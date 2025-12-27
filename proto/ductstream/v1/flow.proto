@@ -8,6 +8,7 @@ option go_package = "github.com/josephjohncox/ductstream/gen/go/ductstream/v1;du
 
 service FlowService {
   rpc CreateFlow(CreateFlowRequest) returns (Flow);
+  rpc UpdateFlow(UpdateFlowRequest) returns (Flow);
   rpc StartFlow(StartFlowRequest) returns (Flow);
   rpc StopFlow(StopFlowRequest) returns (Flow);
   rpc ResumeFlow(ResumeFlowRequest) returns (Flow);
@@ -19,6 +20,10 @@ service FlowService {
 message CreateFlowRequest {
   Flow flow = 1;
   bool start_immediately = 2;
+}
+
+message UpdateFlowRequest {
+  Flow flow = 1;
 }
 
 message StartFlowRequest {

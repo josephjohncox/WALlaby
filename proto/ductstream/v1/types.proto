@@ -52,6 +52,7 @@ message Flow {
   repeated Endpoint destinations = 4;
   FlowState state = 5;
   WireFormat wire_format = 6;
+  int32 parallelism = 7;
 }
 
 message Checkpoint {

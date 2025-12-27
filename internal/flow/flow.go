@@ -21,4 +21,5 @@ type Flow struct {
 	Destinations []connector.Spec
 	State        State
 	WireFormat   connector.WireFormat
+	Parallelism  int
 }

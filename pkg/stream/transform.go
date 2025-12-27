@@ -1,0 +1,293 @@
+package stream
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/josephjohncox/ductstream/pkg/connector"
+)
+
+const (
+	optMetaEnabled     = "meta_enabled"
+	optMetaSyncedAt    = "meta_synced_at"
+	optMetaDeleted     = "meta_deleted"
+	optMetaWatermark   = "meta_watermark"
+	optMetaOp          = "meta_op"
+	optWatermarkSource = "watermark_source"
+	optAppendMode      = "append_mode"
+	optSoftDelete      = "soft_delete"
+)
+
+var reservedMetaColumns = map[string]struct{}{
+	"__op":             {},
+	"__ts":             {},
+	"__schema_version": {},
+	"__table":          {},
+	"__namespace":      {},
+	"__key":            {},
+	"__before_json":    {},
+}
+
+type destTransform struct {
+	metaEnabled     bool
+	appendMode      bool
+	softDelete      bool
+	syncedAtColumn  string
+	deletedColumn   string
+	watermarkColumn string
+	opColumn        string
+	watermarkSource string
+}
+
+func transformBatchForDestination(batch connector.Batch, spec connector.Spec) (connector.Batch, bool, error) {
+	cfg := parseDestTransform(spec.Options)
+	if !cfg.metaEnabled && !cfg.appendMode && !cfg.softDelete {
+		return batch, false, nil
+	}
+
+	metaCols, err := metadataColumns(cfg)
+	if err != nil {
+		return connector.Batch{}, false, err
+	}
+	if len(metaCols) == 0 && !cfg.appendMode && !cfg.softDelete {
+		return batch, false, nil
+	}
+
+	schema, err := applyMetadataSchema(batch.Schema, metaCols)
+	if err != nil {
+		return connector.Batch{}, false, err
+	}
+
+	records := make([]connector.Record, 0, len(batch.Records))
+	for _, record := range batch.Records {
+		updated, err := applyRecordTransform(record, batch.Checkpoint, cfg, metaCols)
+		if err != nil {
+			return connector.Batch{}, false, err
+		}
+		records = append(records, updated)
+	}
+
+	return connector.Batch{
+		Records:    records,
+		Schema:     schema,
+		Checkpoint: batch.Checkpoint,
+		WireFormat: batch.WireFormat,
+	}, true, nil
+}
+
+func parseDestTransform(options map[string]string) destTransform {
+	cfg := destTransform{
+		metaEnabled:     parseBool(options[optMetaEnabled], false),
+		appendMode:      parseBool(options[optAppendMode], false),
+		softDelete:      parseBool(options[optSoftDelete], false),
+		syncedAtColumn:  options[optMetaSyncedAt],
+		deletedColumn:   options[optMetaDeleted],
+		watermarkColumn: options[optMetaWatermark],
+		opColumn:        options[optMetaOp],
+		watermarkSource: options[optWatermarkSource],
+	}
+
+	if cfg.syncedAtColumn == "" {
+		cfg.syncedAtColumn = "__ds_synced_at"
+	}
+	if cfg.deletedColumn == "" {
+		cfg.deletedColumn = "__ds_is_deleted"
+	}
+	if cfg.watermarkColumn == "" {
+		cfg.watermarkColumn = "__ds_watermark"
+	}
+	if cfg.opColumn == "" {
+		cfg.opColumn = "__ds_op"
+	}
+	if cfg.watermarkSource == "" {
+		cfg.watermarkSource = "timestamp"
+	}
+	if cfg.appendMode || cfg.softDelete || options[optMetaSyncedAt] != "" || options[optMetaDeleted] != "" || options[optMetaWatermark] != "" || options[optMetaOp] != "" {
+		cfg.metaEnabled = true
+	}
+
+	return cfg
+}
+
+type metadataColumn struct {
+	Name string
+	Type string
+}
+
+func metadataColumns(cfg destTransform) ([]metadataColumn, error) {
+	if !cfg.metaEnabled {
+		return nil, nil
+	}
+
+	cols := []metadataColumn{
+		{Name: cfg.syncedAtColumn, Type: "timestamptz"},
+		{Name: cfg.deletedColumn, Type: "boolean"},
+	}
+
+	if cfg.appendMode || cfg.opColumn != "" && cfg.opColumn != "-" {
+		cols = append(cols, metadataColumn{Name: cfg.opColumn, Type: "text"})
+	}
+
+	if cfg.watermarkColumn != "" && cfg.watermarkColumn != "-" {
+		if cfg.watermarkSource != "none" && cfg.watermarkSource != "disabled" {
+			colType := "timestamptz"
+			if cfg.watermarkSource == "lsn" {
+				colType = "text"
+			}
+			cols = append(cols, metadataColumn{Name: cfg.watermarkColumn, Type: colType})
+		}
+	}
+
+	seen := map[string]struct{}{}
+	for _, col := range cols {
+		if col.Name == "" {
+			continue
+		}
+		if _, ok := reservedMetaColumns[col.Name]; ok {
+			return nil, fmt.Errorf("metadata column name %q is reserved", col.Name)
+		}
+		lower := strings.ToLower(col.Name)
+		if _, ok := seen[lower]; ok {
+			return nil, fmt.Errorf("duplicate metadata column name %q", col.Name)
+		}
+		seen[lower] = struct{}{}
+	}
+
+	return cols, nil
+}
+
+func applyMetadataSchema(schema connector.Schema, cols []metadataColumn) (connector.Schema, error) {
+	if len(cols) == 0 {
+		return schema, nil
+	}
+
+	existing := map[string]struct{}{}
+	for _, col := range schema.Columns {
+		existing[strings.ToLower(col.Name)] = struct{}{}
+	}
+
+	for _, col := range cols {
+		if col.Name == "" {
+			continue
+		}
+		if _, ok := existing[strings.ToLower(col.Name)]; ok {
+			return connector.Schema{}, fmt.Errorf("metadata column %q collides with existing schema column", col.Name)
+		}
+	}
+
+	next := connector.Schema{
+		Name:      schema.Name,
+		Namespace: schema.Namespace,
+		Version:   schema.Version,
+		Columns:   make([]connector.Column, 0, len(schema.Columns)+len(cols)),
+	}
+	next.Columns = append(next.Columns, schema.Columns...)
+	for _, col := range cols {
+		if col.Name == "" {
+			continue
+		}
+		next.Columns = append(next.Columns, connector.Column{
+			Name:     col.Name,
+			Type:     col.Type,
+			Nullable: true,
+		})
+	}
+
+	return next, nil
+}
+
+func applyRecordTransform(record connector.Record, checkpoint connector.Checkpoint, cfg destTransform, cols []metadataColumn) (connector.Record, error) {
+	if !cfg.metaEnabled && !cfg.appendMode && !cfg.softDelete {
+		return record, nil
+	}
+
+	out := record
+	origOp := record.Operation
+
+	after := cloneMap(record.After)
+	if after == nil {
+		if record.Operation == connector.OpDelete && (cfg.softDelete || cfg.appendMode) && record.Before != nil {
+			after = cloneMap(record.Before)
+		} else {
+			after = map[string]any{}
+		}
+	}
+
+	deleted := false
+	if record.Operation == connector.OpDelete {
+		deleted = true
+		if cfg.softDelete {
+			out.Operation = connector.OpUpdate
+		}
+		if cfg.appendMode {
+			out.Operation = connector.OpInsert
+		}
+	}
+	if record.Operation == connector.OpUpdate && cfg.appendMode {
+		out.Operation = connector.OpInsert
+	}
+
+	if cfg.metaEnabled {
+		syncedAt := record.Timestamp
+		if syncedAt.IsZero() {
+			syncedAt = time.Now().UTC()
+		}
+		setIfPresent(cols, cfg.syncedAtColumn, after, syncedAt)
+		setIfPresent(cols, cfg.deletedColumn, after, deleted)
+
+		if cfg.appendMode {
+			setIfPresent(cols, cfg.opColumn, after, string(origOp))
+		}
+
+		if cfg.watermarkColumn != "" && cfg.watermarkColumn != "-" && cfg.watermarkSource != "none" && cfg.watermarkSource != "disabled" {
+			switch cfg.watermarkSource {
+			case "lsn":
+				if checkpoint.LSN != "" {
+					setIfPresent(cols, cfg.watermarkColumn, after, checkpoint.LSN)
+				}
+			default:
+				setIfPresent(cols, cfg.watermarkColumn, after, syncedAt)
+			}
+		}
+	}
+
+	out.After = after
+
+	return out, nil
+}
+
+func setIfPresent(cols []metadataColumn, name string, target map[string]any, value any) {
+	if target == nil || name == "" {
+		return
+	}
+	for _, col := range cols {
+		if col.Name == name {
+			target[name] = value
+			return
+		}
+	}
+}
+
+func cloneMap(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	out := make(map[string]any, len(source))
+	for key, value := range source {
+		out[key] = value
+	}
+	return out
+}
+
+func parseBool(value string, fallback bool) bool {
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}

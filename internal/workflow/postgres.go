@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/ductstream/internal/flow"
+	"github.com/josephjohncox/ductstream/pkg/connector"
 )
 
 const (
@@ -60,6 +61,9 @@ func (p *PostgresEngine) Create(ctx context.Context, f flow.Flow) (flow.Flow, er
 	if f.State == "" {
 		f.State = flow.StateCreated
 	}
+	if f.Parallelism <= 0 {
+		f.Parallelism = 1
+	}
 
 	sourceJSON, err := json.Marshal(f.Source)
 	if err != nil {
@@ -71,9 +75,9 @@ func (p *PostgresEngine) Create(ctx context.Context, f flow.Flow) (flow.Flow, er
 	}
 
 	_, err = p.pool.Exec(ctx,
-		`INSERT INTO flows (id, name, source, destinations, state)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		f.ID, f.Name, sourceJSON, destJSON, string(f.State),
+		`INSERT INTO flows (id, name, source, destinations, state, wire_format, parallelism)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		f.ID, f.Name, sourceJSON, destJSON, string(f.State), emptyToNull(string(f.WireFormat)), f.Parallelism,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -87,6 +91,37 @@ func (p *PostgresEngine) Create(ctx context.Context, f flow.Flow) (flow.Flow, er
 	}
 
 	return f, nil
+}
+
+func (p *PostgresEngine) Update(ctx context.Context, f flow.Flow) (flow.Flow, error) {
+	if f.ID == "" {
+		return flow.Flow{}, errors.New("flow id is required")
+	}
+	if f.Parallelism <= 0 {
+		f.Parallelism = 1
+	}
+
+	sourceJSON, err := json.Marshal(f.Source)
+	if err != nil {
+		return flow.Flow{}, fmt.Errorf("marshal source: %w", err)
+	}
+	destJSON, err := json.Marshal(f.Destinations)
+	if err != nil {
+		return flow.Flow{}, fmt.Errorf("marshal destinations: %w", err)
+	}
+
+	row := p.pool.QueryRow(ctx,
+		`UPDATE flows
+		 SET name = $2, source = $3, destinations = $4, wire_format = $5, parallelism = $6, updated_at = now()
+		 WHERE id = $1
+		 RETURNING id, name, source, destinations, state, wire_format, parallelism`,
+		f.ID, f.Name, sourceJSON, destJSON, emptyToNull(string(f.WireFormat)), f.Parallelism,
+	)
+	updated, err := scanFlow(row)
+	if err != nil {
+		return flow.Flow{}, err
+	}
+	return updated, nil
 }
 
 func (p *PostgresEngine) Start(ctx context.Context, flowID string) (flow.Flow, error) {
@@ -114,14 +149,14 @@ func (p *PostgresEngine) Delete(ctx context.Context, flowID string) error {
 
 func (p *PostgresEngine) Get(ctx context.Context, flowID string) (flow.Flow, error) {
 	row := p.pool.QueryRow(ctx,
-		"SELECT id, name, source, destinations, state FROM flows WHERE id = $1",
+		"SELECT id, name, source, destinations, state, wire_format, parallelism FROM flows WHERE id = $1",
 		flowID,
 	)
 	return scanFlow(row)
 }
 
 func (p *PostgresEngine) List(ctx context.Context) ([]flow.Flow, error) {
-	rows, err := p.pool.Query(ctx, "SELECT id, name, source, destinations, state FROM flows ORDER BY created_at")
+	rows, err := p.pool.Query(ctx, "SELECT id, name, source, destinations, state, wire_format, parallelism FROM flows ORDER BY created_at")
 	if err != nil {
 		return nil, fmt.Errorf("list flows: %w", err)
 	}
@@ -150,7 +185,7 @@ func (p *PostgresEngine) transition(ctx context.Context, flowID string, target f
 	}
 
 	row := p.pool.QueryRow(ctx,
-		"UPDATE flows SET state = $2, updated_at = now() WHERE id = $1 RETURNING id, name, source, destinations, state",
+		"UPDATE flows SET state = $2, updated_at = now() WHERE id = $1 RETURNING id, name, source, destinations, state, wire_format, parallelism",
 		flowID, string(target),
 	)
 	updated, err := scanFlow(row)
@@ -192,8 +227,10 @@ func scanFlow(row pgx.Row) (flow.Flow, error) {
 	var sourceJSON []byte
 	var destJSON []byte
 	var state string
+	var wireFormat *string
+	var parallelism int
 
-	if err := row.Scan(&f.ID, &f.Name, &sourceJSON, &destJSON, &state); err != nil {
+	if err := row.Scan(&f.ID, &f.Name, &sourceJSON, &destJSON, &state, &wireFormat, &parallelism); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return flow.Flow{}, ErrNotFound
 		}
@@ -208,6 +245,14 @@ func scanFlow(row pgx.Row) (flow.Flow, error) {
 	}
 
 	f.State = flow.State(state)
+	if wireFormat != nil {
+		f.WireFormat = connector.WireFormat(*wireFormat)
+	}
+	if parallelism > 0 {
+		f.Parallelism = parallelism
+	} else {
+		f.Parallelism = 1
+	}
 	return f, nil
 }
 

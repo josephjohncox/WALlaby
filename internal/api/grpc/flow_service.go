@@ -5,9 +5,9 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
+	ductstreampb "github.com/josephjohncox/ductstream/gen/go/ductstream/v1"
 	"github.com/josephjohncox/ductstream/internal/flow"
 	"github.com/josephjohncox/ductstream/internal/workflow"
-	ductstreampb "github.com/josephjohncox/ductstream/gen/go/ductstream/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -51,6 +51,42 @@ func (s *FlowService) CreateFlow(ctx context.Context, req *ductstreampb.CreateFl
 	}
 
 	return flowToProto(created), nil
+}
+
+func (s *FlowService) UpdateFlow(ctx context.Context, req *ductstreampb.UpdateFlowRequest) (*ductstreampb.Flow, error) {
+	if req == nil || req.Flow == nil {
+		return nil, status.Error(codes.InvalidArgument, "flow is required")
+	}
+
+	model, err := flowFromProto(req.Flow)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if model.ID == "" {
+		return nil, status.Error(codes.InvalidArgument, "flow id is required")
+	}
+
+	existing, err := s.engine.Get(ctx, model.ID)
+	if err != nil {
+		return nil, mapWorkflowError(err)
+	}
+	model.State = existing.State
+	if model.Name == "" {
+		model.Name = existing.Name
+	}
+	if model.WireFormat == "" {
+		model.WireFormat = existing.WireFormat
+	}
+	if model.Parallelism == 0 {
+		model.Parallelism = existing.Parallelism
+	}
+
+	updated, err := s.engine.Update(ctx, model)
+	if err != nil {
+		return nil, mapWorkflowError(err)
+	}
+
+	return flowToProto(updated), nil
 }
 
 func (s *FlowService) StartFlow(ctx context.Context, req *ductstreampb.StartFlowRequest) (*ductstreampb.Flow, error) {

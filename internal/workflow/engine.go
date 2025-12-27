@@ -9,6 +9,7 @@ import (
 // Engine coordinates durable flow execution.
 type Engine interface {
 	Create(ctx context.Context, flow flow.Flow) (flow.Flow, error)
+	Update(ctx context.Context, flow flow.Flow) (flow.Flow, error)
 	Start(ctx context.Context, flowID string) (flow.Flow, error)
 	Stop(ctx context.Context, flowID string) (flow.Flow, error)
 	Resume(ctx context.Context, flowID string) (flow.Flow, error)
@@ -30,10 +31,11 @@ func (n *NoopEngine) Create(_ context.Context, f flow.Flow) (flow.Flow, error) {
 	}
 	return f, nil
 }
-func (n *NoopEngine) Start(_ context.Context, _ string) (flow.Flow, error)  { return flow.Flow{}, nil }
-func (n *NoopEngine) Stop(_ context.Context, _ string) (flow.Flow, error)   { return flow.Flow{}, nil }
-func (n *NoopEngine) Resume(_ context.Context, _ string) (flow.Flow, error) { return flow.Flow{}, nil }
-func (n *NoopEngine) Delete(_ context.Context, _ string) error              { return nil }
+func (n *NoopEngine) Update(_ context.Context, f flow.Flow) (flow.Flow, error) { return f, nil }
+func (n *NoopEngine) Start(_ context.Context, _ string) (flow.Flow, error)     { return flow.Flow{}, nil }
+func (n *NoopEngine) Stop(_ context.Context, _ string) (flow.Flow, error)      { return flow.Flow{}, nil }
+func (n *NoopEngine) Resume(_ context.Context, _ string) (flow.Flow, error)    { return flow.Flow{}, nil }
+func (n *NoopEngine) Delete(_ context.Context, _ string) error                 { return nil }
 func (n *NoopEngine) Get(_ context.Context, _ string) (flow.Flow, error) {
 	return flow.Flow{}, nil
 }

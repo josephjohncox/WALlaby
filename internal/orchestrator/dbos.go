@@ -191,6 +191,9 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunIn
 		MaxEmptyReads: maxEmptyReads,
 		Tracer:        tracer,
 	}
+	if f.Parallelism > 0 {
+		runner.Parallelism = f.Parallelism
+	}
 
 	if err := runner.Run(ctx); err != nil {
 		if errors.Is(err, registry.ErrApprovalRequired) {

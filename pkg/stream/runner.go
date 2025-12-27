@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/josephjohncox/ductstream/pkg/connector"
@@ -30,6 +31,7 @@ type Runner struct {
 	MaxEmptyReads int
 	WireFormat    connector.WireFormat
 	StrictFormat  bool
+	Parallelism   int
 }
 
 // Run executes the streaming loop until context cancellation or error.
@@ -115,12 +117,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			attribute.String("schema", batch.Schema.Name),
 		)
 
-		for _, dest := range r.Destinations {
-			if err := dest.Dest.Write(batchCtx, batch); err != nil {
-				span.RecordError(err)
-				span.End()
-				return fmt.Errorf("write destination %s: %w", dest.Spec.Name, err)
-			}
+		if err := r.writeDestinations(batchCtx, batch); err != nil {
+			span.RecordError(err)
+			span.End()
+			return err
 		}
 
 		if err := r.Source.Ack(batchCtx, batch.Checkpoint); err != nil {
@@ -170,5 +170,68 @@ func (r *Runner) normalizeWireFormat() error {
 		r.Destinations[i].Spec = spec
 	}
 
+	return nil
+}
+
+func (r *Runner) writeDestinations(ctx context.Context, batch connector.Batch) error {
+	if len(r.Destinations) == 0 {
+		return nil
+	}
+
+	parallelism := r.Parallelism
+	if parallelism <= 0 {
+		parallelism = 1
+	}
+	if parallelism == 1 || len(r.Destinations) == 1 {
+		for _, dest := range r.Destinations {
+			if err := r.writeDestination(ctx, dest, batch); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if parallelism > len(r.Destinations) {
+		parallelism = len(r.Destinations)
+	}
+
+	sem := make(chan struct{}, parallelism)
+	errCh := make(chan error, len(r.Destinations))
+	var wg sync.WaitGroup
+
+	for _, dest := range r.Destinations {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(dest DestinationConfig) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := r.writeDestination(ctx, dest, batch); err != nil {
+				errCh <- err
+			}
+		}(dest)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, batch connector.Batch) error {
+	destBatch := batch
+	if transformed, ok, err := transformBatchForDestination(batch, dest.Spec); err != nil {
+		return fmt.Errorf("transform destination %s: %w", dest.Spec.Name, err)
+	} else if ok {
+		destBatch = transformed
+	}
+
+	if err := dest.Dest.Write(ctx, destBatch); err != nil {
+		return fmt.Errorf("write destination %s: %w", dest.Spec.Name, err)
+	}
 	return nil
 }

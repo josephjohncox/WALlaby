@@ -43,14 +43,8 @@ No Git history exists yet. Use Conventional Commits (e.g., `feat: add wal stream
 PRs should include description, test evidence, and performance/compatibility notes.
 
 ## Pending Tasks / Roadmap
-- Destination hidden schemas/tables for synced_at + soft-delete metadata.
-- Append-only destination mode.
-- Watermark columns/tables support.
-- Initial snapshotting with parallel table/partition workers.
-- Soft delete handling.
-- Destination configuration + reconfiguration.
-- Parallelism per flow.
-- CDC mode batching + refresh intervals.
+- Implement remaining destination connectors (Snowflake/Snowpipe/DuckDB/ClickHouse/Bufstream, etc.).
+- Optional: destination-side hidden metadata schemas/tables for `synced_at`/`is_deleted` beyond column injection.
 
 ## Observability & Lifecycle Expectations
 All new components must emit OpenTelemetry traces/metrics and honor flow lifecycle state transitions. Checkpointing and recovery paths should be tested and documented.

@@ -26,6 +26,10 @@ func (o *OrchestratedEngine) Create(ctx context.Context, f flow.Flow) (flow.Flow
 	return o.base.Create(ctx, f)
 }
 
+func (o *OrchestratedEngine) Update(ctx context.Context, f flow.Flow) (flow.Flow, error) {
+	return o.base.Update(ctx, f)
+}
+
 func (o *OrchestratedEngine) Start(ctx context.Context, flowID string) (flow.Flow, error) {
 	updated, err := o.base.Start(ctx, flowID)
 	if err != nil {

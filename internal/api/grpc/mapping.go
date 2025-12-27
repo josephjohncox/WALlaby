@@ -16,6 +16,7 @@ func flowToProto(f flow.Flow) *ductstreampb.Flow {
 		Destinations: endpointsToProto(f.Destinations),
 		State:        flowStateToProto(f.State),
 		WireFormat:   wireFormatToProto(f.WireFormat),
+		Parallelism:  int32(f.Parallelism),
 	}
 }
 
@@ -53,6 +54,7 @@ func flowFromProto(pb *ductstreampb.Flow) (flow.Flow, error) {
 		Destinations: dests,
 		State:        flowStateFromProto(pb.State),
 		WireFormat:   wireFormatFromProto(pb.WireFormat),
+		Parallelism:  int(pb.Parallelism),
 	}, nil
 }
 

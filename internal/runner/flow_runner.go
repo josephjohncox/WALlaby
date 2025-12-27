@@ -20,6 +20,7 @@ type FlowRunner struct {
 	WireFormat  connector.WireFormat
 	StrictWire  bool
 	MaxEmpty    int
+	Parallelism int
 }
 
 func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Source, destinations []stream.DestinationConfig) error {
@@ -69,6 +70,11 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		runner.WireFormat = f.WireFormat
 	} else if r.WireFormat != "" {
 		runner.WireFormat = r.WireFormat
+	}
+	if f.Parallelism > 0 {
+		runner.Parallelism = f.Parallelism
+	} else if r.Parallelism > 0 {
+		runner.Parallelism = r.Parallelism
 	}
 	runner.StrictFormat = r.StrictWire
 	runner.MaxEmptyReads = r.MaxEmpty

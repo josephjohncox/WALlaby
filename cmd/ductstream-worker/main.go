@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -19,13 +20,16 @@ import (
 
 func main() {
 	var (
-		configPath    string
-		flowID        string
-		maxEmptyReads int
-		mode          string
-		tables        string
-		schemas       string
-		startLSN      string
+		configPath      string
+		flowID          string
+		maxEmptyReads   int
+		mode            string
+		tables          string
+		schemas         string
+		startLSN        string
+		snapshotWorkers int
+		partitionColumn string
+		partitionCount  int
 	)
 	flag.StringVar(&configPath, "config", "", "path to config file")
 	flag.StringVar(&flowID, "flow-id", "", "flow id to run")
@@ -34,6 +38,9 @@ func main() {
 	flag.StringVar(&tables, "tables", "", "comma-separated tables for backfill (schema.table)")
 	flag.StringVar(&schemas, "schemas", "", "comma-separated schemas for backfill")
 	flag.StringVar(&startLSN, "start-lsn", "", "override start LSN for replay")
+	flag.IntVar(&snapshotWorkers, "snapshot-workers", 0, "parallel workers for backfill snapshots")
+	flag.StringVar(&partitionColumn, "partition-column", "", "partition column for backfill hashing")
+	flag.IntVar(&partitionCount, "partition-count", 0, "partition count per table for backfill hashing")
 	flag.Parse()
 
 	if flowID == "" {
@@ -99,6 +106,15 @@ func main() {
 		}
 		if schemas != "" {
 			flowDef.Source.Options["schemas"] = schemas
+		}
+		if snapshotWorkers > 0 {
+			flowDef.Source.Options["snapshot_workers"] = fmt.Sprintf("%d", snapshotWorkers)
+		}
+		if partitionColumn != "" {
+			flowDef.Source.Options["partition_column"] = partitionColumn
+		}
+		if partitionCount > 0 {
+			flowDef.Source.Options["partition_count"] = fmt.Sprintf("%d", partitionCount)
 		}
 	}
 	if startLSN != "" {

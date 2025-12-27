@@ -27,6 +27,12 @@ examples/grpc/create_flow.sh
 
 Flow definitions can also be copied from `examples/flows/*.json`.
 
+Flow fields you can set:
+- `wire_format` — default wire format for the flow
+- `parallelism` — max concurrent destination writes per batch (default `1`)
+
+To reconfigure destinations or wire format, call `UpdateFlow` with a full `Flow` payload; state is preserved.
+
 ## Worker Mode (Per-Flow Process)
 Run a single flow in its own process. This is recommended for Kubernetes or when you want isolated scaling per flow.
 
@@ -67,6 +73,10 @@ Key Postgres source options (connector `options`):
 - `ensure_publication` (default `true`) — create publication if missing
 - `publication_tables` (optional) — comma-separated list for publication creation
 - `validate_replication` (default `true`) — checks `wal_level`, `max_replication_slots`, `max_wal_senders`
+- `batch_size` (default `100`) — max records per batch
+- `batch_timeout` (default `1s`) — flush interval when idle
+- `status_interval` (default `10s`) — standby status update interval
+- `emit_empty` (default `false`) — emit empty batches (useful for scheduled runs)
 - `ensure_state` (default `true`) — creates a durable source-state table for cleanup and auditing
 - `state_schema` (default `ductstream`)
 - `state_table` (default `source_state`)
@@ -105,6 +115,21 @@ Ack messages when processed:
 ./bin/ductstream-admin stream ack -stream orders -group search -ids 1,2,3
 ```
 
+## Destination Metadata + Append/Soft Delete
+Destinations can opt into metadata columns (synced time, soft-delete flags, watermarks) and append-only behavior:
+
+Options (on destination `options`):
+- `meta_enabled` (default `false`) — enable metadata columns
+- `meta_synced_at` (default `__ds_synced_at`)
+- `meta_deleted` (default `__ds_is_deleted`)
+- `meta_watermark` (default `__ds_watermark`, set `-` to disable)
+- `meta_op` (default `__ds_op`)
+- `watermark_source` (`timestamp` default, or `lsn`)
+- `soft_delete` (default `false`) — converts deletes to updates with `meta_deleted=true`
+- `append_mode` (default `false`) — converts updates/deletes to inserts and stores original op in `meta_op`
+
+Metadata columns are added to the destination schema; choose names that do not collide with source columns.
+
 ## DDL Governance
 Enable gating to require approval before applying DDL-derived schema changes:
 
@@ -127,6 +152,18 @@ Run a backfill by switching the worker to `backfill` mode and providing tables:
 
 ```bash
 ./bin/ductstream-worker -flow-id \"<flow-id>\" -mode backfill -tables public.users,public.orders
+```
+
+Backfill performance options (source `options`):
+- `snapshot_workers` (default `1`) — parallel table/partition workers
+- `parallel_tables` (alias of `snapshot_workers`)
+- `partition_column` (optional) — column used to hash-partition a table
+- `partition_count` (default `1`) — number of partitions per table
+
+Example with parallel workers and hash partitions:
+
+```bash
+./bin/ductstream-worker -flow-id \"<flow-id>\" -mode backfill -tables public.users -snapshot-workers 4 -partition-column id -partition-count 8
 ```
 
 Replay from a specific LSN (if your replication slot retains WAL):

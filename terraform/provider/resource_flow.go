@@ -21,6 +21,7 @@ type flowResourceModel struct {
 	ID               types.String    `tfsdk:"id"`
 	Name             types.String    `tfsdk:"name"`
 	WireFormat       types.String    `tfsdk:"wire_format"`
+	Parallelism      types.Int64     `tfsdk:"parallelism"`
 	State            types.String    `tfsdk:"state"`
 	StartImmediately types.Bool      `tfsdk:"start_immediately"`
 	Source           endpointModel   `tfsdk:"source"`
@@ -54,6 +55,9 @@ func (r *flowResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			"wire_format": schema.StringAttribute{
 				Optional:      true,
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+			},
+			"parallelism": schema.Int64Attribute{
+				Optional: true,
 			},
 			"state": schema.StringAttribute{
 				Computed: true,
@@ -135,6 +139,7 @@ func (r *flowResource) Create(ctx context.Context, req resource.CreateRequest, r
 		ID:               types.StringValue(result.Id),
 		Name:             types.StringValue(result.Name),
 		WireFormat:       types.StringValue(wireFormatToString(result.WireFormat)),
+		Parallelism:      types.Int64Value(int64(result.Parallelism)),
 		State:            types.StringValue(flowStateToString(result.State)),
 		StartImmediately: plan.StartImmediately,
 		Source:           endpointFromProto(result.Source),
@@ -166,6 +171,7 @@ func (r *flowResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		ID:               types.StringValue(result.Id),
 		Name:             types.StringValue(result.Name),
 		WireFormat:       types.StringValue(wireFormatToString(result.WireFormat)),
+		Parallelism:      types.Int64Value(int64(result.Parallelism)),
 		State:            types.StringValue(flowStateToString(result.State)),
 		StartImmediately: state.StartImmediately,
 		Source:           endpointFromProto(result.Source),
@@ -176,7 +182,36 @@ func (r *flowResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 }
 
 func (r *flowResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	resp.Diagnostics.AddError("Unsupported update", "Flow updates require replacement")
+	var plan flowResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	flow, diags := flowModelToProto(ctx, plan)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	result, err := r.client.Flow.UpdateFlow(ctx, &ductstreampb.UpdateFlowRequest{Flow: flow})
+	if err != nil {
+		resp.Diagnostics.AddError("Update flow failed", err.Error())
+		return
+	}
+
+	state := flowResourceModel{
+		ID:               types.StringValue(result.Id),
+		Name:             types.StringValue(result.Name),
+		WireFormat:       types.StringValue(wireFormatToString(result.WireFormat)),
+		Parallelism:      types.Int64Value(int64(result.Parallelism)),
+		State:            types.StringValue(flowStateToString(result.State)),
+		StartImmediately: plan.StartImmediately,
+		Source:           endpointFromProto(result.Source),
+		Destinations:     endpointsFromProto(result.Destinations),
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
 
 func (r *flowResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -217,6 +252,7 @@ func flowModelToProto(ctx context.Context, model flowResourceModel) (*ductstream
 		Id:           model.ID.ValueString(),
 		Name:         model.Name.ValueString(),
 		WireFormat:   wireFormatFromString(model.WireFormat.ValueString()),
+		Parallelism:  int32(model.Parallelism.ValueInt64()),
 		Source:       source,
 		Destinations: dests,
 	}, diags
