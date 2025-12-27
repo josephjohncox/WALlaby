@@ -9,16 +9,16 @@ import (
 	"time"
 
 	_ "github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/josephjohncox/ductstream/connectors/destinations/clickhouse"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/connectors/destinations/clickhouse"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 func BenchmarkClickHouseMutationUpdate(b *testing.B) {
-	dsn := os.Getenv("DUCTSTREAM_TEST_CLICKHOUSE_DSN")
+	dsn := os.Getenv("WALLABY_TEST_CLICKHOUSE_DSN")
 	if dsn == "" {
-		b.Skip("DUCTSTREAM_TEST_CLICKHOUSE_DSN not set")
+		b.Skip("WALLABY_TEST_CLICKHOUSE_DSN not set")
 	}
-	database := os.Getenv("DUCTSTREAM_TEST_CLICKHOUSE_DB")
+	database := os.Getenv("WALLABY_TEST_CLICKHOUSE_DB")
 	if database == "" {
 		database = "default"
 	}
@@ -34,7 +34,7 @@ func BenchmarkClickHouseMutationUpdate(b *testing.B) {
 		b.Fatalf("create database: %v", err)
 	}
 
-	table := fmt.Sprintf("ductstream_bench_mut_%d", time.Now().UnixNano())
+	table := fmt.Sprintf("wallaby_bench_mut_%d", time.Now().UnixNano())
 	fullTable := fmt.Sprintf("%s.%s", database, table)
 	createSQL := fmt.Sprintf(`CREATE TABLE %s (
   id UInt64,
@@ -97,11 +97,11 @@ func BenchmarkClickHouseMutationUpdate(b *testing.B) {
 }
 
 func BenchmarkClickHouseAppendInsert(b *testing.B) {
-	dsn := os.Getenv("DUCTSTREAM_TEST_CLICKHOUSE_DSN")
+	dsn := os.Getenv("WALLABY_TEST_CLICKHOUSE_DSN")
 	if dsn == "" {
-		b.Skip("DUCTSTREAM_TEST_CLICKHOUSE_DSN not set")
+		b.Skip("WALLABY_TEST_CLICKHOUSE_DSN not set")
 	}
-	database := os.Getenv("DUCTSTREAM_TEST_CLICKHOUSE_DB")
+	database := os.Getenv("WALLABY_TEST_CLICKHOUSE_DB")
 	if database == "" {
 		database = "default"
 	}
@@ -117,7 +117,7 @@ func BenchmarkClickHouseAppendInsert(b *testing.B) {
 		b.Fatalf("create database: %v", err)
 	}
 
-	table := fmt.Sprintf("ductstream_bench_append_%d", time.Now().UnixNano())
+	table := fmt.Sprintf("wallaby_bench_append_%d", time.Now().UnixNano())
 	fullTable := fmt.Sprintf("%s.%s", database, table)
 	createSQL := fmt.Sprintf(`CREATE TABLE %s (
   id UInt64,

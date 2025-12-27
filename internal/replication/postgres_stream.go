@@ -15,8 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgtype"
-	internalschema "github.com/josephjohncox/ductstream/internal/schema"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	internalschema "github.com/josephjohncox/wallaby/internal/schema"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 // PostgresStream implements logical replication using pgoutput.

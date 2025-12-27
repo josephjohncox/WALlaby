@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	ductstreampb "github.com/josephjohncox/ductstream/gen/go/ductstream/v1"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -28,14 +28,14 @@ func (c *ProtoCodec) Encode(batch connector.Batch) ([]byte, error) {
 	return proto.Marshal(pbBatch)
 }
 
-func batchToProto(batch connector.Batch) (*ductstreampb.Batch, error) {
-	schema := &ductstreampb.Schema{
+func batchToProto(batch connector.Batch) (*wallabypb.Batch, error) {
+	schema := &wallabypb.Schema{
 		Name:      batch.Schema.Name,
 		Namespace: batch.Schema.Namespace,
 		Version:   batch.Schema.Version,
 	}
 	for _, col := range batch.Schema.Columns {
-		schema.Columns = append(schema.Columns, &ductstreampb.SchemaColumn{
+		schema.Columns = append(schema.Columns, &wallabypb.SchemaColumn{
 			Name:       col.Name,
 			Type:       col.Type,
 			Nullable:   col.Nullable,
@@ -44,7 +44,7 @@ func batchToProto(batch connector.Batch) (*ductstreampb.Batch, error) {
 		})
 	}
 
-	records := make([]*ductstreampb.Record, 0, len(batch.Records))
+	records := make([]*wallabypb.Record, 0, len(batch.Records))
 	for _, rec := range batch.Records {
 		before, err := json.Marshal(rec.Before)
 		if err != nil {
@@ -55,7 +55,7 @@ func batchToProto(batch connector.Batch) (*ductstreampb.Batch, error) {
 			return nil, fmt.Errorf("marshal after: %w", err)
 		}
 
-		records = append(records, &ductstreampb.Record{
+		records = append(records, &wallabypb.Record{
 			Table:               rec.Table,
 			Operation:           string(rec.Operation),
 			Key:                 rec.Key,
@@ -68,10 +68,10 @@ func batchToProto(batch connector.Batch) (*ductstreampb.Batch, error) {
 		})
 	}
 
-	return &ductstreampb.Batch{
+	return &wallabypb.Batch{
 		Schema:  schema,
 		Records: records,
-		Checkpoint: &ductstreampb.Checkpoint{
+		Checkpoint: &wallabypb.Checkpoint{
 			Lsn:                 batch.Checkpoint.LSN,
 			TimestampUnixMillis: batch.Checkpoint.Timestamp.UnixMilli(),
 			Metadata:            batch.Checkpoint.Metadata,
@@ -80,19 +80,19 @@ func batchToProto(batch connector.Batch) (*ductstreampb.Batch, error) {
 	}, nil
 }
 
-func wireFormatToProto(format connector.WireFormat) ductstreampb.WireFormat {
+func wireFormatToProto(format connector.WireFormat) wallabypb.WireFormat {
 	switch format {
 	case connector.WireFormatArrow:
-		return ductstreampb.WireFormat_WIRE_FORMAT_ARROW
+		return wallabypb.WireFormat_WIRE_FORMAT_ARROW
 	case connector.WireFormatParquet:
-		return ductstreampb.WireFormat_WIRE_FORMAT_PARQUET
+		return wallabypb.WireFormat_WIRE_FORMAT_PARQUET
 	case connector.WireFormatProto:
-		return ductstreampb.WireFormat_WIRE_FORMAT_PROTO
+		return wallabypb.WireFormat_WIRE_FORMAT_PROTO
 	case connector.WireFormatAvro:
-		return ductstreampb.WireFormat_WIRE_FORMAT_AVRO
+		return wallabypb.WireFormat_WIRE_FORMAT_AVRO
 	case connector.WireFormatJSON:
-		return ductstreampb.WireFormat_WIRE_FORMAT_JSON
+		return wallabypb.WireFormat_WIRE_FORMAT_JSON
 	default:
-		return ductstreampb.WireFormat_WIRE_FORMAT_UNSPECIFIED
+		return wallabypb.WireFormat_WIRE_FORMAT_UNSPECIFIED
 	}
 }

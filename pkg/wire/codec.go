@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 // Codec encodes a batch into a wire payload.

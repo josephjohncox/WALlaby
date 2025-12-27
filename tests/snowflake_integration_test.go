@@ -4,24 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/josephjohncox/ductstream/connectors/destinations/snowflake"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 	_ "github.com/snowflakedb/gosnowflake"
 )
 
 func TestSnowflakeDestination(t *testing.T) {
-	dsn := os.Getenv("DUCTSTREAM_TEST_SNOWFLAKE_DSN")
-	if dsn == "" {
-		t.Skip("DUCTSTREAM_TEST_SNOWFLAKE_DSN not set")
-	}
-	schema := os.Getenv("DUCTSTREAM_TEST_SNOWFLAKE_SCHEMA")
-	if schema == "" {
-		schema = "PUBLIC"
+	dsn, schema, ok := snowflakeTestDSN(t)
+	if !ok {
+		t.Skip("snowflake DSN not configured; set WALLABY_TEST_SNOWFLAKE_DSN or WALLABY_TEST_FAKESNOW_HOST/PORT")
 	}
 
 	ctx := context.Background()
@@ -37,7 +32,7 @@ func TestSnowflakeDestination(t *testing.T) {
 		}
 	}
 
-	table := fmt.Sprintf("ductstream_sf_%d", time.Now().UnixNano())
+	table := fmt.Sprintf("wallaby_sf_%d", time.Now().UnixNano())
 	fullTable := quoteSnowflakeIdent(table)
 	if schema != "" {
 		fullTable = quoteSnowflakeIdent(schema) + "." + quoteSnowflakeIdent(table)

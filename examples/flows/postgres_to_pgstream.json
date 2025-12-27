@@ -6,8 +6,8 @@
     "type": "postgres",
     "options": {
       "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
-      "slot": "ductstream_slot",
-      "publication": "ductstream_pub",
+      "slot": "wallaby_slot",
+      "publication": "wallaby_pub",
       "batch_size": "500",
       "batch_timeout": "1s",
       "status_interval": "10s",
@@ -20,7 +20,7 @@
       "name": "stream-out",
       "type": "pgstream",
       "options": {
-        "dsn": "postgres://user:pass@localhost:5432/ductstream?sslmode=disable",
+        "dsn": "postgres://user:pass@localhost:5432/wallaby?sslmode=disable",
         "stream": "orders",
         "format": "json"
       }

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pglogrepl"
-	"github.com/josephjohncox/ductstream/internal/replication"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/internal/replication"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 const (
@@ -117,7 +117,7 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	if parseBool(spec.Options[optEnsureState], true) {
 		stateSchema := spec.Options[optStateSchema]
 		if stateSchema == "" {
-			stateSchema = "ductstream"
+			stateSchema = "wallaby"
 		}
 		stateTable := spec.Options[optStateTable]
 		if stateTable == "" {

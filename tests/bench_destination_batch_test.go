@@ -10,20 +10,20 @@ import (
 	"time"
 
 	_ "github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/josephjohncox/ductstream/connectors/destinations/clickhouse"
-	"github.com/josephjohncox/ductstream/connectors/destinations/duckdb"
-	"github.com/josephjohncox/ductstream/connectors/destinations/snowflake"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/connectors/destinations/clickhouse"
+	"github.com/josephjohncox/wallaby/connectors/destinations/duckdb"
+	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 	_ "github.com/marcboeker/go-duckdb"
 	_ "github.com/snowflakedb/gosnowflake"
 )
 
 func BenchmarkClickHouseBatchSizes(b *testing.B) {
-	dsn := os.Getenv("DUCTSTREAM_TEST_CLICKHOUSE_DSN")
+	dsn := os.Getenv("WALLABY_TEST_CLICKHOUSE_DSN")
 	if dsn == "" {
-		b.Skip("DUCTSTREAM_TEST_CLICKHOUSE_DSN not set")
+		b.Skip("WALLABY_TEST_CLICKHOUSE_DSN not set")
 	}
-	database := os.Getenv("DUCTSTREAM_TEST_CLICKHOUSE_DB")
+	database := os.Getenv("WALLABY_TEST_CLICKHOUSE_DB")
 	if database == "" {
 		database = "default"
 	}
@@ -39,7 +39,7 @@ func BenchmarkClickHouseBatchSizes(b *testing.B) {
 	}
 
 	benchBatchSizes(b, "clickhouse", []int{1, 10, 100, 500}, func(size int) benchTarget {
-		table := fmt.Sprintf("ductstream_batch_ch_%d_%d", time.Now().UnixNano(), size)
+		table := fmt.Sprintf("wallaby_batch_ch_%d_%d", time.Now().UnixNano(), size)
 		fullTable := fmt.Sprintf("%s.%s", database, table)
 		createSQL := fmt.Sprintf(`CREATE TABLE %s (
   id UInt64,
@@ -81,9 +81,9 @@ func BenchmarkClickHouseBatchSizes(b *testing.B) {
 }
 
 func BenchmarkDuckDBBatchSizes(b *testing.B) {
-	dsn := os.Getenv("DUCTSTREAM_TEST_DUCKDB_DSN")
+	dsn := os.Getenv("WALLABY_TEST_DUCKDB_DSN")
 	if dsn == "" {
-		b.Skip("DUCTSTREAM_TEST_DUCKDB_DSN not set")
+		b.Skip("WALLABY_TEST_DUCKDB_DSN not set")
 	}
 
 	ctx := context.Background()
@@ -94,7 +94,7 @@ func BenchmarkDuckDBBatchSizes(b *testing.B) {
 	defer setupDB.Close()
 
 	benchBatchSizes(b, "duckdb", []int{1, 10, 100, 500}, func(size int) benchTarget {
-		table := fmt.Sprintf("ductstream_batch_duck_%d_%d", time.Now().UnixNano(), size)
+		table := fmt.Sprintf("wallaby_batch_duck_%d_%d", time.Now().UnixNano(), size)
 		if _, err := setupDB.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s (id INTEGER, name TEXT)", table)); err != nil {
 			b.Fatalf("create table: %v", err)
 		}
@@ -129,11 +129,11 @@ func BenchmarkDuckDBBatchSizes(b *testing.B) {
 }
 
 func BenchmarkSnowflakeBatchSizes(b *testing.B) {
-	dsn := os.Getenv("DUCTSTREAM_TEST_SNOWFLAKE_DSN")
+	dsn := os.Getenv("WALLABY_TEST_SNOWFLAKE_DSN")
 	if dsn == "" {
-		b.Skip("DUCTSTREAM_TEST_SNOWFLAKE_DSN not set")
+		b.Skip("WALLABY_TEST_SNOWFLAKE_DSN not set")
 	}
-	schema := os.Getenv("DUCTSTREAM_TEST_SNOWFLAKE_SCHEMA")
+	schema := os.Getenv("WALLABY_TEST_SNOWFLAKE_SCHEMA")
 	if schema == "" {
 		schema = "PUBLIC"
 	}
@@ -150,7 +150,7 @@ func BenchmarkSnowflakeBatchSizes(b *testing.B) {
 	}
 
 	benchBatchSizes(b, "snowflake", []int{1, 10, 100, 500}, func(size int) benchTarget {
-		table := fmt.Sprintf("ductstream_batch_sf_%d_%d", time.Now().UnixNano(), size)
+		table := fmt.Sprintf("wallaby_batch_sf_%d_%d", time.Now().UnixNano(), size)
 		fullTable := quoteSnowflakeIdentBench(schema) + "." + quoteSnowflakeIdentBench(table)
 		createSQL := fmt.Sprintf("CREATE TABLE %s (id NUMBER, name STRING)", fullTable)
 		if _, err := setupDB.ExecContext(ctx, createSQL); err != nil {

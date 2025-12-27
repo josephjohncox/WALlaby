@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/josephjohncox/ductstream/pkg/connector"
-	"github.com/josephjohncox/ductstream/pkg/wire"
+	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/wire"
 )
 
 const (

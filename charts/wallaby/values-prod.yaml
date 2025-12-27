@@ -1,0 +1,60 @@
+# Production-flavored values template for WALlaby.
+# - Uses ConfigMap for non-secret env vars
+# - Uses Secret for sensitive values
+
+image:
+  repository: ghcr.io/josephjohncox/wallaby
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 8080
+
+serviceAnnotations: {}
+
+# ConfigMap-backed env vars
+config:
+  enabled: true
+  data:
+    WALLABY_GRPC_LISTEN: ":8080"
+    WALLABY_WIRE_FORMAT: "arrow"
+
+# Secret-backed env vars (reference in envFrom)
+# Create a Secret named <release>-wallaby-secrets with keys like WALLABY_POSTGRES_DSN
+# Example:
+# kubectl create secret generic my-wallaby-secrets \
+#   --from-literal=WALLABY_POSTGRES_DSN='postgres://...'
+# Then set envFrom below.
+
+envFrom:
+  - secretRef:
+      name: "wallaby-secrets"
+
+# Additional env overrides
+# env:
+#   - name: WALLABY_DBOS_ENABLED
+#     value: "true"
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# Optional worker pool (one deployment per flow).
+workers:
+  enabled: false
+  items:
+    - name: "flow-a"
+      kind: "deployment"
+      replicas: 1
+      command: ["/usr/local/bin/wallaby-worker"]
+      args: ["--flow-id=flow-a"]
+      envFrom:
+        - secretRef:
+            name: "wallaby-secrets"

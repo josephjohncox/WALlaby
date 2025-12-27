@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 func BenchmarkTransformMetadata(b *testing.B) {

@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
 	"github.com/hamba/avro/v2/ocf"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 // AvroCodec encodes batches as Avro OCF.
@@ -55,7 +56,7 @@ func (c *AvroCodec) Encode(batch connector.Batch) ([]byte, error) {
 			if record.Operation == connector.OpDelete {
 				val = nil
 			}
-			row[col.Name] = normalizeAvroValue(val)
+			row[col.Name] = normalizeAvroValue(col.Type, val)
 		}
 
 		if err := writer.Encode(row); err != nil {
@@ -85,7 +86,7 @@ func avroSchemaFor(schema connector.Schema) string {
 		fields = append(fields, fieldJSON(col.Name, avroTypeFor(col.Type, col.Nullable)))
 	}
 
-	return fmt.Sprintf(`{"type":"record","name":"ductstream_record","fields":[%s]}`, strings.Join(fields, ","))
+	return fmt.Sprintf(`{"type":"record","name":"wallaby_record","fields":[%s]}`, strings.Join(fields, ","))
 }
 
 func fieldJSON(name string, types []string) string {
@@ -133,11 +134,59 @@ func avroTypeFor(pgType string, nullable bool) []string {
 	return []string{avroType}
 }
 
-func normalizeAvroValue(val any) any {
+func normalizeAvroValue(colType string, val any) any {
+	if val == nil {
+		return nil
+	}
 	switch v := val.(type) {
 	case time.Time:
 		return v.UnixMilli()
-	default:
-		return v
+	case json.RawMessage:
+		return string(v)
+	case []byte:
+		if isByteaType(colType) {
+			return v
+		}
+		return string(v)
 	}
+
+	if isJSONType(colType) {
+		if payload, err := json.Marshal(val); err == nil {
+			return string(payload)
+		}
+	}
+
+	rv := reflect.ValueOf(val)
+	switch rv.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Array:
+		if payload, err := json.Marshal(val); err == nil {
+			return string(payload)
+		}
+	}
+
+	return val
+}
+
+func isJSONType(pgType string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(pgType))
+	normalized = strings.TrimPrefix(normalized, "_")
+	normalized = strings.TrimSuffix(normalized, "[]")
+	if idx := strings.Index(normalized, "("); idx > 0 {
+		normalized = normalized[:idx]
+	}
+	if idx := strings.LastIndex(normalized, "."); idx > 0 {
+		normalized = normalized[idx+1:]
+	}
+	return normalized == "json" || normalized == "jsonb"
+}
+
+func isByteaType(pgType string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(pgType))
+	if idx := strings.Index(normalized, "("); idx > 0 {
+		normalized = normalized[:idx]
+	}
+	if idx := strings.LastIndex(normalized, "."); idx > 0 {
+		normalized = normalized[idx+1:]
+	}
+	return normalized == "bytea"
 }

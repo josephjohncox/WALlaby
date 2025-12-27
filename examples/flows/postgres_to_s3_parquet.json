@@ -6,8 +6,8 @@
     "type": "postgres",
     "options": {
       "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
-      "slot": "ductstream_slot",
-      "publication": "ductstream_pub",
+      "slot": "wallaby_slot",
+      "publication": "wallaby_pub",
       "batch_size": "1000",
       "batch_timeout": "2s",
       "status_interval": "10s",
@@ -20,7 +20,7 @@
       "name": "s3-out",
       "type": "s3",
       "options": {
-        "bucket": "my-ductstream-bucket",
+        "bucket": "my-wallaby-bucket",
         "prefix": "cdc/",
         "region": "us-east-1",
         "format": "parquet",

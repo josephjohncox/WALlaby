@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package wallaby.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabypb";
+
+message StreamMessage {
+  int64 id = 1;
+  string stream = 2;
+  string namespace = 3;
+  string table = 4;
+  string lsn = 5;
+  string wire_format = 6;
+  bytes payload = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message StreamPullRequest {
+  string stream = 1;
+  string consumer_group = 2;
+  int32 max_messages = 3;
+  int32 visibility_timeout_seconds = 4;
+  string consumer_id = 5;
+}
+
+message StreamPullResponse {
+  repeated StreamMessage messages = 1;
+}
+
+message StreamAckRequest {
+  string stream = 1;
+  string consumer_group = 2;
+  repeated int64 ids = 3;
+}
+
+message StreamAckResponse {
+  int64 acked = 1;
+}
+
+message StreamReplayRequest {
+  string stream = 1;
+  string consumer_group = 2;
+  string from_lsn = 3;
+  google.protobuf.Timestamp since = 4;
+}
+
+message StreamReplayResponse {
+  int64 reset = 1;
+}
+
+service StreamService {
+  rpc Pull(StreamPullRequest) returns (StreamPullResponse);
+  rpc Ack(StreamAckRequest) returns (StreamAckResponse);
+  rpc Replay(StreamReplayRequest) returns (StreamReplayResponse);
+}

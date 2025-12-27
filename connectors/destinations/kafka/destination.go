@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/josephjohncox/ductstream/pkg/connector"
-	"github.com/josephjohncox/ductstream/pkg/wire"
+	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/wire"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -78,10 +78,10 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		Topic: d.topic,
 		Value: payload,
 		Headers: []kgo.RecordHeader{
-			{Key: "ductstream-format", Value: []byte(d.codec.Name())},
-			{Key: "ductstream-schema", Value: []byte(batch.Schema.Name)},
-			{Key: "ductstream-namespace", Value: []byte(batch.Schema.Namespace)},
-			{Key: "ductstream-schema-version", Value: []byte(fmt.Sprintf("%d", batch.Schema.Version))},
+			{Key: "wallaby-format", Value: []byte(d.codec.Name())},
+			{Key: "wallaby-schema", Value: []byte(batch.Schema.Name)},
+			{Key: "wallaby-namespace", Value: []byte(batch.Schema.Namespace)},
+			{Key: "wallaby-schema-version", Value: []byte(fmt.Sprintf("%d", batch.Schema.Version))},
 		},
 	}
 

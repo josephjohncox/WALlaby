@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/jackc/pglogrepl"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 // LSN mirrors Postgres log sequence numbers.

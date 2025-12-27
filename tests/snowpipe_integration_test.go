@@ -5,15 +5,15 @@ import (
 	"os"
 	"testing"
 
-	"github.com/josephjohncox/ductstream/connectors/destinations/snowpipe"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/connectors/destinations/snowpipe"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 func TestSnowpipeAutoIngestUpload(t *testing.T) {
-	dsn := os.Getenv("DUCTSTREAM_TEST_SNOWPIPE_DSN")
-	stage := os.Getenv("DUCTSTREAM_TEST_SNOWPIPE_STAGE")
+	dsn := os.Getenv("WALLABY_TEST_SNOWPIPE_DSN")
+	stage := os.Getenv("WALLABY_TEST_SNOWPIPE_STAGE")
 	if dsn == "" || stage == "" {
-		t.Skip("DUCTSTREAM_TEST_SNOWPIPE_DSN or DUCTSTREAM_TEST_SNOWPIPE_STAGE not set")
+		t.Skip("WALLABY_TEST_SNOWPIPE_DSN or WALLABY_TEST_SNOWPIPE_STAGE not set")
 	}
 
 	ctx := context.Background()

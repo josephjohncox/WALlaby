@@ -10,8 +10,8 @@ import (
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/josephjohncox/ductstream/internal/schema"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/internal/schema"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 const (

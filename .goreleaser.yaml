@@ -1,25 +1,25 @@
 version: 2
 
-project_name: ductstream
+project_name: wallaby
 
 before:
   hooks:
     - make tidy
 
 builds:
-  - id: ductstream
-    main: ./cmd/ductstream
-    binary: ductstream
+  - id: wallaby
+    main: ./cmd/wallaby
+    binary: wallaby
     env:
       - CGO_ENABLED=0
-  - id: ductstream-worker
-    main: ./cmd/ductstream-worker
-    binary: ductstream-worker
+  - id: wallaby-worker
+    main: ./cmd/wallaby-worker
+    binary: wallaby-worker
     env:
       - CGO_ENABLED=0
-  - id: ductstream-admin
-    main: ./cmd/ductstream-admin
-    binary: ductstream-admin
+  - id: wallaby-admin
+    main: ./cmd/wallaby-admin
+    binary: wallaby-admin
     env:
       - CGO_ENABLED=0
 

@@ -5,16 +5,16 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
-	ductstreampb "github.com/josephjohncox/ductstream/gen/go/ductstream/v1"
-	"github.com/josephjohncox/ductstream/internal/flow"
-	"github.com/josephjohncox/ductstream/internal/workflow"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/internal/workflow"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 // FlowService implements the gRPC FlowService API.
 type FlowService struct {
-	ductstreampb.UnimplementedFlowServiceServer
+	wallabypb.UnimplementedFlowServiceServer
 	engine     workflow.Engine
 	dispatcher FlowDispatcher
 }
@@ -27,7 +27,7 @@ func NewFlowService(engine workflow.Engine, dispatcher FlowDispatcher) *FlowServ
 	return &FlowService{engine: engine, dispatcher: dispatcher}
 }
 
-func (s *FlowService) CreateFlow(ctx context.Context, req *ductstreampb.CreateFlowRequest) (*ductstreampb.Flow, error) {
+func (s *FlowService) CreateFlow(ctx context.Context, req *wallabypb.CreateFlowRequest) (*wallabypb.Flow, error) {
 	if req == nil || req.Flow == nil {
 		return nil, status.Error(codes.InvalidArgument, "flow is required")
 	}
@@ -58,7 +58,7 @@ func (s *FlowService) CreateFlow(ctx context.Context, req *ductstreampb.CreateFl
 	return flowToProto(created), nil
 }
 
-func (s *FlowService) UpdateFlow(ctx context.Context, req *ductstreampb.UpdateFlowRequest) (*ductstreampb.Flow, error) {
+func (s *FlowService) UpdateFlow(ctx context.Context, req *wallabypb.UpdateFlowRequest) (*wallabypb.Flow, error) {
 	if req == nil || req.Flow == nil {
 		return nil, status.Error(codes.InvalidArgument, "flow is required")
 	}
@@ -94,7 +94,7 @@ func (s *FlowService) UpdateFlow(ctx context.Context, req *ductstreampb.UpdateFl
 	return flowToProto(updated), nil
 }
 
-func (s *FlowService) StartFlow(ctx context.Context, req *ductstreampb.StartFlowRequest) (*ductstreampb.Flow, error) {
+func (s *FlowService) StartFlow(ctx context.Context, req *wallabypb.StartFlowRequest) (*wallabypb.Flow, error) {
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
 	}
@@ -105,7 +105,7 @@ func (s *FlowService) StartFlow(ctx context.Context, req *ductstreampb.StartFlow
 	return flowToProto(started), nil
 }
 
-func (s *FlowService) RunFlowOnce(ctx context.Context, req *ductstreampb.RunFlowOnceRequest) (*ductstreampb.RunFlowOnceResponse, error) {
+func (s *FlowService) RunFlowOnce(ctx context.Context, req *wallabypb.RunFlowOnceRequest) (*wallabypb.RunFlowOnceResponse, error) {
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
 	}
@@ -118,10 +118,10 @@ func (s *FlowService) RunFlowOnce(ctx context.Context, req *ductstreampb.RunFlow
 	if err := s.dispatcher.EnqueueFlow(ctx, req.FlowId); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	return &ductstreampb.RunFlowOnceResponse{Dispatched: true}, nil
+	return &wallabypb.RunFlowOnceResponse{Dispatched: true}, nil
 }
 
-func (s *FlowService) StopFlow(ctx context.Context, req *ductstreampb.StopFlowRequest) (*ductstreampb.Flow, error) {
+func (s *FlowService) StopFlow(ctx context.Context, req *wallabypb.StopFlowRequest) (*wallabypb.Flow, error) {
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
 	}
@@ -132,7 +132,7 @@ func (s *FlowService) StopFlow(ctx context.Context, req *ductstreampb.StopFlowRe
 	return flowToProto(stopped), nil
 }
 
-func (s *FlowService) ResumeFlow(ctx context.Context, req *ductstreampb.ResumeFlowRequest) (*ductstreampb.Flow, error) {
+func (s *FlowService) ResumeFlow(ctx context.Context, req *wallabypb.ResumeFlowRequest) (*wallabypb.Flow, error) {
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
 	}
@@ -143,7 +143,7 @@ func (s *FlowService) ResumeFlow(ctx context.Context, req *ductstreampb.ResumeFl
 	return flowToProto(resumed), nil
 }
 
-func (s *FlowService) GetFlow(ctx context.Context, req *ductstreampb.GetFlowRequest) (*ductstreampb.Flow, error) {
+func (s *FlowService) GetFlow(ctx context.Context, req *wallabypb.GetFlowRequest) (*wallabypb.Flow, error) {
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
 	}
@@ -154,28 +154,28 @@ func (s *FlowService) GetFlow(ctx context.Context, req *ductstreampb.GetFlowRequ
 	return flowToProto(found), nil
 }
 
-func (s *FlowService) ListFlows(ctx context.Context, _ *ductstreampb.ListFlowsRequest) (*ductstreampb.ListFlowsResponse, error) {
+func (s *FlowService) ListFlows(ctx context.Context, _ *wallabypb.ListFlowsRequest) (*wallabypb.ListFlowsResponse, error) {
 	flows, err := s.engine.List(ctx)
 	if err != nil {
 		return nil, mapWorkflowError(err)
 	}
 
-	items := make([]*ductstreampb.Flow, 0, len(flows))
+	items := make([]*wallabypb.Flow, 0, len(flows))
 	for _, f := range flows {
 		items = append(items, flowToProto(f))
 	}
 
-	return &ductstreampb.ListFlowsResponse{Flows: items}, nil
+	return &wallabypb.ListFlowsResponse{Flows: items}, nil
 }
 
-func (s *FlowService) DeleteFlow(ctx context.Context, req *ductstreampb.DeleteFlowRequest) (*ductstreampb.DeleteFlowResponse, error) {
+func (s *FlowService) DeleteFlow(ctx context.Context, req *wallabypb.DeleteFlowRequest) (*wallabypb.DeleteFlowResponse, error) {
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
 	}
 	if err := s.engine.Delete(ctx, req.FlowId); err != nil {
 		return nil, mapWorkflowError(err)
 	}
-	return &ductstreampb.DeleteFlowResponse{Deleted: true}, nil
+	return &wallabypb.DeleteFlowResponse{Deleted: true}, nil
 }
 
 func mapWorkflowError(err error) error {

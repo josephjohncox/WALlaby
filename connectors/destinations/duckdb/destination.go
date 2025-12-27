@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/josephjohncox/ductstream/internal/ddl"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/internal/ddl"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 	_ "github.com/marcboeker/go-duckdb"
 )
 
@@ -38,7 +38,7 @@ const (
 	batchResolveNone     = "none"
 	batchResolveAppend   = "append"
 	batchResolveReplace  = "replace"
-	defaultMetaSchema    = "ductstream_meta"
+	defaultMetaSchema    = "wallaby_meta"
 	defaultMetaTable     = "__metadata"
 	defaultMetaPKPref    = "pk_"
 	defaultStagingSuffix = "_staging"
@@ -352,11 +352,14 @@ func (d *Destination) stagingTable(schema connector.Schema, record connector.Rec
 }
 
 func (d *Destination) insertRow(ctx context.Context, tx *sql.Tx, target string, schema connector.Schema, record connector.Record) error {
-	cols, vals := recordColumns(schema, record)
+	cols, vals, exprs, err := recordColumns(schema, record)
+	if err != nil {
+		return err
+	}
 	if len(cols) == 0 {
 		return nil
 	}
-	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols, '"'), placeholders(len(cols)))
+	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols, '"'), strings.Join(exprs, ", "))
 	if _, err := tx.ExecContext(ctx, stmt, vals...); err != nil {
 		return fmt.Errorf("insert row: %w", err)
 	}
@@ -473,14 +476,17 @@ func (d *Destination) updateRow(ctx context.Context, tx *sql.Tx, target string, 
 		return errors.New("update requires record key")
 	}
 
-	cols, vals := recordColumns(schema, record)
+	cols, vals, exprs, err := recordColumns(schema, record)
+	if err != nil {
+		return err
+	}
 	if len(cols) == 0 {
 		return nil
 	}
 
 	setClause := make([]string, 0, len(cols))
-	for _, col := range cols {
-		setClause = append(setClause, fmt.Sprintf("%s = ?", quoteIdent(col, '"')))
+	for idx, col := range cols {
+		setClause = append(setClause, fmt.Sprintf("%s = %s", quoteIdent(col, '"'), exprs[idx]))
 	}
 
 	whereClause, whereArgs := whereFromKey(key, '"', "")
@@ -627,19 +633,72 @@ func (d *Destination) ensureMetaColumn(ctx context.Context, column string) error
 	return nil
 }
 
-func recordColumns(schema connector.Schema, record connector.Record) ([]string, []any) {
+func recordColumns(schema connector.Schema, record connector.Record) ([]string, []any, []string, error) {
 	if record.After == nil {
-		return nil, nil
+		return nil, nil, nil, nil
 	}
 	cols := make([]string, 0, len(schema.Columns))
 	vals := make([]any, 0, len(schema.Columns))
+	exprs := make([]string, 0, len(schema.Columns))
 	for _, col := range schema.Columns {
 		if val, ok := record.After[col.Name]; ok {
+			expr := "?"
+			normalized, err := normalizeDuckDBValue(col.Type, val)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if isDuckDBJSONType(col.Type) {
+				expr = "CAST(? AS JSON)"
+			}
 			cols = append(cols, col.Name)
-			vals = append(vals, val)
+			vals = append(vals, normalized)
+			exprs = append(exprs, expr)
 		}
 	}
-	return cols, vals
+	return cols, vals, exprs, nil
+}
+
+func normalizeDuckDBValue(colType string, value any) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if isDuckDBArrayType(colType) {
+		return value, nil
+	}
+	switch v := value.(type) {
+	case json.RawMessage:
+		return string(v), nil
+	case []byte:
+		if isDuckDBJSONType(colType) {
+			return string(v), nil
+		}
+		return value, nil
+	case map[string]any, []any:
+		payload, err := json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("marshal json value: %w", err)
+		}
+		return string(payload), nil
+	default:
+		if isDuckDBJSONType(colType) {
+			payload, err := json.Marshal(v)
+			if err != nil {
+				return nil, fmt.Errorf("marshal json value: %w", err)
+			}
+			return string(payload), nil
+		}
+		return value, nil
+	}
+}
+
+func isDuckDBJSONType(colType string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(colType))
+	return strings.HasPrefix(normalized, "json")
+}
+
+func isDuckDBArrayType(colType string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(colType))
+	return strings.HasSuffix(normalized, "[]")
 }
 
 func schemaColumns(schema connector.Schema) []string {

@@ -15,8 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
-	"github.com/josephjohncox/ductstream/pkg/connector"
-	"github.com/josephjohncox/ductstream/pkg/wire"
+	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/wire"
 )
 
 const (

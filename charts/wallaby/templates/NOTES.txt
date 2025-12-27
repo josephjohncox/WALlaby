@@ -1,0 +1,6 @@
+WALlaby is running.
+
+To connect to the gRPC endpoint:
+  kubectl port-forward svc/{{ include "wallaby.fullname" . }} 8080:{{ .Values.service.port }}
+
+Set required environment variables (e.g., WALLABY_POSTGRES_DSN) via values.yaml or a ConfigMap.

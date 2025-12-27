@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/josephjohncox/ductstream/connectors/destinations/duckdb"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/connectors/destinations/duckdb"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 	_ "github.com/marcboeker/go-duckdb"
 )
 
 func TestDuckDBDestination(t *testing.T) {
-	dsn := os.Getenv("DUCTSTREAM_TEST_DUCKDB_DSN")
+	dsn := os.Getenv("WALLABY_TEST_DUCKDB_DSN")
 	if dsn == "" {
-		t.Skip("DUCTSTREAM_TEST_DUCKDB_DSN not set")
+		t.Skip("WALLABY_TEST_DUCKDB_DSN not set")
 	}
 
 	ctx := context.Background()
@@ -27,7 +27,7 @@ func TestDuckDBDestination(t *testing.T) {
 	}
 	defer setupDB.Close()
 
-	table := fmt.Sprintf("ductstream_duckdb_%d", time.Now().UnixNano())
+	table := fmt.Sprintf("wallaby_duckdb_%d", time.Now().UnixNano())
 	createSQL := fmt.Sprintf("CREATE TABLE %s (id INTEGER, name TEXT)", table)
 	if _, err := setupDB.ExecContext(ctx, createSQL); err != nil {
 		t.Fatalf("create table: %v", err)
@@ -119,10 +119,10 @@ func TestDuckDBDestination(t *testing.T) {
 }
 
 func TestDuckDBDestinationWithTempFile(t *testing.T) {
-	if os.Getenv("DUCTSTREAM_TEST_DUCKDB_DSN") != "" {
+	if os.Getenv("WALLABY_TEST_DUCKDB_DSN") != "" {
 		return
 	}
-	path := filepath.Join(t.TempDir(), "ductstream.duckdb")
+	path := filepath.Join(t.TempDir(), "wallaby.duckdb")
 	ctx := context.Background()
 	dest := &duckdb.Destination{}
 	spec := connector.Spec{
@@ -130,7 +130,7 @@ func TestDuckDBDestinationWithTempFile(t *testing.T) {
 		Type: connector.EndpointDuckDB,
 		Options: map[string]string{
 			"dsn":                path,
-			"table":              "ductstream_temp",
+			"table":              "wallaby_temp",
 			"meta_table_enabled": "false",
 		},
 	}

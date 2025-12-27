@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/dbos-inc/dbos-transact-golang/dbos"
-	"github.com/josephjohncox/ductstream/internal/flow"
-	"github.com/josephjohncox/ductstream/internal/registry"
-	"github.com/josephjohncox/ductstream/internal/runner"
-	"github.com/josephjohncox/ductstream/internal/workflow"
-	"github.com/josephjohncox/ductstream/pkg/connector"
-	"github.com/josephjohncox/ductstream/pkg/stream"
+	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/internal/registry"
+	"github.com/josephjohncox/wallaby/internal/runner"
+	"github.com/josephjohncox/wallaby/internal/workflow"
+	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/stream"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -177,7 +177,7 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunIn
 
 	tracer := o.tracer
 	if tracer == nil {
-		tracer = otel.Tracer("ductstream/dbos")
+		tracer = otel.Tracer("wallaby/dbos")
 	}
 
 	runner := stream.Runner{

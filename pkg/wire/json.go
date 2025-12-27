@@ -3,7 +3,7 @@ package wire
 import (
 	"encoding/json"
 
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 // JSONCodec encodes batches as JSON.

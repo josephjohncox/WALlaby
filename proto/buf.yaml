@@ -1,5 +1,5 @@
 version: v1
-name: buf.build/josephjohncox/ductstream
+name: buf.build/josephjohncox/wallaby
 breaking:
   use:
     - FILE

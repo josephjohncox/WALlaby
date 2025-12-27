@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/josephjohncox/ductstream/internal/flow"
+	"github.com/josephjohncox/wallaby/internal/flow"
 )
 
 // FlowDispatcher enqueues flow executions.

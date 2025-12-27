@@ -3,7 +3,7 @@ package workflow
 import (
 	"context"
 
-	"github.com/josephjohncox/ductstream/internal/flow"
+	"github.com/josephjohncox/wallaby/internal/flow"
 )
 
 // Engine coordinates durable flow execution.

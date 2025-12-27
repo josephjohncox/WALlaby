@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/josephjohncox/ductstream/pkg/connector"
-	"github.com/josephjohncox/ductstream/pkg/pgstream"
-	"github.com/josephjohncox/ductstream/pkg/wire"
+	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/pgstream"
+	"github.com/josephjohncox/wallaby/pkg/wire"
 )
 
 const (

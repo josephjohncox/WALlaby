@@ -1,6 +1,6 @@
 package flow
 
-import "github.com/josephjohncox/ductstream/pkg/connector"
+import "github.com/josephjohncox/wallaby/pkg/connector"
 
 // State captures lifecycle status for a flow.
 type State string

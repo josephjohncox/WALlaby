@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 func BenchmarkCodecEncodeArrow(b *testing.B)   { benchmarkCodec(b, connector.WireFormatArrow) }

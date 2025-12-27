@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/josephjohncox/ductstream/internal/ddl"
-	"github.com/josephjohncox/ductstream/pkg/connector"
-	"github.com/josephjohncox/ductstream/pkg/wire"
+	"github.com/josephjohncox/wallaby/internal/ddl"
+	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/wire"
 	_ "github.com/snowflakedb/gosnowflake"
 )
 
@@ -37,7 +37,7 @@ const (
 	optFlowID       = "flow_id"
 
 	writeModeAppend   = "append"
-	defaultMetaSchema = "DUCTSTREAM_META"
+	defaultMetaSchema = "WALLABY_META"
 	defaultMetaTable  = "__METADATA"
 	defaultMetaPKPref = "pk_"
 )
@@ -285,7 +285,7 @@ func (d *Destination) writeTempFile(payload []byte, schema connector.Schema) (st
 	stamp := time.Now().UTC().Format("20060102T150405Z")
 	name := fmt.Sprintf("%s_%s_%s", schema.Name, stamp, uuid.NewString())
 
-	file, err := os.CreateTemp("", "ductstream-snowpipe-*")
+	file, err := os.CreateTemp("", "wallaby-snowpipe-*")
 	if err != nil {
 		return "", "", fmt.Errorf("create temp file: %w", err)
 	}

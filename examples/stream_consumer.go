@@ -7,7 +7,7 @@ import (
 	"log"
 	"time"
 
-	ductstreampb "github.com/josephjohncox/ductstream/gen/go/ductstream/v1"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -28,11 +28,11 @@ func main() {
 	}
 	defer conn.Close()
 
-	client := ductstreampb.NewStreamServiceClient(conn)
+	client := wallabypb.NewStreamServiceClient(conn)
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		resp, err := client.Pull(ctx, &ductstreampb.StreamPullRequest{
+		resp, err := client.Pull(ctx, &wallabypb.StreamPullRequest{
 			Stream:                   *stream,
 			ConsumerGroup:            *group,
 			MaxMessages:              int32(*max),
@@ -56,7 +56,7 @@ func main() {
 		}
 
 		ackCtx, ackCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_, err = client.Ack(ackCtx, &ductstreampb.StreamAckRequest{
+		_, err = client.Ack(ackCtx, &wallabypb.StreamAckRequest{
 			Stream:        *stream,
 			ConsumerGroup: *group,
 			Ids:           ids,

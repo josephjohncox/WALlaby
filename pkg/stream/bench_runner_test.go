@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 func BenchmarkStreamThroughput1Dest(b *testing.B) { benchmarkStream(b, 1, 1000) }

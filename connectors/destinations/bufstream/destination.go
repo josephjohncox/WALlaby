@@ -3,8 +3,8 @@ package bufstream
 import (
 	"context"
 
-	"github.com/josephjohncox/ductstream/connectors/destinations/kafka"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/connectors/destinations/kafka"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 // Destination writes batches to a Bufstream deployment using Kafka protocol semantics.

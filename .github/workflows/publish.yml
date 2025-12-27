@@ -38,10 +38,10 @@ jobs:
         uses: azure/setup-helm@v4
 
       - name: Helm lint
-        run: helm lint charts/ductstream
+        run: helm lint charts/wallaby
 
       - name: Helm test template
-        run: helm template ductstream charts/ductstream > /tmp/ductstream.yaml
+        run: helm template wallaby charts/wallaby > /tmp/wallaby.yaml
 
       - name: Build and push image
         uses: docker/build-push-action@v6
@@ -66,7 +66,7 @@ jobs:
 
       - name: Package Helm chart
         run: |
-          helm package charts/ductstream \
+          helm package charts/wallaby \
             --version "${{ steps.vars.outputs.version }}" \
             --app-version "${{ steps.vars.outputs.version }}"
 
@@ -75,4 +75,4 @@ jobs:
           HELM_EXPERIMENTAL_OCI: "1"
         run: |
           helm registry login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
-          helm push "ductstream-${{ steps.vars.outputs.version }}.tgz" "oci://ghcr.io/${{ github.repository }}/charts"
+          helm push "wallaby-${{ steps.vars.outputs.version }}.tgz" "oci://ghcr.io/${{ github.repository }}/charts"

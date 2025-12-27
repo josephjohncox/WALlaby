@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Config holds runtime settings for the DuctStream service.
+// Config holds runtime settings for the WALlaby service.
 type Config struct {
 	Environment string
 	API         APIConfig
@@ -90,65 +90,65 @@ type CheckpointConfig struct {
 // Load loads config from environment for now. File parsing will be added later.
 func Load(_ string) (*Config, error) {
 	cfg := &Config{
-		Environment: getenv("DUCTSTREAM_ENV", "dev"),
+		Environment: getenv("WALLABY_ENV", "dev"),
 		API: APIConfig{
-			GRPCListen: getenv("DUCTSTREAM_GRPC_LISTEN", ":8080"),
+			GRPCListen: getenv("WALLABY_GRPC_LISTEN", ":8080"),
 		},
 		Postgres: PostgresConfig{
-			DSN: getenv("DUCTSTREAM_POSTGRES_DSN", ""),
+			DSN: getenv("WALLABY_POSTGRES_DSN", ""),
 		},
 		Telemetry: TelemetryConfig{
-			ServiceName: getenv("DUCTSTREAM_OTEL_SERVICE", "ductstream"),
+			ServiceName: getenv("WALLABY_OTEL_SERVICE", "wallaby"),
 		},
 		DBOS: DBOSConfig{
-			Enabled:       getenvBool("DUCTSTREAM_DBOS_ENABLED", false),
-			AppName:       getenv("DUCTSTREAM_DBOS_APP", "ductstream"),
-			Schedule:      getenv("DUCTSTREAM_DBOS_SCHEDULE", ""),
-			Queue:         getenv("DUCTSTREAM_DBOS_QUEUE", "ductstream"),
-			MaxEmptyReads: getenvInt("DUCTSTREAM_DBOS_MAX_EMPTY_READS", 1),
+			Enabled:       getenvBool("WALLABY_DBOS_ENABLED", false),
+			AppName:       getenv("WALLABY_DBOS_APP", "wallaby"),
+			Schedule:      getenv("WALLABY_DBOS_SCHEDULE", ""),
+			Queue:         getenv("WALLABY_DBOS_QUEUE", "wallaby"),
+			MaxEmptyReads: getenvInt("WALLABY_DBOS_MAX_EMPTY_READS", 1),
 		},
 		Kubernetes: KubernetesConfig{
-			Enabled:            getenvBool("DUCTSTREAM_K8S_ENABLED", false),
-			KubeconfigPath:     getenv("DUCTSTREAM_K8S_KUBECONFIG", getenv("KUBECONFIG", "")),
-			KubeContext:        getenv("DUCTSTREAM_K8S_CONTEXT", ""),
-			APIServer:          getenv("DUCTSTREAM_K8S_API_SERVER", ""),
-			BearerToken:        getenv("DUCTSTREAM_K8S_TOKEN", ""),
-			CAFile:             getenv("DUCTSTREAM_K8S_CA_FILE", ""),
-			CAData:             getenv("DUCTSTREAM_K8S_CA_DATA", ""),
-			ClientCertFile:     getenv("DUCTSTREAM_K8S_CLIENT_CERT", ""),
-			ClientKeyFile:      getenv("DUCTSTREAM_K8S_CLIENT_KEY", ""),
-			InsecureSkipTLS:    getenvBool("DUCTSTREAM_K8S_INSECURE_SKIP_TLS", false),
-			Namespace:          getenv("DUCTSTREAM_K8S_NAMESPACE", ""),
-			JobImage:           getenv("DUCTSTREAM_K8S_JOB_IMAGE", ""),
-			JobImagePullPolicy: getenv("DUCTSTREAM_K8S_JOB_IMAGE_PULL_POLICY", "IfNotPresent"),
-			JobServiceAccount:  getenv("DUCTSTREAM_K8S_JOB_SERVICE_ACCOUNT", ""),
-			JobNamePrefix:      getenv("DUCTSTREAM_K8S_JOB_NAME_PREFIX", "ductstream-worker"),
-			JobTTLSeconds:      getenvInt("DUCTSTREAM_K8S_JOB_TTL_SECONDS", 0),
-			JobBackoffLimit:    getenvInt("DUCTSTREAM_K8S_JOB_BACKOFF_LIMIT", 1),
-			MaxEmptyReads:      getenvInt("DUCTSTREAM_K8S_JOB_MAX_EMPTY_READS", 0),
-			JobLabels:          getenvKeyValueMap("DUCTSTREAM_K8S_JOB_LABELS"),
-			JobAnnotations:     getenvKeyValueMap("DUCTSTREAM_K8S_JOB_ANNOTATIONS"),
-			JobCommand:         getenvCSV("DUCTSTREAM_K8S_JOB_COMMAND", ""),
-			JobArgs:            getenvCSV("DUCTSTREAM_K8S_JOB_ARGS", ""),
-			JobEnv:             getenvKeyValueMap("DUCTSTREAM_K8S_JOB_ENV"),
-			JobEnvFrom:         getenvCSV("DUCTSTREAM_K8S_JOB_ENV_FROM", ""),
+			Enabled:            getenvBool("WALLABY_K8S_ENABLED", false),
+			KubeconfigPath:     getenv("WALLABY_K8S_KUBECONFIG", getenv("KUBECONFIG", "")),
+			KubeContext:        getenv("WALLABY_K8S_CONTEXT", ""),
+			APIServer:          getenv("WALLABY_K8S_API_SERVER", ""),
+			BearerToken:        getenv("WALLABY_K8S_TOKEN", ""),
+			CAFile:             getenv("WALLABY_K8S_CA_FILE", ""),
+			CAData:             getenv("WALLABY_K8S_CA_DATA", ""),
+			ClientCertFile:     getenv("WALLABY_K8S_CLIENT_CERT", ""),
+			ClientKeyFile:      getenv("WALLABY_K8S_CLIENT_KEY", ""),
+			InsecureSkipTLS:    getenvBool("WALLABY_K8S_INSECURE_SKIP_TLS", false),
+			Namespace:          getenv("WALLABY_K8S_NAMESPACE", ""),
+			JobImage:           getenv("WALLABY_K8S_JOB_IMAGE", ""),
+			JobImagePullPolicy: getenv("WALLABY_K8S_JOB_IMAGE_PULL_POLICY", "IfNotPresent"),
+			JobServiceAccount:  getenv("WALLABY_K8S_JOB_SERVICE_ACCOUNT", ""),
+			JobNamePrefix:      getenv("WALLABY_K8S_JOB_NAME_PREFIX", "wallaby-worker"),
+			JobTTLSeconds:      getenvInt("WALLABY_K8S_JOB_TTL_SECONDS", 0),
+			JobBackoffLimit:    getenvInt("WALLABY_K8S_JOB_BACKOFF_LIMIT", 1),
+			MaxEmptyReads:      getenvInt("WALLABY_K8S_JOB_MAX_EMPTY_READS", 0),
+			JobLabels:          getenvKeyValueMap("WALLABY_K8S_JOB_LABELS"),
+			JobAnnotations:     getenvKeyValueMap("WALLABY_K8S_JOB_ANNOTATIONS"),
+			JobCommand:         getenvCSV("WALLABY_K8S_JOB_COMMAND", ""),
+			JobArgs:            getenvCSV("WALLABY_K8S_JOB_ARGS", ""),
+			JobEnv:             getenvKeyValueMap("WALLABY_K8S_JOB_ENV"),
+			JobEnvFrom:         getenvCSV("WALLABY_K8S_JOB_ENV_FROM", ""),
 		},
 		Wire: WireConfig{
-			DefaultFormat: getenv("DUCTSTREAM_WIRE_FORMAT", ""),
-			Enforce:       getenvBool("DUCTSTREAM_WIRE_ENFORCE", true),
+			DefaultFormat: getenv("WALLABY_WIRE_FORMAT", ""),
+			Enforce:       getenvBool("WALLABY_WIRE_ENFORCE", true),
 		},
 		DDL: DDLConfig{
-			CatalogEnabled:  getenvBool("DUCTSTREAM_DDL_CATALOG_ENABLED", false),
-			CatalogInterval: getenvDuration("DUCTSTREAM_DDL_CATALOG_INTERVAL", 30*time.Second),
-			CatalogSchemas:  getenvCSV("DUCTSTREAM_DDL_CATALOG_SCHEMAS", "public"),
-			AutoApprove:     getenvBool("DUCTSTREAM_DDL_AUTO_APPROVE", false),
-			Gate:            getenvBool("DUCTSTREAM_DDL_GATE", false),
-			AutoApply:       getenvBool("DUCTSTREAM_DDL_AUTO_APPLY", false),
+			CatalogEnabled:  getenvBool("WALLABY_DDL_CATALOG_ENABLED", false),
+			CatalogInterval: getenvDuration("WALLABY_DDL_CATALOG_INTERVAL", 30*time.Second),
+			CatalogSchemas:  getenvCSV("WALLABY_DDL_CATALOG_SCHEMAS", "public"),
+			AutoApprove:     getenvBool("WALLABY_DDL_AUTO_APPROVE", false),
+			Gate:            getenvBool("WALLABY_DDL_GATE", false),
+			AutoApply:       getenvBool("WALLABY_DDL_AUTO_APPLY", false),
 		},
 		Checkpoints: CheckpointConfig{
-			Backend: getenv("DUCTSTREAM_CHECKPOINT_BACKEND", ""),
-			DSN:     getenv("DUCTSTREAM_CHECKPOINT_DSN", ""),
-			Path:    getenv("DUCTSTREAM_CHECKPOINT_PATH", ""),
+			Backend: getenv("WALLABY_CHECKPOINT_BACKEND", ""),
+			DSN:     getenv("WALLABY_CHECKPOINT_DSN", ""),
+			Path:    getenv("WALLABY_CHECKPOINT_PATH", ""),
 		},
 	}
 

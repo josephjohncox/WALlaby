@@ -1,32 +1,32 @@
 # Usage
 
-This guide covers how to run DuctStream and operate flows using the gRPC API, worker mode, and DBOS scheduling.
+This guide covers how to run WALlaby and operate flows using the gRPC API, worker mode, and DBOS scheduling.
 
 ## Prerequisites
 - PostgreSQL with logical replication enabled (`wal_level=logical`).
-- A replication slot + publication for the source database (DuctStream can create the publication/slot when permitted).
-- Destinations (Kafka, S3) reachable from the DuctStream process.
+- A replication slot + publication for the source database (WALlaby can create the publication/slot when permitted).
+- Destinations (Kafka, S3) reachable from the WALlaby process.
 
 ## API Server
 Start the gRPC API server:
 
 ```bash
-export DUCTSTREAM_POSTGRES_DSN="postgres://user:pass@localhost:5432/ductstream?sslmode=disable"
-export DUCTSTREAM_GRPC_LISTEN=":8080"
-export DUCTSTREAM_WIRE_FORMAT="arrow"
-export DUCTSTREAM_WIRE_ENFORCE="true"
-./bin/ductstream
+export WALLABY_POSTGRES_DSN="postgres://user:pass@localhost:5432/wallaby?sslmode=disable"
+export WALLABY_GRPC_LISTEN=":8080"
+export WALLABY_WIRE_FORMAT="arrow"
+export WALLABY_WIRE_ENFORCE="true"
+./bin/wallaby
 ```
 
 ## Kubernetes / Helm
 Install the OCI Helm chart from GHCR (published on tagged releases):
 
 ```bash
-helm install ductstream oci://ghcr.io/josephjohncox/ductstream/charts/ductstream --version <tag>
+helm install wallaby oci://ghcr.io/josephjohncox/wallaby/charts/wallaby --version <tag>
 ```
 
 Set required env vars via Helm values (`env`) or a ConfigMap (`config.enabled=true` + `config.data`).
-See `charts/ductstream/values.example.yaml` for a minimal example.
+See `charts/wallaby/values.example.yaml` for a minimal example.
 
 To run per-flow workers from the chart, enable `workers` and define one item per flow:
 
@@ -37,7 +37,7 @@ workers:
     - name: flow-a
       kind: deployment
       replicas: 1
-      command: ["/usr/local/bin/ductstream-worker"]
+      command: ["/usr/local/bin/wallaby-worker"]
       args: ["--flow-id=flow-a"]
 ```
 
@@ -62,7 +62,7 @@ To reconfigure destinations or wire format, call `UpdateFlow` with a full `Flow`
 Run a single flow in its own process. This is recommended for Kubernetes or when you want isolated scaling per flow.
 
 ```bash
-./bin/ductstream-worker -flow-id "<flow-id>"
+./bin/wallaby-worker -flow-id "<flow-id>"
 ```
 
 Add `-max-empty-reads 1` to stop after one empty poll. This is useful for periodic/scheduled runs.
@@ -72,56 +72,56 @@ For backfill runs that land in staging tables, add `-resolve-staging` to apply s
 Enable DBOS and (optionally) a schedule to run flows as durable jobs:
 
 ```bash
-export DUCTSTREAM_DBOS_ENABLED="true"
-export DUCTSTREAM_DBOS_APP="ductstream"
-export DUCTSTREAM_DBOS_QUEUE="ductstream"
-export DUCTSTREAM_DBOS_SCHEDULE="*/10 * * * * *" # every 10 seconds
+export WALLABY_DBOS_ENABLED="true"
+export WALLABY_DBOS_APP="wallaby"
+export WALLABY_DBOS_QUEUE="wallaby"
+export WALLABY_DBOS_SCHEDULE="*/10 * * * * *" # every 10 seconds
 ```
 
-If `DUCTSTREAM_DBOS_SCHEDULE` is set, DBOS enqueues one run for each flow in `running` state.
+If `WALLABY_DBOS_SCHEDULE` is set, DBOS enqueues one run for each flow in `running` state.
 
 ## Kubernetes Job Dispatch
 If the API server runs inside Kubernetes, it can launch per-flow workers as Jobs when you call `StartFlow` or `ResumeFlow`:
 
 ```bash
-export DUCTSTREAM_K8S_ENABLED="true"
-export DUCTSTREAM_K8S_JOB_IMAGE="ghcr.io/josephjohncox/ductstream:0.1.0"
-export DUCTSTREAM_K8S_JOB_SERVICE_ACCOUNT="ductstream"
-export DUCTSTREAM_K8S_JOB_ENV_FROM="secret:ductstream-secrets,configmap:ductstream-config"
+export WALLABY_K8S_ENABLED="true"
+export WALLABY_K8S_JOB_IMAGE="ghcr.io/josephjohncox/wallaby:0.1.0"
+export WALLABY_K8S_JOB_SERVICE_ACCOUNT="wallaby"
+export WALLABY_K8S_JOB_ENV_FROM="secret:wallaby-secrets,configmap:wallaby-config"
 ```
 
 Optional settings:
-- `DUCTSTREAM_K8S_NAMESPACE` (defaults to the in-cluster namespace)
-- `DUCTSTREAM_K8S_JOB_MAX_EMPTY_READS` (appends `-max-empty-reads` to workers)
-- `DUCTSTREAM_K8S_JOB_ARGS` / `DUCTSTREAM_K8S_JOB_COMMAND` (comma-separated list)
-- `DUCTSTREAM_K8S_JOB_LABELS` / `DUCTSTREAM_K8S_JOB_ANNOTATIONS` (`key=value` comma list)
-- `DUCTSTREAM_K8S_KUBECONFIG` / `DUCTSTREAM_K8S_CONTEXT` for out-of-cluster kubeconfig usage
-- `DUCTSTREAM_K8S_API_SERVER`, `DUCTSTREAM_K8S_TOKEN`, `DUCTSTREAM_K8S_CA_FILE`, `DUCTSTREAM_K8S_CA_DATA` for explicit API config
-- `DUCTSTREAM_K8S_CLIENT_CERT`, `DUCTSTREAM_K8S_CLIENT_KEY` for mTLS auth
-- `DUCTSTREAM_K8S_INSECURE_SKIP_TLS` to skip TLS verification (not recommended)
+- `WALLABY_K8S_NAMESPACE` (defaults to the in-cluster namespace)
+- `WALLABY_K8S_JOB_MAX_EMPTY_READS` (appends `-max-empty-reads` to workers)
+- `WALLABY_K8S_JOB_ARGS` / `WALLABY_K8S_JOB_COMMAND` (comma-separated list)
+- `WALLABY_K8S_JOB_LABELS` / `WALLABY_K8S_JOB_ANNOTATIONS` (`key=value` comma list)
+- `WALLABY_K8S_KUBECONFIG` / `WALLABY_K8S_CONTEXT` for out-of-cluster kubeconfig usage
+- `WALLABY_K8S_API_SERVER`, `WALLABY_K8S_TOKEN`, `WALLABY_K8S_CA_FILE`, `WALLABY_K8S_CA_DATA` for explicit API config
+- `WALLABY_K8S_CLIENT_CERT`, `WALLABY_K8S_CLIENT_KEY` for mTLS auth
+- `WALLABY_K8S_INSECURE_SKIP_TLS` to skip TLS verification (not recommended)
 
 You can also trigger a one-off run without changing flow state via gRPC:
 
 ```bash
-grpcurl -plaintext -d '{"flow_id":"<id>"}' localhost:8080 ductstream.v1.FlowService/RunFlowOnce
+grpcurl -plaintext -d '{"flow_id":"<id>"}' localhost:8080 wallaby.v1.FlowService/RunFlowOnce
 ```
 
 ## Checkpoint Store
-By default, checkpoints use Postgres when `DUCTSTREAM_POSTGRES_DSN` is set. For standalone runs, SQLite is supported:
+By default, checkpoints use Postgres when `WALLABY_POSTGRES_DSN` is set. For standalone runs, SQLite is supported:
 
 ```bash
-export DUCTSTREAM_CHECKPOINT_BACKEND="sqlite"
-export DUCTSTREAM_CHECKPOINT_PATH="$HOME/.ductstream/checkpoints.db"
+export WALLABY_CHECKPOINT_BACKEND="sqlite"
+export WALLABY_CHECKPOINT_PATH="$HOME/.wallaby/checkpoints.db"
 ```
 
-Set `DUCTSTREAM_CHECKPOINT_DSN` to override the full SQLite DSN.
+Set `WALLABY_CHECKPOINT_DSN` to override the full SQLite DSN.
 
 ## Wire Formats
-DuctStream supports multiple wire formats. Set the default at the service level or per-flow:
+WALlaby supports multiple wire formats. Set the default at the service level or per-flow:
 
 ```bash
-export DUCTSTREAM_WIRE_FORMAT="arrow"   # arrow | parquet | avro | proto | json
-export DUCTSTREAM_WIRE_ENFORCE="true"
+export WALLABY_WIRE_FORMAT="arrow"   # arrow | parquet | avro | proto | json
+export WALLABY_WIRE_ENFORCE="true"
 ```
 
 Per-flow overrides are supported via `flow.wire_format` or connector `options.format`.
@@ -158,7 +158,7 @@ Key Postgres source options (connector `options`):
 - `sync_publication` (default `false`) — add/drop tables at start
 - `sync_publication_mode` (`add` default, or `sync` to drop extras)
 - `ensure_state` (default `true`) — creates a durable source-state table for cleanup and auditing
-- `state_schema` (default `ductstream`)
+- `state_schema` (default `wallaby`)
 - `state_table` (default `source_state`)
 - `flow_id` (optional) — stable ID used in source-state records
 
@@ -166,14 +166,14 @@ Key Postgres source options (connector `options`):
 Use `sync_publication` with `publication_tables` or `publication_schemas` to add/drop tables when a flow starts. For ad-hoc changes, the admin CLI can update the publication:
 
 ```bash
-./bin/ductstream-admin publication list -flow-id "<flow-id>"
-./bin/ductstream-admin publication sync -flow-id "<flow-id>" -schemas public -mode add -pause -resume
+./bin/wallaby-admin publication list -flow-id "<flow-id>"
+./bin/wallaby-admin publication sync -flow-id "<flow-id>" -schemas public -mode add -pause -resume
 ```
 
 To add tables and snapshot them:
 
 ```bash
-./bin/ductstream-admin publication sync -flow-id "<flow-id>" -tables public.new_table -snapshot -pause -resume
+./bin/wallaby-admin publication sync -flow-id "<flow-id>" -tables public.new_table -snapshot -pause -resume
 ```
 
 ## HTTP/Webhook Destination
@@ -200,13 +200,13 @@ Destination options:
 Consumers can pull from the stream using the StreamService or the admin CLI:
 
 ```bash
-./bin/ductstream-admin stream pull -stream orders -group search -max 10 -visibility 30
+./bin/wallaby-admin stream pull -stream orders -group search -max 10 -visibility 30
 ```
 
 Ack messages when processed:
 
 ```bash
-./bin/ductstream-admin stream ack -stream orders -group search -ids 1,2,3
+./bin/wallaby-admin stream ack -stream orders -group search -ids 1,2,3
 ```
 
 ## Snowflake Destination
@@ -220,7 +220,7 @@ Options:
 - `batch_resolution` (`none` default, or `append` / `replace`)
 - `staging_schema`, `staging_table`, `staging_suffix` (default suffix `_staging`)
 - `meta_table_enabled` (default `true`) — create/update `meta_schema.meta_table`
-- `meta_schema` (default `DUCTSTREAM_META`)
+- `meta_schema` (default `WALLABY_META`)
 - `meta_table` (default `__METADATA`)
 - `meta_pk_prefix` (default `pk_`)
 
@@ -301,24 +301,24 @@ Example:
 Enable gating to require approval before applying DDL-derived schema changes:
 
 ```bash
-export DUCTSTREAM_DDL_GATE="true"
-export DUCTSTREAM_DDL_AUTO_APPROVE="false"
-export DUCTSTREAM_DDL_AUTO_APPLY="false"
+export WALLABY_DDL_GATE="true"
+export WALLABY_DDL_AUTO_APPROVE="false"
+export WALLABY_DDL_AUTO_APPLY="false"
 ```
 
 Use the admin CLI to list and approve DDL events:
 
 ```bash
-./bin/ductstream-admin ddl list -status pending
-./bin/ductstream-admin ddl approve -id 1
-./bin/ductstream-admin ddl apply -id 1
+./bin/wallaby-admin ddl list -status pending
+./bin/wallaby-admin ddl approve -id 1
+./bin/wallaby-admin ddl apply -id 1
 ```
 
 ## Resolve Staging Tables (Admin)
 If backfill loads landed in staging tables, resolve them without running a flow:
 
 ```bash
-./bin/ductstream-admin flow resolve-staging -flow-id "<flow-id>" -tables public.users,public.orders
+./bin/wallaby-admin flow resolve-staging -flow-id "<flow-id>" -tables public.users,public.orders
 ```
 
 Use `-schemas` to resolve all tables in schemas, and `-dest` to scope to a single destination.
@@ -327,7 +327,7 @@ Use `-schemas` to resolve all tables in schemas, and `-dest` to scope to a singl
 Run a backfill by switching the worker to `backfill` mode and providing tables:
 
 ```bash
-./bin/ductstream-worker -flow-id \"<flow-id>\" -mode backfill -tables public.users,public.orders
+./bin/wallaby-worker -flow-id \"<flow-id>\" -mode backfill -tables public.users,public.orders
 ```
 
 Backfill performance options (source `options`):
@@ -337,26 +337,26 @@ Backfill performance options (source `options`):
 - `partition_count` (default `1`) — number of partitions per table
 - `snapshot_consistent` (default `true`) — uses `pg_export_snapshot()` for a consistent snapshot
 - `snapshot_state_backend` (`postgres` default, or `file`, `none`)
-- `snapshot_state_schema` (default `ductstream`)
+- `snapshot_state_schema` (default `wallaby`)
 - `snapshot_state_table` (default `snapshot_state`)
 - `snapshot_state_path` (required for `file` backend)
 
 Example with parallel workers and hash partitions:
 
 ```bash
-./bin/ductstream-worker -flow-id \"<flow-id>\" -mode backfill -tables public.users -snapshot-workers 4 -partition-column id -partition-count 8
+./bin/wallaby-worker -flow-id \"<flow-id>\" -mode backfill -tables public.users -snapshot-workers 4 -partition-column id -partition-count 8
 ```
 
 Replay from a specific LSN (if your replication slot retains WAL):
 
 ```bash
-./bin/ductstream-worker -flow-id \"<flow-id>\" -start-lsn \"0/16B6C50\"
+./bin/wallaby-worker -flow-id \"<flow-id>\" -start-lsn \"0/16B6C50\"
 ```
 
 For Postgres stream consumers, use the admin CLI to reset deliveries:
 
 ```bash
-./bin/ductstream-admin stream replay -stream orders -group search -since 2025-01-01T00:00:00Z
+./bin/wallaby-admin stream replay -stream orders -group search -since 2025-01-01T00:00:00Z
 ```
 
 ## Checkpointing

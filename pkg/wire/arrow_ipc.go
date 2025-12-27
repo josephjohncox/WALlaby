@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/apache/arrow-go/v18/arrow/ipc"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 // ArrowIPCCodec encodes batches using Arrow IPC.

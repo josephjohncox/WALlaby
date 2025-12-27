@@ -11,23 +11,23 @@ Build and run the provider from `terraform/provider`:
 ```bash
 cd terraform/provider
 
-go build -o ductstream-tf
+go build -o wallaby-tf
 ```
 
 ## Acceptance Tests
 Acceptance tests are guarded by the `acceptance` build tag and environment variables.
 
 ```bash
-export DUCTSTREAM_TF_ACC=1
-export DUCTSTREAM_TF_ENDPOINT="localhost:8080"
-export DUCTSTREAM_TF_INSECURE="true"
-export DUCTSTREAM_TF_POSTGRES_DSN="postgres://user:pass@localhost:5432/app?sslmode=disable"
-export DUCTSTREAM_TF_KAFKA_BROKERS="localhost:9092"
-export DUCTSTREAM_TF_KAFKA_TOPIC="ductstream.cdc"
+export WALLABY_TF_ACC=1
+export WALLABY_TF_ENDPOINT="localhost:8080"
+export WALLABY_TF_INSECURE="true"
+export WALLABY_TF_POSTGRES_DSN="postgres://user:pass@localhost:5432/app?sslmode=disable"
+export WALLABY_TF_KAFKA_BROKERS="localhost:9092"
+export WALLABY_TF_KAFKA_TOPIC="wallaby.cdc"
 
 cd terraform/provider
 
 go test -tags=acceptance ./...
 ```
 
-The tests expect a running DuctStream gRPC server and a Postgres instance configured for logical replication.
+The tests expect a running WALlaby gRPC server and a Postgres instance configured for logical replication.

@@ -1,6 +1,0 @@
-DuctStream is running.
-
-To connect to the gRPC endpoint:
-  kubectl port-forward svc/{{ include "ductstream.fullname" . }} 8080:{{ .Values.service.port }}
-
-Set required environment variables (e.g., DUCTSTREAM_POSTGRES_DSN) via values.yaml or a ConfigMap.

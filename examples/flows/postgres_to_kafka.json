@@ -6,8 +6,8 @@
     "type": "postgres",
     "options": {
       "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
-      "slot": "ductstream_slot",
-      "publication": "ductstream_pub",
+      "slot": "wallaby_slot",
+      "publication": "wallaby_pub",
       "batch_size": "500",
       "batch_timeout": "1s",
       "status_interval": "10s",
@@ -21,7 +21,7 @@
       "type": "kafka",
       "options": {
         "brokers": "localhost:9092",
-        "topic": "ductstream.cdc",
+        "topic": "wallaby.cdc",
         "format": "arrow",
         "compression": "lz4",
         "acks": "all"

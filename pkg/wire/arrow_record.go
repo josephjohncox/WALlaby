@@ -9,7 +9,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 func buildArrowRecord(batch connector.Batch) (arrow.Record, error) {
@@ -163,7 +163,22 @@ func appendValue(builder array.Builder, value any) error {
 
 	switch b := builder.(type) {
 	case *array.StringBuilder:
-		b.Append(fmt.Sprint(value))
+		switch v := value.(type) {
+		case string:
+			b.Append(v)
+		case []byte:
+			b.Append(string(v))
+		case json.RawMessage:
+			b.Append(string(v))
+		case map[string]any, []any:
+			payload, err := json.Marshal(v)
+			if err != nil {
+				return fmt.Errorf("marshal json value: %w", err)
+			}
+			b.Append(string(payload))
+		default:
+			b.Append(fmt.Sprint(value))
+		}
 	case *array.Int16Builder:
 		b.Append(int16(asInt64(value)))
 	case *array.Int32Builder:

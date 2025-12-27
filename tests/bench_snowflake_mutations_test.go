@@ -4,24 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/josephjohncox/ductstream/connectors/destinations/snowflake"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 	_ "github.com/snowflakedb/gosnowflake"
 )
 
 func BenchmarkSnowflakeUpdate(b *testing.B) {
-	dsn := os.Getenv("DUCTSTREAM_TEST_SNOWFLAKE_DSN")
-	if dsn == "" {
-		b.Skip("DUCTSTREAM_TEST_SNOWFLAKE_DSN not set")
-	}
-	schema := os.Getenv("DUCTSTREAM_TEST_SNOWFLAKE_SCHEMA")
-	if schema == "" {
-		schema = "PUBLIC"
+	dsn, schema, ok := snowflakeTestDSN(b)
+	if !ok {
+		b.Skip("snowflake DSN not configured; set WALLABY_TEST_SNOWFLAKE_DSN or WALLABY_TEST_FAKESNOW_HOST/PORT")
 	}
 
 	ctx := context.Background()
@@ -35,7 +30,7 @@ func BenchmarkSnowflakeUpdate(b *testing.B) {
 		b.Fatalf("create schema: %v", err)
 	}
 
-	table := fmt.Sprintf("ductstream_bench_sf_%d", time.Now().UnixNano())
+	table := fmt.Sprintf("wallaby_bench_sf_%d", time.Now().UnixNano())
 	fullTable := quoteSnowflakeIdentBench(schema) + "." + quoteSnowflakeIdentBench(table)
 	createSQL := fmt.Sprintf("CREATE TABLE %s (id NUMBER, name STRING)", fullTable)
 	if _, err := db.ExecContext(ctx, createSQL); err != nil {
@@ -94,13 +89,9 @@ func BenchmarkSnowflakeUpdate(b *testing.B) {
 }
 
 func BenchmarkSnowflakeAppend(b *testing.B) {
-	dsn := os.Getenv("DUCTSTREAM_TEST_SNOWFLAKE_DSN")
-	if dsn == "" {
-		b.Skip("DUCTSTREAM_TEST_SNOWFLAKE_DSN not set")
-	}
-	schema := os.Getenv("DUCTSTREAM_TEST_SNOWFLAKE_SCHEMA")
-	if schema == "" {
-		schema = "PUBLIC"
+	dsn, schema, ok := snowflakeTestDSN(b)
+	if !ok {
+		b.Skip("snowflake DSN not configured; set WALLABY_TEST_SNOWFLAKE_DSN or WALLABY_TEST_FAKESNOW_HOST/PORT")
 	}
 
 	ctx := context.Background()
@@ -114,7 +105,7 @@ func BenchmarkSnowflakeAppend(b *testing.B) {
 		b.Fatalf("create schema: %v", err)
 	}
 
-	table := fmt.Sprintf("ductstream_bench_sf_append_%d", time.Now().UnixNano())
+	table := fmt.Sprintf("wallaby_bench_sf_append_%d", time.Now().UnixNano())
 	fullTable := quoteSnowflakeIdentBench(schema) + "." + quoteSnowflakeIdentBench(table)
 	createSQL := fmt.Sprintf("CREATE TABLE %s (id NUMBER, name STRING)", fullTable)
 	if _, err := db.ExecContext(ctx, createSQL); err != nil {

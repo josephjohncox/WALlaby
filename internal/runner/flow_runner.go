@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/josephjohncox/ductstream/internal/flow"
-	"github.com/josephjohncox/ductstream/internal/workflow"
-	"github.com/josephjohncox/ductstream/pkg/connector"
-	"github.com/josephjohncox/ductstream/pkg/stream"
+	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/internal/workflow"
+	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/stream"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -31,7 +31,7 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 
 	tracer := r.Tracer
 	if tracer == nil {
-		tracer = otel.Tracer("ductstream/flow")
+		tracer = otel.Tracer("wallaby/flow")
 	}
 
 	flowSpanCtx, span := tracer.Start(ctx, "flow.run")

@@ -1,16 +1,10 @@
 package orchestrator
 
 import (
-	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,7 +12,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"gopkg.in/yaml.v3"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 const (
@@ -54,28 +53,22 @@ type KubernetesConfig struct {
 
 // KubernetesDispatcher triggers flow workers as Kubernetes Jobs.
 type KubernetesDispatcher struct {
-	client    *http.Client
-	baseURL   string
-	token     string
+	client    kubernetes.Interface
 	namespace string
 	cfg       KubernetesConfig
 }
 
-// NewKubernetesDispatcher builds a dispatcher that uses in-cluster config.
+// NewKubernetesDispatcher builds a dispatcher using in-cluster or kubeconfig credentials.
 func NewKubernetesDispatcher(ctx context.Context, cfg KubernetesConfig) (*KubernetesDispatcher, error) {
 	if cfg.JobImage == "" {
 		return nil, errors.New("kubernetes job image is required")
 	}
 
-	baseURL, token, client, ns, err := resolveKubeClient(ctx, cfg)
+	client, namespace, err := resolveKubeClient(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	namespace := strings.TrimSpace(cfg.Namespace)
-	if namespace == "" {
-		namespace = ns
-	}
 	if namespace == "" {
 		namespace = "default"
 	}
@@ -84,13 +77,11 @@ func NewKubernetesDispatcher(ctx context.Context, cfg KubernetesConfig) (*Kubern
 		cfg.JobImagePullPolicy = "IfNotPresent"
 	}
 	if cfg.JobNamePrefix == "" {
-		cfg.JobNamePrefix = "ductstream-worker"
+		cfg.JobNamePrefix = "wallaby-worker"
 	}
 
 	return &KubernetesDispatcher{
 		client:    client,
-		baseURL:   baseURL,
-		token:     token,
 		namespace: namespace,
 		cfg:       cfg,
 	}, nil
@@ -104,43 +95,45 @@ func (k *KubernetesDispatcher) EnqueueFlow(ctx context.Context, flowID string) e
 
 	jobName := buildJobName(k.cfg.JobNamePrefix, flowID)
 	labels := mergeLabels(map[string]string{
-		"app.kubernetes.io/name":      "ductstream-worker",
+		"app.kubernetes.io/name":      "wallaby-worker",
 		"app.kubernetes.io/component": "worker",
-		"ductstream.flow-id":          flowID,
+		"wallaby.flow-id":             flowID,
 	}, k.cfg.JobLabels)
 	annotations := mergeLabels(nil, k.cfg.JobAnnotations)
 
 	command := k.cfg.JobCommand
 	if len(command) == 0 {
-		command = []string{"/usr/local/bin/ductstream-worker"}
+		command = []string{"/usr/local/bin/wallaby-worker"}
 	}
 	args := ensureFlowArgs(k.cfg.JobArgs, flowID, k.cfg.MaxEmptyReads)
 
 	env := mapToEnvVars(k.cfg.JobEnv)
 	envFrom := parseEnvFrom(k.cfg.JobEnvFrom)
 
-	job := jobSpec{
-		APIVersion: "batch/v1",
-		Kind:       "Job",
-		Metadata: objectMeta{
+	job := &batchv1.Job{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "batch/v1",
+			Kind:       "Job",
+		},
+		ObjectMeta: metav1.ObjectMeta{
 			Name:        jobName,
 			Namespace:   k.namespace,
 			Labels:      labels,
 			Annotations: annotations,
 		},
-		Spec: jobSpecDetails{
+		Spec: batchv1.JobSpec{
 			TTLSecondsAfterFinished: optionalInt32(k.cfg.JobTTLSeconds),
 			BackoffLimit:            optionalInt32(k.cfg.JobBackoffLimit),
-			Template: podTemplate{
-				Metadata: objectMeta{Labels: labels},
-				Spec: podSpec{
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
 					ServiceAccountName: k.cfg.JobServiceAccount,
-					RestartPolicy:      "Never",
-					Containers: []containerSpec{
+					RestartPolicy:      corev1.RestartPolicyNever,
+					Containers: []corev1.Container{
 						{
 							Name:            "worker",
 							Image:           k.cfg.JobImage,
-							ImagePullPolicy: k.cfg.JobImagePullPolicy,
+							ImagePullPolicy: corev1.PullPolicy(k.cfg.JobImagePullPolicy),
 							Command:         command,
 							Args:            args,
 							Env:             env,
@@ -152,320 +145,109 @@ func (k *KubernetesDispatcher) EnqueueFlow(ctx context.Context, flowID string) e
 		},
 	}
 
-	payload, err := json.Marshal(job)
-	if err != nil {
-		return fmt.Errorf("marshal kubernetes job: %w", err)
-	}
-
-	endpoint := fmt.Sprintf("%s/apis/batch/v1/namespaces/%s/jobs", k.baseURL, k.namespace)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("create kubernetes request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if k.token != "" {
-		req.Header.Set("Authorization", "Bearer "+k.token)
-	}
-
-	resp, err := k.client.Do(req)
+	_, err := k.client.BatchV1().Jobs(k.namespace).Create(ctx, job, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("create kubernetes job: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("kubernetes job create failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	return nil
 }
 
-type jobSpec struct {
-	APIVersion string         `json:"apiVersion"`
-	Kind       string         `json:"kind"`
-	Metadata   objectMeta     `json:"metadata"`
-	Spec       jobSpecDetails `json:"spec"`
-}
+func resolveKubeClient(ctx context.Context, cfg KubernetesConfig) (kubernetes.Interface, string, error) {
+	var (
+		restCfg   *rest.Config
+		namespace string
+		err       error
+	)
 
-type jobSpecDetails struct {
-	TTLSecondsAfterFinished *int32      `json:"ttlSecondsAfterFinished,omitempty"`
-	BackoffLimit            *int32      `json:"backoffLimit,omitempty"`
-	Template                podTemplate `json:"template"`
-}
-
-type podTemplate struct {
-	Metadata objectMeta `json:"metadata,omitempty"`
-	Spec     podSpec    `json:"spec"`
-}
-
-type podSpec struct {
-	ServiceAccountName string          `json:"serviceAccountName,omitempty"`
-	RestartPolicy      string          `json:"restartPolicy,omitempty"`
-	Containers         []containerSpec `json:"containers"`
-}
-
-type containerSpec struct {
-	Name            string          `json:"name"`
-	Image           string          `json:"image"`
-	ImagePullPolicy string          `json:"imagePullPolicy,omitempty"`
-	Command         []string        `json:"command,omitempty"`
-	Args            []string        `json:"args,omitempty"`
-	Env             []envVar        `json:"env,omitempty"`
-	EnvFrom         []envFromSource `json:"envFrom,omitempty"`
-}
-
-type envVar struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
-}
-
-type envFromSource struct {
-	ConfigMapRef *nameRef `json:"configMapRef,omitempty"`
-	SecretRef    *nameRef `json:"secretRef,omitempty"`
-}
-
-type nameRef struct {
-	Name string `json:"name"`
-}
-
-type objectMeta struct {
-	Name        string            `json:"name,omitempty"`
-	Namespace   string            `json:"namespace,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	Annotations map[string]string `json:"annotations,omitempty"`
-}
-
-type kubeConfig struct {
-	CurrentContext string             `yaml:"current-context"`
-	Clusters       []kubeClusterEntry `yaml:"clusters"`
-	Users          []kubeUserEntry    `yaml:"users"`
-	Contexts       []kubeContextEntry `yaml:"contexts"`
-}
-
-type kubeClusterEntry struct {
-	Name    string      `yaml:"name"`
-	Cluster kubeCluster `yaml:"cluster"`
-}
-
-type kubeCluster struct {
-	Server                   string `yaml:"server"`
-	CertificateAuthority     string `yaml:"certificate-authority"`
-	CertificateAuthorityData string `yaml:"certificate-authority-data"`
-	InsecureSkipTLSVerify    bool   `yaml:"insecure-skip-tls-verify"`
-}
-
-type kubeUserEntry struct {
-	Name string   `yaml:"name"`
-	User kubeUser `yaml:"user"`
-}
-
-type kubeUser struct {
-	Token                 string `yaml:"token"`
-	ClientCertificate     string `yaml:"client-certificate"`
-	ClientCertificateData string `yaml:"client-certificate-data"`
-	ClientKey             string `yaml:"client-key"`
-	ClientKeyData         string `yaml:"client-key-data"`
-}
-
-type kubeContextEntry struct {
-	Name    string      `yaml:"name"`
-	Context kubeContext `yaml:"context"`
-}
-
-type kubeContext struct {
-	Cluster   string `yaml:"cluster"`
-	User      string `yaml:"user"`
-	Namespace string `yaml:"namespace"`
-}
-
-func resolveKubeClient(ctx context.Context, cfg KubernetesConfig) (string, string, *http.Client, string, error) {
-	if cfg.APIServer != "" || cfg.BearerToken != "" || cfg.CAFile != "" || cfg.CAData != "" || cfg.ClientCertFile != "" || cfg.ClientKeyFile != "" || cfg.InsecureSkipTLS {
-		return clientFromStaticConfig(cfg)
+	switch {
+	case hasStaticConfig(cfg):
+		restCfg, namespace, err = configFromStatic(cfg)
+	case cfg.KubeconfigPath != "":
+		restCfg, namespace, err = configFromKubeconfig(cfg)
+	default:
+		restCfg, err = rest.InClusterConfig()
+		if err != nil {
+			return nil, "", err
+		}
+		namespace = strings.TrimSpace(cfg.Namespace)
+		if namespace == "" {
+			if ns, nsErr := readNamespace(); nsErr == nil {
+				namespace = ns
+			}
+		}
 	}
-	if cfg.KubeconfigPath != "" {
-		return clientFromKubeconfig(cfg)
-	}
-	baseURL, token, client, err := inClusterClient(ctx)
 	if err != nil {
-		return "", "", nil, "", err
+		return nil, "", err
 	}
-	ns, _ := readNamespace()
-	return baseURL, token, client, ns, nil
+
+	if restCfg.Timeout == 0 {
+		restCfg.Timeout = 15 * time.Second
+	}
+	if namespace == "" {
+		namespace = strings.TrimSpace(cfg.Namespace)
+	}
+	if namespace == "" {
+		namespace = "default"
+	}
+
+	client, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return nil, "", fmt.Errorf("create kubernetes client: %w", err)
+	}
+	return client, namespace, nil
 }
 
-func clientFromStaticConfig(cfg KubernetesConfig) (string, string, *http.Client, string, error) {
+func hasStaticConfig(cfg KubernetesConfig) bool {
+	return cfg.APIServer != "" || cfg.BearerToken != "" || cfg.CAFile != "" || cfg.CAData != "" || cfg.ClientCertFile != "" || cfg.ClientKeyFile != "" || cfg.InsecureSkipTLS
+}
+
+func configFromStatic(cfg KubernetesConfig) (*rest.Config, string, error) {
 	if cfg.APIServer == "" {
-		return "", "", nil, "", errors.New("kubernetes api server is required for out-of-cluster config")
+		return nil, "", errors.New("kubernetes api server is required for out-of-cluster config")
 	}
-	tlsConfig, err := buildTLSConfig(tlsConfigInput{
-		CAData:          cfg.CAData,
-		CAFile:          cfg.CAFile,
-		InsecureSkipTLS: cfg.InsecureSkipTLS,
-		ClientCertFile:  cfg.ClientCertFile,
-		ClientKeyFile:   cfg.ClientKeyFile,
-	})
+
+	caData, err := decodeMaybeBase64(cfg.CAData, true)
 	if err != nil {
-		return "", "", nil, "", err
-	}
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}, Timeout: 15 * time.Second}
-	return normalizeServerURL(cfg.APIServer), cfg.BearerToken, client, cfg.Namespace, nil
-}
-
-func clientFromKubeconfig(cfg KubernetesConfig) (string, string, *http.Client, string, error) {
-	data, err := os.ReadFile(cfg.KubeconfigPath)
-	if err != nil {
-		return "", "", nil, "", fmt.Errorf("read kubeconfig: %w", err)
-	}
-	var kc kubeConfig
-	if err := yaml.Unmarshal(data, &kc); err != nil {
-		return "", "", nil, "", fmt.Errorf("parse kubeconfig: %w", err)
+		return nil, "", err
 	}
 
-	contextName := strings.TrimSpace(cfg.KubeContext)
-	if contextName == "" {
-		contextName = strings.TrimSpace(kc.CurrentContext)
+	restCfg := &rest.Config{
+		Host:        normalizeServerURL(cfg.APIServer),
+		BearerToken: strings.TrimSpace(cfg.BearerToken),
+		TLSClientConfig: rest.TLSClientConfig{
+			Insecure: cfg.InsecureSkipTLS,
+			CAFile:   strings.TrimSpace(cfg.CAFile),
+			CAData:   caData,
+			CertFile: strings.TrimSpace(cfg.ClientCertFile),
+			KeyFile:  strings.TrimSpace(cfg.ClientKeyFile),
+		},
 	}
-	if contextName == "" && len(kc.Contexts) > 0 {
-		contextName = kc.Contexts[0].Name
-	}
-	if contextName == "" {
-		return "", "", nil, "", errors.New("kubeconfig context not found")
-	}
-
-	ctxEntry, ok := findContext(kc.Contexts, contextName)
-	if !ok {
-		return "", "", nil, "", fmt.Errorf("kubeconfig context %q not found", contextName)
-	}
-	clusterEntry, ok := findCluster(kc.Clusters, ctxEntry.Context.Cluster)
-	if !ok {
-		return "", "", nil, "", fmt.Errorf("kubeconfig cluster %q not found", ctxEntry.Context.Cluster)
-	}
-	userEntry, _ := findUser(kc.Users, ctxEntry.Context.User)
-
-	baseDir := filepath.Dir(cfg.KubeconfigPath)
-	token := strings.TrimSpace(cfg.BearerToken)
-	if token == "" {
-		token = strings.TrimSpace(userEntry.User.Token)
-	}
-
-	caPath := resolvePath(firstNonEmpty(cfg.CAFile, clusterEntry.Cluster.CertificateAuthority), baseDir)
-	clientCertPath := resolvePath(firstNonEmpty(cfg.ClientCertFile, userEntry.User.ClientCertificate), baseDir)
-	clientKeyPath := resolvePath(firstNonEmpty(cfg.ClientKeyFile, userEntry.User.ClientKey), baseDir)
-
-	tlsConfig, err := buildTLSConfig(tlsConfigInput{
-		CAData:              firstNonEmpty(cfg.CAData, clusterEntry.Cluster.CertificateAuthorityData),
-		CAFile:              caPath,
-		InsecureSkipTLS:     cfg.InsecureSkipTLS || clusterEntry.Cluster.InsecureSkipTLSVerify,
-		ClientCertFile:      clientCertPath,
-		ClientKeyFile:       clientKeyPath,
-		ClientCertData:      userEntry.User.ClientCertificateData,
-		ClientKeyData:       userEntry.User.ClientKeyData,
-		AssumeBase64ForData: true,
-	})
-	if err != nil {
-		return "", "", nil, "", err
-	}
-
-	server := clusterEntry.Cluster.Server
-	if server == "" {
-		return "", "", nil, "", errors.New("kubeconfig cluster server is required")
-	}
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}, Timeout: 15 * time.Second}
 
 	namespace := strings.TrimSpace(cfg.Namespace)
-	if namespace == "" {
-		namespace = strings.TrimSpace(ctxEntry.Context.Namespace)
-	}
-	return normalizeServerURL(server), token, client, namespace, nil
+	return restCfg, namespace, nil
 }
 
-func findContext(entries []kubeContextEntry, name string) (kubeContextEntry, bool) {
-	for _, entry := range entries {
-		if entry.Name == name {
-			return entry, true
-		}
+func configFromKubeconfig(cfg KubernetesConfig) (*rest.Config, string, error) {
+	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: cfg.KubeconfigPath}
+	overrides := &clientcmd.ConfigOverrides{}
+	if strings.TrimSpace(cfg.KubeContext) != "" {
+		overrides.CurrentContext = strings.TrimSpace(cfg.KubeContext)
 	}
-	return kubeContextEntry{}, false
-}
-
-func findCluster(entries []kubeClusterEntry, name string) (kubeClusterEntry, bool) {
-	for _, entry := range entries {
-		if entry.Name == name {
-			return entry, true
-		}
-	}
-	return kubeClusterEntry{}, false
-}
-
-func findUser(entries []kubeUserEntry, name string) (kubeUserEntry, bool) {
-	for _, entry := range entries {
-		if entry.Name == name {
-			return entry, true
-		}
-	}
-	return kubeUserEntry{}, false
-}
-
-type tlsConfigInput struct {
-	CAData              string
-	CAFile              string
-	InsecureSkipTLS     bool
-	ClientCertFile      string
-	ClientKeyFile       string
-	ClientCertData      string
-	ClientKeyData       string
-	AssumeBase64ForData bool
-}
-
-func buildTLSConfig(input tlsConfigInput) (*tls.Config, error) {
-	cfg := &tls.Config{InsecureSkipVerify: input.InsecureSkipTLS} //nolint:gosec
-	if input.CAData != "" || input.CAFile != "" {
-		caPool := x509.NewCertPool()
-		caBytes, err := loadPEMData(input.CAData, input.CAFile, input.AssumeBase64ForData)
-		if err != nil {
-			return nil, err
-		}
-		if len(caBytes) > 0 && !caPool.AppendCertsFromPEM(caBytes) {
-			return nil, errors.New("parse kubernetes ca cert")
-		}
-		cfg.RootCAs = caPool
+	if strings.TrimSpace(cfg.Namespace) != "" {
+		overrides.Context.Namespace = strings.TrimSpace(cfg.Namespace)
 	}
 
-	if input.ClientCertData != "" || input.ClientCertFile != "" {
-		certBytes, err := loadPEMData(input.ClientCertData, input.ClientCertFile, input.AssumeBase64ForData)
-		if err != nil {
-			return nil, err
-		}
-		keyBytes, err := loadPEMData(input.ClientKeyData, input.ClientKeyFile, input.AssumeBase64ForData)
-		if err != nil {
-			return nil, err
-		}
-		if len(certBytes) == 0 || len(keyBytes) == 0 {
-			return nil, errors.New("client certificate and key are required together")
-		}
-		cert, err := tls.X509KeyPair(certBytes, keyBytes)
-		if err != nil {
-			return nil, fmt.Errorf("parse client cert: %w", err)
-		}
-		cfg.Certificates = []tls.Certificate{cert}
-	}
-
-	return cfg, nil
-}
-
-func loadPEMData(dataValue, filePath string, base64Decode bool) ([]byte, error) {
-	if dataValue != "" {
-		return decodeMaybeBase64(dataValue, base64Decode)
-	}
-	if filePath == "" {
-		return nil, nil
-	}
-	content, err := os.ReadFile(filePath)
+	clientCfg := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides)
+	restCfg, err := clientCfg.ClientConfig()
 	if err != nil {
-		return nil, fmt.Errorf("read file %s: %w", filePath, err)
+		return nil, "", fmt.Errorf("load kubeconfig: %w", err)
 	}
-	return content, nil
+	namespace, _, err := clientCfg.Namespace()
+	if err != nil {
+		return nil, "", fmt.Errorf("load kubeconfig namespace: %w", err)
+	}
+	return restCfg, namespace, nil
 }
 
 func decodeMaybeBase64(value string, base64Decode bool) ([]byte, error) {
@@ -494,57 +276,6 @@ func normalizeServerURL(server string) string {
 		return trim
 	}
 	return "https://" + trim
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func resolvePath(path, baseDir string) string {
-	trim := strings.TrimSpace(path)
-	if trim == "" {
-		return ""
-	}
-	if filepath.IsAbs(trim) || baseDir == "" {
-		return trim
-	}
-	return filepath.Join(baseDir, trim)
-}
-
-func inClusterClient(_ context.Context) (string, string, *http.Client, error) {
-	host := strings.TrimSpace(os.Getenv("KUBERNETES_SERVICE_HOST"))
-	port := strings.TrimSpace(os.Getenv("KUBERNETES_SERVICE_PORT"))
-	if host == "" || port == "" {
-		return "", "", nil, errors.New("kubernetes service host/port not found (is this running in cluster?)")
-	}
-
-	caPath := filepath.Join(serviceAccountPath, "ca.crt")
-	caData, err := os.ReadFile(caPath)
-	if err != nil {
-		return "", "", nil, fmt.Errorf("read kubernetes ca: %w", err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caData) {
-		return "", "", nil, errors.New("parse kubernetes ca cert")
-	}
-
-	tokenPath := filepath.Join(serviceAccountPath, "token")
-	tokenData, err := os.ReadFile(tokenPath)
-	if err != nil {
-		return "", "", nil, fmt.Errorf("read kubernetes token: %w", err)
-	}
-	token := strings.TrimSpace(string(tokenData))
-
-	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}
-	client := &http.Client{Transport: transport, Timeout: 15 * time.Second}
-	baseURL := fmt.Sprintf("https://%s:%s", host, port)
-
-	return baseURL, token, client, nil
 }
 
 func readNamespace() (string, error) {
@@ -639,7 +370,7 @@ func hasFlag(args []string, name string) bool {
 	return false
 }
 
-func mapToEnvVars(values map[string]string) []envVar {
+func mapToEnvVars(values map[string]string) []corev1.EnvVar {
 	if len(values) == 0 {
 		return nil
 	}
@@ -648,18 +379,18 @@ func mapToEnvVars(values map[string]string) []envVar {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	out := make([]envVar, 0, len(values))
+	out := make([]corev1.EnvVar, 0, len(values))
 	for _, key := range keys {
-		out = append(out, envVar{Name: key, Value: values[key]})
+		out = append(out, corev1.EnvVar{Name: key, Value: values[key]})
 	}
 	return out
 }
 
-func parseEnvFrom(entries []string) []envFromSource {
+func parseEnvFrom(entries []string) []corev1.EnvFromSource {
 	if len(entries) == 0 {
 		return nil
 	}
-	out := make([]envFromSource, 0, len(entries))
+	out := make([]corev1.EnvFromSource, 0, len(entries))
 	for _, entry := range entries {
 		item := strings.TrimSpace(entry)
 		if item == "" {
@@ -676,9 +407,9 @@ func parseEnvFrom(entries []string) []envFromSource {
 		}
 		switch kind {
 		case "secret", "secretref":
-			out = append(out, envFromSource{SecretRef: &nameRef{Name: name}})
+			out = append(out, corev1.EnvFromSource{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: name}}})
 		case "configmap", "configmapref", "config-map":
-			out = append(out, envFromSource{ConfigMapRef: &nameRef{Name: name}})
+			out = append(out, corev1.EnvFromSource{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: name}}})
 		}
 	}
 	if len(out) == 0 {

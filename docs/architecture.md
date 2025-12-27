@@ -1,6 +1,6 @@
 # Architecture
 
-DuctStream is organized as a small set of composable subsystems designed for high‑throughput CDC and flexible deployment topologies.
+WALlaby is organized as a small set of composable subsystems designed for high‑throughput CDC and flexible deployment topologies.
 
 ## High-Level Flow
 
@@ -41,8 +41,8 @@ DuctStream is organized as a small set of composable subsystems designed for hig
 ## Deployment Modes
 
 ### API Server + Workers
-- Run the API server (`ductstream`) for control plane.
-- Run per‑flow workers (`ductstream-worker`) for data plane.
+- Run the API server (`wallaby`) for control plane.
+- Run per‑flow workers (`wallaby-worker`) for data plane.
 
 ### DBOS Scheduling
 - The API server can also run DBOS to schedule flow runs.

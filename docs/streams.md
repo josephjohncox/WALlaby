@@ -1,6 +1,6 @@
 # Streams
 
-DuctStream includes a Postgres‑backed stream sink (`pgstream`) that behaves like a durable queue with consumer groups and visibility timeouts.
+WALlaby includes a Postgres‑backed stream sink (`pgstream`) that behaves like a durable queue with consumer groups and visibility timeouts.
 This is useful for workflow fan‑out, webhooks, and downstream processing pipelines.
 
 ## How It Works
@@ -17,24 +17,24 @@ See `examples/flows/postgres_to_pgstream.json`.
 
 ### 2) Pull messages
 ```bash
-./bin/ductstream-admin stream pull -stream orders -group search -max 10 -visibility 30
+./bin/wallaby-admin stream pull -stream orders -group search -max 10 -visibility 30
 ```
 
 For scripting, use JSON output:
 
 ```bash
-./bin/ductstream-admin stream pull --json -stream orders -group search -max 10 -visibility 30
+./bin/wallaby-admin stream pull --json -stream orders -group search -max 10 -visibility 30
 ```
 
 For human-readable JSON:
 
 ```bash
-./bin/ductstream-admin stream pull --pretty -stream orders -group search -max 10 -visibility 30
+./bin/wallaby-admin stream pull --pretty -stream orders -group search -max 10 -visibility 30
 ```
 
 ### 3) Ack messages
 ```bash
-./bin/ductstream-admin stream ack -stream orders -group search -ids 1,2,3
+./bin/wallaby-admin stream ack -stream orders -group search -ids 1,2,3
 ```
 
 ## Visibility Timeout Semantics
@@ -45,11 +45,11 @@ For human-readable JSON:
 You can reset deliveries for a consumer group in two ways:
 
 ```bash
-./bin/ductstream-admin stream replay -stream orders -group search -from-lsn 0/16B6C50
+./bin/wallaby-admin stream replay -stream orders -group search -from-lsn 0/16B6C50
 ```
 
 ```bash
-./bin/ductstream-admin stream replay -stream orders -group search -since 2025-01-01T00:00:00Z
+./bin/wallaby-admin stream replay -stream orders -group search -since 2025-01-01T00:00:00Z
 ```
 
 This moves matching deliveries back to `available` so they can be reprocessed.

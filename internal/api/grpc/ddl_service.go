@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 
-	ductstreampb "github.com/josephjohncox/ductstream/gen/go/ductstream/v1"
-	"github.com/josephjohncox/ductstream/internal/registry"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/registry"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -14,7 +14,7 @@ import (
 
 // DDLService implements the gRPC DDLService API.
 type DDLService struct {
-	ductstreampb.UnimplementedDDLServiceServer
+	wallabypb.UnimplementedDDLServiceServer
 	store registry.Store
 }
 
@@ -22,21 +22,21 @@ func NewDDLService(store registry.Store) *DDLService {
 	return &DDLService{store: store}
 }
 
-func (s *DDLService) ListPendingDDL(ctx context.Context, _ *ductstreampb.ListPendingDDLRequest) (*ductstreampb.ListPendingDDLResponse, error) {
+func (s *DDLService) ListPendingDDL(ctx context.Context, _ *wallabypb.ListPendingDDLRequest) (*wallabypb.ListPendingDDLResponse, error) {
 	events, err := s.store.ListPendingDDL(ctx)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	items := make([]*ductstreampb.DDLEvent, 0, len(events))
+	items := make([]*wallabypb.DDLEvent, 0, len(events))
 	for _, event := range events {
 		items = append(items, ddlEventToProto(event))
 	}
 
-	return &ductstreampb.ListPendingDDLResponse{Events: items}, nil
+	return &wallabypb.ListPendingDDLResponse{Events: items}, nil
 }
 
-func (s *DDLService) ListDDL(ctx context.Context, req *ductstreampb.ListDDLRequest) (*ductstreampb.ListDDLResponse, error) {
+func (s *DDLService) ListDDL(ctx context.Context, req *wallabypb.ListDDLRequest) (*wallabypb.ListDDLResponse, error) {
 	statusFilter := ""
 	if req != nil {
 		statusFilter = req.Status
@@ -47,15 +47,15 @@ func (s *DDLService) ListDDL(ctx context.Context, req *ductstreampb.ListDDLReque
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	items := make([]*ductstreampb.DDLEvent, 0, len(events))
+	items := make([]*wallabypb.DDLEvent, 0, len(events))
 	for _, event := range events {
 		items = append(items, ddlEventToProto(event))
 	}
 
-	return &ductstreampb.ListDDLResponse{Events: items}, nil
+	return &wallabypb.ListDDLResponse{Events: items}, nil
 }
 
-func (s *DDLService) ApproveDDL(ctx context.Context, req *ductstreampb.ApproveDDLRequest) (*ductstreampb.ApproveDDLResponse, error) {
+func (s *DDLService) ApproveDDL(ctx context.Context, req *wallabypb.ApproveDDLRequest) (*wallabypb.ApproveDDLResponse, error) {
 	if req == nil || req.Id == 0 {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
@@ -66,10 +66,10 @@ func (s *DDLService) ApproveDDL(ctx context.Context, req *ductstreampb.ApproveDD
 	if err != nil {
 		return nil, mapRegistryError(err)
 	}
-	return &ductstreampb.ApproveDDLResponse{Event: ddlEventToProto(event)}, nil
+	return &wallabypb.ApproveDDLResponse{Event: ddlEventToProto(event)}, nil
 }
 
-func (s *DDLService) RejectDDL(ctx context.Context, req *ductstreampb.RejectDDLRequest) (*ductstreampb.RejectDDLResponse, error) {
+func (s *DDLService) RejectDDL(ctx context.Context, req *wallabypb.RejectDDLRequest) (*wallabypb.RejectDDLResponse, error) {
 	if req == nil || req.Id == 0 {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
@@ -80,10 +80,10 @@ func (s *DDLService) RejectDDL(ctx context.Context, req *ductstreampb.RejectDDLR
 	if err != nil {
 		return nil, mapRegistryError(err)
 	}
-	return &ductstreampb.RejectDDLResponse{Event: ddlEventToProto(event)}, nil
+	return &wallabypb.RejectDDLResponse{Event: ddlEventToProto(event)}, nil
 }
 
-func (s *DDLService) MarkDDLApplied(ctx context.Context, req *ductstreampb.MarkDDLAppliedRequest) (*ductstreampb.MarkDDLAppliedResponse, error) {
+func (s *DDLService) MarkDDLApplied(ctx context.Context, req *wallabypb.MarkDDLAppliedRequest) (*wallabypb.MarkDDLAppliedResponse, error) {
 	if req == nil || req.Id == 0 {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
@@ -94,10 +94,10 @@ func (s *DDLService) MarkDDLApplied(ctx context.Context, req *ductstreampb.MarkD
 	if err != nil {
 		return nil, mapRegistryError(err)
 	}
-	return &ductstreampb.MarkDDLAppliedResponse{Event: ddlEventToProto(event)}, nil
+	return &wallabypb.MarkDDLAppliedResponse{Event: ddlEventToProto(event)}, nil
 }
 
-func ddlEventToProto(event registry.DDLEvent) *ductstreampb.DDLEvent {
+func ddlEventToProto(event registry.DDLEvent) *wallabypb.DDLEvent {
 	var planJSON string
 	if len(event.Plan.Changes) > 0 {
 		if payload, err := json.Marshal(event.Plan); err == nil {
@@ -110,7 +110,7 @@ func ddlEventToProto(event registry.DDLEvent) *ductstreampb.DDLEvent {
 		createdAt = timestamppb.New(event.CreatedAt)
 	}
 
-	return &ductstreampb.DDLEvent{
+	return &wallabypb.DDLEvent{
 		Id:        event.ID,
 		Ddl:       event.DDL,
 		Lsn:       event.LSN,

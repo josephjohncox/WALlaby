@@ -10,16 +10,16 @@ import (
 	"time"
 
 	_ "github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/josephjohncox/ductstream/connectors/destinations/clickhouse"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/connectors/destinations/clickhouse"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 func TestClickHouseMutations(t *testing.T) {
-	dsn := os.Getenv("DUCTSTREAM_TEST_CLICKHOUSE_DSN")
+	dsn := os.Getenv("WALLABY_TEST_CLICKHOUSE_DSN")
 	if dsn == "" {
-		t.Skip("DUCTSTREAM_TEST_CLICKHOUSE_DSN not set")
+		t.Skip("WALLABY_TEST_CLICKHOUSE_DSN not set")
 	}
-	database := os.Getenv("DUCTSTREAM_TEST_CLICKHOUSE_DB")
+	database := os.Getenv("WALLABY_TEST_CLICKHOUSE_DB")
 	if database == "" {
 		database = "default"
 	}
@@ -35,7 +35,7 @@ func TestClickHouseMutations(t *testing.T) {
 		t.Fatalf("create database: %v", err)
 	}
 
-	table := fmt.Sprintf("ductstream_mutations_%d", time.Now().UnixNano())
+	table := fmt.Sprintf("wallaby_mutations_%d", time.Now().UnixNano())
 	fullTable := fmt.Sprintf("%s.%s", database, table)
 	createSQL := fmt.Sprintf(`CREATE TABLE %s (
   id UInt64,

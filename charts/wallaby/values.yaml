@@ -1,0 +1,42 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/josephjohncox/wallaby
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+service:
+  type: ClusterIP
+  port: 8080
+
+serviceAnnotations: {}
+
+env: []
+envFrom: []
+
+config:
+  enabled: false
+  data: {}
+
+command: []
+args: []
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+workers:
+  enabled: false
+  items: []

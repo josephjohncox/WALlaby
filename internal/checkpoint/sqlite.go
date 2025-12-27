@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 	_ "modernc.org/sqlite"
 )
 

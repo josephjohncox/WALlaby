@@ -11,8 +11,8 @@ import (
 	"time"
 
 	_ "github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/josephjohncox/ductstream/internal/ddl"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/internal/ddl"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 const (
@@ -42,7 +42,7 @@ const (
 	batchResolveNone     = "none"
 	batchResolveAppend   = "append"
 	batchResolveReplace  = "replace"
-	defaultMetaSchema    = "ductstream_meta"
+	defaultMetaSchema    = "wallaby_meta"
 	defaultMetaTable     = "__metadata"
 	defaultMetaPKPref    = "pk_"
 	defaultMetaEngine    = "MergeTree"
@@ -361,7 +361,10 @@ func (d *Destination) stagingTable(schema connector.Schema, record connector.Rec
 }
 
 func (d *Destination) insertRow(ctx context.Context, target string, schema connector.Schema, record connector.Record) error {
-	cols, vals := recordColumns(schema, record)
+	cols, vals, err := recordColumns(schema, record)
+	if err != nil {
+		return err
+	}
 	if len(cols) == 0 {
 		return nil
 	}
@@ -485,7 +488,10 @@ func (d *Destination) updateRow(ctx context.Context, target string, schema conne
 		return errors.New("update requires record key")
 	}
 
-	cols, vals := recordColumns(schema, record)
+	cols, vals, err := recordColumns(schema, record)
+	if err != nil {
+		return err
+	}
 	if len(cols) == 0 {
 		return nil
 	}
@@ -639,19 +645,66 @@ func (d *Destination) ensureMetaColumn(ctx context.Context, column string) error
 	return nil
 }
 
-func recordColumns(schema connector.Schema, record connector.Record) ([]string, []any) {
+func recordColumns(schema connector.Schema, record connector.Record) ([]string, []any, error) {
 	if record.After == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	cols := make([]string, 0, len(schema.Columns))
 	vals := make([]any, 0, len(schema.Columns))
 	for _, col := range schema.Columns {
 		if val, ok := record.After[col.Name]; ok {
+			normalized, err := normalizeClickHouseValue(col.Type, val)
+			if err != nil {
+				return nil, nil, err
+			}
 			cols = append(cols, col.Name)
-			vals = append(vals, val)
+			vals = append(vals, normalized)
 		}
 	}
-	return cols, vals
+	return cols, vals, nil
+}
+
+func normalizeClickHouseValue(colType string, value any) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if isClickHouseArrayType(colType) {
+		return value, nil
+	}
+	switch v := value.(type) {
+	case json.RawMessage:
+		return string(v), nil
+	case []byte:
+		if isClickHouseJSONType(colType) {
+			return string(v), nil
+		}
+		return value, nil
+	case map[string]any, []any:
+		payload, err := json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("marshal json value: %w", err)
+		}
+		return string(payload), nil
+	default:
+		if isClickHouseJSONType(colType) {
+			payload, err := json.Marshal(v)
+			if err != nil {
+				return nil, fmt.Errorf("marshal json value: %w", err)
+			}
+			return string(payload), nil
+		}
+		return value, nil
+	}
+}
+
+func isClickHouseArrayType(colType string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(colType))
+	return strings.HasPrefix(normalized, "array(") || strings.HasSuffix(normalized, "[]")
+}
+
+func isClickHouseJSONType(colType string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(colType))
+	return strings.HasPrefix(normalized, "json")
 }
 
 func schemaColumns(schema connector.Schema) []string {

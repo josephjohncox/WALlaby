@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/josephjohncox/ductstream/connectors/destinations/duckdb"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/connectors/destinations/duckdb"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 	_ "github.com/marcboeker/go-duckdb"
 )
 
 func BenchmarkDuckDBUpdate(b *testing.B) {
-	dsn := os.Getenv("DUCTSTREAM_TEST_DUCKDB_DSN")
+	dsn := os.Getenv("WALLABY_TEST_DUCKDB_DSN")
 	if dsn == "" {
-		dsn = filepath.Join(os.TempDir(), fmt.Sprintf("ductstream_bench_duckdb_%d.duckdb", time.Now().UnixNano()))
+		dsn = filepath.Join(os.TempDir(), fmt.Sprintf("wallaby_bench_duckdb_%d.duckdb", time.Now().UnixNano()))
 	}
 
 	ctx := context.Background()
@@ -27,7 +27,7 @@ func BenchmarkDuckDBUpdate(b *testing.B) {
 	}
 	defer setupDB.Close()
 
-	table := fmt.Sprintf("ductstream_bench_duckdb_%d", time.Now().UnixNano())
+	table := fmt.Sprintf("wallaby_bench_duckdb_%d", time.Now().UnixNano())
 	if _, err := setupDB.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s (id INTEGER, name TEXT)", table)); err != nil {
 		b.Fatalf("create table: %v", err)
 	}
@@ -82,9 +82,9 @@ func BenchmarkDuckDBUpdate(b *testing.B) {
 }
 
 func BenchmarkDuckDBAppend(b *testing.B) {
-	dsn := os.Getenv("DUCTSTREAM_TEST_DUCKDB_DSN")
+	dsn := os.Getenv("WALLABY_TEST_DUCKDB_DSN")
 	if dsn == "" {
-		dsn = filepath.Join(os.TempDir(), fmt.Sprintf("ductstream_bench_duckdb_append_%d.duckdb", time.Now().UnixNano()))
+		dsn = filepath.Join(os.TempDir(), fmt.Sprintf("wallaby_bench_duckdb_append_%d.duckdb", time.Now().UnixNano()))
 	}
 
 	ctx := context.Background()
@@ -94,7 +94,7 @@ func BenchmarkDuckDBAppend(b *testing.B) {
 	}
 	defer setupDB.Close()
 
-	table := fmt.Sprintf("ductstream_bench_duckdb_append_%d", time.Now().UnixNano())
+	table := fmt.Sprintf("wallaby_bench_duckdb_append_%d", time.Now().UnixNano())
 	if _, err := setupDB.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s (id INTEGER, name TEXT)", table)); err != nil {
 		b.Fatalf("create table: %v", err)
 	}

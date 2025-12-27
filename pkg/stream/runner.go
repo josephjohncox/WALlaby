@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -57,7 +57,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	tracer := r.Tracer
 	if tracer == nil {
-		tracer = otel.Tracer("ductstream/stream")
+		tracer = otel.Tracer("wallaby/stream")
 	}
 	if err := r.normalizeWireFormat(); err != nil {
 		return err

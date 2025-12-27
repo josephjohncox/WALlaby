@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package wallaby.v1;
+
+option go_package = "github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabypb";
+
+enum FlowState {
+  FLOW_STATE_UNSPECIFIED = 0;
+  FLOW_STATE_CREATED = 1;
+  FLOW_STATE_RUNNING = 2;
+  FLOW_STATE_PAUSED = 3;
+  FLOW_STATE_STOPPING = 4;
+  FLOW_STATE_FAILED = 5;
+}
+
+enum EndpointType {
+  ENDPOINT_TYPE_UNSPECIFIED = 0;
+  ENDPOINT_TYPE_POSTGRES = 1;
+  ENDPOINT_TYPE_SNOWFLAKE = 2;
+  ENDPOINT_TYPE_S3 = 3;
+  ENDPOINT_TYPE_KAFKA = 4;
+  ENDPOINT_TYPE_HTTP = 5;
+  ENDPOINT_TYPE_GRPC = 6;
+  ENDPOINT_TYPE_PROTO = 7;
+  ENDPOINT_TYPE_PGSTREAM = 8;
+  ENDPOINT_TYPE_SNOWPIPE = 9;
+  ENDPOINT_TYPE_PARQUET = 10;
+  ENDPOINT_TYPE_DUCKDB = 11;
+  ENDPOINT_TYPE_BUFSTREAM = 12;
+  ENDPOINT_TYPE_CLICKHOUSE = 13;
+}
+
+enum WireFormat {
+  WIRE_FORMAT_UNSPECIFIED = 0;
+  WIRE_FORMAT_ARROW = 1;
+  WIRE_FORMAT_PARQUET = 2;
+  WIRE_FORMAT_PROTO = 3;
+  WIRE_FORMAT_AVRO = 4;
+  WIRE_FORMAT_JSON = 5;
+}
+
+message Endpoint {
+  string name = 1;
+  EndpointType type = 2;
+  map<string, string> options = 3;
+}
+
+message Flow {
+  string id = 1;
+  string name = 2;
+  Endpoint source = 3;
+  repeated Endpoint destinations = 4;
+  FlowState state = 5;
+  WireFormat wire_format = 6;
+  int32 parallelism = 7;
+}
+
+message Checkpoint {
+  string lsn = 1;
+  int64 timestamp_unix_millis = 2;
+  map<string, string> metadata = 3;
+}

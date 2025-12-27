@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 const (

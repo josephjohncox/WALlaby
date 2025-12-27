@@ -10,7 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	ductstreampb "github.com/josephjohncox/ductstream/gen/go/ductstream/v1"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 )
 
 type flowResource struct {
@@ -126,7 +126,7 @@ func (r *flowResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	result, err := r.client.Flow.CreateFlow(ctx, &ductstreampb.CreateFlowRequest{
+	result, err := r.client.Flow.CreateFlow(ctx, &wallabypb.CreateFlowRequest{
 		Flow:             flow,
 		StartImmediately: plan.StartImmediately.ValueBool(),
 	})
@@ -161,7 +161,7 @@ func (r *flowResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 
-	result, err := r.client.Flow.GetFlow(ctx, &ductstreampb.GetFlowRequest{FlowId: state.ID.ValueString()})
+	result, err := r.client.Flow.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: state.ID.ValueString()})
 	if err != nil {
 		resp.State.RemoveResource(ctx)
 		return
@@ -194,7 +194,7 @@ func (r *flowResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
-	result, err := r.client.Flow.UpdateFlow(ctx, &ductstreampb.UpdateFlowRequest{Flow: flow})
+	result, err := r.client.Flow.UpdateFlow(ctx, &wallabypb.UpdateFlowRequest{Flow: flow})
 	if err != nil {
 		resp.Diagnostics.AddError("Update flow failed", err.Error())
 		return
@@ -225,11 +225,11 @@ func (r *flowResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 		return
 	}
 
-	_, _ = r.client.Flow.DeleteFlow(ctx, &ductstreampb.DeleteFlowRequest{FlowId: state.ID.ValueString()})
+	_, _ = r.client.Flow.DeleteFlow(ctx, &wallabypb.DeleteFlowRequest{FlowId: state.ID.ValueString()})
 	resp.State.RemoveResource(ctx)
 }
 
-func flowModelToProto(ctx context.Context, model flowResourceModel) (*ductstreampb.Flow, diag.Diagnostics) {
+func flowModelToProto(ctx context.Context, model flowResourceModel) (*wallabypb.Flow, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	source, diag := endpointModelToProto(ctx, model.Source)
@@ -238,7 +238,7 @@ func flowModelToProto(ctx context.Context, model flowResourceModel) (*ductstream
 		return nil, diags
 	}
 
-	dests := make([]*ductstreampb.Endpoint, 0, len(model.Destinations))
+	dests := make([]*wallabypb.Endpoint, 0, len(model.Destinations))
 	for _, dest := range model.Destinations {
 		endpoint, diag := endpointModelToProto(ctx, dest)
 		diags.Append(diag...)
@@ -248,7 +248,7 @@ func flowModelToProto(ctx context.Context, model flowResourceModel) (*ductstream
 		dests = append(dests, endpoint)
 	}
 
-	return &ductstreampb.Flow{
+	return &wallabypb.Flow{
 		Id:           model.ID.ValueString(),
 		Name:         model.Name.ValueString(),
 		WireFormat:   wireFormatFromString(model.WireFormat.ValueString()),
@@ -258,7 +258,7 @@ func flowModelToProto(ctx context.Context, model flowResourceModel) (*ductstream
 	}, diags
 }
 
-func endpointModelToProto(ctx context.Context, model endpointModel) (*ductstreampb.Endpoint, diag.Diagnostics) {
+func endpointModelToProto(ctx context.Context, model endpointModel) (*wallabypb.Endpoint, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	options := map[string]string{}
 	if !model.Options.IsNull() {
@@ -268,14 +268,14 @@ func endpointModelToProto(ctx context.Context, model endpointModel) (*ductstream
 		}
 	}
 
-	return &ductstreampb.Endpoint{
+	return &wallabypb.Endpoint{
 		Name:    model.Name.ValueString(),
 		Type:    endpointTypeFromString(model.Type.ValueString()),
 		Options: options,
 	}, diags
 }
 
-func endpointsFromProto(items []*ductstreampb.Endpoint) []endpointModel {
+func endpointsFromProto(items []*wallabypb.Endpoint) []endpointModel {
 	out := make([]endpointModel, 0, len(items))
 	for _, item := range items {
 		out = append(out, endpointFromProto(item))
@@ -283,7 +283,7 @@ func endpointsFromProto(items []*ductstreampb.Endpoint) []endpointModel {
 	return out
 }
 
-func endpointFromProto(item *ductstreampb.Endpoint) endpointModel {
+func endpointFromProto(item *wallabypb.Endpoint) endpointModel {
 	if item == nil {
 		return endpointModel{}
 	}
@@ -299,117 +299,117 @@ func endpointFromProto(item *ductstreampb.Endpoint) endpointModel {
 	}
 }
 
-func endpointTypeFromString(value string) ductstreampb.EndpointType {
+func endpointTypeFromString(value string) wallabypb.EndpointType {
 	switch strings.ToLower(value) {
 	case "postgres":
-		return ductstreampb.EndpointType_ENDPOINT_TYPE_POSTGRES
+		return wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES
 	case "snowflake":
-		return ductstreampb.EndpointType_ENDPOINT_TYPE_SNOWFLAKE
+		return wallabypb.EndpointType_ENDPOINT_TYPE_SNOWFLAKE
 	case "s3":
-		return ductstreampb.EndpointType_ENDPOINT_TYPE_S3
+		return wallabypb.EndpointType_ENDPOINT_TYPE_S3
 	case "kafka":
-		return ductstreampb.EndpointType_ENDPOINT_TYPE_KAFKA
+		return wallabypb.EndpointType_ENDPOINT_TYPE_KAFKA
 	case "http":
-		return ductstreampb.EndpointType_ENDPOINT_TYPE_HTTP
+		return wallabypb.EndpointType_ENDPOINT_TYPE_HTTP
 	case "grpc":
-		return ductstreampb.EndpointType_ENDPOINT_TYPE_GRPC
+		return wallabypb.EndpointType_ENDPOINT_TYPE_GRPC
 	case "proto":
-		return ductstreampb.EndpointType_ENDPOINT_TYPE_PROTO
+		return wallabypb.EndpointType_ENDPOINT_TYPE_PROTO
 	case "pgstream":
-		return ductstreampb.EndpointType_ENDPOINT_TYPE_PGSTREAM
+		return wallabypb.EndpointType_ENDPOINT_TYPE_PGSTREAM
 	case "snowpipe":
-		return ductstreampb.EndpointType_ENDPOINT_TYPE_SNOWPIPE
+		return wallabypb.EndpointType_ENDPOINT_TYPE_SNOWPIPE
 	case "parquet":
-		return ductstreampb.EndpointType_ENDPOINT_TYPE_PARQUET
+		return wallabypb.EndpointType_ENDPOINT_TYPE_PARQUET
 	case "duckdb":
-		return ductstreampb.EndpointType_ENDPOINT_TYPE_DUCKDB
+		return wallabypb.EndpointType_ENDPOINT_TYPE_DUCKDB
 	case "bufstream":
-		return ductstreampb.EndpointType_ENDPOINT_TYPE_BUFSTREAM
+		return wallabypb.EndpointType_ENDPOINT_TYPE_BUFSTREAM
 	case "clickhouse":
-		return ductstreampb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE
+		return wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE
 	default:
-		return ductstreampb.EndpointType_ENDPOINT_TYPE_UNSPECIFIED
+		return wallabypb.EndpointType_ENDPOINT_TYPE_UNSPECIFIED
 	}
 }
 
-func wireFormatFromString(value string) ductstreampb.WireFormat {
+func wireFormatFromString(value string) wallabypb.WireFormat {
 	switch strings.ToLower(value) {
 	case "arrow":
-		return ductstreampb.WireFormat_WIRE_FORMAT_ARROW
+		return wallabypb.WireFormat_WIRE_FORMAT_ARROW
 	case "parquet":
-		return ductstreampb.WireFormat_WIRE_FORMAT_PARQUET
+		return wallabypb.WireFormat_WIRE_FORMAT_PARQUET
 	case "proto":
-		return ductstreampb.WireFormat_WIRE_FORMAT_PROTO
+		return wallabypb.WireFormat_WIRE_FORMAT_PROTO
 	case "avro":
-		return ductstreampb.WireFormat_WIRE_FORMAT_AVRO
+		return wallabypb.WireFormat_WIRE_FORMAT_AVRO
 	case "json":
-		return ductstreampb.WireFormat_WIRE_FORMAT_JSON
+		return wallabypb.WireFormat_WIRE_FORMAT_JSON
 	default:
-		return ductstreampb.WireFormat_WIRE_FORMAT_UNSPECIFIED
+		return wallabypb.WireFormat_WIRE_FORMAT_UNSPECIFIED
 	}
 }
 
-func wireFormatToString(value ductstreampb.WireFormat) string {
+func wireFormatToString(value wallabypb.WireFormat) string {
 	switch value {
-	case ductstreampb.WireFormat_WIRE_FORMAT_ARROW:
+	case wallabypb.WireFormat_WIRE_FORMAT_ARROW:
 		return "arrow"
-	case ductstreampb.WireFormat_WIRE_FORMAT_PARQUET:
+	case wallabypb.WireFormat_WIRE_FORMAT_PARQUET:
 		return "parquet"
-	case ductstreampb.WireFormat_WIRE_FORMAT_PROTO:
+	case wallabypb.WireFormat_WIRE_FORMAT_PROTO:
 		return "proto"
-	case ductstreampb.WireFormat_WIRE_FORMAT_AVRO:
+	case wallabypb.WireFormat_WIRE_FORMAT_AVRO:
 		return "avro"
-	case ductstreampb.WireFormat_WIRE_FORMAT_JSON:
+	case wallabypb.WireFormat_WIRE_FORMAT_JSON:
 		return "json"
 	default:
 		return ""
 	}
 }
 
-func endpointTypeToString(value ductstreampb.EndpointType) string {
+func endpointTypeToString(value wallabypb.EndpointType) string {
 	switch value {
-	case ductstreampb.EndpointType_ENDPOINT_TYPE_POSTGRES:
+	case wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES:
 		return "postgres"
-	case ductstreampb.EndpointType_ENDPOINT_TYPE_SNOWFLAKE:
+	case wallabypb.EndpointType_ENDPOINT_TYPE_SNOWFLAKE:
 		return "snowflake"
-	case ductstreampb.EndpointType_ENDPOINT_TYPE_S3:
+	case wallabypb.EndpointType_ENDPOINT_TYPE_S3:
 		return "s3"
-	case ductstreampb.EndpointType_ENDPOINT_TYPE_KAFKA:
+	case wallabypb.EndpointType_ENDPOINT_TYPE_KAFKA:
 		return "kafka"
-	case ductstreampb.EndpointType_ENDPOINT_TYPE_HTTP:
+	case wallabypb.EndpointType_ENDPOINT_TYPE_HTTP:
 		return "http"
-	case ductstreampb.EndpointType_ENDPOINT_TYPE_GRPC:
+	case wallabypb.EndpointType_ENDPOINT_TYPE_GRPC:
 		return "grpc"
-	case ductstreampb.EndpointType_ENDPOINT_TYPE_PROTO:
+	case wallabypb.EndpointType_ENDPOINT_TYPE_PROTO:
 		return "proto"
-	case ductstreampb.EndpointType_ENDPOINT_TYPE_PGSTREAM:
+	case wallabypb.EndpointType_ENDPOINT_TYPE_PGSTREAM:
 		return "pgstream"
-	case ductstreampb.EndpointType_ENDPOINT_TYPE_SNOWPIPE:
+	case wallabypb.EndpointType_ENDPOINT_TYPE_SNOWPIPE:
 		return "snowpipe"
-	case ductstreampb.EndpointType_ENDPOINT_TYPE_PARQUET:
+	case wallabypb.EndpointType_ENDPOINT_TYPE_PARQUET:
 		return "parquet"
-	case ductstreampb.EndpointType_ENDPOINT_TYPE_DUCKDB:
+	case wallabypb.EndpointType_ENDPOINT_TYPE_DUCKDB:
 		return "duckdb"
-	case ductstreampb.EndpointType_ENDPOINT_TYPE_BUFSTREAM:
+	case wallabypb.EndpointType_ENDPOINT_TYPE_BUFSTREAM:
 		return "bufstream"
-	case ductstreampb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE:
+	case wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE:
 		return "clickhouse"
 	default:
 		return ""
 	}
 }
 
-func flowStateToString(value ductstreampb.FlowState) string {
+func flowStateToString(value wallabypb.FlowState) string {
 	switch value {
-	case ductstreampb.FlowState_FLOW_STATE_CREATED:
+	case wallabypb.FlowState_FLOW_STATE_CREATED:
 		return "created"
-	case ductstreampb.FlowState_FLOW_STATE_RUNNING:
+	case wallabypb.FlowState_FLOW_STATE_RUNNING:
 		return "running"
-	case ductstreampb.FlowState_FLOW_STATE_PAUSED:
+	case wallabypb.FlowState_FLOW_STATE_PAUSED:
 		return "paused"
-	case ductstreampb.FlowState_FLOW_STATE_STOPPING:
+	case wallabypb.FlowState_FLOW_STATE_STOPPING:
 		return "stopping"
-	case ductstreampb.FlowState_FLOW_STATE_FAILED:
+	case wallabypb.FlowState_FLOW_STATE_FAILED:
 		return "failed"
 	default:
 		return ""

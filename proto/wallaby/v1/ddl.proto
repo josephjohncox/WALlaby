@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package wallaby.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabypb";
+
+message DDLEvent {
+  int64 id = 1;
+  string ddl = 2;
+  string lsn = 3;
+  string status = 4;
+  string plan_json = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+message ListPendingDDLRequest {}
+
+message ListPendingDDLResponse {
+  repeated DDLEvent events = 1;
+}
+
+message ListDDLRequest {
+  string status = 1;
+}
+
+message ListDDLResponse {
+  repeated DDLEvent events = 1;
+}
+
+message ApproveDDLRequest {
+  int64 id = 1;
+}
+
+message ApproveDDLResponse {
+  DDLEvent event = 1;
+}
+
+message RejectDDLRequest {
+  int64 id = 1;
+}
+
+message RejectDDLResponse {
+  DDLEvent event = 1;
+}
+
+message MarkDDLAppliedRequest {
+  int64 id = 1;
+}
+
+message MarkDDLAppliedResponse {
+  DDLEvent event = 1;
+}
+
+service DDLService {
+  rpc ListPendingDDL(ListPendingDDLRequest) returns (ListPendingDDLResponse);
+  rpc ListDDL(ListDDLRequest) returns (ListDDLResponse);
+  rpc ApproveDDL(ApproveDDLRequest) returns (ApproveDDLResponse);
+  rpc RejectDDL(RejectDDLRequest) returns (RejectDDLResponse);
+  rpc MarkDDLApplied(MarkDDLAppliedRequest) returns (MarkDDLAppliedResponse);
+}

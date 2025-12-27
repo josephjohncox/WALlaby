@@ -3,19 +3,20 @@ package runner
 import (
 	"fmt"
 
-	"github.com/josephjohncox/ductstream/connectors/destinations/bufstream"
-	"github.com/josephjohncox/ductstream/connectors/destinations/clickhouse"
-	"github.com/josephjohncox/ductstream/connectors/destinations/duckdb"
-	httpdest "github.com/josephjohncox/ductstream/connectors/destinations/http"
-	"github.com/josephjohncox/ductstream/connectors/destinations/kafka"
-	"github.com/josephjohncox/ductstream/connectors/destinations/pgstream"
-	"github.com/josephjohncox/ductstream/connectors/destinations/s3"
-	"github.com/josephjohncox/ductstream/connectors/destinations/snowflake"
-	"github.com/josephjohncox/ductstream/connectors/destinations/snowpipe"
-	"github.com/josephjohncox/ductstream/connectors/sources/postgres"
-	"github.com/josephjohncox/ductstream/internal/replication"
-	"github.com/josephjohncox/ductstream/pkg/connector"
-	"github.com/josephjohncox/ductstream/pkg/stream"
+	"github.com/josephjohncox/wallaby/connectors/destinations/bufstream"
+	"github.com/josephjohncox/wallaby/connectors/destinations/clickhouse"
+	"github.com/josephjohncox/wallaby/connectors/destinations/duckdb"
+	httpdest "github.com/josephjohncox/wallaby/connectors/destinations/http"
+	"github.com/josephjohncox/wallaby/connectors/destinations/kafka"
+	"github.com/josephjohncox/wallaby/connectors/destinations/pgstream"
+	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
+	"github.com/josephjohncox/wallaby/connectors/destinations/s3"
+	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
+	"github.com/josephjohncox/wallaby/connectors/destinations/snowpipe"
+	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
+	"github.com/josephjohncox/wallaby/internal/replication"
+	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/stream"
 )
 
 // Factory builds connectors for flows.
@@ -28,10 +29,10 @@ func (f Factory) Source(spec connector.Spec) (connector.Source, error) {
 	case connector.EndpointPostgres:
 		if spec.Options != nil {
 			if mode := spec.Options["mode"]; mode == "backfill" {
-				return &postgres.BackfillSource{}, nil
+				return &pgsource.BackfillSource{}, nil
 			}
 		}
-		source := &postgres.Source{SchemaHook: f.SchemaHook}
+		source := &pgsource.Source{SchemaHook: f.SchemaHook}
 		return source, nil
 	default:
 		return nil, fmt.Errorf("unsupported source type: %s", spec.Type)
@@ -68,6 +69,8 @@ func (f Factory) destination(spec connector.Spec) (connector.Destination, error)
 		return &duckdb.Destination{}, nil
 	case connector.EndpointClickHouse:
 		return &clickhouse.Destination{}, nil
+	case connector.EndpointPostgres:
+		return &pgdest.Destination{}, nil
 	case connector.EndpointBufStream:
 		return &bufstream.Destination{}, nil
 	default:

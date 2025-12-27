@@ -1,6 +1,9 @@
-# DuctStream
+# WALlaby
 
-DuctStream is a Go-first CDC adapter for PostgreSQL logical replication. It is API-driven (gRPC + Terraform-friendly setup), supports multiple sources and destinations, and uses a durable workflow engine backed by Postgres. The focus is on performance, reliability, schema evolution, and observability.
+![Wallaby logo. Kicking a WAL block](./wallaby.png)
+
+
+WALlaby is a Go-first CDC adapter for PostgreSQL logical replication. It is API-driven (gRPC + Terraform-friendly setup), supports multiple sources and destinations, and uses a durable workflow engine backed by Postgres. The focus is on performance, reliability, schema evolution, and observability.
 
 ## Goals
 - High-throughput logical replication with checkpointing and recovery.
@@ -47,11 +50,11 @@ Snowpipe auto-ingest (upload-only) snippet:
 Once a tagged release is published, install via OCI Helm chart:
 
 ```bash
-helm install ductstream oci://ghcr.io/josephjohncox/ductstream/charts/ductstream --version <tag>
+helm install wallaby oci://ghcr.io/josephjohncox/wallaby/charts/wallaby --version <tag>
 ```
 
-An example values file is available at `charts/ductstream/values.example.yaml`.
-For production-style values (ConfigMap + Secret pattern), see `charts/ductstream/values-prod.yaml`.
+An example values file is available at `charts/wallaby/values.example.yaml`.
+For production-style values (ConfigMap + Secret pattern), see `charts/wallaby/values-prod.yaml`.
 
 ## License
 PolyForm Noncommercial 1.0.0. Commercial use requires a separate license.

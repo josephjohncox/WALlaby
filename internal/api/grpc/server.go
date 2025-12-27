@@ -3,11 +3,11 @@ package grpc
 import (
 	"net"
 
-	ductstreampb "github.com/josephjohncox/ductstream/gen/go/ductstream/v1"
-	"github.com/josephjohncox/ductstream/internal/registry"
-	"github.com/josephjohncox/ductstream/internal/workflow"
-	"github.com/josephjohncox/ductstream/pkg/connector"
-	"github.com/josephjohncox/ductstream/pkg/pgstream"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/registry"
+	"github.com/josephjohncox/wallaby/internal/workflow"
+	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/pgstream"
 	gogrpc "google.golang.org/grpc"
 )
 
@@ -18,15 +18,15 @@ type Server struct {
 
 func New(engine workflow.Engine, dispatcher FlowDispatcher, checkpoints connector.CheckpointStore, registryStore registry.Store, streamStore *pgstream.Store) *Server {
 	server := gogrpc.NewServer()
-	ductstreampb.RegisterFlowServiceServer(server, NewFlowService(engine, dispatcher))
+	wallabypb.RegisterFlowServiceServer(server, NewFlowService(engine, dispatcher))
 	if checkpoints != nil {
-		ductstreampb.RegisterCheckpointServiceServer(server, NewCheckpointService(checkpoints))
+		wallabypb.RegisterCheckpointServiceServer(server, NewCheckpointService(checkpoints))
 	}
 	if registryStore != nil {
-		ductstreampb.RegisterDDLServiceServer(server, NewDDLService(registryStore))
+		wallabypb.RegisterDDLServiceServer(server, NewDDLService(registryStore))
 	}
 	if streamStore != nil {
-		ductstreampb.RegisterStreamServiceServer(server, NewStreamService(streamStore))
+		wallabypb.RegisterStreamServiceServer(server, NewStreamService(streamStore))
 	}
 
 	return &Server{server: server}

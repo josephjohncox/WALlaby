@@ -1,18 +1,18 @@
 terraform {
   required_providers {
-    ductstream = {
-      source  = "josephjohncox/ductstream"
+    wallaby = {
+      source  = "josephjohncox/wallaby"
       version = "0.1.0"
     }
   }
 }
 
-provider "ductstream" {
+provider "wallaby" {
   endpoint = "localhost:8080"
   insecure = true
 }
 
-resource "ductstream_flow" "pg_to_kafka" {
+resource "wallaby_flow" "pg_to_kafka" {
   name              = "pg_to_kafka"
   wire_format       = "arrow"
   start_immediately = true
@@ -22,8 +22,8 @@ resource "ductstream_flow" "pg_to_kafka" {
     type = "postgres"
     options = {
       dsn             = "postgres://user:pass@localhost:5432/app?sslmode=disable"
-      slot            = "ductstream_slot"
-      publication     = "ductstream_pub"
+      slot            = "wallaby_slot"
+      publication     = "wallaby_pub"
       batch_size      = "500"
       batch_timeout   = "1s"
       status_interval = "10s"
@@ -38,7 +38,7 @@ resource "ductstream_flow" "pg_to_kafka" {
       type = "kafka"
       options = {
         brokers     = "localhost:9092"
-        topic       = "ductstream.cdc"
+        topic       = "wallaby.cdc"
         format      = "arrow"
         compression = "lz4"
         acks        = "all"

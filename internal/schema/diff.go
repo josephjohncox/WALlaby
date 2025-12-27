@@ -3,7 +3,7 @@ package schema
 import (
 	"strings"
 
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 // Diff compares two schemas and returns a change plan.

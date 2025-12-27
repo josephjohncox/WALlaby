@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ADMIN_BIN=${DUCTSTREAM_ADMIN:-./bin/ductstream-admin}
+ADMIN_BIN=${WALLABY_ADMIN:-./bin/wallaby-admin}
 STREAM=${1:-orders}
 GROUP=${2:-search}
-ENDPOINT=${DUCTSTREAM_ENDPOINT:-localhost:8080}
+ENDPOINT=${WALLABY_ENDPOINT:-localhost:8080}
 VISIBILITY=${VISIBILITY:-30}
 MAX=${MAX:-10}
 SLEEP=${SLEEP:-2}

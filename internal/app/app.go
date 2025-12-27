@@ -11,17 +11,17 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	apigrpc "github.com/josephjohncox/ductstream/internal/api/grpc"
-	"github.com/josephjohncox/ductstream/internal/checkpoint"
-	"github.com/josephjohncox/ductstream/internal/config"
-	"github.com/josephjohncox/ductstream/internal/ddl"
-	"github.com/josephjohncox/ductstream/internal/orchestrator"
-	"github.com/josephjohncox/ductstream/internal/registry"
-	"github.com/josephjohncox/ductstream/internal/runner"
-	"github.com/josephjohncox/ductstream/internal/telemetry"
-	"github.com/josephjohncox/ductstream/internal/workflow"
-	"github.com/josephjohncox/ductstream/pkg/connector"
-	"github.com/josephjohncox/ductstream/pkg/pgstream"
+	apigrpc "github.com/josephjohncox/wallaby/internal/api/grpc"
+	"github.com/josephjohncox/wallaby/internal/checkpoint"
+	"github.com/josephjohncox/wallaby/internal/config"
+	"github.com/josephjohncox/wallaby/internal/ddl"
+	"github.com/josephjohncox/wallaby/internal/orchestrator"
+	"github.com/josephjohncox/wallaby/internal/registry"
+	"github.com/josephjohncox/wallaby/internal/runner"
+	"github.com/josephjohncox/wallaby/internal/telemetry"
+	"github.com/josephjohncox/wallaby/internal/workflow"
+	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/pgstream"
 )
 
 // Run wires up core services. It will grow as implementations land.
@@ -62,7 +62,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	case "", "none":
 	case "postgres":
 		if postgresDSN == "" {
-			return errors.New("checkpoint backend postgres requires DUCTSTREAM_POSTGRES_DSN")
+			return errors.New("checkpoint backend postgres requires WALLABY_POSTGRES_DSN")
 		}
 		checkpointStore, err := checkpoint.NewPostgresStore(ctx, postgresDSN)
 		if err != nil {
@@ -250,5 +250,5 @@ func defaultCheckpointPath() string {
 	if err != nil {
 		return "checkpoints.db"
 	}
-	return filepath.Join(home, ".ductstream", "checkpoints.db")
+	return filepath.Join(home, ".wallaby", "checkpoints.db")
 }

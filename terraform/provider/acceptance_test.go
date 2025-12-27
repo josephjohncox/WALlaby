@@ -13,42 +13,42 @@ import (
 )
 
 func TestAccFlowBasic(t *testing.T) {
-	if os.Getenv("DUCTSTREAM_TF_ACC") == "" {
-		t.Skip("set DUCTSTREAM_TF_ACC=1 to enable acceptance tests")
+	if os.Getenv("WALLABY_TF_ACC") == "" {
+		t.Skip("set WALLABY_TF_ACC=1 to enable acceptance tests")
 	}
 
-	endpoint := os.Getenv("DUCTSTREAM_TF_ENDPOINT")
+	endpoint := os.Getenv("WALLABY_TF_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("DUCTSTREAM_TF_ENDPOINT is required")
+		t.Skip("WALLABY_TF_ENDPOINT is required")
 	}
 
-	dsn := os.Getenv("DUCTSTREAM_TF_POSTGRES_DSN")
+	dsn := os.Getenv("WALLABY_TF_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("DUCTSTREAM_TF_POSTGRES_DSN is required")
+		t.Skip("WALLABY_TF_POSTGRES_DSN is required")
 	}
 
-	brokers := os.Getenv("DUCTSTREAM_TF_KAFKA_BROKERS")
+	brokers := os.Getenv("WALLABY_TF_KAFKA_BROKERS")
 	if brokers == "" {
-		t.Skip("DUCTSTREAM_TF_KAFKA_BROKERS is required")
+		t.Skip("WALLABY_TF_KAFKA_BROKERS is required")
 	}
 
-	topic := os.Getenv("DUCTSTREAM_TF_KAFKA_TOPIC")
+	topic := os.Getenv("WALLABY_TF_KAFKA_TOPIC")
 	if topic == "" {
-		t.Skip("DUCTSTREAM_TF_KAFKA_TOPIC is required")
+		t.Skip("WALLABY_TF_KAFKA_TOPIC is required")
 	}
 
-	insecure := os.Getenv("DUCTSTREAM_TF_INSECURE")
+	insecure := os.Getenv("WALLABY_TF_INSECURE")
 	if insecure == "" {
 		insecure = "true"
 	}
 
 	config := fmt.Sprintf(`
-provider "ductstream" {
+provider "wallaby" {
   endpoint = "%s"
   insecure = %s
 }
 
-resource "ductstream_flow" "acc" {
+resource "wallaby_flow" "acc" {
   name              = "acc_flow"
   wire_format       = "arrow"
   start_immediately = true
@@ -58,8 +58,8 @@ resource "ductstream_flow" "acc" {
     type = "postgres"
     options = {
       dsn             = "%s"
-      slot            = "ductstream_acc_slot"
-      publication     = "ductstream_acc_pub"
+      slot            = "wallaby_acc_slot"
+      publication     = "wallaby_acc_pub"
       batch_size      = "100"
       batch_timeout   = "1s"
       status_interval = "10s"
@@ -85,7 +85,7 @@ resource "ductstream_flow" "acc" {
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
-			"ductstream": providerserver.NewProtocol6WithError(New("test")()),
+			"wallaby": providerserver.NewProtocol6WithError(New("test")()),
 		},
 		Steps: []resource.TestStep{
 			{

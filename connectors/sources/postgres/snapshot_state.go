@@ -12,7 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 const (
@@ -53,7 +53,7 @@ func newSnapshotStateStore(ctx context.Context, backend string, spec connector.S
 		if stateDSN == "" {
 			return nil, errors.New("snapshot state dsn is required")
 		}
-		schema := "ductstream"
+		schema := "wallaby"
 		table := "snapshot_state"
 		if spec.Options != nil {
 			if value := spec.Options[optSnapshotStateSchema]; value != "" {

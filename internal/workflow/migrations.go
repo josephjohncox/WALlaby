@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const migrationsTableSQL = `CREATE TABLE IF NOT EXISTS ductstream_schema_migrations (
+const migrationsTableSQL = `CREATE TABLE IF NOT EXISTS wallaby_schema_migrations (
 	version TEXT PRIMARY KEY,
 	applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );`
@@ -50,7 +50,7 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 			return fmt.Errorf("apply migration %s: %w", version, err)
 		}
 
-		if _, err := pool.Exec(ctx, "INSERT INTO ductstream_schema_migrations (version) VALUES ($1)", version); err != nil {
+		if _, err := pool.Exec(ctx, "INSERT INTO wallaby_schema_migrations (version) VALUES ($1)", version); err != nil {
 			return fmt.Errorf("record migration %s: %w", version, err)
 		}
 	}
@@ -59,7 +59,7 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 }
 
 func loadAppliedMigrations(ctx context.Context, pool *pgxpool.Pool) (map[string]bool, error) {
-	rows, err := pool.Query(ctx, "SELECT version FROM ductstream_schema_migrations")
+	rows, err := pool.Query(ctx, "SELECT version FROM wallaby_schema_migrations")
 	if err != nil {
 		return nil, fmt.Errorf("read migrations: %w", err)
 	}

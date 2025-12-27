@@ -4,14 +4,14 @@ import (
 	"context"
 	"errors"
 
-	ductstreampb "github.com/josephjohncox/ductstream/gen/go/ductstream/v1"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 type Client struct {
 	conn *grpc.ClientConn
-	Flow ductstreampb.FlowServiceClient
+	Flow wallabypb.FlowServiceClient
 }
 
 func newClient(ctx context.Context, endpoint string, insecureConn bool) (*Client, error) {
@@ -33,6 +33,6 @@ func newClient(ctx context.Context, endpoint string, insecureConn bool) (*Client
 
 	return &Client{
 		conn: conn,
-		Flow: ductstreampb.NewFlowServiceClient(conn),
+		Flow: wallabypb.NewFlowServiceClient(conn),
 	}, nil
 }

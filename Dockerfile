@@ -9,14 +9,14 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/ductstream ./cmd/ductstream
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/ductstream-admin ./cmd/ductstream-admin
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/ductstream-worker ./cmd/ductstream-worker
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/wallaby ./cmd/wallaby
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/wallaby-admin ./cmd/wallaby-admin
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/wallaby-worker ./cmd/wallaby-worker
 
 FROM gcr.io/distroless/base-debian12:nonroot
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=build /out/ductstream /usr/local/bin/ductstream
-COPY --from=build /out/ductstream-admin /usr/local/bin/ductstream-admin
-COPY --from=build /out/ductstream-worker /usr/local/bin/ductstream-worker
+COPY --from=build /out/wallaby /usr/local/bin/wallaby
+COPY --from=build /out/wallaby-admin /usr/local/bin/wallaby-admin
+COPY --from=build /out/wallaby-worker /usr/local/bin/wallaby-worker
 USER nonroot:nonroot
-ENTRYPOINT ["/usr/local/bin/ductstream"]
+ENTRYPOINT ["/usr/local/bin/wallaby"]

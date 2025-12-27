@@ -1,12 +1,12 @@
 # Repository Guidelines
 
 ## Project Overview
-DuctStream is a Go-first CDC adapter for Postgres logical replication. It is API-driven (gRPC), supports multiple sources and destinations, and uses a workflow engine. Priorities: performance, lifecycle management, DDL handling, schema evolution, checkpointing, and OTEL.
+WALlaby is a Go-first CDC adapter for Postgres logical replication. It is API-driven (gRPC), supports multiple sources and destinations, and uses a workflow engine. Priorities: performance, lifecycle management, DDL handling, schema evolution, checkpointing, and OTEL.
 
 ## Project Structure & Module Organization
 Keep new code organized as follows:
-- `cmd/ductstream/`: API server entrypoint.
-- `cmd/ductstream-worker/`: per-flow worker process (run a single flow in its own process).
+- `cmd/wallaby/`: API server entrypoint.
+- `cmd/wallaby-worker/`: per-flow worker process (run a single flow in its own process).
 - `internal/`: core engine (replication, workflow, schema evolution, checkpoints).
 - `internal/orchestrator/`: DBOS-backed flow scheduling/dispatch.
 - `internal/registry/`: schema registry + DDL event storage.

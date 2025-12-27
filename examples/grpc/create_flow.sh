@@ -7,10 +7,10 @@ ROOT_DIR=$(cd "$(dirname "$0")/../.." && pwd)
 
 grpcurl -plaintext \
   -import-path "$ROOT_DIR/proto" \
-  -proto ductstream/v1/flow.proto \
-  -proto ductstream/v1/types.proto \
+  -proto wallaby/v1/flow.proto \
+  -proto wallaby/v1/types.proto \
   -d @ \
-  localhost:8080 ductstream.v1.FlowService/CreateFlow <<'JSON'
+  localhost:8080 wallaby.v1.FlowService/CreateFlow <<'JSON'
 {
   "flow": {
     "name": "pg_to_kafka",
@@ -20,8 +20,8 @@ grpcurl -plaintext \
       "type": "ENDPOINT_TYPE_POSTGRES",
       "options": {
         "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
-        "slot": "ductstream_slot",
-        "publication": "ductstream_pub",
+        "slot": "wallaby_slot",
+        "publication": "wallaby_pub",
         "batch_size": "500",
         "batch_timeout": "1s",
         "status_interval": "10s",
@@ -35,7 +35,7 @@ grpcurl -plaintext \
         "type": "ENDPOINT_TYPE_KAFKA",
         "options": {
           "brokers": "localhost:9092",
-          "topic": "ductstream.cdc",
+          "topic": "wallaby.cdc",
           "format": "arrow",
           "compression": "lz4",
           "acks": "all"

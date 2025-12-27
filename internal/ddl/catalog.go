@@ -6,9 +6,9 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/josephjohncox/ductstream/internal/registry"
-	"github.com/josephjohncox/ductstream/internal/schema"
-	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/wallaby/internal/registry"
+	"github.com/josephjohncox/wallaby/internal/schema"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 // CatalogScanner polls pg_catalog to discover schema changes.

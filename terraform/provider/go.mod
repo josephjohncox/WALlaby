@@ -1,4 +1,4 @@
-module github.com/josephjohncox/ductstream/terraform/provider
+module github.com/josephjohncox/wallaby/terraform/provider
 
 go 1.25.5
 
@@ -6,7 +6,7 @@ require (
 	github.com/hashicorp/terraform-plugin-framework v1.8.0
 	github.com/hashicorp/terraform-plugin-go v0.23.0
 	github.com/hashicorp/terraform-plugin-testing v1.9.0
-	github.com/josephjohncox/ductstream v0.0.0
+	github.com/josephjohncox/wallaby v0.0.0
 	google.golang.org/grpc v1.78.0
 )
 
@@ -61,4 +61,4 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/josephjohncox/ductstream => ../..
+replace github.com/josephjohncox/wallaby => ../..

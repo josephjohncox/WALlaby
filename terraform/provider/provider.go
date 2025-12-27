@@ -10,7 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-type ductstreamProvider struct {
+type wallabyProvider struct {
 	version string
 }
 
@@ -21,16 +21,16 @@ type providerModel struct {
 
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
-		return &ductstreamProvider{version: version}
+		return &wallabyProvider{version: version}
 	}
 }
 
-func (p *ductstreamProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
-	resp.TypeName = "ductstream"
+func (p *wallabyProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
+	resp.TypeName = "wallaby"
 	resp.Version = p.version
 }
 
-func (p *ductstreamProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
+func (p *wallabyProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = providerschema.Schema{
 		Attributes: map[string]providerschema.Attribute{
 			"endpoint": providerschema.StringAttribute{
@@ -43,7 +43,7 @@ func (p *ductstreamProvider) Schema(_ context.Context, _ provider.SchemaRequest,
 	}
 }
 
-func (p *ductstreamProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
+func (p *wallabyProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
 	var data providerModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
@@ -66,12 +66,12 @@ func (p *ductstreamProvider) Configure(ctx context.Context, req provider.Configu
 	resp.ResourceData = client
 }
 
-func (p *ductstreamProvider) Resources(_ context.Context) []func() resource.Resource {
+func (p *wallabyProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewFlowResource,
 	}
 }
 
-func (p *ductstreamProvider) DataSources(_ context.Context) []func() datasource.DataSource {
+func (p *wallabyProvider) DataSources(_ context.Context) []func() datasource.DataSource {
 	return nil
 }

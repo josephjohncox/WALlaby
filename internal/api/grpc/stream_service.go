@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	ductstreampb "github.com/josephjohncox/ductstream/gen/go/ductstream/v1"
-	"github.com/josephjohncox/ductstream/pkg/pgstream"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/pkg/pgstream"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -14,7 +14,7 @@ import (
 
 // StreamService implements the gRPC StreamService API.
 type StreamService struct {
-	ductstreampb.UnimplementedStreamServiceServer
+	wallabypb.UnimplementedStreamServiceServer
 	store *pgstream.Store
 }
 
@@ -22,7 +22,7 @@ func NewStreamService(store *pgstream.Store) *StreamService {
 	return &StreamService{store: store}
 }
 
-func (s *StreamService) Pull(ctx context.Context, req *ductstreampb.StreamPullRequest) (*ductstreampb.StreamPullResponse, error) {
+func (s *StreamService) Pull(ctx context.Context, req *wallabypb.StreamPullRequest) (*wallabypb.StreamPullResponse, error) {
 	if req == nil || req.Stream == "" || req.ConsumerGroup == "" {
 		return nil, status.Error(codes.InvalidArgument, "stream and consumer_group are required")
 	}
@@ -34,20 +34,20 @@ func (s *StreamService) Pull(ctx context.Context, req *ductstreampb.StreamPullRe
 		return nil, mapStreamError(err)
 	}
 
-	items := make([]*ductstreampb.StreamMessage, 0, len(messages))
+	items := make([]*wallabypb.StreamMessage, 0, len(messages))
 	for _, msg := range messages {
 		items = append(items, streamMessageToProto(msg))
 	}
 
-	return &ductstreampb.StreamPullResponse{Messages: items}, nil
+	return &wallabypb.StreamPullResponse{Messages: items}, nil
 }
 
-func (s *StreamService) Ack(ctx context.Context, req *ductstreampb.StreamAckRequest) (*ductstreampb.StreamAckResponse, error) {
+func (s *StreamService) Ack(ctx context.Context, req *wallabypb.StreamAckRequest) (*wallabypb.StreamAckResponse, error) {
 	if req == nil || req.Stream == "" || req.ConsumerGroup == "" {
 		return nil, status.Error(codes.InvalidArgument, "stream and consumer_group are required")
 	}
 	if len(req.Ids) == 0 {
-		return &ductstreampb.StreamAckResponse{Acked: 0}, nil
+		return &wallabypb.StreamAckResponse{Acked: 0}, nil
 	}
 
 	acked, err := s.store.Ack(ctx, req.Stream, req.ConsumerGroup, req.Ids)
@@ -55,10 +55,10 @@ func (s *StreamService) Ack(ctx context.Context, req *ductstreampb.StreamAckRequ
 		return nil, mapStreamError(err)
 	}
 
-	return &ductstreampb.StreamAckResponse{Acked: acked}, nil
+	return &wallabypb.StreamAckResponse{Acked: acked}, nil
 }
 
-func (s *StreamService) Replay(ctx context.Context, req *ductstreampb.StreamReplayRequest) (*ductstreampb.StreamReplayResponse, error) {
+func (s *StreamService) Replay(ctx context.Context, req *wallabypb.StreamReplayRequest) (*wallabypb.StreamReplayResponse, error) {
 	if req == nil || req.Stream == "" || req.ConsumerGroup == "" {
 		return nil, status.Error(codes.InvalidArgument, "stream and consumer_group are required")
 	}
@@ -73,16 +73,16 @@ func (s *StreamService) Replay(ctx context.Context, req *ductstreampb.StreamRepl
 		return nil, mapStreamError(err)
 	}
 
-	return &ductstreampb.StreamReplayResponse{Reset_: reset}, nil
+	return &wallabypb.StreamReplayResponse{Reset_: reset}, nil
 }
 
-func streamMessageToProto(msg pgstream.Message) *ductstreampb.StreamMessage {
+func streamMessageToProto(msg pgstream.Message) *wallabypb.StreamMessage {
 	var createdAt *timestamppb.Timestamp
 	if !msg.CreatedAt.IsZero() {
 		createdAt = timestamppb.New(msg.CreatedAt)
 	}
 
-	return &ductstreampb.StreamMessage{
+	return &wallabypb.StreamMessage{
 		Id:         msg.ID,
 		Stream:     msg.Stream,
 		Namespace:  msg.Namespace,
