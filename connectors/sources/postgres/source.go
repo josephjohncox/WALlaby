@@ -14,16 +14,23 @@ import (
 )
 
 const (
-	optDSN            = "dsn"
-	optSlot           = "slot"
-	optPublication    = "publication"
-	optStartLSN       = "start_lsn"
-	optBatchSize      = "batch_size"
-	optBatchTimeout   = "batch_timeout"
-	optStatusInterval = "status_interval"
-	optCreateSlot     = "create_slot"
-	optFormat         = "format"
-	optEmitEmpty      = "emit_empty"
+	optDSN               = "dsn"
+	optSlot              = "slot"
+	optPublication       = "publication"
+	optStartLSN          = "start_lsn"
+	optBatchSize         = "batch_size"
+	optBatchTimeout      = "batch_timeout"
+	optStatusInterval    = "status_interval"
+	optCreateSlot        = "create_slot"
+	optFormat            = "format"
+	optEmitEmpty         = "emit_empty"
+	optEnsurePublication = "ensure_publication"
+	optValidateSettings  = "validate_replication"
+	optPublicationTables = "publication_tables"
+	optEnsureState       = "ensure_state"
+	optStateSchema       = "state_schema"
+	optStateTable        = "state_table"
+	optFlowID            = "flow_id"
 )
 
 // Source implements Postgres logical replication as a connector.Source.
@@ -38,6 +45,8 @@ type Source struct {
 	wireFormat   connector.WireFormat
 	emitEmpty    bool
 	SchemaHook   replication.SchemaHook
+	stateStore   *sourceStateStore
+	stateID      string
 }
 
 func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
@@ -67,6 +76,35 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	}
 	s.emitEmpty = parseBool(spec.Options[optEmitEmpty], false)
 
+	ensurePublication := parseBool(spec.Options[optEnsurePublication], true)
+	validateSettings := parseBool(spec.Options[optValidateSettings], true)
+	publicationTables := parseCSV(spec.Options[optPublicationTables])
+	if len(publicationTables) == 0 {
+		publicationTables = parseCSV(spec.Options[optTables])
+	}
+	if ensurePublication || validateSettings {
+		if err := ensureReplication(ctx, dsn, s.publication, publicationTables, ensurePublication, validateSettings); err != nil {
+			return err
+		}
+	}
+
+	if parseBool(spec.Options[optEnsureState], true) {
+		stateSchema := spec.Options[optStateSchema]
+		if stateSchema == "" {
+			stateSchema = "ductstream"
+		}
+		stateTable := spec.Options[optStateTable]
+		if stateTable == "" {
+			stateTable = "source_state"
+		}
+		store, err := newSourceStateStore(ctx, dsn, stateSchema, stateTable)
+		if err != nil {
+			return err
+		}
+		s.stateStore = store
+		s.stateID = sourceStateID(spec, s.slot)
+	}
+
 	opts := []replication.PostgresStreamOption{
 		replication.WithStatusInterval(statusInterval),
 	}
@@ -87,9 +125,30 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	s.stream = replication.NewPostgresStream(dsn, opts...)
 	changes, err := s.stream.Start(ctx, s.slot, s.publication)
 	if err != nil {
+		if s.stateStore != nil {
+			s.stateStore.Close()
+			s.stateStore = nil
+		}
 		return err
 	}
 	s.changes = changes
+
+	if s.stateStore != nil {
+		err := s.stateStore.Upsert(ctx, sourceState{
+			ID:          s.stateID,
+			SourceName:  spec.Name,
+			Slot:        s.slot,
+			Publication: s.publication,
+			State:       "running",
+			Options:     sanitizeOptions(spec.Options),
+		})
+		if err != nil {
+			_ = s.stream.Stop(ctx)
+			s.stateStore.Close()
+			s.stateStore = nil
+			return err
+		}
+	}
 
 	return nil
 }
@@ -156,7 +215,7 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 	}
 }
 
-func (s *Source) Ack(_ context.Context, checkpoint connector.Checkpoint) error {
+func (s *Source) Ack(ctx context.Context, checkpoint connector.Checkpoint) error {
 	if s.stream == nil {
 		return nil
 	}
@@ -168,6 +227,11 @@ func (s *Source) Ack(_ context.Context, checkpoint connector.Checkpoint) error {
 		return fmt.Errorf("parse checkpoint lsn: %w", err)
 	}
 	s.stream.Ack(lsn)
+	if s.stateStore != nil {
+		if err := s.stateStore.RecordAck(ctx, s.stateID, checkpoint.LSN); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -175,7 +239,13 @@ func (s *Source) Close(ctx context.Context) error {
 	if s.stream == nil {
 		return nil
 	}
-	return s.stream.Stop(ctx)
+	err := s.stream.Stop(ctx)
+	if s.stateStore != nil {
+		_ = s.stateStore.UpdateState(ctx, s.stateID, "stopped")
+		s.stateStore.Close()
+		s.stateStore = nil
+	}
+	return err
 }
 
 func (s *Source) Capabilities() connector.Capabilities {

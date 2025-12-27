@@ -76,7 +76,103 @@ grpcurl -plaintext \
 JSON
 ```
 
-## Tutorial 3: DDL Gating + Approval
+## Tutorial 3: Postgres → HTTP Webhook
+
+Use a webhook endpoint to trigger downstream automation:
+
+```bash
+grpcurl -plaintext \
+  -import-path ./proto \
+  -proto ductstream/v1/flow.proto \
+  -proto ductstream/v1/types.proto \
+  -d @ \
+  localhost:8080 ductstream.v1.FlowService/CreateFlow <<'JSON'
+{
+  "flow": {
+    "name": "pg_to_webhook",
+    "wire_format": "WIRE_FORMAT_JSON",
+    "source": {
+      "name": "pg-source",
+      "type": "ENDPOINT_TYPE_POSTGRES",
+      "options": {
+        "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+        "slot": "ductstream_slot",
+        "publication": "ductstream_pub",
+        "format": "json"
+      }
+    },
+    "destinations": [
+      {
+        "name": "webhook",
+        "type": "ENDPOINT_TYPE_HTTP",
+        "options": {
+          "url": "https://api.example.com/ingest",
+          "method": "POST",
+          "format": "json",
+          "headers": "Authorization:Bearer token123",
+          "max_retries": "5",
+          "backoff_base": "200ms",
+          "backoff_max": "5s"
+        }
+      }
+    ]
+  },
+  "start_immediately": true
+}
+JSON
+```
+
+## Tutorial 4: Postgres → Postgres Stream
+
+```bash
+grpcurl -plaintext \
+  -import-path ./proto \
+  -proto ductstream/v1/flow.proto \
+  -proto ductstream/v1/types.proto \
+  -d @ \
+  localhost:8080 ductstream.v1.FlowService/CreateFlow <<'JSON'
+{
+  "flow": {
+    "name": "pg_to_pgstream",
+    "wire_format": "WIRE_FORMAT_JSON",
+    "source": {
+      "name": "pg-source",
+      "type": "ENDPOINT_TYPE_POSTGRES",
+      "options": {
+        "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+        "slot": "ductstream_slot",
+        "publication": "ductstream_pub",
+        "format": "json"
+      }
+    },
+    "destinations": [
+      {
+        "name": "stream-out",
+        "type": "ENDPOINT_TYPE_PGSTREAM",
+        "options": {
+          "dsn": "postgres://user:pass@localhost:5432/ductstream?sslmode=disable",
+          "stream": "orders",
+          "format": "json"
+        }
+      }
+    ]
+  },
+  "start_immediately": true
+}
+JSON
+```
+
+Consume the stream:
+
+```bash
+grpcurl -plaintext \
+  -import-path ./proto \
+  -proto ductstream/v1/stream.proto \
+  -d '{"stream":"orders","consumer_group":"search","max_messages":5,"visibility_timeout_seconds":30}' \
+  localhost:8080 ductstream.v1.StreamService/Pull
+```
+
+## Tutorial 5: DDL Gating + Approval
 
 ### 1) Enable gating
 ```bash
@@ -95,7 +191,7 @@ Apply a DDL change (e.g., `ALTER TABLE ... ADD COLUMN`).
 ./bin/ductstream-admin ddl apply -id <id>
 ```
 
-## Tutorial 4: Worker Mode + DBOS Scheduling
+## Tutorial 6: Worker Mode + DBOS Scheduling
 
 ### 1) Start DBOS scheduling
 ```bash

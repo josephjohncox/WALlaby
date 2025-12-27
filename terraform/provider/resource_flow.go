@@ -273,10 +273,14 @@ func endpointTypeFromString(value string) ductstreampb.EndpointType {
 		return ductstreampb.EndpointType_ENDPOINT_TYPE_S3
 	case "kafka":
 		return ductstreampb.EndpointType_ENDPOINT_TYPE_KAFKA
+	case "http":
+		return ductstreampb.EndpointType_ENDPOINT_TYPE_HTTP
 	case "grpc":
 		return ductstreampb.EndpointType_ENDPOINT_TYPE_GRPC
 	case "proto":
 		return ductstreampb.EndpointType_ENDPOINT_TYPE_PROTO
+	case "pgstream":
+		return ductstreampb.EndpointType_ENDPOINT_TYPE_PGSTREAM
 	case "snowpipe":
 		return ductstreampb.EndpointType_ENDPOINT_TYPE_SNOWPIPE
 	case "parquet":
@@ -336,10 +340,14 @@ func endpointTypeToString(value ductstreampb.EndpointType) string {
 		return "s3"
 	case ductstreampb.EndpointType_ENDPOINT_TYPE_KAFKA:
 		return "kafka"
+	case ductstreampb.EndpointType_ENDPOINT_TYPE_HTTP:
+		return "http"
 	case ductstreampb.EndpointType_ENDPOINT_TYPE_GRPC:
 		return "grpc"
 	case ductstreampb.EndpointType_ENDPOINT_TYPE_PROTO:
 		return "proto"
+	case ductstreampb.EndpointType_ENDPOINT_TYPE_PGSTREAM:
+		return "pgstream"
 	case ductstreampb.EndpointType_ENDPOINT_TYPE_SNOWPIPE:
 		return "snowpipe"
 	case ductstreampb.EndpointType_ENDPOINT_TYPE_PARQUET:

@@ -22,10 +22,18 @@ func main() {
 		configPath    string
 		flowID        string
 		maxEmptyReads int
+		mode          string
+		tables        string
+		schemas       string
+		startLSN      string
 	)
 	flag.StringVar(&configPath, "config", "", "path to config file")
 	flag.StringVar(&flowID, "flow-id", "", "flow id to run")
 	flag.IntVar(&maxEmptyReads, "max-empty-reads", 0, "stop after N empty reads (0 = continuous)")
+	flag.StringVar(&mode, "mode", "cdc", "source mode: cdc or backfill")
+	flag.StringVar(&tables, "tables", "", "comma-separated tables for backfill (schema.table)")
+	flag.StringVar(&schemas, "schemas", "", "comma-separated schemas for backfill")
+	flag.StringVar(&startLSN, "start-lsn", "", "override start LSN for replay")
 	flag.Parse()
 
 	if flowID == "" {
@@ -80,6 +88,24 @@ func main() {
 		if flowDef.Source.Options["emit_empty"] == "" {
 			flowDef.Source.Options["emit_empty"] = "true"
 		}
+	}
+	if mode != "" && mode != "cdc" {
+		if flowDef.Source.Options == nil {
+			flowDef.Source.Options = map[string]string{}
+		}
+		flowDef.Source.Options["mode"] = mode
+		if tables != "" {
+			flowDef.Source.Options["tables"] = tables
+		}
+		if schemas != "" {
+			flowDef.Source.Options["schemas"] = schemas
+		}
+	}
+	if startLSN != "" {
+		if flowDef.Source.Options == nil {
+			flowDef.Source.Options = map[string]string{}
+		}
+		flowDef.Source.Options["start_lsn"] = startLSN
 	}
 
 	factory := runner.Factory{

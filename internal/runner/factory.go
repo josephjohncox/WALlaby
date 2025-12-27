@@ -3,7 +3,9 @@ package runner
 import (
 	"fmt"
 
+	httpdest "github.com/josephjohncox/ductstream/connectors/destinations/http"
 	"github.com/josephjohncox/ductstream/connectors/destinations/kafka"
+	"github.com/josephjohncox/ductstream/connectors/destinations/pgstream"
 	"github.com/josephjohncox/ductstream/connectors/destinations/s3"
 	"github.com/josephjohncox/ductstream/connectors/sources/postgres"
 	"github.com/josephjohncox/ductstream/internal/replication"
@@ -19,6 +21,11 @@ type Factory struct {
 func (f Factory) Source(spec connector.Spec) (connector.Source, error) {
 	switch spec.Type {
 	case connector.EndpointPostgres:
+		if spec.Options != nil {
+			if mode := spec.Options["mode"]; mode == "backfill" {
+				return &postgres.BackfillSource{}, nil
+			}
+		}
 		source := &postgres.Source{SchemaHook: f.SchemaHook}
 		return source, nil
 	default:
@@ -44,6 +51,10 @@ func (f Factory) destination(spec connector.Spec) (connector.Destination, error)
 		return &kafka.Destination{}, nil
 	case connector.EndpointS3:
 		return &s3.Destination{}, nil
+	case connector.EndpointHTTP:
+		return &httpdest.Destination{}, nil
+	case connector.EndpointPGStream:
+		return &pgstream.Destination{}, nil
 	default:
 		return nil, fmt.Errorf("unsupported destination type: %s", spec.Type)
 	}

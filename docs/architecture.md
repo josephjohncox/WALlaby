@@ -19,7 +19,7 @@ DuctStream is organized as a small set of composable subsystems designed for hig
 - Records include `before`, `after`, and `unchanged` fields to handle TOAST and updates.
 
 ### Destinations
-- Kafka and S3 destinations are implemented with wire‑format encoding.
+- Kafka, S3, HTTP webhooks, and Postgres streams are implemented with wire‑format encoding.
 - Each destination advertises capabilities and supported wire formats.
 
 ### Wire Formats
@@ -30,11 +30,13 @@ DuctStream is organized as a small set of composable subsystems designed for hig
 - The Postgres-backed workflow engine stores flow metadata and lifecycle transitions.
 - DBOS (optional) runs scheduled workflows and queues per‑flow executions.
 - Worker mode runs a single flow in a dedicated process without DBOS.
+- Fan‑out is explicit: each destination is written independently, and consumers can scale separately.
 
 ### Schema Registry + DDL
 - The registry stores schema snapshots and DDL events.
 - DDL events can be gated for approval and marked applied.
 - A catalog scanner can diff `pg_catalog` for schema drift or generated column changes.
+- DDL gating can pause the pipeline until an operator approves or applies the change.
 
 ## Deployment Modes
 
@@ -52,9 +54,13 @@ DuctStream is organized as a small set of composable subsystems designed for hig
 - **Record**: operation + timestamps + before/after data.
 - **Checkpoint**: LSN + timestamp.
 - **DDLEvent**: DDL text, schema diff plan, status.
+- **StreamMessage**: stream event with visibility timeout and consumer group state.
 
 ## Extensibility
 
 - Add connectors by implementing `connector.Source` or `connector.Destination`.
 - Add wire formats by implementing `wire.Codec`.
 - Add orchestration by implementing `workflow.Engine` and `workflow.FlowDispatcher`.
+
+## Delivery Semantics
+The runner only acknowledges a source checkpoint after **all** destinations successfully write a batch. This mirrors a buffer → deliver → ack loop and prevents advancing the LSN before downstream durability is confirmed.

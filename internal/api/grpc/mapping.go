@@ -3,9 +3,9 @@ package grpc
 import (
 	"errors"
 
+	ductstreampb "github.com/josephjohncox/ductstream/gen/go/ductstream/v1"
 	"github.com/josephjohncox/ductstream/internal/flow"
 	"github.com/josephjohncox/ductstream/pkg/connector"
-	ductstreampb "github.com/josephjohncox/ductstream/gen/go/ductstream/v1"
 )
 
 func flowToProto(f flow.Flow) *ductstreampb.Flow {
@@ -88,10 +88,14 @@ func endpointTypeToProto(t connector.EndpointType) ductstreampb.EndpointType {
 		return ductstreampb.EndpointType_ENDPOINT_TYPE_S3
 	case connector.EndpointKafka:
 		return ductstreampb.EndpointType_ENDPOINT_TYPE_KAFKA
+	case connector.EndpointHTTP:
+		return ductstreampb.EndpointType_ENDPOINT_TYPE_HTTP
 	case connector.EndpointGRPC:
 		return ductstreampb.EndpointType_ENDPOINT_TYPE_GRPC
 	case connector.EndpointProto:
 		return ductstreampb.EndpointType_ENDPOINT_TYPE_PROTO
+	case connector.EndpointPGStream:
+		return ductstreampb.EndpointType_ENDPOINT_TYPE_PGSTREAM
 	case connector.EndpointSnowpipe:
 		return ductstreampb.EndpointType_ENDPOINT_TYPE_SNOWPIPE
 	case connector.EndpointParquet:
@@ -117,10 +121,14 @@ func endpointTypeFromProto(t ductstreampb.EndpointType) connector.EndpointType {
 		return connector.EndpointS3
 	case ductstreampb.EndpointType_ENDPOINT_TYPE_KAFKA:
 		return connector.EndpointKafka
+	case ductstreampb.EndpointType_ENDPOINT_TYPE_HTTP:
+		return connector.EndpointHTTP
 	case ductstreampb.EndpointType_ENDPOINT_TYPE_GRPC:
 		return connector.EndpointGRPC
 	case ductstreampb.EndpointType_ENDPOINT_TYPE_PROTO:
 		return connector.EndpointProto
+	case ductstreampb.EndpointType_ENDPOINT_TYPE_PGSTREAM:
+		return connector.EndpointPGStream
 	case ductstreampb.EndpointType_ENDPOINT_TYPE_SNOWPIPE:
 		return connector.EndpointSnowpipe
 	case ductstreampb.EndpointType_ENDPOINT_TYPE_PARQUET:

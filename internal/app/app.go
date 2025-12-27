@@ -18,6 +18,7 @@ import (
 	"github.com/josephjohncox/ductstream/internal/telemetry"
 	"github.com/josephjohncox/ductstream/internal/workflow"
 	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/ductstream/pkg/pgstream"
 )
 
 // Run wires up core services. It will grow as implementations land.
@@ -29,6 +30,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	var registryStore registry.Store
 	var registryCloser interface{ Close() }
 	var dbosOrchestrator *orchestrator.DBOSOrchestrator
+	var streamStore *pgstream.Store
 	if cfg.Postgres.DSN != "" {
 		postgresEngine, err := workflow.NewPostgresEngine(ctx, cfg.Postgres.DSN)
 		if err != nil {
@@ -49,6 +51,11 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		}
 		registryStore = store
 		registryCloser = store
+
+		streamStore, err = pgstream.NewStore(ctx, cfg.Postgres.DSN)
+		if err != nil {
+			return err
+		}
 	}
 
 	factory := runner.Factory{}
@@ -119,7 +126,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		return err
 	}
 
-	server := apigrpc.New(engine, checkpoints, registryStore)
+	server := apigrpc.New(engine, checkpoints, registryStore, streamStore)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- server.Serve(listener)
@@ -139,6 +146,9 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			}
 			if registryCloser != nil {
 				registryCloser.Close()
+			}
+			if streamStore != nil {
+				streamStore.Close()
 			}
 			if dbosOrchestrator != nil {
 				dbosOrchestrator.Shutdown(30 * time.Second)

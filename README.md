@@ -18,6 +18,7 @@ See `examples/README.md` for gRPC, Terraform, and worker usage examples.
 - `docs/usage.md` — operational usage and configuration.
 - `docs/tutorials.md` — step-by-step tutorials.
 - `docs/architecture.md` — system architecture overview.
+- `docs/streams.md` — stream consumer operations and recovery playbooks.
 
 ## License
 PolyForm Noncommercial 1.0.0. Commercial use requires a separate license.

@@ -3,8 +3,8 @@
 This guide covers how to run DuctStream and operate flows using the gRPC API, worker mode, and DBOS scheduling.
 
 ## Prerequisites
-- PostgreSQL with logical replication enabled.
-- A replication slot + publication for the source database.
+- PostgreSQL with logical replication enabled (`wal_level=logical`).
+- A replication slot + publication for the source database (DuctStream can create the publication/slot when permitted).
 - Destinations (Kafka, S3) reachable from the DuctStream process.
 
 ## API Server
@@ -58,6 +58,53 @@ export DUCTSTREAM_WIRE_ENFORCE="true"
 
 Per-flow overrides are supported via `flow.wire_format` or connector `options.format`.
 
+## Postgres Source Options
+Key Postgres source options (connector `options`):
+- `dsn` (required)
+- `slot` (required; created automatically when `create_slot=true`)
+- `publication` (required)
+- `create_slot` (default `true`)
+- `ensure_publication` (default `true`) — create publication if missing
+- `publication_tables` (optional) — comma-separated list for publication creation
+- `validate_replication` (default `true`) — checks `wal_level`, `max_replication_slots`, `max_wal_senders`
+- `ensure_state` (default `true`) — creates a durable source-state table for cleanup and auditing
+- `state_schema` (default `ductstream`)
+- `state_table` (default `source_state`)
+- `flow_id` (optional) — stable ID used in source-state records
+
+## HTTP/Webhook Destination
+Use the HTTP destination to push each change as a request to an API endpoint:
+
+Key options:
+- `url` (required)
+- `method` (default `POST`)
+- `format` (default `json`)
+- `headers` (comma-separated `Key:Value`)
+- `max_retries`, `backoff_base`, `backoff_max`, `backoff_factor`
+- `idempotency_header` (default `Idempotency-Key`)
+
+The idempotency key is derived from `(table, primary key, lsn)` and hashed to a fixed string.
+
+## Postgres Stream Destination
+The `pgstream` destination writes events into a Postgres-backed stream with consumer groups and visibility timeouts.
+
+Destination options:
+- `dsn` (required)
+- `stream` (defaults to the destination name)
+- `format` (default `json`)
+
+Consumers can pull from the stream using the StreamService or the admin CLI:
+
+```bash
+./bin/ductstream-admin stream pull -stream orders -group search -max 10 -visibility 30
+```
+
+Ack messages when processed:
+
+```bash
+./bin/ductstream-admin stream ack -stream orders -group search -ids 1,2,3
+```
+
 ## DDL Governance
 Enable gating to require approval before applying DDL-derived schema changes:
 
@@ -73,6 +120,25 @@ Use the admin CLI to list and approve DDL events:
 ./bin/ductstream-admin ddl list -status pending
 ./bin/ductstream-admin ddl approve -id 1
 ./bin/ductstream-admin ddl apply -id 1
+```
+
+## Backfill + Replay
+Run a backfill by switching the worker to `backfill` mode and providing tables:
+
+```bash
+./bin/ductstream-worker -flow-id \"<flow-id>\" -mode backfill -tables public.users,public.orders
+```
+
+Replay from a specific LSN (if your replication slot retains WAL):
+
+```bash
+./bin/ductstream-worker -flow-id \"<flow-id>\" -start-lsn \"0/16B6C50\"
+```
+
+For Postgres stream consumers, use the admin CLI to reset deliveries:
+
+```bash
+./bin/ductstream-admin stream replay -stream orders -group search -since 2025-01-01T00:00:00Z
 ```
 
 ## Checkpointing

@@ -9,8 +9,10 @@ Source and destination implementations live here. The initial focus is Postgres 
 - `destinations/snowflake`
 - `destinations/s3`
 - `destinations/kafka`
+- `destinations/http`
 - `destinations/grpc`
 - `destinations/proto`
+- `destinations/pgstream`
 - `destinations/snowpipe`
 - `destinations/parquet`
 - `destinations/duckdb`

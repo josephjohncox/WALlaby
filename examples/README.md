@@ -59,3 +59,9 @@ See `examples/terraform/flow.tf` for a minimal provider + flow resource definiti
 ## Example Flow Specs
 - `examples/flows/postgres_to_kafka.json`
 - `examples/flows/postgres_to_s3_parquet.json`
+- `examples/flows/postgres_to_http.json`
+- `examples/flows/postgres_to_pgstream.json`
+
+## Stream Consumer Example
+- `examples/stream_consumer.sh` — minimal pull/ack loop using `ductstream-admin` + `jq`.
+- `examples/stream_consumer.go` — minimal Go client (no external tools).
