@@ -66,10 +66,25 @@ func (c *CatalogScanner) scan(ctx context.Context) (map[string]connector.Schema,
 	}
 
 	rows, err := c.Pool.Query(ctx,
-		`SELECT table_schema, table_name, column_name, is_nullable, data_type, is_generated, generation_expression
-		 FROM information_schema.columns
-		 WHERE table_schema = ANY($1::text[])
-		 ORDER BY table_schema, table_name, ordinal_position`, schemas)
+		`SELECT ns.nspname AS table_schema,
+		        c.relname AS table_name,
+		        a.attname AS column_name,
+		        NOT a.attnotnull AS is_nullable,
+		        format_type(a.atttypid, a.atttypmod) AS data_type,
+		        a.attgenerated,
+		        pg_get_expr(ad.adbin, ad.adrelid) AS generation_expression,
+		        tns.nspname AS type_schema
+		 FROM pg_class c
+		 JOIN pg_namespace ns ON ns.oid = c.relnamespace
+		 JOIN pg_attribute a ON a.attrelid = c.oid
+		 JOIN pg_type t ON t.oid = a.atttypid
+		 JOIN pg_namespace tns ON tns.oid = t.typnamespace
+		 LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
+		 WHERE ns.nspname = ANY($1::text[])
+		   AND a.attnum > 0
+		   AND NOT a.attisdropped
+		   AND c.relkind IN ('r','p')
+		 ORDER BY ns.nspname, c.relname, a.attnum`, schemas)
 	if err != nil {
 		return nil, fmt.Errorf("scan catalog: %w", err)
 	}
@@ -77,9 +92,10 @@ func (c *CatalogScanner) scan(ctx context.Context) (map[string]connector.Schema,
 
 	result := make(map[string]connector.Schema)
 	for rows.Next() {
-		var namespace, table, column, nullable, dataType, isGenerated string
+		var namespace, table, column, dataType, generated, typeSchema string
+		var nullable bool
 		var expression *string
-		if err := rows.Scan(&namespace, &table, &column, &nullable, &dataType, &isGenerated, &expression); err != nil {
+		if err := rows.Scan(&namespace, &table, &column, &nullable, &dataType, &generated, &expression, &typeSchema); err != nil {
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
 
@@ -95,9 +111,9 @@ func (c *CatalogScanner) scan(ctx context.Context) (map[string]connector.Schema,
 
 		col := connector.Column{
 			Name:      column,
-			Type:      strings.ToLower(dataType),
-			Nullable:  nullable == "YES",
-			Generated: isGenerated == "ALWAYS",
+			Type:      formatTypeName(typeSchema, dataType),
+			Nullable:  nullable,
+			Generated: generated != "",
 		}
 		if expression != nil {
 			col.Expression = *expression
@@ -111,4 +127,19 @@ func (c *CatalogScanner) scan(ctx context.Context) (map[string]connector.Schema,
 	}
 
 	return result, nil
+}
+
+func formatTypeName(schema, formatted string) string {
+	formatted = strings.ToLower(strings.TrimSpace(formatted))
+	schema = strings.ToLower(strings.TrimSpace(schema))
+	if formatted == "" {
+		return formatted
+	}
+	if schema == "" || schema == "pg_catalog" || schema == "pg_toast" {
+		return formatted
+	}
+	if strings.Contains(formatted, ".") {
+		return formatted
+	}
+	return schema + "." + formatted
 }

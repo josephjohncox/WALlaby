@@ -72,15 +72,33 @@ Key Postgres source options (connector `options`):
 - `create_slot` (default `true`)
 - `ensure_publication` (default `true`) — create publication if missing
 - `publication_tables` (optional) — comma-separated list for publication creation
+- `publication_schemas` (optional) — comma-separated schemas for auto-discovery
 - `validate_replication` (default `true`) — checks `wal_level`, `max_replication_slots`, `max_wal_senders`
 - `batch_size` (default `100`) — max records per batch
 - `batch_timeout` (default `1s`) — flush interval when idle
 - `status_interval` (default `10s`) — standby status update interval
 - `emit_empty` (default `false`) — emit empty batches (useful for scheduled runs)
+- `resolve_types` (default `true`) — resolve type OIDs using `pg_type` (captures extension types)
+- `sync_publication` (default `false`) — add/drop tables at start
+- `sync_publication_mode` (`add` default, or `sync` to drop extras)
 - `ensure_state` (default `true`) — creates a durable source-state table for cleanup and auditing
 - `state_schema` (default `ductstream`)
 - `state_table` (default `source_state`)
 - `flow_id` (optional) — stable ID used in source-state records
+
+## Publication Lifecycle
+Use `sync_publication` with `publication_tables` or `publication_schemas` to add/drop tables when a flow starts. For ad-hoc changes, the admin CLI can update the publication:
+
+```bash
+./bin/ductstream-admin publication list -flow-id "<flow-id>"
+./bin/ductstream-admin publication sync -flow-id "<flow-id>" -schemas public -mode add -pause -resume
+```
+
+To add tables and snapshot them:
+
+```bash
+./bin/ductstream-admin publication sync -flow-id "<flow-id>" -tables public.new_table -snapshot -pause -resume
+```
 
 ## HTTP/Webhook Destination
 Use the HTTP destination to push each change as a request to an API endpoint:
@@ -130,6 +148,19 @@ Options (on destination `options`):
 
 Metadata columns are added to the destination schema; choose names that do not collide with source columns.
 
+## Destination Type Mappings
+Destinations can override source types for downstream compatibility:
+
+Options (on destination `options`):
+- `type_mappings` — JSON map of source type → destination type
+- `type_mappings_file` — path to a JSON map (same format)
+
+Example:
+
+```json
+{"public.geometry": "GEOGRAPHY", "jsonb": "VARIANT"}
+```
+
 ## DDL Governance
 Enable gating to require approval before applying DDL-derived schema changes:
 
@@ -159,6 +190,11 @@ Backfill performance options (source `options`):
 - `parallel_tables` (alias of `snapshot_workers`)
 - `partition_column` (optional) — column used to hash-partition a table
 - `partition_count` (default `1`) — number of partitions per table
+- `snapshot_consistent` (default `true`) — uses `pg_export_snapshot()` for a consistent snapshot
+- `snapshot_state_backend` (`postgres` default, or `file`, `none`)
+- `snapshot_state_schema` (default `ductstream`)
+- `snapshot_state_table` (default `snapshot_state`)
+- `snapshot_state_path` (required for `file` backend)
 
 Example with parallel workers and hash partitions:
 

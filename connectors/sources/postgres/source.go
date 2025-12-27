@@ -14,23 +14,27 @@ import (
 )
 
 const (
-	optDSN               = "dsn"
-	optSlot              = "slot"
-	optPublication       = "publication"
-	optStartLSN          = "start_lsn"
-	optBatchSize         = "batch_size"
-	optBatchTimeout      = "batch_timeout"
-	optStatusInterval    = "status_interval"
-	optCreateSlot        = "create_slot"
-	optFormat            = "format"
-	optEmitEmpty         = "emit_empty"
-	optEnsurePublication = "ensure_publication"
-	optValidateSettings  = "validate_replication"
-	optPublicationTables = "publication_tables"
-	optEnsureState       = "ensure_state"
-	optStateSchema       = "state_schema"
-	optStateTable        = "state_table"
-	optFlowID            = "flow_id"
+	optDSN                 = "dsn"
+	optSlot                = "slot"
+	optPublication         = "publication"
+	optStartLSN            = "start_lsn"
+	optBatchSize           = "batch_size"
+	optBatchTimeout        = "batch_timeout"
+	optStatusInterval      = "status_interval"
+	optCreateSlot          = "create_slot"
+	optFormat              = "format"
+	optEmitEmpty           = "emit_empty"
+	optEnsurePublication   = "ensure_publication"
+	optValidateSettings    = "validate_replication"
+	optPublicationTables   = "publication_tables"
+	optPublicationSchemas  = "publication_schemas"
+	optSyncPublication     = "sync_publication"
+	optSyncPublicationMode = "sync_publication_mode"
+	optResolveTypes        = "resolve_types"
+	optEnsureState         = "ensure_state"
+	optStateSchema         = "state_schema"
+	optStateTable          = "state_table"
+	optFlowID              = "flow_id"
 )
 
 // Source implements Postgres logical replication as a connector.Source.
@@ -47,6 +51,7 @@ type Source struct {
 	SchemaHook   replication.SchemaHook
 	stateStore   *sourceStateStore
 	stateID      string
+	typeResolver *pgTypeResolver
 }
 
 func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
@@ -82,9 +87,30 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	if len(publicationTables) == 0 {
 		publicationTables = parseCSV(spec.Options[optTables])
 	}
+	publicationSchemas := parseCSV(spec.Options[optPublicationSchemas])
+	if len(publicationTables) == 0 && len(publicationSchemas) > 0 {
+		tables, err := ScrapeTables(ctx, dsn, publicationSchemas)
+		if err != nil {
+			return err
+		}
+		publicationTables = tables
+	}
 	if ensurePublication || validateSettings {
 		if err := ensureReplication(ctx, dsn, s.publication, publicationTables, ensurePublication, validateSettings); err != nil {
 			return err
+		}
+	}
+
+	if parseBool(spec.Options[optSyncPublication], false) {
+		desired := publicationTables
+		if len(desired) > 0 {
+			mode := spec.Options[optSyncPublicationMode]
+			if mode == "" {
+				mode = "add"
+			}
+			if _, _, err := SyncPublicationTables(ctx, dsn, s.publication, desired, mode); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -111,6 +137,14 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	if s.SchemaHook != nil {
 		opts = append(opts, replication.WithSchemaHook(s.SchemaHook))
 	}
+	if parseBool(spec.Options[optResolveTypes], true) {
+		resolver, err := newTypeResolver(ctx, dsn)
+		if err != nil {
+			return err
+		}
+		s.typeResolver = resolver
+		opts = append(opts, replication.WithTypeResolver(resolver))
+	}
 	if startLSN := spec.Options[optStartLSN]; startLSN != "" {
 		lsn, err := pglogrepl.ParseLSN(startLSN)
 		if err != nil {
@@ -128,6 +162,10 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		if s.stateStore != nil {
 			s.stateStore.Close()
 			s.stateStore = nil
+		}
+		if s.typeResolver != nil {
+			s.typeResolver.Close()
+			s.typeResolver = nil
 		}
 		return err
 	}
@@ -244,6 +282,10 @@ func (s *Source) Close(ctx context.Context) error {
 		_ = s.stateStore.UpdateState(ctx, s.stateID, "stopped")
 		s.stateStore.Close()
 		s.stateStore = nil
+	}
+	if s.typeResolver != nil {
+		s.typeResolver.Close()
+		s.typeResolver = nil
 	}
 	return err
 }

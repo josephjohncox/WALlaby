@@ -1,23 +1,28 @@
 package stream
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/josephjohncox/ductstream/pkg/connector"
 )
 
 const (
-	optMetaEnabled     = "meta_enabled"
-	optMetaSyncedAt    = "meta_synced_at"
-	optMetaDeleted     = "meta_deleted"
-	optMetaWatermark   = "meta_watermark"
-	optMetaOp          = "meta_op"
-	optWatermarkSource = "watermark_source"
-	optAppendMode      = "append_mode"
-	optSoftDelete      = "soft_delete"
+	optMetaEnabled      = "meta_enabled"
+	optMetaSyncedAt     = "meta_synced_at"
+	optMetaDeleted      = "meta_deleted"
+	optMetaWatermark    = "meta_watermark"
+	optMetaOp           = "meta_op"
+	optWatermarkSource  = "watermark_source"
+	optAppendMode       = "append_mode"
+	optSoftDelete       = "soft_delete"
+	optTypeMappings     = "type_mappings"
+	optTypeMappingsFile = "type_mappings_file"
 )
 
 var reservedMetaColumns = map[string]struct{}{
@@ -39,34 +44,48 @@ type destTransform struct {
 	watermarkColumn string
 	opColumn        string
 	watermarkSource string
+	typeMappings    map[string]string
 }
 
 func transformBatchForDestination(batch connector.Batch, spec connector.Spec) (connector.Batch, bool, error) {
-	cfg := parseDestTransform(spec.Options)
-	if !cfg.metaEnabled && !cfg.appendMode && !cfg.softDelete {
-		return batch, false, nil
+	cfg, err := parseDestTransform(spec.Options)
+	if err != nil {
+		return connector.Batch{}, false, err
 	}
 
 	metaCols, err := metadataColumns(cfg)
 	if err != nil {
 		return connector.Batch{}, false, err
 	}
-	if len(metaCols) == 0 && !cfg.appendMode && !cfg.softDelete {
-		return batch, false, nil
-	}
 
-	schema, err := applyMetadataSchema(batch.Schema, metaCols)
-	if err != nil {
-		return connector.Batch{}, false, err
-	}
+	schema := batch.Schema
+	records := batch.Records
+	changed := false
 
-	records := make([]connector.Record, 0, len(batch.Records))
-	for _, record := range batch.Records {
-		updated, err := applyRecordTransform(record, batch.Checkpoint, cfg, metaCols)
+	if cfg.metaEnabled || cfg.appendMode || cfg.softDelete {
+		updatedSchema, err := applyMetadataSchema(schema, metaCols)
 		if err != nil {
 			return connector.Batch{}, false, err
 		}
-		records = append(records, updated)
+		schema = updatedSchema
+		records = make([]connector.Record, 0, len(batch.Records))
+		for _, record := range batch.Records {
+			updated, err := applyRecordTransform(record, batch.Checkpoint, cfg, metaCols)
+			if err != nil {
+				return connector.Batch{}, false, err
+			}
+			records = append(records, updated)
+		}
+		changed = true
+	}
+
+	if len(cfg.typeMappings) > 0 {
+		schema = applyTypeMappings(schema, cfg.typeMappings)
+		changed = true
+	}
+
+	if !changed {
+		return batch, false, nil
 	}
 
 	return connector.Batch{
@@ -77,7 +96,7 @@ func transformBatchForDestination(batch connector.Batch, spec connector.Spec) (c
 	}, true, nil
 }
 
-func parseDestTransform(options map[string]string) destTransform {
+func parseDestTransform(options map[string]string) (destTransform, error) {
 	cfg := destTransform{
 		metaEnabled:     parseBool(options[optMetaEnabled], false),
 		appendMode:      parseBool(options[optAppendMode], false),
@@ -108,7 +127,13 @@ func parseDestTransform(options map[string]string) destTransform {
 		cfg.metaEnabled = true
 	}
 
-	return cfg
+	mappings, err := loadTypeMappings(options)
+	if err != nil {
+		return destTransform{}, err
+	}
+	cfg.typeMappings = mappings
+
+	return cfg, nil
 }
 
 type metadataColumn struct {
@@ -279,6 +304,96 @@ func cloneMap(source map[string]any) map[string]any {
 		out[key] = value
 	}
 	return out
+}
+
+func applyTypeMappings(schema connector.Schema, mappings map[string]string) connector.Schema {
+	if len(mappings) == 0 {
+		return schema
+	}
+
+	cols := make([]connector.Column, 0, len(schema.Columns))
+	for _, col := range schema.Columns {
+		next := col
+		next.Type = mapType(col.Type, mappings)
+		cols = append(cols, next)
+	}
+	schema.Columns = cols
+	return schema
+}
+
+func mapType(value string, mappings map[string]string) string {
+	if value == "" || len(mappings) == 0 {
+		return value
+	}
+	key := normalizeTypeKey(value)
+	if mapped, ok := mappings[key]; ok {
+		return mapped
+	}
+	if idx := strings.LastIndex(key, "."); idx > 0 {
+		if mapped, ok := mappings[key[idx+1:]]; ok {
+			return mapped
+		}
+	}
+	return value
+}
+
+func normalizeTypeKey(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+type cachedTypeMapping struct {
+	modTime  time.Time
+	mappings map[string]string
+}
+
+var typeMappingCache sync.Map
+
+func loadTypeMappings(options map[string]string) (map[string]string, error) {
+	if options == nil {
+		return nil, nil
+	}
+	if raw := strings.TrimSpace(options[optTypeMappings]); raw != "" {
+		return parseTypeMappings(raw)
+	}
+	if path := strings.TrimSpace(options[optTypeMappingsFile]); path != "" {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("stat type mapping file: %w", err)
+		}
+		if cached, ok := typeMappingCache.Load(path); ok {
+			entry := cached.(cachedTypeMapping)
+			if info.ModTime().Equal(entry.modTime) {
+				return entry.mappings, nil
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read type mapping file: %w", err)
+		}
+		mappings, err := parseTypeMappings(string(data))
+		if err != nil {
+			return nil, err
+		}
+		typeMappingCache.Store(path, cachedTypeMapping{modTime: info.ModTime(), mappings: mappings})
+		return mappings, nil
+	}
+	return nil, nil
+}
+
+func parseTypeMappings(raw string) (map[string]string, error) {
+	var mappings map[string]string
+	if err := json.Unmarshal([]byte(raw), &mappings); err != nil {
+		return nil, fmt.Errorf("parse type_mappings: %w", err)
+	}
+	out := make(map[string]string, len(mappings))
+	for key, value := range mappings {
+		normalized := normalizeTypeKey(key)
+		if normalized == "" {
+			continue
+		}
+		out[normalized] = strings.TrimSpace(value)
+	}
+	return out, nil
 }
 
 func parseBool(value string, fallback bool) bool {

@@ -103,6 +103,23 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		if len(batch.Records) == 0 {
+			if isControlCheckpoint(batch.Checkpoint) {
+				if err := r.Source.Ack(batchCtx, batch.Checkpoint); err != nil {
+					span.RecordError(err)
+					span.End()
+					return fmt.Errorf("ack source: %w", err)
+				}
+				if r.Checkpoints != nil && r.FlowID != "" && shouldPersistCheckpoint(batch.Checkpoint) {
+					if err := r.Checkpoints.Put(batchCtx, r.FlowID, batch.Checkpoint); err != nil {
+						span.RecordError(err)
+						span.End()
+						return fmt.Errorf("persist checkpoint: %w", err)
+					}
+				}
+				span.End()
+				continue
+			}
+
 			emptyReads++
 			span.End()
 			if r.MaxEmptyReads > 0 && emptyReads >= r.MaxEmptyReads {
@@ -128,7 +145,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			span.End()
 			return fmt.Errorf("ack source: %w", err)
 		}
-		if r.Checkpoints != nil && r.FlowID != "" {
+		if r.Checkpoints != nil && r.FlowID != "" && shouldPersistCheckpoint(batch.Checkpoint) {
 			if err := r.Checkpoints.Put(batchCtx, r.FlowID, batch.Checkpoint); err != nil {
 				span.RecordError(err)
 				span.End()
@@ -171,6 +188,35 @@ func (r *Runner) normalizeWireFormat() error {
 	}
 
 	return nil
+}
+
+func isControlCheckpoint(cp connector.Checkpoint) bool {
+	if cp.Metadata == nil {
+		return false
+	}
+	if cp.Metadata["mode"] == "backfill" {
+		return true
+	}
+	if cp.Metadata["done"] == "true" {
+		return true
+	}
+	if cp.Metadata["control"] == "true" {
+		return true
+	}
+	return false
+}
+
+func shouldPersistCheckpoint(cp connector.Checkpoint) bool {
+	if cp.LSN != "" {
+		return true
+	}
+	if cp.Metadata == nil {
+		return false
+	}
+	if cp.Metadata["mode"] == "backfill" {
+		return false
+	}
+	return true
 }
 
 func (r *Runner) writeDestinations(ctx context.Context, batch connector.Batch) error {

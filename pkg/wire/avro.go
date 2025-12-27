@@ -107,6 +107,9 @@ func avroTypeFor(pgType string, nullable bool) []string {
 	if idx := strings.Index(base, "("); idx > 0 {
 		base = base[:idx]
 	}
+	if idx := strings.LastIndex(base, "."); idx > 0 {
+		base = base[idx+1:]
+	}
 
 	avroType := "string"
 	switch base {

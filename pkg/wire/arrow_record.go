@@ -95,6 +95,9 @@ func arrowTypeFor(pgType string) arrow.DataType {
 	if idx := strings.Index(base, "("); idx > 0 {
 		base = base[:idx]
 	}
+	if idx := strings.LastIndex(base, "."); idx > 0 {
+		base = base[idx+1:]
+	}
 
 	switch base {
 	case "int2", "smallint":

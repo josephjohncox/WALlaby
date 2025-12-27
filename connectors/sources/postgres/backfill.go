@@ -15,12 +15,18 @@ import (
 )
 
 const (
-	optTables          = "tables"
-	optSchemas         = "schemas"
-	optSnapshotWorkers = "snapshot_workers"
-	optParallelTables  = "parallel_tables"
-	optPartitionColumn = "partition_column"
-	optPartitionCount  = "partition_count"
+	optTables               = "tables"
+	optSchemas              = "schemas"
+	optSnapshotWorkers      = "snapshot_workers"
+	optParallelTables       = "parallel_tables"
+	optPartitionColumn      = "partition_column"
+	optPartitionCount       = "partition_count"
+	optSnapshotConsistent   = "snapshot_consistent"
+	optSnapshotStateBackend = "snapshot_state_backend"
+	optSnapshotStateSchema  = "snapshot_state_schema"
+	optSnapshotStateTable   = "snapshot_state_table"
+	optSnapshotStatePath    = "snapshot_state_path"
+	optSnapshotStateDSN     = "snapshot_state_dsn"
 )
 
 // BackfillSource reads existing table data in bulk.
@@ -36,6 +42,12 @@ type BackfillSource struct {
 	results        chan batchResult
 	cancel         context.CancelFunc
 	wg             sync.WaitGroup
+	snapshotName   string
+	snapshotConn   *pgxpool.Conn
+	snapshotTx     pgx.Tx
+	stateStore     snapshotStateStore
+	flowID         string
+	taskStates     map[snapshotTaskKey]snapshotTaskState
 }
 
 func (b *BackfillSource) Open(ctx context.Context, spec connector.Spec) error {
@@ -79,6 +91,28 @@ func (b *BackfillSource) Open(ctx context.Context, spec connector.Spec) error {
 		b.partitionCount = 1
 	}
 
+	b.flowID = snapshotFlowID(spec)
+	if backend := strings.ToLower(spec.Options[optSnapshotStateBackend]); backend != "none" {
+		store, err := newSnapshotStateStore(ctx, backend, spec, dsn)
+		if err != nil {
+			return err
+		}
+		b.stateStore = store
+		if b.stateStore != nil {
+			states, err := b.stateStore.Load(ctx, b.flowID)
+			if err != nil {
+				return err
+			}
+			b.taskStates = states
+		}
+	}
+
+	if parseBool(spec.Options[optSnapshotConsistent], true) {
+		if err := b.beginSnapshot(ctx); err != nil {
+			return err
+		}
+	}
+
 	tables := parseCSV(spec.Options[optTables])
 	if len(tables) == 0 {
 		schemas := parseCSV(spec.Options[optSchemas])
@@ -118,8 +152,33 @@ func (b *BackfillSource) Read(ctx context.Context) (connector.Batch, error) {
 	}
 }
 
-func (b *BackfillSource) Ack(_ context.Context, _ connector.Checkpoint) error {
-	return nil
+func (b *BackfillSource) Ack(ctx context.Context, checkpoint connector.Checkpoint) error {
+	if b.stateStore == nil || b.flowID == "" {
+		return nil
+	}
+	meta := checkpoint.Metadata
+	if meta == nil || meta["mode"] != "backfill" {
+		return nil
+	}
+	table := meta["table"]
+	if table == "" {
+		return nil
+	}
+	partitionIndex := parseInt(meta["partition_index"], 0)
+	partitionCount := parseInt(meta["partition_count"], 1)
+	cursor := meta["cursor"]
+	status := snapshotStatusRunning
+	if parseBool(meta["done"], false) {
+		status = snapshotStatusDone
+	}
+	return b.stateStore.Upsert(ctx, snapshotTaskState{
+		FlowID:         b.flowID,
+		Table:          table,
+		PartitionIndex: partitionIndex,
+		PartitionCount: maxPartitionCount(partitionCount),
+		Cursor:         cursor,
+		Status:         status,
+	})
 }
 
 func (b *BackfillSource) Close(_ context.Context) error {
@@ -127,9 +186,14 @@ func (b *BackfillSource) Close(_ context.Context) error {
 		b.cancel()
 		b.wg.Wait()
 	}
+	b.endSnapshot(context.Background())
 	if b.pool != nil {
 		b.pool.Close()
 		b.pool = nil
+	}
+	if b.stateStore != nil {
+		b.stateStore.Close()
+		b.stateStore = nil
 	}
 	return nil
 }
@@ -178,10 +242,23 @@ func (b *BackfillSource) loadTables(ctx context.Context, schemas []string) ([]st
 
 func (b *BackfillSource) loadSchema(ctx context.Context, schema, table string) (connector.Schema, error) {
 	rows, err := b.pool.Query(ctx,
-		`SELECT column_name, is_nullable, data_type, is_generated, generation_expression
-		 FROM information_schema.columns
-		 WHERE table_schema = $1 AND table_name = $2
-		 ORDER BY ordinal_position`, schema, table)
+		`SELECT a.attname,
+		        NOT a.attnotnull AS is_nullable,
+		        format_type(a.atttypid, a.atttypmod) AS data_type,
+		        a.attgenerated,
+		        pg_get_expr(ad.adbin, ad.adrelid) AS generation_expression,
+		        tns.nspname AS type_schema
+		 FROM pg_class c
+		 JOIN pg_namespace ns ON ns.oid = c.relnamespace
+		 JOIN pg_attribute a ON a.attrelid = c.oid
+		 JOIN pg_type t ON t.oid = a.atttypid
+		 JOIN pg_namespace tns ON tns.oid = t.typnamespace
+		 LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
+		 WHERE ns.nspname = $1
+		   AND c.relname = $2
+		   AND a.attnum > 0
+		   AND NOT a.attisdropped
+		 ORDER BY a.attnum`, schema, table)
 	if err != nil {
 		return connector.Schema{}, fmt.Errorf("load schema: %w", err)
 	}
@@ -189,17 +266,19 @@ func (b *BackfillSource) loadSchema(ctx context.Context, schema, table string) (
 
 	columns := make([]connector.Column, 0)
 	for rows.Next() {
-		var column, nullable, dataType, isGenerated string
+		var column, dataType, generated string
+		var nullable bool
 		var expression *string
-		if err := rows.Scan(&column, &nullable, &dataType, &isGenerated, &expression); err != nil {
+		var typeSchema string
+		if err := rows.Scan(&column, &nullable, &dataType, &generated, &expression, &typeSchema); err != nil {
 			return connector.Schema{}, fmt.Errorf("scan schema row: %w", err)
 		}
 
 		col := connector.Column{
 			Name:      column,
-			Type:      strings.ToLower(dataType),
-			Nullable:  nullable == "YES",
-			Generated: isGenerated == "ALWAYS",
+			Type:      formatTypeName(typeSchema, dataType),
+			Nullable:  nullable,
+			Generated: generated != "",
 		}
 		if expression != nil {
 			col.Expression = *expression
@@ -233,6 +312,7 @@ type backfillTask struct {
 	table          string
 	partitionIndex int
 	partitionCount int
+	cursor         string
 }
 
 type batchResult struct {
@@ -245,14 +325,26 @@ func (b *BackfillSource) startWorkers(ctx context.Context) {
 	for _, table := range b.tables {
 		if b.partitionCol != "" && b.partitionCount > 1 {
 			for idx := 0; idx < b.partitionCount; idx++ {
-				tasks = append(tasks, backfillTask{
+				task := backfillTask{
 					table:          table,
 					partitionIndex: idx,
 					partitionCount: b.partitionCount,
-				})
+				}
+				if state := b.stateForTask(task); state.Status == snapshotStatusDone {
+					continue
+				} else if state.Cursor != "" {
+					task.cursor = state.Cursor
+				}
+				tasks = append(tasks, task)
 			}
 		} else {
-			tasks = append(tasks, backfillTask{table: table})
+			task := backfillTask{table: table}
+			if state := b.stateForTask(task); state.Status == snapshotStatusDone {
+				continue
+			} else if state.Cursor != "" {
+				task.cursor = state.Cursor
+			}
+			tasks = append(tasks, task)
 		}
 	}
 
@@ -315,14 +407,31 @@ func (b *BackfillSource) runTask(ctx context.Context, task backfillTask) error {
 			return fmt.Errorf("partition column %s not found on %s", b.partitionCol, task.table)
 		}
 	}
+	if task.cursor != "" && b.partitionCol == "" {
+		return fmt.Errorf("snapshot cursor requires partition_column for %s", task.table)
+	}
 
-	rows, err := b.queryTablePartition(ctx, namespace, table, task)
+	if b.stateStore != nil {
+		_ = b.stateStore.Upsert(ctx, snapshotTaskState{
+			FlowID:         b.flowID,
+			Table:          task.table,
+			PartitionIndex: task.partitionIndex,
+			PartitionCount: maxPartitionCount(task.partitionCount),
+			Cursor:         task.cursor,
+			Status:         snapshotStatusRunning,
+		})
+	}
+
+	rows, cleanup, err := b.queryTablePartition(ctx, namespace, table, task)
 	if err != nil {
 		return err
 	}
+	defer cleanup()
 	defer rows.Close()
 
 	records := make([]connector.Record, 0, b.batchSize)
+	lastCursor := task.cursor
+	produced := false
 	for rows.Next() {
 		values, err := rows.Values()
 		if err != nil {
@@ -334,6 +443,11 @@ func (b *BackfillSource) runTask(ctx context.Context, task backfillTask) error {
 		for idx, field := range fields {
 			row[string(field.Name)] = values[idx]
 		}
+		if b.partitionCol != "" {
+			if value, ok := row[b.partitionCol]; ok && value != nil {
+				lastCursor = fmt.Sprint(value)
+			}
+		}
 
 		records = append(records, connector.Record{
 			Table:         schema.Name,
@@ -344,36 +458,31 @@ func (b *BackfillSource) runTask(ctx context.Context, task backfillTask) error {
 		})
 
 		if len(records) >= b.batchSize {
-			if err := b.emitBatch(ctx, schema, task, records); err != nil {
+			if err := b.emitBatch(ctx, schema, task, records, lastCursor, false); err != nil {
 				return err
 			}
 			records = make([]connector.Record, 0, b.batchSize)
+			produced = true
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate rows: %w", err)
 	}
 	if len(records) > 0 {
-		if err := b.emitBatch(ctx, schema, task, records); err != nil {
+		if err := b.emitBatch(ctx, schema, task, records, lastCursor, true); err != nil {
 			return err
 		}
+		produced = true
+	}
+	if err := b.emitControlDone(ctx, schema, task, lastCursor, produced); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-func (b *BackfillSource) emitBatch(ctx context.Context, schema connector.Schema, task backfillTask, records []connector.Record) error {
-	checkpoint := connector.Checkpoint{
-		Timestamp: time.Now().UTC(),
-		Metadata: map[string]string{
-			"mode":  "backfill",
-			"table": task.table,
-		},
-	}
-	if task.partitionCount > 1 {
-		checkpoint.Metadata["partition"] = fmt.Sprintf("%d/%d", task.partitionIndex, task.partitionCount)
-	}
-
+func (b *BackfillSource) emitBatch(ctx context.Context, schema connector.Schema, task backfillTask, records []connector.Record, cursor string, done bool) error {
+	checkpoint := snapshotCheckpoint(task, cursor, done)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -387,20 +496,80 @@ func (b *BackfillSource) emitBatch(ctx context.Context, schema connector.Schema,
 	}
 }
 
-func (b *BackfillSource) queryTablePartition(ctx context.Context, schema, table string, task backfillTask) (pgx.Rows, error) {
+func (b *BackfillSource) emitControlDone(ctx context.Context, schema connector.Schema, task backfillTask, cursor string, produced bool) error {
+	checkpoint := snapshotCheckpoint(task, cursor, true)
+	if produced {
+		checkpoint.Metadata["control"] = "true"
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case b.results <- batchResult{batch: connector.Batch{
+		Records:    nil,
+		Schema:     schema,
+		Checkpoint: checkpoint,
+		WireFormat: b.wireFormat,
+	}}:
+		return nil
+	}
+}
+
+func (b *BackfillSource) queryTablePartition(ctx context.Context, schema, table string, task backfillTask) (pgx.Rows, func(), error) {
 	identifier := pgx.Identifier{schema, table}.Sanitize()
 	query := fmt.Sprintf("SELECT * FROM %s", identifier)
 	var args []any
+	clauses := make([]string, 0, 2)
 	if b.partitionCol != "" && task.partitionCount > 1 {
 		columnIdent := pgx.Identifier{b.partitionCol}.Sanitize()
-		query = fmt.Sprintf("%s WHERE mod(hashtext(%s::text), $1) = $2", query, columnIdent)
-		args = []any{task.partitionCount, task.partitionIndex}
+		clauses = append(clauses, fmt.Sprintf("mod(hashtext(%s::text), $1) = $2", columnIdent))
+		args = append(args, task.partitionCount, task.partitionIndex)
 	}
-	rows, err := b.pool.Query(ctx, query, args...)
+	if b.partitionCol != "" && task.cursor != "" {
+		columnIdent := pgx.Identifier{b.partitionCol}.Sanitize()
+		clauses = append(clauses, fmt.Sprintf("%s > $%d", columnIdent, len(args)+1))
+		args = append(args, task.cursor)
+	}
+	if len(clauses) > 0 {
+		query = fmt.Sprintf("%s WHERE %s", query, strings.Join(clauses, " AND "))
+	}
+	if b.partitionCol != "" {
+		columnIdent := pgx.Identifier{b.partitionCol}.Sanitize()
+		query = fmt.Sprintf("%s ORDER BY %s", query, columnIdent)
+	}
+
+	if b.snapshotName == "" {
+		rows, err := b.pool.Query(ctx, query, args...)
+		if err != nil {
+			return nil, nil, fmt.Errorf("query table %s: %w", identifier, err)
+		}
+		return rows, func() {}, nil
+	}
+
+	conn, err := b.pool.Acquire(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("query table %s: %w", identifier, err)
+		return nil, nil, fmt.Errorf("acquire snapshot connection: %w", err)
 	}
-	return rows, nil
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		conn.Release()
+		return nil, nil, fmt.Errorf("begin snapshot transaction: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "SET TRANSACTION SNAPSHOT $1", b.snapshotName); err != nil {
+		_ = tx.Rollback(ctx)
+		conn.Release()
+		return nil, nil, fmt.Errorf("set snapshot: %w", err)
+	}
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		conn.Release()
+		return nil, nil, fmt.Errorf("query table %s: %w", identifier, err)
+	}
+	cleanup := func() {
+		_ = tx.Commit(ctx)
+		conn.Release()
+	}
+	return rows, cleanup, nil
 }
 
 func schemaHasColumn(schema connector.Schema, name string) bool {
@@ -410,4 +579,97 @@ func schemaHasColumn(schema connector.Schema, name string) bool {
 		}
 	}
 	return false
+}
+
+func (b *BackfillSource) beginSnapshot(ctx context.Context) error {
+	if b.pool == nil {
+		return errors.New("snapshot pool not initialized")
+	}
+	conn, err := b.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire snapshot connection: %w", err)
+	}
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		conn.Release()
+		return fmt.Errorf("begin snapshot transaction: %w", err)
+	}
+	var snapshot string
+	if err := tx.QueryRow(ctx, "SELECT pg_export_snapshot()").Scan(&snapshot); err != nil {
+		_ = tx.Rollback(ctx)
+		conn.Release()
+		return fmt.Errorf("export snapshot: %w", err)
+	}
+	b.snapshotConn = conn
+	b.snapshotTx = tx
+	b.snapshotName = snapshot
+	return nil
+}
+
+func (b *BackfillSource) endSnapshot(ctx context.Context) {
+	if b.snapshotTx != nil {
+		_ = b.snapshotTx.Commit(ctx)
+		b.snapshotTx = nil
+	}
+	if b.snapshotConn != nil {
+		b.snapshotConn.Release()
+		b.snapshotConn = nil
+	}
+	b.snapshotName = ""
+}
+
+func snapshotFlowID(spec connector.Spec) string {
+	if spec.Options != nil {
+		if value := spec.Options[optFlowID]; value != "" {
+			return value
+		}
+	}
+	if spec.Name != "" {
+		return spec.Name
+	}
+	return "snapshot"
+}
+
+func snapshotCheckpoint(task backfillTask, cursor string, done bool) connector.Checkpoint {
+	meta := map[string]string{
+		"mode":  "backfill",
+		"table": task.table,
+	}
+	if task.partitionCount > 1 {
+		meta["partition_index"] = fmt.Sprintf("%d", task.partitionIndex)
+		meta["partition_count"] = fmt.Sprintf("%d", task.partitionCount)
+		meta["partition"] = fmt.Sprintf("%d/%d", task.partitionIndex, task.partitionCount)
+	}
+	if cursor != "" {
+		meta["cursor"] = cursor
+	}
+	if done {
+		meta["done"] = "true"
+	}
+	return connector.Checkpoint{
+		Timestamp: time.Now().UTC(),
+		Metadata:  meta,
+	}
+}
+
+func (b *BackfillSource) stateForTask(task backfillTask) snapshotTaskState {
+	if b.taskStates == nil {
+		return snapshotTaskState{}
+	}
+	key := snapshotTaskKey{
+		Table:          task.table,
+		PartitionIndex: task.partitionIndex,
+		PartitionCount: maxPartitionCount(task.partitionCount),
+	}
+	if state, ok := b.taskStates[key]; ok {
+		return state
+	}
+	return snapshotTaskState{}
+}
+
+func maxPartitionCount(value int) int {
+	if value <= 0 {
+		return 1
+	}
+	return value
 }

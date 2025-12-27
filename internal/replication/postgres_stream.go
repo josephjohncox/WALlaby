@@ -29,6 +29,9 @@ type PostgresStream struct {
 	createSlot     bool
 	typeMap        *pgtype.Map
 	schemaHook     SchemaHook
+	typeResolver   TypeResolver
+	typeMu         sync.Mutex
+	typeNames      map[uint32]string
 
 	mu        sync.Mutex
 	conn      *pgconn.PgConn
@@ -88,11 +91,22 @@ func WithSchemaHook(hook SchemaHook) PostgresStreamOption {
 	}
 }
 
+func WithTypeResolver(resolver TypeResolver) PostgresStreamOption {
+	return func(s *PostgresStream) {
+		s.typeResolver = resolver
+	}
+}
+
 // SchemaHook receives schema evolution and DDL events.
 type SchemaHook interface {
 	OnSchema(ctx context.Context, schema connector.Schema) error
 	OnSchemaChange(ctx context.Context, plan internalschema.Plan) error
 	OnDDL(ctx context.Context, ddl string, lsn pglogrepl.LSN) error
+}
+
+// TypeResolver resolves Postgres type OIDs to names.
+type TypeResolver interface {
+	ResolveType(ctx context.Context, oid uint32) (string, bool, error)
 }
 
 // NewPostgresStream returns a Postgres logical replication stream.
@@ -105,6 +119,7 @@ func NewPostgresStream(dsn string, opts ...PostgresStreamOption) *PostgresStream
 		relations:      make(map[uint32]*pglogrepl.RelationMessage),
 		schemas:        make(map[uint32]connector.Schema),
 		versions:       make(map[uint32]int64),
+		typeNames:      make(map[uint32]string),
 	}
 
 	for _, opt := range opts {
@@ -331,7 +346,7 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 	case *pglogrepl.RelationMessage:
 		p.relations[msg.RelationID] = msg
 		prevSchema, hasPrev := p.schemas[msg.RelationID]
-		schemaDef := p.schemaForRelation(msg)
+		schemaDef := p.schemaForRelation(ctx, msg)
 		p.schemas[msg.RelationID] = schemaDef
 		if p.schemaHook != nil {
 			if err := p.schemaHook.OnSchema(ctx, schemaDef); err != nil {
@@ -464,16 +479,13 @@ func isSlotExistsErr(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "already exists")
 }
 
-func (p *PostgresStream) schemaForRelation(rel *pglogrepl.RelationMessage) connector.Schema {
+func (p *PostgresStream) schemaForRelation(ctx context.Context, rel *pglogrepl.RelationMessage) connector.Schema {
 	p.versions[rel.RelationID]++
 	version := p.versions[rel.RelationID]
 
 	columns := make([]connector.Column, 0, len(rel.Columns))
 	for _, col := range rel.Columns {
-		colType := fmt.Sprintf("oid:%d", col.DataType)
-		if typ, ok := p.typeMap.TypeForOID(col.DataType); ok {
-			colType = typ.Name
-		}
+		colType := p.resolveTypeName(ctx, col.DataType)
 		columns = append(columns, connector.Column{
 			Name:     col.Name,
 			Type:     colType,
@@ -494,7 +506,7 @@ func (p *PostgresStream) schemaForRelationID(relationID uint32) connector.Schema
 		return schema
 	}
 	if rel, ok := p.relations[relationID]; ok {
-		return p.schemaForRelation(rel)
+		return p.schemaForRelation(context.Background(), rel)
 	}
 	return connector.Schema{}
 }
@@ -718,4 +730,39 @@ func (p *PostgresStream) ackPosition() pglogrepl.LSN {
 		return p.ackLSN
 	}
 	return p.recvLSN
+}
+
+func (p *PostgresStream) resolveTypeName(ctx context.Context, oid uint32) string {
+	if oid == 0 {
+		return ""
+	}
+	p.typeMu.Lock()
+	if name, ok := p.typeNames[oid]; ok {
+		p.typeMu.Unlock()
+		return name
+	}
+	p.typeMu.Unlock()
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if p.typeResolver != nil {
+		if name, ok, err := p.typeResolver.ResolveType(ctx, oid); err == nil && ok {
+			p.typeMu.Lock()
+			p.typeNames[oid] = name
+			p.typeMu.Unlock()
+			return name
+		}
+	}
+
+	colType := fmt.Sprintf("oid:%d", oid)
+	if typ, ok := p.typeMap.TypeForOID(oid); ok {
+		colType = typ.Name
+	}
+
+	p.typeMu.Lock()
+	p.typeNames[oid] = colType
+	p.typeMu.Unlock()
+	return colType
 }
