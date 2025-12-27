@@ -43,5 +43,12 @@ Snowpipe auto-ingest (upload-only) snippet:
 - `docs/architecture.md` — system architecture overview.
 - `docs/streams.md` — stream consumer operations and recovery playbooks.
 
+## Helm (OCI via GHCR)
+Once a tagged release is published, install via OCI Helm chart:
+
+```bash
+helm install ductstream oci://ghcr.io/josephjohncox/ductstream/charts/ductstream --version <tag>
+```
+
 ## License
 PolyForm Noncommercial 1.0.0. Commercial use requires a separate license.

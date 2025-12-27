@@ -18,6 +18,15 @@ export DUCTSTREAM_WIRE_ENFORCE="true"
 ./bin/ductstream
 ```
 
+## Kubernetes / Helm
+Install the OCI Helm chart from GHCR (published on tagged releases):
+
+```bash
+helm install ductstream oci://ghcr.io/josephjohncox/ductstream/charts/ductstream --version <tag>
+```
+
+Set required env vars via Helm values (`env`) or a ConfigMap (`config.enabled=true` + `config.data`).
+
 ### Create a Flow (gRPC)
 Use `grpcurl` with local proto files:
 

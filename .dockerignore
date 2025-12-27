@@ -1,0 +1,10 @@
+.git
+.gitignore
+.github
+.idea
+.vscode
+bin
+examples
+tests
+terraform
+**/*.md

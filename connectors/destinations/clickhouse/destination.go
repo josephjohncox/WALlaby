@@ -67,6 +67,7 @@ type Destination struct {
 	metaEngine       string
 	metaOrderBy      string
 	stagingTables    map[string]tableInfo
+	stagingResolved  bool
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
@@ -325,6 +326,9 @@ func (d *Destination) finalizeStaging(ctx context.Context) error {
 	if d.batchResolve == "" || d.batchResolve == batchResolveNone {
 		return nil
 	}
+	if d.stagingResolved {
+		return nil
+	}
 	if len(d.stagingTables) == 0 {
 		return nil
 	}
@@ -335,6 +339,7 @@ func (d *Destination) finalizeStaging(ctx context.Context) error {
 		}
 	}
 
+	d.stagingResolved = true
 	return nil
 }
 

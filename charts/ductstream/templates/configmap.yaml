@@ -1,0 +1,13 @@
+{{- if .Values.config.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ductstream.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "ductstream.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+{{- range $key, $value := .Values.config.data }}
+  {{ $key }}: {{ $value | quote }}
+{{- end }}
+{{- end }}
