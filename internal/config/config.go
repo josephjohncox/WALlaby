@@ -49,6 +49,7 @@ type DDLConfig struct {
 	CatalogSchemas  []string
 	AutoApprove     bool
 	Gate            bool
+	AutoApply       bool
 }
 
 // Load loads config from environment for now. File parsing will be added later.
@@ -81,6 +82,7 @@ func Load(_ string) (*Config, error) {
 			CatalogSchemas:  getenvCSV("DUCTSTREAM_DDL_CATALOG_SCHEMAS", "public"),
 			AutoApprove:     getenvBool("DUCTSTREAM_DDL_AUTO_APPROVE", false),
 			Gate:            getenvBool("DUCTSTREAM_DDL_GATE", false),
+			AutoApply:       getenvBool("DUCTSTREAM_DDL_AUTO_APPLY", false),
 		},
 	}
 

@@ -49,6 +49,14 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		FlowID:       f.ID,
 		Tracer:       tracer,
 	}
+	if r.MaxEmpty > 0 {
+		if runner.SourceSpec.Options == nil {
+			runner.SourceSpec.Options = map[string]string{}
+		}
+		if runner.SourceSpec.Options["emit_empty"] == "" {
+			runner.SourceSpec.Options["emit_empty"] = "true"
+		}
+	}
 	if f.WireFormat != "" {
 		runner.WireFormat = f.WireFormat
 	} else if r.WireFormat != "" {

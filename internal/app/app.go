@@ -57,6 +57,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			Store:        registryStore,
 			AutoApprove:  cfg.DDL.AutoApprove,
 			GateApproval: cfg.DDL.Gate,
+			AutoApply:    cfg.DDL.AutoApply,
 		}
 	}
 

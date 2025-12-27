@@ -29,6 +29,7 @@ type Store interface {
 	ListPendingDDL(ctx context.Context) ([]DDLEvent, error)
 	GetDDL(ctx context.Context, id int64) (DDLEvent, error)
 	GetDDLByLSN(ctx context.Context, lsn string) (DDLEvent, error)
+	ListDDL(ctx context.Context, status string) ([]DDLEvent, error)
 }
 
 // PostgresStore stores registry data in Postgres.
@@ -134,6 +135,35 @@ func (p *PostgresStore) ListPendingDDL(ctx context.Context) ([]DDLEvent, error) 
 	return items, nil
 }
 
+func (p *PostgresStore) ListDDL(ctx context.Context, status string) ([]DDLEvent, error) {
+	query := "SELECT id, ddl, plan_json, lsn, status, created_at, applied_at FROM ddl_events"
+	var rows pgx.Rows
+	var err error
+	if status != "" && status != "all" {
+		query += " WHERE status = $1"
+		rows, err = p.pool.Query(ctx, query+" ORDER BY created_at", status)
+	} else {
+		rows, err = p.pool.Query(ctx, query+" ORDER BY created_at")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list ddl events: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]DDLEvent, 0)
+	for rows.Next() {
+		event, err := scanDDLEvent(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan ddl event: %w", err)
+		}
+		items = append(items, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate ddl events: %w", err)
+	}
+	return items, nil
+}
+
 func (p *PostgresStore) GetDDL(ctx context.Context, id int64) (DDLEvent, error) {
 	row := p.pool.QueryRow(ctx, "SELECT id, ddl, plan_json, lsn, status, created_at, applied_at FROM ddl_events WHERE id = $1", id)
 	return scanDDLEvent(row)
@@ -163,6 +193,7 @@ type Hook struct {
 	Store        Store
 	AutoApprove  bool
 	GateApproval bool
+	AutoApply    bool
 }
 
 func (h *Hook) OnSchema(ctx context.Context, schema connector.Schema) error {
@@ -179,6 +210,9 @@ func (h *Hook) OnSchemaChange(ctx context.Context, plan schema.Plan) error {
 	status := StatusPending
 	if h.AutoApprove {
 		status = StatusApproved
+		if h.AutoApply {
+			status = StatusApplied
+		}
 	}
 	_, err := h.Store.RecordDDL(ctx, "", plan, "", status)
 	if err != nil {
@@ -217,6 +251,9 @@ func (h *Hook) OnDDL(ctx context.Context, ddl string, lsn pglogrepl.LSN) error {
 	status := StatusPending
 	if h.AutoApprove {
 		status = StatusApproved
+		if h.AutoApply {
+			status = StatusApplied
+		}
 	}
 	_, err := h.Store.RecordDDL(ctx, ddl, schema.Plan{}, lsnStr, status)
 	if err != nil {

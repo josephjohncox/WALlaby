@@ -36,6 +36,25 @@ func (s *DDLService) ListPendingDDL(ctx context.Context, _ *ductstreampb.ListPen
 	return &ductstreampb.ListPendingDDLResponse{Events: items}, nil
 }
 
+func (s *DDLService) ListDDL(ctx context.Context, req *ductstreampb.ListDDLRequest) (*ductstreampb.ListDDLResponse, error) {
+	statusFilter := ""
+	if req != nil {
+		statusFilter = req.Status
+	}
+
+	events, err := s.store.ListDDL(ctx, statusFilter)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	items := make([]*ductstreampb.DDLEvent, 0, len(events))
+	for _, event := range events {
+		items = append(items, ddlEventToProto(event))
+	}
+
+	return &ductstreampb.ListDDLResponse{Events: items}, nil
+}
+
 func (s *DDLService) ApproveDDL(ctx context.Context, req *ductstreampb.ApproveDDLRequest) (*ductstreampb.ApproveDDLResponse, error) {
 	if req == nil || req.Id == 0 {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
@@ -62,6 +81,20 @@ func (s *DDLService) RejectDDL(ctx context.Context, req *ductstreampb.RejectDDLR
 		return nil, mapRegistryError(err)
 	}
 	return &ductstreampb.RejectDDLResponse{Event: ddlEventToProto(event)}, nil
+}
+
+func (s *DDLService) MarkDDLApplied(ctx context.Context, req *ductstreampb.MarkDDLAppliedRequest) (*ductstreampb.MarkDDLAppliedResponse, error) {
+	if req == nil || req.Id == 0 {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if err := s.store.SetDDLStatus(ctx, req.Id, registry.StatusApplied); err != nil {
+		return nil, mapRegistryError(err)
+	}
+	event, err := s.store.GetDDL(ctx, req.Id)
+	if err != nil {
+		return nil, mapRegistryError(err)
+	}
+	return &ductstreampb.MarkDDLAppliedResponse{Event: ddlEventToProto(event)}, nil
 }
 
 func ddlEventToProto(event registry.DDLEvent) *ductstreampb.DDLEvent {

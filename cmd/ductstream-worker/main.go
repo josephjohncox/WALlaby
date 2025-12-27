@@ -87,6 +87,7 @@ func main() {
 			Store:        registryStore,
 			AutoApprove:  cfg.DDL.AutoApprove,
 			GateApproval: cfg.DDL.Gate,
+			AutoApply:    cfg.DDL.AutoApply,
 		},
 	}
 

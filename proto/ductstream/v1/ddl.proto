@@ -21,6 +21,14 @@ message ListPendingDDLResponse {
   repeated DDLEvent events = 1;
 }
 
+message ListDDLRequest {
+  string status = 1;
+}
+
+message ListDDLResponse {
+  repeated DDLEvent events = 1;
+}
+
 message ApproveDDLRequest {
   int64 id = 1;
 }
@@ -37,8 +45,18 @@ message RejectDDLResponse {
   DDLEvent event = 1;
 }
 
+message MarkDDLAppliedRequest {
+  int64 id = 1;
+}
+
+message MarkDDLAppliedResponse {
+  DDLEvent event = 1;
+}
+
 service DDLService {
   rpc ListPendingDDL(ListPendingDDLRequest) returns (ListPendingDDLResponse);
+  rpc ListDDL(ListDDLRequest) returns (ListDDLResponse);
   rpc ApproveDDL(ApproveDDLRequest) returns (ApproveDDLResponse);
   rpc RejectDDL(RejectDDLRequest) returns (RejectDDLResponse);
+  rpc MarkDDLApplied(MarkDDLAppliedRequest) returns (MarkDDLAppliedResponse);
 }
