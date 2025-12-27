@@ -20,6 +20,14 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	return d.inner.Write(ctx, batch)
 }
 
+func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, record connector.Record) error {
+	return d.inner.ApplyDDL(ctx, schema, record)
+}
+
+func (d *Destination) TypeMappings() map[string]string {
+	return d.inner.TypeMappings()
+}
+
 func (d *Destination) Close(ctx context.Context) error {
 	return d.inner.Close(ctx)
 }

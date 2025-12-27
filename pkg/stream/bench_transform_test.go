@@ -23,7 +23,7 @@ func BenchmarkTransformMetadata(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, _, err := transformBatchForDestination(batch, spec); err != nil {
+		if _, _, err := transformBatchForDestination(batch, spec, nil); err != nil {
 			b.Fatalf("transform: %v", err)
 		}
 	}

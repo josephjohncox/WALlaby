@@ -56,6 +56,12 @@ func (d *benchDestination) Write(_ context.Context, batch connector.Batch) error
 	return nil
 }
 
+func (d *benchDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
+	return nil
+}
+
+func (d *benchDestination) TypeMappings() map[string]string { return nil }
+
 func (d *benchDestination) Close(context.Context) error { return nil }
 
 func (d *benchDestination) Capabilities() connector.Capabilities {
@@ -64,6 +70,7 @@ func (d *benchDestination) Capabilities() connector.Capabilities {
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      true,
+		SupportsTypeMapping:   true,
 	}
 }
 

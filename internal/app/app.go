@@ -33,6 +33,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	var registryStore registry.Store
 	var registryCloser interface{ Close() }
 	var dbosOrchestrator *orchestrator.DBOSOrchestrator
+	var kubeDispatcher *orchestrator.KubernetesDispatcher
 	var streamStore *pgstream.Store
 	postgresDSN := cfg.Postgres.DSN
 	if postgresDSN != "" {
@@ -124,6 +125,9 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 
 	if cfg.DBOS.Enabled {
+		if cfg.Kubernetes.Enabled {
+			return errors.New("dbos and kubernetes dispatch cannot both be enabled")
+		}
 		if cfg.Postgres.DSN == "" {
 			return errors.New("dbos enabled but postgres dsn is not set")
 		}
@@ -147,13 +151,53 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		dbosOrchestrator = dbosRunner
 		engine = workflow.NewOrchestratedEngine(baseEngine, dbosRunner)
 	}
+	if cfg.Kubernetes.Enabled {
+		dispatcher, err := orchestrator.NewKubernetesDispatcher(ctx, orchestrator.KubernetesConfig{
+			KubeconfigPath:     cfg.Kubernetes.KubeconfigPath,
+			KubeContext:        cfg.Kubernetes.KubeContext,
+			APIServer:          cfg.Kubernetes.APIServer,
+			BearerToken:        cfg.Kubernetes.BearerToken,
+			CAFile:             cfg.Kubernetes.CAFile,
+			CAData:             cfg.Kubernetes.CAData,
+			ClientCertFile:     cfg.Kubernetes.ClientCertFile,
+			ClientKeyFile:      cfg.Kubernetes.ClientKeyFile,
+			InsecureSkipTLS:    cfg.Kubernetes.InsecureSkipTLS,
+			Namespace:          cfg.Kubernetes.Namespace,
+			JobImage:           cfg.Kubernetes.JobImage,
+			JobImagePullPolicy: cfg.Kubernetes.JobImagePullPolicy,
+			JobServiceAccount:  cfg.Kubernetes.JobServiceAccount,
+			JobNamePrefix:      cfg.Kubernetes.JobNamePrefix,
+			JobTTLSeconds:      cfg.Kubernetes.JobTTLSeconds,
+			JobBackoffLimit:    cfg.Kubernetes.JobBackoffLimit,
+			MaxEmptyReads:      cfg.Kubernetes.MaxEmptyReads,
+			JobLabels:          cfg.Kubernetes.JobLabels,
+			JobAnnotations:     cfg.Kubernetes.JobAnnotations,
+			JobCommand:         cfg.Kubernetes.JobCommand,
+			JobArgs:            cfg.Kubernetes.JobArgs,
+			JobEnv:             cfg.Kubernetes.JobEnv,
+			JobEnvFrom:         cfg.Kubernetes.JobEnvFrom,
+		})
+		if err != nil {
+			return err
+		}
+		kubeDispatcher = dispatcher
+		engine = workflow.NewOrchestratedEngine(baseEngine, dispatcher)
+	}
 
 	listener, err := net.Listen("tcp", cfg.API.GRPCListen)
 	if err != nil {
 		return err
 	}
 
-	server := apigrpc.New(engine, checkpoints, registryStore, streamStore)
+	var dispatcher apigrpc.FlowDispatcher
+	if dbosOrchestrator != nil {
+		dispatcher = dbosOrchestrator
+	}
+	if kubeDispatcher != nil {
+		dispatcher = kubeDispatcher
+	}
+
+	server := apigrpc.New(engine, dispatcher, checkpoints, registryStore, streamStore)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- server.Serve(listener)
@@ -180,6 +224,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			if dbosOrchestrator != nil {
 				dbosOrchestrator.Shutdown(30 * time.Second)
 			}
+			_ = kubeDispatcher
 			return nil
 		}
 		return ctx.Err()

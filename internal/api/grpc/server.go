@@ -16,9 +16,9 @@ type Server struct {
 	server *gogrpc.Server
 }
 
-func New(engine workflow.Engine, checkpoints connector.CheckpointStore, registryStore registry.Store, streamStore *pgstream.Store) *Server {
+func New(engine workflow.Engine, dispatcher FlowDispatcher, checkpoints connector.CheckpointStore, registryStore registry.Store, streamStore *pgstream.Store) *Server {
 	server := gogrpc.NewServer()
-	ductstreampb.RegisterFlowServiceServer(server, NewFlowService(engine))
+	ductstreampb.RegisterFlowServiceServer(server, NewFlowService(engine, dispatcher))
 	if checkpoints != nil {
 		ductstreampb.RegisterCheckpointServiceServer(server, NewCheckpointService(checkpoints))
 	}

@@ -15,11 +15,16 @@ import (
 // FlowService implements the gRPC FlowService API.
 type FlowService struct {
 	ductstreampb.UnimplementedFlowServiceServer
-	engine workflow.Engine
+	engine     workflow.Engine
+	dispatcher FlowDispatcher
 }
 
-func NewFlowService(engine workflow.Engine) *FlowService {
-	return &FlowService{engine: engine}
+type FlowDispatcher interface {
+	EnqueueFlow(ctx context.Context, flowID string) error
+}
+
+func NewFlowService(engine workflow.Engine, dispatcher FlowDispatcher) *FlowService {
+	return &FlowService{engine: engine, dispatcher: dispatcher}
 }
 
 func (s *FlowService) CreateFlow(ctx context.Context, req *ductstreampb.CreateFlowRequest) (*ductstreampb.Flow, error) {
@@ -98,6 +103,22 @@ func (s *FlowService) StartFlow(ctx context.Context, req *ductstreampb.StartFlow
 		return nil, mapWorkflowError(err)
 	}
 	return flowToProto(started), nil
+}
+
+func (s *FlowService) RunFlowOnce(ctx context.Context, req *ductstreampb.RunFlowOnceRequest) (*ductstreampb.RunFlowOnceResponse, error) {
+	if req == nil || req.FlowId == "" {
+		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
+	}
+	if s.dispatcher == nil {
+		return nil, status.Error(codes.FailedPrecondition, "dispatcher not configured")
+	}
+	if _, err := s.engine.Get(ctx, req.FlowId); err != nil {
+		return nil, mapWorkflowError(err)
+	}
+	if err := s.dispatcher.EnqueueFlow(ctx, req.FlowId); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &ductstreampb.RunFlowOnceResponse{Dispatched: true}, nil
 }
 
 func (s *FlowService) StopFlow(ctx context.Context, req *ductstreampb.StopFlowRequest) (*ductstreampb.Flow, error) {

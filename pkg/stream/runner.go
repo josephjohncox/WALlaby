@@ -331,8 +331,22 @@ func (r *Runner) writeDestinations(ctx context.Context, batch connector.Batch) e
 }
 
 func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, batch connector.Batch) error {
+	if len(batch.Records) > 0 {
+		if dest.Dest.Capabilities().SupportsDDL {
+			for _, record := range batch.Records {
+				if record.Operation != connector.OpDDL && record.DDL == "" {
+					continue
+				}
+				if err := dest.Dest.ApplyDDL(ctx, batch.Schema, record); err != nil {
+					return fmt.Errorf("apply ddl destination %s: %w", dest.Spec.Name, err)
+				}
+			}
+		}
+	}
+
 	destBatch := batch
-	if transformed, ok, err := transformBatchForDestination(batch, dest.Spec); err != nil {
+	baseMappings := dest.Dest.TypeMappings()
+	if transformed, ok, err := transformBatchForDestination(batch, dest.Spec, baseMappings); err != nil {
 		return fmt.Errorf("transform destination %s: %w", dest.Spec.Name, err)
 	} else if ok {
 		destBatch = transformed

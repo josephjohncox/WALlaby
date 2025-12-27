@@ -80,6 +80,32 @@ export DUCTSTREAM_DBOS_SCHEDULE="*/10 * * * * *" # every 10 seconds
 
 If `DUCTSTREAM_DBOS_SCHEDULE` is set, DBOS enqueues one run for each flow in `running` state.
 
+## Kubernetes Job Dispatch
+If the API server runs inside Kubernetes, it can launch per-flow workers as Jobs when you call `StartFlow` or `ResumeFlow`:
+
+```bash
+export DUCTSTREAM_K8S_ENABLED="true"
+export DUCTSTREAM_K8S_JOB_IMAGE="ghcr.io/josephjohncox/ductstream:0.1.0"
+export DUCTSTREAM_K8S_JOB_SERVICE_ACCOUNT="ductstream"
+export DUCTSTREAM_K8S_JOB_ENV_FROM="secret:ductstream-secrets,configmap:ductstream-config"
+```
+
+Optional settings:
+- `DUCTSTREAM_K8S_NAMESPACE` (defaults to the in-cluster namespace)
+- `DUCTSTREAM_K8S_JOB_MAX_EMPTY_READS` (appends `-max-empty-reads` to workers)
+- `DUCTSTREAM_K8S_JOB_ARGS` / `DUCTSTREAM_K8S_JOB_COMMAND` (comma-separated list)
+- `DUCTSTREAM_K8S_JOB_LABELS` / `DUCTSTREAM_K8S_JOB_ANNOTATIONS` (`key=value` comma list)
+- `DUCTSTREAM_K8S_KUBECONFIG` / `DUCTSTREAM_K8S_CONTEXT` for out-of-cluster kubeconfig usage
+- `DUCTSTREAM_K8S_API_SERVER`, `DUCTSTREAM_K8S_TOKEN`, `DUCTSTREAM_K8S_CA_FILE`, `DUCTSTREAM_K8S_CA_DATA` for explicit API config
+- `DUCTSTREAM_K8S_CLIENT_CERT`, `DUCTSTREAM_K8S_CLIENT_KEY` for mTLS auth
+- `DUCTSTREAM_K8S_INSECURE_SKIP_TLS` to skip TLS verification (not recommended)
+
+You can also trigger a one-off run without changing flow state via gRPC:
+
+```bash
+grpcurl -plaintext -d '{"flow_id":"<id>"}' localhost:8080 ductstream.v1.FlowService/RunFlowOnce
+```
+
 ## Checkpoint Store
 By default, checkpoints use Postgres when `DUCTSTREAM_POSTGRES_DSN` is set. For standalone runs, SQLite is supported:
 
@@ -99,6 +125,20 @@ export DUCTSTREAM_WIRE_ENFORCE="true"
 ```
 
 Per-flow overrides are supported via `flow.wire_format` or connector `options.format`.
+
+## Type Mapping (Schema Translation)
+Destinations that materialize tables (Snowflake, Snowpipe, ClickHouse, DuckDB) apply default Postgres → destination type mappings. Override per destination with:
+- `type_mappings` — JSON map of `postgres_type` → `dest_type`
+- `type_mappings_file` — path to a JSON map file
+
+Example:
+
+```json
+{
+  "timestamptz": "TIMESTAMP_TZ",
+  "jsonb": "VARIANT"
+}
+```
 
 ## Postgres Source Options
 Key Postgres source options (connector `options`):

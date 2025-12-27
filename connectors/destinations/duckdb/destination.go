@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/josephjohncox/ductstream/internal/ddl"
 	"github.com/josephjohncox/ductstream/pkg/connector"
 	_ "github.com/marcboeker/go-duckdb"
 )
@@ -204,6 +205,7 @@ func (d *Destination) Capabilities() connector.Capabilities {
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      true,
+		SupportsTypeMapping:   true,
 		SupportedWireFormats: []connector.WireFormat{
 			connector.WireFormatArrow,
 			connector.WireFormatParquet,
@@ -212,6 +214,29 @@ func (d *Destination) Capabilities() connector.Capabilities {
 			connector.WireFormatJSON,
 		},
 	}
+}
+
+func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, record connector.Record) error {
+	if d.db == nil {
+		return errors.New("duckdb destination not initialized")
+	}
+	statements, err := ddl.TranslateRecordDDL(schema, record, ddl.DialectConfigFor(ddl.DialectDuckDB), d.TypeMappings(), d.spec.Options)
+	if err != nil {
+		return err
+	}
+	for _, stmt := range statements {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("apply ddl: %w", err)
+		}
+	}
+	return nil
+}
+
+func (d *Destination) TypeMappings() map[string]string {
+	return defaultDuckDBTypeMappings()
 }
 
 func (d *Destination) applyRecord(ctx context.Context, tx *sql.Tx, target string, schema connector.Schema, record connector.Record, mode string) error {
@@ -233,6 +258,47 @@ func (d *Destination) applyRecord(ctx context.Context, tx *sql.Tx, target string
 		return d.insertRow(ctx, tx, target, schema, record)
 	default:
 		return nil
+	}
+}
+
+func defaultDuckDBTypeMappings() map[string]string {
+	return map[string]string{
+		"bool":                        "BOOLEAN",
+		"boolean":                     "BOOLEAN",
+		"int2":                        "SMALLINT",
+		"smallint":                    "SMALLINT",
+		"int4":                        "INTEGER",
+		"integer":                     "INTEGER",
+		"int":                         "INTEGER",
+		"int8":                        "BIGINT",
+		"bigint":                      "BIGINT",
+		"serial":                      "INTEGER",
+		"bigserial":                   "BIGINT",
+		"float4":                      "REAL",
+		"real":                        "REAL",
+		"float8":                      "DOUBLE",
+		"double precision":            "DOUBLE",
+		"numeric":                     "DECIMAL",
+		"decimal":                     "DECIMAL",
+		"money":                       "DECIMAL",
+		"uuid":                        "UUID",
+		"text":                        "TEXT",
+		"varchar":                     "VARCHAR",
+		"character varying":           "VARCHAR",
+		"character":                   "VARCHAR",
+		"bpchar":                      "VARCHAR",
+		"json":                        "JSON",
+		"jsonb":                       "JSON",
+		"bytea":                       "BLOB",
+		"date":                        "DATE",
+		"time":                        "TIME",
+		"timetz":                      "TIME",
+		"timestamp":                   "TIMESTAMP",
+		"timestamp without time zone": "TIMESTAMP",
+		"timestamp with time zone":    "TIMESTAMPTZ",
+		"timestamptz":                 "TIMESTAMPTZ",
+		"inet":                        "VARCHAR",
+		"cidr":                        "VARCHAR",
 	}
 }
 

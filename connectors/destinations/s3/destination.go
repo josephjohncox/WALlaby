@@ -106,6 +106,12 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	return nil
 }
 
+func (d *Destination) ApplyDDL(_ context.Context, _ connector.Schema, _ connector.Record) error {
+	return nil
+}
+
+func (d *Destination) TypeMappings() map[string]string { return nil }
+
 func (d *Destination) Close(_ context.Context) error {
 	return nil
 }
@@ -116,6 +122,7 @@ func (d *Destination) Capabilities() connector.Capabilities {
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     false,
 		SupportsBulkLoad:      true,
+		SupportsTypeMapping:   true,
 		SupportedWireFormats: []connector.WireFormat{
 			connector.WireFormatArrow,
 			connector.WireFormatParquet,

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/josephjohncox/ductstream/internal/ddl"
 	"github.com/josephjohncox/ductstream/pkg/connector"
 	"github.com/josephjohncox/ductstream/pkg/wire"
 	_ "github.com/snowflakedb/gosnowflake"
@@ -191,6 +192,29 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	return nil
 }
 
+func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, record connector.Record) error {
+	if d.db == nil {
+		return errors.New("snowpipe destination not initialized")
+	}
+	statements, err := ddl.TranslateRecordDDL(schema, record, ddl.DialectConfigFor(ddl.DialectSnowflake), d.TypeMappings(), d.spec.Options)
+	if err != nil {
+		return err
+	}
+	for _, stmt := range statements {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("apply ddl: %w", err)
+		}
+	}
+	return nil
+}
+
+func (d *Destination) TypeMappings() map[string]string {
+	return defaultSnowpipeTypeMappings()
+}
+
 func (d *Destination) Close(_ context.Context) error {
 	if d.db != nil {
 		return d.db.Close()
@@ -204,6 +228,7 @@ func (d *Destination) Capabilities() connector.Capabilities {
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     false,
 		SupportsBulkLoad:      true,
+		SupportsTypeMapping:   true,
 		SupportedWireFormats: []connector.WireFormat{
 			connector.WireFormatParquet,
 			connector.WireFormatAvro,
@@ -308,6 +333,47 @@ func extensionForFormat(format connector.WireFormat) string {
 		return "json"
 	default:
 		return "bin"
+	}
+}
+
+func defaultSnowpipeTypeMappings() map[string]string {
+	return map[string]string{
+		"bool":                        "BOOLEAN",
+		"boolean":                     "BOOLEAN",
+		"int2":                        "SMALLINT",
+		"smallint":                    "SMALLINT",
+		"int4":                        "INTEGER",
+		"integer":                     "INTEGER",
+		"int":                         "INTEGER",
+		"int8":                        "BIGINT",
+		"bigint":                      "BIGINT",
+		"serial":                      "INTEGER",
+		"bigserial":                   "BIGINT",
+		"float4":                      "FLOAT",
+		"real":                        "FLOAT",
+		"float8":                      "DOUBLE",
+		"double precision":            "DOUBLE",
+		"numeric":                     "NUMBER",
+		"decimal":                     "NUMBER",
+		"money":                       "NUMBER",
+		"uuid":                        "STRING",
+		"text":                        "STRING",
+		"varchar":                     "STRING",
+		"character varying":           "STRING",
+		"character":                   "STRING",
+		"bpchar":                      "STRING",
+		"json":                        "VARIANT",
+		"jsonb":                       "VARIANT",
+		"bytea":                       "BINARY",
+		"date":                        "DATE",
+		"time":                        "TIME",
+		"timetz":                      "TIME",
+		"timestamp":                   "TIMESTAMP_NTZ",
+		"timestamp without time zone": "TIMESTAMP_NTZ",
+		"timestamp with time zone":    "TIMESTAMP_TZ",
+		"timestamptz":                 "TIMESTAMP_TZ",
+		"inet":                        "STRING",
+		"cidr":                        "STRING",
 	}
 }
 

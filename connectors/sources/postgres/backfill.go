@@ -204,6 +204,7 @@ func (b *BackfillSource) Capabilities() connector.Capabilities {
 		SupportsSchemaChanges: false,
 		SupportsStreaming:     false,
 		SupportsBulkLoad:      true,
+		SupportsTypeMapping:   true,
 		SupportedWireFormats: []connector.WireFormat{
 			connector.WireFormatArrow,
 			connector.WireFormatParquet,

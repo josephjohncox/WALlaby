@@ -14,6 +14,7 @@ type Config struct {
 	Postgres    PostgresConfig
 	Telemetry   TelemetryConfig
 	DBOS        DBOSConfig
+	Kubernetes  KubernetesConfig
 	Wire        WireConfig
 	DDL         DDLConfig
 	Checkpoints CheckpointConfig
@@ -37,6 +38,33 @@ type DBOSConfig struct {
 	Schedule      string
 	Queue         string
 	MaxEmptyReads int
+}
+
+type KubernetesConfig struct {
+	Enabled            bool
+	KubeconfigPath     string
+	KubeContext        string
+	APIServer          string
+	BearerToken        string
+	CAFile             string
+	CAData             string
+	ClientCertFile     string
+	ClientKeyFile      string
+	InsecureSkipTLS    bool
+	Namespace          string
+	JobImage           string
+	JobImagePullPolicy string
+	JobServiceAccount  string
+	JobNamePrefix      string
+	JobTTLSeconds      int
+	JobBackoffLimit    int
+	MaxEmptyReads      int
+	JobLabels          map[string]string
+	JobAnnotations     map[string]string
+	JobCommand         []string
+	JobArgs            []string
+	JobEnv             map[string]string
+	JobEnvFrom         []string
 }
 
 type WireConfig struct {
@@ -78,6 +106,32 @@ func Load(_ string) (*Config, error) {
 			Schedule:      getenv("DUCTSTREAM_DBOS_SCHEDULE", ""),
 			Queue:         getenv("DUCTSTREAM_DBOS_QUEUE", "ductstream"),
 			MaxEmptyReads: getenvInt("DUCTSTREAM_DBOS_MAX_EMPTY_READS", 1),
+		},
+		Kubernetes: KubernetesConfig{
+			Enabled:            getenvBool("DUCTSTREAM_K8S_ENABLED", false),
+			KubeconfigPath:     getenv("DUCTSTREAM_K8S_KUBECONFIG", getenv("KUBECONFIG", "")),
+			KubeContext:        getenv("DUCTSTREAM_K8S_CONTEXT", ""),
+			APIServer:          getenv("DUCTSTREAM_K8S_API_SERVER", ""),
+			BearerToken:        getenv("DUCTSTREAM_K8S_TOKEN", ""),
+			CAFile:             getenv("DUCTSTREAM_K8S_CA_FILE", ""),
+			CAData:             getenv("DUCTSTREAM_K8S_CA_DATA", ""),
+			ClientCertFile:     getenv("DUCTSTREAM_K8S_CLIENT_CERT", ""),
+			ClientKeyFile:      getenv("DUCTSTREAM_K8S_CLIENT_KEY", ""),
+			InsecureSkipTLS:    getenvBool("DUCTSTREAM_K8S_INSECURE_SKIP_TLS", false),
+			Namespace:          getenv("DUCTSTREAM_K8S_NAMESPACE", ""),
+			JobImage:           getenv("DUCTSTREAM_K8S_JOB_IMAGE", ""),
+			JobImagePullPolicy: getenv("DUCTSTREAM_K8S_JOB_IMAGE_PULL_POLICY", "IfNotPresent"),
+			JobServiceAccount:  getenv("DUCTSTREAM_K8S_JOB_SERVICE_ACCOUNT", ""),
+			JobNamePrefix:      getenv("DUCTSTREAM_K8S_JOB_NAME_PREFIX", "ductstream-worker"),
+			JobTTLSeconds:      getenvInt("DUCTSTREAM_K8S_JOB_TTL_SECONDS", 0),
+			JobBackoffLimit:    getenvInt("DUCTSTREAM_K8S_JOB_BACKOFF_LIMIT", 1),
+			MaxEmptyReads:      getenvInt("DUCTSTREAM_K8S_JOB_MAX_EMPTY_READS", 0),
+			JobLabels:          getenvKeyValueMap("DUCTSTREAM_K8S_JOB_LABELS"),
+			JobAnnotations:     getenvKeyValueMap("DUCTSTREAM_K8S_JOB_ANNOTATIONS"),
+			JobCommand:         getenvCSV("DUCTSTREAM_K8S_JOB_COMMAND", ""),
+			JobArgs:            getenvCSV("DUCTSTREAM_K8S_JOB_ARGS", ""),
+			JobEnv:             getenvKeyValueMap("DUCTSTREAM_K8S_JOB_ENV"),
+			JobEnvFrom:         getenvCSV("DUCTSTREAM_K8S_JOB_ENV_FROM", ""),
 		},
 		Wire: WireConfig{
 			DefaultFormat: getenv("DUCTSTREAM_WIRE_FORMAT", ""),
@@ -153,4 +207,36 @@ func getenvInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func getenvKeyValueMap(key string) map[string]string {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	out := make(map[string]string)
+	parts := strings.Split(raw, ",")
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item == "" {
+			continue
+		}
+		pair := strings.SplitN(item, "=", 2)
+		if len(pair) == 0 {
+			continue
+		}
+		k := strings.TrimSpace(pair[0])
+		if k == "" {
+			continue
+		}
+		val := ""
+		if len(pair) > 1 {
+			val = strings.TrimSpace(pair[1])
+		}
+		out[k] = val
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

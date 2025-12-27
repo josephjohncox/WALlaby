@@ -47,8 +47,8 @@ type destTransform struct {
 	typeMappings    map[string]string
 }
 
-func transformBatchForDestination(batch connector.Batch, spec connector.Spec) (connector.Batch, bool, error) {
-	cfg, err := parseDestTransform(spec.Options)
+func transformBatchForDestination(batch connector.Batch, spec connector.Spec, baseMappings map[string]string) (connector.Batch, bool, error) {
+	cfg, err := parseDestTransform(spec.Options, baseMappings)
 	if err != nil {
 		return connector.Batch{}, false, err
 	}
@@ -61,8 +61,15 @@ func transformBatchForDestination(batch connector.Batch, spec connector.Spec) (c
 	schema := batch.Schema
 	records := batch.Records
 	changed := false
+	hasData := false
+	for _, record := range batch.Records {
+		if record.Operation != connector.OpDDL {
+			hasData = true
+			break
+		}
+	}
 
-	if cfg.metaEnabled || cfg.appendMode || cfg.softDelete {
+	if hasData && (cfg.metaEnabled || cfg.appendMode || cfg.softDelete) {
 		updatedSchema, err := applyMetadataSchema(schema, metaCols)
 		if err != nil {
 			return connector.Batch{}, false, err
@@ -70,6 +77,10 @@ func transformBatchForDestination(batch connector.Batch, spec connector.Spec) (c
 		schema = updatedSchema
 		records = make([]connector.Record, 0, len(batch.Records))
 		for _, record := range batch.Records {
+			if record.Operation == connector.OpDDL {
+				records = append(records, record)
+				continue
+			}
 			updated, err := applyRecordTransform(record, batch.Checkpoint, cfg, metaCols)
 			if err != nil {
 				return connector.Batch{}, false, err
@@ -79,7 +90,7 @@ func transformBatchForDestination(batch connector.Batch, spec connector.Spec) (c
 		changed = true
 	}
 
-	if len(cfg.typeMappings) > 0 {
+	if hasData && len(cfg.typeMappings) > 0 {
 		schema = applyTypeMappings(schema, cfg.typeMappings)
 		changed = true
 	}
@@ -96,7 +107,7 @@ func transformBatchForDestination(batch connector.Batch, spec connector.Spec) (c
 	}, true, nil
 }
 
-func parseDestTransform(options map[string]string) (destTransform, error) {
+func parseDestTransform(options map[string]string, baseMappings map[string]string) (destTransform, error) {
 	cfg := destTransform{
 		metaEnabled:     parseBool(options[optMetaEnabled], false),
 		appendMode:      parseBool(options[optAppendMode], false),
@@ -131,9 +142,29 @@ func parseDestTransform(options map[string]string) (destTransform, error) {
 	if err != nil {
 		return destTransform{}, err
 	}
-	cfg.typeMappings = mappings
+	cfg.typeMappings = mergeTypeMappings(baseMappings, mappings)
 
 	return cfg, nil
+}
+
+func mergeTypeMappings(base, override map[string]string) map[string]string {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(base)+len(override))
+	for key, value := range base {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		out[normalizeTypeKey(key)] = value
+	}
+	for key, value := range override {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		out[normalizeTypeKey(key)] = value
+	}
+	return out
 }
 
 type metadataColumn struct {

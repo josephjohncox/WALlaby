@@ -296,6 +296,7 @@ func (s *Source) Capabilities() connector.Capabilities {
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      false,
+		SupportsTypeMapping:   true,
 		SupportedWireFormats: []connector.WireFormat{
 			connector.WireFormatArrow,
 			connector.WireFormatParquet,

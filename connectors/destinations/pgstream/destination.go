@@ -95,6 +95,12 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	return d.store.Enqueue(ctx, d.stream, messages)
 }
 
+func (d *Destination) ApplyDDL(_ context.Context, _ connector.Schema, _ connector.Record) error {
+	return nil
+}
+
+func (d *Destination) TypeMappings() map[string]string { return nil }
+
 func (d *Destination) Close(_ context.Context) error {
 	if d.store != nil {
 		d.store.Close()
@@ -108,6 +114,7 @@ func (d *Destination) Capabilities() connector.Capabilities {
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      true,
+		SupportsTypeMapping:   true,
 		SupportedWireFormats: []connector.WireFormat{
 			connector.WireFormatArrow,
 			connector.WireFormatParquet,

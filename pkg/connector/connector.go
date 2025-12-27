@@ -59,6 +59,7 @@ type Capabilities struct {
 	SupportsSchemaChanges bool
 	SupportsStreaming     bool
 	SupportsBulkLoad      bool
+	SupportsTypeMapping   bool
 	SupportedWireFormats  []WireFormat
 }
 
@@ -127,6 +128,8 @@ type Source interface {
 type Destination interface {
 	Open(ctx context.Context, spec Spec) error
 	Write(ctx context.Context, batch Batch) error
+	ApplyDDL(ctx context.Context, schema Schema, record Record) error
+	TypeMappings() map[string]string
 	Close(ctx context.Context) error
 	Capabilities() Capabilities
 }

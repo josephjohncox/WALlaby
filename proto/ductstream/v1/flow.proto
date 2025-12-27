@@ -10,6 +10,7 @@ service FlowService {
   rpc CreateFlow(CreateFlowRequest) returns (Flow);
   rpc UpdateFlow(UpdateFlowRequest) returns (Flow);
   rpc StartFlow(StartFlowRequest) returns (Flow);
+  rpc RunFlowOnce(RunFlowOnceRequest) returns (RunFlowOnceResponse);
   rpc StopFlow(StopFlowRequest) returns (Flow);
   rpc ResumeFlow(ResumeFlowRequest) returns (Flow);
   rpc GetFlow(GetFlowRequest) returns (Flow);
@@ -28,6 +29,14 @@ message UpdateFlowRequest {
 
 message StartFlowRequest {
   string flow_id = 1;
+}
+
+message RunFlowOnceRequest {
+  string flow_id = 1;
+}
+
+message RunFlowOnceResponse {
+  bool dispatched = 1;
 }
 
 message StopFlowRequest {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	_ "github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/josephjohncox/ductstream/internal/ddl"
 	"github.com/josephjohncox/ductstream/pkg/connector"
 )
 
@@ -213,6 +214,7 @@ func (d *Destination) Capabilities() connector.Capabilities {
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      true,
+		SupportsTypeMapping:   true,
 		SupportedWireFormats: []connector.WireFormat{
 			connector.WireFormatArrow,
 			connector.WireFormatParquet,
@@ -221,6 +223,29 @@ func (d *Destination) Capabilities() connector.Capabilities {
 			connector.WireFormatJSON,
 		},
 	}
+}
+
+func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, record connector.Record) error {
+	if d.db == nil {
+		return errors.New("clickhouse destination not initialized")
+	}
+	statements, err := ddl.TranslateRecordDDL(schema, record, ddl.DialectConfigFor(ddl.DialectClickHouse), d.TypeMappings(), d.spec.Options)
+	if err != nil {
+		return err
+	}
+	for _, stmt := range statements {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("apply ddl: %w", err)
+		}
+	}
+	return nil
+}
+
+func (d *Destination) TypeMappings() map[string]string {
+	return defaultClickHouseTypeMappings()
 }
 
 func (d *Destination) applyRecord(ctx context.Context, target string, schema connector.Schema, record connector.Record, mode string) error {
@@ -242,6 +267,47 @@ func (d *Destination) applyRecord(ctx context.Context, target string, schema con
 		return d.insertRow(ctx, target, schema, record)
 	default:
 		return nil
+	}
+}
+
+func defaultClickHouseTypeMappings() map[string]string {
+	return map[string]string{
+		"bool":                        "UInt8",
+		"boolean":                     "UInt8",
+		"int2":                        "Int16",
+		"smallint":                    "Int16",
+		"int4":                        "Int32",
+		"integer":                     "Int32",
+		"int":                         "Int32",
+		"int8":                        "Int64",
+		"bigint":                      "Int64",
+		"serial":                      "Int32",
+		"bigserial":                   "Int64",
+		"float4":                      "Float32",
+		"real":                        "Float32",
+		"float8":                      "Float64",
+		"double precision":            "Float64",
+		"numeric":                     "Decimal",
+		"decimal":                     "Decimal",
+		"money":                       "Decimal",
+		"uuid":                        "String",
+		"text":                        "String",
+		"varchar":                     "String",
+		"character varying":           "String",
+		"character":                   "String",
+		"bpchar":                      "String",
+		"json":                        "String",
+		"jsonb":                       "String",
+		"bytea":                       "String",
+		"date":                        "Date",
+		"time":                        "String",
+		"timetz":                      "String",
+		"timestamp":                   "DateTime64(6)",
+		"timestamp without time zone": "DateTime64(6)",
+		"timestamp with time zone":    "DateTime64(6)",
+		"timestamptz":                 "DateTime64(6)",
+		"inet":                        "String",
+		"cidr":                        "String",
 	}
 }
 
