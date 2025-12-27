@@ -93,6 +93,7 @@ You can override connection settings via env vars:
 - `BENCH_PG_DSN` (default: `postgres://postgres:postgres@localhost:5432/wallaby?sslmode=disable`)
 - `BENCH_CLICKHOUSE_DSN` (default: `clickhouse://bench:bench@localhost:9000/bench`)
 - `BENCH_KAFKA_BROKERS` (default: `localhost:9092`)
+- `BENCH_CLICKHOUSE_WRITE_MODE` (default: `append`) — use `target` to benchmark mutation-based upserts
 - `RESET_VOLUMES` (default: `1`, set to `0` to preserve Docker volumes)
 
 Example:

@@ -774,13 +774,14 @@ func buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix string) (c
 		}
 		return spec, &pgdest.Destination{}, nil
 	case "clickhouse":
+		writeMode := getenv("BENCH_CLICKHOUSE_WRITE_MODE", "append")
 		spec := connector.Spec{
 			Name: "bench-clickhouse",
 			Type: connector.EndpointClickHouse,
 			Options: map[string]string{
 				"dsn":                ckDSN,
 				"database":           "bench",
-				"write_mode":         "target",
+				"write_mode":         writeMode,
 				"meta_table_enabled": "false",
 			},
 		}
