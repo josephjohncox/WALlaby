@@ -183,6 +183,21 @@ func (d *Destination) ResolveStaging(ctx context.Context) error {
 	return d.finalizeStaging(ctx)
 }
 
+// ResolveStagingFor applies staged data for specific schemas/tables.
+func (d *Destination) ResolveStagingFor(ctx context.Context, schemas []connector.Schema) error {
+	if d.db == nil {
+		return errors.New("duckdb destination not initialized")
+	}
+	for _, schema := range schemas {
+		if schema.Name == "" {
+			continue
+		}
+		key := tableKey(schema, schema.Name)
+		d.stagingTables[key] = tableInfo{schema: schema, table: schema.Name}
+	}
+	return d.finalizeStaging(ctx)
+}
+
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
 		SupportsDDL:           true,
@@ -240,16 +255,9 @@ func (d *Destination) trackStaging(schema connector.Schema, record connector.Rec
 }
 
 func (d *Destination) targetTable(schema connector.Schema, record connector.Record) string {
-	table := strings.TrimSpace(d.spec.Options[optTable])
-	targetSchema := strings.TrimSpace(d.spec.Options[optSchema])
-	if table == "" {
-		table = record.Table
-	}
+	targetSchema, table := d.targetParts(schema, record.Table)
 	if strings.Contains(table, ".") {
 		return quoteQualified(table, '"')
-	}
-	if targetSchema == "" {
-		targetSchema = schema.Namespace
 	}
 	if targetSchema == "" {
 		return quoteIdent(table, '"')
@@ -261,22 +269,7 @@ func (d *Destination) stagingTable(schema connector.Schema, record connector.Rec
 	stagingTable := strings.TrimSpace(d.stagingTableName)
 	stagingSchema := strings.TrimSpace(d.stagingSchema)
 
-	table := strings.TrimSpace(d.spec.Options[optTable])
-	targetSchema := strings.TrimSpace(d.spec.Options[optSchema])
-	if table == "" {
-		table = record.Table
-	}
-	if strings.Contains(table, ".") {
-		parts := strings.SplitN(table, ".", 2)
-		if len(parts) == 2 {
-			targetSchema = parts[0]
-			table = parts[1]
-		}
-	}
-	if targetSchema == "" {
-		targetSchema = schema.Namespace
-	}
-
+	targetSchema, table := d.targetParts(schema, record.Table)
 	if stagingTable == "" {
 		stagingTable = table + d.stagingSuffix
 	}
@@ -333,6 +326,13 @@ func (d *Destination) resolveStagingTable(ctx context.Context, info tableInfo) e
 	staging := d.stagingTable(info.schema, connector.Record{Table: info.table})
 	cols := schemaColumns(info.schema)
 	if len(cols) == 0 {
+		loaded, err := d.loadColumns(ctx, info.schema, info.table)
+		if err != nil {
+			return err
+		}
+		cols = loaded
+	}
+	if len(cols) == 0 {
 		return nil
 	}
 	colList := quoteColumns(cols, '"')
@@ -346,6 +346,56 @@ func (d *Destination) resolveStagingTable(ctx context.Context, info tableInfo) e
 		return fmt.Errorf("resolve staging: %w", err)
 	}
 	return nil
+}
+
+func (d *Destination) targetParts(schema connector.Schema, table string) (string, string) {
+	targetSchema := strings.TrimSpace(d.spec.Options[optSchema])
+	targetTable := strings.TrimSpace(d.spec.Options[optTable])
+	if targetTable == "" {
+		targetTable = table
+	}
+	if strings.Contains(targetTable, ".") {
+		parts := strings.SplitN(targetTable, ".", 2)
+		if len(parts) == 2 {
+			targetSchema = parts[0]
+			targetTable = parts[1]
+		}
+	}
+	if targetSchema == "" {
+		targetSchema = schema.Namespace
+	}
+	return targetSchema, targetTable
+}
+
+func (d *Destination) loadColumns(ctx context.Context, schema connector.Schema, table string) ([]string, error) {
+	targetSchema, targetTable := d.targetParts(schema, table)
+	if targetTable == "" {
+		return nil, nil
+	}
+	if targetSchema == "" {
+		targetSchema = "main"
+	}
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT column_name FROM information_schema.columns WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position`,
+		targetSchema, targetTable,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load columns: %w", err)
+	}
+	defer rows.Close()
+
+	var cols []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan column: %w", err)
+		}
+		cols = append(cols, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate columns: %w", err)
+	}
+	return cols, nil
 }
 
 func (d *Destination) updateRow(ctx context.Context, tx *sql.Tx, target string, schema connector.Schema, record connector.Record) error {

@@ -1,0 +1,42 @@
+version: 2
+
+project_name: ductstream
+
+before:
+  hooks:
+    - make tidy
+
+builds:
+  - id: ductstream
+    main: ./cmd/ductstream
+    binary: ductstream
+    env:
+      - CGO_ENABLED=0
+  - id: ductstream-worker
+    main: ./cmd/ductstream-worker
+    binary: ductstream-worker
+    env:
+      - CGO_ENABLED=0
+  - id: ductstream-admin
+    main: ./cmd/ductstream-admin
+    binary: ductstream-admin
+    env:
+      - CGO_ENABLED=0
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  name_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"

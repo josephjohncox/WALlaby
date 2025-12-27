@@ -25,6 +25,11 @@ type StagingResolver interface {
 	ResolveStaging(ctx context.Context) error
 }
 
+// StagingResolverFor lets destinations resolve staging tables for known schemas.
+type StagingResolverFor interface {
+	ResolveStagingFor(ctx context.Context, schemas []connector.Schema) error
+}
+
 // Runner streams data from a source to destinations.
 type Runner struct {
 	Source         connector.Source

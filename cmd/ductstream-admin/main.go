@@ -35,6 +35,8 @@ func main() {
 		runStream(os.Args[2:])
 	case "publication":
 		runPublication(os.Args[2:])
+	case "flow":
+		runFlow(os.Args[2:])
 	default:
 		usage()
 	}
@@ -247,6 +249,7 @@ func usage() {
 	fmt.Println("  ductstream-admin ddl <list|approve|reject|apply> [flags]")
 	fmt.Println("  ductstream-admin stream <replay> [flags]")
 	fmt.Println("  ductstream-admin publication <list|add|remove|sync|scrape> [flags]")
+	fmt.Println("  ductstream-admin flow <resolve-staging> [flags]")
 	os.Exit(1)
 }
 
@@ -322,6 +325,24 @@ func streamUsage() {
 	fmt.Println("  ductstream-admin stream replay -stream <name> -group <name> [-from-lsn <lsn>] [-since <rfc3339>]")
 	fmt.Println("  ductstream-admin stream pull -stream <name> -group <name> [-max 10] [-visibility 30] [-consumer <id>] [--json|--pretty]")
 	fmt.Println("  ductstream-admin stream ack -stream <name> -group <name> -ids 1,2,3")
+	os.Exit(1)
+}
+
+func runFlow(args []string) {
+	if len(args) < 1 {
+		flowUsage()
+	}
+	switch args[0] {
+	case "resolve-staging":
+		flowResolveStaging(args[1:])
+	default:
+		flowUsage()
+	}
+}
+
+func flowUsage() {
+	fmt.Println("Flow subcommands:")
+	fmt.Println("  ductstream-admin flow resolve-staging -flow-id <id> [-tables schema.table,...] [-schemas public,...] [-dest <name>]")
 	os.Exit(1)
 }
 
@@ -750,6 +771,88 @@ func publicationScrape(args []string) {
 	}
 }
 
+func flowResolveStaging(args []string) {
+	fs := flag.NewFlagSet("flow resolve-staging", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
+	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
+	flowID := fs.String("flow-id", "", "flow id")
+	tables := fs.String("tables", "", "comma-separated tables (schema.table)")
+	schemas := fs.String("schemas", "", "comma-separated schemas to resolve")
+	destName := fs.String("dest", "", "destination name (optional)")
+	fs.Parse(args)
+
+	if *flowID == "" {
+		log.Fatal("-flow-id is required")
+	}
+
+	ctx := context.Background()
+	client, closeConn := flowClientOrExit(*endpoint, *insecureConn)
+	defer closeConn()
+
+	flowResp, err := client.GetFlow(ctx, &ductstreampb.GetFlowRequest{FlowId: *flowID})
+	if err != nil {
+		log.Fatalf("load flow: %v", err)
+	}
+	model, err := flowFromProto(flowResp)
+	if err != nil {
+		log.Fatalf("parse flow: %v", err)
+	}
+
+	tableList, err := resolveFlowTables(ctx, model, *tables, *schemas)
+	if err != nil {
+		log.Fatalf("resolve tables: %v", err)
+	}
+	if len(tableList) == 0 {
+		log.Fatal("no tables resolved")
+	}
+	schemaList, err := parseSchemaTables(tableList)
+	if err != nil {
+		log.Fatalf("parse tables: %v", err)
+	}
+
+	factory := runner.Factory{}
+	destinations, err := factory.Destinations(model.Destinations)
+	if err != nil {
+		log.Fatalf("build destinations: %v", err)
+	}
+
+	resolved := 0
+	for _, dest := range destinations {
+		if *destName != "" && dest.Spec.Name != *destName {
+			continue
+		}
+		if dest.Spec.Options == nil {
+			dest.Spec.Options = map[string]string{}
+		}
+		if dest.Spec.Options["flow_id"] == "" {
+			dest.Spec.Options["flow_id"] = model.ID
+		}
+		if err := dest.Dest.Open(ctx, dest.Spec); err != nil {
+			log.Fatalf("open destination %s: %v", dest.Spec.Name, err)
+		}
+
+		if resolver, ok := dest.Dest.(stream.StagingResolverFor); ok {
+			if err := resolver.ResolveStagingFor(ctx, schemaList); err != nil {
+				_ = dest.Dest.Close(ctx)
+				log.Fatalf("resolve staging for %s: %v", dest.Spec.Name, err)
+			}
+			resolved++
+		} else if resolver, ok := dest.Dest.(stream.StagingResolver); ok {
+			if err := resolver.ResolveStaging(ctx); err != nil {
+				_ = dest.Dest.Close(ctx)
+				log.Fatalf("resolve staging for %s: %v", dest.Spec.Name, err)
+			}
+			resolved++
+		}
+
+		if err := dest.Dest.Close(ctx); err != nil {
+			log.Fatalf("close destination %s: %v", dest.Spec.Name, err)
+		}
+	}
+
+	fmt.Printf("Resolved staging for %d destinations\n", resolved)
+}
+
 type publicationConfig struct {
 	dsn         string
 	publication string
@@ -811,6 +914,63 @@ func resolveDesiredTables(ctx context.Context, cfg publicationConfig, tables, sc
 		}
 	}
 	return nil, errors.New("no tables or schemas specified")
+}
+
+func resolveFlowTables(ctx context.Context, model flow.Flow, tables, schemas string) ([]string, error) {
+	if tables != "" {
+		return parseCSVValue(tables), nil
+	}
+	if schemas != "" {
+		schemaList := parseCSVValue(schemas)
+		if len(schemaList) == 0 {
+			return nil, errors.New("no schemas provided")
+		}
+		return scrapeFlowTables(ctx, model, schemaList)
+	}
+	if model.Source.Options != nil {
+		if value := model.Source.Options["tables"]; value != "" {
+			return parseCSVValue(value), nil
+		}
+		if value := model.Source.Options["schemas"]; value != "" {
+			return scrapeFlowTables(ctx, model, parseCSVValue(value))
+		}
+		if value := model.Source.Options["publication_tables"]; value != "" {
+			return parseCSVValue(value), nil
+		}
+		if value := model.Source.Options["publication_schemas"]; value != "" {
+			return scrapeFlowTables(ctx, model, parseCSVValue(value))
+		}
+	}
+	return nil, errors.New("no tables or schemas specified")
+}
+
+func scrapeFlowTables(ctx context.Context, model flow.Flow, schemas []string) ([]string, error) {
+	if len(schemas) == 0 {
+		return nil, errors.New("no schemas provided")
+	}
+	if model.Source.Options == nil {
+		return nil, errors.New("source options missing dsn")
+	}
+	dsn := model.Source.Options["dsn"]
+	if dsn == "" {
+		return nil, errors.New("source dsn missing")
+	}
+	return postgres.ScrapeTables(ctx, dsn, schemas)
+}
+
+func parseSchemaTables(tables []string) ([]connector.Schema, error) {
+	out := make([]connector.Schema, 0, len(tables))
+	for _, table := range tables {
+		parts := strings.SplitN(table, ".", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("table %q must be schema.table", table)
+		}
+		out = append(out, connector.Schema{
+			Name:      parts[1],
+			Namespace: parts[0],
+		})
+	}
+	return out, nil
 }
 
 func runBackfill(ctx context.Context, flowPB *ductstreampb.Flow, tables []string, workers int, partitionColumn string, partitionCount int, snapshotStateBackend string, snapshotStatePath string) error {

@@ -26,6 +26,7 @@ helm install ductstream oci://ghcr.io/josephjohncox/ductstream/charts/ductstream
 ```
 
 Set required env vars via Helm values (`env`) or a ConfigMap (`config.enabled=true` + `config.data`).
+See `charts/ductstream/values.example.yaml` for a minimal example.
 
 ### Create a Flow (gRPC)
 Use `grpcurl` with local proto files:
@@ -257,6 +258,15 @@ Use the admin CLI to list and approve DDL events:
 ./bin/ductstream-admin ddl approve -id 1
 ./bin/ductstream-admin ddl apply -id 1
 ```
+
+## Resolve Staging Tables (Admin)
+If backfill loads landed in staging tables, resolve them without running a flow:
+
+```bash
+./bin/ductstream-admin flow resolve-staging -flow-id "<flow-id>" -tables public.users,public.orders
+```
+
+Use `-schemas` to resolve all tables in schemas, and `-dest` to scope to a single destination.
 
 ## Backfill + Replay
 Run a backfill by switching the worker to `backfill` mode and providing tables:

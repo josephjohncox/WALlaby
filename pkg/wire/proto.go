@@ -56,21 +56,21 @@ func batchToProto(batch connector.Batch) (*ductstreampb.Batch, error) {
 		}
 
 		records = append(records, &ductstreampb.Record{
-			Table:             rec.Table,
-			Operation:         string(rec.Operation),
-			Key:               rec.Key,
-			BeforeJson:        before,
-			AfterJson:         after,
-			Ddl:               rec.DDL,
+			Table:               rec.Table,
+			Operation:           string(rec.Operation),
+			Key:                 rec.Key,
+			BeforeJson:          before,
+			AfterJson:           after,
+			Ddl:                 rec.DDL,
 			TimestampUnixMillis: rec.Timestamp.UnixMilli(),
-			SchemaVersion:     rec.SchemaVersion,
-			Unchanged:         rec.Unchanged,
+			SchemaVersion:       rec.SchemaVersion,
+			Unchanged:           rec.Unchanged,
 		})
 	}
 
 	return &ductstreampb.Batch{
-		Schema:    schema,
-		Records:   records,
+		Schema:  schema,
+		Records: records,
 		Checkpoint: &ductstreampb.Checkpoint{
 			Lsn:                 batch.Checkpoint.LSN,
 			TimestampUnixMillis: batch.Checkpoint.Timestamp.UnixMilli(),

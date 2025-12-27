@@ -4,6 +4,7 @@ package tools
 
 import (
 	_ "github.com/bufbuild/buf/cmd/buf"
+	_ "github.com/goreleaser/goreleaser/v2"
 	_ "github.com/golangci/golangci-lint/cmd/golangci-lint"
 	_ "golang.org/x/tools/cmd/goimports"
 	_ "google.golang.org/grpc/cmd/protoc-gen-go-grpc"

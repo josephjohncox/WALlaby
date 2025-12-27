@@ -50,5 +50,8 @@ Once a tagged release is published, install via OCI Helm chart:
 helm install ductstream oci://ghcr.io/josephjohncox/ductstream/charts/ductstream --version <tag>
 ```
 
+An example values file is available at `charts/ductstream/values.example.yaml`.
+For production-style values (ConfigMap + Secret pattern), see `charts/ductstream/values-prod.yaml`.
+
 ## License
 PolyForm Noncommercial 1.0.0. Commercial use requires a separate license.

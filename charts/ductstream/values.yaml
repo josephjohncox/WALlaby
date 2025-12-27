@@ -20,6 +20,8 @@ service:
   type: ClusterIP
   port: 8080
 
+serviceAnnotations: {}
+
 env: []
 envFrom: []
 

@@ -2,14 +2,16 @@
 ARG GO_VERSION=1.25.5
 
 FROM golang:${GO_VERSION}-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
 RUN apk add --no-cache git ca-certificates
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/ductstream ./cmd/ductstream
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/ductstream-admin ./cmd/ductstream-admin
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/ductstream-worker ./cmd/ductstream-worker
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/ductstream ./cmd/ductstream
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/ductstream-admin ./cmd/ductstream-admin
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/ductstream-worker ./cmd/ductstream-worker
 
 FROM gcr.io/distroless/base-debian12:nonroot
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
