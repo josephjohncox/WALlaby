@@ -14,13 +14,14 @@ import (
 
 // FlowRunner executes flows with lifecycle updates.
 type FlowRunner struct {
-	Engine      workflow.Engine
-	Checkpoints connector.CheckpointStore
-	Tracer      trace.Tracer
-	WireFormat  connector.WireFormat
-	StrictWire  bool
-	MaxEmpty    int
-	Parallelism int
+	Engine         workflow.Engine
+	Checkpoints    connector.CheckpointStore
+	Tracer         trace.Tracer
+	WireFormat     connector.WireFormat
+	StrictWire     bool
+	MaxEmpty       int
+	Parallelism    int
+	ResolveStaging bool
 }
 
 func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Source, destinations []stream.DestinationConfig) error {
@@ -43,12 +44,13 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 	}
 
 	runner := stream.Runner{
-		Source:       source,
-		SourceSpec:   f.Source,
-		Destinations: destinations,
-		Checkpoints:  r.Checkpoints,
-		FlowID:       f.ID,
-		Tracer:       tracer,
+		Source:         source,
+		SourceSpec:     f.Source,
+		Destinations:   destinations,
+		Checkpoints:    r.Checkpoints,
+		FlowID:         f.ID,
+		Tracer:         tracer,
+		ResolveStaging: r.ResolveStaging,
 	}
 	if runner.SourceSpec.Type == connector.EndpointPostgres {
 		if runner.SourceSpec.Options == nil {

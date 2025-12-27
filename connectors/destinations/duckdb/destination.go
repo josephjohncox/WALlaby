@@ -174,6 +174,14 @@ func (d *Destination) Close(ctx context.Context) error {
 	return nil
 }
 
+// ResolveStaging applies staged backfill data into target tables.
+func (d *Destination) ResolveStaging(ctx context.Context) error {
+	if d.db == nil {
+		return nil
+	}
+	return d.finalizeStaging(ctx)
+}
+
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
 		SupportsDDL:           true,

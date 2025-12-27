@@ -30,6 +30,7 @@ func main() {
 		snapshotWorkers int
 		partitionColumn string
 		partitionCount  int
+		resolveStaging  bool
 	)
 	flag.StringVar(&configPath, "config", "", "path to config file")
 	flag.StringVar(&flowID, "flow-id", "", "flow id to run")
@@ -41,6 +42,7 @@ func main() {
 	flag.IntVar(&snapshotWorkers, "snapshot-workers", 0, "parallel workers for backfill snapshots")
 	flag.StringVar(&partitionColumn, "partition-column", "", "partition column for backfill hashing")
 	flag.IntVar(&partitionCount, "partition-count", 0, "partition count per table for backfill hashing")
+	flag.BoolVar(&resolveStaging, "resolve-staging", false, "resolve destination staging tables after batch/backfill runs")
 	flag.Parse()
 
 	if flowID == "" {
@@ -143,11 +145,12 @@ func main() {
 	}
 
 	flowRunner := runner.FlowRunner{
-		Engine:      engine,
-		Checkpoints: checkpoints,
-		Tracer:      tracer,
-		StrictWire:  cfg.Wire.Enforce,
-		MaxEmpty:    maxEmptyReads,
+		Engine:         engine,
+		Checkpoints:    checkpoints,
+		Tracer:         tracer,
+		StrictWire:     cfg.Wire.Enforce,
+		MaxEmpty:       maxEmptyReads,
+		ResolveStaging: resolveStaging,
 	}
 	if flowRunner.WireFormat == "" && cfg.Wire.DefaultFormat != "" {
 		flowRunner.WireFormat = connector.WireFormat(cfg.Wire.DefaultFormat)

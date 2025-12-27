@@ -41,6 +41,7 @@ Run a single flow in its own process. This is recommended for Kubernetes or when
 ```
 
 Add `-max-empty-reads 1` to stop after one empty poll. This is useful for periodic/scheduled runs.
+For backfill runs that land in staging tables, add `-resolve-staging` to apply staged data without relying on process shutdown.
 
 ## DBOS Scheduling
 Enable DBOS and (optionally) a schedule to run flows as durable jobs:

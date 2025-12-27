@@ -14,6 +14,29 @@ Early scaffolding. Interfaces are being defined before full implementations.
 ## Examples
 See `examples/README.md` for gRPC, Terraform, and worker usage examples.
 
+Flow specs you can copy:
+- `examples/flows/postgres_to_snowflake.json`
+- `examples/flows/postgres_to_snowpipe.json`
+- `examples/flows/postgres_to_duckdb.json`
+- `examples/flows/postgres_to_clickhouse.json`
+- `examples/flows/postgres_to_bufstream.json`
+
+Snowpipe auto-ingest (upload-only) snippet:
+
+```json
+{
+  "name": "snowpipe-out",
+  "type": "snowpipe",
+  "options": {
+    "dsn": "user:pass@account/db/schema?role=SYSADMIN",
+    "stage": "@my_external_stage",
+    "format": "parquet",
+    "auto_ingest": "true",
+    "copy_on_write": "false"
+  }
+}
+```
+
 ## Documentation
 - `docs/usage.md` — operational usage and configuration.
 - `docs/tutorials.md` — step-by-step tutorials.

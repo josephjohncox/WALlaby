@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func recordKey(t *testing.T, key map[string]any) []byte {
+func recordKey(t testing.TB, key map[string]any) []byte {
 	if key == nil {
 		return nil
 	}

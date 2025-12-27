@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -19,19 +20,25 @@ type DestinationConfig struct {
 	Dest connector.Destination
 }
 
+// StagingResolver is implemented by destinations that can resolve staging tables.
+type StagingResolver interface {
+	ResolveStaging(ctx context.Context) error
+}
+
 // Runner streams data from a source to destinations.
 type Runner struct {
-	Source        connector.Source
-	SourceSpec    connector.Spec
-	Destinations  []DestinationConfig
-	Checkpoints   connector.CheckpointStore
-	FlowID        string
-	Tracer        trace.Tracer
-	BatchTimeout  time.Duration
-	MaxEmptyReads int
-	WireFormat    connector.WireFormat
-	StrictFormat  bool
-	Parallelism   int
+	Source         connector.Source
+	SourceSpec     connector.Spec
+	Destinations   []DestinationConfig
+	Checkpoints    connector.CheckpointStore
+	FlowID         string
+	ResolveStaging bool
+	Tracer         trace.Tracer
+	BatchTimeout   time.Duration
+	MaxEmptyReads  int
+	WireFormat     connector.WireFormat
+	StrictFormat   bool
+	Parallelism    int
 }
 
 // Run executes the streaming loop until context cancellation or error.
@@ -112,6 +119,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		batchCtx, span := tracer.Start(ctx, "stream.batch")
 		batch, err := r.Source.Read(batchCtx)
 		if err != nil {
+			if errors.Is(err, io.EOF) && r.isBackfill() {
+				span.End()
+				if r.ResolveStaging {
+					if err := r.resolveStaging(batchCtx); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
 			span.RecordError(err)
 			span.End()
 			return err
@@ -141,6 +157,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			emptyReads++
 			span.End()
 			if r.MaxEmptyReads > 0 && emptyReads >= r.MaxEmptyReads {
+				if r.ResolveStaging && r.isBackfill() {
+					if err := r.resolveStaging(batchCtx); err != nil {
+						return err
+					}
+				}
 				return nil
 			}
 			continue
@@ -173,6 +194,24 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		span.End()
 	}
+}
+
+func (r *Runner) resolveStaging(ctx context.Context) error {
+	for _, dest := range r.Destinations {
+		if resolver, ok := dest.Dest.(StagingResolver); ok {
+			if err := resolver.ResolveStaging(ctx); err != nil {
+				return fmt.Errorf("resolve staging for %s: %w", dest.Spec.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (r *Runner) isBackfill() bool {
+	if r.SourceSpec.Options == nil {
+		return false
+	}
+	return r.SourceSpec.Options["mode"] == "backfill"
 }
 
 func (r *Runner) normalizeWireFormat() error {

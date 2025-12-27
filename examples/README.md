@@ -24,6 +24,7 @@ Run a single flow in its own process (useful for Kubernetes deployments or per-f
 ```
 
 `-max-empty-reads 1` tells the worker to stop when no changes are available, which is useful for periodic scheduling (DBOS or cron). Omit it for continuous streaming.
+For backfill runs that land in staging tables, add `-resolve-staging` to apply staged data before the worker exits.
 
 ## DBOS Scheduling (Durable Runs)
 Enable DBOS and optional scheduling to run flow batches durably:
@@ -61,6 +62,28 @@ See `examples/terraform/flow.tf` for a minimal provider + flow resource definiti
 - `examples/flows/postgres_to_s3_parquet.json`
 - `examples/flows/postgres_to_http.json`
 - `examples/flows/postgres_to_pgstream.json`
+- `examples/flows/postgres_to_snowflake.json`
+- `examples/flows/postgres_to_snowpipe.json`
+- `examples/flows/postgres_to_duckdb.json`
+- `examples/flows/postgres_to_clickhouse.json`
+- `examples/flows/postgres_to_bufstream.json`
+
+## Snowpipe Auto-Ingest (Upload Only)
+Use the Snowpipe destination with external stage notifications. Set `auto_ingest=true` to skip COPY and only upload files:
+
+```json
+{
+  "name": "snowpipe-out",
+  "type": "snowpipe",
+  "options": {
+    "dsn": "user:pass@account/db/schema?role=SYSADMIN",
+    "stage": "@my_external_stage",
+    "format": "parquet",
+    "auto_ingest": "true",
+    "copy_on_write": "false"
+  }
+}
+```
 
 ## Stream Consumer Example
 - `examples/stream_consumer.sh` — minimal pull/ack loop using `ductstream-admin` + `jq`.
