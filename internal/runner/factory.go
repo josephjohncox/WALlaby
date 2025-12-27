@@ -3,10 +3,15 @@ package runner
 import (
 	"fmt"
 
+	"github.com/josephjohncox/ductstream/connectors/destinations/bufstream"
+	"github.com/josephjohncox/ductstream/connectors/destinations/clickhouse"
+	"github.com/josephjohncox/ductstream/connectors/destinations/duckdb"
 	httpdest "github.com/josephjohncox/ductstream/connectors/destinations/http"
 	"github.com/josephjohncox/ductstream/connectors/destinations/kafka"
 	"github.com/josephjohncox/ductstream/connectors/destinations/pgstream"
 	"github.com/josephjohncox/ductstream/connectors/destinations/s3"
+	"github.com/josephjohncox/ductstream/connectors/destinations/snowflake"
+	"github.com/josephjohncox/ductstream/connectors/destinations/snowpipe"
 	"github.com/josephjohncox/ductstream/connectors/sources/postgres"
 	"github.com/josephjohncox/ductstream/internal/replication"
 	"github.com/josephjohncox/ductstream/pkg/connector"
@@ -55,6 +60,16 @@ func (f Factory) destination(spec connector.Spec) (connector.Destination, error)
 		return &httpdest.Destination{}, nil
 	case connector.EndpointPGStream:
 		return &pgstream.Destination{}, nil
+	case connector.EndpointSnowflake:
+		return &snowflake.Destination{}, nil
+	case connector.EndpointSnowpipe:
+		return &snowpipe.Destination{}, nil
+	case connector.EndpointDuckDB:
+		return &duckdb.Destination{}, nil
+	case connector.EndpointClickHouse:
+		return &clickhouse.Destination{}, nil
+	case connector.EndpointBufStream:
+		return &bufstream.Destination{}, nil
 	default:
 		return nil, fmt.Errorf("unsupported destination type: %s", spec.Type)
 	}

@@ -1,2 +1,2 @@
-// Package duckdb is a connector implementation placeholder.
+// Package duckdb implements a DuckDB destination.
 package duckdb

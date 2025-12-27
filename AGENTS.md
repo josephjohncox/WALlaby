@@ -43,8 +43,6 @@ No Git history exists yet. Use Conventional Commits (e.g., `feat: add wal stream
 PRs should include description, test evidence, and performance/compatibility notes.
 
 ## Pending Tasks / Roadmap
-- Implement remaining destination connectors (Snowflake/Snowpipe/DuckDB/ClickHouse/Bufstream).
-- Destination-side hidden metadata schemas/tables for `synced_at`/`is_deleted` beyond column injection.
 - Optional: alternative state backends (file/sqlite) for system metadata beyond snapshot state.
 
 ## Observability & Lifecycle Expectations

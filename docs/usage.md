@@ -133,6 +133,56 @@ Ack messages when processed:
 ./bin/ductstream-admin stream ack -stream orders -group search -ids 1,2,3
 ```
 
+## Snowflake Destination
+Write directly into Snowflake tables with row-level change application.
+
+Options:
+- `dsn` (required)
+- `schema`, `table` (optional; defaults to source schema/table)
+- `write_mode` (`target` default, or `append`)
+- `meta_table_enabled` (default `true`) — create/update `meta_schema.meta_table`
+- `meta_schema` (default `DUCTSTREAM_META`)
+- `meta_table` (default `__METADATA`)
+- `meta_pk_prefix` (default `pk_`)
+
+## Snowpipe Destination
+Bulk-load batches to a Snowflake stage and optionally trigger `COPY INTO`.
+
+Options:
+- `dsn` (required)
+- `stage` (required unless using table stage via `@%schema.table`)
+- `stage_path` (optional prefix inside the stage)
+- `schema`, `table` (required if `copy_on_write=true`)
+- `format` (`parquet` default; `parquet` | `avro` | `json`)
+- `file_format` (optional Snowflake file format object name)
+- `copy_on_write` (default `true`)
+- `meta_table_enabled` (default `true`)
+
+Snowpipe runs in append mode; use `append_mode` + metadata columns to preserve operation semantics.
+
+## DuckDB Destination
+Write directly into DuckDB (local file or in-memory).
+
+Options:
+- `dsn` (required; e.g. `./data/warehouse.duckdb`)
+- `schema`, `table` (optional; defaults to source schema/table)
+- `write_mode` (`target` default, or `append`)
+- `meta_table_enabled` (default `true`)
+
+## ClickHouse Destination
+Apply changes using ClickHouse mutations.
+
+Options:
+- `dsn` (required)
+- `database` or `schema`, `table` (optional; defaults to source namespace/table)
+- `write_mode` (`target` default, or `append`)
+- `meta_table_enabled` (default `true`)
+- `meta_engine` (default `MergeTree`)
+- `meta_order_by` (default `flow_id, source_schema, source_table, key_json`)
+
+## Bufstream Destination
+Bufstream is Kafka-compatible; use the same options as the Kafka destination (`brokers`, `topic`, `format`, `compression`, `acks`).
+
 ## Destination Metadata + Append/Soft Delete
 Destinations can opt into metadata columns (synced time, soft-delete flags, watermarks) and append-only behavior:
 

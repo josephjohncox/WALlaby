@@ -50,6 +50,24 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err := r.normalizeWireFormat(); err != nil {
 		return err
 	}
+	if r.FlowID != "" {
+		if r.SourceSpec.Options == nil {
+			r.SourceSpec.Options = map[string]string{}
+		}
+		if r.SourceSpec.Options["flow_id"] == "" {
+			r.SourceSpec.Options["flow_id"] = r.FlowID
+		}
+		for i := range r.Destinations {
+			spec := r.Destinations[i].Spec
+			if spec.Options == nil {
+				spec.Options = map[string]string{}
+			}
+			if spec.Options["flow_id"] == "" {
+				spec.Options["flow_id"] = r.FlowID
+			}
+			r.Destinations[i].Spec = spec
+		}
+	}
 
 	if r.Checkpoints != nil && r.FlowID != "" {
 		if cp, err := r.Checkpoints.Get(ctx, r.FlowID); err == nil && cp.LSN != "" {

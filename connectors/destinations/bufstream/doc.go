@@ -1,2 +1,2 @@
-// Package bufstream is a connector implementation placeholder.
+// Package bufstream implements a Kafka-compatible Bufstream destination.
 package bufstream

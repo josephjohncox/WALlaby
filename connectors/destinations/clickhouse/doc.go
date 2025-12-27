@@ -1,2 +1,2 @@
-// Package clickhouse is a connector implementation placeholder.
+// Package clickhouse implements a ClickHouse destination.
 package clickhouse

@@ -1,0 +1,514 @@
+package snowpipe
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/josephjohncox/ductstream/pkg/connector"
+	"github.com/josephjohncox/ductstream/pkg/wire"
+	_ "github.com/snowflakedb/gosnowflake"
+)
+
+const (
+	optDSN          = "dsn"
+	optStage        = "stage"
+	optStagePath    = "stage_path"
+	optSchema       = "schema"
+	optTable        = "table"
+	optFormat       = "format"
+	optFileFormat   = "file_format"
+	optCopyOnWrite  = "copy_on_write"
+	optWriteMode    = "write_mode"
+	optMetaTable    = "meta_table"
+	optMetaSchema   = "meta_schema"
+	optMetaEnabled  = "meta_table_enabled"
+	optMetaPKPrefix = "meta_pk_prefix"
+	optFlowID       = "flow_id"
+
+	writeModeAppend   = "append"
+	defaultMetaSchema = "DUCTSTREAM_META"
+	defaultMetaTable  = "__METADATA"
+	defaultMetaPKPref = "pk_"
+)
+
+// Destination writes batches to Snowflake stages and optionally issues COPY INTO.
+type Destination struct {
+	spec         connector.Spec
+	db           *sql.DB
+	codec        wire.Codec
+	stage        string
+	stagePath    string
+	copyOnWrite  bool
+	fileFormat   string
+	writeMode    string
+	metaEnabled  bool
+	metaSchema   string
+	metaTable    string
+	metaPKPrefix string
+	flowID       string
+	metaColumns  map[string]struct{}
+}
+
+func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+	d.spec = spec
+	dsn := spec.Options[optDSN]
+	if dsn == "" {
+		return errors.New("snowpipe dsn is required")
+	}
+
+	db, err := sql.Open("snowflake", dsn)
+	if err != nil {
+		return fmt.Errorf("open snowflake: %w", err)
+	}
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return fmt.Errorf("ping snowflake: %w", err)
+	}
+	d.db = db
+
+	format := spec.Options[optFormat]
+	if format == "" {
+		format = string(connector.WireFormatParquet)
+	}
+	codec, err := wire.NewCodec(format)
+	if err != nil {
+		return err
+	}
+	switch codec.Name() {
+	case connector.WireFormatParquet, connector.WireFormatAvro, connector.WireFormatJSON:
+		// supported
+	default:
+		return fmt.Errorf("snowpipe format %s not supported", codec.Name())
+	}
+	d.codec = codec
+
+	d.stage = strings.TrimSpace(spec.Options[optStage])
+	d.stagePath = strings.Trim(strings.TrimSpace(spec.Options[optStagePath]), "/")
+	d.copyOnWrite = parseBool(spec.Options[optCopyOnWrite], true)
+	d.fileFormat = strings.TrimSpace(spec.Options[optFileFormat])
+	d.writeMode = strings.ToLower(strings.TrimSpace(spec.Options[optWriteMode]))
+	if d.writeMode == "" {
+		d.writeMode = writeModeAppend
+	}
+	if d.writeMode != writeModeAppend {
+		return fmt.Errorf("snowpipe only supports append write_mode")
+	}
+
+	d.metaEnabled = parseBool(spec.Options[optMetaEnabled], true)
+	d.metaSchema = strings.TrimSpace(spec.Options[optMetaSchema])
+	if d.metaSchema == "" {
+		d.metaSchema = defaultMetaSchema
+	}
+	d.metaTable = strings.TrimSpace(spec.Options[optMetaTable])
+	if d.metaTable == "" {
+		d.metaTable = defaultMetaTable
+	}
+	d.metaPKPrefix = spec.Options[optMetaPKPrefix]
+	if d.metaPKPrefix == "" {
+		d.metaPKPrefix = defaultMetaPKPref
+	}
+	d.flowID = spec.Options[optFlowID]
+	d.metaColumns = map[string]struct{}{}
+
+	if d.metaEnabled {
+		if err := d.ensureMetaTable(ctx); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
+	if d.db == nil {
+		return errors.New("snowpipe destination not initialized")
+	}
+	if len(batch.Records) == 0 {
+		return nil
+	}
+
+	payload, err := d.codec.Encode(batch)
+	if err != nil {
+		return err
+	}
+	if len(payload) == 0 {
+		return nil
+	}
+
+	filePath, fileName, err := d.writeTempFile(payload, batch.Schema)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(filePath)
+
+	stage := d.resolveStage(batch)
+	if stage == "" {
+		return errors.New("snowpipe stage is required")
+	}
+	stageLocation := joinStage(stage, d.stagePath)
+
+	putStmt := fmt.Sprintf("PUT file://%s %s AUTO_COMPRESS=FALSE", filePath, stageLocation)
+	if _, err := d.db.ExecContext(ctx, putStmt); err != nil {
+		return fmt.Errorf("put to stage: %w", err)
+	}
+
+	if d.copyOnWrite {
+		copyStmt := fmt.Sprintf("COPY INTO %s FROM %s FILES = ('%s') %s", d.targetTable(batch.Schema, batch.Records[0]), stageLocation, fileName, d.fileFormatClause())
+		if _, err := d.db.ExecContext(ctx, copyStmt); err != nil {
+			return fmt.Errorf("copy into: %w", err)
+		}
+	}
+
+	if d.metaEnabled {
+		tx, err := d.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin metadata transaction: %w", err)
+		}
+		for _, record := range batch.Records {
+			if err := d.upsertMetadata(ctx, tx, batch.Schema, record, batch.Checkpoint); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit metadata transaction: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (d *Destination) Close(_ context.Context) error {
+	if d.db != nil {
+		return d.db.Close()
+	}
+	return nil
+}
+
+func (d *Destination) Capabilities() connector.Capabilities {
+	return connector.Capabilities{
+		SupportsDDL:           true,
+		SupportsSchemaChanges: true,
+		SupportsStreaming:     false,
+		SupportsBulkLoad:      true,
+		SupportedWireFormats: []connector.WireFormat{
+			connector.WireFormatParquet,
+			connector.WireFormatAvro,
+			connector.WireFormatJSON,
+		},
+	}
+}
+
+func (d *Destination) resolveStage(batch connector.Batch) string {
+	if d.stage != "" {
+		return ensureStagePrefix(d.stage)
+	}
+
+	table := strings.TrimSpace(d.spec.Options[optTable])
+	schema := strings.TrimSpace(d.spec.Options[optSchema])
+	if table == "" && len(batch.Records) > 0 {
+		table = batch.Records[0].Table
+	}
+	if table == "" {
+		return ""
+	}
+	if schema == "" {
+		schema = batch.Schema.Namespace
+	}
+	if schema != "" && !strings.Contains(table, ".") {
+		return ensureStagePrefix("@%" + schema + "." + table)
+	}
+	if strings.Contains(table, ".") {
+		return ensureStagePrefix("@%" + table)
+	}
+	return ensureStagePrefix("@%" + table)
+}
+
+func (d *Destination) targetTable(schema connector.Schema, record connector.Record) string {
+	table := strings.TrimSpace(d.spec.Options[optTable])
+	targetSchema := strings.TrimSpace(d.spec.Options[optSchema])
+	if table == "" {
+		table = record.Table
+	}
+	if strings.Contains(table, ".") {
+		return quoteQualified(table, '"')
+	}
+	if targetSchema == "" {
+		targetSchema = schema.Namespace
+	}
+	if targetSchema == "" {
+		return quoteIdent(table, '"')
+	}
+	return quoteIdent(targetSchema, '"') + "." + quoteIdent(table, '"')
+}
+
+func (d *Destination) writeTempFile(payload []byte, schema connector.Schema) (string, string, error) {
+	ext := extensionForFormat(d.codec.Name())
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+	name := fmt.Sprintf("%s_%s_%s", schema.Name, stamp, uuid.NewString())
+
+	file, err := os.CreateTemp("", "ductstream-snowpipe-*")
+	if err != nil {
+		return "", "", fmt.Errorf("create temp file: %w", err)
+	}
+	filePath := file.Name()
+	if ext != "" {
+		newPath := filepath.Join(filepath.Dir(filePath), name+"."+ext)
+		if err := os.Rename(filePath, newPath); err == nil {
+			filePath = newPath
+		}
+	}
+
+	if _, err := file.Write(payload); err != nil {
+		_ = file.Close()
+		return "", "", fmt.Errorf("write temp file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return "", "", fmt.Errorf("close temp file: %w", err)
+	}
+	return filePath, filepath.Base(filePath), nil
+}
+
+func (d *Destination) fileFormatClause() string {
+	if d.fileFormat != "" {
+		return fmt.Sprintf("FILE_FORMAT = (FORMAT_NAME = '%s')", strings.ReplaceAll(d.fileFormat, "'", "''"))
+	}
+	switch d.codec.Name() {
+	case connector.WireFormatParquet:
+		return "FILE_FORMAT = (TYPE = PARQUET)"
+	case connector.WireFormatAvro:
+		return "FILE_FORMAT = (TYPE = AVRO)"
+	case connector.WireFormatJSON:
+		return "FILE_FORMAT = (TYPE = JSON)"
+	default:
+		return ""
+	}
+}
+
+func extensionForFormat(format connector.WireFormat) string {
+	switch format {
+	case connector.WireFormatParquet:
+		return "parquet"
+	case connector.WireFormatAvro:
+		return "avro"
+	case connector.WireFormatJSON:
+		return "json"
+	default:
+		return "bin"
+	}
+}
+
+func ensureStagePrefix(stage string) string {
+	trim := strings.TrimSpace(stage)
+	if trim == "" {
+		return ""
+	}
+	if strings.HasPrefix(trim, "@") {
+		return trim
+	}
+	return "@" + trim
+}
+
+func joinStage(stage, prefix string) string {
+	base := ensureStagePrefix(stage)
+	if prefix == "" {
+		return base
+	}
+	return strings.TrimRight(base, "/") + "/" + strings.TrimLeft(prefix, "/")
+}
+
+func (d *Destination) ensureMetaTable(ctx context.Context) error {
+	if d.metaSchema == "" || d.metaTable == "" {
+		return errors.New("meta schema and table are required")
+	}
+	schemaIdent := quoteIdent(d.metaSchema, '"')
+	if _, err := d.db.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", schemaIdent)); err != nil {
+		return fmt.Errorf("create meta schema: %w", err)
+	}
+	tableIdent := schemaIdent + "." + quoteIdent(d.metaTable, '"')
+	query := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+  FLOW_ID STRING,
+  SOURCE_SCHEMA STRING,
+  SOURCE_TABLE STRING,
+  SYNCED_AT TIMESTAMP_TZ,
+  IS_DELETED BOOLEAN,
+  LSN STRING,
+  OPERATION STRING,
+  KEY_JSON STRING
+)`, tableIdent)
+	if _, err := d.db.ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("create meta table: %w", err)
+	}
+	return d.refreshMetaColumns(ctx)
+}
+
+func (d *Destination) refreshMetaColumns(ctx context.Context) error {
+	table := strings.ToUpper(d.metaTable)
+	schema := strings.ToUpper(d.metaSchema)
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
+		schema, table)
+	if err != nil {
+		return fmt.Errorf("load meta columns: %w", err)
+	}
+	defer rows.Close()
+
+	d.metaColumns = map[string]struct{}{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return fmt.Errorf("scan meta column: %w", err)
+		}
+		d.metaColumns[strings.ToLower(name)] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate meta columns: %w", err)
+	}
+	return nil
+}
+
+func (d *Destination) upsertMetadata(ctx context.Context, tx *sql.Tx, schema connector.Schema, record connector.Record, checkpoint connector.Checkpoint) error {
+	key, err := decodeKey(record.Key)
+	if err != nil {
+		return err
+	}
+	if len(key) == 0 {
+		return nil
+	}
+
+	pkCols := make([]string, 0, len(key))
+	pkVals := make([]any, 0, len(key))
+	for col, val := range key {
+		columnName := d.metaPKPrefix + col
+		pkCols = append(pkCols, columnName)
+		pkVals = append(pkVals, val)
+		if err := d.ensureMetaColumn(ctx, columnName); err != nil {
+			return err
+		}
+	}
+
+	target := quoteIdent(d.metaSchema, '"') + "." + quoteIdent(d.metaTable, '"')
+	whereClause, whereArgs := whereFromKey(key, '"', d.metaPKPrefix)
+	whereClause = "FLOW_ID = ? AND SOURCE_SCHEMA = ? AND SOURCE_TABLE = ? AND " + whereClause
+	whereArgs = append([]any{d.flowID, schema.Namespace, record.Table}, whereArgs...)
+
+	deleteStmt := fmt.Sprintf("DELETE FROM %s WHERE %s", target, whereClause)
+	if _, err := tx.ExecContext(ctx, deleteStmt, whereArgs...); err != nil {
+		return fmt.Errorf("delete meta row: %w", err)
+	}
+
+	syncedAt := record.Timestamp
+	if syncedAt.IsZero() {
+		syncedAt = time.Now().UTC()
+	}
+	keyJSON := string(record.Key)
+	if keyJSON == "" {
+		raw, _ := json.Marshal(key)
+		keyJSON = string(raw)
+	}
+
+	columns := []string{"FLOW_ID", "SOURCE_SCHEMA", "SOURCE_TABLE", "SYNCED_AT", "IS_DELETED", "LSN", "OPERATION", "KEY_JSON"}
+	values := []any{d.flowID, schema.Namespace, record.Table, syncedAt, record.Operation == connector.OpDelete, checkpoint.LSN, string(record.Operation), keyJSON}
+	columns = append(columns, pkCols...)
+	values = append(values, pkVals...)
+
+	insertStmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(columns, '"'), placeholders(len(columns)))
+	if _, err := tx.ExecContext(ctx, insertStmt, values...); err != nil {
+		return fmt.Errorf("insert meta row: %w", err)
+	}
+	return nil
+}
+
+func (d *Destination) ensureMetaColumn(ctx context.Context, column string) error {
+	if column == "" {
+		return nil
+	}
+	key := strings.ToLower(column)
+	if _, ok := d.metaColumns[key]; ok {
+		return nil
+	}
+	target := quoteIdent(d.metaSchema, '"') + "." + quoteIdent(d.metaTable, '"')
+	stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s STRING", target, quoteIdent(column, '"'))
+	if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("add meta column: %w", err)
+	}
+	d.metaColumns[key] = struct{}{}
+	return nil
+}
+
+func decodeKey(raw []byte) (map[string]any, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode record key: %w", err)
+	}
+	return out, nil
+}
+
+func whereFromKey(key map[string]any, quote rune, prefix string) (string, []any) {
+	parts := make([]string, 0, len(key))
+	args := make([]any, 0, len(key))
+	for col, val := range key {
+		name := prefix + col
+		parts = append(parts, fmt.Sprintf("%s = ?", quoteIdent(name, quote)))
+		args = append(args, val)
+	}
+	return strings.Join(parts, " AND "), args
+}
+
+func quoteColumns(cols []string, quote rune) string {
+	quoted := make([]string, 0, len(cols))
+	for _, col := range cols {
+		quoted = append(quoted, quoteIdent(col, quote))
+	}
+	return strings.Join(quoted, ", ")
+}
+
+func placeholders(count int) string {
+	if count <= 0 {
+		return ""
+	}
+	return strings.TrimRight(strings.Repeat("?,", count), ",")
+}
+
+func quoteIdent(value string, quote rune) string {
+	if value == "" {
+		return value
+	}
+	escaped := strings.ReplaceAll(value, string(quote), string(quote)+string(quote))
+	return string(quote) + escaped + string(quote)
+}
+
+func quoteQualified(name string, quote rune) string {
+	parts := strings.Split(name, ".")
+	if len(parts) == 1 {
+		return quoteIdent(parts[0], quote)
+	}
+	quoted := make([]string, 0, len(parts))
+	for _, part := range parts {
+		quoted = append(quoted, quoteIdent(part, quote))
+	}
+	return strings.Join(quoted, ".")
+}
+
+func parseBool(value string, fallback bool) bool {
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}

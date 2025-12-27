@@ -1,2 +1,2 @@
-// Package snowflake is a connector implementation placeholder.
+// Package snowflake implements a Snowflake destination.
 package snowflake

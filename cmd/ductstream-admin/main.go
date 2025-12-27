@@ -853,6 +853,7 @@ func runBackfill(ctx context.Context, flowPB *ductstreampb.Flow, tables []string
 		Source:       source,
 		SourceSpec:   model.Source,
 		Destinations: destinations,
+		FlowID:       model.ID,
 		WireFormat:   model.WireFormat,
 		Parallelism:  model.Parallelism,
 	}

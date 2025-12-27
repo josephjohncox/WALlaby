@@ -1,2 +1,2 @@
-// Package snowpipe is a connector implementation placeholder.
+// Package snowpipe implements a Snowpipe-style bulk loader.
 package snowpipe
