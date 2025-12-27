@@ -33,6 +33,8 @@ enum WireFormat {
   WIRE_FORMAT_ARROW = 1;
   WIRE_FORMAT_PARQUET = 2;
   WIRE_FORMAT_PROTO = 3;
+  WIRE_FORMAT_AVRO = 4;
+  WIRE_FORMAT_JSON = 5;
 }
 
 message Endpoint {
@@ -47,6 +49,7 @@ message Flow {
   Endpoint source = 3;
   repeated Endpoint destinations = 4;
   FlowState state = 5;
+  WireFormat wire_format = 6;
 }
 
 message Checkpoint {

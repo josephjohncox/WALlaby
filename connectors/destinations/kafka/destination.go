@@ -104,6 +104,8 @@ func (d *Destination) Capabilities() connector.Capabilities {
 		SupportsBulkLoad:      false,
 		SupportedWireFormats: []connector.WireFormat{
 			connector.WireFormatArrow,
+			connector.WireFormatAvro,
+			connector.WireFormatProto,
 			connector.WireFormatJSON,
 		},
 	}

@@ -90,7 +90,7 @@ func WithSchemaHook(hook SchemaHook) PostgresStreamOption {
 type SchemaHook interface {
 	OnSchema(ctx context.Context, schema connector.Schema) error
 	OnSchemaChange(ctx context.Context, plan internalschema.Plan) error
-	OnDDL(ctx context.Context, ddl string) error
+	OnDDL(ctx context.Context, ddl string, lsn pglogrepl.LSN) error
 }
 
 // NewPostgresStream returns a Postgres logical replication stream.
@@ -382,7 +382,7 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 		return nil
 	case *pglogrepl.LogicalDecodingMessage:
 		if p.schemaHook != nil {
-			if err := p.schemaHook.OnDDL(ctx, string(msg.Content)); err != nil {
+			if err := p.schemaHook.OnDDL(ctx, string(msg.Content), xld.WALStart); err != nil {
 				return fmt.Errorf("ddl hook: %w", err)
 			}
 		}

@@ -15,6 +15,7 @@ func flowToProto(f flow.Flow) *ductstreampb.Flow {
 		Source:       endpointToProto(f.Source),
 		Destinations: endpointsToProto(f.Destinations),
 		State:        flowStateToProto(f.State),
+		WireFormat:   wireFormatToProto(f.WireFormat),
 	}
 }
 
@@ -51,6 +52,7 @@ func flowFromProto(pb *ductstreampb.Flow) (flow.Flow, error) {
 		Source:       source,
 		Destinations: dests,
 		State:        flowStateFromProto(pb.State),
+		WireFormat:   wireFormatFromProto(pb.WireFormat),
 	}, nil
 }
 
@@ -163,6 +165,40 @@ func flowStateFromProto(state ductstreampb.FlowState) flow.State {
 		return flow.StateStopping
 	case ductstreampb.FlowState_FLOW_STATE_FAILED:
 		return flow.StateFailed
+	default:
+		return ""
+	}
+}
+
+func wireFormatToProto(format connector.WireFormat) ductstreampb.WireFormat {
+	switch format {
+	case connector.WireFormatArrow:
+		return ductstreampb.WireFormat_WIRE_FORMAT_ARROW
+	case connector.WireFormatParquet:
+		return ductstreampb.WireFormat_WIRE_FORMAT_PARQUET
+	case connector.WireFormatProto:
+		return ductstreampb.WireFormat_WIRE_FORMAT_PROTO
+	case connector.WireFormatAvro:
+		return ductstreampb.WireFormat_WIRE_FORMAT_AVRO
+	case connector.WireFormatJSON:
+		return ductstreampb.WireFormat_WIRE_FORMAT_JSON
+	default:
+		return ductstreampb.WireFormat_WIRE_FORMAT_UNSPECIFIED
+	}
+}
+
+func wireFormatFromProto(format ductstreampb.WireFormat) connector.WireFormat {
+	switch format {
+	case ductstreampb.WireFormat_WIRE_FORMAT_ARROW:
+		return connector.WireFormatArrow
+	case ductstreampb.WireFormat_WIRE_FORMAT_PARQUET:
+		return connector.WireFormatParquet
+	case ductstreampb.WireFormat_WIRE_FORMAT_PROTO:
+		return connector.WireFormatProto
+	case ductstreampb.WireFormat_WIRE_FORMAT_AVRO:
+		return connector.WireFormatAvro
+	case ductstreampb.WireFormat_WIRE_FORMAT_JSON:
+		return connector.WireFormatJSON
 	default:
 		return ""
 	}

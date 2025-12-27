@@ -28,6 +28,8 @@ type Runner struct {
 	Tracer        trace.Tracer
 	BatchTimeout  time.Duration
 	MaxEmptyReads int
+	WireFormat    connector.WireFormat
+	StrictFormat  bool
 }
 
 // Run executes the streaming loop until context cancellation or error.
@@ -42,6 +44,20 @@ func (r *Runner) Run(ctx context.Context) error {
 	tracer := r.Tracer
 	if tracer == nil {
 		tracer = otel.Tracer("ductstream/stream")
+	}
+	if err := r.normalizeWireFormat(); err != nil {
+		return err
+	}
+
+	if r.Checkpoints != nil && r.FlowID != "" {
+		if cp, err := r.Checkpoints.Get(ctx, r.FlowID); err == nil && cp.LSN != "" {
+			if r.SourceSpec.Options == nil {
+				r.SourceSpec.Options = map[string]string{}
+			}
+			if r.SourceSpec.Options["start_lsn"] == "" {
+				r.SourceSpec.Options["start_lsn"] = cp.LSN
+			}
+		}
 	}
 
 	if err := r.Source.Open(ctx, r.SourceSpec); err != nil {
@@ -80,12 +96,15 @@ func (r *Runner) Run(ctx context.Context) error {
 			span.End()
 			return err
 		}
+		if r.WireFormat != "" {
+			batch.WireFormat = r.WireFormat
+		}
 
 		if len(batch.Records) == 0 {
 			emptyReads++
 			span.End()
 			if r.MaxEmptyReads > 0 && emptyReads >= r.MaxEmptyReads {
-				return errors.New("max empty reads reached")
+				return nil
 			}
 			continue
 		}
@@ -119,4 +138,37 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		span.End()
 	}
+}
+
+func (r *Runner) normalizeWireFormat() error {
+	if r.WireFormat == "" {
+		return nil
+	}
+	if r.SourceSpec.Options == nil {
+		r.SourceSpec.Options = map[string]string{}
+	}
+	if srcFormat := r.SourceSpec.Options["format"]; srcFormat != "" && connector.WireFormat(srcFormat) != r.WireFormat {
+		if r.StrictFormat {
+			return fmt.Errorf("source format %s does not match flow format %s", srcFormat, r.WireFormat)
+		}
+	} else if r.SourceSpec.Options["format"] == "" {
+		r.SourceSpec.Options["format"] = string(r.WireFormat)
+	}
+
+	for i := range r.Destinations {
+		spec := r.Destinations[i].Spec
+		if spec.Options == nil {
+			spec.Options = map[string]string{}
+		}
+		if destFormat := spec.Options["format"]; destFormat != "" && connector.WireFormat(destFormat) != r.WireFormat {
+			if r.StrictFormat {
+				return fmt.Errorf("destination %s format %s does not match flow format %s", spec.Name, destFormat, r.WireFormat)
+			}
+		} else if spec.Options["format"] == "" {
+			spec.Options["format"] = string(r.WireFormat)
+		}
+		r.Destinations[i].Spec = spec
+	}
+
+	return nil
 }

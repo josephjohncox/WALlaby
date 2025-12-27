@@ -5,21 +5,26 @@ DuctStream is a Go-first CDC adapter for Postgres logical replication. It is API
 
 ## Project Structure & Module Organization
 This repository is early-stage; please keep new code organized as follows:
-- `cmd/ductstream/`: CLI entrypoint(s).
+- `cmd/ductstream/`: API server entrypoint.
+- `cmd/ductstream-worker/`: per-flow worker process (run a single flow in its own process).
 - `internal/`: core engine (replication, workflow, schema evolution, checkpoints).
+- `internal/orchestrator/`: DBOS-backed flow scheduling/dispatch.
+- `internal/registry/`: schema registry + DDL event storage.
+- `internal/ddl/`: pg_catalog diff scanner.
 - `pkg/`: stable library APIs for adapters and shared types.
 - `proto/`: gRPC/Protobuf definitions (API surface, wire contracts).
 - `connectors/`: source/destination implementations (e.g., Snowflake, S3, Kafka).
-- `terraform/`: modules and examples for provisioning.
+- `terraform/provider/`: Terraform provider implementation.
 - `tests/`: integration tests and fixtures.
 
 ## Build, Test, and Development Commands
-Until a Makefile exists, use standard Go tooling:
-- `go test ./...` — run all unit tests.
-- `go test ./tests/...` — run integration tests (expect a logical-replication-ready Postgres).
-- `go vet ./...` — static analysis.
-- `golangci-lint run` — linting (if configured).
-- `buf generate` — regenerate Protobuf/gRPC stubs (when `proto/` is present).
+Use the Makefile for consistent workflows:
+- `make fmt` — gofmt all packages.
+- `make lint` — run golangci-lint.
+- `make test` — run unit tests.
+- `make test-integration` — run integration tests (requires logical replication enabled).
+- `make proto` — regenerate Protobuf/gRPC stubs.
+- `make tidy` — sync module dependencies (includes tools).
 
 ## Coding Style & Naming Conventions
 - Go formatting: `gofmt` is required; use `goimports` for import cleanup.

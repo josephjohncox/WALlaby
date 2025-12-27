@@ -118,6 +118,9 @@ func (d *Destination) Capabilities() connector.Capabilities {
 		SupportsBulkLoad:      true,
 		SupportedWireFormats: []connector.WireFormat{
 			connector.WireFormatArrow,
+			connector.WireFormatParquet,
+			connector.WireFormatAvro,
+			connector.WireFormatProto,
 			connector.WireFormatJSON,
 		},
 	}
@@ -136,6 +139,12 @@ func extensionForFormat(format connector.WireFormat) string {
 	switch format {
 	case connector.WireFormatArrow:
 		return "arrow"
+	case connector.WireFormatParquet:
+		return "parquet"
+	case connector.WireFormatAvro:
+		return "avro"
+	case connector.WireFormatProto:
+		return "pb"
 	case connector.WireFormatJSON:
 		return "json"
 	default:

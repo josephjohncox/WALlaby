@@ -17,6 +17,9 @@ type FlowRunner struct {
 	Engine      workflow.Engine
 	Checkpoints connector.CheckpointStore
 	Tracer      trace.Tracer
+	WireFormat  connector.WireFormat
+	StrictWire  bool
+	MaxEmpty    int
 }
 
 func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Source, destinations []stream.DestinationConfig) error {
@@ -46,6 +49,13 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		FlowID:       f.ID,
 		Tracer:       tracer,
 	}
+	if f.WireFormat != "" {
+		runner.WireFormat = f.WireFormat
+	} else if r.WireFormat != "" {
+		runner.WireFormat = r.WireFormat
+	}
+	runner.StrictFormat = r.StrictWire
+	runner.MaxEmptyReads = r.MaxEmpty
 
 	if err := runner.Run(flowSpanCtx); err != nil {
 		span.RecordError(err)

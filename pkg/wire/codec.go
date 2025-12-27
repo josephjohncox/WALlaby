@@ -19,6 +19,12 @@ func NewCodec(format string) (Codec, error) {
 	switch strings.ToLower(strings.TrimSpace(format)) {
 	case "", string(connector.WireFormatArrow):
 		return &ArrowIPCCodec{}, nil
+	case string(connector.WireFormatParquet):
+		return &ParquetCodec{}, nil
+	case string(connector.WireFormatAvro):
+		return &AvroCodec{}, nil
+	case string(connector.WireFormatProto):
+		return &ProtoCodec{}, nil
 	case string(connector.WireFormatJSON):
 		return &JSONCodec{}, nil
 	default:

@@ -20,4 +20,5 @@ type Flow struct {
 	Source       connector.Spec
 	Destinations []connector.Spec
 	State        State
+	WireFormat   connector.WireFormat
 }

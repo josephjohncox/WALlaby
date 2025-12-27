@@ -22,6 +22,8 @@ const (
 	optBatchTimeout   = "batch_timeout"
 	optStatusInterval = "status_interval"
 	optCreateSlot     = "create_slot"
+	optFormat         = "format"
+	optEmitEmpty      = "emit_empty"
 )
 
 // Source implements Postgres logical replication as a connector.Source.
@@ -33,6 +35,9 @@ type Source struct {
 	batchTimeout time.Duration
 	slot         string
 	publication  string
+	wireFormat   connector.WireFormat
+	emitEmpty    bool
+	SchemaHook   replication.SchemaHook
 }
 
 func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
@@ -56,9 +61,17 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	s.batchSize = parseInt(spec.Options[optBatchSize], 100)
 	s.batchTimeout = parseDuration(spec.Options[optBatchTimeout], 1*time.Second)
 	statusInterval := parseDuration(spec.Options[optStatusInterval], 10*time.Second)
+	s.wireFormat = connector.WireFormat(spec.Options[optFormat])
+	if s.wireFormat == "" {
+		s.wireFormat = connector.WireFormatArrow
+	}
+	s.emitEmpty = parseBool(spec.Options[optEmitEmpty], false)
 
 	opts := []replication.PostgresStreamOption{
 		replication.WithStatusInterval(statusInterval),
+	}
+	if s.SchemaHook != nil {
+		opts = append(opts, replication.WithSchemaHook(s.SchemaHook))
 	}
 	if startLSN := spec.Options[optStartLSN]; startLSN != "" {
 		lsn, err := pglogrepl.ParseLSN(startLSN)
@@ -99,6 +112,14 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 			return connector.Batch{}, ctx.Err()
 		case <-timer.C:
 			if len(records) == 0 {
+				if s.emitEmpty {
+					return connector.Batch{
+						Records:    nil,
+						Schema:     schema,
+						Checkpoint: checkpoint,
+						WireFormat: s.wireFormat,
+					}, nil
+				}
 				timer.Reset(s.batchTimeout)
 				continue
 			}
@@ -106,7 +127,7 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 				Records:    records,
 				Schema:     schema,
 				Checkpoint: checkpoint,
-				WireFormat: connector.WireFormatArrow,
+				WireFormat: s.wireFormat,
 			}, nil
 		case change, ok := <-s.changes:
 			if !ok {
@@ -128,7 +149,7 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 					Records:    records,
 					Schema:     schema,
 					Checkpoint: checkpoint,
-					WireFormat: connector.WireFormatArrow,
+					WireFormat: s.wireFormat,
 				}, nil
 			}
 		}
@@ -163,7 +184,13 @@ func (s *Source) Capabilities() connector.Capabilities {
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      false,
-		SupportedWireFormats:  []connector.WireFormat{connector.WireFormatProto},
+		SupportedWireFormats: []connector.WireFormat{
+			connector.WireFormatArrow,
+			connector.WireFormatParquet,
+			connector.WireFormatAvro,
+			connector.WireFormatProto,
+			connector.WireFormatJSON,
+		},
 	}
 }
 
