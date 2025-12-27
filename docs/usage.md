@@ -126,6 +126,18 @@ export WALLABY_WIRE_ENFORCE="true"
 
 Per-flow overrides are supported via `flow.wire_format` or connector `options.format`.
 
+## Kafka Destination
+Kafka destination options (connector `options`):
+- `brokers` (required) — comma-separated list
+- `topic` (required)
+- `format` (default `arrow`)
+- `compression` (`none`, `gzip`, `snappy`, `lz4`, `zstd`)
+- `acks` (`all` default, or `leader`, `none`)
+- `max_message_bytes` (default `900000`) — upper bound for Kafka record batches
+- `max_batch_bytes` (default = `max_message_bytes`) — size-aware split threshold for encoded batches
+- `max_record_bytes` (default = `max_message_bytes`) — hard cap for single-record payloads
+- `oversize_policy` (`error` default, or `drop`)
+
 ## Type Mapping (Schema Translation)
 Destinations that materialize tables (Snowflake, Snowpipe, ClickHouse, DuckDB) apply default Postgres → destination type mappings. Override per destination with:
 - `type_mappings` — JSON map of `postgres_type` → `dest_type`

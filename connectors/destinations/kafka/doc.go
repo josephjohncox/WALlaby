@@ -1,2 +1,2 @@
-// Package kafka is a connector implementation placeholder.
+// Package kafka provides a Kafka destination with size-aware batching.
 package kafka

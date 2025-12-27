@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"strconv"
 	"strings"
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -17,14 +19,22 @@ const (
 	optFormat      = "format"
 	optCompression = "compression"
 	optAcks        = "acks"
+	optMaxMessage  = "max_message_bytes"
+	optMaxBatch    = "max_batch_bytes"
+	optMaxRecord   = "max_record_bytes"
+	optOversize    = "oversize_policy"
 )
 
 // Destination writes batches to Kafka.
 type Destination struct {
-	spec   connector.Spec
-	client *kgo.Client
-	topic  string
-	codec  wire.Codec
+	spec           connector.Spec
+	client         *kgo.Client
+	topic          string
+	codec          wire.Codec
+	maxMessageSize int
+	maxBatchSize   int
+	maxRecordSize  int
+	oversizePolicy string
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
@@ -44,6 +54,30 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	}
 	d.codec = codec
 
+	maxMessage, err := parseSizeOption(spec.Options, optMaxMessage, 900000)
+	if err != nil {
+		return err
+	}
+	maxBatch, err := parseSizeOption(spec.Options, optMaxBatch, maxMessage)
+	if err != nil {
+		return err
+	}
+	maxRecord, err := parseSizeOption(spec.Options, optMaxRecord, maxMessage)
+	if err != nil {
+		return err
+	}
+	oversize := strings.ToLower(strings.TrimSpace(spec.Options[optOversize]))
+	if oversize == "" {
+		oversize = "error"
+	}
+	if oversize != "error" && oversize != "drop" {
+		return fmt.Errorf("unsupported oversize_policy %q (use error or drop)", oversize)
+	}
+	d.maxMessageSize = maxMessage
+	d.maxBatchSize = maxBatch
+	d.maxRecordSize = maxRecord
+	d.oversizePolicy = oversize
+
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(brokers...),
 		kgo.RequiredAcks(parseAcks(spec.Options[optAcks])),
@@ -51,6 +85,9 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 
 	if compression := strings.ToLower(spec.Options[optCompression]); compression != "" {
 		opts = append(opts, kgo.ProducerBatchCompression(parseCompression(compression)))
+	}
+	if d.maxMessageSize > 0 {
+		opts = append(opts, kgo.ProducerBatchMaxBytes(int32(d.maxMessageSize)))
 	}
 
 	client, err := kgo.NewClient(opts...)
@@ -66,27 +103,14 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	if d.client == nil {
 		return errors.New("kafka destination not initialized")
 	}
-	payload, err := d.codec.Encode(batch)
-	if err != nil {
-		return err
-	}
-	if len(payload) == 0 {
+	if len(batch.Records) == 0 {
 		return nil
 	}
-
-	record := &kgo.Record{
-		Topic: d.topic,
-		Value: payload,
-		Headers: []kgo.RecordHeader{
-			{Key: "wallaby-format", Value: []byte(d.codec.Name())},
-			{Key: "wallaby-schema", Value: []byte(batch.Schema.Name)},
-			{Key: "wallaby-namespace", Value: []byte(batch.Schema.Namespace)},
-			{Key: "wallaby-schema-version", Value: []byte(fmt.Sprintf("%d", batch.Schema.Version))},
-		},
+	limit := d.batchLimit()
+	if limit <= 0 {
+		return d.writeEncoded(ctx, batch)
 	}
-
-	results := d.client.ProduceSync(ctx, record)
-	return results.FirstErr()
+	return d.writeWithLimit(ctx, batch, limit)
 }
 
 func (d *Destination) ApplyDDL(_ context.Context, _ connector.Schema, _ connector.Record) error {
@@ -131,6 +155,103 @@ func splitCSV(value string) []string {
 		}
 	}
 	return out
+}
+
+func parseSizeOption(options map[string]string, key string, fallback int) (int, error) {
+	if options == nil {
+		return fallback, nil
+	}
+	raw := strings.TrimSpace(options[key])
+	if raw == "" {
+		return fallback, nil
+	}
+	val, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	if val < 0 {
+		return 0, fmt.Errorf("%s must be >= 0", key)
+	}
+	return val, nil
+}
+
+func (d *Destination) batchLimit() int {
+	limit := d.maxBatchSize
+	if d.maxMessageSize > 0 && (limit <= 0 || d.maxMessageSize < limit) {
+		limit = d.maxMessageSize
+	}
+	if limit <= 0 && d.maxRecordSize > 0 {
+		limit = d.maxRecordSize
+	}
+	return limit
+}
+
+func (d *Destination) writeEncoded(ctx context.Context, batch connector.Batch) error {
+	payload, err := d.codec.Encode(batch)
+	if err != nil {
+		return err
+	}
+	if len(payload) == 0 {
+		return nil
+	}
+	if len(batch.Records) == 1 && d.maxRecordSize > 0 && len(payload) > d.maxRecordSize {
+		return d.handleOversize(batch, len(payload), d.maxRecordSize, "record")
+	}
+	return d.producePayload(ctx, batch, payload)
+}
+
+func (d *Destination) writeWithLimit(ctx context.Context, batch connector.Batch, limit int) error {
+	payload, err := d.codec.Encode(batch)
+	if err != nil {
+		return err
+	}
+	if len(payload) == 0 {
+		return nil
+	}
+	if len(batch.Records) == 1 && d.maxRecordSize > 0 && len(payload) > d.maxRecordSize {
+		return d.handleOversize(batch, len(payload), d.maxRecordSize, "record")
+	}
+	if len(payload) <= limit {
+		return d.producePayload(ctx, batch, payload)
+	}
+	if len(batch.Records) == 1 {
+		return d.handleOversize(batch, len(payload), limit, "message")
+	}
+	mid := len(batch.Records) / 2
+	left := batch
+	left.Records = batch.Records[:mid]
+	right := batch
+	right.Records = batch.Records[mid:]
+	if err := d.writeWithLimit(ctx, left, limit); err != nil {
+		return err
+	}
+	return d.writeWithLimit(ctx, right, limit)
+}
+
+func (d *Destination) producePayload(ctx context.Context, batch connector.Batch, payload []byte) error {
+	record := &kgo.Record{
+		Topic: d.topic,
+		Value: payload,
+		Headers: []kgo.RecordHeader{
+			{Key: "wallaby-format", Value: []byte(d.codec.Name())},
+			{Key: "wallaby-schema", Value: []byte(batch.Schema.Name)},
+			{Key: "wallaby-namespace", Value: []byte(batch.Schema.Namespace)},
+			{Key: "wallaby-schema-version", Value: []byte(fmt.Sprintf("%d", batch.Schema.Version))},
+		},
+	}
+	results := d.client.ProduceSync(ctx, record)
+	return results.FirstErr()
+}
+
+func (d *Destination) handleOversize(batch connector.Batch, size, limit int, limitType string) error {
+	msg := fmt.Sprintf("kafka %s payload size %d exceeds limit %d (records=%d)", limitType, size, limit, len(batch.Records))
+	switch d.oversizePolicy {
+	case "drop":
+		log.Printf("kafka oversize_policy=drop: %s", msg)
+		return nil
+	default:
+		return errors.New(msg)
+	}
 }
 
 func parseCompression(value string) kgo.CompressionCodec {

@@ -55,3 +55,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+#benchmark
+bench/results/

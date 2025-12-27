@@ -19,6 +19,7 @@ require (
 	github.com/marcboeker/go-duckdb v1.8.5
 	github.com/snowflakedb/gosnowflake v1.18.1
 	github.com/twmb/franz-go v1.20.6
+	github.com/twmb/franz-go/pkg/kadm v1.17.1
 	go.opentelemetry.io/otel v1.39.0
 	go.opentelemetry.io/otel/trace v1.39.0
 	golang.org/x/tools v0.40.0

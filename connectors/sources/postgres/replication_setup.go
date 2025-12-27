@@ -183,7 +183,7 @@ func validateLogicalReplication(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 
 	var maxSlots int
-	if err := pool.QueryRow(ctx, "SHOW max_replication_slots").Scan(&maxSlots); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT current_setting('max_replication_slots')::int").Scan(&maxSlots); err != nil {
 		return fmt.Errorf("read max_replication_slots: %w", err)
 	}
 	if maxSlots < 1 {
@@ -191,7 +191,7 @@ func validateLogicalReplication(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 
 	var maxSenders int
-	if err := pool.QueryRow(ctx, "SHOW max_wal_senders").Scan(&maxSenders); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT current_setting('max_wal_senders')::int").Scan(&maxSenders); err != nil {
 		return fmt.Errorf("read max_wal_senders: %w", err)
 	}
 	if maxSenders < 1 {

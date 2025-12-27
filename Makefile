@@ -9,7 +9,7 @@ PROFILE ?= small
 TARGETS ?= all
 SCENARIO ?= base
 
-.PHONY: fmt lint test test-integration proto tidy release release-snapshot proto-tools bench bench-ddl bench-up bench-down
+.PHONY: fmt lint test test-integration proto tidy release release-snapshot proto-tools bench bench-ddl bench-up bench-down benchmark benchmark-profile
 
 fmt:
 	$(GO) fmt ./...
@@ -50,3 +50,9 @@ bench: bench-up
 
 bench-ddl:
 	$(MAKE) bench SCENARIO=ddl
+
+benchmark:
+	./bench/benchmark.sh
+
+benchmark-profile:
+	ENABLE_PROFILES=1 ./bench/benchmark.sh

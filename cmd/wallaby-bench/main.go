@@ -12,6 +12,9 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/pprof"
+	"runtime/trace"
 	"sort"
 	"strings"
 	"sync"
@@ -28,6 +31,9 @@ import (
 	"github.com/josephjohncox/wallaby/internal/ddl"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
+	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kerr"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 type profile struct {
@@ -132,39 +138,95 @@ func (m *metricsDestination) Capabilities() connector.Capabilities {
 }
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	var (
 		profileName  = flag.String("profile", "small", "profile: small|medium|large")
 		targetsRaw   = flag.String("targets", "all", "targets: all|kafka,postgres,clickhouse")
 		scenario     = flag.String("scenario", "base", "scenario: base|ddl")
 		pgDSN        = flag.String("pg-dsn", getenv("BENCH_PG_DSN", "postgres://postgres:postgres@localhost:5432/wallaby?sslmode=disable"), "postgres DSN")
-		ckDSN        = flag.String("clickhouse-dsn", getenv("BENCH_CLICKHOUSE_DSN", "clickhouse://localhost:9000/bench"), "clickhouse DSN")
+		ckDSN        = flag.String("clickhouse-dsn", getenv("BENCH_CLICKHOUSE_DSN", "clickhouse://bench:bench@localhost:9000/bench"), "clickhouse DSN")
 		kafkaBrokers = flag.String("kafka-brokers", getenv("BENCH_KAFKA_BROKERS", "localhost:9092"), "kafka brokers")
 		outputDir    = flag.String("output-dir", "bench/results", "output directory for results")
 		seed         = flag.Int64("seed", 42, "random seed")
+		cpuProfile   = flag.String("cpu-profile", "", "write CPU profile to file")
+		memProfile   = flag.String("mem-profile", "", "write heap profile to file")
+		traceProfile = flag.String("trace", "", "write execution trace to file")
 	)
 	flag.Parse()
 
+	if *cpuProfile != "" {
+		file, err := os.Create(*cpuProfile)
+		if err != nil {
+			return fmt.Errorf("create cpu profile: %w", err)
+		}
+		if err := pprof.StartCPUProfile(file); err != nil {
+			file.Close()
+			return fmt.Errorf("start cpu profile: %w", err)
+		}
+		defer func() {
+			pprof.StopCPUProfile()
+			_ = file.Close()
+		}()
+	}
+
+	if *traceProfile != "" {
+		file, err := os.Create(*traceProfile)
+		if err != nil {
+			return fmt.Errorf("create trace: %w", err)
+		}
+		if err := trace.Start(file); err != nil {
+			file.Close()
+			return fmt.Errorf("start trace: %w", err)
+		}
+		defer func() {
+			trace.Stop()
+			_ = file.Close()
+		}()
+	}
+
+	if *memProfile != "" {
+		path := *memProfile
+		defer func() {
+			file, err := os.Create(path)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "create heap profile: %v\n", err)
+				return
+			}
+			defer file.Close()
+			runtime.GC()
+			if err := pprof.WriteHeapProfile(file); err != nil {
+				fmt.Fprintf(os.Stderr, "write heap profile: %v\n", err)
+			}
+		}()
+	}
+
 	profile, err := resolveProfile(*profileName)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	if *scenario != "base" && *scenario != "ddl" {
-		fatal(fmt.Errorf("unsupported scenario %q", *scenario))
+		return fmt.Errorf("unsupported scenario %q", *scenario)
 	}
 
 	targets, err := resolveTargets(*targetsRaw)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, *pgDSN)
 	if err != nil {
-		fatal(fmt.Errorf("connect postgres: %w", err))
+		return fmt.Errorf("connect postgres: %w", err)
 	}
 	defer pool.Close()
 	if err := pool.Ping(ctx); err != nil {
-		fatal(fmt.Errorf("ping postgres: %w", err))
+		return fmt.Errorf("ping postgres: %w", err)
 	}
 
 	data := buildBenchData(*seed)
@@ -175,21 +237,21 @@ func main() {
 	}
 
 	if err := setupPostgresSchemas(ctx, pool, specs); err != nil {
-		fatal(err)
+		return err
 	}
 
 	if err := seedTables(ctx, pool, specs, profile.InitialRows); err != nil {
-		fatal(err)
+		return err
 	}
 
 	if hasTarget(targets, "postgres") {
 		if err := setupPostgresSink(ctx, pool, specs); err != nil {
-			fatal(err)
+			return err
 		}
 	}
 	if hasTarget(targets, "clickhouse") {
 		if err := setupClickHouseSink(ctx, *ckDSN, specs); err != nil {
-			fatal(err)
+			return err
 		}
 	}
 
@@ -197,14 +259,15 @@ func main() {
 	for _, target := range targets {
 		result, err := runTarget(ctx, target, profile, *scenario, pool, *pgDSN, *ckDSN, *kafkaBrokers, specs, rowSizes)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		results = append(results, result)
 	}
 
 	if err := writeResults(*outputDir, results); err != nil {
-		fatal(err)
+		return err
 	}
+	return nil
 }
 
 func resolveProfile(name string) (profile, error) {
@@ -501,7 +564,11 @@ func setupClickHouseSink(ctx context.Context, dsn string, specs []tableSpec) err
 
 	for _, spec := range specs {
 		stmt := strings.Replace(spec.CreateSQL, "bench_src", "bench", 1)
-		translated, err := ddl.TranslatePostgresDDL(stmt, ddl.DialectConfigFor(ddl.DialectClickHouse), nil)
+		translated, err := ddl.TranslatePostgresDDL(
+			stmt,
+			ddl.DialectConfigFor(ddl.DialectClickHouse),
+			(&clickhouse.Destination{}).TypeMappings(),
+		)
 		if err != nil {
 			return fmt.Errorf("translate clickhouse ddl: %w", err)
 		}
@@ -560,6 +627,27 @@ func truncateClickHouseSink(ctx context.Context, dsn string, specs []tableSpec) 
 	return nil
 }
 
+func ensureKafkaTopic(ctx context.Context, brokers []string, topic string) error {
+	if len(brokers) == 0 {
+		return errors.New("kafka brokers are required")
+	}
+	if strings.TrimSpace(topic) == "" {
+		return errors.New("kafka topic is required")
+	}
+	client, err := kgo.NewClient(kgo.SeedBrokers(brokers...), kgo.AllowAutoTopicCreation())
+	if err != nil {
+		return fmt.Errorf("create kafka client: %w", err)
+	}
+	defer client.Close()
+
+	admin := kadm.NewClient(client)
+	_, err = admin.CreateTopic(ctx, 1, 1, nil, topic)
+	if err != nil && !errors.Is(err, kerr.TopicAlreadyExists) {
+		return fmt.Errorf("create kafka topic %s: %w", topic, err)
+	}
+	return nil
+}
+
 func runTarget(ctx context.Context, target string, prof profile, scenario string, pool *pgxpool.Pool, pgDSN, ckDSN, kafkaBrokers string, specs []tableSpec, rowSizes map[string]int64) (benchResult, error) {
 	if err := resetSourceTables(ctx, pool, specs, prof.InitialRows); err != nil {
 		return benchResult{}, err
@@ -575,6 +663,17 @@ func runTarget(ctx context.Context, target string, prof profile, scenario string
 		}
 	}
 
+	batchSize := prof.BatchSize
+	batchTimeout := prof.BatchTimeout
+	if target == "kafka" {
+		if batchSize > 25 {
+			batchSize = 25
+		}
+		if batchTimeout > 200*time.Millisecond {
+			batchTimeout = 200 * time.Millisecond
+		}
+	}
+
 	sourceSpec := connector.Spec{
 		Name: "bench-source",
 		Type: connector.EndpointPostgres,
@@ -586,8 +685,8 @@ func runTarget(ctx context.Context, target string, prof profile, scenario string
 			"ensure_publication":    "true",
 			"sync_publication":      "true",
 			"sync_publication_mode": "sync",
-			"batch_size":            fmt.Sprintf("%d", prof.BatchSize),
-			"batch_timeout":         prof.BatchTimeout.String(),
+			"batch_size":            fmt.Sprintf("%d", batchSize),
+			"batch_timeout":         batchTimeout.String(),
 			"emit_empty":            "true",
 			"resolve_types":         "true",
 		},
@@ -602,6 +701,12 @@ func runTarget(ctx context.Context, target string, prof profile, scenario string
 	destSpec, dest, err := buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix)
 	if err != nil {
 		return benchResult{}, err
+	}
+	if target == "kafka" {
+		brokers := splitCSV(kafkaBrokers)
+		if err := ensureKafkaTopic(ctx, brokers, destSpec.Options["topic"]); err != nil {
+			return benchResult{}, err
+		}
 	}
 
 	stats := &benchStats{}
@@ -649,9 +754,10 @@ func buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix string) (c
 			Name: "bench-kafka",
 			Type: connector.EndpointKafka,
 			Options: map[string]string{
-				"brokers": kafkaBrokers,
-				"topic":   fmt.Sprintf("wallaby_bench_%s", topicSuffix),
-				"format":  string(connector.WireFormatArrow),
+				"brokers":     kafkaBrokers,
+				"topic":       fmt.Sprintf("wallaby_bench_%s", topicSuffix),
+				"format":      string(connector.WireFormatArrow),
+				"compression": "lz4",
 			},
 		}
 		return spec, &kafka.Destination{}, nil
@@ -994,6 +1100,19 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
+func splitCSV(value string) []string {
+	raw := strings.Split(value, ",")
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
 func schemaName(qualified string) string {
 	parts := strings.Split(qualified, ".")
 	if len(parts) >= 2 {
@@ -1038,9 +1157,4 @@ func buildEventArray(rng *rand.Rand, count int) []any {
 		})
 	}
 	return out
-}
-
-func fatal(err error) {
-	fmt.Fprintln(os.Stderr, err)
-	os.Exit(1)
 }
