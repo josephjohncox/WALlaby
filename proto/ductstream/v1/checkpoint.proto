@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package ductstream.v1;
+
+import "ductstream/v1/types.proto";
+
+option go_package = "github.com/josephjohncox/ductstream/gen/go/ductstream/v1;ductstreampb";
+
+service CheckpointService {
+  rpc GetCheckpoint(GetCheckpointRequest) returns (FlowCheckpoint);
+  rpc PutCheckpoint(PutCheckpointRequest) returns (FlowCheckpoint);
+  rpc ListCheckpoints(ListCheckpointsRequest) returns (ListCheckpointsResponse);
+}
+
+message GetCheckpointRequest {
+  string flow_id = 1;
+}
+
+message PutCheckpointRequest {
+  string flow_id = 1;
+  Checkpoint checkpoint = 2;
+}
+
+message ListCheckpointsRequest {}
+
+message FlowCheckpoint {
+  string flow_id = 1;
+  Checkpoint checkpoint = 2;
+}
+
+message ListCheckpointsResponse {
+  repeated FlowCheckpoint checkpoints = 1;
+}
