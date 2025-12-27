@@ -15,41 +15,58 @@ import (
 )
 
 const (
-	optDSN          = "dsn"
-	optDatabase     = "database"
-	optSchema       = "schema"
-	optTable        = "table"
-	optWriteMode    = "write_mode"
-	optMetaTable    = "meta_table"
-	optMetaSchema   = "meta_schema"
-	optMetaDatabase = "meta_database"
-	optMetaEnabled  = "meta_table_enabled"
-	optMetaPKPrefix = "meta_pk_prefix"
-	optMetaEngine   = "meta_engine"
-	optMetaOrderBy  = "meta_order_by"
-	optFlowID       = "flow_id"
+	optDSN             = "dsn"
+	optDatabase        = "database"
+	optSchema          = "schema"
+	optTable           = "table"
+	optWriteMode       = "write_mode"
+	optBatchMode       = "batch_mode"
+	optBatchResolution = "batch_resolution"
+	optStagingSchema   = "staging_schema"
+	optStagingTable    = "staging_table"
+	optStagingSuffix   = "staging_suffix"
+	optMetaTable       = "meta_table"
+	optMetaSchema      = "meta_schema"
+	optMetaDatabase    = "meta_database"
+	optMetaEnabled     = "meta_table_enabled"
+	optMetaPKPrefix    = "meta_pk_prefix"
+	optMetaEngine      = "meta_engine"
+	optMetaOrderBy     = "meta_order_by"
+	optFlowID          = "flow_id"
 
-	writeModeTarget   = "target"
-	writeModeAppend   = "append"
-	defaultMetaSchema = "ductstream_meta"
-	defaultMetaTable  = "__metadata"
-	defaultMetaPKPref = "pk_"
-	defaultMetaEngine = "MergeTree"
+	writeModeTarget      = "target"
+	writeModeAppend      = "append"
+	batchModeTarget      = "target"
+	batchModeStaging     = "staging"
+	batchResolveNone     = "none"
+	batchResolveAppend   = "append"
+	batchResolveReplace  = "replace"
+	defaultMetaSchema    = "ductstream_meta"
+	defaultMetaTable     = "__metadata"
+	defaultMetaPKPref    = "pk_"
+	defaultMetaEngine    = "MergeTree"
+	defaultStagingSuffix = "_staging"
 )
 
 // Destination writes change events into ClickHouse tables.
 type Destination struct {
-	spec         connector.Spec
-	db           *sql.DB
-	writeMode    string
-	metaEnabled  bool
-	metaSchema   string
-	metaTable    string
-	metaPKPrefix string
-	flowID       string
-	metaColumns  map[string]struct{}
-	metaEngine   string
-	metaOrderBy  string
+	spec             connector.Spec
+	db               *sql.DB
+	writeMode        string
+	batchMode        string
+	batchResolve     string
+	stagingSchema    string
+	stagingTableName string
+	stagingSuffix    string
+	metaEnabled      bool
+	metaSchema       string
+	metaTable        string
+	metaPKPrefix     string
+	flowID           string
+	metaColumns      map[string]struct{}
+	metaEngine       string
+	metaOrderBy      string
+	stagingTables    map[string]tableInfo
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
@@ -72,6 +89,20 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.writeMode = strings.ToLower(spec.Options[optWriteMode])
 	if d.writeMode == "" {
 		d.writeMode = writeModeTarget
+	}
+	d.batchMode = strings.ToLower(spec.Options[optBatchMode])
+	if d.batchMode == "" {
+		d.batchMode = batchModeTarget
+	}
+	d.batchResolve = strings.ToLower(spec.Options[optBatchResolution])
+	if d.batchResolve == "" {
+		d.batchResolve = batchResolveNone
+	}
+	d.stagingSchema = strings.TrimSpace(spec.Options[optStagingSchema])
+	d.stagingTableName = strings.TrimSpace(spec.Options[optStagingTable])
+	d.stagingSuffix = strings.TrimSpace(spec.Options[optStagingSuffix])
+	if d.stagingSuffix == "" {
+		d.stagingSuffix = defaultStagingSuffix
 	}
 
 	d.metaEnabled = parseBool(spec.Options[optMetaEnabled], true)
@@ -106,6 +137,7 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 			return err
 		}
 	}
+	d.stagingTables = map[string]tableInfo{}
 
 	return nil
 }
@@ -124,7 +156,11 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	}
 
 	for _, record := range batch.Records {
-		if err := d.applyRecord(ctx, batch.Schema, record, mode); err != nil {
+		target, isStaging := d.resolveTarget(batch.Schema, record)
+		if isStaging {
+			d.trackStaging(batch.Schema, record)
+		}
+		if err := d.applyRecord(ctx, target, batch.Schema, record, mode); err != nil {
 			return err
 		}
 		if d.metaEnabled {
@@ -136,8 +172,12 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	return nil
 }
 
-func (d *Destination) Close(_ context.Context) error {
+func (d *Destination) Close(ctx context.Context) error {
 	if d.db != nil {
+		if err := d.finalizeStaging(ctx); err != nil {
+			_ = d.db.Close()
+			return err
+		}
 		return d.db.Close()
 	}
 	return nil
@@ -159,8 +199,10 @@ func (d *Destination) Capabilities() connector.Capabilities {
 	}
 }
 
-func (d *Destination) applyRecord(ctx context.Context, schema connector.Schema, record connector.Record, mode string) error {
-	target := d.targetTable(schema, record)
+func (d *Destination) applyRecord(ctx context.Context, target string, schema connector.Schema, record connector.Record, mode string) error {
+	if target == "" {
+		target = d.targetTable(schema, record)
+	}
 	switch record.Operation {
 	case connector.OpDelete:
 		if mode == writeModeAppend {
@@ -177,6 +219,24 @@ func (d *Destination) applyRecord(ctx context.Context, schema connector.Schema, 
 	default:
 		return nil
 	}
+}
+
+func (d *Destination) resolveTarget(schema connector.Schema, record connector.Record) (string, bool) {
+	if record.Operation == connector.OpLoad && d.batchMode == batchModeStaging {
+		return d.stagingTable(schema, record), true
+	}
+	return d.targetTable(schema, record), false
+}
+
+func (d *Destination) trackStaging(schema connector.Schema, record connector.Record) {
+	if record.Table == "" {
+		return
+	}
+	key := tableKey(schema, record.Table)
+	if _, ok := d.stagingTables[key]; ok {
+		return
+	}
+	d.stagingTables[key] = tableInfo{schema: schema, table: record.Table}
 }
 
 func (d *Destination) targetTable(schema connector.Schema, record connector.Record) string {
@@ -200,6 +260,44 @@ func (d *Destination) targetTable(schema connector.Schema, record connector.Reco
 	return quoteIdent(targetSchema, '`') + "." + quoteIdent(table, '`')
 }
 
+func (d *Destination) stagingTable(schema connector.Schema, record connector.Record) string {
+	stagingTable := strings.TrimSpace(d.stagingTableName)
+	stagingSchema := strings.TrimSpace(d.stagingSchema)
+
+	table := strings.TrimSpace(d.spec.Options[optTable])
+	targetSchema := strings.TrimSpace(d.spec.Options[optDatabase])
+	if targetSchema == "" {
+		targetSchema = strings.TrimSpace(d.spec.Options[optSchema])
+	}
+	if table == "" {
+		table = record.Table
+	}
+	if strings.Contains(table, ".") {
+		parts := strings.SplitN(table, ".", 2)
+		if len(parts) == 2 {
+			targetSchema = parts[0]
+			table = parts[1]
+		}
+	}
+	if targetSchema == "" {
+		targetSchema = schema.Namespace
+	}
+
+	if stagingTable == "" {
+		stagingTable = table + d.stagingSuffix
+	}
+	if strings.Contains(stagingTable, ".") {
+		return quoteQualified(stagingTable, '`')
+	}
+	if stagingSchema == "" {
+		stagingSchema = targetSchema
+	}
+	if stagingSchema == "" {
+		return quoteIdent(stagingTable, '`')
+	}
+	return quoteIdent(stagingSchema, '`') + "." + quoteIdent(stagingTable, '`')
+}
+
 func (d *Destination) insertRow(ctx context.Context, target string, schema connector.Schema, record connector.Record) error {
 	cols, vals := recordColumns(schema, record)
 	if len(cols) == 0 {
@@ -208,6 +306,46 @@ func (d *Destination) insertRow(ctx context.Context, target string, schema conne
 	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols, '`'), placeholders(len(cols)))
 	if _, err := d.db.ExecContext(ctx, stmt, vals...); err != nil {
 		return fmt.Errorf("insert row: %w", err)
+	}
+	return nil
+}
+
+func (d *Destination) finalizeStaging(ctx context.Context) error {
+	if d.batchMode != batchModeStaging {
+		return nil
+	}
+	if d.batchResolve == "" || d.batchResolve == batchResolveNone {
+		return nil
+	}
+	if len(d.stagingTables) == 0 {
+		return nil
+	}
+
+	for _, info := range d.stagingTables {
+		if err := d.resolveStagingTable(ctx, info); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (d *Destination) resolveStagingTable(ctx context.Context, info tableInfo) error {
+	target := d.targetTable(info.schema, connector.Record{Table: info.table})
+	staging := d.stagingTable(info.schema, connector.Record{Table: info.table})
+	cols := schemaColumns(info.schema)
+	if len(cols) == 0 {
+		return nil
+	}
+	colList := quoteColumns(cols, '`')
+	if d.batchResolve == batchResolveReplace {
+		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("TRUNCATE TABLE %s", target)); err != nil {
+			return fmt.Errorf("truncate target: %w", err)
+		}
+	}
+	stmt := fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s", target, colList, colList, staging)
+	if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("resolve staging: %w", err)
 	}
 	return nil
 }
@@ -390,6 +528,14 @@ func recordColumns(schema connector.Schema, record connector.Record) ([]string, 
 	return cols, vals
 }
 
+func schemaColumns(schema connector.Schema) []string {
+	cols := make([]string, 0, len(schema.Columns))
+	for _, col := range schema.Columns {
+		cols = append(cols, col.Name)
+	}
+	return cols
+}
+
 func decodeKey(raw []byte) (map[string]any, error) {
 	if len(raw) == 0 {
 		return nil, nil
@@ -456,4 +602,19 @@ func parseBool(value string, fallback bool) bool {
 		return fallback
 	}
 	return parsed
+}
+
+type tableInfo struct {
+	schema connector.Schema
+	table  string
+}
+
+func tableKey(schema connector.Schema, table string) string {
+	if schema.Namespace == "" {
+		return table
+	}
+	if table == "" {
+		return schema.Namespace
+	}
+	return schema.Namespace + "." + table
 }

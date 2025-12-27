@@ -1,0 +1,32 @@
+{
+  "name": "pg_to_snowpipe",
+  "wire_format": "parquet",
+  "source": {
+    "name": "pg-source",
+    "type": "postgres",
+    "options": {
+      "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+      "slot": "ductstream_slot",
+      "publication": "ductstream_pub",
+      "batch_size": "1000",
+      "batch_timeout": "2s",
+      "status_interval": "10s",
+      "create_slot": "true",
+      "format": "parquet"
+    }
+  },
+  "destinations": [
+    {
+      "name": "snowpipe-out",
+      "type": "snowpipe",
+      "options": {
+        "dsn": "user:pass@account/db/schema?role=SYSADMIN",
+        "stage": "@my_external_stage",
+        "stage_path": "ductstream/",
+        "format": "parquet",
+        "auto_ingest": "true",
+        "copy_on_write": "false"
+      }
+    }
+  ]
+}

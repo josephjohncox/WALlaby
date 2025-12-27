@@ -1,0 +1,30 @@
+{
+  "name": "pg_to_snowflake",
+  "wire_format": "arrow",
+  "source": {
+    "name": "pg-source",
+    "type": "postgres",
+    "options": {
+      "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+      "slot": "ductstream_slot",
+      "publication": "ductstream_pub",
+      "batch_size": "500",
+      "batch_timeout": "1s",
+      "status_interval": "10s",
+      "create_slot": "true",
+      "format": "arrow"
+    }
+  },
+  "destinations": [
+    {
+      "name": "snowflake-out",
+      "type": "snowflake",
+      "options": {
+        "dsn": "user:pass@account/db/schema?role=SYSADMIN",
+        "schema": "PUBLIC",
+        "write_mode": "target",
+        "meta_table_enabled": "true"
+      }
+    }
+  ]
+}

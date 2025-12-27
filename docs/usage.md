@@ -54,6 +54,16 @@ export DUCTSTREAM_DBOS_SCHEDULE="*/10 * * * * *" # every 10 seconds
 
 If `DUCTSTREAM_DBOS_SCHEDULE` is set, DBOS enqueues one run for each flow in `running` state.
 
+## Checkpoint Store
+By default, checkpoints use Postgres when `DUCTSTREAM_POSTGRES_DSN` is set. For standalone runs, SQLite is supported:
+
+```bash
+export DUCTSTREAM_CHECKPOINT_BACKEND="sqlite"
+export DUCTSTREAM_CHECKPOINT_PATH="$HOME/.ductstream/checkpoints.db"
+```
+
+Set `DUCTSTREAM_CHECKPOINT_DSN` to override the full SQLite DSN.
+
 ## Wire Formats
 DuctStream supports multiple wire formats. Set the default at the service level or per-flow:
 
@@ -140,6 +150,9 @@ Options:
 - `dsn` (required)
 - `schema`, `table` (optional; defaults to source schema/table)
 - `write_mode` (`target` default, or `append`)
+- `batch_mode` (`target` default, or `staging` for backfill loads)
+- `batch_resolution` (`none` default, or `append` / `replace`)
+- `staging_schema`, `staging_table`, `staging_suffix` (default suffix `_staging`)
 - `meta_table_enabled` (default `true`) — create/update `meta_schema.meta_table`
 - `meta_schema` (default `DUCTSTREAM_META`)
 - `meta_table` (default `__METADATA`)
@@ -156,6 +169,7 @@ Options:
 - `format` (`parquet` default; `parquet` | `avro` | `json`)
 - `file_format` (optional Snowflake file format object name)
 - `copy_on_write` (default `true`)
+- `auto_ingest` (default `false`) — set `true` to only upload (skip COPY)
 - `meta_table_enabled` (default `true`)
 
 Snowpipe runs in append mode; use `append_mode` + metadata columns to preserve operation semantics.
@@ -167,6 +181,9 @@ Options:
 - `dsn` (required; e.g. `./data/warehouse.duckdb`)
 - `schema`, `table` (optional; defaults to source schema/table)
 - `write_mode` (`target` default, or `append`)
+- `batch_mode` (`target` default, or `staging` for backfill loads)
+- `batch_resolution` (`none` default, or `append` / `replace`)
+- `staging_schema`, `staging_table`, `staging_suffix` (default suffix `_staging`)
 - `meta_table_enabled` (default `true`)
 
 ## ClickHouse Destination
@@ -176,6 +193,9 @@ Options:
 - `dsn` (required)
 - `database` or `schema`, `table` (optional; defaults to source namespace/table)
 - `write_mode` (`target` default, or `append`)
+- `batch_mode` (`target` default, or `staging` for backfill loads)
+- `batch_resolution` (`none` default, or `append` / `replace`)
+- `staging_schema`, `staging_table`, `staging_suffix` (default suffix `_staging`)
 - `meta_table_enabled` (default `true`)
 - `meta_engine` (default `MergeTree`)
 - `meta_order_by` (default `flow_id, source_schema, source_table, key_json`)

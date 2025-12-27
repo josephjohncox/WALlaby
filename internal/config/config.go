@@ -16,6 +16,7 @@ type Config struct {
 	DBOS        DBOSConfig
 	Wire        WireConfig
 	DDL         DDLConfig
+	Checkpoints CheckpointConfig
 }
 
 type APIConfig struct {
@@ -52,6 +53,12 @@ type DDLConfig struct {
 	AutoApply       bool
 }
 
+type CheckpointConfig struct {
+	Backend string
+	DSN     string
+	Path    string
+}
+
 // Load loads config from environment for now. File parsing will be added later.
 func Load(_ string) (*Config, error) {
 	cfg := &Config{
@@ -83,6 +90,11 @@ func Load(_ string) (*Config, error) {
 			AutoApprove:     getenvBool("DUCTSTREAM_DDL_AUTO_APPROVE", false),
 			Gate:            getenvBool("DUCTSTREAM_DDL_GATE", false),
 			AutoApply:       getenvBool("DUCTSTREAM_DDL_AUTO_APPLY", false),
+		},
+		Checkpoints: CheckpointConfig{
+			Backend: getenv("DUCTSTREAM_CHECKPOINT_BACKEND", ""),
+			DSN:     getenv("DUCTSTREAM_CHECKPOINT_DSN", ""),
+			Path:    getenv("DUCTSTREAM_CHECKPOINT_PATH", ""),
 		},
 	}
 

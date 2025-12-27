@@ -5,6 +5,9 @@ import (
 	"errors"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,19 +34,14 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	var registryCloser interface{ Close() }
 	var dbosOrchestrator *orchestrator.DBOSOrchestrator
 	var streamStore *pgstream.Store
-	if cfg.Postgres.DSN != "" {
+	postgresDSN := cfg.Postgres.DSN
+	if postgresDSN != "" {
 		postgresEngine, err := workflow.NewPostgresEngine(ctx, cfg.Postgres.DSN)
 		if err != nil {
 			return err
 		}
 		engine = postgresEngine
 		baseEngine = postgresEngine
-
-		checkpointStore, err := checkpoint.NewPostgresStore(ctx, cfg.Postgres.DSN)
-		if err != nil {
-			return err
-		}
-		checkpoints = checkpointStore
 
 		store, err := registry.NewPostgresStore(ctx, cfg.Postgres.DSN)
 		if err != nil {
@@ -56,6 +54,35 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	backend := resolveCheckpointBackend(cfg)
+	switch backend {
+	case "", "none":
+	case "postgres":
+		if postgresDSN == "" {
+			return errors.New("checkpoint backend postgres requires DUCTSTREAM_POSTGRES_DSN")
+		}
+		checkpointStore, err := checkpoint.NewPostgresStore(ctx, postgresDSN)
+		if err != nil {
+			return err
+		}
+		checkpoints = checkpointStore
+	case "sqlite":
+		dsn := cfg.Checkpoints.DSN
+		if dsn == "" {
+			dsn = cfg.Checkpoints.Path
+		}
+		if dsn == "" {
+			dsn = defaultCheckpointPath()
+		}
+		checkpointStore, err := checkpoint.NewSQLiteStore(ctx, dsn)
+		if err != nil {
+			return err
+		}
+		checkpoints = checkpointStore
+	default:
+		return errors.New("unsupported checkpoint backend: " + backend)
 	}
 
 	factory := runner.Factory{}
@@ -157,4 +184,26 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		}
 		return ctx.Err()
 	}
+}
+
+func resolveCheckpointBackend(cfg *config.Config) string {
+	backend := strings.ToLower(strings.TrimSpace(cfg.Checkpoints.Backend))
+	if backend != "" {
+		return backend
+	}
+	if cfg.Postgres.DSN != "" {
+		return "postgres"
+	}
+	if cfg.Checkpoints.DSN != "" || cfg.Checkpoints.Path != "" {
+		return "sqlite"
+	}
+	return ""
+}
+
+func defaultCheckpointPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "checkpoints.db"
+	}
+	return filepath.Join(home, ".ductstream", "checkpoints.db")
 }

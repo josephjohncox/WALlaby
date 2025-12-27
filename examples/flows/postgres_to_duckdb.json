@@ -1,0 +1,30 @@
+{
+  "name": "pg_to_duckdb",
+  "wire_format": "arrow",
+  "source": {
+    "name": "pg-source",
+    "type": "postgres",
+    "options": {
+      "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+      "slot": "ductstream_slot",
+      "publication": "ductstream_pub",
+      "batch_size": "500",
+      "batch_timeout": "1s",
+      "status_interval": "10s",
+      "create_slot": "true",
+      "format": "arrow"
+    }
+  },
+  "destinations": [
+    {
+      "name": "duckdb-out",
+      "type": "duckdb",
+      "options": {
+        "dsn": "./data/warehouse.duckdb",
+        "schema": "main",
+        "write_mode": "target",
+        "meta_table_enabled": "true"
+      }
+    }
+  ]
+}

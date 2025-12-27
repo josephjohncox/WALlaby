@@ -27,6 +27,7 @@ const (
 	optFormat       = "format"
 	optFileFormat   = "file_format"
 	optCopyOnWrite  = "copy_on_write"
+	optAutoIngest   = "auto_ingest"
 	optWriteMode    = "write_mode"
 	optMetaTable    = "meta_table"
 	optMetaSchema   = "meta_schema"
@@ -94,6 +95,9 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.stage = strings.TrimSpace(spec.Options[optStage])
 	d.stagePath = strings.Trim(strings.TrimSpace(spec.Options[optStagePath]), "/")
 	d.copyOnWrite = parseBool(spec.Options[optCopyOnWrite], true)
+	if parseBool(spec.Options[optAutoIngest], false) {
+		d.copyOnWrite = false
+	}
 	d.fileFormat = strings.TrimSpace(spec.Options[optFileFormat])
 	d.writeMode = strings.ToLower(strings.TrimSpace(spec.Options[optWriteMode]))
 	if d.writeMode == "" {

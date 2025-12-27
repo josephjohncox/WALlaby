@@ -43,7 +43,7 @@ No Git history exists yet. Use Conventional Commits (e.g., `feat: add wal stream
 PRs should include description, test evidence, and performance/compatibility notes.
 
 ## Pending Tasks / Roadmap
-- Optional: alternative state backends (file/sqlite) for system metadata beyond snapshot state.
+- Optional: SQLite-backed schema registry / DDL store for non-Postgres deployments.
 
 ## Observability & Lifecycle Expectations
 All new components must emit OpenTelemetry traces/metrics and honor flow lifecycle state transitions. Checkpointing and recovery paths should be tested and documented.
