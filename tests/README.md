@@ -49,3 +49,16 @@ Stream throughput benchmark:
 ```bash
 go test ./pkg/stream -bench StreamThroughput -run '^$'
 ```
+
+Stream harness benchmark (parallelism/record width):
+
+```bash
+go test ./pkg/stream -bench StreamHarness -run '^$'
+```
+
+Export benchmark results (JSON/CSV):
+
+```bash
+go test ./pkg/stream -bench StreamHarness -run '^$' | go run ./tools/benchreport -format json > bench.json
+go test ./pkg/stream -bench StreamHarness -run '^$' | go run ./tools/benchreport -format csv > bench.csv
+```

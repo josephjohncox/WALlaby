@@ -36,3 +36,7 @@ resources: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+workers:
+  enabled: false
+  items: []

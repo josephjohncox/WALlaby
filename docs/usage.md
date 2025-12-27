@@ -28,6 +28,21 @@ helm install ductstream oci://ghcr.io/josephjohncox/ductstream/charts/ductstream
 Set required env vars via Helm values (`env`) or a ConfigMap (`config.enabled=true` + `config.data`).
 See `charts/ductstream/values.example.yaml` for a minimal example.
 
+To run per-flow workers from the chart, enable `workers` and define one item per flow:
+
+```yaml
+workers:
+  enabled: true
+  items:
+    - name: flow-a
+      kind: deployment
+      replicas: 1
+      command: ["/usr/local/bin/ductstream-worker"]
+      args: ["--flow-id=flow-a"]
+```
+
+Use `kind: job` for one-off runs or `kind: cronjob` with `schedule` for periodic backfills.
+
 ### Create a Flow (gRPC)
 Use `grpcurl` with local proto files:
 

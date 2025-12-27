@@ -16,6 +16,7 @@ Keep new code organized as follows:
 - `connectors/`: source/destination implementations (e.g., Snowflake, S3, Kafka).
 - `terraform/provider/`: Terraform provider implementation.
 - `tests/`: integration tests and fixtures.
+- `tools/benchreport/`: benchmark output converter (JSON/CSV).
 
 ## Build, Test, and Development Commands
 Use the Makefile for consistent workflows:
@@ -44,6 +45,7 @@ PRs should include description, test evidence, and performance/compatibility not
 
 ## Pending Tasks / Roadmap
 - Optional: SQLite-backed schema registry / DDL store for non-Postgres deployments.
+- Automate logical replication setup beyond validation (wal_level guidance + slot/publication cleanup on flow delete).
 
 ## Observability & Lifecycle Expectations
 All new components must emit OpenTelemetry traces/metrics and honor flow lifecycle state transitions. Checkpointing and recovery paths should be tested and documented.

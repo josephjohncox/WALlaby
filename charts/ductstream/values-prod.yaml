@@ -45,3 +45,16 @@ resources:
   limits:
     cpu: 1000m
     memory: 1Gi
+
+# Optional worker pool (one deployment per flow).
+workers:
+  enabled: false
+  items:
+    - name: "flow-a"
+      kind: "deployment"
+      replicas: 1
+      command: ["/usr/local/bin/ductstream-worker"]
+      args: ["--flow-id=flow-a"]
+      envFrom:
+        - secretRef:
+            name: "ductstream-secrets"
