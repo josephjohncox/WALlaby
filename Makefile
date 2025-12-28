@@ -9,6 +9,8 @@ PROFILE ?= small
 TARGETS ?= all
 SCENARIO ?= base
 
+export GO_TEST_TIMEOUT
+
 .PHONY: fmt lint test test-integration test-integration-ci test-e2e test-k8s-kind proto tidy release release-snapshot proto-tools bench bench-ddl bench-up bench-down benchmark benchmark-profile
 
 fmt:

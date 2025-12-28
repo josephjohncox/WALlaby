@@ -33,8 +33,9 @@ CLI integration tests run `go run ./cmd/wallaby-admin` against a local gRPC serv
 Set these environment variables to enable destination tests:
 - `TEST_PG_DSN` (Postgres logical replication E2E)
 - `WALLABY_TEST_DBOS_DSN` (DBOS integration; falls back to `TEST_PG_DSN`)
-- `WALLABY_TEST_DBOS_STREAM=1` (opt in to DBOS streaming integration test)
+  - DBOS backfill + streaming integration tests always run when a DBOS DSN is available.
 - `WALLABY_TEST_K8S_KUBECONFIG` (Kubernetes dispatcher integration; avoids using global kubeconfig)
+- `WALLABY_TEST_K8S_KIND=1` (spin up a local kind cluster and set `WALLABY_TEST_K8S_KUBECONFIG`)
 - `WALLABY_TEST_K8S_NAMESPACE` (optional)
 - `WALLABY_TEST_K8S_IMAGE` (optional job image)
 - `WALLABY_TEST_CLICKHOUSE_DSN`, optional `WALLABY_TEST_CLICKHOUSE_DB`

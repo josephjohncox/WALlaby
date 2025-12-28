@@ -71,7 +71,7 @@ func (c *CatalogScanner) scan(ctx context.Context) (map[string]connector.Schema,
 		        a.attname AS column_name,
 		        NOT a.attnotnull AS is_nullable,
 		        format_type(a.atttypid, a.atttypmod) AS data_type,
-		        a.attgenerated,
+		        a.attgenerated::text AS generated,
 		        pg_get_expr(ad.adbin, ad.adrelid) AS generation_expression,
 		        tns.nspname AS type_schema
 		 FROM pg_class c

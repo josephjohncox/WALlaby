@@ -2,12 +2,17 @@ package integration_test
 
 import (
 	"context"
+	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/orchestrator"
@@ -82,6 +87,7 @@ func TestDBOSIntegrationBackfill(t *testing.T) {
 			"batch_size":          "200",
 			"snapshot_workers":    "1",
 			"snapshot_consistent": "false",
+			"flow_id":             flowID,
 			"resolve_types":       "true",
 		},
 	}
@@ -120,10 +126,11 @@ func TestDBOSIntegrationBackfill(t *testing.T) {
 		t.Fatalf("start flow: %v", err)
 	}
 
+	queueName := "wallaby"
 	orch, err := orchestrator.NewDBOSOrchestrator(ctx, orchestrator.Config{
 		AppName:       "wallaby-test",
 		DatabaseURL:   dsn,
-		Queue:         "wallaby",
+		Queue:         queueName,
 		MaxEmptyReads: 1,
 		DefaultWire:   connector.WireFormatJSON,
 	}, engine, nil, runner.Factory{})
@@ -136,19 +143,18 @@ func TestDBOSIntegrationBackfill(t *testing.T) {
 		t.Fatalf("enqueue flow: %v", err)
 	}
 
-	waitFor(t, 30*time.Second, 200*time.Millisecond, func() (bool, error) {
-		var count int
-		if err := pool.QueryRow(ctx, "SELECT count(*) FROM stream_events WHERE stream = $1", streamName).Scan(&count); err != nil {
-			return false, err
-		}
-		return count >= 2, nil
-	})
+	t.Logf("dbos backfill flow=%s stream=%s queue=%s", flowID, streamName, queueName)
+	inputPayload := ""
+	if payload, err := json.Marshal(orchestrator.FlowRunInput{
+		FlowID:        flowID,
+		MaxEmptyReads: 1,
+	}); err == nil {
+		inputPayload = base64.StdEncoding.EncodeToString(payload)
+	}
+	waitForStreamEvents(t, ctx, pool, flowID, streamName, inputPayload, 2)
 }
 
 func TestDBOSIntegrationStreaming(t *testing.T) {
-	if strings.TrimSpace(os.Getenv("WALLABY_TEST_DBOS_STREAM")) != "1" {
-		t.Skip("set WALLABY_TEST_DBOS_STREAM=1 to run streaming DBOS test")
-	}
 	dsn := strings.TrimSpace(os.Getenv("WALLABY_TEST_DBOS_DSN"))
 	if dsn == "" {
 		dsn = strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
@@ -292,4 +298,192 @@ func TestDBOSIntegrationStreaming(t *testing.T) {
 		}
 		return count > 0, nil
 	})
+}
+
+func waitForStreamEvents(t *testing.T, ctx context.Context, pool *pgxpool.Pool, flowID, streamName, inputPayload string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	logEvery := 5 * time.Second
+	nextLog := time.Now().Add(logEvery)
+
+	for {
+		var count int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM stream_events WHERE stream = $1", streamName).Scan(&count); err != nil {
+			logDBOSDiagnostics(t, ctx, pool, flowID, streamName)
+			t.Fatalf("query stream_events: %v", err)
+		}
+		if count >= want {
+			return
+		}
+		now := time.Now()
+		if inputPayload != "" {
+			var status string
+			var errMsg sql.NullString
+			err := pool.QueryRow(ctx, `SELECT status, error
+FROM dbos.workflow_status
+WHERE inputs = $1
+ORDER BY created_at DESC
+LIMIT 1`, inputPayload).Scan(&status, &errMsg)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				t.Logf("diagnostics dbos workflow status query failed: %v", err)
+			} else if err == nil {
+				if status == "ERROR" {
+					t.Fatalf("dbos workflow error status=%s error=%s", status, errMsg.String)
+				}
+				if status == "SUCCESS" && count < want {
+					t.Fatalf("dbos workflow completed without stream events status=%s stream=%s count=%d want=%d", status, streamName, count, want)
+				}
+			}
+		}
+
+		if now.After(nextLog) {
+			t.Logf("waiting for stream_events stream=%s count=%d want=%d", streamName, count, want)
+			logDBOSDiagnostics(t, ctx, pool, flowID, streamName)
+			nextLog = now.Add(logEvery)
+		}
+		if now.After(deadline) {
+			logDBOSDiagnostics(t, ctx, pool, flowID, streamName)
+			t.Fatalf("timed out waiting for stream events stream=%s count=%d want=%d", streamName, count, want)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func logDBOSDiagnostics(t *testing.T, ctx context.Context, pool *pgxpool.Pool, flowID, streamName string) {
+	t.Helper()
+
+	var flowState string
+	if err := pool.QueryRow(ctx, "SELECT state FROM flows WHERE id = $1", flowID).Scan(&flowState); err != nil {
+		t.Logf("diagnostics flow state query failed: %v", err)
+	} else {
+		t.Logf("diagnostics flow state=%s", flowState)
+	}
+
+	rows, err := pool.Query(ctx, "SELECT from_state, to_state, COALESCE(reason, ''), created_at FROM flow_state_events WHERE flow_id = $1 ORDER BY id DESC LIMIT 5", flowID)
+	if err != nil {
+		t.Logf("diagnostics flow state events query failed: %v", err)
+	} else {
+		for rows.Next() {
+			var fromState sql.NullString
+			var toState, reason string
+			var createdAt time.Time
+			if scanErr := rows.Scan(&fromState, &toState, &reason, &createdAt); scanErr != nil {
+				t.Logf("diagnostics flow state event scan failed: %v", scanErr)
+				continue
+			}
+			fromValue := ""
+			if fromState.Valid {
+				fromValue = fromState.String
+			}
+			t.Logf("diagnostics flow event from=%s to=%s at=%s reason=%s", fromValue, toState, createdAt.UTC().Format(time.RFC3339), reason)
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			t.Logf("diagnostics flow state events rows error: %v", rowsErr)
+		}
+		rows.Close()
+	}
+
+	var streamCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM stream_events WHERE stream = $1", streamName).Scan(&streamCount); err != nil {
+		t.Logf("diagnostics stream_events query failed: %v", err)
+	} else {
+		t.Logf("diagnostics stream_events count=%d stream=%s", streamCount, streamName)
+	}
+
+	rows, err = pool.Query(ctx, `SELECT workflow_uuid, status, name,
+  COALESCE(queue_name, ''), COALESCE(deduplication_id, ''), COALESCE(error, ''),
+  created_at, updated_at
+FROM dbos.workflow_status
+WHERE deduplication_id = $1
+ORDER BY created_at DESC`, flowID)
+	if err != nil {
+		t.Logf("diagnostics dbos workflow status query failed: %v", err)
+	} else {
+		found := false
+		for rows.Next() {
+			var workflowID, status, name, queueName, dedupID, errMsg string
+			var createdAt, updatedAt int64
+			if scanErr := rows.Scan(&workflowID, &status, &name, &queueName, &dedupID, &errMsg, &createdAt, &updatedAt); scanErr != nil {
+				t.Logf("diagnostics dbos workflow status scan failed: %v", scanErr)
+				continue
+			}
+			found = true
+			t.Logf("diagnostics dbos workflow id=%s status=%s name=%s queue=%s dedup=%s created=%s updated=%s error=%s",
+				workflowID,
+				status,
+				name,
+				queueName,
+				dedupID,
+				time.UnixMilli(createdAt).UTC().Format(time.RFC3339),
+				time.UnixMilli(updatedAt).UTC().Format(time.RFC3339),
+				errMsg,
+			)
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			t.Logf("diagnostics dbos workflow status rows error: %v", rowsErr)
+		}
+		rows.Close()
+		if !found {
+			t.Logf("diagnostics dbos workflow status: no rows for deduplication_id=%s", flowID)
+		}
+	}
+
+	rows, err = pool.Query(ctx, `SELECT workflow_uuid, status, name,
+  COALESCE(queue_name, ''), COALESCE(deduplication_id, ''), COALESCE(error, ''),
+  COALESCE(inputs, ''), created_at, updated_at
+FROM dbos.workflow_status
+ORDER BY created_at DESC
+LIMIT 5`)
+	if err != nil {
+		t.Logf("diagnostics dbos recent workflows query failed: %v", err)
+	} else {
+		for rows.Next() {
+			var workflowID, status, name, queueName, dedupID, errMsg, inputs string
+			var createdAt, updatedAt int64
+			if scanErr := rows.Scan(&workflowID, &status, &name, &queueName, &dedupID, &errMsg, &inputs, &createdAt, &updatedAt); scanErr != nil {
+				t.Logf("diagnostics dbos recent workflows scan failed: %v", scanErr)
+				continue
+			}
+			inputPreview := inputs
+			if len(inputPreview) > 200 {
+				inputPreview = inputPreview[:200] + "..."
+			}
+			t.Logf("diagnostics dbos recent id=%s status=%s name=%s queue=%s dedup=%s created=%s updated=%s error=%s",
+				workflowID,
+				status,
+				name,
+				queueName,
+				dedupID,
+				time.UnixMilli(createdAt).UTC().Format(time.RFC3339),
+				time.UnixMilli(updatedAt).UTC().Format(time.RFC3339),
+				errMsg,
+			)
+			if inputPreview != "" {
+				t.Logf("diagnostics dbos recent inputs=%s", inputPreview)
+			}
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			t.Logf("diagnostics dbos recent workflows rows error: %v", rowsErr)
+		}
+		rows.Close()
+	}
+
+	rows, err = pool.Query(ctx, "SELECT status, count(*) FROM dbos.workflow_status GROUP BY status ORDER BY status")
+	if err != nil {
+		t.Logf("diagnostics dbos status counts query failed: %v", err)
+	} else {
+		for rows.Next() {
+			var status string
+			var count int
+			if scanErr := rows.Scan(&status, &count); scanErr != nil {
+				t.Logf("diagnostics dbos status counts scan failed: %v", scanErr)
+				continue
+			}
+			t.Logf("diagnostics dbos status count status=%s count=%d", status, count)
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			t.Logf("diagnostics dbos status counts rows error: %v", rowsErr)
+		}
+		rows.Close()
+	}
 }

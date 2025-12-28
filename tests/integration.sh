@@ -5,12 +5,48 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="$ROOT_DIR/tests/docker-compose.yml"
 
 RESET_VOLUMES="${RESET_VOLUMES:-1}"
+KIND_ENABLED="${WALLABY_TEST_K8S_KIND:-1}"
+KIND_CLUSTER="${KIND_CLUSTER:-wallaby-test}"
+KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
+KIND_KEEP="${KIND_KEEP:-0}"
 PG_PORT="${TEST_PG_PORT:-5433}"
 CLICKHOUSE_PORT="${TEST_CLICKHOUSE_PORT:-9001}"
 CLICKHOUSE_HTTP_PORT="${TEST_CLICKHOUSE_HTTP_PORT:-8124}"
 CLICKHOUSE_USER="${TEST_CLICKHOUSE_USER:-wallaby}"
 CLICKHOUSE_PASSWORD="${TEST_CLICKHOUSE_PASSWORD:-wallaby}"
 FAKESNOW_PORT="${TEST_FAKESNOW_PORT:-8000}"
+
+kind_created=0
+kind_kubeconfig=""
+
+cleanup_kind() {
+  if [[ -n "${kind_kubeconfig}" ]]; then
+    rm -f "${kind_kubeconfig}"
+  fi
+  if [[ "${kind_created}" == "1" && "${KIND_KEEP}" != "1" ]]; then
+    kind delete cluster --name "${KIND_CLUSTER}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_kind EXIT
+
+if [[ "${KIND_ENABLED}" == "1" ]]; then
+  if ! command -v kind >/dev/null 2>&1; then
+    echo "kind is required to run Kubernetes integration tests" >&2
+    exit 1
+  fi
+  if ! kind get clusters | grep -qx "${KIND_CLUSTER}"; then
+    if [[ -n "${KIND_NODE_IMAGE}" ]]; then
+      kind create cluster --name "${KIND_CLUSTER}" --image "${KIND_NODE_IMAGE}"
+    else
+      kind create cluster --name "${KIND_CLUSTER}"
+    fi
+    kind_created=1
+  fi
+  kind_kubeconfig="$(mktemp -t wallaby-kind-kubeconfig.XXXXXX)"
+  kind get kubeconfig --name "${KIND_CLUSTER}" > "${kind_kubeconfig}"
+  export WALLABY_TEST_K8S_KUBECONFIG="${kind_kubeconfig}"
+  export WALLABY_TEST_K8S_NAMESPACE="${WALLABY_TEST_K8S_NAMESPACE:-default}"
+fi
 
 if [[ "$RESET_VOLUMES" == "1" ]]; then
   docker compose -f "$COMPOSE_FILE" down -v
