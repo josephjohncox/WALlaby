@@ -2,7 +2,24 @@
 
 Integration tests live here and exercise logical replication, schema evolution, checkpoints, and destination writes.
 
+Run the Postgres E2E test locally (starts a Postgres container with logical replication):
+
+```bash
+make test-e2e
+```
+
+Run the full integration suite with local containers (Postgres + ClickHouse):
+
+```bash
+make test-integration-ci
+```
+
 Set these environment variables to enable destination tests:
+- `TEST_PG_DSN` (Postgres logical replication E2E)
+- `WALLABY_TEST_DBOS_DSN` (DBOS integration; falls back to `TEST_PG_DSN`)
+- `WALLABY_TEST_K8S_KUBECONFIG` (Kubernetes dispatcher integration)
+- `WALLABY_TEST_K8S_NAMESPACE` (optional)
+- `WALLABY_TEST_K8S_IMAGE` (optional job image)
 - `WALLABY_TEST_CLICKHOUSE_DSN`, optional `WALLABY_TEST_CLICKHOUSE_DB`
 - `WALLABY_TEST_DUCKDB_DSN`
 - `WALLABY_TEST_SNOWFLAKE_DSN`, optional `WALLABY_TEST_SNOWFLAKE_SCHEMA`

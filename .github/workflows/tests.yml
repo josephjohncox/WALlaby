@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+
+      - name: Integration tests (Postgres, ClickHouse, DBOS, K8s)
+        run: |
+          WALLABY_TEST_K8S_KUBECONFIG="$KUBECONFIG" ./tests/integration.sh

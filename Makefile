@@ -9,7 +9,7 @@ PROFILE ?= small
 TARGETS ?= all
 SCENARIO ?= base
 
-.PHONY: fmt lint test test-integration proto tidy release release-snapshot proto-tools bench bench-ddl bench-up bench-down benchmark benchmark-profile
+.PHONY: fmt lint test test-integration test-integration-ci test-e2e proto tidy release release-snapshot proto-tools bench bench-ddl bench-up bench-down benchmark benchmark-profile
 
 fmt:
 	$(GO) fmt ./...
@@ -22,6 +22,12 @@ test:
 
 test-integration:
 	$(GO) test ./tests/...
+
+test-integration-ci:
+	./tests/integration.sh
+
+test-e2e:
+	./tests/e2e.sh
 
 proto: proto-tools
 	PATH="$(GOBIN):$$PATH" $(BUF) generate
