@@ -35,7 +35,7 @@ func newSourceStateStore(ctx context.Context, dsn, schema, table string) (*sourc
 	if strings.Contains(schema, ".") || strings.Contains(table, ".") {
 		return nil, errors.New("state schema/table must not contain '.'")
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := newPool(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}

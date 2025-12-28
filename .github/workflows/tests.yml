@@ -18,6 +18,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Setup Buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: "1.32.2"
+
+      - name: Generate protobufs
+        run: make proto
+
       - name: Unit tests
         run: go test ./...
 

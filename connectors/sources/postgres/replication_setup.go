@@ -11,7 +11,7 @@ import (
 )
 
 func ensureReplication(ctx context.Context, dsn, publication string, tables []string, ensurePublication, validateSettings, captureDDL bool, ddlSchema, ddlTrigger, ddlPrefix string) error {
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := newPool(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
@@ -59,7 +59,7 @@ func ListPublicationTables(ctx context.Context, dsn, publication string) ([]stri
 	if publication == "" {
 		return nil, errors.New("publication is required")
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := newPool(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
@@ -75,7 +75,7 @@ func AddPublicationTables(ctx context.Context, dsn, publication string, tables [
 	if len(tables) == 0 {
 		return nil
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := newPool(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
@@ -91,7 +91,7 @@ func DropPublicationTables(ctx context.Context, dsn, publication string, tables 
 	if len(tables) == 0 {
 		return nil
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := newPool(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
@@ -110,7 +110,7 @@ func SyncPublicationTables(ctx context.Context, dsn, publication string, tables 
 	if publication == "" {
 		return nil, nil, errors.New("publication is required")
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := newPool(ctx, dsn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect postgres: %w", err)
 	}
@@ -168,7 +168,7 @@ func ScrapeTables(ctx context.Context, dsn string, schemas []string) ([]string, 
 	if dsn == "" {
 		return nil, errors.New("postgres dsn is required")
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := newPool(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}

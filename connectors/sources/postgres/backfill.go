@@ -58,7 +58,7 @@ func (b *BackfillSource) Open(ctx context.Context, spec connector.Spec) error {
 		return errors.New("postgres dsn is required")
 	}
 
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := newPool(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
@@ -443,6 +443,9 @@ func (b *BackfillSource) runTask(ctx context.Context, task backfillTask) error {
 		row := make(map[string]any, len(fields))
 		for idx, field := range fields {
 			row[string(field.Name)] = values[idx]
+		}
+		if err := connector.NormalizePostgresRecord(schema, row); err != nil {
+			return err
 		}
 		if b.partitionCol != "" {
 			if value, ok := row[b.partitionCol]; ok && value != nil {

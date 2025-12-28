@@ -20,7 +20,7 @@ func newTypeResolver(ctx context.Context, dsn string) (*pgTypeResolver, error) {
 	if dsn == "" {
 		return nil, errors.New("postgres dsn is required for type resolver")
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := newPool(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}

@@ -100,6 +100,8 @@ func TestPostgresToPostgresE2E(t *testing.T) {
   id BIGINT PRIMARY KEY,
   payload JSONB,
   tags JSONB,
+  amount NUMERIC(10,2),
+  uid UUID,
   updated_at TIMESTAMPTZ
 )`, schemaName, table)
 	if _, err := srcPool.Exec(ctx, createTable); err != nil {
@@ -109,6 +111,8 @@ func TestPostgresToPostgresE2E(t *testing.T) {
   id BIGINT PRIMARY KEY,
   payload JSONB,
   tags JSONB,
+  amount NUMERIC(10,2),
+  uid UUID,
   updated_at TIMESTAMPTZ
 )`, schemaName, table)
 	if _, err := dstPool.Exec(ctx, createDest); err != nil {
@@ -145,7 +149,8 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 		Options: map[string]string{
 			"dsn":                dstDSN,
 			"schema":             schemaName,
-			"meta_table_enabled": "false",
+			"meta_table_enabled": "true",
+			"flow_id":            "e2e-flow",
 			"synchronous_commit": "off",
 		},
 	}
@@ -184,17 +189,27 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 	})
 
 	now := time.Now().UTC()
-	insertSQL := fmt.Sprintf(`INSERT INTO %s.%s (id, payload, tags, updated_at, extra) VALUES ($1, $2::jsonb, $3::jsonb, $4, $5)`, schemaName, table)
-	if _, err := srcPool.Exec(ctx, insertSQL, 1, `{"status":"new"}`, `["a","b"]`, now, "extra-1"); err != nil {
+	uid1 := "11111111-1111-1111-1111-111111111111"
+	uid2 := "22222222-2222-2222-2222-222222222222"
+	uid3 := "33333333-3333-3333-3333-333333333333"
+	insertSQL := fmt.Sprintf(`INSERT INTO %s.%s (id, payload, tags, amount, uid, updated_at, extra) VALUES ($1, $2::jsonb, $3::jsonb, $4, $5::uuid, $6, $7)`, schemaName, table)
+	if _, err := srcPool.Exec(ctx, insertSQL, 1, `{"status":"new"}`, `["a","b"]`, "10.50", uid1, now, "extra-1"); err != nil {
 		t.Fatalf("insert row1: %v", err)
 	}
-	if _, err := srcPool.Exec(ctx, insertSQL, 2, `{"status":"old"}`, `["x","y"]`, now, "extra-2"); err != nil {
+	if _, err := srcPool.Exec(ctx, insertSQL, 2, `{"status":"old"}`, `["x","y"]`, "20.00", uid2, now, "extra-2"); err != nil {
 		t.Fatalf("insert row2: %v", err)
 	}
+	if _, err := srcPool.Exec(ctx, insertSQL, 3, `{"status":"move"}`, `["m"]`, "42.00", uid3, now, "extra-3"); err != nil {
+		t.Fatalf("insert row3: %v", err)
+	}
 
-	updateSQL := fmt.Sprintf(`UPDATE %s.%s SET payload = $2::jsonb, tags = $3::jsonb, updated_at = $4, extra = $5 WHERE id = $1`, schemaName, table)
-	if _, err := srcPool.Exec(ctx, updateSQL, 1, `{"status":"updated"}`, `["c"]`, now.Add(1*time.Second), "extra-1b"); err != nil {
+	updateSQL := fmt.Sprintf(`UPDATE %s.%s SET payload = $2::jsonb, tags = $3::jsonb, amount = $4, updated_at = $5, extra = $6 WHERE id = $1`, schemaName, table)
+	if _, err := srcPool.Exec(ctx, updateSQL, 1, `{"status":"updated"}`, `["c"]`, "11.75", now.Add(1*time.Second), "extra-1b"); err != nil {
 		t.Fatalf("update row1: %v", err)
+	}
+	updatePKSQL := fmt.Sprintf(`UPDATE %s.%s SET id = $2, amount = $3, updated_at = $4 WHERE id = $1`, schemaName, table)
+	if _, err := srcPool.Exec(ctx, updatePKSQL, 3, 4, "43.00", now.Add(2*time.Second)); err != nil {
+		t.Fatalf("update row3 -> row4: %v", err)
 	}
 
 	deleteSQL := fmt.Sprintf(`DELETE FROM %s.%s WHERE id = $1`, schemaName, table)
@@ -208,13 +223,13 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 		if err := dstPool.QueryRow(ctx, query).Scan(&count); err != nil {
 			return false, err
 		}
-		return count == 1, nil
+		return count == 2, nil
 	})
 
 	var payloadRaw, tagsRaw []byte
-	var extra string
-	rowQuery := fmt.Sprintf("SELECT payload::text, tags::text, extra FROM %s.%s WHERE id = $1", schemaName, table)
-	if err := dstPool.QueryRow(ctx, rowQuery, 1).Scan(&payloadRaw, &tagsRaw, &extra); err != nil {
+	var extra, amountText, uidText string
+	rowQuery := fmt.Sprintf("SELECT payload::text, tags::text, extra, amount::text, uid::text FROM %s.%s WHERE id = $1", schemaName, table)
+	if err := dstPool.QueryRow(ctx, rowQuery, 1).Scan(&payloadRaw, &tagsRaw, &extra, &amountText, &uidText); err != nil {
 		t.Fatalf("read dest row: %v", err)
 	}
 
@@ -235,6 +250,42 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 	}
 	if extra != "extra-1b" {
 		t.Fatalf("expected extra column to match, got %s", extra)
+	}
+	if amountText != "11.75" {
+		t.Fatalf("expected amount 11.75, got %s", amountText)
+	}
+	if uidText != uid1 {
+		t.Fatalf("expected uid %s, got %s", uid1, uidText)
+	}
+
+	var movedCount int
+	movedQuery := fmt.Sprintf("SELECT count(*) FROM %s.%s WHERE id = $1", schemaName, table)
+	if err := dstPool.QueryRow(ctx, movedQuery, 3).Scan(&movedCount); err != nil {
+		t.Fatalf("check id 3: %v", err)
+	}
+	if movedCount != 0 {
+		t.Fatalf("expected id 3 to be moved, still present")
+	}
+	var movedAmount string
+	if err := dstPool.QueryRow(ctx, movedQuery, 4).Scan(&movedCount); err != nil {
+		t.Fatalf("check id 4: %v", err)
+	}
+	if movedCount != 1 {
+		t.Fatalf("expected id 4 to exist, count=%d", movedCount)
+	}
+	if err := dstPool.QueryRow(ctx, fmt.Sprintf("SELECT amount::text FROM %s.%s WHERE id = $1", schemaName, table), 4).Scan(&movedAmount); err != nil {
+		t.Fatalf("read id 4 amount: %v", err)
+	}
+	if movedAmount != "43.00" {
+		t.Fatalf("expected id 4 amount 43.00, got %s", movedAmount)
+	}
+
+	var metaCount int
+	if err := dstPool.QueryRow(ctx, `SELECT count(*) FROM wallaby_meta.__metadata WHERE pk_id = $1 AND is_deleted = true AND operation = 'delete'`, "2").Scan(&metaCount); err != nil {
+		t.Fatalf("read meta delete: %v", err)
+	}
+	if metaCount == 0 {
+		t.Fatalf("expected meta delete for id 2, got none")
 	}
 
 	cancel()

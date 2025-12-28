@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -328,7 +329,7 @@ func (d *Destination) applyRecord(ctx context.Context, tx pgx.Tx, target string,
 		if mode == writeModeAppend {
 			return d.insertRow(ctx, tx, target, schema, record)
 		}
-		return d.deleteRow(ctx, tx, target, record)
+		return d.deleteRow(ctx, tx, target, schema, record)
 	case connector.OpUpdate:
 		if mode == writeModeAppend {
 			return d.insertRow(ctx, tx, target, schema, record)
@@ -830,11 +831,11 @@ func (d *Destination) loadColumns(ctx context.Context, schema connector.Schema, 
 }
 
 func (d *Destination) updateRow(ctx context.Context, tx pgx.Tx, target string, schema connector.Schema, record connector.Record) error {
-	key, err := decodeKey(record.Key)
+	keyCols, keyVals, err := keyColumnsAndValues(schema, record)
 	if err != nil {
 		return err
 	}
-	if len(key) == 0 {
+	if len(keyCols) == 0 {
 		return errors.New("update requires record key")
 	}
 
@@ -851,8 +852,8 @@ func (d *Destination) updateRow(ctx context.Context, tx pgx.Tx, target string, s
 		setClause = append(setClause, fmt.Sprintf("%s = %s", quoteIdent(col, '"'), exprs[idx]))
 	}
 
-	whereClause, whereArgs := whereFromKey(key, '"', "", len(vals))
-	args := append(vals, whereArgs...)
+	whereClause := whereFromKeyColumns(schema, keyCols, len(vals), '"')
+	args := append(vals, keyVals...)
 
 	stmt := fmt.Sprintf("UPDATE %s SET %s WHERE %s", target, strings.Join(setClause, ", "), whereClause)
 	if _, err := tx.Exec(ctx, stmt, args...); err != nil {
@@ -861,18 +862,18 @@ func (d *Destination) updateRow(ctx context.Context, tx pgx.Tx, target string, s
 	return nil
 }
 
-func (d *Destination) deleteRow(ctx context.Context, tx pgx.Tx, target string, record connector.Record) error {
-	key, err := decodeKey(record.Key)
+func (d *Destination) deleteRow(ctx context.Context, tx pgx.Tx, target string, schema connector.Schema, record connector.Record) error {
+	keyCols, keyVals, err := keyColumnsAndValues(schema, record)
 	if err != nil {
 		return err
 	}
-	if len(key) == 0 {
+	if len(keyCols) == 0 {
 		return errors.New("delete requires record key")
 	}
 
-	whereClause, args := whereFromKey(key, '"', "", 0)
+	whereClause := whereFromKeyColumns(schema, keyCols, 0, '"')
 	stmt := fmt.Sprintf("DELETE FROM %s WHERE %s", target, whereClause)
-	if _, err := tx.Exec(ctx, stmt, args...); err != nil {
+	if _, err := tx.Exec(ctx, stmt, keyVals...); err != nil {
 		return fmt.Errorf("delete row: %w", err)
 	}
 	return nil
@@ -1379,9 +1380,11 @@ func columnType(colTypes map[string]string, col string) string {
 }
 
 func comparisonCastType(colType string) string {
-	castType := postgresJSONType(colType)
-	if castType != "" {
-		return "text"
+	if colType == "" {
+		return ""
+	}
+	if castType := postgresJSONType(colType); castType != "" {
+		return castType
 	}
 	return colType
 }
@@ -1463,23 +1466,31 @@ func decodeKey(raw []byte) (map[string]any, error) {
 		return nil, nil
 	}
 	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode record key: %w", err)
 	}
 	return out, nil
 }
 
-func whereFromKey(key map[string]any, quote rune, prefix string, offset int) (string, []any) {
-	parts := make([]string, 0, len(key))
-	args := make([]any, 0, len(key))
-	idx := offset
-	for col, val := range key {
-		idx++
-		name := prefix + col
-		parts = append(parts, fmt.Sprintf("%s = $%d", quoteIdent(name, quote), idx))
-		args = append(args, val)
+func whereFromKeyColumns(schema connector.Schema, keyCols []string, offset int, quote rune) string {
+	if len(keyCols) == 0 {
+		return ""
 	}
-	return strings.Join(parts, " AND "), args
+	colTypes := columnTypeMap(schema)
+	parts := make([]string, 0, len(keyCols))
+	for idx, col := range keyCols {
+		placeholder := fmt.Sprintf("$%d", offset+idx+1)
+		expr := placeholder
+		if colType := columnType(colTypes, col); colType != "" {
+			if castType := comparisonCastType(colType); castType != "" {
+				expr = fmt.Sprintf("CAST(%s AS %s)", placeholder, castType)
+			}
+		}
+		parts = append(parts, fmt.Sprintf("%s = %s", quoteIdent(col, quote), expr))
+	}
+	return strings.Join(parts, " AND ")
 }
 
 func quoteColumns(cols []string, quote rune) string {

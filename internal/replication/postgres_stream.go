@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgtype"
+	postgrescodec "github.com/josephjohncox/wallaby/internal/postgres"
 	internalschema "github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -138,6 +139,7 @@ func NewPostgresStream(dsn string, opts ...PostgresStreamOption) *PostgresStream
 	if stream.typeMap == nil {
 		stream.typeMap = pgtype.NewMap()
 	}
+	postgrescodec.RegisterRawJSONCodecs(stream.typeMap)
 
 	return stream
 }
@@ -534,6 +536,9 @@ func (p *PostgresStream) decodeInsert(msg *pglogrepl.InsertMessage, xld pglogrep
 	if err != nil {
 		return nil, connector.Schema{}, err
 	}
+	if err := connector.NormalizePostgresRecord(schema, values); err != nil {
+		return nil, connector.Schema{}, err
+	}
 
 	key, err := encodeKey(p.keyColumns(rel, values))
 	if err != nil {
@@ -566,12 +571,18 @@ func (p *PostgresStream) decodeUpdate(msg *pglogrepl.UpdateMessage, xld pglogrep
 		if err != nil {
 			return nil, connector.Schema{}, err
 		}
+		if err := connector.NormalizePostgresRecord(schema, decoded); err != nil {
+			return nil, connector.Schema{}, err
+		}
 		before = decoded
 		beforeUnchanged = unchanged
 	}
 
 	after, afterUnchanged, err := p.decodeTuple(rel, msg.NewTuple)
 	if err != nil {
+		return nil, connector.Schema{}, err
+	}
+	if err := connector.NormalizePostgresRecord(schema, after); err != nil {
 		return nil, connector.Schema{}, err
 	}
 
@@ -610,6 +621,9 @@ func (p *PostgresStream) decodeDelete(msg *pglogrepl.DeleteMessage, xld pglogrep
 
 	before, unchanged, err := p.decodeTuple(rel, msg.OldTuple)
 	if err != nil {
+		return nil, connector.Schema{}, err
+	}
+	if err := connector.NormalizePostgresRecord(schema, before); err != nil {
 		return nil, connector.Schema{}, err
 	}
 
