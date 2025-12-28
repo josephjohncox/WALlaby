@@ -173,6 +173,10 @@ Key Postgres source options (connector `options`):
 - `state_schema` (default `wallaby`)
 - `state_table` (default `source_state`)
 - `flow_id` (optional) — stable ID used in source-state records
+- `capture_ddl` (default `false`) — installs an event trigger to emit raw DDL via logical messages
+- `ddl_trigger_schema` (default `wallaby`) — schema for the DDL capture function
+- `ddl_trigger_name` (default `wallaby_ddl_capture`) — event trigger name
+- `ddl_message_prefix` (default `wallaby_ddl`) — logical message prefix to filter DDL events
 
 ## Publication Lifecycle
 Use `sync_publication` with `publication_tables` or `publication_schemas` to add/drop tables when a flow starts. For ad-hoc changes, the admin CLI can update the publication:

@@ -35,9 +35,12 @@ Profiling outputs:
 - `bench/results/run_<timestamp>/cpu_<profile>_<scenario>_<target>.pprof`
 - `bench/results/run_<timestamp>/heap_<profile>_<scenario>_<target>.pprof`
 - `bench/results/run_<timestamp>/trace_<profile>_<scenario>_<target>.out`
-- `bench/results/run_<timestamp>/cpu_<profile>_<scenario>_<target>.svg` (if `go tool pprof` is available)
+- `bench/results/run_<timestamp>/cpu_<profile>_<scenario>_<target>.svg` (flamegraph by default)
+- `bench/results/run_<timestamp>/cpu_<profile>_<scenario>_<target>.top.txt`
 
-You can disable SVG generation with `PROFILE_FORMAT=none`.
+If flamegraphs are missing, install a pprof binary (`go install github.com/google/pprof@latest`) or ensure your Go toolchain includes `go tool pprof`.
+
+You can switch formats with `PROFILE_FORMAT=flamegraph|svg|both|none`, disable rendering with `PROFILE_RENDER=0`, or skip the top report with `PROFILE_TOP=0`.
 
 That command:
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pglogrepl"
@@ -35,6 +36,10 @@ const (
 	optStateSchema         = "state_schema"
 	optStateTable          = "state_table"
 	optFlowID              = "flow_id"
+	optCaptureDDL          = "capture_ddl"
+	optDDLTriggerSchema    = "ddl_trigger_schema"
+	optDDLTriggerName      = "ddl_trigger_name"
+	optDDLMessagePrefix    = "ddl_message_prefix"
 )
 
 // Source implements Postgres logical replication as a connector.Source.
@@ -83,6 +88,10 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 
 	ensurePublication := parseBool(spec.Options[optEnsurePublication], true)
 	validateSettings := parseBool(spec.Options[optValidateSettings], true)
+	captureDDL := parseBool(spec.Options[optCaptureDDL], false)
+	ddlSchema := strings.TrimSpace(spec.Options[optDDLTriggerSchema])
+	ddlTrigger := strings.TrimSpace(spec.Options[optDDLTriggerName])
+	ddlPrefix := strings.TrimSpace(spec.Options[optDDLMessagePrefix])
 	publicationTables := parseCSV(spec.Options[optPublicationTables])
 	if len(publicationTables) == 0 {
 		publicationTables = parseCSV(spec.Options[optTables])
@@ -95,8 +104,8 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		}
 		publicationTables = tables
 	}
-	if ensurePublication || validateSettings {
-		if err := ensureReplication(ctx, dsn, s.publication, publicationTables, ensurePublication, validateSettings); err != nil {
+	if ensurePublication || validateSettings || captureDDL {
+		if err := ensureReplication(ctx, dsn, s.publication, publicationTables, ensurePublication, validateSettings, captureDDL, ddlSchema, ddlTrigger, ddlPrefix); err != nil {
 			return err
 		}
 	}
@@ -144,6 +153,9 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		}
 		s.typeResolver = resolver
 		opts = append(opts, replication.WithTypeResolver(resolver))
+	}
+	if ddlPrefix != "" {
+		opts = append(opts, replication.WithDDLMessagePrefix(ddlPrefix))
 	}
 	if startLSN := spec.Options[optStartLSN]; startLSN != "" {
 		lsn, err := pglogrepl.ParseLSN(startLSN)

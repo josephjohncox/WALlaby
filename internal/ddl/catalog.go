@@ -103,9 +103,10 @@ func (c *CatalogScanner) scan(ctx context.Context) (map[string]connector.Schema,
 		current := result[key]
 		if current.Name == "" {
 			current = connector.Schema{
-				Name:      table,
-				Namespace: namespace,
-				Version:   0,
+				Name:              table,
+				Namespace:         namespace,
+				Version:           0,
+				QuotedIdentifiers: map[string]bool{namespace: true, table: true},
 			}
 		}
 
@@ -119,6 +120,12 @@ func (c *CatalogScanner) scan(ctx context.Context) (map[string]connector.Schema,
 			col.Expression = *expression
 		}
 		current.Columns = append(current.Columns, col)
+		if current.QuotedIdentifiers == nil {
+			current.QuotedIdentifiers = map[string]bool{}
+		}
+		if column != "" {
+			current.QuotedIdentifiers[column] = true
+		}
 		result[key] = current
 	}
 

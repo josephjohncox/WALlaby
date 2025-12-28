@@ -10,7 +10,9 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-$ROOT_DIR/bench/results}"
 RUN_ID="${RUN_ID:-$(date -u +"%Y%m%dT%H%M%SZ")}"
 OUT_DIR="$OUTPUT_ROOT/run_$RUN_ID"
 ENABLE_PROFILES="${ENABLE_PROFILES:-0}"
-PROFILE_FORMAT="${PROFILE_FORMAT:-svg}"
+PROFILE_FORMAT="${PROFILE_FORMAT:-flamegraph}"
+PROFILE_RENDER="${PROFILE_RENDER:-1}"
+PROFILE_TOP="${PROFILE_TOP:-1}"
 
 PROFILES_RAW="${PROFILES_RAW//,/ }"
 SCENARIOS_RAW="${SCENARIOS_RAW//,/ }"
@@ -151,24 +153,86 @@ pprof_supports_flamegraph() {
   go tool pprof -help 2>/dev/null | grep -q "flamegraph"
 }
 
+pprof_command() {
+  if command -v go >/dev/null 2>&1 && go tool pprof -help >/dev/null 2>&1; then
+    echo "go tool pprof"
+    return 0
+  fi
+  if command -v pprof >/dev/null 2>&1; then
+    echo "pprof"
+    return 0
+  fi
+  return 1
+}
+
 render_profile() {
   local bin_path="$1"
   local cpu_path="$2"
-  local out_path="$3"
+  local out_base="$3"
 
-  if ! command -v go >/dev/null 2>&1; then
-    return 0
-  fi
-  if ! go tool pprof -help >/dev/null 2>&1; then
-    echo "go tool pprof not available; skipping flamegraph generation"
+  local pprof_cmd
+  pprof_cmd="$(pprof_command || true)"
+  if [[ -z "$pprof_cmd" ]]; then
+    echo "pprof not available; skipping profile rendering"
     return 0
   fi
 
-  if pprof_supports_flamegraph; then
-    go tool pprof -flamegraph "$bin_path" "$cpu_path" > "$out_path"
-    return 0
+  render_flamegraph() {
+    if $pprof_cmd -flamegraph "$bin_path" "$cpu_path" > "${out_base}.svg"; then
+      return 0
+    fi
+    return 1
+  }
+
+  render_callgraph() {
+    $pprof_cmd -svg "$bin_path" "$cpu_path" > "${out_base}.svg"
+  }
+
+  case "$PROFILE_FORMAT" in
+    flamegraph)
+      if ! render_flamegraph; then
+        render_callgraph
+      fi
+      ;;
+    svg)
+      render_callgraph
+      ;;
+    both)
+      render_callgraph
+      if ! $pprof_cmd -flamegraph "$bin_path" "$cpu_path" > "${out_base}.flame.svg"; then
+        echo "pprof does not support -flamegraph; install github.com/google/pprof for flamegraphs"
+      fi
+      ;;
+    none)
+      ;;
+    *)
+      echo "Unknown PROFILE_FORMAT=$PROFILE_FORMAT (use flamegraph|svg|both|none)"
+      render_callgraph
+      ;;
+  esac
+
+  if [[ "$PROFILE_TOP" == "1" ]]; then
+    $pprof_cmd -top "$bin_path" "$cpu_path" > "${out_base}.top.txt"
   fi
-  go tool pprof -svg "$bin_path" "$cpu_path" > "$out_path"
+}
+
+write_profile_readme() {
+  local out_dir="$1"
+  cat <<'NOTE' > "$out_dir/PROFILE_README.txt"
+Profile artifacts:
+- cpu_*.pprof (CPU)
+- heap_*.pprof (heap)
+- trace_*.out (Go execution trace)
+- cpu_*.top.txt (top CPU functions)
+
+Render flamegraphs:
+  go tool pprof -flamegraph wallaby-bench.bin cpu_*.pprof > cpu_*.svg
+  # or install pprof binary: go install github.com/google/pprof@latest
+  pprof -flamegraph wallaby-bench.bin cpu_*.pprof > cpu_*.svg
+
+View trace:
+  go tool trace trace_*.out
+NOTE
 }
 
 for profile in $PROFILES_RAW; do
@@ -180,12 +244,13 @@ for profile in $PROFILES_RAW; do
         mem_path="$OUT_DIR/heap_${profile}_${scenario}_${target}.pprof"
         trace_path="$OUT_DIR/trace_${profile}_${scenario}_${target}.out"
         (cd "$ROOT_DIR" && go run ./cmd/wallaby-bench -profile "$profile" -targets "$target" -scenario "$scenario" -output-dir "$OUT_DIR" -cpu-profile "$cpu_path" -mem-profile "$mem_path" -trace "$trace_path")
-        if [[ "$PROFILE_FORMAT" != "none" ]]; then
+        if [[ "$PROFILE_RENDER" == "1" && "$PROFILE_FORMAT" != "none" ]]; then
           bench_bin="$OUT_DIR/wallaby-bench.bin"
           build_bench_bin "$bench_bin"
-          render_profile "$bench_bin" "$cpu_path" "$OUT_DIR/cpu_${profile}_${scenario}_${target}.svg"
+          render_profile "$bench_bin" "$cpu_path" "$OUT_DIR/cpu_${profile}_${scenario}_${target}"
         fi
       done
+      write_profile_readme "$OUT_DIR"
     else
       echo "Running profile=$profile scenario=$scenario targets=$TARGETS"
       (cd "$ROOT_DIR" && go run ./cmd/wallaby-bench -profile "$profile" -targets "$TARGETS" -scenario "$scenario" -output-dir "$OUT_DIR")

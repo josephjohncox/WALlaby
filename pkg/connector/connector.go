@@ -69,6 +69,8 @@ type Schema struct {
 	Namespace string
 	Version   int64
 	Columns   []Column
+	// QuotedIdentifiers tracks identifiers that were quoted in source DDL.
+	QuotedIdentifiers map[string]bool
 }
 
 // Column defines a schema field.

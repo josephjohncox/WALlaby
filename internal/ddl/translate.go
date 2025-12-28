@@ -137,7 +137,11 @@ func TranslateRecordDDL(schema connector.Schema, record connector.Record, dialec
 		if !strings.Contains(table, ".") && strings.TrimSpace(schema.Namespace) != "" {
 			table = schema.Namespace + "." + table
 		}
-		ddlText = "TRUNCATE TABLE " + table
+		qualified, err := quoteTableNamePreserve(table, schema, dialect)
+		if err != nil {
+			return nil, err
+		}
+		ddlText = "TRUNCATE TABLE " + qualified
 	}
 	return TranslatePostgresDDL(ddlText, dialect, mappings)
 }
@@ -532,14 +536,14 @@ func splitQualifiedName(name string) (string, string) {
 	}
 	parts := splitTopLevel(name, '.')
 	if len(parts) == 1 {
-		return "", stripQuotes(strings.TrimSpace(parts[0]))
+		return "", strings.TrimSpace(parts[0])
 	}
 	if len(parts) >= 2 {
-		schema := stripQuotes(strings.TrimSpace(parts[0]))
-		table := stripQuotes(strings.TrimSpace(parts[len(parts)-1]))
+		schema := strings.TrimSpace(parts[0])
+		table := strings.TrimSpace(parts[len(parts)-1])
 		return schema, table
 	}
-	return "", stripQuotes(strings.TrimSpace(name))
+	return "", strings.TrimSpace(name)
 }
 
 func stripQuotes(value string) string {
@@ -553,12 +557,51 @@ func stripQuotes(value string) string {
 }
 
 func quoteIdent(value, quote string) string {
-	value = stripQuotes(value)
-	if value == "" {
+	ident, quoted := parseIdent(value)
+	if ident == "" {
 		return ""
 	}
-	escaped := strings.ReplaceAll(value, quote, quote+quote)
+	if !quoted {
+		ident = strings.ToLower(ident)
+	}
+	escaped := strings.ReplaceAll(ident, quote, quote+quote)
 	return quote + escaped + quote
+}
+
+func quoteIdentPreserve(value, quote string) string {
+	ident, _ := parseIdent(value)
+	if ident == "" {
+		return ""
+	}
+	escaped := strings.ReplaceAll(ident, quote, quote+quote)
+	return quote + escaped + quote
+}
+
+func quoteTableNamePreserve(name string, schema connector.Schema, dialect DialectConfig) (string, error) {
+	if strings.TrimSpace(name) == "" {
+		return "", errors.New("truncate missing table name")
+	}
+	schemaName, tableName := splitQualifiedName(name)
+	if tableName == "" {
+		return "", fmt.Errorf("invalid table name %q", name)
+	}
+	if schemaName == "" {
+		schemaName = strings.TrimSpace(schema.Namespace)
+	}
+	if schemaName != "" {
+		return quoteIdentPreserve(schemaName, dialect.Quote) + "." + quoteIdentPreserve(tableName, dialect.Quote), nil
+	}
+	return quoteIdentPreserve(tableName, dialect.Quote), nil
+}
+
+func parseIdent(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 {
+		if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '`' && value[len(value)-1] == '`') {
+			return value[1 : len(value)-1], true
+		}
+	}
+	return value, false
 }
 
 func mapType(value string, mappings map[string]string, dialect DialectConfig) string {

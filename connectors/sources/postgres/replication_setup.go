@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func ensureReplication(ctx context.Context, dsn, publication string, tables []string, ensurePublication, validateSettings bool) error {
+func ensureReplication(ctx context.Context, dsn, publication string, tables []string, ensurePublication, validateSettings, captureDDL bool, ddlSchema, ddlTrigger, ddlPrefix string) error {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
@@ -39,6 +39,12 @@ func ensureReplication(ctx context.Context, dsn, publication string, tables []st
 			if err := createPublication(ctx, pool, publication, tables); err != nil {
 				return err
 			}
+		}
+	}
+
+	if captureDDL {
+		if err := ensureDDLCapture(ctx, pool, ddlSchema, ddlTrigger, ddlPrefix); err != nil {
+			return err
 		}
 	}
 
@@ -199,6 +205,77 @@ func validateLogicalReplication(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 
 	return nil
+}
+
+func ensureDDLCapture(ctx context.Context, pool *pgxpool.Pool, schema, triggerName, prefix string) error {
+	if schema == "" {
+		schema = "wallaby"
+	}
+	if triggerName == "" {
+		triggerName = "wallaby_ddl_capture"
+	}
+	if prefix == "" {
+		prefix = "wallaby_ddl"
+	}
+
+	schemaIdent := pgx.Identifier{schema}.Sanitize()
+	if _, err := pool.Exec(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", schemaIdent)); err != nil {
+		return fmt.Errorf("create ddl schema: %w", err)
+	}
+
+	funcIdent := fmt.Sprintf("%s.%s", schemaIdent, pgx.Identifier{"emit_ddl"}.Sanitize())
+	funcSQL := fmt.Sprintf(
+		`CREATE OR REPLACE FUNCTION %s()
+RETURNS event_trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  ddl TEXT;
+BEGIN
+  ddl := current_query();
+  IF ddl IS NULL OR ddl = '' THEN
+    RETURN;
+  END IF;
+  PERFORM pg_logical_emit_message(true, %s, ddl);
+END;
+$$;`,
+		funcIdent,
+		quoteLiteral(prefix),
+	)
+	if _, err := pool.Exec(ctx, funcSQL); err != nil {
+		return fmt.Errorf("create ddl capture function: %w", err)
+	}
+
+	exists, err := ddlTriggerExists(ctx, pool, triggerName)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		triggerIdent := pgx.Identifier{triggerName}.Sanitize()
+		ddlTriggerSQL := fmt.Sprintf(
+			"CREATE EVENT TRIGGER %s ON ddl_command_end EXECUTE FUNCTION %s()",
+			triggerIdent,
+			funcIdent,
+		)
+		if _, err := pool.Exec(ctx, ddlTriggerSQL); err != nil {
+			return fmt.Errorf("create ddl event trigger: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func ddlTriggerExists(ctx context.Context, pool *pgxpool.Pool, name string) (bool, error) {
+	var exists bool
+	if err := pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_event_trigger WHERE evtname = $1)", name).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check ddl trigger: %w", err)
+	}
+	return exists, nil
+}
+
+func quoteLiteral(value string) string {
+	escaped := strings.ReplaceAll(value, "'", "''")
+	return "'" + escaped + "'"
 }
 
 func publicationExists(ctx context.Context, pool *pgxpool.Pool, name string) (bool, error) {

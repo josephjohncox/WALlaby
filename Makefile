@@ -55,4 +55,4 @@ benchmark:
 	./bench/benchmark.sh
 
 benchmark-profile:
-	ENABLE_PROFILES=1 ./bench/benchmark.sh
+	ENABLE_PROFILES=1 PROFILE_FORMAT=both ./bench/benchmark.sh

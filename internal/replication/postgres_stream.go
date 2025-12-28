@@ -44,6 +44,8 @@ type PostgresStream struct {
 	relations map[uint32]*pglogrepl.RelationMessage
 	schemas   map[uint32]connector.Schema
 	versions  map[uint32]int64
+
+	ddlMessagePrefix string
 }
 
 // PostgresStreamOption configures the stream.
@@ -97,6 +99,12 @@ func WithTypeResolver(resolver TypeResolver) PostgresStreamOption {
 	}
 }
 
+func WithDDLMessagePrefix(prefix string) PostgresStreamOption {
+	return func(s *PostgresStream) {
+		s.ddlMessagePrefix = prefix
+	}
+}
+
 // SchemaHook receives schema evolution and DDL events.
 type SchemaHook interface {
 	OnSchema(ctx context.Context, schema connector.Schema) error
@@ -112,14 +120,15 @@ type TypeResolver interface {
 // NewPostgresStream returns a Postgres logical replication stream.
 func NewPostgresStream(dsn string, opts ...PostgresStreamOption) *PostgresStream {
 	stream := &PostgresStream{
-		dsn:            dsn,
-		outputPlugin:   "pgoutput",
-		statusInterval: 10 * time.Second,
-		createSlot:     true,
-		relations:      make(map[uint32]*pglogrepl.RelationMessage),
-		schemas:        make(map[uint32]connector.Schema),
-		versions:       make(map[uint32]int64),
-		typeNames:      make(map[uint32]string),
+		dsn:              dsn,
+		outputPlugin:     "pgoutput",
+		statusInterval:   10 * time.Second,
+		createSlot:       true,
+		relations:        make(map[uint32]*pglogrepl.RelationMessage),
+		schemas:          make(map[uint32]connector.Schema),
+		versions:         make(map[uint32]int64),
+		typeNames:        make(map[uint32]string),
+		ddlMessagePrefix: "wallaby_ddl",
 	}
 
 	for _, opt := range opts {
@@ -398,6 +407,9 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 		}
 		return nil
 	case *pglogrepl.LogicalDecodingMessage:
+		if p.ddlMessagePrefix != "" && msg.Prefix != p.ddlMessagePrefix {
+			return nil
+		}
 		if p.schemaHook != nil {
 			if err := p.schemaHook.OnDDL(ctx, string(msg.Content), xld.WALStart); err != nil {
 				return fmt.Errorf("ddl hook: %w", err)
@@ -494,10 +506,11 @@ func (p *PostgresStream) schemaForRelation(ctx context.Context, rel *pglogrepl.R
 	}
 
 	return connector.Schema{
-		Name:      rel.RelationName,
-		Namespace: rel.Namespace,
-		Version:   version,
-		Columns:   columns,
+		Name:              rel.RelationName,
+		Namespace:         rel.Namespace,
+		Version:           version,
+		Columns:           columns,
+		QuotedIdentifiers: quotedIdentifiersForSchema(rel.Namespace, rel.RelationName, columns),
 	}
 }
 
@@ -721,6 +734,23 @@ func (p *PostgresStream) setReceivedLSN(lsn pglogrepl.LSN) {
 		p.recvLSN = lsn
 	}
 	p.mu.Unlock()
+}
+
+func quotedIdentifiersForSchema(namespace, table string, columns []connector.Column) map[string]bool {
+	quoted := make(map[string]bool, len(columns)+2)
+	if namespace != "" {
+		quoted[namespace] = true
+	}
+	if table != "" {
+		quoted[table] = true
+	}
+	for _, col := range columns {
+		if col.Name == "" {
+			continue
+		}
+		quoted[col.Name] = true
+	}
+	return quoted
 }
 
 func (p *PostgresStream) ackPosition() pglogrepl.LSN {

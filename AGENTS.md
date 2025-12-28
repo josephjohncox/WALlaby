@@ -44,8 +44,14 @@ No Git history exists yet. Use Conventional Commits (e.g., `feat: add wal stream
 PRs should include description, test evidence, and performance/compatibility notes.
 
 ## Pending Tasks / Roadmap
-- Optional: SQLite-backed schema registry / DDL store for non-Postgres deployments.
-- Automate logical replication setup beyond validation (wal_level guidance + slot/publication cleanup on flow delete).
+- Orchestration & lifecycle: DBOS integration while keeping the lifecycle engine; separate consumer processes per flow (standalone + DBOS tasks); run-once RPC; durable K8s job dispatch (client-go, kubeconfig/out-of-cluster).
+- Sources & snapshots: automate logical replication setup (wal_level, slots, publications, cleanup); initial snapshotting with `pg_export_snapshot()`; resumeable snapshot state + ack policy; publication/table add/remove lifecycle; schema/type compatibility (including extensions).
+- Schema & DDL: schema registry; pg_catalog diffs + DDL capture stream; DDL approval/auto-apply gating with CLI; full DDL apply per destination with dialect mapping; evolution semantics (add/drop/alter/rename/typed changes).
+- Destinations: implement Snowflake/Snowpipe/DuckDB/ClickHouse/Bufstream + HTTP/webhook + Postgres stream sink; hidden metadata tables (global, materialized PKs); append mode + watermark columns; JSON/JSONB arrays support everywhere; default type-mapping tables per destination.
+- Wire formats & storage: selectable wire format (proto/arrow/avro) with consistent system-wide config; optional durable S3 storage (Parquet/Arrow/Avro/native column).
+- Terraform & Helm: Terraform provider + example configs + acceptance harness; Helm chart (workers/pools, values.yaml + values-prod, chart tests, helm lint); publish workflow (OCI/ghcr, multi-arch, cosign).
+- Benchmarks & perf: destination-specific DDL/mutation benchmarks; baseline comparisons vs Sequin/Debezium/PeerDB; flamegraphs/traces in bench runs; vary parallelism/record width and export CSV/JSON.
+- CLI/admin & docs: stream pull/ack CLI with pretty JSON, DDL list/approve/apply, staging resolve flag; examples under `examples/`; usage/tutorial/architecture docs and `docs/streams.md`.
 
 ## Observability & Lifecycle Expectations
 All new components must emit OpenTelemetry traces/metrics and honor flow lifecycle state transitions. Checkpointing and recovery paths should be tested and documented.
