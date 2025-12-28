@@ -87,7 +87,7 @@ func TestDBOSIntegration(t *testing.T) {
 			"sync_publication":   "true",
 			"batch_size":         "200",
 			"batch_timeout":      "200ms",
-			"emit_empty":         "true",
+			"emit_empty":         "false",
 			"resolve_types":      "true",
 			"start_lsn":          startLSN,
 		},
@@ -142,6 +142,14 @@ func TestDBOSIntegration(t *testing.T) {
 	if err := orch.EnqueueFlow(ctx, flowID); err != nil {
 		t.Fatalf("enqueue flow: %v", err)
 	}
+
+	waitFor(t, 30*time.Second, 200*time.Millisecond, func() (bool, error) {
+		var active bool
+		if err := pool.QueryRow(ctx, "SELECT COALESCE((SELECT active FROM pg_replication_slots WHERE slot_name = $1), false)", slot).Scan(&active); err != nil {
+			return false, err
+		}
+		return active, nil
+	})
 
 	if _, err := pool.Exec(ctx,
 		fmt.Sprintf(`INSERT INTO %s.%s (id, payload, updated_at) VALUES ($1, $2::jsonb, $3)`, schema, table),

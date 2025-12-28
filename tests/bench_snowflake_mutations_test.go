@@ -18,8 +18,12 @@ func BenchmarkSnowflakeUpdate(b *testing.B) {
 	if !ok {
 		b.Skip("snowflake DSN not configured; set WALLABY_TEST_SNOWFLAKE_DSN or WALLABY_TEST_FAKESNOW_HOST/PORT")
 	}
+	if usingFakesnow() && !allowFakesnowSnowflake() {
+		b.Skip("fakesnow enabled; set WALLABY_TEST_RUN_FAKESNOW=1 to run Snowflake benchmarks")
+	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
+	defer cancel()
 	db, err := sql.Open("snowflake", dsn)
 	if err != nil {
 		b.Fatalf("open snowflake: %v", err)
@@ -93,8 +97,12 @@ func BenchmarkSnowflakeAppend(b *testing.B) {
 	if !ok {
 		b.Skip("snowflake DSN not configured; set WALLABY_TEST_SNOWFLAKE_DSN or WALLABY_TEST_FAKESNOW_HOST/PORT")
 	}
+	if usingFakesnow() && !allowFakesnowSnowflake() {
+		b.Skip("fakesnow enabled; set WALLABY_TEST_RUN_FAKESNOW=1 to run Snowflake benchmarks")
+	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
+	defer cancel()
 	db, err := sql.Open("snowflake", dsn)
 	if err != nil {
 		b.Fatalf("open snowflake: %v", err)

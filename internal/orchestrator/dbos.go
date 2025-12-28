@@ -68,6 +68,10 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Engine
 		return nil, err
 	}
 
+	if cfg.Queue != "" {
+		dbos.NewWorkflowQueue(dbosCtx, cfg.Queue)
+	}
+
 	orchestrator := &DBOSOrchestrator{
 		ctx:           dbosCtx,
 		engine:        engine,

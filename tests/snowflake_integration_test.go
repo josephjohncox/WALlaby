@@ -18,13 +18,23 @@ func TestSnowflakeDestination(t *testing.T) {
 	if !ok {
 		t.Skip("snowflake DSN not configured; set WALLABY_TEST_SNOWFLAKE_DSN or WALLABY_TEST_FAKESNOW_HOST/PORT")
 	}
+	if usingFakesnow() && !allowFakesnowSnowflake() {
+		t.Skip("fakesnow enabled; set WALLABY_TEST_RUN_FAKESNOW=1 to run Snowflake integration")
+	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
+	defer cancel()
 	setupDB, err := sql.Open("snowflake", dsn)
 	if err != nil {
 		t.Fatalf("open snowflake: %v", err)
 	}
 	defer setupDB.Close()
+	if err := setupDB.PingContext(ctx); err != nil {
+		if usingFakesnow() {
+			t.Skipf("fakesnow ping failed: %v", err)
+		}
+		t.Fatalf("ping snowflake: %v", err)
+	}
 
 	if schema != "" {
 		if _, err := setupDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", quoteSnowflakeIdent(schema))); err != nil {

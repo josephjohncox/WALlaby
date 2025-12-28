@@ -11,16 +11,15 @@ import (
 	"github.com/josephjohncox/wallaby/internal/orchestrator"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
 func TestKubernetesDispatcherIntegration(t *testing.T) {
 	kubeconfig := strings.TrimSpace(os.Getenv("WALLABY_TEST_K8S_KUBECONFIG"))
-	if kubeconfig == "" {
-		kubeconfig = strings.TrimSpace(os.Getenv("KUBECONFIG"))
-	}
-	if kubeconfig == "" {
-		t.Skip("WALLABY_TEST_K8S_KUBECONFIG not set")
+	inCluster := strings.TrimSpace(os.Getenv("KUBERNETES_SERVICE_HOST")) != ""
+	if kubeconfig == "" && !inCluster {
+		t.Skip("WALLABY_TEST_K8S_KUBECONFIG not set and not running in-cluster")
 	}
 
 	namespace := strings.TrimSpace(os.Getenv("WALLABY_TEST_K8S_NAMESPACE"))
@@ -79,9 +78,17 @@ func TestKubernetesDispatcherIntegration(t *testing.T) {
 }
 
 func kubeClient(kubeconfig string) (*kubernetes.Clientset, error) {
-	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig}
-	clientCfg := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, &clientcmd.ConfigOverrides{})
-	restCfg, err := clientCfg.ClientConfig()
+	if strings.TrimSpace(kubeconfig) != "" {
+		loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig}
+		clientCfg := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, &clientcmd.ConfigOverrides{})
+		restCfg, err := clientCfg.ClientConfig()
+		if err != nil {
+			return nil, err
+		}
+		return kubernetes.NewForConfig(restCfg)
+	}
+
+	restCfg, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, err
 	}

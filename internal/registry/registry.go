@@ -302,11 +302,23 @@ func scanSchemaVersion(row pgx.Row) (connector.Schema, error) {
 func scanDDLEvent(row pgx.Row) (DDLEvent, error) {
 	var event DDLEvent
 	var planJSON []byte
-	if err := row.Scan(&event.ID, &event.DDL, &planJSON, &event.LSN, &event.Status, &event.CreatedAt, &event.AppliedAt); err != nil {
+	var ddl *string
+	var lsn *string
+	var appliedAt *time.Time
+	if err := row.Scan(&event.ID, &ddl, &planJSON, &lsn, &event.Status, &event.CreatedAt, &appliedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return DDLEvent{}, ErrNotFound
 		}
 		return DDLEvent{}, err
+	}
+	if ddl != nil {
+		event.DDL = *ddl
+	}
+	if lsn != nil {
+		event.LSN = *lsn
+	}
+	if appliedAt != nil {
+		event.AppliedAt = *appliedAt
 	}
 	if len(planJSON) > 0 {
 		_ = json.Unmarshal(planJSON, &event.Plan)

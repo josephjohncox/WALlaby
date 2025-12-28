@@ -249,7 +249,7 @@ func usage() {
 	fmt.Println("  wallaby-admin ddl <list|approve|reject|apply> [flags]")
 	fmt.Println("  wallaby-admin stream <replay> [flags]")
 	fmt.Println("  wallaby-admin publication <list|add|remove|sync|scrape> [flags]")
-	fmt.Println("  wallaby-admin flow <resolve-staging> [flags]")
+	fmt.Println("  wallaby-admin flow <create|run-once|resolve-staging> [flags]")
 	os.Exit(1)
 }
 
@@ -333,6 +333,10 @@ func runFlow(args []string) {
 		flowUsage()
 	}
 	switch args[0] {
+	case "create":
+		flowCreate(args[1:])
+	case "run-once":
+		flowRunOnce(args[1:])
 	case "resolve-staging":
 		flowResolveStaging(args[1:])
 	default:
@@ -342,8 +346,121 @@ func runFlow(args []string) {
 
 func flowUsage() {
 	fmt.Println("Flow subcommands:")
+	fmt.Println("  wallaby-admin flow create -file <path> [-start] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow run-once -flow-id <id>")
 	fmt.Println("  wallaby-admin flow resolve-staging -flow-id <id> [-tables schema.table,...] [-schemas public,...] [-dest <name>]")
 	os.Exit(1)
+}
+
+func flowCreate(args []string) {
+	fs := flag.NewFlagSet("flow create", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
+	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
+	path := fs.String("file", "", "flow config JSON file")
+	start := fs.Bool("start", false, "start flow immediately")
+	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
+	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
+	fs.Parse(args)
+
+	if *path == "" {
+		log.Fatal("-file is required")
+	}
+
+	payload, err := os.ReadFile(*path)
+	if err != nil {
+		log.Fatalf("read flow file: %v", err)
+	}
+
+	var cfg flowConfig
+	if err := json.Unmarshal(payload, &cfg); err != nil {
+		log.Fatalf("parse flow json: %v", err)
+	}
+
+	pbFlow, err := flowConfigToProto(cfg)
+	if err != nil {
+		log.Fatalf("flow config: %v", err)
+	}
+
+	client, closeConn := flowClientOrExit(*endpoint, *insecureConn)
+	defer closeConn()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := client.CreateFlow(ctx, &wallabypb.CreateFlowRequest{
+		Flow:             pbFlow,
+		StartImmediately: *start,
+	})
+	if err != nil {
+		log.Fatalf("create flow: %v", err)
+	}
+
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		out := map[string]any{
+			"id":          resp.Id,
+			"name":        resp.Name,
+			"state":       resp.State.String(),
+			"wire_format": resp.WireFormat.String(),
+		}
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			log.Fatalf("encode json: %v", err)
+		}
+		return
+	}
+
+	fmt.Printf("Created flow %s (state=%s)\n", resp.Id, resp.State.String())
+}
+
+func flowRunOnce(args []string) {
+	fs := flag.NewFlagSet("flow run-once", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
+	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
+	flowID := fs.String("flow-id", "", "flow id")
+	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
+	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
+	fs.Parse(args)
+
+	if *flowID == "" {
+		log.Fatal("-flow-id is required")
+	}
+
+	client, closeConn := flowClientOrExit(*endpoint, *insecureConn)
+	defer closeConn()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := client.RunFlowOnce(ctx, &wallabypb.RunFlowOnceRequest{FlowId: *flowID})
+	if err != nil {
+		log.Fatalf("run flow once: %v", err)
+	}
+
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		out := map[string]any{
+			"flow_id":    *flowID,
+			"dispatched": resp.Dispatched,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			log.Fatalf("encode json: %v", err)
+		}
+		return
+	}
+
+	fmt.Printf("Dispatched flow %s\n", *flowID)
 }
 
 func streamClientOrExit(endpoint string, insecureConn bool) (wallabypb.StreamServiceClient, func()) {
@@ -1140,6 +1257,107 @@ func parseCSVValue(value string) []string {
 		}
 	}
 	return out
+}
+
+type flowConfig struct {
+	ID           string           `json:"id"`
+	Name         string           `json:"name"`
+	WireFormat   string           `json:"wire_format"`
+	Parallelism  int32            `json:"parallelism"`
+	Source       endpointConfig   `json:"source"`
+	Destinations []endpointConfig `json:"destinations"`
+}
+
+type endpointConfig struct {
+	Name    string            `json:"name"`
+	Type    string            `json:"type"`
+	Options map[string]string `json:"options"`
+}
+
+func flowConfigToProto(cfg flowConfig) (*wallabypb.Flow, error) {
+	source, err := endpointConfigToProto(cfg.Source)
+	if err != nil {
+		return nil, err
+	}
+	destinations := make([]*wallabypb.Endpoint, 0, len(cfg.Destinations))
+	for _, dest := range cfg.Destinations {
+		pb, err := endpointConfigToProto(dest)
+		if err != nil {
+			return nil, err
+		}
+		destinations = append(destinations, pb)
+	}
+
+	return &wallabypb.Flow{
+		Id:           cfg.ID,
+		Name:         cfg.Name,
+		Source:       source,
+		Destinations: destinations,
+		WireFormat:   wireFormatToProto(cfg.WireFormat),
+		Parallelism:  cfg.Parallelism,
+	}, nil
+}
+
+func endpointConfigToProto(cfg endpointConfig) (*wallabypb.Endpoint, error) {
+	endpointType := endpointTypeToProto(cfg.Type)
+	if endpointType == wallabypb.EndpointType_ENDPOINT_TYPE_UNSPECIFIED {
+		return nil, fmt.Errorf("endpoint type %q is unsupported", cfg.Type)
+	}
+	return &wallabypb.Endpoint{
+		Name:    cfg.Name,
+		Type:    endpointType,
+		Options: cfg.Options,
+	}, nil
+}
+
+func endpointTypeToProto(value string) wallabypb.EndpointType {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "postgres":
+		return wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES
+	case "snowflake":
+		return wallabypb.EndpointType_ENDPOINT_TYPE_SNOWFLAKE
+	case "s3":
+		return wallabypb.EndpointType_ENDPOINT_TYPE_S3
+	case "kafka":
+		return wallabypb.EndpointType_ENDPOINT_TYPE_KAFKA
+	case "http":
+		return wallabypb.EndpointType_ENDPOINT_TYPE_HTTP
+	case "grpc":
+		return wallabypb.EndpointType_ENDPOINT_TYPE_GRPC
+	case "proto":
+		return wallabypb.EndpointType_ENDPOINT_TYPE_PROTO
+	case "pgstream":
+		return wallabypb.EndpointType_ENDPOINT_TYPE_PGSTREAM
+	case "snowpipe":
+		return wallabypb.EndpointType_ENDPOINT_TYPE_SNOWPIPE
+	case "parquet":
+		return wallabypb.EndpointType_ENDPOINT_TYPE_PARQUET
+	case "duckdb":
+		return wallabypb.EndpointType_ENDPOINT_TYPE_DUCKDB
+	case "bufstream":
+		return wallabypb.EndpointType_ENDPOINT_TYPE_BUFSTREAM
+	case "clickhouse":
+		return wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE
+	default:
+		return wallabypb.EndpointType_ENDPOINT_TYPE_UNSPECIFIED
+	}
+}
+
+func wireFormatToProto(value string) wallabypb.WireFormat {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "arrow":
+		return wallabypb.WireFormat_WIRE_FORMAT_ARROW
+	case "parquet":
+		return wallabypb.WireFormat_WIRE_FORMAT_PARQUET
+	case "proto":
+		return wallabypb.WireFormat_WIRE_FORMAT_PROTO
+	case "avro":
+		return wallabypb.WireFormat_WIRE_FORMAT_AVRO
+	case "json":
+		return wallabypb.WireFormat_WIRE_FORMAT_JSON
+	default:
+		return wallabypb.WireFormat_WIRE_FORMAT_UNSPECIFIED
+	}
 }
 
 type streamPullOutput struct {

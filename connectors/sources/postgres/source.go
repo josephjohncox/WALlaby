@@ -167,6 +167,13 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	if createSlot := parseBool(spec.Options[optCreateSlot], true); !createSlot {
 		opts = append(opts, replication.WithCreateSlot(false))
 	}
+	if captureDDL {
+		opts = append(opts, replication.WithPluginArgs([]string{
+			"proto_version '1'",
+			fmt.Sprintf("publication_names '%s'", s.publication),
+			"messages 'true'",
+		}))
+	}
 
 	s.stream = replication.NewPostgresStream(dsn, opts...)
 	changes, err := s.stream.Start(ctx, s.slot, s.publication)

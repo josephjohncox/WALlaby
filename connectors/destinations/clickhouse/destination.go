@@ -497,12 +497,20 @@ func (d *Destination) updateRow(ctx context.Context, target string, schema conne
 	}
 
 	setClause := make([]string, 0, len(cols))
-	for _, col := range cols {
+	setArgs := make([]any, 0, len(cols))
+	for i, col := range cols {
+		if _, isKey := key[col]; isKey {
+			continue
+		}
 		setClause = append(setClause, fmt.Sprintf("%s = ?", quoteIdent(col, '`')))
+		setArgs = append(setArgs, vals[i])
+	}
+	if len(setClause) == 0 {
+		return nil
 	}
 
 	whereClause, whereArgs := whereFromKey(key, '`', "")
-	args := append(vals, whereArgs...)
+	args := append(setArgs, whereArgs...)
 
 	stmt := fmt.Sprintf("ALTER TABLE %s UPDATE %s WHERE %s", target, strings.Join(setClause, ", "), whereClause)
 	if _, err := d.db.ExecContext(ctx, stmt, args...); err != nil {

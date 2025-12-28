@@ -25,6 +25,22 @@ services:
     image: clickhouse/clickhouse-server:24.12
     environment:
       CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: wallaby
+      CLICKHOUSE_PASSWORD: wallaby
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     ports:
       - "9001:9000"
       - "8124:8123"
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user wallaby --password wallaby --query 'SELECT 1' >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+  fakesnow:
+    image: python:3.11-slim
+    command:
+      - "sh"
+      - "-c"
+      - "pip install --no-cache-dir 'fakesnow[server]' && fakesnow -s -p 8000"
+    ports:
+      - "8000:8000"

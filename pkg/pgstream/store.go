@@ -134,10 +134,20 @@ func (s *Store) Claim(ctx context.Context, stream, consumerGroup, consumerID str
 WITH candidate AS (
   SELECT e.id
   FROM stream_events e
-  LEFT JOIN stream_deliveries d
-    ON e.id = d.event_id AND d.consumer_group = $2
   WHERE e.stream = $1
-    AND (d.event_id IS NULL OR (d.status IN ('available', 'claimed') AND d.visible_at <= now()))
+    AND (
+      NOT EXISTS (
+        SELECT 1 FROM stream_deliveries d
+        WHERE d.event_id = e.id AND d.consumer_group = $2
+      )
+      OR EXISTS (
+        SELECT 1 FROM stream_deliveries d
+        WHERE d.event_id = e.id
+          AND d.consumer_group = $2
+          AND d.status IN ('available', 'claimed')
+          AND d.visible_at <= now()
+      )
+    )
   ORDER BY e.id
   LIMIT $3
   FOR UPDATE SKIP LOCKED

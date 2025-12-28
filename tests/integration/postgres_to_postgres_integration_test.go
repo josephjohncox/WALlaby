@@ -79,6 +79,7 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 	defer dstPool.Close()
 
 	cleanup := func() {
+		cancel()
 		_, _ = srcPool.Exec(context.Background(), fmt.Sprintf("DROP PUBLICATION IF EXISTS %s", pub))
 		_, _ = srcPool.Exec(context.Background(), "SELECT pg_drop_replication_slot($1)", slot)
 		srcPool.Close()
