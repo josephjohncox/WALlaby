@@ -140,6 +140,97 @@ func TestCLIIntegrationDDLList(t *testing.T) {
 
 }
 
+func TestCLIIntegrationDDLApproveRejectApply(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
+	if baseDSN == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	adminPool, err := pgxpool.New(ctx, baseDSN)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer adminPool.Close()
+
+	dbName := "wallaby_cli_ddl_" + fmt.Sprintf("%d", time.Now().UnixNano())
+	if _, err := adminPool.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", dbName)); err != nil {
+		t.Fatalf("create cli database: %v", err)
+	}
+	defer func() {
+		_, _ = adminPool.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", dbName))
+	}()
+
+	dbDSN, err := dsnWithDatabase(baseDSN, dbName)
+	if err != nil {
+		t.Fatalf("build cli dsn: %v", err)
+	}
+
+	store, err := registry.NewPostgresStore(ctx, dbDSN)
+	if err != nil {
+		t.Fatalf("create registry store: %v", err)
+	}
+	defer store.Close()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen grpc: %v", err)
+	}
+	defer listener.Close()
+
+	server := apigrpc.New(workflow.NewNoopEngine(), noopDispatcher{}, nil, store, nil)
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	defer server.Stop()
+	waitForTCP(t, listener.Addr().String(), 2*time.Second)
+
+	plan := schema.Plan{Changes: []schema.Change{{Type: schema.ChangeAddColumn, Namespace: "public", Table: "widgets", Column: "extra", ToType: "text"}}}
+	eventID, err := store.RecordDDL(ctx, `ALTER TABLE "public"."widgets" ADD COLUMN "extra" text`, plan, "0/0", registry.StatusPending)
+	if err != nil {
+		t.Fatalf("record ddl: %v", err)
+	}
+
+	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "approve", "-id", fmt.Sprintf("%d", eventID)); err != nil {
+		t.Fatalf("wallaby-admin ddl approve: %v", err)
+	}
+	approved, err := store.GetDDL(ctx, eventID)
+	if err != nil {
+		t.Fatalf("get ddl: %v", err)
+	}
+	if approved.Status != registry.StatusApproved {
+		t.Fatalf("expected approved status, got %s", approved.Status)
+	}
+
+	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "apply", "-id", fmt.Sprintf("%d", eventID)); err != nil {
+		t.Fatalf("wallaby-admin ddl apply: %v", err)
+	}
+	applied, err := store.GetDDL(ctx, eventID)
+	if err != nil {
+		t.Fatalf("get ddl: %v", err)
+	}
+	if applied.Status != registry.StatusApplied {
+		t.Fatalf("expected applied status, got %s", applied.Status)
+	}
+
+	rejectID, err := store.RecordDDL(ctx, `ALTER TABLE "public"."widgets" ADD COLUMN "rejected" text`, plan, "0/1", registry.StatusPending)
+	if err != nil {
+		t.Fatalf("record ddl: %v", err)
+	}
+	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "reject", "-id", fmt.Sprintf("%d", rejectID)); err != nil {
+		t.Fatalf("wallaby-admin ddl reject: %v", err)
+	}
+	rejected, err := store.GetDDL(ctx, rejectID)
+	if err != nil {
+		t.Fatalf("get ddl: %v", err)
+	}
+	if rejected.Status != registry.StatusRejected {
+		t.Fatalf("expected rejected status, got %s", rejected.Status)
+	}
+}
+
 func TestCLIIntegrationStreamPullAck(t *testing.T) {
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
 	if baseDSN == "" {
@@ -446,6 +537,90 @@ func TestCLIIntegrationPublicationSync(t *testing.T) {
 	}
 }
 
+func TestCLIIntegrationPublicationListAddRemoveScrape(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
+	if baseDSN == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	adminPool, err := pgxpool.New(ctx, baseDSN)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer adminPool.Close()
+
+	srcDB, srcDSN := createTempDatabase(t, ctx, adminPool, "wallaby_pub_list")
+	defer dropDatabase(t, adminPool, srcDB)
+
+	srcPool, err := pgxpool.New(ctx, srcDSN)
+	if err != nil {
+		t.Fatalf("connect source: %v", err)
+	}
+	defer srcPool.Close()
+
+	if _, err := srcPool.Exec(ctx, `CREATE TABLE public.alpha (id int primary key)`); err != nil {
+		t.Fatalf("create table alpha: %v", err)
+	}
+	if _, err := srcPool.Exec(ctx, `CREATE TABLE public.beta (id int primary key)`); err != nil {
+		t.Fatalf("create table beta: %v", err)
+	}
+	if _, err := srcPool.Exec(ctx, `CREATE TABLE public.gamma (id int primary key)`); err != nil {
+		t.Fatalf("create table gamma: %v", err)
+	}
+	pubName := "wallaby_pub_" + fmt.Sprintf("%d", time.Now().UnixNano())
+	if _, err := srcPool.Exec(ctx, fmt.Sprintf(`CREATE PUBLICATION %s FOR TABLE public.alpha`, pubName)); err != nil {
+		t.Fatalf("create publication: %v", err)
+	}
+
+	listOutput, err := runWallabyAdmin(ctx, "unused:0", "publication", "list", "-dsn", srcDSN, "-publication", pubName, "-json")
+	if err != nil {
+		t.Fatalf("wallaby-admin publication list: %v\n%s", err, listOutput)
+	}
+	tables := parsePublicationTables(t, listOutput)
+	if !containsTable(tables, "public.alpha") {
+		t.Fatalf("expected public.alpha, got %v", tables)
+	}
+
+	if _, err := runWallabyAdmin(ctx, "unused:0", "publication", "add", "-dsn", srcDSN, "-publication", pubName, "-tables", "public.beta"); err != nil {
+		t.Fatalf("wallaby-admin publication add: %v", err)
+	}
+	listOutput, err = runWallabyAdmin(ctx, "unused:0", "publication", "list", "-dsn", srcDSN, "-publication", pubName, "-json")
+	if err != nil {
+		t.Fatalf("wallaby-admin publication list: %v\n%s", err, listOutput)
+	}
+	tables = parsePublicationTables(t, listOutput)
+	if !containsTable(tables, "public.beta") {
+		t.Fatalf("expected public.beta, got %v", tables)
+	}
+
+	if _, err := runWallabyAdmin(ctx, "unused:0", "publication", "remove", "-dsn", srcDSN, "-publication", pubName, "-tables", "public.alpha"); err != nil {
+		t.Fatalf("wallaby-admin publication remove: %v", err)
+	}
+	listOutput, err = runWallabyAdmin(ctx, "unused:0", "publication", "list", "-dsn", srcDSN, "-publication", pubName, "-json")
+	if err != nil {
+		t.Fatalf("wallaby-admin publication list: %v\n%s", err, listOutput)
+	}
+	tables = parsePublicationTables(t, listOutput)
+	if containsTable(tables, "public.alpha") {
+		t.Fatalf("expected public.alpha removed, got %v", tables)
+	}
+
+	if _, err := runWallabyAdmin(ctx, "unused:0", "publication", "scrape", "-dsn", srcDSN, "-publication", pubName, "-schemas", "public", "-apply"); err != nil {
+		t.Fatalf("wallaby-admin publication scrape: %v", err)
+	}
+	listOutput, err = runWallabyAdmin(ctx, "unused:0", "publication", "list", "-dsn", srcDSN, "-publication", pubName, "-json")
+	if err != nil {
+		t.Fatalf("wallaby-admin publication list: %v\n%s", err, listOutput)
+	}
+	tables = parsePublicationTables(t, listOutput)
+	if !containsTable(tables, "public.gamma") {
+		t.Fatalf("expected public.gamma after scrape, got %v", tables)
+	}
+}
+
 func runWallabyAdmin(ctx context.Context, endpoint string, args ...string) ([]byte, error) {
 	root, err := moduleRoot()
 	if err != nil {
@@ -513,6 +688,30 @@ func waitForTCP(t *testing.T, addr string, timeout time.Duration) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func parsePublicationTables(t *testing.T, output []byte) []string {
+	t.Helper()
+	var resp struct {
+		Count  int      `json:"count"`
+		Tables []string `json:"tables"`
+	}
+	if err := json.Unmarshal(output, &resp); err != nil {
+		t.Fatalf("decode publication list output: %v\n%s", err, output)
+	}
+	if resp.Count == 0 {
+		return nil
+	}
+	return resp.Tables
+}
+
+func containsTable(tables []string, value string) bool {
+	for _, table := range tables {
+		if strings.EqualFold(table, value) {
+			return true
+		}
+	}
+	return false
 }
 
 type flowConfigPayload struct {

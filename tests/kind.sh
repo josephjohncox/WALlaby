@@ -34,4 +34,4 @@ trap cleanup EXIT
 export WALLABY_TEST_K8S_KUBECONFIG="$kubeconfig"
 export WALLABY_TEST_K8S_NAMESPACE="${WALLABY_TEST_K8S_NAMESPACE:-default}"
 
-go test ./tests/integration -run KubernetesDispatcherIntegration -v
+go test ./tests/integration -run KubernetesDispatcher -v
