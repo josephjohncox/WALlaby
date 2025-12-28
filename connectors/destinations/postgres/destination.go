@@ -32,6 +32,7 @@ const (
 	optMetaEnabled     = "meta_table_enabled"
 	optMetaPKPrefix    = "meta_pk_prefix"
 	optFlowID          = "flow_id"
+	optSyncCommit      = "synchronous_commit"
 
 	writeModeTarget      = "target"
 	writeModeAppend      = "append"
@@ -61,6 +62,7 @@ type Destination struct {
 	metaTable        string
 	metaPKPrefix     string
 	flowID           string
+	syncCommit       string
 	metaColumns      map[string]struct{}
 	stagingTables    map[string]tableInfo
 	stagingResolved  bool
@@ -116,6 +118,7 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		d.metaPKPrefix = defaultMetaPKPref
 	}
 	d.flowID = spec.Options[optFlowID]
+	d.syncCommit = normalizeSyncCommit(spec.Options[optSyncCommit])
 	d.metaColumns = map[string]struct{}{}
 	d.stagingTables = map[string]tableInfo{}
 
@@ -144,6 +147,12 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	tx, err := d.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
+	}
+	if d.syncCommit != "" {
+		if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL synchronous_commit = %s", d.syncCommit)); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("set synchronous_commit: %w", err)
+		}
 	}
 	targetRecords := map[string][]connector.Record{}
 	for _, record := range batch.Records {
@@ -1521,6 +1530,16 @@ func parseBool(value string, fallback bool) bool {
 		return fallback
 	}
 	return parsed
+}
+
+func normalizeSyncCommit(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	switch value {
+	case "", "on", "off", "local", "remote_write", "remote_apply":
+		return value
+	default:
+		return ""
+	}
 }
 
 type tableInfo struct {

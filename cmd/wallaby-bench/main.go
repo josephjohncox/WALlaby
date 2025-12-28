@@ -770,6 +770,7 @@ func buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix string) (c
 				"schema":             "bench_sink",
 				"write_mode":         "target",
 				"meta_table_enabled": "false",
+				"synchronous_commit": getenv("BENCH_PG_SYNC_COMMIT", "off"),
 			},
 		}
 		return spec, &pgdest.Destination{}, nil
