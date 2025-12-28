@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package wallaby.v1;
+
+import "wallaby/v1/types.proto";
+
+option go_package = "github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabypb";
+
+message IngestBatchRequest {
+  string flow_id = 1;
+  string destination = 2;
+  WireFormat wire_format = 3;
+  bytes payload = 4;
+  Checkpoint checkpoint = 5;
+}
+
+message IngestBatchResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+service IngestService {
+  rpc IngestBatch(IngestBatchRequest) returns (IngestBatchResponse);
+}

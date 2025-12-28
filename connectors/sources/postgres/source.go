@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/replication"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -40,6 +41,8 @@ const (
 	optDDLTriggerSchema    = "ddl_trigger_schema"
 	optDDLTriggerName      = "ddl_trigger_name"
 	optDDLMessagePrefix    = "ddl_message_prefix"
+	optToastFetch          = "toast_fetch"
+	optToastCacheSize      = "toast_cache_size"
 )
 
 // Source implements Postgres logical replication as a connector.Source.
@@ -57,6 +60,9 @@ type Source struct {
 	stateStore   *sourceStateStore
 	stateID      string
 	typeResolver *pgTypeResolver
+	toastFetch   string
+	toastPool    *pgxpool.Pool
+	toastCache   *toastCache
 }
 
 func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
@@ -138,6 +144,30 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		}
 		s.stateStore = store
 		s.stateID = sourceStateID(spec, s.slot)
+	}
+
+	toastFetch := strings.ToLower(strings.TrimSpace(spec.Options[optToastFetch]))
+	if toastFetch == "" {
+		toastFetch = toastFetchOff
+	}
+	switch toastFetch {
+	case toastFetchOff, toastFetchSource, toastFetchCache, toastFetchFull:
+	default:
+		return fmt.Errorf("unsupported toast_fetch %q", toastFetch)
+	}
+	s.toastFetch = toastFetch
+	if s.toastFetch == toastFetchSource || s.toastFetch == toastFetchFull {
+		pool, err := newPool(ctx, dsn)
+		if err != nil {
+			return err
+		}
+		s.toastPool = pool
+	}
+	if s.toastFetch == toastFetchCache {
+		cacheSize := parseInt(spec.Options[optToastCacheSize], 10000)
+		if cacheSize > 0 {
+			s.toastCache = newToastCache(cacheSize)
+		}
 	}
 
 	opts := []replication.PostgresStreamOption{
@@ -250,6 +280,9 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 				return connector.Batch{}, io.EOF
 			}
 			if change.Record != nil {
+				if err := s.handleToast(ctx, change, change.Record); err != nil {
+					return connector.Batch{}, err
+				}
 				records = append(records, *change.Record)
 			}
 			if change.SchemaDef != nil {
@@ -305,6 +338,10 @@ func (s *Source) Close(ctx context.Context) error {
 	if s.typeResolver != nil {
 		s.typeResolver.Close()
 		s.typeResolver = nil
+	}
+	if s.toastPool != nil {
+		s.toastPool.Close()
+		s.toastPool = nil
 	}
 	return err
 }

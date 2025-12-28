@@ -140,6 +140,29 @@ Kafka destination options (connector `options`):
 - `max_record_bytes` (default = `max_message_bytes`) — hard cap for single-record payloads
 - `oversize_policy` (`error` default, or `drop`)
 
+## HTTP / Webhook Destination
+HTTP destination options (connector `options`):
+- `url` (required)
+- `method` (`POST` default)
+- `format` (default `json`)
+- `payload_mode` (`wire` default, or `record_json`/`raw`, `wal`)
+- `headers` (comma-separated `Key:Value` list)
+- `idempotency_header` (default `Idempotency-Key`)
+
+`payload_mode=record_json` (alias `raw`) sends a single-record JSON envelope (table, operation, key, before/after, etc.) and ignores `format`.
+`payload_mode=wal` sends raw pgoutput bytes (requires a Postgres logical source).
+
+## gRPC Destination
+gRPC destination options (connector `options`):
+- `endpoint` (required, e.g. `host:port`)
+- `format` (default `json`)
+- `payload_mode` (`wire` default, or `record_json`/`raw`, `wal`)
+- `insecure` (`true` default), `tls_ca_file`, `tls_server_name`
+- `headers` (comma-separated `Key:Value` list)
+- `timeout`, `max_retries`, `backoff_base`, `backoff_max`, `backoff_factor`
+
+The client calls `IngestService/IngestBatch` and sends `payload_mode` as gRPC metadata (`x-wallaby-payload-mode`).
+
 ## Type Mapping (Schema Translation)
 Destinations that materialize tables (Snowflake, Snowpipe, ClickHouse, DuckDB) apply default Postgres → destination type mappings. Override per destination with:
 - `type_mappings` — JSON map of `postgres_type` → `dest_type`
@@ -179,6 +202,10 @@ Key Postgres source options (connector `options`):
 - `ddl_trigger_schema` (default `wallaby`) — schema for the DDL capture function
 - `ddl_trigger_name` (default `wallaby_ddl_capture`) — event trigger name
 - `ddl_message_prefix` (default `wallaby_ddl`) — logical message prefix to filter DDL events
+- `toast_fetch` (`off` default, or `source`, `full`, `cache`) — how to rehydrate TOASTed/unchanged columns on UPDATE
+- `toast_cache_size` (default `10000`) — LRU size used when `toast_fetch=cache`
+
+**TOAST rehydration**: Postgres may omit large unchanged columns on UPDATE. By default WALlaby emits partial updates plus `unchanged` fields. Use `toast_fetch=source` to reselect only those columns by primary key, `toast_fetch=full` to reselect the full row, or `toast_fetch=cache` for a best‑effort in‑memory merge.
 
 ## Publication Lifecycle
 Use `sync_publication` with `publication_tables` or `publication_schemas` to add/drop tables when a flow starts. For ad-hoc changes, the admin CLI can update the publication:
@@ -206,6 +233,20 @@ Key options:
 - `idempotency_header` (default `Idempotency-Key`)
 
 The idempotency key is derived from `(table, primary key, lsn)` and hashed to a fixed string.
+
+## gRPC Destination
+Use the gRPC destination to send encoded batches to a remote ingest service. The destination calls
+`wallaby.v1.IngestService/IngestBatch` with the wire‑format payload.
+
+Key options:
+- `endpoint` (required) — gRPC host:port
+- `format` (default `json`)
+- `insecure` (default `true`) — use plaintext instead of TLS
+- `tls_ca_file`, `tls_server_name` (optional) — TLS settings when `insecure=false`
+- `headers` (comma-separated `Key:Value`) — gRPC metadata
+- `timeout`, `max_retries`, `backoff_base`, `backoff_max`, `backoff_factor`
+- `flow_id` (optional) — forwarded in the ingest request
+- `destination` (optional) — logical destination name (defaults to the destination spec name)
 
 ## Postgres Stream Destination
 The `pgstream` destination writes events into a Postgres-backed stream with consumer groups and visibility timeouts.

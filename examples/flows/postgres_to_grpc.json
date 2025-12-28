@@ -1,0 +1,35 @@
+{
+  "name": "pg_to_grpc",
+  "wire_format": "json",
+  "source": {
+    "name": "pg-source",
+    "type": "postgres",
+    "options": {
+      "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+      "slot": "wallaby_slot",
+      "publication": "wallaby_pub",
+      "batch_size": "500",
+      "batch_timeout": "1s",
+      "status_interval": "10s",
+      "create_slot": "true",
+      "format": "json"
+    }
+  },
+  "destinations": [
+    {
+      "name": "grpc_ingest",
+      "type": "grpc",
+      "options": {
+        "endpoint": "localhost:9090",
+        "format": "json",
+        "insecure": "true",
+        "timeout": "10s",
+        "max_retries": "3",
+        "backoff_base": "200ms",
+        "backoff_max": "5s",
+        "backoff_factor": "2",
+        "headers": "x-tenant:demo"
+      }
+    }
+  ]
+}

@@ -79,10 +79,21 @@ func arrowSchemaFor(schema connector.Schema) (*arrow.Schema, map[string]int, err
 		if _, exists := fieldIndex[col.Name]; exists {
 			return nil, nil, fmt.Errorf("column name collides with metadata field: %s", col.Name)
 		}
+		var meta arrow.Metadata
+		if len(col.TypeMetadata) > 0 {
+			keys := make([]string, 0, len(col.TypeMetadata))
+			values := make([]string, 0, len(col.TypeMetadata))
+			for key, val := range col.TypeMetadata {
+				keys = append(keys, key)
+				values = append(values, val)
+			}
+			meta = arrow.NewMetadata(keys, values)
+		}
 		fields = append(fields, arrow.Field{
 			Name:     col.Name,
 			Type:     arrowTypeFor(col.Type),
 			Nullable: true,
+			Metadata: meta,
 		})
 		fieldIndex[col.Name] = len(fields) - 1
 	}
@@ -91,7 +102,11 @@ func arrowSchemaFor(schema connector.Schema) (*arrow.Schema, map[string]int, err
 }
 
 func arrowTypeFor(pgType string) arrow.DataType {
-	base := strings.ToLower(pgType)
+	normalized := strings.ToLower(pgType)
+	if strings.Contains(normalized, ".") {
+		return arrow.BinaryTypes.Binary
+	}
+	base := normalized
 	if idx := strings.Index(base, "("); idx > 0 {
 		base = base[:idx]
 	}
@@ -117,6 +132,8 @@ func arrowTypeFor(pgType string) arrow.DataType {
 	case "uuid":
 		return arrow.BinaryTypes.String
 	case "bytea":
+		return arrow.BinaryTypes.Binary
+	case "json", "jsonb":
 		return arrow.BinaryTypes.Binary
 	case "timestamp", "timestamptz", "timestamp without time zone", "timestamp with time zone":
 		return arrow.FixedWidthTypes.Timestamp_ms
@@ -195,6 +212,14 @@ func appendValue(builder array.Builder, value any) error {
 		switch v := value.(type) {
 		case []byte:
 			b.Append(v)
+		case json.RawMessage:
+			b.Append([]byte(v))
+		case map[string]any, []any:
+			payload, err := json.Marshal(v)
+			if err != nil {
+				return fmt.Errorf("marshal json value: %w", err)
+			}
+			b.Append(payload)
 		default:
 			b.Append([]byte(fmt.Sprint(value)))
 		}

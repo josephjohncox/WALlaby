@@ -80,6 +80,8 @@ type Column struct {
 	Nullable   bool
 	Generated  bool
 	Expression string
+	// TypeMetadata carries optional source-specific type info (e.g. extension, oid).
+	TypeMetadata map[string]string
 }
 
 // Checkpoint identifies a durable offset for a flow.

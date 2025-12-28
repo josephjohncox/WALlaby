@@ -76,6 +76,8 @@ grpcurl -plaintext \
 JSON
 ```
 
+For full‑row webhooks (rehydrating TOASTed columns), see `examples/flows/postgres_to_http_toast_full.json` and set `"toast_fetch": "full"` on the Postgres source.
+
 ## Tutorial 3: Postgres → HTTP Webhook
 
 Use a webhook endpoint to trigger downstream automation:

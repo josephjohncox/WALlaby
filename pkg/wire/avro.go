@@ -73,23 +73,33 @@ func (c *AvroCodec) Encode(batch connector.Batch) ([]byte, error) {
 
 func avroSchemaFor(schema connector.Schema) string {
 	fields := []string{
-		fieldJSON("__op", []string{"string"}),
-		fieldJSON("__ts", []string{"long"}),
-		fieldJSON("__schema_version", []string{"long"}),
-		fieldJSON("__table", []string{"string"}),
-		fieldJSON("__namespace", []string{"string"}),
-		fieldJSON("__key", []string{"null", "bytes"}),
-		fieldJSON("__before_json", []string{"string"}),
+		fieldJSON("__op", []string{"string"}, nil),
+		fieldJSON("__ts", []string{"long"}, nil),
+		fieldJSON("__schema_version", []string{"long"}, nil),
+		fieldJSON("__table", []string{"string"}, nil),
+		fieldJSON("__namespace", []string{"string"}, nil),
+		fieldJSON("__key", []string{"null", "bytes"}, nil),
+		fieldJSON("__before_json", []string{"string"}, nil),
 	}
 
 	for _, col := range schema.Columns {
-		fields = append(fields, fieldJSON(col.Name, avroTypeFor(col.Type, col.Nullable)))
+		props := map[string]string{}
+		for key, val := range col.TypeMetadata {
+			if key == "" || val == "" {
+				continue
+			}
+			props[key] = val
+		}
+		if len(props) == 0 {
+			props = nil
+		}
+		fields = append(fields, fieldJSON(col.Name, avroTypeFor(col.Type, col.Nullable), props))
 	}
 
 	return fmt.Sprintf(`{"type":"record","name":"wallaby_record","fields":[%s]}`, strings.Join(fields, ","))
 }
 
-func fieldJSON(name string, types []string) string {
+func fieldJSON(name string, types []string, props map[string]string) string {
 	var typeJSON string
 	if len(types) == 1 {
 		typeJSON = fmt.Sprintf("\"%s\"", types[0])
@@ -100,11 +110,19 @@ func fieldJSON(name string, types []string) string {
 		}
 		typeJSON = fmt.Sprintf("[%s]", strings.Join(parts, ","))
 	}
-	return fmt.Sprintf(`{"name":"%s","type":%s}`, name, typeJSON)
+	if len(props) == 0 {
+		return fmt.Sprintf(`{"name":"%s","type":%s}`, name, typeJSON)
+	}
+	payload, _ := json.Marshal(props)
+	return fmt.Sprintf(`{"name":"%s","type":%s,"wallaby":%s}`, name, typeJSON, payload)
 }
 
 func avroTypeFor(pgType string, nullable bool) []string {
-	base := strings.ToLower(pgType)
+	normalized := strings.ToLower(pgType)
+	if strings.Contains(normalized, ".") {
+		return wrapNullable("bytes", nullable)
+	}
+	base := normalized
 	if idx := strings.Index(base, "("); idx > 0 {
 		base = base[:idx]
 	}
@@ -122,16 +140,15 @@ func avroTypeFor(pgType string, nullable bool) []string {
 		avroType = "boolean"
 	case "bytea":
 		avroType = "bytes"
+	case "json", "jsonb":
+		avroType = "bytes"
 	case "timestamp", "timestamptz", "timestamp without time zone", "timestamp with time zone", "date":
 		avroType = "long"
 	default:
 		avroType = "string"
 	}
 
-	if nullable {
-		return []string{"null", avroType}
-	}
-	return []string{avroType}
+	return wrapNullable(avroType, nullable)
 }
 
 func normalizeAvroValue(colType string, val any) any {
@@ -142,9 +159,12 @@ func normalizeAvroValue(colType string, val any) any {
 	case time.Time:
 		return v.UnixMilli()
 	case json.RawMessage:
-		return string(v)
+		return []byte(v)
 	case []byte:
 		if isByteaType(colType) {
+			return v
+		}
+		if isJSONType(colType) {
 			return v
 		}
 		return string(v)
@@ -152,7 +172,7 @@ func normalizeAvroValue(colType string, val any) any {
 
 	if isJSONType(colType) {
 		if payload, err := json.Marshal(val); err == nil {
-			return string(payload)
+			return payload
 		}
 	}
 
@@ -165,6 +185,13 @@ func normalizeAvroValue(colType string, val any) any {
 	}
 
 	return val
+}
+
+func wrapNullable(avroType string, nullable bool) []string {
+	if nullable {
+		return []string{"null", avroType}
+	}
+	return []string{avroType}
 }
 
 func isJSONType(pgType string) bool {

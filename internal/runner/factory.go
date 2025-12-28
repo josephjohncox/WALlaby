@@ -6,6 +6,7 @@ import (
 	"github.com/josephjohncox/wallaby/connectors/destinations/bufstream"
 	"github.com/josephjohncox/wallaby/connectors/destinations/clickhouse"
 	"github.com/josephjohncox/wallaby/connectors/destinations/duckdb"
+	grpcdest "github.com/josephjohncox/wallaby/connectors/destinations/grpc"
 	httpdest "github.com/josephjohncox/wallaby/connectors/destinations/http"
 	"github.com/josephjohncox/wallaby/connectors/destinations/kafka"
 	"github.com/josephjohncox/wallaby/connectors/destinations/pgstream"
@@ -59,6 +60,8 @@ func (f Factory) destination(spec connector.Spec) (connector.Destination, error)
 		return &s3.Destination{}, nil
 	case connector.EndpointHTTP:
 		return &httpdest.Destination{}, nil
+	case connector.EndpointGRPC:
+		return &grpcdest.Destination{}, nil
 	case connector.EndpointPGStream:
 		return &pgstream.Destination{}, nil
 	case connector.EndpointSnowflake:

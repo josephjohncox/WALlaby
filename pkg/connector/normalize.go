@@ -8,7 +8,10 @@ import (
 	"net"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 var jsonNumberPattern = regexp.MustCompile(`^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?$`)
@@ -24,7 +27,7 @@ func NormalizePostgresRecord(schema Schema, values map[string]any) error {
 		if !ok {
 			continue
 		}
-		normalized, err := normalizePostgresValue(col.Type, val)
+		normalized, err := normalizePostgresValueWithColumn(col, val)
 		if err != nil {
 			return fmt.Errorf("normalize %s: %w", col.Name, err)
 		}
@@ -33,13 +36,17 @@ func NormalizePostgresRecord(schema Schema, values map[string]any) error {
 	return nil
 }
 
-func normalizePostgresValue(colType string, value any) (any, error) {
+func normalizePostgresValueWithColumn(col Column, value any) (any, error) {
 	if value == nil {
 		return nil, nil
 	}
-	base, isArray := splitPostgresType(colType)
+	base, isArray := splitPostgresType(col.Type)
 	if isArray {
 		return normalizePostgresArray(base, value)
+	}
+
+	if isExtensionType(col, base) {
+		return normalizeExtensionValue(base, value)
 	}
 
 	switch base {
@@ -54,6 +61,159 @@ func normalizePostgresValue(colType string, value any) (any, error) {
 	default:
 		return value, nil
 	}
+}
+
+func isExtensionType(col Column, base string) bool {
+	if col.TypeMetadata != nil {
+		if ext := strings.TrimSpace(col.TypeMetadata["extension"]); ext != "" {
+			return true
+		}
+	}
+	if strings.Contains(col.Type, ".") {
+		return true
+	}
+	switch base {
+	case "hstore", "geometry", "geography", "vector":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeExtensionValue(base string, value any) (any, error) {
+	switch base {
+	case "hstore":
+		return normalizeHstoreValue(value)
+	case "vector":
+		return normalizeVectorValue(value)
+	case "geometry", "geography":
+		return normalizeGeometryValue(value)
+	default:
+		return value, nil
+	}
+}
+
+func normalizeHstoreValue(value any) (any, error) {
+	switch v := value.(type) {
+	case pgtype.Hstore:
+		return hstoreToMap(v), nil
+	case map[string]*string:
+		return hstoreToMap(pgtype.Hstore(v)), nil
+	case map[string]string:
+		out := make(map[string]any, len(v))
+		for key, val := range v {
+			out[key] = val
+		}
+		return out, nil
+	case string:
+		var h pgtype.Hstore
+		if err := h.Scan(v); err != nil {
+			return v, nil
+		}
+		return hstoreToMap(h), nil
+	case []byte:
+		var h pgtype.Hstore
+		if err := h.Scan(string(v)); err != nil {
+			return v, nil
+		}
+		return hstoreToMap(h), nil
+	default:
+		return value, nil
+	}
+}
+
+func hstoreToMap(h pgtype.Hstore) map[string]any {
+	out := make(map[string]any, len(h))
+	for key, val := range h {
+		if val == nil {
+			out[key] = nil
+		} else {
+			out[key] = *val
+		}
+	}
+	return out
+}
+
+func normalizeVectorValue(value any) (any, error) {
+	switch v := value.(type) {
+	case []float32:
+		return v, nil
+	case []float64:
+		out := make([]float32, len(v))
+		for i, f := range v {
+			out[i] = float32(f)
+		}
+		return out, nil
+	case string:
+		return parseVectorText(v)
+	case []byte:
+		return parseVectorText(string(v))
+	default:
+		return value, nil
+	}
+}
+
+func parseVectorText(raw string) ([]float32, error) {
+	trimmed := strings.TrimSpace(raw)
+	trimmed = strings.TrimPrefix(trimmed, "[")
+	trimmed = strings.TrimSuffix(trimmed, "]")
+	trimmed = strings.TrimPrefix(trimmed, "{")
+	trimmed = strings.TrimSuffix(trimmed, "}")
+	if trimmed == "" {
+		return []float32{}, nil
+	}
+	parts := strings.Split(trimmed, ",")
+	out := make([]float32, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		f, err := strconv.ParseFloat(part, 32)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, float32(f))
+	}
+	return out, nil
+}
+
+func normalizeGeometryValue(value any) (any, error) {
+	switch v := value.(type) {
+	case []byte:
+		raw := make([]byte, len(v))
+		copy(raw, v)
+		return raw, nil
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if looksLikeHex(trimmed) {
+			if decoded, err := hex.DecodeString(strings.TrimPrefix(trimmed, "\\x")); err == nil {
+				return decoded, nil
+			}
+		}
+		return v, nil
+	default:
+		return value, nil
+	}
+}
+
+func looksLikeHex(value string) bool {
+	if strings.HasPrefix(value, "\\x") {
+		value = strings.TrimPrefix(value, "\\x")
+	}
+	if len(value)%2 != 0 || value == "" {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func normalizePostgresArray(base string, value any) (any, error) {
@@ -78,6 +238,10 @@ func normalizePostgresArray(base string, value any) (any, error) {
 		out[i] = normalized
 	}
 	return out, nil
+}
+
+func normalizePostgresValue(base string, value any) (any, error) {
+	return normalizePostgresValueWithColumn(Column{Type: base}, value)
 }
 
 func splitPostgresType(value string) (string, bool) {

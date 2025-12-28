@@ -1,0 +1,35 @@
+{
+  "name": "pg_to_http_full_toast",
+  "wire_format": "json",
+  "source": {
+    "name": "pg-source",
+    "type": "postgres",
+    "options": {
+      "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+      "slot": "wallaby_slot",
+      "publication": "wallaby_pub",
+      "batch_size": "500",
+      "batch_timeout": "1s",
+      "status_interval": "10s",
+      "create_slot": "true",
+      "format": "json",
+      "toast_fetch": "full"
+    }
+  },
+  "destinations": [
+    {
+      "name": "webhook",
+      "type": "http",
+      "options": {
+        "url": "https://api.example.com/ingest",
+        "method": "POST",
+        "format": "json",
+        "headers": "Authorization:Bearer token123",
+        "max_retries": "5",
+        "backoff_base": "200ms",
+        "backoff_max": "5s",
+        "backoff_factor": "2"
+      }
+    }
+  ]
+}

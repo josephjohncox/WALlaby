@@ -118,6 +118,19 @@ type TypeResolver interface {
 	ResolveType(ctx context.Context, oid uint32) (string, bool, error)
 }
 
+// TypeInfo provides extended metadata for Postgres types.
+type TypeInfo struct {
+	OID       uint32
+	Name      string
+	Schema    string
+	Extension string
+}
+
+// TypeInfoResolver optionally exposes richer type metadata.
+type TypeInfoResolver interface {
+	ResolveTypeInfo(ctx context.Context, oid uint32) (TypeInfo, bool, error)
+}
+
 // NewPostgresStream returns a Postgres logical replication stream.
 func NewPostgresStream(dsn string, opts ...PostgresStreamOption) *PostgresStream {
 	stream := &PostgresStream{
@@ -426,6 +439,9 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 func (p *PostgresStream) emitChange(ctx context.Context, xld pglogrepl.XLogData, schema connector.Schema, record *connector.Record, ddl string) error {
 	payload := make([]byte, len(xld.WALData))
 	copy(payload, xld.WALData)
+	if record != nil {
+		record.Payload = payload
+	}
 
 	change := Change{
 		LSN:       xld.WALStart,
@@ -449,6 +465,7 @@ func (p *PostgresStream) emitLogicalMessage(ctx context.Context, xld pglogrepl.X
 		Operation: connector.OpDDL,
 		DDL:       ddl,
 		Timestamp: xld.ServerTime,
+		Payload:   payload,
 	}
 
 	change := Change{
@@ -497,14 +514,33 @@ func (p *PostgresStream) schemaForRelation(ctx context.Context, rel *pglogrepl.R
 	p.versions[rel.RelationID]++
 	version := p.versions[rel.RelationID]
 
+	var infoResolver TypeInfoResolver
+	if resolver, ok := p.typeResolver.(TypeInfoResolver); ok {
+		infoResolver = resolver
+	}
+
 	columns := make([]connector.Column, 0, len(rel.Columns))
 	for _, col := range rel.Columns {
 		colType := p.resolveTypeName(ctx, col.DataType)
-		columns = append(columns, connector.Column{
+		column := connector.Column{
 			Name:     col.Name,
 			Type:     colType,
 			Nullable: true,
-		})
+		}
+		if infoResolver != nil {
+			if info, ok, err := infoResolver.ResolveTypeInfo(ctx, col.DataType); err == nil && ok {
+				column.TypeMetadata = map[string]string{
+					"oid": fmt.Sprintf("%d", info.OID),
+				}
+				if info.Schema != "" {
+					column.TypeMetadata["type_schema"] = info.Schema
+				}
+				if info.Extension != "" {
+					column.TypeMetadata["extension"] = info.Extension
+				}
+			}
+		}
+		columns = append(columns, column)
 	}
 
 	return connector.Schema{
@@ -685,7 +721,13 @@ func (p *PostgresStream) decodeTuple(rel *pglogrepl.RelationMessage, tuple *pglo
 				}
 				values[colMeta.Name] = decoded
 			} else {
-				values[colMeta.Name] = string(col.Data)
+				if col.DataType == pglogrepl.TupleDataTypeBinary {
+					raw := make([]byte, len(col.Data))
+					copy(raw, col.Data)
+					values[colMeta.Name] = raw
+				} else {
+					values[colMeta.Name] = string(col.Data)
+				}
 			}
 		default:
 			return nil, nil, fmt.Errorf("unknown column data type %c", col.DataType)

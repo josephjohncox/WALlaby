@@ -73,13 +73,17 @@ func (c *CatalogScanner) scan(ctx context.Context) (map[string]connector.Schema,
 		        format_type(a.atttypid, a.atttypmod) AS data_type,
 		        a.attgenerated::text AS generated,
 		        pg_get_expr(ad.adbin, ad.adrelid) AS generation_expression,
-		        tns.nspname AS type_schema
+		        tns.nspname AS type_schema,
+		        ext.extname AS extension
 		 FROM pg_class c
 		 JOIN pg_namespace ns ON ns.oid = c.relnamespace
 		 JOIN pg_attribute a ON a.attrelid = c.oid
 		 JOIN pg_type t ON t.oid = a.atttypid
 		 JOIN pg_namespace tns ON tns.oid = t.typnamespace
 		 LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
+		 LEFT JOIN pg_depend dep ON dep.classid = 'pg_type'::regclass
+		   AND dep.objid = t.oid AND dep.deptype = 'e'
+		 LEFT JOIN pg_extension ext ON ext.oid = dep.refobjid
 		 WHERE ns.nspname = ANY($1::text[])
 		   AND a.attnum > 0
 		   AND NOT a.attisdropped
@@ -95,7 +99,8 @@ func (c *CatalogScanner) scan(ctx context.Context) (map[string]connector.Schema,
 		var namespace, table, column, dataType, generated, typeSchema string
 		var nullable bool
 		var expression *string
-		if err := rows.Scan(&namespace, &table, &column, &nullable, &dataType, &generated, &expression, &typeSchema); err != nil {
+		var extension *string
+		if err := rows.Scan(&namespace, &table, &column, &nullable, &dataType, &generated, &expression, &typeSchema, &extension); err != nil {
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
 
@@ -115,6 +120,11 @@ func (c *CatalogScanner) scan(ctx context.Context) (map[string]connector.Schema,
 			Type:      formatTypeName(typeSchema, dataType),
 			Nullable:  nullable,
 			Generated: generated != "",
+		}
+		if extension != nil && *extension != "" {
+			col.TypeMetadata = map[string]string{
+				"extension": strings.ToLower(*extension),
+			}
 		}
 		if expression != nil {
 			col.Expression = *expression

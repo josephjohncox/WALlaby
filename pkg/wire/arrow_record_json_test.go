@@ -55,9 +55,9 @@ func TestBuildArrowRecordJSONArrays(t *testing.T) {
 		t.Fatal("payload field not found")
 	}
 
-	col, ok := rec.Column(idx).(*array.String)
+	col, ok := rec.Column(idx).(*array.Binary)
 	if !ok {
-		t.Fatalf("payload column type = %T, want *array.String", rec.Column(idx))
+		t.Fatalf("payload column type = %T, want *array.Binary", rec.Column(idx))
 	}
 	if col.Len() != 1 {
 		t.Fatalf("payload column len = %d, want 1", col.Len())
@@ -70,7 +70,7 @@ func TestBuildArrowRecordJSONArrays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	if got := col.Value(0); got != string(expected) {
-		t.Fatalf("payload value = %q, want %q", got, string(expected))
+	if got := col.Value(0); string(got) != string(expected) {
+		t.Fatalf("payload value = %q, want %q", string(got), string(expected))
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -21,6 +22,7 @@ const (
 	optURL               = "url"
 	optMethod            = "method"
 	optFormat            = "format"
+	optPayloadMode       = "payload_mode"
 	optTimeout           = "timeout"
 	optHeaders           = "headers"
 	optMaxRetries        = "max_retries"
@@ -30,12 +32,19 @@ const (
 	optIdempotencyHeader = "idempotency_header"
 )
 
+const (
+	payloadModeWire       = "wire"
+	payloadModeRecordJSON = "record_json"
+	payloadModeWAL        = "wal"
+)
+
 // Destination delivers records to an HTTP endpoint.
 type Destination struct {
 	spec              connector.Spec
 	url               string
 	method            string
 	codec             wire.Codec
+	payloadMode       string
 	headers           map[string]string
 	client            *http.Client
 	maxRetries        int
@@ -57,15 +66,19 @@ func (d *Destination) Open(_ context.Context, spec connector.Spec) error {
 		d.method = http.MethodPost
 	}
 
+	d.payloadMode = normalizePayloadMode(spec.Options[optPayloadMode])
+
 	format := spec.Options[optFormat]
 	if format == "" {
 		format = string(connector.WireFormatJSON)
 	}
-	codec, err := wire.NewCodec(format)
-	if err != nil {
-		return err
+	if d.payloadMode == payloadModeWire {
+		codec, err := wire.NewCodec(format)
+		if err != nil {
+			return err
+		}
+		d.codec = codec
 	}
-	d.codec = codec
 
 	if spec.Options[optTimeout] == "" {
 		d.client = &http.Client{Timeout: 10 * time.Second}
@@ -106,7 +119,7 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 			WireFormat: batch.WireFormat,
 		}
 
-		payload, err := d.codec.Encode(payloadBatch)
+		payload, contentType, err := d.encodePayload(payloadBatch, record)
 		if err != nil {
 			return err
 		}
@@ -115,7 +128,7 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		}
 
 		idempotencyKey := d.buildIdempotencyKey(record, batch.Checkpoint.LSN, payload)
-		if err := d.sendWithRetry(ctx, payload, idempotencyKey); err != nil {
+		if err := d.sendWithRetry(ctx, payload, contentType, idempotencyKey); err != nil {
 			return err
 		}
 	}
@@ -150,7 +163,71 @@ func (d *Destination) Capabilities() connector.Capabilities {
 	}
 }
 
-func (d *Destination) sendWithRetry(ctx context.Context, payload []byte, idempotencyKey string) error {
+func (d *Destination) encodePayload(batch connector.Batch, record connector.Record) ([]byte, string, error) {
+	switch d.payloadMode {
+	case payloadModeRecordJSON:
+		payload, err := marshalRecordJSON(record)
+		if err != nil {
+			return nil, "", err
+		}
+		return payload, "application/json", nil
+	case payloadModeWAL:
+		if len(record.Payload) == 0 {
+			return nil, "", errors.New("wal payload not available on record")
+		}
+		return record.Payload, "application/octet-stream", nil
+	default:
+		if d.codec == nil {
+			return nil, "", errors.New("wire codec not initialized")
+		}
+		payload, err := d.codec.Encode(batch)
+		if err != nil {
+			return nil, "", err
+		}
+		return payload, d.codec.ContentType(), nil
+	}
+}
+
+func normalizePayloadMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", payloadModeWire:
+		return payloadModeWire
+	case "record", "record_json", "raw":
+		return payloadModeRecordJSON
+	case "wal":
+		return payloadModeWAL
+	default:
+		return payloadModeWire
+	}
+}
+
+func marshalRecordJSON(record connector.Record) ([]byte, error) {
+	type recordJSON struct {
+		Table         string         `json:"table"`
+		Operation     string         `json:"operation"`
+		SchemaVersion int64          `json:"schema_version"`
+		Key           []byte         `json:"key"`
+		Before        map[string]any `json:"before,omitempty"`
+		After         map[string]any `json:"after,omitempty"`
+		Unchanged     []string       `json:"unchanged,omitempty"`
+		DDL           string         `json:"ddl,omitempty"`
+		Timestamp     time.Time      `json:"timestamp"`
+	}
+	payload := recordJSON{
+		Table:         record.Table,
+		Operation:     string(record.Operation),
+		SchemaVersion: record.SchemaVersion,
+		Key:           record.Key,
+		Before:        record.Before,
+		After:         record.After,
+		Unchanged:     record.Unchanged,
+		DDL:           record.DDL,
+		Timestamp:     record.Timestamp,
+	}
+	return json.Marshal(payload)
+}
+
+func (d *Destination) sendWithRetry(ctx context.Context, payload []byte, contentType, idempotencyKey string) error {
 	attempts := d.maxRetries + 1
 	if attempts < 1 {
 		attempts = 1
@@ -164,8 +241,8 @@ func (d *Destination) sendWithRetry(ctx context.Context, payload []byte, idempot
 		for k, v := range d.headers {
 			req.Header.Set(k, v)
 		}
-		if d.codec != nil {
-			req.Header.Set("Content-Type", d.codec.ContentType())
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
 		}
 		if d.idempotencyHeader != "" && idempotencyKey != "" {
 			req.Header.Set(d.idempotencyHeader, idempotencyKey)
