@@ -1,6 +1,6 @@
 # WALlaby
 
-![Wallaby logo. Kicking a WAL block](./wallaby.png)
+![Wallaby logo. Kicking a WAL block](./wallaby-small.png)
 
 
 WALlaby is a Go-first CDC adapter for PostgreSQL logical replication. It is API-driven (gRPC + Terraform-friendly setup), supports multiple sources and destinations, and uses a durable workflow engine backed by Postgres. The focus is on performance, reliability, schema evolution, and observability.
