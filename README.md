@@ -11,6 +11,19 @@ WALlaby is a Go-first CDC adapter for PostgreSQL logical replication. It is API-
 - Efficient wire formats (Arrow, Parquet) and full DDL support.
 - Best-in-class Go libraries with minimal custom reinvention.
 
+## Why WALlaby (vs Airbyte/Fivetran/Debezium/PeerDB/Sequin)
+- Low‑latency Postgres CDC with fan‑out built in, so one source can serve many destinations reliably.
+- Schema fidelity via binary wire formats and DDL capture/gating, so downstream schemas stay aligned.
+- API‑driven control plane for flows and lifecycle (start/stop/resume, publication sync, backfill/replay) that’s easy to automate.
+- Simple deployment: a small Go service or per‑flow workers (DBOS/K8s) with explicit checkpoints and predictable recovery.
+- Designed for streaming and event‑driven pipelines without the operational weight of larger platforms.
+
+Quick contrasts:
+- Airbyte/Fivetran: broad connector catalogs and managed ELT; WALlaby prioritizes streaming CDC and direct control.
+- Debezium: JVM + Kafka‑centric; WALlaby is a Go service with API‑driven lifecycle and multi‑sink fan‑out.
+- PeerDB: strong warehouse replication; WALlaby is API‑first with desired‑state configuration and multi‑destination CDC.
+- Sequin: API/webhook‑first; WALlaby includes that plus durable flows, DDL gating, and multiple sink types.
+
 ## Status
 Early scaffolding. Interfaces are being defined before full implementations.
 
