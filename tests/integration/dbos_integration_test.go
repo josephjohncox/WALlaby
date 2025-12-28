@@ -14,6 +14,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/runner"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/pgstream"
 )
 
 func TestDBOSIntegrationBackfill(t *testing.T) {
@@ -56,6 +57,12 @@ func TestDBOSIntegrationBackfill(t *testing.T) {
 	if _, err := pool.Exec(ctx, createTable); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
+
+	store, err := pgstream.NewStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open stream store: %v", err)
+	}
+	store.Close()
 
 	if _, err := pool.Exec(ctx,
 		fmt.Sprintf(`INSERT INTO %s.%s (id, payload, updated_at) VALUES ($1, $2::jsonb, $3), ($4, $5::jsonb, $6)`, schema, table),
