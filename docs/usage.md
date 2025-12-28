@@ -2,6 +2,8 @@
 
 This guide covers how to run WALlaby and operate flows using the gRPC API, worker mode, and DBOS scheduling.
 
+Workflow mode templates live in `examples/workflows/` and a longer overview is in `docs/workflows.md`.
+
 ## Prerequisites
 - PostgreSQL with logical replication enabled (`wal_level=logical`).
 - A replication slot + publication for the source database (WALlaby can create the publication/slot when permitted).

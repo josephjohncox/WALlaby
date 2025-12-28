@@ -88,3 +88,4 @@ Use the Snowpipe destination with external stage notifications. Set `auto_ingest
 ## Stream Consumer Example
 - `examples/stream_consumer.sh` — minimal pull/ack loop using `wallaby-admin` + `jq`.
 - `examples/stream_consumer.go` — minimal Go client (no external tools).
+- `examples/workflows/` — CLI/DBOS/Kubernetes workflow configs.
