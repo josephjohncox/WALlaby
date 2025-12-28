@@ -146,13 +146,6 @@ build_bench_bin() {
   (cd "$ROOT_DIR" && go build -o "$bin_path" ./cmd/wallaby-bench)
 }
 
-pprof_supports_flamegraph() {
-  if ! command -v go >/dev/null 2>&1; then
-    return 1
-  fi
-  go tool pprof -help 2>/dev/null | grep -q "flamegraph"
-}
-
 pprof_command() {
   if command -v go >/dev/null 2>&1 && go tool pprof -help >/dev/null 2>&1; then
     echo "go tool pprof"
@@ -163,6 +156,14 @@ pprof_command() {
     return 0
   fi
   return 1
+}
+
+pprof_supports_flamegraph() {
+  local cmd="$1"
+  if [[ -z "$cmd" ]]; then
+    return 1
+  fi
+  $cmd -help 2>/dev/null | grep -q "flamegraph"
 }
 
 render_profile() {
@@ -177,15 +178,21 @@ render_profile() {
     return 0
   fi
 
+  render_callgraph() {
+    $pprof_cmd -svg "$bin_path" "$cpu_path" > "${out_base}.svg"
+  }
+
+  local supports_flamegraph=0
+  if pprof_supports_flamegraph "$pprof_cmd"; then
+    supports_flamegraph=1
+  fi
+
   render_flamegraph() {
-    if $pprof_cmd -flamegraph "$bin_path" "$cpu_path" > "${out_base}.svg"; then
+    if [[ "$supports_flamegraph" == "1" ]]; then
+      $pprof_cmd -flamegraph "$bin_path" "$cpu_path" > "${out_base}.svg"
       return 0
     fi
     return 1
-  }
-
-  render_callgraph() {
-    $pprof_cmd -svg "$bin_path" "$cpu_path" > "${out_base}.svg"
   }
 
   case "$PROFILE_FORMAT" in
@@ -199,7 +206,9 @@ render_profile() {
       ;;
     both)
       render_callgraph
-      if ! $pprof_cmd -flamegraph "$bin_path" "$cpu_path" > "${out_base}.flame.svg"; then
+      if [[ "$supports_flamegraph" == "1" ]]; then
+        $pprof_cmd -flamegraph "$bin_path" "$cpu_path" > "${out_base}.flame.svg"
+      else
         echo "pprof does not support -flamegraph; install github.com/google/pprof for flamegraphs"
       fi
       ;;

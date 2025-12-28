@@ -548,15 +548,16 @@ func (d *Destination) updateRows(ctx context.Context, tx pgx.Tx, target string, 
 		if len(group.rows) == 0 {
 			continue
 		}
+		localTypes := normalizeKeyColumnTypes(colTypes, group.keyCols, group.rows)
 		keyAliases := make([]string, 0, len(group.keyCols))
-		aliasTypes := make(map[string]string, len(colTypes)+len(group.keyCols))
-		for name, typ := range colTypes {
+		aliasTypes := make(map[string]string, len(localTypes)+len(group.keyCols))
+		for name, typ := range localTypes {
 			aliasTypes[name] = typ
 		}
 		for _, col := range group.keyCols {
 			alias := "__key_" + col
 			keyAliases = append(keyAliases, alias)
-			if typ := columnType(colTypes, col); typ != "" {
+			if typ := columnType(localTypes, col); typ != "" {
 				aliasTypes[alias] = typ
 			}
 		}
@@ -572,7 +573,7 @@ func (d *Destination) updateRows(ctx context.Context, tx pgx.Tx, target string, 
 		whereClause := make([]string, 0, len(group.keyCols))
 		for idx, col := range group.keyCols {
 			alias := keyAliases[idx]
-			if colType := columnType(colTypes, col); colType != "" {
+			if colType := columnType(localTypes, col); colType != "" {
 				if postgresJSONType(colType) != "" {
 					whereClause = append(whereClause, fmt.Sprintf("t.%s::text = v.%s::text", quoteIdent(col, '"'), quoteIdent(alias, '"')))
 				} else {
@@ -623,13 +624,14 @@ func (d *Destination) deleteRows(ctx context.Context, tx pgx.Tx, target string, 
 		if len(group.rows) == 0 {
 			continue
 		}
-		valuesClause, args, err := buildValuesClause(group.keyCols, colTypes, group.rows)
+		localTypes := normalizeKeyColumnTypes(colTypes, group.keyCols, group.rows)
+		valuesClause, args, err := buildValuesClause(group.keyCols, localTypes, group.rows)
 		if err != nil {
 			return err
 		}
 		whereClause := make([]string, 0, len(group.keyCols))
 		for _, col := range group.keyCols {
-			if colType := columnType(colTypes, col); colType != "" {
+			if colType := columnType(localTypes, col); colType != "" {
 				if postgresJSONType(colType) != "" {
 					whereClause = append(whereClause, fmt.Sprintf("t.%s::text = v.%s::text", quoteIdent(col, '"'), quoteIdent(col, '"')))
 				} else {
@@ -1386,6 +1388,52 @@ func normalizeTypeKey(value string) string {
 		value = value[idx+1:]
 	}
 	return strings.TrimSpace(value)
+}
+
+func normalizeKeyColumnTypes(colTypes map[string]string, keyCols []string, rows [][]any) map[string]string {
+	if len(keyCols) == 0 || len(rows) == 0 {
+		return colTypes
+	}
+	row := rows[0]
+	if len(row) == 0 {
+		return colTypes
+	}
+	var out map[string]string
+	for idx, col := range keyCols {
+		if idx >= len(row) {
+			break
+		}
+		colType := columnType(colTypes, col)
+		if postgresJSONType(colType) != "" {
+			continue
+		}
+		if !looksLikeJSONValue(row[idx]) {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]string, len(colTypes)+2)
+			for key, val := range colTypes {
+				out[key] = val
+			}
+		}
+		out[col] = "jsonb"
+		if lower := strings.ToLower(col); lower != col {
+			out[lower] = "jsonb"
+		}
+	}
+	if out == nil {
+		return colTypes
+	}
+	return out
+}
+
+func looksLikeJSONValue(value any) bool {
+	switch value.(type) {
+	case map[string]any, []any, json.RawMessage:
+		return true
+	default:
+		return false
+	}
 }
 
 func isPostgresArrayType(colType string) bool {

@@ -577,7 +577,7 @@ func (p *PostgresStream) decodeUpdate(msg *pglogrepl.UpdateMessage, xld pglogrep
 
 	keyFields := map[string]any{}
 	if msg.OldTupleType == pglogrepl.UpdateMessageTupleTypeKey && before != nil {
-		keyFields = before
+		keyFields = p.keyColumns(rel, before)
 	} else {
 		keyFields = p.keyColumns(rel, after)
 	}
@@ -613,7 +613,8 @@ func (p *PostgresStream) decodeDelete(msg *pglogrepl.DeleteMessage, xld pglogrep
 		return nil, connector.Schema{}, err
 	}
 
-	key, err := encodeKey(before)
+	keyFields := p.keyColumns(rel, before)
+	key, err := encodeKey(keyFields)
 	if err != nil {
 		return nil, connector.Schema{}, err
 	}
