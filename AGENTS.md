@@ -53,16 +53,17 @@ PRs should include description, test evidence, and performance/compatibility not
 - Benchmarks & perf: destination-specific DDL/mutation benchmarks; baseline comparisons vs Sequin/Debezium/PeerDB; flamegraphs/traces in bench runs; vary parallelism/record width and export CSV/JSON.
 - CLI/admin & docs: stream pull/ack CLI with pretty JSON, DDL list/approve/apply, staging resolve flag; examples under `examples/`; usage/tutorial/architecture docs and `docs/streams.md`.
 ### Execution Order (current focus)
-1) Type system completeness + extension mapping (pgvector, postgis, hstore, citext, ltree); centralize type mapping + casts; round-trip tests per destination.
-2) Schema evolution lifecycle: DDL capture → approval → apply → checkpointed DDL stream; apply tests for Snowflake/ClickHouse/DuckLake/Postgres.
-3) Snapshot/backfill: `pg_export_snapshot()` + persistent snapshot state + resume; parallel snapshot workers; snapshot→stream switch tests.
+1) [done] Type system completeness + extension mapping (pgvector, postgis, hstore, citext, ltree); centralize type mapping + casts; round-trip tests per destination.
+2) [done] Schema evolution lifecycle: DDL capture → approval → apply → checkpointed DDL stream; apply tests for Snowflake/ClickHouse/DuckLake/Postgres.
+3) [done] Snapshot/backfill: `pg_export_snapshot()` + persistent snapshot state + resume; parallel snapshot workers; snapshot→stream switch tests.
 4) Workflow engines + orchestrators: DBOS/K8s/CLI parity, retry/recovery tests, run-once coverage.
 5) Destinations parity: finish/verify Snowflake/Snowpipe/ClickHouse/DuckDB/DuckLake/Postgres/Kafka/HTTP; S3 partition + metadata.
 6) Wire formats + schema registry: enforce end-to-end wire format, registry for Avro/Proto, evolution tests.
 7) Benchmarks + profiling: flamegraphs/traces + per-destination bench matrix.
 8) Operational controls: publication add/remove lifecycle, durable state tables, cleanup/reconfig.
-9) can we make some of the type mapping and normalization driven by optional configs (proto, terraform, yaml, json)? i.e. optionally override default type mappers
-  selectively (i.e. just one by one)?
+9) [done] Optional type mapping overrides via config (proto/terraform options, JSON/YAML files).
+10) [done] RDS / AWS support with AWS IRSA/role-based auth.
+11) IAM support on the CLI endpoints as flags (so wallaby-admin publication ... can auth to RDS directly)
 
 ## Observability & Lifecycle Expectations
 All new components must emit OpenTelemetry traces/metrics and honor flow lifecycle state transitions. Checkpointing and recovery paths should be tested and documented.

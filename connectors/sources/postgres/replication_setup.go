@@ -10,8 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func ensureReplication(ctx context.Context, dsn, publication string, tables []string, ensurePublication, validateSettings, captureDDL bool, ddlSchema, ddlTrigger, ddlPrefix string) error {
-	pool, err := newPool(ctx, dsn)
+func ensureReplication(ctx context.Context, dsn string, options map[string]string, publication string, tables []string, ensurePublication, validateSettings, captureDDL bool, ddlSchema, ddlTrigger, ddlPrefix string) error {
+	pool, err := newPool(ctx, dsn, options)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
@@ -52,14 +52,14 @@ func ensureReplication(ctx context.Context, dsn, publication string, tables []st
 }
 
 // ListPublicationTables returns schema-qualified tables in a publication.
-func ListPublicationTables(ctx context.Context, dsn, publication string) ([]string, error) {
+func ListPublicationTables(ctx context.Context, dsn, publication string, options map[string]string) ([]string, error) {
 	if dsn == "" {
 		return nil, errors.New("postgres dsn is required")
 	}
 	if publication == "" {
 		return nil, errors.New("publication is required")
 	}
-	pool, err := newPool(ctx, dsn)
+	pool, err := newPool(ctx, dsn, options)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
@@ -71,11 +71,11 @@ func ListPublicationTables(ctx context.Context, dsn, publication string) ([]stri
 }
 
 // AddPublicationTables adds tables to a publication.
-func AddPublicationTables(ctx context.Context, dsn, publication string, tables []string) error {
+func AddPublicationTables(ctx context.Context, dsn, publication string, tables []string, options map[string]string) error {
 	if len(tables) == 0 {
 		return nil
 	}
-	pool, err := newPool(ctx, dsn)
+	pool, err := newPool(ctx, dsn, options)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
@@ -87,11 +87,11 @@ func AddPublicationTables(ctx context.Context, dsn, publication string, tables [
 }
 
 // DropPublicationTables removes tables from a publication.
-func DropPublicationTables(ctx context.Context, dsn, publication string, tables []string) error {
+func DropPublicationTables(ctx context.Context, dsn, publication string, tables []string, options map[string]string) error {
 	if len(tables) == 0 {
 		return nil
 	}
-	pool, err := newPool(ctx, dsn)
+	pool, err := newPool(ctx, dsn, options)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
@@ -103,14 +103,14 @@ func DropPublicationTables(ctx context.Context, dsn, publication string, tables 
 }
 
 // SyncPublicationTables adds missing tables and optionally drops extras.
-func SyncPublicationTables(ctx context.Context, dsn, publication string, tables []string, mode string) ([]string, []string, error) {
+func SyncPublicationTables(ctx context.Context, dsn, publication string, tables []string, mode string, options map[string]string) ([]string, []string, error) {
 	if dsn == "" {
 		return nil, nil, errors.New("postgres dsn is required")
 	}
 	if publication == "" {
 		return nil, nil, errors.New("publication is required")
 	}
-	pool, err := newPool(ctx, dsn)
+	pool, err := newPool(ctx, dsn, options)
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect postgres: %w", err)
 	}
@@ -164,11 +164,11 @@ func SyncPublicationTables(ctx context.Context, dsn, publication string, tables 
 }
 
 // ScrapeTables discovers tables in schemas.
-func ScrapeTables(ctx context.Context, dsn string, schemas []string) ([]string, error) {
+func ScrapeTables(ctx context.Context, dsn string, schemas []string, options map[string]string) ([]string, error) {
 	if dsn == "" {
 		return nil, errors.New("postgres dsn is required")
 	}
-	pool, err := newPool(ctx, dsn)
+	pool, err := newPool(ctx, dsn, options)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}

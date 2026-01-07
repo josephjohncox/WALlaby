@@ -28,14 +28,14 @@ type sourceState struct {
 	LastLSN     string
 }
 
-func newSourceStateStore(ctx context.Context, dsn, schema, table string) (*sourceStateStore, error) {
+func newSourceStateStore(ctx context.Context, dsn, schema, table string, options map[string]string) (*sourceStateStore, error) {
 	if schema == "" || table == "" {
 		return nil, errors.New("state schema and table are required")
 	}
 	if strings.Contains(schema, ".") || strings.Contains(table, ".") {
 		return nil, errors.New("state schema/table must not contain '.'")
 	}
-	pool, err := newPool(ctx, dsn)
+	pool, err := newPool(ctx, dsn, options)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}

@@ -63,7 +63,7 @@ func newSnapshotStateStore(ctx context.Context, backend string, spec connector.S
 				table = value
 			}
 		}
-		return newPostgresSnapshotStateStore(ctx, stateDSN, schema, table)
+		return newPostgresSnapshotStateStore(ctx, stateDSN, schema, table, spec.Options)
 	case "file":
 		path := ""
 		if spec.Options != nil {
@@ -83,14 +83,14 @@ type postgresSnapshotStateStore struct {
 	table  string
 }
 
-func newPostgresSnapshotStateStore(ctx context.Context, dsn, schema, table string) (*postgresSnapshotStateStore, error) {
+func newPostgresSnapshotStateStore(ctx context.Context, dsn, schema, table string, options map[string]string) (*postgresSnapshotStateStore, error) {
 	if schema == "" || table == "" {
 		return nil, errors.New("snapshot state schema and table are required")
 	}
 	if strings.Contains(schema, ".") || strings.Contains(table, ".") {
 		return nil, errors.New("snapshot state schema/table must not contain '.'")
 	}
-	pool, err := newPool(ctx, dsn)
+	pool, err := newPool(ctx, dsn, options)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}

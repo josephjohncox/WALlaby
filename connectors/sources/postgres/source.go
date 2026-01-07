@@ -43,6 +43,13 @@ const (
 	optDDLMessagePrefix    = "ddl_message_prefix"
 	optToastFetch          = "toast_fetch"
 	optToastCacheSize      = "toast_cache_size"
+	optAWSRDSIAM           = "aws_rds_iam"
+	optAWSRegion           = "aws_region"
+	optAWSProfile          = "aws_profile"
+	optAWSRoleARN          = "aws_role_arn"
+	optAWSRoleSessionName  = "aws_role_session_name"
+	optAWSRoleExternalID   = "aws_role_external_id"
+	optAWSEndpoint         = "aws_endpoint"
 )
 
 // Source implements Postgres logical replication as a connector.Source.
@@ -104,14 +111,14 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	}
 	publicationSchemas := parseCSV(spec.Options[optPublicationSchemas])
 	if len(publicationTables) == 0 && len(publicationSchemas) > 0 {
-		tables, err := ScrapeTables(ctx, dsn, publicationSchemas)
+		tables, err := ScrapeTables(ctx, dsn, publicationSchemas, spec.Options)
 		if err != nil {
 			return err
 		}
 		publicationTables = tables
 	}
 	if ensurePublication || validateSettings || captureDDL {
-		if err := ensureReplication(ctx, dsn, s.publication, publicationTables, ensurePublication, validateSettings, captureDDL, ddlSchema, ddlTrigger, ddlPrefix); err != nil {
+		if err := ensureReplication(ctx, dsn, spec.Options, s.publication, publicationTables, ensurePublication, validateSettings, captureDDL, ddlSchema, ddlTrigger, ddlPrefix); err != nil {
 			return err
 		}
 	}
@@ -123,7 +130,7 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 			if mode == "" {
 				mode = "add"
 			}
-			if _, _, err := SyncPublicationTables(ctx, dsn, s.publication, desired, mode); err != nil {
+			if _, _, err := SyncPublicationTables(ctx, dsn, s.publication, desired, mode, spec.Options); err != nil {
 				return err
 			}
 		}
@@ -138,7 +145,7 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		if stateTable == "" {
 			stateTable = "source_state"
 		}
-		store, err := newSourceStateStore(ctx, dsn, stateSchema, stateTable)
+		store, err := newSourceStateStore(ctx, dsn, stateSchema, stateTable, spec.Options)
 		if err != nil {
 			return err
 		}
@@ -157,7 +164,7 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	}
 	s.toastFetch = toastFetch
 	if s.toastFetch == toastFetchSource || s.toastFetch == toastFetchFull {
-		pool, err := newPool(ctx, dsn)
+		pool, err := newPool(ctx, dsn, spec.Options)
 		if err != nil {
 			return err
 		}
@@ -170,14 +177,22 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		}
 	}
 
+	iamProvider, err := newRDSIAMTokenProvider(ctx, dsn, spec.Options)
+	if err != nil {
+		return err
+	}
+
 	opts := []replication.PostgresStreamOption{
 		replication.WithStatusInterval(statusInterval),
+	}
+	if iamProvider != nil {
+		opts = append(opts, replication.WithConnConfigFunc(iamProvider.ApplyToConnConfig))
 	}
 	if s.SchemaHook != nil {
 		opts = append(opts, replication.WithSchemaHook(s.SchemaHook))
 	}
 	if parseBool(spec.Options[optResolveTypes], true) {
-		resolver, err := newTypeResolver(ctx, dsn)
+		resolver, err := newTypeResolver(ctx, dsn, spec.Options)
 		if err != nil {
 			return err
 		}

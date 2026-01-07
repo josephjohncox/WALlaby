@@ -33,6 +33,7 @@ type PostgresStream struct {
 	typeResolver   TypeResolver
 	typeMu         sync.Mutex
 	typeNames      map[uint32]string
+	connConfigFunc func(context.Context, *pgconn.Config) error
 
 	mu        sync.Mutex
 	conn      *pgconn.PgConn
@@ -106,6 +107,12 @@ func WithDDLMessagePrefix(prefix string) PostgresStreamOption {
 	}
 }
 
+func WithConnConfigFunc(fn func(context.Context, *pgconn.Config) error) PostgresStreamOption {
+	return func(s *PostgresStream) {
+		s.connConfigFunc = fn
+	}
+}
+
 // SchemaHook receives schema evolution and DDL events.
 type SchemaHook interface {
 	OnSchema(ctx context.Context, schema connector.Schema) error
@@ -174,6 +181,11 @@ func (p *PostgresStream) Start(ctx context.Context, slot, publication string) (<
 		return nil, fmt.Errorf("parse dsn: %w", err)
 	}
 	cfg.RuntimeParams["replication"] = "database"
+	if p.connConfigFunc != nil {
+		if err := p.connConfigFunc(ctx, cfg); err != nil {
+			return nil, fmt.Errorf("configure replication connection: %w", err)
+		}
+	}
 
 	conn, err := pgconn.ConnectConfig(ctx, cfg)
 	if err != nil {

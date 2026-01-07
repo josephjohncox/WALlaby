@@ -653,7 +653,7 @@ func publicationList(args []string) {
 		log.Fatal(err)
 	}
 
-	tables, err := postgres.ListPublicationTables(ctx, cfg.dsn, cfg.publication)
+	tables, err := postgres.ListPublicationTables(ctx, cfg.dsn, cfg.publication, nil)
 	if err != nil {
 		log.Fatalf("list publication tables: %v", err)
 	}
@@ -713,7 +713,7 @@ func publicationAdd(args []string) {
 		log.Fatal(err)
 	}
 
-	if err := postgres.AddPublicationTables(ctx, cfg.dsn, cfg.publication, tableList); err != nil {
+	if err := postgres.AddPublicationTables(ctx, cfg.dsn, cfg.publication, tableList, nil); err != nil {
 		log.Fatalf("add publication tables: %v", err)
 	}
 	fmt.Printf("Added %d tables to publication %s\n", len(tableList), cfg.publication)
@@ -745,7 +745,7 @@ func publicationRemove(args []string) {
 		log.Fatal(err)
 	}
 
-	if err := postgres.DropPublicationTables(ctx, cfg.dsn, cfg.publication, tableList); err != nil {
+	if err := postgres.DropPublicationTables(ctx, cfg.dsn, cfg.publication, tableList, nil); err != nil {
 		log.Fatalf("drop publication tables: %v", err)
 	}
 	fmt.Printf("Removed %d tables from publication %s\n", len(tableList), cfg.publication)
@@ -803,7 +803,7 @@ func publicationSync(args []string) {
 		}
 	}
 
-	added, removed, err := postgres.SyncPublicationTables(ctx, cfg.dsn, cfg.publication, desired, *mode)
+	added, removed, err := postgres.SyncPublicationTables(ctx, cfg.dsn, cfg.publication, desired, *mode, nil)
 	if err != nil {
 		log.Fatalf("sync publication: %v", err)
 	}
@@ -850,11 +850,11 @@ func publicationScrape(args []string) {
 		log.Fatal(err)
 	}
 
-	allTables, err := postgres.ScrapeTables(ctx, cfg.dsn, schemaList)
+	allTables, err := postgres.ScrapeTables(ctx, cfg.dsn, schemaList, nil)
 	if err != nil {
 		log.Fatalf("scrape tables: %v", err)
 	}
-	current, err := postgres.ListPublicationTables(ctx, cfg.dsn, cfg.publication)
+	current, err := postgres.ListPublicationTables(ctx, cfg.dsn, cfg.publication, nil)
 	if err != nil {
 		log.Fatalf("list publication tables: %v", err)
 	}
@@ -871,7 +871,7 @@ func publicationScrape(args []string) {
 	}
 
 	if *apply && len(missing) > 0 {
-		if err := postgres.AddPublicationTables(ctx, cfg.dsn, cfg.publication, missing); err != nil {
+		if err := postgres.AddPublicationTables(ctx, cfg.dsn, cfg.publication, missing, nil); err != nil {
 			log.Fatalf("add publication tables: %v", err)
 		}
 		fmt.Printf("Added %d tables to publication %s\n", len(missing), cfg.publication)
@@ -1014,7 +1014,7 @@ func resolveDesiredTables(ctx context.Context, cfg publicationConfig, tables, sc
 		if len(list) == 0 {
 			return nil, errors.New("no schemas provided")
 		}
-		return postgres.ScrapeTables(ctx, cfg.dsn, list)
+		return postgres.ScrapeTables(ctx, cfg.dsn, list, nil)
 	}
 	if cfg.flow != nil {
 		if value := cfg.flow.Source.Options["publication_tables"]; value != "" {
@@ -1024,10 +1024,10 @@ func resolveDesiredTables(ctx context.Context, cfg publicationConfig, tables, sc
 			return parseCSVValue(value), nil
 		}
 		if value := cfg.flow.Source.Options["publication_schemas"]; value != "" {
-			return postgres.ScrapeTables(ctx, cfg.dsn, parseCSVValue(value))
+			return postgres.ScrapeTables(ctx, cfg.dsn, parseCSVValue(value), nil)
 		}
 		if value := cfg.flow.Source.Options["schemas"]; value != "" {
-			return postgres.ScrapeTables(ctx, cfg.dsn, parseCSVValue(value))
+			return postgres.ScrapeTables(ctx, cfg.dsn, parseCSVValue(value), nil)
 		}
 	}
 	return nil, errors.New("no tables or schemas specified")
@@ -1072,7 +1072,7 @@ func scrapeFlowTables(ctx context.Context, model flow.Flow, schemas []string) ([
 	if dsn == "" {
 		return nil, errors.New("source dsn missing")
 	}
-	return postgres.ScrapeTables(ctx, dsn, schemas)
+	return postgres.ScrapeTables(ctx, dsn, schemas, nil)
 }
 
 func parseSchemaTables(tables []string) ([]connector.Schema, error) {

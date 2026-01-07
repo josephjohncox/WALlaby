@@ -520,7 +520,7 @@ func TestCLIIntegrationPublicationSync(t *testing.T) {
 		t.Fatalf("wallaby-admin publication sync: %v", err)
 	}
 
-	tables, err := pgsource.ListPublicationTables(ctx, srcDSN, pubName)
+	tables, err := pgsource.ListPublicationTables(ctx, srcDSN, pubName, nil)
 	if err != nil {
 		t.Fatalf("list publication tables: %v", err)
 	}

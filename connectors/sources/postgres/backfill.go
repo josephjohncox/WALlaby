@@ -58,7 +58,7 @@ func (b *BackfillSource) Open(ctx context.Context, spec connector.Spec) error {
 		return errors.New("postgres dsn is required")
 	}
 
-	pool, err := newPool(ctx, dsn)
+	pool, err := newPool(ctx, dsn, spec.Options)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
@@ -271,7 +271,8 @@ func (b *BackfillSource) loadSchema(ctx context.Context, schema, table string) (
 
 	columns := make([]connector.Column, 0)
 	for rows.Next() {
-		var column, dataType, generated string
+		var column, dataType string
+		var generated any
 		var nullable bool
 		var expression *string
 		var typeSchema string
@@ -280,11 +281,12 @@ func (b *BackfillSource) loadSchema(ctx context.Context, schema, table string) (
 			return connector.Schema{}, fmt.Errorf("scan schema row: %w", err)
 		}
 
+		generatedText := normalizeGeneratedValue(generated)
 		col := connector.Column{
 			Name:      column,
 			Type:      formatTypeName(typeSchema, dataType),
 			Nullable:  nullable,
-			Generated: generated != "",
+			Generated: generatedText != "",
 		}
 		if extension != nil && *extension != "" {
 			col.TypeMetadata = map[string]string{
@@ -306,6 +308,23 @@ func (b *BackfillSource) loadSchema(ctx context.Context, schema, table string) (
 		Version:   1,
 		Columns:   columns,
 	}, nil
+}
+
+func normalizeGeneratedValue(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(v)
+	case []byte:
+		return strings.TrimSpace(string(v))
+	case byte:
+		return strings.TrimSpace(string([]byte{v}))
+	case rune:
+		return strings.TrimSpace(string(v))
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
 }
 
 func splitTable(value string) (string, string, error) {

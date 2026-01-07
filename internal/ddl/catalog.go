@@ -96,7 +96,8 @@ func (c *CatalogScanner) scan(ctx context.Context) (map[string]connector.Schema,
 
 	result := make(map[string]connector.Schema)
 	for rows.Next() {
-		var namespace, table, column, dataType, generated, typeSchema string
+		var namespace, table, column, dataType, typeSchema string
+		var generated any
 		var nullable bool
 		var expression *string
 		var extension *string
@@ -104,6 +105,7 @@ func (c *CatalogScanner) scan(ctx context.Context) (map[string]connector.Schema,
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
 
+		generatedText := normalizeGeneratedValue(generated)
 		key := fmt.Sprintf("%s.%s", namespace, table)
 		current := result[key]
 		if current.Name == "" {
@@ -119,7 +121,7 @@ func (c *CatalogScanner) scan(ctx context.Context) (map[string]connector.Schema,
 			Name:      column,
 			Type:      formatTypeName(typeSchema, dataType),
 			Nullable:  nullable,
-			Generated: generated != "",
+			Generated: generatedText != "",
 		}
 		if extension != nil && *extension != "" {
 			col.TypeMetadata = map[string]string{
@@ -159,4 +161,21 @@ func formatTypeName(schema, formatted string) string {
 		return formatted
 	}
 	return schema + "." + formatted
+}
+
+func normalizeGeneratedValue(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(v)
+	case []byte:
+		return strings.TrimSpace(string(v))
+	case byte:
+		return strings.TrimSpace(string([]byte{v}))
+	case rune:
+		return strings.TrimSpace(string(v))
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
 }

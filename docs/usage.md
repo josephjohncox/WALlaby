@@ -256,6 +256,13 @@ Key Postgres source options (connector `options`):
 - `ddl_message_prefix` (default `wallaby_ddl`) — logical message prefix to filter DDL events
 - `toast_fetch` (`off` default, or `source`, `full`, `cache`) — how to rehydrate TOASTed/unchanged columns on UPDATE
 - `toast_cache_size` (default `10000`) — LRU size used when `toast_fetch=cache`
+- `aws_rds_iam` (default `false`) — enable RDS IAM auth (IRSA/role-based)
+- `aws_region` (required when `aws_rds_iam=true` unless inferred from host)
+- `aws_profile` (optional shared config profile)
+- `aws_role_arn` / `aws_role_session_name` / `aws_role_external_id` (optional assume-role settings)
+- `aws_endpoint` (optional AWS endpoint override)
+
+RDS IAM uses the AWS SDK default credential chain (IRSA, env vars, shared config, or assume-role).
 
 **TOAST rehydration**: Postgres may omit large unchanged columns on UPDATE. By default WALlaby emits partial updates plus `unchanged` fields. Use `toast_fetch=source` to reselect only those columns by primary key, `toast_fetch=full` to reselect the full row, or `toast_fetch=cache` for a best‑effort in‑memory merge.
 

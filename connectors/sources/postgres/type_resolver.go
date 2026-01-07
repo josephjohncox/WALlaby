@@ -18,11 +18,11 @@ type pgTypeResolver struct {
 	info  map[uint32]replication.TypeInfo
 }
 
-func newTypeResolver(ctx context.Context, dsn string) (*pgTypeResolver, error) {
+func newTypeResolver(ctx context.Context, dsn string, options map[string]string) (*pgTypeResolver, error) {
 	if dsn == "" {
 		return nil, errors.New("postgres dsn is required for type resolver")
 	}
-	pool, err := newPool(ctx, dsn)
+	pool, err := newPool(ctx, dsn, options)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
