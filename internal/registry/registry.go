@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pglogrepl"
@@ -210,9 +211,9 @@ func (h *Hook) OnSchemaChange(ctx context.Context, plan schema.Plan) error {
 	status := StatusPending
 	if h.AutoApprove {
 		status = StatusApproved
-		if h.AutoApply {
-			status = StatusApplied
-		}
+	}
+	if h.AutoApply {
+		status = StatusApproved
 	}
 	_, err := h.Store.RecordDDL(ctx, "", plan, "", status)
 	if err != nil {
@@ -251,9 +252,9 @@ func (h *Hook) OnDDL(ctx context.Context, ddl string, lsn pglogrepl.LSN) error {
 	status := StatusPending
 	if h.AutoApprove {
 		status = StatusApproved
-		if h.AutoApply {
-			status = StatusApplied
-		}
+	}
+	if h.AutoApply {
+		status = StatusApproved
 	}
 	_, err := h.Store.RecordDDL(ctx, ddl, schema.Plan{}, lsnStr, status)
 	if err != nil {
@@ -270,6 +271,24 @@ func ddlOrNull(ddl string) interface{} {
 		return nil
 	}
 	return ddl
+}
+
+// MarkDDLAppliedByLSN updates a DDL event to applied for the given LSN.
+func MarkDDLAppliedByLSN(ctx context.Context, store Store, lsn string) error {
+	if store == nil || strings.TrimSpace(lsn) == "" {
+		return nil
+	}
+	event, err := store.GetDDLByLSN(ctx, lsn)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if event.Status == StatusApplied || event.Status == StatusRejected {
+		return nil
+	}
+	return store.SetDDLStatus(ctx, event.ID, StatusApplied)
 }
 
 func appliedAt(status string) interface{} {

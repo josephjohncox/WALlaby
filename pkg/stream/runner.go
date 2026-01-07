@@ -44,6 +44,7 @@ type Runner struct {
 	WireFormat     connector.WireFormat
 	StrictFormat   bool
 	Parallelism    int
+	DDLApplied     func(ctx context.Context, lsn string, ddl string) error
 }
 
 // Run executes the streaming loop until context cancellation or error.
@@ -285,6 +286,7 @@ func (r *Runner) writeDestinations(ctx context.Context, batch connector.Batch) e
 	if len(r.Destinations) == 0 {
 		return nil
 	}
+	ddlRecords := ddlRecordsInBatch(batch)
 
 	parallelism := r.Parallelism
 	if parallelism <= 0 {
@@ -296,7 +298,7 @@ func (r *Runner) writeDestinations(ctx context.Context, batch connector.Batch) e
 				return err
 			}
 		}
-		return nil
+		return r.markDDLApplied(ctx, batch.Checkpoint, ddlRecords)
 	}
 
 	if parallelism > len(r.Destinations) {
@@ -324,6 +326,34 @@ func (r *Runner) writeDestinations(ctx context.Context, batch connector.Batch) e
 
 	for err := range errCh {
 		if err != nil {
+			return err
+		}
+	}
+	return r.markDDLApplied(ctx, batch.Checkpoint, ddlRecords)
+}
+
+func ddlRecordsInBatch(batch connector.Batch) []connector.Record {
+	if len(batch.Records) == 0 {
+		return nil
+	}
+	records := make([]connector.Record, 0)
+	for _, record := range batch.Records {
+		if record.Operation == connector.OpDDL || record.DDL != "" {
+			records = append(records, record)
+		}
+	}
+	return records
+}
+
+func (r *Runner) markDDLApplied(ctx context.Context, checkpoint connector.Checkpoint, records []connector.Record) error {
+	if r.DDLApplied == nil || len(records) == 0 {
+		return nil
+	}
+	if checkpoint.LSN == "" {
+		return nil
+	}
+	for _, record := range records {
+		if err := r.DDLApplied(ctx, checkpoint.LSN, record.DDL); err != nil {
 			return err
 		}
 	}

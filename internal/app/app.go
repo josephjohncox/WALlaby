@@ -32,6 +32,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	var checkpoints connector.CheckpointStore
 	var registryStore registry.Store
 	var registryCloser interface{ Close() }
+	var ddlApplied func(context.Context, string, string) error
 	var dbosOrchestrator *orchestrator.DBOSOrchestrator
 	var kubeDispatcher *orchestrator.KubernetesDispatcher
 	var streamStore *pgstream.Store
@@ -50,6 +51,9 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		}
 		registryStore = store
 		registryCloser = store
+		ddlApplied = func(ctx context.Context, lsn string, _ string) error {
+			return registry.MarkDDLAppliedByLSN(ctx, registryStore, lsn)
+		}
 
 		streamStore, err = pgstream.NewStore(ctx, cfg.Postgres.DSN)
 		if err != nil {
@@ -144,6 +148,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			DefaultWire:   connector.WireFormat(cfg.Wire.DefaultFormat),
 			StrictWire:    cfg.Wire.Enforce,
 			Tracer:        tracer,
+			DDLApplied:    ddlApplied,
 		}, baseEngine, checkpoints, factory)
 		if err != nil {
 			return err

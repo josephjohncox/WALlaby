@@ -273,7 +273,7 @@ func (d *Destination) applyRecord(ctx context.Context, exec execer, target strin
 		if mode == writeModeAppend {
 			return d.insertRow(ctx, exec, target, schema, record)
 		}
-		return d.deleteRow(ctx, exec, target, record)
+		return d.deleteRow(ctx, exec, target, schema, record)
 	case connector.OpUpdate:
 		if mode == writeModeAppend {
 			return d.insertRow(ctx, exec, target, schema, record)
@@ -324,6 +324,24 @@ func defaultSnowflakeTypeMappings() map[string]string {
 		"timestamptz":                 "TIMESTAMP_TZ",
 		"inet":                        "STRING",
 		"cidr":                        "STRING",
+		"citext":                      "STRING",
+		"ltree":                       "STRING",
+		"hstore":                      "OBJECT",
+		"vector":                      "ARRAY",
+		"geometry":                    "STRING",
+		"geography":                   "STRING",
+		"postgis.geometry":            "STRING",
+		"postgis.geography":           "STRING",
+		"ext:postgis.geometry":        "STRING",
+		"ext:postgis.geography":       "STRING",
+		"ext:hstore.hstore":           "OBJECT",
+		"ext:hstore":                  "OBJECT",
+		"ext:citext.citext":           "STRING",
+		"ext:citext":                  "STRING",
+		"ext:ltree.ltree":             "STRING",
+		"ext:ltree":                   "STRING",
+		"ext:vector.vector":           "ARRAY",
+		"ext:vector":                  "ARRAY",
 	}
 }
 
@@ -496,7 +514,7 @@ func (d *Destination) loadColumns(ctx context.Context, schema connector.Schema, 
 }
 
 func (d *Destination) updateRow(ctx context.Context, exec execer, target string, schema connector.Schema, record connector.Record) error {
-	key, err := decodeKey(record.Key)
+	key, err := decodeKeyForSchema(schema, record.Key)
 	if err != nil {
 		return err
 	}
@@ -527,8 +545,8 @@ func (d *Destination) updateRow(ctx context.Context, exec execer, target string,
 	return nil
 }
 
-func (d *Destination) deleteRow(ctx context.Context, exec execer, target string, record connector.Record) error {
-	key, err := decodeKey(record.Key)
+func (d *Destination) deleteRow(ctx context.Context, exec execer, target string, schema connector.Schema, record connector.Record) error {
+	key, err := decodeKeyForSchema(schema, record.Key)
 	if err != nil {
 		return err
 	}
@@ -595,7 +613,7 @@ func (d *Destination) refreshMetaColumns(ctx context.Context) error {
 }
 
 func (d *Destination) upsertMetadata(ctx context.Context, exec execer, schema connector.Schema, record connector.Record, checkpoint connector.Checkpoint) error {
-	key, err := decodeKey(record.Key)
+	key, err := decodeKeyForSchema(schema, record.Key)
 	if err != nil {
 		return err
 	}
@@ -747,6 +765,14 @@ func decodeKey(raw []byte) (map[string]any, error) {
 		return nil, fmt.Errorf("decode record key: %w", err)
 	}
 	return out, nil
+}
+
+func decodeKeyForSchema(schema connector.Schema, raw []byte) (map[string]any, error) {
+	key, err := decodeKey(raw)
+	if err != nil {
+		return nil, err
+	}
+	return connector.NormalizeKeyForSchema(schema, key)
 }
 
 func whereFromKey(key map[string]any, quote rune, prefix string) (string, []any) {

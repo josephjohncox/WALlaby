@@ -104,3 +104,52 @@ func TestNormalizePostgresRecord_Array(t *testing.T) {
 		t.Fatalf("unexpected uuid[1]: %v", ids[1])
 	}
 }
+
+func TestNormalizePostgresRecord_IntegerBool(t *testing.T) {
+	schema := Schema{
+		Name:      "widgets",
+		Namespace: "public",
+		Columns: []Column{
+			{Name: "id", Type: "bigint"},
+			{Name: "active", Type: "boolean"},
+		},
+	}
+	values := map[string]any{
+		"id":     "42",
+		"active": "true",
+	}
+	if err := NormalizePostgresRecord(schema, values); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if got, ok := values["id"].(int64); !ok || got != 42 {
+		t.Fatalf("expected int64(42), got %T %v", values["id"], values["id"])
+	}
+	if got, ok := values["active"].(bool); !ok || !got {
+		t.Fatalf("expected true bool, got %T %v", values["active"], values["active"])
+	}
+}
+
+func TestNormalizeKeyForSchema(t *testing.T) {
+	schema := Schema{
+		Name:      "widgets",
+		Namespace: "public",
+		Columns: []Column{
+			{Name: "id", Type: "int8"},
+			{Name: "active", Type: "bool"},
+		},
+	}
+	key := map[string]any{
+		"id":     "7",
+		"active": "f",
+	}
+	normalized, err := NormalizeKeyForSchema(schema, key)
+	if err != nil {
+		t.Fatalf("normalize key: %v", err)
+	}
+	if got, ok := normalized["id"].(int64); !ok || got != 7 {
+		t.Fatalf("expected int64(7), got %T %v", normalized["id"], normalized["id"])
+	}
+	if got, ok := normalized["active"].(bool); !ok || got {
+		t.Fatalf("expected false bool, got %T %v", normalized["active"], normalized["active"])
+	}
+}

@@ -22,6 +22,7 @@ type FlowRunner struct {
 	MaxEmpty       int
 	Parallelism    int
 	ResolveStaging bool
+	DDLApplied     func(ctx context.Context, lsn string, ddl string) error
 }
 
 func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Source, destinations []stream.DestinationConfig) error {
@@ -51,6 +52,9 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		FlowID:         f.ID,
 		Tracer:         tracer,
 		ResolveStaging: r.ResolveStaging,
+	}
+	if r.DDLApplied != nil {
+		runner.DDLApplied = r.DDLApplied
 	}
 	if runner.SourceSpec.Type == connector.EndpointPostgres {
 		if runner.SourceSpec.Options == nil {

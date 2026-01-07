@@ -50,6 +50,10 @@ func normalizePostgresValueWithColumn(col Column, value any) (any, error) {
 	}
 
 	switch base {
+	case "bool", "boolean":
+		return normalizeBoolValue(value)
+	case "int2", "int4", "int8", "smallint", "integer", "int", "bigint", "serial", "bigserial":
+		return normalizeIntegerValue(value)
 	case "json", "jsonb":
 		return normalizeJSONValue(value)
 	case "uuid":
@@ -244,6 +248,39 @@ func normalizePostgresValue(base string, value any) (any, error) {
 	return normalizePostgresValueWithColumn(Column{Type: base}, value)
 }
 
+// NormalizeKeyForSchema coerces key values based on the provided schema.
+// This keeps WHERE clauses consistent with the source column types.
+func NormalizeKeyForSchema(schema Schema, key map[string]any) (map[string]any, error) {
+	if len(key) == 0 {
+		return key, nil
+	}
+	cols := make(map[string]Column, len(schema.Columns))
+	for _, col := range schema.Columns {
+		if col.Name == "" {
+			continue
+		}
+		cols[col.Name] = col
+		cols[strings.ToLower(col.Name)] = col
+	}
+	out := make(map[string]any, len(key))
+	for name, value := range key {
+		col, ok := cols[name]
+		if !ok {
+			col, ok = cols[strings.ToLower(name)]
+		}
+		if ok {
+			normalized, err := normalizePostgresValueWithColumn(col, value)
+			if err != nil {
+				return nil, err
+			}
+			out[name] = normalized
+			continue
+		}
+		out[name] = value
+	}
+	return out, nil
+}
+
 func splitPostgresType(value string) (string, bool) {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	if idx := strings.Index(normalized, "("); idx > 0 {
@@ -285,6 +322,96 @@ func normalizeJSONValue(value any) (any, error) {
 			return nil, fmt.Errorf("marshal json value: %w", err)
 		}
 		return json.RawMessage(payload), nil
+	}
+}
+
+func normalizeIntegerValue(value any) (any, error) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), nil
+	case int8:
+		return int64(v), nil
+	case int16:
+		return int64(v), nil
+	case int32:
+		return int64(v), nil
+	case int64:
+		return v, nil
+	case uint:
+		return int64(v), nil
+	case uint8:
+		return int64(v), nil
+	case uint16:
+		return int64(v), nil
+	case uint32:
+		return int64(v), nil
+	case uint64:
+		if v > uint64(^uint64(0)>>1) {
+			return nil, fmt.Errorf("integer overflow: %d", v)
+		}
+		return int64(v), nil
+	case float32:
+		return int64(v), nil
+	case float64:
+		return int64(v), nil
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return i, nil
+		}
+		f, err := v.Float64()
+		if err != nil {
+			return nil, err
+		}
+		return int64(f), nil
+	case string:
+		if v == "" {
+			return nil, nil
+		}
+		i, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		return i, nil
+	case []byte:
+		if len(v) == 0 {
+			return nil, nil
+		}
+		i, err := strconv.ParseInt(string(v), 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		return i, nil
+	default:
+		return value, nil
+	}
+}
+
+func normalizeBoolValue(value any) (any, error) {
+	switch v := value.(type) {
+	case bool:
+		return v, nil
+	case string:
+		if v == "" {
+			return nil, nil
+		}
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "t", "true", "1", "y", "yes":
+			return true, nil
+		case "f", "false", "0", "n", "no":
+			return false, nil
+		default:
+			return nil, fmt.Errorf("invalid bool %q", v)
+		}
+	case []byte:
+		return normalizeBoolValue(string(v))
+	case int:
+		return v != 0, nil
+	case int64:
+		return v != 0, nil
+	case float64:
+		return v != 0, nil
+	default:
+		return value, nil
 	}
 }
 

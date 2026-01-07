@@ -27,6 +27,7 @@ type Config struct {
 	DefaultWire   connector.WireFormat
 	StrictWire    bool
 	Tracer        trace.Tracer
+	DDLApplied    func(ctx context.Context, lsn string, ddl string) error
 }
 
 // FlowRunInput is the workflow input for running a single flow.
@@ -46,6 +47,7 @@ type DBOSOrchestrator struct {
 	defaultWire   connector.WireFormat
 	strictWire    bool
 	tracer        trace.Tracer
+	ddlApplied    func(ctx context.Context, lsn string, ddl string) error
 }
 
 // NewDBOSOrchestrator builds and launches a DBOS-backed orchestrator.
@@ -82,6 +84,7 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Engine
 		defaultWire:   cfg.DefaultWire,
 		strictWire:    cfg.StrictWire,
 		tracer:        cfg.Tracer,
+		ddlApplied:    cfg.DDLApplied,
 	}
 
 	orchestrator.registerWorkflows(cfg.Schedule)
@@ -194,6 +197,9 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunIn
 		StrictFormat:  o.strictWire,
 		MaxEmptyReads: maxEmptyReads,
 		Tracer:        tracer,
+	}
+	if o.ddlApplied != nil {
+		runner.DDLApplied = o.ddlApplied
 	}
 	if f.Parallelism > 0 {
 		runner.Parallelism = f.Parallelism

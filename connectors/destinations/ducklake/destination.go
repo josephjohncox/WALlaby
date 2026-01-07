@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/josephjohncox/wallaby/internal/ddl"
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	_ "github.com/duckdb/duckdb-go/v2"
 )
 
 const (
@@ -359,7 +359,7 @@ func (d *Destination) applyRecord(ctx context.Context, tx *sql.Tx, target string
 		if mode == writeModeAppend {
 			return d.insertRow(ctx, tx, target, schema, record)
 		}
-		return d.deleteRow(ctx, tx, target, record)
+		return d.deleteRow(ctx, tx, target, schema, record)
 	case connector.OpUpdate:
 		if mode == writeModeAppend {
 			return d.insertRow(ctx, tx, target, schema, record)
@@ -579,7 +579,7 @@ func (d *Destination) loadColumns(ctx context.Context, schema connector.Schema, 
 }
 
 func (d *Destination) updateRow(ctx context.Context, tx *sql.Tx, target string, schema connector.Schema, record connector.Record) error {
-	key, err := decodeKey(record.Key)
+	key, err := decodeKeyForSchema(schema, record.Key)
 	if err != nil {
 		return err
 	}
@@ -610,8 +610,8 @@ func (d *Destination) updateRow(ctx context.Context, tx *sql.Tx, target string, 
 	return nil
 }
 
-func (d *Destination) deleteRow(ctx context.Context, tx *sql.Tx, target string, record connector.Record) error {
-	key, err := decodeKey(record.Key)
+func (d *Destination) deleteRow(ctx context.Context, tx *sql.Tx, target string, schema connector.Schema, record connector.Record) error {
+	key, err := decodeKeyForSchema(schema, record.Key)
 	if err != nil {
 		return err
 	}
@@ -676,7 +676,7 @@ func (d *Destination) refreshMetaColumns(ctx context.Context) error {
 }
 
 func (d *Destination) upsertMetadata(ctx context.Context, tx *sql.Tx, schema connector.Schema, record connector.Record, checkpoint connector.Checkpoint) error {
-	key, err := decodeKey(record.Key)
+	key, err := decodeKeyForSchema(schema, record.Key)
 	if err != nil {
 		return err
 	}
@@ -829,6 +829,14 @@ func decodeKey(raw []byte) (map[string]any, error) {
 		return nil, fmt.Errorf("decode record key: %w", err)
 	}
 	return out, nil
+}
+
+func decodeKeyForSchema(schema connector.Schema, raw []byte) (map[string]any, error) {
+	key, err := decodeKey(raw)
+	if err != nil {
+		return nil, err
+	}
+	return connector.NormalizeKeyForSchema(schema, key)
 }
 
 func whereFromKey(key map[string]any, quote rune, prefix string) (string, []any) {

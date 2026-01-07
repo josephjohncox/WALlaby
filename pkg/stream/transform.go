@@ -345,31 +345,93 @@ func applyTypeMappings(schema connector.Schema, mappings map[string]string) conn
 	cols := make([]connector.Column, 0, len(schema.Columns))
 	for _, col := range schema.Columns {
 		next := col
-		next.Type = mapType(col.Type, mappings)
+		next.Type = mapTypeForColumn(col, mappings)
 		cols = append(cols, next)
 	}
 	schema.Columns = cols
 	return schema
 }
 
-func mapType(value string, mappings map[string]string) string {
-	if value == "" || len(mappings) == 0 {
-		return value
+func mapTypeForColumn(col connector.Column, mappings map[string]string) string {
+	if col.Type == "" || len(mappings) == 0 {
+		return col.Type
 	}
-	key := normalizeTypeKey(value)
-	if mapped, ok := mappings[key]; ok {
-		return mapped
-	}
-	if idx := strings.LastIndex(key, "."); idx > 0 {
-		if mapped, ok := mappings[key[idx+1:]]; ok {
+	for _, key := range typeMappingKeys(col) {
+		if mapped, ok := mappings[key]; ok {
 			return mapped
 		}
 	}
-	return value
+	return col.Type
 }
 
 func normalizeTypeKey(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func typeMappingKeys(col connector.Column) []string {
+	seen := map[string]struct{}{}
+	var keys []string
+
+	add := func(value string) {
+		value = normalizeTypeKey(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		keys = append(keys, value)
+	}
+
+	raw := normalizeTypeKey(col.Type)
+	add(raw)
+
+	base, isArray := baseTypeKey(raw)
+	if base != raw {
+		add(base)
+	}
+	if isArray {
+		add(base + "[]")
+	}
+
+	if col.TypeMetadata != nil {
+		if schema := strings.TrimSpace(col.TypeMetadata["type_schema"]); schema != "" {
+			add(schema + "." + base)
+			if isArray {
+				add(schema + "." + base + "[]")
+			}
+		}
+		if ext := strings.TrimSpace(col.TypeMetadata["extension"]); ext != "" {
+			add("ext:" + ext + "." + base)
+			add("ext:" + ext)
+		}
+	}
+
+	if idx := strings.LastIndex(raw, "."); idx > 0 {
+		add(raw[idx+1:])
+	}
+
+	return keys
+}
+
+func baseTypeKey(value string) (string, bool) {
+	normalized := normalizeTypeKey(value)
+	if idx := strings.Index(normalized, "("); idx > 0 {
+		normalized = normalized[:idx]
+	}
+	if idx := strings.LastIndex(normalized, "."); idx > 0 {
+		normalized = normalized[idx+1:]
+	}
+	isArray := false
+	if strings.HasSuffix(normalized, "[]") {
+		normalized = strings.TrimSuffix(normalized, "[]")
+		isArray = true
+	} else if strings.HasPrefix(normalized, "_") {
+		normalized = strings.TrimPrefix(normalized, "_")
+		isArray = true
+	}
+	return normalized, isArray
 }
 
 type cachedTypeMapping struct {

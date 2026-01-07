@@ -152,6 +152,11 @@ func main() {
 		MaxEmpty:       maxEmptyReads,
 		ResolveStaging: resolveStaging,
 	}
+	if registryStore != nil {
+		flowRunner.DDLApplied = func(ctx context.Context, lsn string, _ string) error {
+			return registry.MarkDDLAppliedByLSN(ctx, registryStore, lsn)
+		}
+	}
 	if flowRunner.WireFormat == "" && cfg.Wire.DefaultFormat != "" {
 		flowRunner.WireFormat = connector.WireFormat(cfg.Wire.DefaultFormat)
 	}
