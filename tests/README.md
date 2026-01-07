@@ -44,7 +44,9 @@ Set these environment variables to enable destination tests:
 - `WALLABY_TEST_FORCE_FAKESNOW=1` (prefer fakesnow even if Snowflake DSN is set)
 - `WALLABY_TEST_RUN_FAKESNOW=1` (opt in to run Snowflake integration/benchmarks against fakesnow)
 - `WALLABY_TEST_CLI_LOG=1` (print wallaby-admin output during CLI integration tests)
+- `WALLABY_TEST_S3_ENDPOINT`, `WALLABY_TEST_S3_BUCKET`, `WALLABY_TEST_S3_ACCESS_KEY`, `WALLABY_TEST_S3_SECRET_KEY`, optional `WALLABY_TEST_S3_REGION`
 - `WALLABY_TEST_DUCKDB_DSN`
+- `WALLABY_TEST_DUCKLAKE=1` (enabled by default; requires ducklake extension)
 - `WALLABY_TEST_SNOWFLAKE_DSN`, optional `WALLABY_TEST_SNOWFLAKE_SCHEMA`
 - `WALLABY_TEST_SNOWPIPE_DSN`, `WALLABY_TEST_SNOWPIPE_STAGE`
 

@@ -20,6 +20,7 @@ const (
 	EndpointSnowpipe   EndpointType = "snowpipe"
 	EndpointParquet    EndpointType = "parquet"
 	EndpointDuckDB     EndpointType = "duckdb"
+	EndpointDuckLake   EndpointType = "ducklake"
 	EndpointBufStream  EndpointType = "bufstream"
 	EndpointClickHouse EndpointType = "clickhouse"
 )

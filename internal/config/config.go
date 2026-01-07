@@ -21,7 +21,8 @@ type Config struct {
 }
 
 type APIConfig struct {
-	GRPCListen string
+	GRPCListen     string
+	GRPCReflection bool
 }
 
 type PostgresConfig struct {
@@ -92,7 +93,8 @@ func Load(_ string) (*Config, error) {
 	cfg := &Config{
 		Environment: getenv("WALLABY_ENV", "dev"),
 		API: APIConfig{
-			GRPCListen: getenv("WALLABY_GRPC_LISTEN", ":8080"),
+			GRPCListen:     getenv("WALLABY_GRPC_LISTEN", ":8080"),
+			GRPCReflection: getenvBool("WALLABY_GRPC_REFLECTION", false),
 		},
 		Postgres: PostgresConfig{
 			DSN: getenv("WALLABY_POSTGRES_DSN", ""),

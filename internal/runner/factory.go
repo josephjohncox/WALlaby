@@ -6,6 +6,7 @@ import (
 	"github.com/josephjohncox/wallaby/connectors/destinations/bufstream"
 	"github.com/josephjohncox/wallaby/connectors/destinations/clickhouse"
 	"github.com/josephjohncox/wallaby/connectors/destinations/duckdb"
+	"github.com/josephjohncox/wallaby/connectors/destinations/ducklake"
 	grpcdest "github.com/josephjohncox/wallaby/connectors/destinations/grpc"
 	httpdest "github.com/josephjohncox/wallaby/connectors/destinations/http"
 	"github.com/josephjohncox/wallaby/connectors/destinations/kafka"
@@ -70,6 +71,8 @@ func (f Factory) destination(spec connector.Spec) (connector.Destination, error)
 		return &snowpipe.Destination{}, nil
 	case connector.EndpointDuckDB:
 		return &duckdb.Destination{}, nil
+	case connector.EndpointDuckLake:
+		return &ducklake.Destination{}, nil
 	case connector.EndpointClickHouse:
 		return &clickhouse.Destination{}, nil
 	case connector.EndpointPostgres:

@@ -1,0 +1,20 @@
+FROM python:3.12-slim-bookworm
+
+ARG FAKESNOW_VERSION=0.11.0
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir "fakesnow[server]==${FAKESNOW_VERSION}"
+
+WORKDIR /app
+COPY fakesnow_entrypoint.py /app/fakesnow_entrypoint.py
+
+EXPOSE 8000
+
+ENTRYPOINT ["python", "/app/fakesnow_entrypoint.py"]

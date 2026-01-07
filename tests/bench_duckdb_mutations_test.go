@@ -11,7 +11,7 @@ import (
 
 	"github.com/josephjohncox/wallaby/connectors/destinations/duckdb"
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	_ "github.com/marcboeker/go-duckdb"
+	_ "github.com/duckdb/duckdb-go/v2"
 )
 
 func BenchmarkDuckDBUpdate(b *testing.B) {

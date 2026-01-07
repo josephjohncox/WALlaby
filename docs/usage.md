@@ -15,6 +15,7 @@ Start the gRPC API server:
 ```bash
 export WALLABY_POSTGRES_DSN="postgres://user:pass@localhost:5432/wallaby?sslmode=disable"
 export WALLABY_GRPC_LISTEN=":8080"
+export WALLABY_GRPC_REFLECTION="false"
 export WALLABY_WIRE_FORMAT="arrow"
 export WALLABY_WIRE_ENFORCE="true"
 ./bin/wallaby
@@ -140,6 +141,37 @@ Kafka destination options (connector `options`):
 - `max_record_bytes` (default = `max_message_bytes`) — hard cap for single-record payloads
 - `oversize_policy` (`error` default, or `drop`)
 
+## S3 Destination
+S3 destination options (connector `options`):
+- `bucket` (required)
+- `prefix` (optional)
+- `endpoint` (optional, for MinIO/local S3)
+- `access_key` / `secret_key` / `session_token` (optional)
+- `force_path_style` (default `false`)
+- `use_fips` / `use_dualstack` (optional; needed for GovCloud/regulated environments)
+- `format` (default `json`)
+- `compression` (`gzip` to compress objects)
+- `partition_by` — comma-separated list of `column` or `column:day|hour|month|year`
+
+Set `region` to GovCloud/China regions (e.g., `us-gov-west-1`, `cn-north-1`) to use the correct AWS partition.
+
+## Snowflake / Snowpipe Destinations
+Snowflake options are passed through the DSN. For GovCloud or private endpoints, use the appropriate account/host in the DSN; WALlaby does not rewrite hosts.
+
+Example partitioning:
+
+```json
+{
+  "type": "s3",
+  "options": {
+    "bucket": "wallaby-data",
+    "prefix": "cdc",
+    "format": "parquet",
+    "partition_by": "region,created_at:day"
+  }
+}
+```
+
 ## HTTP / Webhook Destination
 HTTP destination options (connector `options`):
 - `url` (required)
@@ -176,6 +208,17 @@ Example:
   "jsonb": "VARIANT"
 }
 ```
+
+## DuckLake Destination
+DuckLake options (connector `options`):
+- `dsn` (required) — DuckDB connection string
+- `catalog` (required) — DuckLake metadata location (e.g. `metadata.ducklake`, `postgres:...`, `sqlite:...`)
+- `catalog_name` (default `ducklake`)
+- `data_path` (optional) — Parquet data root (local or object storage)
+- `override_data_path` (default `false`)
+- `install_extensions` (default `true`)
+
+DuckLake uses DuckDB for execution and stores data as Parquet with a separate metadata catalog.
 
 ## Postgres Source Options
 Key Postgres source options (connector `options`):

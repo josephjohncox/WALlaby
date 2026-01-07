@@ -9,6 +9,7 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/pgstream"
 	gogrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
 // Server wraps the gRPC server lifecycle.
@@ -16,7 +17,7 @@ type Server struct {
 	server *gogrpc.Server
 }
 
-func New(engine workflow.Engine, dispatcher FlowDispatcher, checkpoints connector.CheckpointStore, registryStore registry.Store, streamStore *pgstream.Store) *Server {
+func New(engine workflow.Engine, dispatcher FlowDispatcher, checkpoints connector.CheckpointStore, registryStore registry.Store, streamStore *pgstream.Store, enableReflection bool) *Server {
 	server := gogrpc.NewServer()
 	wallabypb.RegisterFlowServiceServer(server, NewFlowService(engine, dispatcher))
 	if checkpoints != nil {
@@ -27,6 +28,9 @@ func New(engine workflow.Engine, dispatcher FlowDispatcher, checkpoints connecto
 	}
 	if streamStore != nil {
 		wallabypb.RegisterStreamServiceServer(server, NewStreamService(streamStore))
+	}
+	if enableReflection {
+		reflection.Register(server)
 	}
 
 	return &Server{server: server}

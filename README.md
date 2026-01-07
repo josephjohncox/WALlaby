@@ -34,6 +34,7 @@ Flow specs you can copy:
 - `examples/flows/postgres_to_snowflake.json`
 - `examples/flows/postgres_to_snowpipe.json`
 - `examples/flows/postgres_to_duckdb.json`
+- `examples/flows/postgres_to_ducklake.json`
 - `examples/flows/postgres_to_clickhouse.json`
 - `examples/flows/postgres_to_bufstream.json`
 

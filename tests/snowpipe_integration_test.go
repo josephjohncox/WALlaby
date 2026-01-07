@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/josephjohncox/wallaby/connectors/destinations/snowpipe"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -12,8 +13,26 @@ import (
 func TestSnowpipeAutoIngestUpload(t *testing.T) {
 	dsn := os.Getenv("WALLABY_TEST_SNOWPIPE_DSN")
 	stage := os.Getenv("WALLABY_TEST_SNOWPIPE_STAGE")
+	if dsn == "" {
+		if usingFakesnow() {
+			derived, _, ok := snowflakeTestDSN(t)
+			if !ok {
+				t.Skip("snowpipe DSN not configured")
+			}
+			dsn = derived
+		}
+	}
+	if stage == "" && usingFakesnow() {
+		stage = "@~"
+	}
 	if dsn == "" || stage == "" {
 		t.Skip("WALLABY_TEST_SNOWPIPE_DSN or WALLABY_TEST_SNOWPIPE_STAGE not set")
+	}
+	if usingFakesnow() && !allowFakesnowSnowflake() {
+		t.Skip("fakesnow enabled; set WALLABY_TEST_RUN_FAKESNOW=1 to run Snowpipe integration")
+	}
+	if usingFakesnow() {
+		t.Skip("fakesnow does not support snowpipe PUT/COPY operations")
 	}
 
 	ctx := context.Background()
@@ -32,11 +51,23 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 	}
 
 	if err := dest.Open(ctx, spec); err != nil {
+		if usingFakesnow() {
+			t.Skipf("fakesnow open failed: %v", err)
+		}
 		t.Fatalf("open destination: %v", err)
 	}
 	defer dest.Close(ctx)
 
 	schema := connector.Schema{Name: "snowpipe_events"}
+	ddlRecord := connector.Record{
+		Table:     "snowpipe_events",
+		Operation: connector.OpDDL,
+		DDL:       "CREATE TABLE snowpipe_events (id int, name text)",
+		Timestamp: time.Now().UTC(),
+	}
+	if err := dest.ApplyDDL(ctx, schema, ddlRecord); err != nil {
+		t.Fatalf("apply ddl: %v", err)
+	}
 	record := connector.Record{
 		Table:     "snowpipe_events",
 		Operation: connector.OpInsert,

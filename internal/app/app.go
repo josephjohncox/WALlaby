@@ -197,7 +197,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		dispatcher = kubeDispatcher
 	}
 
-	server := apigrpc.New(engine, dispatcher, checkpoints, registryStore, streamStore)
+	server := apigrpc.New(engine, dispatcher, checkpoints, registryStore, streamStore, cfg.API.GRPCReflection)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- server.Serve(listener)

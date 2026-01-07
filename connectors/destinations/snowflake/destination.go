@@ -19,6 +19,7 @@ const (
 	optDSN               = "dsn"
 	optSchema            = "schema"
 	optTable             = "table"
+	optDisableTx         = "disable_transactions"
 	optWriteMode         = "write_mode"
 	optBatchMode         = "batch_mode"
 	optBatchResolution   = "batch_resolution"
@@ -47,6 +48,7 @@ const (
 type Destination struct {
 	spec             connector.Spec
 	db               *sql.DB
+	disableTx        bool
 	writeMode        string
 	batchMode        string
 	batchResolve     string
@@ -79,6 +81,7 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		return fmt.Errorf("ping snowflake: %w", err)
 	}
 	d.db = db
+	d.disableTx = parseBool(spec.Options[optDisableTx], false)
 
 	d.writeMode = strings.ToLower(spec.Options[optWriteMode])
 	if d.writeMode == "" {
@@ -125,6 +128,10 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	return nil
 }
 
+type execer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	if d.db == nil {
 		return errors.New("snowflake destination not initialized")
@@ -136,6 +143,25 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	mode := d.writeMode
 	if mode == "" {
 		mode = writeModeTarget
+	}
+
+	if d.disableTx {
+		exec := execer(d.db)
+		for _, record := range batch.Records {
+			target, isStaging := d.resolveTarget(batch.Schema, record)
+			if isStaging {
+				d.trackStaging(batch.Schema, record)
+			}
+			if err := d.applyRecord(ctx, exec, target, batch.Schema, record, mode); err != nil {
+				return err
+			}
+			if d.metaEnabled {
+				if err := d.upsertMetadata(ctx, exec, batch.Schema, record, batch.Checkpoint); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	}
 
 	tx, err := d.db.BeginTx(ctx, nil)
@@ -238,23 +264,23 @@ func (d *Destination) TypeMappings() map[string]string {
 	return defaultSnowflakeTypeMappings()
 }
 
-func (d *Destination) applyRecord(ctx context.Context, tx *sql.Tx, target string, schema connector.Schema, record connector.Record, mode string) error {
+func (d *Destination) applyRecord(ctx context.Context, exec execer, target string, schema connector.Schema, record connector.Record, mode string) error {
 	if target == "" {
 		target = d.targetTable(schema, record)
 	}
 	switch record.Operation {
 	case connector.OpDelete:
 		if mode == writeModeAppend {
-			return d.insertRow(ctx, tx, target, schema, record)
+			return d.insertRow(ctx, exec, target, schema, record)
 		}
-		return d.deleteRow(ctx, tx, target, record)
+		return d.deleteRow(ctx, exec, target, record)
 	case connector.OpUpdate:
 		if mode == writeModeAppend {
-			return d.insertRow(ctx, tx, target, schema, record)
+			return d.insertRow(ctx, exec, target, schema, record)
 		}
-		return d.updateRow(ctx, tx, target, schema, record)
+		return d.updateRow(ctx, exec, target, schema, record)
 	case connector.OpInsert, connector.OpLoad:
-		return d.insertRow(ctx, tx, target, schema, record)
+		return d.insertRow(ctx, exec, target, schema, record)
 	default:
 		return nil
 	}
@@ -350,7 +376,7 @@ func (d *Destination) stagingTable(schema connector.Schema, record connector.Rec
 	return quoteIdent(stagingSchema, '"') + "." + quoteIdent(stagingTable, '"')
 }
 
-func (d *Destination) insertRow(ctx context.Context, tx *sql.Tx, target string, schema connector.Schema, record connector.Record) error {
+func (d *Destination) insertRow(ctx context.Context, exec execer, target string, schema connector.Schema, record connector.Record) error {
 	cols, vals, exprs, err := recordColumns(schema, record)
 	if err != nil {
 		return err
@@ -359,7 +385,7 @@ func (d *Destination) insertRow(ctx context.Context, tx *sql.Tx, target string, 
 		return nil
 	}
 	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols, '"'), strings.Join(exprs, ", "))
-	if _, err := tx.ExecContext(ctx, stmt, vals...); err != nil {
+	if _, err := exec.ExecContext(ctx, stmt, vals...); err != nil {
 		return fmt.Errorf("insert row: %w", err)
 	}
 	return nil
@@ -469,7 +495,7 @@ func (d *Destination) loadColumns(ctx context.Context, schema connector.Schema, 
 	return cols, nil
 }
 
-func (d *Destination) updateRow(ctx context.Context, tx *sql.Tx, target string, schema connector.Schema, record connector.Record) error {
+func (d *Destination) updateRow(ctx context.Context, exec execer, target string, schema connector.Schema, record connector.Record) error {
 	key, err := decodeKey(record.Key)
 	if err != nil {
 		return err
@@ -495,13 +521,13 @@ func (d *Destination) updateRow(ctx context.Context, tx *sql.Tx, target string, 
 	args := append(vals, whereArgs...)
 
 	stmt := fmt.Sprintf("UPDATE %s SET %s WHERE %s", target, strings.Join(setClause, ", "), whereClause)
-	if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
+	if _, err := exec.ExecContext(ctx, stmt, args...); err != nil {
 		return fmt.Errorf("update row: %w", err)
 	}
 	return nil
 }
 
-func (d *Destination) deleteRow(ctx context.Context, tx *sql.Tx, target string, record connector.Record) error {
+func (d *Destination) deleteRow(ctx context.Context, exec execer, target string, record connector.Record) error {
 	key, err := decodeKey(record.Key)
 	if err != nil {
 		return err
@@ -512,7 +538,7 @@ func (d *Destination) deleteRow(ctx context.Context, tx *sql.Tx, target string, 
 
 	whereClause, args := whereFromKey(key, '"', "")
 	stmt := fmt.Sprintf("DELETE FROM %s WHERE %s", target, whereClause)
-	if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
+	if _, err := exec.ExecContext(ctx, stmt, args...); err != nil {
 		return fmt.Errorf("delete row: %w", err)
 	}
 	return nil
@@ -568,7 +594,7 @@ func (d *Destination) refreshMetaColumns(ctx context.Context) error {
 	return nil
 }
 
-func (d *Destination) upsertMetadata(ctx context.Context, tx *sql.Tx, schema connector.Schema, record connector.Record, checkpoint connector.Checkpoint) error {
+func (d *Destination) upsertMetadata(ctx context.Context, exec execer, schema connector.Schema, record connector.Record, checkpoint connector.Checkpoint) error {
 	key, err := decodeKey(record.Key)
 	if err != nil {
 		return err
@@ -594,7 +620,7 @@ func (d *Destination) upsertMetadata(ctx context.Context, tx *sql.Tx, schema con
 	whereArgs = append([]any{d.flowID, schema.Namespace, record.Table}, whereArgs...)
 
 	deleteStmt := fmt.Sprintf("DELETE FROM %s WHERE %s", target, whereClause)
-	if _, err := tx.ExecContext(ctx, deleteStmt, whereArgs...); err != nil {
+	if _, err := exec.ExecContext(ctx, deleteStmt, whereArgs...); err != nil {
 		return fmt.Errorf("delete meta row: %w", err)
 	}
 
@@ -614,7 +640,7 @@ func (d *Destination) upsertMetadata(ctx context.Context, tx *sql.Tx, schema con
 	values = append(values, pkVals...)
 
 	insertStmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(columns, '"'), placeholders(len(columns)))
-	if _, err := tx.ExecContext(ctx, insertStmt, values...); err != nil {
+	if _, err := exec.ExecContext(ctx, insertStmt, values...); err != nil {
 		return fmt.Errorf("insert meta row: %w", err)
 	}
 	return nil

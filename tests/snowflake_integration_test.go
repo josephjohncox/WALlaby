@@ -65,6 +65,9 @@ func TestSnowflakeDestination(t *testing.T) {
 			"write_mode":         "target",
 		},
 	}
+	if usingFakesnow() {
+		spec.Options["disable_transactions"] = "true"
+	}
 	if err := dest.Open(ctx, spec); err != nil {
 		t.Fatalf("open destination: %v", err)
 	}
@@ -137,6 +140,40 @@ func TestSnowflakeDestination(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("expected 0 rows after delete, got %d", count)
+	}
+
+	ddlRecord := connector.Record{
+		Table:     table,
+		Operation: connector.OpDDL,
+		DDL:       fmt.Sprintf("ALTER TABLE %s ADD COLUMN extra text", fullTable),
+		Timestamp: time.Now().UTC(),
+	}
+	if err := dest.ApplyDDL(ctx, schemaDef, ddlRecord); err != nil {
+		t.Fatalf("apply ddl: %v", err)
+	}
+
+	schemaDef.Columns = append(schemaDef.Columns, connector.Column{Name: "extra", Type: "STRING"})
+	insert = connector.Record{
+		Table:     table,
+		Operation: connector.OpInsert,
+		Key:       recordKey(t, map[string]any{"id": 2}),
+		After: map[string]any{
+			"id":    2,
+			"name":  "gamma",
+			"extra": "v2",
+		},
+	}
+	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schemaDef, Checkpoint: connector.Checkpoint{LSN: "4"}}
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("insert after ddl: %v", err)
+	}
+
+	var extra string
+	if err := setupDB.QueryRowContext(ctx, fmt.Sprintf("SELECT extra FROM %s WHERE id = 2", fullTable)).Scan(&extra); err != nil {
+		t.Fatalf("select extra: %v", err)
+	}
+	if strings.TrimSpace(extra) != "v2" {
+		t.Fatalf("unexpected extra after ddl: %s", extra)
 	}
 }
 

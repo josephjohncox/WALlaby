@@ -14,7 +14,7 @@ export WALLABY_WIRE_ENFORCE="true"
 ```
 
 ## Create a Flow (gRPC)
-Use `grpcurl` with local proto files (reflection is not enabled yet). See `examples/grpc/create_flow.sh` for a runnable command, or copy a flow spec from `examples/flows/`.
+Use `grpcurl` with local proto files. If you enable reflection (`WALLABY_GRPC_REFLECTION=true`), you can omit `-proto`. See `examples/grpc/create_flow.sh` for a runnable command, or copy a flow spec from `examples/flows/`.
 
 ## Run a Flow Worker (Standalone)
 Run a single flow in its own process (useful for Kubernetes deployments or per-flow scaling):
@@ -65,6 +65,7 @@ See `examples/terraform/flow.tf` for a minimal provider + flow resource definiti
 - `examples/flows/postgres_to_snowflake.json`
 - `examples/flows/postgres_to_snowpipe.json`
 - `examples/flows/postgres_to_duckdb.json`
+- `examples/flows/postgres_to_ducklake.json`
 - `examples/flows/postgres_to_clickhouse.json`
 - `examples/flows/postgres_to_bufstream.json`
 

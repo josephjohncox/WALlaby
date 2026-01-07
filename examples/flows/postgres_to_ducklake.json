@@ -1,6 +1,6 @@
 {
-  "name": "pg_to_s3",
-  "wire_format": "parquet",
+  "name": "pg_to_ducklake",
+  "wire_format": "json",
   "source": {
     "name": "pg-source",
     "type": "postgres",
@@ -12,20 +12,19 @@
       "batch_timeout": "2s",
       "status_interval": "10s",
       "create_slot": "true",
-      "format": "parquet"
+      "format": "json"
     }
   },
   "destinations": [
     {
-      "name": "s3-out",
-      "type": "s3",
+      "name": "ducklake-out",
+      "type": "ducklake",
       "options": {
-        "bucket": "my-wallaby-bucket",
-        "prefix": "cdc/",
-        "region": "us-east-1",
-        "format": "parquet",
-        "compression": "gzip",
-        "partition_by": "region,created_at:day"
+        "dsn": "duckdb.db",
+        "catalog": "metadata.ducklake",
+        "catalog_name": "lake",
+        "data_path": "s3://my-ducklake-data",
+        "override_data_path": "true"
       }
     }
   ]

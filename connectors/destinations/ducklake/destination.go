@@ -1,4 +1,4 @@
-package duckdb
+package ducklake
 
 import (
 	"context"
@@ -17,6 +17,11 @@ import (
 
 const (
 	optDSN             = "dsn"
+	optCatalog         = "catalog"
+	optCatalogName     = "catalog_name"
+	optDataPath        = "data_path"
+	optOverrideData    = "override_data_path"
+	optInstallExt      = "install_extensions"
 	optSchema          = "schema"
 	optTable           = "table"
 	optWriteMode       = "write_mode"
@@ -42,12 +47,18 @@ const (
 	defaultMetaTable     = "__metadata"
 	defaultMetaPKPref    = "pk_"
 	defaultStagingSuffix = "_staging"
+	defaultCatalogName   = "ducklake"
 )
 
-// Destination writes change events into DuckDB tables.
+// Destination writes change events into DuckLake tables via DuckDB.
 type Destination struct {
 	spec             connector.Spec
 	db               *sql.DB
+	catalog          string
+	catalogName      string
+	dataPath         string
+	overrideDataPath bool
+	installExt       bool
 	writeMode        string
 	batchMode        string
 	batchResolve     string
@@ -70,6 +81,17 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	if dsn == "" {
 		return errors.New("duckdb dsn is required")
 	}
+	d.catalog = strings.TrimSpace(spec.Options[optCatalog])
+	if d.catalog == "" {
+		return errors.New("ducklake catalog is required")
+	}
+	d.catalogName = strings.TrimSpace(spec.Options[optCatalogName])
+	if d.catalogName == "" {
+		d.catalogName = defaultCatalogName
+	}
+	d.dataPath = strings.TrimSpace(spec.Options[optDataPath])
+	d.overrideDataPath = parseBool(spec.Options[optOverrideData], false)
+	d.installExt = parseBool(spec.Options[optInstallExt], true)
 
 	db, err := sql.Open("duckdb", dsn)
 	if err != nil {
@@ -80,6 +102,15 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		return fmt.Errorf("ping duckdb: %w", err)
 	}
 	d.db = db
+
+	if d.installExt {
+		if err := d.installExtensions(ctx); err != nil {
+			return err
+		}
+	}
+	if err := d.attachDuckLake(ctx); err != nil {
+		return err
+	}
 
 	d.writeMode = strings.ToLower(spec.Options[optWriteMode])
 	if d.writeMode == "" {
@@ -128,7 +159,7 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 
 func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	if d.db == nil {
-		return errors.New("duckdb destination not initialized")
+		return errors.New("ducklake destination not initialized")
 	}
 	if len(batch.Records) == 0 {
 		return nil
@@ -187,7 +218,7 @@ func (d *Destination) ResolveStaging(ctx context.Context) error {
 // ResolveStagingFor applies staged data for specific schemas/tables.
 func (d *Destination) ResolveStagingFor(ctx context.Context, schemas []connector.Schema) error {
 	if d.db == nil {
-		return errors.New("duckdb destination not initialized")
+		return errors.New("ducklake destination not initialized")
 	}
 	for _, schema := range schemas {
 		if schema.Name == "" {
@@ -218,7 +249,7 @@ func (d *Destination) Capabilities() connector.Capabilities {
 
 func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, record connector.Record) error {
 	if d.db == nil {
-		return errors.New("duckdb destination not initialized")
+		return errors.New("ducklake destination not initialized")
 	}
 	statements, err := ddl.TranslateRecordDDL(schema, record, ddl.DialectConfigFor(ddl.DialectDuckDB), d.TypeMappings(), d.spec.Options)
 	if err != nil {
@@ -237,6 +268,86 @@ func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, rec
 
 func (d *Destination) TypeMappings() map[string]string {
 	return defaultDuckDBTypeMappings()
+}
+
+func (d *Destination) installExtensions(ctx context.Context) error {
+	if d.db == nil {
+		return errors.New("ducklake destination not initialized")
+	}
+	if _, err := d.db.ExecContext(ctx, "INSTALL ducklake"); err != nil {
+		return fmt.Errorf("install ducklake: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, "LOAD ducklake"); err != nil {
+		return fmt.Errorf("load ducklake: %w", err)
+	}
+	switch catalogBackend(d.catalog) {
+	case "postgres":
+		if _, err := d.db.ExecContext(ctx, "INSTALL postgres"); err != nil {
+			return fmt.Errorf("install postgres: %w", err)
+		}
+		if _, err := d.db.ExecContext(ctx, "LOAD postgres"); err != nil {
+			return fmt.Errorf("load postgres: %w", err)
+		}
+	case "sqlite":
+		if _, err := d.db.ExecContext(ctx, "INSTALL sqlite"); err != nil {
+			return fmt.Errorf("install sqlite: %w", err)
+		}
+		if _, err := d.db.ExecContext(ctx, "LOAD sqlite"); err != nil {
+			return fmt.Errorf("load sqlite: %w", err)
+		}
+	}
+	return nil
+}
+
+func (d *Destination) attachDuckLake(ctx context.Context) error {
+	if d.db == nil {
+		return errors.New("ducklake destination not initialized")
+	}
+	uri := d.catalogURI()
+	opts := make([]string, 0, 2)
+	if d.dataPath != "" {
+		opts = append(opts, fmt.Sprintf("DATA_PATH '%s'", escapeString(d.dataPath)))
+	}
+	if d.overrideDataPath {
+		opts = append(opts, "OVERRIDE_DATA_PATH true")
+	}
+
+	stmt := fmt.Sprintf("ATTACH '%s' AS %s", escapeString(uri), quoteIdent(d.catalogName, '"'))
+	if len(opts) > 0 {
+		stmt += " (" + strings.Join(opts, ", ") + ")"
+	}
+	if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("attach ducklake: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, fmt.Sprintf("USE %s", quoteIdent(d.catalogName, '"'))); err != nil {
+		return fmt.Errorf("use ducklake catalog: %w", err)
+	}
+	return nil
+}
+
+func (d *Destination) catalogURI() string {
+	raw := strings.TrimSpace(d.catalog)
+	if strings.HasPrefix(raw, "ducklake:") {
+		return raw
+	}
+	return "ducklake:" + raw
+}
+
+func catalogBackend(catalog string) string {
+	raw := strings.TrimSpace(catalog)
+	raw = strings.TrimPrefix(raw, "ducklake:")
+	switch {
+	case strings.HasPrefix(raw, "postgres:") || strings.HasPrefix(raw, "postgresql:"):
+		return "postgres"
+	case strings.HasPrefix(raw, "sqlite:"):
+		return "sqlite"
+	default:
+		return ""
+	}
+}
+
+func escapeString(value string) string {
+	return strings.ReplaceAll(value, "'", "''")
 }
 
 func (d *Destination) applyRecord(ctx context.Context, tx *sql.Tx, target string, schema connector.Schema, record connector.Record, mode string) error {
