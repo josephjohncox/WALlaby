@@ -197,8 +197,8 @@ The client calls `IngestService/IngestBatch` and sends `payload_mode` as gRPC me
 
 ## Type Mapping (Schema Translation)
 Destinations that materialize tables (Snowflake, Snowpipe, ClickHouse, DuckDB) apply default Postgres → destination type mappings. Override per destination with:
-- `type_mappings` — JSON map of `postgres_type` → `dest_type`
-- `type_mappings_file` — path to a JSON map file
+- `type_mappings` — JSON or YAML map of `postgres_type` → `dest_type`
+- `type_mappings_file` — path to a JSON or YAML map file
 
 Example:
 
@@ -207,6 +207,15 @@ Example:
   "timestamptz": "TIMESTAMP_TZ",
   "jsonb": "VARIANT"
 }
+```
+
+YAML example:
+
+```yaml
+timestamptz: TIMESTAMP_TZ
+jsonb: VARIANT
+ext:postgis.geometry: STRING
+ext:vector: ARRAY
 ```
 
 ## DuckLake Destination
@@ -390,13 +399,20 @@ Metadata columns are added to the destination schema; choose names that do not c
 Destinations can override source types for downstream compatibility:
 
 Options (on destination `options`):
-- `type_mappings` — JSON map of source type → destination type
-- `type_mappings_file` — path to a JSON map (same format)
+- `type_mappings` — JSON or YAML map of source type → destination type
+- `type_mappings_file` — path to a JSON or YAML map
 
 Example:
 
 ```json
 {"public.geometry": "GEOGRAPHY", "jsonb": "VARIANT"}
+```
+
+YAML example:
+
+```yaml
+ext:postgis.geometry: GEOGRAPHY
+jsonb: VARIANT
 ```
 
 ## DDL Governance
