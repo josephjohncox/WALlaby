@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -475,8 +476,11 @@ func loadTypeMappings(options map[string]string) (map[string]string, error) {
 
 func parseTypeMappings(raw string) (map[string]string, error) {
 	var mappings map[string]string
-	if err := json.Unmarshal([]byte(raw), &mappings); err != nil {
-		return nil, fmt.Errorf("parse type_mappings: %w", err)
+	data := []byte(raw)
+	if err := json.Unmarshal(data, &mappings); err != nil {
+		if err := yaml.Unmarshal(data, &mappings); err != nil {
+			return nil, fmt.Errorf("parse type_mappings: %w", err)
+		}
 	}
 	out := make(map[string]string, len(mappings))
 	for key, value := range mappings {
