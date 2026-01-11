@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/config"
@@ -71,6 +72,17 @@ func run() error {
 	if cfg.Postgres.DSN == "" {
 		return errors.New("WALLABY_POSTGRES_DSN is required to run a flow worker")
 	}
+
+	// Initialize telemetry provider
+	telemetryProvider, err := telemetry.NewProvider(ctx, cfg.Telemetry)
+	if err != nil {
+		log.Fatalf("init telemetry: %v", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = telemetryProvider.Shutdown(shutdownCtx)
+	}()
 
 	tracer := telemetry.Tracer(cfg.Telemetry.ServiceName)
 
@@ -174,6 +186,7 @@ func run() error {
 		Engine:         engine,
 		Checkpoints:    checkpoints,
 		Tracer:         tracer,
+		Meters:         telemetryProvider.Meters(),
 		StrictWire:     cfg.Wire.Enforce,
 		MaxEmpty:       maxEmptyReads,
 		ResolveStaging: resolveStaging,
