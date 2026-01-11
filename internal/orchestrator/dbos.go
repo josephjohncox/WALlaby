@@ -20,6 +20,7 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -224,6 +225,23 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunIn
 		tracer = otel.Tracer("wallaby/dbos")
 	}
 
+	// Build destination names for tracing
+	destNames := make([]string, len(f.Destinations))
+	for i, d := range f.Destinations {
+		destNames[i] = d.Name
+	}
+
+	// Create parent span for the entire flow run
+	flowCtx, flowSpan := tracer.Start(ctx, "flow.run",
+		trace.WithAttributes(
+			attribute.String("flow.id", f.ID),
+			attribute.String("source.type", string(f.Source.Type)),
+			attribute.Int("destinations.count", len(f.Destinations)),
+			attribute.StringSlice("destinations.names", destNames),
+		),
+	)
+	defer flowSpan.End()
+
 	runner := stream.Runner{
 		Source:        source,
 		SourceSpec:    sourceSpec,
@@ -265,11 +283,12 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunIn
 		runner.Parallelism = f.Parallelism
 	}
 
-	if err := runner.Run(ctx); err != nil {
+	if err := runner.Run(flowCtx); err != nil {
 		if errors.Is(err, registry.ErrApprovalRequired) {
 			_, _ = o.engine.Stop(ctx, f.ID)
 			return "ddl gated", nil
 		}
+		flowSpan.RecordError(err)
 		return "", fmt.Errorf("run flow %s: %w", f.ID, err)
 	}
 

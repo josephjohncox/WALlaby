@@ -183,8 +183,18 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		}
 
 		batchStart := time.Now()
-		batchCtx, span := tracer.Start(ctx, "stream.batch")
-		batch, err := r.Source.Read(batchCtx)
+		batchCtx, span := tracer.Start(ctx, "stream.batch",
+			trace.WithNewRoot(),
+			trace.WithAttributes(
+				attribute.String("flow.id", r.FlowID),
+				attribute.String("source.type", string(r.SourceSpec.Type)),
+			),
+		)
+
+		// Read from source with child span
+		readCtx, readSpan := tracer.Start(batchCtx, "source.read")
+		batch, err := r.Source.Read(readCtx)
+		readSpan.End()
 		if err != nil {
 			if errors.Is(err, connector.ErrDDLApprovalRequired) {
 				r.handleDDLGate(batchCtx, span, err)
@@ -274,8 +284,8 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		emptyReads = 0
 
 		span.SetAttributes(
-			attribute.Int("records", len(batch.Records)),
-			attribute.String("schema", batch.Schema.Name),
+			attribute.Int("batch.records", len(batch.Records)),
+			attribute.String("batch.schema", batch.Schema.Name),
 		)
 
 		ddlRecords := ddlRecordsInBatch(batch)
@@ -329,14 +339,27 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		}
 
 		writeStart := time.Now()
-		if err := r.writeWithRetry(batchCtx, batch, r.Destinations); err != nil {
+		writeCtx, writeSpan := tracer.Start(batchCtx, "destination.write",
+			trace.WithAttributes(
+				attribute.Int("destinations.count", len(r.Destinations)),
+			),
+		)
+		if err := r.writeWithRetry(writeCtx, batch, r.Destinations); err != nil {
 			r.emitTrace(batchCtx, "write_error", batch.Checkpoint.LSN, "", spec.ActionWriteFail, err)
 			r.recordError(ctx, "destination_write")
+			writeSpan.RecordError(err)
+			writeSpan.End()
 			span.RecordError(err)
 			span.End()
 			return err
 		}
+		writeLatencyMs := float64(time.Since(writeStart).Milliseconds())
+		writeSpan.SetAttributes(attribute.Float64("latency_ms", writeLatencyMs))
+		writeSpan.End()
 		r.recordDestinationWrite(ctx, time.Since(writeStart))
+		span.SetAttributes(
+			attribute.Float64("destination.write_latency_ms", writeLatencyMs),
+		)
 		if err := r.markDDLApplied(batchCtx, batch.Checkpoint, ddlRecords); err != nil {
 			span.RecordError(err)
 			span.End()
@@ -349,7 +372,11 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			return err
 		}
 
+		batchLatencyMs := float64(time.Since(batchStart).Milliseconds())
 		r.recordBatch(ctx, len(batch.Records), time.Since(batchStart))
+		span.SetAttributes(
+			attribute.Float64("batch.latency_ms", batchLatencyMs),
+		)
 
 		span.End()
 	}

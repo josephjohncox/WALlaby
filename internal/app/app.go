@@ -42,7 +42,6 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}()
 
 	tracer := telemetry.Tracer(cfg.Telemetry.ServiceName)
-	_ = telemetryProvider.Meters()
 	var engine workflow.Engine = workflow.NewNoopEngine()
 	baseEngine := engine
 	var checkpoints connector.CheckpointStore
@@ -200,6 +199,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			DefaultWire:   connector.WireFormat(cfg.Wire.DefaultFormat),
 			StrictWire:    cfg.Wire.Enforce,
 			Tracer:        tracer,
+			Meters:        telemetryProvider.Meters(),
 			DDLApplied:    ddlApplied,
 			TraceSink:     traceSink,
 			TracePath:     tracePath,
