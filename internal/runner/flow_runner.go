@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
@@ -17,6 +18,7 @@ type FlowRunner struct {
 	Engine         workflow.Engine
 	Checkpoints    connector.CheckpointStore
 	Tracer         trace.Tracer
+	Meters         *telemetry.Meters
 	WireFormat     connector.WireFormat
 	StrictWire     bool
 	MaxEmpty       int
@@ -52,6 +54,7 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		Checkpoints:    r.Checkpoints,
 		FlowID:         f.ID,
 		Tracer:         tracer,
+		Meters:         r.Meters,
 		ResolveStaging: r.ResolveStaging,
 		TraceSink:      r.TraceSink,
 	}

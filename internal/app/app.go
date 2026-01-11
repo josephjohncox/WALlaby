@@ -30,7 +30,19 @@ import (
 
 // Run wires up core services. It will grow as implementations land.
 func Run(ctx context.Context, cfg *config.Config) error {
+	// Initialize telemetry provider
+	telemetryProvider, err := telemetry.NewProvider(ctx, cfg.Telemetry)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = telemetryProvider.Shutdown(shutdownCtx)
+	}()
+
 	tracer := telemetry.Tracer(cfg.Telemetry.ServiceName)
+	_ = telemetryProvider.Meters()
 	var engine workflow.Engine = workflow.NewNoopEngine()
 	baseEngine := engine
 	var checkpoints connector.CheckpointStore
