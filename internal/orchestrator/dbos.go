@@ -15,6 +15,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/registry"
 	"github.com/josephjohncox/wallaby/internal/runner"
+	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
@@ -36,6 +37,7 @@ type Config struct {
 	AdminServer   bool
 	AdminPort     int
 	Tracer        trace.Tracer
+	Meters        *telemetry.Meters
 	DDLApplied    func(ctx context.Context, flowID string, lsn string, ddl string) error
 	TraceSink     stream.TraceSink
 	TracePath     string
@@ -60,6 +62,7 @@ type DBOSOrchestrator struct {
 	defaultWire   connector.WireFormat
 	strictWire    bool
 	tracer        trace.Tracer
+	meters        *telemetry.Meters
 	ddlApplied    func(ctx context.Context, flowID string, lsn string, ddl string) error
 	traceSink     stream.TraceSink
 	tracePath     string
@@ -109,6 +112,7 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Engine
 		defaultWire:   cfg.DefaultWire,
 		strictWire:    cfg.StrictWire,
 		tracer:        cfg.Tracer,
+		meters:        cfg.Meters,
 		ddlApplied:    cfg.DDLApplied,
 		traceSink:     cfg.TraceSink,
 		tracePath:     cfg.TracePath,
@@ -230,6 +234,7 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunIn
 		StrictFormat:  o.strictWire,
 		MaxEmptyReads: maxEmptyReads,
 		Tracer:        tracer,
+		Meters:        o.meters,
 	}
 	if f.Config.AckPolicy != "" {
 		runner.AckPolicy = f.Config.AckPolicy

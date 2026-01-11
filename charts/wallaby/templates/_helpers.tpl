@@ -22,3 +22,32 @@
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "wallaby.otelEnv" -}}
+{{- with .Values.observability.metrics }}
+{{- if and .enabled .otel.endpoint }}
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: {{ .otel.endpoint | quote }}
+- name: OTEL_EXPORTER_OTLP_INSECURE
+  value: {{ .otel.insecure | toString | quote }}
+- name: OTEL_EXPORTER_OTLP_PROTOCOL
+  value: {{ .otel.protocol | default "grpc" | quote }}
+- name: OTEL_METRICS_EXPORTER
+  value: "otlp"
+{{- if .otel.interval }}
+- name: WALLABY_OTEL_METRICS_INTERVAL
+  value: {{ .otel.interval | quote }}
+{{- end }}
+{{- if .otel.serviceName }}
+- name: OTEL_SERVICE_NAME
+  value: {{ .otel.serviceName | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- with .Values.observability.traces }}
+{{- if and .enabled .otel.endpoint }}
+- name: OTEL_TRACES_EXPORTER
+  value: "otlp"
+{{- end }}
+{{- end }}
+{{- end -}}

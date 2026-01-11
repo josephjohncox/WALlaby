@@ -31,7 +31,12 @@ type PostgresConfig struct {
 }
 
 type TelemetryConfig struct {
-	ServiceName string
+	ServiceName     string
+	OTLPEndpoint    string
+	OTLPInsecure    bool
+	OTLPProtocol    string // "grpc" or "http/protobuf"
+	MetricsExporter string
+	MetricsInterval time.Duration
 }
 
 type TraceConfig struct {
@@ -107,7 +112,12 @@ func Load(_ string) (*Config, error) {
 			DSN: getenv("WALLABY_POSTGRES_DSN", ""),
 		},
 		Telemetry: TelemetryConfig{
-			ServiceName: getenv("WALLABY_OTEL_SERVICE", "wallaby"),
+			ServiceName:     getenv("OTEL_SERVICE_NAME", getenv("WALLABY_OTEL_SERVICE", "wallaby")),
+			OTLPEndpoint:    getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+			OTLPInsecure:    getenvBool("OTEL_EXPORTER_OTLP_INSECURE", true),
+			OTLPProtocol:    getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
+			MetricsExporter: getenv("OTEL_METRICS_EXPORTER", "otlp"),
+			MetricsInterval: getenvDuration("WALLABY_OTEL_METRICS_INTERVAL", 30*time.Second),
 		},
 		Trace: TraceConfig{
 			Path: getenv("WALLABY_TRACE_PATH", ""),

@@ -6,6 +6,7 @@ image:
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
+
 nameOverride: ""
 fullnameOverride: ""
 
@@ -14,6 +15,7 @@ serviceAccount:
   name: ""
 
 podAnnotations: {}
+
 podLabels: {}
 
 service:
@@ -22,21 +24,82 @@ service:
 
 serviceAnnotations: {}
 
+# env:
+#   - name: WALLABY_POSTGRES_DSN
+#     value: "postgres://user:pass@postgres:5432/wallaby?sslmode=disable"
+#   - name: WALLABY_GRPC_LISTEN
+#     value: ":8080"
+#   - name: WALLABY_WIRE_FORMAT
+#     value: "arrow"
 env: []
+
+# envFrom:
+#   - secretRef:
+#       name: wallaby-secrets
+#   - configMapRef:
+#       name: wallaby-config
 envFrom: []
 
 config:
   enabled: false
+  # data:
+  #   WALLABY_GRPC_LISTEN: ":8080"
+  #   WALLABY_WIRE_FORMAT: "arrow"
   data: {}
 
+# command:
+#   - /usr/local/bin/wallaby
 command: []
+
+# args:
+#   - --config=/etc/wallaby/config.yaml
 args: []
 
+# resources:
+#   requests:
+#     cpu: 200m
+#     memory: 256Mi
+#   limits:
+#     cpu: 1000m
+#     memory: 1Gi
 resources: {}
+
 nodeSelector: {}
 tolerations: []
 affinity: {}
 
+# https://opentelemetry.io/docs/concepts/sdk-configuration/otlp-exporter-configuration/
+observability:
+  metrics:
+    enabled: false
+    otel:
+      endpoint: ""
+      insecure: true
+      protocol: "grpc"
+      interval: "30s"
+      # serviceName: ""  # optional, defaults to release fullname
+  traces:
+    enabled: false
+    otel:
+      endpoint: ""
+      insecure: true
+      protocol: "grpc"
+      # serviceName: ""  # optional, defaults to release fullname
+
 workers:
   enabled: false
-  items: []
+  # items:
+  #   - name: example-flow
+  #     kind: deployment
+  #     replicas: 1
+  #     command: ["/usr/local/bin/wallaby-worker"]
+  #     args: ["--flow-id=example-flow"]
+  #     env:
+  #       - name: WALLABY_POSTGRES_DSN
+  #         value: "postgres://user:pass@postgres:5432/wallaby?sslmode=disable"
+  #   - name: scheduled-job
+  #     kind: cronjob
+  #     schedule: "0 * * * *"
+  #     command: ["/usr/local/bin/wallaby-worker"]
+  #     args: ["--flow-id=hourly-sync"]
+items: []

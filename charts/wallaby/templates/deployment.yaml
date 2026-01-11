@@ -57,9 +57,13 @@ spec:
           envFrom:
 {{ toYaml $envFrom | indent 12 }}
 {{- end }}
-{{- if .Values.env }}
+{{- $otelEnv := include "wallaby.otelEnv" . }}
+{{- if or .Values.env $otelEnv }}
           env:
-{{ toYaml .Values.env | indent 12 }}
+{{- with .Values.env }}
+{{ toYaml . | indent 12 }}
+{{- end }}
+{{ $otelEnv | indent 12 }}
 {{- end }}
 {{- with .Values.resources }}
           resources:
