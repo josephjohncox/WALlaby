@@ -225,7 +225,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				return nil
 			}
 			r.emitTrace(batchCtx, "read_error", "", "", spec.ActionReadFail, err)
-			r.recordError(ctx, "source_read")
+			r.Meters.RecordError(ctx, "source_read")
 			span.RecordError(err)
 			span.End()
 			readFailures++
@@ -252,7 +252,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				r.emitTrace(batchCtx, "deliver", batch.Checkpoint.LSN, "", spec.ActionDeliver, nil)
 				if err := r.Source.Ack(batchCtx, batch.Checkpoint); err != nil {
 					r.emitTrace(batchCtx, "ack_error", batch.Checkpoint.LSN, "", spec.ActionNone, err)
-					r.recordError(ctx, "source_ack")
+					r.Meters.RecordError(ctx, "source_ack")
 					span.RecordError(err)
 					span.End()
 					return fmt.Errorf("ack source: %w", err)
@@ -261,13 +261,13 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				r.emitTrace(batchCtx, "control_checkpoint", batch.Checkpoint.LSN, "", spec.ActionNone, nil)
 				if r.Checkpoints != nil && r.FlowID != "" && shouldPersistCheckpoint(batch.Checkpoint) {
 					if err := r.Checkpoints.Put(batchCtx, r.FlowID, batch.Checkpoint); err != nil {
-						r.recordError(ctx, "checkpoint_persist")
+						r.Meters.RecordError(ctx, "checkpoint_persist")
 						span.RecordError(err)
 						span.End()
 						return fmt.Errorf("persist checkpoint: %w", err)
 					}
 					r.emitTrace(batchCtx, "checkpoint", batch.Checkpoint.LSN, "", spec.ActionNone, nil)
-					r.recordCheckpoint(ctx)
+					r.Meters.RecordCheckpoint(ctx, r.FlowID)
 				}
 				span.End()
 				continue
@@ -302,17 +302,17 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		ackAndCheckpoint := func() error {
 			if err := r.Source.Ack(batchCtx, batch.Checkpoint); err != nil {
 				r.emitTrace(batchCtx, "ack_error", batch.Checkpoint.LSN, "", spec.ActionNone, err)
-				r.recordError(ctx, "source_ack")
+				r.Meters.RecordError(ctx, "source_ack")
 				return fmt.Errorf("ack source: %w", err)
 			}
 			r.emitTrace(batchCtx, "ack", batch.Checkpoint.LSN, "", spec.ActionAck, nil)
 			if r.Checkpoints != nil && r.FlowID != "" && shouldPersistCheckpoint(batch.Checkpoint) {
 				if err := r.Checkpoints.Put(batchCtx, r.FlowID, batch.Checkpoint); err != nil {
-					r.recordError(ctx, "checkpoint_persist")
+					r.Meters.RecordError(ctx, "checkpoint_persist")
 					return fmt.Errorf("persist checkpoint: %w", err)
 				}
 				r.emitTrace(batchCtx, "checkpoint", batch.Checkpoint.LSN, "", spec.ActionNone, nil)
-				r.recordCheckpoint(ctx)
+				r.Meters.RecordCheckpoint(ctx, r.FlowID)
 			}
 			return nil
 		}
@@ -321,12 +321,12 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			writeStart := time.Now()
 			if err := r.writeWithRetry(batchCtx, batch, []DestinationConfig{primary}); err != nil {
 				r.emitTrace(batchCtx, "write_error", batch.Checkpoint.LSN, "", spec.ActionWriteFail, err)
-				r.recordError(ctx, "destination_write")
+				r.Meters.RecordError(ctx, "destination_write")
 				span.RecordError(err)
 				span.End()
 				return err
 			}
-			r.recordDestinationWrite(ctx, time.Since(writeStart))
+			r.Meters.RecordDestinationWrite(ctx, r.FlowID, float64(time.Since(writeStart).Milliseconds()))
 			r.emitTrace(batchCtx, "deliver", batch.Checkpoint.LSN, "", spec.ActionDeliver, nil)
 			if err := ackAndCheckpoint(); err != nil {
 				span.RecordError(err)
@@ -342,7 +342,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				span.End()
 				return err
 			}
-			r.recordBatch(ctx, len(batch.Records), time.Since(batchStart))
+			r.Meters.RecordBatch(ctx, r.FlowID, int64(len(batch.Records)), float64(time.Since(batchStart).Milliseconds()))
 			span.End()
 			continue
 		}
@@ -355,7 +355,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		)
 		if err := r.writeWithRetry(writeCtx, batch, r.Destinations); err != nil {
 			r.emitTrace(batchCtx, "write_error", batch.Checkpoint.LSN, "", spec.ActionWriteFail, err)
-			r.recordError(ctx, "destination_write")
+			r.Meters.RecordError(ctx, "destination_write")
 			writeSpan.RecordError(err)
 			writeSpan.End()
 			span.RecordError(err)
@@ -365,7 +365,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		writeLatencyMs := float64(time.Since(writeStart).Milliseconds())
 		writeSpan.SetAttributes(attribute.Float64("latency_ms", writeLatencyMs))
 		writeSpan.End()
-		r.recordDestinationWrite(ctx, time.Since(writeStart))
+		r.Meters.RecordDestinationWrite(ctx, r.FlowID, float64(time.Since(writeStart).Milliseconds()))
 		span.SetAttributes(
 			attribute.Float64("destination.write_latency_ms", writeLatencyMs),
 		)
@@ -382,7 +382,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		}
 
 		batchLatencyMs := float64(time.Since(batchStart).Milliseconds())
-		r.recordBatch(ctx, len(batch.Records), time.Since(batchStart))
+		r.Meters.RecordBatch(ctx, r.FlowID, int64(len(batch.Records)), float64(time.Since(batchStart).Milliseconds()))
 		span.SetAttributes(
 			attribute.Float64("batch.latency_ms", batchLatencyMs),
 		)
@@ -846,7 +846,7 @@ func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, b
 		return fmt.Errorf("write destination %s: %w", dest.Spec.Name, err)
 	}
 	r.emitTrace(ctx, "write", batch.Checkpoint.LSN, dest.Spec.Name, spec.ActionNone, nil)
-	r.recordDestinationWriteCount(ctx, string(dest.Spec.Type))
+	r.Meters.RecordDestinationWriteCount(ctx, string(dest.Spec.Type))
 	return nil
 }
 
@@ -874,32 +874,3 @@ func (r *Runner) emitTrace(ctx context.Context, kind, lsn, destination string, s
 	r.TraceSink.Emit(ctx, event)
 }
 
-func (r *Runner) recordError(ctx context.Context, errorType string) {
-	if r.Meters != nil {
-		r.Meters.RecordError(ctx, errorType)
-	}
-}
-
-func (r *Runner) recordCheckpoint(ctx context.Context) {
-	if r.Meters != nil {
-		r.Meters.RecordCheckpoint(ctx, r.FlowID)
-	}
-}
-
-func (r *Runner) recordDestinationWrite(ctx context.Context, duration time.Duration) {
-	if r.Meters != nil {
-		r.Meters.RecordDestinationWrite(ctx, r.FlowID, float64(duration.Milliseconds()))
-	}
-}
-
-func (r *Runner) recordBatch(ctx context.Context, recordCount int, duration time.Duration) {
-	if r.Meters != nil {
-		r.Meters.RecordBatch(ctx, r.FlowID, int64(recordCount), float64(duration.Milliseconds()))
-	}
-}
-
-func (r *Runner) recordDestinationWriteCount(ctx context.Context, destType string) {
-	if r.Meters != nil {
-		r.Meters.RecordDestinationWriteCount(ctx, destType)
-	}
-}
