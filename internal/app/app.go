@@ -208,7 +208,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			return err
 		}
 		dbosOrchestrator = dbosRunner
-		engine = workflow.NewOrchestratedEngine(baseEngine, dbosRunner)
+		engine = workflow.NewOrchestratedEngine(baseEngine, dbosRunner, telemetryProvider.Meters())
 	}
 	if cfg.Kubernetes.Enabled {
 		dispatcher, err := orchestrator.NewKubernetesDispatcher(ctx, orchestrator.KubernetesConfig{
@@ -240,7 +240,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			return err
 		}
 		kubeDispatcher = dispatcher
-		engine = workflow.NewOrchestratedEngine(baseEngine, dispatcher)
+		engine = workflow.NewOrchestratedEngine(baseEngine, dispatcher, telemetryProvider.Meters())
 	}
 
 	listener, err := net.Listen("tcp", cfg.API.GRPCListen)
@@ -256,7 +256,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		dispatcher = kubeDispatcher
 	}
 
-	server := apigrpc.New(engine, dispatcher, checkpoints, registryStore, streamStore, cfg.API.GRPCReflection)
+	server := apigrpc.New(engine, dispatcher, checkpoints, registryStore, streamStore, cfg.API.GRPCReflection, telemetryProvider.Meters())
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- server.Serve(listener)

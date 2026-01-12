@@ -7,6 +7,7 @@ import (
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
+	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -15,18 +16,23 @@ import (
 // CheckpointService implements the gRPC CheckpointService API.
 type CheckpointService struct {
 	wallabypb.UnimplementedCheckpointServiceServer
-	store connector.CheckpointStore
+	store  connector.CheckpointStore
+	meters *telemetry.Meters
 }
 
-func NewCheckpointService(store connector.CheckpointStore) *CheckpointService {
-	return &CheckpointService{store: store}
+func NewCheckpointService(store connector.CheckpointStore, meters *telemetry.Meters) *CheckpointService {
+	return &CheckpointService{store: store, meters: meters}
 }
 
 func (s *CheckpointService) GetCheckpoint(ctx context.Context, req *wallabypb.GetCheckpointRequest) (*wallabypb.FlowCheckpoint, error) {
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
 	}
+	start := time.Now()
 	cp, err := s.store.Get(ctx, req.FlowId)
+	if s.meters != nil {
+		s.meters.RecordCheckpointGet(ctx, "postgres", float64(time.Since(start).Milliseconds()))
+	}
 	if err != nil {
 		return nil, mapCheckpointError(err)
 	}
@@ -38,8 +44,12 @@ func (s *CheckpointService) PutCheckpoint(ctx context.Context, req *wallabypb.Pu
 		return nil, status.Error(codes.InvalidArgument, "flow_id and checkpoint are required")
 	}
 	cp := checkpointFromProto(req.Checkpoint)
+	start := time.Now()
 	if err := s.store.Put(ctx, req.FlowId, cp); err != nil {
 		return nil, mapCheckpointError(err)
+	}
+	if s.meters != nil {
+		s.meters.RecordCheckpointPut(ctx, "postgres", float64(time.Since(start).Milliseconds()))
 	}
 	return &wallabypb.FlowCheckpoint{FlowId: req.FlowId, Checkpoint: checkpointToProto(cp)}, nil
 }

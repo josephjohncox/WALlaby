@@ -93,7 +93,7 @@ func TestCLIIntegrationDDLList(t *testing.T) {
 	}
 	defer listener.Close()
 
-	server := apigrpc.New(workflow.NewNoopEngine(), noopDispatcher{}, nil, store, nil, false)
+	server := apigrpc.New(workflow.NewNoopEngine(), noopDispatcher{}, nil, store, nil, false, nil)
 	go func() {
 		_ = server.Serve(listener)
 	}()
@@ -182,7 +182,7 @@ func TestCLIIntegrationDDLApproveRejectApply(t *testing.T) {
 	}
 	defer listener.Close()
 
-	server := apigrpc.New(workflow.NewNoopEngine(), noopDispatcher{}, nil, store, nil, false)
+	server := apigrpc.New(workflow.NewNoopEngine(), noopDispatcher{}, nil, store, nil, false, nil)
 	go func() {
 		_ = server.Serve(listener)
 	}()
@@ -277,7 +277,7 @@ func TestCLIIntegrationStreamPullAck(t *testing.T) {
 	}
 	defer listener.Close()
 
-	server := apigrpc.New(workflow.NewNoopEngine(), noopDispatcher{}, nil, nil, store, false)
+	server := apigrpc.New(workflow.NewNoopEngine(), noopDispatcher{}, nil, nil, store, false, nil)
 	go func() {
 		_ = server.Serve(listener)
 	}()
@@ -354,7 +354,7 @@ func TestCLIIntegrationFlowCreateRunOnce(t *testing.T) {
 	}
 	defer listener.Close()
 
-	server := apigrpc.New(engine, dispatcher, nil, nil, nil, false)
+	server := apigrpc.New(engine, dispatcher, nil, nil, nil, false, nil)
 	go func() {
 		_ = server.Serve(listener)
 	}()
@@ -665,7 +665,7 @@ func TestCLIIntegrationPublicationSync(t *testing.T) {
 	}
 	defer listener.Close()
 
-	server := apigrpc.New(engine, noopDispatcher{}, nil, nil, nil, false)
+	server := apigrpc.New(engine, noopDispatcher{}, nil, nil, nil, false, nil)
 	go func() {
 		_ = server.Serve(listener)
 	}()

@@ -192,9 +192,11 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		)
 
 		// Read from source with child span
+		readStart := time.Now()
 		readCtx, readSpan := tracer.Start(batchCtx, "source.read")
 		batch, err := r.Source.Read(readCtx)
 		readSpan.End()
+		r.Meters.RecordSourceReadLatency(ctx, float64(time.Since(readStart).Milliseconds()))
 		if err != nil {
 			if errors.Is(err, connector.ErrDDLApprovalRequired) {
 				r.handleDDLGate(batchCtx, span, err)
@@ -819,6 +821,7 @@ func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, b
 					r.emitTrace(ctx, "ddl_error", batch.Checkpoint.LSN, dest.Spec.Name, spec.ActionNone, err)
 					return fmt.Errorf("apply ddl destination %s: %w", dest.Spec.Name, err)
 				}
+				r.Meters.RecordDestinationDDL(ctx, string(dest.Spec.Type))
 			}
 		}
 	}
@@ -836,6 +839,7 @@ func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, b
 		return fmt.Errorf("write destination %s: %w", dest.Spec.Name, err)
 	}
 	r.emitTrace(ctx, "write", batch.Checkpoint.LSN, dest.Spec.Name, spec.ActionNone, nil)
+	r.recordDestinationWriteCount(ctx, string(dest.Spec.Type))
 	return nil
 }
 
@@ -884,5 +888,11 @@ func (r *Runner) recordDestinationWrite(ctx context.Context, duration time.Durat
 func (r *Runner) recordBatch(ctx context.Context, recordCount int, duration time.Duration) {
 	if r.Meters != nil {
 		r.Meters.RecordBatch(ctx, r.FlowID, int64(recordCount), float64(duration.Milliseconds()))
+	}
+}
+
+func (r *Runner) recordDestinationWriteCount(ctx context.Context, destType string) {
+	if r.Meters != nil {
+		r.Meters.RecordDestinationWriteCount(ctx, destType)
 	}
 }
