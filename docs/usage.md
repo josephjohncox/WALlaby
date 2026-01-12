@@ -166,9 +166,6 @@ S3 destination options (connector `options`):
 
 Set `region` to GovCloud/China regions (e.g., `us-gov-west-1`, `cn-north-1`) to use the correct AWS partition.
 
-## Snowflake / Snowpipe Destinations
-Snowflake options are passed through the DSN. For GovCloud or private endpoints, use the appropriate account/host in the DSN; WALlaby does not rewrite hosts.
-
 Example partitioning:
 
 ```json
@@ -189,11 +186,14 @@ HTTP destination options (connector `options`):
 - `method` (`POST` default)
 - `format` (default `json`)
 - `payload_mode` (`wire` default, or `record_json`/`raw`, `wal`)
+- `timeout` (duration string, default `10s`)
 - `headers` (comma-separated `Key:Value` list)
+- `max_retries`, `backoff_base`, `backoff_max`, `backoff_factor`
 - `idempotency_header` (default `Idempotency-Key`)
 
 `payload_mode=record_json` (alias `raw`) sends a single-record JSON envelope (table, operation, key, before/after, etc.) and ignores `format`.
 `payload_mode=wal` sends raw pgoutput bytes (requires a Postgres logical source).
+The idempotency key is derived from `(table, key, lsn)` and hashed to a fixed string.
 
 ## gRPC Destination
 gRPC destination options (connector `options`):
@@ -202,7 +202,9 @@ gRPC destination options (connector `options`):
 - `payload_mode` (`wire` default, or `record_json`/`raw`, `wal`)
 - `insecure` (`true` default), `tls_ca_file`, `tls_server_name`
 - `headers` (comma-separated `Key:Value` list)
-- `timeout`, `max_retries`, `backoff_base`, `backoff_max`, `backoff_factor`
+- `timeout`, `max_retries`, `backoff_base`, `backoff_max`, `backoff_factor` (durations are strings like `200ms`, `5s`)
+- `flow_id` (optional) — forwarded in the ingest request
+- `destination` (optional) — logical destination name (defaults to the destination spec name)
 
 The client calls `IngestService/IngestBatch` and sends `payload_mode` as gRPC metadata (`x-wallaby-payload-mode`).
 
@@ -293,33 +295,6 @@ To add tables and snapshot them:
 ./bin/wallaby-admin publication sync -flow-id "<flow-id>" -tables public.new_table -snapshot -pause -resume
 ```
 
-## HTTP/Webhook Destination
-Use the HTTP destination to push each change as a request to an API endpoint:
-
-Key options:
-- `url` (required)
-- `method` (default `POST`)
-- `format` (default `json`)
-- `headers` (comma-separated `Key:Value`)
-- `max_retries`, `backoff_base`, `backoff_max`, `backoff_factor`
-- `idempotency_header` (default `Idempotency-Key`)
-
-The idempotency key is derived from `(table, primary key, lsn)` and hashed to a fixed string.
-
-## gRPC Destination
-Use the gRPC destination to send encoded batches to a remote ingest service. The destination calls
-`wallaby.v1.IngestService/IngestBatch` with the wire‑format payload.
-
-Key options:
-- `endpoint` (required) — gRPC host:port
-- `format` (default `json`)
-- `insecure` (default `true`) — use plaintext instead of TLS
-- `tls_ca_file`, `tls_server_name` (optional) — TLS settings when `insecure=false`
-- `headers` (comma-separated `Key:Value`) — gRPC metadata
-- `timeout`, `max_retries`, `backoff_base`, `backoff_max`, `backoff_factor`
-- `flow_id` (optional) — forwarded in the ingest request
-- `destination` (optional) — logical destination name (defaults to the destination spec name)
-
 ## Postgres Stream Destination
 The `pgstream` destination writes events into a Postgres-backed stream with consumer groups and visibility timeouts.
 
@@ -355,6 +330,8 @@ Options:
 - `meta_table` (default `__METADATA`)
 - `meta_pk_prefix` (default `pk_`)
 
+Snowflake options are passed through the DSN. For GovCloud or private endpoints, use the appropriate account/host in the DSN; WALlaby does not rewrite hosts.
+
 ## Snowpipe Destination
 Bulk-load batches to a Snowflake stage and optionally trigger `COPY INTO`.
 
@@ -369,7 +346,7 @@ Options:
 - `auto_ingest` (default `false`) — set `true` to only upload (skip COPY)
 - `meta_table_enabled` (default `true`)
 
-Snowpipe runs in append mode; use `append_mode` + metadata columns to preserve operation semantics.
+Snowpipe only supports `write_mode=append`; use metadata columns to preserve operation semantics.
 
 ## DuckDB Destination
 Write directly into DuckDB (local file or in-memory).
@@ -532,3 +509,16 @@ For Postgres stream consumers, use the admin CLI to reset deliveries:
 
 ## Checkpointing
 Checkpoints are stored in Postgres and are used to resume streams from the last confirmed LSN. If a checkpoint exists, the runner sets `start_lsn` on the source before opening the replication stream.
+
+## Testing (Developer)
+Run the unit test suite:
+
+```bash
+make test
+```
+
+Run property tests with Rapid (default in CI uses `RAPID_CHECKS=100`):
+
+```bash
+make test-rapid RAPID_CHECKS=100
+```

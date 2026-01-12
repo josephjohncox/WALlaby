@@ -29,6 +29,11 @@ jobs:
         with:
           version: "1.32.2"
 
+      - name: Install golangci-lint
+        run: |
+          GOBIN="$PWD/.cache/bin" go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.57.2
+          echo "$PWD/.cache/bin" >> "$GITHUB_PATH"
+
       - name: Lint
         run: make lint
 

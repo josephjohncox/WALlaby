@@ -37,6 +37,7 @@ Flow specs you can copy:
 - `examples/flows/postgres_to_ducklake.json`
 - `examples/flows/postgres_to_clickhouse.json`
 - `examples/flows/postgres_to_bufstream.json`
+- `examples/flows/postgres_to_kafka_http_primary.json`
 
 Snowpipe auto-ingest (upload-only) snippet:
 
@@ -59,6 +60,18 @@ Snowpipe auto-ingest (upload-only) snippet:
 - `docs/tutorials.md` — step-by-step tutorials.
 - `docs/architecture.md` — system architecture overview.
 - `docs/streams.md` — stream consumer operations and recovery playbooks.
+
+## Development & Testing
+Common commands:
+
+```bash
+make fmt
+make lint
+make test
+make test-rapid RAPID_CHECKS=100
+```
+
+`make test-rapid` runs property tests with Rapid and then runs the rest of the test suite without Rapid flags. Override `RAPID_CHECKS` to adjust the number of generated cases.
 
 ## Helm (OCI via GHCR)
 Once a tagged release is published, install via OCI Helm chart:

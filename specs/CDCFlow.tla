@@ -223,6 +223,7 @@ SpecFair ==
 
 SpecWitness ==
   SpecFair
+  /\ WF_vars(Start)
   /\ WF_vars(ApproveDDL)
   /\ WF_vars(ApplyDDL)
   /\ WF_vars(ResumeAfterDDL)
@@ -275,6 +276,9 @@ DDLAppliedAfterApproval == ddlApplied \subseteq ddlApproved
 
 DDLGatedPausesFlow ==
   (GateDDL /\ ddlPending # {}) => flow # "Running"
+
+PausedImpliesDDL ==
+  (flow # "Paused") \/ (ddlPending # {}) \/ (ddlApproved # {})
 
 FlowTransitionsValid ==
   flow = "Created"

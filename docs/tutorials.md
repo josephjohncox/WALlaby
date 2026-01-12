@@ -26,142 +26,38 @@ examples/grpc/create_flow.sh
 ```
 
 ### 4) Verify Kafka Output
-Consume the topic with your preferred tool. Each message includes headers for schema name and wire format.
+Consume the topic with your preferred tool. Payloads are encoded using the selected wire format.
 
 ## Tutorial 2: Postgres → S3 (Parquet)
 
 ### 1) Create a Flow Spec
 Use `examples/flows/postgres_to_s3_parquet.json` as a baseline.
 
-### 2) Create the Flow via gRPC
+### 2) Create the Flow
+Use the CLI (fastest for examples):
+
 ```bash
-grpcurl -plaintext \
-  -import-path ./proto \
-  -proto wallaby/v1/flow.proto \
-  -proto wallaby/v1/types.proto \
-  -d @ \
-  localhost:8080 wallaby.v1.FlowService/CreateFlow <<'JSON'
-{
-  "flow": {
-    "name": "pg_to_s3",
-    "wire_format": "WIRE_FORMAT_PARQUET",
-    "source": {
-      "name": "pg-source",
-      "type": "ENDPOINT_TYPE_POSTGRES",
-      "options": {
-        "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
-        "slot": "wallaby_slot",
-        "publication": "wallaby_pub",
-        "batch_size": "1000",
-        "batch_timeout": "2s",
-        "format": "parquet"
-      }
-    },
-    "destinations": [
-      {
-        "name": "s3-out",
-        "type": "ENDPOINT_TYPE_S3",
-        "options": {
-          "bucket": "my-wallaby-bucket",
-          "prefix": "cdc/",
-          "region": "us-east-1",
-          "format": "parquet",
-          "compression": "gzip"
-        }
-      }
-    ]
-  },
-  "start_immediately": true
-}
-JSON
+./bin/wallaby-admin flow create -file examples/flows/postgres_to_s3_parquet.json -start
 ```
 
-For full‑row webhooks (rehydrating TOASTed columns), see `examples/flows/postgres_to_http_toast_full.json` and set `"toast_fetch": "full"` on the Postgres source.
+If you prefer gRPC, paste the JSON from `examples/flows/postgres_to_s3_parquet.json` into the `flow` field of a `CreateFlow` request.
 
 ## Tutorial 3: Postgres → HTTP Webhook
 
-Use a webhook endpoint to trigger downstream automation:
+Use the HTTP example flow spec:
 
 ```bash
-grpcurl -plaintext \
-  -import-path ./proto \
-  -proto wallaby/v1/flow.proto \
-  -proto wallaby/v1/types.proto \
-  -d @ \
-  localhost:8080 wallaby.v1.FlowService/CreateFlow <<'JSON'
-{
-  "flow": {
-    "name": "pg_to_webhook",
-    "wire_format": "WIRE_FORMAT_JSON",
-    "source": {
-      "name": "pg-source",
-      "type": "ENDPOINT_TYPE_POSTGRES",
-      "options": {
-        "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
-        "slot": "wallaby_slot",
-        "publication": "wallaby_pub",
-        "format": "json"
-      }
-    },
-    "destinations": [
-      {
-        "name": "webhook",
-        "type": "ENDPOINT_TYPE_HTTP",
-        "options": {
-          "url": "https://api.example.com/ingest",
-          "method": "POST",
-          "format": "json",
-          "headers": "Authorization:Bearer token123",
-          "max_retries": "5",
-          "backoff_base": "200ms",
-          "backoff_max": "5s"
-        }
-      }
-    ]
-  },
-  "start_immediately": true
-}
-JSON
+./bin/wallaby-admin flow create -file examples/flows/postgres_to_http.json -start
 ```
+
+For full‑row webhooks (rehydrating TOASTed columns), use `examples/flows/postgres_to_http_toast_full.json` and set `"toast_fetch": "full"` on the Postgres source.
 
 ## Tutorial 4: Postgres → Postgres Stream
 
+Use the stream example flow spec:
+
 ```bash
-grpcurl -plaintext \
-  -import-path ./proto \
-  -proto wallaby/v1/flow.proto \
-  -proto wallaby/v1/types.proto \
-  -d @ \
-  localhost:8080 wallaby.v1.FlowService/CreateFlow <<'JSON'
-{
-  "flow": {
-    "name": "pg_to_pgstream",
-    "wire_format": "WIRE_FORMAT_JSON",
-    "source": {
-      "name": "pg-source",
-      "type": "ENDPOINT_TYPE_POSTGRES",
-      "options": {
-        "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
-        "slot": "wallaby_slot",
-        "publication": "wallaby_pub",
-        "format": "json"
-      }
-    },
-    "destinations": [
-      {
-        "name": "stream-out",
-        "type": "ENDPOINT_TYPE_PGSTREAM",
-        "options": {
-          "dsn": "postgres://user:pass@localhost:5432/wallaby?sslmode=disable",
-          "stream": "orders",
-          "format": "json"
-        }
-      }
-    ]
-  },
-  "start_immediately": true
-}
-JSON
+./bin/wallaby-admin flow create -file examples/flows/postgres_to_pgstream.json -start
 ```
 
 Consume the stream:

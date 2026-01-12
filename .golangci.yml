@@ -28,7 +28,6 @@ linters:
     - nolintlint
     - prealloc
     - staticcheck
-    - typecheck
     - unconvert
     - unparam
     - unused

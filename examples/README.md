@@ -62,6 +62,8 @@ See `examples/terraform/flow.tf` for a minimal provider + flow resource definiti
 - `examples/flows/postgres_to_kafka_http_primary.json`
 - `examples/flows/postgres_to_s3_parquet.json`
 - `examples/flows/postgres_to_http.json`
+- `examples/flows/postgres_to_http_toast_full.json`
+- `examples/flows/postgres_to_grpc.json`
 - `examples/flows/postgres_to_pgstream.json`
 - `examples/flows/postgres_to_snowflake.json`
 - `examples/flows/postgres_to_snowpipe.json`

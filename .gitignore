@@ -21,6 +21,9 @@ bin/
 # Logs
 *.log
 
+# Rapid property test failures
+**/testdata/rapid/
+
 # Vendor (if used)
 /vendor/
 
