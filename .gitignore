@@ -1,11 +1,5 @@
 # Binaries
 bin/
-/wallaby
-/wallaby-admin
-/wallaby-api
-/wallaby-worker
-/wallaby-bench
-/wallaby-bench-summary
 
 # Build artifacts
 /dist/
