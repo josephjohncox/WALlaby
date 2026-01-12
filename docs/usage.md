@@ -58,6 +58,16 @@ Flow definitions can also be copied from `examples/flows/*.json`.
 Flow fields you can set:
 - `wire_format` — default wire format for the flow
 - `parallelism` — max concurrent destination writes per batch (default `1`)
+- `config.ack_policy` — `all` (default) or `primary`
+- `config.primary_destination` — destination name used when `ack_policy=primary`
+- `config.failure_mode` — `hold_slot` (default) or `drop_slot`
+- `config.give_up_policy` — `on_retry_exhaustion` (default) or `never`
+
+Why fan‑out instead of multiple replication slots?
+- One slot means WAL is decoded once, reducing CPU/I/O on the primary.
+- Fewer slots reduces WAL retention risk and slot‑quota pressure.
+- A single stream preserves ordering and shares DDL gating across destinations.
+- `ack_policy=primary` lets the primary destination advance the slot while secondaries replay.
 
 To reconfigure destinations or wire format, call `UpdateFlow` with a full `Flow` payload; state is preserved.
 
@@ -426,21 +436,54 @@ jsonb: VARIANT
 ```
 
 ## DDL Governance
-Enable gating to require approval before applying DDL-derived schema changes:
+DDL approval is configured per flow. When unset, the default is accept/apply (gate=false, auto_approve=true, auto_apply=true). Environment variables act as global defaults.
+
+Flow config example:
+
+```json
+{
+  "config": {
+    "ddl": {
+      "gate": true,
+      "auto_approve": false,
+      "auto_apply": false
+    }
+  }
+}
+```
+
+Environment defaults (used when not set on the flow):
 
 ```bash
-export WALLABY_DDL_GATE="true"
-export WALLABY_DDL_AUTO_APPROVE="false"
-export WALLABY_DDL_AUTO_APPLY="false"
+export WALLABY_DDL_GATE="false"
+export WALLABY_DDL_AUTO_APPROVE="true"
+export WALLABY_DDL_AUTO_APPLY="true"
 ```
 
 Use the admin CLI to list and approve DDL events:
 
 ```bash
-./bin/wallaby-admin ddl list -status pending
+./bin/wallaby-admin ddl list -status pending [-flow-id <flow-id>]
 ./bin/wallaby-admin ddl approve -id 1
 ./bin/wallaby-admin ddl apply -id 1
 ```
+
+When a DDL gate blocks a flow, WALlaby emits an OpenTelemetry event (`ddl.gated`)
+and a trace event (`ddl_gate`). It also increments the `wallaby.ddl.gated_total` metric.
+
+Log-to-alert example (Loki-style):
+
+```
+{service="wallaby"} |= "ddl gate:"
+```
+
+Metric alert example:
+
+```
+rate(wallaby_ddl_gated_total[5m]) > 0
+```
+
+Note: exporters may sanitize metric names (e.g., `wallaby_ddl_gated_total` in Prometheus).
 
 ## Resolve Staging Tables (Admin)
 If backfill loads landed in staging tables, resolve them without running a flow:

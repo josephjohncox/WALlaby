@@ -176,12 +176,23 @@ grpcurl -plaintext \
 
 ## Tutorial 5: DDL Gating + Approval
 
-### 1) Enable gating
-```bash
-export WALLABY_DDL_GATE="true"
-export WALLABY_DDL_AUTO_APPROVE="false"
-export WALLABY_DDL_AUTO_APPLY="false"
+### 1) Enable gating per flow
+Set DDL policy on the flow (API/JSON). Example:
+
+```json
+{
+  "config": {
+    "ddl": {
+      "gate": true,
+      "auto_approve": false,
+      "auto_apply": false
+    }
+  }
+}
 ```
+
+Environment variables (`WALLABY_DDL_GATE`, `WALLABY_DDL_AUTO_APPROVE`, `WALLABY_DDL_AUTO_APPLY`)
+act as defaults when a flow does not override DDL policy.
 
 ### 2) Run a schema change in Postgres
 Apply a DDL change (e.g., `ALTER TABLE ... ADD COLUMN`).
@@ -192,6 +203,9 @@ Apply a DDL change (e.g., `ALTER TABLE ... ADD COLUMN`).
 ./bin/wallaby-admin ddl approve -id <id>
 ./bin/wallaby-admin ddl apply -id <id>
 ```
+
+When a gate blocks, WALlaby emits a `ddl.gated` OpenTelemetry event and a trace event
+`ddl_gate` (if trace sinks are enabled) so operators can alert and approve.
 
 ## Tutorial 6: Worker Mode + DBOS Scheduling
 

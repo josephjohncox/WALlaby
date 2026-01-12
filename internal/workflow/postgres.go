@@ -73,11 +73,18 @@ func (p *PostgresEngine) Create(ctx context.Context, f flow.Flow) (flow.Flow, er
 	if err != nil {
 		return flow.Flow{}, fmt.Errorf("marshal destinations: %w", err)
 	}
+	configJSON, err := json.Marshal(f.Config)
+	if err != nil {
+		return flow.Flow{}, fmt.Errorf("marshal config: %w", err)
+	}
+	if f.Config == (flow.Config{}) {
+		configJSON = nil
+	}
 
 	_, err = p.pool.Exec(ctx,
-		`INSERT INTO flows (id, name, source, destinations, state, wire_format, parallelism)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		f.ID, f.Name, sourceJSON, destJSON, string(f.State), emptyToNull(string(f.WireFormat)), f.Parallelism,
+		`INSERT INTO flows (id, name, source, destinations, state, wire_format, parallelism, config)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		f.ID, f.Name, sourceJSON, destJSON, string(f.State), emptyToNull(string(f.WireFormat)), f.Parallelism, configJSON,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -109,13 +116,20 @@ func (p *PostgresEngine) Update(ctx context.Context, f flow.Flow) (flow.Flow, er
 	if err != nil {
 		return flow.Flow{}, fmt.Errorf("marshal destinations: %w", err)
 	}
+	configJSON, err := json.Marshal(f.Config)
+	if err != nil {
+		return flow.Flow{}, fmt.Errorf("marshal config: %w", err)
+	}
+	if f.Config == (flow.Config{}) {
+		configJSON = nil
+	}
 
 	row := p.pool.QueryRow(ctx,
 		`UPDATE flows
-		 SET name = $2, source = $3, destinations = $4, wire_format = $5, parallelism = $6, updated_at = now()
+		 SET name = $2, source = $3, destinations = $4, wire_format = $5, parallelism = $6, config = $7, updated_at = now()
 		 WHERE id = $1
-		 RETURNING id, name, source, destinations, state, wire_format, parallelism`,
-		f.ID, f.Name, sourceJSON, destJSON, emptyToNull(string(f.WireFormat)), f.Parallelism,
+		 RETURNING id, name, source, destinations, state, wire_format, parallelism, config`,
+		f.ID, f.Name, sourceJSON, destJSON, emptyToNull(string(f.WireFormat)), f.Parallelism, configJSON,
 	)
 	updated, err := scanFlow(row)
 	if err != nil {
@@ -149,14 +163,14 @@ func (p *PostgresEngine) Delete(ctx context.Context, flowID string) error {
 
 func (p *PostgresEngine) Get(ctx context.Context, flowID string) (flow.Flow, error) {
 	row := p.pool.QueryRow(ctx,
-		"SELECT id, name, source, destinations, state, wire_format, parallelism FROM flows WHERE id = $1",
+		"SELECT id, name, source, destinations, state, wire_format, parallelism, config FROM flows WHERE id = $1",
 		flowID,
 	)
 	return scanFlow(row)
 }
 
 func (p *PostgresEngine) List(ctx context.Context) ([]flow.Flow, error) {
-	rows, err := p.pool.Query(ctx, "SELECT id, name, source, destinations, state, wire_format, parallelism FROM flows ORDER BY created_at")
+	rows, err := p.pool.Query(ctx, "SELECT id, name, source, destinations, state, wire_format, parallelism, config FROM flows ORDER BY created_at")
 	if err != nil {
 		return nil, fmt.Errorf("list flows: %w", err)
 	}
@@ -185,7 +199,7 @@ func (p *PostgresEngine) transition(ctx context.Context, flowID string, target f
 	}
 
 	row := p.pool.QueryRow(ctx,
-		"UPDATE flows SET state = $2, updated_at = now() WHERE id = $1 RETURNING id, name, source, destinations, state, wire_format, parallelism",
+		"UPDATE flows SET state = $2, updated_at = now() WHERE id = $1 RETURNING id, name, source, destinations, state, wire_format, parallelism, config",
 		flowID, string(target),
 	)
 	updated, err := scanFlow(row)
@@ -226,11 +240,12 @@ func scanFlow(row pgx.Row) (flow.Flow, error) {
 	var f flow.Flow
 	var sourceJSON []byte
 	var destJSON []byte
+	var configJSON []byte
 	var state string
 	var wireFormat *string
 	var parallelism int
 
-	if err := row.Scan(&f.ID, &f.Name, &sourceJSON, &destJSON, &state, &wireFormat, &parallelism); err != nil {
+	if err := row.Scan(&f.ID, &f.Name, &sourceJSON, &destJSON, &state, &wireFormat, &parallelism, &configJSON); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return flow.Flow{}, ErrNotFound
 		}
@@ -242,6 +257,11 @@ func scanFlow(row pgx.Row) (flow.Flow, error) {
 	}
 	if err := json.Unmarshal(destJSON, &f.Destinations); err != nil {
 		return flow.Flow{}, fmt.Errorf("unmarshal destinations: %w", err)
+	}
+	if len(configJSON) > 0 {
+		if err := json.Unmarshal(configJSON, &f.Config); err != nil {
+			return flow.Flow{}, fmt.Errorf("unmarshal config: %w", err)
+		}
 	}
 
 	f.State = flow.State(state)

@@ -40,10 +40,42 @@ enum WireFormat {
   WIRE_FORMAT_JSON = 5;
 }
 
+enum AckPolicy {
+  ACK_POLICY_UNSPECIFIED = 0;
+  ACK_POLICY_ALL = 1;
+  ACK_POLICY_PRIMARY = 2;
+}
+
+enum FailureMode {
+  FAILURE_MODE_UNSPECIFIED = 0;
+  FAILURE_MODE_HOLD_SLOT = 1;
+  FAILURE_MODE_DROP_SLOT = 2;
+}
+
+enum GiveUpPolicy {
+  GIVE_UP_POLICY_UNSPECIFIED = 0;
+  GIVE_UP_POLICY_NEVER = 1;
+  GIVE_UP_POLICY_ON_RETRY_EXHAUSTION = 2;
+}
+
 message Endpoint {
   string name = 1;
   EndpointType type = 2;
   map<string, string> options = 3;
+}
+
+message FlowConfig {
+  AckPolicy ack_policy = 1;
+  string primary_destination = 2;
+  FailureMode failure_mode = 3;
+  GiveUpPolicy give_up_policy = 4;
+  DDLPolicy ddl = 5;
+}
+
+message DDLPolicy {
+  optional bool gate = 1;
+  optional bool auto_approve = 2;
+  optional bool auto_apply = 3;
 }
 
 message Flow {
@@ -54,6 +86,7 @@ message Flow {
   FlowState state = 5;
   WireFormat wire_format = 6;
   int32 parallelism = 7;
+  FlowConfig config = 8;
 }
 
 message Checkpoint {

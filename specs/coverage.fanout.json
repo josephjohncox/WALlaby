@@ -1,0 +1,39 @@
+{
+  "spec": "CDCFlowFanout",
+  "actions": [
+    "Start",
+    "Pause",
+    "Resume",
+    "Stop",
+    "Fail",
+    "ReadBatch",
+    "Deliver",
+    "AckDest",
+    "AckSource",
+    "Idle"
+  ],
+  "invariants": [
+    "TypeInvariant",
+    "AckedImpliesDelivered",
+    "SourceAckRequiresPolicy",
+    "CheckpointMonotonic"
+  ],
+  "unreachable_actions": [
+    "Start",
+    "Pause",
+    "Resume",
+    "Stop",
+    "Fail",
+    "ReadBatch",
+    "Deliver",
+    "AckDest",
+    "AckSource",
+    "Idle"
+  ],
+  "unreachable_invariants": [
+    "TypeInvariant",
+    "AckedImpliesDelivered",
+    "SourceAckRequiresPolicy",
+    "CheckpointMonotonic"
+  ]
+}

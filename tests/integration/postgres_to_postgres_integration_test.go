@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/spec"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 )
 
@@ -155,10 +157,12 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 		},
 	}
 
+	traceSink := &stream.MemoryTraceSink{}
 	runner := &stream.Runner{
 		Source:       &pgsource.Source{},
 		SourceSpec:   sourceSpec,
 		Destinations: []stream.DestinationConfig{{Spec: destSpec, Dest: &pgdest.Destination{}}},
+		TraceSink:    traceSink,
 	}
 
 	errCh := make(chan error, 1)
@@ -297,6 +301,36 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("runner did not stop after cancel")
 	}
+
+	manifest := loadCDCFlowManifest(t)
+	if _, err := stream.EvaluateTrace(traceSink.Events(), stream.TraceValidationOptions{}, &manifest); err != nil {
+		t.Fatalf("trace validation failed: %v", err)
+	}
+}
+
+func loadCDCFlowManifest(t *testing.T) spec.Manifest {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for i := 0; i < 8; i++ {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			path := spec.ManifestPath(filepath.Join(dir, "specs"), spec.SpecCDCFlow)
+			manifest, err := spec.LoadManifest(path)
+			if err != nil {
+				t.Fatalf("load manifest: %v", err)
+			}
+			return manifest
+		}
+		next := filepath.Dir(dir)
+		if next == dir {
+			break
+		}
+		dir = next
+	}
+	t.Fatalf("go.mod not found while resolving manifest path")
+	return spec.Manifest{}
 }
 
 func dsnWithDatabase(baseDSN, database string) (string, error) {

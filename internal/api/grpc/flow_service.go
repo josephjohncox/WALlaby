@@ -85,6 +85,9 @@ func (s *FlowService) UpdateFlow(ctx context.Context, req *wallabypb.UpdateFlowR
 	if model.Parallelism == 0 {
 		model.Parallelism = existing.Parallelism
 	}
+	if req.Flow.Config == nil {
+		model.Config = existing.Config
+	}
 
 	updated, err := s.engine.Update(ctx, model)
 	if err != nil {

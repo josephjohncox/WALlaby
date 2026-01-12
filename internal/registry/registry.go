@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/josephjohncox/wallaby/internal/flowctx"
 	"github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -25,12 +26,12 @@ const (
 // Store persists schema and DDL events.
 type Store interface {
 	RegisterSchema(ctx context.Context, schema connector.Schema) error
-	RecordDDL(ctx context.Context, ddl string, plan schema.Plan, lsn string, status string) (int64, error)
+	RecordDDL(ctx context.Context, flowID string, ddl string, plan schema.Plan, lsn string, status string) (int64, error)
 	SetDDLStatus(ctx context.Context, id int64, status string) error
-	ListPendingDDL(ctx context.Context) ([]DDLEvent, error)
+	ListPendingDDL(ctx context.Context, flowID string) ([]DDLEvent, error)
 	GetDDL(ctx context.Context, id int64) (DDLEvent, error)
-	GetDDLByLSN(ctx context.Context, lsn string) (DDLEvent, error)
-	ListDDL(ctx context.Context, status string) ([]DDLEvent, error)
+	GetDDLByLSN(ctx context.Context, flowID string, lsn string) (DDLEvent, error)
+	ListDDL(ctx context.Context, flowID string, status string) ([]DDLEvent, error)
 }
 
 // PostgresStore stores registry data in Postgres.
@@ -81,7 +82,7 @@ func (p *PostgresStore) RegisterSchema(ctx context.Context, schema connector.Sch
 	return nil
 }
 
-func (p *PostgresStore) RecordDDL(ctx context.Context, ddl string, plan schema.Plan, lsn string, status string) (int64, error) {
+func (p *PostgresStore) RecordDDL(ctx context.Context, flowID string, ddl string, plan schema.Plan, lsn string, status string) (int64, error) {
 	if status == "" {
 		status = StatusPending
 	}
@@ -92,10 +93,10 @@ func (p *PostgresStore) RecordDDL(ctx context.Context, ddl string, plan schema.P
 
 	var id int64
 	if err := p.pool.QueryRow(ctx,
-		`INSERT INTO ddl_events (ddl, plan_json, lsn, status)
-		 VALUES ($1, $2, $3, $4)
+		`INSERT INTO ddl_events (flow_id, ddl, plan_json, lsn, status)
+		 VALUES ($1, $2, $3, $4, $5)
 		 RETURNING id`,
-		ddlOrNull(ddl), planJSON, lsn, status,
+		flowIDOrNull(flowID), ddlOrNull(ddl), planJSON, lsn, status,
 	).Scan(&id); err != nil {
 		return 0, fmt.Errorf("insert ddl event: %w", err)
 	}
@@ -113,8 +114,15 @@ func (p *PostgresStore) SetDDLStatus(ctx context.Context, id int64, status strin
 	return nil
 }
 
-func (p *PostgresStore) ListPendingDDL(ctx context.Context) ([]DDLEvent, error) {
-	rows, err := p.pool.Query(ctx, "SELECT id, ddl, plan_json, lsn, status, created_at, applied_at FROM ddl_events WHERE status = $1 ORDER BY created_at", StatusPending)
+func (p *PostgresStore) ListPendingDDL(ctx context.Context, flowID string) ([]DDLEvent, error) {
+	query := "SELECT id, flow_id, ddl, plan_json, lsn, status, created_at, applied_at FROM ddl_events WHERE status = $1"
+	args := []any{StatusPending}
+	if flowID != "" {
+		query += " AND flow_id = $2"
+		args = append(args, flowID)
+	}
+	query += " ORDER BY created_at"
+	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list ddl events: %w", err)
 	}
@@ -136,16 +144,23 @@ func (p *PostgresStore) ListPendingDDL(ctx context.Context) ([]DDLEvent, error) 
 	return items, nil
 }
 
-func (p *PostgresStore) ListDDL(ctx context.Context, status string) ([]DDLEvent, error) {
-	query := "SELECT id, ddl, plan_json, lsn, status, created_at, applied_at FROM ddl_events"
-	var rows pgx.Rows
-	var err error
+func (p *PostgresStore) ListDDL(ctx context.Context, flowID string, status string) ([]DDLEvent, error) {
+	query := "SELECT id, flow_id, ddl, plan_json, lsn, status, created_at, applied_at FROM ddl_events"
+	args := []any{}
+	clauses := []string{}
 	if status != "" && status != "all" {
-		query += " WHERE status = $1"
-		rows, err = p.pool.Query(ctx, query+" ORDER BY created_at", status)
-	} else {
-		rows, err = p.pool.Query(ctx, query+" ORDER BY created_at")
+		clauses = append(clauses, "status = $1")
+		args = append(args, status)
 	}
+	if flowID != "" {
+		clauses = append(clauses, fmt.Sprintf("flow_id = $%d", len(args)+1))
+		args = append(args, flowID)
+	}
+	if len(clauses) > 0 {
+		query += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	query += " ORDER BY created_at"
+	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list ddl events: %w", err)
 	}
@@ -166,21 +181,29 @@ func (p *PostgresStore) ListDDL(ctx context.Context, status string) ([]DDLEvent,
 }
 
 func (p *PostgresStore) GetDDL(ctx context.Context, id int64) (DDLEvent, error) {
-	row := p.pool.QueryRow(ctx, "SELECT id, ddl, plan_json, lsn, status, created_at, applied_at FROM ddl_events WHERE id = $1", id)
+	row := p.pool.QueryRow(ctx, "SELECT id, flow_id, ddl, plan_json, lsn, status, created_at, applied_at FROM ddl_events WHERE id = $1", id)
 	return scanDDLEvent(row)
 }
 
-func (p *PostgresStore) GetDDLByLSN(ctx context.Context, lsn string) (DDLEvent, error) {
-	if lsn == "" {
+func (p *PostgresStore) GetDDLByLSN(ctx context.Context, flowID string, lsn string) (DDLEvent, error) {
+	if strings.TrimSpace(lsn) == "" {
 		return DDLEvent{}, ErrNotFound
 	}
-	row := p.pool.QueryRow(ctx, "SELECT id, ddl, plan_json, lsn, status, created_at, applied_at FROM ddl_events WHERE lsn = $1 ORDER BY id DESC LIMIT 1", lsn)
+	query := "SELECT id, flow_id, ddl, plan_json, lsn, status, created_at, applied_at FROM ddl_events WHERE lsn = $1"
+	args := []any{lsn}
+	if flowID != "" {
+		query += " AND flow_id = $2"
+		args = append(args, flowID)
+	}
+	query += " ORDER BY id DESC LIMIT 1"
+	row := p.pool.QueryRow(ctx, query, args...)
 	return scanDDLEvent(row)
 }
 
 // DDLEvent captures a DDL change request.
 type DDLEvent struct {
 	ID        int64
+	FlowID    string
 	DDL       string
 	Plan      schema.Plan
 	LSN       string
@@ -192,6 +215,7 @@ type DDLEvent struct {
 // Hook wires replication schema events to the registry.
 type Hook struct {
 	Store        Store
+	FlowID       string
 	AutoApprove  bool
 	GateApproval bool
 	AutoApply    bool
@@ -208,6 +232,7 @@ func (h *Hook) OnSchemaChange(ctx context.Context, plan schema.Plan) error {
 	if h.Store == nil {
 		return nil
 	}
+	flowID := h.flowID(ctx)
 	status := StatusPending
 	if h.AutoApprove {
 		status = StatusApproved
@@ -215,12 +240,21 @@ func (h *Hook) OnSchemaChange(ctx context.Context, plan schema.Plan) error {
 	if h.AutoApply {
 		status = StatusApproved
 	}
-	_, err := h.Store.RecordDDL(ctx, "", plan, "", status)
+	id, err := h.Store.RecordDDL(ctx, flowID, "", plan, "", status)
 	if err != nil {
 		return err
 	}
 	if h.GateApproval && status == StatusPending {
-		return ErrApprovalRequired
+		var planJSON string
+		if payload, err := json.Marshal(plan); err == nil {
+			planJSON = string(payload)
+		}
+		return &connector.DDLGateError{
+			FlowID:   flowID,
+			Status:   status,
+			EventID:  id,
+			PlanJSON: planJSON,
+		}
 	}
 	return nil
 }
@@ -229,21 +263,34 @@ func (h *Hook) OnDDL(ctx context.Context, ddl string, lsn pglogrepl.LSN) error {
 	if h.Store == nil {
 		return nil
 	}
+	flowID := h.flowID(ctx)
 	lsnStr := lsn.String()
 	if lsnStr != "" {
-		existing, err := h.Store.GetDDLByLSN(ctx, lsnStr)
+		existing, err := h.Store.GetDDLByLSN(ctx, flowID, lsnStr)
 		if err == nil {
 			switch existing.Status {
 			case StatusApproved, StatusApplied:
 				return nil
 			case StatusRejected:
 				if h.GateApproval {
-					return ErrApprovalRequired
+					return &connector.DDLGateError{
+						FlowID:  flowID,
+						LSN:     lsnStr,
+						DDL:     ddlOrFallback(ddl, existing.DDL),
+						Status:  existing.Status,
+						EventID: existing.ID,
+					}
 				}
 				return nil
 			default:
 				if h.GateApproval {
-					return ErrApprovalRequired
+					return &connector.DDLGateError{
+						FlowID:  flowID,
+						LSN:     lsnStr,
+						DDL:     ddlOrFallback(ddl, existing.DDL),
+						Status:  existing.Status,
+						EventID: existing.ID,
+					}
 				}
 				return nil
 			}
@@ -256,14 +303,33 @@ func (h *Hook) OnDDL(ctx context.Context, ddl string, lsn pglogrepl.LSN) error {
 	if h.AutoApply {
 		status = StatusApproved
 	}
-	_, err := h.Store.RecordDDL(ctx, ddl, schema.Plan{}, lsnStr, status)
+	id, err := h.Store.RecordDDL(ctx, flowID, ddl, schema.Plan{}, lsnStr, status)
 	if err != nil {
 		return err
 	}
 	if h.GateApproval && status == StatusPending {
-		return ErrApprovalRequired
+		return &connector.DDLGateError{
+			FlowID:  flowID,
+			LSN:     lsnStr,
+			DDL:     ddl,
+			Status:  status,
+			EventID: id,
+		}
 	}
 	return nil
+}
+
+func (h *Hook) flowID(ctx context.Context) string {
+	if h.FlowID != "" {
+		return h.FlowID
+	}
+	if ctx == nil {
+		return ""
+	}
+	if id, ok := flowctx.FlowIDFromContext(ctx); ok {
+		return id
+	}
+	return ""
 }
 
 func ddlOrNull(ddl string) interface{} {
@@ -273,12 +339,26 @@ func ddlOrNull(ddl string) interface{} {
 	return ddl
 }
 
+func ddlOrFallback(ddl string, fallback string) string {
+	if ddl != "" {
+		return ddl
+	}
+	return fallback
+}
+
+func flowIDOrNull(flowID string) interface{} {
+	if strings.TrimSpace(flowID) == "" {
+		return nil
+	}
+	return flowID
+}
+
 // MarkDDLAppliedByLSN updates a DDL event to applied for the given LSN.
-func MarkDDLAppliedByLSN(ctx context.Context, store Store, lsn string) error {
+func MarkDDLAppliedByLSN(ctx context.Context, store Store, flowID string, lsn string) error {
 	if store == nil || strings.TrimSpace(lsn) == "" {
 		return nil
 	}
-	event, err := store.GetDDLByLSN(ctx, lsn)
+	event, err := store.GetDDLByLSN(ctx, flowID, lsn)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil
@@ -287,6 +367,15 @@ func MarkDDLAppliedByLSN(ctx context.Context, store Store, lsn string) error {
 	}
 	if event.Status == StatusApplied || event.Status == StatusRejected {
 		return nil
+	}
+	if event.Status != StatusApproved {
+		return &connector.DDLGateError{
+			FlowID:  flowID,
+			LSN:     lsn,
+			DDL:     event.DDL,
+			Status:  event.Status,
+			EventID: event.ID,
+		}
 	}
 	return store.SetDDLStatus(ctx, event.ID, StatusApplied)
 }
@@ -301,7 +390,7 @@ func appliedAt(status string) interface{} {
 var ErrNotFound = errors.New("registry entry not found")
 
 // ErrApprovalRequired indicates DDL gating requires approval before continuing.
-var ErrApprovalRequired = errors.New("ddl approval required")
+var ErrApprovalRequired = connector.ErrDDLApprovalRequired
 
 func scanSchemaVersion(row pgx.Row) (connector.Schema, error) {
 	var payload []byte
@@ -321,14 +410,18 @@ func scanSchemaVersion(row pgx.Row) (connector.Schema, error) {
 func scanDDLEvent(row pgx.Row) (DDLEvent, error) {
 	var event DDLEvent
 	var planJSON []byte
+	var flowID *string
 	var ddl *string
 	var lsn *string
 	var appliedAt *time.Time
-	if err := row.Scan(&event.ID, &ddl, &planJSON, &lsn, &event.Status, &event.CreatedAt, &appliedAt); err != nil {
+	if err := row.Scan(&event.ID, &flowID, &ddl, &planJSON, &lsn, &event.Status, &event.CreatedAt, &appliedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return DDLEvent{}, ErrNotFound
 		}
 		return DDLEvent{}, err
+	}
+	if flowID != nil {
+		event.FlowID = *flowID
 	}
 	if ddl != nil {
 		event.DDL = *ddl

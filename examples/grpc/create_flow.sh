@@ -15,6 +15,12 @@ grpcurl -plaintext \
   "flow": {
     "name": "pg_to_kafka",
     "wire_format": "WIRE_FORMAT_ARROW",
+    "config": {
+      "ack_policy": "ACK_POLICY_PRIMARY",
+      "primary_destination": "kafka-out",
+      "failure_mode": "FAILURE_MODE_HOLD_SLOT",
+      "give_up_policy": "GIVE_UP_POLICY_ON_RETRY_EXHAUSTION"
+    },
     "source": {
       "name": "pg-source",
       "type": "ENDPOINT_TYPE_POSTGRES",

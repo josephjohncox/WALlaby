@@ -13,6 +13,7 @@ type Config struct {
 	API         APIConfig
 	Postgres    PostgresConfig
 	Telemetry   TelemetryConfig
+	Trace       TraceConfig
 	DBOS        DBOSConfig
 	Kubernetes  KubernetesConfig
 	Wire        WireConfig
@@ -31,6 +32,10 @@ type PostgresConfig struct {
 
 type TelemetryConfig struct {
 	ServiceName string
+}
+
+type TraceConfig struct {
+	Path string
 }
 
 type DBOSConfig struct {
@@ -104,6 +109,9 @@ func Load(_ string) (*Config, error) {
 		Telemetry: TelemetryConfig{
 			ServiceName: getenv("WALLABY_OTEL_SERVICE", "wallaby"),
 		},
+		Trace: TraceConfig{
+			Path: getenv("WALLABY_TRACE_PATH", ""),
+		},
 		DBOS: DBOSConfig{
 			Enabled:       getenvBool("WALLABY_DBOS_ENABLED", false),
 			AppName:       getenv("WALLABY_DBOS_APP", "wallaby"),
@@ -145,9 +153,9 @@ func Load(_ string) (*Config, error) {
 			CatalogEnabled:  getenvBool("WALLABY_DDL_CATALOG_ENABLED", false),
 			CatalogInterval: getenvDuration("WALLABY_DDL_CATALOG_INTERVAL", 30*time.Second),
 			CatalogSchemas:  getenvCSV("WALLABY_DDL_CATALOG_SCHEMAS", "public"),
-			AutoApprove:     getenvBool("WALLABY_DDL_AUTO_APPROVE", false),
+			AutoApprove:     getenvBool("WALLABY_DDL_AUTO_APPROVE", true),
 			Gate:            getenvBool("WALLABY_DDL_GATE", false),
-			AutoApply:       getenvBool("WALLABY_DDL_AUTO_APPLY", false),
+			AutoApply:       getenvBool("WALLABY_DDL_AUTO_APPLY", true),
 		},
 		Checkpoints: CheckpointConfig{
 			Backend: getenv("WALLABY_CHECKPOINT_BACKEND", ""),

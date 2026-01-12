@@ -6,6 +6,7 @@ import (
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/stream"
 )
 
 func flowToProto(f flow.Flow) *wallabypb.Flow {
@@ -17,6 +18,7 @@ func flowToProto(f flow.Flow) *wallabypb.Flow {
 		State:        flowStateToProto(f.State),
 		WireFormat:   wireFormatToProto(f.WireFormat),
 		Parallelism:  int32(f.Parallelism),
+		Config:       flowConfigToProto(f.Config),
 	}
 }
 
@@ -55,7 +57,128 @@ func flowFromProto(pb *wallabypb.Flow) (flow.Flow, error) {
 		State:        flowStateFromProto(pb.State),
 		WireFormat:   wireFormatFromProto(pb.WireFormat),
 		Parallelism:  int(pb.Parallelism),
+		Config:       flowConfigFromProto(pb.Config),
 	}, nil
+}
+
+func flowConfigToProto(cfg flow.Config) *wallabypb.FlowConfig {
+	if cfg == (flow.Config{}) {
+		return nil
+	}
+	return &wallabypb.FlowConfig{
+		AckPolicy:          ackPolicyToProto(cfg.AckPolicy),
+		PrimaryDestination: cfg.PrimaryDestination,
+		FailureMode:        failureModeToProto(cfg.FailureMode),
+		GiveUpPolicy:       giveUpPolicyToProto(cfg.GiveUpPolicy),
+		Ddl:                ddlPolicyToProto(cfg.DDL),
+	}
+}
+
+func flowConfigFromProto(cfg *wallabypb.FlowConfig) flow.Config {
+	if cfg == nil {
+		return flow.Config{}
+	}
+	return flow.Config{
+		AckPolicy:          ackPolicyFromProto(cfg.AckPolicy),
+		PrimaryDestination: cfg.PrimaryDestination,
+		FailureMode:        failureModeFromProto(cfg.FailureMode),
+		GiveUpPolicy:       giveUpPolicyFromProto(cfg.GiveUpPolicy),
+		DDL:                ddlPolicyFromProto(cfg.Ddl),
+	}
+}
+
+func ddlPolicyToProto(policy flow.DDLPolicy) *wallabypb.DDLPolicy {
+	if policy == (flow.DDLPolicy{}) {
+		return nil
+	}
+	out := &wallabypb.DDLPolicy{}
+	if policy.Gate != nil {
+		out.Gate = policy.Gate
+	}
+	if policy.AutoApprove != nil {
+		out.AutoApprove = policy.AutoApprove
+	}
+	if policy.AutoApply != nil {
+		out.AutoApply = policy.AutoApply
+	}
+	return out
+}
+
+func ddlPolicyFromProto(pb *wallabypb.DDLPolicy) flow.DDLPolicy {
+	if pb == nil {
+		return flow.DDLPolicy{}
+	}
+	return flow.DDLPolicy{
+		Gate:        pb.Gate,
+		AutoApprove: pb.AutoApprove,
+		AutoApply:   pb.AutoApply,
+	}
+}
+
+func ackPolicyToProto(policy stream.AckPolicy) wallabypb.AckPolicy {
+	switch policy {
+	case stream.AckPolicyAll:
+		return wallabypb.AckPolicy_ACK_POLICY_ALL
+	case stream.AckPolicyPrimary:
+		return wallabypb.AckPolicy_ACK_POLICY_PRIMARY
+	default:
+		return wallabypb.AckPolicy_ACK_POLICY_UNSPECIFIED
+	}
+}
+
+func ackPolicyFromProto(policy wallabypb.AckPolicy) stream.AckPolicy {
+	switch policy {
+	case wallabypb.AckPolicy_ACK_POLICY_ALL:
+		return stream.AckPolicyAll
+	case wallabypb.AckPolicy_ACK_POLICY_PRIMARY:
+		return stream.AckPolicyPrimary
+	default:
+		return ""
+	}
+}
+
+func failureModeToProto(mode stream.FailureMode) wallabypb.FailureMode {
+	switch mode {
+	case stream.FailureModeHoldSlot:
+		return wallabypb.FailureMode_FAILURE_MODE_HOLD_SLOT
+	case stream.FailureModeDropSlot:
+		return wallabypb.FailureMode_FAILURE_MODE_DROP_SLOT
+	default:
+		return wallabypb.FailureMode_FAILURE_MODE_UNSPECIFIED
+	}
+}
+
+func failureModeFromProto(mode wallabypb.FailureMode) stream.FailureMode {
+	switch mode {
+	case wallabypb.FailureMode_FAILURE_MODE_HOLD_SLOT:
+		return stream.FailureModeHoldSlot
+	case wallabypb.FailureMode_FAILURE_MODE_DROP_SLOT:
+		return stream.FailureModeDropSlot
+	default:
+		return ""
+	}
+}
+
+func giveUpPolicyToProto(policy stream.GiveUpPolicy) wallabypb.GiveUpPolicy {
+	switch policy {
+	case stream.GiveUpPolicyNever:
+		return wallabypb.GiveUpPolicy_GIVE_UP_POLICY_NEVER
+	case stream.GiveUpPolicyOnRetryExhaustion:
+		return wallabypb.GiveUpPolicy_GIVE_UP_POLICY_ON_RETRY_EXHAUSTION
+	default:
+		return wallabypb.GiveUpPolicy_GIVE_UP_POLICY_UNSPECIFIED
+	}
+}
+
+func giveUpPolicyFromProto(policy wallabypb.GiveUpPolicy) stream.GiveUpPolicy {
+	switch policy {
+	case wallabypb.GiveUpPolicy_GIVE_UP_POLICY_NEVER:
+		return stream.GiveUpPolicyNever
+	case wallabypb.GiveUpPolicy_GIVE_UP_POLICY_ON_RETRY_EXHAUSTION:
+		return stream.GiveUpPolicyOnRetryExhaustion
+	default:
+		return ""
+	}
 }
 
 func endpointToProto(spec connector.Spec) *wallabypb.Endpoint {

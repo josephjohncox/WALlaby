@@ -18,20 +18,35 @@ type flowResource struct {
 }
 
 type flowResourceModel struct {
-	ID               types.String    `tfsdk:"id"`
-	Name             types.String    `tfsdk:"name"`
-	WireFormat       types.String    `tfsdk:"wire_format"`
-	Parallelism      types.Int64     `tfsdk:"parallelism"`
-	State            types.String    `tfsdk:"state"`
-	StartImmediately types.Bool      `tfsdk:"start_immediately"`
-	Source           endpointModel   `tfsdk:"source"`
-	Destinations     []endpointModel `tfsdk:"destinations"`
+	ID               types.String     `tfsdk:"id"`
+	Name             types.String     `tfsdk:"name"`
+	WireFormat       types.String     `tfsdk:"wire_format"`
+	Parallelism      types.Int64      `tfsdk:"parallelism"`
+	State            types.String     `tfsdk:"state"`
+	StartImmediately types.Bool       `tfsdk:"start_immediately"`
+	Source           endpointModel    `tfsdk:"source"`
+	Destinations     []endpointModel  `tfsdk:"destinations"`
+	Config           *flowConfigModel `tfsdk:"config"`
 }
 
 type endpointModel struct {
 	Name    types.String `tfsdk:"name"`
 	Type    types.String `tfsdk:"type"`
 	Options types.Map    `tfsdk:"options"`
+}
+
+type flowConfigModel struct {
+	AckPolicy          types.String        `tfsdk:"ack_policy"`
+	PrimaryDestination types.String        `tfsdk:"primary_destination"`
+	FailureMode        types.String        `tfsdk:"failure_mode"`
+	GiveUpPolicy       types.String        `tfsdk:"give_up_policy"`
+	DDL                *flowDDLConfigModel `tfsdk:"ddl"`
+}
+
+type flowDDLConfigModel struct {
+	Gate        types.Bool `tfsdk:"gate"`
+	AutoApprove types.Bool `tfsdk:"auto_approve"`
+	AutoApply   types.Bool `tfsdk:"auto_apply"`
 }
 
 func NewFlowResource() resource.Resource {
@@ -97,6 +112,37 @@ func (r *flowResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 					},
 				},
 			},
+			"config": schema.SingleNestedAttribute{
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"ack_policy": schema.StringAttribute{
+						Optional: true,
+					},
+					"primary_destination": schema.StringAttribute{
+						Optional: true,
+					},
+					"failure_mode": schema.StringAttribute{
+						Optional: true,
+					},
+					"give_up_policy": schema.StringAttribute{
+						Optional: true,
+					},
+					"ddl": schema.SingleNestedAttribute{
+						Optional: true,
+						Attributes: map[string]schema.Attribute{
+							"gate": schema.BoolAttribute{
+								Optional: true,
+							},
+							"auto_approve": schema.BoolAttribute{
+								Optional: true,
+							},
+							"auto_apply": schema.BoolAttribute{
+								Optional: true,
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -144,6 +190,7 @@ func (r *flowResource) Create(ctx context.Context, req resource.CreateRequest, r
 		StartImmediately: plan.StartImmediately,
 		Source:           endpointFromProto(result.Source),
 		Destinations:     endpointsFromProto(result.Destinations),
+		Config:           flowConfigModelFromProto(result.Config),
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
@@ -176,6 +223,7 @@ func (r *flowResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		StartImmediately: state.StartImmediately,
 		Source:           endpointFromProto(result.Source),
 		Destinations:     endpointsFromProto(result.Destinations),
+		Config:           flowConfigModelFromProto(result.Config),
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, newState)...)
@@ -209,6 +257,7 @@ func (r *flowResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		StartImmediately: plan.StartImmediately,
 		Source:           endpointFromProto(result.Source),
 		Destinations:     endpointsFromProto(result.Destinations),
+		Config:           flowConfigModelFromProto(result.Config),
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
@@ -255,6 +304,7 @@ func flowModelToProto(ctx context.Context, model flowResourceModel) (*wallabypb.
 		Parallelism:  int32(model.Parallelism.ValueInt64()),
 		Source:       source,
 		Destinations: dests,
+		Config:       flowConfigModelToProto(model.Config),
 	}, diags
 }
 
@@ -299,6 +349,146 @@ func endpointFromProto(item *wallabypb.Endpoint) endpointModel {
 	}
 }
 
+func flowConfigModelToProto(model *flowConfigModel) *wallabypb.FlowConfig {
+	if model == nil {
+		return nil
+	}
+	cfg := &wallabypb.FlowConfig{}
+	has := false
+
+	if !model.AckPolicy.IsNull() && !model.AckPolicy.IsUnknown() {
+		value := strings.TrimSpace(model.AckPolicy.ValueString())
+		if value != "" {
+			cfg.AckPolicy = ackPolicyFromString(value)
+			has = true
+		}
+	}
+	if !model.PrimaryDestination.IsNull() && !model.PrimaryDestination.IsUnknown() {
+		value := strings.TrimSpace(model.PrimaryDestination.ValueString())
+		if value != "" {
+			cfg.PrimaryDestination = value
+			has = true
+		}
+	}
+	if !model.FailureMode.IsNull() && !model.FailureMode.IsUnknown() {
+		value := strings.TrimSpace(model.FailureMode.ValueString())
+		if value != "" {
+			cfg.FailureMode = failureModeFromString(value)
+			has = true
+		}
+	}
+	if !model.GiveUpPolicy.IsNull() && !model.GiveUpPolicy.IsUnknown() {
+		value := strings.TrimSpace(model.GiveUpPolicy.ValueString())
+		if value != "" {
+			cfg.GiveUpPolicy = giveUpPolicyFromString(value)
+			has = true
+		}
+	}
+	if model.DDL != nil {
+		ddl := ddlPolicyModelToProto(model.DDL)
+		if ddl != nil {
+			cfg.Ddl = ddl
+			has = true
+		}
+	}
+	if !has {
+		return nil
+	}
+	return cfg
+}
+
+func flowConfigModelFromProto(pb *wallabypb.FlowConfig) *flowConfigModel {
+	if pb == nil {
+		return nil
+	}
+	model := &flowConfigModel{
+		AckPolicy:          types.StringNull(),
+		PrimaryDestination: types.StringNull(),
+		FailureMode:        types.StringNull(),
+		GiveUpPolicy:       types.StringNull(),
+	}
+	has := false
+	if pb.AckPolicy != wallabypb.AckPolicy_ACK_POLICY_UNSPECIFIED {
+		model.AckPolicy = types.StringValue(ackPolicyToString(pb.AckPolicy))
+		has = true
+	}
+	if pb.PrimaryDestination != "" {
+		model.PrimaryDestination = types.StringValue(pb.PrimaryDestination)
+		has = true
+	}
+	if pb.FailureMode != wallabypb.FailureMode_FAILURE_MODE_UNSPECIFIED {
+		model.FailureMode = types.StringValue(failureModeToString(pb.FailureMode))
+		has = true
+	}
+	if pb.GiveUpPolicy != wallabypb.GiveUpPolicy_GIVE_UP_POLICY_UNSPECIFIED {
+		model.GiveUpPolicy = types.StringValue(giveUpPolicyToString(pb.GiveUpPolicy))
+		has = true
+	}
+	if ddl := ddlPolicyModelFromProto(pb.Ddl); ddl != nil {
+		model.DDL = ddl
+		has = true
+	}
+	if !has {
+		return nil
+	}
+	return model
+}
+
+func ddlPolicyModelToProto(model *flowDDLConfigModel) *wallabypb.DDLPolicy {
+	if model == nil {
+		return nil
+	}
+	out := &wallabypb.DDLPolicy{}
+	has := false
+	if !model.Gate.IsNull() && !model.Gate.IsUnknown() {
+		value := model.Gate.ValueBool()
+		out.Gate = &value
+		has = true
+	}
+	if !model.AutoApprove.IsNull() && !model.AutoApprove.IsUnknown() {
+		value := model.AutoApprove.ValueBool()
+		out.AutoApprove = &value
+		has = true
+	}
+	if !model.AutoApply.IsNull() && !model.AutoApply.IsUnknown() {
+		value := model.AutoApply.ValueBool()
+		out.AutoApply = &value
+		has = true
+	}
+	if !has {
+		return nil
+	}
+	return out
+}
+
+func ddlPolicyModelFromProto(pb *wallabypb.DDLPolicy) *flowDDLConfigModel {
+	if pb == nil {
+		return nil
+	}
+	model := &flowDDLConfigModel{
+		Gate:        types.BoolNull(),
+		AutoApprove: types.BoolNull(),
+		AutoApply:   types.BoolNull(),
+	}
+	has := false
+	if pb.Gate != nil {
+		model.Gate = types.BoolValue(*pb.Gate)
+		has = true
+	}
+	if pb.AutoApprove != nil {
+		model.AutoApprove = types.BoolValue(*pb.AutoApprove)
+		has = true
+	}
+	if pb.AutoApply != nil {
+		model.AutoApply = types.BoolValue(*pb.AutoApply)
+		has = true
+	}
+	if !has {
+		return nil
+	}
+	return model
+}
+
 func endpointTypeFromString(value string) wallabypb.EndpointType {
 	switch strings.ToLower(value) {
 	case "postgres":
@@ -329,6 +519,72 @@ func endpointTypeFromString(value string) wallabypb.EndpointType {
 		return wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE
 	default:
 		return wallabypb.EndpointType_ENDPOINT_TYPE_UNSPECIFIED
+	}
+}
+
+func ackPolicyFromString(value string) wallabypb.AckPolicy {
+	switch strings.ToLower(value) {
+	case "all":
+		return wallabypb.AckPolicy_ACK_POLICY_ALL
+	case "primary":
+		return wallabypb.AckPolicy_ACK_POLICY_PRIMARY
+	default:
+		return wallabypb.AckPolicy_ACK_POLICY_UNSPECIFIED
+	}
+}
+
+func ackPolicyToString(value wallabypb.AckPolicy) string {
+	switch value {
+	case wallabypb.AckPolicy_ACK_POLICY_ALL:
+		return "all"
+	case wallabypb.AckPolicy_ACK_POLICY_PRIMARY:
+		return "primary"
+	default:
+		return ""
+	}
+}
+
+func failureModeFromString(value string) wallabypb.FailureMode {
+	switch strings.ToLower(value) {
+	case "hold_slot":
+		return wallabypb.FailureMode_FAILURE_MODE_HOLD_SLOT
+	case "drop_slot":
+		return wallabypb.FailureMode_FAILURE_MODE_DROP_SLOT
+	default:
+		return wallabypb.FailureMode_FAILURE_MODE_UNSPECIFIED
+	}
+}
+
+func failureModeToString(value wallabypb.FailureMode) string {
+	switch value {
+	case wallabypb.FailureMode_FAILURE_MODE_HOLD_SLOT:
+		return "hold_slot"
+	case wallabypb.FailureMode_FAILURE_MODE_DROP_SLOT:
+		return "drop_slot"
+	default:
+		return ""
+	}
+}
+
+func giveUpPolicyFromString(value string) wallabypb.GiveUpPolicy {
+	switch strings.ToLower(value) {
+	case "never":
+		return wallabypb.GiveUpPolicy_GIVE_UP_POLICY_NEVER
+	case "on_retry_exhaustion":
+		return wallabypb.GiveUpPolicy_GIVE_UP_POLICY_ON_RETRY_EXHAUSTION
+	default:
+		return wallabypb.GiveUpPolicy_GIVE_UP_POLICY_UNSPECIFIED
+	}
+}
+
+func giveUpPolicyToString(value wallabypb.GiveUpPolicy) string {
+	switch value {
+	case wallabypb.GiveUpPolicy_GIVE_UP_POLICY_NEVER:
+		return "never"
+	case wallabypb.GiveUpPolicy_GIVE_UP_POLICY_ON_RETRY_EXHAUSTION:
+		return "on_retry_exhaustion"
+	default:
+		return ""
 	}
 }
 

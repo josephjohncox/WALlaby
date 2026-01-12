@@ -129,6 +129,11 @@ type Source interface {
 	Capabilities() Capabilities
 }
 
+// SlotDropper is implemented by sources that can drop replication slots.
+type SlotDropper interface {
+	DropSlot(ctx context.Context) error
+}
+
 // Destination writes to a downstream system.
 type Destination interface {
 	Open(ctx context.Context, spec Spec) error

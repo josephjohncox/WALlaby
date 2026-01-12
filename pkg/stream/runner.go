@@ -5,13 +5,26 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"sync"
 	"time"
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/spec"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
+)
+
+const (
+	defaultRetryAttempts = 3
+	defaultRetryBackoff  = 50 * time.Millisecond
+)
+
+var (
+	ddlGatedCounter metric.Int64Counter
+	ddlGatedOnce    sync.Once
 )
 
 // DestinationConfig binds a destination to its spec.
@@ -32,29 +45,51 @@ type StagingResolverFor interface {
 
 // Runner streams data from a source to destinations.
 type Runner struct {
-	Source         connector.Source
-	SourceSpec     connector.Spec
-	Destinations   []DestinationConfig
-	Checkpoints    connector.CheckpointStore
-	FlowID         string
-	ResolveStaging bool
-	Tracer         trace.Tracer
-	BatchTimeout   time.Duration
-	MaxEmptyReads  int
-	WireFormat     connector.WireFormat
-	StrictFormat   bool
-	Parallelism    int
-	DDLApplied     func(ctx context.Context, lsn string, ddl string) error
+	Source             connector.Source
+	SourceSpec         connector.Spec
+	Destinations       []DestinationConfig
+	Checkpoints        connector.CheckpointStore
+	FlowID             string
+	ResolveStaging     bool
+	Tracer             trace.Tracer
+	BatchTimeout       time.Duration
+	MaxEmptyReads      int
+	WireFormat         connector.WireFormat
+	StrictFormat       bool
+	Parallelism        int
+	AckPolicy          AckPolicy
+	PrimaryDestination string
+	FailureMode        FailureMode
+	GiveUpPolicy       GiveUpPolicy
+	DDLApplied         func(ctx context.Context, flowID string, lsn string, ddl string) error
+	TraceSink          TraceSink
 }
 
 // Run executes the streaming loop until context cancellation or error.
-func (r *Runner) Run(ctx context.Context) error {
+func (r *Runner) Run(ctx context.Context) (retErr error) {
 	if r.Source == nil {
 		return errors.New("source is required")
 	}
 	if len(r.Destinations) == 0 {
 		return errors.New("at least one destination is required")
 	}
+
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		if r.effectiveFailureMode() != FailureModeDropSlot {
+			return
+		}
+		if errors.Is(retErr, context.Canceled) || errors.Is(retErr, context.DeadlineExceeded) {
+			return
+		}
+		if dropper, ok := r.Source.(connector.SlotDropper); ok {
+			if err := dropper.DropSlot(ctx); err != nil {
+				retErr = fmt.Errorf("%w (drop slot failed: %v)", retErr, err)
+			}
+		}
+	}()
 
 	tracer := r.Tracer
 	if tracer == nil {
@@ -114,7 +149,24 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	ackPolicy := r.effectiveAckPolicy()
+	var primary DestinationConfig
+	var secondaryQueues []*secondaryQueue
+	if ackPolicy == AckPolicyPrimary && len(r.Destinations) > 1 {
+		var secondary []DestinationConfig
+		var err error
+		primary, secondary, err = r.partitionDestinations()
+		if err != nil {
+			return err
+		}
+		secondaryQueues = make([]*secondaryQueue, 0, len(secondary))
+		for _, dest := range secondary {
+			secondaryQueues = append(secondaryQueues, &secondaryQueue{dest: dest})
+		}
+	}
+
 	emptyReads := 0
+	readFailures := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -122,11 +174,27 @@ func (r *Runner) Run(ctx context.Context) error {
 		default:
 		}
 
+		if len(secondaryQueues) > 0 {
+			if _, err := r.drainSecondaryQueues(ctx, secondaryQueues); err != nil {
+				return err
+			}
+		}
+
 		batchCtx, span := tracer.Start(ctx, "stream.batch")
 		batch, err := r.Source.Read(batchCtx)
 		if err != nil {
+			if errors.Is(err, connector.ErrDDLApprovalRequired) {
+				r.handleDDLGate(batchCtx, span, err)
+				span.End()
+				return err
+			}
 			if errors.Is(err, io.EOF) && r.isBackfill() {
 				span.End()
+				if len(secondaryQueues) > 0 {
+					if err := r.flushSecondaryQueues(ctx, secondaryQueues); err != nil {
+						return err
+					}
+				}
 				if r.ResolveStaging {
 					if err := r.resolveStaging(batchCtx); err != nil {
 						return err
@@ -134,9 +202,23 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 				return nil
 			}
+			r.emitTrace(batchCtx, "read_error", "", "", spec.ActionReadFail, err)
 			span.RecordError(err)
 			span.End()
-			return err
+			readFailures++
+			if r.shouldGiveUp(readFailures) {
+				return err
+			}
+			if err := r.sleepRetry(ctx); err != nil {
+				return err
+			}
+			continue
+		}
+		readFailures = 0
+		if len(ddlRecordsInBatch(batch)) > 0 {
+			r.emitTrace(batchCtx, "read", batch.Checkpoint.LSN, "", spec.ActionReadDDL, nil)
+		} else {
+			r.emitTrace(batchCtx, "read", batch.Checkpoint.LSN, "", spec.ActionReadBatch, nil)
 		}
 		if r.WireFormat != "" {
 			batch.WireFormat = r.WireFormat
@@ -144,17 +226,22 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		if len(batch.Records) == 0 {
 			if isControlCheckpoint(batch.Checkpoint) {
+				r.emitTrace(batchCtx, "deliver", batch.Checkpoint.LSN, "", spec.ActionDeliver, nil)
 				if err := r.Source.Ack(batchCtx, batch.Checkpoint); err != nil {
+					r.emitTrace(batchCtx, "ack_error", batch.Checkpoint.LSN, "", spec.ActionNone, err)
 					span.RecordError(err)
 					span.End()
 					return fmt.Errorf("ack source: %w", err)
 				}
+				r.emitTrace(batchCtx, "ack", batch.Checkpoint.LSN, "", spec.ActionAck, nil)
+				r.emitTrace(batchCtx, "control_checkpoint", batch.Checkpoint.LSN, "", spec.ActionNone, nil)
 				if r.Checkpoints != nil && r.FlowID != "" && shouldPersistCheckpoint(batch.Checkpoint) {
 					if err := r.Checkpoints.Put(batchCtx, r.FlowID, batch.Checkpoint); err != nil {
 						span.RecordError(err)
 						span.End()
 						return fmt.Errorf("persist checkpoint: %w", err)
 					}
+					r.emitTrace(batchCtx, "checkpoint", batch.Checkpoint.LSN, "", spec.ActionNone, nil)
 				}
 				span.End()
 				continue
@@ -163,6 +250,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			emptyReads++
 			span.End()
 			if r.MaxEmptyReads > 0 && emptyReads >= r.MaxEmptyReads {
+				if len(secondaryQueues) > 0 {
+					if err := r.flushSecondaryQueues(ctx, secondaryQueues); err != nil {
+						return err
+					}
+				}
 				if r.ResolveStaging && r.isBackfill() {
 					if err := r.resolveStaging(batchCtx); err != nil {
 						return err
@@ -179,23 +271,65 @@ func (r *Runner) Run(ctx context.Context) error {
 			attribute.String("schema", batch.Schema.Name),
 		)
 
-		if err := r.writeDestinations(batchCtx, batch); err != nil {
+		ddlRecords := ddlRecordsInBatch(batch)
+
+		ackAndCheckpoint := func() error {
+			if err := r.Source.Ack(batchCtx, batch.Checkpoint); err != nil {
+				r.emitTrace(batchCtx, "ack_error", batch.Checkpoint.LSN, "", spec.ActionNone, err)
+				return fmt.Errorf("ack source: %w", err)
+			}
+			r.emitTrace(batchCtx, "ack", batch.Checkpoint.LSN, "", spec.ActionAck, nil)
+			if r.Checkpoints != nil && r.FlowID != "" && shouldPersistCheckpoint(batch.Checkpoint) {
+				if err := r.Checkpoints.Put(batchCtx, r.FlowID, batch.Checkpoint); err != nil {
+					return fmt.Errorf("persist checkpoint: %w", err)
+				}
+				r.emitTrace(batchCtx, "checkpoint", batch.Checkpoint.LSN, "", spec.ActionNone, nil)
+			}
+			return nil
+		}
+
+		if ackPolicy == AckPolicyPrimary && len(secondaryQueues) > 0 {
+			if err := r.writeWithRetry(batchCtx, batch, []DestinationConfig{primary}); err != nil {
+				r.emitTrace(batchCtx, "write_error", batch.Checkpoint.LSN, "", spec.ActionWriteFail, err)
+				span.RecordError(err)
+				span.End()
+				return err
+			}
+			r.emitTrace(batchCtx, "deliver", batch.Checkpoint.LSN, "", spec.ActionDeliver, nil)
+			if err := ackAndCheckpoint(); err != nil {
+				span.RecordError(err)
+				span.End()
+				return err
+			}
+			pending := newPendingBatch(batch, ddlRecords, len(secondaryQueues))
+			for _, queue := range secondaryQueues {
+				queue.pending = append(queue.pending, pending)
+			}
+			if _, err := r.drainSecondaryQueues(batchCtx, secondaryQueues); err != nil {
+				span.RecordError(err)
+				span.End()
+				return err
+			}
+			span.End()
+			continue
+		}
+
+		if err := r.writeWithRetry(batchCtx, batch, r.Destinations); err != nil {
+			r.emitTrace(batchCtx, "write_error", batch.Checkpoint.LSN, "", spec.ActionWriteFail, err)
 			span.RecordError(err)
 			span.End()
 			return err
 		}
-
-		if err := r.Source.Ack(batchCtx, batch.Checkpoint); err != nil {
+		if err := r.markDDLApplied(batchCtx, batch.Checkpoint, ddlRecords); err != nil {
 			span.RecordError(err)
 			span.End()
-			return fmt.Errorf("ack source: %w", err)
+			return err
 		}
-		if r.Checkpoints != nil && r.FlowID != "" && shouldPersistCheckpoint(batch.Checkpoint) {
-			if err := r.Checkpoints.Put(batchCtx, r.FlowID, batch.Checkpoint); err != nil {
-				span.RecordError(err)
-				span.End()
-				return fmt.Errorf("persist checkpoint: %w", err)
-			}
+		r.emitTrace(batchCtx, "deliver", batch.Checkpoint.LSN, "", spec.ActionDeliver, nil)
+		if err := ackAndCheckpoint(); err != nil {
+			span.RecordError(err)
+			span.End()
+			return err
 		}
 
 		span.End()
@@ -218,6 +352,170 @@ func (r *Runner) isBackfill() bool {
 		return false
 	}
 	return r.SourceSpec.Options["mode"] == "backfill"
+}
+
+func (r *Runner) effectiveAckPolicy() AckPolicy {
+	if r.AckPolicy == "" {
+		return AckPolicyAll
+	}
+	return r.AckPolicy
+}
+
+func (r *Runner) effectiveGiveUpPolicy() GiveUpPolicy {
+	if r.GiveUpPolicy == "" {
+		return GiveUpPolicyOnRetryExhaustion
+	}
+	return r.GiveUpPolicy
+}
+
+func (r *Runner) effectiveFailureMode() FailureMode {
+	if r.FailureMode == "" {
+		return FailureModeHoldSlot
+	}
+	return r.FailureMode
+}
+
+func (r *Runner) retryLimit() int {
+	return defaultRetryAttempts
+}
+
+func (r *Runner) retryBackoff() time.Duration {
+	return defaultRetryBackoff
+}
+
+func (r *Runner) shouldGiveUp(attempts int) bool {
+	if r.effectiveGiveUpPolicy() == GiveUpPolicyNever {
+		return false
+	}
+	return attempts >= r.retryLimit()
+}
+
+func (r *Runner) sleepRetry(ctx context.Context) error {
+	backoff := r.retryBackoff()
+	if backoff <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (r *Runner) partitionDestinations() (DestinationConfig, []DestinationConfig, error) {
+	if len(r.Destinations) == 0 {
+		return DestinationConfig{}, nil, errors.New("at least one destination is required")
+	}
+	if r.PrimaryDestination == "" {
+		return r.Destinations[0], append([]DestinationConfig(nil), r.Destinations[1:]...), nil
+	}
+	for i, dest := range r.Destinations {
+		if dest.Spec.Name == r.PrimaryDestination {
+			secondary := make([]DestinationConfig, 0, len(r.Destinations)-1)
+			secondary = append(secondary, r.Destinations[:i]...)
+			secondary = append(secondary, r.Destinations[i+1:]...)
+			return dest, secondary, nil
+		}
+	}
+	return DestinationConfig{}, nil, fmt.Errorf("primary destination %q not found", r.PrimaryDestination)
+}
+
+func (r *Runner) writeWithRetry(ctx context.Context, batch connector.Batch, dests []DestinationConfig) error {
+	attempts := 0
+	for {
+		if err := r.writeDestinations(ctx, batch, dests); err != nil {
+			attempts++
+			if r.shouldGiveUp(attempts) {
+				return err
+			}
+			if err := r.sleepRetry(ctx); err != nil {
+				return err
+			}
+			continue
+		}
+		return nil
+	}
+}
+
+func (r *Runner) drainSecondaryQueues(ctx context.Context, queues []*secondaryQueue) (bool, error) {
+	progressed := false
+	for _, queue := range queues {
+		for len(queue.pending) > 0 {
+			pending := queue.pending[0]
+			if err := r.writeDestination(ctx, queue.dest, pending.batch); err != nil {
+				pending.bumpAttempt(queue.dest.Spec.Name)
+				if r.shouldGiveUp(pending.attempts[queue.dest.Spec.Name]) {
+					return progressed, err
+				}
+				break
+			}
+			queue.pending = queue.pending[1:]
+			pending.remaining--
+			progressed = true
+			if pending.remaining == 0 && len(pending.ddlRecords) > 0 {
+				if err := r.markDDLApplied(ctx, pending.batch.Checkpoint, pending.ddlRecords); err != nil {
+					return progressed, err
+				}
+			}
+		}
+	}
+	return progressed, nil
+}
+
+func (r *Runner) flushSecondaryQueues(ctx context.Context, queues []*secondaryQueue) error {
+	for {
+		empty := true
+		for _, queue := range queues {
+			if len(queue.pending) > 0 {
+				empty = false
+				break
+			}
+		}
+		if empty {
+			return nil
+		}
+		progressed, err := r.drainSecondaryQueues(ctx, queues)
+		if err != nil {
+			return err
+		}
+		if progressed {
+			continue
+		}
+		if r.effectiveGiveUpPolicy() != GiveUpPolicyNever {
+			return fmt.Errorf("secondary destinations failed to catch up")
+		}
+		if err := r.sleepRetry(ctx); err != nil {
+			return err
+		}
+	}
+}
+
+type pendingBatch struct {
+	batch      connector.Batch
+	ddlRecords []connector.Record
+	remaining  int
+	attempts   map[string]int
+}
+
+func newPendingBatch(batch connector.Batch, ddlRecords []connector.Record, remaining int) *pendingBatch {
+	return &pendingBatch{
+		batch:      batch,
+		ddlRecords: ddlRecords,
+		remaining:  remaining,
+		attempts:   make(map[string]int),
+	}
+}
+
+func (p *pendingBatch) bumpAttempt(dest string) {
+	p.attempts[dest]++
+}
+
+type secondaryQueue struct {
+	dest    DestinationConfig
+	pending []*pendingBatch
 }
 
 func (r *Runner) normalizeWireFormat() error {
@@ -282,34 +580,33 @@ func shouldPersistCheckpoint(cp connector.Checkpoint) bool {
 	return true
 }
 
-func (r *Runner) writeDestinations(ctx context.Context, batch connector.Batch) error {
-	if len(r.Destinations) == 0 {
+func (r *Runner) writeDestinations(ctx context.Context, batch connector.Batch, dests []DestinationConfig) error {
+	if len(dests) == 0 {
 		return nil
 	}
-	ddlRecords := ddlRecordsInBatch(batch)
 
 	parallelism := r.Parallelism
 	if parallelism <= 0 {
 		parallelism = 1
 	}
-	if parallelism == 1 || len(r.Destinations) == 1 {
-		for _, dest := range r.Destinations {
+	if parallelism == 1 || len(dests) == 1 {
+		for _, dest := range dests {
 			if err := r.writeDestination(ctx, dest, batch); err != nil {
 				return err
 			}
 		}
-		return r.markDDLApplied(ctx, batch.Checkpoint, ddlRecords)
+		return nil
 	}
 
-	if parallelism > len(r.Destinations) {
-		parallelism = len(r.Destinations)
+	if parallelism > len(dests) {
+		parallelism = len(dests)
 	}
 
 	sem := make(chan struct{}, parallelism)
-	errCh := make(chan error, len(r.Destinations))
+	errCh := make(chan error, len(dests))
 	var wg sync.WaitGroup
 
-	for _, dest := range r.Destinations {
+	for _, dest := range dests {
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(dest DestinationConfig) {
@@ -329,7 +626,7 @@ func (r *Runner) writeDestinations(ctx context.Context, batch connector.Batch) e
 			return err
 		}
 	}
-	return r.markDDLApplied(ctx, batch.Checkpoint, ddlRecords)
+	return nil
 }
 
 func ddlRecordsInBatch(batch connector.Batch) []connector.Record {
@@ -353,11 +650,116 @@ func (r *Runner) markDDLApplied(ctx context.Context, checkpoint connector.Checkp
 		return nil
 	}
 	for _, record := range records {
-		if err := r.DDLApplied(ctx, checkpoint.LSN, record.DDL); err != nil {
+		if err := r.DDLApplied(ctx, r.FlowID, checkpoint.LSN, record.DDL); err != nil {
+			if errors.Is(err, connector.ErrDDLApprovalRequired) {
+				r.handleDDLGate(ctx, trace.SpanFromContext(ctx), err)
+			}
 			return err
+		}
+		if r.TraceSink != nil {
+			r.TraceSink.Emit(ctx, TraceEvent{
+				Kind:       "ddl_applied",
+				Spec:       spec.SpecCDCFlow,
+				SpecAction: spec.ActionApplyDDL,
+				LSN:        checkpoint.LSN,
+				FlowID:     r.FlowID,
+				DDL:        record.DDL,
+			})
 		}
 	}
 	return nil
+}
+
+func (r *Runner) handleDDLGate(ctx context.Context, span trace.Span, err error) {
+	if span == nil {
+		span = trace.SpanFromContext(ctx)
+	}
+	gate, _ := connector.AsDDLGate(err)
+	attrs := []attribute.KeyValue{
+		attribute.Bool("ddl.gated", true),
+	}
+	if r.FlowID != "" {
+		attrs = append(attrs, attribute.String("flow.id", r.FlowID))
+	}
+	if gate != nil {
+		if gate.FlowID != "" {
+			attrs = append(attrs, attribute.String("ddl.flow_id", gate.FlowID))
+		}
+		if gate.LSN != "" {
+			attrs = append(attrs, attribute.String("ddl.lsn", gate.LSN))
+		}
+		if gate.Status != "" {
+			attrs = append(attrs, attribute.String("ddl.status", gate.Status))
+		}
+		if gate.EventID != 0 {
+			attrs = append(attrs, attribute.Int64("ddl.event_id", gate.EventID))
+		}
+	}
+	span.AddEvent("ddl.gated", trace.WithAttributes(attrs...))
+
+	r.emitDDLGateTrace(ctx, gate, err)
+	r.emitDDLGateMetric(ctx, gate)
+
+	if gate != nil {
+		log.Printf("ddl gate: flow=%s event_id=%d status=%s lsn=%s", r.FlowID, gate.EventID, gate.Status, gate.LSN)
+		return
+	}
+	log.Printf("ddl gate: flow=%s error=%v", r.FlowID, err)
+}
+
+func (r *Runner) emitDDLGateMetric(ctx context.Context, gate *connector.DDLGateError) {
+	counter := ddlGatedMetric()
+	if counter == nil {
+		return
+	}
+	attrs := []attribute.KeyValue{}
+	if r.FlowID != "" {
+		attrs = append(attrs, attribute.String("flow.id", r.FlowID))
+	}
+	if gate != nil && gate.Status != "" {
+		attrs = append(attrs, attribute.String("ddl.status", gate.Status))
+	}
+	counter.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+func (r *Runner) emitDDLGateTrace(ctx context.Context, gate *connector.DDLGateError, err error) {
+	if r.TraceSink == nil {
+		return
+	}
+	event := TraceEvent{
+		Kind:       "ddl_gate",
+		Spec:       spec.SpecCDCFlow,
+		SpecAction: spec.ActionPause,
+		FlowID:     r.FlowID,
+	}
+	if err != nil {
+		event.Error = err.Error()
+	}
+	if gate != nil {
+		if gate.FlowID != "" {
+			event.FlowID = gate.FlowID
+		}
+		event.LSN = gate.LSN
+		event.DDL = gate.DDL
+		event.Detail = gate.PlanJSON
+		event.EventID = gate.EventID
+	}
+	r.TraceSink.Emit(ctx, event)
+}
+
+func ddlGatedMetric() metric.Int64Counter {
+	ddlGatedOnce.Do(func() {
+		meter := otel.Meter("wallaby/stream")
+		counter, err := meter.Int64Counter(
+			"wallaby.ddl.gated_total",
+			metric.WithDescription("Number of times a flow was gated on DDL approval."),
+			metric.WithUnit("1"),
+		)
+		if err == nil {
+			ddlGatedCounter = counter
+		}
+	})
+	return ddlGatedCounter
 }
 
 func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, batch connector.Batch) error {
@@ -368,6 +770,7 @@ func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, b
 					continue
 				}
 				if err := dest.Dest.ApplyDDL(ctx, batch.Schema, record); err != nil {
+					r.emitTrace(ctx, "ddl_error", batch.Checkpoint.LSN, dest.Spec.Name, spec.ActionNone, err)
 					return fmt.Errorf("apply ddl destination %s: %w", dest.Spec.Name, err)
 				}
 			}
@@ -383,7 +786,33 @@ func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, b
 	}
 
 	if err := dest.Dest.Write(ctx, destBatch); err != nil {
+		r.emitTrace(ctx, "write_error", batch.Checkpoint.LSN, dest.Spec.Name, spec.ActionWriteFail, err)
 		return fmt.Errorf("write destination %s: %w", dest.Spec.Name, err)
 	}
+	r.emitTrace(ctx, "write", batch.Checkpoint.LSN, dest.Spec.Name, spec.ActionNone, nil)
 	return nil
+}
+
+func (r *Runner) emitTrace(ctx context.Context, kind, lsn, destination string, specAction spec.Action, err error) {
+	if r.TraceSink == nil {
+		return
+	}
+	if lsn == "" {
+		switch kind {
+		case "read", "deliver", "ack", "ack_error", "checkpoint", "write", "write_error", "ddl_error", "control_checkpoint":
+			return
+		}
+	}
+	event := TraceEvent{
+		Kind:        kind,
+		Spec:        spec.SpecCDCFlow,
+		SpecAction:  specAction,
+		LSN:         lsn,
+		FlowID:      r.FlowID,
+		Destination: destination,
+	}
+	if err != nil {
+		event.Error = err.Error()
+	}
+	r.TraceSink.Emit(ctx, event)
 }

@@ -67,6 +67,7 @@ func ddlList(args []string) {
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
 	status := fs.String("status", "pending", "status filter: pending|approved|rejected|applied|all")
+	flowID := fs.String("flow-id", "", "filter by flow id")
 	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
 	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
 	fs.Parse(args)
@@ -79,13 +80,13 @@ func ddlList(args []string) {
 
 	var events []*wallabypb.DDLEvent
 	if *status == "pending" {
-		resp, err := client.ListPendingDDL(ctx, &wallabypb.ListPendingDDLRequest{})
+		resp, err := client.ListPendingDDL(ctx, &wallabypb.ListPendingDDLRequest{FlowId: *flowID})
 		if err != nil {
 			log.Fatalf("list pending ddl: %v", err)
 		}
 		events = resp.Events
 	} else {
-		resp, err := client.ListDDL(ctx, &wallabypb.ListDDLRequest{Status: *status})
+		resp, err := client.ListDDL(ctx, &wallabypb.ListDDLRequest{Status: *status, FlowId: *flowID})
 		if err != nil {
 			log.Fatalf("list ddl: %v", err)
 		}
@@ -117,10 +118,10 @@ func ddlList(args []string) {
 		return
 	}
 
-	fmt.Printf("%-6s %-10s %-18s %-s\n", "ID", "STATUS", "LSN", "DDL/PLAN")
+	fmt.Printf("%-6s %-10s %-18s %-12s %-s\n", "ID", "STATUS", "LSN", "FLOW", "DDL/PLAN")
 	for _, event := range events {
 		flagged := statusFlag(event.Status)
-		line := fmt.Sprintf("%-6d %-10s %-18s %-s", event.Id, event.Status, event.Lsn, ddlSummary(event))
+		line := fmt.Sprintf("%-6d %-10s %-18s %-12s %-s", event.Id, event.Status, event.Lsn, event.FlowId, ddlSummary(event))
 		if flagged != "" {
 			line = fmt.Sprintf("%s [%s]", line, flagged)
 		}
@@ -255,7 +256,7 @@ func usage() {
 
 func ddlUsage() {
 	fmt.Println("DDL subcommands:")
-	fmt.Println("  wallaby-admin ddl list -status pending|approved|rejected|applied|all")
+	fmt.Println("  wallaby-admin ddl list -status pending|approved|rejected|applied|all [-flow-id <flow_id>]")
 	fmt.Println("  wallaby-admin ddl approve -id <event_id>")
 	fmt.Println("  wallaby-admin ddl reject -id <event_id>")
 	fmt.Println("  wallaby-admin ddl apply -id <event_id>")
@@ -1345,7 +1346,7 @@ func runBackfill(ctx context.Context, flowPB *wallabypb.Flow, tables []string, w
 	}
 
 	factory := runner.Factory{}
-	source, err := factory.Source(model.Source)
+	source, err := factory.SourceForFlow(model)
 	if err != nil {
 		return err
 	}
@@ -1361,6 +1362,18 @@ func runBackfill(ctx context.Context, flowPB *wallabypb.Flow, tables []string, w
 		FlowID:       model.ID,
 		WireFormat:   model.WireFormat,
 		Parallelism:  model.Parallelism,
+	}
+	if model.Config.AckPolicy != "" {
+		runner.AckPolicy = model.Config.AckPolicy
+	}
+	if model.Config.PrimaryDestination != "" {
+		runner.PrimaryDestination = model.Config.PrimaryDestination
+	}
+	if model.Config.FailureMode != "" {
+		runner.FailureMode = model.Config.FailureMode
+	}
+	if model.Config.GiveUpPolicy != "" {
+		runner.GiveUpPolicy = model.Config.GiveUpPolicy
 	}
 	return runner.Run(ctx)
 }
@@ -1405,7 +1418,53 @@ func flowFromProto(pb *wallabypb.Flow) (flow.Flow, error) {
 		Destinations: destinations,
 		WireFormat:   wireFormatFromProto(pb.WireFormat),
 		Parallelism:  int(pb.Parallelism),
+		Config:       flowConfigFromProto(pb.Config),
 	}, nil
+}
+
+func flowConfigFromProto(cfg *wallabypb.FlowConfig) flow.Config {
+	if cfg == nil {
+		return flow.Config{}
+	}
+	return flow.Config{
+		AckPolicy:          ackPolicyFromProto(cfg.AckPolicy),
+		PrimaryDestination: cfg.PrimaryDestination,
+		FailureMode:        failureModeFromProto(cfg.FailureMode),
+		GiveUpPolicy:       giveUpPolicyFromProto(cfg.GiveUpPolicy),
+	}
+}
+
+func ackPolicyFromProto(policy wallabypb.AckPolicy) stream.AckPolicy {
+	switch policy {
+	case wallabypb.AckPolicy_ACK_POLICY_ALL:
+		return stream.AckPolicyAll
+	case wallabypb.AckPolicy_ACK_POLICY_PRIMARY:
+		return stream.AckPolicyPrimary
+	default:
+		return ""
+	}
+}
+
+func failureModeFromProto(mode wallabypb.FailureMode) stream.FailureMode {
+	switch mode {
+	case wallabypb.FailureMode_FAILURE_MODE_HOLD_SLOT:
+		return stream.FailureModeHoldSlot
+	case wallabypb.FailureMode_FAILURE_MODE_DROP_SLOT:
+		return stream.FailureModeDropSlot
+	default:
+		return ""
+	}
+}
+
+func giveUpPolicyFromProto(policy wallabypb.GiveUpPolicy) stream.GiveUpPolicy {
+	switch policy {
+	case wallabypb.GiveUpPolicy_GIVE_UP_POLICY_NEVER:
+		return stream.GiveUpPolicyNever
+	case wallabypb.GiveUpPolicy_GIVE_UP_POLICY_ON_RETRY_EXHAUSTION:
+		return stream.GiveUpPolicyOnRetryExhaustion
+	default:
+		return ""
+	}
 }
 
 func endpointFromProto(endpoint *wallabypb.Endpoint) (connector.Spec, error) {
@@ -1490,18 +1549,26 @@ func parseCSVValue(value string) []string {
 }
 
 type flowConfig struct {
-	ID           string           `json:"id"`
-	Name         string           `json:"name"`
-	WireFormat   string           `json:"wire_format"`
-	Parallelism  int32            `json:"parallelism"`
-	Source       endpointConfig   `json:"source"`
-	Destinations []endpointConfig `json:"destinations"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	WireFormat   string            `json:"wire_format"`
+	Parallelism  int32             `json:"parallelism"`
+	Config       flowRuntimeConfig `json:"config,omitempty"`
+	Source       endpointConfig    `json:"source"`
+	Destinations []endpointConfig  `json:"destinations"`
 }
 
 type endpointConfig struct {
 	Name    string            `json:"name"`
 	Type    string            `json:"type"`
 	Options map[string]string `json:"options"`
+}
+
+type flowRuntimeConfig struct {
+	AckPolicy          string `json:"ack_policy"`
+	PrimaryDestination string `json:"primary_destination"`
+	FailureMode        string `json:"failure_mode"`
+	GiveUpPolicy       string `json:"give_up_policy"`
 }
 
 func flowConfigToProto(cfg flowConfig) (*wallabypb.Flow, error) {
@@ -1525,7 +1592,20 @@ func flowConfigToProto(cfg flowConfig) (*wallabypb.Flow, error) {
 		Destinations: destinations,
 		WireFormat:   wireFormatToProto(cfg.WireFormat),
 		Parallelism:  cfg.Parallelism,
+		Config:       flowRuntimeConfigToProto(cfg.Config),
 	}, nil
+}
+
+func flowRuntimeConfigToProto(cfg flowRuntimeConfig) *wallabypb.FlowConfig {
+	if cfg == (flowRuntimeConfig{}) {
+		return nil
+	}
+	return &wallabypb.FlowConfig{
+		AckPolicy:          ackPolicyStringToProto(cfg.AckPolicy),
+		PrimaryDestination: cfg.PrimaryDestination,
+		FailureMode:        failureModeStringToProto(cfg.FailureMode),
+		GiveUpPolicy:       giveUpPolicyStringToProto(cfg.GiveUpPolicy),
+	}
 }
 
 func endpointConfigToProto(cfg endpointConfig) (*wallabypb.Endpoint, error) {
@@ -1572,6 +1652,39 @@ func endpointTypeToProto(value string) wallabypb.EndpointType {
 		return wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE
 	default:
 		return wallabypb.EndpointType_ENDPOINT_TYPE_UNSPECIFIED
+	}
+}
+
+func ackPolicyStringToProto(value string) wallabypb.AckPolicy {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "all":
+		return wallabypb.AckPolicy_ACK_POLICY_ALL
+	case "primary":
+		return wallabypb.AckPolicy_ACK_POLICY_PRIMARY
+	default:
+		return wallabypb.AckPolicy_ACK_POLICY_UNSPECIFIED
+	}
+}
+
+func failureModeStringToProto(value string) wallabypb.FailureMode {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "hold_slot", "hold":
+		return wallabypb.FailureMode_FAILURE_MODE_HOLD_SLOT
+	case "drop_slot", "drop":
+		return wallabypb.FailureMode_FAILURE_MODE_DROP_SLOT
+	default:
+		return wallabypb.FailureMode_FAILURE_MODE_UNSPECIFIED
+	}
+}
+
+func giveUpPolicyStringToProto(value string) wallabypb.GiveUpPolicy {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "never":
+		return wallabypb.GiveUpPolicy_GIVE_UP_POLICY_NEVER
+	case "on_retry_exhaustion", "on_retry", "retry_exhaustion":
+		return wallabypb.GiveUpPolicy_GIVE_UP_POLICY_ON_RETRY_EXHAUSTION
+	default:
+		return wallabypb.GiveUpPolicy_GIVE_UP_POLICY_UNSPECIFIED
 	}
 }
 
@@ -1632,6 +1745,7 @@ type ddlListOutput struct {
 
 type ddlListRecord struct {
 	ID        int64  `json:"id"`
+	FlowID    string `json:"flow_id,omitempty"`
 	Status    string `json:"status"`
 	LSN       string `json:"lsn"`
 	DDL       string `json:"ddl,omitempty"`
@@ -1644,6 +1758,7 @@ func ddlListEvents(events []*wallabypb.DDLEvent) []ddlListRecord {
 	for _, event := range events {
 		record := ddlListRecord{
 			ID:       event.Id,
+			FlowID:   event.FlowId,
 			Status:   event.Status,
 			LSN:      event.Lsn,
 			DDL:      event.Ddl,

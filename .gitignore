@@ -13,6 +13,7 @@ bin/
 # Local tooling
 /.idea/
 /.vscode/
+.cache/
 .DS_Store
 *.swp
 *.tmp
@@ -41,6 +42,8 @@ bin/
 coverage.*
 *.coverprofile
 profile.cov
+!specs/coverage.json
+!specs/coverage*.json
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
@@ -58,3 +61,9 @@ go.work.sum
 
 #benchmark
 bench/results/
+
+# TLA+ TLC state dumps
+states/
+
+# TLA+ coverage outputs
+specs/coverage/

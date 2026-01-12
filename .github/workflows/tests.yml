@@ -18,16 +18,48 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Setup Buf
         uses: bufbuild/buf-setup-action@v1
         with:
           version: "1.32.2"
 
+      - name: Lint
+        run: make lint
+
       - name: Generate protobufs
         run: make proto
 
+      - name: Spec manifest
+        run: make spec-verify
+
+      - name: Spec analyzer
+        run: make spec-lint
+
+      - name: Spec sync
+        run: make spec-sync
+
+      - name: TLA+ model check
+        run: |
+          make tla-tools
+          make tla
+
+      - name: TLA+ coverage
+        run: |
+          make tla-coverage
+          make tla-coverage-check
+
+      - name: Trace suite coverage
+        run: |
+          TRACE_CASES=200 TRACE_COVERAGE_REPORT=1 make trace-suite
+
       - name: Unit tests
-        run: go test ./...
+        run: make test-rapid RAPID_CHECKS=100
 
       - name: Create kind cluster
         uses: helm/kind-action@v1

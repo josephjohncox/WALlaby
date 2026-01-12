@@ -7,15 +7,19 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/config"
+	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/registry"
+	"github.com/josephjohncox/wallaby/internal/replication"
 	"github.com/josephjohncox/wallaby/internal/runner"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/stream"
 )
 
 func main() {
@@ -126,16 +130,31 @@ func main() {
 		flowDef.Source.Options["start_lsn"] = startLSN
 	}
 
+	defaults := flow.DDLPolicyDefaults{
+		Gate:        cfg.DDL.Gate,
+		AutoApprove: cfg.DDL.AutoApprove,
+		AutoApply:   cfg.DDL.AutoApply,
+	}
 	factory := runner.Factory{
+		SchemaHookForFlow: func(f flow.Flow) replication.SchemaHook {
+			policy := f.Config.DDL.Resolve(defaults)
+			return &registry.Hook{
+				Store:        registryStore,
+				FlowID:       f.ID,
+				AutoApprove:  policy.AutoApprove,
+				GateApproval: policy.Gate,
+				AutoApply:    policy.AutoApply,
+			}
+		},
 		SchemaHook: &registry.Hook{
 			Store:        registryStore,
-			AutoApprove:  cfg.DDL.AutoApprove,
-			GateApproval: cfg.DDL.Gate,
-			AutoApply:    cfg.DDL.AutoApply,
+			AutoApprove:  defaults.AutoApprove,
+			GateApproval: defaults.Gate,
+			AutoApply:    defaults.AutoApply,
 		},
 	}
 
-	source, err := factory.Source(flowDef.Source)
+	source, err := factory.SourceForFlow(flowDef)
 	if err != nil {
 		log.Fatalf("build source: %v", err)
 	}
@@ -152,9 +171,18 @@ func main() {
 		MaxEmpty:       maxEmptyReads,
 		ResolveStaging: resolveStaging,
 	}
+	if cfg.Trace.Path != "" {
+		tracePath := strings.ReplaceAll(cfg.Trace.Path, "{flow_id}", flowDef.ID)
+		traceFile, err := os.Create(tracePath)
+		if err != nil {
+			log.Fatalf("open trace file: %v", err)
+		}
+		defer traceFile.Close()
+		flowRunner.TraceSink = stream.NewJSONTraceSink(traceFile)
+	}
 	if registryStore != nil {
-		flowRunner.DDLApplied = func(ctx context.Context, lsn string, _ string) error {
-			return registry.MarkDDLAppliedByLSN(ctx, registryStore, lsn)
+		flowRunner.DDLApplied = func(ctx context.Context, flowID string, lsn string, _ string) error {
+			return registry.MarkDDLAppliedByLSN(ctx, registryStore, flowID, lsn)
 		}
 	}
 	if flowRunner.WireFormat == "" && cfg.Wire.DefaultFormat != "" {

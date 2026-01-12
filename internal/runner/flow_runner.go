@@ -22,7 +22,8 @@ type FlowRunner struct {
 	MaxEmpty       int
 	Parallelism    int
 	ResolveStaging bool
-	DDLApplied     func(ctx context.Context, lsn string, ddl string) error
+	DDLApplied     func(ctx context.Context, flowID string, lsn string, ddl string) error
+	TraceSink      stream.TraceSink
 }
 
 func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Source, destinations []stream.DestinationConfig) error {
@@ -52,6 +53,19 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		FlowID:         f.ID,
 		Tracer:         tracer,
 		ResolveStaging: r.ResolveStaging,
+		TraceSink:      r.TraceSink,
+	}
+	if f.Config.AckPolicy != "" {
+		runner.AckPolicy = f.Config.AckPolicy
+	}
+	if f.Config.PrimaryDestination != "" {
+		runner.PrimaryDestination = f.Config.PrimaryDestination
+	}
+	if f.Config.FailureMode != "" {
+		runner.FailureMode = f.Config.FailureMode
+	}
+	if f.Config.GiveUpPolicy != "" {
+		runner.GiveUpPolicy = f.Config.GiveUpPolicy
 	}
 	if r.DDLApplied != nil {
 		runner.DDLApplied = r.DDLApplied

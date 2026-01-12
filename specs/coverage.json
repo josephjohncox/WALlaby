@@ -1,0 +1,67 @@
+{
+  "spec": "CDCFlow",
+  "actions": [
+    "Start",
+    "Pause",
+    "Resume",
+    "Stop",
+    "Fail",
+    "ReadBatch",
+    "ReadDDL",
+    "ReadFail",
+    "ReadGiveUp",
+    "Deliver",
+    "WriteFail",
+    "WriteGiveUp",
+    "Ack",
+    "ApproveDDL",
+    "ApplyDDL",
+    "ResumeAfterDDL",
+    "Idle"
+  ],
+  "invariants": [
+    "TypeInvariant",
+    "NoAckWithoutDeliver",
+    "AckMonotonic",
+    "ReadAheadBounded",
+    "RetryBounds",
+    "CheckpointMonotonic",
+    "DDLAppliedAfterApproval",
+    "DDLGatedPausesFlow",
+    "FlowTransitionsValid"
+  ],
+  "min_actions": {
+    "Ack": 1,
+    "ApplyDDL": 1,
+    "Deliver": 1,
+    "ReadBatch": 1,
+    "ReadDDL": 1
+  },
+  "min_invariants": {
+    "AckMonotonic": 1,
+    "CheckpointMonotonic": 1,
+    "DDLAppliedAfterApproval": 1,
+    "NoAckWithoutDeliver": 1
+  },
+  "unreachable_actions": [
+    "Start",
+    "Pause",
+    "Resume",
+    "Stop",
+    "Fail",
+    "ReadFail",
+    "ReadGiveUp",
+    "WriteFail",
+    "WriteGiveUp",
+    "ApproveDDL",
+    "ResumeAfterDDL",
+    "Idle"
+  ],
+  "unreachable_invariants": [
+    "TypeInvariant",
+    "ReadAheadBounded",
+    "RetryBounds",
+    "DDLGatedPausesFlow",
+    "FlowTransitionsValid"
+  ]
+}

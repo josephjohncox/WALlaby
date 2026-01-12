@@ -113,3 +113,24 @@ Results are written to `bench/results/` as JSON and CSV with:
 - throughput (records/sec, MB/sec)
 - end-to-end latency (p50/p95/p99)
 - duration
+
+## Statistical Regression Checks
+
+For statistical comparisons between two sets of runs (baseline vs candidate),
+use `benchstat` from `golang.org/x/perf`:
+
+```bash
+make benchstat BASELINE=bench/results/baseline CANDIDATE=bench/results/candidate
+```
+
+Each directory can contain one or more `bench_*.json` files (from multiple runs).
+The target converts JSON to benchstat format (`benchstat.txt`) and runs benchstat
+across the two directories for:
+
+- records/sec
+- MB/sec
+- p95 latency
+- p99 latency
+
+If you only have a single run per side, benchstat will report `N=1` samples and
+no confidence intervals. Run multiple iterations for meaningful statistics.

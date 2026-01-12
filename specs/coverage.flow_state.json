@@ -1,0 +1,23 @@
+{
+  "spec": "FlowStateMachine",
+  "actions": [
+    "Start",
+    "Stop",
+    "Resume",
+    "Fail",
+    "RunOnce"
+  ],
+  "invariants": [
+    "TypeInvariant"
+  ],
+  "unreachable_actions": [
+    "Start",
+    "Stop",
+    "Resume",
+    "Fail",
+    "RunOnce"
+  ],
+  "unreachable_invariants": [
+    "TypeInvariant"
+  ]
+}

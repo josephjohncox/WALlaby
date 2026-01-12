@@ -50,7 +50,7 @@ func (c *CatalogScanner) RunOnce(ctx context.Context) error {
 			if c.AutoApprove {
 				status = registry.StatusApproved
 			}
-			_, _ = c.Registry.RecordDDL(ctx, "", plan, "", status)
+			_, _ = c.Registry.RecordDDL(ctx, "", "", plan, "", status)
 			_ = c.Registry.RegisterSchema(ctx, newSchema)
 			c.last[key] = newSchema
 		}

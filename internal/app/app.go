@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -15,13 +16,16 @@ import (
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/config"
 	"github.com/josephjohncox/wallaby/internal/ddl"
+	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/orchestrator"
 	"github.com/josephjohncox/wallaby/internal/registry"
+	"github.com/josephjohncox/wallaby/internal/replication"
 	"github.com/josephjohncox/wallaby/internal/runner"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/pgstream"
+	"github.com/josephjohncox/wallaby/pkg/stream"
 )
 
 // Run wires up core services. It will grow as implementations land.
@@ -32,10 +36,13 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	var checkpoints connector.CheckpointStore
 	var registryStore registry.Store
 	var registryCloser interface{ Close() }
-	var ddlApplied func(context.Context, string, string) error
+	var ddlApplied func(context.Context, string, string, string) error
 	var dbosOrchestrator *orchestrator.DBOSOrchestrator
 	var kubeDispatcher *orchestrator.KubernetesDispatcher
 	var streamStore *pgstream.Store
+	var traceSink stream.TraceSink
+	var traceClose func() error
+	tracePath := cfg.Trace.Path
 	postgresDSN := cfg.Postgres.DSN
 	if postgresDSN != "" {
 		postgresEngine, err := workflow.NewPostgresEngine(ctx, cfg.Postgres.DSN)
@@ -51,14 +58,29 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		}
 		registryStore = store
 		registryCloser = store
-		ddlApplied = func(ctx context.Context, lsn string, _ string) error {
-			return registry.MarkDDLAppliedByLSN(ctx, registryStore, lsn)
+		ddlApplied = func(ctx context.Context, flowID string, lsn string, _ string) error {
+			return registry.MarkDDLAppliedByLSN(ctx, registryStore, flowID, lsn)
 		}
 
 		streamStore, err = pgstream.NewStore(ctx, cfg.Postgres.DSN)
 		if err != nil {
 			return err
 		}
+	}
+
+	if cfg.DBOS.Enabled && tracePath != "" && strings.Contains(tracePath, "{flow_id}") {
+		// DBOS will manage per-flow trace sinks.
+	} else if tracePath != "" {
+		tracePath = strings.ReplaceAll(tracePath, "{flow_id}", "server")
+		traceFile, err := os.Create(tracePath)
+		if err != nil {
+			return fmt.Errorf("open trace file: %w", err)
+		}
+		traceClose = traceFile.Close
+		traceSink = stream.NewJSONTraceSink(traceFile)
+	}
+	if traceClose != nil {
+		defer traceClose()
 	}
 
 	backend := resolveCheckpointBackend(cfg)
@@ -92,11 +114,26 @@ func Run(ctx context.Context, cfg *config.Config) error {
 
 	factory := runner.Factory{}
 	if registryStore != nil {
+		defaults := flow.DDLPolicyDefaults{
+			Gate:        cfg.DDL.Gate,
+			AutoApprove: cfg.DDL.AutoApprove,
+			AutoApply:   cfg.DDL.AutoApply,
+		}
+		factory.SchemaHookForFlow = func(f flow.Flow) replication.SchemaHook {
+			policy := f.Config.DDL.Resolve(defaults)
+			return &registry.Hook{
+				Store:        registryStore,
+				FlowID:       f.ID,
+				AutoApprove:  policy.AutoApprove,
+				GateApproval: policy.Gate,
+				AutoApply:    policy.AutoApply,
+			}
+		}
 		factory.SchemaHook = &registry.Hook{
 			Store:        registryStore,
-			AutoApprove:  cfg.DDL.AutoApprove,
-			GateApproval: cfg.DDL.Gate,
-			AutoApply:    cfg.DDL.AutoApply,
+			AutoApprove:  defaults.AutoApprove,
+			GateApproval: defaults.Gate,
+			AutoApply:    defaults.AutoApply,
 		}
 	}
 
@@ -151,6 +188,8 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			StrictWire:    cfg.Wire.Enforce,
 			Tracer:        tracer,
 			DDLApplied:    ddlApplied,
+			TraceSink:     traceSink,
+			TracePath:     tracePath,
 		}, baseEngine, checkpoints, factory)
 		if err != nil {
 			return err

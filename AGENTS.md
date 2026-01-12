@@ -51,7 +51,10 @@ PRs should include description, test evidence, and performance/compatibility not
 - Wire formats & storage: selectable wire format (proto/arrow/avro) with consistent system-wide config; optional durable S3 storage (Parquet/Arrow/Avro/native column).
 - Terraform & Helm: Terraform provider + example configs + acceptance harness; Helm chart (workers/pools, values.yaml + values-prod, chart tests, helm lint); publish workflow (OCI/ghcr, multi-arch, cosign).
 - Benchmarks & perf: destination-specific DDL/mutation benchmarks; baseline comparisons vs Sequin/Debezium/PeerDB; flamegraphs/traces in bench runs; vary parallelism/record width and export CSV/JSON.
+- Linting & analysis: golangci-lint config (Go-only) with CI blocking; property-based protocol invariants; statistical regression checks for bench results.
 - CLI/admin & docs: stream pull/ack CLI with pretty JSON, DDL list/approve/apply, staging resolve flag; examples under `examples/`; usage/tutorial/architecture docs and `docs/streams.md`.
+### Formal Verification
+- [in progress] Lightweight TLA+/PlusCal spec for CDC protocol + flow lifecycle (now includes DDL gating + retry bounds); mirror invariants in property tests; trace log validation tool.
 ### Execution Order (current focus)
 1) [done] Type system completeness + extension mapping (pgvector, postgis, hstore, citext, ltree); centralize type mapping + casts; round-trip tests per destination.
 2) [done] Schema evolution lifecycle: DDL capture → approval → apply → checkpointed DDL stream; apply tests for Snowflake/ClickHouse/DuckLake/Postgres.

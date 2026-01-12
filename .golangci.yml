@@ -1,19 +1,75 @@
+version: 2
+
 run:
   timeout: 5m
   tests: true
+  allow-parallel-runners: true
+  skip-dirs:
+    - ^gen$
+    - ^gen/
+    - ^terraform/provider$
+    - ^terraform/provider/
+    - ^tools$
+    - ^tools/
 
 linters:
   enable:
-    - govet
+    - asciicheck
+    - bodyclose
     - errcheck
-    - staticcheck
-    - revive
+    - errorlint
+    - gosec
+    - govet
+    - gocritic
     - ineffassign
+    - misspell
+    - nilerr
+    - nilnil
+    - nolintlint
+    - prealloc
+    - staticcheck
+    - typecheck
+    - unconvert
+    - unparam
     - unused
 
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
 linters-settings:
-  revive:
-    rules:
-      - name: exported
-        arguments:
-          - disableStutteringCheck
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+  gosec:
+    exclude-generated: true
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+      - style
+
+issues:
+  exclude-use-default: false
+  max-same-issues: 0
+  max-issues-per-linter: 0
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+    - path: ^gen/
+      linters:
+        - gofmt
+        - goimports
+        - govet
+        - staticcheck
+        - errcheck
+        - gocritic
+        - unparam
+        - unconvert
+        - unused

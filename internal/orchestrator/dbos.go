@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/dbos-inc/dbos-transact-golang/dbos"
@@ -33,7 +36,9 @@ type Config struct {
 	AdminServer   bool
 	AdminPort     int
 	Tracer        trace.Tracer
-	DDLApplied    func(ctx context.Context, lsn string, ddl string) error
+	DDLApplied    func(ctx context.Context, flowID string, lsn string, ddl string) error
+	TraceSink     stream.TraceSink
+	TracePath     string
 }
 
 // FlowRunInput is the workflow input for running a single flow.
@@ -55,7 +60,9 @@ type DBOSOrchestrator struct {
 	defaultWire   connector.WireFormat
 	strictWire    bool
 	tracer        trace.Tracer
-	ddlApplied    func(ctx context.Context, lsn string, ddl string) error
+	ddlApplied    func(ctx context.Context, flowID string, lsn string, ddl string) error
+	traceSink     stream.TraceSink
+	tracePath     string
 }
 
 // FlowWorkflowName returns the fully qualified workflow name used by DBOS recovery.
@@ -103,6 +110,8 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Engine
 		strictWire:    cfg.StrictWire,
 		tracer:        cfg.Tracer,
 		ddlApplied:    cfg.DDLApplied,
+		traceSink:     cfg.TraceSink,
+		tracePath:     cfg.TracePath,
 	}
 
 	orchestrator.registerWorkflows(cfg.Schedule)
@@ -176,7 +185,7 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunIn
 		return "skipped", nil
 	}
 
-	source, err := o.factory.Source(f.Source)
+	source, err := o.factory.SourceForFlow(f)
 	if err != nil {
 		return "", err
 	}
@@ -222,6 +231,28 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunIn
 		MaxEmptyReads: maxEmptyReads,
 		Tracer:        tracer,
 	}
+	if f.Config.AckPolicy != "" {
+		runner.AckPolicy = f.Config.AckPolicy
+	}
+	if f.Config.PrimaryDestination != "" {
+		runner.PrimaryDestination = f.Config.PrimaryDestination
+	}
+	if f.Config.FailureMode != "" {
+		runner.FailureMode = f.Config.FailureMode
+	}
+	if f.Config.GiveUpPolicy != "" {
+		runner.GiveUpPolicy = f.Config.GiveUpPolicy
+	}
+	traceSink, traceClose, err := o.flowTraceSink(f.ID)
+	if err != nil {
+		return "", err
+	}
+	if traceSink != nil {
+		runner.TraceSink = traceSink
+	}
+	if traceClose != nil {
+		defer traceClose()
+	}
 	if o.ddlApplied != nil {
 		runner.DDLApplied = o.ddlApplied
 	}
@@ -231,6 +262,7 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunIn
 
 	if err := runner.Run(ctx); err != nil {
 		if errors.Is(err, registry.ErrApprovalRequired) {
+			_, _ = o.engine.Stop(ctx, f.ID)
 			return "ddl gated", nil
 		}
 		return "", fmt.Errorf("run flow %s: %w", f.ID, err)
@@ -257,4 +289,25 @@ func (o *DBOSOrchestrator) dispatchWorkflow(ctx dbos.DBOSContext, _ time.Time) (
 	}
 
 	return fmt.Sprintf("scheduled %d flows", count), nil
+}
+
+func (o *DBOSOrchestrator) flowTraceSink(flowID string) (stream.TraceSink, func() error, error) {
+	if o.tracePath == "" {
+		return o.traceSink, nil, nil
+	}
+	path := strings.ReplaceAll(o.tracePath, "{flow_id}", flowID)
+	if path == o.tracePath {
+		path = fmt.Sprintf("%s.%s", o.tracePath, flowID)
+	}
+	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, nil, fmt.Errorf("create trace dir: %w", err)
+		}
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open trace file: %w", err)
+	}
+	return stream.NewJSONTraceSink(file), file.Close, nil
 }

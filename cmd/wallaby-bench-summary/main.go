@@ -38,7 +38,7 @@ type resultKey struct {
 
 func main() {
 	dir := flag.String("dir", "bench/results", "directory containing bench_*.json files")
-	format := flag.String("format", "table", "output format: table|markdown|json")
+	format := flag.String("format", "table", "output format: table|markdown|benchstat|json")
 	latest := flag.Bool("latest", true, "show latest result per target/profile/scenario")
 	output := flag.String("output", "", "optional output file")
 	flag.Parse()
@@ -71,6 +71,10 @@ func main() {
 		}
 	case "markdown":
 		if err := writeMarkdown(writer, results); err != nil {
+			fatal(err)
+		}
+	case "benchstat":
+		if err := writeBenchstat(writer, results); err != nil {
 			fatal(err)
 		}
 	case "json":
@@ -229,6 +233,50 @@ func writeMarkdown(writer io.Writer, results []benchResult) error {
 	return nil
 }
 
+func writeBenchstat(writer io.Writer, results []benchResult) error {
+	for _, result := range results {
+		base := fmt.Sprintf(
+			"BenchmarkCDC/%s/%s/%s",
+			sanitizeBenchName(result.Target),
+			sanitizeBenchName(result.Profile),
+			sanitizeBenchName(result.Scenario),
+		)
+		if err := writeBenchstatMetric(writer, base, "records_per_sec", result.RecordsPerSec, "records/s"); err != nil {
+			return err
+		}
+		if err := writeBenchstatMetric(writer, base, "mb_per_sec", result.MBPerSec, "MB/s"); err != nil {
+			return err
+		}
+		if err := writeBenchstatMetric(writer, base, "latency_p50_ms", result.LatencyP50Ms, "ms"); err != nil {
+			return err
+		}
+		if err := writeBenchstatMetric(writer, base, "latency_p95_ms", result.LatencyP95Ms, "ms"); err != nil {
+			return err
+		}
+		if err := writeBenchstatMetric(writer, base, "latency_p99_ms", result.LatencyP99Ms, "ms"); err != nil {
+			return err
+		}
+		if err := writeBenchstatMetric(writer, base, "duration_s", result.DurationSec, "s"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeBenchstatMetric(writer io.Writer, base, metric string, value float64, unit string) error {
+	_, err := fmt.Fprintf(writer, "%s/%s %s %s\n", base, metric, formatBenchFloat(value), unit)
+	return err
+}
+
+func sanitizeBenchName(value string) string {
+	if value == "" {
+		return "unknown"
+	}
+	value = strings.ReplaceAll(value, " ", "_")
+	value = strings.ReplaceAll(value, "\t", "_")
+	return value
+}
+
 func writeJSON(writer io.Writer, results []benchResult) error {
 	enc := json.NewEncoder(writer)
 	enc.SetIndent("", "  ")
@@ -240,6 +288,13 @@ func formatFloat(value float64) string {
 		return "0"
 	}
 	return fmt.Sprintf("%.2f", value)
+}
+
+func formatBenchFloat(value float64) string {
+	if value == 0 {
+		return "0"
+	}
+	return fmt.Sprintf("%.6f", value)
 }
 
 func fatal(err error) {

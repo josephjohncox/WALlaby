@@ -22,8 +22,12 @@ func NewDDLService(store registry.Store) *DDLService {
 	return &DDLService{store: store}
 }
 
-func (s *DDLService) ListPendingDDL(ctx context.Context, _ *wallabypb.ListPendingDDLRequest) (*wallabypb.ListPendingDDLResponse, error) {
-	events, err := s.store.ListPendingDDL(ctx)
+func (s *DDLService) ListPendingDDL(ctx context.Context, req *wallabypb.ListPendingDDLRequest) (*wallabypb.ListPendingDDLResponse, error) {
+	flowID := ""
+	if req != nil {
+		flowID = req.FlowId
+	}
+	events, err := s.store.ListPendingDDL(ctx, flowID)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -38,11 +42,13 @@ func (s *DDLService) ListPendingDDL(ctx context.Context, _ *wallabypb.ListPendin
 
 func (s *DDLService) ListDDL(ctx context.Context, req *wallabypb.ListDDLRequest) (*wallabypb.ListDDLResponse, error) {
 	statusFilter := ""
+	flowID := ""
 	if req != nil {
 		statusFilter = req.Status
+		flowID = req.FlowId
 	}
 
-	events, err := s.store.ListDDL(ctx, statusFilter)
+	events, err := s.store.ListDDL(ctx, flowID, statusFilter)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -117,6 +123,7 @@ func ddlEventToProto(event registry.DDLEvent) *wallabypb.DDLEvent {
 		Status:    event.Status,
 		PlanJson:  planJSON,
 		CreatedAt: createdAt,
+		FlowId:    event.FlowID,
 	}
 }
 

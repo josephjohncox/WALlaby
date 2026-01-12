@@ -82,7 +82,7 @@ func TestCLIIntegrationDDLList(t *testing.T) {
 		}},
 	}
 	eventDDL := `ALTER TABLE "public"."widgets" ADD COLUMN "extra" text`
-	eventID, err := store.RecordDDL(ctx, eventDDL, plan, "0/0", registry.StatusPending)
+	eventID, err := store.RecordDDL(ctx, "flow-cli", eventDDL, plan, "0/0", registry.StatusPending)
 	if err != nil {
 		t.Fatalf("record ddl: %v", err)
 	}
@@ -109,12 +109,14 @@ func TestCLIIntegrationDDLList(t *testing.T) {
 		Status string `json:"status"`
 		Count  int    `json:"count"`
 		Events []struct {
-			ID  int64  `json:"id"`
-			DDL string `json:"ddl"`
+			ID     int64  `json:"id"`
+			FlowID string `json:"flow_id"`
+			DDL    string `json:"ddl"`
 		} `json:"events"`
 		Records []struct {
-			ID  int64  `json:"id"`
-			DDL string `json:"ddl"`
+			ID     int64  `json:"id"`
+			FlowID string `json:"flow_id"`
+			DDL    string `json:"ddl"`
 		} `json:"records"`
 	}
 	if err := json.Unmarshal(output, &resp); err != nil {
@@ -129,7 +131,7 @@ func TestCLIIntegrationDDLList(t *testing.T) {
 	}
 	found := false
 	for _, record := range events {
-		if record.ID == eventID && record.DDL == eventDDL {
+		if record.ID == eventID && record.DDL == eventDDL && record.FlowID == "flow-cli" {
 			found = true
 			break
 		}
@@ -188,7 +190,7 @@ func TestCLIIntegrationDDLApproveRejectApply(t *testing.T) {
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
 	plan := schema.Plan{Changes: []schema.Change{{Type: schema.ChangeAddColumn, Namespace: "public", Table: "widgets", Column: "extra", ToType: "text"}}}
-	eventID, err := store.RecordDDL(ctx, `ALTER TABLE "public"."widgets" ADD COLUMN "extra" text`, plan, "0/0", registry.StatusPending)
+	eventID, err := store.RecordDDL(ctx, "flow-cli", `ALTER TABLE "public"."widgets" ADD COLUMN "extra" text`, plan, "0/0", registry.StatusPending)
 	if err != nil {
 		t.Fatalf("record ddl: %v", err)
 	}
@@ -215,7 +217,7 @@ func TestCLIIntegrationDDLApproveRejectApply(t *testing.T) {
 		t.Fatalf("expected applied status, got %s", applied.Status)
 	}
 
-	rejectID, err := store.RecordDDL(ctx, `ALTER TABLE "public"."widgets" ADD COLUMN "rejected" text`, plan, "0/1", registry.StatusPending)
+	rejectID, err := store.RecordDDL(ctx, "flow-cli", `ALTER TABLE "public"."widgets" ADD COLUMN "rejected" text`, plan, "0/1", registry.StatusPending)
 	if err != nil {
 		t.Fatalf("record ddl: %v", err)
 	}
@@ -534,6 +536,82 @@ func TestCLIIntegrationFlowStartStopResume(t *testing.T) {
 	}
 	if resumeResp.State != "FLOW_STATE_RUNNING" {
 		t.Fatalf("expected running, got %s", resumeResp.State)
+	}
+}
+
+func TestCLIIntegrationFlowCreateStartFlag(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
+	if baseDSN == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	adminPool, err := pgxpool.New(ctx, baseDSN)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer adminPool.Close()
+
+	dbName, dbDSN := createTempDatabase(t, ctx, adminPool, "wallaby_flow_start_flag")
+	defer dropDatabase(t, adminPool, dbName)
+
+	engine, err := workflow.NewPostgresEngine(ctx, dbDSN)
+	if err != nil {
+		t.Fatalf("create workflow engine: %v", err)
+	}
+	defer engine.Close()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen grpc: %v", err)
+	}
+	defer listener.Close()
+
+	server := apigrpc.New(engine, noopDispatcher{}, nil, nil, nil, false)
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	defer server.Stop()
+	waitForTCP(t, listener.Addr().String(), 2*time.Second)
+
+	configPath := writeFlowConfig(t, flowConfigPayload{
+		Name:       "cli-flow-start",
+		WireFormat: "json",
+		Source: endpointConfigPayload{
+			Name: "src",
+			Type: "postgres",
+			Options: map[string]string{
+				"dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+			},
+		},
+		Destinations: []endpointConfigPayload{
+			{
+				Name: "dest",
+				Type: "pgstream",
+				Options: map[string]string{
+					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"stream": "orders",
+				},
+			},
+		},
+	})
+
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "-file", configPath, "-start", "-json")
+	if err != nil {
+		t.Fatalf("wallaby-admin flow create -start: %v\n%s", err, output)
+	}
+
+	var resp struct {
+		ID    string `json:"id"`
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(output, &resp); err != nil {
+		t.Fatalf("decode flow create output: %v\n%s", err, output)
+	}
+	if resp.State != "FLOW_STATE_RUNNING" {
+		t.Fatalf("expected running, got %s", resp.State)
 	}
 }
 

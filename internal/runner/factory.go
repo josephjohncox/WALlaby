@@ -16,6 +16,7 @@ import (
 	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
 	"github.com/josephjohncox/wallaby/connectors/destinations/snowpipe"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
+	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/replication"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
@@ -23,10 +24,26 @@ import (
 
 // Factory builds connectors for flows.
 type Factory struct {
-	SchemaHook replication.SchemaHook
+	SchemaHook        replication.SchemaHook
+	SchemaHookForFlow func(flow.Flow) replication.SchemaHook
 }
 
 func (f Factory) Source(spec connector.Spec) (connector.Source, error) {
+	return f.source(spec, f.SchemaHook)
+}
+
+// SourceForFlow builds a source with per-flow configuration.
+func (f Factory) SourceForFlow(fdef flow.Flow) (connector.Source, error) {
+	hook := f.SchemaHook
+	if f.SchemaHookForFlow != nil {
+		if candidate := f.SchemaHookForFlow(fdef); candidate != nil {
+			hook = candidate
+		}
+	}
+	return f.source(fdef.Source, hook)
+}
+
+func (f Factory) source(spec connector.Spec, hook replication.SchemaHook) (connector.Source, error) {
 	switch spec.Type {
 	case connector.EndpointPostgres:
 		if spec.Options != nil {
@@ -34,7 +51,7 @@ func (f Factory) Source(spec connector.Spec) (connector.Source, error) {
 				return &pgsource.BackfillSource{}, nil
 			}
 		}
-		source := &pgsource.Source{SchemaHook: f.SchemaHook}
+		source := &pgsource.Source{SchemaHook: hook}
 		return source, nil
 	default:
 		return nil, fmt.Errorf("unsupported source type: %s", spec.Type)

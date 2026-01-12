@@ -5,22 +5,60 @@ GORELEASER ?= goreleaser
 PROTOC_GEN_GO ?= protoc-gen-go
 PROTOC_GEN_GO_GRPC ?= protoc-gen-go-grpc
 GOBIN ?= $(shell $(GO) env GOPATH)/bin
+CACHE_DIR ?= .cache
+GOMODCACHE ?= $(abspath $(CACHE_DIR)/gomod)
+GOCACHE ?= $(abspath $(CACHE_DIR)/gocache)
+GOLANGCI_LINT_CACHE ?= $(abspath $(CACHE_DIR)/golangci-lint)
 PROFILE ?= small
 TARGETS ?= all
 SCENARIO ?= base
+TLC ?= tlc2.TLC
+TLA_MODULE ?= specs/CDCFlow.tla
+TLA_CONFIG ?= specs/CDCFlow.cfg
+TLA_TOOLS_TAG ?= latest
+TLA_TOOLS_URL ?= https://github.com/tlaplus/tlaplus/releases/$(TLA_TOOLS_TAG)/download/tla2tools.jar
+TLA_TOOLS_DIR ?= $(abspath $(CACHE_DIR)/tla)
+TLA_TOOLS_JAR ?= $(TLA_TOOLS_DIR)/tla2tools.jar
+TLC_JAVA_OPTS ?= -XX:+UseParallelGC
+TLC_ARGS ?=
+TLC_COVERAGE_DIR ?= specs/coverage
+TLA_COVERAGE_MIN ?= 1
+TLA_COVERAGE_IGNORE ?=
+TRACE_CASES ?= 1000
+TRACE_SEED ?= 1
+TRACE_MAX_BATCHES ?= 10
+TRACE_MAX_RECORDS ?= 3
+RAPID_CHECKS ?= 100
+RAPID_PACKAGES ?= ./pkg/stream ./pkg/wire ./internal/ddl ./internal/registry ./internal/workflow ./connectors/sources/postgres
+SPEC_LINT_VERBOSE ?=
+SPEC_LINT_VERBOSE_MODE ?= checks
 
 export GO_TEST_TIMEOUT
 
-.PHONY: fmt lint test test-integration test-integration-ci test-e2e test-k8s-kind proto tidy release release-snapshot proto-tools bench bench-ddl bench-up bench-down benchmark benchmark-profile
+.PHONY: fmt lint test test-rapid test-integration test-integration-ci test-e2e test-k8s-kind proto tidy release release-snapshot proto-tools tla-tools bench bench-ddl bench-up bench-down benchmark benchmark-profile benchstat check check-coverage tla tla-single tla-flow tla-state tla-fanout tla-liveness tla-witness tla-coverage tla-coverage-check trace-suite trace-suite-large spec-manifest spec-verify spec-lint spec-sync
 
 fmt:
 	$(GO) fmt ./...
 
 lint:
-	$(GOLANGCI_LINT) run ./...
+	GOMODCACHE="$(GOMODCACHE)" GOCACHE="$(GOCACHE)" GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" $(GOLANGCI_LINT) run ./...
+
+check: spec-verify spec-sync spec-lint tla
+	$(GO) test ./...
+
+check-coverage: spec-sync tla-coverage tla-coverage-check trace-suite test-e2e
 
 test:
 	$(GO) test ./...
+
+test-rapid:
+	@rapid_pkgs="$(RAPID_PACKAGES)"; \
+	$(GO) test $$rapid_pkgs -args -rapid.checks="$(RAPID_CHECKS)"; \
+	skip_regex='^github.com/josephjohncox/wallaby/(pkg/stream|pkg/wire|internal/ddl|internal/registry|internal/workflow|connectors/sources/postgres)(/.*)?$$'; \
+	non_rapid_pkgs=$$($(GO) list ./... | grep -Ev "$$skip_regex" || true); \
+	if [ -n "$$non_rapid_pkgs" ]; then \
+		$(GO) test $$non_rapid_pkgs; \
+	fi
 
 test-integration:
 	$(GO) test ./tests/...
@@ -40,6 +78,41 @@ proto: proto-tools
 proto-tools:
 	GOBIN="$(GOBIN)" $(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 	GOBIN="$(GOBIN)" $(GO) install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+spec-manifest:
+	$(GO) run ./cmd/wallaby-spec-manifest -out specs/coverage.json -dir specs
+
+spec-verify: spec-manifest
+	@echo "Verifying spec coverage manifests match generator output"
+	@ls -1 specs/coverage*.json
+	@if ! git diff --exit-code -- specs/coverage*.json; then \
+		echo "spec manifests are out of date; run make spec-manifest"; \
+		git diff -- specs/coverage*.json; \
+		exit 1; \
+	fi
+
+spec-lint:
+	@mkdir -p "$(GOBIN)"
+	$(GO) build -o "$(GOBIN)/wallaby-speccheck" ./cmd/wallaby-speccheck
+	$(GO) vet -vettool="$(GOBIN)/wallaby-speccheck" -specaction.verbose-mode="$(SPEC_LINT_VERBOSE_MODE)" $(if $(SPEC_LINT_VERBOSE),-specaction.verbose="$(SPEC_LINT_VERBOSE)",) ./...
+
+spec-sync:
+	$(GO) run ./cmd/wallaby-spec-sync -spec-dir specs -manifest-dir specs
+
+tla-tools:
+	@mkdir -p "$(TLA_TOOLS_DIR)" "$(GOBIN)"
+	@if command -v curl >/dev/null 2>&1; then \
+		curl -fsSL "$(TLA_TOOLS_URL)" -o "$(TLA_TOOLS_JAR)"; \
+	elif command -v wget >/dev/null 2>&1; then \
+		wget -qO "$(TLA_TOOLS_JAR)" "$(TLA_TOOLS_URL)"; \
+	else \
+		echo "curl or wget is required to download tla2tools.jar"; \
+		exit 1; \
+	fi
+	@chmod 0644 "$(TLA_TOOLS_JAR)"
+	@printf '%s\n' '#!/bin/sh' 'exec java -cp "$(TLA_TOOLS_JAR)" tlc2.TLC "$$@"' > "$(GOBIN)/tlc2.TLC"
+	@printf '%s\n' '#!/bin/sh' 'exec java -cp "$(TLA_TOOLS_JAR)" pcal.trans "$$@"' > "$(GOBIN)/pcal"
+	@chmod +x "$(GOBIN)/tlc2.TLC" "$(GOBIN)/pcal"
 
 tidy:
 	GOFLAGS='-tags=tools' $(GO) mod tidy
@@ -67,3 +140,43 @@ benchmark:
 
 benchmark-profile:
 	ENABLE_PROFILES=1 PROFILE_FORMAT=both ./bench/benchmark.sh
+
+benchstat:
+	$(GO) run ./cmd/wallaby-bench-summary -dir "$(BASELINE)" -format benchstat -latest=false -output "$(BASELINE)/benchstat.txt"
+	$(GO) run ./cmd/wallaby-bench-summary -dir "$(CANDIDATE)" -format benchstat -latest=false -output "$(CANDIDATE)/benchstat.txt"
+	$(GO) run golang.org/x/perf/cmd/benchstat@latest "$(BASELINE)/benchstat.txt" "$(CANDIDATE)/benchstat.txt"
+
+tla: tla-flow tla-state tla-fanout tla-liveness tla-witness
+
+tla-single:
+	PATH="$(GOBIN):$$PATH" JAVA_TOOL_OPTIONS="$(TLC_JAVA_OPTS)" $(TLC) $(TLC_ARGS) -config "$(TLA_CONFIG)" "$(TLA_MODULE)"
+
+tla-flow:
+	$(MAKE) tla-single TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlow.cfg
+
+tla-state:
+	$(MAKE) tla-single TLA_MODULE=specs/FlowStateMachine.tla TLA_CONFIG=specs/FlowStateMachine.cfg
+
+tla-fanout:
+	$(MAKE) tla-single TLA_MODULE=specs/CDCFlowFanout.tla TLA_CONFIG=specs/CDCFlowFanout.cfg
+
+tla-liveness:
+	$(MAKE) tla-single TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowLiveness.cfg
+
+tla-witness:
+	$(MAKE) tla-single TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowWitness.cfg
+
+tla-coverage:
+	@mkdir -p "$(TLC_COVERAGE_DIR)"
+	PATH="$(GOBIN):$$PATH" JAVA_TOOL_OPTIONS="$(TLC_JAVA_OPTS)" $(TLC) -coverage 1 -config "specs/CDCFlow.cfg" "specs/CDCFlow.tla" > "$(TLC_COVERAGE_DIR)/CDCFlow.txt"
+	PATH="$(GOBIN):$$PATH" JAVA_TOOL_OPTIONS="$(TLC_JAVA_OPTS)" $(TLC) -coverage 1 -config "specs/FlowStateMachine.cfg" "specs/FlowStateMachine.tla" > "$(TLC_COVERAGE_DIR)/FlowStateMachine.txt"
+	PATH="$(GOBIN):$$PATH" JAVA_TOOL_OPTIONS="$(TLC_JAVA_OPTS)" $(TLC) -coverage 1 -config "specs/CDCFlowFanout.cfg" "specs/CDCFlowFanout.tla" > "$(TLC_COVERAGE_DIR)/CDCFlowFanout.txt"
+
+tla-coverage-check:
+	GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run ./cmd/wallaby-tla-coverage -dir "$(TLC_COVERAGE_DIR)" -min "$(TLA_COVERAGE_MIN)" -ignore "$(TLA_COVERAGE_IGNORE)" -json "$(TLC_COVERAGE_DIR)/report.json"
+
+trace-suite:
+	TRACE_CASES=$(TRACE_CASES) TRACE_SEED=$(TRACE_SEED) TRACE_MAX_BATCHES=$(TRACE_MAX_BATCHES) TRACE_MAX_RECORDS=$(TRACE_MAX_RECORDS) $(GO) test ./pkg/stream -run TestTraceSuite -count=1
+
+trace-suite-large:
+	TRACE_CASES=20000 TRACE_SEED=123 TRACE_MAX_BATCHES=12 TRACE_MAX_RECORDS=5 $(GO) test ./pkg/stream -run TestTraceSuite -count=1

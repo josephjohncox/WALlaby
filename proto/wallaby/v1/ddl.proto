@@ -13,9 +13,12 @@ message DDLEvent {
   string status = 4;
   string plan_json = 5;
   google.protobuf.Timestamp created_at = 6;
+  string flow_id = 7;
 }
 
-message ListPendingDDLRequest {}
+message ListPendingDDLRequest {
+  string flow_id = 1;
+}
 
 message ListPendingDDLResponse {
   repeated DDLEvent events = 1;
@@ -23,6 +26,7 @@ message ListPendingDDLResponse {
 
 message ListDDLRequest {
   string status = 1;
+  string flow_id = 2;
 }
 
 message ListDDLResponse {

@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/josephjohncox/wallaby/internal/flowctx"
 	postgrescodec "github.com/josephjohncox/wallaby/internal/postgres"
 	"github.com/josephjohncox/wallaby/internal/replication"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -56,6 +58,7 @@ const (
 // Source implements Postgres logical replication as a connector.Source.
 type Source struct {
 	spec         connector.Spec
+	dsn          string
 	stream       *replication.PostgresStream
 	changes      <-chan replication.Change
 	batchSize    int
@@ -79,6 +82,11 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	dsn, ok := spec.Options[optDSN]
 	if !ok || dsn == "" {
 		return errors.New("postgres dsn is required")
+	}
+	s.dsn = dsn
+
+	if flowID := strings.TrimSpace(spec.Options[optFlowID]); flowID != "" {
+		ctx = flowctx.ContextWithFlowID(ctx, flowID)
 	}
 
 	s.slot = spec.Options[optSlot]
@@ -293,6 +301,11 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 			}, nil
 		case change, ok := <-s.changes:
 			if !ok {
+				if s.stream != nil {
+					if err := s.stream.Err(); err != nil {
+						return connector.Batch{}, err
+					}
+				}
 				return connector.Batch{}, io.EOF
 			}
 			if change.Record != nil {
@@ -346,6 +359,7 @@ func (s *Source) Close(ctx context.Context) error {
 		return nil
 	}
 	err := s.stream.Stop(ctx)
+	s.stream = nil
 	if s.stateStore != nil {
 		_ = s.stateStore.UpdateState(ctx, s.stateID, "stopped")
 		s.stateStore.Close()
@@ -360,6 +374,43 @@ func (s *Source) Close(ctx context.Context) error {
 		s.toastPool = nil
 	}
 	return err
+}
+
+// DropSlot drops the replication slot for this source.
+func (s *Source) DropSlot(ctx context.Context) error {
+	if s.slot == "" {
+		return nil
+	}
+	if s.stream != nil {
+		_ = s.stream.Stop(ctx)
+		s.stream = nil
+	}
+	if s.dsn == "" {
+		return errors.New("postgres dsn is required")
+	}
+
+	pool, err := newPool(ctx, s.dsn, s.spec.Options)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	_, err = pool.Exec(ctx, "SELECT pg_drop_replication_slot($1)", s.slot)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42704" {
+			err = nil
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if s.stateStore != nil {
+		if updateErr := s.stateStore.UpdateState(ctx, s.stateID, "dropped"); updateErr != nil {
+			return updateErr
+		}
+	}
+	return nil
 }
 
 func (s *Source) Capabilities() connector.Capabilities {

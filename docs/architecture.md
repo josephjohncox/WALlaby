@@ -32,11 +32,20 @@ WALlaby is organized as a small set of composable subsystems designed for high�
 - Worker mode runs a single flow in a dedicated process without DBOS.
 - Fan‑out is explicit: each destination is written independently, and consumers can scale separately.
 
+### Fan‑out vs Multiple Replication Slots
+Fan‑out keeps a single logical replication slot per flow and multiplexes downstream writes. Compared to multiple slots:
+- **Lower source load:** WAL is decoded once, not N times, reducing CPU and I/O on the primary.
+- **Lower WAL retention risk:** one slot means one acknowledged LSN; fewer slots reduces “stuck slot” risk and WAL bloat.
+- **Consistent ordering + DDL gating:** a single read stream preserves ordering across destinations and shares DDL approval gates.
+- **Centralized lifecycle:** one place to pause/resume/fail and coordinate backfill/stream handoff.
+
+Multiple slots are still valid when destinations must be fully isolated (independent retention, separate lag policies, or separate ownership), but they multiply decoding cost and operational overhead.
+
 ### Schema Registry + DDL
 - The registry stores schema snapshots and DDL events.
 - DDL events can be gated for approval and marked applied.
 - A catalog scanner can diff `pg_catalog` for schema drift or generated column changes.
-- DDL gating can pause the pipeline until an operator approves or applies the change.
+- DDL gating is per‑flow; blocked gates emit log lines and an OpenTelemetry event (`ddl.gated`) for alerting.
 
 ## Deployment Modes
 
@@ -63,4 +72,4 @@ WALlaby is organized as a small set of composable subsystems designed for high�
 - Add orchestration by implementing `workflow.Engine` and `workflow.FlowDispatcher`.
 
 ## Delivery Semantics
-The runner only acknowledges a source checkpoint after **all** destinations successfully write a batch. This mirrors a buffer → deliver → ack loop and prevents advancing the LSN before downstream durability is confirmed.
+The runner acknowledges a source checkpoint after **all** destinations succeed by default. When `ack_policy=primary`, it acknowledges after the primary destination succeeds and queues secondary destinations for replay. This trades off per‑destination durability for source progress and lower WAL retention.

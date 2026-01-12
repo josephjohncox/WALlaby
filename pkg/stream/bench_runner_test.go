@@ -39,7 +39,7 @@ func benchmarkStream(b *testing.B, destCount, batchSize int) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := runner.writeDestinations(ctx, batch); err != nil {
+		if err := runner.writeDestinations(ctx, batch, runner.Destinations); err != nil {
 			b.Fatalf("write destinations: %v", err)
 		}
 	}
