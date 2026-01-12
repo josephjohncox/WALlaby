@@ -66,3 +66,33 @@ services:
       interval: 3s
       timeout: 5s
       retries: 40
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.8
+    ports:
+      - "9094:9092"
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - "1G"
+      - --reserve-memory
+      - "0M"
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://localhost:9094
+  http-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.http-test
+    image: wallaby-http-test:0.1.0
+    environment:
+      HTTP_TEST_PORT: "8080"
+    ports:
+      - "8081:8080"

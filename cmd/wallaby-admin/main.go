@@ -335,8 +335,14 @@ func runFlow(args []string) {
 	switch args[0] {
 	case "create":
 		flowCreate(args[1:])
+	case "start":
+		flowStart(args[1:])
 	case "run-once":
 		flowRunOnce(args[1:])
+	case "stop":
+		flowStop(args[1:])
+	case "resume":
+		flowResume(args[1:])
 	case "resolve-staging":
 		flowResolveStaging(args[1:])
 	default:
@@ -347,7 +353,10 @@ func runFlow(args []string) {
 func flowUsage() {
 	fmt.Println("Flow subcommands:")
 	fmt.Println("  wallaby-admin flow create -file <path> [-start] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow start -flow-id <id> [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow run-once -flow-id <id>")
+	fmt.Println("  wallaby-admin flow stop -flow-id <id> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow resume -flow-id <id> [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow resolve-staging -flow-id <id> [-tables schema.table,...] [-schemas public,...] [-dest <name>]")
 	os.Exit(1)
 }
@@ -461,6 +470,141 @@ func flowRunOnce(args []string) {
 	}
 
 	fmt.Printf("Dispatched flow %s\n", *flowID)
+}
+
+func flowStart(args []string) {
+	fs := flag.NewFlagSet("flow start", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
+	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
+	flowID := fs.String("flow-id", "", "flow id")
+	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
+	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
+	fs.Parse(args)
+
+	if *flowID == "" {
+		log.Fatal("-flow-id is required")
+	}
+
+	client, closeConn := flowClientOrExit(*endpoint, *insecureConn)
+	defer closeConn()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := client.StartFlow(ctx, &wallabypb.StartFlowRequest{FlowId: *flowID})
+	if err != nil {
+		log.Fatalf("start flow: %v", err)
+	}
+
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		out := map[string]any{
+			"id":    resp.Id,
+			"state": resp.State.String(),
+		}
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			log.Fatalf("encode json: %v", err)
+		}
+		return
+	}
+
+	fmt.Printf("Started flow %s (state=%s)\n", resp.Id, resp.State.String())
+}
+
+func flowStop(args []string) {
+	fs := flag.NewFlagSet("flow stop", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
+	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
+	flowID := fs.String("flow-id", "", "flow id")
+	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
+	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
+	fs.Parse(args)
+
+	if *flowID == "" {
+		log.Fatal("-flow-id is required")
+	}
+
+	client, closeConn := flowClientOrExit(*endpoint, *insecureConn)
+	defer closeConn()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := client.StopFlow(ctx, &wallabypb.StopFlowRequest{FlowId: *flowID})
+	if err != nil {
+		log.Fatalf("stop flow: %v", err)
+	}
+
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		out := map[string]any{
+			"id":    resp.Id,
+			"state": resp.State.String(),
+		}
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			log.Fatalf("encode json: %v", err)
+		}
+		return
+	}
+
+	fmt.Printf("Stopped flow %s (state=%s)\n", resp.Id, resp.State.String())
+}
+
+func flowResume(args []string) {
+	fs := flag.NewFlagSet("flow resume", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
+	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
+	flowID := fs.String("flow-id", "", "flow id")
+	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
+	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
+	fs.Parse(args)
+
+	if *flowID == "" {
+		log.Fatal("-flow-id is required")
+	}
+
+	client, closeConn := flowClientOrExit(*endpoint, *insecureConn)
+	defer closeConn()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := client.ResumeFlow(ctx, &wallabypb.ResumeFlowRequest{FlowId: *flowID})
+	if err != nil {
+		log.Fatalf("resume flow: %v", err)
+	}
+
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		out := map[string]any{
+			"id":    resp.Id,
+			"state": resp.State.String(),
+		}
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			log.Fatalf("encode json: %v", err)
+		}
+		return
+	}
+
+	fmt.Printf("Resumed flow %s (state=%s)\n", resp.Id, resp.State.String())
 }
 
 func streamClientOrExit(endpoint string, insecureConn bool) (wallabypb.StreamServiceClient, func()) {
@@ -631,6 +775,7 @@ func publicationUsage() {
 	fmt.Println("  wallaby-admin publication remove -flow-id <id> -tables schema.table,...")
 	fmt.Println("  wallaby-admin publication sync -flow-id <id> [-tables ...] [-schemas ...] [-mode add|sync] [-pause] [-resume] [-snapshot]")
 	fmt.Println("  wallaby-admin publication scrape -flow-id <id> -schemas public,app [-apply]")
+	fmt.Println("  IAM flags: -aws-rds-iam -aws-region <region> -aws-profile <profile> -aws-role-arn <arn>")
 	os.Exit(1)
 }
 
@@ -643,17 +788,18 @@ func publicationList(args []string) {
 	publication := fs.String("publication", "", "publication name")
 	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
 	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
+	awsFlags := addAWSIAMFlags(fs)
 	fs.Parse(args)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cfg, err := resolvePublicationConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *publication)
+	cfg, err := resolvePublicationConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *publication, awsFlags.options())
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	tables, err := postgres.ListPublicationTables(ctx, cfg.dsn, cfg.publication, nil)
+	tables, err := postgres.ListPublicationTables(ctx, cfg.dsn, cfg.publication, cfg.options)
 	if err != nil {
 		log.Fatalf("list publication tables: %v", err)
 	}
@@ -695,6 +841,7 @@ func publicationAdd(args []string) {
 	dsn := fs.String("dsn", "", "postgres source dsn")
 	publication := fs.String("publication", "", "publication name")
 	tables := fs.String("tables", "", "comma-separated schema.table list")
+	awsFlags := addAWSIAMFlags(fs)
 	fs.Parse(args)
 
 	if *tables == "" {
@@ -708,12 +855,12 @@ func publicationAdd(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	cfg, err := resolvePublicationConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *publication)
+	cfg, err := resolvePublicationConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *publication, awsFlags.options())
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if err := postgres.AddPublicationTables(ctx, cfg.dsn, cfg.publication, tableList, nil); err != nil {
+	if err := postgres.AddPublicationTables(ctx, cfg.dsn, cfg.publication, tableList, cfg.options); err != nil {
 		log.Fatalf("add publication tables: %v", err)
 	}
 	fmt.Printf("Added %d tables to publication %s\n", len(tableList), cfg.publication)
@@ -727,6 +874,7 @@ func publicationRemove(args []string) {
 	dsn := fs.String("dsn", "", "postgres source dsn")
 	publication := fs.String("publication", "", "publication name")
 	tables := fs.String("tables", "", "comma-separated schema.table list")
+	awsFlags := addAWSIAMFlags(fs)
 	fs.Parse(args)
 
 	if *tables == "" {
@@ -740,12 +888,12 @@ func publicationRemove(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	cfg, err := resolvePublicationConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *publication)
+	cfg, err := resolvePublicationConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *publication, awsFlags.options())
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if err := postgres.DropPublicationTables(ctx, cfg.dsn, cfg.publication, tableList, nil); err != nil {
+	if err := postgres.DropPublicationTables(ctx, cfg.dsn, cfg.publication, tableList, cfg.options); err != nil {
 		log.Fatalf("drop publication tables: %v", err)
 	}
 	fmt.Printf("Removed %d tables from publication %s\n", len(tableList), cfg.publication)
@@ -769,6 +917,7 @@ func publicationSync(args []string) {
 	partitionCount := fs.Int("partition-count", 0, "partition count per table for backfill hashing")
 	snapshotStateBackend := fs.String("snapshot-state-backend", "", "snapshot state backend (postgres|file|none)")
 	snapshotStatePath := fs.String("snapshot-state-path", "", "snapshot state path (file backend)")
+	awsFlags := addAWSIAMFlags(fs)
 	fs.Parse(args)
 
 	if *flowID == "" {
@@ -778,7 +927,7 @@ func publicationSync(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	cfg, err := resolvePublicationConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *publication)
+	cfg, err := resolvePublicationConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *publication, awsFlags.options())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -786,7 +935,7 @@ func publicationSync(args []string) {
 		log.Fatal("flow is required for publication sync")
 	}
 
-	desired, err := resolveDesiredTables(ctx, cfg, *tables, *schemas)
+	desired, err := resolveDesiredTables(ctx, cfg, cfg.options, *tables, *schemas)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -803,7 +952,7 @@ func publicationSync(args []string) {
 		}
 	}
 
-	added, removed, err := postgres.SyncPublicationTables(ctx, cfg.dsn, cfg.publication, desired, *mode, nil)
+	added, removed, err := postgres.SyncPublicationTables(ctx, cfg.dsn, cfg.publication, desired, *mode, cfg.options)
 	if err != nil {
 		log.Fatalf("sync publication: %v", err)
 	}
@@ -832,6 +981,7 @@ func publicationScrape(args []string) {
 	publication := fs.String("publication", "", "publication name")
 	schemas := fs.String("schemas", "", "comma-separated schemas")
 	apply := fs.Bool("apply", false, "add newly discovered tables to publication")
+	awsFlags := addAWSIAMFlags(fs)
 	fs.Parse(args)
 
 	if *schemas == "" {
@@ -845,16 +995,16 @@ func publicationScrape(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cfg, err := resolvePublicationConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *publication)
+	cfg, err := resolvePublicationConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *publication, awsFlags.options())
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	allTables, err := postgres.ScrapeTables(ctx, cfg.dsn, schemaList, nil)
+	allTables, err := postgres.ScrapeTables(ctx, cfg.dsn, schemaList, cfg.options)
 	if err != nil {
 		log.Fatalf("scrape tables: %v", err)
 	}
-	current, err := postgres.ListPublicationTables(ctx, cfg.dsn, cfg.publication, nil)
+	current, err := postgres.ListPublicationTables(ctx, cfg.dsn, cfg.publication, cfg.options)
 	if err != nil {
 		log.Fatalf("list publication tables: %v", err)
 	}
@@ -871,7 +1021,7 @@ func publicationScrape(args []string) {
 	}
 
 	if *apply && len(missing) > 0 {
-		if err := postgres.AddPublicationTables(ctx, cfg.dsn, cfg.publication, missing, nil); err != nil {
+		if err := postgres.AddPublicationTables(ctx, cfg.dsn, cfg.publication, missing, cfg.options); err != nil {
 			log.Fatalf("add publication tables: %v", err)
 		}
 		fmt.Printf("Added %d tables to publication %s\n", len(missing), cfg.publication)
@@ -974,10 +1124,11 @@ type publicationConfig struct {
 	dsn         string
 	publication string
 	flow        *wallabypb.Flow
+	options     map[string]string
 }
 
-func resolvePublicationConfig(ctx context.Context, endpoint string, insecureConn bool, flowID, dsn, publication string) (publicationConfig, error) {
-	cfg := publicationConfig{dsn: dsn, publication: publication}
+func resolvePublicationConfig(ctx context.Context, endpoint string, insecureConn bool, flowID, dsn, publication string, options map[string]string) (publicationConfig, error) {
+	cfg := publicationConfig{dsn: dsn, publication: publication, options: options}
 	if flowID == "" {
 		if cfg.dsn == "" || cfg.publication == "" {
 			return cfg, errors.New("flow-id or dsn/publication is required")
@@ -999,13 +1150,14 @@ func resolvePublicationConfig(ctx context.Context, endpoint string, insecureConn
 	if cfg.publication == "" {
 		cfg.publication = flowResp.Source.Options["publication"]
 	}
+	cfg.options = mergeOptionMaps(flowResp.Source.Options, cfg.options)
 	if cfg.dsn == "" || cfg.publication == "" {
 		return cfg, errors.New("source dsn/publication not found on flow")
 	}
 	return cfg, nil
 }
 
-func resolveDesiredTables(ctx context.Context, cfg publicationConfig, tables, schemas string) ([]string, error) {
+func resolveDesiredTables(ctx context.Context, cfg publicationConfig, options map[string]string, tables, schemas string) ([]string, error) {
 	if tables != "" {
 		return parseCSVValue(tables), nil
 	}
@@ -1014,7 +1166,7 @@ func resolveDesiredTables(ctx context.Context, cfg publicationConfig, tables, sc
 		if len(list) == 0 {
 			return nil, errors.New("no schemas provided")
 		}
-		return postgres.ScrapeTables(ctx, cfg.dsn, list, nil)
+		return postgres.ScrapeTables(ctx, cfg.dsn, list, options)
 	}
 	if cfg.flow != nil {
 		if value := cfg.flow.Source.Options["publication_tables"]; value != "" {
@@ -1024,10 +1176,10 @@ func resolveDesiredTables(ctx context.Context, cfg publicationConfig, tables, sc
 			return parseCSVValue(value), nil
 		}
 		if value := cfg.flow.Source.Options["publication_schemas"]; value != "" {
-			return postgres.ScrapeTables(ctx, cfg.dsn, parseCSVValue(value), nil)
+			return postgres.ScrapeTables(ctx, cfg.dsn, parseCSVValue(value), options)
 		}
 		if value := cfg.flow.Source.Options["schemas"]; value != "" {
-			return postgres.ScrapeTables(ctx, cfg.dsn, parseCSVValue(value), nil)
+			return postgres.ScrapeTables(ctx, cfg.dsn, parseCSVValue(value), options)
 		}
 	}
 	return nil, errors.New("no tables or schemas specified")
@@ -1072,7 +1224,83 @@ func scrapeFlowTables(ctx context.Context, model flow.Flow, schemas []string) ([
 	if dsn == "" {
 		return nil, errors.New("source dsn missing")
 	}
-	return postgres.ScrapeTables(ctx, dsn, schemas, nil)
+	return postgres.ScrapeTables(ctx, dsn, schemas, model.Source.Options)
+}
+
+type awsIAMFlags struct {
+	enabled         *bool
+	region          *string
+	profile         *string
+	roleARN         *string
+	roleSessionName *string
+	roleExternalID  *string
+	endpoint        *string
+}
+
+func addAWSIAMFlags(fs *flag.FlagSet) *awsIAMFlags {
+	return &awsIAMFlags{
+		enabled:         fs.Bool("aws-rds-iam", false, "use AWS RDS IAM authentication"),
+		region:          fs.String("aws-region", "", "AWS region for RDS IAM authentication"),
+		profile:         fs.String("aws-profile", "", "AWS profile for RDS IAM authentication"),
+		roleARN:         fs.String("aws-role-arn", "", "AWS role ARN to assume for RDS IAM"),
+		roleSessionName: fs.String("aws-role-session-name", "", "AWS role session name for RDS IAM"),
+		roleExternalID:  fs.String("aws-role-external-id", "", "AWS role external id for RDS IAM"),
+		endpoint:        fs.String("aws-endpoint", "", "AWS endpoint override for RDS IAM"),
+	}
+}
+
+func (f *awsIAMFlags) options() map[string]string {
+	if f == nil {
+		return nil
+	}
+	enabled := false
+	options := map[string]string{}
+	if f.enabled != nil && *f.enabled {
+		enabled = true
+	}
+	if f.region != nil && strings.TrimSpace(*f.region) != "" {
+		options["aws_region"] = strings.TrimSpace(*f.region)
+		enabled = true
+	}
+	if f.profile != nil && strings.TrimSpace(*f.profile) != "" {
+		options["aws_profile"] = strings.TrimSpace(*f.profile)
+		enabled = true
+	}
+	if f.roleARN != nil && strings.TrimSpace(*f.roleARN) != "" {
+		options["aws_role_arn"] = strings.TrimSpace(*f.roleARN)
+		enabled = true
+	}
+	if f.roleSessionName != nil && strings.TrimSpace(*f.roleSessionName) != "" {
+		options["aws_role_session_name"] = strings.TrimSpace(*f.roleSessionName)
+		enabled = true
+	}
+	if f.roleExternalID != nil && strings.TrimSpace(*f.roleExternalID) != "" {
+		options["aws_role_external_id"] = strings.TrimSpace(*f.roleExternalID)
+		enabled = true
+	}
+	if f.endpoint != nil && strings.TrimSpace(*f.endpoint) != "" {
+		options["aws_endpoint"] = strings.TrimSpace(*f.endpoint)
+		enabled = true
+	}
+	if !enabled {
+		return nil
+	}
+	options["aws_rds_iam"] = "true"
+	return options
+}
+
+func mergeOptionMaps(base map[string]string, override map[string]string) map[string]string {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(base)+len(override))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range override {
+		out[k] = v
+	}
+	return out
 }
 
 func parseSchemaTables(tables []string) ([]connector.Schema, error) {

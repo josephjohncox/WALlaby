@@ -20,6 +20,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const (
+	iamOptEnabled         = "aws_rds_iam"
+	iamOptRegion          = "aws_region"
+	iamOptProfile         = "aws_profile"
+	iamOptRoleARN         = "aws_role_arn"
+	iamOptRoleSessionName = "aws_role_session_name"
+	iamOptRoleExternalID  = "aws_role_external_id"
+	iamOptEndpoint        = "aws_endpoint"
+)
+
 type rdsIAMConfig struct {
 	Enabled          bool
 	Region           string
@@ -30,13 +40,15 @@ type rdsIAMConfig struct {
 	EndpointOverride string
 }
 
-type rdsIAMTokenProvider struct {
+// RDSIAMTokenProvider generates short-lived auth tokens for Postgres RDS.
+type RDSIAMTokenProvider struct {
 	cfg    aws.Config
 	region string
 }
 
-func newRDSIAMTokenProvider(ctx context.Context, dsn string, options map[string]string) (*rdsIAMTokenProvider, error) {
-	if options == nil || !parseBool(options[optAWSRDSIAM], false) {
+// NewRDSIAMTokenProvider builds a token provider from connection options.
+func NewRDSIAMTokenProvider(ctx context.Context, dsn string, options map[string]string) (*RDSIAMTokenProvider, error) {
+	if options == nil || !parseBoolOption(options[iamOptEnabled], false) {
 		return nil, nil
 	}
 	connCfg, err := pgx.ParseConfig(dsn)
@@ -77,10 +89,11 @@ func newRDSIAMTokenProvider(ctx context.Context, dsn string, options map[string]
 		cfg.BaseEndpoint = aws.String(iam.EndpointOverride)
 	}
 
-	return &rdsIAMTokenProvider{cfg: cfg, region: iam.Region}, nil
+	return &RDSIAMTokenProvider{cfg: cfg, region: iam.Region}, nil
 }
 
-func (p *rdsIAMTokenProvider) ApplyToPoolConfig(ctx context.Context, cfg *pgxpool.Config) error {
+// ApplyToPoolConfig configures pool connections to use IAM tokens.
+func (p *RDSIAMTokenProvider) ApplyToPoolConfig(ctx context.Context, cfg *pgxpool.Config) error {
 	if p == nil {
 		return nil
 	}
@@ -101,7 +114,8 @@ func (p *rdsIAMTokenProvider) ApplyToPoolConfig(ctx context.Context, cfg *pgxpoo
 	return nil
 }
 
-func (p *rdsIAMTokenProvider) ApplyToConnConfig(ctx context.Context, connCfg *pgconn.Config) error {
+// ApplyToConnConfig applies IAM auth to a replication connection config.
+func (p *RDSIAMTokenProvider) ApplyToConnConfig(ctx context.Context, connCfg *pgconn.Config) error {
 	if p == nil {
 		return nil
 	}
@@ -113,7 +127,8 @@ func (p *rdsIAMTokenProvider) ApplyToConnConfig(ctx context.Context, connCfg *pg
 	return nil
 }
 
-func (p *rdsIAMTokenProvider) Token(ctx context.Context, host string, port uint16, user string) (string, error) {
+// Token returns a signed auth token for the given endpoint and user.
+func (p *RDSIAMTokenProvider) Token(ctx context.Context, host string, port uint16, user string) (string, error) {
 	if p == nil {
 		return "", errors.New("rds iam provider not configured")
 	}
@@ -160,16 +175,16 @@ func (p *rdsIAMTokenProvider) Token(ctx context.Context, host string, port uint1
 
 func rdsIAMConfigFromOptions(options map[string]string, host string) (rdsIAMConfig, error) {
 	cfg := rdsIAMConfig{}
-	if options == nil || !parseBool(options[optAWSRDSIAM], false) {
+	if options == nil || !parseBoolOption(options[iamOptEnabled], false) {
 		return cfg, nil
 	}
 	cfg.Enabled = true
-	cfg.Region = strings.TrimSpace(options[optAWSRegion])
-	cfg.Profile = strings.TrimSpace(options[optAWSProfile])
-	cfg.RoleARN = strings.TrimSpace(options[optAWSRoleARN])
-	cfg.RoleSessionName = strings.TrimSpace(options[optAWSRoleSessionName])
-	cfg.RoleExternalID = strings.TrimSpace(options[optAWSRoleExternalID])
-	cfg.EndpointOverride = strings.TrimSpace(options[optAWSEndpoint])
+	cfg.Region = strings.TrimSpace(options[iamOptRegion])
+	cfg.Profile = strings.TrimSpace(options[iamOptProfile])
+	cfg.RoleARN = strings.TrimSpace(options[iamOptRoleARN])
+	cfg.RoleSessionName = strings.TrimSpace(options[iamOptRoleSessionName])
+	cfg.RoleExternalID = strings.TrimSpace(options[iamOptRoleExternalID])
+	cfg.EndpointOverride = strings.TrimSpace(options[iamOptEndpoint])
 
 	if cfg.Region == "" {
 		cfg.Region = inferAWSRegionFromHost(host)
@@ -198,4 +213,18 @@ func inferAWSRegionFromHost(host string) string {
 		}
 	}
 	return ""
+}
+
+func parseBoolOption(raw string, fallback bool) bool {
+	if raw == "" {
+		return fallback
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }

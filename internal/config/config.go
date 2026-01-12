@@ -39,6 +39,8 @@ type DBOSConfig struct {
 	Schedule      string
 	Queue         string
 	MaxEmptyReads int
+	MaxRetries    int
+	MaxRetriesSet bool
 }
 
 type KubernetesConfig struct {
@@ -154,6 +156,11 @@ func Load(_ string) (*Config, error) {
 		},
 	}
 
+	if maxRetries, ok := getenvIntOptional("WALLABY_DBOS_MAX_RETRIES"); ok {
+		cfg.DBOS.MaxRetries = maxRetries
+		cfg.DBOS.MaxRetriesSet = true
+	}
+
 	return cfg, nil
 }
 
@@ -209,6 +216,18 @@ func getenvInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func getenvIntOptional(key string) (int, bool) {
+	value, ok := os.LookupEnv(key)
+	if !ok {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, true
+	}
+	return parsed, true
 }
 
 func getenvKeyValueMap(key string) map[string]string {

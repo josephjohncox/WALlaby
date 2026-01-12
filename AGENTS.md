@@ -56,14 +56,14 @@ PRs should include description, test evidence, and performance/compatibility not
 1) [done] Type system completeness + extension mapping (pgvector, postgis, hstore, citext, ltree); centralize type mapping + casts; round-trip tests per destination.
 2) [done] Schema evolution lifecycle: DDL capture → approval → apply → checkpointed DDL stream; apply tests for Snowflake/ClickHouse/DuckLake/Postgres.
 3) [done] Snapshot/backfill: `pg_export_snapshot()` + persistent snapshot state + resume; parallel snapshot workers; snapshot→stream switch tests.
-4) Workflow engines + orchestrators: DBOS/K8s/CLI parity, retry/recovery tests, run-once coverage.
-5) Destinations parity: finish/verify Snowflake/Snowpipe/ClickHouse/DuckDB/DuckLake/Postgres/Kafka/HTTP; S3 partition + metadata.
+4) [done] Workflow engines + orchestrators: DBOS/K8s/CLI parity, retry/recovery tests, run-once coverage. (DBOS retry/backoff test + K8s backoff test + CLI lifecycle tests.)
+5) [in progress] Destinations parity: finish/verify Snowflake/Snowpipe/ClickHouse/DuckDB/DuckLake/Postgres/Kafka/HTTP; S3 partition + metadata. (Kafka/HTTP parity tests + Redpanda/HTTP fixtures added; Avro/Arrow/Proto Kafka decode assertions added.)
 6) Wire formats + schema registry: enforce end-to-end wire format, registry for Avro/Proto, evolution tests.
 7) Benchmarks + profiling: flamegraphs/traces + per-destination bench matrix.
 8) Operational controls: publication add/remove lifecycle, durable state tables, cleanup/reconfig.
 9) [done] Optional type mapping overrides via config (proto/terraform options, JSON/YAML files).
 10) [done] RDS / AWS support with AWS IRSA/role-based auth.
-11) IAM support on the CLI endpoints as flags (so wallaby-admin publication ... can auth to RDS directly)
+11) [done] IAM support on the CLI endpoints as flags (so wallaby-admin publication ... can auth to RDS directly)
 
 ## Observability & Lifecycle Expectations
 All new components must emit OpenTelemetry traces/metrics and honor flow lifecycle state transitions. Checkpointing and recovery paths should be tested and documented.

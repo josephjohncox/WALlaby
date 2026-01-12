@@ -15,7 +15,7 @@ func newPool(ctx context.Context, dsn string, options map[string]string) (*pgxpo
 		return nil, fmt.Errorf("parse postgres dsn: %w", err)
 	}
 
-	iamProvider, err := newRDSIAMTokenProvider(ctx, dsn, options)
+	iamProvider, err := postgrescodec.NewRDSIAMTokenProvider(ctx, dsn, options)
 	if err != nil {
 		return nil, err
 	}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgxpool"
+	postgrescodec "github.com/josephjohncox/wallaby/internal/postgres"
 	"github.com/josephjohncox/wallaby/internal/replication"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -177,7 +178,7 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		}
 	}
 
-	iamProvider, err := newRDSIAMTokenProvider(ctx, dsn, spec.Options)
+	iamProvider, err := postgrescodec.NewRDSIAMTokenProvider(ctx, dsn, spec.Options)
 	if err != nil {
 		return err
 	}

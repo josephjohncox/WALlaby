@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	postgrescodec "github.com/josephjohncox/wallaby/internal/postgres"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
@@ -76,7 +77,19 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		return errors.New("postgres dsn is required")
 	}
 
-	pool, err := pgxpool.New(ctx, dsn)
+	poolCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return fmt.Errorf("parse postgres dsn: %w", err)
+	}
+	iamProvider, err := postgrescodec.NewRDSIAMTokenProvider(ctx, dsn, spec.Options)
+	if err != nil {
+		return err
+	}
+	if err := iamProvider.ApplyToPoolConfig(ctx, poolCfg); err != nil {
+		return err
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}

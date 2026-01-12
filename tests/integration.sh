@@ -17,6 +17,8 @@ CLICKHOUSE_USER="${TEST_CLICKHOUSE_USER:-wallaby}"
 CLICKHOUSE_PASSWORD="${TEST_CLICKHOUSE_PASSWORD:-wallaby}"
 FAKESNOW_PORT="${TEST_FAKESNOW_PORT:-8000}"
 MINIO_PORT="${TEST_MINIO_PORT:-9002}"
+KAFKA_PORT="${TEST_KAFKA_PORT:-9094}"
+HTTP_PORT="${TEST_HTTP_PORT:-8081}"
 MINIO_ACCESS_KEY="${TEST_MINIO_ACCESS_KEY:-wallaby}"
 MINIO_SECRET_KEY="${TEST_MINIO_SECRET_KEY:-wallabysecret}"
 MINIO_BUCKET="${TEST_MINIO_BUCKET:-wallaby-test}"
@@ -194,6 +196,8 @@ wait_for_http() {
 
 wait_for_http_code "localhost" "$FAKESNOW_PORT" "/session/v1/login-request" "fakesnow" "POST" '{}'
 wait_for_port "localhost" "$MINIO_PORT" "minio"
+wait_for_port "localhost" "$KAFKA_PORT" "kafka"
+wait_for_http "localhost" "$HTTP_PORT" "http-test"
 if command -v curl >/dev/null 2>&1; then
   for ((i=1; i<=30; i++)); do
     if curl -fsS "http://localhost:${MINIO_PORT}/minio/health/ready" >/dev/null 2>&1; then
@@ -220,6 +224,8 @@ export WALLABY_TEST_S3_ACCESS_KEY="${WALLABY_TEST_S3_ACCESS_KEY:-${MINIO_ACCESS_
 export WALLABY_TEST_S3_SECRET_KEY="${WALLABY_TEST_S3_SECRET_KEY:-${MINIO_SECRET_KEY}}"
 export WALLABY_TEST_S3_REGION="${WALLABY_TEST_S3_REGION:-us-east-1}"
 export WALLABY_TEST_DUCKLAKE="${WALLABY_TEST_DUCKLAKE:-1}"
+export WALLABY_TEST_KAFKA_BROKERS="${WALLABY_TEST_KAFKA_BROKERS:-localhost:${KAFKA_PORT}}"
+export WALLABY_TEST_HTTP_URL="${WALLABY_TEST_HTTP_URL:-http://localhost:${HTTP_PORT}}"
 
 # Avoid invoking external credential helpers during integration tests.
 if [[ -n "${WALLABY_TEST_K8S_KUBECONFIG:-}" ]]; then

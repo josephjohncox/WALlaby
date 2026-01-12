@@ -300,6 +300,112 @@ func TestDBOSIntegrationStreaming(t *testing.T) {
 	})
 }
 
+func TestDBOSIntegrationRetries(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("WALLABY_TEST_DBOS_DSN"))
+	if dsn == "" {
+		dsn = strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
+	}
+	if dsn == "" {
+		t.Skip("WALLABY_TEST_DBOS_DSN or TEST_PG_DSN not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer pool.Close()
+
+	suffix := time.Now().UnixNano()
+	flowID := fmt.Sprintf("flow-retry-%d", suffix)
+
+	engine, err := workflow.NewPostgresEngine(ctx, dsn)
+	if err != nil {
+		t.Fatalf("create engine: %v", err)
+	}
+	defer engine.Close()
+	defer func() {
+		_ = engine.Delete(context.Background(), flowID)
+	}()
+
+	badSource := connector.Spec{
+		Name: "bad-source",
+		Type: connector.EndpointType("bogus"),
+	}
+	destSpec := connector.Spec{
+		Name: "stream",
+		Type: connector.EndpointPGStream,
+		Options: map[string]string{
+			"dsn":    dsn,
+			"stream": fmt.Sprintf("wallaby_retry_%d", suffix),
+			"format": "json",
+		},
+	}
+
+	created, err := engine.Create(ctx, flow.Flow{
+		ID:           flowID,
+		Name:         "dbos-retry",
+		Source:       badSource,
+		Destinations: []connector.Spec{destSpec},
+		State:        flow.StateCreated,
+		Parallelism:  1,
+	})
+	if err != nil {
+		t.Fatalf("create flow: %v", err)
+	}
+	if _, err := engine.Start(ctx, created.ID); err != nil {
+		t.Fatalf("start flow: %v", err)
+	}
+
+	orch, err := orchestrator.NewDBOSOrchestrator(ctx, orchestrator.Config{
+		AppName:       "wallaby-test",
+		DatabaseURL:   dsn,
+		Queue:         "wallaby",
+		MaxEmptyReads: 1,
+		MaxRetries:    1,
+		MaxRetriesSet: true,
+		DefaultWire:   connector.WireFormatJSON,
+	}, engine, nil, runner.Factory{})
+	if err != nil {
+		t.Fatalf("create dbos orchestrator: %v", err)
+	}
+	defer orch.Shutdown(5 * time.Second)
+
+	if err := orch.EnqueueFlow(ctx, flowID); err != nil {
+		t.Fatalf("enqueue flow: %v", err)
+	}
+
+	startedAt := time.Now().Add(-1 * time.Second).UnixMilli()
+
+	waitFor(t, 30*time.Second, 500*time.Millisecond, func() (bool, error) {
+		var status string
+		var attempts int64
+		var errMsg sql.NullString
+		err := pool.QueryRow(ctx, `SELECT status, recovery_attempts, error
+FROM dbos.workflow_status
+WHERE created_at >= $1 AND error ILIKE '%unsupported source type%'
+ORDER BY created_at DESC
+LIMIT 1`, startedAt).Scan(&status, &attempts, &errMsg)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return false, nil
+			}
+			return false, err
+		}
+		if status == "ERROR" || status == "MAX_RECOVERY_ATTEMPTS_EXCEEDED" {
+			if attempts >= 1 {
+				if errMsg.Valid && !strings.Contains(errMsg.String, "unsupported source type") {
+					t.Fatalf("unexpected error: %s", errMsg.String)
+				}
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+}
+
 func waitForStreamEvents(t *testing.T, ctx context.Context, pool *pgxpool.Pool, flowID, streamName, inputPayload string, want int) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)

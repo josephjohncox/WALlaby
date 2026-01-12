@@ -422,6 +422,121 @@ func TestCLIIntegrationFlowCreateRunOnce(t *testing.T) {
 	}
 }
 
+func TestCLIIntegrationFlowStartStopResume(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
+	if baseDSN == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	adminPool, err := pgxpool.New(ctx, baseDSN)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer adminPool.Close()
+
+	dbName, dbDSN := createTempDatabase(t, ctx, adminPool, "wallaby_flow_state")
+	defer dropDatabase(t, adminPool, dbName)
+
+	engine, err := workflow.NewPostgresEngine(ctx, dbDSN)
+	if err != nil {
+		t.Fatalf("create workflow engine: %v", err)
+	}
+	defer engine.Close()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen grpc: %v", err)
+	}
+	defer listener.Close()
+
+	server := apigrpc.New(engine, noopDispatcher{}, nil, nil, nil, false)
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	defer server.Stop()
+	waitForTCP(t, listener.Addr().String(), 2*time.Second)
+
+	configPath := writeFlowConfig(t, flowConfigPayload{
+		Name:       "cli-flow-state",
+		WireFormat: "json",
+		Source: endpointConfigPayload{
+			Name: "src",
+			Type: "postgres",
+			Options: map[string]string{
+				"dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+			},
+		},
+		Destinations: []endpointConfigPayload{
+			{
+				Name: "dest",
+				Type: "pgstream",
+				Options: map[string]string{
+					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"stream": "orders",
+				},
+			},
+		},
+	})
+
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "-file", configPath, "-json")
+	if err != nil {
+		t.Fatalf("wallaby-admin flow create: %v\n%s", err, output)
+	}
+	var createResp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output, &createResp); err != nil {
+		t.Fatalf("decode flow create output: %v\n%s", err, output)
+	}
+	if createResp.ID == "" {
+		t.Fatalf("expected flow id, got: %s", output)
+	}
+
+	type stateResp struct {
+		ID    string `json:"id"`
+		State string `json:"state"`
+	}
+
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "start", "-flow-id", createResp.ID, "-json")
+	if err != nil {
+		t.Fatalf("wallaby-admin flow start: %v\n%s", err, output)
+	}
+	var startResp stateResp
+	if err := json.Unmarshal(output, &startResp); err != nil {
+		t.Fatalf("decode flow start output: %v\n%s", err, output)
+	}
+	if startResp.State != "FLOW_STATE_RUNNING" {
+		t.Fatalf("expected running, got %s", startResp.State)
+	}
+
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "stop", "-flow-id", createResp.ID, "-json")
+	if err != nil {
+		t.Fatalf("wallaby-admin flow stop: %v\n%s", err, output)
+	}
+	var stopResp stateResp
+	if err := json.Unmarshal(output, &stopResp); err != nil {
+		t.Fatalf("decode flow stop output: %v\n%s", err, output)
+	}
+	if stopResp.State != "FLOW_STATE_PAUSED" {
+		t.Fatalf("expected paused, got %s", stopResp.State)
+	}
+
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "resume", "-flow-id", createResp.ID, "-json")
+	if err != nil {
+		t.Fatalf("wallaby-admin flow resume: %v\n%s", err, output)
+	}
+	var resumeResp stateResp
+	if err := json.Unmarshal(output, &resumeResp); err != nil {
+		t.Fatalf("decode flow resume output: %v\n%s", err, output)
+	}
+	if resumeResp.State != "FLOW_STATE_RUNNING" {
+		t.Fatalf("expected running, got %s", resumeResp.State)
+	}
+}
+
 func TestCLIIntegrationPublicationSync(t *testing.T) {
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
 	if baseDSN == "" {

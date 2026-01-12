@@ -25,6 +25,7 @@ export WALLABY_DBOS_ENABLED="true"
 export WALLABY_DBOS_APP="wallaby"
 export WALLABY_DBOS_QUEUE="wallaby"
 export WALLABY_DBOS_SCHEDULE="*/10 * * * * *"
+export WALLABY_DBOS_MAX_RETRIES="5"
 ```
 
 See `examples/workflows/dbos.env` for a full template.

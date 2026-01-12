@@ -24,6 +24,8 @@ type Config struct {
 	Queue         string
 	Schedule      string
 	MaxEmptyReads int
+	MaxRetries    int
+	MaxRetriesSet bool
 	DefaultWire   connector.WireFormat
 	StrictWire    bool
 	Tracer        trace.Tracer
@@ -44,6 +46,8 @@ type DBOSOrchestrator struct {
 	factory       runner.Factory
 	queue         string
 	maxEmptyReads int
+	maxRetries    int
+	maxRetriesSet bool
 	defaultWire   connector.WireFormat
 	strictWire    bool
 	tracer        trace.Tracer
@@ -81,6 +85,8 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Engine
 		factory:       factory,
 		queue:         cfg.Queue,
 		maxEmptyReads: cfg.MaxEmptyReads,
+		maxRetries:    cfg.MaxRetries,
+		maxRetriesSet: cfg.MaxRetriesSet,
 		defaultWire:   cfg.DefaultWire,
 		strictWire:    cfg.StrictWire,
 		tracer:        cfg.Tracer,
@@ -133,9 +139,15 @@ func (o *DBOSOrchestrator) Shutdown(timeout time.Duration) {
 }
 
 func (o *DBOSOrchestrator) registerWorkflows(schedule string) {
-	dbos.RegisterWorkflow(o.ctx, o.runFlowWorkflow)
+	opts := []dbos.WorkflowRegistrationOption{}
+	if o.maxRetriesSet {
+		opts = append(opts, dbos.WithMaxRetries(o.maxRetries))
+	}
+	dbos.RegisterWorkflow(o.ctx, o.runFlowWorkflow, opts...)
 	if schedule != "" {
-		dbos.RegisterWorkflow(o.ctx, o.dispatchWorkflow, dbos.WithSchedule(schedule))
+		dispatchOpts := append([]dbos.WorkflowRegistrationOption{}, opts...)
+		dispatchOpts = append(dispatchOpts, dbos.WithSchedule(schedule))
+		dbos.RegisterWorkflow(o.ctx, o.dispatchWorkflow, dispatchOpts...)
 	}
 }
 

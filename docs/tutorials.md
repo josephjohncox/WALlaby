@@ -200,6 +200,7 @@ Apply a DDL change (e.g., `ALTER TABLE ... ADD COLUMN`).
 export WALLABY_DBOS_ENABLED="true"
 export WALLABY_DBOS_APP="wallaby"
 export WALLABY_DBOS_SCHEDULE="*/30 * * * * *"
+export WALLABY_DBOS_MAX_RETRIES="5"
 ./bin/wallaby
 ```
 

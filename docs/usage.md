@@ -79,6 +79,7 @@ export WALLABY_DBOS_ENABLED="true"
 export WALLABY_DBOS_APP="wallaby"
 export WALLABY_DBOS_QUEUE="wallaby"
 export WALLABY_DBOS_SCHEDULE="*/10 * * * * *" # every 10 seconds
+export WALLABY_DBOS_MAX_RETRIES="5" # workflow recovery retries (optional)
 ```
 
 If `WALLABY_DBOS_SCHEDULE` is set, DBOS enqueues one run for each flow in `running` state.
@@ -273,6 +274,8 @@ Use `sync_publication` with `publication_tables` or `publication_schemas` to add
 ./bin/wallaby-admin publication list -flow-id "<flow-id>"
 ./bin/wallaby-admin publication sync -flow-id "<flow-id>" -schemas public -mode add -pause -resume
 ```
+
+For RDS IAM sources, pass `-aws-rds-iam` plus region/role flags (these override flow defaults).
 
 To add tables and snapshot them:
 

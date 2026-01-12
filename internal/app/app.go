@@ -145,6 +145,8 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			Queue:         cfg.DBOS.Queue,
 			Schedule:      cfg.DBOS.Schedule,
 			MaxEmptyReads: maxEmptyReads,
+			MaxRetries:    cfg.DBOS.MaxRetries,
+			MaxRetriesSet: cfg.DBOS.MaxRetriesSet,
 			DefaultWire:   connector.WireFormat(cfg.Wire.DefaultFormat),
 			StrictWire:    cfg.Wire.Enforce,
 			Tracer:        tracer,
