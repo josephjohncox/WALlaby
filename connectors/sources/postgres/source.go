@@ -77,6 +77,7 @@ type Source struct {
 	toastFetch   string
 	toastPool    *pgxpool.Pool
 	toastCache   *toastCache
+	lagPool      *pgxpool.Pool
 }
 
 func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
@@ -232,9 +233,20 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		}))
 	}
 
+	// Create pool for replication lag queries
+	lagPool, err := newPool(ctx, dsn, spec.Options)
+	if err != nil {
+		return fmt.Errorf("create lag pool: %w", err)
+	}
+	s.lagPool = lagPool
+
 	s.stream = replication.NewPostgresStream(dsn, opts...)
 	changes, err := s.stream.Start(ctx, s.slot, s.publication)
 	if err != nil {
+		if s.lagPool != nil {
+			s.lagPool.Close()
+			s.lagPool = nil
+		}
 		if s.stateStore != nil {
 			s.stateStore.Close()
 			s.stateStore = nil
@@ -401,6 +413,10 @@ func (s *Source) Close(ctx context.Context) error {
 		s.toastPool.Close()
 		s.toastPool = nil
 	}
+	if s.lagPool != nil {
+		s.lagPool.Close()
+		s.lagPool = nil
+	}
 	return err
 }
 
@@ -456,6 +472,25 @@ func (s *Source) Capabilities() connector.Capabilities {
 			connector.WireFormatJSON,
 		},
 	}
+}
+
+// ReplicationLag returns the current replication lag in bytes for this source's slot.
+func (s *Source) ReplicationLag(ctx context.Context) (string, int64, error) {
+	if s.lagPool == nil {
+		return s.slot, 0, errors.New("lag pool not initialized")
+	}
+
+	var lagBytes int64
+	err := s.lagPool.QueryRow(ctx, `
+		SELECT COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn), 0)::bigint
+		FROM pg_replication_slots
+		WHERE slot_name = $1
+	`, s.slot).Scan(&lagBytes)
+	if err != nil {
+		return s.slot, 0, fmt.Errorf("query replication lag: %w", err)
+	}
+
+	return s.slot, lagBytes, nil
 }
 
 func parseInt(raw string, fallback int) int {

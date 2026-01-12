@@ -197,6 +197,13 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		batch, err := r.Source.Read(readCtx)
 		readSpan.End()
 		r.Meters.RecordSourceReadLatency(ctx, float64(time.Since(readStart).Milliseconds()))
+
+		// Record replication lag if source supports it
+		if lagProvider, ok := r.Source.(connector.ReplicationLagProvider); ok {
+			if slot, lagBytes, lagErr := lagProvider.ReplicationLag(ctx); lagErr == nil {
+				r.Meters.RecordSourceLag(ctx, slot, lagBytes)
+			}
+		}
 		if err != nil {
 			if errors.Is(err, connector.ErrDDLApprovalRequired) {
 				r.handleDDLGate(batchCtx, span, err)
