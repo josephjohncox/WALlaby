@@ -42,7 +42,7 @@ func (d *fakeDispatcher) EnqueueFlow(_ context.Context, flowID string) error {
 func TestOrchestratedEngine_StartDispatches(t *testing.T) {
 	base := &fakeEngine{startFlow: flow.Flow{ID: "flow-1", State: flow.StateRunning}}
 	dispatcher := &fakeDispatcher{}
-	engine := NewOrchestratedEngine(base, dispatcher)
+	engine := NewOrchestratedEngine(base, dispatcher, nil)
 
 	if _, err := engine.Start(context.Background(), "flow-1"); err != nil {
 		t.Fatalf("start: %v", err)
@@ -58,7 +58,7 @@ func TestOrchestratedEngine_StartDispatches(t *testing.T) {
 func TestOrchestratedEngine_StartDispatchErrorStopsFlow(t *testing.T) {
 	base := &fakeEngine{startFlow: flow.Flow{ID: "flow-2", State: flow.StateRunning}}
 	dispatcher := &fakeDispatcher{err: errors.New("dispatch failed")}
-	engine := NewOrchestratedEngine(base, dispatcher)
+	engine := NewOrchestratedEngine(base, dispatcher, nil)
 
 	if _, err := engine.Start(context.Background(), "flow-2"); err == nil {
 		t.Fatalf("expected error")
@@ -71,7 +71,7 @@ func TestOrchestratedEngine_StartDispatchErrorStopsFlow(t *testing.T) {
 func TestOrchestratedEngine_ResumeDispatches(t *testing.T) {
 	base := &fakeEngine{startFlow: flow.Flow{ID: "flow-3", State: flow.StateRunning}}
 	dispatcher := &fakeDispatcher{}
-	engine := NewOrchestratedEngine(base, dispatcher)
+	engine := NewOrchestratedEngine(base, dispatcher, nil)
 
 	if _, err := engine.Resume(context.Background(), "flow-3"); err != nil {
 		t.Fatalf("resume: %v", err)

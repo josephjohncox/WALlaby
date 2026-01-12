@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/internal/telemetry"
 )
 
 // FlowDispatcher enqueues flow executions.
@@ -16,14 +17,19 @@ type FlowDispatcher interface {
 type OrchestratedEngine struct {
 	base       Engine
 	dispatcher FlowDispatcher
+	meters     *telemetry.Meters
 }
 
-func NewOrchestratedEngine(base Engine, dispatcher FlowDispatcher) *OrchestratedEngine {
-	return &OrchestratedEngine{base: base, dispatcher: dispatcher}
+func NewOrchestratedEngine(base Engine, dispatcher FlowDispatcher, meters *telemetry.Meters) *OrchestratedEngine {
+	return &OrchestratedEngine{base: base, dispatcher: dispatcher, meters: meters}
 }
 
 func (o *OrchestratedEngine) Create(ctx context.Context, f flow.Flow) (flow.Flow, error) {
-	return o.base.Create(ctx, f)
+	created, err := o.base.Create(ctx, f)
+	if err == nil && o.meters != nil {
+		o.meters.RecordFlowCreate(ctx)
+	}
+	return created, err
 }
 
 func (o *OrchestratedEngine) Update(ctx context.Context, f flow.Flow) (flow.Flow, error) {
@@ -35,18 +41,30 @@ func (o *OrchestratedEngine) Start(ctx context.Context, flowID string) (flow.Flo
 	if err != nil {
 		return flow.Flow{}, err
 	}
+	if o.meters != nil {
+		o.meters.RecordFlowActive(ctx, 1)
+		o.meters.RecordFlowStateTransition(ctx, "created", "running")
+	}
 	if o.dispatcher == nil {
 		return updated, nil
 	}
 	if err := o.dispatcher.EnqueueFlow(ctx, updated.ID); err != nil {
 		_, _ = o.base.Stop(ctx, updated.ID)
+		if o.meters != nil {
+			o.meters.RecordFlowActive(ctx, -1)
+		}
 		return flow.Flow{}, err
 	}
 	return updated, nil
 }
 
 func (o *OrchestratedEngine) Stop(ctx context.Context, flowID string) (flow.Flow, error) {
-	return o.base.Stop(ctx, flowID)
+	stopped, err := o.base.Stop(ctx, flowID)
+	if err == nil && o.meters != nil {
+		o.meters.RecordFlowActive(ctx, -1)
+		o.meters.RecordFlowStateTransition(ctx, "running", "stopped")
+	}
+	return stopped, err
 }
 
 func (o *OrchestratedEngine) Resume(ctx context.Context, flowID string) (flow.Flow, error) {
@@ -54,11 +72,18 @@ func (o *OrchestratedEngine) Resume(ctx context.Context, flowID string) (flow.Fl
 	if err != nil {
 		return flow.Flow{}, err
 	}
+	if o.meters != nil {
+		o.meters.RecordFlowActive(ctx, 1)
+		o.meters.RecordFlowStateTransition(ctx, "stopped", "running")
+	}
 	if o.dispatcher == nil {
 		return updated, nil
 	}
 	if err := o.dispatcher.EnqueueFlow(ctx, updated.ID); err != nil {
 		_, _ = o.base.Stop(ctx, updated.ID)
+		if o.meters != nil {
+			o.meters.RecordFlowActive(ctx, -1)
+		}
 		return flow.Flow{}, err
 	}
 	return updated, nil
@@ -68,7 +93,11 @@ func (o *OrchestratedEngine) Delete(ctx context.Context, flowID string) error {
 	if o.base == nil {
 		return errors.New("workflow engine is required")
 	}
-	return o.base.Delete(ctx, flowID)
+	err := o.base.Delete(ctx, flowID)
+	if err == nil && o.meters != nil {
+		o.meters.RecordFlowStateTransition(ctx, "stopped", "deleted")
+	}
+	return err
 }
 
 func (o *OrchestratedEngine) Get(ctx context.Context, flowID string) (flow.Flow, error) {
