@@ -16,6 +16,9 @@ import (
 	postgrescodec "github.com/josephjohncox/wallaby/internal/postgres"
 	"github.com/josephjohncox/wallaby/internal/replication"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -269,6 +272,7 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 		return connector.Batch{}, errors.New("source not started")
 	}
 
+	tracer := otel.Tracer("wallaby/source/postgres")
 	var records []connector.Record
 	var schema connector.Schema
 	var checkpoint connector.Checkpoint
@@ -276,13 +280,23 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 	timer := time.NewTimer(s.batchTimeout)
 	defer timer.Stop()
 
+	// Track spans: wait until first change, then process
+	_, waitSpan := tracer.Start(ctx, "source.wait")
+	var processSpan trace.Span
+
 	for {
 		select {
 		case <-ctx.Done():
+			waitSpan.End()
+			if processSpan != nil {
+				processSpan.End()
+			}
 			return connector.Batch{}, ctx.Err()
 		case <-timer.C:
 			if len(records) == 0 {
+				waitSpan.SetAttributes(attribute.Bool("timeout", true))
 				if s.emitEmpty {
+					waitSpan.End()
 					return connector.Batch{
 						Records:    nil,
 						Schema:     schema,
@@ -293,6 +307,8 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 				timer.Reset(s.batchTimeout)
 				continue
 			}
+			processSpan.SetAttributes(attribute.Int("records", len(records)))
+			processSpan.End()
 			return connector.Batch{
 				Records:    records,
 				Schema:     schema,
@@ -301,6 +317,10 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 			}, nil
 		case change, ok := <-s.changes:
 			if !ok {
+				waitSpan.End()
+				if processSpan != nil {
+					processSpan.End()
+				}
 				if s.stream != nil {
 					if err := s.stream.Err(); err != nil {
 						return connector.Batch{}, err
@@ -308,8 +328,14 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 				}
 				return connector.Batch{}, io.EOF
 			}
+			// First change: end wait, start process
+			if processSpan == nil {
+				waitSpan.End()
+				_, processSpan = tracer.Start(ctx, "source.process")
+			}
 			if change.Record != nil {
 				if err := s.handleToast(ctx, change, change.Record); err != nil {
+					processSpan.End()
 					return connector.Batch{}, err
 				}
 				records = append(records, *change.Record)
@@ -323,6 +349,8 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 			}
 
 			if len(records) >= s.batchSize {
+				processSpan.SetAttributes(attribute.Int("records", len(records)))
+				processSpan.End()
 				return connector.Batch{
 					Records:    records,
 					Schema:     schema,
