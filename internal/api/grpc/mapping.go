@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"errors"
+	"math"
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/flow"
@@ -17,7 +18,7 @@ func flowToProto(f flow.Flow) *wallabypb.Flow {
 		Destinations: endpointsToProto(f.Destinations),
 		State:        flowStateToProto(f.State),
 		WireFormat:   wireFormatToProto(f.WireFormat),
-		Parallelism:  int32(f.Parallelism),
+		Parallelism:  safeInt32(f.Parallelism),
 		Config:       flowConfigToProto(f.Config),
 	}
 }
@@ -59,6 +60,17 @@ func flowFromProto(pb *wallabypb.Flow) (flow.Flow, error) {
 		Parallelism:  int(pb.Parallelism),
 		Config:       flowConfigFromProto(pb.Config),
 	}, nil
+}
+
+func safeInt32(value int) int32 {
+	if value > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if value < math.MinInt32 {
+		return math.MinInt32
+	}
+	// #nosec G115 -- value clamped to int32 range above.
+	return int32(value)
 }
 
 func flowConfigToProto(cfg flow.Config) *wallabypb.FlowConfig {

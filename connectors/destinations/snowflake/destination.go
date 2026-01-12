@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -77,7 +78,7 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		return fmt.Errorf("open snowflake: %w", err)
 	}
 	if err := db.PingContext(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("ping snowflake: %w", err)
 	}
 	d.db = db
@@ -453,6 +454,7 @@ func (d *Destination) resolveStagingTable(ctx context.Context, info tableInfo) e
 			return fmt.Errorf("truncate target: %w", err)
 		}
 	}
+	// #nosec G201 -- identifiers are quoted and derived from schema/config.
 	stmt := fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s", target, colList, colList, staging)
 	if _, err := d.db.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("resolve staging: %w", err)
@@ -482,13 +484,13 @@ func (d *Destination) targetParts(schema connector.Schema, table string) (string
 func (d *Destination) loadColumns(ctx context.Context, schema connector.Schema, table string) ([]string, error) {
 	targetSchema, targetTable := d.targetParts(schema, table)
 	if targetTable == "" {
-		return nil, nil
+		return []string{}, nil
 	}
 	if targetSchema == "" {
 		targetSchema = schema.Namespace
 	}
 	if targetSchema == "" {
-		return nil, nil
+		return []string{}, nil
 	}
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`,
@@ -497,7 +499,11 @@ func (d *Destination) loadColumns(ctx context.Context, schema connector.Schema, 
 	if err != nil {
 		return nil, fmt.Errorf("load columns: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("close rows: %v", err)
+		}
+	}()
 
 	var cols []string
 	for rows.Next() {
@@ -536,7 +542,8 @@ func (d *Destination) updateRow(ctx context.Context, exec execer, target string,
 	}
 
 	whereClause, whereArgs := whereFromKey(key, '"', "")
-	args := append(vals, whereArgs...)
+	vals = append(vals, whereArgs...)
+	args := vals
 
 	stmt := fmt.Sprintf("UPDATE %s SET %s WHERE %s", target, strings.Join(setClause, ", "), whereClause)
 	if _, err := exec.ExecContext(ctx, stmt, args...); err != nil {
@@ -596,7 +603,11 @@ func (d *Destination) refreshMetaColumns(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load meta columns: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("close rows: %v", err)
+		}
+	}()
 
 	d.metaColumns = map[string]struct{}{}
 	for rows.Next() {
@@ -652,8 +663,10 @@ func (d *Destination) upsertMetadata(ctx context.Context, exec execer, schema co
 		keyJSON = string(raw)
 	}
 
-	columns := []string{"FLOW_ID", "SOURCE_SCHEMA", "SOURCE_TABLE", "SYNCED_AT", "IS_DELETED", "LSN", "OPERATION", "KEY_JSON"}
-	values := []any{d.flowID, schema.Namespace, record.Table, syncedAt, record.Operation == connector.OpDelete, checkpoint.LSN, string(record.Operation), keyJSON}
+	columns := make([]string, 0, 8+len(pkCols))
+	columns = append(columns, "FLOW_ID", "SOURCE_SCHEMA", "SOURCE_TABLE", "SYNCED_AT", "IS_DELETED", "LSN", "OPERATION", "KEY_JSON")
+	values := make([]any, 0, 8+len(pkVals))
+	values = append(values, d.flowID, schema.Namespace, record.Table, syncedAt, record.Operation == connector.OpDelete, checkpoint.LSN, string(record.Operation), keyJSON)
 	columns = append(columns, pkCols...)
 	values = append(values, pkVals...)
 
@@ -683,7 +696,7 @@ func (d *Destination) ensureMetaColumn(ctx context.Context, column string) error
 
 func recordColumns(schema connector.Schema, record connector.Record) ([]string, []any, []string, error) {
 	if record.After == nil {
-		return nil, nil, nil, nil
+		return []string{}, []any{}, []string{}, nil
 	}
 	cols := make([]string, 0, len(schema.Columns))
 	vals := make([]any, 0, len(schema.Columns))
@@ -708,7 +721,7 @@ func recordColumns(schema connector.Schema, record connector.Record) ([]string, 
 
 func normalizeSnowflakeValue(colType string, value any) (any, error) {
 	if value == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // nil maps to NULL
 	}
 	if isSnowflakeJSONType(colType) {
 		switch v := value.(type) {
@@ -758,7 +771,7 @@ func schemaColumns(schema connector.Schema) []string {
 
 func decodeKey(raw []byte) (map[string]any, error) {
 	if len(raw) == 0 {
-		return nil, nil
+		return map[string]any{}, nil
 	}
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {

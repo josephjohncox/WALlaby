@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -377,6 +378,7 @@ func (d *Destination) insertRow(ctx context.Context, tx *sql.Tx, target string, 
 	if len(cols) == 0 {
 		return nil
 	}
+	// #nosec G201 -- identifiers are quoted and derived from schema/config.
 	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols, '"'), strings.Join(exprs, ", "))
 	if _, err := tx.ExecContext(ctx, stmt, vals...); err != nil {
 		return fmt.Errorf("insert row: %w", err)
@@ -428,6 +430,7 @@ func (d *Destination) resolveStagingTable(ctx context.Context, info tableInfo) e
 			return fmt.Errorf("truncate target: %w", err)
 		}
 	}
+	// #nosec G201 -- identifiers are quoted and derived from schema/config.
 	stmt := fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s", target, colList, colList, staging)
 	if _, err := d.db.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("resolve staging: %w", err)
@@ -457,7 +460,7 @@ func (d *Destination) targetParts(schema connector.Schema, table string) (string
 func (d *Destination) loadColumns(ctx context.Context, schema connector.Schema, table string) ([]string, error) {
 	targetSchema, targetTable := d.targetParts(schema, table)
 	if targetTable == "" {
-		return nil, nil
+		return []string{}, nil
 	}
 	if targetSchema == "" {
 		targetSchema = "main"
@@ -469,7 +472,11 @@ func (d *Destination) loadColumns(ctx context.Context, schema connector.Schema, 
 	if err != nil {
 		return nil, fmt.Errorf("load columns: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("close rows: %v", err)
+		}
+	}()
 
 	var cols []string
 	for rows.Next() {
@@ -508,8 +515,10 @@ func (d *Destination) updateRow(ctx context.Context, tx *sql.Tx, target string, 
 	}
 
 	whereClause, whereArgs := whereFromKey(key, '"', "")
-	args := append(vals, whereArgs...)
+	vals = append(vals, whereArgs...)
+	args := vals
 
+	// #nosec G201 -- identifiers are quoted and derived from schema/config.
 	stmt := fmt.Sprintf("UPDATE %s SET %s WHERE %s", target, strings.Join(setClause, ", "), whereClause)
 	if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
 		return fmt.Errorf("update row: %w", err)
@@ -527,6 +536,7 @@ func (d *Destination) deleteRow(ctx context.Context, tx *sql.Tx, target string, 
 	}
 
 	whereClause, args := whereFromKey(key, '"', "")
+	// #nosec G201 -- identifiers are quoted and derived from schema/config.
 	stmt := fmt.Sprintf("DELETE FROM %s WHERE %s", target, whereClause)
 	if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
 		return fmt.Errorf("delete row: %w", err)
@@ -566,7 +576,11 @@ func (d *Destination) refreshMetaColumns(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load meta columns: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("close rows: %v", err)
+		}
+	}()
 
 	d.metaColumns = map[string]struct{}{}
 	for rows.Next() {
@@ -607,6 +621,7 @@ func (d *Destination) upsertMetadata(ctx context.Context, tx *sql.Tx, schema con
 	whereClause = "flow_id = ? AND source_schema = ? AND source_table = ? AND " + whereClause
 	whereArgs = append([]any{d.flowID, schema.Namespace, record.Table}, whereArgs...)
 
+	// #nosec G201 -- identifiers are quoted and derived from schema/config.
 	deleteStmt := fmt.Sprintf("DELETE FROM %s WHERE %s", target, whereClause)
 	if _, err := tx.ExecContext(ctx, deleteStmt, whereArgs...); err != nil {
 		return fmt.Errorf("delete meta row: %w", err)
@@ -622,11 +637,14 @@ func (d *Destination) upsertMetadata(ctx context.Context, tx *sql.Tx, schema con
 		keyJSON = string(raw)
 	}
 
-	columns := []string{"flow_id", "source_schema", "source_table", "synced_at", "is_deleted", "lsn", "operation", "key_json"}
-	values := []any{d.flowID, schema.Namespace, record.Table, syncedAt, record.Operation == connector.OpDelete, checkpoint.LSN, string(record.Operation), keyJSON}
+	columns := make([]string, 0, 8+len(pkCols))
+	columns = append(columns, "flow_id", "source_schema", "source_table", "synced_at", "is_deleted", "lsn", "operation", "key_json")
+	values := make([]any, 0, 8+len(pkVals))
+	values = append(values, d.flowID, schema.Namespace, record.Table, syncedAt, record.Operation == connector.OpDelete, checkpoint.LSN, string(record.Operation), keyJSON)
 	columns = append(columns, pkCols...)
 	values = append(values, pkVals...)
 
+	// #nosec G201 -- identifiers are quoted and derived from schema/config.
 	insertStmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(columns, '"'), placeholders(len(columns)))
 	if _, err := tx.ExecContext(ctx, insertStmt, values...); err != nil {
 		return fmt.Errorf("insert meta row: %w", err)
@@ -653,7 +671,7 @@ func (d *Destination) ensureMetaColumn(ctx context.Context, column string) error
 
 func recordColumns(schema connector.Schema, record connector.Record) ([]string, []any, []string, error) {
 	if record.After == nil {
-		return nil, nil, nil, nil
+		return []string{}, []any{}, []string{}, nil
 	}
 	cols := make([]string, 0, len(schema.Columns))
 	vals := make([]any, 0, len(schema.Columns))
@@ -678,7 +696,7 @@ func recordColumns(schema connector.Schema, record connector.Record) ([]string, 
 
 func normalizeDuckDBValue(colType string, value any) (any, error) {
 	if value == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // nil maps to NULL
 	}
 	if isDuckDBArrayType(colType) {
 		return value, nil
@@ -729,7 +747,7 @@ func schemaColumns(schema connector.Schema) []string {
 
 func decodeKey(raw []byte) (map[string]any, error) {
 	if len(raw) == 0 {
-		return nil, nil
+		return map[string]any{}, nil
 	}
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {

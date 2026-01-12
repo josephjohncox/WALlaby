@@ -86,7 +86,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		}
 		if dropper, ok := r.Source.(connector.SlotDropper); ok {
 			if err := dropper.DropSlot(ctx); err != nil {
-				retErr = fmt.Errorf("%w (drop slot failed: %v)", retErr, err)
+				retErr = fmt.Errorf("%w (drop slot failed: %s)", retErr, err.Error())
 			}
 		}
 	}()
@@ -131,7 +131,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	if err := r.Source.Open(ctx, r.SourceSpec); err != nil {
 		return fmt.Errorf("open source: %w", err)
 	}
-	defer r.Source.Close(ctx)
+	defer func() { _ = r.Source.Close(ctx) }()
 
 	for _, dest := range r.Destinations {
 		if dest.Dest == nil {
@@ -140,7 +140,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		if err := dest.Dest.Open(ctx, dest.Spec); err != nil {
 			return fmt.Errorf("open destination %s: %w", dest.Spec.Name, err)
 		}
-		defer dest.Dest.Close(ctx)
+		defer func() { _ = dest.Dest.Close(ctx) }()
 	}
 
 	if r.Checkpoints != nil && r.FlowID != "" {

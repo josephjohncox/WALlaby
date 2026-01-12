@@ -84,7 +84,6 @@ type benchStats struct {
 	records   int64
 	bytes     int64
 	latencies []int64
-	rowSizes  map[string]int64
 }
 
 type benchResult struct {
@@ -161,44 +160,59 @@ func run() error {
 	flag.Parse()
 
 	if *cpuProfile != "" {
+		// #nosec G304 -- profile path comes from CLI flag.
 		file, err := os.Create(*cpuProfile)
 		if err != nil {
 			return fmt.Errorf("create cpu profile: %w", err)
 		}
 		if err := pprof.StartCPUProfile(file); err != nil {
-			file.Close()
+			if closeErr := file.Close(); closeErr != nil {
+				fmt.Fprintf(os.Stderr, "close cpu profile: %v\n", closeErr)
+			}
 			return fmt.Errorf("start cpu profile: %w", err)
 		}
 		defer func() {
 			pprof.StopCPUProfile()
-			_ = file.Close()
+			if err := file.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "close cpu profile: %v\n", err)
+			}
 		}()
 	}
 
 	if *traceProfile != "" {
+		// #nosec G304 -- trace path comes from CLI flag.
 		file, err := os.Create(*traceProfile)
 		if err != nil {
 			return fmt.Errorf("create trace: %w", err)
 		}
 		if err := trace.Start(file); err != nil {
-			file.Close()
+			if closeErr := file.Close(); closeErr != nil {
+				fmt.Fprintf(os.Stderr, "close trace: %v\n", closeErr)
+			}
 			return fmt.Errorf("start trace: %w", err)
 		}
 		defer func() {
 			trace.Stop()
-			_ = file.Close()
+			if err := file.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "close trace: %v\n", err)
+			}
 		}()
 	}
 
 	if *memProfile != "" {
 		path := *memProfile
 		defer func() {
+			// #nosec G304 -- profile path comes from CLI flag.
 			file, err := os.Create(path)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "create heap profile: %v\n", err)
 				return
 			}
-			defer file.Close()
+			defer func() {
+				if err := file.Close(); err != nil {
+					fmt.Fprintf(os.Stderr, "close heap profile: %v\n", err)
+				}
+			}()
 			runtime.GC()
 			if err := pprof.WriteHeapProfile(file); err != nil {
 				fmt.Fprintf(os.Stderr, "write heap profile: %v\n", err)
@@ -347,6 +361,7 @@ func hasTarget(targets []string, needle string) bool {
 }
 
 func buildBenchData(seed int64) benchData {
+	// #nosec G404 -- deterministic RNG for benchmarks.
 	rng := rand.New(rand.NewSource(seed))
 
 	narrowBlob := randString(rng, 900)
@@ -553,7 +568,11 @@ func setupClickHouseSink(ctx context.Context, dsn string, specs []tableSpec) err
 	if err != nil {
 		return fmt.Errorf("open clickhouse: %w", err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "close clickhouse db: %v\n", err)
+		}
+	}()
 	if err := db.PingContext(ctx); err != nil {
 		return fmt.Errorf("ping clickhouse: %w", err)
 	}
@@ -614,7 +633,11 @@ func truncateClickHouseSink(ctx context.Context, dsn string, specs []tableSpec) 
 	if err != nil {
 		return fmt.Errorf("open clickhouse: %w", err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "close clickhouse db: %v\n", err)
+		}
+	}()
 	if err := db.PingContext(ctx); err != nil {
 		return fmt.Errorf("ping clickhouse: %w", err)
 	}
@@ -831,6 +854,7 @@ func runWorkload(ctx context.Context, pool *pgxpool.Pool, tables []*tableState, 
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
+			// #nosec G404 -- RNG used for benchmark load shaping.
 			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)))
 			for {
 				idx := atomic.AddInt64(&counter, 1)
@@ -1021,6 +1045,7 @@ func writeResults(dir string, results []benchResult) error {
 	if len(results) == 0 {
 		return nil
 	}
+	// #nosec G301 -- bench output directory is intentionally world-readable.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
@@ -1039,11 +1064,16 @@ func writeResults(dir string, results []benchResult) error {
 }
 
 func writeJSON(path string, results []benchResult) error {
+	// #nosec G304 -- output path comes from CLI flag.
 	file, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("create json file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "close json file: %v\n", err)
+		}
+	}()
 
 	enc := json.NewEncoder(file)
 	enc.SetIndent("", "  ")
@@ -1054,11 +1084,16 @@ func writeJSON(path string, results []benchResult) error {
 }
 
 func writeCSV(path string, results []benchResult) error {
+	// #nosec G304 -- output path comes from CLI flag.
 	file, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("create csv file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "close csv file: %v\n", err)
+		}
+	}()
 
 	writer := csv.NewWriter(file)
 	if err := writer.Write([]string{"target", "profile", "scenario", "records", "bytes", "duration_sec", "records_per_sec", "mb_per_sec", "latency_p50_ms", "latency_p95_ms", "latency_p99_ms", "started_at", "ended_at"}); err != nil {

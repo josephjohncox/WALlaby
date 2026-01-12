@@ -30,6 +30,7 @@ func main() {
 }
 
 func writeAll(dir string) error {
+	// #nosec G301 -- manifest directory intended to be readable by all users.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -48,5 +49,6 @@ func writeManifest(path string, manifest spec.Manifest) error {
 		return err
 	}
 	data = append(data, '\n')
+	// #nosec G306 -- manifest is intended to be readable by all users.
 	return os.WriteFile(path, data, 0o644)
 }

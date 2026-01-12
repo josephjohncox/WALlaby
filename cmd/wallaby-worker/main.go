@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -23,6 +24,12 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	var (
 		configPath      string
 		flowID          string
@@ -50,7 +57,7 @@ func main() {
 	flag.Parse()
 
 	if flowID == "" {
-		log.Fatal("flow-id is required")
+		return errors.New("flow-id is required")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -58,36 +65,36 @@ func main() {
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		return fmt.Errorf("load config: %w", err)
 	}
 
 	if cfg.Postgres.DSN == "" {
-		log.Fatal("WALLABY_POSTGRES_DSN is required to run a flow worker")
+		return errors.New("WALLABY_POSTGRES_DSN is required to run a flow worker")
 	}
 
 	tracer := telemetry.Tracer(cfg.Telemetry.ServiceName)
 
 	engine, err := workflow.NewPostgresEngine(ctx, cfg.Postgres.DSN)
 	if err != nil {
-		log.Fatalf("start workflow engine: %v", err)
+		return fmt.Errorf("start workflow engine: %w", err)
 	}
 	defer engine.Close()
 
 	checkpoints, err := checkpoint.NewPostgresStore(ctx, cfg.Postgres.DSN)
 	if err != nil {
-		log.Fatalf("start checkpoint store: %v", err)
+		return fmt.Errorf("start checkpoint store: %w", err)
 	}
 	defer checkpoints.Close()
 
 	registryStore, err := registry.NewPostgresStore(ctx, cfg.Postgres.DSN)
 	if err != nil {
-		log.Fatalf("start registry store: %v", err)
+		return fmt.Errorf("start registry store: %w", err)
 	}
 	defer registryStore.Close()
 
 	flowDef, err := engine.Get(ctx, flowID)
 	if err != nil {
-		log.Fatalf("load flow: %v", err)
+		return fmt.Errorf("load flow: %w", err)
 	}
 
 	if flowDef.WireFormat == "" && cfg.Wire.DefaultFormat != "" {
@@ -156,11 +163,11 @@ func main() {
 
 	source, err := factory.SourceForFlow(flowDef)
 	if err != nil {
-		log.Fatalf("build source: %v", err)
+		return fmt.Errorf("build source: %w", err)
 	}
 	destinations, err := factory.Destinations(flowDef.Destinations)
 	if err != nil {
-		log.Fatalf("build destinations: %v", err)
+		return fmt.Errorf("build destinations: %w", err)
 	}
 
 	flowRunner := runner.FlowRunner{
@@ -173,11 +180,12 @@ func main() {
 	}
 	if cfg.Trace.Path != "" {
 		tracePath := strings.ReplaceAll(cfg.Trace.Path, "{flow_id}", flowDef.ID)
+		// #nosec G304 -- trace path is configured by the operator.
 		traceFile, err := os.Create(tracePath)
 		if err != nil {
-			log.Fatalf("open trace file: %v", err)
+			return fmt.Errorf("open trace file: %w", err)
 		}
-		defer traceFile.Close()
+		defer func() { _ = traceFile.Close() }()
 		flowRunner.TraceSink = stream.NewJSONTraceSink(traceFile)
 	}
 	if registryStore != nil {
@@ -190,6 +198,7 @@ func main() {
 	}
 
 	if err := flowRunner.Run(ctx, flowDef, source, destinations); err != nil {
-		log.Fatalf("run flow: %v", err)
+		return fmt.Errorf("run flow: %w", err)
 	}
+	return nil
 }

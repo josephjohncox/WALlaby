@@ -38,7 +38,7 @@ func NormalizePostgresRecord(schema Schema, values map[string]any) error {
 
 func normalizePostgresValueWithColumn(col Column, value any) (any, error) {
 	if value == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // nil maps to SQL NULL
 	}
 	base, isArray := splitPostgresType(col.Type)
 	if isArray {
@@ -111,16 +111,16 @@ func normalizeHstoreValue(value any) (any, error) {
 		return out, nil
 	case string:
 		var h pgtype.Hstore
-		if err := h.Scan(v); err != nil {
-			return v, nil
+		if err := h.Scan(v); err == nil {
+			return hstoreToMap(h), nil
 		}
-		return hstoreToMap(h), nil
+		return v, nil
 	case []byte:
 		var h pgtype.Hstore
-		if err := h.Scan(string(v)); err != nil {
-			return v, nil
+		if err := h.Scan(string(v)); err == nil {
+			return hstoreToMap(h), nil
 		}
-		return hstoreToMap(h), nil
+		return v, nil
 	default:
 		return value, nil
 	}
@@ -202,9 +202,7 @@ func normalizeGeometryValue(value any) (any, error) {
 }
 
 func looksLikeHex(value string) bool {
-	if strings.HasPrefix(value, "\\x") {
-		value = strings.TrimPrefix(value, "\\x")
-	}
+	value = strings.TrimPrefix(value, "\\x")
 	if len(value)%2 != 0 || value == "" {
 		return false
 	}
@@ -222,7 +220,7 @@ func looksLikeHex(value string) bool {
 
 func normalizePostgresArray(base string, value any) (any, error) {
 	if value == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // nil maps to SQL NULL
 	}
 	rv := reflect.ValueOf(value)
 	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
@@ -326,6 +324,7 @@ func normalizeJSONValue(value any) (any, error) {
 }
 
 func normalizeIntegerValue(value any) (any, error) {
+	const maxInt64Uint = ^uint64(0) >> 1
 	switch v := value.(type) {
 	case int:
 		return int64(v), nil
@@ -338,6 +337,10 @@ func normalizeIntegerValue(value any) (any, error) {
 	case int64:
 		return v, nil
 	case uint:
+		if uint64(v) > maxInt64Uint {
+			return nil, fmt.Errorf("integer overflow: %d", v)
+		}
+		// #nosec G115 -- bounds checked above.
 		return int64(v), nil
 	case uint8:
 		return int64(v), nil
@@ -346,9 +349,10 @@ func normalizeIntegerValue(value any) (any, error) {
 	case uint32:
 		return int64(v), nil
 	case uint64:
-		if v > uint64(^uint64(0)>>1) {
+		if v > maxInt64Uint {
 			return nil, fmt.Errorf("integer overflow: %d", v)
 		}
+		// #nosec G115 -- bounds checked above.
 		return int64(v), nil
 	case float32:
 		return int64(v), nil
@@ -365,7 +369,7 @@ func normalizeIntegerValue(value any) (any, error) {
 		return int64(f), nil
 	case string:
 		if v == "" {
-			return nil, nil
+			return nil, nil //nolint:nilnil // empty string maps to NULL
 		}
 		i, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
@@ -374,7 +378,7 @@ func normalizeIntegerValue(value any) (any, error) {
 		return i, nil
 	case []byte:
 		if len(v) == 0 {
-			return nil, nil
+			return nil, nil //nolint:nilnil // empty bytes map to NULL
 		}
 		i, err := strconv.ParseInt(string(v), 10, 64)
 		if err != nil {
@@ -392,7 +396,7 @@ func normalizeBoolValue(value any) (any, error) {
 		return v, nil
 	case string:
 		if v == "" {
-			return nil, nil
+			return nil, nil //nolint:nilnil // empty string maps to NULL
 		}
 		switch strings.ToLower(strings.TrimSpace(v)) {
 		case "t", "true", "1", "y", "yes":
@@ -459,7 +463,7 @@ func normalizeNumericValue(value any) (any, error) {
 			return nil, err
 		}
 		if val == nil {
-			return nil, nil
+			return nil, nil //nolint:nilnil // nil maps to SQL NULL
 		}
 		return normalizeNumericValue(val)
 	}
@@ -496,7 +500,7 @@ func normalizeInetValue(value any) (any, error) {
 		return v.String(), nil
 	case *net.IPNet:
 		if v == nil {
-			return nil, nil
+			return nil, nil //nolint:nilnil // nil maps to SQL NULL
 		}
 		return v.String(), nil
 	case driver.Valuer:

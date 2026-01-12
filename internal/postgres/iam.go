@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
@@ -49,7 +49,7 @@ type RDSIAMTokenProvider struct {
 // NewRDSIAMTokenProvider builds a token provider from connection options.
 func NewRDSIAMTokenProvider(ctx context.Context, dsn string, options map[string]string) (*RDSIAMTokenProvider, error) {
 	if options == nil || !parseBoolOption(options[iamOptEnabled], false) {
-		return nil, nil
+		return nil, nil //nolint:nilnil // IAM disabled by config
 	}
 	connCfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
@@ -60,7 +60,7 @@ func NewRDSIAMTokenProvider(ctx context.Context, dsn string, options map[string]
 		return nil, err
 	}
 	if !iam.Enabled {
-		return nil, nil
+		return nil, nil //nolint:nilnil // IAM disabled by options
 	}
 
 	loader := []func(*config.LoadOptions) error{

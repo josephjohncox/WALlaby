@@ -25,15 +25,6 @@ func newTraceCoverage() TraceCoverage {
 	}
 }
 
-func (c *TraceCoverage) merge(other TraceCoverage) {
-	for action, count := range other.Actions {
-		c.Actions[action] += count
-	}
-	for inv, count := range other.Invariants {
-		c.Invariants[inv] += count
-	}
-}
-
 // TraceViolation describes a failed invariant.
 type TraceViolation struct {
 	Invariant string

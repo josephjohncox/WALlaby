@@ -25,12 +25,12 @@ func TestRecordColumnsJSONArrays(t *testing.T) {
 		},
 	}
 
-	cols, vals, exprs, err := recordColumns(schema, record)
+	cols, vals, err := recordColumns(schema, record)
 	if err != nil {
 		t.Fatalf("recordColumns: %v", err)
 	}
-	if len(cols) != 2 || len(vals) != 2 || len(exprs) != 2 {
-		t.Fatalf("unexpected lengths: cols=%d vals=%d exprs=%d", len(cols), len(vals), len(exprs))
+	if len(cols) != 2 || len(vals) != 2 {
+		t.Fatalf("unexpected lengths: cols=%d vals=%d", len(cols), len(vals))
 	}
 
 	expPayload, _ := json.Marshal(payload)
@@ -43,10 +43,4 @@ func TestRecordColumnsJSONArrays(t *testing.T) {
 		t.Fatalf("plain val = %v, want %s", vals[1], string(expPlain))
 	}
 
-	if exprs[0] != "CAST($1 AS jsonb)" {
-		t.Fatalf("payload expr = %q", exprs[0])
-	}
-	if exprs[1] != "$2" {
-		t.Fatalf("plain expr = %q", exprs[1])
-	}
 }

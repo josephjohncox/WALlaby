@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -64,7 +65,7 @@ func NewKubernetesDispatcher(ctx context.Context, cfg KubernetesConfig) (*Kubern
 		return nil, errors.New("kubernetes job image is required")
 	}
 
-	client, namespace, err := resolveKubeClient(ctx, cfg)
+	client, namespace, err := resolveKubeClient(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +154,7 @@ func (k *KubernetesDispatcher) EnqueueFlow(ctx context.Context, flowID string) e
 	return nil
 }
 
-func resolveKubeClient(ctx context.Context, cfg KubernetesConfig) (kubernetes.Interface, string, error) {
+func resolveKubeClient(cfg KubernetesConfig) (kubernetes.Interface, string, error) {
 	var (
 		restCfg   *rest.Config
 		namespace string
@@ -207,10 +208,7 @@ func configFromStatic(cfg KubernetesConfig) (*rest.Config, string, error) {
 		return nil, "", errors.New("kubernetes api server is required for out-of-cluster config")
 	}
 
-	caData, err := decodeMaybeBase64(cfg.CAData, true)
-	if err != nil {
-		return nil, "", err
-	}
+	caData := decodeMaybeBase64(cfg.CAData, true)
 
 	restCfg := &rest.Config{
 		Host:        normalizeServerURL(cfg.APIServer),
@@ -250,21 +248,21 @@ func configFromKubeconfig(cfg KubernetesConfig) (*rest.Config, string, error) {
 	return restCfg, namespace, nil
 }
 
-func decodeMaybeBase64(value string, base64Decode bool) ([]byte, error) {
+func decodeMaybeBase64(value string, base64Decode bool) []byte {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return nil, nil
+		return nil
 	}
 	if strings.Contains(value, "BEGIN CERTIFICATE") || strings.Contains(value, "BEGIN RSA PRIVATE KEY") || strings.Contains(value, "BEGIN PRIVATE KEY") {
-		return []byte(value), nil
+		return []byte(value)
 	}
 	if base64Decode {
 		decoded, err := base64.StdEncoding.DecodeString(value)
 		if err == nil {
-			return decoded, nil
+			return decoded
 		}
 	}
-	return []byte(value), nil
+	return []byte(value)
 }
 
 func normalizeServerURL(server string) string {
@@ -280,6 +278,7 @@ func normalizeServerURL(server string) string {
 
 func readNamespace() (string, error) {
 	path := filepath.Join(serviceAccountPath, "namespace")
+	// #nosec G304 -- path is fixed within the service account mount.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
@@ -422,6 +421,10 @@ func optionalInt32(value int) *int32 {
 	if value <= 0 {
 		return nil
 	}
+	if value > math.MaxInt32 {
+		value = math.MaxInt32
+	}
+	// #nosec G115 -- value clamped to MaxInt32 above.
 	val := int32(value)
 	return &val
 }

@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -24,25 +25,33 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		usage()
-	}
-
-	switch os.Args[1] {
-	case "ddl":
-		runDDL(os.Args[2:])
-	case "stream":
-		runStream(os.Args[2:])
-	case "publication":
-		runPublication(os.Args[2:])
-	case "flow":
-		runFlow(os.Args[2:])
-	default:
-		usage()
+	if err := run(os.Args); err != nil {
+		log.Fatal(err)
 	}
 }
 
-func runDDL(args []string) {
+func run(args []string) error {
+	if len(args) < 2 {
+		usage()
+		return nil
+	}
+
+	switch args[1] {
+	case "ddl":
+		return runDDL(args[2:])
+	case "stream":
+		return runStream(args[2:])
+	case "publication":
+		return runPublication(args[2:])
+	case "flow":
+		return runFlow(args[2:])
+	default:
+		usage()
+		return nil
+	}
+}
+
+func runDDL(args []string) error {
 	if len(args) < 1 {
 		ddlUsage()
 	}
@@ -50,19 +59,20 @@ func runDDL(args []string) {
 	sub := args[0]
 	switch sub {
 	case "list":
-		ddlList(args[1:])
+		return ddlList(args[1:])
 	case "approve":
-		ddlApprove(args[1:])
+		return ddlApprove(args[1:])
 	case "reject":
-		ddlReject(args[1:])
+		return ddlReject(args[1:])
 	case "apply":
-		ddlApply(args[1:])
+		return ddlApply(args[1:])
 	default:
 		ddlUsage()
 	}
+	return nil
 }
 
-func ddlList(args []string) {
+func ddlList(args []string) error {
 	fs := flag.NewFlagSet("ddl list", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
@@ -70,10 +80,15 @@ func ddlList(args []string) {
 	flowID := fs.String("flow-id", "", "filter by flow id")
 	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
 	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
-	client, closeConn := ddlClientOrExit(*endpoint, *insecureConn)
-	defer closeConn()
+	client, closeConn, err := ddlClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -82,13 +97,13 @@ func ddlList(args []string) {
 	if *status == "pending" {
 		resp, err := client.ListPendingDDL(ctx, &wallabypb.ListPendingDDLRequest{FlowId: *flowID})
 		if err != nil {
-			log.Fatalf("list pending ddl: %v", err)
+			return fmt.Errorf("list pending ddl: %w", err)
 		}
 		events = resp.Events
 	} else {
 		resp, err := client.ListDDL(ctx, &wallabypb.ListDDLRequest{Status: *status, FlowId: *flowID})
 		if err != nil {
-			log.Fatalf("list ddl: %v", err)
+			return fmt.Errorf("list ddl: %w", err)
 		}
 		events = resp.Events
 	}
@@ -108,14 +123,14 @@ func ddlList(args []string) {
 			enc.SetIndent("", "  ")
 		}
 		if err := enc.Encode(out); err != nil {
-			log.Fatalf("encode json: %v", err)
+			return fmt.Errorf("encode json: %w", err)
 		}
-		return
+		return nil
 	}
 
 	if len(events) == 0 {
 		fmt.Println("No DDL events found.")
-		return
+		return nil
 	}
 
 	fmt.Printf("%-6s %-10s %-18s %-12s %-s\n", "ID", "STATUS", "LSN", "FLOW", "DDL/PLAN")
@@ -127,93 +142,112 @@ func ddlList(args []string) {
 		}
 		fmt.Println(line)
 	}
+	return nil
 }
 
-func ddlApprove(args []string) {
+func ddlApprove(args []string) error {
 	fs := flag.NewFlagSet("ddl approve", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
 	id := fs.Int64("id", 0, "DDL event ID")
-	fs.Parse(args)
-
-	if *id == 0 {
-		log.Fatal("-id is required")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	client, closeConn := ddlClientOrExit(*endpoint, *insecureConn)
-	defer closeConn()
+	if *id == 0 {
+		return errors.New("-id is required")
+	}
+
+	client, closeConn, err := ddlClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	resp, err := client.ApproveDDL(ctx, &wallabypb.ApproveDDLRequest{Id: *id})
 	if err != nil {
-		log.Fatalf("approve ddl: %v", err)
+		return fmt.Errorf("approve ddl: %w", err)
 	}
 	fmt.Printf("Approved DDL %d (status=%s)\n", resp.Event.Id, resp.Event.Status)
+	return nil
 }
 
-func ddlReject(args []string) {
+func ddlReject(args []string) error {
 	fs := flag.NewFlagSet("ddl reject", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
 	id := fs.Int64("id", 0, "DDL event ID")
-	fs.Parse(args)
-
-	if *id == 0 {
-		log.Fatal("-id is required")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	client, closeConn := ddlClientOrExit(*endpoint, *insecureConn)
-	defer closeConn()
+	if *id == 0 {
+		return errors.New("-id is required")
+	}
+
+	client, closeConn, err := ddlClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	resp, err := client.RejectDDL(ctx, &wallabypb.RejectDDLRequest{Id: *id})
 	if err != nil {
-		log.Fatalf("reject ddl: %v", err)
+		return fmt.Errorf("reject ddl: %w", err)
 	}
 	fmt.Printf("Rejected DDL %d (status=%s)\n", resp.Event.Id, resp.Event.Status)
+	return nil
 }
 
-func ddlApply(args []string) {
+func ddlApply(args []string) error {
 	fs := flag.NewFlagSet("ddl apply", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
 	id := fs.Int64("id", 0, "DDL event ID")
-	fs.Parse(args)
-
-	if *id == 0 {
-		log.Fatal("-id is required")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	client, closeConn := ddlClientOrExit(*endpoint, *insecureConn)
-	defer closeConn()
+	if *id == 0 {
+		return errors.New("-id is required")
+	}
+
+	client, closeConn, err := ddlClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	resp, err := client.MarkDDLApplied(ctx, &wallabypb.MarkDDLAppliedRequest{Id: *id})
 	if err != nil {
-		log.Fatalf("mark ddl applied: %v", err)
+		return fmt.Errorf("mark ddl applied: %w", err)
 	}
 	fmt.Printf("Marked DDL %d applied (status=%s)\n", resp.Event.Id, resp.Event.Status)
+	return nil
 }
 
-func ddlClientOrExit(endpoint string, insecureConn bool) (wallabypb.DDLServiceClient, func()) {
+func ddlClient(endpoint string, insecureConn bool) (wallabypb.DDLServiceClient, func() error, error) {
 	if endpoint == "" {
-		log.Fatal("endpoint is required")
+		return nil, nil, errors.New("endpoint is required")
 	}
 	if !insecureConn {
-		log.Fatal("secure grpc is not configured")
+		return nil, nil, errors.New("secure grpc is not configured")
 	}
 
-	conn, err := grpc.Dial(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("connect: %v", err)
+		return nil, nil, fmt.Errorf("connect: %w", err)
 	}
-	return wallabypb.NewDDLServiceClient(conn), func() { _ = conn.Close() }
+	return wallabypb.NewDDLServiceClient(conn), conn.Close, nil
 }
 
 func ddlSummary(event *wallabypb.DDLEvent) string {
@@ -263,23 +297,24 @@ func ddlUsage() {
 	os.Exit(1)
 }
 
-func runStream(args []string) {
+func runStream(args []string) error {
 	if len(args) < 1 {
 		streamUsage()
 	}
 	switch args[0] {
 	case "replay":
-		streamReplay(args[1:])
+		return streamReplay(args[1:])
 	case "pull":
-		streamPull(args[1:])
+		return streamPull(args[1:])
 	case "ack":
-		streamAck(args[1:])
+		return streamAck(args[1:])
 	default:
 		streamUsage()
 	}
+	return nil
 }
 
-func streamReplay(args []string) {
+func streamReplay(args []string) error {
 	fs := flag.NewFlagSet("stream replay", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
@@ -287,20 +322,25 @@ func streamReplay(args []string) {
 	consumerGroup := fs.String("group", "", "consumer group")
 	fromLSN := fs.String("from-lsn", "", "replay events from this LSN (optional)")
 	since := fs.String("since", "", "replay events since RFC3339 time (optional)")
-	fs.Parse(args)
-
-	if *stream == "" || *consumerGroup == "" {
-		log.Fatal("-stream and -group are required")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	client, closeConn := streamClientOrExit(*endpoint, *insecureConn)
-	defer closeConn()
+	if *stream == "" || *consumerGroup == "" {
+		return errors.New("-stream and -group are required")
+	}
+
+	client, closeConn, err := streamClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
 
 	var sinceTS *timestamppb.Timestamp
 	if *since != "" {
 		parsed, err := time.Parse(time.RFC3339, *since)
 		if err != nil {
-			log.Fatalf("parse since: %v", err)
+			return fmt.Errorf("parse since: %w", err)
 		}
 		sinceTS = timestamppb.New(parsed)
 	}
@@ -315,10 +355,11 @@ func streamReplay(args []string) {
 		Since:         sinceTS,
 	})
 	if err != nil {
-		log.Fatalf("replay stream: %v", err)
+		return fmt.Errorf("replay stream: %w", err)
 	}
 
 	fmt.Printf("Reset %d deliveries for stream %s group %s\n", resp.Reset_, *stream, *consumerGroup)
+	return nil
 }
 
 func streamUsage() {
@@ -329,26 +370,27 @@ func streamUsage() {
 	os.Exit(1)
 }
 
-func runFlow(args []string) {
+func runFlow(args []string) error {
 	if len(args) < 1 {
 		flowUsage()
 	}
 	switch args[0] {
 	case "create":
-		flowCreate(args[1:])
+		return flowCreate(args[1:])
 	case "start":
-		flowStart(args[1:])
+		return flowStart(args[1:])
 	case "run-once":
-		flowRunOnce(args[1:])
+		return flowRunOnce(args[1:])
 	case "stop":
-		flowStop(args[1:])
+		return flowStop(args[1:])
 	case "resume":
-		flowResume(args[1:])
+		return flowResume(args[1:])
 	case "resolve-staging":
-		flowResolveStaging(args[1:])
+		return flowResolveStaging(args[1:])
 	default:
 		flowUsage()
 	}
+	return nil
 }
 
 func flowUsage() {
@@ -362,7 +404,7 @@ func flowUsage() {
 	os.Exit(1)
 }
 
-func flowCreate(args []string) {
+func flowCreate(args []string) error {
 	fs := flag.NewFlagSet("flow create", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
@@ -370,29 +412,34 @@ func flowCreate(args []string) {
 	start := fs.Bool("start", false, "start flow immediately")
 	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
 	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if *path == "" {
-		log.Fatal("-file is required")
+		return errors.New("-file is required")
 	}
 
 	payload, err := os.ReadFile(*path)
 	if err != nil {
-		log.Fatalf("read flow file: %v", err)
+		return fmt.Errorf("read flow file: %w", err)
 	}
 
 	var cfg flowConfig
 	if err := json.Unmarshal(payload, &cfg); err != nil {
-		log.Fatalf("parse flow json: %v", err)
+		return fmt.Errorf("parse flow json: %w", err)
 	}
 
 	pbFlow, err := flowConfigToProto(cfg)
 	if err != nil {
-		log.Fatalf("flow config: %v", err)
+		return fmt.Errorf("flow config: %w", err)
 	}
 
-	client, closeConn := flowClientOrExit(*endpoint, *insecureConn)
-	defer closeConn()
+	client, closeConn, err := flowClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -402,7 +449,7 @@ func flowCreate(args []string) {
 		StartImmediately: *start,
 	})
 	if err != nil {
-		log.Fatalf("create flow: %v", err)
+		return fmt.Errorf("create flow: %w", err)
 	}
 
 	if *prettyOutput {
@@ -420,36 +467,42 @@ func flowCreate(args []string) {
 			enc.SetIndent("", "  ")
 		}
 		if err := enc.Encode(out); err != nil {
-			log.Fatalf("encode json: %v", err)
+			return fmt.Errorf("encode json: %w", err)
 		}
-		return
+		return nil
 	}
 
 	fmt.Printf("Created flow %s (state=%s)\n", resp.Id, resp.State.String())
+	return nil
 }
 
-func flowRunOnce(args []string) {
+func flowRunOnce(args []string) error {
 	fs := flag.NewFlagSet("flow run-once", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
 	flowID := fs.String("flow-id", "", "flow id")
 	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
 	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	fs.Parse(args)
-
-	if *flowID == "" {
-		log.Fatal("-flow-id is required")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	client, closeConn := flowClientOrExit(*endpoint, *insecureConn)
-	defer closeConn()
+	if *flowID == "" {
+		return errors.New("-flow-id is required")
+	}
+
+	client, closeConn, err := flowClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	resp, err := client.RunFlowOnce(ctx, &wallabypb.RunFlowOnceRequest{FlowId: *flowID})
 	if err != nil {
-		log.Fatalf("run flow once: %v", err)
+		return fmt.Errorf("run flow once: %w", err)
 	}
 
 	if *prettyOutput {
@@ -465,36 +518,42 @@ func flowRunOnce(args []string) {
 			enc.SetIndent("", "  ")
 		}
 		if err := enc.Encode(out); err != nil {
-			log.Fatalf("encode json: %v", err)
+			return fmt.Errorf("encode json: %w", err)
 		}
-		return
+		return nil
 	}
 
 	fmt.Printf("Dispatched flow %s\n", *flowID)
+	return nil
 }
 
-func flowStart(args []string) {
+func flowStart(args []string) error {
 	fs := flag.NewFlagSet("flow start", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
 	flowID := fs.String("flow-id", "", "flow id")
 	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
 	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	fs.Parse(args)
-
-	if *flowID == "" {
-		log.Fatal("-flow-id is required")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	client, closeConn := flowClientOrExit(*endpoint, *insecureConn)
-	defer closeConn()
+	if *flowID == "" {
+		return errors.New("-flow-id is required")
+	}
+
+	client, closeConn, err := flowClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	resp, err := client.StartFlow(ctx, &wallabypb.StartFlowRequest{FlowId: *flowID})
 	if err != nil {
-		log.Fatalf("start flow: %v", err)
+		return fmt.Errorf("start flow: %w", err)
 	}
 
 	if *prettyOutput {
@@ -510,36 +569,42 @@ func flowStart(args []string) {
 			enc.SetIndent("", "  ")
 		}
 		if err := enc.Encode(out); err != nil {
-			log.Fatalf("encode json: %v", err)
+			return fmt.Errorf("encode json: %w", err)
 		}
-		return
+		return nil
 	}
 
 	fmt.Printf("Started flow %s (state=%s)\n", resp.Id, resp.State.String())
+	return nil
 }
 
-func flowStop(args []string) {
+func flowStop(args []string) error {
 	fs := flag.NewFlagSet("flow stop", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
 	flowID := fs.String("flow-id", "", "flow id")
 	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
 	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	fs.Parse(args)
-
-	if *flowID == "" {
-		log.Fatal("-flow-id is required")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	client, closeConn := flowClientOrExit(*endpoint, *insecureConn)
-	defer closeConn()
+	if *flowID == "" {
+		return errors.New("-flow-id is required")
+	}
+
+	client, closeConn, err := flowClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	resp, err := client.StopFlow(ctx, &wallabypb.StopFlowRequest{FlowId: *flowID})
 	if err != nil {
-		log.Fatalf("stop flow: %v", err)
+		return fmt.Errorf("stop flow: %w", err)
 	}
 
 	if *prettyOutput {
@@ -555,36 +620,42 @@ func flowStop(args []string) {
 			enc.SetIndent("", "  ")
 		}
 		if err := enc.Encode(out); err != nil {
-			log.Fatalf("encode json: %v", err)
+			return fmt.Errorf("encode json: %w", err)
 		}
-		return
+		return nil
 	}
 
 	fmt.Printf("Stopped flow %s (state=%s)\n", resp.Id, resp.State.String())
+	return nil
 }
 
-func flowResume(args []string) {
+func flowResume(args []string) error {
 	fs := flag.NewFlagSet("flow resume", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
 	flowID := fs.String("flow-id", "", "flow id")
 	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
 	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	fs.Parse(args)
-
-	if *flowID == "" {
-		log.Fatal("-flow-id is required")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	client, closeConn := flowClientOrExit(*endpoint, *insecureConn)
-	defer closeConn()
+	if *flowID == "" {
+		return errors.New("-flow-id is required")
+	}
+
+	client, closeConn, err := flowClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	resp, err := client.ResumeFlow(ctx, &wallabypb.ResumeFlowRequest{FlowId: *flowID})
 	if err != nil {
-		log.Fatalf("resume flow: %v", err)
+		return fmt.Errorf("resume flow: %w", err)
 	}
 
 	if *prettyOutput {
@@ -600,30 +671,31 @@ func flowResume(args []string) {
 			enc.SetIndent("", "  ")
 		}
 		if err := enc.Encode(out); err != nil {
-			log.Fatalf("encode json: %v", err)
+			return fmt.Errorf("encode json: %w", err)
 		}
-		return
+		return nil
 	}
 
 	fmt.Printf("Resumed flow %s (state=%s)\n", resp.Id, resp.State.String())
+	return nil
 }
 
-func streamClientOrExit(endpoint string, insecureConn bool) (wallabypb.StreamServiceClient, func()) {
+func streamClient(endpoint string, insecureConn bool) (wallabypb.StreamServiceClient, func() error, error) {
 	if endpoint == "" {
-		log.Fatal("endpoint is required")
+		return nil, nil, errors.New("endpoint is required")
 	}
 	if !insecureConn {
-		log.Fatal("secure grpc is not configured")
+		return nil, nil, errors.New("secure grpc is not configured")
 	}
 
-	conn, err := grpc.Dial(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("connect: %v", err)
+		return nil, nil, fmt.Errorf("connect: %w", err)
 	}
-	return wallabypb.NewStreamServiceClient(conn), func() { _ = conn.Close() }
+	return wallabypb.NewStreamServiceClient(conn), conn.Close, nil
 }
 
-func streamPull(args []string) {
+func streamPull(args []string) error {
 	fs := flag.NewFlagSet("stream pull", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
@@ -634,27 +706,41 @@ func streamPull(args []string) {
 	consumerID := fs.String("consumer", "", "consumer id")
 	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
 	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	fs.Parse(args)
-
-	if *stream == "" || *consumerGroup == "" {
-		log.Fatal("-stream and -group are required")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	client, closeConn := streamClientOrExit(*endpoint, *insecureConn)
-	defer closeConn()
+	if *stream == "" || *consumerGroup == "" {
+		return errors.New("-stream and -group are required")
+	}
+
+	client, closeConn, err := streamClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	maxMessages, err := int32Arg("max", *max)
+	if err != nil {
+		return err
+	}
+	visibilitySeconds, err := int32Arg("visibility", *visibility)
+	if err != nil {
+		return err
+	}
+
 	resp, err := client.Pull(ctx, &wallabypb.StreamPullRequest{
 		Stream:                   *stream,
 		ConsumerGroup:            *consumerGroup,
-		MaxMessages:              int32(*max),
-		VisibilityTimeoutSeconds: int32(*visibility),
+		MaxMessages:              maxMessages,
+		VisibilityTimeoutSeconds: visibilitySeconds,
 		ConsumerId:               *consumerID,
 	})
 	if err != nil {
-		log.Fatalf("pull stream: %v", err)
+		return fmt.Errorf("pull stream: %w", err)
 	}
 
 	if *prettyOutput {
@@ -673,45 +759,51 @@ func streamPull(args []string) {
 			enc.SetIndent("", "  ")
 		}
 		if err := enc.Encode(out); err != nil {
-			log.Fatalf("encode json: %v", err)
+			return fmt.Errorf("encode json: %w", err)
 		}
-		return
+		return nil
 	}
 
 	if len(resp.Messages) == 0 {
 		fmt.Println("No messages available.")
-		return
+		return nil
 	}
 
 	fmt.Printf("Pulled %d messages:\n", len(resp.Messages))
 	for _, msg := range resp.Messages {
 		fmt.Printf("- id=%d table=%s lsn=%s bytes=%d\n", msg.Id, msg.Table, msg.Lsn, len(msg.Payload))
 	}
+	return nil
 }
 
-func streamAck(args []string) {
+func streamAck(args []string) error {
 	fs := flag.NewFlagSet("stream ack", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
 	stream := fs.String("stream", "", "stream name")
 	consumerGroup := fs.String("group", "", "consumer group")
 	ids := fs.String("ids", "", "comma-separated message ids")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if *stream == "" || *consumerGroup == "" {
-		log.Fatal("-stream and -group are required")
+		return errors.New("-stream and -group are required")
 	}
 	if *ids == "" {
-		log.Fatal("-ids is required")
+		return errors.New("-ids is required")
 	}
 
 	parsed, err := parseIDs(*ids)
 	if err != nil {
-		log.Fatalf("parse ids: %v", err)
+		return fmt.Errorf("parse ids: %w", err)
 	}
 
-	client, closeConn := streamClientOrExit(*endpoint, *insecureConn)
-	defer closeConn()
+	client, closeConn, err := streamClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -722,10 +814,11 @@ func streamAck(args []string) {
 		Ids:           parsed,
 	})
 	if err != nil {
-		log.Fatalf("ack stream: %v", err)
+		return fmt.Errorf("ack stream: %w", err)
 	}
 
 	fmt.Printf("Acked %d messages\n", resp.Acked)
+	return nil
 }
 
 func parseIDs(value string) ([]int64, error) {
@@ -748,25 +841,34 @@ func parseIDs(value string) ([]int64, error) {
 	return out, nil
 }
 
-func runPublication(args []string) {
+func int32Arg(name string, value int) (int32, error) {
+	if value < 0 || value > math.MaxInt32 {
+		return 0, fmt.Errorf("%s out of range: %d", name, value)
+	}
+	// #nosec G115 -- bounds checked above.
+	return int32(value), nil
+}
+
+func runPublication(args []string) error {
 	if len(args) < 1 {
 		publicationUsage()
 	}
 
 	switch args[0] {
 	case "list":
-		publicationList(args[1:])
+		return publicationList(args[1:])
 	case "add":
-		publicationAdd(args[1:])
+		return publicationAdd(args[1:])
 	case "remove":
-		publicationRemove(args[1:])
+		return publicationRemove(args[1:])
 	case "sync":
-		publicationSync(args[1:])
+		return publicationSync(args[1:])
 	case "scrape":
-		publicationScrape(args[1:])
+		return publicationScrape(args[1:])
 	default:
 		publicationUsage()
 	}
+	return nil
 }
 
 func publicationUsage() {
@@ -780,7 +882,7 @@ func publicationUsage() {
 	os.Exit(1)
 }
 
-func publicationList(args []string) {
+func publicationList(args []string) error {
 	fs := flag.NewFlagSet("publication list", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
@@ -790,19 +892,21 @@ func publicationList(args []string) {
 	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
 	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
 	awsFlags := addAWSIAMFlags(fs)
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	cfg, err := resolvePublicationConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *publication, awsFlags.options())
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	tables, err := postgres.ListPublicationTables(ctx, cfg.dsn, cfg.publication, cfg.options)
 	if err != nil {
-		log.Fatalf("list publication tables: %v", err)
+		return fmt.Errorf("list publication tables: %w", err)
 	}
 
 	if *prettyOutput {
@@ -819,22 +923,23 @@ func publicationList(args []string) {
 			enc.SetIndent("", "  ")
 		}
 		if err := enc.Encode(out); err != nil {
-			log.Fatalf("encode json: %v", err)
+			return fmt.Errorf("encode json: %w", err)
 		}
-		return
+		return nil
 	}
 
 	if len(tables) == 0 {
 		fmt.Println("No tables in publication.")
-		return
+		return nil
 	}
 	fmt.Printf("Publication %s tables:\n", cfg.publication)
 	for _, table := range tables {
 		fmt.Printf("- %s\n", table)
 	}
+	return nil
 }
 
-func publicationAdd(args []string) {
+func publicationAdd(args []string) error {
 	fs := flag.NewFlagSet("publication add", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
@@ -843,14 +948,16 @@ func publicationAdd(args []string) {
 	publication := fs.String("publication", "", "publication name")
 	tables := fs.String("tables", "", "comma-separated schema.table list")
 	awsFlags := addAWSIAMFlags(fs)
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if *tables == "" {
-		log.Fatal("-tables is required")
+		return errors.New("-tables is required")
 	}
 	tableList := parseCSVValue(*tables)
 	if len(tableList) == 0 {
-		log.Fatal("no tables provided")
+		return errors.New("no tables provided")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -858,16 +965,17 @@ func publicationAdd(args []string) {
 
 	cfg, err := resolvePublicationConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *publication, awsFlags.options())
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	if err := postgres.AddPublicationTables(ctx, cfg.dsn, cfg.publication, tableList, cfg.options); err != nil {
-		log.Fatalf("add publication tables: %v", err)
+		return fmt.Errorf("add publication tables: %w", err)
 	}
 	fmt.Printf("Added %d tables to publication %s\n", len(tableList), cfg.publication)
+	return nil
 }
 
-func publicationRemove(args []string) {
+func publicationRemove(args []string) error {
 	fs := flag.NewFlagSet("publication remove", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
@@ -876,14 +984,16 @@ func publicationRemove(args []string) {
 	publication := fs.String("publication", "", "publication name")
 	tables := fs.String("tables", "", "comma-separated schema.table list")
 	awsFlags := addAWSIAMFlags(fs)
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if *tables == "" {
-		log.Fatal("-tables is required")
+		return errors.New("-tables is required")
 	}
 	tableList := parseCSVValue(*tables)
 	if len(tableList) == 0 {
-		log.Fatal("no tables provided")
+		return errors.New("no tables provided")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -891,16 +1001,17 @@ func publicationRemove(args []string) {
 
 	cfg, err := resolvePublicationConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *publication, awsFlags.options())
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	if err := postgres.DropPublicationTables(ctx, cfg.dsn, cfg.publication, tableList, cfg.options); err != nil {
-		log.Fatalf("drop publication tables: %v", err)
+		return fmt.Errorf("drop publication tables: %w", err)
 	}
 	fmt.Printf("Removed %d tables from publication %s\n", len(tableList), cfg.publication)
+	return nil
 }
 
-func publicationSync(args []string) {
+func publicationSync(args []string) error {
 	fs := flag.NewFlagSet("publication sync", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
@@ -919,10 +1030,12 @@ func publicationSync(args []string) {
 	snapshotStateBackend := fs.String("snapshot-state-backend", "", "snapshot state backend (postgres|file|none)")
 	snapshotStatePath := fs.String("snapshot-state-path", "", "snapshot state path (file backend)")
 	awsFlags := addAWSIAMFlags(fs)
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if *flowID == "" {
-		log.Fatal("-flow-id is required")
+		return errors.New("-flow-id is required")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -930,50 +1043,54 @@ func publicationSync(args []string) {
 
 	cfg, err := resolvePublicationConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *publication, awsFlags.options())
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if cfg.flow == nil {
-		log.Fatal("flow is required for publication sync")
+		return errors.New("flow is required for publication sync")
 	}
 
 	desired, err := resolveDesiredTables(ctx, cfg, cfg.options, *tables, *schemas)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if len(desired) == 0 {
-		log.Fatal("no tables provided for sync")
+		return errors.New("no tables provided for sync")
 	}
 
-	flowClient, closeConn := flowClientOrExit(*endpoint, *insecureConn)
-	defer closeConn()
+	flowSvc, closeConn, err := flowClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
 
 	if *pause {
-		if _, err := flowClient.StopFlow(ctx, &wallabypb.StopFlowRequest{FlowId: cfg.flow.Id}); err != nil {
+		if _, err := flowSvc.StopFlow(ctx, &wallabypb.StopFlowRequest{FlowId: cfg.flow.Id}); err != nil {
 			log.Printf("pause flow: %v", err)
 		}
 	}
 
 	added, removed, err := postgres.SyncPublicationTables(ctx, cfg.dsn, cfg.publication, desired, *mode, cfg.options)
 	if err != nil {
-		log.Fatalf("sync publication: %v", err)
+		return fmt.Errorf("sync publication: %w", err)
 	}
 
 	if *snapshot && len(added) > 0 {
 		if err := runBackfill(context.Background(), cfg.flow, added, *snapshotWorkers, *partitionColumn, *partitionCount, *snapshotStateBackend, *snapshotStatePath); err != nil {
-			log.Fatalf("backfill new tables: %v", err)
+			return fmt.Errorf("backfill new tables: %w", err)
 		}
 	}
 
 	if *resume {
-		if _, err := flowClient.ResumeFlow(ctx, &wallabypb.ResumeFlowRequest{FlowId: cfg.flow.Id}); err != nil {
+		if _, err := flowSvc.ResumeFlow(ctx, &wallabypb.ResumeFlowRequest{FlowId: cfg.flow.Id}); err != nil {
 			log.Printf("resume flow: %v", err)
 		}
 	}
 
 	fmt.Printf("Synced publication %s (added=%d removed=%d)\n", cfg.publication, len(added), len(removed))
+	return nil
 }
 
-func publicationScrape(args []string) {
+func publicationScrape(args []string) error {
 	fs := flag.NewFlagSet("publication scrape", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
@@ -983,14 +1100,16 @@ func publicationScrape(args []string) {
 	schemas := fs.String("schemas", "", "comma-separated schemas")
 	apply := fs.Bool("apply", false, "add newly discovered tables to publication")
 	awsFlags := addAWSIAMFlags(fs)
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if *schemas == "" {
-		log.Fatal("-schemas is required")
+		return errors.New("-schemas is required")
 	}
 	schemaList := parseCSVValue(*schemas)
 	if len(schemaList) == 0 {
-		log.Fatal("no schemas provided")
+		return errors.New("no schemas provided")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -998,16 +1117,16 @@ func publicationScrape(args []string) {
 
 	cfg, err := resolvePublicationConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *publication, awsFlags.options())
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	allTables, err := postgres.ScrapeTables(ctx, cfg.dsn, schemaList, cfg.options)
 	if err != nil {
-		log.Fatalf("scrape tables: %v", err)
+		return fmt.Errorf("scrape tables: %w", err)
 	}
 	current, err := postgres.ListPublicationTables(ctx, cfg.dsn, cfg.publication, cfg.options)
 	if err != nil {
-		log.Fatalf("list publication tables: %v", err)
+		return fmt.Errorf("list publication tables: %w", err)
 	}
 
 	currentSet := make(map[string]struct{}, len(current))
@@ -1023,23 +1142,24 @@ func publicationScrape(args []string) {
 
 	if *apply && len(missing) > 0 {
 		if err := postgres.AddPublicationTables(ctx, cfg.dsn, cfg.publication, missing, cfg.options); err != nil {
-			log.Fatalf("add publication tables: %v", err)
+			return fmt.Errorf("add publication tables: %w", err)
 		}
 		fmt.Printf("Added %d tables to publication %s\n", len(missing), cfg.publication)
-		return
+		return nil
 	}
 
 	if len(missing) == 0 {
 		fmt.Println("No new tables found.")
-		return
+		return nil
 	}
 	fmt.Printf("New tables not in publication %s:\n", cfg.publication)
 	for _, table := range missing {
 		fmt.Printf("- %s\n", table)
 	}
+	return nil
 }
 
-func flowResolveStaging(args []string) {
+func flowResolveStaging(args []string) error {
 	fs := flag.NewFlagSet("flow resolve-staging", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
 	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
@@ -1047,41 +1167,46 @@ func flowResolveStaging(args []string) {
 	tables := fs.String("tables", "", "comma-separated tables (schema.table)")
 	schemas := fs.String("schemas", "", "comma-separated schemas to resolve")
 	destName := fs.String("dest", "", "destination name (optional)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if *flowID == "" {
-		log.Fatal("-flow-id is required")
+		return errors.New("-flow-id is required")
 	}
 
 	ctx := context.Background()
-	client, closeConn := flowClientOrExit(*endpoint, *insecureConn)
-	defer closeConn()
+	client, closeConn, err := flowClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
 
 	flowResp, err := client.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: *flowID})
 	if err != nil {
-		log.Fatalf("load flow: %v", err)
+		return fmt.Errorf("load flow: %w", err)
 	}
 	model, err := flowFromProto(flowResp)
 	if err != nil {
-		log.Fatalf("parse flow: %v", err)
+		return fmt.Errorf("parse flow: %w", err)
 	}
 
 	tableList, err := resolveFlowTables(ctx, model, *tables, *schemas)
 	if err != nil {
-		log.Fatalf("resolve tables: %v", err)
+		return fmt.Errorf("resolve tables: %w", err)
 	}
 	if len(tableList) == 0 {
-		log.Fatal("no tables resolved")
+		return errors.New("no tables resolved")
 	}
 	schemaList, err := parseSchemaTables(tableList)
 	if err != nil {
-		log.Fatalf("parse tables: %v", err)
+		return fmt.Errorf("parse tables: %w", err)
 	}
 
 	factory := runner.Factory{}
 	destinations, err := factory.Destinations(model.Destinations)
 	if err != nil {
-		log.Fatalf("build destinations: %v", err)
+		return fmt.Errorf("build destinations: %w", err)
 	}
 
 	resolved := 0
@@ -1096,29 +1221,30 @@ func flowResolveStaging(args []string) {
 			dest.Spec.Options["flow_id"] = model.ID
 		}
 		if err := dest.Dest.Open(ctx, dest.Spec); err != nil {
-			log.Fatalf("open destination %s: %v", dest.Spec.Name, err)
+			return fmt.Errorf("open destination %s: %w", dest.Spec.Name, err)
 		}
 
 		if resolver, ok := dest.Dest.(stream.StagingResolverFor); ok {
 			if err := resolver.ResolveStagingFor(ctx, schemaList); err != nil {
 				_ = dest.Dest.Close(ctx)
-				log.Fatalf("resolve staging for %s: %v", dest.Spec.Name, err)
+				return fmt.Errorf("resolve staging for %s: %w", dest.Spec.Name, err)
 			}
 			resolved++
 		} else if resolver, ok := dest.Dest.(stream.StagingResolver); ok {
 			if err := resolver.ResolveStaging(ctx); err != nil {
 				_ = dest.Dest.Close(ctx)
-				log.Fatalf("resolve staging for %s: %v", dest.Spec.Name, err)
+				return fmt.Errorf("resolve staging for %s: %w", dest.Spec.Name, err)
 			}
 			resolved++
 		}
 
 		if err := dest.Dest.Close(ctx); err != nil {
-			log.Fatalf("close destination %s: %v", dest.Spec.Name, err)
+			return fmt.Errorf("close destination %s: %w", dest.Spec.Name, err)
 		}
 	}
 
 	fmt.Printf("Resolved staging for %d destinations\n", resolved)
+	return nil
 }
 
 type publicationConfig struct {
@@ -1137,12 +1263,15 @@ func resolvePublicationConfig(ctx context.Context, endpoint string, insecureConn
 		return cfg, nil
 	}
 
-	client, closeConn := flowClientOrExit(endpoint, insecureConn)
-	defer closeConn()
+	client, closeConn, err := flowClient(endpoint, insecureConn)
+	if err != nil {
+		return cfg, err
+	}
+	defer func() { _ = closeConn() }()
 
 	flowResp, err := client.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: flowID})
 	if err != nil {
-		return cfg, err
+		return cfg, fmt.Errorf("load flow: %w", err)
 	}
 	cfg.flow = flowResp
 	if cfg.dsn == "" {
@@ -1378,19 +1507,19 @@ func runBackfill(ctx context.Context, flowPB *wallabypb.Flow, tables []string, w
 	return runner.Run(ctx)
 }
 
-func flowClientOrExit(endpoint string, insecureConn bool) (wallabypb.FlowServiceClient, func()) {
+func flowClient(endpoint string, insecureConn bool) (wallabypb.FlowServiceClient, func() error, error) {
 	if endpoint == "" {
-		log.Fatal("endpoint is required")
+		return nil, nil, errors.New("endpoint is required")
 	}
 	if !insecureConn {
-		log.Fatal("secure grpc is not configured")
+		return nil, nil, errors.New("secure grpc is not configured")
 	}
 
-	conn, err := grpc.Dial(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("connect: %v", err)
+		return nil, nil, fmt.Errorf("connect: %w", err)
 	}
-	return wallabypb.NewFlowServiceClient(conn), func() { _ = conn.Close() }
+	return wallabypb.NewFlowServiceClient(conn), conn.Close, nil
 }
 
 func flowFromProto(pb *wallabypb.Flow) (flow.Flow, error) {

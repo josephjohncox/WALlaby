@@ -471,7 +471,7 @@ func (b *BackfillSource) runTask(ctx context.Context, task backfillTask) error {
 		fields := rows.FieldDescriptions()
 		row := make(map[string]any, len(fields))
 		for idx, field := range fields {
-			row[string(field.Name)] = values[idx]
+			row[field.Name] = values[idx]
 		}
 		if err := connector.NormalizePostgresRecord(schema, row); err != nil {
 			return err

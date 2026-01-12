@@ -72,6 +72,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		// DBOS will manage per-flow trace sinks.
 	} else if tracePath != "" {
 		tracePath = strings.ReplaceAll(tracePath, "{flow_id}", "server")
+		// #nosec G304 -- path is configured by the operator.
 		traceFile, err := os.Create(tracePath)
 		if err != nil {
 			return fmt.Errorf("open trace file: %w", err)
@@ -80,7 +81,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		traceSink = stream.NewJSONTraceSink(traceFile)
 	}
 	if traceClose != nil {
-		defer traceClose()
+		defer func() { _ = traceClose() }()
 	}
 
 	backend := resolveCheckpointBackend(cfg)

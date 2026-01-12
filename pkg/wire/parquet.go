@@ -32,6 +32,7 @@ func (c *ParquetCodec) Encode(batch connector.Batch) ([]byte, error) {
 	}
 	defer rec.Release()
 
+	//nolint:staticcheck // TODO: migrate to RecordBatch once arrow-go API is updated here.
 	table := array.NewTableFromRecords(rec.Schema(), []arrow.Record{rec})
 	defer table.Release()
 

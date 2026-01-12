@@ -194,7 +194,7 @@ func (p *PostgresStream) Start(ctx context.Context, slot, publication string) (<
 
 	sysident, err := pglogrepl.IdentifySystem(ctx, conn)
 	if err != nil {
-		conn.Close(ctx)
+		_ = conn.Close(ctx)
 		return nil, fmt.Errorf("identify system: %w", err)
 	}
 
@@ -206,7 +206,7 @@ func (p *PostgresStream) Start(ctx context.Context, slot, publication string) (<
 	if p.createSlot {
 		_, err = pglogrepl.CreateReplicationSlot(ctx, conn, slot, p.outputPlugin, pglogrepl.CreateReplicationSlotOptions{})
 		if err != nil && !isSlotExistsErr(err) {
-			conn.Close(ctx)
+			_ = conn.Close(ctx)
 			return nil, fmt.Errorf("create replication slot: %w", err)
 		}
 	}
@@ -220,7 +220,7 @@ func (p *PostgresStream) Start(ctx context.Context, slot, publication string) (<
 	}
 
 	if err := pglogrepl.StartReplication(ctx, conn, slot, startLSN, pglogrepl.StartReplicationOptions{PluginArgs: pluginArgs}); err != nil {
-		conn.Close(ctx)
+		_ = conn.Close(ctx)
 		return nil, fmt.Errorf("start replication: %w", err)
 	}
 
@@ -403,19 +403,19 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 		if err != nil {
 			return err
 		}
-		return p.emitChange(ctx, xld, schema, record, "")
+		return p.emitChange(ctx, xld, schema, record)
 	case *pglogrepl.UpdateMessage:
 		record, schema, err := p.decodeUpdate(msg, xld)
 		if err != nil {
 			return err
 		}
-		return p.emitChange(ctx, xld, schema, record, "")
+		return p.emitChange(ctx, xld, schema, record)
 	case *pglogrepl.DeleteMessage:
 		record, schema, err := p.decodeDelete(msg, xld)
 		if err != nil {
 			return err
 		}
-		return p.emitChange(ctx, xld, schema, record, "")
+		return p.emitChange(ctx, xld, schema, record)
 	case *pglogrepl.TruncateMessage:
 		if len(msg.RelationIDs) == 0 {
 			return nil
@@ -428,7 +428,7 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 				SchemaVersion: schema.Version,
 				Timestamp:     xld.ServerTime,
 			}
-			if err := p.emitChange(ctx, xld, schema, &record, ""); err != nil {
+			if err := p.emitChange(ctx, xld, schema, &record); err != nil {
 				return err
 			}
 		}
@@ -448,7 +448,7 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 	}
 }
 
-func (p *PostgresStream) emitChange(ctx context.Context, xld pglogrepl.XLogData, schema connector.Schema, record *connector.Record, ddl string) error {
+func (p *PostgresStream) emitChange(ctx context.Context, xld pglogrepl.XLogData, schema connector.Schema, record *connector.Record) error {
 	payload := make([]byte, len(xld.WALData))
 	copy(payload, xld.WALData)
 	if record != nil {
@@ -461,7 +461,7 @@ func (p *PostgresStream) emitChange(ctx context.Context, xld pglogrepl.XLogData,
 		Table:     schema.Name,
 		Operation: string(record.Operation),
 		Payload:   payload,
-		DDL:       ddl,
+		DDL:       "",
 		Record:    record,
 		SchemaDef: &schema,
 	}
@@ -634,7 +634,7 @@ func (p *PostgresStream) decodeUpdate(msg *pglogrepl.UpdateMessage, xld pglogrep
 		return nil, connector.Schema{}, err
 	}
 
-	keyFields := map[string]any{}
+	var keyFields map[string]any
 	if msg.OldTupleType == pglogrepl.UpdateMessageTupleTypeKey && before != nil {
 		keyFields = p.keyColumns(rel, before)
 	} else {
@@ -646,7 +646,8 @@ func (p *PostgresStream) decodeUpdate(msg *pglogrepl.UpdateMessage, xld pglogrep
 		return nil, connector.Schema{}, err
 	}
 
-	unchanged := append(beforeUnchanged, afterUnchanged...)
+	beforeUnchanged = append(beforeUnchanged, afterUnchanged...)
+	unchanged := beforeUnchanged
 	record := &connector.Record{
 		Table:         rel.RelationName,
 		Operation:     connector.OpUpdate,

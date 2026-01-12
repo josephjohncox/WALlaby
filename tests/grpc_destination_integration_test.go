@@ -3,8 +3,10 @@ package tests
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -37,6 +39,9 @@ func TestGRPCDestinationModes(t *testing.T) {
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
+		if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+			t.Skipf("listen not permitted in sandbox: %v", err)
+		}
 		t.Fatalf("listen: %v", err)
 	}
 	defer listener.Close()

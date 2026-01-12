@@ -4,11 +4,14 @@ GOLANGCI_LINT ?= golangci-lint
 GORELEASER ?= goreleaser
 PROTOC_GEN_GO ?= protoc-gen-go
 PROTOC_GEN_GO_GRPC ?= protoc-gen-go-grpc
+PROTOC_GEN_GO_VERSION ?= v1.36.11
+PROTOC_GEN_GO_GRPC_VERSION ?= v1.6.0
 GOBIN ?= $(shell $(GO) env GOPATH)/bin
 CACHE_DIR ?= .cache
 GOMODCACHE ?= $(abspath $(CACHE_DIR)/gomod)
 GOCACHE ?= $(abspath $(CACHE_DIR)/gocache)
 GOLANGCI_LINT_CACHE ?= $(abspath $(CACHE_DIR)/golangci-lint)
+GOENV ?= GOMODCACHE="$(GOMODCACHE)" GOCACHE="$(GOCACHE)"
 PROFILE ?= small
 TARGETS ?= all
 SCENARIO ?= base
@@ -36,6 +39,7 @@ SPEC_LINT_VERBOSE_MODE ?= checks
 export GO_TEST_TIMEOUT
 
 .PHONY: fmt lint test test-rapid test-integration test-integration-ci test-e2e test-k8s-kind proto tidy release release-snapshot proto-tools tla-tools bench bench-ddl bench-up bench-down benchmark benchmark-profile benchstat check check-coverage tla tla-single tla-flow tla-state tla-fanout tla-liveness tla-witness tla-coverage tla-coverage-check trace-suite trace-suite-large spec-manifest spec-verify spec-lint spec-sync
+.PHONY: proto-lint proto-breaking
 
 fmt:
 	$(GO) fmt ./...
@@ -44,24 +48,24 @@ lint:
 	GOMODCACHE="$(GOMODCACHE)" GOCACHE="$(GOCACHE)" GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" $(GOLANGCI_LINT) run ./...
 
 check: spec-verify spec-sync spec-lint tla
-	$(GO) test ./...
+	$(GOENV) $(GO) test ./...
 
 check-coverage: spec-sync tla-coverage tla-coverage-check trace-suite test-e2e
 
 test:
-	$(GO) test ./...
+	$(GOENV) $(GO) test ./...
 
 test-rapid:
 	@rapid_pkgs="$(RAPID_PACKAGES)"; \
-	$(GO) test $$rapid_pkgs -args -rapid.checks="$(RAPID_CHECKS)"; \
+	$(GOENV) $(GO) test $$rapid_pkgs -args -rapid.checks="$(RAPID_CHECKS)"; \
 	skip_regex='^github.com/josephjohncox/wallaby/(pkg/stream|pkg/wire|internal/ddl|internal/registry|internal/workflow|connectors/sources/postgres)(/.*)?$$'; \
-	non_rapid_pkgs=$$($(GO) list ./... | grep -Ev "$$skip_regex" || true); \
+	non_rapid_pkgs=$$($(GOENV) $(GO) list ./... | grep -Ev "$$skip_regex" || true); \
 	if [ -n "$$non_rapid_pkgs" ]; then \
-		$(GO) test $$non_rapid_pkgs; \
+		$(GOENV) $(GO) test $$non_rapid_pkgs; \
 	fi
 
 test-integration:
-	$(GO) test ./tests/...
+	$(GOENV) $(GO) test ./tests/...
 
 test-integration-ci:
 	./tests/integration.sh
@@ -75,12 +79,18 @@ test-k8s-kind:
 proto: proto-tools
 	PATH="$(GOBIN):$$PATH" $(BUF) generate
 
+proto-lint:
+	$(BUF) lint
+
+proto-breaking:
+	$(BUF) breaking --against '.git#branch=main'
+
 proto-tools:
-	GOBIN="$(GOBIN)" $(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-	GOBIN="$(GOBIN)" $(GO) install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+	GOBIN="$(GOBIN)" $(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	GOBIN="$(GOBIN)" $(GO) install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
 
 spec-manifest:
-	$(GO) run ./cmd/wallaby-spec-manifest -out specs/coverage.json -dir specs
+	$(GOENV) $(GO) run ./cmd/wallaby-spec-manifest -out specs/coverage.json -dir specs
 
 spec-verify: spec-manifest
 	@echo "Verifying spec coverage manifests match generator output"
@@ -93,11 +103,11 @@ spec-verify: spec-manifest
 
 spec-lint:
 	@mkdir -p "$(GOBIN)"
-	$(GO) build -o "$(GOBIN)/wallaby-speccheck" ./cmd/wallaby-speccheck
-	$(GO) vet -vettool="$(GOBIN)/wallaby-speccheck" -specaction.verbose-mode="$(SPEC_LINT_VERBOSE_MODE)" $(if $(SPEC_LINT_VERBOSE),-specaction.verbose="$(SPEC_LINT_VERBOSE)",) ./...
+	$(GOENV) $(GO) build -o "$(GOBIN)/wallaby-speccheck" ./cmd/wallaby-speccheck
+	$(GOENV) $(GO) vet -vettool="$(GOBIN)/wallaby-speccheck" -specaction.verbose-mode="$(SPEC_LINT_VERBOSE_MODE)" $(if $(SPEC_LINT_VERBOSE),-specaction.verbose="$(SPEC_LINT_VERBOSE)",) ./...
 
 spec-sync:
-	$(GO) run ./cmd/wallaby-spec-sync -spec-dir specs -manifest-dir specs
+	$(GOENV) $(GO) run ./cmd/wallaby-spec-sync -spec-dir specs -manifest-dir specs
 
 tla-tools:
 	@mkdir -p "$(TLA_TOOLS_DIR)" "$(GOBIN)"
@@ -130,7 +140,7 @@ bench-down:
 	docker compose -f bench/docker-compose.yml down
 
 bench: bench-up
-	$(GO) run ./cmd/wallaby-bench -profile $(PROFILE) -targets $(TARGETS) -scenario $(SCENARIO)
+	$(GOENV) $(GO) run ./cmd/wallaby-bench -profile $(PROFILE) -targets $(TARGETS) -scenario $(SCENARIO)
 
 bench-ddl:
 	$(MAKE) bench SCENARIO=ddl
@@ -142,9 +152,9 @@ benchmark-profile:
 	ENABLE_PROFILES=1 PROFILE_FORMAT=both ./bench/benchmark.sh
 
 benchstat:
-	$(GO) run ./cmd/wallaby-bench-summary -dir "$(BASELINE)" -format benchstat -latest=false -output "$(BASELINE)/benchstat.txt"
-	$(GO) run ./cmd/wallaby-bench-summary -dir "$(CANDIDATE)" -format benchstat -latest=false -output "$(CANDIDATE)/benchstat.txt"
-	$(GO) run golang.org/x/perf/cmd/benchstat@latest "$(BASELINE)/benchstat.txt" "$(CANDIDATE)/benchstat.txt"
+	$(GOENV) $(GO) run ./cmd/wallaby-bench-summary -dir "$(BASELINE)" -format benchstat -latest=false -output "$(BASELINE)/benchstat.txt"
+	$(GOENV) $(GO) run ./cmd/wallaby-bench-summary -dir "$(CANDIDATE)" -format benchstat -latest=false -output "$(CANDIDATE)/benchstat.txt"
+	$(GOENV) $(GO) run golang.org/x/perf/cmd/benchstat@latest "$(BASELINE)/benchstat.txt" "$(CANDIDATE)/benchstat.txt"
 
 tla: tla-flow tla-state tla-fanout tla-liveness tla-witness
 
@@ -173,10 +183,10 @@ tla-coverage:
 	PATH="$(GOBIN):$$PATH" JAVA_TOOL_OPTIONS="$(TLC_JAVA_OPTS)" $(TLC) -coverage 1 -config "specs/CDCFlowFanout.cfg" "specs/CDCFlowFanout.tla" > "$(TLC_COVERAGE_DIR)/CDCFlowFanout.txt"
 
 tla-coverage-check:
-	GOCACHE="$(GOCACHE)" GOMODCACHE="$(GOMODCACHE)" $(GO) run ./cmd/wallaby-tla-coverage -dir "$(TLC_COVERAGE_DIR)" -min "$(TLA_COVERAGE_MIN)" -ignore "$(TLA_COVERAGE_IGNORE)" -json "$(TLC_COVERAGE_DIR)/report.json"
+	$(GOENV) $(GO) run ./cmd/wallaby-tla-coverage -dir "$(TLC_COVERAGE_DIR)" -min "$(TLA_COVERAGE_MIN)" -ignore "$(TLA_COVERAGE_IGNORE)" -json "$(TLC_COVERAGE_DIR)/report.json"
 
 trace-suite:
-	TRACE_CASES=$(TRACE_CASES) TRACE_SEED=$(TRACE_SEED) TRACE_MAX_BATCHES=$(TRACE_MAX_BATCHES) TRACE_MAX_RECORDS=$(TRACE_MAX_RECORDS) $(GO) test ./pkg/stream -run TestTraceSuite -count=1
+	TRACE_CASES=$(TRACE_CASES) TRACE_SEED=$(TRACE_SEED) TRACE_MAX_BATCHES=$(TRACE_MAX_BATCHES) TRACE_MAX_RECORDS=$(TRACE_MAX_RECORDS) $(GOENV) $(GO) test ./pkg/stream -run TestTraceSuite -count=1
 
 trace-suite-large:
-	TRACE_CASES=20000 TRACE_SEED=123 TRACE_MAX_BATCHES=12 TRACE_MAX_RECORDS=5 $(GO) test ./pkg/stream -run TestTraceSuite -count=1
+	TRACE_CASES=20000 TRACE_SEED=123 TRACE_MAX_BATCHES=12 TRACE_MAX_RECORDS=5 $(GOENV) $(GO) test ./pkg/stream -run TestTraceSuite -count=1

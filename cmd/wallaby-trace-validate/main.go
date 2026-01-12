@@ -25,7 +25,11 @@ func main() {
 		fatal(err)
 	}
 	if closer != nil {
-		defer closer()
+		defer func() {
+			if err := closer(); err != nil {
+				fmt.Fprintf(os.Stderr, "close trace input: %v\n", err)
+			}
+		}()
 	}
 
 	events, err := readEvents(reader)
@@ -88,6 +92,7 @@ func openReader(path string) (io.Reader, func() error, error) {
 	if path == "" || path == "-" {
 		return os.Stdin, nil, nil
 	}
+	// #nosec G304 -- input path comes from CLI flag.
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open %s: %w", path, err)

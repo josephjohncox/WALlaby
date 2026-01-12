@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -153,7 +154,7 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(filePath)
+	defer func() { _ = os.Remove(filePath) }()
 
 	stage := d.resolveStage(batch)
 	if stage == "" {
@@ -167,6 +168,7 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	}
 
 	if d.copyOnWrite {
+		// #nosec G201 -- identifiers are quoted and derived from schema/config.
 		copyStmt := fmt.Sprintf("COPY INTO %s FROM %s FILES = ('%s') %s", d.targetTable(batch.Schema, batch.Records[0]), stageLocation, fileName, d.fileFormatClause())
 		if _, err := d.db.ExecContext(ctx, copyStmt); err != nil {
 			return fmt.Errorf("copy into: %w", err)
@@ -448,7 +450,11 @@ func (d *Destination) refreshMetaColumns(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load meta columns: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("close rows: %v", err)
+		}
+	}()
 
 	d.metaColumns = map[string]struct{}{}
 	for rows.Next() {
@@ -489,6 +495,7 @@ func (d *Destination) upsertMetadata(ctx context.Context, tx *sql.Tx, schema con
 	whereClause = "FLOW_ID = ? AND SOURCE_SCHEMA = ? AND SOURCE_TABLE = ? AND " + whereClause
 	whereArgs = append([]any{d.flowID, schema.Namespace, record.Table}, whereArgs...)
 
+	// #nosec G201 -- identifiers are quoted and derived from schema/config.
 	deleteStmt := fmt.Sprintf("DELETE FROM %s WHERE %s", target, whereClause)
 	if _, err := tx.ExecContext(ctx, deleteStmt, whereArgs...); err != nil {
 		return fmt.Errorf("delete meta row: %w", err)
@@ -504,11 +511,14 @@ func (d *Destination) upsertMetadata(ctx context.Context, tx *sql.Tx, schema con
 		keyJSON = string(raw)
 	}
 
-	columns := []string{"FLOW_ID", "SOURCE_SCHEMA", "SOURCE_TABLE", "SYNCED_AT", "IS_DELETED", "LSN", "OPERATION", "KEY_JSON"}
-	values := []any{d.flowID, schema.Namespace, record.Table, syncedAt, record.Operation == connector.OpDelete, checkpoint.LSN, string(record.Operation), keyJSON}
+	columns := make([]string, 0, 8+len(pkCols))
+	columns = append(columns, "FLOW_ID", "SOURCE_SCHEMA", "SOURCE_TABLE", "SYNCED_AT", "IS_DELETED", "LSN", "OPERATION", "KEY_JSON")
+	values := make([]any, 0, 8+len(pkVals))
+	values = append(values, d.flowID, schema.Namespace, record.Table, syncedAt, record.Operation == connector.OpDelete, checkpoint.LSN, string(record.Operation), keyJSON)
 	columns = append(columns, pkCols...)
 	values = append(values, pkVals...)
 
+	// #nosec G201 -- identifiers are quoted and derived from schema/config.
 	insertStmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(columns, '"'), placeholders(len(columns)))
 	if _, err := tx.ExecContext(ctx, insertStmt, values...); err != nil {
 		return fmt.Errorf("insert meta row: %w", err)
@@ -535,7 +545,7 @@ func (d *Destination) ensureMetaColumn(ctx context.Context, column string) error
 
 func decodeKey(raw []byte) (map[string]any, error) {
 	if len(raw) == 0 {
-		return nil, nil
+		return map[string]any{}, nil
 	}
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {

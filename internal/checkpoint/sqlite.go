@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,7 +133,11 @@ func (s *SQLiteStore) List(ctx context.Context) ([]connector.FlowCheckpoint, err
 	if err != nil {
 		return nil, fmt.Errorf("list checkpoints: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("close rows: %v", err)
+		}
+	}()
 
 	out := []connector.FlowCheckpoint{}
 	for rows.Next() {
@@ -183,7 +188,7 @@ func ensureSQLitePath(dsn string) error {
 	if dir == "." || dir == "" {
 		return nil
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create sqlite dir: %w", err)
 	}
 	return nil

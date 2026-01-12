@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -13,6 +14,12 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	var configPath string
 	flag.StringVar(&configPath, "config", "", "path to config file")
 	flag.Parse()
@@ -22,10 +29,11 @@ func main() {
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		return fmt.Errorf("load config: %w", err)
 	}
 
 	if err := app.Run(ctx, cfg); err != nil {
-		log.Fatalf("wallaby stopped: %v", err)
+		return fmt.Errorf("wallaby stopped: %w", err)
 	}
+	return nil
 }

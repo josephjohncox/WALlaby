@@ -31,7 +31,7 @@ func (s *Source) handleToast(ctx context.Context, change replication.Change, rec
 			return err
 		}
 	case toastFetchCache:
-		if err := s.applyToastCache(change, record); err != nil {
+		if err := s.applyToastCache(record); err != nil {
 			return err
 		}
 	default:
@@ -154,12 +154,12 @@ func (s *Source) rehydrateToast(ctx context.Context, change replication.Change, 
 		}
 	}
 	record.Unchanged = nil
-	s.updateToastCache(change, record)
+	s.updateToastCache(record)
 
 	return nil
 }
 
-func (s *Source) applyToastCache(change replication.Change, record *connector.Record) error {
+func (s *Source) applyToastCache(record *connector.Record) error {
 	if s.toastCache == nil || record == nil {
 		return nil
 	}
@@ -190,7 +190,7 @@ func (s *Source) applyToastCache(change replication.Change, record *connector.Re
 	return nil
 }
 
-func (s *Source) updateToastCache(change replication.Change, record *connector.Record) {
+func (s *Source) updateToastCache(record *connector.Record) {
 	if s.toastCache == nil || record == nil {
 		return
 	}
@@ -210,7 +210,7 @@ func (s *Source) updateToastCache(change replication.Change, record *connector.R
 
 func decodeKey(raw []byte) (map[string]any, error) {
 	if len(raw) == 0 {
-		return nil, nil
+		return map[string]any{}, nil
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 
@@ -87,6 +88,10 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		opts = append(opts, kgo.ProducerBatchCompression(parseCompression(compression)))
 	}
 	if d.maxMessageSize > 0 {
+		if d.maxMessageSize > math.MaxInt32 {
+			return fmt.Errorf("max_message_size exceeds int32: %d", d.maxMessageSize)
+		}
+		// #nosec G115 -- size validated above.
 		opts = append(opts, kgo.ProducerBatchMaxBytes(int32(d.maxMessageSize)))
 	}
 

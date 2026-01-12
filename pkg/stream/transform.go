@@ -82,10 +82,7 @@ func transformBatchForDestination(batch connector.Batch, spec connector.Spec, ba
 				records = append(records, record)
 				continue
 			}
-			updated, err := applyRecordTransform(record, batch.Checkpoint, cfg, metaCols)
-			if err != nil {
-				return connector.Batch{}, false, err
-			}
+			updated := applyRecordTransform(record, batch.Checkpoint, cfg, metaCols)
 			records = append(records, updated)
 		}
 		changed = true
@@ -175,7 +172,7 @@ type metadataColumn struct {
 
 func metadataColumns(cfg destTransform) ([]metadataColumn, error) {
 	if !cfg.metaEnabled {
-		return nil, nil
+		return []metadataColumn{}, nil
 	}
 
 	cols := []metadataColumn{
@@ -255,9 +252,9 @@ func applyMetadataSchema(schema connector.Schema, cols []metadataColumn) (connec
 	return next, nil
 }
 
-func applyRecordTransform(record connector.Record, checkpoint connector.Checkpoint, cfg destTransform, cols []metadataColumn) (connector.Record, error) {
+func applyRecordTransform(record connector.Record, checkpoint connector.Checkpoint, cfg destTransform, cols []metadataColumn) connector.Record {
 	if !cfg.metaEnabled && !cfg.appendMode && !cfg.softDelete {
-		return record, nil
+		return record
 	}
 
 	out := record
@@ -312,7 +309,7 @@ func applyRecordTransform(record connector.Record, checkpoint connector.Checkpoi
 
 	out.After = after
 
-	return out, nil
+	return out
 }
 
 func setIfPresent(cols []metadataColumn, name string, target map[string]any, value any) {
@@ -444,7 +441,7 @@ var typeMappingCache sync.Map
 
 func loadTypeMappings(options map[string]string) (map[string]string, error) {
 	if options == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // absence of mappings is not an error
 	}
 	if raw := strings.TrimSpace(options[optTypeMappings]); raw != "" {
 		return parseTypeMappings(raw)
@@ -460,6 +457,7 @@ func loadTypeMappings(options map[string]string) (map[string]string, error) {
 				return entry.mappings, nil
 			}
 		}
+		// #nosec G304 -- path is user-configured and explicitly opted-in.
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("read type mapping file: %w", err)
@@ -471,7 +469,7 @@ func loadTypeMappings(options map[string]string) (map[string]string, error) {
 		typeMappingCache.Store(path, cachedTypeMapping{modTime: info.ModTime(), mappings: mappings})
 		return mappings, nil
 	}
-	return nil, nil
+	return nil, nil //nolint:nilnil // absence of mappings is not an error
 }
 
 func parseTypeMappings(raw string) (map[string]string, error) {

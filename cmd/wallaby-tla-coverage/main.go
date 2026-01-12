@@ -103,6 +103,7 @@ var (
 )
 
 func parseCoverage(path string) (map[string]int, error) {
+	// #nosec G304 -- coverage path comes from CLI flag.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -176,6 +177,7 @@ func writeJSON(path string, report coverageReport) error {
 		return err
 	}
 	data = append(data, '\n')
+	// #nosec G306 -- report is intended to be readable by all users.
 	return os.WriteFile(path, data, 0o644)
 }
 

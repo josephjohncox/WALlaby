@@ -121,6 +121,7 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 
 	ctx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
+	//nolint:staticcheck // TODO: migrate to grpc.NewClient when we can preserve dial timeouts.
 	conn, err := grpc.DialContext(ctx, d.endpoint, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return fmt.Errorf("grpc dial: %w", err)
@@ -381,6 +382,7 @@ func (d *Destination) backoffDuration(attempt int) time.Duration {
 	if delay > d.backoffMax && d.backoffMax > 0 {
 		delay = d.backoffMax
 	}
+	// #nosec G404 -- jitter does not require cryptographic randomness.
 	jitter := time.Duration(rand.Int63n(int64(delay/4 + 1)))
 	return delay + jitter
 }

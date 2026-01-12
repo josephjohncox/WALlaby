@@ -84,11 +84,16 @@ func validateSpec(file specFiles, manifestDir string) error {
 }
 
 func parseNextActions(path string) (map[string]struct{}, error) {
+	// #nosec G304 -- spec path is provided via CLI flag.
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "close %s: %v\n", path, err)
+		}
+	}()
 
 	actions := make(map[string]struct{})
 	scanner := bufio.NewScanner(file)
@@ -124,11 +129,16 @@ func parseNextActions(path string) (map[string]struct{}, error) {
 }
 
 func parseCfgInvariants(path string) (map[string]struct{}, error) {
+	// #nosec G304 -- spec path is provided via CLI flag.
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "close %s: %v\n", path, err)
+		}
+	}()
 
 	invariants := make(map[string]struct{})
 	scanner := bufio.NewScanner(file)

@@ -100,16 +100,20 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		loadOpts = append(loadOpts, config.WithCredentialsProvider(creds))
 	}
 	if d.endpoint != "" {
+		//nolint:staticcheck // TODO: migrate to service-specific endpoint resolver.
 		resolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, _ ...interface{}) (aws.Endpoint, error) {
 			if service == s3.ServiceID {
+				//nolint:staticcheck // TODO: migrate to service-specific endpoint resolver.
 				return aws.Endpoint{
 					URL:               d.endpoint,
 					SigningRegion:     region,
 					HostnameImmutable: true,
 				}, nil
 			}
+			//nolint:staticcheck // TODO: migrate to service-specific endpoint resolver.
 			return aws.Endpoint{}, &aws.EndpointNotFoundError{}
 		})
+		//nolint:staticcheck // TODO: migrate to service-specific endpoint resolver.
 		loadOpts = append(loadOpts, config.WithEndpointResolverWithOptions(resolver))
 	}
 
@@ -148,7 +152,7 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	grouped := map[string][]connector.Record{}
 	representative := map[string]connector.Record{}
 	for _, record := range batch.Records {
-		partPath, err := d.partitionPath(batch.Schema, record)
+		partPath, err := d.partitionPath(record)
 		if err != nil {
 			return err
 		}
@@ -249,7 +253,7 @@ func (d *Destination) objectKey(schema connector.Schema, record connector.Record
 	suffix := d.fileSuffix()
 	ext := extensionForFormat(d.codec.Name())
 	if d.compression == "gzip" {
-		ext = ext + ".gz"
+		ext += ".gz"
 	}
 	name := fmt.Sprintf("%s_%s_%d_%s.%s", table, stamp, schema.Version, suffix, ext)
 
@@ -336,7 +340,7 @@ func parsePartitionBy(raw string) []partitionSpec {
 	return out
 }
 
-func (d *Destination) partitionPath(schema connector.Schema, record connector.Record) (string, error) {
+func (d *Destination) partitionPath(record connector.Record) (string, error) {
 	if len(d.partitions) == 0 {
 		return "", nil
 	}

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -61,7 +62,11 @@ func main() {
 		fatal(err)
 	}
 	if closer != nil {
-		defer closer()
+		defer func() {
+			if err := closer(); err != nil {
+				log.Printf("close output: %v", err)
+			}
+		}()
 	}
 
 	switch strings.ToLower(*format) {
@@ -97,16 +102,21 @@ func loadResults(dir string) ([]benchResult, error) {
 	}
 	results := make([]benchResult, 0)
 	for _, path := range paths {
+		// #nosec G304 -- path comes from local benchmark directory.
 		file, err := os.Open(path)
 		if err != nil {
 			return nil, fmt.Errorf("open %s: %w", path, err)
 		}
 		var batch []benchResult
 		if err := json.NewDecoder(file).Decode(&batch); err != nil {
-			file.Close()
+			if closeErr := file.Close(); closeErr != nil {
+				fmt.Fprintf(os.Stderr, "close %s: %v\n", path, closeErr)
+			}
 			return nil, fmt.Errorf("decode %s: %w", path, err)
 		}
-		file.Close()
+		if err := file.Close(); err != nil {
+			return nil, fmt.Errorf("close %s: %w", path, err)
+		}
 		results = append(results, batch...)
 	}
 	return results, nil
@@ -169,6 +179,7 @@ func outputWriter(path string) (io.Writer, func() error, error) {
 	if path == "" {
 		return os.Stdout, nil, nil
 	}
+	// #nosec G304 -- output path is provided via CLI flag.
 	file, err := os.Create(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create output file: %w", err)

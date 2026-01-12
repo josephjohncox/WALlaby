@@ -89,7 +89,7 @@ func (s *Store) Enqueue(ctx context.Context, stream string, messages []Message) 
 	}
 
 	br := s.pool.SendBatch(ctx, batch)
-	defer br.Close()
+	defer func() { _ = br.Close() }()
 
 	for i := 0; i < len(messages); i++ {
 		if _, err := br.Exec(); err != nil {

@@ -392,21 +392,6 @@ var ErrNotFound = errors.New("registry entry not found")
 // ErrApprovalRequired indicates DDL gating requires approval before continuing.
 var ErrApprovalRequired = connector.ErrDDLApprovalRequired
 
-func scanSchemaVersion(row pgx.Row) (connector.Schema, error) {
-	var payload []byte
-	if err := row.Scan(&payload); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return connector.Schema{}, ErrNotFound
-		}
-		return connector.Schema{}, err
-	}
-	var schema connector.Schema
-	if err := json.Unmarshal(payload, &schema); err != nil {
-		return connector.Schema{}, err
-	}
-	return schema, nil
-}
-
 func scanDDLEvent(row pgx.Row) (DDLEvent, error) {
 	var event DDLEvent
 	var planJSON []byte

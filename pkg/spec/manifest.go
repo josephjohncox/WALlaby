@@ -244,6 +244,7 @@ func newManifest(spec SpecName, actions []Action, invariants []Invariant, unreac
 
 // LoadManifest loads a coverage manifest from disk.
 func LoadManifest(path string) (Manifest, error) {
+	// #nosec G304 -- manifest path is controlled by the caller.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Manifest{}, fmt.Errorf("read coverage manifest: %w", err)

@@ -309,7 +309,11 @@ func assertArrowRow(t *rapid.T, rec arrow.Record, fieldIndex map[string]int, sch
 		var expected any
 		switch col.Type {
 		case "int8":
-			expected = asInt64(val)
+			iv, err := asInt64(val)
+			if err != nil {
+				t.Fatalf("arrow int conversion failed for %s: %v", col.Name, err)
+			}
+			expected = iv
 		case "float8":
 			expected = asFloat64(val)
 		case "bool":

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"time"
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
@@ -22,11 +23,24 @@ func main() {
 	sleep := flag.Duration("sleep", 2*time.Second, "sleep between empty polls")
 	flag.Parse()
 
-	conn, err := grpc.Dial(*endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if *max > math.MaxInt32 {
+		log.Fatalf("max exceeds int32: %d", *max)
+	}
+	if *visibility > math.MaxInt32 {
+		log.Fatalf("visibility exceeds int32: %d", *visibility)
+	}
+	maxMessages := int32(*max)              // #nosec G115 -- bounds checked above.
+	visibilitySeconds := int32(*visibility) // #nosec G115 -- bounds checked above.
+
+	conn, err := grpc.NewClient(*endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("connect: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("close connection: %v", err)
+		}
+	}()
 
 	client := wallabypb.NewStreamServiceClient(conn)
 
@@ -35,13 +49,14 @@ func main() {
 		resp, err := client.Pull(ctx, &wallabypb.StreamPullRequest{
 			Stream:                   *stream,
 			ConsumerGroup:            *group,
-			MaxMessages:              int32(*max),
-			VisibilityTimeoutSeconds: int32(*visibility),
+			MaxMessages:              maxMessages,
+			VisibilityTimeoutSeconds: visibilitySeconds,
 			ConsumerId:               *consumerID,
 		})
 		cancel()
 		if err != nil {
-			log.Fatalf("pull: %v", err)
+			log.Printf("pull: %v", err)
+			return
 		}
 
 		if len(resp.Messages) == 0 {
@@ -63,7 +78,8 @@ func main() {
 		})
 		ackCancel()
 		if err != nil {
-			log.Fatalf("ack: %v", err)
+			log.Printf("ack: %v", err)
+			return
 		}
 	}
 }

@@ -89,7 +89,7 @@ func DialectConfigFor(d Dialect) DialectConfig {
 func TranslatePostgresDDL(ddl string, dialect DialectConfig, mappings map[string]string) ([]string, error) {
 	statement := strings.TrimSpace(strings.TrimSuffix(ddl, ";"))
 	if statement == "" {
-		return nil, nil
+		return []string{}, nil
 	}
 	upper := strings.ToUpper(statement)
 
@@ -133,7 +133,7 @@ func TranslateRecordDDL(schema connector.Schema, record connector.Record, dialec
 			table = strings.TrimSpace(schema.Name)
 		}
 		if table == "" {
-			return nil, nil
+			return []string{}, nil
 		}
 		if !strings.Contains(table, ".") && strings.TrimSpace(schema.Namespace) != "" {
 			table = schema.Namespace + "." + table
@@ -547,16 +547,6 @@ func splitQualifiedName(name string) (string, string) {
 	return "", strings.TrimSpace(name)
 }
 
-func stripQuotes(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) >= 2 {
-		if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '`' && value[len(value)-1] == '`') {
-			return value[1 : len(value)-1]
-		}
-	}
-	return value
-}
-
 func quoteIdent(value, quote string) string {
 	ident, quoted := parseIdent(value)
 	if ident == "" {
@@ -623,7 +613,7 @@ func mapType(value string, mappings map[string]string, dialect DialectConfig) st
 		suffix = "(38,9)"
 	}
 	if suffix != "" && !strings.Contains(mapped, "(") {
-		mapped = mapped + suffix
+		mapped += suffix
 	}
 
 	if isArray && dialect.ArrayType != nil {
@@ -672,19 +662,20 @@ func normalizeTypeKey(value string) string {
 // LoadTypeMappings loads per-destination type mappings from connector options.
 func LoadTypeMappings(options map[string]string) (map[string]string, error) {
 	if options == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // absence of mappings is not an error
 	}
 	if raw := strings.TrimSpace(options[optTypeMappings]); raw != "" {
 		return parseTypeMappings(raw)
 	}
 	if path := strings.TrimSpace(options[optTypeMappingsFile]); path != "" {
+		// #nosec G304 -- path is user-configured and explicitly opted-in.
 		data, err := os.ReadFile(filepath.Clean(path))
 		if err != nil {
 			return nil, fmt.Errorf("read type mappings file: %w", err)
 		}
 		return parseTypeMappings(string(data))
 	}
-	return nil, nil
+	return nil, nil //nolint:nilnil // absence of mappings is not an error
 }
 
 // MergeTypeMappings merges base and overrides, with overrides winning.

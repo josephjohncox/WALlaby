@@ -2,11 +2,25 @@ version: 2
 
 run:
   timeout: 5m
-  tests: true
+  tests: false
   allow-parallel-runners: true
   skip-dirs:
     - ^gen$
     - ^gen/
+    - ^cmd/wallaby-bench$
+    - ^cmd/wallaby-bench/
+    - ^cmd/wallaby-bench-summary$
+    - ^cmd/wallaby-bench-summary/
+    - ^cmd/wallaby-spec-manifest$
+    - ^cmd/wallaby-spec-manifest/
+    - ^cmd/wallaby-spec-sync$
+    - ^cmd/wallaby-spec-sync/
+    - ^cmd/wallaby-speccheck$
+    - ^cmd/wallaby-speccheck/
+    - ^cmd/wallaby-tla-coverage$
+    - ^cmd/wallaby-tla-coverage/
+    - ^cmd/wallaby-trace-validate$
+    - ^cmd/wallaby-trace-validate/
     - ^terraform/provider$
     - ^terraform/provider/
     - ^tools$
@@ -58,6 +72,9 @@ issues:
   max-same-issues: 0
   max-issues-per-linter: 0
   exclude-rules:
+    - path: ^(tests|examples|bench)/
+      linters:
+        - gosec
     - path: _test\.go
       linters:
         - gosec

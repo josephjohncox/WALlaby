@@ -71,7 +71,7 @@ func newSnapshotStateStore(ctx context.Context, backend string, spec connector.S
 		}
 		return newFileSnapshotStateStore(path)
 	case "none":
-		return nil, nil
+		return nil, nil //nolint:nilnil // snapshot state explicitly disabled
 	default:
 		return nil, fmt.Errorf("unsupported snapshot state backend %q", backend)
 	}
@@ -217,7 +217,7 @@ func newFileSnapshotStateStore(path string) (*fileSnapshotStateStore, error) {
 		return nil, errors.New("snapshot state path is required")
 	}
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create snapshot state directory: %w", err)
 	}
 
@@ -295,7 +295,7 @@ func (s *fileSnapshotStateStore) persist() error {
 	if err != nil {
 		return fmt.Errorf("encode snapshot state: %w", err)
 	}
-	if err := os.WriteFile(s.path, payload, 0o644); err != nil {
+	if err := os.WriteFile(s.path, payload, 0o600); err != nil {
 		return fmt.Errorf("write snapshot state: %w", err)
 	}
 	return nil

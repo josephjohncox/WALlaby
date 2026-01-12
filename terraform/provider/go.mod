@@ -2,6 +2,8 @@ module github.com/josephjohncox/wallaby/terraform/provider
 
 go 1.25.5
 
+toolchain go1.25.5
+
 require (
 	github.com/hashicorp/terraform-plugin-framework v1.8.0
 	github.com/hashicorp/terraform-plugin-go v0.23.0

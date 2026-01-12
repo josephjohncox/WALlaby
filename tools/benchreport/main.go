@@ -33,7 +33,11 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "close input: %v\n", err)
+		}
+	}()
 
 	results, err := parseBench(reader)
 	if err != nil {
@@ -70,6 +74,7 @@ func openInput(path string) (io.ReadCloser, error) {
 	if path == "" || path == "-" {
 		return readCloser{Reader: os.Stdin}, nil
 	}
+	// #nosec G304 -- input path provided via CLI flag.
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err

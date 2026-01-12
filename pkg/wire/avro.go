@@ -72,7 +72,8 @@ func (c *AvroCodec) Encode(batch connector.Batch) ([]byte, error) {
 }
 
 func avroSchemaFor(schema connector.Schema) string {
-	fields := []string{
+	fields := make([]string, 0, 7+len(schema.Columns))
+	fields = append(fields,
 		fieldJSON("__op", []string{"string"}, nil),
 		fieldJSON("__ts", []string{"long"}, nil),
 		fieldJSON("__schema_version", []string{"long"}, nil),
@@ -80,7 +81,7 @@ func avroSchemaFor(schema connector.Schema) string {
 		fieldJSON("__namespace", []string{"string"}, nil),
 		fieldJSON("__key", []string{"null", "bytes"}, nil),
 		fieldJSON("__before_json", []string{"string"}, nil),
-	}
+	)
 
 	for _, col := range schema.Columns {
 		props := map[string]string{}
@@ -144,8 +145,6 @@ func avroTypeFor(pgType string, nullable bool) []string {
 		avroType = "bytes"
 	case "timestamp", "timestamptz", "timestamp without time zone", "timestamp with time zone", "date":
 		avroType = "long"
-	default:
-		avroType = "string"
 	}
 
 	return wrapNullable(avroType, nullable)

@@ -3,6 +3,7 @@ package wire
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -12,9 +13,10 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+//nolint:staticcheck // TODO: migrate to RecordBatch once arrow-go API is updated here.
 func buildArrowRecord(batch connector.Batch) (arrow.Record, error) {
 	if len(batch.Records) == 0 {
-		return nil, nil
+		return nil, nil //nolint:nilnil // empty batches yield no record
 	}
 
 	schema, fieldIndex, err := arrowSchemaFor(batch.Schema)
@@ -55,6 +57,7 @@ func buildArrowRecord(batch connector.Batch) (arrow.Record, error) {
 		}
 	}
 
+	//nolint:staticcheck // TODO: migrate to RecordBatch once arrow-go API is updated here.
 	rec := builder.NewRecord()
 	return rec, nil
 }
@@ -197,11 +200,31 @@ func appendValue(builder array.Builder, value any) error {
 			b.Append(fmt.Sprint(value))
 		}
 	case *array.Int16Builder:
-		b.Append(int16(asInt64(value)))
+		v, err := asInt64(value)
+		if err != nil {
+			return err
+		}
+		if v < math.MinInt16 || v > math.MaxInt16 {
+			return fmt.Errorf("int16 overflow: %d", v)
+		}
+		// #nosec G115 -- bounds checked above.
+		b.Append(int16(v))
 	case *array.Int32Builder:
-		b.Append(int32(asInt64(value)))
+		v, err := asInt64(value)
+		if err != nil {
+			return err
+		}
+		if v < math.MinInt32 || v > math.MaxInt32 {
+			return fmt.Errorf("int32 overflow: %d", v)
+		}
+		// #nosec G115 -- bounds checked above.
+		b.Append(int32(v))
 	case *array.Int64Builder:
-		b.Append(asInt64(value))
+		v, err := asInt64(value)
+		if err != nil {
+			return err
+		}
+		b.Append(v)
 	case *array.Float32Builder:
 		b.Append(float32(asFloat64(value)))
 	case *array.Float64Builder:
@@ -244,30 +267,38 @@ func appendValue(builder array.Builder, value any) error {
 	return nil
 }
 
-func asInt64(value any) int64 {
+func asInt64(value any) (int64, error) {
 	switch v := value.(type) {
 	case int:
-		return int64(v)
+		return int64(v), nil
 	case int16:
-		return int64(v)
+		return int64(v), nil
 	case int32:
-		return int64(v)
+		return int64(v), nil
 	case int64:
-		return v
+		return v, nil
 	case uint:
-		return int64(v)
+		if uint64(v) > math.MaxInt64 {
+			return 0, fmt.Errorf("int64 overflow: %d", v)
+		}
+		// #nosec G115 -- bounds checked above.
+		return int64(v), nil
 	case uint16:
-		return int64(v)
+		return int64(v), nil
 	case uint32:
-		return int64(v)
+		return int64(v), nil
 	case uint64:
-		return int64(v)
+		if v > math.MaxInt64 {
+			return 0, fmt.Errorf("int64 overflow: %d", v)
+		}
+		// #nosec G115 -- bounds checked above.
+		return int64(v), nil
 	case float32:
-		return int64(v)
+		return int64(v), nil
 	case float64:
-		return int64(v)
+		return int64(v), nil
 	default:
-		return 0
+		return 0, nil
 	}
 }
 

@@ -295,6 +295,7 @@ func (d *Destination) backoffDuration(attempt int) time.Duration {
 		delay = d.backoffMax
 	}
 
+	// #nosec G404 -- jitter does not require cryptographic randomness.
 	jitter := 0.5 + rand.Float64()
 	return time.Duration(float64(delay) * jitter)
 }

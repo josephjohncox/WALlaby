@@ -320,8 +320,8 @@ func (d *Destination) applyTargetBatch(ctx context.Context, tx pgx.Tx, target st
 		updatesSameKey = append(updatesSameKey, record)
 	}
 
-	upserts := append(inserts, updatesSameKey...)
-	if err := d.upsertRows(ctx, tx, target, schema, upserts); err != nil {
+	inserts = append(inserts, updatesSameKey...)
+	if err := d.upsertRows(ctx, tx, target, schema, inserts); err != nil {
 		return err
 	}
 	if err := d.updateRows(ctx, tx, target, schema, updatesKeyChange); err != nil {
@@ -331,28 +331,6 @@ func (d *Destination) applyTargetBatch(ctx context.Context, tx pgx.Tx, target st
 		return err
 	}
 	return nil
-}
-
-func (d *Destination) applyRecord(ctx context.Context, tx pgx.Tx, target string, schema connector.Schema, record connector.Record, mode string) error {
-	if target == "" {
-		target = d.targetTable(schema, record)
-	}
-	switch record.Operation {
-	case connector.OpDelete:
-		if mode == writeModeAppend {
-			return d.insertRow(ctx, tx, target, schema, record)
-		}
-		return d.deleteRow(ctx, tx, target, schema, record)
-	case connector.OpUpdate:
-		if mode == writeModeAppend {
-			return d.insertRow(ctx, tx, target, schema, record)
-		}
-		return d.updateRow(ctx, tx, target, schema, record)
-	case connector.OpInsert, connector.OpLoad:
-		return d.insertRow(ctx, tx, target, schema, record)
-	default:
-		return nil
-	}
 }
 
 type rowGroup struct {
@@ -378,7 +356,7 @@ func (d *Destination) insertRows(ctx context.Context, tx pgx.Tx, target string, 
 	colTypes := columnTypeMap(schema)
 	groups := map[string]*rowGroup{}
 	for _, record := range records {
-		cols, vals, _, err := recordColumns(schema, record)
+		cols, vals, err := recordColumns(schema, record)
 		if err != nil {
 			return err
 		}
@@ -402,7 +380,7 @@ func (d *Destination) insertRows(ctx context.Context, tx pgx.Tx, target string, 
 			if err != nil {
 				return err
 			}
-			stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", target, quoteColumns(group.cols, '"'), valuesClause)
+			stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", target, quoteColumns(group.cols), valuesClause)
 			if _, err := tx.Exec(ctx, stmt, args...); err != nil {
 				return fmt.Errorf("insert rows: %w", err)
 			}
@@ -434,7 +412,7 @@ func (d *Destination) upsertRows(ctx context.Context, tx pgx.Tx, target string, 
 	colTypes := columnTypeMap(schema)
 	groups := map[string]*upsertGroup{}
 	for _, record := range records {
-		cols, vals, _, err := recordColumns(schema, record)
+		cols, vals, err := recordColumns(schema, record)
 		if err != nil {
 			return err
 		}
@@ -490,13 +468,13 @@ func (d *Destination) upsertRows(ctx context.Context, tx pgx.Tx, target string, 
 			if err != nil {
 				return err
 			}
-			stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", tempIdent, quoteColumns(group.cols, '"'), valuesClause)
+			stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", tempIdent, quoteColumns(group.cols), valuesClause)
 			if _, err := tx.Exec(ctx, stmt, args...); err != nil {
 				return fmt.Errorf("insert temp rows: %w", err)
 			}
 		}
 
-		insertCols := quoteColumns(group.cols, '"')
+		insertCols := quoteColumns(group.cols)
 		quotedKeyCols := make([]string, 0, len(group.keyCols))
 		for _, col := range group.keyCols {
 			quotedKeyCols = append(quotedKeyCols, quoteIdent(col, '"'))
@@ -544,7 +522,7 @@ func (d *Destination) updateRows(ctx context.Context, tx pgx.Tx, target string, 
 	colTypes := columnTypeMap(schema)
 	groups := map[string]*updateGroup{}
 	for _, record := range records {
-		cols, vals, _, err := recordColumns(schema, record)
+		cols, vals, err := recordColumns(schema, record)
 		if err != nil {
 			return err
 		}
@@ -611,7 +589,7 @@ func (d *Destination) updateRows(ctx context.Context, tx pgx.Tx, target string, 
 			target,
 			strings.Join(setClause, ", "),
 			valuesClause,
-			quoteColumns(allCols, '"'),
+			quoteColumns(allCols),
 			strings.Join(whereClause, " AND "),
 		)
 		if _, err := tx.Exec(ctx, stmt, args...); err != nil {
@@ -668,7 +646,7 @@ func (d *Destination) deleteRows(ctx context.Context, tx pgx.Tx, target string, 
 			"DELETE FROM %s AS t USING (VALUES %s) AS v(%s) WHERE %s",
 			target,
 			valuesClause,
-			quoteColumns(group.keyCols, '"'),
+			quoteColumns(group.keyCols),
 			strings.Join(whereClause, " AND "),
 		)
 		if _, err := tx.Exec(ctx, stmt, args...); err != nil {
@@ -727,21 +705,6 @@ func (d *Destination) stagingTable(schema connector.Schema, record connector.Rec
 	return quoteIdent(stagingSchema, '"') + "." + quoteIdent(stagingTable, '"')
 }
 
-func (d *Destination) insertRow(ctx context.Context, tx pgx.Tx, target string, schema connector.Schema, record connector.Record) error {
-	cols, vals, exprs, err := recordColumns(schema, record)
-	if err != nil {
-		return err
-	}
-	if len(cols) == 0 {
-		return nil
-	}
-	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols, '"'), strings.Join(exprs, ", "))
-	if _, err := tx.Exec(ctx, stmt, vals...); err != nil {
-		return fmt.Errorf("insert row: %w", err)
-	}
-	return nil
-}
-
 func (d *Destination) finalizeStaging(ctx context.Context) error {
 	if d.batchMode != batchModeStaging {
 		return nil
@@ -780,7 +743,7 @@ func (d *Destination) resolveStagingTable(ctx context.Context, info tableInfo) e
 	if len(cols) == 0 {
 		return nil
 	}
-	colList := quoteColumns(cols, '"')
+	colList := quoteColumns(cols)
 	if d.batchResolve == batchResolveReplace {
 		if _, err := d.pool.Exec(ctx, fmt.Sprintf("TRUNCATE TABLE %s", target)); err != nil {
 			return fmt.Errorf("truncate target: %w", err)
@@ -815,7 +778,7 @@ func (d *Destination) targetParts(schema connector.Schema, table string) (string
 func (d *Destination) loadColumns(ctx context.Context, schema connector.Schema, table string) ([]string, error) {
 	targetSchema, targetTable := d.targetParts(schema, table)
 	if targetTable == "" {
-		return nil, nil
+		return []string{}, nil
 	}
 	if targetSchema == "" {
 		targetSchema = "public"
@@ -841,55 +804,6 @@ func (d *Destination) loadColumns(ctx context.Context, schema connector.Schema, 
 		return nil, fmt.Errorf("iterate columns: %w", err)
 	}
 	return cols, nil
-}
-
-func (d *Destination) updateRow(ctx context.Context, tx pgx.Tx, target string, schema connector.Schema, record connector.Record) error {
-	keyCols, keyVals, err := keyColumnsAndValues(schema, record)
-	if err != nil {
-		return err
-	}
-	if len(keyCols) == 0 {
-		return errors.New("update requires record key")
-	}
-
-	cols, vals, exprs, err := recordColumns(schema, record)
-	if err != nil {
-		return err
-	}
-	if len(cols) == 0 {
-		return nil
-	}
-
-	setClause := make([]string, 0, len(cols))
-	for idx, col := range cols {
-		setClause = append(setClause, fmt.Sprintf("%s = %s", quoteIdent(col, '"'), exprs[idx]))
-	}
-
-	whereClause := whereFromKeyColumns(schema, keyCols, len(vals), '"')
-	args := append(vals, keyVals...)
-
-	stmt := fmt.Sprintf("UPDATE %s SET %s WHERE %s", target, strings.Join(setClause, ", "), whereClause)
-	if _, err := tx.Exec(ctx, stmt, args...); err != nil {
-		return fmt.Errorf("update row: %w", err)
-	}
-	return nil
-}
-
-func (d *Destination) deleteRow(ctx context.Context, tx pgx.Tx, target string, schema connector.Schema, record connector.Record) error {
-	keyCols, keyVals, err := keyColumnsAndValues(schema, record)
-	if err != nil {
-		return err
-	}
-	if len(keyCols) == 0 {
-		return errors.New("delete requires record key")
-	}
-
-	whereClause := whereFromKeyColumns(schema, keyCols, 0, '"')
-	stmt := fmt.Sprintf("DELETE FROM %s WHERE %s", target, whereClause)
-	if _, err := tx.Exec(ctx, stmt, keyVals...); err != nil {
-		return fmt.Errorf("delete row: %w", err)
-	}
-	return nil
 }
 
 func (d *Destination) ensureMetaTable(ctx context.Context) error {
@@ -945,12 +859,14 @@ func (d *Destination) upsertMetadata(ctx context.Context, tx pgx.Tx, schema conn
 		keyJSON = string(raw)
 	}
 
-	columns := []string{"flow_id", "source_schema", "source_table", "synced_at", "is_deleted", "lsn", "operation", "key_json"}
-	values := []any{d.flowID, schema.Namespace, record.Table, syncedAt, record.Operation == connector.OpDelete, checkpoint.LSN, string(record.Operation), keyJSON}
+	columns := make([]string, 0, 8+len(pkCols))
+	columns = append(columns, "flow_id", "source_schema", "source_table", "synced_at", "is_deleted", "lsn", "operation", "key_json")
+	values := make([]any, 0, 8+len(pkVals))
+	values = append(values, d.flowID, schema.Namespace, record.Table, syncedAt, record.Operation == connector.OpDelete, checkpoint.LSN, string(record.Operation), keyJSON)
 	columns = append(columns, pkCols...)
 	values = append(values, pkVals...)
 
-	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(columns, '"'), placeholders(1, len(columns)))
+	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(columns), placeholders(1, len(columns)))
 	if _, err := tx.Exec(ctx, stmt, values...); err != nil {
 		return fmt.Errorf("insert meta row: %w", err)
 	}
@@ -974,13 +890,12 @@ func (d *Destination) ensureMetaColumn(ctx context.Context, column string) error
 	return nil
 }
 
-func recordColumns(schema connector.Schema, record connector.Record) ([]string, []any, []string, error) {
+func recordColumns(schema connector.Schema, record connector.Record) ([]string, []any, error) {
 	if record.After == nil {
-		return nil, nil, nil, nil
+		return []string{}, []any{}, nil
 	}
 	cols := make([]string, 0, len(schema.Columns))
 	vals := make([]any, 0, len(schema.Columns))
-	exprs := make([]string, 0, len(schema.Columns))
 	for _, col := range schema.Columns {
 		val, ok := record.After[col.Name]
 		if !ok {
@@ -988,23 +903,17 @@ func recordColumns(schema connector.Schema, record connector.Record) ([]string, 
 		}
 		normalized, err := normalizePostgresValue(col.Type, val)
 		if err != nil {
-			return nil, nil, nil, err
-		}
-		placeholder := fmt.Sprintf("$%d", len(vals)+1)
-		expr := placeholder
-		if jsonType := postgresJSONType(col.Type); jsonType != "" {
-			expr = fmt.Sprintf("CAST(%s AS %s)", placeholder, jsonType)
+			return nil, nil, err
 		}
 		cols = append(cols, col.Name)
 		vals = append(vals, normalized)
-		exprs = append(exprs, expr)
 	}
-	return cols, vals, exprs, nil
+	return cols, vals, nil
 }
 
 func normalizePostgresValue(colType string, value any) (any, error) {
 	if value == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // nil maps to NULL
 	}
 	if isPostgresArrayType(colType) {
 		return value, nil
@@ -1077,7 +986,7 @@ func keyColumnsAndValues(schema connector.Schema, record connector.Record) ([]st
 		return nil, nil, err
 	}
 	if len(keyMap) == 0 {
-		return nil, nil, nil
+		return []string{}, []any{}, nil
 	}
 	keys := make([]string, 0, len(keyMap))
 	for key := range keyMap {
@@ -1107,7 +1016,7 @@ func keyColumnsAndValues(schema connector.Schema, record connector.Record) ([]st
 
 func buildValuesClause(cols []string, colTypes map[string]string, rows [][]any) (string, []any, error) {
 	if len(cols) == 0 || len(rows) == 0 {
-		return "", nil, nil
+		return "", []any{}, nil
 	}
 	args := make([]any, 0, len(rows)*len(cols))
 	valueRows := make([]string, 0, len(rows))
@@ -1146,8 +1055,16 @@ func coerceKeyValue(colType string, value any) (any, bool, error) {
 		}
 		switch normalizeTypeKey(colType) {
 		case "int2", "smallint":
+			if coerced < math.MinInt16 || coerced > math.MaxInt16 {
+				return nil, false, fmt.Errorf("int16 overflow: %d", coerced)
+			}
+			// #nosec G115 -- bounds checked above.
 			return int16(coerced), true, nil
 		case "int4", "integer", "int", "serial":
+			if coerced < math.MinInt32 || coerced > math.MaxInt32 {
+				return nil, false, fmt.Errorf("int32 overflow: %d", coerced)
+			}
+			// #nosec G115 -- bounds checked above.
 			return int32(coerced), true, nil
 		default:
 			return coerced, true, nil
@@ -1392,16 +1309,6 @@ func columnType(colTypes map[string]string, col string) string {
 	return ""
 }
 
-func comparisonCastType(colType string) string {
-	if colType == "" {
-		return ""
-	}
-	if castType := postgresJSONType(colType); castType != "" {
-		return castType
-	}
-	return colType
-}
-
 func normalizeTypeKey(value string) string {
 	value = strings.TrimSpace(strings.ToLower(value))
 	value = strings.TrimSuffix(value, "[]")
@@ -1476,7 +1383,7 @@ func schemaColumns(schema connector.Schema) []string {
 
 func decodeKey(raw []byte) (map[string]any, error) {
 	if len(raw) == 0 {
-		return nil, nil
+		return map[string]any{}, nil
 	}
 	var out map[string]any
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -1487,29 +1394,10 @@ func decodeKey(raw []byte) (map[string]any, error) {
 	return out, nil
 }
 
-func whereFromKeyColumns(schema connector.Schema, keyCols []string, offset int, quote rune) string {
-	if len(keyCols) == 0 {
-		return ""
-	}
-	colTypes := columnTypeMap(schema)
-	parts := make([]string, 0, len(keyCols))
-	for idx, col := range keyCols {
-		placeholder := fmt.Sprintf("$%d", offset+idx+1)
-		expr := placeholder
-		if colType := columnType(colTypes, col); colType != "" {
-			if castType := comparisonCastType(colType); castType != "" {
-				expr = fmt.Sprintf("CAST(%s AS %s)", placeholder, castType)
-			}
-		}
-		parts = append(parts, fmt.Sprintf("%s = %s", quoteIdent(col, quote), expr))
-	}
-	return strings.Join(parts, " AND ")
-}
-
-func quoteColumns(cols []string, quote rune) string {
+func quoteColumns(cols []string) string {
 	quoted := make([]string, 0, len(cols))
 	for _, col := range cols {
-		quoted = append(quoted, quoteIdent(col, quote))
+		quoted = append(quoted, quoteIdent(col, '"'))
 	}
 	return strings.Join(quoted, ", ")
 }

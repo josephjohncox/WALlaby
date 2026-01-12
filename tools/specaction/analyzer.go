@@ -91,10 +91,10 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 	switch mode {
 	case "none":
-		return nil, nil
+		return struct{}{}, nil
 	case "checks":
 		if checks == 0 && unknown == 0 {
-			return nil, nil
+			return struct{}{}, nil
 		}
 	case "all":
 		// fallthrough to print
@@ -102,12 +102,12 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		if verbose || checks > 0 || unknown > 0 {
 			fmt.Fprintf(os.Stderr, "specaction: unknown verbose-mode=%q (use all|checks|none)\n", mode)
 		}
-		return nil, nil
+		return struct{}{}, nil
 	}
 
 	fmt.Fprintf(os.Stderr, "specaction: pkg=%s manifest=%s actions=%d checks=%d unknown=%d\n", pass.Pkg.Path(), manifestLocation, len(allowed), checks, unknown)
 
-	return nil, nil
+	return struct{}{}, nil
 }
 
 func checkEmitTrace(pass *analysis.Pass, call *ast.CallExpr, allowed map[spec.Action]struct{}, unknown *int) int {
