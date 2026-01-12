@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"runtime"
 	"time"
 
 	"github.com/dbos-inc/dbos-transact-golang/dbos"
@@ -28,6 +30,8 @@ type Config struct {
 	MaxRetriesSet bool
 	DefaultWire   connector.WireFormat
 	StrictWire    bool
+	AdminServer   bool
+	AdminPort     int
 	Tracer        trace.Tracer
 	DDLApplied    func(ctx context.Context, lsn string, ddl string) error
 }
@@ -54,6 +58,12 @@ type DBOSOrchestrator struct {
 	ddlApplied    func(ctx context.Context, lsn string, ddl string) error
 }
 
+// FlowWorkflowName returns the fully qualified workflow name used by DBOS recovery.
+func FlowWorkflowName() string {
+	var o DBOSOrchestrator
+	return runtime.FuncForPC(reflect.ValueOf((&o).runFlowWorkflow).Pointer()).Name()
+}
+
 // NewDBOSOrchestrator builds and launches a DBOS-backed orchestrator.
 func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Engine, checkpoints connector.CheckpointStore, factory runner.Factory) (*DBOSOrchestrator, error) {
 	if engine == nil {
@@ -67,8 +77,10 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Engine
 	}
 
 	dbosCtx, err := dbos.NewDBOSContext(ctx, dbos.Config{
-		AppName:     cfg.AppName,
-		DatabaseURL: cfg.DatabaseURL,
+		AppName:         cfg.AppName,
+		DatabaseURL:     cfg.DatabaseURL,
+		AdminServer:     cfg.AdminServer,
+		AdminServerPort: cfg.AdminPort,
 	})
 	if err != nil {
 		return nil, err

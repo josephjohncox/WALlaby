@@ -1,17 +1,21 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/flow"
@@ -406,6 +410,188 @@ LIMIT 1`, startedAt).Scan(&status, &attempts, &errMsg)
 	})
 }
 
+func TestDBOSIntegrationAdminRecovery(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("WALLABY_TEST_DBOS_DSN"))
+	if dsn == "" {
+		dsn = strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
+	}
+	if dsn == "" {
+		t.Skip("WALLABY_TEST_DBOS_DSN or TEST_PG_DSN not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer pool.Close()
+
+	suffix := time.Now().UnixNano()
+	appVersion := fmt.Sprintf("wallaby-recovery-%d", suffix)
+	restoreEnv(t, "DBOS__APPVERSION", appVersion)
+
+	adminPort := freePort(t)
+
+	schema := fmt.Sprintf("dbos_recovery_%d", suffix)
+	table := "events"
+	streamName := fmt.Sprintf("wallaby_stream_%d", suffix)
+	flowID := fmt.Sprintf("flow-%d", suffix)
+
+	if _, err := pool.Exec(ctx, fmt.Sprintf("CREATE SCHEMA %s", schema)); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schema))
+	}()
+
+	createTable := fmt.Sprintf(`CREATE TABLE %s.%s (
+  id BIGINT PRIMARY KEY,
+  payload JSONB,
+  updated_at TIMESTAMPTZ
+)`, schema, table)
+	if _, err := pool.Exec(ctx, createTable); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		fmt.Sprintf(`INSERT INTO %s.%s (id, payload, updated_at) VALUES ($1, $2::jsonb, $3)`, schema, table),
+		1, `{"status":"dbos"}`, time.Now().UTC(),
+	); err != nil {
+		t.Fatalf("seed source rows: %v", err)
+	}
+
+	sourceSpec := connector.Spec{
+		Name: "dbos-source",
+		Type: connector.EndpointPostgres,
+		Options: map[string]string{
+			"dsn":                 dsn,
+			"mode":                "backfill",
+			"tables":              fmt.Sprintf("%s.%s", schema, table),
+			"batch_size":          "200",
+			"snapshot_workers":    "1",
+			"snapshot_consistent": "false",
+			"flow_id":             flowID,
+			"resolve_types":       "true",
+		},
+	}
+
+	destSpec := connector.Spec{
+		Name: "dbos-stream",
+		Type: connector.EndpointPGStream,
+		Options: map[string]string{
+			"dsn":    dsn,
+			"stream": streamName,
+			"format": "json",
+		},
+	}
+
+	engine, err := workflow.NewPostgresEngine(ctx, dsn)
+	if err != nil {
+		t.Fatalf("create engine: %v", err)
+	}
+	defer engine.Close()
+	defer func() {
+		_ = engine.Delete(context.Background(), flowID)
+	}()
+
+	created, err := engine.Create(ctx, flow.Flow{
+		ID:           flowID,
+		Name:         "dbos-recovery",
+		Source:       sourceSpec,
+		Destinations: []connector.Spec{destSpec},
+		State:        flow.StateCreated,
+		Parallelism:  1,
+	})
+	if err != nil {
+		t.Fatalf("create flow: %v", err)
+	}
+	if _, err := engine.Start(ctx, created.ID); err != nil {
+		t.Fatalf("start flow: %v", err)
+	}
+
+	orch, err := orchestrator.NewDBOSOrchestrator(ctx, orchestrator.Config{
+		AppName:       "wallaby-test",
+		DatabaseURL:   dsn,
+		MaxEmptyReads: 1,
+		DefaultWire:   connector.WireFormatJSON,
+		AdminServer:   true,
+		AdminPort:     adminPort,
+	}, engine, nil, runner.Factory{})
+	if err != nil {
+		t.Fatalf("create dbos orchestrator: %v", err)
+	}
+	defer orch.Shutdown(5 * time.Second)
+
+	adminURL := fmt.Sprintf("http://127.0.0.1:%d/dbos-healthz", adminPort)
+	waitFor(t, 10*time.Second, 200*time.Millisecond, func() (bool, error) {
+		resp, err := http.Get(adminURL)
+		if err != nil {
+			return false, nil
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode == http.StatusOK, nil
+	})
+
+	workflowID := uuid.NewString()
+	workflowName := orchestrator.FlowWorkflowName()
+	inputPayload, err := json.Marshal(orchestrator.FlowRunInput{
+		FlowID:        flowID,
+		MaxEmptyReads: 1,
+	})
+	if err != nil {
+		t.Fatalf("marshal flow input: %v", err)
+	}
+	createdAt := time.Now().UnixMilli()
+	_, err = pool.Exec(ctx, `INSERT INTO dbos.workflow_status (workflow_uuid, status, name, executor_id, application_version, application_id, created_at, updated_at, inputs, authenticated_user, assumed_role)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10)`,
+		workflowID,
+		"PENDING",
+		workflowName,
+		"local",
+		appVersion,
+		"",
+		createdAt,
+		string(inputPayload),
+		"",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("insert pending workflow: %v", err)
+	}
+
+	recoveryURL := fmt.Sprintf("http://127.0.0.1:%d/dbos-workflow-recovery", adminPort)
+	body, _ := json.Marshal([]string{"local"})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, recoveryURL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build recovery request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("call recovery endpoint: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		t.Fatalf("recovery endpoint status %d", resp.StatusCode)
+	}
+	var recovered []string
+	if err := json.NewDecoder(resp.Body).Decode(&recovered); err != nil {
+		t.Fatalf("decode recovery response: %v", err)
+	}
+	if !containsString(recovered, workflowID) {
+		t.Fatalf("expected workflow %s in recovery response, got %v", workflowID, recovered)
+	}
+
+	waitFor(t, 30*time.Second, 500*time.Millisecond, func() (bool, error) {
+		var status string
+		if err := pool.QueryRow(ctx, "SELECT status FROM dbos.workflow_status WHERE workflow_uuid = $1", workflowID).Scan(&status); err != nil {
+			return false, err
+		}
+		return status != "PENDING", nil
+	})
+}
+
 func waitForStreamEvents(t *testing.T, ctx context.Context, pool *pgxpool.Pool, flowID, streamName, inputPayload string, want int) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -453,6 +639,44 @@ LIMIT 1`, inputPayload).Scan(&status, &errMsg)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for port: %v", err)
+	}
+	defer listener.Close()
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("unexpected addr type: %T", listener.Addr())
+	}
+	return addr.Port
+}
+
+func restoreEnv(t *testing.T, key, value string) {
+	t.Helper()
+	previous, ok := os.LookupEnv(key)
+	if err := os.Setenv(key, value); err != nil {
+		t.Fatalf("set %s: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if ok {
+			_ = os.Setenv(key, previous)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
+}
+
+func containsString(items []string, needle string) bool {
+	for _, item := range items {
+		if item == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func logDBOSDiagnostics(t *testing.T, ctx context.Context, pool *pgxpool.Pool, flowID, streamName string) {
