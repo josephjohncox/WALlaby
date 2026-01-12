@@ -328,11 +328,17 @@ func newMeters(meter metric.Meter) (*Meters, error) {
 
 // RecordError records an error metric with the given error type.
 func (m *Meters) RecordError(ctx context.Context, errorType string) {
+	if m == nil {
+		return
+	}
 	m.ErrorsTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("error_type", errorType)))
 }
 
 // RecordBatch records batch processing metrics.
 func (m *Meters) RecordBatch(ctx context.Context, flowID string, recordCount int64, latencyMs float64) {
+	if m == nil {
+		return
+	}
 	attrs := metric.WithAttributes(attribute.String("flow_id", flowID))
 	m.RecordsProcessed.Add(ctx, recordCount, attrs)
 	m.BatchesProcessed.Add(ctx, 1, attrs)
@@ -342,16 +348,25 @@ func (m *Meters) RecordBatch(ctx context.Context, flowID string, recordCount int
 
 // RecordDestinationWrite records destination write latency.
 func (m *Meters) RecordDestinationWrite(ctx context.Context, flowID string, latencyMs float64) {
+	if m == nil {
+		return
+	}
 	m.DestinationWriteLatency.Record(ctx, latencyMs, metric.WithAttributes(attribute.String("flow_id", flowID)))
 }
 
 // RecordCheckpoint records a checkpoint commit.
 func (m *Meters) RecordCheckpoint(ctx context.Context, flowID string) {
+	if m == nil {
+		return
+	}
 	m.CheckpointCommits.Add(ctx, 1, metric.WithAttributes(attribute.String("flow_id", flowID)))
 }
 
 // RecordGRPCRequest records a gRPC request with method and status.
 func (m *Meters) RecordGRPCRequest(ctx context.Context, method, status string) {
+	if m == nil {
+		return
+	}
 	m.GRPCRequestsTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("method", method),
 		attribute.String("status", status),
@@ -360,11 +375,17 @@ func (m *Meters) RecordGRPCRequest(ctx context.Context, method, status string) {
 
 // RecordGRPCLatency records gRPC request latency.
 func (m *Meters) RecordGRPCLatency(ctx context.Context, method string, latencyMs float64) {
+	if m == nil {
+		return
+	}
 	m.GRPCRequestLatency.Record(ctx, latencyMs, metric.WithAttributes(attribute.String("method", method)))
 }
 
 // RecordGRPCError records a gRPC error with method and code.
 func (m *Meters) RecordGRPCError(ctx context.Context, method, code string) {
+	if m == nil {
+		return
+	}
 	m.GRPCErrorsTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("method", method),
 		attribute.String("code", code),
@@ -373,11 +394,17 @@ func (m *Meters) RecordGRPCError(ctx context.Context, method, code string) {
 
 // RecordFlowActive adjusts the active flow count (delta: +1 or -1).
 func (m *Meters) RecordFlowActive(ctx context.Context, delta int64) {
+	if m == nil {
+		return
+	}
 	m.FlowsActive.Add(ctx, delta)
 }
 
 // RecordFlowStateTransition records a flow state transition.
 func (m *Meters) RecordFlowStateTransition(ctx context.Context, fromState, toState string) {
+	if m == nil {
+		return
+	}
 	m.FlowStateTransitions.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("from_state", fromState),
 		attribute.String("to_state", toState),
@@ -386,35 +413,58 @@ func (m *Meters) RecordFlowStateTransition(ctx context.Context, fromState, toSta
 
 // RecordFlowCreate records a flow creation.
 func (m *Meters) RecordFlowCreate(ctx context.Context) {
+	if m == nil {
+		return
+	}
 	m.FlowCreateTotal.Add(ctx, 1)
 }
 
 // RecordCheckpointGet records checkpoint get latency.
 func (m *Meters) RecordCheckpointGet(ctx context.Context, backend string, latencyMs float64) {
+	if m == nil {
+		return
+	}
 	m.CheckpointGetLatency.Record(ctx, latencyMs, metric.WithAttributes(attribute.String("backend", backend)))
 }
 
 // RecordCheckpointPut records checkpoint put latency.
 func (m *Meters) RecordCheckpointPut(ctx context.Context, backend string, latencyMs float64) {
+	if m == nil {
+		return
+	}
 	m.CheckpointPutLatency.Record(ctx, latencyMs, metric.WithAttributes(attribute.String("backend", backend)))
 }
 
 // RecordSourceLag records replication lag for a slot.
 func (m *Meters) RecordSourceLag(ctx context.Context, slot string, lagBytes int64) {
-	m.SourceReplicationLag.Record(ctx, lagBytes, metric.WithAttributes(attribute.String("slot", slot)))
+	if m == nil {
+		return
+	}
+	m.SourceReplicationLag.Record(ctx, lagBytes, metric.WithAttributes(
+		attribute.String("slot", slot),
+	))
 }
 
 // RecordSourceReadLatency records source read latency.
 func (m *Meters) RecordSourceReadLatency(ctx context.Context, latencyMs float64) {
+	if m == nil {
+		return
+	}
 	m.SourceReadLatency.Record(ctx, latencyMs)
 }
 
 // RecordDestinationWriteCount records a destination write.
 func (m *Meters) RecordDestinationWriteCount(ctx context.Context, destType string) {
+	if m == nil {
+		return
+	}
 	m.DestinationWriteTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("type", destType)))
 }
 
 // RecordDestinationDDL records a DDL application.
 func (m *Meters) RecordDestinationDDL(ctx context.Context, destType string) {
+	if m == nil {
+		return
+	}
 	m.DestinationDDLApplied.Add(ctx, 1, metric.WithAttributes(attribute.String("type", destType)))
 }

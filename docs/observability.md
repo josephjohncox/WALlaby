@@ -62,7 +62,7 @@ WALlaby supports OpenTelemetry metrics export via OTLP gRPC.
 
 | Metric | Type | Labels | Status |
 |--------|------|--------|--------|
-| `wallaby.source.replication.lag` | Gauge | `slot` | Planned |
+| `wallaby.source.replication.lag` | Gauge | `slot` | Implemented |
 | `wallaby.source.read.latency` | Histogram | - | Implemented |
 
 ### Destination Connectors
