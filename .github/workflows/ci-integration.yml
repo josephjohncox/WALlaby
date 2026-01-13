@@ -1,0 +1,71 @@
+name: CI Integration
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      GOBIN: ${{ github.workspace }}/.cache/bin
+      GOMODCACHE: ${{ github.workspace }}/.cache/gomod
+      GOCACHE: ${{ github.workspace }}/.cache/gocache
+      GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.cache/golangci-lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Restore Go + tools cache
+        id: cache-go-tools
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .cache/bin
+            .cache/gomod
+            .cache/golangci-lint
+          key: ${{ runner.os }}-go-tools-${{ hashFiles('go.sum') }}
+
+      - name: Restore Go build cache
+        id: cache-go-build
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/gocache
+          key: ${{ runner.os }}-go-build-${{ hashFiles('go.sum') }}
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          node_image: kindest/node:v1.35.0
+          cluster_name: wallaby-test
+
+      - name: Integration tests (Postgres, ClickHouse, DBOS, K8s)
+        run: |
+          WALLABY_TEST_K8S_KUBECONFIG="$KUBECONFIG" WALLABY_TEST_K8S_NAMESPACE=default ./tests/integration.sh
+
+      - name: Save Go + tools cache
+        if: always() && steps.cache-go-tools.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .cache/bin
+            .cache/gomod
+            .cache/golangci-lint
+          key: ${{ steps.cache-go-tools.outputs.cache-primary-key }}
+
+      - name: Save Go build cache
+        if: always() && steps.cache-go-build.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/gocache
+          key: ${{ steps.cache-go-build.outputs.cache-primary-key }}

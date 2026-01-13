@@ -26,6 +26,10 @@ MINIO_BUCKET="${TEST_MINIO_BUCKET:-wallaby-test}"
 kind_created=0
 kind_kubeconfig=""
 
+if [[ -n "${WALLABY_TEST_K8S_KUBECONFIG:-}" ]]; then
+  KIND_ENABLED=0
+fi
+
 cleanup_kind() {
   if [[ -n "${kind_kubeconfig}" ]]; then
     rm -f "${kind_kubeconfig}"
