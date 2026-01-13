@@ -871,4 +871,3 @@ func (r *Runner) emitTrace(ctx context.Context, kind, lsn, destination string, s
 	}
 	r.TraceSink.Emit(ctx, event)
 }
-

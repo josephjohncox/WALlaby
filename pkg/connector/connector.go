@@ -139,11 +139,6 @@ type SlotDropper interface {
 	DropSlot(ctx context.Context) error
 }
 
-// ReplicationLagProvider is implemented by sources that can report replication lag.
-type ReplicationLagProvider interface {
-	ReplicationLag(ctx context.Context) (slot string, lagBytes int64, err error)
-}
-
 // Destination writes to a downstream system.
 type Destination interface {
 	Open(ctx context.Context, spec Spec) error
