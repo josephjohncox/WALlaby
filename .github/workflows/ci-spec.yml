@@ -26,6 +26,11 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      - name: Setup Buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: "1.63.0"
+
       - name: Setup Java
         uses: actions/setup-java@v5
         with:
@@ -61,6 +66,9 @@ jobs:
 
       - name: Spec manifest
         run: make spec-verify
+
+      - name: Generate protobufs
+        run: make proto
 
       - name: Spec analyzer
         run: make spec-lint
