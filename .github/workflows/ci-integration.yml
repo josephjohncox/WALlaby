@@ -26,6 +26,11 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      - name: Setup Buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: "1.63.0"
+
       - name: Restore Go + tools cache
         id: cache-go-tools
         uses: actions/cache/restore@v4
@@ -48,6 +53,9 @@ jobs:
         with:
           node_image: kindest/node:v1.35.0
           cluster_name: wallaby-test
+
+      - name: Generate protobufs
+        run: make proto
 
       - name: Integration tests (Postgres, ClickHouse, DBOS, K8s)
         run: |
