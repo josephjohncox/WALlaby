@@ -99,23 +99,6 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		creds := credentials.NewStaticCredentialsProvider(d.accessKey, d.secretKey, d.sessionToken)
 		loadOpts = append(loadOpts, config.WithCredentialsProvider(creds))
 	}
-	if d.endpoint != "" {
-		//nolint:staticcheck // TODO: migrate to service-specific endpoint resolver.
-		resolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, _ ...interface{}) (aws.Endpoint, error) {
-			if service == s3.ServiceID {
-				//nolint:staticcheck // TODO: migrate to service-specific endpoint resolver.
-				return aws.Endpoint{
-					URL:               d.endpoint,
-					SigningRegion:     region,
-					HostnameImmutable: true,
-				}, nil
-			}
-			//nolint:staticcheck // TODO: migrate to service-specific endpoint resolver.
-			return aws.Endpoint{}, &aws.EndpointNotFoundError{}
-		})
-		//nolint:staticcheck // TODO: migrate to service-specific endpoint resolver.
-		loadOpts = append(loadOpts, config.WithEndpointResolverWithOptions(resolver))
-	}
 
 	awsCfg, err := config.LoadDefaultConfig(ctx, loadOpts...)
 	if err != nil {
@@ -123,6 +106,9 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	}
 
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		if d.endpoint != "" {
+			o.BaseEndpoint = aws.String(d.endpoint)
+		}
 		if d.forcePathStyle {
 			o.UsePathStyle = true
 		}

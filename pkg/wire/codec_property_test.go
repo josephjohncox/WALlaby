@@ -99,9 +99,9 @@ func TestArrowCodecRoundTripRapid(t *testing.T) {
 		}
 		defer reader.Release()
 
-		var records []arrow.Record
+		var records []arrow.RecordBatch
 		for reader.Next() {
-			rec := reader.Record()
+			rec := reader.RecordBatch()
 			rec.Retain()
 			records = append(records, rec)
 		}
@@ -242,7 +242,7 @@ func assertAvroRow(t *rapid.T, row map[string]any, schema connector.Schema, reco
 	}
 }
 
-func assertArrowRow(t *rapid.T, rec arrow.Record, fieldIndex map[string]int, schema connector.Schema, record connector.Record, row int) {
+func assertArrowRow(t *rapid.T, rec arrow.RecordBatch, fieldIndex map[string]int, schema connector.Schema, record connector.Record, row int) {
 	get := func(name string) any {
 		idx := fieldIndex[name]
 		arr := rec.Column(idx)

@@ -13,8 +13,7 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-//nolint:staticcheck // TODO: migrate to RecordBatch once arrow-go API is updated here.
-func buildArrowRecord(batch connector.Batch) (arrow.Record, error) {
+func buildArrowRecord(batch connector.Batch) (arrow.RecordBatch, error) {
 	if len(batch.Records) == 0 {
 		return nil, nil //nolint:nilnil // empty batches yield no record
 	}
@@ -57,8 +56,7 @@ func buildArrowRecord(batch connector.Batch) (arrow.Record, error) {
 		}
 	}
 
-	//nolint:staticcheck // TODO: migrate to RecordBatch once arrow-go API is updated here.
-	rec := builder.NewRecord()
+	rec := builder.NewRecordBatch()
 	return rec, nil
 }
 

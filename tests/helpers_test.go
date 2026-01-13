@@ -75,10 +75,6 @@ func snowflakeTestDSN(t testing.TB) (string, string, bool) {
 			DisableOCSPChecks: true,
 			Params:            params,
 		}
-		cfg.LoginTimeout = 5 * time.Second
-		cfg.RequestTimeout = 5 * time.Second
-		cfg.ClientTimeout = 5 * time.Second
-		cfg.JWTClientTimeout = 5 * time.Second
 		cfg.MaxRetryCount = 1
 
 		dsn, err := gosnowflake.DSN(cfg)

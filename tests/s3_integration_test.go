@@ -174,17 +174,12 @@ func newS3Client(ctx context.Context, endpoint, region, accessKey, secretKey str
 		ctx,
 		config.WithRegion(region),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
-		config.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(func(service, region string, _ ...interface{}) (aws.Endpoint, error) {
-			if service == s3.ServiceID {
-				return aws.Endpoint{URL: endpoint, SigningRegion: region, HostnameImmutable: true}, nil
-			}
-			return aws.Endpoint{}, &aws.EndpointNotFoundError{}
-		})),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(endpoint)
 		o.UsePathStyle = true
 	})
 	return client, nil

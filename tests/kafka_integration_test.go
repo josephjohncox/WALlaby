@@ -335,7 +335,7 @@ func assertArrowPayload(t *testing.T, payload []byte) {
 		t.Fatalf("no arrow records")
 	}
 
-	rec := reader.Record()
+	rec := reader.RecordBatch()
 	if rec.NumRows() != 1 {
 		t.Fatalf("expected 1 row, got %d", rec.NumRows())
 	}
@@ -409,7 +409,7 @@ func assertProtoPayload(t *testing.T, payload []byte) {
 	}
 }
 
-func fieldIndex(rec arrow.Record, name string) int {
+func fieldIndex(rec arrow.RecordBatch, name string) int {
 	for idx, field := range rec.Schema().Fields() {
 		if field.Name == name {
 			return idx

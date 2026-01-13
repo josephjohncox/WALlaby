@@ -119,10 +119,11 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, d.timeout)
-	defer cancel()
-	//nolint:staticcheck // TODO: migrate to grpc.NewClient when we can preserve dial timeouts.
-	conn, err := grpc.DialContext(ctx, d.endpoint, grpc.WithTransportCredentials(creds))
+	conn, err := grpc.NewClient(
+		d.endpoint,
+		grpc.WithTransportCredentials(creds),
+		grpc.WithConnectParams(grpc.ConnectParams{MinConnectTimeout: d.timeout}),
+	)
 	if err != nil {
 		return fmt.Errorf("grpc dial: %w", err)
 	}
