@@ -178,9 +178,9 @@ tla-witness:
 
 tla-coverage:
 	@mkdir -p "$(TLC_COVERAGE_DIR)"
-	PATH="$(GOBIN):$$PATH" JAVA_TOOL_OPTIONS="$(TLC_JAVA_OPTS)" $(TLC) -coverage 1 -config "specs/CDCFlow.cfg" "specs/CDCFlow.tla" > "$(TLC_COVERAGE_DIR)/CDCFlow.txt"
-	PATH="$(GOBIN):$$PATH" JAVA_TOOL_OPTIONS="$(TLC_JAVA_OPTS)" $(TLC) -coverage 1 -config "specs/FlowStateMachine.cfg" "specs/FlowStateMachine.tla" > "$(TLC_COVERAGE_DIR)/FlowStateMachine.txt"
-	PATH="$(GOBIN):$$PATH" JAVA_TOOL_OPTIONS="$(TLC_JAVA_OPTS)" $(TLC) -coverage 1 -config "specs/CDCFlowFanout.cfg" "specs/CDCFlowFanout.tla" > "$(TLC_COVERAGE_DIR)/CDCFlowFanout.txt"
+	PATH="$(GOBIN):$$PATH" JAVA_TOOL_OPTIONS="$(TLC_JAVA_OPTS)" $(TLC) -coverage 1 -config "specs/CDCFlow.cfg" "specs/CDCFlow.tla" > "$(TLC_COVERAGE_DIR)/CDCFlow.txt" 2>&1
+	PATH="$(GOBIN):$$PATH" JAVA_TOOL_OPTIONS="$(TLC_JAVA_OPTS)" $(TLC) -coverage 1 -config "specs/FlowStateMachine.cfg" "specs/FlowStateMachine.tla" > "$(TLC_COVERAGE_DIR)/FlowStateMachine.txt" 2>&1
+	PATH="$(GOBIN):$$PATH" JAVA_TOOL_OPTIONS="$(TLC_JAVA_OPTS)" $(TLC) -coverage 1 -config "specs/CDCFlowFanout.cfg" "specs/CDCFlowFanout.tla" > "$(TLC_COVERAGE_DIR)/CDCFlowFanout.txt" 2>&1
 
 tla-coverage-check:
 	$(GOENV) $(GO) run ./cmd/wallaby-tla-coverage -dir "$(TLC_COVERAGE_DIR)" -min "$(TLA_COVERAGE_MIN)" -ignore "$(TLA_COVERAGE_IGNORE)" -json "$(TLC_COVERAGE_DIR)/report.json"
