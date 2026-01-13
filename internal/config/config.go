@@ -107,11 +107,6 @@ type CheckpointConfig struct {
 	Path    string
 }
 
-type ProfilingConfig struct {
-	Enabled bool
-	Listen  string
-}
-
 // Load loads config from environment for now. File parsing will be added later.
 func Load(_ string) (*Config, error) {
 	cfg := &Config{
@@ -188,10 +183,6 @@ func Load(_ string) (*Config, error) {
 			Backend: getenv("WALLABY_CHECKPOINT_BACKEND", ""),
 			DSN:     getenv("WALLABY_CHECKPOINT_DSN", ""),
 			Path:    getenv("WALLABY_CHECKPOINT_PATH", ""),
-		},
-		Profiling: ProfilingConfig{
-			Enabled: getenvBool("WALLABY_PPROF_ENABLED", false),
-			Listen:  getenv("WALLABY_PPROF_LISTEN", ":6060"),
 		},
 	}
 

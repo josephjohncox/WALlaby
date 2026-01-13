@@ -7,7 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
-	_ "net/http/pprof"
+	_ "net/http/pprof" //nolint:gosec // pprof is gated by config.
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,7 +43,10 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}()
 
 	if cfg.Profiling.Enabled {
-		pprofServer := &http.Server{Addr: cfg.Profiling.Listen}
+		pprofServer := &http.Server{
+			Addr:              cfg.Profiling.Listen,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
 		go func() {
 			log.Printf("pprof server listening on %s", cfg.Profiling.Listen)
 			if err := pprofServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
