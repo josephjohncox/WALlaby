@@ -7,7 +7,7 @@ if ! command -v kind >/dev/null 2>&1; then
 fi
 
 KIND_CLUSTER="${KIND_CLUSTER:-wallaby-test}"
-KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-kindest/node:v1.35.0@sha256:54adb0a219b3314071e1a7ad5cf76f6fef839d0d8c6f1cfc83503d5098328fd2}"
+KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-kindest/node:v1.35.0}"
 KIND_KEEP="${KIND_KEEP:-0}"
 
 created=0
