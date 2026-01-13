@@ -46,6 +46,11 @@ spec:
             - name: grpc
               containerPort: {{ .Values.service.port }}
               protocol: TCP
+{{- if .Values.observability.profiling.enabled }}
+            - name: pprof
+              containerPort: {{ .Values.observability.profiling.port }}
+              protocol: TCP
+{{- end }}
 {{- $envFrom := list }}
 {{- if .Values.config.enabled }}
 {{- $envFrom = append $envFrom (dict "configMapRef" (dict "name" (include "wallaby.fullname" .))) }}

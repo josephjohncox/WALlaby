@@ -85,6 +85,9 @@ observability:
       insecure: true
       protocol: "grpc"
       # serviceName: ""  # optional, defaults to release fullname
+  profiling:
+    enabled: false
+    port: 6060
 
 workers:
   enabled: false
