@@ -191,17 +191,16 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			),
 		)
 
-		// Read from source with child span
 		readStart := time.Now()
 		readCtx, readSpan := tracer.Start(batchCtx, "source.read")
 		batch, err := r.Source.Read(readCtx)
 		readSpan.End()
-		r.Meters.RecordSourceReadLatency(ctx, float64(time.Since(readStart).Milliseconds()))
-
-		// Record replication lag if source supports it
-		if lagProvider, ok := r.Source.(connector.ReplicationLagProvider); ok {
-			if slot, lagBytes, lagErr := lagProvider.ReplicationLag(ctx); lagErr == nil {
-				r.Meters.RecordSourceLag(ctx, slot, lagBytes)
+		if r.Meters != nil {
+			r.Meters.RecordSourceReadLatency(ctx, float64(time.Since(readStart).Milliseconds()))
+			if lagProvider, ok := r.Source.(connector.ReplicationLagProvider); ok {
+				if slot, lagBytes, lagErr := lagProvider.ReplicationLag(ctx); lagErr == nil {
+					r.Meters.RecordSourceLag(ctx, slot, lagBytes)
+				}
 			}
 		}
 		if err != nil {
@@ -382,11 +381,10 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		}
 
 		batchLatencyMs := float64(time.Since(batchStart).Milliseconds())
-		r.Meters.RecordBatch(ctx, r.FlowID, int64(len(batch.Records)), float64(time.Since(batchStart).Milliseconds()))
+		r.Meters.RecordBatch(ctx, r.FlowID, int64(len(batch.Records)), batchLatencyMs)
 		span.SetAttributes(
 			attribute.Float64("batch.latency_ms", batchLatencyMs),
 		)
-
 		span.End()
 	}
 }

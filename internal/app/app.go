@@ -32,7 +32,6 @@ import (
 
 // Run wires up core services. It will grow as implementations land.
 func Run(ctx context.Context, cfg *config.Config) error {
-	// Initialize telemetry provider
 	telemetryProvider, err := telemetry.NewProvider(ctx, cfg.Telemetry)
 	if err != nil {
 		return err
@@ -43,7 +42,6 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		_ = telemetryProvider.Shutdown(shutdownCtx)
 	}()
 
-	// Start pprof server if profiling is enabled
 	if cfg.Profiling.Enabled {
 		pprofServer := &http.Server{Addr: cfg.Profiling.Listen}
 		go func() {

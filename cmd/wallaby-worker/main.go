@@ -6,6 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"strings"
@@ -73,16 +75,30 @@ func run() error {
 		return errors.New("WALLABY_POSTGRES_DSN is required to run a flow worker")
 	}
 
-	// Initialize telemetry provider
 	telemetryProvider, err := telemetry.NewProvider(ctx, cfg.Telemetry)
 	if err != nil {
-		log.Fatalf("init telemetry: %v", err)
+		return fmt.Errorf("init telemetry: %w", err)
 	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = telemetryProvider.Shutdown(shutdownCtx)
 	}()
+
+	if cfg.Profiling.Enabled {
+		pprofServer := &http.Server{Addr: cfg.Profiling.Listen}
+		go func() {
+			log.Printf("pprof server listening on %s", cfg.Profiling.Listen)
+			if err := pprofServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("pprof server error: %v", err)
+			}
+		}()
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = pprofServer.Shutdown(shutdownCtx)
+		}()
+	}
 
 	tracer := telemetry.Tracer(cfg.Telemetry.ServiceName)
 

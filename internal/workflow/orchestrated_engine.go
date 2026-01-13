@@ -37,13 +37,14 @@ func (o *OrchestratedEngine) Update(ctx context.Context, f flow.Flow) (flow.Flow
 }
 
 func (o *OrchestratedEngine) Start(ctx context.Context, flowID string) (flow.Flow, error) {
+	fromState := o.getState(ctx, flowID)
 	updated, err := o.base.Start(ctx, flowID)
 	if err != nil {
 		return flow.Flow{}, err
 	}
+	o.recordTransition(ctx, fromState, string(updated.State))
 	if o.meters != nil {
 		o.meters.RecordFlowActive(ctx, 1)
-		o.meters.RecordFlowStateTransition(ctx, "created", "running")
 	}
 	if o.dispatcher == nil {
 		return updated, nil
@@ -59,22 +60,26 @@ func (o *OrchestratedEngine) Start(ctx context.Context, flowID string) (flow.Flo
 }
 
 func (o *OrchestratedEngine) Stop(ctx context.Context, flowID string) (flow.Flow, error) {
+	fromState := o.getState(ctx, flowID)
 	stopped, err := o.base.Stop(ctx, flowID)
-	if err == nil && o.meters != nil {
-		o.meters.RecordFlowActive(ctx, -1)
-		o.meters.RecordFlowStateTransition(ctx, "running", "stopped")
+	if err == nil {
+		o.recordTransition(ctx, fromState, string(stopped.State))
+		if o.meters != nil {
+			o.meters.RecordFlowActive(ctx, -1)
+		}
 	}
 	return stopped, err
 }
 
 func (o *OrchestratedEngine) Resume(ctx context.Context, flowID string) (flow.Flow, error) {
+	fromState := o.getState(ctx, flowID)
 	updated, err := o.base.Resume(ctx, flowID)
 	if err != nil {
 		return flow.Flow{}, err
 	}
+	o.recordTransition(ctx, fromState, string(updated.State))
 	if o.meters != nil {
 		o.meters.RecordFlowActive(ctx, 1)
-		o.meters.RecordFlowStateTransition(ctx, "stopped", "running")
 	}
 	if o.dispatcher == nil {
 		return updated, nil
@@ -93,9 +98,10 @@ func (o *OrchestratedEngine) Delete(ctx context.Context, flowID string) error {
 	if o.base == nil {
 		return errors.New("workflow engine is required")
 	}
+	fromState := o.getState(ctx, flowID)
 	err := o.base.Delete(ctx, flowID)
-	if err == nil && o.meters != nil {
-		o.meters.RecordFlowStateTransition(ctx, "stopped", "deleted")
+	if err == nil {
+		o.recordTransition(ctx, fromState, "deleted")
 	}
 	return err
 }
@@ -106,4 +112,25 @@ func (o *OrchestratedEngine) Get(ctx context.Context, flowID string) (flow.Flow,
 
 func (o *OrchestratedEngine) List(ctx context.Context) ([]flow.Flow, error) {
 	return o.base.List(ctx)
+}
+
+func (o *OrchestratedEngine) recordTransition(ctx context.Context, fromState, toState string) {
+	if o.meters == nil || toState == "" {
+		return
+	}
+	if fromState == "" {
+		fromState = "unknown"
+	}
+	o.meters.RecordFlowStateTransition(ctx, fromState, toState)
+}
+
+func (o *OrchestratedEngine) getState(ctx context.Context, flowID string) string {
+	if o.meters == nil {
+		return ""
+	}
+	current, err := o.base.Get(ctx, flowID)
+	if err != nil {
+		return ""
+	}
+	return string(current.State)
 }

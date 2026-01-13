@@ -70,9 +70,13 @@ spec:
               envFrom:
 {{ toYaml $envFrom | indent 16 }}
 {{- end }}
-{{- if $worker.env }}
+{{- $otelEnv := include "wallaby.otelEnv" $root }}
+{{- if or $worker.env $otelEnv }}
               env:
-{{ toYaml $worker.env | indent 16 }}
+{{- with $worker.env }}
+{{ toYaml . | indent 16 }}
+{{- end }}
+{{ $otelEnv | indent 16 }}
 {{- end }}
 {{- with $worker.resources }}
               resources:
@@ -147,9 +151,13 @@ spec:
           envFrom:
 {{ toYaml $envFrom | indent 12 }}
 {{- end }}
-{{- if $worker.env }}
+{{- $otelEnv := include "wallaby.otelEnv" $root }}
+{{- if or $worker.env $otelEnv }}
           env:
-{{ toYaml $worker.env | indent 12 }}
+{{- with $worker.env }}
+{{ toYaml . | indent 12 }}
+{{- end }}
+{{ $otelEnv | indent 12 }}
 {{- end }}
 {{- with $worker.resources }}
           resources:
@@ -229,9 +237,13 @@ spec:
           envFrom:
 {{ toYaml $envFrom | indent 12 }}
 {{- end }}
-{{- if $worker.env }}
+{{- $otelEnv := include "wallaby.otelEnv" $root }}
+{{- if or $worker.env $otelEnv }}
           env:
-{{ toYaml $worker.env | indent 12 }}
+{{- with $worker.env }}
+{{ toYaml . | indent 12 }}
+{{- end }}
+{{ $otelEnv | indent 12 }}
 {{- end }}
 {{- with $worker.resources }}
           resources:
