@@ -454,7 +454,7 @@ func TestCLIIntegrationFlowStartStopResume(t *testing.T) {
 	}
 	defer listener.Close()
 
-	server := apigrpc.New(engine, noopDispatcher{}, nil, nil, nil, false)
+	server := apigrpc.New(engine, noopDispatcher{}, nil, nil, nil, false, nil)
 	go func() {
 		_ = server.Serve(listener)
 	}()
@@ -569,7 +569,7 @@ func TestCLIIntegrationFlowCreateStartFlag(t *testing.T) {
 	}
 	defer listener.Close()
 
-	server := apigrpc.New(engine, noopDispatcher{}, nil, nil, nil, false)
+	server := apigrpc.New(engine, noopDispatcher{}, nil, nil, nil, false, nil)
 	go func() {
 		_ = server.Serve(listener)
 	}()

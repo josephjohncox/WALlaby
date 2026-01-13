@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,6 +42,22 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		defer cancel()
 		_ = telemetryProvider.Shutdown(shutdownCtx)
 	}()
+
+	// Start pprof server if profiling is enabled
+	if cfg.Profiling.Enabled {
+		pprofServer := &http.Server{Addr: cfg.Profiling.Listen}
+		go func() {
+			log.Printf("pprof server listening on %s", cfg.Profiling.Listen)
+			if err := pprofServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("pprof server error: %v", err)
+			}
+		}()
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = pprofServer.Shutdown(shutdownCtx)
+		}()
+	}
 
 	tracer := telemetry.Tracer(cfg.Telemetry.ServiceName)
 	var engine workflow.Engine = workflow.NewNoopEngine()

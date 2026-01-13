@@ -50,4 +50,12 @@
   value: "otlp"
 {{- end }}
 {{- end }}
+{{- with .Values.observability.profiling }}
+{{- if .enabled }}
+- name: WALLABY_PPROF_ENABLED
+  value: "true"
+- name: WALLABY_PPROF_LISTEN
+  value: {{ printf ":%d" (int .port) | quote }}
+{{- end }}
+{{- end }}
 {{- end -}}
