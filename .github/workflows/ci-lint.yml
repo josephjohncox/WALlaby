@@ -97,6 +97,8 @@ jobs:
 
       - name: Proto breaking
         run: make proto-breaking
+        env:
+          BUF_BREAKING_REF: ${{ github.event.pull_request.base.sha }}
 
       - name: Unit tests
         run: make test-rapid RAPID_CHECKS=100
