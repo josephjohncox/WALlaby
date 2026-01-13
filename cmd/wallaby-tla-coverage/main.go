@@ -95,6 +95,7 @@ func main() {
 
 var (
 	actionLine     = regexp.MustCompile(`^\s*([A-Za-z0-9_]+)\s*:\s*([0-9]+)\s*$`)
+	actionColon    = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_]+)\s*:\s*([0-9]+)\s*$`)
 	neverEnabled   = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_]+)\s+is\s+never\s+enabled`)
 	neverExecuted  = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_]+)\s+is\s+never\s+executed`)
 	actionExecuted = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_]+)\s+was\s+executed\s+([0-9]+)\s+times`)
@@ -115,6 +116,14 @@ func parseCoverage(path string) (map[string]int, error) {
 			continue
 		}
 		if match := actionLine.FindStringSubmatch(line); len(match) == 3 {
+			count, err := strconv.Atoi(match[2])
+			if err != nil {
+				return nil, fmt.Errorf("parse count %q: %w", match[2], err)
+			}
+			actions[match[1]] = count
+			continue
+		}
+		if match := actionColon.FindStringSubmatch(line); len(match) == 3 {
 			count, err := strconv.Atoi(match[2])
 			if err != nil {
 				return nil, fmt.Errorf("parse count %q: %w", match[2], err)
