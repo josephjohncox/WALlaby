@@ -94,12 +94,14 @@ func main() {
 }
 
 var (
-	actionLine     = regexp.MustCompile(`^\s*([A-Za-z0-9_]+)\s*:\s*([0-9]+)\s*$`)
-	actionColon    = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_]+)\s*:\s*([0-9]+)\s*$`)
-	neverEnabled   = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_]+)\s+is\s+never\s+enabled`)
-	neverExecuted  = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_]+)\s+is\s+never\s+executed`)
-	actionExecuted = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_]+)\s+was\s+executed\s+([0-9]+)\s+times`)
-	actionCovered  = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_]+)\s+covered\s+([0-9]+)\s+times`)
+	actionLine     = regexp.MustCompile(`^\s*([A-Za-z0-9_'-]+)\s*:\s*([0-9]+)\s*$`)
+	actionColon    = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_'-]+)\s*:\s*([0-9]+)\s*$`)
+	actionPlain    = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_'-]+)\s+([0-9]+)\s*$`)
+	actionBare     = regexp.MustCompile(`^\s*([A-Za-z0-9_'-]+)\s+([0-9]+)\s*$`)
+	neverEnabled   = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_'-]+)\s+is\s+never\s+enabled`)
+	neverExecuted  = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_'-]+)\s+is\s+never\s+executed`)
+	actionExecuted = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_'-]+)\s+was\s+executed\s+([0-9]+)\s+times`)
+	actionCovered  = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_'-]+)\s+covered\s+([0-9]+)\s+times`)
 	coverageHeader = regexp.MustCompile(`^\s*Coverage\s+report`)
 )
 
@@ -124,6 +126,22 @@ func parseCoverage(path string) (map[string]int, error) {
 			continue
 		}
 		if match := actionColon.FindStringSubmatch(line); len(match) == 3 {
+			count, err := strconv.Atoi(match[2])
+			if err != nil {
+				return nil, fmt.Errorf("parse count %q: %w", match[2], err)
+			}
+			actions[match[1]] = count
+			continue
+		}
+		if match := actionPlain.FindStringSubmatch(line); len(match) == 3 {
+			count, err := strconv.Atoi(match[2])
+			if err != nil {
+				return nil, fmt.Errorf("parse count %q: %w", match[2], err)
+			}
+			actions[match[1]] = count
+			continue
+		}
+		if match := actionBare.FindStringSubmatch(line); len(match) == 3 {
 			count, err := strconv.Atoi(match[2])
 			if err != nil {
 				return nil, fmt.Errorf("parse count %q: %w", match[2], err)
@@ -157,7 +175,20 @@ func parseCoverage(path string) (map[string]int, error) {
 		}
 	}
 	if len(actions) == 0 {
-		return nil, fmt.Errorf("no action coverage lines found")
+		snippet := make([]string, 0, 5)
+		for _, line := range lines {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			snippet = append(snippet, line)
+			if len(snippet) == cap(snippet) {
+				break
+			}
+		}
+		if len(snippet) > 0 {
+			return nil, fmt.Errorf("no action coverage lines found (first lines: %s)", strings.Join(snippet, " | "))
+		}
+		return nil, fmt.Errorf("no action coverage lines found (file empty)")
 	}
 	return actions, nil
 }
