@@ -129,6 +129,11 @@ type Source interface {
 	Capabilities() Capabilities
 }
 
+// ReplicationLagProvider exposes replication lag metrics for sources that can report it.
+type ReplicationLagProvider interface {
+	ReplicationLag(ctx context.Context) (slot string, lagBytes int64, err error)
+}
+
 // SlotDropper is implemented by sources that can drop replication slots.
 type SlotDropper interface {
 	DropSlot(ctx context.Context) error

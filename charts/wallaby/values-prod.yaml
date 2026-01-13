@@ -33,6 +33,25 @@ envFrom:
   - secretRef:
       name: "wallaby-secrets"
 
+# OpenTelemetry configuration
+observability:
+  metrics:
+    enabled: false
+    otel:
+      endpoint: ""
+      insecure: true
+      protocol: "grpc"
+      interval: "30s"
+  traces:
+    enabled: false
+    otel:
+      endpoint: ""
+      insecure: true
+      protocol: "grpc"
+  profiling:
+    enabled: false
+    port: 6060
+
 # Additional env overrides
 # env:
 #   - name: WALLABY_DBOS_ENABLED

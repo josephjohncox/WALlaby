@@ -1,121 +1,90 @@
 # Observability
 
-WALlaby supports OpenTelemetry metrics export via OTLP gRPC.
+WALlaby exposes OpenTelemetry metrics and tracing plus optional `pprof` profiling.
+
+## OpenTelemetry Configuration
+
+Set standard OTLP environment variables:
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT` (e.g. `http://otel-collector:4317`)
+- `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc` or `http/protobuf`)
+- `OTEL_EXPORTER_OTLP_INSECURE` (`true`/`false`)
+- `OTEL_SERVICE_NAME` (defaults to `wallaby`)
+- `OTEL_METRICS_EXPORTER` (`otlp` to enable, `none` to disable)
+- `OTEL_TRACES_EXPORTER` (`otlp` to enable, `none` to disable)
+- `WALLABY_OTEL_METRICS_INTERVAL` (e.g. `30s`)
 
 ## Metrics
 
 ### Stream Runner
 
-| Metric | Type | Labels | Status |
-|--------|------|--------|--------|
-| `wallaby.records.processed` | Counter | `flow_id` | Implemented |
-| `wallaby.batches.processed` | Counter | `flow_id` | Implemented |
-| `wallaby.batch.latency` | Histogram | `flow_id` | Implemented |
-| `wallaby.destination.write.latency` | Histogram | `flow_id` | Implemented |
-| `wallaby.batch.records` | Histogram | `flow_id` | Implemented |
-| `wallaby.errors.total` | Counter | `error_type` | Implemented |
-| `wallaby.checkpoints.commits` | Counter | `flow_id` | Implemented |
+| Metric | Type | Labels |
+|--------|------|--------|
+| `wallaby.records.processed` | Counter | `flow_id` |
+| `wallaby.batches.processed` | Counter | `flow_id` |
+| `wallaby.batch.latency` | Histogram | `flow_id` |
+| `wallaby.destination.write.latency` | Histogram | `flow_id` |
+| `wallaby.batch.records` | Histogram | `flow_id` |
+| `wallaby.errors.total` | Counter | `error_type` |
+| `wallaby.checkpoints.commits` | Counter | `flow_id` |
+| `wallaby.ddl.gated_total` | Counter | `flow.id`, `ddl.status` |
 
-**Error Types:**
-- `source_read` - Error reading from source
-- `source_ack` - Error acknowledging source
-- `destination_write` - Error writing to destination
-- `checkpoint_persist` - Error persisting checkpoint
+Error types include: `source_read`, `source_ack`, `destination_write`, `checkpoint_persist`.
 
-**Histogram Buckets:**
-- Latency (ms): `1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000`
-- Count: `1, 10, 50, 100, 500, 1000, 5000, 10000`
+### gRPC API
 
-### gRPC API Server
-
-| Metric | Type | Labels | Status |
-|--------|------|--------|--------|
-| `wallaby.grpc.requests.total` | Counter | `method`, `status` | Implemented |
-| `wallaby.grpc.request.latency` | Histogram | `method` | Implemented |
-| `wallaby.grpc.errors.total` | Counter | `method`, `code` | Implemented |
+| Metric | Type | Labels |
+|--------|------|--------|
+| `wallaby.grpc.requests.total` | Counter | `method`, `status` |
+| `wallaby.grpc.request.latency` | Histogram | `method` |
+| `wallaby.grpc.errors.total` | Counter | `method`, `code` |
 
 ### Workflow Engine
 
-| Metric | Type | Labels | Status |
-|--------|------|--------|--------|
-| `wallaby.flows.active` | UpDownCounter | - | Implemented |
-| `wallaby.flow.state.transitions` | Counter | `from_state`, `to_state` | Implemented |
-| `wallaby.flow.create.total` | Counter | - | Implemented |
+| Metric | Type | Labels |
+|--------|------|--------|
+| `wallaby.flows.active` | UpDownCounter | - |
+| `wallaby.flow.state.transitions` | Counter | `from_state`, `to_state` |
+| `wallaby.flow.create.total` | Counter | - |
 
 ### Checkpoint Store
 
-| Metric | Type | Labels | Status |
-|--------|------|--------|--------|
-| `wallaby.checkpoint.get.latency` | Histogram | `backend` | Implemented |
-| `wallaby.checkpoint.put.latency` | Histogram | `backend` | Implemented |
+| Metric | Type | Labels |
+|--------|------|--------|
+| `wallaby.checkpoint.get.latency` | Histogram | `backend` |
+| `wallaby.checkpoint.put.latency` | Histogram | `backend` |
 
-### Orchestrators
+### Source & Destination
 
-| Metric | Type | Labels | Status |
-|--------|------|--------|--------|
-| `wallaby.dbos.jobs.scheduled` | Counter | - | Planned |
-| `wallaby.dbos.jobs.completed` | Counter | `status` | Planned |
-| `wallaby.k8s.jobs.launched` | Counter | - | Planned |
-| `wallaby.k8s.jobs.failed` | Counter | `reason` | Planned |
-
-### Source Connectors
-
-| Metric | Type | Labels | Status |
-|--------|------|--------|--------|
-| `wallaby.source.replication.lag` | Gauge | `slot` | Implemented |
-| `wallaby.source.read.latency` | Histogram | - | Implemented |
-
-### Destination Connectors
-
-| Metric | Type | Labels | Status |
-|--------|------|--------|--------|
-| `wallaby.destination.write.total` | Counter | `type` | Implemented |
-| `wallaby.destination.ddl.applied` | Counter | `type` | Implemented |
+| Metric | Type | Labels |
+|--------|------|--------|
+| `wallaby.source.replication.lag` | Gauge | `slot` |
+| `wallaby.source.read.latency` | Histogram | - |
+| `wallaby.destination.write.total` | Counter | `type` |
+| `wallaby.destination.ddl.applied` | Counter | `type` |
 
 ## Tracing
 
-OpenTelemetry tracing is available via spans:
+Key spans emitted:
 
-| Span | Location | Description |
-|------|----------|-------------|
-| `stream.batch` | `pkg/stream/runner.go` | Parent span for each batch processed |
-| `source.read` | `pkg/stream/runner.go` | Span wrapping source Read() call |
-| `source.wait` | `connectors/sources/postgres/source.go` | Time waiting for first change |
-| `source.process` | `connectors/sources/postgres/source.go` | Time processing changes in batch |
-| `destination.write` | `pkg/stream/runner.go` | Span wrapping destination Write() calls |
+- `stream.batch` (root for each batch)
+- `source.read` (source read latency)
+- `source.wait` / `source.process` (Postgres replication wait/process)
+- `destination.write` (destination write latency)
 
-### Trace Hierarchy
+Important span attributes:
 
-```
-stream.batch (root)
-├── source.read
-│   ├── source.wait      ← waiting for data
-│   └── source.process   ← processing changes
-└── destination.write
-```
+- `flow.id`, `source.type`
+- `batch.records`, `batch.schema`, `batch.latency_ms`
+- `destination.write_latency_ms`
 
-### Span Attributes
+DDL gating emits an explicit span event `ddl.gated` and a trace event `ddl_gate` in the trace sink.
 
-**stream.batch:**
-- `flow.id` - Flow identifier
-- `source.type` - Source connector type
-- `batch.records` - Number of records in batch
-- `batch.schema` - Schema name
-- `batch.latency_ms` - Total batch latency
-- `destination.write_latency_ms` - Write latency
+## pprof
 
-**source.read:**
-- `records_count` - Number of records read
-- `wait_ms` - Time waiting for first change
-- `process_ms` - Time processing changes
-- `checkpoint.lsn` - Checkpoint LSN
+Enable the built-in profiler with:
 
-**source.wait:**
-- `timeout` - Whether wait ended due to timeout
+- `WALLABY_PPROF_ENABLED=true`
+- `WALLABY_PPROF_LISTEN=:6060`
 
-**source.process:**
-- `records` - Number of records processed
-
-**destination.write:**
-- `destinations.count` - Number of destinations
-- `latency_ms` - Write latency
+The admin server and workers will expose `/debug/pprof` on the configured address.

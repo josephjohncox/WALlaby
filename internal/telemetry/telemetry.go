@@ -1,4 +1,4 @@
-// Package telemetry provides OpenTelemetry instrumentation for Wallaby.
+// Package telemetry provides OpenTelemetry instrumentation for WALlaby.
 package telemetry
 
 import (
@@ -18,7 +18,6 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -35,39 +34,56 @@ type Provider struct {
 
 // NewProvider creates a new telemetry provider with metrics and tracing export.
 func NewProvider(ctx context.Context, cfg config.TelemetryConfig) (*Provider, error) {
-	if cfg.OTLPEndpoint == "" || cfg.MetricsExporter == "none" {
+	metricsExporter := strings.ToLower(strings.TrimSpace(cfg.MetricsExporter))
+	tracesExporter := strings.ToLower(strings.TrimSpace(cfg.TracesExporter))
+	metricsEnabled := cfg.OTLPEndpoint != "" && metricsExporter != "" && metricsExporter != "none"
+	tracesEnabled := cfg.OTLPEndpoint != "" && tracesExporter != "" && tracesExporter != "none"
+
+	if !metricsEnabled && !tracesEnabled {
 		meters, _ := newMeters(otel.Meter("noop"))
 		return &Provider{meters: meters}, nil
 	}
 
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
-			semconv.ServiceNameKey.String(cfg.ServiceName),
+			attribute.String("service.name", cfg.ServiceName),
 		),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	meterProvider, err := newMeterProvider(ctx, cfg, res)
-	if err != nil {
-		return nil, err
-	}
-	otel.SetMeterProvider(meterProvider)
+	var meterProvider *sdkmetric.MeterProvider
+	var tracerProvider *sdktrace.TracerProvider
+	var meters *Meters
 
-	meters, err := newMeters(meterProvider.Meter(cfg.ServiceName))
-	if err != nil {
-		_ = meterProvider.Shutdown(ctx)
-		return nil, err
+	if metricsEnabled {
+		meterProvider, err = newMeterProvider(ctx, cfg, res)
+		if err != nil {
+			return nil, err
+		}
+		otel.SetMeterProvider(meterProvider)
+
+		meters, err = newMeters(meterProvider.Meter(cfg.ServiceName))
+		if err != nil {
+			_ = meterProvider.Shutdown(ctx)
+			return nil, err
+		}
+	} else {
+		meters, _ = newMeters(otel.Meter("noop"))
 	}
 
-	tracerProvider, err := newTracerProvider(ctx, cfg, res)
-	if err != nil {
-		_ = meterProvider.Shutdown(ctx)
-		return nil, err
-	}
-	if tracerProvider != nil {
-		otel.SetTracerProvider(tracerProvider)
+	if tracesEnabled {
+		tracerProvider, err = newTracerProvider(ctx, cfg, res)
+		if err != nil {
+			if meterProvider != nil {
+				_ = meterProvider.Shutdown(ctx)
+			}
+			return nil, err
+		}
+		if tracerProvider != nil {
+			otel.SetTracerProvider(tracerProvider)
+		}
 	}
 
 	return &Provider{
@@ -128,10 +144,6 @@ func newMeterProvider(ctx context.Context, cfg config.TelemetryConfig, res *reso
 }
 
 func newTracerProvider(ctx context.Context, cfg config.TelemetryConfig, res *resource.Resource) (*sdktrace.TracerProvider, error) {
-	if cfg.OTLPEndpoint == "" {
-		return nil, nil
-	}
-
 	exporter, err := newExporter(ctx, cfg, exporterTrace)
 	if err != nil {
 		return nil, err

@@ -16,12 +16,13 @@ import (
 // CheckpointService implements the gRPC CheckpointService API.
 type CheckpointService struct {
 	wallabypb.UnimplementedCheckpointServiceServer
-	store  connector.CheckpointStore
-	meters *telemetry.Meters
+	store   connector.CheckpointStore
+	meters  *telemetry.Meters
+	backend string
 }
 
 func NewCheckpointService(store connector.CheckpointStore, meters *telemetry.Meters) *CheckpointService {
-	return &CheckpointService{store: store, meters: meters}
+	return &CheckpointService{store: store, meters: meters, backend: checkpointBackend(store)}
 }
 
 func (s *CheckpointService) GetCheckpoint(ctx context.Context, req *wallabypb.GetCheckpointRequest) (*wallabypb.FlowCheckpoint, error) {
@@ -31,7 +32,7 @@ func (s *CheckpointService) GetCheckpoint(ctx context.Context, req *wallabypb.Ge
 	start := time.Now()
 	cp, err := s.store.Get(ctx, req.FlowId)
 	if s.meters != nil {
-		s.meters.RecordCheckpointGet(ctx, "postgres", float64(time.Since(start).Milliseconds()))
+		s.meters.RecordCheckpointGet(ctx, s.backend, float64(time.Since(start).Milliseconds()))
 	}
 	if err != nil {
 		return nil, mapCheckpointError(err)
@@ -49,7 +50,7 @@ func (s *CheckpointService) PutCheckpoint(ctx context.Context, req *wallabypb.Pu
 		return nil, mapCheckpointError(err)
 	}
 	if s.meters != nil {
-		s.meters.RecordCheckpointPut(ctx, "postgres", float64(time.Since(start).Milliseconds()))
+		s.meters.RecordCheckpointPut(ctx, s.backend, float64(time.Since(start).Milliseconds()))
 	}
 	return &wallabypb.FlowCheckpoint{FlowId: req.FlowId, Checkpoint: checkpointToProto(cp)}, nil
 }
@@ -95,5 +96,16 @@ func mapCheckpointError(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
+	}
+}
+
+func checkpointBackend(store connector.CheckpointStore) string {
+	switch store.(type) {
+	case *checkpoint.PostgresStore:
+		return "postgres"
+	case *checkpoint.SQLiteStore:
+		return "sqlite"
+	default:
+		return "unknown"
 	}
 }

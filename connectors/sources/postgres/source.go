@@ -233,7 +233,6 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		}))
 	}
 
-	// Create pool for replication lag queries
 	lagPool, err := newPool(ctx, dsn, spec.Options)
 	if err != nil {
 		return fmt.Errorf("create lag pool: %w", err)
@@ -292,7 +291,6 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 	timer := time.NewTimer(s.batchTimeout)
 	defer timer.Stop()
 
-	// Track spans: wait until first change, then process
 	_, waitSpan := tracer.Start(ctx, "source.wait")
 	var processSpan trace.Span
 
@@ -340,7 +338,6 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 				}
 				return connector.Batch{}, io.EOF
 			}
-			// First change: end wait, start process
 			if processSpan == nil {
 				waitSpan.End()
 				_, processSpan = tracer.Start(ctx, "source.process")

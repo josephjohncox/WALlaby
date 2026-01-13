@@ -37,11 +37,17 @@ type TelemetryConfig struct {
 	OTLPInsecure    bool
 	OTLPProtocol    string // "grpc" or "http/protobuf"
 	MetricsExporter string
+	TracesExporter  string
 	MetricsInterval time.Duration
 }
 
 type TraceConfig struct {
 	Path string
+}
+
+type ProfilingConfig struct {
+	Enabled bool
+	Listen  string
 }
 
 type DBOSConfig struct {
@@ -122,11 +128,16 @@ func Load(_ string) (*Config, error) {
 			OTLPEndpoint:    getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 			OTLPInsecure:    getenvBool("OTEL_EXPORTER_OTLP_INSECURE", true),
 			OTLPProtocol:    getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
-			MetricsExporter: getenv("OTEL_METRICS_EXPORTER", "otlp"),
+			MetricsExporter: getenv("OTEL_METRICS_EXPORTER", "none"),
+			TracesExporter:  getenv("OTEL_TRACES_EXPORTER", "none"),
 			MetricsInterval: getenvDuration("WALLABY_OTEL_METRICS_INTERVAL", 30*time.Second),
 		},
 		Trace: TraceConfig{
 			Path: getenv("WALLABY_TRACE_PATH", ""),
+		},
+		Profiling: ProfilingConfig{
+			Enabled: getenvBool("WALLABY_PPROF_ENABLED", false),
+			Listen:  getenv("WALLABY_PPROF_LISTEN", ":6060"),
 		},
 		DBOS: DBOSConfig{
 			Enabled:       getenvBool("WALLABY_DBOS_ENABLED", false),

@@ -16,15 +16,19 @@ type fakeEngine struct {
 
 func (f *fakeEngine) Create(_ context.Context, fl flow.Flow) (flow.Flow, error) { return fl, nil }
 func (f *fakeEngine) Update(_ context.Context, fl flow.Flow) (flow.Flow, error) { return fl, nil }
-func (f *fakeEngine) Start(_ context.Context, _ string) (flow.Flow, error)     { return f.startFlow, f.startErr }
+func (f *fakeEngine) Start(_ context.Context, _ string) (flow.Flow, error) {
+	return f.startFlow, f.startErr
+}
 func (f *fakeEngine) Stop(_ context.Context, _ string) (flow.Flow, error) {
 	f.stopCalled = true
 	return flow.Flow{}, nil
 }
-func (f *fakeEngine) Resume(_ context.Context, _ string) (flow.Flow, error) { return f.startFlow, f.startErr }
-func (f *fakeEngine) Delete(_ context.Context, _ string) error              { return nil }
-func (f *fakeEngine) Get(_ context.Context, _ string) (flow.Flow, error)    { return f.startFlow, nil }
-func (f *fakeEngine) List(_ context.Context) ([]flow.Flow, error)           { return nil, nil }
+func (f *fakeEngine) Resume(_ context.Context, _ string) (flow.Flow, error) {
+	return f.startFlow, f.startErr
+}
+func (f *fakeEngine) Delete(_ context.Context, _ string) error           { return nil }
+func (f *fakeEngine) Get(_ context.Context, _ string) (flow.Flow, error) { return f.startFlow, nil }
+func (f *fakeEngine) List(_ context.Context) ([]flow.Flow, error)        { return nil, nil }
 
 type fakeDispatcher struct {
 	err      error

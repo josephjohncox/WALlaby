@@ -1,0 +1,58 @@
+# Example values for WALlaby
+
+image:
+  repository: ghcr.io/josephjohncox/wallaby
+  tag: "0.1.0"
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# Service annotations (e.g., for load balancers or service mesh)
+serviceAnnotations: {}
+
+# Environment variables for the container
+env:
+  - name: WALLABY_POSTGRES_DSN
+    value: "postgres://user:pass@postgres:5432/wallaby?sslmode=disable"
+  - name: WALLABY_GRPC_LISTEN
+    value: ":8080"
+  - name: WALLABY_WIRE_FORMAT
+    value: "arrow"
+
+# Optionally mount config via ConfigMap
+config:
+  enabled: false
+  data: {}
+
+# OpenTelemetry configuration
+observability:
+  metrics:
+    enabled: false
+    otel:
+      endpoint: ""
+      insecure: true
+      protocol: "grpc"
+      interval: "30s"
+  traces:
+    enabled: false
+    otel:
+      endpoint: ""
+      insecure: true
+      protocol: "grpc"
+  profiling:
+    enabled: false
+    port: 6060
+
+# Optional worker deployments (one per flow)
+workers:
+  enabled: false
+  items:
+    - name: "example-flow"
+      kind: "deployment"
+      replicas: 1
+      command: ["/usr/local/bin/wallaby-worker"]
+      args: ["--flow-id=example-flow"]
+      env:
+        - name: WALLABY_POSTGRES_DSN
+          value: "postgres://user:pass@postgres:5432/wallaby?sslmode=disable"

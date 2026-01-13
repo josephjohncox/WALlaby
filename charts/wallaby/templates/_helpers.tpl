@@ -24,31 +24,51 @@
 {{- end -}}
 
 {{- define "wallaby.otelEnv" -}}
-{{- with .Values.observability.metrics }}
-{{- if and .enabled .otel.endpoint }}
+{{- $metrics := .Values.observability.metrics -}}
+{{- $traces := .Values.observability.traces -}}
+{{- $endpoint := "" -}}
+{{- $insecure := "" -}}
+{{- $protocol := "" -}}
+{{- if and $metrics.enabled $metrics.otel.endpoint -}}
+{{- $endpoint = $metrics.otel.endpoint -}}
+{{- $insecure = $metrics.otel.insecure -}}
+{{- $protocol = $metrics.otel.protocol -}}
+{{- else if and $traces.enabled $traces.otel.endpoint -}}
+{{- $endpoint = $traces.otel.endpoint -}}
+{{- $insecure = $traces.otel.insecure -}}
+{{- $protocol = $traces.otel.protocol -}}
+{{- end -}}
+{{- if $endpoint }}
 - name: OTEL_EXPORTER_OTLP_ENDPOINT
-  value: {{ .otel.endpoint | quote }}
+  value: {{ $endpoint | quote }}
 - name: OTEL_EXPORTER_OTLP_INSECURE
-  value: {{ .otel.insecure | toString | quote }}
+  value: {{ $insecure | toString | quote }}
 - name: OTEL_EXPORTER_OTLP_PROTOCOL
-  value: {{ .otel.protocol | default "grpc" | quote }}
+  value: {{ $protocol | default "grpc" | quote }}
+{{- end }}
+{{- if and $metrics.enabled $endpoint }}
 - name: OTEL_METRICS_EXPORTER
   value: "otlp"
-{{- if .otel.interval }}
+{{- if $metrics.otel.interval }}
 - name: WALLABY_OTEL_METRICS_INTERVAL
-  value: {{ .otel.interval | quote }}
-{{- end }}
-{{- if .otel.serviceName }}
-- name: OTEL_SERVICE_NAME
-  value: {{ .otel.serviceName | quote }}
+  value: {{ $metrics.otel.interval | quote }}
 {{- end }}
 {{- end }}
-{{- end }}
-{{- with .Values.observability.traces }}
-{{- if and .enabled .otel.endpoint }}
+{{- if and $traces.enabled $endpoint }}
 - name: OTEL_TRACES_EXPORTER
   value: "otlp"
 {{- end }}
+{{- $serviceName := "" -}}
+{{- if $metrics.otel.serviceName }}
+{{- $serviceName = $metrics.otel.serviceName -}}
+{{- else if $traces.otel.serviceName }}
+{{- $serviceName = $traces.otel.serviceName -}}
+{{- else if or $metrics.enabled $traces.enabled }}
+{{- $serviceName = include "wallaby.fullname" . -}}
+{{- end }}
+{{- if $serviceName }}
+- name: OTEL_SERVICE_NAME
+  value: {{ $serviceName | quote }}
 {{- end }}
 {{- with .Values.observability.profiling }}
 {{- if .enabled }}
