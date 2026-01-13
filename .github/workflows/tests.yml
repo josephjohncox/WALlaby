@@ -120,8 +120,16 @@ jobs:
 
       - name: TLA+ coverage
         run: |
+          set -euo pipefail
           make tla-coverage
-          make tla-coverage-check
+          if ! make tla-coverage-check; then
+            echo "==== TLA coverage outputs ===="
+            for f in specs/coverage/*.txt; do
+              echo "---- ${f} ----"
+              cat "${f}" || true
+            done
+            exit 1
+          fi
 
       - name: Trace suite coverage
         run: |

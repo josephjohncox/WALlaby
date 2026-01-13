@@ -98,6 +98,7 @@ var (
 	actionColon    = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_'-]+)\s*:\s*([0-9]+)\s*$`)
 	actionPlain    = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_'-]+)\s+([0-9]+)\s*$`)
 	actionBare     = regexp.MustCompile(`^\s*([A-Za-z0-9_'-]+)\s+([0-9]+)\s*$`)
+	actionHeader   = regexp.MustCompile(`^\s*<([A-Za-z0-9_'-]+)\s+line[^>]*>:\s*([0-9]+)(?::([0-9]+))?\s*$`)
 	neverEnabled   = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_'-]+)\s+is\s+never\s+enabled`)
 	neverExecuted  = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_'-]+)\s+is\s+never\s+executed`)
 	actionExecuted = regexp.MustCompile(`^\s*Action\s+([A-Za-z0-9_'-]+)\s+was\s+executed\s+([0-9]+)\s+times`)
@@ -145,6 +146,18 @@ func parseCoverage(path string) (map[string]int, error) {
 			count, err := strconv.Atoi(match[2])
 			if err != nil {
 				return nil, fmt.Errorf("parse count %q: %w", match[2], err)
+			}
+			actions[match[1]] = count
+			continue
+		}
+		if match := actionHeader.FindStringSubmatch(line); len(match) >= 3 {
+			raw := match[2]
+			if len(match) > 3 && match[3] != "" {
+				raw = match[3]
+			}
+			count, err := strconv.Atoi(raw)
+			if err != nil {
+				return nil, fmt.Errorf("parse count %q: %w", raw, err)
 			}
 			actions[match[1]] = count
 			continue
