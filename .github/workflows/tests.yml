@@ -141,7 +141,7 @@ jobs:
       - name: Create kind cluster
         uses: helm/kind-action@v1
         with:
-          node_image: kindest/node:v1.35.0@sha256:54adb0a219b3314071e1a7ad5cf76f6fef839d0d8c6f1cfc83503d5098328fd2
+          node_image: kindest/node:v1.35.0
 
       - name: Integration tests (Postgres, ClickHouse, DBOS, K8s)
         run: |
