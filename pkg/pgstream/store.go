@@ -19,14 +19,17 @@ const (
 
 // Message represents a stream event stored in Postgres.
 type Message struct {
-	ID         int64
-	Stream     string
-	Namespace  string
-	Table      string
-	LSN        string
-	WireFormat connector.WireFormat
-	Payload    []byte
-	CreatedAt  time.Time
+	ID              int64
+	Stream          string
+	Namespace       string
+	Table           string
+	LSN             string
+	WireFormat      connector.WireFormat
+	Payload         []byte
+	RegistrySubject string
+	RegistryID      string
+	RegistryVersion int
+	CreatedAt       time.Time
 }
 
 // Store persists stream events and delivery state.
@@ -77,14 +80,19 @@ func (s *Store) Enqueue(ctx context.Context, stream string, messages []Message) 
 	batch := &pgx.Batch{}
 	for _, msg := range messages {
 		batch.Queue(
-			`INSERT INTO stream_events (stream, namespace, table_name, lsn, wire_format, payload)
-			 VALUES ($1, $2, $3, $4, $5, $6)`,
+			`INSERT INTO stream_events (
+			  stream, namespace, table_name, lsn, wire_format, payload,
+			  registry_subject, registry_id, registry_version
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 			stream,
 			nullIfEmpty(msg.Namespace),
 			nullIfEmpty(msg.Table),
 			nullIfEmpty(msg.LSN),
 			nullIfEmpty(string(msg.WireFormat)),
 			msg.Payload,
+			nullIfEmpty(msg.RegistrySubject),
+			nullIfEmpty(msg.RegistryID),
+			nullInt(msg.RegistryVersion),
 		)
 	}
 
@@ -164,7 +172,8 @@ upsert AS (
         updated_at = now()
   RETURNING event_id
 )
-SELECT e.id, e.stream, e.namespace, e.table_name, e.lsn, e.wire_format, e.payload, e.created_at
+SELECT e.id, e.stream, e.namespace, e.table_name, e.lsn, e.wire_format, e.payload,
+       e.registry_subject, e.registry_id, e.registry_version, e.created_at
 FROM stream_events e
 JOIN upsert u ON e.id = u.event_id
 ORDER BY e.id`, stream, consumerGroup, maxMessages, visSeconds, consumerID)
@@ -177,11 +186,23 @@ ORDER BY e.id`, stream, consumerGroup, maxMessages, visSeconds, consumerID)
 	for rows.Next() {
 		var msg Message
 		var wireFormat *string
-		if err := rows.Scan(&msg.ID, &msg.Stream, &msg.Namespace, &msg.Table, &msg.LSN, &wireFormat, &msg.Payload, &msg.CreatedAt); err != nil {
+		var regSubject *string
+		var regID *string
+		var regVersion *int64
+		if err := rows.Scan(&msg.ID, &msg.Stream, &msg.Namespace, &msg.Table, &msg.LSN, &wireFormat, &msg.Payload, &regSubject, &regID, &regVersion, &msg.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan stream event: %w", err)
 		}
 		if wireFormat != nil {
 			msg.WireFormat = connector.WireFormat(*wireFormat)
+		}
+		if regSubject != nil {
+			msg.RegistrySubject = *regSubject
+		}
+		if regID != nil {
+			msg.RegistryID = *regID
+		}
+		if regVersion != nil {
+			msg.RegistryVersion = int(*regVersion)
 		}
 		messages = append(messages, msg)
 	}
@@ -273,6 +294,13 @@ func (s *Store) Replay(ctx context.Context, stream, consumerGroup string, opts R
 
 func nullIfEmpty(value string) interface{} {
 	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func nullInt(value int) interface{} {
+	if value == 0 {
 		return nil
 	}
 	return value

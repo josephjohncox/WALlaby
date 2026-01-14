@@ -15,6 +15,7 @@ const (
 	OptRegistryDSN            = "schema_registry_dsn"
 	OptRegistryTimeout        = "schema_registry_timeout"
 	OptRegistryApicurioCompat = "schema_registry_apicurio_compat"
+	OptRegistrySubjectMode    = "schema_registry_subject_mode"
 	OptRegistrySubject        = "schema_registry_subject"
 	OptRegistryProtoTypes     = "schema_registry_proto_types_subject"
 

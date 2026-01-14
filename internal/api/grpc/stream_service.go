@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"math"
 	"time"
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
@@ -82,15 +83,27 @@ func streamMessageToProto(msg pgstream.Message) *wallabypb.StreamMessage {
 		createdAt = timestamppb.New(msg.CreatedAt)
 	}
 
+	registryVersion := int32(0)
+	if msg.RegistryVersion > 0 {
+		if msg.RegistryVersion > math.MaxInt32 {
+			registryVersion = math.MaxInt32
+		} else {
+			registryVersion = int32(msg.RegistryVersion)
+		}
+	}
+
 	return &wallabypb.StreamMessage{
-		Id:         msg.ID,
-		Stream:     msg.Stream,
-		Namespace:  msg.Namespace,
-		Table:      msg.Table,
-		Lsn:        msg.LSN,
-		WireFormat: string(msg.WireFormat),
-		Payload:    msg.Payload,
-		CreatedAt:  createdAt,
+		Id:              msg.ID,
+		Stream:          msg.Stream,
+		Namespace:       msg.Namespace,
+		Table:           msg.Table,
+		Lsn:             msg.LSN,
+		WireFormat:      string(msg.WireFormat),
+		Payload:         msg.Payload,
+		CreatedAt:       createdAt,
+		RegistrySubject: msg.RegistrySubject,
+		RegistryId:      msg.RegistryID,
+		RegistryVersion: registryVersion,
 	}
 }
 

@@ -337,7 +337,11 @@ func (d *Destination) catalogAttached(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("close ducklake rows: %v", err)
+		}
+	}()
 
 	for rows.Next() {
 		var seq int

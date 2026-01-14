@@ -98,8 +98,11 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	case connector.WireFormatAvro, connector.WireFormatProto:
 		registryCfg := schemaregistry.ConfigFromOptions(spec.Options)
 		registry, err := schemaregistry.NewRegistry(ctx, registryCfg)
-		if err != nil {
+		if err != nil && !errors.Is(err, schemaregistry.ErrRegistryDisabled) {
 			return err
+		}
+		if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+			registry = nil
 		}
 		d.registry = registry
 	}
@@ -150,7 +153,11 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	}
 	meta, err := d.ensureSchema(ctx, batch.Schema)
 	if err != nil {
-		return err
+		if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+			meta = nil
+		} else {
+			return err
+		}
 	}
 	if len(d.partitions) == 0 {
 		return d.writeBatch(ctx, batch, connector.Record{}, meta)
@@ -254,7 +261,7 @@ type schemaMeta struct {
 
 func (d *Destination) ensureSchema(ctx context.Context, schema connector.Schema) (*schemaMeta, error) {
 	if d.registry == nil || d.codec == nil {
-		return nil, nil
+		return nil, schemaregistry.ErrRegistryDisabled
 	}
 	subject := d.registrySubjectFor(schema)
 	switch d.codec.Name() {
@@ -263,7 +270,7 @@ func (d *Destination) ensureSchema(ctx context.Context, schema connector.Schema)
 	case connector.WireFormatProto:
 		return d.registerProtoSchema(ctx, subject)
 	default:
-		return nil, nil
+		return nil, schemaregistry.ErrRegistryDisabled
 	}
 }
 

@@ -70,6 +70,12 @@ func (f Factory) Destinations(specs []connector.Spec) ([]stream.DestinationConfi
 	return items, nil
 }
 
+// DestinationsForFlow builds destinations, applying flow-level defaults.
+func (f Factory) DestinationsForFlow(fdef flow.Flow) ([]stream.DestinationConfig, error) {
+	specs := flow.ApplyRegistryDefaults(fdef.Destinations, fdef.Config)
+	return f.Destinations(specs)
+}
+
 func (f Factory) destination(spec connector.Spec) (connector.Destination, error) {
 	switch spec.Type {
 	case connector.EndpointKafka:

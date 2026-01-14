@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"math"
 	"os"
 	"path/filepath"
@@ -12,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -345,20 +345,22 @@ func readNamespace() (string, error) {
 }
 
 func buildJobName(prefix, flowID string) string {
-	suffix := strings.ToLower(strings.TrimSpace(uuid.NewString()))
-	if len(suffix) > 8 {
-		suffix = suffix[:8]
-	}
 	base := sanitizeName(prefix + "-" + flowID)
+	if base == "" {
+		base = "flow"
+	}
+	if len(base) <= 63 {
+		return base
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(base))
+	suffix := fmt.Sprintf("%08x", hash.Sum32())
 	maxBase := 63 - len(suffix) - 1
 	if maxBase < 1 {
 		maxBase = 1
 	}
 	if len(base) > maxBase {
 		base = strings.TrimRight(base[:maxBase], "-")
-	}
-	if base == "" {
-		base = "flow"
 	}
 	return base + "-" + suffix
 }

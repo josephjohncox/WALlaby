@@ -21,6 +21,7 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/stream"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -379,6 +380,8 @@ func runFlow(args []string) error {
 		return flowCreate(args[1:])
 	case "update":
 		return flowUpdate(args[1:])
+	case "reconfigure":
+		return flowReconfigure(args[1:])
 	case "start":
 		return flowStart(args[1:])
 	case "run-once":
@@ -387,6 +390,8 @@ func runFlow(args []string) error {
 		return flowStop(args[1:])
 	case "resume":
 		return flowResume(args[1:])
+	case "cleanup":
+		return flowCleanup(args[1:])
 	case "resolve-staging":
 		return flowResolveStaging(args[1:])
 	default:
@@ -399,10 +404,12 @@ func flowUsage() {
 	fmt.Println("Flow subcommands:")
 	fmt.Println("  wallaby-admin flow create -file <path> [-start] [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow update -file <path> [-flow-id <id>] [-pause] [-resume] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow reconfigure -file <path> [-flow-id <id>] [-pause] [-resume] [-sync-publication] [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow start -flow-id <id> [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow run-once -flow-id <id>")
 	fmt.Println("  wallaby-admin flow stop -flow-id <id> [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow resume -flow-id <id> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow cleanup -flow-id <id> [-drop-slot] [-drop-publication] [-drop-source-state] [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow resolve-staging -flow-id <id> [-tables schema.table,...] [-schemas public,...] [-dest <name>]")
 	os.Exit(1)
 }
@@ -565,6 +572,89 @@ func flowUpdate(args []string) error {
 	}
 
 	fmt.Printf("Updated flow %s (state=%s)\n", resp.Id, resp.State.String())
+	return nil
+}
+
+func flowReconfigure(args []string) error {
+	fs := flag.NewFlagSet("flow reconfigure", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
+	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
+	path := fs.String("file", "", "flow config JSON file")
+	flowID := fs.String("flow-id", "", "flow id override")
+	pause := fs.Bool("pause", true, "pause flow before reconfigure")
+	resume := fs.Bool("resume", true, "resume flow after reconfigure")
+	syncPublication := fs.Bool("sync-publication", false, "sync publication tables after update")
+	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
+	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *path == "" {
+		return errors.New("-file is required")
+	}
+
+	payload, err := os.ReadFile(*path)
+	if err != nil {
+		return fmt.Errorf("read flow file: %w", err)
+	}
+
+	var cfg flowConfig
+	if err := json.Unmarshal(payload, &cfg); err != nil {
+		return fmt.Errorf("parse flow json: %w", err)
+	}
+	if *flowID != "" {
+		cfg.ID = *flowID
+	}
+	if cfg.ID == "" {
+		return errors.New("flow id is required (provide in file or -flow-id)")
+	}
+
+	pbFlow, err := flowConfigToProto(cfg)
+	if err != nil {
+		return fmt.Errorf("flow config: %w", err)
+	}
+
+	client, closeConn, err := flowClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := client.ReconfigureFlow(ctx, &wallabypb.ReconfigureFlowRequest{
+		Flow:            pbFlow,
+		PauseFirst:      proto.Bool(*pause),
+		ResumeAfter:     proto.Bool(*resume),
+		SyncPublication: proto.Bool(*syncPublication),
+	})
+	if err != nil {
+		return fmt.Errorf("reconfigure flow: %w", err)
+	}
+
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		out := map[string]any{
+			"id":          resp.Id,
+			"name":        resp.Name,
+			"state":       resp.State.String(),
+			"wire_format": resp.WireFormat.String(),
+		}
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	fmt.Printf("Reconfigured flow %s (state=%s)\n", resp.Id, resp.State.String())
 	return nil
 }
 
@@ -769,6 +859,65 @@ func flowResume(args []string) error {
 	}
 
 	fmt.Printf("Resumed flow %s (state=%s)\n", resp.Id, resp.State.String())
+	return nil
+}
+
+func flowCleanup(args []string) error {
+	fs := flag.NewFlagSet("flow cleanup", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
+	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
+	flowID := fs.String("flow-id", "", "flow id")
+	dropSlot := fs.Bool("drop-slot", true, "drop replication slot")
+	dropPublication := fs.Bool("drop-publication", false, "drop publication")
+	dropState := fs.Bool("drop-source-state", true, "delete source state row")
+	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
+	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *flowID == "" {
+		return errors.New("-flow-id is required")
+	}
+
+	client, closeConn, err := flowClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := client.CleanupFlow(ctx, &wallabypb.CleanupFlowRequest{
+		FlowId:          *flowID,
+		DropSlot:        proto.Bool(*dropSlot),
+		DropPublication: proto.Bool(*dropPublication),
+		DropSourceState: proto.Bool(*dropState),
+	})
+	if err != nil {
+		return fmt.Errorf("cleanup flow: %w", err)
+	}
+
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		out := map[string]any{
+			"flow_id": *flowID,
+			"cleaned": resp.Cleaned,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	fmt.Printf("Cleaned flow %s\n", *flowID)
 	return nil
 }
 
@@ -1786,10 +1935,13 @@ type endpointConfig struct {
 }
 
 type flowRuntimeConfig struct {
-	AckPolicy          string `json:"ack_policy"`
-	PrimaryDestination string `json:"primary_destination"`
-	FailureMode        string `json:"failure_mode"`
-	GiveUpPolicy       string `json:"give_up_policy"`
+	AckPolicy                       string `json:"ack_policy"`
+	PrimaryDestination              string `json:"primary_destination"`
+	FailureMode                     string `json:"failure_mode"`
+	GiveUpPolicy                    string `json:"give_up_policy"`
+	SchemaRegistrySubject           string `json:"schema_registry_subject,omitempty"`
+	SchemaRegistryProtoTypesSubject string `json:"schema_registry_proto_types_subject,omitempty"`
+	SchemaRegistrySubjectMode       string `json:"schema_registry_subject_mode,omitempty"`
 }
 
 func flowConfigToProto(cfg flowConfig) (*wallabypb.Flow, error) {
@@ -1822,10 +1974,13 @@ func flowRuntimeConfigToProto(cfg flowRuntimeConfig) *wallabypb.FlowConfig {
 		return nil
 	}
 	return &wallabypb.FlowConfig{
-		AckPolicy:          ackPolicyStringToProto(cfg.AckPolicy),
-		PrimaryDestination: cfg.PrimaryDestination,
-		FailureMode:        failureModeStringToProto(cfg.FailureMode),
-		GiveUpPolicy:       giveUpPolicyStringToProto(cfg.GiveUpPolicy),
+		AckPolicy:                       ackPolicyStringToProto(cfg.AckPolicy),
+		PrimaryDestination:              cfg.PrimaryDestination,
+		FailureMode:                     failureModeStringToProto(cfg.FailureMode),
+		GiveUpPolicy:                    giveUpPolicyStringToProto(cfg.GiveUpPolicy),
+		SchemaRegistrySubject:           cfg.SchemaRegistrySubject,
+		SchemaRegistryProtoTypesSubject: cfg.SchemaRegistryProtoTypesSubject,
+		SchemaRegistrySubjectMode:       cfg.SchemaRegistrySubjectMode,
 	}
 }
 
@@ -1934,12 +2089,15 @@ type streamPullOutput struct {
 }
 
 type streamPullMessage struct {
-	ID            int64  `json:"id"`
-	Namespace     string `json:"namespace"`
-	Table         string `json:"table"`
-	LSN           string `json:"lsn"`
-	WireFormat    string `json:"wire_format"`
-	PayloadBase64 string `json:"payload_base64"`
+	ID              int64  `json:"id"`
+	Namespace       string `json:"namespace"`
+	Table           string `json:"table"`
+	LSN             string `json:"lsn"`
+	WireFormat      string `json:"wire_format"`
+	PayloadBase64   string `json:"payload_base64"`
+	RegistrySubject string `json:"registry_subject,omitempty"`
+	RegistryID      string `json:"registry_id,omitempty"`
+	RegistryVersion int32  `json:"registry_version,omitempty"`
 }
 
 func streamPullMessages(messages []*wallabypb.StreamMessage) []streamPullMessage {
@@ -1947,12 +2105,15 @@ func streamPullMessages(messages []*wallabypb.StreamMessage) []streamPullMessage
 	for _, msg := range messages {
 		payload := base64.StdEncoding.EncodeToString(msg.Payload)
 		out = append(out, streamPullMessage{
-			ID:            msg.Id,
-			Namespace:     msg.Namespace,
-			Table:         msg.Table,
-			LSN:           msg.Lsn,
-			WireFormat:    msg.WireFormat,
-			PayloadBase64: payload,
+			ID:              msg.Id,
+			Namespace:       msg.Namespace,
+			Table:           msg.Table,
+			LSN:             msg.Lsn,
+			WireFormat:      msg.WireFormat,
+			PayloadBase64:   payload,
+			RegistrySubject: msg.RegistrySubject,
+			RegistryID:      msg.RegistryId,
+			RegistryVersion: msg.RegistryVersion,
 		})
 	}
 	return out

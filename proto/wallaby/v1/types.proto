@@ -70,6 +70,9 @@ message FlowConfig {
   FailureMode failure_mode = 3;
   GiveUpPolicy give_up_policy = 4;
   DDLPolicy ddl = 5;
+  string schema_registry_subject = 6;
+  string schema_registry_proto_types_subject = 7;
+  string schema_registry_subject_mode = 8;
 }
 
 message DDLPolicy {

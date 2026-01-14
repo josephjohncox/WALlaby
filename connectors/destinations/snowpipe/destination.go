@@ -34,6 +34,7 @@ const (
 	optCopyPurge    = "copy_purge"
 	optCopyMatch    = "copy_match_by_column_name"
 	optAutoIngest   = "auto_ingest"
+	optCompatMode   = "compat_mode"
 	optWriteMode    = "write_mode"
 	optMetaTable    = "meta_table"
 	optMetaSchema   = "meta_schema"
@@ -41,10 +42,11 @@ const (
 	optMetaPKPrefix = "meta_pk_prefix"
 	optFlowID       = "flow_id"
 
-	writeModeAppend   = "append"
-	defaultMetaSchema = "WALLABY_META"
-	defaultMetaTable  = "__METADATA"
-	defaultMetaPKPref = "pk_"
+	writeModeAppend    = "append"
+	compatModeFakesnow = "fakesnow"
+	defaultMetaSchema  = "WALLABY_META"
+	defaultMetaTable   = "__METADATA"
+	defaultMetaPKPref  = "pk_"
 )
 
 // Destination writes batches to Snowflake stages and optionally issues COPY INTO.
@@ -61,12 +63,18 @@ type Destination struct {
 	copyMatch    string
 	fileFormat   string
 	writeMode    string
+	compatMode   string
+	compatNoTx   bool
 	metaEnabled  bool
 	metaSchema   string
 	metaTable    string
 	metaPKPrefix string
 	flowID       string
 	metaColumns  map[string]struct{}
+}
+
+type execer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
@@ -124,6 +132,17 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		return fmt.Errorf("snowpipe only supports append write_mode")
 	}
 
+	compatMode := strings.ToLower(strings.TrimSpace(spec.Options[optCompatMode]))
+	switch compatMode {
+	case "", "none":
+		d.compatMode = ""
+	case compatModeFakesnow:
+		d.compatMode = compatModeFakesnow
+		d.compatNoTx = true
+	default:
+		return fmt.Errorf("snowpipe compat_mode %s not supported", compatMode)
+	}
+
 	d.metaEnabled = parseBool(spec.Options[optMetaEnabled], true)
 	d.metaSchema = strings.TrimSpace(spec.Options[optMetaSchema])
 	if d.metaSchema == "" {
@@ -179,14 +198,14 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 
 	putStmt := fmt.Sprintf("PUT file://%s %s AUTO_COMPRESS=FALSE", filePath, stageLocation)
 	if _, err := d.db.ExecContext(ctx, putStmt); err != nil {
-		return fmt.Errorf("put to stage: %w", err)
+		return d.fallbackIfCompat(ctx, batch, err, "put to stage")
 	}
 
 	if d.copyOnWrite {
 		// #nosec G201 -- identifiers are quoted and derived from schema/config.
 		copyStmt := fmt.Sprintf("COPY INTO %s FROM %s FILES = ('%s') %s", d.targetTable(batch.Schema, batch.Records[0]), stageLocation, fileName, d.copyOptionsClause())
 		if _, err := d.db.ExecContext(ctx, copyStmt); err != nil {
-			return fmt.Errorf("copy into: %w", err)
+			return d.fallbackIfCompat(ctx, batch, err, "copy into")
 		}
 	}
 
@@ -206,6 +225,66 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		}
 	}
 
+	return nil
+}
+
+func (d *Destination) fallbackIfCompat(ctx context.Context, batch connector.Batch, err error, action string) error {
+	if d.compatMode != compatModeFakesnow {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	log.Printf("snowpipe compat fallback (%s): %v", action, err)
+	return d.writeCompat(ctx, batch)
+}
+
+func (d *Destination) writeCompat(ctx context.Context, batch connector.Batch) error {
+	if d.compatNoTx {
+		exec := execer(d.db)
+		for _, record := range batch.Records {
+			cols, vals := recordColumns(batch.Schema, record)
+			if len(cols) == 0 {
+				continue
+			}
+			target := d.targetTable(batch.Schema, record)
+			// #nosec G201 -- identifiers are quoted and derived from schema/config.
+			insertStmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols, '"'), placeholders(len(cols)))
+			if _, err := exec.ExecContext(ctx, insertStmt, vals...); err != nil {
+				return fmt.Errorf("compat insert: %w", err)
+			}
+			if d.metaEnabled {
+				if err := d.upsertMetadata(ctx, exec, batch.Schema, record, batch.Checkpoint); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin compat transaction: %w", err)
+	}
+	for _, record := range batch.Records {
+		cols, vals := recordColumns(batch.Schema, record)
+		if len(cols) == 0 {
+			continue
+		}
+		target := d.targetTable(batch.Schema, record)
+		// #nosec G201 -- identifiers are quoted and derived from schema/config.
+		insertStmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols, '"'), placeholders(len(cols)))
+		if _, err := tx.ExecContext(ctx, insertStmt, vals...); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("compat insert: %w", err)
+		}
+		if d.metaEnabled {
+			if err := d.upsertMetadata(ctx, tx, batch.Schema, record, batch.Checkpoint); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit compat transaction: %w", err)
+	}
 	return nil
 }
 
@@ -513,7 +592,7 @@ func (d *Destination) refreshMetaColumns(ctx context.Context) error {
 	return nil
 }
 
-func (d *Destination) upsertMetadata(ctx context.Context, tx *sql.Tx, schema connector.Schema, record connector.Record, checkpoint connector.Checkpoint) error {
+func (d *Destination) upsertMetadata(ctx context.Context, exec execer, schema connector.Schema, record connector.Record, checkpoint connector.Checkpoint) error {
 	key, err := decodeKeyForSchema(schema, record.Key)
 	if err != nil {
 		return err
@@ -540,7 +619,7 @@ func (d *Destination) upsertMetadata(ctx context.Context, tx *sql.Tx, schema con
 
 	// #nosec G201 -- identifiers are quoted and derived from schema/config.
 	deleteStmt := fmt.Sprintf("DELETE FROM %s WHERE %s", target, whereClause)
-	if _, err := tx.ExecContext(ctx, deleteStmt, whereArgs...); err != nil {
+	if _, err := exec.ExecContext(ctx, deleteStmt, whereArgs...); err != nil {
 		return fmt.Errorf("delete meta row: %w", err)
 	}
 
@@ -563,7 +642,7 @@ func (d *Destination) upsertMetadata(ctx context.Context, tx *sql.Tx, schema con
 
 	// #nosec G201 -- identifiers are quoted and derived from schema/config.
 	insertStmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(columns, '"'), placeholders(len(columns)))
-	if _, err := tx.ExecContext(ctx, insertStmt, values...); err != nil {
+	if _, err := exec.ExecContext(ctx, insertStmt, values...); err != nil {
 		return fmt.Errorf("insert meta row: %w", err)
 	}
 	return nil
@@ -584,6 +663,23 @@ func (d *Destination) ensureMetaColumn(ctx context.Context, column string) error
 	}
 	d.metaColumns[key] = struct{}{}
 	return nil
+}
+
+func recordColumns(schema connector.Schema, record connector.Record) ([]string, []any) {
+	if record.After == nil {
+		return []string{}, []any{}
+	}
+	cols := make([]string, 0, len(schema.Columns))
+	vals := make([]any, 0, len(schema.Columns))
+	for _, col := range schema.Columns {
+		val, ok := record.After[col.Name]
+		if !ok {
+			continue
+		}
+		cols = append(cols, col.Name)
+		vals = append(vals, val)
+	}
+	return cols, vals
 }
 
 func decodeKey(raw []byte) (map[string]any, error) {

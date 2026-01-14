@@ -2,16 +2,19 @@ package schemaregistry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
+
+var ErrRegistryDisabled = errors.New("schema registry disabled")
 
 // NewRegistry creates a registry from config. Returns nil if disabled.
 func NewRegistry(ctx context.Context, cfg Config) (Registry, error) {
 	typ := strings.ToLower(strings.TrimSpace(cfg.Type))
 	switch typ {
 	case "", "none", "disabled":
-		return nil, nil
+		return nil, ErrRegistryDisabled
 	case "csr", "confluent":
 		reg, err := newConfluentRegistry(cfg)
 		if err != nil {
