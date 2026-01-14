@@ -60,13 +60,48 @@ PRs should include description, test evidence, and performance/compatibility not
 2) [done] Schema evolution lifecycle: DDL capture → approval → apply → checkpointed DDL stream; apply tests for Snowflake/ClickHouse/DuckLake/Postgres.
 3) [done] Snapshot/backfill: `pg_export_snapshot()` + persistent snapshot state + resume; parallel snapshot workers; snapshot→stream switch tests.
 4) [done] Workflow engines + orchestrators: DBOS/K8s/CLI parity, retry/recovery tests, run-once coverage. (DBOS retry/backoff test + K8s backoff test + CLI lifecycle tests.)
-5) [in progress] Destinations parity: finish/verify Snowflake/Snowpipe/ClickHouse/DuckDB/DuckLake/Postgres/Kafka/HTTP; S3 partition + metadata. (Kafka/HTTP parity tests + Redpanda/HTTP fixtures added; Avro/Arrow/Proto Kafka decode assertions added.)
-6) Wire formats + schema registry: enforce end-to-end wire format, registry for Avro/Proto, evolution tests.
+5) [in progress] Destinations parity: finish/verify Snowflake/Snowpipe/ClickHouse/DuckDB/DuckLake/Postgres/Kafka/HTTP; S3 partition + metadata. (Kafka record-mode headers + transactional producer + registry headers; HTTP idempotency + transaction header; Snowpipe COPY options; DuckLake catalog attach safety.)
+6) [in progress] Wire formats + schema registry: schema registry package (CSR/Apicurio/Glue/local/postgres) wired into Kafka; add evolution tests and registry coverage across destinations.
 7) Benchmarks + profiling: flamegraphs/traces + per-destination bench matrix.
-8) Operational controls: publication add/remove lifecycle, durable state tables, cleanup/reconfig.
+8) [in progress] Operational controls: publication add/remove lifecycle, durable source state tables, cleanup/reconfig + pause/resume. (Flow update CLI + source state assertion added.)
 9) [done] Optional type mapping overrides via config (proto/terraform options, JSON/YAML files).
 10) [done] RDS / AWS support with AWS IRSA/role-based auth.
 11) [done] IAM support on the CLI endpoints as flags (so wallaby-admin publication ... can auth to RDS directly)
+
+## Remaining Gaps (detailed)
+### Destination parity (step 5)
+- Snowpipe: full PUT/COPY behavior.
+- DuckLake: stability and durability hardening.
+- Kafka/HTTP: parity tests + stronger delivery semantics (registry headers and transaction/idempotency in place).
+- Destination-specific DDL/mutation behavior gaps.
+
+### Wire format + schema registry (step 6)
+- End-to-end format enforcement.
+- Avro/Proto schema registry integration (CSR/Apicurio/Glue/local/db; Kafka headers).
+- Evolution tests across destinations.
+
+### Operational controls (step 8)
+- Publication lifecycle automation (add/remove tables).
+- Durable source-side state tables.
+- Cleanup/reconfig flows.
+- Full lifecycle handling for reconfig + pause/resume.
+
+### Benchmarks & profiling (step 7)
+- Standardized flamegraph/tracing in bench runs.
+- Per-destination DDL/mutation performance bench matrix.
+- Baseline comparisons vs Debezium/PeerDB/Sequin.
+
+### Trace/spec coverage
+- Enforce trace-suite + tla-coverage in CI with actionable reporting and min coverage thresholds.
+
+### Workflow/dispatch gaps
+- Durable K8s dispatch beyond basic tests (retries + recovery across pods).
+- Server-side “launch job” API flows.
+
+### Docs/UX gaps
+- Spec/trace verification flow (TLA+ + trace suite + coverage).
+- Connector-specific config docs (Snowpipe auto-ingest, DuckLake caveats, Kafka payload formats).
+- Operational runbooks for DDL gating and recovery.
 
 ## Observability & Lifecycle Expectations
 All new components must emit OpenTelemetry traces/metrics and honor flow lifecycle state transitions. Checkpointing and recovery paths should be tested and documented.

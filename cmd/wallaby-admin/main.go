@@ -377,6 +377,8 @@ func runFlow(args []string) error {
 	switch args[0] {
 	case "create":
 		return flowCreate(args[1:])
+	case "update":
+		return flowUpdate(args[1:])
 	case "start":
 		return flowStart(args[1:])
 	case "run-once":
@@ -396,6 +398,7 @@ func runFlow(args []string) error {
 func flowUsage() {
 	fmt.Println("Flow subcommands:")
 	fmt.Println("  wallaby-admin flow create -file <path> [-start] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow update -file <path> [-flow-id <id>] [-pause] [-resume] [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow start -flow-id <id> [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow run-once -flow-id <id>")
 	fmt.Println("  wallaby-admin flow stop -flow-id <id> [--json|--pretty]")
@@ -473,6 +476,95 @@ func flowCreate(args []string) error {
 	}
 
 	fmt.Printf("Created flow %s (state=%s)\n", resp.Id, resp.State.String())
+	return nil
+}
+
+func flowUpdate(args []string) error {
+	fs := flag.NewFlagSet("flow update", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
+	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
+	path := fs.String("file", "", "flow config JSON file")
+	flowID := fs.String("flow-id", "", "flow id override")
+	pause := fs.Bool("pause", false, "pause flow before update")
+	resume := fs.Bool("resume", false, "resume flow after update")
+	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
+	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *path == "" {
+		return errors.New("-file is required")
+	}
+
+	payload, err := os.ReadFile(*path)
+	if err != nil {
+		return fmt.Errorf("read flow file: %w", err)
+	}
+
+	var cfg flowConfig
+	if err := json.Unmarshal(payload, &cfg); err != nil {
+		return fmt.Errorf("parse flow json: %w", err)
+	}
+	if *flowID != "" {
+		cfg.ID = *flowID
+	}
+	if cfg.ID == "" {
+		return errors.New("flow id is required (provide in file or -flow-id)")
+	}
+
+	pbFlow, err := flowConfigToProto(cfg)
+	if err != nil {
+		return fmt.Errorf("flow config: %w", err)
+	}
+
+	client, closeConn, err := flowClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if *pause {
+		if _, err := client.StopFlow(ctx, &wallabypb.StopFlowRequest{FlowId: cfg.ID}); err != nil {
+			log.Printf("pause flow: %v", err)
+		}
+	}
+
+	resp, err := client.UpdateFlow(ctx, &wallabypb.UpdateFlowRequest{Flow: pbFlow})
+	if err != nil {
+		return fmt.Errorf("update flow: %w", err)
+	}
+
+	if *resume {
+		if _, err := client.ResumeFlow(ctx, &wallabypb.ResumeFlowRequest{FlowId: cfg.ID}); err != nil {
+			log.Printf("resume flow: %v", err)
+		}
+	}
+
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		out := map[string]any{
+			"id":          resp.Id,
+			"name":        resp.Name,
+			"state":       resp.State.String(),
+			"wire_format": resp.WireFormat.String(),
+		}
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	fmt.Printf("Updated flow %s (state=%s)\n", resp.Id, resp.State.String())
 	return nil
 }
 

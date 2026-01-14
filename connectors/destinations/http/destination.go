@@ -11,10 +11,14 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"path"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 	"github.com/josephjohncox/wallaby/pkg/wire"
 )
 
@@ -30,6 +34,8 @@ const (
 	optBackoffMax        = "backoff_max"
 	optBackoffFactor     = "backoff_factor"
 	optIdempotencyHeader = "idempotency_header"
+	optDedupeWindow      = "dedupe_window"
+	optTransactionHeader = "transaction_header"
 )
 
 const (
@@ -52,9 +58,16 @@ type Destination struct {
 	backoffMax        time.Duration
 	backoffFactor     float64
 	idempotencyHeader string
+	dedupeWindow      time.Duration
+	transactionHeader string
+	dedupe            map[string]time.Time
+	dedupeMu          sync.Mutex
+	registry          schemaregistry.Registry
+	registrySubject   string
+	protoTypesSubject string
 }
 
-func (d *Destination) Open(_ context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.spec = spec
 	d.url = spec.Options[optURL]
 	if d.url == "" {
@@ -79,6 +92,19 @@ func (d *Destination) Open(_ context.Context, spec connector.Spec) error {
 		}
 		d.codec = codec
 	}
+	d.registrySubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistrySubject])
+	d.protoTypesSubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistryProtoTypes])
+	if d.payloadMode == payloadModeWire && d.codec != nil {
+		switch d.codec.Name() {
+		case connector.WireFormatAvro, connector.WireFormatProto:
+			registryCfg := schemaregistry.ConfigFromOptions(spec.Options)
+			registry, err := schemaregistry.NewRegistry(ctx, registryCfg)
+			if err != nil {
+				return err
+			}
+			d.registry = registry
+		}
+	}
 
 	if spec.Options[optTimeout] == "" {
 		d.client = &http.Client{Timeout: 10 * time.Second}
@@ -99,6 +125,14 @@ func (d *Destination) Open(_ context.Context, spec connector.Spec) error {
 	if d.idempotencyHeader == "" {
 		d.idempotencyHeader = "Idempotency-Key"
 	}
+	d.transactionHeader = strings.TrimSpace(spec.Options[optTransactionHeader])
+	if d.transactionHeader == "" {
+		d.transactionHeader = "X-Wallaby-Transaction-Id"
+	}
+	d.dedupeWindow = parseDuration(spec.Options[optDedupeWindow], 0)
+	if d.dedupeWindow > 0 {
+		d.dedupe = make(map[string]time.Time)
+	}
 
 	return nil
 }
@@ -111,6 +145,10 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		return nil
 	}
 
+	meta, err := d.ensureSchema(ctx, batch.Schema)
+	if err != nil {
+		return err
+	}
 	for _, record := range batch.Records {
 		payloadBatch := connector.Batch{
 			Records:    []connector.Record{record},
@@ -128,7 +166,11 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		}
 
 		idempotencyKey := d.buildIdempotencyKey(record, batch.Checkpoint.LSN, payload)
-		if err := d.sendWithRetry(ctx, payload, contentType, idempotencyKey); err != nil {
+		if d.shouldSkip(idempotencyKey) {
+			continue
+		}
+		txnID := d.transactionID(record, batch.Checkpoint.LSN)
+		if err := d.sendWithRetry(ctx, payload, contentType, idempotencyKey, txnID, meta); err != nil {
 			return err
 		}
 	}
@@ -143,6 +185,9 @@ func (d *Destination) ApplyDDL(_ context.Context, _ connector.Schema, _ connecto
 func (d *Destination) TypeMappings() map[string]string { return nil }
 
 func (d *Destination) Close(_ context.Context) error {
+	if d.registry != nil {
+		_ = d.registry.Close()
+	}
 	return nil
 }
 
@@ -227,7 +272,7 @@ func marshalRecordJSON(record connector.Record) ([]byte, error) {
 	return json.Marshal(payload)
 }
 
-func (d *Destination) sendWithRetry(ctx context.Context, payload []byte, contentType, idempotencyKey string) error {
+func (d *Destination) sendWithRetry(ctx context.Context, payload []byte, contentType, idempotencyKey, txnID string, meta *schemaMeta) error {
 	attempts := d.maxRetries + 1
 	if attempts < 1 {
 		attempts = 1
@@ -246,6 +291,16 @@ func (d *Destination) sendWithRetry(ctx context.Context, payload []byte, content
 		}
 		if d.idempotencyHeader != "" && idempotencyKey != "" {
 			req.Header.Set(d.idempotencyHeader, idempotencyKey)
+		}
+		if d.transactionHeader != "" && txnID != "" {
+			req.Header.Set(d.transactionHeader, txnID)
+		}
+		if meta != nil {
+			req.Header.Set("X-Wallaby-Registry-Subject", meta.Subject)
+			req.Header.Set("X-Wallaby-Registry-Id", meta.ID)
+			if meta.Version > 0 {
+				req.Header.Set("X-Wallaby-Registry-Version", fmt.Sprintf("%d", meta.Version))
+			}
 		}
 
 		resp, err := d.client.Do(req)
@@ -280,6 +335,102 @@ func (d *Destination) sendWithRetry(ctx context.Context, payload []byte, content
 	return errors.New("http destination retries exhausted")
 }
 
+type schemaMeta struct {
+	Subject string
+	ID      string
+	Version int
+}
+
+func (d *Destination) ensureSchema(ctx context.Context, schema connector.Schema) (*schemaMeta, error) {
+	if d.registry == nil || d.codec == nil {
+		return nil, nil
+	}
+	subject := d.registrySubjectFor(schema)
+	switch d.codec.Name() {
+	case connector.WireFormatAvro:
+		return d.registerAvroSchema(ctx, subject, schema)
+	case connector.WireFormatProto:
+		return d.registerProtoSchema(ctx, subject)
+	default:
+		return nil, nil
+	}
+}
+
+func (d *Destination) registerAvroSchema(ctx context.Context, subject string, schema connector.Schema) (*schemaMeta, error) {
+	req := schemaregistry.RegisterRequest{
+		Subject:    subject,
+		Schema:     wire.AvroSchema(schema),
+		SchemaType: schemaregistry.SchemaTypeAvro,
+	}
+	result, err := d.registry.Register(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &schemaMeta{Subject: subject, ID: result.ID, Version: result.Version}, nil
+}
+
+func (d *Destination) registerProtoSchema(ctx context.Context, subject string) (*schemaMeta, error) {
+	def, err := wire.ProtoBatchSchema()
+	if err != nil {
+		return nil, err
+	}
+	refNames := make([]string, 0, len(def.Dependencies))
+	for name := range def.Dependencies {
+		refNames = append(refNames, name)
+	}
+	sort.Strings(refNames)
+
+	refs := make([]schemaregistry.Reference, 0, len(refNames))
+	for _, name := range refNames {
+		depSubject := d.protoReferenceSubject(subject, name)
+		refResult, err := d.registry.Register(ctx, schemaregistry.RegisterRequest{
+			Subject:    depSubject,
+			Schema:     def.Dependencies[name],
+			SchemaType: schemaregistry.SchemaTypeProtobuf,
+		})
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, schemaregistry.Reference{
+			Name:    name,
+			Subject: depSubject,
+			Version: refResult.Version,
+		})
+	}
+
+	result, err := d.registry.Register(ctx, schemaregistry.RegisterRequest{
+		Subject:    subject,
+		Schema:     def.Schema,
+		SchemaType: schemaregistry.SchemaTypeProtobuf,
+		References: refs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &schemaMeta{Subject: subject, ID: result.ID, Version: result.Version}, nil
+}
+
+func (d *Destination) registrySubjectFor(schema connector.Schema) string {
+	if d.registrySubject != "" {
+		return d.registrySubject
+	}
+	if schema.Namespace != "" {
+		return fmt.Sprintf("%s.%s", schema.Namespace, schema.Name)
+	}
+	return schema.Name
+}
+
+func (d *Destination) protoReferenceSubject(subject, ref string) string {
+	if d.protoTypesSubject != "" {
+		return d.protoTypesSubject
+	}
+	name := strings.TrimSuffix(path.Base(ref), ".proto")
+	if name == "" {
+		name = "types"
+	}
+	return fmt.Sprintf("%s.%s", subject, name)
+}
+
 func (d *Destination) backoffDuration(attempt int) time.Duration {
 	base := float64(d.backoffBase)
 	if base <= 0 {
@@ -300,6 +451,27 @@ func (d *Destination) backoffDuration(attempt int) time.Duration {
 	return time.Duration(float64(delay) * jitter)
 }
 
+func (d *Destination) shouldSkip(idempotencyKey string) bool {
+	if d.dedupeWindow <= 0 || idempotencyKey == "" {
+		return false
+	}
+	d.dedupeMu.Lock()
+	defer d.dedupeMu.Unlock()
+	now := time.Now()
+	for key, ts := range d.dedupe {
+		if now.Sub(ts) > d.dedupeWindow {
+			delete(d.dedupe, key)
+		}
+	}
+	if ts, ok := d.dedupe[idempotencyKey]; ok {
+		if now.Sub(ts) <= d.dedupeWindow {
+			return true
+		}
+	}
+	d.dedupe[idempotencyKey] = now
+	return false
+}
+
 func (d *Destination) buildIdempotencyKey(record connector.Record, lsn string, payload []byte) string {
 	if d.idempotencyHeader == "" {
 		return ""
@@ -310,6 +482,19 @@ func (d *Destination) buildIdempotencyKey(record connector.Record, lsn string, p
 		keyPart = string(payload)
 	}
 	base := fmt.Sprintf("%s|%s|%s", record.Table, keyPart, lsn)
+	sum := sha256.Sum256([]byte(base))
+	return hex.EncodeToString(sum[:])
+}
+
+func (d *Destination) transactionID(record connector.Record, lsn string) string {
+	if lsn != "" {
+		return lsn
+	}
+	keyPart := string(record.Key)
+	if keyPart == "" {
+		keyPart = string(record.Table)
+	}
+	base := fmt.Sprintf("%s|%s", record.Table, keyPart)
 	sum := sha256.Sum256([]byte(base))
 	return hex.EncodeToString(sum[:])
 }

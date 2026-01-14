@@ -424,6 +424,130 @@ func TestCLIIntegrationFlowCreateRunOnce(t *testing.T) {
 	}
 }
 
+func TestCLIIntegrationFlowUpdate(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
+	if baseDSN == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	adminPool, err := pgxpool.New(ctx, baseDSN)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer adminPool.Close()
+
+	dbName, dbDSN := createTempDatabase(t, ctx, adminPool, "wallaby_flow_update")
+	defer dropDatabase(t, adminPool, dbName)
+
+	engine, err := workflow.NewPostgresEngine(ctx, dbDSN)
+	if err != nil {
+		t.Fatalf("create workflow engine: %v", err)
+	}
+	defer engine.Close()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen grpc: %v", err)
+	}
+	defer listener.Close()
+
+	server := apigrpc.New(engine, noopDispatcher{}, nil, nil, nil, false, nil)
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	defer server.Stop()
+	waitForTCP(t, listener.Addr().String(), 2*time.Second)
+
+	configPath := writeFlowConfig(t, flowConfigPayload{
+		Name:       "update-flow",
+		WireFormat: "json",
+		Source: endpointConfigPayload{
+			Name: "src",
+			Type: "postgres",
+			Options: map[string]string{
+				"dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+			},
+		},
+		Destinations: []endpointConfigPayload{
+			{
+				Name: "dest",
+				Type: "pgstream",
+				Options: map[string]string{
+					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"stream": "orders",
+				},
+			},
+		},
+	})
+
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "-file", configPath, "-json")
+	if err != nil {
+		t.Fatalf("wallaby-admin flow create: %v\n%s", err, output)
+	}
+
+	var createResp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output, &createResp); err != nil {
+		t.Fatalf("decode flow create output: %v\n%s", err, output)
+	}
+	if createResp.ID == "" {
+		t.Fatalf("expected flow id, got: %s", output)
+	}
+
+	updatePath := writeFlowConfig(t, flowConfigPayload{
+		ID:         createResp.ID,
+		Name:       "update-flow",
+		WireFormat: "json",
+		Source: endpointConfigPayload{
+			Name: "src",
+			Type: "postgres",
+			Options: map[string]string{
+				"dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+			},
+		},
+		Destinations: []endpointConfigPayload{
+			{
+				Name: "dest",
+				Type: "pgstream",
+				Options: map[string]string{
+					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"stream": "orders_v2",
+				},
+			},
+		},
+	})
+
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "update", "-file", updatePath, "-flow-id", createResp.ID, "-json")
+	if err != nil {
+		t.Fatalf("wallaby-admin flow update: %v\n%s", err, output)
+	}
+
+	var updateResp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output, &updateResp); err != nil {
+		t.Fatalf("decode flow update output: %v\n%s", err, output)
+	}
+	if updateResp.ID != createResp.ID {
+		t.Fatalf("expected updated id %s, got %s", createResp.ID, updateResp.ID)
+	}
+
+	updated, err := engine.Get(ctx, createResp.ID)
+	if err != nil {
+		t.Fatalf("get updated flow: %v", err)
+	}
+	if len(updated.Destinations) != 1 {
+		t.Fatalf("expected 1 destination, got %d", len(updated.Destinations))
+	}
+	if updated.Destinations[0].Options["stream"] != "orders_v2" {
+		t.Fatalf("expected updated stream option, got %v", updated.Destinations[0].Options)
+	}
+}
+
 func TestCLIIntegrationFlowStartStopResume(t *testing.T) {
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
 	if baseDSN == "" {

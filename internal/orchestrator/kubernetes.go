@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -95,12 +96,44 @@ func (k *KubernetesDispatcher) EnqueueFlow(ctx context.Context, flowID string) e
 	}
 
 	jobName := buildJobName(k.cfg.JobNamePrefix, flowID)
+	if err := k.createJob(ctx, flowID, jobName); err == nil {
+		return nil
+	} else if !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+
+	existing, err := k.client.BatchV1().Jobs(k.namespace).Get(ctx, jobName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get existing job: %w", err)
+	}
+	if jobActive(existing) {
+		return nil
+	}
+	if jobFinished(existing) {
+		if err := k.deleteJob(ctx, jobName); err != nil {
+			return err
+		}
+		if err := k.waitForJobDeletion(ctx, jobName, 30*time.Second); err != nil {
+			return err
+		}
+		if err := k.createJob(ctx, flowID, jobName); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	return nil
+}
+
+func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName string) error {
 	labels := mergeLabels(map[string]string{
 		"app.kubernetes.io/name":      "wallaby-worker",
 		"app.kubernetes.io/component": "worker",
 		"wallaby.flow-id":             flowID,
 	}, k.cfg.JobLabels)
-	annotations := mergeLabels(nil, k.cfg.JobAnnotations)
+	annotations := mergeLabels(map[string]string{
+		"wallaby.flow-id": flowID,
+	}, k.cfg.JobAnnotations)
 
 	command := k.cfg.JobCommand
 	if len(command) == 0 {
@@ -152,6 +185,31 @@ func (k *KubernetesDispatcher) EnqueueFlow(ctx context.Context, flowID string) e
 	}
 
 	return nil
+}
+
+func jobActive(job *batchv1.Job) bool {
+	if job == nil {
+		return false
+	}
+	return job.Status.Active > 0
+}
+
+func jobFinished(job *batchv1.Job) bool {
+	if job == nil {
+		return false
+	}
+	if job.Status.Succeeded > 0 || job.Status.Failed > 0 {
+		return true
+	}
+	for _, condition := range job.Status.Conditions {
+		if condition.Type == batchv1.JobComplete && condition.Status == corev1.ConditionTrue {
+			return true
+		}
+		if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveKubeClient(cfg KubernetesConfig) (kubernetes.Interface, string, error) {
@@ -303,6 +361,36 @@ func buildJobName(prefix, flowID string) string {
 		base = "flow"
 	}
 	return base + "-" + suffix
+}
+func (k *KubernetesDispatcher) deleteJob(ctx context.Context, name string) error {
+	policy := metav1.DeletePropagationBackground
+	if err := k.client.BatchV1().Jobs(k.namespace).Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &policy}); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("delete job: %w", err)
+	}
+	return nil
+}
+
+func (k *KubernetesDispatcher) waitForJobDeletion(ctx context.Context, name string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for job deletion: %s", name)
+		}
+		if _, err := k.client.BatchV1().Jobs(k.namespace).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return fmt.Errorf("check job deletion: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 func sanitizeName(value string) string {

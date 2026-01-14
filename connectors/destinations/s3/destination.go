@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 	"github.com/josephjohncox/wallaby/pkg/wire"
 )
 
@@ -46,21 +49,24 @@ type partitionSpec struct {
 
 // Destination writes batches to S3.
 type Destination struct {
-	spec           connector.Spec
-	bucket         string
-	prefix         string
-	format         string
-	compression    string
-	partitions     []partitionSpec
-	endpoint       string
-	accessKey      string
-	secretKey      string
-	sessionToken   string
-	forcePathStyle bool
-	useFIPS        bool
-	useDualstack   bool
-	codec          wire.Codec
-	uploader       *manager.Uploader
+	spec              connector.Spec
+	bucket            string
+	prefix            string
+	format            string
+	compression       string
+	partitions        []partitionSpec
+	endpoint          string
+	accessKey         string
+	secretKey         string
+	sessionToken      string
+	forcePathStyle    bool
+	useFIPS           bool
+	useDualstack      bool
+	codec             wire.Codec
+	uploader          *manager.Uploader
+	registry          schemaregistry.Registry
+	registrySubject   string
+	protoTypesSubject string
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
@@ -86,6 +92,17 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		return err
 	}
 	d.codec = codec
+	d.registrySubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistrySubject])
+	d.protoTypesSubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistryProtoTypes])
+	switch d.codec.Name() {
+	case connector.WireFormatAvro, connector.WireFormatProto:
+		registryCfg := schemaregistry.ConfigFromOptions(spec.Options)
+		registry, err := schemaregistry.NewRegistry(ctx, registryCfg)
+		if err != nil {
+			return err
+		}
+		d.registry = registry
+	}
 
 	loadOpts := []func(*config.LoadOptions) error{}
 	region := strings.TrimSpace(spec.Options[optRegion])
@@ -131,8 +148,12 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	if len(batch.Records) == 0 {
 		return nil
 	}
+	meta, err := d.ensureSchema(ctx, batch.Schema)
+	if err != nil {
+		return err
+	}
 	if len(d.partitions) == 0 {
-		return d.writeBatch(ctx, batch, connector.Record{})
+		return d.writeBatch(ctx, batch, connector.Record{}, meta)
 	}
 
 	grouped := map[string][]connector.Record{}
@@ -156,14 +177,14 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 			WireFormat: batch.WireFormat,
 		}
 		record := representative[partPath]
-		if err := d.writeBatch(ctx, subBatch, record, partPath); err != nil {
+		if err := d.writeBatch(ctx, subBatch, record, meta, partPath); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (d *Destination) writeBatch(ctx context.Context, batch connector.Batch, record connector.Record, partitions ...string) error {
+func (d *Destination) writeBatch(ctx context.Context, batch connector.Batch, record connector.Record, meta *schemaMeta, partitions ...string) error {
 	if len(batch.Records) == 0 {
 		return nil
 	}
@@ -191,6 +212,15 @@ func (d *Destination) writeBatch(ctx context.Context, batch connector.Batch, rec
 		Body:        body,
 		ContentType: &contentType,
 	}
+	if meta != nil {
+		input.Metadata = map[string]string{
+			"wallaby-registry-subject": meta.Subject,
+			"wallaby-registry-id":      meta.ID,
+		}
+		if meta.Version > 0 {
+			input.Metadata["wallaby-registry-version"] = fmt.Sprintf("%d", meta.Version)
+		}
+	}
 	if contentEncoding != "" {
 		input.ContentEncoding = &contentEncoding
 	}
@@ -210,7 +240,106 @@ func (d *Destination) ApplyDDL(_ context.Context, _ connector.Schema, _ connecto
 func (d *Destination) TypeMappings() map[string]string { return nil }
 
 func (d *Destination) Close(_ context.Context) error {
+	if d.registry != nil {
+		_ = d.registry.Close()
+	}
 	return nil
+}
+
+type schemaMeta struct {
+	Subject string
+	ID      string
+	Version int
+}
+
+func (d *Destination) ensureSchema(ctx context.Context, schema connector.Schema) (*schemaMeta, error) {
+	if d.registry == nil || d.codec == nil {
+		return nil, nil
+	}
+	subject := d.registrySubjectFor(schema)
+	switch d.codec.Name() {
+	case connector.WireFormatAvro:
+		return d.registerAvroSchema(ctx, subject, schema)
+	case connector.WireFormatProto:
+		return d.registerProtoSchema(ctx, subject)
+	default:
+		return nil, nil
+	}
+}
+
+func (d *Destination) registerAvroSchema(ctx context.Context, subject string, schema connector.Schema) (*schemaMeta, error) {
+	req := schemaregistry.RegisterRequest{
+		Subject:    subject,
+		Schema:     wire.AvroSchema(schema),
+		SchemaType: schemaregistry.SchemaTypeAvro,
+	}
+	result, err := d.registry.Register(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &schemaMeta{Subject: subject, ID: result.ID, Version: result.Version}, nil
+}
+
+func (d *Destination) registerProtoSchema(ctx context.Context, subject string) (*schemaMeta, error) {
+	def, err := wire.ProtoBatchSchema()
+	if err != nil {
+		return nil, err
+	}
+	refNames := make([]string, 0, len(def.Dependencies))
+	for name := range def.Dependencies {
+		refNames = append(refNames, name)
+	}
+	sort.Strings(refNames)
+
+	refs := make([]schemaregistry.Reference, 0, len(refNames))
+	for _, name := range refNames {
+		depSubject := d.protoReferenceSubject(subject, name)
+		refResult, err := d.registry.Register(ctx, schemaregistry.RegisterRequest{
+			Subject:    depSubject,
+			Schema:     def.Dependencies[name],
+			SchemaType: schemaregistry.SchemaTypeProtobuf,
+		})
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, schemaregistry.Reference{
+			Name:    name,
+			Subject: depSubject,
+			Version: refResult.Version,
+		})
+	}
+
+	result, err := d.registry.Register(ctx, schemaregistry.RegisterRequest{
+		Subject:    subject,
+		Schema:     def.Schema,
+		SchemaType: schemaregistry.SchemaTypeProtobuf,
+		References: refs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &schemaMeta{Subject: subject, ID: result.ID, Version: result.Version}, nil
+}
+
+func (d *Destination) registrySubjectFor(schema connector.Schema) string {
+	if d.registrySubject != "" {
+		return d.registrySubject
+	}
+	if schema.Namespace != "" {
+		return fmt.Sprintf("%s.%s", schema.Namespace, schema.Name)
+	}
+	return schema.Name
+}
+
+func (d *Destination) protoReferenceSubject(subject, ref string) string {
+	if d.protoTypesSubject != "" {
+		return d.protoTypesSubject
+	}
+	name := strings.TrimSuffix(filepath.Base(ref), ".proto")
+	if name == "" {
+		name = "types"
+	}
+	return fmt.Sprintf("%s.%s", subject, name)
 }
 
 func (d *Destination) Capabilities() connector.Capabilities {

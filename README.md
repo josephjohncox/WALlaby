@@ -87,6 +87,9 @@ Snowpipe auto-ingest (upload-only) snippet:
 - `docs/architecture.md` — system architecture overview.
 - `docs/streams.md` — stream consumer operations and recovery playbooks.
 - `docs/workflows.md` — DBOS/Kubernetes/CLI workflow modes.
+- `docs/specs.md` — TLA+ specs and trace verification flow.
+- `docs/connectors.md` — connector configuration notes and caveats.
+- `docs/runbooks.md` — operational runbooks (DDL gating, recovery).
 - `docs/benchmarks.md` — benchmark harness and results.
 
 ## Development & Testing

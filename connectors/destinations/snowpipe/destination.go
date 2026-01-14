@@ -29,6 +29,10 @@ const (
 	optFormat       = "format"
 	optFileFormat   = "file_format"
 	optCopyOnWrite  = "copy_on_write"
+	optCopyPattern  = "copy_pattern"
+	optCopyOnError  = "copy_on_error"
+	optCopyPurge    = "copy_purge"
+	optCopyMatch    = "copy_match_by_column_name"
 	optAutoIngest   = "auto_ingest"
 	optWriteMode    = "write_mode"
 	optMetaTable    = "meta_table"
@@ -51,6 +55,10 @@ type Destination struct {
 	stage        string
 	stagePath    string
 	copyOnWrite  bool
+	copyPattern  string
+	copyOnError  string
+	copyPurge    *bool
+	copyMatch    string
 	fileFormat   string
 	writeMode    string
 	metaEnabled  bool
@@ -97,6 +105,13 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.stage = strings.TrimSpace(spec.Options[optStage])
 	d.stagePath = strings.Trim(strings.TrimSpace(spec.Options[optStagePath]), "/")
 	d.copyOnWrite = parseBool(spec.Options[optCopyOnWrite], true)
+	d.copyPattern = strings.TrimSpace(spec.Options[optCopyPattern])
+	d.copyOnError = strings.TrimSpace(spec.Options[optCopyOnError])
+	d.copyMatch = strings.TrimSpace(spec.Options[optCopyMatch])
+	if raw := strings.TrimSpace(spec.Options[optCopyPurge]); raw != "" {
+		val := parseBool(raw, false)
+		d.copyPurge = &val
+	}
 	if parseBool(spec.Options[optAutoIngest], false) {
 		d.copyOnWrite = false
 	}
@@ -169,7 +184,7 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 
 	if d.copyOnWrite {
 		// #nosec G201 -- identifiers are quoted and derived from schema/config.
-		copyStmt := fmt.Sprintf("COPY INTO %s FROM %s FILES = ('%s') %s", d.targetTable(batch.Schema, batch.Records[0]), stageLocation, fileName, d.fileFormatClause())
+		copyStmt := fmt.Sprintf("COPY INTO %s FROM %s FILES = ('%s') %s", d.targetTable(batch.Schema, batch.Records[0]), stageLocation, fileName, d.copyOptionsClause())
 		if _, err := d.db.ExecContext(ctx, copyStmt); err != nil {
 			return fmt.Errorf("copy into: %w", err)
 		}
@@ -323,6 +338,34 @@ func (d *Destination) fileFormatClause() string {
 	default:
 		return ""
 	}
+}
+
+func (d *Destination) copyOptionsClause() string {
+	parts := make([]string, 0, 4)
+	if clause := d.fileFormatClause(); clause != "" {
+		parts = append(parts, clause)
+	}
+	if d.copyPattern != "" {
+		parts = append(parts, fmt.Sprintf("PATTERN = '%s'", escapeCopyString(d.copyPattern)))
+	}
+	if d.copyOnError != "" {
+		parts = append(parts, fmt.Sprintf("ON_ERROR = '%s'", escapeCopyString(d.copyOnError)))
+	}
+	if d.copyMatch != "" {
+		parts = append(parts, fmt.Sprintf("MATCH_BY_COLUMN_NAME = '%s'", escapeCopyString(d.copyMatch)))
+	}
+	if d.copyPurge != nil {
+		if *d.copyPurge {
+			parts = append(parts, "PURGE = TRUE")
+		} else {
+			parts = append(parts, "PURGE = FALSE")
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func escapeCopyString(value string) string {
+	return strings.ReplaceAll(value, "'", "''")
 }
 
 func extensionForFormat(format connector.WireFormat) string {
