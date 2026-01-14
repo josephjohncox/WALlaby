@@ -34,6 +34,10 @@ Kafka options:
 - `schema_registry_region`, `schema_registry_endpoint`, `schema_registry_profile`, `schema_registry_role_arn`,
   `schema_registry_glue_registry`, `schema_registry_glue_schema` (Glue registry)
 
+Flow defaults:
+- `config.schema_registry_subject`, `config.schema_registry_proto_types_subject`, and
+  `config.schema_registry_subject_mode` can be set on the flow config. Endpoint options override flow defaults.
+
 Payload format notes:
 - `arrow`/`avro`/`proto` use the shared schema from the flow; schema evolution is driven by DDL events.
 - JSON is supported for compatibility but loses some typing fidelity; prefer Arrow/Avro/Proto for strict round-trip.
@@ -45,6 +49,7 @@ Options:
 - `dsn` (required)
 - `stage` (required) — e.g., `@my_external_stage`
 - `format` (`parquet` recommended)
+- `compat_mode` (`fakesnow` to enable PUT/COPY fallback inserts for emulator tests)
 - `auto_ingest` (`true` to **skip COPY** and rely on external notifications)
 - `copy_on_write` (`true` to run COPY immediately; set `false` with `auto_ingest=true`)
 - `copy_pattern` (Snowflake COPY PATTERN)

@@ -9,6 +9,7 @@ option go_package = "github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabyp
 service FlowService {
   rpc CreateFlow(CreateFlowRequest) returns (Flow);
   rpc UpdateFlow(UpdateFlowRequest) returns (Flow);
+  rpc ReconfigureFlow(ReconfigureFlowRequest) returns (Flow);
   rpc StartFlow(StartFlowRequest) returns (Flow);
   rpc RunFlowOnce(RunFlowOnceRequest) returns (RunFlowOnceResponse);
   rpc StopFlow(StopFlowRequest) returns (Flow);
@@ -16,6 +17,7 @@ service FlowService {
   rpc GetFlow(GetFlowRequest) returns (Flow);
   rpc ListFlows(ListFlowsRequest) returns (ListFlowsResponse);
   rpc DeleteFlow(DeleteFlowRequest) returns (DeleteFlowResponse);
+  rpc CleanupFlow(CleanupFlowRequest) returns (CleanupFlowResponse);
 }
 
 message CreateFlowRequest {
@@ -25,6 +27,13 @@ message CreateFlowRequest {
 
 message UpdateFlowRequest {
   Flow flow = 1;
+}
+
+message ReconfigureFlowRequest {
+  Flow flow = 1;
+  optional bool pause_first = 2;
+  optional bool resume_after = 3;
+  optional bool sync_publication = 4;
 }
 
 message StartFlowRequest {
@@ -67,4 +76,15 @@ message DeleteFlowRequest {
 
 message DeleteFlowResponse {
   bool deleted = 1;
+}
+
+message CleanupFlowRequest {
+  string flow_id = 1;
+  optional bool drop_slot = 2;
+  optional bool drop_publication = 3;
+  optional bool drop_source_state = 4;
+}
+
+message CleanupFlowResponse {
+  bool cleaned = 1;
 }

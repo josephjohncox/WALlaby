@@ -62,6 +62,9 @@ Flow fields you can set:
 - `config.primary_destination` — destination name used when `ack_policy=primary`
 - `config.failure_mode` — `hold_slot` (default) or `drop_slot`
 - `config.give_up_policy` — `on_retry_exhaustion` (default) or `never`
+- `config.schema_registry_subject` — default registry subject for destinations (overridden by endpoint options)
+- `config.schema_registry_proto_types_subject` — default subject for Proto dependency schemas
+- `config.schema_registry_subject_mode` — Kafka subject mode (`topic`, `table`, `topic_table`)
 
 Why fan‑out instead of multiple replication slots?
 - One slot means WAL is decoded once, reducing CPU/I/O on the primary.
@@ -70,7 +73,10 @@ Why fan‑out instead of multiple replication slots?
 - `ack_policy=primary` lets the primary destination advance the slot while secondaries replay.
 
 To reconfigure destinations or wire format, call `UpdateFlow` with a full `Flow` payload; state is preserved.
-From the CLI, use `wallaby-admin flow update -file <path> [-pause] [-resume]` to pause, update, and resume in one step.
+From the CLI, use `wallaby-admin flow update -file <path> [-pause] [-resume]` to pause, update, and resume in one step,
+or `wallaby-admin flow reconfigure -file <path> [-sync-publication]` to let the server orchestrate the pause/update/resume cycle.
+When decommissioning a flow, `wallaby-admin flow cleanup -flow-id <id> [-drop-slot] [-drop-publication] [-drop-source-state]`
+removes replication slots/publications and clears source state entries.
 
 ## Worker Mode (Per-Flow Process)
 Run a single flow in its own process. This is recommended for Kubernetes or when you want isolated scaling per flow.

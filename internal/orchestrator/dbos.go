@@ -195,7 +195,7 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunIn
 		return "", err
 	}
 
-	destinations, err := o.factory.Destinations(f.Destinations)
+	destinations, err := o.factory.DestinationsForFlow(f)
 	if err != nil {
 		return "", err
 	}

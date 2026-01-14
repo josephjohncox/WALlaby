@@ -6,6 +6,7 @@ This is useful for workflow fan‑out, webhooks, and downstream processing pipel
 ## How It Works
 - Each CDC record is encoded with the configured wire format and written into `stream_events`.
 - For each consumer group, delivery state is tracked in `stream_deliveries`.
+- When schema registry is enabled (Avro/Proto), registry metadata is stored alongside each event and returned in stream pull responses.
 - `Pull` claims messages and sets a visibility timeout.
 - `Ack` marks messages as delivered and prevents redelivery.
 - If the timeout expires, messages become visible again.

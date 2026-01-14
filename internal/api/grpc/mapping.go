@@ -78,11 +78,14 @@ func flowConfigToProto(cfg flow.Config) *wallabypb.FlowConfig {
 		return nil
 	}
 	return &wallabypb.FlowConfig{
-		AckPolicy:          ackPolicyToProto(cfg.AckPolicy),
-		PrimaryDestination: cfg.PrimaryDestination,
-		FailureMode:        failureModeToProto(cfg.FailureMode),
-		GiveUpPolicy:       giveUpPolicyToProto(cfg.GiveUpPolicy),
-		Ddl:                ddlPolicyToProto(cfg.DDL),
+		AckPolicy:                       ackPolicyToProto(cfg.AckPolicy),
+		PrimaryDestination:              cfg.PrimaryDestination,
+		FailureMode:                     failureModeToProto(cfg.FailureMode),
+		GiveUpPolicy:                    giveUpPolicyToProto(cfg.GiveUpPolicy),
+		Ddl:                             ddlPolicyToProto(cfg.DDL),
+		SchemaRegistrySubject:           cfg.SchemaRegistrySubject,
+		SchemaRegistryProtoTypesSubject: cfg.SchemaRegistryProtoTypesSubject,
+		SchemaRegistrySubjectMode:       cfg.SchemaRegistrySubjectMode,
 	}
 }
 
@@ -91,11 +94,14 @@ func flowConfigFromProto(cfg *wallabypb.FlowConfig) flow.Config {
 		return flow.Config{}
 	}
 	return flow.Config{
-		AckPolicy:          ackPolicyFromProto(cfg.AckPolicy),
-		PrimaryDestination: cfg.PrimaryDestination,
-		FailureMode:        failureModeFromProto(cfg.FailureMode),
-		GiveUpPolicy:       giveUpPolicyFromProto(cfg.GiveUpPolicy),
-		DDL:                ddlPolicyFromProto(cfg.Ddl),
+		AckPolicy:                       ackPolicyFromProto(cfg.AckPolicy),
+		PrimaryDestination:              cfg.PrimaryDestination,
+		FailureMode:                     failureModeFromProto(cfg.FailureMode),
+		GiveUpPolicy:                    giveUpPolicyFromProto(cfg.GiveUpPolicy),
+		DDL:                             ddlPolicyFromProto(cfg.Ddl),
+		SchemaRegistrySubject:           cfg.SchemaRegistrySubject,
+		SchemaRegistryProtoTypesSubject: cfg.SchemaRegistryProtoTypesSubject,
+		SchemaRegistrySubjectMode:       cfg.SchemaRegistrySubjectMode,
 	}
 }
 

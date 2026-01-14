@@ -196,7 +196,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("build source: %w", err)
 	}
-	destinations, err := factory.Destinations(flowDef.Destinations)
+	destinations, err := factory.DestinationsForFlow(flowDef)
 	if err != nil {
 		return fmt.Errorf("build destinations: %w", err)
 	}

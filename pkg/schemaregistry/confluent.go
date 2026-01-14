@@ -53,7 +53,7 @@ func newApicurioRegistry(cfg Config) (*confluentRegistry, error) {
 	}
 	base := strings.TrimSuffix(cfg.URL, "/")
 	if cfg.ApicurioCompat && !strings.Contains(base, "/apis/ccompat/") {
-		base = base + "/apis/ccompat/v7"
+		base += "/apis/ccompat/v7"
 	}
 	cfg.URL = base
 	return newConfluentRegistry(cfg)
@@ -90,7 +90,9 @@ func (r *confluentRegistry) Register(ctx context.Context, req RegisterRequest) (
 	if err != nil {
 		return RegisterResult{}, fmt.Errorf("register schema: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return RegisterResult{}, fmt.Errorf("read registry response: %w", err)

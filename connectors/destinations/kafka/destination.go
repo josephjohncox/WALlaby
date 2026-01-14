@@ -21,23 +21,20 @@ import (
 )
 
 const (
-	optBrokers             = "brokers"
-	optTopic               = "topic"
-	optFormat              = "format"
-	optCompression         = "compression"
-	optAcks                = "acks"
-	optMaxMessage          = "max_message_bytes"
-	optMaxBatch            = "max_batch_bytes"
-	optMaxRecord           = "max_record_bytes"
-	optOversize            = "oversize_policy"
-	optMessageMode         = "message_mode"
-	optKeyMode             = "key_mode"
-	optTxnID               = "transactional_id"
-	optTxnTimeout          = "transaction_timeout"
-	optTxnHeader           = "transaction_header"
-	optRegistrySubjectMode = "schema_registry_subject_mode"
-	optRegistrySubject     = "schema_registry_subject"
-	optRegistryProtoTypes  = "schema_registry_proto_types_subject"
+	optBrokers     = "brokers"
+	optTopic       = "topic"
+	optFormat      = "format"
+	optCompression = "compression"
+	optAcks        = "acks"
+	optMaxMessage  = "max_message_bytes"
+	optMaxBatch    = "max_batch_bytes"
+	optMaxRecord   = "max_record_bytes"
+	optOversize    = "oversize_policy"
+	optMessageMode = "message_mode"
+	optKeyMode     = "key_mode"
+	optTxnID       = "transactional_id"
+	optTxnTimeout  = "transaction_timeout"
+	optTxnHeader   = "transaction_header"
 )
 
 // Destination writes batches to Kafka.
@@ -112,12 +109,12 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	if d.txnHeader == "" {
 		d.txnHeader = "wallaby-transaction-id"
 	}
-	d.registryMode = strings.ToLower(strings.TrimSpace(spec.Options[optRegistrySubjectMode]))
+	d.registryMode = strings.ToLower(strings.TrimSpace(spec.Options[schemaregistry.OptRegistrySubjectMode]))
 	if d.registryMode == "" {
 		d.registryMode = "topic_table"
 	}
-	d.registrySubject = strings.TrimSpace(spec.Options[optRegistrySubject])
-	d.protoTypesSubject = strings.TrimSpace(spec.Options[optRegistryProtoTypes])
+	d.registrySubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistrySubject])
+	d.protoTypesSubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistryProtoTypes])
 
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(brokers...),
@@ -155,8 +152,11 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	if d.codec.Name() == connector.WireFormatAvro || d.codec.Name() == connector.WireFormatProto {
 		registryCfg := schemaregistry.ConfigFromOptions(spec.Options)
 		registry, err := schemaregistry.NewRegistry(ctx, registryCfg)
-		if err != nil {
+		if err != nil && !errors.Is(err, schemaregistry.ErrRegistryDisabled) {
 			return err
+		}
+		if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+			registry = nil
 		}
 		d.registry = registry
 	}
@@ -181,7 +181,11 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		if d.transactional {
 			_ = d.client.EndTransaction(ctx, kgo.TryAbort)
 		}
-		return err
+		if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+			meta = nil
+		} else {
+			return err
+		}
 	}
 	if d.messageMode == "record" {
 		err = d.writeRecords(ctx, batch, meta)
@@ -422,7 +426,7 @@ type schemaMeta struct {
 
 func (d *Destination) ensureSchema(ctx context.Context, batch connector.Batch) (*schemaMeta, error) {
 	if d.registry == nil {
-		return nil, nil
+		return nil, schemaregistry.ErrRegistryDisabled
 	}
 	subject := d.registrySubjectFor(batch.Schema)
 	switch d.codec.Name() {
@@ -431,7 +435,7 @@ func (d *Destination) ensureSchema(ctx context.Context, batch connector.Batch) (
 	case connector.WireFormatProto:
 		return d.registerProtoSchema(ctx, subject)
 	default:
-		return nil, nil
+		return nil, schemaregistry.ErrRegistryDisabled
 	}
 }
 

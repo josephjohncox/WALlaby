@@ -144,6 +144,18 @@ func (s *sourceStateStore) UpdateState(ctx context.Context, id, state string) er
 	return nil
 }
 
+func (s *sourceStateStore) Delete(ctx context.Context, id string) error {
+	if id == "" {
+		return nil
+	}
+	tableIdent := pgx.Identifier{s.schema, s.table}.Sanitize()
+	query := fmt.Sprintf("DELETE FROM %s WHERE id = $1", tableIdent)
+	if _, err := s.pool.Exec(ctx, query, id); err != nil {
+		return fmt.Errorf("delete source state: %w", err)
+	}
+	return nil
+}
+
 func (s *sourceStateStore) Close() {
 	if s.pool != nil {
 		s.pool.Close()
