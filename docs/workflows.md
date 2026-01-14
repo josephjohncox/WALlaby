@@ -43,3 +43,5 @@ export WALLABY_K8S_JOB_ENV_FROM="secret:wallaby-secrets,configmap:wallaby-config
 
 Optional settings include namespace, kubeconfig, explicit API server credentials, and job labels/annotations.
 See `examples/workflows/k8s.env` for a ready‑to‑edit template.
+
+For server-side one-off dispatch (without changing flow state), call `RunFlowOnce` via gRPC or `wallaby-admin flow run-once`.

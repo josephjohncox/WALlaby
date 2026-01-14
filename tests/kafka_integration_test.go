@@ -3,6 +3,8 @@ package tests
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -211,6 +213,189 @@ func TestKafkaDestinationWireFormats(t *testing.T) {
 			}
 			tc.check(t, record.Value)
 		})
+	}
+}
+
+func TestKafkaDestinationRecordModeHeaders(t *testing.T) {
+	brokersRaw := strings.TrimSpace(os.Getenv("WALLABY_TEST_KAFKA_BROKERS"))
+	if brokersRaw == "" {
+		t.Skip("WALLABY_TEST_KAFKA_BROKERS not set")
+	}
+	brokers := splitCSV(brokersRaw)
+	if len(brokers) == 0 {
+		t.Skip("no kafka brokers configured")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	topic := fmt.Sprintf("wallaby_test_record_%d", time.Now().UnixNano())
+	adminClient, err := kgo.NewClient(kgo.SeedBrokers(brokers...))
+	if err != nil {
+		t.Fatalf("create kafka client: %v", err)
+	}
+	defer adminClient.Close()
+
+	admin := kadm.NewClient(adminClient)
+	if err := ensureKafkaTopic(ctx, admin, topic); err != nil {
+		t.Fatalf("create topic: %v", err)
+	}
+
+	dest := &kafkadest.Destination{}
+	spec := connector.Spec{
+		Name: "kafka-test-record",
+		Type: connector.EndpointKafka,
+		Options: map[string]string{
+			"brokers":            brokersRaw,
+			"topic":              topic,
+			"format":             "json",
+			"acks":               "all",
+			"message_mode":       "record",
+			"key_mode":           "hash",
+			"transaction_header": "wallaby-transaction-id",
+		},
+	}
+	if err := dest.Open(ctx, spec); err != nil {
+		t.Fatalf("open destination: %v", err)
+	}
+	defer dest.Close(ctx)
+
+	now := time.Now().UTC()
+	batch := connector.Batch{
+		Schema: connector.Schema{
+			Name:      "orders",
+			Namespace: "public",
+			Version:   1,
+			Columns: []connector.Column{
+				{Name: "id", Type: "int8"},
+				{Name: "status", Type: "text"},
+			},
+		},
+		Checkpoint: connector.Checkpoint{LSN: "0/42", Timestamp: now},
+		WireFormat: connector.WireFormatJSON,
+		Records: []connector.Record{
+			{
+				Table:         "public.orders",
+				Operation:     connector.OpInsert,
+				SchemaVersion: 1,
+				Key:           []byte(`{"id":42}`),
+				After: map[string]any{
+					"id":     42,
+					"status": "paid",
+				},
+				Timestamp: now,
+			},
+		},
+	}
+
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("write kafka batch: %v", err)
+	}
+
+	consumer, err := kgo.NewClient(
+		kgo.SeedBrokers(brokers...),
+		kgo.ConsumeTopics(topic),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+	)
+	if err != nil {
+		t.Fatalf("create kafka consumer: %v", err)
+	}
+	defer consumer.Close()
+
+	record, err := waitForKafkaRecord(ctx, consumer, topic)
+	if err != nil {
+		t.Fatalf("consume kafka record: %v", err)
+	}
+
+	if headerValue(record.Headers, "wallaby-table") != "public.orders" {
+		t.Fatalf("missing wallaby-table header: %v", record.Headers)
+	}
+	if headerValue(record.Headers, "wallaby-op") != string(connector.OpInsert) {
+		t.Fatalf("missing wallaby-op header: %v", record.Headers)
+	}
+	if headerValue(record.Headers, "wallaby-lsn") != "0/42" {
+		t.Fatalf("missing wallaby-lsn header: %v", record.Headers)
+	}
+	if headerValue(record.Headers, "wallaby-transaction-id") != "0/42" {
+		t.Fatalf("missing transaction header: %v", record.Headers)
+	}
+	if record.Key == nil || len(record.Key) == 0 {
+		t.Fatalf("expected deterministic record key")
+	}
+	expectedHash := hashString(string(batch.Records[0].Key))
+	if headerValue(record.Headers, "wallaby-key-hash") != expectedHash {
+		t.Fatalf("expected key hash %s, got %s", expectedHash, headerValue(record.Headers, "wallaby-key-hash"))
+	}
+}
+
+func TestKafkaDestinationSchemaRegistryHeaders(t *testing.T) {
+	brokersRaw := strings.TrimSpace(os.Getenv("WALLABY_TEST_KAFKA_BROKERS"))
+	if brokersRaw == "" {
+		t.Skip("WALLABY_TEST_KAFKA_BROKERS not set")
+	}
+	brokers := splitCSV(brokersRaw)
+	if len(brokers) == 0 {
+		t.Skip("no kafka brokers configured")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	topic := fmt.Sprintf("wallaby_test_registry_%d", time.Now().UnixNano())
+	adminClient, err := kgo.NewClient(kgo.SeedBrokers(brokers...))
+	if err != nil {
+		t.Fatalf("create kafka client: %v", err)
+	}
+	defer adminClient.Close()
+
+	admin := kadm.NewClient(adminClient)
+	if err := ensureKafkaTopic(ctx, admin, topic); err != nil {
+		t.Fatalf("create topic: %v", err)
+	}
+
+	dest := &kafkadest.Destination{}
+	spec := connector.Spec{
+		Name: "kafka-test-registry",
+		Type: connector.EndpointKafka,
+		Options: map[string]string{
+			"brokers":                      brokersRaw,
+			"topic":                        topic,
+			"format":                       "avro",
+			"acks":                         "all",
+			"schema_registry":              "local",
+			"schema_registry_subject_mode": "topic",
+		},
+	}
+	if err := dest.Open(ctx, spec); err != nil {
+		t.Fatalf("open destination: %v", err)
+	}
+	defer dest.Close(ctx)
+
+	batch := sampleBatch(connector.WireFormatAvro)
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("write kafka batch: %v", err)
+	}
+
+	consumer, err := kgo.NewClient(
+		kgo.SeedBrokers(brokers...),
+		kgo.ConsumeTopics(topic),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+	)
+	if err != nil {
+		t.Fatalf("create kafka consumer: %v", err)
+	}
+	defer consumer.Close()
+
+	record, err := waitForKafkaRecord(ctx, consumer, topic)
+	if err != nil {
+		t.Fatalf("consume kafka record: %v", err)
+	}
+
+	if headerValue(record.Headers, "wallaby-registry-subject") == "" {
+		t.Fatalf("missing wallaby-registry-subject header")
+	}
+	if headerValue(record.Headers, "wallaby-registry-id") == "" {
+		t.Fatalf("missing wallaby-registry-id header")
 	}
 }
 
@@ -466,4 +651,9 @@ func splitCSV(value string) []string {
 		}
 	}
 	return out
+}
+
+func hashString(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }

@@ -172,6 +172,18 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 
 	time.Sleep(1 * time.Second)
 
+	waitFor(t, 10*time.Second, 200*time.Millisecond, func() (bool, error) {
+		var count int
+		err := srcPool.QueryRow(ctx,
+			"SELECT COUNT(*) FROM wallaby.source_state WHERE slot_name = $1 AND publication_name = $2",
+			slot, pub,
+		).Scan(&count)
+		if err != nil {
+			return false, err
+		}
+		return count > 0, nil
+	})
+
 	ddlSQL := fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN extra TEXT`, schemaName, table)
 	if _, err := srcPool.Exec(ctx, ddlSQL); err != nil {
 		t.Fatalf("alter table: %v", err)

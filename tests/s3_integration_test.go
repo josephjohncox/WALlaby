@@ -142,6 +142,106 @@ func TestS3PartitionedParquet(t *testing.T) {
 	}
 }
 
+func TestS3SchemaRegistryMetadata(t *testing.T) {
+	endpoint := os.Getenv("WALLABY_TEST_S3_ENDPOINT")
+	bucket := os.Getenv("WALLABY_TEST_S3_BUCKET")
+	accessKey := os.Getenv("WALLABY_TEST_S3_ACCESS_KEY")
+	secretKey := os.Getenv("WALLABY_TEST_S3_SECRET_KEY")
+	region := os.Getenv("WALLABY_TEST_S3_REGION")
+	if endpoint == "" || bucket == "" || accessKey == "" || secretKey == "" {
+		t.Skip("S3 test env not configured")
+	}
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	ctx := context.Background()
+	client, err := newS3Client(ctx, endpoint, region, accessKey, secretKey)
+	if err != nil {
+		t.Fatalf("create s3 client: %v", err)
+	}
+
+	if _, err := client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)}); err != nil {
+		var owned *types.BucketAlreadyOwnedByYou
+		var exists *types.BucketAlreadyExists
+		if !errors.As(err, &owned) && !errors.As(err, &exists) {
+			t.Fatalf("create bucket: %v", err)
+		}
+	}
+
+	prefix := fmt.Sprintf("wallaby-registry-%d", time.Now().UnixNano())
+	dest := &s3dest.Destination{}
+	spec := connector.Spec{
+		Name: "s3-registry",
+		Type: connector.EndpointS3,
+		Options: map[string]string{
+			"bucket":           bucket,
+			"region":           region,
+			"endpoint":         endpoint,
+			"access_key":       accessKey,
+			"secret_key":       secretKey,
+			"force_path_style": "true",
+			"format":           "avro",
+			"prefix":           prefix,
+			"schema_registry":  "local",
+		},
+	}
+	if err := dest.Open(ctx, spec); err != nil {
+		t.Fatalf("open s3 destination: %v", err)
+	}
+	defer dest.Close(ctx)
+
+	schema := connector.Schema{
+		Namespace: "public",
+		Name:      "orders",
+		Version:   1,
+		Columns: []connector.Column{
+			{Name: "id", Type: "int8"},
+		},
+	}
+	batch := connector.Batch{
+		Records: []connector.Record{
+			{Table: "orders", Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1}},
+		},
+		Schema:     schema,
+		Checkpoint: connector.Checkpoint{LSN: "1"},
+		WireFormat: connector.WireFormatAvro,
+	}
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("write batch: %v", err)
+	}
+
+	key1, meta1, err := latestObjectMetadata(ctx, client, bucket, prefix)
+	if err != nil {
+		t.Fatalf("metadata v1: %v", err)
+	}
+	v1 := metadataLookup(meta1, "wallaby-registry-version")
+	if v1 == "" {
+		t.Fatalf("missing registry version metadata on %s: %v", key1, meta1)
+	}
+	if metadataLookup(meta1, "wallaby-registry-id") == "" {
+		t.Fatalf("missing registry id metadata on %s: %v", key1, meta1)
+	}
+
+	schema.Version = 2
+	schema.Columns = append(schema.Columns, connector.Column{Name: "status", Type: "text"})
+	batch.Schema = schema
+	batch.Records[0].After = map[string]any{"id": 1, "status": "paid"}
+	batch.Checkpoint = connector.Checkpoint{LSN: "2"}
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("write batch v2: %v", err)
+	}
+
+	_, meta2, err := latestObjectMetadata(ctx, client, bucket, prefix)
+	if err != nil {
+		t.Fatalf("metadata v2: %v", err)
+	}
+	v2 := metadataLookup(meta2, "wallaby-registry-version")
+	if v2 == "" || v2 == v1 {
+		t.Fatalf("expected registry version to change (v1=%s v2=%s)", v1, v2)
+	}
+}
+
 func assertParquetObject(ctx context.Context, client *s3.Client, bucket, key string) error {
 	obj, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
 	if err != nil {
@@ -167,6 +267,40 @@ func assertParquetObject(ctx context.Context, client *s3.Client, bucket, key str
 		return fmt.Errorf("unexpected parquet header: %q", string(header))
 	}
 	return nil
+}
+
+func latestObjectMetadata(ctx context.Context, client *s3.Client, bucket, prefix string) (string, map[string]string, error) {
+	resp, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket),
+		Prefix: aws.String(prefix),
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("list objects: %w", err)
+	}
+	if len(resp.Contents) == 0 {
+		return "", nil, fmt.Errorf("no objects under %s", prefix)
+	}
+	latest := resp.Contents[0]
+	for _, obj := range resp.Contents[1:] {
+		if obj.LastModified != nil && latest.LastModified != nil && obj.LastModified.After(*latest.LastModified) {
+			latest = obj
+		}
+	}
+	key := aws.ToString(latest.Key)
+	head, err := client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
+	if err != nil {
+		return "", nil, fmt.Errorf("head object %s: %w", key, err)
+	}
+	return key, head.Metadata, nil
+}
+
+func metadataLookup(headers map[string]string, key string) string {
+	for k, v := range headers {
+		if strings.EqualFold(k, key) {
+			return v
+		}
+	}
+	return ""
 }
 
 func newS3Client(ctx context.Context, endpoint, region, accessKey, secretKey string) (*s3.Client, error) {

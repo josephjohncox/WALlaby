@@ -33,6 +33,14 @@ func (r *ingestRecorder) IngestBatch(ctx context.Context, req *wallabypb.IngestB
 	return &wallabypb.IngestBatchResponse{Accepted: true}, nil
 }
 
+func firstMeta(md metadata.MD, key string) string {
+	values := md.Get(key)
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
 func TestGRPCDestinationModes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -100,6 +108,80 @@ func TestGRPCDestinationModes(t *testing.T) {
 		if mode := recorder.meta[0].Get("x-wallaby-payload-mode"); len(mode) == 0 || mode[0] != "wire" {
 			t.Fatalf("expected payload_mode=wire, got %v", mode)
 		}
+	})
+
+	t.Run("wire_registry", func(t *testing.T) {
+		recorder.mu.Lock()
+		recorder.requests = nil
+		recorder.meta = nil
+		recorder.mu.Unlock()
+
+		dest := &grpcdest.Destination{}
+		spec := connector.Spec{
+			Name: "grpc-wire-registry",
+			Type: connector.EndpointGRPC,
+			Options: map[string]string{
+				"endpoint":        target,
+				"format":          "avro",
+				"schema_registry": "local",
+			},
+		}
+		if err := dest.Open(ctx, spec); err != nil {
+			t.Fatalf("open dest: %v", err)
+		}
+		defer dest.Close(ctx)
+
+		schema := connector.Schema{
+			Name:      "items",
+			Namespace: "public",
+			Version:   1,
+			Columns: []connector.Column{
+				{Name: "id", Type: "int8"},
+			},
+		}
+		batch := connector.Batch{
+			Records: []connector.Record{
+				{Table: "items", Operation: connector.OpInsert, After: map[string]any{"id": 1}},
+			},
+			Schema:     schema,
+			Checkpoint: connector.Checkpoint{LSN: "10"},
+		}
+		if err := dest.Write(ctx, batch); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+
+		recorder.mu.Lock()
+		if len(recorder.meta) < 1 {
+			recorder.mu.Unlock()
+			t.Fatalf("expected metadata")
+		}
+		meta1 := recorder.meta[len(recorder.meta)-1]
+		v1 := firstMeta(meta1, "x-wallaby-registry-version")
+		id1 := firstMeta(meta1, "x-wallaby-registry-id")
+		if id1 == "" || v1 == "" {
+			recorder.mu.Unlock()
+			t.Fatalf("missing registry metadata: %v", meta1)
+		}
+		recorder.mu.Unlock()
+
+		schema.Version = 2
+		schema.Columns = append(schema.Columns, connector.Column{Name: "status", Type: "text"})
+		batch.Schema = schema
+		batch.Records[0].After = map[string]any{"id": 1, "status": "ok"}
+		batch.Checkpoint = connector.Checkpoint{LSN: "11"}
+
+		if err := dest.Write(ctx, batch); err != nil {
+			t.Fatalf("write v2: %v", err)
+		}
+
+		recorder.mu.Lock()
+		meta2 := recorder.meta[len(recorder.meta)-1]
+		v2 := firstMeta(meta2, "x-wallaby-registry-version")
+		if v2 == "" || v2 == v1 {
+			recorder.mu.Unlock()
+			t.Fatalf("expected registry version to change (v1=%s v2=%s)", v1, v2)
+		}
+		recorder.mu.Unlock()
 	})
 
 	t.Run("record_json", func(t *testing.T) {

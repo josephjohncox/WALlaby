@@ -309,6 +309,103 @@ func TestKubernetesDispatcherRetry(t *testing.T) {
 	_ = deleteJob(ctx, client, namespace, jobName)
 }
 
+func TestKubernetesDispatcherRecovery(t *testing.T) {
+	kubeconfig := strings.TrimSpace(os.Getenv("WALLABY_TEST_K8S_KUBECONFIG"))
+	inCluster := strings.TrimSpace(os.Getenv("KUBERNETES_SERVICE_HOST")) != ""
+	if kubeconfig == "" && !inCluster {
+		t.Skip("WALLABY_TEST_K8S_KUBECONFIG not set and not running in-cluster")
+	}
+
+	namespace := strings.TrimSpace(os.Getenv("WALLABY_TEST_K8S_NAMESPACE"))
+	if namespace == "" {
+		namespace = "default"
+	}
+	image := strings.TrimSpace(os.Getenv("WALLABY_TEST_K8S_IMAGE"))
+	if image == "" {
+		image = "busybox:1.36"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	dispatcher, err := orchestrator.NewKubernetesDispatcher(ctx, orchestrator.KubernetesConfig{
+		KubeconfigPath:  kubeconfig,
+		Namespace:       namespace,
+		JobImage:        image,
+		JobNamePrefix:   "wallaby-recover",
+		JobBackoffLimit: 0,
+		JobCommand:      []string{"/bin/true"},
+	})
+	if err != nil {
+		t.Fatalf("create dispatcher: %v", err)
+	}
+
+	client, err := kubeClient(kubeconfig)
+	if err != nil {
+		t.Fatalf("kube client: %v", err)
+	}
+
+	flowID := fmt.Sprintf("flow-%d", time.Now().UnixNano())
+	if err := dispatcher.EnqueueFlow(ctx, flowID); err != nil {
+		t.Fatalf("enqueue flow: %v", err)
+	}
+
+	var firstJob string
+	var firstUID string
+	waitFor(t, 30*time.Second, 2*time.Second, func() (bool, error) {
+		list, err := client.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("wallaby.flow-id=%s", flowID),
+		})
+		if err != nil {
+			return false, err
+		}
+		if len(list.Items) == 0 {
+			return false, nil
+		}
+		firstJob = list.Items[0].Name
+		firstUID = string(list.Items[0].UID)
+		return true, nil
+	})
+
+	waitFor(t, 60*time.Second, 2*time.Second, func() (bool, error) {
+		job, err := client.BatchV1().Jobs(namespace).Get(ctx, firstJob, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		if job.Status.Succeeded > 0 {
+			return true, nil
+		}
+		for _, condition := range job.Status.Conditions {
+			if condition.Type == batchv1.JobComplete && condition.Status == corev1.ConditionTrue {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+
+	if err := dispatcher.EnqueueFlow(ctx, flowID); err != nil {
+		t.Fatalf("enqueue flow after completion: %v", err)
+	}
+
+	waitFor(t, 30*time.Second, 2*time.Second, func() (bool, error) {
+		job, err := client.BatchV1().Jobs(namespace).Get(ctx, firstJob, metav1.GetOptions{})
+		if err != nil {
+			return false, nil
+		}
+		return string(job.UID) != firstUID, nil
+	})
+
+	jobs, err := client.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("wallaby.flow-id=%s", flowID),
+	})
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	for _, job := range jobs.Items {
+		_ = deleteJob(ctx, client, namespace, job.Name)
+	}
+}
+
 func kubeClient(kubeconfig string) (*kubernetes.Clientset, error) {
 	if strings.TrimSpace(kubeconfig) != "" {
 		loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig}

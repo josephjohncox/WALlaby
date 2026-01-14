@@ -304,6 +304,12 @@ func (d *Destination) attachDuckLake(ctx context.Context) error {
 	if d.db == nil {
 		return errors.New("ducklake destination not initialized")
 	}
+	if attached, err := d.catalogAttached(ctx); err == nil && attached {
+		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("USE %s", quoteIdent(d.catalogName, '"'))); err != nil {
+			return fmt.Errorf("use ducklake catalog: %w", err)
+		}
+		return nil
+	}
 	uri := d.catalogURI()
 	opts := make([]string, 0, 2)
 	if d.dataPath != "" {
@@ -324,6 +330,30 @@ func (d *Destination) attachDuckLake(ctx context.Context) error {
 		return fmt.Errorf("use ducklake catalog: %w", err)
 	}
 	return nil
+}
+
+func (d *Destination) catalogAttached(ctx context.Context) (bool, error) {
+	rows, err := d.db.QueryContext(ctx, "PRAGMA database_list")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var seq int
+		var name string
+		var file string
+		if err := rows.Scan(&seq, &name, &file); err != nil {
+			return false, err
+		}
+		if name == d.catalogName {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func (d *Destination) catalogURI() string {

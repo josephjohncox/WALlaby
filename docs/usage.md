@@ -70,6 +70,7 @@ Why fan‑out instead of multiple replication slots?
 - `ack_policy=primary` lets the primary destination advance the slot while secondaries replay.
 
 To reconfigure destinations or wire format, call `UpdateFlow` with a full `Flow` payload; state is preserved.
+From the CLI, use `wallaby-admin flow update -file <path> [-pause] [-resume]` to pause, update, and resume in one step.
 
 ## Worker Mode (Per-Flow Process)
 Run a single flow in its own process. This is recommended for Kubernetes or when you want isolated scaling per flow.
@@ -140,6 +141,8 @@ export WALLABY_WIRE_ENFORCE="true"
 
 Per-flow overrides are supported via `flow.wire_format` or connector `options.format`.
 
+For connector-specific caveats (Snowpipe auto-ingest, DuckLake, Kafka payloads), see `docs/connectors.md`.
+
 ## Kafka Destination
 Kafka destination options (connector `options`):
 - `brokers` (required) — comma-separated list
@@ -151,6 +154,18 @@ Kafka destination options (connector `options`):
 - `max_batch_bytes` (default = `max_message_bytes`) — size-aware split threshold for encoded batches
 - `max_record_bytes` (default = `max_message_bytes`) — hard cap for single-record payloads
 - `oversize_policy` (`error` default, or `drop`)
+- `message_mode` (`batch` default, or `record`)
+- `key_mode` (`hash` default, or `raw` to use the record key directly)
+- `transactional_id` (enable Kafka transactions per batch)
+- `transaction_timeout` (optional, e.g. `30s`)
+- `transaction_header` (defaults to `wallaby-transaction-id`)
+- `schema_registry` (`csr`, `apicurio`, `glue`, `postgres`, `local`, `none`)
+- `schema_registry_url` (CSR/Apicurio)
+- `schema_registry_subject` / `schema_registry_subject_mode`
+- `schema_registry_username` / `schema_registry_password` / `schema_registry_token`
+- `schema_registry_dsn` (postgres registry)
+
+Kafka payload details and headers are documented in `docs/connectors.md`.
 
 ## S3 Destination
 S3 destination options (connector `options`):
@@ -190,10 +205,15 @@ HTTP destination options (connector `options`):
 - `headers` (comma-separated `Key:Value` list)
 - `max_retries`, `backoff_base`, `backoff_max`, `backoff_factor`
 - `idempotency_header` (default `Idempotency-Key`)
+- `transaction_header` (default `X-Wallaby-Transaction-Id`)
+- `dedupe_window` (duration string, disables duplicates within the window)
 
 `payload_mode=record_json` (alias `raw`) sends a single-record JSON envelope (table, operation, key, before/after, etc.) and ignores `format`.
 `payload_mode=wal` sends raw pgoutput bytes (requires a Postgres logical source).
 The idempotency key is derived from `(table, key, lsn)` and hashed to a fixed string.
+
+## Runbooks
+For operational playbooks (DDL gating and recovery), see `docs/runbooks.md`.
 
 ## gRPC Destination
 gRPC destination options (connector `options`):

@@ -34,6 +34,7 @@ func TestHTTPDestinationRecordJSON(t *testing.T) {
 			"url":                strings.TrimRight(baseURL, "/") + "/capture",
 			"payload_mode":       "record_json",
 			"idempotency_header": "Idempotency-Key",
+			"transaction_header": "X-Wallaby-Transaction-Id",
 			"timeout":            "3s",
 		},
 	}
@@ -100,6 +101,101 @@ func TestHTTPDestinationRecordJSON(t *testing.T) {
 	}
 	if gotKey != expectedKey {
 		t.Fatalf("unexpected idempotency key: %s", gotKey)
+	}
+	if headerLookup(last.Headers, "X-Wallaby-Transaction-Id") != batch.Checkpoint.LSN {
+		t.Fatalf("missing transaction header: %v", last.Headers)
+	}
+}
+
+func TestHTTPDestinationSchemaRegistryHeaders(t *testing.T) {
+	baseURL := strings.TrimSpace(os.Getenv("WALLABY_TEST_HTTP_URL"))
+	if baseURL == "" {
+		t.Skip("WALLABY_TEST_HTTP_URL not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	dest := &httpdest.Destination{}
+	spec := connector.Spec{
+		Name: "http-registry",
+		Type: connector.EndpointHTTP,
+		Options: map[string]string{
+			"url":                strings.TrimRight(baseURL, "/") + "/capture",
+			"payload_mode":       "wire",
+			"format":             "avro",
+			"schema_registry":    "local",
+			"timeout":            "3s",
+			"transaction_header": "X-Wallaby-Transaction-Id",
+		},
+	}
+	if err := dest.Open(ctx, spec); err != nil {
+		t.Fatalf("open http destination: %v", err)
+	}
+	defer dest.Close(ctx)
+
+	now := time.Now().UTC()
+	batch := connector.Batch{
+		Schema: connector.Schema{
+			Name:      "orders",
+			Namespace: "public",
+			Version:   1,
+			Columns: []connector.Column{
+				{Name: "id", Type: "int8"},
+			},
+		},
+		Checkpoint: connector.Checkpoint{LSN: "0/10", Timestamp: now},
+		Records: []connector.Record{
+			{
+				Table:         "public.orders",
+				Operation:     connector.OpInsert,
+				SchemaVersion: 1,
+				Key:           []byte("order-1"),
+				After: map[string]any{
+					"id": 1,
+				},
+				Timestamp: now,
+			},
+		},
+	}
+
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("write http batch: %v", err)
+	}
+
+	first, err := waitForHTTPRecord(ctx, baseURL, "/capture")
+	if err != nil {
+		t.Fatalf("fetch http capture: %v", err)
+	}
+	v1 := headerLookup(first.Headers, "X-Wallaby-Registry-Version")
+	if v1 == "" {
+		t.Fatalf("missing registry version header: %v", first.Headers)
+	}
+	if headerLookup(first.Headers, "X-Wallaby-Registry-Id") == "" {
+		t.Fatalf("missing registry id header: %v", first.Headers)
+	}
+	if headerLookup(first.Headers, "X-Wallaby-Registry-Subject") == "" {
+		t.Fatalf("missing registry subject header: %v", first.Headers)
+	}
+
+	batch.Schema.Version = 2
+	batch.Schema.Columns = append(batch.Schema.Columns, connector.Column{Name: "status", Type: "text"})
+	batch.Records[0].After = map[string]any{"id": 1, "status": "paid"}
+	batch.Checkpoint = connector.Checkpoint{LSN: "0/11", Timestamp: now.Add(time.Second)}
+
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("write http batch v2: %v", err)
+	}
+	second, err := waitForHTTPRecord(ctx, baseURL, "/capture")
+	if err != nil {
+		t.Fatalf("fetch http capture v2: %v", err)
+	}
+	v2 := headerLookup(second.Headers, "X-Wallaby-Registry-Version")
+	if v2 == "" {
+		t.Fatalf("missing registry version header v2: %v", second.Headers)
+	}
+	if v1 == v2 {
+		t.Fatalf("expected registry version to change (v1=%s v2=%s)", v1, v2)
 	}
 }
 
