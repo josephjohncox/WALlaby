@@ -319,7 +319,7 @@ func TestKafkaDestinationRecordModeHeaders(t *testing.T) {
 	if headerValue(record.Headers, "wallaby-transaction-id") != "0/42" {
 		t.Fatalf("missing transaction header: %v", record.Headers)
 	}
-	if record.Key == nil || len(record.Key) == 0 {
+	if len(record.Key) == 0 {
 		t.Fatalf("expected deterministic record key")
 	}
 	expectedHash := hashString(string(batch.Records[0].Key))

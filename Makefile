@@ -1,6 +1,10 @@
 GO ?= go
 BUF ?= buf
 GOLANGCI_LINT ?= golangci-lint
+STATICCHECK_VERSION ?= latest
+GOVULNCHECK_VERSION ?= latest
+STATICCHECK_CMD ?= $(GOENV) $(GO) run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
+GOVULNCHECK_CMD ?= $(GOENV) $(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 GORELEASER ?= goreleaser
 PROTOC_GEN_GO ?= protoc-gen-go
 PROTOC_GEN_GO_GRPC ?= protoc-gen-go-grpc
@@ -38,7 +42,7 @@ SPEC_LINT_VERBOSE_MODE ?= checks
 
 export GO_TEST_TIMEOUT
 
-.PHONY: fmt lint test test-rapid test-integration test-integration-ci test-e2e test-k8s-kind proto tidy release release-snapshot proto-tools tla-tools bench bench-ddl bench-up bench-down benchmark benchmark-profile benchstat check check-coverage tla tla-single tla-flow tla-state tla-fanout tla-liveness tla-witness tla-coverage tla-coverage-check trace-suite trace-suite-large spec-manifest spec-verify spec-lint spec-sync
+.PHONY: fmt lint staticcheck vulncheck lint-full test test-rapid test-integration test-integration-ci test-e2e test-k8s-kind proto tidy release release-snapshot proto-tools tla-tools bench bench-ddl bench-up bench-down benchmark benchmark-profile benchstat check check-coverage tla tla-single tla-flow tla-state tla-fanout tla-liveness tla-witness tla-coverage tla-coverage-check trace-suite trace-suite-large spec-manifest spec-verify spec-lint spec-sync
 .PHONY: proto-lint proto-breaking
 
 fmt:
@@ -46,6 +50,14 @@ fmt:
 
 lint:
 	GOMODCACHE="$(GOMODCACHE)" GOCACHE="$(GOCACHE)" GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" $(GOLANGCI_LINT) run ./...
+
+staticcheck:
+	$(STATICCHECK_CMD) ./...
+
+vulncheck:
+	$(GOVULNCHECK_CMD) ./...
+
+lint-full: lint staticcheck vulncheck proto-lint proto-breaking
 
 check: spec-verify spec-sync spec-lint tla
 	$(GOENV) $(GO) test ./...
