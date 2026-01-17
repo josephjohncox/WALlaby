@@ -33,3 +33,8 @@ func newPool(ctx context.Context, dsn string, options map[string]string) (*pgxpo
 	}
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
+
+// OpenPool exposes the standard Postgres pool configuration (IAM + codecs).
+func OpenPool(ctx context.Context, dsn string, options map[string]string) (*pgxpool.Pool, error) {
+	return newPool(ctx, dsn, options)
+}

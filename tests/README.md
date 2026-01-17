@@ -47,6 +47,7 @@ Set these environment variables to enable destination tests:
 - `WALLABY_TEST_S3_ENDPOINT`, `WALLABY_TEST_S3_BUCKET`, `WALLABY_TEST_S3_ACCESS_KEY`, `WALLABY_TEST_S3_SECRET_KEY`, optional `WALLABY_TEST_S3_REGION`
 - `WALLABY_TEST_KAFKA_BROKERS` (Kafka/Redpanda brokers)
 - `WALLABY_TEST_HTTP_URL` (HTTP destination test endpoint)
+- `WALLABY_TEST_GLUE_ENDPOINT`, optional `WALLABY_TEST_GLUE_REGION` (Glue schema registry via LocalStack)
 - `WALLABY_TEST_DUCKDB_DSN`
 - `WALLABY_TEST_DUCKLAKE=1` (enabled by default; requires ducklake extension)
 - `WALLABY_TEST_SNOWFLAKE_DSN`, optional `WALLABY_TEST_SNOWFLAKE_SCHEMA`

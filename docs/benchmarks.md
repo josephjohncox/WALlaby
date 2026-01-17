@@ -89,6 +89,17 @@ DDL churn is available as a separate scenario (adds/drops a column and changes a
 make bench-ddl PROFILE=small TARGETS=postgres
 ```
 
+### Mutation/Target Write Matrix
+
+For destinations with multiple write modes (e.g., ClickHouse mutations vs append), run the DDL scenario
+with the destination-specific write mode toggles:
+
+```bash
+# ClickHouse: compare append vs mutation-based target writes
+BENCH_CLICKHOUSE_WRITE_MODE=append make bench-ddl PROFILE=small TARGETS=clickhouse
+BENCH_CLICKHOUSE_WRITE_MODE=target make bench-ddl PROFILE=small TARGETS=clickhouse
+```
+
 ## Environment Overrides
 
 You can override connection settings via env vars:
@@ -134,3 +145,21 @@ across the two directories for:
 
 If you only have a single run per side, benchstat will report `N=1` samples and
 no confidence intervals. Run multiple iterations for meaningful statistics.
+
+## External Baselines (Debezium / PeerDB / Sequin)
+
+To compare WALlaby against other CDC systems, run them under the **same Docker
+composition, dataset, and workload** and store results alongside WALlaby runs.
+We recommend:
+
+1. Start the same Postgres source + target stack used by `bench/docker-compose.yml`.
+2. Run the other tool with identical table shapes and a 70/20/10 update/insert/delete mix.
+3. Export results into `bench/results/external/<tool>/bench_*.json` with the same fields
+   (`records_per_sec`, `mb_per_sec`, `latency_p95_ms`, `latency_p99_ms`).
+4. Compare with `benchstat`:
+
+```bash
+make benchstat BASELINE=bench/results/external/debezium CANDIDATE=bench/results/run_<timestamp>
+```
+
+Keep notes about versions, config, and hardware so we can reproduce results later.

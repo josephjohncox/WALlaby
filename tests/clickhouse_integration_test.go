@@ -263,6 +263,142 @@ func TestClickHouseStagingAndDDL(t *testing.T) {
 	if extra != "ok" {
 		t.Fatalf("unexpected extra value: %s", extra)
 	}
+
+	renameDDL := connector.Record{
+		Table:     table,
+		Operation: connector.OpDDL,
+		DDL:       fmt.Sprintf("ALTER TABLE %s RENAME COLUMN name TO display_name", fullTable),
+	}
+	if err := dest.ApplyDDL(ctx, schema, renameDDL); err != nil {
+		t.Fatalf("apply rename ddl: %v", err)
+	}
+	schema.Columns = []connector.Column{
+		{Name: "id", Type: "UInt64"},
+		{Name: "display_name", Type: "String"},
+		{Name: "extra", Type: "String"},
+	}
+	insert = connector.Record{
+		Table:     table,
+		Operation: connector.OpInsert,
+		Key:       recordKey(t, map[string]any{"id": uint64(12)}),
+		After: map[string]any{
+			"id":           uint64(12),
+			"display_name": "renamed",
+			"extra":        "v2",
+		},
+	}
+	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "3"}}
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("insert after rename ddl: %v", err)
+	}
+	var renamed string
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT display_name FROM %s WHERE id = 12", fullTable)).Scan(&renamed); err != nil {
+		t.Fatalf("select display_name: %v", err)
+	}
+	if renamed != "renamed" {
+		t.Fatalf("unexpected display_name after rename ddl: %s", renamed)
+	}
+
+	typeDDL := connector.Record{
+		Table:     table,
+		Operation: connector.OpDDL,
+		DDL:       fmt.Sprintf("ALTER TABLE %s ALTER COLUMN extra TYPE text", fullTable),
+	}
+	if err := dest.ApplyDDL(ctx, schema, typeDDL); err != nil {
+		t.Fatalf("apply type ddl: %v", err)
+	}
+	schema.Columns = []connector.Column{
+		{Name: "id", Type: "UInt64"},
+		{Name: "display_name", Type: "String"},
+		{Name: "extra", Type: "String"},
+	}
+	insert = connector.Record{
+		Table:     table,
+		Operation: connector.OpInsert,
+		Key:       recordKey(t, map[string]any{"id": uint64(13)}),
+		After: map[string]any{
+			"id":           uint64(13),
+			"display_name": "typed",
+			"extra":        "v3",
+		},
+	}
+	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "4"}}
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("insert after type ddl: %v", err)
+	}
+	var typed string
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT extra FROM %s WHERE id = 13", fullTable)).Scan(&typed); err != nil {
+		t.Fatalf("select extra after type change: %v", err)
+	}
+	if typed != "v3" {
+		t.Fatalf("unexpected extra after type ddl: %s", typed)
+	}
+
+	dropDDL := connector.Record{
+		Table:     table,
+		Operation: connector.OpDDL,
+		DDL:       fmt.Sprintf("ALTER TABLE %s DROP COLUMN extra", fullTable),
+	}
+	if err := dest.ApplyDDL(ctx, schema, dropDDL); err != nil {
+		t.Fatalf("apply drop ddl: %v", err)
+	}
+	schema.Columns = []connector.Column{
+		{Name: "id", Type: "UInt64"},
+		{Name: "display_name", Type: "String"},
+	}
+	insert = connector.Record{
+		Table:     table,
+		Operation: connector.OpInsert,
+		Key:       recordKey(t, map[string]any{"id": uint64(14)}),
+		After: map[string]any{
+			"id":           uint64(14),
+			"display_name": "dropped",
+		},
+	}
+	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "5"}}
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("insert after drop ddl: %v", err)
+	}
+	var dropped string
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT display_name FROM %s WHERE id = 14", fullTable)).Scan(&dropped); err != nil {
+		t.Fatalf("select after drop ddl: %v", err)
+	}
+	if dropped != "dropped" {
+		t.Fatalf("unexpected display_name after drop ddl: %s", dropped)
+	}
+
+	renamedTable := fmt.Sprintf("%s_renamed", table)
+	renamedFull := fmt.Sprintf("%s.%s", database, renamedTable)
+	renameTableDDL := connector.Record{
+		Table:     table,
+		Operation: connector.OpDDL,
+		DDL:       fmt.Sprintf("RENAME TABLE %s TO %s", fullTable, renamedFull),
+	}
+	if err := dest.ApplyDDL(ctx, schema, renameTableDDL); err != nil {
+		t.Fatalf("apply rename table ddl: %v", err)
+	}
+	fullTable = renamedFull
+	schema.Name = renamedTable
+	insert = connector.Record{
+		Table:     renamedTable,
+		Operation: connector.OpInsert,
+		Key:       recordKey(t, map[string]any{"id": uint64(15)}),
+		After: map[string]any{
+			"id":           uint64(15),
+			"display_name": "renamed_table",
+		},
+	}
+	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "6"}}
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("insert after rename table ddl: %v", err)
+	}
+	var renamedTableVal string
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT display_name FROM %s WHERE id = 15", fullTable)).Scan(&renamedTableVal); err != nil {
+		t.Fatalf("select after rename table ddl: %v", err)
+	}
+	if renamedTableVal != "renamed_table" {
+		t.Fatalf("unexpected value after rename table ddl: %s", renamedTableVal)
+	}
 }
 
 func waitForClickHouseMutations(ctx context.Context, db *sql.DB, database, table string, timeout time.Duration) error {

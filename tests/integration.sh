@@ -19,6 +19,7 @@ FAKESNOW_PORT="${TEST_FAKESNOW_PORT:-8000}"
 MINIO_PORT="${TEST_MINIO_PORT:-9002}"
 KAFKA_PORT="${TEST_KAFKA_PORT:-9094}"
 HTTP_PORT="${TEST_HTTP_PORT:-8081}"
+GLUE_PORT="${TEST_GLUE_PORT:-4566}"
 MINIO_ACCESS_KEY="${TEST_MINIO_ACCESS_KEY:-wallaby}"
 MINIO_SECRET_KEY="${TEST_MINIO_SECRET_KEY:-wallabysecret}"
 MINIO_BUCKET="${TEST_MINIO_BUCKET:-wallaby-test}"
@@ -135,6 +136,7 @@ wait_for_clickhouse() {
 
 wait_for_clickhouse "localhost" "$CLICKHOUSE_HTTP_PORT"
 wait_for_port "localhost" "$FAKESNOW_PORT" "fakesnow"
+wait_for_port "localhost" "$GLUE_PORT" "localstack"
 wait_for_http_code() {
   local host="$1"
   local port="$2"
@@ -230,6 +232,12 @@ export WALLABY_TEST_S3_REGION="${WALLABY_TEST_S3_REGION:-us-east-1}"
 export WALLABY_TEST_DUCKLAKE="${WALLABY_TEST_DUCKLAKE:-1}"
 export WALLABY_TEST_KAFKA_BROKERS="${WALLABY_TEST_KAFKA_BROKERS:-localhost:${KAFKA_PORT}}"
 export WALLABY_TEST_HTTP_URL="${WALLABY_TEST_HTTP_URL:-http://localhost:${HTTP_PORT}}"
+export WALLABY_TEST_GLUE_ENDPOINT="${WALLABY_TEST_GLUE_ENDPOINT:-http://localhost:${GLUE_PORT}}"
+export WALLABY_TEST_GLUE_REGION="${WALLABY_TEST_GLUE_REGION:-us-east-1}"
+export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-test}"
+export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-test}"
+export AWS_REGION="${AWS_REGION:-${WALLABY_TEST_GLUE_REGION}}"
+export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-${WALLABY_TEST_GLUE_REGION}}"
 
 # Avoid invoking external credential helpers during integration tests.
 if [[ -n "${WALLABY_TEST_K8S_KUBECONFIG:-}" ]]; then

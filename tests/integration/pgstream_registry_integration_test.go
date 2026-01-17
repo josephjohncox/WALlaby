@@ -92,6 +92,31 @@ func TestPGStreamSchemaRegistryMetadata(t *testing.T) {
 		t.Fatalf("expected registry version, got %d", regVersion)
 	}
 
+	schema.Version = 2
+	schema.Columns = append(schema.Columns, connector.Column{Name: "status", Type: "text"})
+	batch = connector.Batch{
+		Records: []connector.Record{
+			{
+				Table:     "orders",
+				Operation: connector.OpInsert,
+				After:     map[string]any{"id": 2, "name": "beta", "status": "paid"},
+				Timestamp: time.Now().UTC(),
+			},
+		},
+		Schema:     schema,
+		Checkpoint: connector.Checkpoint{LSN: "0/2"},
+	}
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("write batch v2: %v", err)
+	}
+	var regVersion2 int
+	if err := streamPool.QueryRow(ctx, "SELECT registry_version FROM stream_events ORDER BY id DESC LIMIT 1").Scan(&regVersion2); err != nil {
+		t.Fatalf("read stream registry metadata v2: %v", err)
+	}
+	if regVersion2 == 0 || regVersion2 == regVersion {
+		t.Fatalf("expected registry version to change (v1=%d v2=%d)", regVersion, regVersion2)
+	}
+
 	store, err := pgstream.NewStore(ctx, dbDSN)
 	if err != nil {
 		t.Fatalf("open store: %v", err)

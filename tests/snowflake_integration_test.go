@@ -175,6 +175,78 @@ func TestSnowflakeDestination(t *testing.T) {
 	if strings.TrimSpace(extra) != "v2" {
 		t.Fatalf("unexpected extra after ddl: %s", extra)
 	}
+
+	renameDDL := connector.Record{
+		Table:     table,
+		Operation: connector.OpDDL,
+		DDL:       fmt.Sprintf("ALTER TABLE %s RENAME COLUMN name TO display_name", fullTable),
+		Timestamp: time.Now().UTC(),
+	}
+	if err := dest.ApplyDDL(ctx, schemaDef, renameDDL); err != nil {
+		t.Fatalf("apply rename ddl: %v", err)
+	}
+	schemaDef.Columns = []connector.Column{
+		{Name: "id", Type: "NUMBER"},
+		{Name: "display_name", Type: "STRING"},
+		{Name: "extra", Type: "STRING"},
+	}
+	insert = connector.Record{
+		Table:     table,
+		Operation: connector.OpInsert,
+		Key:       recordKey(t, map[string]any{"id": 3}),
+		After: map[string]any{
+			"id":           3,
+			"display_name": "delta",
+			"extra":        "v3",
+		},
+	}
+	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schemaDef, Checkpoint: connector.Checkpoint{LSN: "5"}}
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("insert after rename ddl: %v", err)
+	}
+	var renamed string
+	if err := setupDB.QueryRowContext(ctx, fmt.Sprintf("SELECT display_name FROM %s WHERE id = 3", fullTable)).Scan(&renamed); err != nil {
+		t.Fatalf("select renamed column: %v", err)
+	}
+	if strings.TrimSpace(renamed) != "delta" {
+		t.Fatalf("unexpected display_name after rename ddl: %s", renamed)
+	}
+
+	typeDDL := connector.Record{
+		Table:     table,
+		Operation: connector.OpDDL,
+		DDL:       fmt.Sprintf("ALTER TABLE %s ALTER COLUMN extra TYPE VARCHAR(32)", fullTable),
+		Timestamp: time.Now().UTC(),
+	}
+	if err := dest.ApplyDDL(ctx, schemaDef, typeDDL); err != nil {
+		t.Fatalf("apply type ddl: %v", err)
+	}
+	schemaDef.Columns = []connector.Column{
+		{Name: "id", Type: "NUMBER"},
+		{Name: "display_name", Type: "STRING"},
+		{Name: "extra", Type: "VARCHAR"},
+	}
+	insert = connector.Record{
+		Table:     table,
+		Operation: connector.OpInsert,
+		Key:       recordKey(t, map[string]any{"id": 4}),
+		After: map[string]any{
+			"id":           4,
+			"display_name": "epsilon",
+			"extra":        "v4",
+		},
+	}
+	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schemaDef, Checkpoint: connector.Checkpoint{LSN: "6"}}
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("insert after type ddl: %v", err)
+	}
+	var typed string
+	if err := setupDB.QueryRowContext(ctx, fmt.Sprintf("SELECT extra FROM %s WHERE id = 4", fullTable)).Scan(&typed); err != nil {
+		t.Fatalf("select extra after type ddl: %v", err)
+	}
+	if strings.TrimSpace(typed) != "v4" {
+		t.Fatalf("unexpected extra after type ddl: %s", typed)
+	}
 }
 
 func quoteSnowflakeIdent(value string) string {
