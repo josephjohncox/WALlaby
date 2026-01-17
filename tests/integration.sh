@@ -10,6 +10,7 @@ KIND_ENABLED="${WALLABY_TEST_K8S_KIND:-1}"
 KIND_CLUSTER="${KIND_CLUSTER:-wallaby-test}"
 KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-kindest/node:v1.35.0}"
 KIND_KEEP="${KIND_KEEP:-0}"
+COMPOSE_DOWN="${KEEP_CONTAINERS:-0}"
 PG_PORT="${TEST_PG_PORT:-5433}"
 CLICKHOUSE_PORT="${TEST_CLICKHOUSE_PORT:-9001}"
 CLICKHOUSE_HTTP_PORT="${TEST_CLICKHOUSE_HTTP_PORT:-8124}"
@@ -39,7 +40,12 @@ cleanup_kind() {
     kind delete cluster --name "${KIND_CLUSTER}" >/dev/null 2>&1 || true
   fi
 }
-trap cleanup_kind EXIT
+cleanup_compose() {
+  if [[ "${COMPOSE_DOWN}" != "1" ]]; then
+    docker compose -f "$COMPOSE_FILE" down -v >/dev/null 2>&1 || true
+  fi
+}
+trap 'cleanup_compose; cleanup_kind' EXIT
 
 if [[ "${KIND_ENABLED}" == "1" ]]; then
   if ! command -v kind >/dev/null 2>&1; then
@@ -260,7 +266,3 @@ for pkg in $packages; do
   echo "Running go test ${pkg}"
   go test "$pkg" -v -count=1 -timeout="$GO_TEST_TIMEOUT"
 done
-
-if [[ "${KEEP_CONTAINERS:-0}" != "1" ]]; then
-  docker compose -f "$COMPOSE_FILE" down -v
-fi
