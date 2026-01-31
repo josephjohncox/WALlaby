@@ -22,6 +22,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Go
+        id: setup-go
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -46,14 +47,14 @@ jobs:
             .cache/bin
             .cache/gomod
             .cache/golangci-lint
-          key: ${{ runner.os }}-go-tools-${{ hashFiles('go.sum') }}
+          key: ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-tools-${{ hashFiles('go.sum') }}
 
       - name: Restore Go build cache
         id: cache-go-build
         uses: actions/cache/restore@v4
         with:
           path: .cache/gocache
-          key: ${{ runner.os }}-go-build-${{ hashFiles('go.sum') }}
+          key: ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-build-${{ hashFiles('go.sum') }}
 
       - name: Save Go + tools cache
         if: always() && steps.cache-go-tools.outputs.cache-hit != 'true'
