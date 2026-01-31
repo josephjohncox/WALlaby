@@ -15,7 +15,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.6
 	github.com/aws/smithy-go v1.24.0
 	github.com/bufbuild/buf v1.63.0
-	github.com/dbos-inc/dbos-transact-golang v0.9.0
+	github.com/dbos-inc/dbos-transact-golang v0.10.0
 	github.com/duckdb/duckdb-go/v2 v2.5.4
 	github.com/golangci/golangci-lint/v2 v2.8.0
 	github.com/google/uuid v1.6.0
