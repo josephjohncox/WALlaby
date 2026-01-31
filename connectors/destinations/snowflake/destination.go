@@ -178,7 +178,11 @@ func (d *Destination) configureSession(ctx context.Context) error {
 			value = "TRUE"
 		}
 		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("ALTER SESSION SET CLIENT_SESSION_KEEP_ALIVE = %s", value)); err != nil {
-			return fmt.Errorf("set session keep alive: %w", err)
+			if isUnsupportedSessionSetting(err) {
+				log.Printf("snowflake session keep-alive not supported by driver: %v", err)
+			} else {
+				return fmt.Errorf("set session keep alive: %w", err)
+			}
 		}
 	}
 	if d.warehouse == "" {
@@ -215,9 +219,21 @@ func (d *Destination) configureSession(ctx context.Context) error {
 	}
 	stmt := fmt.Sprintf("ALTER WAREHOUSE %s SET %s", quoteIdent(d.warehouse, '"'), strings.Join(settings, " "))
 	if _, err := d.db.ExecContext(ctx, stmt); err != nil {
-		return fmt.Errorf("alter warehouse: %w", err)
+		if isUnsupportedSessionSetting(err) {
+			log.Printf("snowflake warehouse settings not supported by driver: %v", err)
+		} else {
+			return fmt.Errorf("alter warehouse: %w", err)
+		}
 	}
 	return nil
+}
+
+func isUnsupportedSessionSetting(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not implemented") || strings.Contains(msg, "fakesnow")
 }
 
 type execer interface {

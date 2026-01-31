@@ -109,7 +109,7 @@ func hashReflect(h hash.Hash, value any) error {
 		if err := json.Unmarshal(v, &decoded); err != nil {
 			writeString(h, "raw")
 			writeString(h, hex.EncodeToString(v))
-			return nil
+			return nil //nolint:nilerr // fallback to raw JSON bytes when decoding fails
 		}
 		return hashValue(h, decoded)
 	case json.Number:

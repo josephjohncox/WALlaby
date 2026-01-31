@@ -377,6 +377,15 @@ func TestClickHouseStagingAndDDL(t *testing.T) {
 	if err := dest.ApplyDDL(ctx, schema, renameTableDDL); err != nil {
 		t.Fatalf("apply rename table ddl: %v", err)
 	}
+	if err := dest.Close(ctx); err != nil {
+		t.Fatalf("close destination after rename: %v", err)
+	}
+	dest = &clickhouse.Destination{}
+	spec.Options["table"] = renamedTable
+	if err := dest.Open(ctx, spec); err != nil {
+		t.Fatalf("reopen destination after rename: %v", err)
+	}
+	defer dest.Close(ctx)
 	fullTable = renamedFull
 	schema.Name = renamedTable
 	insert = connector.Record{
