@@ -21,6 +21,11 @@ const (
 	optSchema            = "schema"
 	optTable             = "table"
 	optDisableTx         = "disable_transactions"
+	optWarehouse         = "warehouse"
+	optWarehouseSize     = "warehouse_size"
+	optWarehouseSuspend  = "warehouse_auto_suspend"
+	optWarehouseResume   = "warehouse_auto_resume"
+	optSessionKeepAlive  = "session_keep_alive"
 	optWriteMode         = "write_mode"
 	optBatchMode         = "batch_mode"
 	optBatchResolution   = "batch_resolution"
@@ -43,6 +48,7 @@ const (
 	defaultMetaTable     = "__METADATA"
 	defaultMetaPKPrefx   = "pk_"
 	defaultStagingSuffix = "_staging"
+	defaultAutoSuspend   = 60
 )
 
 // Destination writes change events into Snowflake tables.
@@ -64,6 +70,11 @@ type Destination struct {
 	metaColumns      map[string]struct{}
 	stagingTables    map[string]tableInfo
 	stagingResolved  bool
+	warehouse        string
+	warehouseSize    string
+	warehouseSuspend *int
+	warehouseResume  *bool
+	sessionKeepAlive *bool
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
@@ -120,6 +131,34 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.metaColumns = map[string]struct{}{}
 	d.stagingTables = map[string]tableInfo{}
 
+	d.warehouse = strings.TrimSpace(spec.Options[optWarehouse])
+	if raw := strings.TrimSpace(spec.Options[optWarehouseSize]); raw != "" {
+		d.warehouseSize = normalizeWarehouseSize(raw)
+	}
+	if raw := strings.TrimSpace(spec.Options[optWarehouseSuspend]); raw != "" {
+		val, err := parseInt(raw)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", optWarehouseSuspend, err)
+		}
+		d.warehouseSuspend = &val
+	}
+	if raw := strings.TrimSpace(spec.Options[optWarehouseResume]); raw != "" {
+		val := parseBool(raw, true)
+		d.warehouseResume = &val
+	}
+	if raw := strings.TrimSpace(spec.Options[optSessionKeepAlive]); raw != "" {
+		val := parseBool(raw, false)
+		d.sessionKeepAlive = &val
+	} else {
+		val := false
+		d.sessionKeepAlive = &val
+	}
+
+	if err := d.configureSession(ctx); err != nil {
+		_ = d.db.Close()
+		return err
+	}
+
 	if d.metaEnabled {
 		if err := d.ensureMetaTable(ctx); err != nil {
 			return err
@@ -127,6 +166,74 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	}
 
 	return nil
+}
+
+func (d *Destination) configureSession(ctx context.Context) error {
+	if d.db == nil {
+		return nil
+	}
+	if d.sessionKeepAlive != nil {
+		value := "FALSE"
+		if *d.sessionKeepAlive {
+			value = "TRUE"
+		}
+		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("ALTER SESSION SET CLIENT_SESSION_KEEP_ALIVE = %s", value)); err != nil {
+			if isUnsupportedSessionSetting(err) {
+				log.Printf("snowflake session keep-alive not supported by driver: %v", err)
+			} else {
+				return fmt.Errorf("set session keep alive: %w", err)
+			}
+		}
+	}
+	if d.warehouse == "" {
+		return nil
+	}
+	if _, err := d.db.ExecContext(ctx, fmt.Sprintf("USE WAREHOUSE %s", quoteIdent(d.warehouse, '"'))); err != nil {
+		return fmt.Errorf("use warehouse: %w", err)
+	}
+
+	settings := make([]string, 0, 3)
+	if d.warehouseSize != "" {
+		settings = append(settings, fmt.Sprintf("WAREHOUSE_SIZE = %s", d.warehouseSize))
+	}
+	if d.warehouseSuspend == nil {
+		val := defaultAutoSuspend
+		d.warehouseSuspend = &val
+	}
+	if d.warehouseSuspend != nil {
+		settings = append(settings, fmt.Sprintf("AUTO_SUSPEND = %d", *d.warehouseSuspend))
+	}
+	if d.warehouseResume == nil {
+		val := true
+		d.warehouseResume = &val
+	}
+	if d.warehouseResume != nil {
+		val := "FALSE"
+		if *d.warehouseResume {
+			val = "TRUE"
+		}
+		settings = append(settings, fmt.Sprintf("AUTO_RESUME = %s", val))
+	}
+	if len(settings) == 0 {
+		return nil
+	}
+	stmt := fmt.Sprintf("ALTER WAREHOUSE %s SET %s", quoteIdent(d.warehouse, '"'), strings.Join(settings, " "))
+	if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+		if isUnsupportedSessionSetting(err) {
+			log.Printf("snowflake warehouse settings not supported by driver: %v", err)
+		} else {
+			return fmt.Errorf("alter warehouse: %w", err)
+		}
+	}
+	return nil
+}
+
+func isUnsupportedSessionSetting(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not implemented") || strings.Contains(msg, "fakesnow")
 }
 
 type execer interface {
@@ -843,6 +950,28 @@ func parseBool(value string, fallback bool) bool {
 		return fallback
 	}
 	return parsed
+}
+
+func parseInt(value string) (int, error) {
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	return parsed, nil
+}
+
+func normalizeWarehouseSize(value string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	normalized = strings.ReplaceAll(normalized, "-", "")
+	normalized = strings.ReplaceAll(normalized, "_", "")
+	switch normalized {
+	case "XSMALL", "X-SMALL", "X_SMALL":
+		return "XSMALL"
+	case "XXSMALL", "XX-SMALL", "XX_SMALL":
+		return "XXSMALL"
+	default:
+		return normalized
+	}
 }
 
 type tableInfo struct {

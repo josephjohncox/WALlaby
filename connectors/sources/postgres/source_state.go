@@ -28,6 +28,12 @@ type sourceState struct {
 	LastLSN     string
 }
 
+// SourceStateInfo captures selected fields for callers that only need identifiers.
+type SourceStateInfo struct {
+	Slot        string
+	Publication string
+}
+
 func newSourceStateStore(ctx context.Context, dsn, schema, table string, options map[string]string) (*sourceStateStore, error) {
 	if schema == "" || table == "" {
 		return nil, errors.New("state schema and table are required")
@@ -162,6 +168,40 @@ func (s *sourceStateStore) Close() {
 	}
 }
 
+func (s *sourceStateStore) Get(ctx context.Context, id string) (sourceState, bool, error) {
+	if id == "" {
+		return sourceState{}, false, nil
+	}
+	tableIdent := pgx.Identifier{s.schema, s.table}.Sanitize()
+	query := fmt.Sprintf(`SELECT id, source_name, slot_name, publication_name, state, options, last_lsn
+FROM %s WHERE id = $1`, tableIdent)
+	var row sourceState
+	var optionsRaw []byte
+	if err := s.pool.QueryRow(ctx, query, id).Scan(
+		&row.ID,
+		&row.SourceName,
+		&row.Slot,
+		&row.Publication,
+		&row.State,
+		&optionsRaw,
+		&row.LastLSN,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return sourceState{}, false, nil
+		}
+		return sourceState{}, false, fmt.Errorf("load source state: %w", err)
+	}
+	if len(optionsRaw) > 0 {
+		if err := json.Unmarshal(optionsRaw, &row.Options); err != nil {
+			return sourceState{}, false, fmt.Errorf("decode source state options: %w", err)
+		}
+	}
+	if row.Options == nil {
+		row.Options = map[string]string{}
+	}
+	return row, true, nil
+}
+
 func sourceStateID(spec connector.Spec, slot string) string {
 	if spec.Options != nil {
 		if value := spec.Options[optFlowID]; value != "" {
@@ -175,6 +215,36 @@ func sourceStateID(spec connector.Spec, slot string) string {
 		return slot
 	}
 	return "source"
+}
+
+// LookupSourceState returns the slot/publication from the durable state table when present.
+func LookupSourceState(ctx context.Context, spec connector.Spec, slot string) (SourceStateInfo, bool, error) {
+	if !parseBool(spec.Options[optEnsureState], true) {
+		return SourceStateInfo{}, false, nil
+	}
+	dsn := spec.Options[optDSN]
+	if dsn == "" {
+		return SourceStateInfo{}, false, errors.New("postgres dsn is required")
+	}
+	schema := spec.Options[optStateSchema]
+	if schema == "" {
+		schema = "wallaby"
+	}
+	table := spec.Options[optStateTable]
+	if table == "" {
+		table = "source_state"
+	}
+	store, err := newSourceStateStore(ctx, dsn, schema, table, spec.Options)
+	if err != nil {
+		return SourceStateInfo{}, false, err
+	}
+	defer store.Close()
+	stateID := sourceStateID(spec, slot)
+	state, ok, err := store.Get(ctx, stateID)
+	if err != nil || !ok {
+		return SourceStateInfo{}, ok, err
+	}
+	return SourceStateInfo{Slot: state.Slot, Publication: state.Publication}, true, nil
 }
 
 func sanitizeOptions(options map[string]string) map[string]string {

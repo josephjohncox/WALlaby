@@ -391,11 +391,37 @@ func TestKafkaDestinationSchemaRegistryHeaders(t *testing.T) {
 		t.Fatalf("consume kafka record: %v", err)
 	}
 
-	if headerValue(record.Headers, "wallaby-registry-subject") == "" {
+	registrySubject := headerValue(record.Headers, "wallaby-registry-subject")
+	registryID := headerValue(record.Headers, "wallaby-registry-id")
+	registryVersion := headerValue(record.Headers, "wallaby-registry-version")
+	if registrySubject == "" {
 		t.Fatalf("missing wallaby-registry-subject header")
 	}
-	if headerValue(record.Headers, "wallaby-registry-id") == "" {
+	if registryID == "" {
 		t.Fatalf("missing wallaby-registry-id header")
+	}
+	if registryVersion == "" {
+		t.Fatalf("missing wallaby-registry-version header")
+	}
+
+	batch.Schema.Version = 2
+	batch.Schema.Columns = append(batch.Schema.Columns, connector.Column{Name: "extra", Type: "text"})
+	batch.Records[0].After = map[string]any{"id": 1, "status": "paid", "extra": "v2"}
+	batch.Checkpoint = connector.Checkpoint{LSN: "0/2"}
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("write kafka batch v2: %v", err)
+	}
+
+	record2, err := waitForKafkaRecordAfter(ctx, consumer, topic, record.Offset)
+	if err != nil {
+		t.Fatalf("consume kafka record v2: %v", err)
+	}
+	registryVersion2 := headerValue(record2.Headers, "wallaby-registry-version")
+	if registryVersion2 == "" {
+		t.Fatalf("missing wallaby-registry-version header v2")
+	}
+	if registryVersion == registryVersion2 {
+		t.Fatalf("expected registry version to change (v1=%s v2=%s)", registryVersion, registryVersion2)
 	}
 }
 
@@ -408,6 +434,27 @@ func waitForKafkaRecord(ctx context.Context, client *kgo.Client, topic string) (
 		var record *kgo.Record
 		fetches.EachRecord(func(r *kgo.Record) {
 			if r.Topic == topic && record == nil {
+				record = r
+			}
+		})
+		if record != nil {
+			return record, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func waitForKafkaRecordAfter(ctx context.Context, client *kgo.Client, topic string, offset int64) (*kgo.Record, error) {
+	for {
+		fetches := client.PollFetches(ctx)
+		if err := fetches.Err(); err != nil {
+			return nil, err
+		}
+		var record *kgo.Record
+		fetches.EachRecord(func(r *kgo.Record) {
+			if r.Topic == topic && r.Offset > offset && record == nil {
 				record = r
 			}
 		})

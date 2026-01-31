@@ -93,3 +93,34 @@ If a flow is paused with pending DDL:
 3) Resume the flow.
 
 See the DDL gating section above.
+
+## Data Certificate (Production Validation)
+Use `wallaby-admin certify` to compare source/destination data with a deterministic
+hash + count. This is safe for production when paired with sampling.
+
+Example (using a flow configuration):
+
+```bash
+wallaby-admin certify \
+  -flow-id <flow_id> \
+  -destination <dest_name> \
+  -tables public.widgets \
+  -sample-rate 0.01 \
+  -sample-limit 10000 \
+  -json
+```
+
+Direct DSN mode (no flow required):
+
+```bash
+wallaby-admin certify \
+  -source-dsn "postgres://..." \
+  -dest-dsn "postgres://..." \
+  -table public.widgets \
+  -sample-rate 1
+```
+
+Notes:
+- Sampling is deterministic and based on primary keys (if no PKs, use full scan).
+- Values are normalized using the **source** schema so type differences (e.g., numeric vs text)
+  still compare reliably.

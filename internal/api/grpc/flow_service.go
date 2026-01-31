@@ -274,6 +274,21 @@ func (s *FlowService) CleanupFlow(ctx context.Context, req *wallabypb.CleanupFlo
 		return nil, status.Error(codes.InvalidArgument, "postgres dsn is required for cleanup")
 	}
 
+	if dropSlot || dropPublication {
+		if slot == "" || publication == "" {
+			if stateInfo, ok, err := pgsource.LookupSourceState(ctx, f.Source, slot); err != nil {
+				return nil, status.Error(codes.Internal, err.Error())
+			} else if ok {
+				if slot == "" {
+					slot = strings.TrimSpace(stateInfo.Slot)
+				}
+				if publication == "" {
+					publication = strings.TrimSpace(stateInfo.Publication)
+				}
+			}
+		}
+	}
+
 	if dropSlot {
 		if err := pgsource.DropReplicationSlot(ctx, dsn, slot, f.Source.Options); err != nil {
 			return nil, status.Error(codes.Internal, err.Error())

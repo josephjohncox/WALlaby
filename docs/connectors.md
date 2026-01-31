@@ -42,6 +42,25 @@ Payload format notes:
 - `arrow`/`avro`/`proto` use the shared schema from the flow; schema evolution is driven by DDL events.
 - JSON is supported for compatibility but loses some typing fidelity; prefer Arrow/Avro/Proto for strict round-trip.
 
+## Snowflake
+Snowflake is a direct table sink (UPSERT/DELETE in streaming mode). You can manage warehouse costs per destination.
+
+Options:
+- `dsn` (required)
+- `schema`, `table`
+- `write_mode` (`target` or `append`)
+- `batch_mode` (`target` or `staging`) with `batch_resolution` (`none`, `append`, `replace`)
+- `disable_transactions` (useful for emulators)
+- `warehouse` (optional, used for cost management)
+- `warehouse_size` (e.g., `xsmall`, `small`, `medium`)
+- `warehouse_auto_suspend` (seconds; default 60 when `warehouse` set)
+- `warehouse_auto_resume` (`true|false`, default `true` when `warehouse` set)
+- `session_keep_alive` (`true|false`, default `false`)
+
+Cost tips:
+- Set `warehouse_size=xsmall` and `warehouse_auto_suspend=60` to reduce idle burn.
+- Keep `session_keep_alive=false` so sessions don’t pin warehouses.
+
 ## Snowpipe
 Snowpipe is a file-based sink. WALlaby writes files and can optionally issue COPY statements.
 
@@ -57,6 +76,8 @@ Options:
 - `copy_purge` (`true|false` to remove staged files after COPY)
 - `copy_match_by_column_name` (`case_sensitive|case_insensitive`)
 - `file_format` (Snowflake named file format override)
+- `warehouse` (optional, used for COPY cost management)
+- `warehouse_size`, `warehouse_auto_suspend`, `warehouse_auto_resume`, `session_keep_alive` (same semantics as Snowflake)
 
 Auto-ingest mode:
 - Set `auto_ingest=true` to upload only.
