@@ -130,20 +130,90 @@ func TestDuckLakeDestination(t *testing.T) {
 		t.Fatalf("write with extra: %v", err)
 	}
 
+	renameDDL := connector.Record{
+		Table:     "widgets",
+		Operation: connector.OpDDL,
+		DDL:       "ALTER TABLE widgets RENAME COLUMN name TO display_name",
+		Timestamp: time.Now().UTC(),
+	}
+	if err := dest.ApplyDDL(ctx, schema, renameDDL); err != nil {
+		t.Fatalf("apply rename ddl: %v", err)
+	}
+
+	typeDDL := connector.Record{
+		Table:     "widgets",
+		Operation: connector.OpDDL,
+		DDL:       "ALTER TABLE widgets ALTER COLUMN extra SET DATA TYPE VARCHAR",
+		Timestamp: time.Now().UTC(),
+	}
+	if err := dest.ApplyDDL(ctx, schema, typeDDL); err != nil {
+		t.Fatalf("apply type ddl: %v", err)
+	}
+
+	schema.Columns = []connector.Column{
+		{Name: "id", Type: "INTEGER"},
+		{Name: "display_name", Type: "VARCHAR"},
+		{Name: "extra", Type: "VARCHAR"},
+	}
+	renameInsert := connector.Record{
+		Table:     "widgets",
+		Operation: connector.OpInsert,
+		Key:       recordKey(t, map[string]any{"id": 3}),
+		After: map[string]any{
+			"id":           3,
+			"display_name": "delta",
+			"extra":        "v4",
+		},
+		Timestamp: time.Now().UTC(),
+	}
+	batch = connector.Batch{Records: []connector.Record{renameInsert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "2b"}}
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("write after rename/type ddl: %v", err)
+	}
+
 	update := connector.Record{
 		Table:     "widgets",
 		Operation: connector.OpUpdate,
 		Key:       recordKey(t, map[string]any{"id": 2}),
 		After: map[string]any{
-			"id":    2,
-			"name":  "gamma",
-			"extra": "v3",
+			"id":           2,
+			"display_name": "gamma",
+			"extra":        "v3",
 		},
 		Timestamp: time.Now().UTC(),
 	}
 	batch = connector.Batch{Records: []connector.Record{update}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "3"}}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("update write: %v", err)
+	}
+
+	dropDDL := connector.Record{
+		Table:     "widgets",
+		Operation: connector.OpDDL,
+		DDL:       "ALTER TABLE widgets DROP COLUMN extra",
+		Timestamp: time.Now().UTC(),
+	}
+	if err := dest.ApplyDDL(ctx, schema, dropDDL); err != nil {
+		t.Fatalf("apply drop ddl: %v", err)
+	}
+
+	schema.Columns = []connector.Column{
+		{Name: "id", Type: "INTEGER"},
+		{Name: "display_name", Type: "VARCHAR"},
+	}
+	dropInsert := connector.Record{
+		Table:     "widgets",
+		Operation: connector.OpInsert,
+		Key:       recordKey(t, map[string]any{"id": 4}),
+		After: map[string]any{
+			"id":           4,
+			"display_name": "omega",
+		},
+		Timestamp: time.Now().UTC(),
+	}
+	batch = connector.Batch{Records: []connector.Record{dropInsert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "3b"}}
+	if err := dest.Write(ctx, batch); err != nil {
+		t.Fatalf("write after drop ddl: %v", err)
 	}
 
 	del := connector.Record{
@@ -185,15 +255,58 @@ func TestDuckLakeDestination(t *testing.T) {
 	if err := verifyDB.QueryRowContext(ctx, "SELECT count(*) FROM widgets").Scan(&count); err != nil {
 		t.Fatalf("count after delete: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("expected 1 row after delete, got %d", count)
+	if count != 3 {
+		t.Fatalf("expected 3 rows after delete, got %d", count)
 	}
 
-	var finalName, finalExtra string
-	if err := verifyDB.QueryRowContext(ctx, "SELECT name, extra FROM widgets WHERE id = 2").Scan(&finalName, &finalExtra); err != nil {
+	var finalName string
+	if err := verifyDB.QueryRowContext(ctx, "SELECT display_name FROM widgets WHERE id = 2").Scan(&finalName); err != nil {
 		t.Fatalf("select final row: %v", err)
 	}
-	if finalName != "gamma" || finalExtra != "v3" {
-		t.Fatalf("unexpected final values: name=%s extra=%s", finalName, finalExtra)
+	if finalName != "gamma" {
+		t.Fatalf("unexpected final values: name=%s", finalName)
+	}
+
+	var renamedName string
+	if err := verifyDB.QueryRowContext(ctx, "SELECT display_name FROM widgets WHERE id = 3").Scan(&renamedName); err != nil {
+		t.Fatalf("select renamed row: %v", err)
+	}
+	if renamedName != "delta" {
+		t.Fatalf("unexpected renamed values: name=%s", renamedName)
+	}
+
+	var droppedName string
+	if err := verifyDB.QueryRowContext(ctx, "SELECT display_name FROM widgets WHERE id = 4").Scan(&droppedName); err != nil {
+		t.Fatalf("select dropped row: %v", err)
+	}
+	if droppedName != "omega" {
+		t.Fatalf("unexpected dropped values: name=%s", droppedName)
+	}
+
+	colRows, err := verifyDB.QueryContext(ctx, "PRAGMA table_info('widgets')")
+	if err != nil {
+		t.Fatalf("table info: %v", err)
+	}
+	defer colRows.Close()
+	var columns []string
+	for colRows.Next() {
+		var cid int
+		var name string
+		var colType string
+		var notNull any
+		var defaultVal any
+		var pk any
+		if err := colRows.Scan(&cid, &name, &colType, &notNull, &defaultVal, &pk); err != nil {
+			t.Fatalf("scan table info: %v", err)
+		}
+		columns = append(columns, name)
+	}
+	if err := colRows.Err(); err != nil {
+		t.Fatalf("iterate table info: %v", err)
+	}
+	for _, col := range columns {
+		if col == "extra" {
+			t.Fatalf("expected extra column to be dropped, still present")
+		}
 	}
 }

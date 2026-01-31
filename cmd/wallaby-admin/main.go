@@ -17,6 +17,7 @@ import (
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/runner"
+	"github.com/josephjohncox/wallaby/pkg/certify"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 	"google.golang.org/grpc"
@@ -46,6 +47,8 @@ func run(args []string) error {
 		return runPublication(args[2:])
 	case "flow":
 		return runFlow(args[2:])
+	case "certify":
+		return runCertify(args[2:])
 	default:
 		usage()
 		return nil
@@ -283,9 +286,10 @@ func statusFlag(status string) string {
 func usage() {
 	fmt.Println("Usage:")
 	fmt.Println("  wallaby-admin ddl <list|approve|reject|apply> [flags]")
-	fmt.Println("  wallaby-admin stream <replay> [flags]")
+	fmt.Println("  wallaby-admin stream <replay|pull|ack> [flags]")
 	fmt.Println("  wallaby-admin publication <list|add|remove|sync|scrape> [flags]")
-	fmt.Println("  wallaby-admin flow <create|run-once|resolve-staging> [flags]")
+	fmt.Println("  wallaby-admin flow <create|update|reconfigure|start|run-once|stop|resume|cleanup|resolve-staging> [flags]")
+	fmt.Println("  wallaby-admin certify [flags]")
 	os.Exit(1)
 }
 
@@ -396,6 +400,137 @@ func runFlow(args []string) error {
 		return flowResolveStaging(args[1:])
 	default:
 		flowUsage()
+	}
+	return nil
+}
+
+func runCertify(args []string) error {
+	fs := flag.NewFlagSet("certify", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
+	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
+	flowID := fs.String("flow-id", "", "flow id to load source/destination DSNs")
+	destName := fs.String("destination", "", "destination name (required when flow has multiple destinations)")
+	sourceDSN := fs.String("source-dsn", "", "source Postgres DSN (overrides flow)")
+	destDSN := fs.String("dest-dsn", "", "destination Postgres DSN (overrides flow)")
+	table := fs.String("table", "", "table name (schema.table)")
+	tables := fs.String("tables", "", "comma-separated table list (schema.table)")
+	primaryKeys := fs.String("primary-keys", "", "comma-separated primary key columns (optional)")
+	columns := fs.String("columns", "", "comma-separated columns to hash (optional)")
+	sampleRate := fs.Float64("sample-rate", 1, "sample rate 0..1 (uses deterministic PK hash)")
+	sampleLimit := fs.Int("sample-limit", 0, "max rows to hash per table")
+	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
+	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
+
+	var sourceOpts keyValueFlag
+	var destOpts keyValueFlag
+	fs.Var(&sourceOpts, "source-opt", "source option key=value (repeatable)")
+	fs.Var(&destOpts, "dest-opt", "destination option key=value (repeatable)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	tableList := parseCSVValue(*tables)
+	if *table != "" {
+		if len(tableList) > 0 {
+			return errors.New("-table and -tables are mutually exclusive")
+		}
+		tableList = []string{*table}
+	}
+	if len(tableList) == 0 {
+		return errors.New("-table or -tables is required")
+	}
+
+	var sourceOptions map[string]string
+	var destOptions map[string]string
+	if *flowID != "" {
+		client, closeConn, err := flowClient(*endpoint, *insecureConn)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = closeConn() }()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		resp, err := client.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: *flowID})
+		if err != nil {
+			return fmt.Errorf("get flow: %w", err)
+		}
+		sourceOptions = copyStringMap(resp.Source.Options)
+		if *sourceDSN == "" {
+			*sourceDSN = strings.TrimSpace(resp.Source.Options["dsn"])
+		}
+
+		destSpec, err := selectDestination(resp.Destinations, *destName)
+		if err != nil {
+			return err
+		}
+		if destSpec.Type != wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES {
+			return fmt.Errorf("destination %q is not postgres", destSpec.Name)
+		}
+		destOptions = copyStringMap(destSpec.Options)
+		if *destDSN == "" {
+			*destDSN = strings.TrimSpace(destSpec.Options["dsn"])
+		}
+	}
+
+	if *sourceDSN == "" || *destDSN == "" {
+		return errors.New("source-dsn and dest-dsn are required")
+	}
+	sourceOptions = mergeOptions(sourceOptions, sourceOpts.values)
+	destOptions = mergeOptions(destOptions, destOpts.values)
+
+	opts := certify.TableCertOptions{
+		SampleRate:  *sampleRate,
+		SampleLimit: *sampleLimit,
+		PrimaryKeys: parseCSVValue(*primaryKeys),
+		Columns:     parseCSVValue(*columns),
+	}
+	if len(opts.PrimaryKeys) > 0 && len(tableList) > 1 {
+		return errors.New("-primary-keys can only be used with a single table")
+	}
+	if len(opts.Columns) > 0 && len(tableList) > 1 {
+		return errors.New("-columns can only be used with a single table")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	reports := make([]certify.TableCertReport, 0, len(tableList))
+	overallMatch := true
+	for _, name := range tableList {
+		report, err := certify.CertifyPostgresTable(ctx, *sourceDSN, sourceOptions, *destDSN, destOptions, name, opts)
+		if err != nil {
+			return err
+		}
+		reports = append(reports, report)
+		overallMatch = overallMatch && report.Match
+	}
+
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		out := map[string]any{
+			"match":  overallMatch,
+			"tables": reports,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	for _, report := range reports {
+		fmt.Printf("%s match=%t rows=%d hash=%s\n", report.Table, report.Match, report.Source.Rows, report.Source.Hash)
+	}
+	if !overallMatch {
+		return errors.New("certificate mismatch")
 	}
 	return nil
 }
@@ -1916,6 +2051,76 @@ func parseCSVValue(value string) []string {
 		}
 	}
 	return out
+}
+
+type keyValueFlag struct {
+	values map[string]string
+}
+
+func (k *keyValueFlag) String() string {
+	if k == nil || len(k.values) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d entries", len(k.values))
+}
+
+func (k *keyValueFlag) Set(value string) error {
+	parts := strings.SplitN(value, "=", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("expected key=value, got %q", value)
+	}
+	if k.values == nil {
+		k.values = map[string]string{}
+	}
+	key := strings.TrimSpace(parts[0])
+	if key == "" {
+		return fmt.Errorf("empty key in %q", value)
+	}
+	k.values[key] = strings.TrimSpace(parts[1])
+	return nil
+}
+
+func copyStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(values))
+	for k, v := range values {
+		out[k] = v
+	}
+	return out
+}
+
+func mergeOptions(base map[string]string, overrides map[string]string) map[string]string {
+	if base == nil {
+		base = map[string]string{}
+	}
+	if len(overrides) == 0 {
+		return base
+	}
+	out := copyStringMap(base)
+	for key, value := range overrides {
+		out[key] = value
+	}
+	return out
+}
+
+func selectDestination(destinations []*wallabypb.Endpoint, name string) (*wallabypb.Endpoint, error) {
+	if len(destinations) == 0 {
+		return nil, errors.New("flow has no destinations")
+	}
+	if name == "" {
+		if len(destinations) == 1 {
+			return destinations[0], nil
+		}
+		return nil, errors.New("destination name is required when flow has multiple destinations")
+	}
+	for _, dest := range destinations {
+		if dest.GetName() == name {
+			return dest, nil
+		}
+	}
+	return nil, fmt.Errorf("destination %q not found", name)
 }
 
 type flowConfig struct {

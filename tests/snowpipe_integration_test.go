@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 	dsn := os.Getenv("WALLABY_TEST_SNOWPIPE_DSN")
 	stage := os.Getenv("WALLABY_TEST_SNOWPIPE_STAGE")
 	var schema string
+	var stagePath string
 	if dsn == "" {
 		if usingFakesnow() {
 			derived, derivedSchema, ok := snowflakeTestDSN(t)
@@ -84,6 +86,9 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 	}
 	if usingFakesnow() {
 		spec.Options["compat_mode"] = "fakesnow"
+	} else {
+		stagePath = fmt.Sprintf("wallaby_snowpipe_%d", time.Now().UnixNano())
+		spec.Options["stage_path"] = stagePath
 	}
 
 	if err := dest.Open(ctx, spec); err != nil {
@@ -128,4 +133,47 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 	if name != "alpha" {
 		t.Fatalf("unexpected name after write: %s", name)
 	}
+
+	if !usingFakesnow() {
+		stageLocation := joinStageForTest(stage, stagePath)
+		rows, err := setupDB.QueryContext(ctx, fmt.Sprintf("LIST %s", stageLocation))
+		if err != nil {
+			t.Fatalf("list stage: %v", err)
+		}
+		defer rows.Close()
+		var staged int
+		for rows.Next() {
+			staged++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterate stage list: %v", err)
+		}
+		if staged == 0 {
+			t.Fatalf("expected staged files in %s", stageLocation)
+		}
+
+		copyTable := table
+		if schema != "" {
+			copyTable = schema + "." + table
+		}
+		var copyCount int
+		if err := setupDB.QueryRowContext(ctx,
+			fmt.Sprintf("SELECT count(*) FROM TABLE(INFORMATION_SCHEMA.COPY_HISTORY(TABLE_NAME=>'%s'))", strings.ToUpper(copyTable)),
+		).Scan(&copyCount); err != nil {
+			t.Fatalf("copy history: %v", err)
+		}
+		if copyCount == 0 {
+			t.Fatalf("expected COPY history entries for %s", copyTable)
+		}
+	}
+}
+
+func joinStageForTest(stage, path string) string {
+	stage = strings.TrimSpace(stage)
+	if stage == "" || path == "" {
+		return stage
+	}
+	stage = strings.TrimSuffix(stage, "/")
+	path = strings.TrimPrefix(path, "/")
+	return stage + "/" + path
 }

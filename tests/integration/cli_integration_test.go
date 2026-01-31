@@ -3,6 +3,7 @@ package integration_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	apigrpc "github.com/josephjohncox/wallaby/internal/api/grpc"
@@ -737,7 +740,54 @@ func TestCLIIntegrationFlowCleanup(t *testing.T) {
 		t.Fatalf("expected flow id, got: %s", output)
 	}
 
-	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "cleanup", "-flow-id", createResp.ID, "-json")
+	slotName := "cleanup_slot"
+	pubName := "cleanup_pub"
+	tableName := fmt.Sprintf("cleanup_table_%d", time.Now().UnixNano())
+	tableIdent := pgx.Identifier{"public", tableName}.Sanitize()
+
+	if err := pgsource.DropReplicationSlot(ctx, baseDSN, slotName, nil); err != nil {
+		t.Fatalf("drop replication slot: %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id int primary key)", tableIdent)); err != nil {
+		t.Fatalf("create cleanup table: %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, fmt.Sprintf("DROP PUBLICATION IF EXISTS %s", pgx.Identifier{pubName}.Sanitize())); err != nil {
+		t.Fatalf("drop publication: %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, fmt.Sprintf("CREATE PUBLICATION %s FOR TABLE %s", pgx.Identifier{pubName}.Sanitize(), tableIdent)); err != nil {
+		t.Fatalf("create publication: %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, "SELECT pg_create_logical_replication_slot($1, 'pgoutput')", slotName); err != nil {
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "42710" {
+			t.Fatalf("create replication slot: %v", err)
+		}
+	}
+	if _, err := adminPool.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS wallaby"); err != nil {
+		t.Fatalf("ensure source state schema: %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS wallaby.source_state (
+  id TEXT PRIMARY KEY,
+  source_name TEXT,
+  slot_name TEXT NOT NULL,
+  publication_name TEXT NOT NULL,
+  state TEXT NOT NULL,
+  options JSONB NOT NULL DEFAULT '{}'::jsonb,
+  last_lsn TEXT,
+  last_ack_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)`); err != nil {
+		t.Fatalf("ensure source state table: %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, `INSERT INTO wallaby.source_state (id, source_name, slot_name, publication_name, state, options, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, '{}'::jsonb, now(), now())
+ON CONFLICT (id) DO UPDATE SET slot_name = EXCLUDED.slot_name, publication_name = EXCLUDED.publication_name, state = EXCLUDED.state, updated_at = now()`,
+		"src", "src", slotName, pubName, "running"); err != nil {
+		t.Fatalf("seed source state: %v", err)
+	}
+
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "cleanup", "-flow-id", createResp.ID, "-drop-publication", "-json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow cleanup: %v\n%s", err, output)
 	}
@@ -750,6 +800,28 @@ func TestCLIIntegrationFlowCleanup(t *testing.T) {
 	}
 	if !resp.Cleaned {
 		t.Fatalf("expected cleaned=true, got %s", output)
+	}
+
+	var slotCount int
+	if err := adminPool.QueryRow(ctx, "SELECT count(*) FROM pg_replication_slots WHERE slot_name = $1", slotName).Scan(&slotCount); err != nil {
+		t.Fatalf("check slot: %v", err)
+	}
+	if slotCount != 0 {
+		t.Fatalf("expected slot to be dropped, still present")
+	}
+	var pubCount int
+	if err := adminPool.QueryRow(ctx, "SELECT count(*) FROM pg_publication WHERE pubname = $1", pubName).Scan(&pubCount); err != nil {
+		t.Fatalf("check publication: %v", err)
+	}
+	if pubCount != 0 {
+		t.Fatalf("expected publication to be dropped, still present")
+	}
+	var stateCount int
+	if err := adminPool.QueryRow(ctx, "SELECT count(*) FROM wallaby.source_state WHERE id = $1", "src").Scan(&stateCount); err != nil {
+		t.Fatalf("check source state: %v", err)
+	}
+	if stateCount != 0 {
+		t.Fatalf("expected source state to be deleted, still present")
 	}
 }
 

@@ -66,6 +66,15 @@ services:
       interval: 3s
       timeout: 5s
       retries: 40
+  localstack:
+    image: localstack/localstack:3.7.2
+    environment:
+      SERVICES: "glue,sts"
+      DEFAULT_REGION: "us-east-1"
+      AWS_ACCESS_KEY_ID: "test"
+      AWS_SECRET_ACCESS_KEY: "test"
+    ports:
+      - "4566:4566"
   redpanda:
     image: docker.redpanda.com/redpandadata/redpanda:v25.3.4
     ports:

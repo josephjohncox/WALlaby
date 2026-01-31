@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-ARG GO_VERSION=1.25.5
+ARG GO_VERSION=1.25.6
 ARG CGO_ENABLED=1
 
 FROM golang:${GO_VERSION} AS build

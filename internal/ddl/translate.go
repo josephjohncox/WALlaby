@@ -35,6 +35,7 @@ type DialectConfig struct {
 	AddColumnTemplate  string
 	DropColumnTemplate string
 	RenameColumnTpl    string
+	RenameTableTpl     string
 	TruncateTemplate   string
 	ArrayType          func(string) string
 	CreateSuffix       string
@@ -50,6 +51,7 @@ func DialectConfigFor(d Dialect) DialectConfig {
 			AddColumnTemplate:  "ALTER TABLE %s ADD COLUMN %s",
 			DropColumnTemplate: "ALTER TABLE %s DROP COLUMN %s",
 			RenameColumnTpl:    "ALTER TABLE %s RENAME COLUMN %s TO %s",
+			RenameTableTpl:     "RENAME TABLE %s TO %s",
 			TruncateTemplate:   "TRUNCATE TABLE %s",
 			ArrayType: func(inner string) string {
 				return "Array(" + inner + ")"
@@ -64,6 +66,7 @@ func DialectConfigFor(d Dialect) DialectConfig {
 			AddColumnTemplate:  "ALTER TABLE %s ADD COLUMN %s",
 			DropColumnTemplate: "ALTER TABLE %s DROP COLUMN %s",
 			RenameColumnTpl:    "ALTER TABLE %s RENAME COLUMN %s TO %s",
+			RenameTableTpl:     "ALTER TABLE %s RENAME TO %s",
 			TruncateTemplate:   "TRUNCATE TABLE %s",
 			ArrayType: func(inner string) string {
 				return inner + "[]"
@@ -77,6 +80,7 @@ func DialectConfigFor(d Dialect) DialectConfig {
 			AddColumnTemplate:  "ALTER TABLE %s ADD COLUMN %s",
 			DropColumnTemplate: "ALTER TABLE %s DROP COLUMN %s",
 			RenameColumnTpl:    "ALTER TABLE %s RENAME COLUMN %s TO %s",
+			RenameTableTpl:     "ALTER TABLE %s RENAME TO %s",
 			TruncateTemplate:   "TRUNCATE TABLE %s",
 			ArrayType: func(inner string) string {
 				return "ARRAY"
@@ -96,6 +100,12 @@ func TranslatePostgresDDL(ddl string, dialect DialectConfig, mappings map[string
 	switch {
 	case strings.HasPrefix(upper, "CREATE TABLE"):
 		stmt, err := translateCreateTable(statement, dialect, mappings)
+		if err != nil {
+			return nil, err
+		}
+		return []string{stmt}, nil
+	case strings.HasPrefix(upper, "RENAME TABLE"):
+		stmt, err := translateRenameTable(statement, dialect)
 		if err != nil {
 			return nil, err
 		}
@@ -220,6 +230,19 @@ func translateAlterTable(stmt string, dialect DialectConfig, mappings map[string
 		upper := strings.ToUpper(entry)
 
 		switch {
+		case strings.HasPrefix(upper, "RENAME TO"):
+			newName := strings.TrimSpace(entry[len("RENAME TO"):])
+			if newName == "" {
+				return nil, fmt.Errorf("rename table missing new name: %s", entry)
+			}
+			qualifiedNew, err := quoteTableName(newName, dialect)
+			if err != nil {
+				return nil, err
+			}
+			if dialect.RenameTableTpl == "" {
+				return nil, fmt.Errorf("rename table not supported for dialect %s", dialect.Name)
+			}
+			statements = append(statements, fmt.Sprintf(dialect.RenameTableTpl, qualified, qualifiedNew))
 		case strings.HasPrefix(upper, "ADD COLUMN"):
 			colDef := strings.TrimSpace(entry[len("ADD COLUMN"):])
 			colDef = trimPrefixFold(colDef, "IF NOT EXISTS")
@@ -286,6 +309,31 @@ func translateAlterTable(stmt string, dialect DialectConfig, mappings map[string
 		return nil, fmt.Errorf("no alter table actions parsed for: %s", stmt)
 	}
 	return statements, nil
+}
+
+func translateRenameTable(stmt string, dialect DialectConfig) (string, error) {
+	re := regexp.MustCompile(`(?is)^rename\s+table\s+(.+?)\s+to\s+(.+?)\s*$`)
+	matches := re.FindStringSubmatch(stmt)
+	if len(matches) != 3 {
+		return "", fmt.Errorf("unsupported rename table ddl: %s", stmt)
+	}
+	oldName := strings.TrimSpace(matches[1])
+	newName := strings.TrimSpace(matches[2])
+	if oldName == "" || newName == "" {
+		return "", fmt.Errorf("rename table missing names: %s", stmt)
+	}
+	if dialect.RenameTableTpl == "" {
+		return "", fmt.Errorf("rename table not supported for dialect %s", dialect.Name)
+	}
+	qualifiedOld, err := quoteTableName(oldName, dialect)
+	if err != nil {
+		return "", err
+	}
+	qualifiedNew, err := quoteTableName(newName, dialect)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(dialect.RenameTableTpl, qualifiedOld, qualifiedNew), nil
 }
 
 func translateDropTable(stmt string, dialect DialectConfig) (string, error) {
