@@ -21,56 +21,67 @@ import (
 )
 
 const (
-	optDSN          = "dsn"
-	optStage        = "stage"
-	optStagePath    = "stage_path"
-	optSchema       = "schema"
-	optTable        = "table"
-	optFormat       = "format"
-	optFileFormat   = "file_format"
-	optCopyOnWrite  = "copy_on_write"
-	optCopyPattern  = "copy_pattern"
-	optCopyOnError  = "copy_on_error"
-	optCopyPurge    = "copy_purge"
-	optCopyMatch    = "copy_match_by_column_name"
-	optAutoIngest   = "auto_ingest"
-	optCompatMode   = "compat_mode"
-	optWriteMode    = "write_mode"
-	optMetaTable    = "meta_table"
-	optMetaSchema   = "meta_schema"
-	optMetaEnabled  = "meta_table_enabled"
-	optMetaPKPrefix = "meta_pk_prefix"
-	optFlowID       = "flow_id"
+	optDSN              = "dsn"
+	optStage            = "stage"
+	optStagePath        = "stage_path"
+	optSchema           = "schema"
+	optTable            = "table"
+	optFormat           = "format"
+	optFileFormat       = "file_format"
+	optWarehouse        = "warehouse"
+	optWarehouseSize    = "warehouse_size"
+	optWarehouseSuspend = "warehouse_auto_suspend"
+	optWarehouseResume  = "warehouse_auto_resume"
+	optSessionKeepAlive = "session_keep_alive"
+	optCopyOnWrite      = "copy_on_write"
+	optCopyPattern      = "copy_pattern"
+	optCopyOnError      = "copy_on_error"
+	optCopyPurge        = "copy_purge"
+	optCopyMatch        = "copy_match_by_column_name"
+	optAutoIngest       = "auto_ingest"
+	optCompatMode       = "compat_mode"
+	optWriteMode        = "write_mode"
+	optMetaTable        = "meta_table"
+	optMetaSchema       = "meta_schema"
+	optMetaEnabled      = "meta_table_enabled"
+	optMetaPKPrefix     = "meta_pk_prefix"
+	optFlowID           = "flow_id"
 
 	writeModeAppend    = "append"
 	compatModeFakesnow = "fakesnow"
 	defaultMetaSchema  = "WALLABY_META"
 	defaultMetaTable   = "__METADATA"
 	defaultMetaPKPref  = "pk_"
+	defaultAutoSuspend = 60
 )
 
 // Destination writes batches to Snowflake stages and optionally issues COPY INTO.
 type Destination struct {
-	spec         connector.Spec
-	db           *sql.DB
-	codec        wire.Codec
-	stage        string
-	stagePath    string
-	copyOnWrite  bool
-	copyPattern  string
-	copyOnError  string
-	copyPurge    *bool
-	copyMatch    string
-	fileFormat   string
-	writeMode    string
-	compatMode   string
-	compatNoTx   bool
-	metaEnabled  bool
-	metaSchema   string
-	metaTable    string
-	metaPKPrefix string
-	flowID       string
-	metaColumns  map[string]struct{}
+	spec             connector.Spec
+	db               *sql.DB
+	codec            wire.Codec
+	stage            string
+	stagePath        string
+	copyOnWrite      bool
+	copyPattern      string
+	copyOnError      string
+	copyPurge        *bool
+	copyMatch        string
+	fileFormat       string
+	writeMode        string
+	compatMode       string
+	compatNoTx       bool
+	metaEnabled      bool
+	metaSchema       string
+	metaTable        string
+	metaPKPrefix     string
+	flowID           string
+	metaColumns      map[string]struct{}
+	warehouse        string
+	warehouseSize    string
+	warehouseSuspend *int
+	warehouseResume  *bool
+	sessionKeepAlive *bool
 }
 
 type execer interface {
@@ -159,12 +170,92 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.flowID = spec.Options[optFlowID]
 	d.metaColumns = map[string]struct{}{}
 
+	d.warehouse = strings.TrimSpace(spec.Options[optWarehouse])
+	if raw := strings.TrimSpace(spec.Options[optWarehouseSize]); raw != "" {
+		d.warehouseSize = normalizeWarehouseSize(raw)
+	}
+	if raw := strings.TrimSpace(spec.Options[optWarehouseSuspend]); raw != "" {
+		val, err := parseInt(raw)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", optWarehouseSuspend, err)
+		}
+		d.warehouseSuspend = &val
+	}
+	if raw := strings.TrimSpace(spec.Options[optWarehouseResume]); raw != "" {
+		val := parseBool(raw, true)
+		d.warehouseResume = &val
+	}
+	if raw := strings.TrimSpace(spec.Options[optSessionKeepAlive]); raw != "" {
+		val := parseBool(raw, false)
+		d.sessionKeepAlive = &val
+	} else {
+		val := false
+		d.sessionKeepAlive = &val
+	}
+
+	if err := d.configureSession(ctx); err != nil {
+		_ = d.db.Close()
+		return err
+	}
+
 	if d.metaEnabled {
 		if err := d.ensureMetaTable(ctx); err != nil {
 			return err
 		}
 	}
 
+	return nil
+}
+
+func (d *Destination) configureSession(ctx context.Context) error {
+	if d.db == nil {
+		return nil
+	}
+	if d.sessionKeepAlive != nil {
+		value := "FALSE"
+		if *d.sessionKeepAlive {
+			value = "TRUE"
+		}
+		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("ALTER SESSION SET CLIENT_SESSION_KEEP_ALIVE = %s", value)); err != nil {
+			return fmt.Errorf("set session keep alive: %w", err)
+		}
+	}
+	if d.warehouse == "" {
+		return nil
+	}
+	if _, err := d.db.ExecContext(ctx, fmt.Sprintf("USE WAREHOUSE %s", quoteIdent(d.warehouse, '"'))); err != nil {
+		return fmt.Errorf("use warehouse: %w", err)
+	}
+
+	settings := make([]string, 0, 3)
+	if d.warehouseSize != "" {
+		settings = append(settings, fmt.Sprintf("WAREHOUSE_SIZE = %s", d.warehouseSize))
+	}
+	if d.warehouseSuspend == nil {
+		val := defaultAutoSuspend
+		d.warehouseSuspend = &val
+	}
+	if d.warehouseSuspend != nil {
+		settings = append(settings, fmt.Sprintf("AUTO_SUSPEND = %d", *d.warehouseSuspend))
+	}
+	if d.warehouseResume == nil {
+		val := true
+		d.warehouseResume = &val
+	}
+	if d.warehouseResume != nil {
+		val := "FALSE"
+		if *d.warehouseResume {
+			val = "TRUE"
+		}
+		settings = append(settings, fmt.Sprintf("AUTO_RESUME = %s", val))
+	}
+	if len(settings) == 0 {
+		return nil
+	}
+	stmt := fmt.Sprintf("ALTER WAREHOUSE %s SET %s", quoteIdent(d.warehouse, '"'), strings.Join(settings, " "))
+	if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("alter warehouse: %w", err)
+	}
 	return nil
 }
 
@@ -756,4 +847,26 @@ func parseBool(value string, fallback bool) bool {
 		return fallback
 	}
 	return parsed
+}
+
+func parseInt(value string) (int, error) {
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	return parsed, nil
+}
+
+func normalizeWarehouseSize(value string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	normalized = strings.ReplaceAll(normalized, "-", "")
+	normalized = strings.ReplaceAll(normalized, "_", "")
+	switch normalized {
+	case "XSMALL", "X-SMALL", "X_SMALL":
+		return "XSMALL"
+	case "XXSMALL", "XX-SMALL", "XX_SMALL":
+		return "XXSMALL"
+	default:
+		return normalized
+	}
 }
