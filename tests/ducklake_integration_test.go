@@ -309,4 +309,72 @@ func TestDuckLakeDestination(t *testing.T) {
 			t.Fatalf("expected extra column to be dropped, still present")
 		}
 	}
+
+	renameDest := &ducklake.Destination{}
+	if err := renameDest.Open(ctx, spec); err != nil {
+		t.Fatalf("open destination for rename/drop: %v", err)
+	}
+	defer renameDest.Close(ctx)
+
+	renameTableDDL := connector.Record{
+		Table:     "widgets",
+		Operation: connector.OpDDL,
+		DDL:       "ALTER TABLE widgets RENAME TO widgets_renamed",
+		Timestamp: time.Now().UTC(),
+	}
+	if err := renameDest.ApplyDDL(ctx, schema, renameTableDDL); err != nil {
+		t.Fatalf("apply rename table ddl: %v", err)
+	}
+
+	renamedSchema := connector.Schema{
+		Name: "widgets_renamed",
+		Columns: []connector.Column{
+			{Name: "id", Type: "INTEGER"},
+			{Name: "display_name", Type: "VARCHAR"},
+		},
+	}
+	renamedInsert := connector.Record{
+		Table:     "widgets_renamed",
+		Operation: connector.OpInsert,
+		Key:       recordKey(t, map[string]any{"id": 5}),
+		After: map[string]any{
+			"id":           5,
+			"display_name": "lambda",
+		},
+		Timestamp: time.Now().UTC(),
+	}
+	if err := renameDest.Write(ctx, connector.Batch{
+		Records:    []connector.Record{renamedInsert},
+		Schema:     renamedSchema,
+		Checkpoint: connector.Checkpoint{LSN: "5"},
+	}); err != nil {
+		t.Fatalf("write after rename table ddl: %v", err)
+	}
+	var renamedRow string
+	if err := verifyDB.QueryRowContext(ctx, "SELECT display_name FROM widgets_renamed WHERE id = 5").Scan(&renamedRow); err != nil {
+		t.Fatalf("select renamed table row: %v", err)
+	}
+	if renamedRow != "lambda" {
+		t.Fatalf("unexpected value after rename table ddl: %s", renamedRow)
+	}
+
+	dropTableDDL := connector.Record{
+		Table:     "widgets_renamed",
+		Operation: connector.OpDDL,
+		DDL:       "DROP TABLE IF EXISTS widgets_renamed",
+		Timestamp: time.Now().UTC(),
+	}
+	if err := renameDest.ApplyDDL(ctx, renamedSchema, dropTableDDL); err != nil {
+		t.Fatalf("apply drop table ddl: %v", err)
+	}
+
+	var tableCount int
+	if err := verifyDB.QueryRowContext(ctx,
+		`SELECT count(*) FROM information_schema.tables WHERE lower(table_name) = 'widgets_renamed'`,
+	).Scan(&tableCount); err != nil {
+		t.Fatalf("count renamed tables: %v", err)
+	}
+	if tableCount != 0 {
+		t.Fatalf("expected widgets_renamed to be dropped, found %d entries", tableCount)
+	}
 }
