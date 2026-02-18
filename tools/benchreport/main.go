@@ -4,13 +4,14 @@ import (
 	"bufio"
 	"encoding/csv"
 	"encoding/json"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 type benchResult struct {
@@ -24,14 +25,60 @@ type benchResult struct {
 }
 
 func main() {
-	inputPath := flag.String("input", "-", "benchmark output file (default: stdin)")
-	format := flag.String("format", "json", "output format: json or csv")
-	pretty := flag.Bool("pretty", true, "pretty-print JSON output")
-	flag.Parse()
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
 
-	reader, err := openInput(*inputPath)
+type benchReportOptions struct {
+	inputPath string
+	format    string
+	pretty    bool
+}
+
+func run() error {
+	command := newBenchReportCommand()
+	return command.Execute()
+}
+
+func newBenchReportCommand() *cobra.Command {
+	command := &cobra.Command{
+		Use:          "benchreport",
+		Short:        "Convert Go benchmark output to JSON or CSV",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runBenchReport(cmd)
+		},
+	}
+	command.Flags().String("input", "-", "benchmark output file (default: stdin)")
+	command.Flags().String("format", "json", "output format: json or csv")
+	command.Flags().Bool("pretty", true, "pretty-print JSON output")
+	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		return initBenchReportConfig(cmd)
+	}
+	command.InitDefaultCompletionCmd()
+	return command
+}
+
+func initBenchReportConfig(_ *cobra.Command) error {
+	viper.Reset()
+	viper.SetEnvPrefix("BENCHREPORT")
+	viper.AutomaticEnv()
+	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+	return nil
+}
+
+func runBenchReport(cmd *cobra.Command) error {
+	opts := benchReportOptions{
+		inputPath: resolveStringFlag(cmd, "input"),
+		format:    resolveStringFlag(cmd, "format"),
+		pretty:    resolveBoolFlag(cmd, "pretty"),
+	}
+
+	reader, err := openInput(opts.inputPath)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	defer func() {
 		if err := reader.Close(); err != nil {
@@ -41,21 +88,44 @@ func main() {
 
 	results, err := parseBench(reader)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
-	switch strings.ToLower(strings.TrimSpace(*format)) {
+	switch strings.ToLower(strings.TrimSpace(opts.format)) {
 	case "json":
-		if err := writeJSON(os.Stdout, results, *pretty); err != nil {
-			fatal(err)
+		if err := writeJSON(os.Stdout, results, opts.pretty); err != nil {
+			return err
 		}
 	case "csv":
 		if err := writeCSV(os.Stdout, results); err != nil {
-			fatal(err)
+			return err
 		}
 	default:
-		fatal(fmt.Errorf("unsupported format %q", *format))
+		return fmt.Errorf("unsupported format %q", opts.format)
 	}
+	return nil
+}
+
+func resolveStringFlag(cmd *cobra.Command, key string) string {
+	value, err := cmd.Flags().GetString(key)
+	if err != nil {
+		return ""
+	}
+	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
+		return viper.GetString(key)
+	}
+	return value
+}
+
+func resolveBoolFlag(cmd *cobra.Command, key string) bool {
+	value, err := cmd.Flags().GetBool(key)
+	if err != nil {
+		return false
+	}
+	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
+		return viper.GetBool(key)
+	}
+	return value
 }
 
 type readCloser struct {
@@ -219,15 +289,4 @@ func formatFloat(value float64) string {
 		return ""
 	}
 	return strconv.FormatFloat(value, 'f', -1, 64)
-}
-
-func fatal(err error) {
-	if err == nil {
-		return
-	}
-	if errors.Is(err, flag.ErrHelp) {
-		os.Exit(0)
-	}
-	fmt.Fprintln(os.Stderr, err)
-	os.Exit(1)
 }

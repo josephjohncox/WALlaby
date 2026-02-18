@@ -1,8 +1,12 @@
 package ddl
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	schemadiff "github.com/josephjohncox/wallaby/internal/schema"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 func TestTranslatePostgresDDL_PreservesQuotedCase(t *testing.T) {
@@ -233,5 +237,99 @@ func TestTranslatePostgresDDL_ClickHouseRejectsAlterDefaults(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatalf("expected error for clickhouse alter default")
+	}
+}
+
+func TestTranslateRecordDDL_FromPlan(t *testing.T) {
+	schemaDef := connector.Schema{
+		Name:      "widgets",
+		Namespace: "public",
+		Columns: []connector.Column{
+			{Name: "id", Type: "INTEGER"},
+		},
+	}
+	plan := schemadiff.Plan{
+		Changes: []schemadiff.Change{
+			{Type: schemadiff.ChangeAddColumn, Namespace: "public", Table: "widgets", Column: "status", ToType: "text", Nullable: false},
+			{Type: schemadiff.ChangeAlterColumn, Namespace: "public", Table: "widgets", Column: "id", FromType: "INTEGER", ToType: "bigint", FromNullable: false, Nullable: false},
+			{Type: schemadiff.ChangeAlterColumn, Namespace: "public", Table: "widgets", Column: "status", FromType: "text", ToType: "text", FromNullable: true, Nullable: false},
+			{Type: schemadiff.ChangeRenameColumn, Namespace: "public", Table: "widgets", Column: "created_at", ToColumn: "created_at_utc"},
+		},
+	}
+	planBytes, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("marshal ddl plan: %v", err)
+	}
+	record := connector.Record{
+		Operation: connector.OpDDL,
+		Table:     "widgets",
+		DDLPlan:   planBytes,
+	}
+
+	stmts, err := TranslateRecordDDL(schemaDef, record, DialectConfigFor(DialectDuckDB), nil, nil)
+	if err != nil {
+		t.Fatalf("translate record ddl: %v", err)
+	}
+	want := []string{
+		`ALTER TABLE "public"."widgets" ADD COLUMN "status" text NOT NULL`,
+		`ALTER TABLE "public"."widgets" ALTER COLUMN "id" SET DATA TYPE bigint`,
+		`ALTER TABLE "public"."widgets" ALTER COLUMN "status" SET NOT NULL`,
+		`ALTER TABLE "public"."widgets" RENAME COLUMN "created_at" TO "created_at_utc"`,
+	}
+	if len(stmts) != len(want) {
+		t.Fatalf("expected %d statements, got %d (%v)", len(want), len(stmts), stmts)
+	}
+	for i := range want {
+		if stmts[i] != want[i] {
+			t.Fatalf("statement %d mismatch: got %q want %q", i, stmts[i], want[i])
+		}
+	}
+}
+
+func TestTranslateRecordDDL_RejectsGeneratedInPlan(t *testing.T) {
+	schemaDef := connector.Schema{Name: "events"}
+	plan := schemadiff.Plan{
+		Changes: []schemadiff.Change{
+			{Type: schemadiff.ChangeSetGenerated, Table: "events", Column: "value", Expression: "coalesce(value, 0)"},
+		},
+	}
+	planBytes, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("marshal ddl plan: %v", err)
+	}
+	record := connector.Record{
+		Operation: connector.OpDDL,
+		DDLPlan:   planBytes,
+	}
+	if _, err := TranslateRecordDDL(schemaDef, record, DialectConfigFor(DialectDuckDB), nil, nil); err == nil {
+		t.Fatalf("expected generated plan to be unsupported")
+	}
+}
+
+func TestTranslateRecordDDL_RenameColumnUsesToColumnAndFallsBackToType(t *testing.T) {
+	schemaDef := connector.Schema{
+		Name:      "widgets",
+		Namespace: "public",
+	}
+	plan := schemadiff.Plan{
+		Changes: []schemadiff.Change{
+			{Type: schemadiff.ChangeRenameColumn, Namespace: "public", Table: "widgets", Column: "created_at", ToType: "created_at_utc"},
+		},
+	}
+	planBytes, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("marshal ddl plan: %v", err)
+	}
+	record := connector.Record{
+		Operation: connector.OpDDL,
+		DDLPlan:   planBytes,
+	}
+
+	stmts, err := TranslateRecordDDL(schemaDef, record, DialectConfigFor(DialectDuckDB), nil, nil)
+	if err != nil {
+		t.Fatalf("translate record ddl: %v", err)
+	}
+	if len(stmts) != 1 || stmts[0] != `ALTER TABLE "public"."widgets" RENAME COLUMN "created_at" TO "created_at_utc"` {
+		t.Fatalf("unexpected rename stmts: %#v", stmts)
 	}
 }

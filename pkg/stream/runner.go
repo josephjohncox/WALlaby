@@ -688,7 +688,7 @@ func ddlRecordsInBatch(batch connector.Batch) []connector.Record {
 	}
 	records := make([]connector.Record, 0)
 	for _, record := range batch.Records {
-		if record.Operation == connector.OpDDL || record.DDL != "" {
+		if record.Operation == connector.OpDDL || record.DDL != "" || len(record.DDLPlan) > 0 {
 			records = append(records, record)
 		}
 	}
@@ -703,7 +703,11 @@ func (r *Runner) markDDLApplied(ctx context.Context, checkpoint connector.Checkp
 		return nil
 	}
 	for _, record := range records {
-		if err := r.DDLApplied(ctx, r.FlowID, checkpoint.LSN, record.DDL); err != nil {
+		ddlText := record.DDL
+		if ddlText == "" && len(record.DDLPlan) > 0 {
+			ddlText = string(record.DDLPlan)
+		}
+		if err := r.DDLApplied(ctx, r.FlowID, checkpoint.LSN, ddlText); err != nil {
 			if errors.Is(err, connector.ErrDDLApprovalRequired) {
 				r.handleDDLGate(ctx, trace.SpanFromContext(ctx), err)
 			}
@@ -716,7 +720,7 @@ func (r *Runner) markDDLApplied(ctx context.Context, checkpoint connector.Checkp
 				SpecAction: spec.ActionApplyDDL,
 				LSN:        checkpoint.LSN,
 				FlowID:     r.FlowID,
-				DDL:        record.DDL,
+				DDL:        ddlText,
 			})
 		}
 	}
@@ -819,7 +823,7 @@ func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, b
 	if len(batch.Records) > 0 {
 		if dest.Dest.Capabilities().SupportsDDL {
 			for _, record := range batch.Records {
-				if record.Operation != connector.OpDDL && record.DDL == "" {
+				if record.Operation != connector.OpDDL && record.DDL == "" && len(record.DDLPlan) == 0 {
 					continue
 				}
 				if err := dest.Dest.ApplyDDL(ctx, batch.Schema, record); err != nil {

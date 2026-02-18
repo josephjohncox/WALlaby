@@ -45,6 +45,8 @@ export GO_TEST_TIMEOUT
 .PHONY: fmt lint staticcheck vulncheck lint-full test test-rapid test-integration test-integration-ci test-e2e test-k8s-kind proto tidy release release-snapshot proto-tools tla-tools bench bench-ddl bench-up bench-down benchmark benchmark-profile benchstat check check-coverage tla tla-single tla-flow tla-state tla-fanout tla-liveness tla-witness tla-coverage tla-coverage-check trace-suite trace-suite-large spec-manifest spec-verify spec-lint spec-sync
 .PHONY: proto-lint proto-breaking
 
+.PHONY: check-lite check-integration-core check-integration-full
+
 fmt:
 	$(GO) fmt ./...
 
@@ -61,6 +63,9 @@ lint-full: lint staticcheck vulncheck proto-lint proto-breaking
 
 check: spec-verify spec-sync spec-lint tla
 	$(GOENV) $(GO) test ./...
+
+check-lite: spec-sync spec-lint
+	$(GOENV) $(GO) test ./cmd/wallaby-admin ./pkg/... ./internal/... ./connectors/... ./tests/...
 
 check-coverage: spec-sync tla-coverage tla-coverage-check trace-suite test-e2e
 
@@ -83,7 +88,15 @@ test-integration-ci:
 	./tests/integration.sh
 
 test-e2e:
-	./tests/e2e.sh
+	@if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then \
+		./tests/e2e.sh; \
+	else \
+		echo "Skipping test-e2e: docker is not available"; \
+	fi
+
+check-integration-core: test-integration
+
+check-integration-full: test-integration test-e2e
 
 test-k8s-kind:
 	./tests/kind.sh

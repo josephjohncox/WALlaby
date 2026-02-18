@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	internalschema "github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"gopkg.in/yaml.v3"
 )
@@ -25,6 +26,7 @@ const (
 	DialectSnowflake  Dialect = "snowflake"
 	DialectClickHouse Dialect = "clickhouse"
 	DialectDuckDB     Dialect = "duckdb"
+	DialectPostgres   Dialect = "postgres"
 )
 
 // DialectConfig describes SQL formatting for a destination.
@@ -61,6 +63,24 @@ func DialectConfigFor(d Dialect) DialectConfig {
 				return "Array(" + inner + ")"
 			},
 			CreateSuffix: " ENGINE = MergeTree() ORDER BY tuple()",
+		}
+	case DialectPostgres:
+		return DialectConfig{
+			Name:               d,
+			Quote:              "\"",
+			AlterTypeTemplate:  "ALTER TABLE %s ALTER COLUMN %s SET DATA TYPE %s",
+			SetNotNullTemplate: "ALTER TABLE %s ALTER COLUMN %s SET NOT NULL",
+			DropNotNullTpl:     "ALTER TABLE %s ALTER COLUMN %s DROP NOT NULL",
+			SetDefaultTpl:      "ALTER TABLE %s ALTER COLUMN %s SET DEFAULT %s",
+			DropDefaultTpl:     "ALTER TABLE %s ALTER COLUMN %s DROP DEFAULT",
+			AddColumnTemplate:  "ALTER TABLE %s ADD COLUMN %s",
+			DropColumnTemplate: "ALTER TABLE %s DROP COLUMN %s",
+			RenameColumnTpl:    "ALTER TABLE %s ALTER COLUMN %s RENAME TO %s",
+			RenameTableTpl:     "ALTER TABLE %s RENAME TO %s",
+			TruncateTemplate:   "TRUNCATE TABLE %s",
+			ArrayType: func(inner string) string {
+				return inner + "[]"
+			},
 		}
 	case DialectDuckDB:
 		return DialectConfig{
@@ -141,26 +161,151 @@ func TranslatePostgresDDL(ddl string, dialect DialectConfig, mappings map[string
 	}
 }
 
+// TranslatePlanDDL resolves a schema plan into translated DDL statements.
+func TranslatePlanDDL(schemaDef connector.Schema, plan internalschema.Plan, dialect DialectConfig, baseMappings map[string]string, options map[string]string) ([]string, error) {
+	overrides, err := LoadTypeMappings(options)
+	if err != nil {
+		return nil, err
+	}
+	mappings := MergeTypeMappings(baseMappings, overrides)
+
+	if len(plan.Changes) == 0 {
+		return []string{}, nil
+	}
+
+	statements := make([]string, 0, len(plan.Changes))
+	for _, change := range plan.Changes {
+		qualifiedTable, err := planQualifiedTable(schemaDef, change, dialect)
+		if err != nil {
+			return nil, err
+		}
+
+		switch change.Type {
+		case internalschema.ChangeAddColumn:
+			mapped := mapType(change.ToType, mappings, dialect)
+			if mapped == "" {
+				return nil, fmt.Errorf("add column missing type for %s", change.Column)
+			}
+			definition := quoteIdentPreserve(change.Column, dialect.Quote)
+			definition = fmt.Sprintf("%s %s", definition, mapped)
+			if !change.Nullable {
+				definition += " NOT NULL"
+			}
+			statements = append(statements, fmt.Sprintf(dialect.AddColumnTemplate, qualifiedTable, definition))
+		case internalschema.ChangeDropColumn:
+			statements = append(statements, fmt.Sprintf(dialect.DropColumnTemplate, qualifiedTable, quoteIdentPreserve(change.Column, dialect.Quote)))
+		case internalschema.ChangeAlterColumn:
+			typeChanged := strings.TrimSpace(change.FromType) != "" && strings.TrimSpace(change.ToType) != "" && strings.TrimSpace(change.FromType) != strings.TrimSpace(change.ToType)
+			nullabilityChanged := change.FromNullable != change.Nullable
+			if typeChanged {
+				mapped := mapType(change.ToType, mappings, dialect)
+				if mapped == "" {
+					return nil, fmt.Errorf("alter column missing target type for %s", change.Column)
+				}
+				statements = append(statements, fmt.Sprintf(dialect.AlterTypeTemplate, qualifiedTable, quoteIdentPreserve(change.Column, dialect.Quote), mapped))
+			}
+			if nullabilityChanged {
+				if change.Nullable {
+					if dialect.DropNotNullTpl == "" {
+						return nil, fmt.Errorf("drop not null not supported for %s", dialect.Name)
+					}
+					statements = append(statements, fmt.Sprintf(dialect.DropNotNullTpl, qualifiedTable, quoteIdentPreserve(change.Column, dialect.Quote)))
+				} else {
+					if dialect.SetNotNullTemplate == "" {
+						return nil, fmt.Errorf("set not null not supported for %s", dialect.Name)
+					}
+					statements = append(statements, fmt.Sprintf(dialect.SetNotNullTemplate, qualifiedTable, quoteIdentPreserve(change.Column, dialect.Quote)))
+				}
+			}
+			if !typeChanged && !nullabilityChanged {
+				continue
+			}
+		case internalschema.ChangeRenameColumn:
+			newName := strings.TrimSpace(change.ToColumn)
+			if newName == "" {
+				newName = strings.TrimSpace(change.ToType)
+			}
+			if newName == "" {
+				return nil, fmt.Errorf("rename column missing target name for %s", change.Column)
+			}
+			statements = append(statements, fmt.Sprintf(dialect.RenameColumnTpl, qualifiedTable, quoteIdentPreserve(change.Column, dialect.Quote), quoteIdentPreserve(newName, dialect.Quote)))
+		case internalschema.ChangeSetGenerated:
+			return nil, fmt.Errorf("set generated columns are not supported for automatic apply")
+		case internalschema.ChangeDropGenerated:
+			return nil, fmt.Errorf("drop generated columns are not supported for automatic apply")
+		case internalschema.ChangeDropTable:
+			statements = append(statements, fmt.Sprintf("DROP TABLE IF EXISTS %s", qualifiedTable))
+		case internalschema.ChangeCreateTable:
+			return nil, fmt.Errorf("create table changes are not supported for automatic apply")
+		case internalschema.ChangeCreateIndex:
+			return nil, fmt.Errorf("index changes are not supported for automatic apply")
+		case internalschema.ChangeDropIndex:
+			return nil, fmt.Errorf("index changes are not supported for automatic apply")
+		case internalschema.ChangeAlterPrimaryKey:
+			return nil, fmt.Errorf("primary key changes are not supported for automatic apply")
+		case internalschema.ChangeAlterForeignKey:
+			return nil, fmt.Errorf("foreign key changes are not supported for automatic apply")
+		case internalschema.ChangeAlterConstraints:
+			return nil, fmt.Errorf("constraint changes are not supported for automatic apply")
+		default:
+			return nil, fmt.Errorf("unsupported schema change: %s", change.Type)
+		}
+	}
+
+	return statements, nil
+}
+
+func planQualifiedTable(schemaDef connector.Schema, change internalschema.Change, dialect DialectConfig) (string, error) {
+	table := strings.TrimSpace(change.Table)
+	if table == "" {
+		table = strings.TrimSpace(schemaDef.Name)
+	}
+	if table == "" {
+		return "", fmt.Errorf("change has no table")
+	}
+	if !strings.Contains(table, ".") && strings.TrimSpace(change.Namespace) != "" {
+		table = change.Namespace + "." + table
+	}
+	qualified, err := quoteTableNamePreserve(table, schemaDef, dialect)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(qualified) != "" {
+		return qualified, nil
+	}
+	if table == "" {
+		return "", fmt.Errorf("invalid table name")
+	}
+	return qualified, nil
+}
+
 // TranslateRecordDDL resolves a change record into translated DDL statements.
-func TranslateRecordDDL(schema connector.Schema, record connector.Record, dialect DialectConfig, baseMappings map[string]string, options map[string]string) ([]string, error) {
+func TranslateRecordDDL(schemaDef connector.Schema, record connector.Record, dialect DialectConfig, baseMappings map[string]string, options map[string]string) ([]string, error) {
 	overrides, err := LoadTypeMappings(options)
 	if err != nil {
 		return nil, err
 	}
 	mappings := MergeTypeMappings(baseMappings, overrides)
 	ddlText := strings.TrimSpace(record.DDL)
+	if ddlText == "" && len(record.DDLPlan) > 0 {
+		var plan internalschema.Plan
+		if err := json.Unmarshal(record.DDLPlan, &plan); err != nil {
+			return nil, fmt.Errorf("unmarshal ddl plan: %w", err)
+		}
+		return TranslatePlanDDL(schemaDef, plan, dialect, baseMappings, options)
+	}
 	if ddlText == "" {
 		table := strings.TrimSpace(record.Table)
 		if table == "" {
-			table = strings.TrimSpace(schema.Name)
+			table = strings.TrimSpace(schemaDef.Name)
 		}
 		if table == "" {
 			return []string{}, nil
 		}
-		if !strings.Contains(table, ".") && strings.TrimSpace(schema.Namespace) != "" {
-			table = schema.Namespace + "." + table
+		if !strings.Contains(table, ".") && strings.TrimSpace(schemaDef.Namespace) != "" {
+			table = schemaDef.Namespace + "." + table
 		}
-		qualified, err := quoteTableNamePreserve(table, schema, dialect)
+		qualified, err := quoteTableNamePreserve(table, schemaDef, dialect)
 		if err != nil {
 			return nil, err
 		}

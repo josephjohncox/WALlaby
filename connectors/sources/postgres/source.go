@@ -215,6 +215,9 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	if ddlPrefix != "" {
 		opts = append(opts, replication.WithDDLMessagePrefix(ddlPrefix))
 	}
+	if captureDDL {
+		opts = append(opts, replication.WithEmitPlanDDL(false))
+	}
 	if startLSN := spec.Options[optStartLSN]; startLSN != "" {
 		lsn, err := pglogrepl.ParseLSN(startLSN)
 		if err != nil {

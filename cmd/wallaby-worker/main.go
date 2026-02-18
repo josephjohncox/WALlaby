@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -24,6 +23,8 @@ import (
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 func main() {
@@ -33,31 +34,117 @@ func main() {
 }
 
 func run() error {
-	var (
-		configPath      string
-		flowID          string
-		maxEmptyReads   int
-		mode            string
-		tables          string
-		schemas         string
-		startLSN        string
-		snapshotWorkers int
-		partitionColumn string
-		partitionCount  int
-		resolveStaging  bool
-	)
-	flag.StringVar(&configPath, "config", "", "path to config file")
-	flag.StringVar(&flowID, "flow-id", "", "flow id to run")
-	flag.IntVar(&maxEmptyReads, "max-empty-reads", 0, "stop after N empty reads (0 = continuous)")
-	flag.StringVar(&mode, "mode", "cdc", "source mode: cdc or backfill")
-	flag.StringVar(&tables, "tables", "", "comma-separated tables for backfill (schema.table)")
-	flag.StringVar(&schemas, "schemas", "", "comma-separated schemas for backfill")
-	flag.StringVar(&startLSN, "start-lsn", "", "override start LSN for replay")
-	flag.IntVar(&snapshotWorkers, "snapshot-workers", 0, "parallel workers for backfill snapshots")
-	flag.StringVar(&partitionColumn, "partition-column", "", "partition column for backfill hashing")
-	flag.IntVar(&partitionCount, "partition-count", 0, "partition count per table for backfill hashing")
-	flag.BoolVar(&resolveStaging, "resolve-staging", false, "resolve destination staging tables after batch/backfill runs")
-	flag.Parse()
+	command := newWallabyWorkerCommand()
+	return command.Execute()
+}
+
+func newWallabyWorkerCommand() *cobra.Command {
+	command := &cobra.Command{
+		Use:          "wallaby-worker",
+		Short:        "Run a single Wallaby flow worker",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runWallabyWorker(cmd)
+		},
+	}
+	command.PersistentFlags().String("config", "", "path to config file")
+	command.Flags().String("flow-id", "", "flow id to run")
+	command.Flags().Int("max-empty-reads", 0, "stop after N empty reads (0 = continuous)")
+	command.Flags().String("mode", "cdc", "source mode: cdc or backfill")
+	command.Flags().String("tables", "", "comma-separated tables for backfill (schema.table)")
+	command.Flags().String("schemas", "", "comma-separated schemas for backfill")
+	command.Flags().String("start-lsn", "", "override start LSN for replay")
+	command.Flags().Int("snapshot-workers", 0, "parallel workers for backfill snapshots")
+	command.Flags().String("partition-column", "", "partition column for backfill hashing")
+	command.Flags().Int("partition-count", 0, "partition count per table for backfill hashing")
+	command.Flags().Bool("resolve-staging", false, "resolve destination staging tables after batch/backfill runs")
+	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		return initWallabyWorkerConfig(cmd)
+	}
+	command.InitDefaultCompletionCmd()
+	return command
+}
+
+func initWallabyWorkerConfig(cmd *cobra.Command) error {
+	configFlags := cmd.Flags()
+	if cmd.Root() != nil && cmd.Root().PersistentFlags().Lookup("config") != nil {
+		configFlags = cmd.Root().PersistentFlags()
+	}
+	configPath, err := configFlags.GetString("config")
+	if err != nil {
+		return fmt.Errorf("read config flag: %w", err)
+	}
+
+	viper.Reset()
+	viper.SetEnvPrefix("WALLABY_WORKER")
+	viper.AutomaticEnv()
+	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+
+	if configPath != "" {
+		viper.SetConfigFile(configPath)
+	} else if envPath := os.Getenv("WALLABY_WORKER_CONFIG"); envPath != "" {
+		viper.SetConfigFile(envPath)
+	} else {
+		viper.SetConfigName("wallaby-worker")
+		viper.SetConfigType("yaml")
+		viper.AddConfigPath(".")
+	}
+
+	if err := viper.ReadInConfig(); err != nil {
+		var missing viper.ConfigFileNotFoundError
+		if !errors.As(err, &missing) {
+			return fmt.Errorf("read config: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func resolveStringFlag(cmd *cobra.Command, key string) string {
+	value, err := cmd.Flags().GetString(key)
+	if err != nil {
+		return ""
+	}
+	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
+		return viper.GetString(key)
+	}
+	return value
+}
+
+func resolveIntFlag(cmd *cobra.Command, key string) int {
+	value, err := cmd.Flags().GetInt(key)
+	if err != nil {
+		return 0
+	}
+	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
+		return viper.GetInt(key)
+	}
+	return value
+}
+
+func resolveBoolFlag(cmd *cobra.Command, key string) bool {
+	value, err := cmd.Flags().GetBool(key)
+	if err != nil {
+		return false
+	}
+	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
+		return viper.GetBool(key)
+	}
+	return value
+}
+
+func runWallabyWorker(cmd *cobra.Command) error {
+	configPath := resolveStringFlag(cmd, "config")
+	flowID := resolveStringFlag(cmd, "flow-id")
+	maxEmptyReads := resolveIntFlag(cmd, "max-empty-reads")
+	mode := resolveStringFlag(cmd, "mode")
+	tables := resolveStringFlag(cmd, "tables")
+	schemas := resolveStringFlag(cmd, "schemas")
+	startLSN := resolveStringFlag(cmd, "start-lsn")
+	snapshotWorkers := resolveIntFlag(cmd, "snapshot-workers")
+	partitionColumn := resolveStringFlag(cmd, "partition-column")
+	partitionCount := resolveIntFlag(cmd, "partition-count")
+	resolveStaging := resolveBoolFlag(cmd, "resolve-staging")
 
 	if flowID == "" {
 		return errors.New("flow-id is required")

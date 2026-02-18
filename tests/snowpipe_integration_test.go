@@ -275,6 +275,36 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 		if seeded != "seed" {
 			t.Fatalf("unexpected note default value: %s", seeded)
 		}
+
+		dropDefaultDDL := connector.Record{
+			Table:     table,
+			Operation: connector.OpDDL,
+			DDL:       fmt.Sprintf("ALTER TABLE %s ALTER COLUMN note DROP DEFAULT, ALTER COLUMN note DROP NOT NULL", fullTable),
+			Timestamp: time.Now().UTC(),
+		}
+		if err := dest.ApplyDDL(ctx, schemaDef, dropDefaultDDL); err != nil {
+			t.Fatalf("apply drop default/not null ddl: %v", err)
+		}
+		record = connector.Record{
+			Table:     table,
+			Operation: connector.OpInsert,
+			After: map[string]any{
+				"id":           5,
+				"display_name": "epsilon",
+				"extra":        "v5",
+			},
+		}
+		batch = connector.Batch{Records: []connector.Record{record}, Schema: schemaDef, Checkpoint: connector.Checkpoint{LSN: "5"}}
+		if err := dest.Write(ctx, batch); err != nil {
+			t.Fatalf("write after drop default/not null ddl: %v", err)
+		}
+		var nullableNote sql.NullString
+		if err := setupDB.QueryRowContext(ctx, fmt.Sprintf("SELECT note FROM %s WHERE id = 5", fullTable)).Scan(&nullableNote); err != nil {
+			t.Fatalf("select dropped default note: %v", err)
+		}
+		if nullableNote.Valid {
+			t.Fatalf("expected nullable note to be NULL after dropping default/not-null: %s", nullableNote.String)
+		}
 	}
 
 	if !usingFakesnow() {
@@ -307,6 +337,47 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 		}
 		if copyCount == 0 {
 			t.Fatalf("expected COPY history entries for %s", copyTable)
+		}
+
+		renamedTable := table + "_renamed"
+		renamedFullTable := quoteSnowflakeIdent(renamedTable)
+		if schema != "" {
+			renamedFullTable = quoteSnowflakeIdent(schema) + "." + renamedFullTable
+		}
+		renameTableDDL := connector.Record{
+			Table:     table,
+			Operation: connector.OpDDL,
+			DDL:       fmt.Sprintf("ALTER TABLE %s RENAME TO %s", fullTable, renamedFullTable),
+			Timestamp: time.Now().UTC(),
+		}
+		if err := dest.ApplyDDL(ctx, schemaDef, renameTableDDL); err != nil {
+			t.Fatalf("apply rename table ddl: %v", err)
+		}
+
+		var renamedCount int
+		if err := setupDB.QueryRowContext(ctx, "SELECT count(*) FROM information_schema.tables WHERE lower(table_name) = ?", strings.ToLower(renamedTable)).Scan(&renamedCount); err != nil {
+			t.Fatalf("check renamed table: %v", err)
+		}
+		if renamedCount != 1 {
+			t.Fatalf("expected renamed table %q to exist", renamedTable)
+		}
+
+		dropTableDDL := connector.Record{
+			Table:     renamedTable,
+			Operation: connector.OpDDL,
+			DDL:       fmt.Sprintf("DROP TABLE IF EXISTS %s", renamedFullTable),
+			Timestamp: time.Now().UTC(),
+		}
+		if err := dest.ApplyDDL(ctx, schemaDef, dropTableDDL); err != nil {
+			t.Fatalf("apply drop table ddl: %v", err)
+		}
+
+		var droppedCount int
+		if err := setupDB.QueryRowContext(ctx, "SELECT count(*) FROM information_schema.tables WHERE lower(table_name) = ?", strings.ToLower(renamedTable)).Scan(&droppedCount); err != nil {
+			t.Fatalf("check dropped table: %v", err)
+		}
+		if droppedCount != 0 {
+			t.Fatalf("expected renamed table %q to be dropped, found %d", renamedTable, droppedCount)
 		}
 	}
 }

@@ -28,7 +28,7 @@ Optional env vars for kind:
 - `KIND_NODE_IMAGE` (override node image)
 - `KIND_KEEP=1` (leave cluster running)
 
-CLI integration tests run `go run ./cmd/wallaby-admin` against a local gRPC server and cover DDL listing, stream pull/ack, flow create/run-once, and publication sync. They use `TEST_PG_DSN` for backing Postgres storage.
+CLI integration tests run `go run ./cmd/wallaby-admin` against a local gRPC server and cover DDL listing, stream pull/ack, flow create/update/reconfigure/run-once/list/get/wait/delete/validate, and publication sync. They use `TEST_PG_DSN` for backing Postgres storage.
 
 Set these environment variables to enable destination tests:
 - `TEST_PG_DSN` (Postgres logical replication E2E)

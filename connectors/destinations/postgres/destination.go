@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/josephjohncox/wallaby/internal/ddl"
 	postgrescodec "github.com/josephjohncox/wallaby/internal/postgres"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -253,15 +254,33 @@ func (d *Destination) Capabilities() connector.Capabilities {
 	}
 }
 
-func (d *Destination) ApplyDDL(ctx context.Context, _ connector.Schema, record connector.Record) error {
+func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, record connector.Record) error {
 	if d.pool == nil {
 		return errors.New("postgres destination not initialized")
 	}
-	if strings.TrimSpace(record.DDL) == "" {
+
+	var statements []string
+	if strings.TrimSpace(record.DDL) == "" && len(record.DDLPlan) > 0 {
+		planStatements, err := ddl.TranslateRecordDDL(schema, record, ddl.DialectConfigFor(ddl.DialectPostgres), d.TypeMappings(), d.spec.Options)
+		if err != nil {
+			return fmt.Errorf("translate ddl plan: %w", err)
+		}
+		statements = planStatements
+	} else {
+		statements = []string{record.DDL}
+	}
+
+	if len(statements) == 0 {
 		return nil
 	}
-	if _, err := d.pool.Exec(ctx, record.DDL); err != nil {
-		return fmt.Errorf("apply ddl: %w", err)
+
+	for _, statement := range statements {
+		if strings.TrimSpace(statement) == "" {
+			continue
+		}
+		if _, err := d.pool.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("apply ddl: %w", err)
+		}
 	}
 	return nil
 }

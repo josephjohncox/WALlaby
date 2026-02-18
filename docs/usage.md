@@ -75,8 +75,20 @@ Why fan‑out instead of multiple replication slots?
 To reconfigure destinations or wire format, call `UpdateFlow` with a full `Flow` payload; state is preserved.
 From the CLI, use `wallaby-admin flow update -file <path> [-pause] [-resume]` to pause, update, and resume in one step,
 or `wallaby-admin flow reconfigure -file <path> [-sync-publication]` to let the server orchestrate the pause/update/resume cycle.
+Additional CLI operations:
+- `wallaby-admin flow list [-state created|running|paused|stopping|failed]` to inspect all flows.
+- `wallaby-admin flow get -flow-id <id>` to print flow definition and state.
+- `wallaby-admin flow wait -flow-id <id> -state <state>` for automation/scripting.
+- `wallaby-admin flow dry-run -file <path>` to normalize/inspect flow config without applying.
+- `wallaby-admin flow check -file <path> [-endpoint <addr>]` for config pre-flight checks.
+- `wallaby-admin flow delete -flow-id <id>` to remove a flow.
+- `wallaby-admin flow validate -file <path>` to validate config before create/update.
+- `wallaby-admin ddl show -id <event_id> [-status ...]` to inspect a single DDL event.
 When decommissioning a flow, `wallaby-admin flow cleanup -flow-id <id> [-drop-slot] [-drop-publication] [-drop-source-state]`
 removes replication slots/publications and clears source state entries.
+- `wallaby-admin slot list -flow-id <id> [-slot <name>]` to inspect logical replication slot state.
+- `wallaby-admin slot show -flow-id <id> [-slot <name>]` to print the state for one slot.
+- `wallaby-admin slot drop -flow-id <id> [-slot <name>] [-if-exists]` to drop a logical replication slot.
 
 ## Worker Mode (Per-Flow Process)
 Run a single flow in its own process. This is recommended for Kubernetes or when you want isolated scaling per flow.

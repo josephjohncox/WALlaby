@@ -47,6 +47,7 @@ type PostgresStream struct {
 	schemas   map[uint32]connector.Schema
 	versions  map[uint32]int64
 
+	emitPlanDDL      bool
 	ddlMessagePrefix string
 }
 
@@ -107,6 +108,12 @@ func WithDDLMessagePrefix(prefix string) PostgresStreamOption {
 	}
 }
 
+func WithEmitPlanDDL(enabled bool) PostgresStreamOption {
+	return func(s *PostgresStream) {
+		s.emitPlanDDL = enabled
+	}
+}
+
 func WithConnConfigFunc(fn func(context.Context, *pgconn.Config) error) PostgresStreamOption {
 	return func(s *PostgresStream) {
 		s.connConfigFunc = fn
@@ -149,6 +156,7 @@ func NewPostgresStream(dsn string, opts ...PostgresStreamOption) *PostgresStream
 		schemas:          make(map[uint32]connector.Schema),
 		versions:         make(map[uint32]int64),
 		typeNames:        make(map[uint32]string),
+		emitPlanDDL:      true,
 		ddlMessagePrefix: "wallaby_ddl",
 	}
 
@@ -394,6 +402,11 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 					if err := p.schemaHook.OnSchemaChange(ctx, plan); err != nil {
 						return fmt.Errorf("schema change hook: %w", err)
 					}
+					if p.emitPlanDDL {
+						if err := p.emitSchemaChange(ctx, xld, schemaDef, plan); err != nil {
+							return fmt.Errorf("schema change record: %w", err)
+						}
+					}
 				}
 			}
 		}
@@ -461,6 +474,37 @@ func (p *PostgresStream) emitChange(ctx context.Context, xld pglogrepl.XLogData,
 		Table:     schema.Name,
 		Operation: string(record.Operation),
 		Payload:   payload,
+		DDL:       "",
+		Record:    record,
+		SchemaDef: &schema,
+	}
+
+	return p.sendChange(ctx, change)
+}
+
+func (p *PostgresStream) emitSchemaChange(ctx context.Context, xld pglogrepl.XLogData, schema connector.Schema, plan internalschema.Plan) error {
+	if !plan.HasChanges() {
+		return nil
+	}
+
+	planBytes, err := json.Marshal(plan)
+	if err != nil {
+		return fmt.Errorf("marshal schema plan: %w", err)
+	}
+
+	record := &connector.Record{
+		Table:         schema.Name,
+		Operation:     connector.OpDDL,
+		SchemaVersion: schema.Version,
+		DDLPlan:       planBytes,
+		Timestamp:     xld.ServerTime,
+	}
+	change := Change{
+		LSN:       xld.WALStart,
+		Schema:    schema.Namespace,
+		Table:     schema.Name,
+		Operation: string(record.Operation),
+		Payload:   planBytes,
 		DDL:       "",
 		Record:    record,
 		SchemaDef: &schema,

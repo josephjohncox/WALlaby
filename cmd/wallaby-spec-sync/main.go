@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/josephjohncox/wallaby/pkg/spec"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 type specFiles struct {
@@ -19,19 +20,59 @@ type specFiles struct {
 }
 
 func main() {
-	specDir := flag.String("spec-dir", "specs", "directory containing TLA+ specs")
-	manifestDir := flag.String("manifest-dir", "specs", "directory containing coverage manifests")
-	flag.Parse()
+	command := newWallabySpecSyncCommand()
+	if err := command.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+type specSyncOptions struct {
+	specDir     string
+	manifestDir string
+}
+
+func newWallabySpecSyncCommand() *cobra.Command {
+	command := &cobra.Command{
+		Use:          "wallaby-spec-sync",
+		Short:        "Validate local spec declarations against manifests",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runWallabySpecSync(cmd)
+		},
+	}
+	command.Flags().String("spec-dir", "specs", "directory containing TLA+ specs")
+	command.Flags().String("manifest-dir", "specs", "directory containing coverage manifests")
+	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		return initWallabySpecSyncConfig(cmd)
+	}
+	command.InitDefaultCompletionCmd()
+	return command
+}
+
+func initWallabySpecSyncConfig(_ *cobra.Command) error {
+	viper.Reset()
+	viper.SetEnvPrefix("WALLABY_SPEC_SYNC")
+	viper.AutomaticEnv()
+	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+	return nil
+}
+
+func runWallabySpecSync(cmd *cobra.Command) error {
+	opts := specSyncOptions{
+		specDir:     resolveStringFlag(cmd, "spec-dir"),
+		manifestDir: resolveStringFlag(cmd, "manifest-dir"),
+	}
 
 	files := []specFiles{
-		{Name: spec.SpecCDCFlow, TLA: filepath.Join(*specDir, "CDCFlow.tla"), CFG: filepath.Join(*specDir, "CDCFlow.cfg")},
-		{Name: spec.SpecFlowState, TLA: filepath.Join(*specDir, "FlowStateMachine.tla"), CFG: filepath.Join(*specDir, "FlowStateMachine.cfg")},
-		{Name: spec.SpecCDCFlowFanout, TLA: filepath.Join(*specDir, "CDCFlowFanout.tla"), CFG: filepath.Join(*specDir, "CDCFlowFanout.cfg")},
+		{Name: spec.SpecCDCFlow, TLA: filepath.Join(opts.specDir, "CDCFlow.tla"), CFG: filepath.Join(opts.specDir, "CDCFlow.cfg")},
+		{Name: spec.SpecFlowState, TLA: filepath.Join(opts.specDir, "FlowStateMachine.tla"), CFG: filepath.Join(opts.specDir, "FlowStateMachine.cfg")},
+		{Name: spec.SpecCDCFlowFanout, TLA: filepath.Join(opts.specDir, "CDCFlowFanout.tla"), CFG: filepath.Join(opts.specDir, "CDCFlowFanout.cfg")},
 	}
 
 	var failures []string
 	for _, file := range files {
-		if err := validateSpec(file, *manifestDir); err != nil {
+		if err := validateSpec(file, opts.manifestDir); err != nil {
 			failures = append(failures, err.Error())
 		}
 	}
@@ -40,8 +81,21 @@ func main() {
 		for _, failure := range failures {
 			fmt.Fprintln(os.Stderr, failure)
 		}
-		os.Exit(1)
+		return fmt.Errorf("spec sync failed: %d errors", len(failures))
 	}
+
+	return nil
+}
+
+func resolveStringFlag(cmd *cobra.Command, key string) string {
+	value, err := cmd.Flags().GetString(key)
+	if err != nil {
+		return ""
+	}
+	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
+		return viper.GetString(key)
+	}
+	return value
 }
 
 func validateSpec(file specFiles, manifestDir string) error {

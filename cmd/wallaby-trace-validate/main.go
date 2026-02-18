@@ -3,26 +3,77 @@ package main
 import (
 	"bufio"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/josephjohncox/wallaby/pkg/spec"
 	"github.com/josephjohncox/wallaby/pkg/stream"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
-func main() {
-	input := flag.String("input", "", "path to trace JSONL (defaults to stdin)")
-	requireDDL := flag.Bool("require-ddl-approval", false, "require ddl_approved before ddl_applied")
-	manifestPath := flag.String("manifest", "", "path to spec coverage manifest (file or directory)")
-	noManifest := flag.Bool("no-manifest", false, "disable spec action validation")
-	flag.Parse()
+type traceValidateOptions struct {
+	input      string
+	requireDDL bool
+	manifest   string
+	noManifest bool
+}
 
-	reader, closer, err := openReader(*input)
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	command := newWallabyTraceValidateCommand()
+	return command.Execute()
+}
+
+func newWallabyTraceValidateCommand() *cobra.Command {
+	command := &cobra.Command{
+		Use:          "wallaby-trace-validate",
+		Short:        "Validate a wallaby trace against spec manifests",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runWallabyTraceValidate(cmd)
+		},
+	}
+	command.Flags().String("input", "", "path to trace JSONL (defaults to stdin)")
+	command.Flags().String("path", "", "alias for --input")
+	command.Flags().Bool("require-ddl-approval", false, "require ddl_approved before ddl_applied")
+	command.Flags().String("manifest", "", "path to spec coverage manifest (file or directory)")
+	command.Flags().Bool("no-manifest", false, "disable spec action validation")
+	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		return initWallabyTraceValidateConfig(cmd)
+	}
+	command.InitDefaultCompletionCmd()
+	return command
+}
+
+func initWallabyTraceValidateConfig(_ *cobra.Command) error {
+	viper.Reset()
+	viper.SetEnvPrefix("WALLABY_TRACE_VALIDATE")
+	viper.AutomaticEnv()
+	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+	return nil
+}
+
+func runWallabyTraceValidate(cmd *cobra.Command) error {
+	opts := traceValidateOptions{
+		input:      resolveInput(cmd),
+		requireDDL: resolveBoolFlag(cmd, "require-ddl-approval"),
+		manifest:   resolveStringFlag(cmd, "manifest"),
+		noManifest: resolveBoolFlag(cmd, "no-manifest"),
+	}
+
+	reader, closer, err := openReader(opts.input)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	if closer != nil {
 		defer func() {
@@ -34,31 +85,40 @@ func main() {
 
 	events, err := readEvents(reader)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	manifests := make(map[spec.SpecName]spec.Manifest)
-	if !*noManifest {
-		path := *manifestPath
+	if !opts.noManifest {
+		path := opts.manifest
 		if path == "" {
 			root, err := findModuleRoot()
 			if err != nil {
-				fatal(fmt.Errorf("resolve manifest: %w (use -manifest or -no-manifest)", err))
+				return fmt.Errorf("resolve manifest: %w (use -manifest or -no-manifest)", err)
 			}
 			path = filepath.Join(root, "specs")
 		}
 		loaded, err := spec.LoadManifests(path)
 		if err != nil {
-			fatal(fmt.Errorf("load manifest: %w (use -manifest or -no-manifest)", err))
+			return fmt.Errorf("load manifest: %w (use -manifest or -no-manifest)", err)
 		}
 		manifests = loaded
 	}
 
-	if err := validateBySpec(events, stream.TraceValidationOptions{RequireDDLApproval: *requireDDL}, manifests); err != nil {
-		fatal(err)
+	if err := validateBySpec(events, stream.TraceValidationOptions{RequireDDLApproval: opts.requireDDL}, manifests); err != nil {
+		return err
 	}
 
 	fmt.Printf("Trace OK: %d events\n", len(events))
+	return nil
+}
+
+func resolveInput(cmd *cobra.Command) string {
+	path := resolveStringFlag(cmd, "input")
+	if path == "" {
+		path = resolveStringFlag(cmd, "path")
+	}
+	return path
 }
 
 func validateBySpec(events []stream.TraceEvent, opts stream.TraceValidationOptions, manifests map[spec.SpecName]spec.Manifest) error {
@@ -122,11 +182,6 @@ func readEvents(reader io.Reader) ([]stream.TraceEvent, error) {
 	return events, nil
 }
 
-func fatal(err error) {
-	fmt.Fprintln(os.Stderr, err)
-	os.Exit(1)
-}
-
 func findModuleRoot() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
@@ -143,4 +198,26 @@ func findModuleRoot() (string, error) {
 		dir = next
 	}
 	return "", fmt.Errorf("go.mod not found for manifest lookup")
+}
+
+func resolveStringFlag(cmd *cobra.Command, key string) string {
+	value, err := cmd.Flags().GetString(key)
+	if err != nil {
+		return ""
+	}
+	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
+		return viper.GetString(key)
+	}
+	return value
+}
+
+func resolveBoolFlag(cmd *cobra.Command, key string) bool {
+	value, err := cmd.Flags().GetBool(key)
+	if err != nil {
+		return false
+	}
+	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
+		return viper.GetBool(key)
+	}
+	return value
 }
