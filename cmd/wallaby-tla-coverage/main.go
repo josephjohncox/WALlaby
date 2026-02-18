@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 type coverageFile struct {
@@ -65,20 +65,18 @@ func newWallabyTLACoverageCommand() *cobra.Command {
 	return command
 }
 
-func initWallabyTLACoverageConfig(_ *cobra.Command) error {
-	viper.Reset()
-	viper.SetEnvPrefix("WALLABY_TLA_COVERAGE")
-	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-	return nil
+func initWallabyTLACoverageConfig(cmd *cobra.Command) error {
+	return cli.InitViperFromCommand(cmd, cli.ViperConfig{
+		EnvPrefix: "WALLABY_TLA_COVERAGE",
+	})
 }
 
 func runWallabyTLACoverage(cmd *cobra.Command) error {
 	opts := tlaCoverageOptions{
-		dir:     resolveStringFlag(cmd, "dir"),
-		min:     resolveIntFlag(cmd, "min"),
-		ignore:  resolveStringFlag(cmd, "ignore"),
-		jsonOut: resolveStringFlag(cmd, "json"),
+		dir:     cli.ResolveStringFlag(cmd, "dir"),
+		min:     cli.ResolveIntFlag(cmd, "min"),
+		ignore:  cli.ResolveStringFlag(cmd, "ignore"),
+		jsonOut: cli.ResolveStringFlag(cmd, "json"),
 	}
 
 	report, err := buildCoverageReport(opts)
@@ -144,28 +142,6 @@ func buildCoverageReport(opts tlaCoverageOptions) (coverageReport, error) {
 	sort.Strings(failures)
 	report.Failing = failures
 	return report, nil
-}
-
-func resolveStringFlag(cmd *cobra.Command, key string) string {
-	value, err := cmd.Flags().GetString(key)
-	if err != nil {
-		return ""
-	}
-	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
-		return viper.GetString(key)
-	}
-	return value
-}
-
-func resolveIntFlag(cmd *cobra.Command, key string) int {
-	value, err := cmd.Flags().GetInt(key)
-	if err != nil {
-		return 0
-	}
-	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
-		return viper.GetInt(key)
-	}
-	return value
 }
 
 var (

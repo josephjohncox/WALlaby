@@ -64,7 +64,9 @@ jobs:
 
       - name: Integration tests (Postgres, ClickHouse, DBOS, K8s)
         run: |
-          WALLABY_TEST_K8S_KUBECONFIG="$KUBECONFIG" WALLABY_TEST_K8S_NAMESPACE=default ./tests/integration.sh
+          WALLABY_TEST_K8S_KUBECONFIG="$KUBECONFIG" \
+          WALLABY_TEST_K8S_NAMESPACE=default \
+          make test-integration-ci
 
       - name: Save Go + tools cache
         if: always() && steps.cache-go-tools.outputs.cache-hit != 'true'

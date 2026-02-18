@@ -52,6 +52,9 @@ func (s *FlowService) CreateFlow(ctx context.Context, req *wallabypb.CreateFlowR
 	}
 
 	if req.StartImmediately {
+		if err := s.requireDispatcher(); err != nil {
+			return nil, err
+		}
 		created, err = s.engine.Start(ctx, created.ID)
 		if err != nil {
 			return nil, mapWorkflowError(err)
@@ -169,6 +172,9 @@ func (s *FlowService) StartFlow(ctx context.Context, req *wallabypb.StartFlowReq
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
 	}
+	if err := s.requireDispatcher(); err != nil {
+		return nil, err
+	}
 	started, err := s.engine.Start(ctx, req.FlowId)
 	if err != nil {
 		return nil, mapWorkflowError(err)
@@ -180,8 +186,8 @@ func (s *FlowService) RunFlowOnce(ctx context.Context, req *wallabypb.RunFlowOnc
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
 	}
-	if s.dispatcher == nil {
-		return nil, status.Error(codes.FailedPrecondition, "dispatcher not configured")
+	if err := s.requireDispatcher(); err != nil {
+		return nil, err
 	}
 	if _, err := s.engine.Get(ctx, req.FlowId); err != nil {
 		return nil, mapWorkflowError(err)
@@ -206,6 +212,9 @@ func (s *FlowService) StopFlow(ctx context.Context, req *wallabypb.StopFlowReque
 func (s *FlowService) ResumeFlow(ctx context.Context, req *wallabypb.ResumeFlowRequest) (*wallabypb.Flow, error) {
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
+	}
+	if err := s.requireDispatcher(); err != nil {
+		return nil, err
 	}
 	resumed, err := s.engine.Resume(ctx, req.FlowId)
 	if err != nil {
@@ -306,6 +315,13 @@ func (s *FlowService) CleanupFlow(ctx context.Context, req *wallabypb.CleanupFlo
 	}
 
 	return &wallabypb.CleanupFlowResponse{Cleaned: true}, nil
+}
+
+func (s *FlowService) requireDispatcher() error {
+	if s.dispatcher != nil {
+		return nil
+	}
+	return status.Error(codes.FailedPrecondition, "dispatcher is required for immediate execution, but no dispatcher is configured")
 }
 
 func (s *FlowService) ListReplicationSlots(ctx context.Context, req *wallabypb.ListReplicationSlotsRequest) (*wallabypb.ListReplicationSlotsResponse, error) {
@@ -456,9 +472,9 @@ func (s *FlowService) SyncPublicationTables(ctx context.Context, req *wallabypb.
 	if err != nil {
 		return nil, err
 	}
-	mode := strings.TrimSpace(req.Mode)
-	if mode == "" {
-		mode = "add"
+	mode, err := pgsource.NormalizeSyncPublicationMode(req.Mode)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	added, removed, err := pgsource.SyncPublicationTables(ctx, cfg.dsn, cfg.publication, req.Tables, mode, cfg.options)
@@ -669,6 +685,10 @@ func mergeOptionMaps(base map[string]string, override map[string]string) map[str
 }
 
 func mapWorkflowError(err error) error {
+	if st, ok := status.FromError(err); ok {
+		return st.Err()
+	}
+
 	switch {
 	case errors.Is(err, workflow.ErrNotFound):
 		return status.Error(codes.NotFound, err.Error())
@@ -733,10 +753,11 @@ func syncFlowPublication(ctx context.Context, f flow.Flow) error {
 		return nil
 	}
 	mode := strings.TrimSpace(opts["sync_publication_mode"])
-	if mode == "" {
-		mode = "add"
+	mode, err := pgsource.NormalizeSyncPublicationMode(mode)
+	if err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
 	}
-	_, _, err := pgsource.SyncPublicationTables(ctx, dsn, publication, tables, mode, opts)
+	_, _, err = pgsource.SyncPublicationTables(ctx, dsn, publication, tables, mode, opts)
 	return err
 }
 

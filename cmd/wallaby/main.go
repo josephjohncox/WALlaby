@@ -2,18 +2,16 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/josephjohncox/wallaby/internal/app"
+	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/internal/config"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 func main() {
@@ -45,52 +43,17 @@ func newWallabyCommand() *cobra.Command {
 }
 
 func initWallabyConfig(cmd *cobra.Command) error {
-	configFlags := cmd.Flags()
-	if cmd.Root() != nil && cmd.Root().PersistentFlags().Lookup("config") != nil {
-		configFlags = cmd.Root().PersistentFlags()
-	}
-	configPath, err := configFlags.GetString("config")
-	if err != nil {
-		return fmt.Errorf("read config flag: %w", err)
-	}
-
-	viper.Reset()
-	viper.SetEnvPrefix("WALLABY")
-	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-
-	if configPath != "" {
-		viper.SetConfigFile(configPath)
-	} else if envPath := os.Getenv("WALLABY_CONFIG"); envPath != "" {
-		viper.SetConfigFile(envPath)
-	} else {
-		viper.SetConfigName("wallaby")
-		viper.SetConfigType("yaml")
-		viper.AddConfigPath(".")
-	}
-
-	if err := viper.ReadInConfig(); err != nil {
-		var missing viper.ConfigFileNotFoundError
-		if !errors.As(err, &missing) {
-			return fmt.Errorf("read config: %w", err)
-		}
-	}
-	return nil
-}
-
-func resolveStringFlag(cmd *cobra.Command, key string) string {
-	value, err := cmd.Flags().GetString(key)
-	if err != nil {
-		return ""
-	}
-	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
-		return viper.GetString(key)
-	}
-	return value
+	return cli.InitViperFromCommand(cmd, cli.ViperConfig{
+		EnvPrefix:        "WALLABY",
+		ConfigEnvVar:     "WALLABY_CONFIG",
+		ConfigName:       "wallaby",
+		ConfigType:       "yaml",
+		ConfigSearchPath: nil,
+	})
 }
 
 func runWallaby(cmd *cobra.Command) error {
-	configPath := resolveStringFlag(cmd, "config")
+	configPath := cli.ResolveStringFlag(cmd, "config")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

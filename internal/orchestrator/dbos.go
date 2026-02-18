@@ -211,6 +211,13 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunIn
 	}
 
 	sourceSpec := f.Source
+	if sourceSpec.Options != nil {
+		copied := make(map[string]string, len(sourceSpec.Options))
+		for key, value := range sourceSpec.Options {
+			copied[key] = value
+		}
+		sourceSpec.Options = copied
+	}
 	if maxEmptyReads > 0 {
 		if sourceSpec.Options == nil {
 			sourceSpec.Options = map[string]string{}

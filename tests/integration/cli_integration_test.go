@@ -103,7 +103,7 @@ func TestCLIIntegrationDDLList(t *testing.T) {
 	defer server.Stop()
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
-	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "list", "-json")
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "list", "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin ddl list: %v\n%s", err, output)
 	}
@@ -206,7 +206,7 @@ func TestCLIIntegrationDDLShow(t *testing.T) {
 	defer server.Stop()
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
-	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "show", "-id", fmt.Sprintf("%d", eventID), "-json")
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "show", "--id", fmt.Sprintf("%d", eventID), "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin ddl show: %v\n%s", err, output)
 	}
@@ -288,7 +288,7 @@ func TestCLIIntegrationDDLApproveRejectApply(t *testing.T) {
 		t.Fatalf("record ddl: %v", err)
 	}
 
-	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "approve", "-id", fmt.Sprintf("%d", eventID)); err != nil {
+	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "approve", "--id", fmt.Sprintf("%d", eventID)); err != nil {
 		t.Fatalf("wallaby-admin ddl approve: %v", err)
 	}
 	approved, err := store.GetDDL(ctx, eventID)
@@ -299,7 +299,7 @@ func TestCLIIntegrationDDLApproveRejectApply(t *testing.T) {
 		t.Fatalf("expected approved status, got %s", approved.Status)
 	}
 
-	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "apply", "-id", fmt.Sprintf("%d", eventID)); err != nil {
+	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "apply", "--id", fmt.Sprintf("%d", eventID)); err != nil {
 		t.Fatalf("wallaby-admin ddl apply: %v", err)
 	}
 	applied, err := store.GetDDL(ctx, eventID)
@@ -314,7 +314,7 @@ func TestCLIIntegrationDDLApproveRejectApply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record ddl: %v", err)
 	}
-	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "reject", "-id", fmt.Sprintf("%d", rejectID)); err != nil {
+	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "reject", "--id", fmt.Sprintf("%d", rejectID)); err != nil {
 		t.Fatalf("wallaby-admin ddl reject: %v", err)
 	}
 	rejected, err := store.GetDDL(ctx, rejectID)
@@ -389,7 +389,7 @@ func TestCLIIntegrationDDLHistory(t *testing.T) {
 	defer server.Stop()
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
-	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "history", "-flow-id", "flow-cli-history", "-json")
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "history", "--flow-id", "flow-cli-history", "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin ddl history: %v\n%s", err, output)
 	}
@@ -457,7 +457,7 @@ func TestCLIIntegrationFlowPlan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	output, err := runWallabyAdmin(ctx, "", "flow", "plan", "-file", configPath, "-json")
+	output, err := runWallabyAdmin(ctx, "", "flow", "plan", "--file", configPath, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow plan: %v\n%s", err, output)
 	}
@@ -513,7 +513,7 @@ func TestCLIIntegrationCheckCommand(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	output, err := runWallabyAdmin(ctx, "", "check", "-file", configPath, "-json")
+	output, err := runWallabyAdmin(ctx, "", "check", "--file", configPath, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin check: %v\n%s", err, output)
 	}
@@ -615,7 +615,7 @@ func TestCLIIntegrationStreamPullAck(t *testing.T) {
 	defer server.Stop()
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
-	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "stream", "pull", "-stream", streamName, "-group", "g1", "-max", "1", "-json")
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "stream", "pull", "--stream", streamName, "--group", "g1", "--max", "1", "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin stream pull: %v\n%s", err, output)
 	}
@@ -634,7 +634,7 @@ func TestCLIIntegrationStreamPullAck(t *testing.T) {
 	}
 	msgID := resp.Records[0].ID
 
-	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "stream", "ack", "-stream", streamName, "-group", "g1", "-ids", fmt.Sprintf("%d", msgID)); err != nil {
+	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "stream", "ack", "--stream", streamName, "--group", "g1", "--ids", fmt.Sprintf("%d", msgID)); err != nil {
 		t.Fatalf("wallaby-admin stream ack: %v", err)
 	}
 
@@ -714,7 +714,7 @@ func TestCLIIntegrationFlowCreateRunOnce(t *testing.T) {
 		},
 	})
 
-	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "-file", configPath, "-json")
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "--file", configPath, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow create: %v\n%s", err, output)
 	}
@@ -729,7 +729,7 @@ func TestCLIIntegrationFlowCreateRunOnce(t *testing.T) {
 		t.Fatalf("expected flow id, got: %s", output)
 	}
 
-	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "run-once", "-flow-id", createResp.ID, "-json")
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "run-once", "--flow-id", createResp.ID, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow run-once: %v\n%s", err, output)
 	}
@@ -814,7 +814,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 		},
 	})
 
-	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "-file", configPath, "-json")
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "--file", configPath, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow create: %v\n%s", err, output)
 	}
@@ -828,7 +828,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 		t.Fatalf("expected flow id, got: %s", output)
 	}
 
-	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "list", "-json")
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "list", "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow list: %v\n%s", err, output)
 	}
@@ -882,8 +882,8 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 		t.Fatalf("flow %q not found in list output: %s", createResp.ID, output)
 	}
 
-	listFilter := fmt.Sprintf("-state=%s", flowState)
-	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "list", listFilter, "-json")
+	listFilter := fmt.Sprintf("--state=%s", flowState)
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "list", listFilter, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow list with state filter: %v\n%s", err, output)
 	}
@@ -897,7 +897,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 		t.Fatalf("expected non-empty flow list after state filter: %s", output)
 	}
 
-	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "get", "-flow-id", createResp.ID, "-json")
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "get", "--flow-id", createResp.ID, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow get: %v\n%s", err, output)
 	}
@@ -941,7 +941,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 		flowState = getResp.State
 	}
 
-	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "wait", "-flow-id", createResp.ID, "-state", flowState, "-timeout", "2s", "-json")
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "wait", "--flow-id", createResp.ID, "--state", flowState, "--timeout", "2s", "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow wait: %v\n%s", err, output)
 	}
@@ -963,7 +963,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 		t.Fatalf("expected non-zero state raw in wait output: %s", output)
 	}
 
-	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "delete", "-flow-id", createResp.ID, "-json")
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "delete", "--flow-id", createResp.ID, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow delete: %v\n%s", err, output)
 	}
@@ -981,7 +981,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 		t.Fatalf("expected flow delete output id %s, got %s", createResp.ID, deleteResp.FlowID)
 	}
 
-	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "list", "-json")
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "list", "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow list after delete: %v\n%s", err, output)
 	}
@@ -995,7 +995,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 		t.Fatalf("expected no flows after delete, got %d", afterDelete.Count)
 	}
 
-	output, err = runWallabyAdmin(ctx, "", "flow", "validate", "-file", configPath, "-json")
+	output, err = runWallabyAdmin(ctx, "", "flow", "validate", "--file", configPath, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow validate: %v\n%s", err, output)
 	}
@@ -1055,7 +1055,7 @@ func TestCLIIntegrationFlowDryRunCheck(t *testing.T) {
 		},
 	})
 
-	output, err := runWallabyAdmin(ctx, "", "flow", "dry-run", "-file", configPath, "-json")
+	output, err := runWallabyAdmin(ctx, "", "flow", "dry-run", "--file", configPath, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow dry-run: %v\n%s", err, output)
 	}
@@ -1084,7 +1084,7 @@ func TestCLIIntegrationFlowDryRunCheck(t *testing.T) {
 		t.Fatalf("expected 1 destination in dry-run output, got %d", len(dryRunResp.Destinations))
 	}
 
-	output, err = runWallabyAdmin(ctx, "", "flow", "check", "-file", configPath, "-json")
+	output, err = runWallabyAdmin(ctx, "", "flow", "check", "--file", configPath, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow check: %v\n%s", err, output)
 	}
@@ -1170,7 +1170,7 @@ func TestCLIIntegrationFlowUpdate(t *testing.T) {
 		},
 	})
 
-	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "-file", configPath, "-json")
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "--file", configPath, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow create: %v\n%s", err, output)
 	}
@@ -1208,7 +1208,7 @@ func TestCLIIntegrationFlowUpdate(t *testing.T) {
 		},
 	})
 
-	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "update", "-file", updatePath, "-flow-id", createResp.ID, "-json")
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "update", "--file", updatePath, "--flow-id", createResp.ID, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow update: %v\n%s", err, output)
 	}
@@ -1294,7 +1294,7 @@ func TestCLIIntegrationFlowReconfigure(t *testing.T) {
 		},
 	})
 
-	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "-file", configPath, "-json")
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "--file", configPath, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow create: %v\n%s", err, output)
 	}
@@ -1332,7 +1332,7 @@ func TestCLIIntegrationFlowReconfigure(t *testing.T) {
 		},
 	})
 
-	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "reconfigure", "-file", updatePath, "-json")
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "reconfigure", "--file", updatePath, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow reconfigure: %v\n%s", err, output)
 	}
@@ -1409,7 +1409,7 @@ func TestCLIIntegrationFlowCleanup(t *testing.T) {
 		},
 	})
 
-	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "-file", configPath, "-json")
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "--file", configPath, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow create: %v\n%s", err, output)
 	}
@@ -1471,7 +1471,7 @@ ON CONFLICT (id) DO UPDATE SET slot_name = EXCLUDED.slot_name, publication_name 
 		t.Fatalf("seed source state: %v", err)
 	}
 
-	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "cleanup", "-flow-id", createResp.ID, "-drop-publication", "-json")
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "cleanup", "--flow-id", createResp.ID, "--drop-publication", "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow cleanup: %v\n%s", err, output)
 	}
@@ -1594,7 +1594,7 @@ func TestCLIIntegrationSlotCommands(t *testing.T) {
 		},
 	})
 
-	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "-file", configPath, "-json")
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "--file", configPath, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow create: %v\n%s", err, output)
 	}
@@ -1608,7 +1608,7 @@ func TestCLIIntegrationSlotCommands(t *testing.T) {
 		t.Fatalf("expected flow id, got: %s", output)
 	}
 
-	listOutput, err := runWallabyAdmin(ctx, listener.Addr().String(), "slot", "list", "-flow-id", createResp.ID, "-json")
+	listOutput, err := runWallabyAdmin(ctx, listener.Addr().String(), "slot", "list", "--flow-id", createResp.ID, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin slot list: %v\n%s", err, listOutput)
 	}
@@ -1635,7 +1635,7 @@ func TestCLIIntegrationSlotCommands(t *testing.T) {
 		t.Fatalf("expected slot %q in list output: %v", slotName, listOutput)
 	}
 
-	filterOutput, err := runWallabyAdmin(ctx, listener.Addr().String(), "slot", "list", "-flow-id", createResp.ID, "-slot", slotName, "-json")
+	filterOutput, err := runWallabyAdmin(ctx, listener.Addr().String(), "slot", "list", "--flow-id", createResp.ID, "--slot", slotName, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin slot list filtered: %v\n%s", err, filterOutput)
 	}
@@ -1649,7 +1649,7 @@ func TestCLIIntegrationSlotCommands(t *testing.T) {
 		t.Fatalf("expected filtered slot count 1, got %d", filterResp.Count)
 	}
 
-	showOutput, err := runWallabyAdmin(ctx, listener.Addr().String(), "slot", "show", "-flow-id", createResp.ID, "-json")
+	showOutput, err := runWallabyAdmin(ctx, listener.Addr().String(), "slot", "show", "--flow-id", createResp.ID, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin slot show: %v\n%s", err, showOutput)
 	}
@@ -1663,7 +1663,7 @@ func TestCLIIntegrationSlotCommands(t *testing.T) {
 		t.Fatalf("expected slot %q, got %q", slotName, showResp.SlotName)
 	}
 
-	dropOutput, err := runWallabyAdmin(ctx, listener.Addr().String(), "slot", "drop", "-flow-id", createResp.ID, "-json")
+	dropOutput, err := runWallabyAdmin(ctx, listener.Addr().String(), "slot", "drop", "--flow-id", createResp.ID, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin slot drop: %v\n%s", err, dropOutput)
 	}
@@ -1746,7 +1746,7 @@ func TestCLIIntegrationFlowStartStopResume(t *testing.T) {
 		},
 	})
 
-	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "-file", configPath, "-json")
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "--file", configPath, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow create: %v\n%s", err, output)
 	}
@@ -1765,7 +1765,7 @@ func TestCLIIntegrationFlowStartStopResume(t *testing.T) {
 		State string `json:"state"`
 	}
 
-	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "start", "-flow-id", createResp.ID, "-json")
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "start", "--flow-id", createResp.ID, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow start: %v\n%s", err, output)
 	}
@@ -1777,7 +1777,7 @@ func TestCLIIntegrationFlowStartStopResume(t *testing.T) {
 		t.Fatalf("expected running, got %s", startResp.State)
 	}
 
-	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "stop", "-flow-id", createResp.ID, "-json")
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "stop", "--flow-id", createResp.ID, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow stop: %v\n%s", err, output)
 	}
@@ -1789,7 +1789,7 @@ func TestCLIIntegrationFlowStartStopResume(t *testing.T) {
 		t.Fatalf("expected paused, got %s", stopResp.State)
 	}
 
-	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "resume", "-flow-id", createResp.ID, "-json")
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "resume", "--flow-id", createResp.ID, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow resume: %v\n%s", err, output)
 	}
@@ -1861,7 +1861,7 @@ func TestCLIIntegrationFlowCreateStartFlag(t *testing.T) {
 		},
 	})
 
-	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "-file", configPath, "-start", "-json")
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "--file", configPath, "--start", "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow create -start: %v\n%s", err, output)
 	}
@@ -1958,7 +1958,7 @@ func TestCLIIntegrationPublicationSync(t *testing.T) {
 		},
 	})
 
-	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "-file", configPath, "-json")
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "--file", configPath, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow create: %v\n%s", err, output)
 	}
@@ -1972,7 +1972,7 @@ func TestCLIIntegrationPublicationSync(t *testing.T) {
 		t.Fatalf("expected flow id, got: %s", output)
 	}
 
-	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "publication", "sync", "-flow-id", createResp.ID, "-tables", "public.beta", "-mode", "add"); err != nil {
+	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "publication", "sync", "--flow-id", createResp.ID, "--tables", "public.beta", "--mode", "add"); err != nil {
 		t.Fatalf("wallaby-admin publication sync: %v", err)
 	}
 
@@ -2074,7 +2074,7 @@ func TestCLIIntegrationPublicationRemoteCommands(t *testing.T) {
 		},
 	})
 
-	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "-file", configPath, "-json")
+	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "--file", configPath, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow create: %v\n%s", err, output)
 	}
@@ -2088,7 +2088,7 @@ func TestCLIIntegrationPublicationRemoteCommands(t *testing.T) {
 		t.Fatalf("expected flow id, got: %s", output)
 	}
 
-	listOutput, err := runWallabyAdmin(ctx, listener.Addr().String(), "publication", "list", "-flow-id", createResp.ID, "-json")
+	listOutput, err := runWallabyAdmin(ctx, listener.Addr().String(), "publication", "list", "--flow-id", createResp.ID, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin publication list: %v\n%s", err, listOutput)
 	}
@@ -2097,10 +2097,10 @@ func TestCLIIntegrationPublicationRemoteCommands(t *testing.T) {
 		t.Fatalf("expected public.alpha, got %v", tables)
 	}
 
-	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "publication", "add", "-flow-id", createResp.ID, "-tables", "public.beta"); err != nil {
+	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "publication", "add", "--flow-id", createResp.ID, "--tables", "public.beta"); err != nil {
 		t.Fatalf("wallaby-admin publication add: %v", err)
 	}
-	listOutput, err = runWallabyAdmin(ctx, listener.Addr().String(), "publication", "list", "-flow-id", createResp.ID, "-json")
+	listOutput, err = runWallabyAdmin(ctx, listener.Addr().String(), "publication", "list", "--flow-id", createResp.ID, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin publication list: %v\n%s", err, listOutput)
 	}
@@ -2109,10 +2109,10 @@ func TestCLIIntegrationPublicationRemoteCommands(t *testing.T) {
 		t.Fatalf("expected public.beta, got %v", tables)
 	}
 
-	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "publication", "remove", "-flow-id", createResp.ID, "-tables", "public.alpha"); err != nil {
+	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "publication", "remove", "--flow-id", createResp.ID, "--tables", "public.alpha"); err != nil {
 		t.Fatalf("wallaby-admin publication remove: %v", err)
 	}
-	listOutput, err = runWallabyAdmin(ctx, listener.Addr().String(), "publication", "list", "-flow-id", createResp.ID, "-json")
+	listOutput, err = runWallabyAdmin(ctx, listener.Addr().String(), "publication", "list", "--flow-id", createResp.ID, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin publication list: %v\n%s", err, listOutput)
 	}
@@ -2121,10 +2121,10 @@ func TestCLIIntegrationPublicationRemoteCommands(t *testing.T) {
 		t.Fatalf("expected public.alpha removed, got %v", tables)
 	}
 
-	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "publication", "scrape", "-flow-id", createResp.ID, "-schemas", "public", "-apply"); err != nil {
+	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "publication", "scrape", "--flow-id", createResp.ID, "--schemas", "public", "--apply"); err != nil {
 		t.Fatalf("wallaby-admin publication scrape: %v", err)
 	}
-	listOutput, err = runWallabyAdmin(ctx, listener.Addr().String(), "publication", "list", "-flow-id", createResp.ID, "-json")
+	listOutput, err = runWallabyAdmin(ctx, listener.Addr().String(), "publication", "list", "--flow-id", createResp.ID, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin publication list: %v\n%s", err, listOutput)
 	}
@@ -2172,7 +2172,7 @@ func TestCLIIntegrationPublicationListAddRemoveScrape(t *testing.T) {
 		t.Fatalf("create publication: %v", err)
 	}
 
-	listOutput, err := runWallabyAdmin(ctx, "unused:0", "publication", "list", "-dsn", srcDSN, "-publication", pubName, "-json")
+	listOutput, err := runWallabyAdmin(ctx, "unused:0", "publication", "list", "--dsn", srcDSN, "--publication", pubName, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin publication list: %v\n%s", err, listOutput)
 	}
@@ -2181,10 +2181,10 @@ func TestCLIIntegrationPublicationListAddRemoveScrape(t *testing.T) {
 		t.Fatalf("expected public.alpha, got %v", tables)
 	}
 
-	if _, err := runWallabyAdmin(ctx, "unused:0", "publication", "add", "-dsn", srcDSN, "-publication", pubName, "-tables", "public.beta"); err != nil {
+	if _, err := runWallabyAdmin(ctx, "unused:0", "publication", "add", "--dsn", srcDSN, "--publication", pubName, "--tables", "public.beta"); err != nil {
 		t.Fatalf("wallaby-admin publication add: %v", err)
 	}
-	listOutput, err = runWallabyAdmin(ctx, "unused:0", "publication", "list", "-dsn", srcDSN, "-publication", pubName, "-json")
+	listOutput, err = runWallabyAdmin(ctx, "unused:0", "publication", "list", "--dsn", srcDSN, "--publication", pubName, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin publication list: %v\n%s", err, listOutput)
 	}
@@ -2193,10 +2193,10 @@ func TestCLIIntegrationPublicationListAddRemoveScrape(t *testing.T) {
 		t.Fatalf("expected public.beta, got %v", tables)
 	}
 
-	if _, err := runWallabyAdmin(ctx, "unused:0", "publication", "remove", "-dsn", srcDSN, "-publication", pubName, "-tables", "public.alpha"); err != nil {
+	if _, err := runWallabyAdmin(ctx, "unused:0", "publication", "remove", "--dsn", srcDSN, "--publication", pubName, "--tables", "public.alpha"); err != nil {
 		t.Fatalf("wallaby-admin publication remove: %v", err)
 	}
-	listOutput, err = runWallabyAdmin(ctx, "unused:0", "publication", "list", "-dsn", srcDSN, "-publication", pubName, "-json")
+	listOutput, err = runWallabyAdmin(ctx, "unused:0", "publication", "list", "--dsn", srcDSN, "--publication", pubName, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin publication list: %v\n%s", err, listOutput)
 	}
@@ -2205,10 +2205,10 @@ func TestCLIIntegrationPublicationListAddRemoveScrape(t *testing.T) {
 		t.Fatalf("expected public.alpha removed, got %v", tables)
 	}
 
-	if _, err := runWallabyAdmin(ctx, "unused:0", "publication", "scrape", "-dsn", srcDSN, "-publication", pubName, "-schemas", "public", "-apply"); err != nil {
+	if _, err := runWallabyAdmin(ctx, "unused:0", "publication", "scrape", "--dsn", srcDSN, "--publication", pubName, "--schemas", "public", "--apply"); err != nil {
 		t.Fatalf("wallaby-admin publication scrape: %v", err)
 	}
-	listOutput, err = runWallabyAdmin(ctx, "unused:0", "publication", "list", "-dsn", srcDSN, "-publication", pubName, "-json")
+	listOutput, err = runWallabyAdmin(ctx, "unused:0", "publication", "list", "--dsn", srcDSN, "--publication", pubName, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin publication list: %v\n%s", err, listOutput)
 	}
@@ -2225,7 +2225,7 @@ func runWallabyAdmin(ctx context.Context, endpoint string, args ...string) ([]by
 	}
 	cmdArgs := append([]string{"run", "./cmd/wallaby-admin"}, args...)
 	if endpoint != "" {
-		cmdArgs = append(cmdArgs, "-endpoint", endpoint, "-insecure")
+		cmdArgs = append(cmdArgs, "--endpoint", endpoint, "--insecure")
 	}
 	cmd := exec.CommandContext(ctx, "go", cmdArgs...)
 	cmd.Dir = root

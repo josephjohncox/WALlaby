@@ -1,11 +1,11 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/tools/specaction"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -13,6 +13,11 @@ import (
 )
 
 func main() {
+	if shouldPassThroughToAnalyzerFlags(os.Args[1:]) {
+		singlechecker.Main(specaction.Analyzer)
+		return
+	}
+
 	if err := run(); err != nil {
 		os.Exit(1)
 	}
@@ -32,6 +37,7 @@ func newWallabySpeccheckCommand() *cobra.Command {
 		Short:              "Run spec action static checker",
 		Version:            cliVersion,
 		SilenceUsage:       true,
+		Args:               cobra.ArbitraryArgs,
 		FParseErrWhitelist: cobra.FParseErrWhitelist{UnknownFlags: true},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSpeccheck(args)
@@ -56,30 +62,10 @@ func newWallabySpeccheckCommand() *cobra.Command {
 }
 
 func initSpeccheckConfig(cmd *cobra.Command) error {
-	configFlags := cmd.Flags()
-	if cmd.Root() != nil && cmd.Root().PersistentFlags().Lookup("config") != nil {
-		configFlags = cmd.Root().PersistentFlags()
-	}
-	configPath, err := configFlags.GetString("config")
-	if err != nil {
-		return err
-	}
-
-	viper.Reset()
-	viper.SetEnvPrefix("WALLABY_SPECCHECK")
-	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-
-	if configPath != "" {
-		viper.SetConfigFile(configPath)
-	}
-	if err := viper.ReadInConfig(); err != nil {
-		var missing viper.ConfigFileNotFoundError
-		if !errors.As(err, &missing) {
-			return err
-		}
-	}
-	return nil
+	return cli.InitViperFromCommand(cmd, cli.ViperConfig{
+		EnvPrefix:    "WALLABY_SPECCHECK",
+		ConfigEnvVar: "WALLABY_SPECCHECK_CONFIG",
+	})
 }
 
 func runSpeccheck(args []string) error {
@@ -121,4 +107,8 @@ func containsArg(args []string, names ...string) bool {
 		}
 	}
 	return false
+}
+
+func shouldPassThroughToAnalyzerFlags(args []string) bool {
+	return containsArg(args, "-flags", "-V")
 }

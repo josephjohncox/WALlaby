@@ -17,13 +17,18 @@ require (
 	github.com/bufbuild/buf v1.63.0
 	github.com/dbos-inc/dbos-transact-golang v0.9.0
 	github.com/duckdb/duckdb-go/v2 v2.5.4
+	github.com/go-playground/validator/v10 v10.30.1
 	github.com/golangci/golangci-lint/v2 v2.8.0
 	github.com/google/uuid v1.6.0
 	github.com/goreleaser/goreleaser/v2 v2.13.2
 	github.com/hamba/avro/v2 v2.31.0
 	github.com/jackc/pglogrepl v0.0.0-20251213150135-2e8d0df862c1
 	github.com/jackc/pgx/v5 v5.8.0
+	github.com/jedib0t/go-pretty/v6 v6.7.8
 	github.com/snowflakedb/gosnowflake v1.18.1
+	github.com/spf13/afero v1.15.0
+	github.com/spf13/cobra v1.10.2
+	github.com/spf13/viper v1.21.0
 	github.com/twmb/franz-go v1.20.6
 	github.com/twmb/franz-go/pkg/kadm v1.17.2
 	go.opentelemetry.io/otel v1.39.0
@@ -170,6 +175,7 @@ require (
 	github.com/blacktop/go-macho v1.1.258 // indirect
 	github.com/blakesmith/ar v0.0.0-20190502131153-809d4375e1fb // indirect
 	github.com/blang/semver v3.5.1+incompatible // indirect
+	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/blizzy78/varnamelen v0.8.0 // indirect
 	github.com/bluesky-social/indigo v0.0.0-20240813042137-4006c0eca043 // indirect
 	github.com/bombsimon/wsl/v4 v4.7.0 // indirect
@@ -300,7 +306,6 @@ require (
 	github.com/go-openapi/validate v0.25.1 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
-	github.com/go-playground/validator/v10 v10.30.1 // indirect
 	github.com/go-restruct/restruct v1.2.0-alpha // indirect
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1 // indirect
 	github.com/go-toolsmith/astcast v1.1.0 // indirect
@@ -393,7 +398,6 @@ require (
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/jbenet/goprocess v0.1.4 // indirect
 	github.com/jdx/go-netrc v1.0.0 // indirect
-	github.com/jedib0t/go-pretty/v6 v6.7.8 // indirect
 	github.com/jedisct1/go-minisign v0.0.0-20241212093149-d2f9f49435c7 // indirect
 	github.com/jgautheron/goconst v1.8.2 // indirect
 	github.com/jingyugao/rowserrcheck v1.1.1 // indirect
@@ -440,6 +444,7 @@ require (
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
+	github.com/moby/spdystream v0.5.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/modelcontextprotocol/registry v1.4.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
@@ -460,6 +465,7 @@ require (
 	github.com/multiformats/go-multihash v0.2.3 // indirect
 	github.com/multiformats/go-varint v0.0.7 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/mxk/go-flowrate v0.0.0-20140419014527-cca7078d478f // indirect
 	github.com/nakabonne/nestif v0.3.1 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/nishanths/exhaustive v0.12.0 // indirect
@@ -530,11 +536,8 @@ require (
 	github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8 // indirect
 	github.com/sourcegraph/go-diff v0.7.0 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
-	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
-	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
-	github.com/spf13/viper v1.21.0 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect
 	github.com/ssgreg/nlreturn/v2 v2.2.1 // indirect
 	github.com/stbenjam/no-sprintf-host-port v0.3.1 // indirect
@@ -561,6 +564,7 @@ require (
 	github.com/uudashr/gocognit v1.2.0 // indirect
 	github.com/uudashr/iface v1.4.1 // indirect
 	github.com/vbatts/tar-split v0.12.2 // indirect
+	github.com/vladimirvivien/gexe v0.4.1 // indirect
 	github.com/wagoodman/go-progress v0.0.0-20230925121702-07e42b3cdba0 // indirect
 	github.com/whyrusleeping/cbor-gen v0.1.3-0.20240731173018-74d74643234c // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
@@ -622,6 +626,7 @@ require (
 	gopkg.in/mail.v2 v2.3.1 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	honnef.co/go/tools v0.6.1 // indirect
+	k8s.io/component-base v0.32.1 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912 // indirect
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4 // indirect
@@ -632,6 +637,7 @@ require (
 	mvdan.cc/gofumpt v0.9.2 // indirect
 	mvdan.cc/unparam v0.0.0-20251027182757-5beb8c8f8f15 // indirect
 	pluginrpc.com/pluginrpc v0.5.0 // indirect
+	sigs.k8s.io/controller-runtime v0.20.0 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/kind v0.27.0 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect

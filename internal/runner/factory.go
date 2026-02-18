@@ -18,6 +18,7 @@ import (
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/replication"
+	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 )
@@ -26,6 +27,7 @@ import (
 type Factory struct {
 	SchemaHook        replication.SchemaHook
 	SchemaHookForFlow func(flow.Flow) replication.SchemaHook
+	Meters            *telemetry.Meters
 }
 
 func (f Factory) Source(spec connector.Spec) (connector.Source, error) {
@@ -44,14 +46,21 @@ func (f Factory) SourceForFlow(fdef flow.Flow) (connector.Source, error) {
 }
 
 func (f Factory) source(spec connector.Spec, hook replication.SchemaHook) (connector.Source, error) {
+	mode, err := connector.NormalizeSourceMode("")
+	if spec.Options != nil {
+		mode, err = connector.NormalizeSourceMode(spec.Options["mode"])
+	}
+	if err != nil {
+		return nil, err
+	}
+
 	switch spec.Type {
 	case connector.EndpointPostgres:
-		if spec.Options != nil {
-			if mode := spec.Options["mode"]; mode == "backfill" {
-				return &pgsource.BackfillSource{}, nil
-			}
+		if mode == connector.SourceModeBackfill {
+			return &pgsource.BackfillSource{}, nil
 		}
 		source := &pgsource.Source{SchemaHook: hook}
+		source.Meters = f.Meters
 		return source, nil
 	default:
 		return nil, fmt.Errorf("unsupported source type: %s", spec.Type)

@@ -21,6 +21,7 @@ import (
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/runner"
 	"github.com/josephjohncox/wallaby/pkg/certify"
@@ -28,7 +29,6 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/stream"
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
@@ -46,11 +46,7 @@ func main() {
 
 func run(args []string) error {
 	command := newAdminCommand()
-	parsedArgs := []string{}
-	if len(args) > 1 {
-		parsedArgs = args[1:]
-	}
-	command.SetArgs(parsedArgs)
+	command.SetArgs(args[1:])
 	return command.Execute()
 }
 
@@ -188,53 +184,20 @@ func newAdminCommand() *cobra.Command {
 }
 
 func initAdminConfig(cmd *cobra.Command) error {
-	configFlags := cmd.Flags()
-	if cmd.Root() != nil && cmd.Root().PersistentFlags().Lookup("config") != nil {
-		configFlags = cmd.Root().PersistentFlags()
+	var searchPath string
+	if home, err := os.UserHomeDir(); err == nil {
+		searchPath = filepath.Join(home, ".config", "wallaby")
 	}
-	configPath, err := configFlags.GetString("config")
-	if err != nil {
-		return fmt.Errorf("read config flag: %w", err)
-	}
-
-	viper.Reset()
-	viper.SetEnvPrefix("WALLABY_ADMIN")
-	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-
-	if configPath != "" {
-		viper.SetConfigFile(configPath)
-	} else if envPath := os.Getenv("WALLABY_ADMIN_CONFIG"); envPath != "" {
-		viper.SetConfigFile(envPath)
-	} else {
-		viper.SetConfigName("wallaby-admin")
-		viper.SetConfigType("yaml")
-		viper.AddConfigPath(".")
-		if home, err := os.UserHomeDir(); err == nil {
-			viper.AddConfigPath(filepath.Join(home, ".config", "wallaby"))
-		}
-	}
-
-	if err := viper.ReadInConfig(); err != nil {
-		var missing viper.ConfigFileNotFoundError
-		if !errors.As(err, &missing) {
-			return fmt.Errorf("read config: %w", err)
-		}
-	}
-	return nil
+	return cli.InitViperFromCommand(cmd, cli.ViperConfig{
+		EnvPrefix:        "WALLABY_ADMIN",
+		ConfigEnvVar:     "WALLABY_ADMIN_CONFIG",
+		ConfigName:       "wallaby-admin",
+		ConfigType:       "yaml",
+		ConfigSearchPath: []string{searchPath},
+	})
 }
 
 func runWithConfig(cmd *cobra.Command, fn func(*cobra.Command, []string) error, args []string) error {
-	if viper.IsSet("endpoint") && cmd.Flags().Lookup("endpoint") != nil && !cmd.Flags().Changed("endpoint") {
-		if err := cmd.Flags().Set("endpoint", viper.GetString("endpoint")); err != nil {
-			return fmt.Errorf("set endpoint from config: %w", err)
-		}
-	}
-	if viper.IsSet("insecure") && cmd.Flags().Lookup("insecure") != nil && !cmd.Flags().Changed("insecure") {
-		if err := cmd.Flags().Set("insecure", fmt.Sprintf("%t", viper.GetBool("insecure"))); err != nil {
-			return fmt.Errorf("set insecure from config: %w", err)
-		}
-	}
 	return fn(cmd, args)
 }
 
@@ -280,7 +243,7 @@ func addSlotShowFlags(cmd *cobra.Command) {
 	addAdminConnectionFlags(cmd, "localhost:8080")
 	cmd.Flags().String("flow-id", "", "flow id")
 	cmd.Flags().String("dsn", "", "postgres source dsn")
-	cmd.Flags().String("slot", "", "slot name (optional if using -flow-id)")
+	cmd.Flags().String("slot", "", "slot name (optional if using --flow-id)")
 	addJSONOutputFlags(cmd, false)
 	addAWSIAMFlags(cmd)
 }
@@ -289,7 +252,7 @@ func addSlotDropFlags(cmd *cobra.Command) {
 	addAdminConnectionFlags(cmd, "localhost:8080")
 	cmd.Flags().String("flow-id", "", "flow id")
 	cmd.Flags().String("dsn", "", "postgres source dsn")
-	cmd.Flags().String("slot", "", "slot name (optional if using -flow-id)")
+	cmd.Flags().String("slot", "", "slot name (optional if using --flow-id)")
 	cmd.Flags().Bool("if-exists", true, "succeed even when slot is missing")
 	addJSONOutputFlags(cmd, false)
 	addAWSIAMFlags(cmd)
@@ -432,7 +395,7 @@ func addStreamAckFlags(cmd *cobra.Command) {
 
 func addPublicationListFlags(cmd *cobra.Command) {
 	addAdminConnectionFlags(cmd, "localhost:8080")
-	cmd.Flags().String("flow-id", "", "flow id (optional if -dsn and -publication provided)")
+	cmd.Flags().String("flow-id", "", "flow id (optional if --dsn and --publication provided)")
 	cmd.Flags().String("dsn", "", "postgres source dsn")
 	cmd.Flags().String("publication", "", "publication name")
 	addJSONOutputFlags(cmd, false)
@@ -441,7 +404,7 @@ func addPublicationListFlags(cmd *cobra.Command) {
 
 func addPublicationAddFlags(cmd *cobra.Command) {
 	addAdminConnectionFlags(cmd, "localhost:8080")
-	cmd.Flags().String("flow-id", "", "flow id (optional if -dsn and -publication provided)")
+	cmd.Flags().String("flow-id", "", "flow id (optional if --dsn and --publication provided)")
 	cmd.Flags().String("dsn", "", "postgres source dsn")
 	cmd.Flags().String("publication", "", "publication name")
 	cmd.Flags().String("tables", "", "comma-separated schema.table list")
@@ -450,7 +413,7 @@ func addPublicationAddFlags(cmd *cobra.Command) {
 
 func addPublicationRemoveFlags(cmd *cobra.Command) {
 	addAdminConnectionFlags(cmd, "localhost:8080")
-	cmd.Flags().String("flow-id", "", "flow id (optional if -dsn and -publication provided)")
+	cmd.Flags().String("flow-id", "", "flow id (optional if --dsn and --publication provided)")
 	cmd.Flags().String("dsn", "", "postgres source dsn")
 	cmd.Flags().String("publication", "", "publication name")
 	cmd.Flags().String("tables", "", "comma-separated schema.table list")
@@ -478,7 +441,7 @@ func addPublicationSyncFlags(cmd *cobra.Command) {
 
 func addPublicationScrapeFlags(cmd *cobra.Command) {
 	addAdminConnectionFlags(cmd, "localhost:8080")
-	cmd.Flags().String("flow-id", "", "flow id (optional if -dsn and -publication provided)")
+	cmd.Flags().String("flow-id", "", "flow id (optional if --dsn and --publication provided)")
 	cmd.Flags().String("dsn", "", "postgres source dsn")
 	cmd.Flags().String("publication", "", "publication name")
 	cmd.Flags().String("schemas", "", "comma-separated schemas")
@@ -546,51 +509,51 @@ func addFlowCheckFlags(cmd *cobra.Command) {
 }
 
 func stringFlag(cmd *cobra.Command, name string) (*string, error) {
-	v, err := cmd.Flags().GetString(name)
+	v, err := cli.ResolveStringFlagValue(cmd, name)
 	if err != nil {
 		return nil, fmt.Errorf("read --%s: %w", name, err)
 	}
-	return &v, nil
+	return v, nil
 }
 
 func boolFlag(cmd *cobra.Command, name string) (*bool, error) {
-	v, err := cmd.Flags().GetBool(name)
+	v, err := cli.ResolveBoolFlagValue(cmd, name)
 	if err != nil {
 		return nil, fmt.Errorf("read --%s: %w", name, err)
 	}
-	return &v, nil
+	return v, nil
 }
 
 func durationFlag(cmd *cobra.Command, name string) (*time.Duration, error) {
-	v, err := cmd.Flags().GetDuration(name)
+	v, err := cli.ResolveDurationFlagValue(cmd, name)
 	if err != nil {
 		return nil, fmt.Errorf("read --%s: %w", name, err)
 	}
-	return &v, nil
+	return v, nil
 }
 
 func intFlag(cmd *cobra.Command, name string) (*int, error) {
-	v, err := cmd.Flags().GetInt(name)
+	v, err := cli.ResolveIntFlagValue(cmd, name)
 	if err != nil {
 		return nil, fmt.Errorf("read --%s: %w", name, err)
 	}
-	return &v, nil
+	return v, nil
 }
 
-func int64Flag(cmd *cobra.Command, name string) (*int64, error) {
-	v, err := cmd.Flags().GetInt64(name)
+func int64Flag(cmd *cobra.Command, _ string) (*int64, error) {
+	v, err := cli.ResolveInt64FlagValue(cmd, "id")
 	if err != nil {
-		return nil, fmt.Errorf("read --%s: %w", name, err)
+		return nil, fmt.Errorf("read --id: %w", err)
 	}
-	return &v, nil
+	return v, nil
 }
 
 func float64Flag(cmd *cobra.Command, name string) (*float64, error) {
-	v, err := cmd.Flags().GetFloat64(name)
+	v, err := cli.ResolveFloat64FlagValue(cmd, name)
 	if err != nil {
 		return nil, fmt.Errorf("read --%s: %w", name, err)
 	}
-	return &v, nil
+	return v, nil
 }
 
 func keyValueFlagValue(cmd *cobra.Command, name string) (*keyValueFlag, error) {
@@ -723,19 +686,19 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 		FlowID:     *flowID,
 		ConfigPath: *configPath,
 	}); err != nil {
-		return errors.New("-flow-id, -file, or -endpoint is required")
+		return errors.New("--flow-id, --file, or --endpoint is required")
 	}
 	if *flowID == "" && *configPath == "" && *endpoint == "" {
-		return errors.New("-flow-id, -file, or -endpoint is required")
+		return errors.New("--flow-id, --file, or --endpoint is required")
 	}
 	if *flowID != "" && *endpoint == "" {
-		return errors.New("-endpoint is required when -flow-id is set")
+		return errors.New("--endpoint is required when --flow-id is set")
 	}
 	if *prettyOutput {
 		*jsonOutput = true
 	}
 	if *jsonOutput && *yamlOutput {
-		return errors.New("use either -json or -yaml")
+		return errors.New("use either --json or --yaml")
 	}
 
 	result := checkResult{
@@ -1050,7 +1013,7 @@ func ddlHistory(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if strings.TrimSpace(*flowID) == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	client, closeConn, err := ddlClient(*endpoint, *insecureConn)
@@ -1081,7 +1044,7 @@ func ddlHistory(cmd *cobra.Command, _ []string) error {
 
 	if *yamlOutput {
 		if *jsonOutput {
-			return errors.New("cannot use -json and -yaml together")
+			return errors.New("cannot use --json and --yaml together")
 		}
 		yamlPayload, err := yaml.Marshal(out)
 		if err != nil {
@@ -1127,13 +1090,13 @@ func ddlListRecordSummary(event ddlListRecord) string {
 
 func slotUsage() {
 	fmt.Println("Slot subcommands:")
-	fmt.Println("  wallaby-admin slot list -flow-id <id> [-slot <name>] [--json|--pretty]")
-	fmt.Println("  wallaby-admin slot list -dsn <dsn> [-slot <name>] [-aws-* flags] [--json|--pretty]")
-	fmt.Println("  wallaby-admin slot show -flow-id <id> [-slot <name>] [--json|--pretty]")
-	fmt.Println("  wallaby-admin slot show -dsn <dsn> -slot <name> [-aws-* flags] [--json|--pretty]")
-	fmt.Println("  wallaby-admin slot drop -flow-id <id> [-slot <name>] [-if-exists] [--json|--pretty]")
-	fmt.Println("  wallaby-admin slot drop -dsn <dsn> -slot <name> [-if-exists] [-aws-* flags]")
-	fmt.Println("  IAM flags: -aws-rds-iam -aws-region <region> -aws-profile <profile> -aws-role-arn <arn>")
+	fmt.Println("  wallaby-admin slot list --flow-id <id> [--slot <name>] [--json|--pretty]")
+	fmt.Println("  wallaby-admin slot list --dsn <dsn> [--slot <name>] [--aws-* flags] [--json|--pretty]")
+	fmt.Println("  wallaby-admin slot show --flow-id <id> [--slot <name>] [--json|--pretty]")
+	fmt.Println("  wallaby-admin slot show --dsn <dsn> --slot <name> [--aws-* flags] [--json|--pretty]")
+	fmt.Println("  wallaby-admin slot drop --flow-id <id> [--slot <name>] [--if-exists] [--json|--pretty]")
+	fmt.Println("  wallaby-admin slot drop --dsn <dsn> --slot <name> [--if-exists] [--aws-* flags]")
+	fmt.Println("  IAM flags: --aws-rds-iam --aws-region <region> --aws-profile <profile> --aws-role-arn <arn>")
 	os.Exit(1)
 }
 
@@ -1618,7 +1581,7 @@ func ddlShow(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *id == 0 {
-		return errors.New("-id is required")
+		return errors.New("--id is required")
 	}
 
 	client, closeConn, err := ddlClient(*endpoint, *insecureConn)
@@ -1732,7 +1695,7 @@ func ddlApprove(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *id == 0 {
-		return errors.New("-id is required")
+		return errors.New("--id is required")
 	}
 
 	client, closeConn, err := ddlClient(*endpoint, *insecureConn)
@@ -1767,7 +1730,7 @@ func ddlReject(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *id == 0 {
-		return errors.New("-id is required")
+		return errors.New("--id is required")
 	}
 
 	client, closeConn, err := ddlClient(*endpoint, *insecureConn)
@@ -1802,7 +1765,7 @@ func ddlApply(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *id == 0 {
-		return errors.New("-id is required")
+		return errors.New("--id is required")
 	}
 
 	client, closeConn, err := ddlClient(*endpoint, *insecureConn)
@@ -1889,12 +1852,12 @@ func usage() {
 
 func ddlUsage() {
 	fmt.Println("DDL subcommands:")
-	fmt.Println("  wallaby-admin ddl list -status pending|approved|rejected|applied|all [-flow-id <flow_id>]")
-	fmt.Println("  wallaby-admin ddl history -flow-id <flow_id> [--json|--pretty|--yaml]")
-	fmt.Println("  wallaby-admin ddl show -id <event_id> [-status pending|approved|rejected|applied|all] [-flow-id <flow_id>] [--json|--pretty]")
-	fmt.Println("  wallaby-admin ddl approve -id <event_id>")
-	fmt.Println("  wallaby-admin ddl reject -id <event_id>")
-	fmt.Println("  wallaby-admin ddl apply -id <event_id>")
+	fmt.Println("  wallaby-admin ddl list --status pending|approved|rejected|applied|all [--flow-id <flow_id>]")
+	fmt.Println("  wallaby-admin ddl history --flow-id <flow_id> [--json|--pretty|--yaml]")
+	fmt.Println("  wallaby-admin ddl show --id <event_id> [--status pending|approved|rejected|applied|all] [--flow-id <flow_id>] [--json|--pretty]")
+	fmt.Println("  wallaby-admin ddl approve --id <event_id>")
+	fmt.Println("  wallaby-admin ddl reject --id <event_id>")
+	fmt.Println("  wallaby-admin ddl apply --id <event_id>")
 	os.Exit(1)
 }
 
@@ -1925,7 +1888,7 @@ func streamReplay(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *stream == "" || *consumerGroup == "" {
-		return errors.New("-stream and -group are required")
+		return errors.New("--stream and --group are required")
 	}
 
 	client, closeConn, err := streamClient(*endpoint, *insecureConn)
@@ -1962,9 +1925,9 @@ func streamReplay(cmd *cobra.Command, _ []string) error {
 
 func streamUsage() {
 	fmt.Println("Stream subcommands:")
-	fmt.Println("  wallaby-admin stream replay -stream <name> -group <name> [-from-lsn <lsn>] [-since <rfc3339>]")
-	fmt.Println("  wallaby-admin stream pull -stream <name> -group <name> [-max 10] [-visibility 30] [-consumer <id>] [--json|--pretty]")
-	fmt.Println("  wallaby-admin stream ack -stream <name> -group <name> -ids 1,2,3")
+	fmt.Println("  wallaby-admin stream replay --stream <name> --group <name> [--from-lsn <lsn>] [--since <rfc3339>]")
+	fmt.Println("  wallaby-admin stream pull --stream <name> --group <name> [--max 10] [--visibility 30] [--consumer <id>] [--json|--pretty]")
+	fmt.Println("  wallaby-admin stream ack --stream <name> --group <name> --ids 1,2,3")
 	os.Exit(1)
 }
 
@@ -2037,12 +2000,12 @@ func runCertify(cmd *cobra.Command, _ []string) error {
 	tableList := parseCSVValue(*tables)
 	if *table != "" {
 		if len(tableList) > 0 {
-			return errors.New("-table and -tables are mutually exclusive")
+			return errors.New("--table and --tables are mutually exclusive")
 		}
 		tableList = []string{*table}
 	}
 	if len(tableList) == 0 {
-		return errors.New("-table or -tables is required")
+		return errors.New("--table or --tables is required")
 	}
 
 	var sourceOptions map[string]string
@@ -2092,10 +2055,10 @@ func runCertify(cmd *cobra.Command, _ []string) error {
 		Columns:     parseCSVValue(*columns),
 	}
 	if len(opts.PrimaryKeys) > 0 && len(tableList) > 1 {
-		return errors.New("-primary-keys can only be used with a single table")
+		return errors.New("--primary-keys can only be used with a single table")
 	}
 	if len(opts.Columns) > 0 && len(tableList) > 1 {
-		return errors.New("-columns can only be used with a single table")
+		return errors.New("--columns can only be used with a single table")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -2141,23 +2104,23 @@ func runCertify(cmd *cobra.Command, _ []string) error {
 
 func flowUsage() {
 	fmt.Println("Flow subcommands:")
-	fmt.Println("  wallaby-admin flow create -file <path> [-start] [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow update -file <path> [-flow-id <id>] [-pause] [-resume] [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow reconfigure -file <path> [-flow-id <id>] [-pause] [-resume] [-sync-publication] [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow start -flow-id <id> [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow run-once -flow-id <id>")
-	fmt.Println("  wallaby-admin flow get -flow-id <id> [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow list [-page-size 100] [-page-token <token>] [-state created|running|paused|stopping|failed] [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow plan -file <path> [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow dry-run -file <path> [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow check -file <path> [-endpoint <addr>] [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow delete -flow-id <id> [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow wait -flow-id <id> -state <state> [-timeout 60s] [-interval 2s] [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow validate -file <path> [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow stop -flow-id <id> [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow resume -flow-id <id> [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow cleanup -flow-id <id> [-drop-slot] [-drop-publication] [-drop-source-state] [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow resolve-staging -flow-id <id> [-tables schema.table,...] [-schemas public,...] [-dest <name>]")
+	fmt.Println("  wallaby-admin flow create --file <path> [--start] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow update --file <path> [--flow-id <id>] [--pause] [--resume] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow reconfigure --file <path> [--flow-id <id>] [--pause] [--resume] [--sync-publication] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow start --flow-id <id> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow run-once --flow-id <id>")
+	fmt.Println("  wallaby-admin flow get --flow-id <id> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow list [--page-size 100] [--page-token <token>] [--state created|running|paused|stopping|failed] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow plan --file <path> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow dry-run --file <path> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow check --file <path> [--endpoint <addr>] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow delete --flow-id <id> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow wait --flow-id <id> --state <state> [--timeout 60s] [--interval 2s] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow validate --file <path> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow stop --flow-id <id> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow resume --flow-id <id> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow cleanup --flow-id <id> [--drop-slot] [--drop-publication] [--drop-source-state] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow resolve-staging --flow-id <id> [--tables schema.table,...] [--schemas public,...] [--dest <name>]")
 	os.Exit(1)
 }
 
@@ -2188,7 +2151,7 @@ func flowCreate(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *path == "" {
-		return errors.New("-file is required")
+		return errors.New("--file is required")
 	}
 
 	payload, err := readFile(*path)
@@ -2282,7 +2245,7 @@ func flowUpdate(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *path == "" {
-		return errors.New("-file is required")
+		return errors.New("--file is required")
 	}
 
 	payload, err := readFile(*path)
@@ -2298,7 +2261,7 @@ func flowUpdate(cmd *cobra.Command, _ []string) error {
 		cfg.ID = *flowID
 	}
 	if cfg.ID == "" {
-		return errors.New("flow id is required (provide in file or -flow-id)")
+		return errors.New("flow id is required (provide in file or --flow-id)")
 	}
 
 	pbFlow, err := flowConfigToProto(cfg)
@@ -2395,7 +2358,7 @@ func flowReconfigure(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *path == "" {
-		return errors.New("-file is required")
+		return errors.New("--file is required")
 	}
 
 	payload, err := readFile(*path)
@@ -2411,7 +2374,7 @@ func flowReconfigure(cmd *cobra.Command, _ []string) error {
 		cfg.ID = *flowID
 	}
 	if cfg.ID == "" {
-		return errors.New("flow id is required (provide in file or -flow-id)")
+		return errors.New("flow id is required (provide in file or --flow-id)")
 	}
 
 	pbFlow, err := flowConfigToProto(cfg)
@@ -2485,7 +2448,7 @@ func flowRunOnce(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	client, closeConn, err := flowClient(*endpoint, *insecureConn)
@@ -2547,7 +2510,7 @@ func flowStart(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	client, closeConn, err := flowClient(*endpoint, *insecureConn)
@@ -2609,7 +2572,7 @@ func flowStop(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	client, closeConn, err := flowClient(*endpoint, *insecureConn)
@@ -2671,7 +2634,7 @@ func flowResume(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	client, closeConn, err := flowClient(*endpoint, *insecureConn)
@@ -2745,7 +2708,7 @@ func flowCleanup(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	client, closeConn, err := flowClient(*endpoint, *insecureConn)
@@ -2842,7 +2805,7 @@ func streamPull(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if *stream == "" || *consumerGroup == "" {
-		return errors.New("-stream and -group are required")
+		return errors.New("--stream and --group are required")
 	}
 
 	client, closeConn, err := streamClient(*endpoint, *insecureConn)
@@ -2930,10 +2893,10 @@ func streamAck(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *stream == "" || *consumerGroup == "" {
-		return errors.New("-stream and -group are required")
+		return errors.New("--stream and --group are required")
 	}
 	if *ids == "" {
-		return errors.New("-ids is required")
+		return errors.New("--ids is required")
 	}
 
 	parsed, err := parseIDs(*ids)
@@ -2993,12 +2956,12 @@ func int32Arg(name string, value int) (int32, error) {
 
 func publicationUsage() {
 	fmt.Println("Publication subcommands:")
-	fmt.Println("  wallaby-admin publication list -flow-id <id> [--json|--pretty]")
-	fmt.Println("  wallaby-admin publication add -flow-id <id> -tables schema.table,...")
-	fmt.Println("  wallaby-admin publication remove -flow-id <id> -tables schema.table,...")
-	fmt.Println("  wallaby-admin publication sync -flow-id <id> [-tables ...] [-schemas ...] [-mode add|sync] [-pause] [-resume] [-snapshot]")
-	fmt.Println("  wallaby-admin publication scrape -flow-id <id> -schemas public,app [-apply]")
-	fmt.Println("  IAM flags: -aws-rds-iam -aws-region <region> -aws-profile <profile> -aws-role-arn <arn>")
+	fmt.Println("  wallaby-admin publication list --flow-id <id> [--json|--pretty]")
+	fmt.Println("  wallaby-admin publication add --flow-id <id> --tables schema.table,...")
+	fmt.Println("  wallaby-admin publication remove --flow-id <id> --tables schema.table,...")
+	fmt.Println("  wallaby-admin publication sync --flow-id <id> [--tables ...] [--schemas ...] [--mode add|sync] [--pause] [--resume] [--snapshot]")
+	fmt.Println("  wallaby-admin publication scrape --flow-id <id> --schemas public,app [--apply]")
+	fmt.Println("  IAM flags: --aws-rds-iam --aws-region <region> --aws-profile <profile> --aws-role-arn <arn>")
 	os.Exit(1)
 }
 
@@ -3129,7 +3092,7 @@ func publicationAdd(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *tables == "" {
-		return errors.New("-tables is required")
+		return errors.New("--tables is required")
 	}
 	tableList := parseCSVValue(*tables)
 	if len(tableList) == 0 {
@@ -3199,7 +3162,7 @@ func publicationRemove(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *tables == "" {
-		return errors.New("-tables is required")
+		return errors.New("--tables is required")
 	}
 	tableList := parseCSVValue(*tables)
 	if len(tableList) == 0 {
@@ -3309,7 +3272,7 @@ func publicationSync(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -3327,6 +3290,12 @@ func publicationSync(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+
+	modeValue, err := postgres.NormalizeSyncPublicationMode(*mode)
+	if err != nil {
+		return err
+	}
+
 	if len(desired) == 0 {
 		return errors.New("no tables provided for sync")
 	}
@@ -3348,7 +3317,7 @@ func publicationSync(cmd *cobra.Command, _ []string) error {
 		Dsn:         cfg.dsn,
 		Publication: cfg.publication,
 		Tables:      desired,
-		Mode:        *mode,
+		Mode:        modeValue,
 		Options:     cfg.options,
 	})
 	if err != nil {
@@ -3409,7 +3378,7 @@ func publicationScrape(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *schemas == "" {
-		return errors.New("-schemas is required")
+		return errors.New("--schemas is required")
 	}
 	schemaList := parseCSVValue(*schemas)
 	if len(schemaList) == 0 {
@@ -3425,7 +3394,6 @@ func publicationScrape(cmd *cobra.Command, _ []string) error {
 	}
 
 	var missing []string
-	var discoveredTables []string
 	if cfg.flow != nil {
 		flowSvc, closeConn, err := flowClient(*endpoint, *insecureConn)
 		if err != nil {
@@ -3443,10 +3411,9 @@ func publicationScrape(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return fmt.Errorf("scrape publication tables: %w", err)
 		}
-		discoveredTables = resp.DiscoveredTables
 		missing = resp.MissingTables
 	} else {
-		discoveredTables, err = postgres.ScrapeTables(ctx, cfg.dsn, schemaList, cfg.options)
+		discoveredTables, err := postgres.ScrapeTables(ctx, cfg.dsn, schemaList, cfg.options)
 		if err != nil {
 			return fmt.Errorf("scrape tables: %w", err)
 		}
@@ -3515,7 +3482,7 @@ func flowResolveStaging(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	ctx := context.Background()
@@ -3725,7 +3692,7 @@ func flowGet(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	client, closeConn, err := flowClient(*endpoint, *insecureConn)
@@ -3791,7 +3758,7 @@ func flowDelete(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	client, closeConn, err := flowClient(*endpoint, *insecureConn)
@@ -3860,16 +3827,16 @@ func flowWait(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 	if *targetState == "" {
-		return errors.New("-state is required")
+		return errors.New("--state is required")
 	}
 	if *interval <= 0 {
-		return errors.New("-interval must be greater than 0")
+		return errors.New("--interval must be greater than 0")
 	}
 	if *timeout <= 0 {
-		return errors.New("-timeout must be greater than 0")
+		return errors.New("--timeout must be greater than 0")
 	}
 
 	target, err := parseFlowState(*targetState)
@@ -3941,7 +3908,7 @@ func flowValidate(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if *path == "" {
-		return errors.New("-file is required")
+		return errors.New("--file is required")
 	}
 
 	payload, err := readFile(*path)
@@ -4007,7 +3974,7 @@ func flowDryRun(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if *path == "" {
-		return errors.New("-file is required")
+		return errors.New("--file is required")
 	}
 
 	payload, err := readFile(*path)
@@ -4070,7 +4037,7 @@ func flowPlan(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if *path == "" {
-		return errors.New("-file is required")
+		return errors.New("--file is required")
 	}
 
 	payload, err := readFile(*path)
@@ -4206,7 +4173,7 @@ func flowCheck(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if *path == "" {
-		return errors.New("-file is required")
+		return errors.New("--file is required")
 	}
 
 	payload, err := readFile(*path)
@@ -4440,7 +4407,7 @@ func flowStateName(state wallabypb.FlowState) string {
 }
 
 func safeInt32(value int) (int32, bool) {
-	if value <= 0 {
+	if value <= 0 || value > math.MaxInt32 {
 		return 0, false
 	}
 	return int32(value), true
@@ -4645,7 +4612,7 @@ func resolveSlotConfig(ctx context.Context, endpoint string, insecureConn bool, 
 			return cfg, errors.New("flow-id or dsn is required")
 		}
 		if requireSlot && cfg.slot == "" {
-			return cfg, errors.New("slot is required when -flow-id is not provided")
+			return cfg, errors.New("slot is required when --flow-id is not provided")
 		}
 		return cfg, nil
 	}
@@ -4889,7 +4856,7 @@ func runBackfill(ctx context.Context, flowPB *wallabypb.Flow, tables []string, w
 	if model.Source.Options == nil {
 		model.Source.Options = map[string]string{}
 	}
-	model.Source.Options["mode"] = "backfill"
+	model.Source.Options["mode"] = connector.SourceModeBackfill
 	model.Source.Options["tables"] = strings.Join(tables, ",")
 	if workers > 0 {
 		model.Source.Options["snapshot_workers"] = fmt.Sprintf("%d", workers)

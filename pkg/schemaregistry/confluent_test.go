@@ -3,6 +3,7 @@ package schemaregistry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,13 +11,69 @@ import (
 	"testing"
 )
 
+type handlerTransport struct {
+	handler http.Handler
+}
+
+func (h *handlerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req == nil {
+		return nil, errors.New("nil request")
+	}
+
+	rec := httptest.NewRecorder()
+	h.handler.ServeHTTP(rec, req)
+	return rec.Result(), nil
+}
+
+func makeConfluentRegistryWithHandler(t *testing.T, cfg Config, handler http.Handler) *confluentRegistry {
+	t.Helper()
+
+	reg, err := newConfluentRegistry(cfg)
+	if err != nil {
+		t.Fatalf("new confluent registry: %v", err)
+	}
+
+	reg.client = &http.Client{
+		Transport: &handlerTransport{
+			handler: handler,
+		},
+	}
+
+	return reg
+}
+
+func makeApicurioRegistryWithHandler(t *testing.T, cfg Config, handler http.Handler) *confluentRegistry {
+	t.Helper()
+
+	reg, err := newApicurioRegistry(cfg)
+	if err != nil {
+		t.Fatalf("new apicurio registry: %v", err)
+	}
+
+	reg.client = &http.Client{
+		Transport: &handlerTransport{
+			handler: handler,
+		},
+	}
+
+	return reg
+}
+
+func makeRegistryURLConfig() Config {
+	return Config{
+		URL:      "http://schema-registry.local",
+		Username: "user",
+		Password: "pass",
+	}
+}
+
 func TestConfluentRegistryRegister(t *testing.T) {
 	var gotPath string
 	var gotAuth string
 	var gotContentType string
 	var gotPayload confluentRegisterRequest
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	reg := makeConfluentRegistryWithHandler(t, makeRegistryURLConfig(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
 		gotContentType = r.Header.Get("Content-Type")
@@ -25,16 +82,6 @@ func TestConfluentRegistryRegister(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":42,"version":3}`))
 	}))
-	defer srv.Close()
-
-	reg, err := newConfluentRegistry(Config{
-		URL:      srv.URL,
-		Username: "user",
-		Password: "pass",
-	})
-	if err != nil {
-		t.Fatalf("new confluent registry: %v", err)
-	}
 	defer reg.Close()
 
 	res, err := reg.Register(context.Background(), RegisterRequest{
@@ -65,23 +112,16 @@ func TestConfluentRegistryRegister(t *testing.T) {
 func TestApicurioCompatRegister(t *testing.T) {
 	var gotPath string
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	reg := makeApicurioRegistryWithHandler(t, Config{
+		URL:            "http://schema-registry.local",
+		ApicurioCompat: true,
+	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":7,"version":1}`))
 	}))
-	defer srv.Close()
-
-	reg, err := newApicurioRegistry(Config{
-		URL:            srv.URL,
-		ApicurioCompat: true,
-	})
-	if err != nil {
-		t.Fatalf("new apicurio registry: %v", err)
-	}
 	defer reg.Close()
-
-	_, err = reg.Register(context.Background(), RegisterRequest{
+	_, err := reg.Register(context.Background(), RegisterRequest{
 		Subject:    "wallaby.proto",
 		Schema:     `syntax = "proto3"; message Test {}`,
 		SchemaType: SchemaTypeProtobuf,

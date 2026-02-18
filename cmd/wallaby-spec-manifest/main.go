@@ -4,11 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
+	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/pkg/spec"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 func main() {
@@ -46,18 +45,16 @@ func newWallabySpecManifestCommand() *cobra.Command {
 	return command
 }
 
-func initWallabySpecManifestConfig(_ *cobra.Command) error {
-	viper.Reset()
-	viper.SetEnvPrefix("WALLABY_SPEC_MANIFEST")
-	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-	return nil
+func initWallabySpecManifestConfig(cmd *cobra.Command) error {
+	return cli.InitViperFromCommand(cmd, cli.ViperConfig{
+		EnvPrefix: "WALLABY_SPEC_MANIFEST",
+	})
 }
 
 func runWallabySpecManifest(cmd *cobra.Command) error {
 	opts := specManifestOptions{
-		out: resolveStringFlag(cmd, "out"),
-		dir: resolveStringFlag(cmd, "dir"),
+		out: cli.ResolveStringFlag(cmd, "out"),
+		dir: cli.ResolveStringFlag(cmd, "dir"),
 	}
 	manifest := spec.TraceSuiteManifest()
 	if opts.out != "" {
@@ -73,17 +70,6 @@ func runWallabySpecManifest(cmd *cobra.Command) error {
 		}
 	}
 	return nil
-}
-
-func resolveStringFlag(cmd *cobra.Command, key string) string {
-	value, err := cmd.Flags().GetString(key)
-	if err != nil {
-		return ""
-	}
-	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
-		return viper.GetString(key)
-	}
-	return value
 }
 
 func writeAll(dir string) error {

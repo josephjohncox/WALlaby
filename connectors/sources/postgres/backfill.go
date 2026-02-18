@@ -157,7 +157,7 @@ func (b *BackfillSource) Ack(ctx context.Context, checkpoint connector.Checkpoin
 		return nil
 	}
 	meta := checkpoint.Metadata
-	if meta == nil || meta["mode"] != "backfill" {
+	if meta == nil || meta["mode"] != connector.SourceModeBackfill {
 		return nil
 	}
 	table := meta["table"]
@@ -665,7 +665,7 @@ func snapshotFlowID(spec connector.Spec) string {
 
 func snapshotCheckpoint(task backfillTask, cursor string, done bool) connector.Checkpoint {
 	meta := map[string]string{
-		"mode":  "backfill",
+		"mode":  connector.SourceModeBackfill,
 		"table": task.table,
 	}
 	if task.partitionCount > 1 {

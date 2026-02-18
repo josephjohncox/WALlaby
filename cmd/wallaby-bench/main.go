@@ -27,14 +27,20 @@ import (
 	"github.com/josephjohncox/wallaby/connectors/destinations/kafka"
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
+	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/internal/ddl"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
+)
+
+const (
+	defaultPGDSN        = "postgres://postgres:postgres@localhost:5432/wallaby?sslmode=disable"
+	defaultCKDSN        = "clickhouse://bench:bench@localhost:9000/bench"
+	defaultKafkaBrokers = "localhost:9092"
 )
 
 type profile struct {
@@ -175,9 +181,9 @@ func newWallabyBenchCommand() *cobra.Command {
 	command.Flags().String("profile", "small", "profile: small|medium|large")
 	command.Flags().String("targets", "all", "targets: all|kafka,postgres,clickhouse")
 	command.Flags().String("scenario", "base", "scenario: base|ddl")
-	command.Flags().String("pg-dsn", getenv("BENCH_PG_DSN", "postgres://postgres:postgres@localhost:5432/wallaby?sslmode=disable"), "postgres DSN")
-	command.Flags().String("clickhouse-dsn", getenv("BENCH_CLICKHOUSE_DSN", "clickhouse://bench:bench@localhost:9000/bench"), "clickhouse DSN")
-	command.Flags().String("kafka-brokers", getenv("BENCH_KAFKA_BROKERS", "localhost:9092"), "kafka brokers")
+	command.Flags().String("pg-dsn", defaultPGDSN, "postgres DSN")
+	command.Flags().String("clickhouse-dsn", defaultCKDSN, "clickhouse DSN")
+	command.Flags().String("kafka-brokers", defaultKafkaBrokers, "kafka brokers")
 	command.Flags().String("output-dir", "bench/results", "output directory for results")
 	command.Flags().Int64("seed", 42, "random seed")
 	command.Flags().String("cpu-profile", "", "write CPU profile to file")
@@ -191,48 +197,24 @@ func newWallabyBenchCommand() *cobra.Command {
 }
 
 func initWallabyBenchConfig(cmd *cobra.Command) error {
-	viper.Reset()
-	viper.SetEnvPrefix("BENCH")
-	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-	return nil
-}
-
-func resolveStringFlag(cmd *cobra.Command, key string) string {
-	value, err := cmd.Flags().GetString(key)
-	if err != nil {
-		return ""
-	}
-	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
-		return viper.GetString(key)
-	}
-	return value
-}
-
-func resolveInt64Flag(cmd *cobra.Command, key string) int64 {
-	value, err := cmd.Flags().GetInt64(key)
-	if err != nil {
-		return 0
-	}
-	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
-		return viper.GetInt64(key)
-	}
-	return value
+	return cli.InitViperFromCommand(cmd, cli.ViperConfig{
+		EnvPrefix: "BENCH",
+	})
 }
 
 func runWallabyBench(cmd *cobra.Command) error {
 	opts := benchOptions{
-		profileName:  resolveStringFlag(cmd, "profile"),
-		targetsRaw:   resolveStringFlag(cmd, "targets"),
-		scenario:     resolveStringFlag(cmd, "scenario"),
-		pgDSN:        resolveStringFlag(cmd, "pg-dsn"),
-		ckDSN:        resolveStringFlag(cmd, "clickhouse-dsn"),
-		kafkaBrokers: resolveStringFlag(cmd, "kafka-brokers"),
-		outputDir:    resolveStringFlag(cmd, "output-dir"),
-		seed:         resolveInt64Flag(cmd, "seed"),
-		cpuProfile:   resolveStringFlag(cmd, "cpu-profile"),
-		memProfile:   resolveStringFlag(cmd, "mem-profile"),
-		traceProfile: resolveStringFlag(cmd, "trace"),
+		profileName:  cli.ResolveStringFlag(cmd, "profile"),
+		targetsRaw:   cli.ResolveStringFlag(cmd, "targets"),
+		scenario:     cli.ResolveStringFlag(cmd, "scenario"),
+		pgDSN:        cli.ResolveStringFlag(cmd, "pg-dsn"),
+		ckDSN:        cli.ResolveStringFlag(cmd, "clickhouse-dsn"),
+		kafkaBrokers: cli.ResolveStringFlag(cmd, "kafka-brokers"),
+		outputDir:    cli.ResolveStringFlag(cmd, "output-dir"),
+		seed:         cli.ResolveInt64Flag(cmd, "seed"),
+		cpuProfile:   cli.ResolveStringFlag(cmd, "cpu-profile"),
+		memProfile:   cli.ResolveStringFlag(cmd, "mem-profile"),
+		traceProfile: cli.ResolveStringFlag(cmd, "trace"),
 	}
 	return runBench(opts)
 }
@@ -864,6 +846,14 @@ func runTarget(ctx context.Context, target string, prof profile, scenario string
 }
 
 func buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix string) (connector.Spec, connector.Destination, error) {
+	pgSyncCommit := strings.TrimSpace(os.Getenv("BENCH_PG_SYNC_COMMIT"))
+	if pgSyncCommit == "" {
+		pgSyncCommit = "off"
+	}
+	chWriteMode := strings.TrimSpace(os.Getenv("BENCH_CLICKHOUSE_WRITE_MODE"))
+	if chWriteMode == "" {
+		chWriteMode = "append"
+	}
 	switch target {
 	case "kafka":
 		spec := connector.Spec{
@@ -886,19 +876,18 @@ func buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix string) (c
 				"schema":             "bench_sink",
 				"write_mode":         "target",
 				"meta_table_enabled": "false",
-				"synchronous_commit": getenv("BENCH_PG_SYNC_COMMIT", "off"),
+				"synchronous_commit": pgSyncCommit,
 			},
 		}
 		return spec, &pgdest.Destination{}, nil
 	case "clickhouse":
-		writeMode := getenv("BENCH_CLICKHOUSE_WRITE_MODE", "append")
 		spec := connector.Spec{
 			Name: "bench-clickhouse",
 			Type: connector.EndpointClickHouse,
 			Options: map[string]string{
 				"dsn":                ckDSN,
 				"database":           "bench",
-				"write_mode":         writeMode,
+				"write_mode":         chWriteMode,
 				"meta_table_enabled": "false",
 			},
 		}
@@ -1221,13 +1210,6 @@ func writeCSV(path string, results []benchResult) error {
 
 func formatFloat(value float64) string {
 	return fmt.Sprintf("%.4f", value)
-}
-
-func getenv(key, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
-	}
-	return fallback
 }
 
 func splitCSV(value string) []string {

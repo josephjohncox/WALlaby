@@ -7,12 +7,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
+	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/pkg/spec"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 type traceValidateOptions struct {
@@ -55,20 +54,18 @@ func newWallabyTraceValidateCommand() *cobra.Command {
 	return command
 }
 
-func initWallabyTraceValidateConfig(_ *cobra.Command) error {
-	viper.Reset()
-	viper.SetEnvPrefix("WALLABY_TRACE_VALIDATE")
-	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-	return nil
+func initWallabyTraceValidateConfig(cmd *cobra.Command) error {
+	return cli.InitViperFromCommand(cmd, cli.ViperConfig{
+		EnvPrefix: "WALLABY_TRACE_VALIDATE",
+	})
 }
 
 func runWallabyTraceValidate(cmd *cobra.Command) error {
 	opts := traceValidateOptions{
 		input:      resolveInput(cmd),
-		requireDDL: resolveBoolFlag(cmd, "require-ddl-approval"),
-		manifest:   resolveStringFlag(cmd, "manifest"),
-		noManifest: resolveBoolFlag(cmd, "no-manifest"),
+		requireDDL: cli.ResolveBoolFlag(cmd, "require-ddl-approval"),
+		manifest:   cli.ResolveStringFlag(cmd, "manifest"),
+		noManifest: cli.ResolveBoolFlag(cmd, "no-manifest"),
 	}
 
 	reader, closer, err := openReader(opts.input)
@@ -114,9 +111,9 @@ func runWallabyTraceValidate(cmd *cobra.Command) error {
 }
 
 func resolveInput(cmd *cobra.Command) string {
-	path := resolveStringFlag(cmd, "input")
+	path := cli.ResolveStringFlag(cmd, "input")
 	if path == "" {
-		path = resolveStringFlag(cmd, "path")
+		path = cli.ResolveStringFlag(cmd, "path")
 	}
 	return path
 }
@@ -198,26 +195,4 @@ func findModuleRoot() (string, error) {
 		dir = next
 	}
 	return "", fmt.Errorf("go.mod not found for manifest lookup")
-}
-
-func resolveStringFlag(cmd *cobra.Command, key string) string {
-	value, err := cmd.Flags().GetString(key)
-	if err != nil {
-		return ""
-	}
-	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
-		return viper.GetString(key)
-	}
-	return value
-}
-
-func resolveBoolFlag(cmd *cobra.Command, key string) bool {
-	value, err := cmd.Flags().GetBool(key)
-	if err != nil {
-		return false
-	}
-	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
-		return viper.GetBool(key)
-	}
-	return value
 }

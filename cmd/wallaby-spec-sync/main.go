@@ -8,9 +8,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/pkg/spec"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 type specFiles struct {
@@ -50,18 +50,16 @@ func newWallabySpecSyncCommand() *cobra.Command {
 	return command
 }
 
-func initWallabySpecSyncConfig(_ *cobra.Command) error {
-	viper.Reset()
-	viper.SetEnvPrefix("WALLABY_SPEC_SYNC")
-	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-	return nil
+func initWallabySpecSyncConfig(cmd *cobra.Command) error {
+	return cli.InitViperFromCommand(cmd, cli.ViperConfig{
+		EnvPrefix: "WALLABY_SPEC_SYNC",
+	})
 }
 
 func runWallabySpecSync(cmd *cobra.Command) error {
 	opts := specSyncOptions{
-		specDir:     resolveStringFlag(cmd, "spec-dir"),
-		manifestDir: resolveStringFlag(cmd, "manifest-dir"),
+		specDir:     cli.ResolveStringFlag(cmd, "spec-dir"),
+		manifestDir: cli.ResolveStringFlag(cmd, "manifest-dir"),
 	}
 
 	files := []specFiles{
@@ -85,17 +83,6 @@ func runWallabySpecSync(cmd *cobra.Command) error {
 	}
 
 	return nil
-}
-
-func resolveStringFlag(cmd *cobra.Command, key string) string {
-	value, err := cmd.Flags().GetString(key)
-	if err != nil {
-		return ""
-	}
-	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
-		return viper.GetString(key)
-	}
-	return value
 }
 
 func validateSpec(file specFiles, manifestDir string) error {

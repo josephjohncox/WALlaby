@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
+	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/internal/config"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/registry"
@@ -24,7 +25,6 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 func main() {
@@ -50,7 +50,7 @@ func newWallabyWorkerCommand() *cobra.Command {
 	command.PersistentFlags().String("config", "", "path to config file")
 	command.Flags().String("flow-id", "", "flow id to run")
 	command.Flags().Int("max-empty-reads", 0, "stop after N empty reads (0 = continuous)")
-	command.Flags().String("mode", "cdc", "source mode: cdc or backfill")
+	command.Flags().String("mode", connector.SourceModeCDC, "source mode: cdc or backfill")
 	command.Flags().String("tables", "", "comma-separated tables for backfill (schema.table)")
 	command.Flags().String("schemas", "", "comma-separated schemas for backfill")
 	command.Flags().String("start-lsn", "", "override start LSN for replay")
@@ -66,85 +66,27 @@ func newWallabyWorkerCommand() *cobra.Command {
 }
 
 func initWallabyWorkerConfig(cmd *cobra.Command) error {
-	configFlags := cmd.Flags()
-	if cmd.Root() != nil && cmd.Root().PersistentFlags().Lookup("config") != nil {
-		configFlags = cmd.Root().PersistentFlags()
-	}
-	configPath, err := configFlags.GetString("config")
-	if err != nil {
-		return fmt.Errorf("read config flag: %w", err)
-	}
-
-	viper.Reset()
-	viper.SetEnvPrefix("WALLABY_WORKER")
-	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-
-	if configPath != "" {
-		viper.SetConfigFile(configPath)
-	} else if envPath := os.Getenv("WALLABY_WORKER_CONFIG"); envPath != "" {
-		viper.SetConfigFile(envPath)
-	} else {
-		viper.SetConfigName("wallaby-worker")
-		viper.SetConfigType("yaml")
-		viper.AddConfigPath(".")
-	}
-
-	if err := viper.ReadInConfig(); err != nil {
-		var missing viper.ConfigFileNotFoundError
-		if !errors.As(err, &missing) {
-			return fmt.Errorf("read config: %w", err)
-		}
-	}
-
-	return nil
-}
-
-func resolveStringFlag(cmd *cobra.Command, key string) string {
-	value, err := cmd.Flags().GetString(key)
-	if err != nil {
-		return ""
-	}
-	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
-		return viper.GetString(key)
-	}
-	return value
-}
-
-func resolveIntFlag(cmd *cobra.Command, key string) int {
-	value, err := cmd.Flags().GetInt(key)
-	if err != nil {
-		return 0
-	}
-	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
-		return viper.GetInt(key)
-	}
-	return value
-}
-
-func resolveBoolFlag(cmd *cobra.Command, key string) bool {
-	value, err := cmd.Flags().GetBool(key)
-	if err != nil {
-		return false
-	}
-	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
-		return viper.GetBool(key)
-	}
-	return value
+	return cli.InitViperFromCommand(cmd, cli.ViperConfig{
+		EnvPrefix:        "WALLABY_WORKER",
+		ConfigEnvVar:     "WALLABY_WORKER_CONFIG",
+		ConfigName:       "wallaby-worker",
+		ConfigType:       "yaml",
+		ConfigSearchPath: nil,
+	})
 }
 
 func runWallabyWorker(cmd *cobra.Command) error {
-	configPath := resolveStringFlag(cmd, "config")
-	flowID := resolveStringFlag(cmd, "flow-id")
-	maxEmptyReads := resolveIntFlag(cmd, "max-empty-reads")
-	mode := resolveStringFlag(cmd, "mode")
-	tables := resolveStringFlag(cmd, "tables")
-	schemas := resolveStringFlag(cmd, "schemas")
-	startLSN := resolveStringFlag(cmd, "start-lsn")
-	snapshotWorkers := resolveIntFlag(cmd, "snapshot-workers")
-	partitionColumn := resolveStringFlag(cmd, "partition-column")
-	partitionCount := resolveIntFlag(cmd, "partition-count")
-	resolveStaging := resolveBoolFlag(cmd, "resolve-staging")
+	configPath := cli.ResolveStringFlag(cmd, "config")
+	flowID := cli.ResolveStringFlag(cmd, "flow-id")
+	maxEmptyReads := cli.ResolveIntFlag(cmd, "max-empty-reads")
+	mode := cli.ResolveStringFlag(cmd, "mode")
+	tables := cli.ResolveStringFlag(cmd, "tables")
+	schemas := cli.ResolveStringFlag(cmd, "schemas")
+	startLSN := cli.ResolveStringFlag(cmd, "start-lsn")
+	snapshotWorkers := cli.ResolveIntFlag(cmd, "snapshot-workers")
+	partitionColumn := cli.ResolveStringFlag(cmd, "partition-column")
+	partitionCount := cli.ResolveIntFlag(cmd, "partition-count")
+	resolveStaging := cli.ResolveBoolFlag(cmd, "resolve-staging")
 
 	if flowID == "" {
 		return errors.New("flow-id is required")
@@ -215,44 +157,56 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		return fmt.Errorf("load flow: %w", err)
 	}
 
-	if flowDef.WireFormat == "" && cfg.Wire.DefaultFormat != "" {
-		flowDef.WireFormat = connector.WireFormat(cfg.Wire.DefaultFormat)
+	flowSource := flowDef.Source
+	if flowSource.Options != nil {
+		flowSource.Options = copyStringMap(flowDef.Source.Options)
 	}
 
 	if maxEmptyReads > 0 {
-		if flowDef.Source.Options == nil {
-			flowDef.Source.Options = map[string]string{}
+		if flowSource.Options == nil {
+			flowSource.Options = map[string]string{}
 		}
-		if flowDef.Source.Options["emit_empty"] == "" {
-			flowDef.Source.Options["emit_empty"] = "true"
+		if flowSource.Options["emit_empty"] == "" {
+			flowSource.Options["emit_empty"] = "true"
 		}
 	}
-	if mode != "" && mode != "cdc" {
-		if flowDef.Source.Options == nil {
-			flowDef.Source.Options = map[string]string{}
+	mode, err = connector.NormalizeSourceMode(mode)
+	if err != nil {
+		return err
+	}
+
+	if mode != connector.SourceModeCDC {
+		if flowSource.Options == nil {
+			flowSource.Options = map[string]string{}
 		}
-		flowDef.Source.Options["mode"] = mode
+		flowSource.Options["mode"] = mode
 		if tables != "" {
-			flowDef.Source.Options["tables"] = tables
+			flowSource.Options["tables"] = tables
 		}
 		if schemas != "" {
-			flowDef.Source.Options["schemas"] = schemas
+			flowSource.Options["schemas"] = schemas
 		}
 		if snapshotWorkers > 0 {
-			flowDef.Source.Options["snapshot_workers"] = fmt.Sprintf("%d", snapshotWorkers)
+			flowSource.Options["snapshot_workers"] = fmt.Sprintf("%d", snapshotWorkers)
 		}
 		if partitionColumn != "" {
-			flowDef.Source.Options["partition_column"] = partitionColumn
+			flowSource.Options["partition_column"] = partitionColumn
 		}
 		if partitionCount > 0 {
-			flowDef.Source.Options["partition_count"] = fmt.Sprintf("%d", partitionCount)
+			flowSource.Options["partition_count"] = fmt.Sprintf("%d", partitionCount)
 		}
 	}
 	if startLSN != "" {
-		if flowDef.Source.Options == nil {
-			flowDef.Source.Options = map[string]string{}
+		if flowSource.Options == nil {
+			flowSource.Options = map[string]string{}
 		}
-		flowDef.Source.Options["start_lsn"] = startLSN
+		flowSource.Options["start_lsn"] = startLSN
+	}
+
+	runFlow := flowDef
+	runFlow.Source = flowSource
+	if flowDef.WireFormat == "" && cfg.Wire.DefaultFormat != "" {
+		runFlow.WireFormat = connector.WireFormat(cfg.Wire.DefaultFormat)
 	}
 
 	defaults := flow.DDLPolicyDefaults{
@@ -271,6 +225,7 @@ func runWallabyWorker(cmd *cobra.Command) error {
 				AutoApply:    policy.AutoApply,
 			}
 		},
+		Meters: telemetryProvider.Meters(),
 		SchemaHook: &registry.Hook{
 			Store:        registryStore,
 			AutoApprove:  defaults.AutoApprove,
@@ -279,11 +234,11 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		},
 	}
 
-	source, err := factory.SourceForFlow(flowDef)
+	source, err := factory.SourceForFlow(runFlow)
 	if err != nil {
 		return fmt.Errorf("build source: %w", err)
 	}
-	destinations, err := factory.DestinationsForFlow(flowDef)
+	destinations, err := factory.DestinationsForFlow(runFlow)
 	if err != nil {
 		return fmt.Errorf("build destinations: %w", err)
 	}
@@ -316,8 +271,20 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		flowRunner.WireFormat = connector.WireFormat(cfg.Wire.DefaultFormat)
 	}
 
-	if err := flowRunner.Run(ctx, flowDef, source, destinations); err != nil {
+	if err := flowRunner.Run(ctx, runFlow, source, destinations); err != nil {
 		return fmt.Errorf("run flow: %w", err)
 	}
 	return nil
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }

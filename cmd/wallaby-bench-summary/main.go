@@ -13,8 +13,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 type benchResult struct {
@@ -77,20 +77,18 @@ func newWallabyBenchSummaryCommand() *cobra.Command {
 	return command
 }
 
-func initWallabyBenchSummaryConfig(_ *cobra.Command) error {
-	viper.Reset()
-	viper.SetEnvPrefix("WALLABY_BENCH_SUMMARY")
-	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-	return nil
+func initWallabyBenchSummaryConfig(cmd *cobra.Command) error {
+	return cli.InitViperFromCommand(cmd, cli.ViperConfig{
+		EnvPrefix: "WALLABY_BENCH_SUMMARY",
+	})
 }
 
 func runWallabyBenchSummary(cmd *cobra.Command) error {
 	opts := benchSummaryOptions{
-		dir:    resolveStringFlag(cmd, "dir"),
-		format: resolveStringFlag(cmd, "format"),
-		latest: resolveBoolFlag(cmd, "latest"),
-		output: resolveStringFlag(cmd, "output"),
+		dir:    cli.ResolveStringFlag(cmd, "dir"),
+		format: cli.ResolveStringFlag(cmd, "format"),
+		latest: cli.ResolveBoolFlag(cmd, "latest"),
+		output: cli.ResolveStringFlag(cmd, "output"),
 	}
 	return runBenchSummary(opts)
 }
@@ -142,28 +140,6 @@ func runBenchSummary(opts benchSummaryOptions) error {
 		return fmt.Errorf("unsupported format %q", opts.format)
 	}
 	return nil
-}
-
-func resolveStringFlag(cmd *cobra.Command, key string) string {
-	value, err := cmd.Flags().GetString(key)
-	if err != nil {
-		return ""
-	}
-	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
-		return viper.GetString(key)
-	}
-	return value
-}
-
-func resolveBoolFlag(cmd *cobra.Command, key string) bool {
-	value, err := cmd.Flags().GetBool(key)
-	if err != nil {
-		return false
-	}
-	if f := cmd.Flags().Lookup(key); f == nil || (!f.Changed && viper.IsSet(key)) {
-		return viper.GetBool(key)
-	}
-	return value
 }
 
 func loadResults(dir string) ([]benchResult, error) {

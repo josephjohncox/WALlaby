@@ -34,6 +34,7 @@ type PostgresStream struct {
 	typeMu         sync.Mutex
 	typeNames      map[uint32]string
 	connConfigFunc func(context.Context, *pgconn.Config) error
+	protocolError  func(context.Context, string)
 
 	mu        sync.Mutex
 	conn      *pgconn.PgConn
@@ -117,6 +118,12 @@ func WithEmitPlanDDL(enabled bool) PostgresStreamOption {
 func WithConnConfigFunc(fn func(context.Context, *pgconn.Config) error) PostgresStreamOption {
 	return func(s *PostgresStream) {
 		s.connConfigFunc = fn
+	}
+}
+
+func WithProtocolErrorReporter(fn func(context.Context, string)) PostgresStreamOption {
+	return func(s *PostgresStream) {
+		s.protocolError = fn
 	}
 }
 
@@ -349,10 +356,17 @@ func (p *PostgresStream) consume(ctx context.Context, startLSN pglogrepl.LSN) {
 			continue
 		}
 
+		if len(msg.Data) == 0 {
+			p.recordProtocolError(ctx, "empty_message_payload")
+			p.setErr(errors.New("replication message payload is empty"))
+			return
+		}
+
 		switch msg.Data[0] {
 		case pglogrepl.PrimaryKeepaliveMessageByteID:
 			pkm, err := pglogrepl.ParsePrimaryKeepaliveMessage(msg.Data[1:])
 			if err != nil {
+				p.recordProtocolError(ctx, "parse_keepalive")
 				p.setErr(fmt.Errorf("parse keepalive: %w", err))
 				return
 			}
@@ -366,6 +380,7 @@ func (p *PostgresStream) consume(ctx context.Context, startLSN pglogrepl.LSN) {
 		case pglogrepl.XLogDataByteID:
 			xld, err := pglogrepl.ParseXLogData(msg.Data[1:])
 			if err != nil {
+				p.recordProtocolError(ctx, "parse_xlogdata")
 				p.setErr(fmt.Errorf("parse xlogdata: %w", err))
 				return
 			}
@@ -376,6 +391,10 @@ func (p *PostgresStream) consume(ctx context.Context, startLSN pglogrepl.LSN) {
 			}
 
 			p.setReceivedLSN(xld.WALStart + pglogrepl.LSN(len(xld.WALData)))
+		default:
+			p.recordProtocolError(ctx, "unsupported_message_type")
+			p.setErr(fmt.Errorf("unsupported replication message type: %d", msg.Data[0]))
+			return
 		}
 	}
 }
@@ -383,6 +402,7 @@ func (p *PostgresStream) consume(ctx context.Context, startLSN pglogrepl.LSN) {
 func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) error {
 	logicalMsg, err := pglogrepl.Parse(xld.WALData)
 	if err != nil {
+		p.recordProtocolError(ctx, "logical_message_parse")
 		return fmt.Errorf("parse logical message: %w", err)
 	}
 
@@ -414,18 +434,21 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 	case *pglogrepl.InsertMessage:
 		record, schema, err := p.decodeInsert(msg, xld)
 		if err != nil {
+			p.recordProtocolError(ctx, "decode_insert")
 			return err
 		}
 		return p.emitChange(ctx, xld, schema, record)
 	case *pglogrepl.UpdateMessage:
 		record, schema, err := p.decodeUpdate(msg, xld)
 		if err != nil {
+			p.recordProtocolError(ctx, "decode_update")
 			return err
 		}
 		return p.emitChange(ctx, xld, schema, record)
 	case *pglogrepl.DeleteMessage:
 		record, schema, err := p.decodeDelete(msg, xld)
 		if err != nil {
+			p.recordProtocolError(ctx, "decode_delete")
 			return err
 		}
 		return p.emitChange(ctx, xld, schema, record)
@@ -442,6 +465,7 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 				Timestamp:     xld.ServerTime,
 			}
 			if err := p.emitChange(ctx, xld, schema, &record); err != nil {
+				p.recordProtocolError(ctx, "truncate_change")
 				return err
 			}
 		}
@@ -459,6 +483,13 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 	default:
 		return nil
 	}
+}
+
+func (p *PostgresStream) recordProtocolError(ctx context.Context, errorType string) {
+	if p.protocolError == nil || errorType == "" {
+		return
+	}
+	p.protocolError(ctx, errorType)
 }
 
 func (p *PostgresStream) emitChange(ctx context.Context, xld pglogrepl.XLogData, schema connector.Schema, record *connector.Record) error {

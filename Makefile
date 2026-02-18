@@ -28,6 +28,7 @@ TLA_TOOLS_DIR ?= $(abspath $(CACHE_DIR)/tla)
 TLA_TOOLS_JAR ?= $(TLA_TOOLS_DIR)/tla2tools.jar
 TLC_JAVA_OPTS ?= -XX:+UseParallelGC
 TLC_ARGS ?=
+SKIP_TLA_CHECKS ?= false
 TLC_COVERAGE_DIR ?= specs/coverage
 TLA_COVERAGE_MIN ?= 1
 TLA_COVERAGE_IGNORE ?=
@@ -42,10 +43,36 @@ SPEC_LINT_VERBOSE_MODE ?= checks
 
 export GO_TEST_TIMEOUT
 
-.PHONY: fmt lint staticcheck vulncheck lint-full test test-rapid test-integration test-integration-ci test-e2e test-k8s-kind proto tidy release release-snapshot proto-tools tla-tools bench bench-ddl bench-up bench-down benchmark benchmark-profile benchstat check check-coverage tla tla-single tla-flow tla-state tla-fanout tla-liveness tla-witness tla-coverage tla-coverage-check trace-suite trace-suite-large spec-manifest spec-verify spec-lint spec-sync
+GO_TEST_VERBOSE ?= 1
+GO_TEST_VERBOSE_FLAG := $(if $(filter 1,$(GO_TEST_VERBOSE)),-v,)
+
+.PHONY: fmt lint staticcheck vulncheck lint-full test test-rapid test-integration test-integration-ci test-integration-kind test-e2e test-k8s-kind proto tidy release release-snapshot proto-tools tla-tools bench bench-ddl bench-up bench-down benchmark benchmark-profile benchstat check check-coverage check-tla tla tla-single tla-flow tla-state tla-fanout tla-liveness tla-witness tla-coverage tla-coverage-check trace-suite trace-suite-large spec-manifest spec-verify spec-lint spec-sync
 .PHONY: proto-lint proto-breaking
 
+# Integration test harness knobs.
+# Set defaults in the caller env or override in CI to tune test behavior.
 .PHONY: check-lite check-integration-core check-integration-full
+IT_KIND ?= $(if $(WALLABY_TEST_K8S_KIND),$(WALLABY_TEST_K8S_KIND),1)
+IT_KEEP ?= 0
+IT_KIND_CLUSTER ?= $(if $(KIND_CLUSTER),$(KIND_CLUSTER),wallaby-test)
+IT_KIND_NODE_IMAGE ?= $(if $(KIND_NODE_IMAGE),$(KIND_NODE_IMAGE),kindest/node:v1.35.0)
+IT_SERVICE_READY_TIMEOUT_SECONDS ?= 240
+IT_RUN_FILTER ?=
+IT_COUNT ?=
+INTEGRATION_PACKAGE ?= ./tests/...
+INTEGRATION_FLAGS = \
+	-it-kind="$(IT_KIND)" \
+	-it-keep="$(IT_KEEP)" \
+	-it-k8s-kind-cluster="$(IT_KIND_CLUSTER)" \
+	-it-k8s-kind-node-image="$(IT_KIND_NODE_IMAGE)"
+INTEGRATION_RUN_FILTER = $(if $(strip $(IT_RUN_FILTER)),-run $(IT_RUN_FILTER),)
+INTEGRATION_COUNT = $(if $(strip $(IT_COUNT)),-count=$(IT_COUNT),)
+INTEGRATION_TEST_CMD = \
+	$(GOENV) \
+	IT_VERBOSE="$(GO_TEST_VERBOSE)" \
+	WALLABY_IT_VERBOSE="$(GO_TEST_VERBOSE)" \
+	WALLABY_IT_SERVICE_READY_TIMEOUT_SECONDS="$(IT_SERVICE_READY_TIMEOUT_SECONDS)" \
+	$(GO) test $(GO_TEST_VERBOSE_FLAG) $(INTEGRATION_PACKAGE) $(INTEGRATION_FLAGS) $(INTEGRATION_RUN_FILTER) $(INTEGRATION_COUNT)
 
 fmt:
 	$(GO) fmt ./...
@@ -61,8 +88,15 @@ vulncheck:
 
 lint-full: lint staticcheck vulncheck proto-lint proto-breaking
 
-check: spec-verify spec-sync spec-lint tla
+check: spec-verify spec-sync spec-lint check-tla
 	$(GOENV) $(GO) test ./...
+
+check-tla:
+	@if [ "$(SKIP_TLA_CHECKS)" = "1" ] || [ "$(SKIP_TLA_CHECKS)" = "true" ] || [ "$(SKIP_TLA_CHECKS)" = "yes" ]; then \
+		echo "Skipping TLC checks (SKIP_TLA_CHECKS=$(SKIP_TLA_CHECKS)); set to false/0 to run them."; \
+	else \
+		$(MAKE) tla; \
+	fi
 
 check-lite: spec-sync spec-lint
 	$(GOENV) $(GO) test ./cmd/wallaby-admin ./pkg/... ./internal/... ./connectors/... ./tests/...
@@ -70,7 +104,7 @@ check-lite: spec-sync spec-lint
 check-coverage: spec-sync tla-coverage tla-coverage-check trace-suite test-e2e
 
 test:
-	$(GOENV) $(GO) test ./...
+	$(GOENV) $(GO) test $(GO_TEST_VERBOSE_FLAG) ./...
 
 test-rapid:
 	@rapid_pkgs="$(RAPID_PACKAGES)"; \
@@ -82,24 +116,25 @@ test-rapid:
 	fi
 
 test-integration:
-	$(GOENV) $(GO) test ./tests/...
+	$(INTEGRATION_TEST_CMD)
 
-test-integration-ci:
-	./tests/integration.sh
+test-integration-ci: test-integration
 
-test-e2e:
-	@if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then \
-		./tests/e2e.sh; \
-	else \
-		echo "Skipping test-e2e: docker is not available"; \
-	fi
+test-integration-kind: IT_RUN_FILTER="^TestKubernetesDispatcher"
+test-integration-kind: IT_COUNT=1
+test-integration-kind: test-integration
+
+test-e2e: IT_RUN_FILTER="^TestPostgresToPostgresE2E"
+test-e2e: IT_COUNT=1
+test-e2e: test-integration
+
+test-k8s-kind: IT_RUN_FILTER="^TestKubernetesDispatcher"
+test-k8s-kind: IT_COUNT=1
+test-k8s-kind: test-integration
 
 check-integration-core: test-integration
 
 check-integration-full: test-integration test-e2e
-
-test-k8s-kind:
-	./tests/kind.sh
 
 proto: proto-tools
 	PATH="$(GOBIN):$$PATH" $(BUF) generate
@@ -135,7 +170,7 @@ proto-tools:
 	GOBIN="$(GOBIN)" $(GO) install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
 
 spec-manifest:
-	$(GOENV) $(GO) run ./cmd/wallaby-spec-manifest -out specs/coverage.json -dir specs
+	$(GOENV) $(GO) run ./cmd/wallaby-spec-manifest --out specs/coverage.json --dir specs
 
 spec-verify: spec-manifest
 	@echo "Verifying spec coverage manifests match generator output"
@@ -152,7 +187,7 @@ spec-lint:
 	$(GOENV) $(GO) vet -vettool="$(GOBIN)/wallaby-speccheck" -specaction.verbose-mode="$(SPEC_LINT_VERBOSE_MODE)" $(if $(SPEC_LINT_VERBOSE),-specaction.verbose="$(SPEC_LINT_VERBOSE)",) ./...
 
 spec-sync:
-	$(GOENV) $(GO) run ./cmd/wallaby-spec-sync -spec-dir specs -manifest-dir specs
+	$(GOENV) $(GO) run ./cmd/wallaby-spec-sync --spec-dir specs --manifest-dir specs
 
 tla-tools:
 	@mkdir -p "$(TLA_TOOLS_DIR)" "$(GOBIN)"

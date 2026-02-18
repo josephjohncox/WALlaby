@@ -2,10 +2,11 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"math"
 	"os"
 	"path/filepath"
@@ -349,21 +350,27 @@ func buildJobName(prefix, flowID string) string {
 	if base == "" {
 		base = "flow"
 	}
-	if len(base) <= 63 {
-		return base
-	}
-	hash := fnv.New32a()
-	_, _ = hash.Write([]byte(base))
-	suffix := fmt.Sprintf("%08x", hash.Sum32())
+	suffix := jobNameSuffix(prefix, flowID)
 	maxBase := 63 - len(suffix) - 1
 	if maxBase < 1 {
 		maxBase = 1
 	}
-	if len(base) > maxBase {
+	if maxBase < len(base) {
 		base = strings.TrimRight(base[:maxBase], "-")
+	}
+	if base == "" {
+		base = "flow"
 	}
 	return base + "-" + suffix
 }
+
+func jobNameSuffix(prefix, flowID string) string {
+	seed := strings.TrimSpace(prefix) + "|" + strings.TrimSpace(flowID)
+	hash := sha256.Sum256([]byte(seed))
+	// 16 hex characters (64 bits) keeps collisions extremely unlikely and stays readable.
+	return hex.EncodeToString(hash[:8])
+}
+
 func (k *KubernetesDispatcher) deleteJob(ctx context.Context, name string) error {
 	policy := metav1.DeletePropagationBackground
 	if err := k.client.BatchV1().Jobs(k.namespace).Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &policy}); err != nil {
@@ -441,18 +448,18 @@ func mergeLabels(base, override map[string]string) map[string]string {
 func ensureFlowArgs(args []string, flowID string, maxEmpty int) []string {
 	out := append([]string{}, args...)
 	if !hasFlag(out, "flow-id") {
-		out = append(out, fmt.Sprintf("-flow-id=%s", flowID))
+		out = append(out, fmt.Sprintf("--flow-id=%s", flowID))
 	}
 	if maxEmpty > 0 && !hasFlag(out, "max-empty-reads") {
-		out = append(out, fmt.Sprintf("-max-empty-reads=%d", maxEmpty))
+		out = append(out, fmt.Sprintf("--max-empty-reads=%d", maxEmpty))
 	}
 	return out
 }
 
 func hasFlag(args []string, name string) bool {
-	needle := "-" + name
+	needle := "--" + name
 	for _, arg := range args {
-		if arg == needle || strings.HasPrefix(arg, needle+"=") || strings.HasPrefix(arg, "--"+name+"=") || arg == "--"+name {
+		if arg == needle || strings.HasPrefix(arg, needle+"=") {
 			return true
 		}
 	}
