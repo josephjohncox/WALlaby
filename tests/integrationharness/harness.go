@@ -1033,19 +1033,34 @@ func (h *integrationHarness) getService(name string) *managedService {
 func (h *integrationHarness) startManagedService(namespace, name, localPort, servicePort, manifest, label string) (string, error) {
 	h.logf("starting managed service %s", name)
 	exists := h.hasExistingManagedService(namespace, name)
+	applyManifest := func() error {
+		return h.applyManifest(namespace, manifest)
+	}
 
 	if _, ok := h.services[name]; !ok {
 		h.getService(name)
 	}
-	if err := h.applyManifest(namespace, manifest); err != nil {
+	if err := applyManifest(); err != nil {
 		return "", fmt.Errorf("start %s: %w", label, err)
 	}
 	svc := h.getService(name)
 	svc.created = !exists
 	svc.localPort = ""
 
-	if err := h.waitForServiceReady(namespace, name); err != nil {
-		return "", fmt.Errorf("start %s: %w", label, err)
+	maxReadinessAttempts := 2
+	for attempt := 0; attempt < maxReadinessAttempts; attempt++ {
+		if err := h.waitForServiceReady(namespace, name); err == nil {
+			break
+		} else if apierrors.IsNotFound(err) && attempt+1 < maxReadinessAttempts {
+			h.logf("service %s readiness returned not-found; reapplying manifest (attempt %d/%d)", name, attempt+1, maxReadinessAttempts)
+			if err := applyManifest(); err != nil {
+				return "", fmt.Errorf("start %s: %w", label, err)
+			}
+			time.Sleep(500 * time.Millisecond)
+			continue
+		} else {
+			return "", fmt.Errorf("start %s: %w", label, err)
+		}
 	}
 	resolvedLocalPort, portForwardStop, err := h.startLocalPortForward(namespace, name, localPort, servicePort)
 	if err != nil {
