@@ -2272,7 +2272,7 @@ func testPostgresAppDSN(t *testing.T) string {
 	t.Helper()
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
 	if baseDSN == "" {
-		t.Fatalf("TEST_PG_DSN not set")
+		t.Skip("TEST_PG_DSN not set")
 	}
 	dsn, err := dsnWithDatabase(baseDSN, "app")
 	if err != nil {
