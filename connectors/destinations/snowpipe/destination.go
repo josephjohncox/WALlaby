@@ -21,6 +21,14 @@ import (
 	_ "github.com/snowflakedb/gosnowflake"
 )
 
+func safeMetaCapacity(base, extra int) int {
+	maxInt := int(^uint(0) >> 1)
+	if extra > maxInt-base {
+		return maxInt
+	}
+	return base + extra
+}
+
 const (
 	optDSN              = "dsn"
 	optStage            = "stage"
@@ -807,9 +815,9 @@ func (d *Destination) upsertMetadata(ctx context.Context, exec execer, schema co
 		keyJSON = string(raw)
 	}
 
-	columns := make([]string, 0, 11+len(pkCols))
+	columns := make([]string, 0, safeMetaCapacity(11, len(pkCols)))
 	columns = append(columns, "FLOW_ID", "SOURCE_SCHEMA", "SOURCE_TABLE", "SYNCED_AT", "IS_DELETED", "LSN", "OPERATION", "KEY_JSON")
-	values := make([]any, 0, 11+len(pkVals))
+	values := make([]any, 0, safeMetaCapacity(11, len(pkVals)))
 	values = append(values, d.flowID, schema.Namespace, record.Table, syncedAt, record.Operation == connector.OpDelete, checkpoint.LSN, string(record.Operation), keyJSON)
 	regSubject := ""
 	regID := ""
