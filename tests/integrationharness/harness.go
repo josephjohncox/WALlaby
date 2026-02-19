@@ -1223,6 +1223,13 @@ func (h *integrationHarness) waitForServiceReady(namespace, name string) error {
 			return nil
 		}
 
+		// If the deployment is missing and no pods exist yet, fail fast so the caller
+		// can reapply the manifest rather than waiting through the full readiness
+		// timeout.
+		if depErr != nil && apierrors.IsNotFound(depErr) && podTotal == 0 {
+			return depErr
+		}
+
 		// Fallback: tolerate transient missing deployment objects as long as a ready pod
 		// exists for the service label selector.
 		if podErr == nil && podReadyCount > 0 && depErr != nil {

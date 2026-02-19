@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2230,7 +2231,20 @@ func runWallabyAdmin(ctx context.Context, endpoint string, args ...string) ([]by
 	cmd := exec.CommandContext(ctx, "go", cmdArgs...)
 	cmd.Dir = root
 	cmd.Env = os.Environ()
-	output, err := cmd.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	output := stdout.Bytes()
+	debugLog := strings.TrimSpace(os.Getenv("WALLABY_TEST_CLI_LOG")) == "1"
+	if debugLog {
+		if len(stderr.Bytes()) > 0 {
+			fmt.Fprintf(os.Stderr, "\n[wallaby-admin %s stderr]\n%s\n", strings.Join(args, " "), stderr.String())
+		}
+	}
+	if err != nil && len(stderr.Bytes()) > 0 {
+		return append(output, stderr.Bytes()...), err
+	}
 	if strings.TrimSpace(os.Getenv("WALLABY_TEST_CLI_LOG")) == "1" {
 		fmt.Fprintf(os.Stderr, "\n[wallaby-admin %s]\n%s\n", strings.Join(args, " "), string(output))
 	}
