@@ -225,6 +225,7 @@ func TestPostgresDestinationPlanDDL(t *testing.T) {
 		Records: []connector.Record{{
 			Table:     tableName,
 			Operation: connector.OpInsert,
+			Key:       recordKey(t, map[string]any{"id": 1}),
 			After: map[string]any{
 				"id": 1,
 			},
@@ -267,6 +268,7 @@ func TestPostgresDestinationPlanDDL(t *testing.T) {
 		Records: []connector.Record{{
 			Table:     tableName,
 			Operation: connector.OpInsert,
+			Key:       recordKey(t, map[string]any{"id": 2}),
 			After: map[string]any{
 				"id":           2,
 				"display_name": "second",
@@ -325,6 +327,7 @@ func TestPostgresDestinationPlanDDL(t *testing.T) {
 		Records: []connector.Record{{
 			Table:     tableName,
 			Operation: connector.OpInsert,
+			Key:       recordKey(t, map[string]any{"id": 3}),
 			After: map[string]any{
 				"id":    3,
 				"title": "third",

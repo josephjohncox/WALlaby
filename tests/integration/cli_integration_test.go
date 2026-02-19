@@ -439,7 +439,7 @@ func TestCLIIntegrationFlowPlan(t *testing.T) {
 			Name: "plan-src",
 			Type: "postgres",
 			Options: map[string]string{
-				"dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+				"dsn": testPostgresAppDSN(t),
 			},
 		},
 		Destinations: []endpointConfigPayload{
@@ -447,7 +447,7 @@ func TestCLIIntegrationFlowPlan(t *testing.T) {
 				Name: "plan-dest",
 				Type: "pgstream",
 				Options: map[string]string{
-					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"dsn":    testPostgresAppDSN(t),
 					"stream": "orders",
 				},
 			},
@@ -495,7 +495,7 @@ func TestCLIIntegrationCheckCommand(t *testing.T) {
 			Name: "check-src",
 			Type: "postgres",
 			Options: map[string]string{
-				"dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+				"dsn": testPostgresAppDSN(t),
 			},
 		},
 		Destinations: []endpointConfigPayload{
@@ -503,7 +503,7 @@ func TestCLIIntegrationCheckCommand(t *testing.T) {
 				Name: "check-dest",
 				Type: "pgstream",
 				Options: map[string]string{
-					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"dsn":    testPostgresAppDSN(t),
 					"stream": "orders",
 				},
 			},
@@ -699,7 +699,7 @@ func TestCLIIntegrationFlowCreateRunOnce(t *testing.T) {
 			Name: "src",
 			Type: "postgres",
 			Options: map[string]string{
-				"dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+				"dsn": testPostgresAppDSN(t),
 			},
 		},
 		Destinations: []endpointConfigPayload{
@@ -707,7 +707,7 @@ func TestCLIIntegrationFlowCreateRunOnce(t *testing.T) {
 				Name: "dest",
 				Type: "pgstream",
 				Options: map[string]string{
-					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"dsn":    testPostgresAppDSN(t),
 					"stream": "orders",
 				},
 			},
@@ -799,7 +799,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 			Name: "src",
 			Type: "postgres",
 			Options: map[string]string{
-				"dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+				"dsn": testPostgresAppDSN(t),
 			},
 		},
 		Destinations: []endpointConfigPayload{
@@ -807,7 +807,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 				Name: "dest",
 				Type: "pgstream",
 				Options: map[string]string{
-					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"dsn":    testPostgresAppDSN(t),
 					"stream": "orders",
 				},
 			},
@@ -1040,7 +1040,7 @@ func TestCLIIntegrationFlowDryRunCheck(t *testing.T) {
 			Name: "src",
 			Type: "postgres",
 			Options: map[string]string{
-				"dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+				"dsn": testPostgresAppDSN(t),
 			},
 		},
 		Destinations: []endpointConfigPayload{
@@ -1048,7 +1048,7 @@ func TestCLIIntegrationFlowDryRunCheck(t *testing.T) {
 				Name: "dest",
 				Type: "pgstream",
 				Options: map[string]string{
-					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"dsn":    testPostgresAppDSN(t),
 					"stream": "orders",
 				},
 			},
@@ -1155,7 +1155,7 @@ func TestCLIIntegrationFlowUpdate(t *testing.T) {
 			Name: "src",
 			Type: "postgres",
 			Options: map[string]string{
-				"dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+				"dsn": testPostgresAppDSN(t),
 			},
 		},
 		Destinations: []endpointConfigPayload{
@@ -1163,7 +1163,7 @@ func TestCLIIntegrationFlowUpdate(t *testing.T) {
 				Name: "dest",
 				Type: "pgstream",
 				Options: map[string]string{
-					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"dsn":    testPostgresAppDSN(t),
 					"stream": "orders",
 				},
 			},
@@ -1193,7 +1193,7 @@ func TestCLIIntegrationFlowUpdate(t *testing.T) {
 			Name: "src",
 			Type: "postgres",
 			Options: map[string]string{
-				"dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+				"dsn": testPostgresAppDSN(t),
 			},
 		},
 		Destinations: []endpointConfigPayload{
@@ -1201,7 +1201,7 @@ func TestCLIIntegrationFlowUpdate(t *testing.T) {
 				Name: "dest",
 				Type: "pgstream",
 				Options: map[string]string{
-					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"dsn":    testPostgresAppDSN(t),
 					"stream": "orders_v2",
 				},
 			},
@@ -1287,7 +1287,7 @@ func TestCLIIntegrationFlowReconfigure(t *testing.T) {
 				Name: "dest",
 				Type: "pgstream",
 				Options: map[string]string{
-					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"dsn":    testPostgresAppDSN(t),
 					"stream": "orders",
 				},
 			},
@@ -1325,7 +1325,7 @@ func TestCLIIntegrationFlowReconfigure(t *testing.T) {
 				Name: "dest",
 				Type: "pgstream",
 				Options: map[string]string{
-					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"dsn":    testPostgresAppDSN(t),
 					"stream": "orders_v2",
 				},
 			},
@@ -1402,7 +1402,7 @@ func TestCLIIntegrationFlowCleanup(t *testing.T) {
 				Name: "dest",
 				Type: "pgstream",
 				Options: map[string]string{
-					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"dsn":    testPostgresAppDSN(t),
 					"stream": "orders",
 				},
 			},
@@ -1587,7 +1587,7 @@ func TestCLIIntegrationSlotCommands(t *testing.T) {
 				Name: "dest",
 				Type: "pgstream",
 				Options: map[string]string{
-					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"dsn":    testPostgresAppDSN(t),
 					"stream": "orders",
 				},
 			},
@@ -1731,7 +1731,7 @@ func TestCLIIntegrationFlowStartStopResume(t *testing.T) {
 			Name: "src",
 			Type: "postgres",
 			Options: map[string]string{
-				"dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+				"dsn": testPostgresAppDSN(t),
 			},
 		},
 		Destinations: []endpointConfigPayload{
@@ -1739,7 +1739,7 @@ func TestCLIIntegrationFlowStartStopResume(t *testing.T) {
 				Name: "dest",
 				Type: "pgstream",
 				Options: map[string]string{
-					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"dsn":    testPostgresAppDSN(t),
 					"stream": "orders",
 				},
 			},
@@ -1846,7 +1846,7 @@ func TestCLIIntegrationFlowCreateStartFlag(t *testing.T) {
 			Name: "src",
 			Type: "postgres",
 			Options: map[string]string{
-				"dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+				"dsn": testPostgresAppDSN(t),
 			},
 		},
 		Destinations: []endpointConfigPayload{
@@ -1854,7 +1854,7 @@ func TestCLIIntegrationFlowCreateStartFlag(t *testing.T) {
 				Name: "dest",
 				Type: "pgstream",
 				Options: map[string]string{
-					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"dsn":    testPostgresAppDSN(t),
 					"stream": "orders",
 				},
 			},
@@ -1951,7 +1951,7 @@ func TestCLIIntegrationPublicationSync(t *testing.T) {
 				Name: "dest",
 				Type: "pgstream",
 				Options: map[string]string{
-					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"dsn":    testPostgresAppDSN(t),
 					"stream": "orders",
 				},
 			},
@@ -2067,7 +2067,7 @@ func TestCLIIntegrationPublicationRemoteCommands(t *testing.T) {
 				Name: "dest",
 				Type: "pgstream",
 				Options: map[string]string{
-					"dsn":    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+					"dsn":    testPostgresAppDSN(t),
 					"stream": "orders",
 				},
 			},
@@ -2266,6 +2266,19 @@ func createTempDatabase(t *testing.T, ctx context.Context, admin *pgxpool.Pool, 
 		t.Fatalf("build database dsn: %v", err)
 	}
 	return name, dsn
+}
+
+func testPostgresAppDSN(t *testing.T) string {
+	t.Helper()
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
+	if baseDSN == "" {
+		t.Fatalf("TEST_PG_DSN not set")
+	}
+	dsn, err := dsnWithDatabase(baseDSN, "app")
+	if err != nil {
+		t.Fatalf("build test postgres app dsn: %v", err)
+	}
+	return dsn
 }
 
 func dropDatabase(t *testing.T, admin *pgxpool.Pool, name string) {

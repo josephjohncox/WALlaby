@@ -75,7 +75,7 @@ func DialectConfigFor(d Dialect) DialectConfig {
 			DropDefaultTpl:     "ALTER TABLE %s ALTER COLUMN %s DROP DEFAULT",
 			AddColumnTemplate:  "ALTER TABLE %s ADD COLUMN %s",
 			DropColumnTemplate: "ALTER TABLE %s DROP COLUMN %s",
-			RenameColumnTpl:    "ALTER TABLE %s ALTER COLUMN %s RENAME TO %s",
+			RenameColumnTpl:    "ALTER TABLE %s RENAME COLUMN %s TO %s",
 			RenameTableTpl:     "ALTER TABLE %s RENAME TO %s",
 			TruncateTemplate:   "TRUNCATE TABLE %s",
 			ArrayType: func(inner string) string {
