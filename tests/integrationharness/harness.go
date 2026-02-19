@@ -402,15 +402,48 @@ func (h *integrationHarness) startKind() error {
 	kubeconfig := strings.TrimSpace(os.Getenv("WALLABY_TEST_K8S_KUBECONFIG"))
 	if kubeconfig != "" {
 		h.logf("using existing kubeconfig from WALLABY_TEST_K8S_KUBECONFIG")
-		_ = os.Setenv("KUBECONFIG", kubeconfig)
-		_ = os.Setenv("WALLABY_TEST_K8S_NAMESPACE", defaultK8sNamespace())
-		return nil
+		if kubeConfigErr := h.validateKubeconfig(kubeconfig); kubeConfigErr == nil {
+			_ = os.Setenv("KUBECONFIG", kubeconfig)
+			_ = os.Setenv("WALLABY_TEST_K8S_NAMESPACE", defaultK8sNamespace())
+			return nil
+		} else if !h.config.kindEnabled {
+			return fmt.Errorf("provided WALLABY_TEST_K8S_KUBECONFIG is not usable: %w", kubeConfigErr)
+		} else {
+			h.logf("provided WALLABY_TEST_K8S_KUBECONFIG is not usable, falling back to kind: %v", kubeConfigErr)
+		}
 	}
+
+	kubeconfig = strings.TrimSpace(os.Getenv("KUBECONFIG"))
+	if kubeconfig != "" && kubeconfig != "/dev/null" {
+		h.logf("using existing kubeconfig from KUBECONFIG")
+		kubeConfigErr := h.validateKubeconfig(kubeconfig)
+		if kubeConfigErr == nil {
+			_ = os.Setenv("WALLABY_TEST_K8S_KUBECONFIG", kubeconfig)
+			_ = os.Setenv("WALLABY_TEST_K8S_NAMESPACE", defaultK8sNamespace())
+			return nil
+		}
+		h.logf("KUBECONFIG is not usable, falling back to kind: %v", kubeConfigErr)
+	}
+
 	if !h.config.kindEnabled {
 		h.logf("skipping kind bootstrap")
 		return nil
 	}
 
+	return h.bootstrapKindCluster()
+}
+
+func (h *integrationHarness) validateKubeconfig(kubeconfigPath string) error {
+	if kubeconfigPath == "" || kubeconfigPath == "/dev/null" {
+		return fmt.Errorf("empty kubeconfig path")
+	}
+	if _, err := os.Stat(kubeconfigPath); err != nil {
+		return fmt.Errorf("kubeconfig path %q is not readable: %w", kubeconfigPath, err)
+	}
+	return h.validateKindCluster(kubeconfigPath)
+}
+
+func (h *integrationHarness) bootstrapKindCluster() error {
 	ctx := context.Background()
 	clusters, err := commandOutput(ctx, "", "kind", "get", "clusters")
 	if err != nil {
@@ -449,7 +482,6 @@ func (h *integrationHarness) startKind() error {
 	_ = os.Setenv("WALLABY_TEST_K8S_KUBECONFIG", h.kindKubePath)
 	_ = os.Setenv("KUBECONFIG", h.kindKubePath)
 	_ = os.Setenv("WALLABY_TEST_K8S_NAMESPACE", defaultK8sNamespace())
-
 	return nil
 }
 

@@ -64,7 +64,6 @@ jobs:
 
       - name: Integration tests (Postgres, ClickHouse, DBOS, K8s)
         run: |
-          WALLABY_TEST_K8S_KUBECONFIG="$KUBECONFIG" \
           WALLABY_TEST_K8S_NAMESPACE=default \
           make test-integration-ci
 
