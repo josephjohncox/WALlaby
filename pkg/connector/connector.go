@@ -109,6 +109,7 @@ type Record struct {
 	After         map[string]any
 	Unchanged     []string
 	DDL           string
+	DDLPlan       []byte // Structured plan-driven DDL when raw SQL is unavailable
 	Timestamp     time.Time
 }
 

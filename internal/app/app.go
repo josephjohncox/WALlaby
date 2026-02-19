@@ -36,11 +36,23 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+
+	cleanupFns := make([]func(), 0, 10)
+	addCleanup := func(fn func()) {
+		if fn != nil {
+			cleanupFns = append(cleanupFns, fn)
+		}
+	}
 	defer func() {
+		for i := len(cleanupFns) - 1; i >= 0; i-- {
+			cleanupFns[i]()
+		}
+	}()
+	addCleanup(func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = telemetryProvider.Shutdown(shutdownCtx)
-	}()
+	})
 
 	if cfg.Profiling.Enabled {
 		pprofServer := &http.Server{
@@ -53,11 +65,11 @@ func Run(ctx context.Context, cfg *config.Config) error {
 				log.Printf("pprof server error: %v", err)
 			}
 		}()
-		defer func() {
+		addCleanup(func() {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = pprofServer.Shutdown(shutdownCtx)
-		}()
+		})
 	}
 
 	tracer := telemetry.Tracer(cfg.Telemetry.ServiceName)
@@ -65,7 +77,6 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	baseEngine := engine
 	var checkpoints connector.CheckpointStore
 	var registryStore registry.Store
-	var registryCloser interface{ Close() }
 	var ddlApplied func(context.Context, string, string, string) error
 	var dbosOrchestrator *orchestrator.DBOSOrchestrator
 	var kubeDispatcher *orchestrator.KubernetesDispatcher
@@ -81,13 +92,16 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		}
 		engine = postgresEngine
 		baseEngine = postgresEngine
+		addCleanup(func() {
+			postgresEngine.Close()
+		})
 
 		store, err := registry.NewPostgresStore(ctx, cfg.Postgres.DSN)
 		if err != nil {
 			return err
 		}
 		registryStore = store
-		registryCloser = store
+		addCleanup(store.Close)
 		ddlApplied = func(ctx context.Context, flowID string, lsn string, _ string) error {
 			return registry.MarkDDLAppliedByLSN(ctx, registryStore, flowID, lsn)
 		}
@@ -96,6 +110,9 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		if err != nil {
 			return err
 		}
+		addCleanup(func() {
+			streamStore.Close()
+		})
 	}
 
 	if cfg.DBOS.Enabled && tracePath != "" && strings.Contains(tracePath, "{flow_id}") {
@@ -111,7 +128,9 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		traceSink = stream.NewJSONTraceSink(traceFile)
 	}
 	if traceClose != nil {
-		defer func() { _ = traceClose() }()
+		addCleanup(func() {
+			_ = traceClose()
+		})
 	}
 
 	backend := resolveCheckpointBackend(cfg)
@@ -126,6 +145,9 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			return err
 		}
 		checkpoints = checkpointStore
+		addCleanup(func() {
+			checkpointStore.Close()
+		})
 	case "sqlite":
 		dsn := cfg.Checkpoints.DSN
 		if dsn == "" {
@@ -139,11 +161,18 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			return err
 		}
 		checkpoints = checkpointStore
+		addCleanup(func() {
+			if err := checkpointStore.Close(); err != nil {
+				log.Printf("close checkpoint store: %v", err)
+			}
+		})
 	default:
 		return errors.New("unsupported checkpoint backend: " + backend)
 	}
 
-	factory := runner.Factory{}
+	factory := runner.Factory{
+		Meters: telemetryProvider.Meters(),
+	}
 	if registryStore != nil {
 		defaults := flow.DDLPolicyDefaults{
 			Gate:        cfg.DDL.Gate,
@@ -179,21 +208,10 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			Schemas:     cfg.DDL.CatalogSchemas,
 			AutoApprove: cfg.DDL.AutoApprove,
 		}
-		go func() {
-			ticker := time.NewTicker(cfg.DDL.CatalogInterval)
-			defer ticker.Stop()
-			for {
-				if err := scanner.RunOnce(ctx); err != nil {
-					log.Printf("ddl catalog scan error: %v", err)
-				}
-				select {
-				case <-ctx.Done():
-					pool.Close()
-					return
-				case <-ticker.C:
-				}
-			}
-		}()
+		cleanupCatalogScanner := startCatalogScanner(ctx, scanner, cfg.DDL.CatalogInterval, pool)
+		addCleanup(func() {
+			cleanupCatalogScanner()
+		})
 	}
 
 	if cfg.DBOS.Enabled {
@@ -228,6 +246,9 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		}
 		dbosOrchestrator = dbosRunner
 		engine = workflow.NewOrchestratedEngine(baseEngine, dbosRunner, telemetryProvider.Meters())
+		addCleanup(func() {
+			dbosOrchestrator.Shutdown(30 * time.Second)
+		})
 	}
 	if cfg.Kubernetes.Enabled {
 		dispatcher, err := orchestrator.NewKubernetesDispatcher(ctx, orchestrator.KubernetesConfig{
@@ -276,6 +297,12 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 
 	server := apigrpc.New(engine, dispatcher, checkpoints, registryStore, streamStore, cfg.API.GRPCReflection, telemetryProvider.Meters())
+	addCleanup(func() {
+		_ = listener.Close()
+	})
+	addCleanup(func() {
+		server.Stop()
+	})
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- server.Serve(listener)
@@ -286,23 +313,6 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		return err
 	case <-ctx.Done():
 		if errors.Is(ctx.Err(), context.Canceled) {
-			server.Stop()
-			if closer, ok := baseEngine.(interface{ Close() }); ok {
-				closer.Close()
-			}
-			if closer, ok := checkpoints.(interface{ Close() }); ok {
-				closer.Close()
-			}
-			if registryCloser != nil {
-				registryCloser.Close()
-			}
-			if streamStore != nil {
-				streamStore.Close()
-			}
-			if dbosOrchestrator != nil {
-				dbosOrchestrator.Shutdown(30 * time.Second)
-			}
-			_ = kubeDispatcher
 			return nil
 		}
 		return ctx.Err()
@@ -321,6 +331,37 @@ func resolveCheckpointBackend(cfg *config.Config) string {
 		return "sqlite"
 	}
 	return ""
+}
+
+func startCatalogScanner(ctx context.Context, scanner *ddl.CatalogScanner, interval time.Duration, pool *pgxpool.Pool) func() {
+	catalogCtx, cancel := context.WithCancel(ctx)
+	catalogDone := make(chan struct{})
+
+	go func() {
+		defer close(catalogDone)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			if err := scanner.RunOnce(catalogCtx); err != nil {
+				log.Printf("ddl catalog scan error: %v", err)
+			}
+			select {
+			case <-catalogCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+
+	return func() {
+		cancel()
+		select {
+		case <-catalogDone:
+		case <-time.After(2 * time.Second):
+			log.Printf("ddl catalog scanner did not stop within timeout")
+		}
+		pool.Close()
+	}
 }
 
 func defaultCheckpointPath() string {

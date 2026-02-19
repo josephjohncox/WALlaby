@@ -146,7 +146,7 @@ func TestKubernetesDispatcherJobSpec(t *testing.T) {
 			"wallaby.test-annotation": "ok",
 		},
 		JobCommand: []string{"/bin/true"},
-		JobArgs:    []string{"-log-level=debug"},
+		JobArgs:    []string{"--log-level=debug"},
 		JobEnv: map[string]string{
 			"WALLABY_ENV": "test",
 		},
@@ -213,11 +213,11 @@ func TestKubernetesDispatcherJobSpec(t *testing.T) {
 	if ctr.ImagePullPolicy != corev1.PullPolicy("IfNotPresent") {
 		t.Fatalf("expected pull policy IfNotPresent, got %s", ctr.ImagePullPolicy)
 	}
-	if !argPresent(ctr.Args, "-flow-id="+flowID) {
-		t.Fatalf("expected -flow-id arg, got %v", ctr.Args)
+	if !argPresent(ctr.Args, "--flow-id="+flowID) {
+		t.Fatalf("expected --flow-id arg, got %v", ctr.Args)
 	}
-	if !argPresent(ctr.Args, "-max-empty-reads=3") {
-		t.Fatalf("expected -max-empty-reads arg, got %v", ctr.Args)
+	if !argPresent(ctr.Args, "--max-empty-reads=3") {
+		t.Fatalf("expected --max-empty-reads arg, got %v", ctr.Args)
 	}
 	if !envPresent(ctr.Env, "WALLABY_ENV", "test") {
 		t.Fatalf("expected env WALLABY_ENV=test, got %v", ctr.Env)

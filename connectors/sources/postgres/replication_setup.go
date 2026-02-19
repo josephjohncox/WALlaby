@@ -10,6 +10,25 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const (
+	publicationModeAdd  = "add"
+	publicationModeSync = "sync"
+)
+
+// NormalizeSyncPublicationMode normalizes and validates a publication sync mode.
+//
+// It accepts case-insensitive "add" or "sync"; empty values default to "add".
+func NormalizeSyncPublicationMode(raw string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	if mode == "" {
+		return publicationModeAdd, nil
+	}
+	if mode != publicationModeAdd && mode != publicationModeSync {
+		return "", fmt.Errorf("invalid sync publication mode %q", mode)
+	}
+	return mode, nil
+}
+
 func ensureReplication(ctx context.Context, dsn string, options map[string]string, publication string, tables []string, ensurePublication, validateSettings, captureDDL bool, ddlSchema, ddlTrigger, ddlPrefix string) error {
 	pool, err := newPool(ctx, dsn, options)
 	if err != nil {
@@ -109,6 +128,10 @@ func SyncPublicationTables(ctx context.Context, dsn, publication string, tables 
 	}
 	if publication == "" {
 		return nil, nil, errors.New("publication is required")
+	}
+	mode, err := NormalizeSyncPublicationMode(mode)
+	if err != nil {
+		return nil, nil, err
 	}
 	pool, err := newPool(ctx, dsn, options)
 	if err != nil {

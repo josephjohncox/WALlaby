@@ -10,11 +10,11 @@ import (
 	"time"
 
 	_ "github.com/ClickHouse/clickhouse-go/v2"
+	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/josephjohncox/wallaby/connectors/destinations/clickhouse"
 	"github.com/josephjohncox/wallaby/connectors/destinations/duckdb"
 	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	_ "github.com/duckdb/duckdb-go/v2"
 	_ "github.com/snowflakedb/gosnowflake"
 )
 

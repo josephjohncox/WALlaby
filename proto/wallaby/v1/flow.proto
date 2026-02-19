@@ -18,6 +18,14 @@ service FlowService {
   rpc ListFlows(ListFlowsRequest) returns (ListFlowsResponse);
   rpc DeleteFlow(DeleteFlowRequest) returns (DeleteFlowResponse);
   rpc CleanupFlow(CleanupFlowRequest) returns (CleanupFlowResponse);
+  rpc ListReplicationSlots(ListReplicationSlotsRequest) returns (ListReplicationSlotsResponse);
+  rpc GetReplicationSlot(GetReplicationSlotRequest) returns (GetReplicationSlotResponse);
+  rpc DropReplicationSlot(DropReplicationSlotRequest) returns (DropReplicationSlotResponse);
+  rpc ListPublicationTables(ListPublicationTablesRequest) returns (ListPublicationTablesResponse);
+  rpc AddPublicationTables(AddPublicationTablesRequest) returns (PublicationTablesMutationResponse);
+  rpc DropPublicationTables(DropPublicationTablesRequest) returns (PublicationTablesMutationResponse);
+  rpc SyncPublicationTables(SyncPublicationTablesRequest) returns (SyncPublicationTablesResponse);
+  rpc ScrapePublicationTables(ScrapePublicationTablesRequest) returns (ScrapePublicationTablesResponse);
 }
 
 message CreateFlowRequest {
@@ -87,4 +95,122 @@ message CleanupFlowRequest {
 
 message CleanupFlowResponse {
   bool cleaned = 1;
+}
+
+message ListReplicationSlotsRequest {
+  string flow_id = 1;
+  string dsn = 2;
+  string slot = 3;
+  map<string, string> options = 4;
+}
+
+message ReplicationSlotInfo {
+  string slot_name = 1;
+  string plugin = 2;
+  string slot_type = 3;
+  string database = 4;
+  bool active = 5;
+  int32 active_pid = 6;
+  bool temporary = 7;
+  string wal_status = 8;
+  string restart_lsn = 9;
+  string confirmed_flush_lsn = 10;
+  bool active_pid_present = 11;
+}
+
+message ListReplicationSlotsResponse {
+  repeated ReplicationSlotInfo slots = 1;
+  string flow_id = 2;
+}
+
+message GetReplicationSlotRequest {
+  string flow_id = 1;
+  string dsn = 2;
+  string slot = 3;
+  map<string, string> options = 4;
+}
+
+message GetReplicationSlotResponse {
+  ReplicationSlotInfo slot = 1;
+}
+
+message DropReplicationSlotRequest {
+  string flow_id = 1;
+  string dsn = 2;
+  string slot = 3;
+  bool if_exists = 4;
+  map<string, string> options = 5;
+}
+
+message DropReplicationSlotResponse {
+  string slot = 1;
+  bool found = 2;
+  bool dropped = 3;
+  string flow_id = 4;
+}
+
+message ListPublicationTablesRequest {
+  string flow_id = 1;
+  string dsn = 2;
+  string publication = 3;
+  map<string, string> options = 4;
+}
+
+message ListPublicationTablesResponse {
+  repeated string tables = 1;
+  string publication = 2;
+  string flow_id = 3;
+}
+
+message AddPublicationTablesRequest {
+  string flow_id = 1;
+  string dsn = 2;
+  string publication = 3;
+  repeated string tables = 4;
+  map<string, string> options = 5;
+}
+
+message DropPublicationTablesRequest {
+  string flow_id = 1;
+  string dsn = 2;
+  string publication = 3;
+  repeated string tables = 4;
+  map<string, string> options = 5;
+}
+
+message PublicationTablesMutationResponse {
+  repeated string tables = 1;
+  string publication = 2;
+}
+
+message SyncPublicationTablesRequest {
+  string flow_id = 1;
+  string dsn = 2;
+  string publication = 3;
+  repeated string tables = 4;
+  string mode = 5;
+  map<string, string> options = 6;
+}
+
+message SyncPublicationTablesResponse {
+  repeated string added = 1;
+  repeated string removed = 2;
+  string publication = 3;
+  string flow_id = 4;
+}
+
+message ScrapePublicationTablesRequest {
+  string flow_id = 1;
+  string dsn = 2;
+  string publication = 3;
+  repeated string schemas = 4;
+  bool apply = 5;
+  map<string, string> options = 6;
+}
+
+message ScrapePublicationTablesResponse {
+  repeated string discovered_tables = 1;
+  repeated string missing_tables = 2;
+  bool applied = 3;
+  string flow_id = 4;
 }

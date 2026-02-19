@@ -16,6 +16,14 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+func safeMetaCapacity(base, extra int) int {
+	maxInt := int(^uint(0) >> 1)
+	if extra > maxInt-base {
+		return maxInt
+	}
+	return base + extra
+}
+
 const (
 	optDSN             = "dsn"
 	optCatalog         = "catalog"
@@ -764,9 +772,9 @@ func (d *Destination) upsertMetadata(ctx context.Context, tx *sql.Tx, schema con
 		keyJSON = string(raw)
 	}
 
-	columns := make([]string, 0, 8+len(pkCols))
+	columns := make([]string, 0, safeMetaCapacity(8, len(pkCols)))
 	columns = append(columns, "flow_id", "source_schema", "source_table", "synced_at", "is_deleted", "lsn", "operation", "key_json")
-	values := make([]any, 0, 8+len(pkVals))
+	values := make([]any, 0, safeMetaCapacity(8, len(pkVals)))
 	values = append(values, d.flowID, schema.Namespace, record.Table, syncedAt, record.Operation == connector.OpDelete, checkpoint.LSN, string(record.Operation), keyJSON)
 	columns = append(columns, pkCols...)
 	values = append(values, pkVals...)

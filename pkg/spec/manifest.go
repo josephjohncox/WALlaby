@@ -185,11 +185,19 @@ func TraceSuiteManifest() Manifest {
 
 // AllManifests returns manifests for all known specs.
 func AllManifests() []Manifest {
-	return []Manifest{
-		mustManifest(SpecCDCFlow),
-		mustManifest(SpecFlowState),
-		mustManifest(SpecCDCFlowFanout),
+	manifests := make([]Manifest, 0, 3)
+	for _, specName := range []SpecName{
+		SpecCDCFlow,
+		SpecFlowState,
+		SpecCDCFlowFanout,
+	} {
+		manifest, ok := ManifestForSpec(specName)
+		if !ok {
+			continue
+		}
+		manifests = append(manifests, manifest)
 	}
+	return manifests
 }
 
 // ManifestForSpec builds a manifest for the named spec.
@@ -204,14 +212,6 @@ func ManifestForSpec(spec SpecName) (Manifest, bool) {
 	default:
 		return Manifest{}, false
 	}
-}
-
-func mustManifest(spec SpecName) Manifest {
-	manifest, ok := ManifestForSpec(spec)
-	if !ok {
-		panic(fmt.Sprintf("unknown spec %q", spec))
-	}
-	return manifest
 }
 
 func newManifest(spec SpecName, actions []Action, invariants []Invariant, unreachableActions []Action, unreachableInvariants []Invariant) Manifest {

@@ -6,7 +6,7 @@ import (
 )
 
 func TestEnsureFlowArgs_AppendsDefaults(t *testing.T) {
-	args := []string{"-foo=bar"}
+	args := []string{"--foo=bar"}
 	out := ensureFlowArgs(args, "flow-1", 5)
 	if !hasFlag(out, "flow-id") {
 		t.Fatalf("expected flow-id flag added: %v", out)
@@ -17,7 +17,7 @@ func TestEnsureFlowArgs_AppendsDefaults(t *testing.T) {
 }
 
 func TestEnsureFlowArgs_DoesNotDuplicate(t *testing.T) {
-	args := []string{"-flow-id=custom", "--max-empty-reads=2"}
+	args := []string{"--flow-id=custom", "--max-empty-reads=2"}
 	out := ensureFlowArgs(args, "flow-2", 10)
 	if len(out) != len(args) {
 		t.Fatalf("expected args unchanged, got %v", out)

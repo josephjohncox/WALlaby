@@ -4,6 +4,7 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -40,7 +41,10 @@ func NewProvider(ctx context.Context, cfg config.TelemetryConfig) (*Provider, er
 	tracesEnabled := cfg.OTLPEndpoint != "" && tracesExporter != "" && tracesExporter != "none"
 
 	if !metricsEnabled && !tracesEnabled {
-		meters, _ := newMeters(otel.Meter("noop"))
+		meters, err := newMeters(otel.Meter("noop"))
+		if err != nil {
+			return nil, err
+		}
 		return &Provider{meters: meters}, nil
 	}
 
@@ -70,7 +74,10 @@ func NewProvider(ctx context.Context, cfg config.TelemetryConfig) (*Provider, er
 			return nil, err
 		}
 	} else {
-		meters, _ = newMeters(otel.Meter("noop"))
+		meters, err = newMeters(otel.Meter("noop"))
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if tracesEnabled {
@@ -241,97 +248,180 @@ var (
 	countBuckets   = []float64{1, 10, 50, 100, 500, 1000, 5000, 10000}
 )
 
-func must[T any](v T, err error) T {
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
 func newMeters(meter metric.Meter) (*Meters, error) {
-	defer func() {
-		if r := recover(); r != nil {
-			panic(r)
-		}
-	}()
+	var errs error
 
-	return &Meters{
-		// Stream runner
-		RecordsProcessed: must(meter.Int64Counter("wallaby.records.processed",
+	setInt64Counter := func(name string, target *metric.Int64Counter, newMetric func() (metric.Int64Counter, error)) {
+		value, err := newMetric()
+		if err != nil {
+			if errs == nil {
+				errs = fmt.Errorf("create metric %q: %w", name, err)
+			}
+			return
+		}
+		*target = value
+	}
+	setFloat64Histogram := func(name string, target *metric.Float64Histogram, newMetric func() (metric.Float64Histogram, error)) {
+		value, err := newMetric()
+		if err != nil {
+			if errs == nil {
+				errs = fmt.Errorf("create metric %q: %w", name, err)
+			}
+			return
+		}
+		*target = value
+	}
+	setInt64UpDownCounter := func(name string, target *metric.Int64UpDownCounter, newMetric func() (metric.Int64UpDownCounter, error)) {
+		value, err := newMetric()
+		if err != nil {
+			if errs == nil {
+				errs = fmt.Errorf("create metric %q: %w", name, err)
+			}
+			return
+		}
+		*target = value
+	}
+	setInt64Gauge := func(name string, target *metric.Int64Gauge, newMetric func() (metric.Int64Gauge, error)) {
+		value, err := newMetric()
+		if err != nil {
+			if errs == nil {
+				errs = fmt.Errorf("create metric %q: %w", name, err)
+			}
+			return
+		}
+		*target = value
+	}
+	setInt64Histogram := func(name string, target *metric.Int64Histogram, newMetric func() (metric.Int64Histogram, error)) {
+		value, err := newMetric()
+		if err != nil {
+			if errs == nil {
+				errs = fmt.Errorf("create metric %q: %w", name, err)
+			}
+			return
+		}
+		*target = value
+	}
+
+	meters := &Meters{}
+
+	// Stream runner
+	setInt64Counter("wallaby.records.processed", &meters.RecordsProcessed, func() (metric.Int64Counter, error) {
+		return meter.Int64Counter("wallaby.records.processed",
 			metric.WithDescription("Total number of records processed"),
-			metric.WithUnit("{record}"))),
-		BatchesProcessed: must(meter.Int64Counter("wallaby.batches.processed",
+			metric.WithUnit("{record}"))
+	})
+	setInt64Counter("wallaby.batches.processed", &meters.BatchesProcessed, func() (metric.Int64Counter, error) {
+		return meter.Int64Counter("wallaby.batches.processed",
 			metric.WithDescription("Total number of batches processed"),
-			metric.WithUnit("{batch}"))),
-		BatchLatency: must(meter.Float64Histogram("wallaby.batch.latency",
+			metric.WithUnit("{batch}"))
+	})
+	setFloat64Histogram("wallaby.batch.latency", &meters.BatchLatency, func() (metric.Float64Histogram, error) {
+		return meter.Float64Histogram("wallaby.batch.latency",
 			metric.WithDescription("Batch processing latency"),
 			metric.WithUnit("ms"),
-			metric.WithExplicitBucketBoundaries(latencyBuckets...))),
-		DestinationWriteLatency: must(meter.Float64Histogram("wallaby.destination.write.latency",
+			metric.WithExplicitBucketBoundaries(latencyBuckets...))
+	})
+	setFloat64Histogram("wallaby.destination.write.latency", &meters.DestinationWriteLatency, func() (metric.Float64Histogram, error) {
+		return meter.Float64Histogram("wallaby.destination.write.latency",
 			metric.WithDescription("Destination write latency"),
 			metric.WithUnit("ms"),
-			metric.WithExplicitBucketBoundaries(latencyBuckets...))),
-		RecordsPerBatch: must(meter.Int64Histogram("wallaby.batch.records",
+			metric.WithExplicitBucketBoundaries(latencyBuckets...))
+	})
+	setInt64Histogram("wallaby.batch.records", &meters.RecordsPerBatch, func() (metric.Int64Histogram, error) {
+		return meter.Int64Histogram("wallaby.batch.records",
 			metric.WithDescription("Number of records per batch"),
 			metric.WithUnit("{record}"),
-			metric.WithExplicitBucketBoundaries(countBuckets...))),
-		ErrorsTotal: must(meter.Int64Counter("wallaby.errors.total",
+			metric.WithExplicitBucketBoundaries(countBuckets...))
+	})
+	setInt64Counter("wallaby.errors.total", &meters.ErrorsTotal, func() (metric.Int64Counter, error) {
+		return meter.Int64Counter("wallaby.errors.total",
 			metric.WithDescription("Total number of errors by type"),
-			metric.WithUnit("{error}"))),
-		CheckpointCommits: must(meter.Int64Counter("wallaby.checkpoints.commits",
+			metric.WithUnit("{error}"))
+	})
+	setInt64Counter("wallaby.checkpoints.commits", &meters.CheckpointCommits, func() (metric.Int64Counter, error) {
+		return meter.Int64Counter("wallaby.checkpoints.commits",
 			metric.WithDescription("Total number of checkpoint commits"),
-			metric.WithUnit("{commit}"))),
+			metric.WithUnit("{commit}"))
+	})
 
-		// gRPC
-		GRPCRequestsTotal: must(meter.Int64Counter("wallaby.grpc.requests.total",
+	// gRPC
+	setInt64Counter("wallaby.grpc.requests.total", &meters.GRPCRequestsTotal, func() (metric.Int64Counter, error) {
+		return meter.Int64Counter("wallaby.grpc.requests.total",
 			metric.WithDescription("Total number of gRPC requests"),
-			metric.WithUnit("{request}"))),
-		GRPCRequestLatency: must(meter.Float64Histogram("wallaby.grpc.request.latency",
+			metric.WithUnit("{request}"))
+	})
+	setFloat64Histogram("wallaby.grpc.request.latency", &meters.GRPCRequestLatency, func() (metric.Float64Histogram, error) {
+		return meter.Float64Histogram("wallaby.grpc.request.latency",
 			metric.WithDescription("gRPC request latency"),
 			metric.WithUnit("ms"),
-			metric.WithExplicitBucketBoundaries(latencyBuckets...))),
-		GRPCErrorsTotal: must(meter.Int64Counter("wallaby.grpc.errors.total",
+			metric.WithExplicitBucketBoundaries(latencyBuckets...))
+	})
+	setInt64Counter("wallaby.grpc.errors.total", &meters.GRPCErrorsTotal, func() (metric.Int64Counter, error) {
+		return meter.Int64Counter("wallaby.grpc.errors.total",
 			metric.WithDescription("Total number of gRPC errors"),
-			metric.WithUnit("{error}"))),
+			metric.WithUnit("{error}"))
+	})
 
-		// Workflow
-		FlowsActive: must(meter.Int64UpDownCounter("wallaby.flows.active",
+	// Workflow
+	setInt64UpDownCounter("wallaby.flows.active", &meters.FlowsActive, func() (metric.Int64UpDownCounter, error) {
+		return meter.Int64UpDownCounter("wallaby.flows.active",
 			metric.WithDescription("Number of currently active flows"),
-			metric.WithUnit("{flow}"))),
-		FlowStateTransitions: must(meter.Int64Counter("wallaby.flow.state.transitions",
+			metric.WithUnit("{flow}"))
+	})
+	setInt64Counter("wallaby.flow.state.transitions", &meters.FlowStateTransitions, func() (metric.Int64Counter, error) {
+		return meter.Int64Counter("wallaby.flow.state.transitions",
 			metric.WithDescription("Total number of flow state transitions"),
-			metric.WithUnit("{transition}"))),
-		FlowCreateTotal: must(meter.Int64Counter("wallaby.flow.create.total",
+			metric.WithUnit("{transition}"))
+	})
+	setInt64Counter("wallaby.flow.create.total", &meters.FlowCreateTotal, func() (metric.Int64Counter, error) {
+		return meter.Int64Counter("wallaby.flow.create.total",
 			metric.WithDescription("Total number of flows created"),
-			metric.WithUnit("{flow}"))),
+			metric.WithUnit("{flow}"))
+	})
 
-		// Checkpoint store
-		CheckpointGetLatency: must(meter.Float64Histogram("wallaby.checkpoint.get.latency",
+	// Checkpoint store
+	setFloat64Histogram("wallaby.checkpoint.get.latency", &meters.CheckpointGetLatency, func() (metric.Float64Histogram, error) {
+		return meter.Float64Histogram("wallaby.checkpoint.get.latency",
 			metric.WithDescription("Checkpoint get latency"),
 			metric.WithUnit("ms"),
-			metric.WithExplicitBucketBoundaries(latencyBuckets...))),
-		CheckpointPutLatency: must(meter.Float64Histogram("wallaby.checkpoint.put.latency",
+			metric.WithExplicitBucketBoundaries(latencyBuckets...))
+	})
+	setFloat64Histogram("wallaby.checkpoint.put.latency", &meters.CheckpointPutLatency, func() (metric.Float64Histogram, error) {
+		return meter.Float64Histogram("wallaby.checkpoint.put.latency",
 			metric.WithDescription("Checkpoint put latency"),
 			metric.WithUnit("ms"),
-			metric.WithExplicitBucketBoundaries(latencyBuckets...))),
+			metric.WithExplicitBucketBoundaries(latencyBuckets...))
+	})
 
-		// Source
-		SourceReplicationLag: must(meter.Int64Gauge("wallaby.source.replication.lag",
+	// Source
+	setInt64Gauge("wallaby.source.replication.lag", &meters.SourceReplicationLag, func() (metric.Int64Gauge, error) {
+		return meter.Int64Gauge("wallaby.source.replication.lag",
 			metric.WithDescription("Replication lag in bytes"),
-			metric.WithUnit("By"))),
-		SourceReadLatency: must(meter.Float64Histogram("wallaby.source.read.latency",
+			metric.WithUnit("By"))
+	})
+	setFloat64Histogram("wallaby.source.read.latency", &meters.SourceReadLatency, func() (metric.Float64Histogram, error) {
+		return meter.Float64Histogram("wallaby.source.read.latency",
 			metric.WithDescription("Source read latency"),
 			metric.WithUnit("ms"),
-			metric.WithExplicitBucketBoundaries(latencyBuckets...))),
+			metric.WithExplicitBucketBoundaries(latencyBuckets...))
+	})
 
-		// Destination
-		DestinationWriteTotal: must(meter.Int64Counter("wallaby.destination.write.total",
+	// Destination
+	setInt64Counter("wallaby.destination.write.total", &meters.DestinationWriteTotal, func() (metric.Int64Counter, error) {
+		return meter.Int64Counter("wallaby.destination.write.total",
 			metric.WithDescription("Total number of destination writes"),
-			metric.WithUnit("{write}"))),
-		DestinationDDLApplied: must(meter.Int64Counter("wallaby.destination.ddl.applied",
+			metric.WithUnit("{write}"))
+	})
+	setInt64Counter("wallaby.destination.ddl.applied", &meters.DestinationDDLApplied, func() (metric.Int64Counter, error) {
+		return meter.Int64Counter("wallaby.destination.ddl.applied",
 			metric.WithDescription("Total number of DDL statements applied"),
-			metric.WithUnit("{ddl}"))),
-	}, nil
+			metric.WithUnit("{ddl}"))
+	})
+
+	if errs != nil {
+		return nil, errs
+	}
+	return meters, nil
 }
 
 // ----------------------------------------------------------------------------

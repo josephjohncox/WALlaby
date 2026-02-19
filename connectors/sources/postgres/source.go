@@ -15,6 +15,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/flowctx"
 	postgrescodec "github.com/josephjohncox/wallaby/internal/postgres"
 	"github.com/josephjohncox/wallaby/internal/replication"
+	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -78,6 +79,7 @@ type Source struct {
 	toastPool    *pgxpool.Pool
 	toastCache   *toastCache
 	lagPool      *pgxpool.Pool
+	Meters       *telemetry.Meters
 }
 
 func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
@@ -139,9 +141,9 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	if parseBool(spec.Options[optSyncPublication], false) {
 		desired := publicationTables
 		if len(desired) > 0 {
-			mode := spec.Options[optSyncPublicationMode]
-			if mode == "" {
-				mode = "add"
+			mode, err := NormalizeSyncPublicationMode(spec.Options[optSyncPublicationMode])
+			if err != nil {
+				return err
 			}
 			if _, _, err := SyncPublicationTables(ctx, dsn, s.publication, desired, mode, spec.Options); err != nil {
 				return err
@@ -215,6 +217,9 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	if ddlPrefix != "" {
 		opts = append(opts, replication.WithDDLMessagePrefix(ddlPrefix))
 	}
+	if captureDDL {
+		opts = append(opts, replication.WithEmitPlanDDL(false))
+	}
 	if startLSN := spec.Options[optStartLSN]; startLSN != "" {
 		lsn, err := pglogrepl.ParseLSN(startLSN)
 		if err != nil {
@@ -238,6 +243,10 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		return fmt.Errorf("create lag pool: %w", err)
 	}
 	s.lagPool = lagPool
+
+	if s.Meters != nil {
+		opts = append(opts, replication.WithProtocolErrorReporter(s.recordProtocolError))
+	}
 
 	s.stream = replication.NewPostgresStream(dsn, opts...)
 	changes, err := s.stream.Start(ctx, s.slot, s.publication)
@@ -276,6 +285,13 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	}
 
 	return nil
+}
+
+func (s *Source) recordProtocolError(ctx context.Context, errorType string) {
+	if s.Meters == nil || errorType == "" {
+		return
+	}
+	s.Meters.RecordError(ctx, "replication_protocol_"+errorType)
 }
 
 func (s *Source) Read(ctx context.Context) (connector.Batch, error) {

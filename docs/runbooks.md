@@ -67,6 +67,9 @@ If `WALLABY_DDL_AUTO_APPROVE=true` and `WALLABY_DDL_AUTO_APPLY=true`, WALlaby wi
 
 ### Flow worker stalled
 - Check last checkpoint (`wallaby-admin flow get` or DBOS/K8s logs).
+- List stalled flows quickly from automation:
+  - `wallaby-admin flow list -state paused`
+  - `wallaby-admin flow get -flow-id <id>`
 - Verify replication slot status in Postgres (`pg_replication_slots`).
 - If the slot is stuck, restart the flow worker with `-max-empty-reads=1` for a quick probe run.
 

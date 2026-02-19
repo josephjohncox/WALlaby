@@ -127,13 +127,13 @@ func rapidFlow(t *rapid.T) flow.Flow {
 	config := flow.Config{}
 	if rapid.Bool().Draw(t, "config") {
 		config = flow.Config{
-			AckPolicy:          rapid.SampledFrom([]stream.AckPolicy{stream.AckPolicyAll, stream.AckPolicyPrimary}).Draw(t, "ack"),
-			PrimaryDestination: rapid.StringMatching(`[a-z]{0,6}`).Draw(t, "primary"),
-			FailureMode:        rapid.SampledFrom([]stream.FailureMode{stream.FailureModeHoldSlot, stream.FailureModeDropSlot}).Draw(t, "failure"),
-			GiveUpPolicy:       rapid.SampledFrom([]stream.GiveUpPolicy{stream.GiveUpPolicyOnRetryExhaustion, stream.GiveUpPolicyNever}).Draw(t, "giveup"),
-			SchemaRegistrySubject:          rapid.StringMatching(`[a-z]{0,6}`).Draw(t, "reg_subject"),
+			AckPolicy:                       rapid.SampledFrom([]stream.AckPolicy{stream.AckPolicyAll, stream.AckPolicyPrimary}).Draw(t, "ack"),
+			PrimaryDestination:              rapid.StringMatching(`[a-z]{0,6}`).Draw(t, "primary"),
+			FailureMode:                     rapid.SampledFrom([]stream.FailureMode{stream.FailureModeHoldSlot, stream.FailureModeDropSlot}).Draw(t, "failure"),
+			GiveUpPolicy:                    rapid.SampledFrom([]stream.GiveUpPolicy{stream.GiveUpPolicyOnRetryExhaustion, stream.GiveUpPolicyNever}).Draw(t, "giveup"),
+			SchemaRegistrySubject:           rapid.StringMatching(`[a-z]{0,6}`).Draw(t, "reg_subject"),
 			SchemaRegistryProtoTypesSubject: rapid.StringMatching(`[a-z]{0,6}`).Draw(t, "reg_proto_subject"),
-			SchemaRegistrySubjectMode:      rapid.SampledFrom([]string{"", "topic", "table", "topic_table"}).Draw(t, "reg_mode"),
+			SchemaRegistrySubjectMode:       rapid.SampledFrom([]string{"", "topic", "table", "topic_table"}).Draw(t, "reg_mode"),
 			DDL: flow.DDLPolicy{
 				Gate:        rapidBoolPtr(t, "ddl_gate"),
 				AutoApprove: rapidBoolPtr(t, "ddl_auto_approve"),

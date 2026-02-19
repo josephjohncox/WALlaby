@@ -21,15 +21,18 @@ const (
 
 // Change captures a schema change to be applied downstream.
 type Change struct {
-	Type        ChangeType
-	Namespace   string
-	Table       string
-	Column      string
-	FromType    string
-	ToType      string
-	Expression  string
-	Nullable    bool
-	PrimaryKeys []string
+	Type      ChangeType
+	Namespace string
+	Table     string
+	Column    string
+	// ToColumn is used by rename_column updates and should carry the destination column name.
+	ToColumn     string
+	FromNullable bool
+	FromType     string
+	ToType       string
+	Expression   string
+	Nullable     bool
+	PrimaryKeys  []string
 }
 
 // Plan groups multiple schema changes.

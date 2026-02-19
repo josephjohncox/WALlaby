@@ -52,6 +52,9 @@ func (s *FlowService) CreateFlow(ctx context.Context, req *wallabypb.CreateFlowR
 	}
 
 	if req.StartImmediately {
+		if err := s.requireDispatcher(); err != nil {
+			return nil, err
+		}
 		created, err = s.engine.Start(ctx, created.ID)
 		if err != nil {
 			return nil, mapWorkflowError(err)
@@ -169,6 +172,9 @@ func (s *FlowService) StartFlow(ctx context.Context, req *wallabypb.StartFlowReq
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
 	}
+	if err := s.requireDispatcher(); err != nil {
+		return nil, err
+	}
 	started, err := s.engine.Start(ctx, req.FlowId)
 	if err != nil {
 		return nil, mapWorkflowError(err)
@@ -180,8 +186,8 @@ func (s *FlowService) RunFlowOnce(ctx context.Context, req *wallabypb.RunFlowOnc
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
 	}
-	if s.dispatcher == nil {
-		return nil, status.Error(codes.FailedPrecondition, "dispatcher not configured")
+	if err := s.requireDispatcher(); err != nil {
+		return nil, err
 	}
 	if _, err := s.engine.Get(ctx, req.FlowId); err != nil {
 		return nil, mapWorkflowError(err)
@@ -206,6 +212,9 @@ func (s *FlowService) StopFlow(ctx context.Context, req *wallabypb.StopFlowReque
 func (s *FlowService) ResumeFlow(ctx context.Context, req *wallabypb.ResumeFlowRequest) (*wallabypb.Flow, error) {
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
+	}
+	if err := s.requireDispatcher(); err != nil {
+		return nil, err
 	}
 	resumed, err := s.engine.Resume(ctx, req.FlowId)
 	if err != nil {
@@ -308,7 +317,378 @@ func (s *FlowService) CleanupFlow(ctx context.Context, req *wallabypb.CleanupFlo
 	return &wallabypb.CleanupFlowResponse{Cleaned: true}, nil
 }
 
+func (s *FlowService) requireDispatcher() error {
+	if s.dispatcher != nil {
+		return nil
+	}
+	return status.Error(codes.FailedPrecondition, "dispatcher is required for immediate execution, but no dispatcher is configured")
+}
+
+func (s *FlowService) ListReplicationSlots(ctx context.Context, req *wallabypb.ListReplicationSlotsRequest) (*wallabypb.ListReplicationSlotsResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+
+	cfg, err := s.resolveSlotCommandConfig(ctx, req.FlowId, req.Dsn, strings.TrimSpace(req.Slot), false, req.Options)
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.slot != "" {
+		slot, ok, err := pgsource.GetReplicationSlot(ctx, cfg.dsn, cfg.slot, cfg.options)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		if !ok {
+			return nil, status.Error(codes.NotFound, "slot not found")
+		}
+		return &wallabypb.ListReplicationSlotsResponse{FlowId: req.FlowId, Slots: []*wallabypb.ReplicationSlotInfo{replicationSlotInfoFromConnector(slot)}}, nil
+	}
+
+	slots, err := pgsource.ListReplicationSlots(ctx, cfg.dsn, cfg.options)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	out := make([]*wallabypb.ReplicationSlotInfo, 0, len(slots))
+	for _, slot := range slots {
+		out = append(out, replicationSlotInfoFromConnector(slot))
+	}
+	return &wallabypb.ListReplicationSlotsResponse{FlowId: req.FlowId, Slots: out}, nil
+}
+
+func (s *FlowService) GetReplicationSlot(ctx context.Context, req *wallabypb.GetReplicationSlotRequest) (*wallabypb.GetReplicationSlotResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+
+	if strings.TrimSpace(req.Slot) == "" {
+		return nil, status.Error(codes.InvalidArgument, "slot is required")
+	}
+
+	cfg, err := s.resolveSlotCommandConfig(ctx, req.FlowId, req.Dsn, req.Slot, true, req.Options)
+	if err != nil {
+		return nil, err
+	}
+
+	slot, ok, err := pgsource.GetReplicationSlot(ctx, cfg.dsn, cfg.slot, cfg.options)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	if !ok {
+		return nil, status.Error(codes.NotFound, "slot not found")
+	}
+	return &wallabypb.GetReplicationSlotResponse{Slot: replicationSlotInfoFromConnector(slot)}, nil
+}
+
+func (s *FlowService) DropReplicationSlot(ctx context.Context, req *wallabypb.DropReplicationSlotRequest) (*wallabypb.DropReplicationSlotResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if strings.TrimSpace(req.Slot) == "" {
+		return nil, status.Error(codes.InvalidArgument, "slot is required")
+	}
+
+	cfg, err := s.resolveSlotCommandConfig(ctx, req.FlowId, req.Dsn, req.Slot, true, req.Options)
+	if err != nil {
+		return nil, err
+	}
+
+	_, exists, err := pgsource.GetReplicationSlot(ctx, cfg.dsn, cfg.slot, cfg.options)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	if !exists && !req.IfExists {
+		return nil, status.Error(codes.NotFound, "slot not found")
+	}
+
+	if err := pgsource.DropReplicationSlot(ctx, cfg.dsn, cfg.slot, cfg.options); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	return &wallabypb.DropReplicationSlotResponse{FlowId: req.FlowId, Slot: cfg.slot, Found: exists, Dropped: true}, nil
+}
+
+func (s *FlowService) ListPublicationTables(ctx context.Context, req *wallabypb.ListPublicationTablesRequest) (*wallabypb.ListPublicationTablesResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+
+	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, req.Options)
+	if err != nil {
+		return nil, err
+	}
+
+	tables, err := pgsource.ListPublicationTables(ctx, cfg.dsn, cfg.publication, cfg.options)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &wallabypb.ListPublicationTablesResponse{FlowId: req.FlowId, Publication: cfg.publication, Tables: tables}, nil
+}
+
+func (s *FlowService) AddPublicationTables(ctx context.Context, req *wallabypb.AddPublicationTablesRequest) (*wallabypb.PublicationTablesMutationResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if len(req.Tables) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "tables are required")
+	}
+
+	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, req.Options)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := pgsource.AddPublicationTables(ctx, cfg.dsn, cfg.publication, req.Tables, cfg.options); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &wallabypb.PublicationTablesMutationResponse{Publication: cfg.publication, Tables: req.Tables}, nil
+}
+
+func (s *FlowService) DropPublicationTables(ctx context.Context, req *wallabypb.DropPublicationTablesRequest) (*wallabypb.PublicationTablesMutationResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if len(req.Tables) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "tables are required")
+	}
+
+	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, req.Options)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := pgsource.DropPublicationTables(ctx, cfg.dsn, cfg.publication, req.Tables, cfg.options); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &wallabypb.PublicationTablesMutationResponse{Publication: cfg.publication, Tables: req.Tables}, nil
+}
+
+func (s *FlowService) SyncPublicationTables(ctx context.Context, req *wallabypb.SyncPublicationTablesRequest) (*wallabypb.SyncPublicationTablesResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+
+	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, req.Options)
+	if err != nil {
+		return nil, err
+	}
+	mode, err := pgsource.NormalizeSyncPublicationMode(req.Mode)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	added, removed, err := pgsource.SyncPublicationTables(ctx, cfg.dsn, cfg.publication, req.Tables, mode, cfg.options)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &wallabypb.SyncPublicationTablesResponse{FlowId: req.FlowId, Publication: cfg.publication, Added: added, Removed: removed}, nil
+}
+
+func (s *FlowService) ScrapePublicationTables(ctx context.Context, req *wallabypb.ScrapePublicationTablesRequest) (*wallabypb.ScrapePublicationTablesResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if len(req.Schemas) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "schemas are required")
+	}
+
+	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, req.Options)
+	if err != nil {
+		return nil, err
+	}
+
+	allTables, err := pgsource.ScrapeTables(ctx, cfg.dsn, req.Schemas, cfg.options)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	current, err := pgsource.ListPublicationTables(ctx, cfg.dsn, cfg.publication, cfg.options)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	currentSet := make(map[string]struct{}, len(current))
+	for _, table := range current {
+		currentSet[strings.ToLower(table)] = struct{}{}
+	}
+	missing := make([]string, 0)
+	for _, table := range allTables {
+		if _, ok := currentSet[strings.ToLower(table)]; !ok {
+			missing = append(missing, table)
+		}
+	}
+	if req.Apply && len(missing) > 0 {
+		if err := pgsource.AddPublicationTables(ctx, cfg.dsn, cfg.publication, missing, cfg.options); err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+	}
+
+	applied := req.Apply && len(missing) > 0
+	if req.Apply && len(missing) == 0 {
+		applied = false
+	}
+
+	return &wallabypb.ScrapePublicationTablesResponse{
+		DiscoveredTables: allTables,
+		MissingTables:    missing,
+		Applied:          applied,
+		FlowId:           req.FlowId,
+	}, nil
+}
+
+type postgresHelperConfig struct {
+	dsn         string
+	slot        string
+	publication string
+	options     map[string]string
+}
+
+func (s *FlowService) resolveSlotCommandConfig(ctx context.Context, flowID, dsn, slot string, requireSlot bool, options map[string]string) (postgresHelperConfig, error) {
+	if flowID == "" {
+		if strings.TrimSpace(dsn) == "" {
+			return postgresHelperConfig{}, status.Error(codes.InvalidArgument, "flow_id or dsn is required")
+		}
+		return postgresHelperConfig{dsn: dsn, slot: slot, options: options}, nil
+	}
+
+	flowModel, err := flowServiceGetFlow(ctx, s.engine, flowID)
+	if err != nil {
+		return postgresHelperConfig{}, err
+	}
+	if flowModel.Source.Type != connector.EndpointPostgres {
+		return postgresHelperConfig{}, status.Error(codes.InvalidArgument, "flow source is not postgres")
+	}
+
+	baseDSN := strings.TrimSpace(flowModel.Source.Options["dsn"])
+	resolvedDSN := strings.TrimSpace(dsn)
+	if resolvedDSN == "" {
+		resolvedDSN = baseDSN
+	}
+	if resolvedDSN == "" {
+		return postgresHelperConfig{}, status.Error(codes.InvalidArgument, "source dsn not found on flow")
+	}
+
+	resolvedSlot := strings.TrimSpace(slot)
+	if resolvedSlot == "" {
+		resolvedSlot = strings.TrimSpace(flowModel.Source.Options["slot"])
+	}
+
+	if requireSlot && resolvedSlot == "" {
+		state, found, stateErr := pgsource.LookupSourceState(ctx, flowModel.Source, resolvedSlot)
+		if stateErr != nil {
+			return postgresHelperConfig{}, status.Error(codes.Internal, stateErr.Error())
+		}
+		if found && state.Slot != "" {
+			resolvedSlot = strings.TrimSpace(state.Slot)
+		}
+	}
+	if requireSlot && resolvedSlot == "" {
+		return postgresHelperConfig{}, status.Error(codes.InvalidArgument, "source slot not found on flow")
+	}
+
+	return postgresHelperConfig{
+		dsn:         resolvedDSN,
+		slot:        resolvedSlot,
+		publication: strings.TrimSpace(flowModel.Source.Options["publication"]),
+		options:     mergeOptionMaps(flowModel.Source.Options, options),
+	}, nil
+}
+
+func (s *FlowService) resolvePublicationCommandConfig(ctx context.Context, flowID, dsn, publication string, options map[string]string) (postgresHelperConfig, error) {
+	if flowID == "" {
+		resolvedPublication := strings.TrimSpace(publication)
+		if strings.TrimSpace(dsn) == "" {
+			return postgresHelperConfig{}, status.Error(codes.InvalidArgument, "flow_id or dsn is required")
+		}
+		if resolvedPublication == "" {
+			return postgresHelperConfig{}, status.Error(codes.InvalidArgument, "publication is required")
+		}
+		return postgresHelperConfig{dsn: dsn, publication: resolvedPublication, options: options}, nil
+	}
+
+	flowModel, err := flowServiceGetFlow(ctx, s.engine, flowID)
+	if err != nil {
+		return postgresHelperConfig{}, err
+	}
+	if flowModel.Source.Type != connector.EndpointPostgres {
+		return postgresHelperConfig{}, status.Error(codes.InvalidArgument, "flow source is not postgres")
+	}
+	baseDSN := strings.TrimSpace(flowModel.Source.Options["dsn"])
+	resolvedDSN := strings.TrimSpace(dsn)
+	if resolvedDSN == "" {
+		resolvedDSN = baseDSN
+	}
+	if resolvedDSN == "" {
+		return postgresHelperConfig{}, status.Error(codes.InvalidArgument, "source dsn not found on flow")
+	}
+
+	resolvedPublication := strings.TrimSpace(publication)
+	if resolvedPublication == "" {
+		resolvedPublication = strings.TrimSpace(flowModel.Source.Options["publication"])
+	}
+	if resolvedPublication == "" {
+		if state, found, stateErr := pgsource.LookupSourceState(ctx, flowModel.Source, ""); stateErr != nil {
+			return postgresHelperConfig{}, status.Error(codes.Internal, stateErr.Error())
+		} else if found {
+			resolvedPublication = strings.TrimSpace(state.Publication)
+		}
+	}
+	if resolvedPublication == "" {
+		return postgresHelperConfig{}, status.Error(codes.InvalidArgument, "publication is required")
+	}
+
+	return postgresHelperConfig{
+		dsn:         resolvedDSN,
+		publication: resolvedPublication,
+		options:     mergeOptionMaps(flowModel.Source.Options, options),
+	}, nil
+}
+
+func flowServiceGetFlow(ctx context.Context, engine workflow.Engine, flowID string) (flow.Flow, error) {
+	f, err := engine.Get(ctx, flowID)
+	if err != nil {
+		return flow.Flow{}, mapWorkflowError(err)
+	}
+	return f, nil
+}
+
+func replicationSlotInfoFromConnector(item pgsource.ReplicationSlotInfo) *wallabypb.ReplicationSlotInfo {
+	out := &wallabypb.ReplicationSlotInfo{
+		SlotName:          item.SlotName,
+		Plugin:            item.Plugin,
+		SlotType:          item.SlotType,
+		Database:          item.Database,
+		Active:            item.Active,
+		Temporary:         item.Temporary,
+		WalStatus:         item.WalStatus,
+		RestartLsn:        item.RestartLSN,
+		ConfirmedFlushLsn: item.ConfirmedLSN,
+	}
+	if item.ActivePID != nil {
+		out.ActivePid = *item.ActivePID
+		out.ActivePidPresent = true
+	}
+	return out
+}
+
+func mergeOptionMaps(base map[string]string, override map[string]string) map[string]string {
+	if len(base) == 0 && len(override) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(base)+len(override))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range override {
+		out[k] = v
+	}
+	return out
+}
+
 func mapWorkflowError(err error) error {
+	if st, ok := status.FromError(err); ok {
+		return st.Err()
+	}
+
 	switch {
 	case errors.Is(err, workflow.ErrNotFound):
 		return status.Error(codes.NotFound, err.Error())
@@ -373,10 +753,11 @@ func syncFlowPublication(ctx context.Context, f flow.Flow) error {
 		return nil
 	}
 	mode := strings.TrimSpace(opts["sync_publication_mode"])
-	if mode == "" {
-		mode = "add"
+	mode, err := pgsource.NormalizeSyncPublicationMode(mode)
+	if err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
 	}
-	_, _, err := pgsource.SyncPublicationTables(ctx, dsn, publication, tables, mode, opts)
+	_, _, err = pgsource.SyncPublicationTables(ctx, dsn, publication, tables, mode, opts)
 	return err
 }
 

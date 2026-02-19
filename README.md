@@ -44,9 +44,18 @@ Trace validation:
 - `specs/coverage*.json` defines the shared action/invariant contract between spec and Go.
 
 ## CLI Tools
+Core:
 - `wallaby` — gRPC API server.
 - `wallaby-admin` — flow/DDL/stream/publication admin CLI.
 - `wallaby-worker` — run a single flow (standalone or scheduled).
+
+Dev/validation helpers:
+- `wallaby-speccheck` — runs `specaction` static checks.
+- `wallaby-spec-sync` — validates local TLA spec declarations against manifests.
+- `wallaby-spec-manifest` — regenerates local spec coverage manifests.
+- `wallaby-tla-coverage` — computes and validates TLA+ action/invariant coverage.
+- `wallaby-trace-validate` — validates traces against spec manifests.
+- `wallaby-bench` / `wallaby-bench-summary` — benchmark tooling.
 
 Examples:
 ```bash
@@ -54,8 +63,39 @@ wallaby-admin flow create -file examples/flows/postgres_to_s3_parquet.json
 wallaby-admin stream pull -stream orders -group g1 -max 10 -json
 wallaby-admin ddl list -status pending
 wallaby-admin ddl approve -id 1
+wallaby-admin version
 wallaby-worker -flow-id <flow-id> -max-empty-reads 1
+wallaby-speccheck --version
 ```
+
+### Configuration references
+- `wallaby` reads config from:
+  - `--config path`
+  - `WALLABY_CONFIG`
+  - `wallaby.yaml` / `wallaby.yml` in current working directory (when `--config`/env path is not set)
+- `wallaby-admin` reads config from:
+  - `--config path`
+  - `WALLABY_ADMIN_CONFIG`
+  - `wallaby-admin.yaml` / `wallaby-admin.yml` in the current directory or `$HOME/.config/wallaby` (when no explicit config path is set)
+- `wallaby-worker` reads config from:
+  - `--config path`
+  - `WALLABY_WORKER_CONFIG`
+  - `wallaby-worker.yaml` / `wallaby-worker.yml` in the current working directory
+- `wallaby-speccheck` reads config from:
+  - `--config path`
+  - environment-backed flags via `WALLABY_SPECCHECK_*` (for example: `WALLABY_SPECCHECK_MANIFEST`, `WALLABY_SPECCHECK_VERBOSE`)
+- `wallaby-spec-sync` reads flag values from:
+  - environment-backed flags via `WALLABY_SPEC_SYNC_*` (for example: `WALLABY_SPEC_SYNC_SPEC_DIR`, `WALLABY_SPEC_SYNC_MANIFEST_DIR`)
+- `wallaby-spec-manifest` reads flag values from:
+  - environment-backed flags via `WALLABY_SPEC_MANIFEST_*` (for example: `WALLABY_SPEC_MANIFEST_DIR`, `WALLABY_SPEC_MANIFEST_OUT`)
+- `wallaby-tla-coverage` reads flag values from:
+  - environment-backed flags via `WALLABY_TLA_COVERAGE_*` (for example: `WALLABY_TLA_COVERAGE_DIR`, `WALLABY_TLA_COVERAGE_MIN`)
+- `wallaby-trace-validate` reads flag values from:
+  - environment-backed flags via `WALLABY_TRACE_VALIDATE_*` (for example: `WALLABY_TRACE_VALIDATE_INPUT`, `WALLABY_TRACE_VALIDATE_MANIFEST`)
+- `wallaby-bench` reads flag values from:
+  - environment-backed flags via `BENCH_*` (for example: `BENCH_PG_DSN`, `BENCH_CLICKHOUSE_DSN`, `BENCH_KAFKA_BROKERS`)
+- `wallaby-bench-summary` reads flag values from:
+  - environment-backed flags via `WALLABY_BENCH_SUMMARY_*` (for example: `WALLABY_BENCH_SUMMARY_DIR`, `WALLABY_BENCH_SUMMARY_FORMAT`)
 
 ## Examples
 See `examples/README.md` for gRPC, Terraform, and worker usage examples.

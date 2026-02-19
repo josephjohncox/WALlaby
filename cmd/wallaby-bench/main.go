@@ -6,7 +6,6 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"math"
 	"math/rand"
@@ -28,12 +27,20 @@ import (
 	"github.com/josephjohncox/wallaby/connectors/destinations/kafka"
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
+	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/internal/ddl"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
+	"github.com/spf13/cobra"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
+)
+
+const (
+	defaultPGDSN        = "postgres://postgres:postgres@localhost:5432/wallaby?sslmode=disable"
+	defaultCKDSN        = "clickhouse://bench:bench@localhost:9000/bench"
+	defaultKafkaBrokers = "localhost:9092"
 )
 
 type profile struct {
@@ -143,25 +150,93 @@ func main() {
 	}
 }
 
-func run() error {
-	var (
-		profileName  = flag.String("profile", "small", "profile: small|medium|large")
-		targetsRaw   = flag.String("targets", "all", "targets: all|kafka,postgres,clickhouse")
-		scenario     = flag.String("scenario", "base", "scenario: base|ddl")
-		pgDSN        = flag.String("pg-dsn", getenv("BENCH_PG_DSN", "postgres://postgres:postgres@localhost:5432/wallaby?sslmode=disable"), "postgres DSN")
-		ckDSN        = flag.String("clickhouse-dsn", getenv("BENCH_CLICKHOUSE_DSN", "clickhouse://bench:bench@localhost:9000/bench"), "clickhouse DSN")
-		kafkaBrokers = flag.String("kafka-brokers", getenv("BENCH_KAFKA_BROKERS", "localhost:9092"), "kafka brokers")
-		outputDir    = flag.String("output-dir", "bench/results", "output directory for results")
-		seed         = flag.Int64("seed", 42, "random seed")
-		cpuProfile   = flag.String("cpu-profile", "", "write CPU profile to file")
-		memProfile   = flag.String("mem-profile", "", "write heap profile to file")
-		traceProfile = flag.String("trace", "", "write execution trace to file")
-	)
-	flag.Parse()
+type benchOptions struct {
+	profileName  string
+	targetsRaw   string
+	scenario     string
+	pgDSN        string
+	ckDSN        string
+	kafkaBrokers string
+	outputDir    string
+	seed         int64
+	cpuProfile   string
+	memProfile   string
+	traceProfile string
+}
 
-	if *cpuProfile != "" {
+func run() error {
+	command := newWallabyBenchCommand()
+	return command.Execute()
+}
+
+func newWallabyBenchCommand() *cobra.Command {
+	command := &cobra.Command{
+		Use:          "wallaby-bench",
+		Short:        "Run wallaby benchmark suite",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runWallabyBench(cmd)
+		},
+	}
+	command.Flags().String("profile", "small", "profile: small|medium|large")
+	command.Flags().String("targets", "all", "targets: all|kafka,postgres,clickhouse")
+	command.Flags().String("scenario", "base", "scenario: base|ddl")
+	command.Flags().String("pg-dsn", defaultPGDSN, "postgres DSN")
+	command.Flags().String("clickhouse-dsn", defaultCKDSN, "clickhouse DSN")
+	command.Flags().String("kafka-brokers", defaultKafkaBrokers, "kafka brokers")
+	command.Flags().String("output-dir", "bench/results", "output directory for results")
+	command.Flags().Int64("seed", 42, "random seed")
+	command.Flags().String("cpu-profile", "", "write CPU profile to file")
+	command.Flags().String("mem-profile", "", "write heap profile to file")
+	command.Flags().String("trace", "", "write execution trace to file")
+	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		return initWallabyBenchConfig(cmd)
+	}
+	command.InitDefaultCompletionCmd()
+	return command
+}
+
+func initWallabyBenchConfig(cmd *cobra.Command) error {
+	return cli.InitViperFromCommand(cmd, cli.ViperConfig{
+		EnvPrefix: "BENCH",
+	})
+}
+
+func runWallabyBench(cmd *cobra.Command) error {
+	opts := benchOptions{
+		profileName:  cli.ResolveStringFlag(cmd, "profile"),
+		targetsRaw:   cli.ResolveStringFlag(cmd, "targets"),
+		scenario:     cli.ResolveStringFlag(cmd, "scenario"),
+		pgDSN:        cli.ResolveStringFlag(cmd, "pg-dsn"),
+		ckDSN:        cli.ResolveStringFlag(cmd, "clickhouse-dsn"),
+		kafkaBrokers: cli.ResolveStringFlag(cmd, "kafka-brokers"),
+		outputDir:    cli.ResolveStringFlag(cmd, "output-dir"),
+		seed:         cli.ResolveInt64Flag(cmd, "seed"),
+		cpuProfile:   cli.ResolveStringFlag(cmd, "cpu-profile"),
+		memProfile:   cli.ResolveStringFlag(cmd, "mem-profile"),
+		traceProfile: cli.ResolveStringFlag(cmd, "trace"),
+	}
+	return runBench(opts)
+}
+
+func runBench(opts benchOptions) error {
+	var (
+		profileName  = opts.profileName
+		targetsRaw   = opts.targetsRaw
+		scenario     = opts.scenario
+		pgDSN        = opts.pgDSN
+		ckDSN        = opts.ckDSN
+		kafkaBrokers = opts.kafkaBrokers
+		outputDir    = opts.outputDir
+		seed         = opts.seed
+		cpuProfile   = opts.cpuProfile
+		memProfile   = opts.memProfile
+		traceProfile = opts.traceProfile
+	)
+
+	if cpuProfile != "" {
 		// #nosec G304 -- profile path comes from CLI flag.
-		file, err := os.Create(*cpuProfile)
+		file, err := os.Create(cpuProfile)
 		if err != nil {
 			return fmt.Errorf("create cpu profile: %w", err)
 		}
@@ -179,9 +254,9 @@ func run() error {
 		}()
 	}
 
-	if *traceProfile != "" {
+	if traceProfile != "" {
 		// #nosec G304 -- trace path comes from CLI flag.
-		file, err := os.Create(*traceProfile)
+		file, err := os.Create(traceProfile)
 		if err != nil {
 			return fmt.Errorf("create trace: %w", err)
 		}
@@ -199,8 +274,8 @@ func run() error {
 		}()
 	}
 
-	if *memProfile != "" {
-		path := *memProfile
+	if memProfile != "" {
+		path := memProfile
 		defer func() {
 			// #nosec G304 -- profile path comes from CLI flag.
 			file, err := os.Create(path)
@@ -220,21 +295,21 @@ func run() error {
 		}()
 	}
 
-	profile, err := resolveProfile(*profileName)
+	profile, err := resolveProfile(profileName)
 	if err != nil {
 		return err
 	}
-	if *scenario != "base" && *scenario != "ddl" {
-		return fmt.Errorf("unsupported scenario %q", *scenario)
+	if scenario != "base" && scenario != "ddl" {
+		return fmt.Errorf("unsupported scenario %q", scenario)
 	}
 
-	targets, err := resolveTargets(*targetsRaw)
+	targets, err := resolveTargets(targetsRaw)
 	if err != nil {
 		return err
 	}
 
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, *pgDSN)
+	pool, err := pgxpool.New(ctx, pgDSN)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
@@ -243,7 +318,7 @@ func run() error {
 		return fmt.Errorf("ping postgres: %w", err)
 	}
 
-	data := buildBenchData(*seed)
+	data := buildBenchData(seed)
 	specs := buildTableSpecs("bench_src", data)
 	rowSizes := map[string]int64{}
 	for _, spec := range specs {
@@ -264,21 +339,21 @@ func run() error {
 		}
 	}
 	if hasTarget(targets, "clickhouse") {
-		if err := setupClickHouseSink(ctx, *ckDSN, specs); err != nil {
+		if err := setupClickHouseSink(ctx, ckDSN, specs); err != nil {
 			return err
 		}
 	}
 
 	results := make([]benchResult, 0, len(targets))
 	for _, target := range targets {
-		result, err := runTarget(ctx, target, profile, *scenario, pool, *pgDSN, *ckDSN, *kafkaBrokers, specs, rowSizes)
+		result, err := runTarget(ctx, target, profile, scenario, pool, pgDSN, ckDSN, kafkaBrokers, specs, rowSizes)
 		if err != nil {
 			return err
 		}
 		results = append(results, result)
 	}
 
-	if err := writeResults(*outputDir, results); err != nil {
+	if err := writeResults(outputDir, results); err != nil {
 		return err
 	}
 	return nil
@@ -771,6 +846,14 @@ func runTarget(ctx context.Context, target string, prof profile, scenario string
 }
 
 func buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix string) (connector.Spec, connector.Destination, error) {
+	pgSyncCommit := strings.TrimSpace(os.Getenv("BENCH_PG_SYNC_COMMIT"))
+	if pgSyncCommit == "" {
+		pgSyncCommit = "off"
+	}
+	chWriteMode := strings.TrimSpace(os.Getenv("BENCH_CLICKHOUSE_WRITE_MODE"))
+	if chWriteMode == "" {
+		chWriteMode = "append"
+	}
 	switch target {
 	case "kafka":
 		spec := connector.Spec{
@@ -793,19 +876,18 @@ func buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix string) (c
 				"schema":             "bench_sink",
 				"write_mode":         "target",
 				"meta_table_enabled": "false",
-				"synchronous_commit": getenv("BENCH_PG_SYNC_COMMIT", "off"),
+				"synchronous_commit": pgSyncCommit,
 			},
 		}
 		return spec, &pgdest.Destination{}, nil
 	case "clickhouse":
-		writeMode := getenv("BENCH_CLICKHOUSE_WRITE_MODE", "append")
 		spec := connector.Spec{
 			Name: "bench-clickhouse",
 			Type: connector.EndpointClickHouse,
 			Options: map[string]string{
 				"dsn":                ckDSN,
 				"database":           "bench",
-				"write_mode":         writeMode,
+				"write_mode":         chWriteMode,
 				"meta_table_enabled": "false",
 			},
 		}
@@ -1128,13 +1210,6 @@ func writeCSV(path string, results []benchResult) error {
 
 func formatFloat(value float64) string {
 	return fmt.Sprintf("%.4f", value)
-}
-
-func getenv(key, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
-	}
-	return fallback
 }
 
 func splitCSV(value string) []string {

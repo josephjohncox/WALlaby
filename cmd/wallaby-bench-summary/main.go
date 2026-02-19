@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +12,9 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/josephjohncox/wallaby/internal/cli"
+	"github.com/spf13/cobra"
 )
 
 type benchResult struct {
@@ -37,29 +39,77 @@ type resultKey struct {
 	Scenario string
 }
 
-func main() {
-	dir := flag.String("dir", "bench/results", "directory containing bench_*.json files")
-	format := flag.String("format", "table", "output format: table|markdown|benchstat|json")
-	latest := flag.Bool("latest", true, "show latest result per target/profile/scenario")
-	output := flag.String("output", "", "optional output file")
-	flag.Parse()
+type benchSummaryOptions struct {
+	dir    string
+	format string
+	latest bool
+	output string
+}
 
-	results, err := loadResults(*dir)
-	if err != nil {
-		fatal(err)
+func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
 	}
-	if *latest {
+}
+
+func run() error {
+	command := newWallabyBenchSummaryCommand()
+	return command.Execute()
+}
+
+func newWallabyBenchSummaryCommand() *cobra.Command {
+	command := &cobra.Command{
+		Use:          "wallaby-bench-summary",
+		Short:        "Summarize wallaby benchmark result files",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runWallabyBenchSummary(cmd)
+		},
+	}
+	command.Flags().String("dir", "bench/results", "directory containing bench_*.json files")
+	command.Flags().String("format", "table", "output format: table|markdown|benchstat|json")
+	command.Flags().Bool("latest", true, "show latest result per target/profile/scenario")
+	command.Flags().String("output", "", "optional output file")
+	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		return initWallabyBenchSummaryConfig(cmd)
+	}
+	command.InitDefaultCompletionCmd()
+	return command
+}
+
+func initWallabyBenchSummaryConfig(cmd *cobra.Command) error {
+	return cli.InitViperFromCommand(cmd, cli.ViperConfig{
+		EnvPrefix: "WALLABY_BENCH_SUMMARY",
+	})
+}
+
+func runWallabyBenchSummary(cmd *cobra.Command) error {
+	opts := benchSummaryOptions{
+		dir:    cli.ResolveStringFlag(cmd, "dir"),
+		format: cli.ResolveStringFlag(cmd, "format"),
+		latest: cli.ResolveBoolFlag(cmd, "latest"),
+		output: cli.ResolveStringFlag(cmd, "output"),
+	}
+	return runBenchSummary(opts)
+}
+
+func runBenchSummary(opts benchSummaryOptions) error {
+	results, err := loadResults(opts.dir)
+	if err != nil {
+		return err
+	}
+	if opts.latest {
 		results = latestResults(results)
 	}
 	if len(results) == 0 {
-		fatal(errors.New("no benchmark results found"))
+		return errors.New("no benchmark results found")
 	}
 
 	sortResults(results)
 
-	writer, closer, err := outputWriter(*output)
+	writer, closer, err := outputWriter(opts.output)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	if closer != nil {
 		defer func() {
@@ -69,26 +119,27 @@ func main() {
 		}()
 	}
 
-	switch strings.ToLower(*format) {
+	switch strings.ToLower(opts.format) {
 	case "table":
 		if err := writeTable(writer, results); err != nil {
-			fatal(err)
+			return err
 		}
 	case "markdown":
 		if err := writeMarkdown(writer, results); err != nil {
-			fatal(err)
+			return err
 		}
 	case "benchstat":
 		if err := writeBenchstat(writer, results); err != nil {
-			fatal(err)
+			return err
 		}
 	case "json":
 		if err := writeJSON(writer, results); err != nil {
-			fatal(err)
+			return err
 		}
 	default:
-		fatal(fmt.Errorf("unsupported format %q", *format))
+		return fmt.Errorf("unsupported format %q", opts.format)
 	}
+	return nil
 }
 
 func loadResults(dir string) ([]benchResult, error) {
@@ -306,9 +357,4 @@ func formatBenchFloat(value float64) string {
 		return "0"
 	}
 	return fmt.Sprintf("%.6f", value)
-}
-
-func fatal(err error) {
-	fmt.Fprintln(os.Stderr, err)
-	os.Exit(1)
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +9,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/josephjohncox/wallaby/internal/cli"
+	"github.com/spf13/cobra"
 )
 
 type coverageFile struct {
@@ -25,31 +27,93 @@ type coverageReport struct {
 }
 
 func main() {
-	dir := flag.String("dir", "specs/coverage", "directory with TLC coverage outputs")
-	min := flag.Int("min", 1, "minimum coverage count per action")
-	ignore := flag.String("ignore", "", "comma-separated list of actions to ignore")
-	jsonOut := flag.String("json", "", "optional path to write JSON report")
-	flag.Parse()
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
 
+type tlaCoverageOptions struct {
+	dir     string
+	min     int
+	ignore  string
+	jsonOut string
+}
+
+func run() error {
+	command := newWallabyTLACoverageCommand()
+	return command.Execute()
+}
+
+func newWallabyTLACoverageCommand() *cobra.Command {
+	command := &cobra.Command{
+		Use:          "wallaby-tla-coverage",
+		Short:        "Summarize TLC coverage output and enforce minimum thresholds",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runWallabyTLACoverage(cmd)
+		},
+	}
+	command.Flags().String("dir", "specs/coverage", "directory with TLC coverage outputs")
+	command.Flags().Int("min", 1, "minimum coverage count per action")
+	command.Flags().String("ignore", "", "comma-separated list of actions to ignore")
+	command.Flags().String("json", "", "optional path to write JSON report")
+	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		return initWallabyTLACoverageConfig(cmd)
+	}
+	command.InitDefaultCompletionCmd()
+	return command
+}
+
+func initWallabyTLACoverageConfig(cmd *cobra.Command) error {
+	return cli.InitViperFromCommand(cmd, cli.ViperConfig{
+		EnvPrefix: "WALLABY_TLA_COVERAGE",
+	})
+}
+
+func runWallabyTLACoverage(cmd *cobra.Command) error {
+	opts := tlaCoverageOptions{
+		dir:     cli.ResolveStringFlag(cmd, "dir"),
+		min:     cli.ResolveIntFlag(cmd, "min"),
+		ignore:  cli.ResolveStringFlag(cmd, "ignore"),
+		jsonOut: cli.ResolveStringFlag(cmd, "json"),
+	}
+
+	report, err := buildCoverageReport(opts)
+	if err != nil {
+		return err
+	}
+	printReport(report)
+
+	if opts.jsonOut != "" {
+		if err := writeJSON(opts.jsonOut, report); err != nil {
+			return fmt.Errorf("write json report: %w", err)
+		}
+	}
+	if len(report.Failing) > 0 {
+		return fmt.Errorf("coverage below threshold (%d): %s", opts.min, strings.Join(report.Failing, ", "))
+	}
+	return nil
+}
+
+func buildCoverageReport(opts tlaCoverageOptions) (coverageReport, error) {
 	ignoreSet := make(map[string]struct{})
-	for _, item := range strings.Split(*ignore, ",") {
+	for _, item := range strings.Split(opts.ignore, ",") {
 		if trimmed := strings.TrimSpace(item); trimmed != "" {
 			ignoreSet[trimmed] = struct{}{}
 		}
 	}
 
-	files, err := filepath.Glob(filepath.Join(*dir, "*.txt"))
+	files, err := filepath.Glob(filepath.Join(opts.dir, "*.txt"))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "list coverage files: %v\n", err)
-		os.Exit(1)
+		return coverageReport{}, fmt.Errorf("list coverage files: %w", err)
 	}
 	if len(files) == 0 {
-		fmt.Fprintf(os.Stderr, "no coverage files found in %s\n", *dir)
-		os.Exit(1)
+		return coverageReport{}, fmt.Errorf("no coverage files found in %s", opts.dir)
 	}
 
 	report := coverageReport{
-		Min:    *min,
+		Min:    opts.min,
 		Ignore: sortedKeys(ignoreSet),
 		Files:  make([]coverageFile, 0, len(files)),
 	}
@@ -58,8 +122,7 @@ func main() {
 	for _, path := range files {
 		actions, err := parseCoverage(path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "parse %s: %v\n", path, err)
-			os.Exit(1)
+			return coverageReport{}, fmt.Errorf("parse %s: %w", path, err)
 		}
 		fileReport := coverageFile{
 			Name:    filepath.Base(path),
@@ -71,26 +134,14 @@ func main() {
 			if _, skip := ignoreSet[action]; skip {
 				continue
 			}
-			if count < *min {
+			if count < opts.min {
 				failures = append(failures, fmt.Sprintf("%s:%s=%d", filepath.Base(path), action, count))
 			}
 		}
 	}
 	sort.Strings(failures)
 	report.Failing = failures
-
-	printReport(report)
-	if *jsonOut != "" {
-		if err := writeJSON(*jsonOut, report); err != nil {
-			fmt.Fprintf(os.Stderr, "write json report: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
-	if len(failures) > 0 {
-		fmt.Fprintf(os.Stderr, "coverage below threshold (%d): %s\n", *min, strings.Join(failures, ", "))
-		os.Exit(1)
-	}
+	return report, nil
 }
 
 var (

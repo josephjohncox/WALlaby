@@ -5,26 +5,38 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"log"
 	"math"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/go-playground/validator/v10"
+	"github.com/jackc/pgx/v5"
+	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/runner"
 	"github.com/josephjohncox/wallaby/pkg/certify"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
+	"github.com/spf13/afero"
+	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"gopkg.in/yaml.v3"
 )
+
+const cliVersion = "0.0.0-dev"
 
 func main() {
 	if err := run(os.Args); err != nil {
@@ -33,58 +45,1440 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) < 2 {
-		usage()
-		return nil
-	}
-
-	switch args[1] {
-	case "ddl":
-		return runDDL(args[2:])
-	case "stream":
-		return runStream(args[2:])
-	case "publication":
-		return runPublication(args[2:])
-	case "flow":
-		return runFlow(args[2:])
-	case "certify":
-		return runCertify(args[2:])
-	default:
-		usage()
-		return nil
-	}
+	command := newAdminCommand()
+	command.SetArgs(args[1:])
+	return command.Execute()
 }
 
-func runDDL(args []string) error {
-	if len(args) < 1 {
-		ddlUsage()
+func newAdminCommand() *cobra.Command {
+	command := &cobra.Command{
+		Use:          "wallaby-admin",
+		Short:        "Wallaby admin CLI",
+		Version:      cliVersion,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			usage()
+			return nil
+		},
 	}
 
-	sub := args[0]
-	switch sub {
-	case "list":
-		return ddlList(args[1:])
-	case "approve":
-		return ddlApprove(args[1:])
-	case "reject":
-		return ddlReject(args[1:])
-	case "apply":
-		return ddlApply(args[1:])
-	default:
-		ddlUsage()
+	command.PersistentFlags().String("config", "", "path to wallaby-admin config file")
+	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		return initAdminConfig(cmd)
+	}
+
+	addLeaf := func(parent *cobra.Command, name, short string, addFlags func(*cobra.Command), runFn func(*cobra.Command, []string) error) {
+		cmd := &cobra.Command{
+			Use:   name,
+			Short: short,
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runWithConfig(cmd, runFn, args)
+			},
+		}
+		if addFlags != nil {
+			addFlags(cmd)
+		}
+		parent.AddCommand(cmd)
+	}
+
+	addLeaf(command, "check", "check local flow configuration or endpoint connectivity", addCheckFlags, runCheck)
+	addLeaf(command, "certify", "run data certification for postgres sources and destinations", addCertifyFlags, runCertify)
+
+	ddlCommand := &cobra.Command{
+		Use:   "ddl",
+		Short: "manage DDL history and approval",
+		RunE: func(*cobra.Command, []string) error {
+			ddlUsage()
+			return nil
+		},
+	}
+	addLeaf(ddlCommand, "list", "list DDL changes", addDDLListFlags, ddlList)
+	addLeaf(ddlCommand, "history", "show DDL event history", addDDLHistoryFlags, ddlHistory)
+	addLeaf(ddlCommand, "show", "show a DDL event", addDDLShowFlags, ddlShow)
+	addLeaf(ddlCommand, "approve", "approve a DDL event", addDDLApproveFlags, ddlApprove)
+	addLeaf(ddlCommand, "reject", "reject a DDL event", addDDLRejectFlags, ddlReject)
+	addLeaf(ddlCommand, "apply", "apply a DDL event", addDDLApplyFlags, ddlApply)
+	command.AddCommand(ddlCommand)
+
+	streamCommand := &cobra.Command{
+		Use:   "stream",
+		Short: "administer stream operations",
+		RunE: func(*cobra.Command, []string) error {
+			streamUsage()
+			return nil
+		},
+	}
+	addLeaf(streamCommand, "replay", "replay stream events", addStreamReplayFlags, streamReplay)
+	addLeaf(streamCommand, "pull", "pull stream events", addStreamPullFlags, streamPull)
+	addLeaf(streamCommand, "ack", "ack stream records", addStreamAckFlags, streamAck)
+	command.AddCommand(streamCommand)
+
+	slotCommand := &cobra.Command{
+		Use:   "slot",
+		Short: "manage logical replication slots",
+		RunE: func(*cobra.Command, []string) error {
+			slotUsage()
+			return nil
+		},
+	}
+	addLeaf(slotCommand, "list", "list replication slots", addSlotListFlags, slotList)
+	addLeaf(slotCommand, "show", "show replication slots", addSlotShowFlags, slotShow)
+	addLeaf(slotCommand, "drop", "drop replication slots", addSlotDropFlags, slotDrop)
+	command.AddCommand(slotCommand)
+
+	publicationCommand := &cobra.Command{
+		Use:   "publication",
+		Short: "manage source publications",
+		RunE: func(*cobra.Command, []string) error {
+			publicationUsage()
+			return nil
+		},
+	}
+	addLeaf(publicationCommand, "list", "list source publications", addPublicationListFlags, publicationList)
+	addLeaf(publicationCommand, "add", "add a publication", addPublicationAddFlags, publicationAdd)
+	addLeaf(publicationCommand, "remove", "remove a publication", addPublicationRemoveFlags, publicationRemove)
+	addLeaf(publicationCommand, "sync", "sync publication membership", addPublicationSyncFlags, publicationSync)
+	addLeaf(publicationCommand, "scrape", "scrape publication metadata", addPublicationScrapeFlags, publicationScrape)
+	command.AddCommand(publicationCommand)
+
+	flowCommand := &cobra.Command{
+		Use:   "flow",
+		Short: "manage replication flows",
+		RunE: func(*cobra.Command, []string) error {
+			flowUsage()
+			return nil
+		},
+	}
+	addLeaf(flowCommand, "create", "create flow", addFlowCreateFlags, flowCreate)
+	addLeaf(flowCommand, "update", "update flow", addFlowUpdateFlags, flowUpdate)
+	addLeaf(flowCommand, "reconfigure", "reconfigure flow", addFlowReconfigureFlags, flowReconfigure)
+	addLeaf(flowCommand, "start", "start flow", addFlowStartFlags, flowStart)
+	addLeaf(flowCommand, "run-once", "run flow once", addFlowRunOnceFlags, flowRunOnce)
+	addLeaf(flowCommand, "stop", "stop flow", addFlowStopFlags, flowStop)
+	addLeaf(flowCommand, "resume", "resume flow", addFlowResumeFlags, flowResume)
+	addLeaf(flowCommand, "cleanup", "cleanup flow", addFlowCleanupFlags, flowCleanup)
+	addLeaf(flowCommand, "resolve-staging", "resolve staging", addFlowResolveStagingFlags, flowResolveStaging)
+	addLeaf(flowCommand, "get", "get flow", addFlowGetFlags, flowGet)
+	addLeaf(flowCommand, "list", "list flows", addFlowListFlags, flowList)
+	addLeaf(flowCommand, "delete", "delete flow", addFlowDeleteFlags, flowDelete)
+	addLeaf(flowCommand, "wait", "wait for flow state", addFlowWaitFlags, flowWait)
+	addLeaf(flowCommand, "check", "check flow definition", addFlowCheckFlags, flowCheck)
+	addLeaf(flowCommand, "plan", "preview flow plan", addFlowPlanFlags, flowPlan)
+	addLeaf(flowCommand, "dry-run", "dry-run flow update", addFlowDryRunFlags, flowDryRun)
+	addLeaf(flowCommand, "validate", "validate flow definition", addFlowValidateFlags, flowValidate)
+	command.AddCommand(flowCommand)
+
+	command.InitDefaultCompletionCmd()
+
+	command.AddCommand(&cobra.Command{
+		Use:     "version",
+		Short:   "show version",
+		Args:    cobra.NoArgs,
+		Aliases: []string{"v"},
+		RunE: func(*cobra.Command, []string) error {
+			return runVersion()
+		},
+	})
+	return command
+}
+
+func initAdminConfig(cmd *cobra.Command) error {
+	var searchPath string
+	if home, err := os.UserHomeDir(); err == nil {
+		searchPath = filepath.Join(home, ".config", "wallaby")
+	}
+	return cli.InitViperFromCommand(cmd, cli.ViperConfig{
+		EnvPrefix:        "WALLABY_ADMIN",
+		ConfigEnvVar:     "WALLABY_ADMIN_CONFIG",
+		ConfigName:       "wallaby-admin",
+		ConfigType:       "yaml",
+		ConfigSearchPath: []string{searchPath},
+	})
+}
+
+func runWithConfig(cmd *cobra.Command, fn func(*cobra.Command, []string) error, args []string) error {
+	return fn(cmd, args)
+}
+
+func addAdminConnectionFlags(cmd *cobra.Command, defaultEndpoint string) {
+	cmd.Flags().String("endpoint", defaultEndpoint, "admin endpoint host:port")
+	cmd.Flags().Bool("insecure", true, "use insecure gRPC")
+}
+
+func addJSONOutputFlags(cmd *cobra.Command, withYAML bool) {
+	cmd.Flags().Bool("json", false, "output JSON for scripting")
+	if withYAML {
+		cmd.Flags().Bool("yaml", false, "output YAML for scripting")
+	}
+	cmd.Flags().Bool("pretty", false, "pretty-print JSON output")
+}
+
+func addCheckFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "")
+	cmd.Flags().String("flow-id", "", "flow id to validate")
+	cmd.Flags().String("file", "", "flow config JSON file to validate")
+	cmd.Flags().Bool("connectivity", false, "probe destination connectivity")
+	cmd.Flags().Duration("timeout", 5*time.Second, "connection timeout")
+	addJSONOutputFlags(cmd, true)
+}
+
+func addDDLHistoryFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id")
+	cmd.Flags().String("status", "all", "status filter: pending|approved|rejected|applied|all")
+	addJSONOutputFlags(cmd, true)
+}
+
+func addSlotListFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id")
+	cmd.Flags().String("dsn", "", "postgres source dsn")
+	cmd.Flags().String("slot", "", "optional slot filter")
+	addJSONOutputFlags(cmd, false)
+	addAWSIAMFlags(cmd)
+}
+
+func addSlotShowFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id")
+	cmd.Flags().String("dsn", "", "postgres source dsn")
+	cmd.Flags().String("slot", "", "slot name (optional if using --flow-id)")
+	addJSONOutputFlags(cmd, false)
+	addAWSIAMFlags(cmd)
+}
+
+func addSlotDropFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id")
+	cmd.Flags().String("dsn", "", "postgres source dsn")
+	cmd.Flags().String("slot", "", "slot name (optional if using --flow-id)")
+	cmd.Flags().Bool("if-exists", true, "succeed even when slot is missing")
+	addJSONOutputFlags(cmd, false)
+	addAWSIAMFlags(cmd)
+}
+
+func addDDLListFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("status", "pending", "status filter: pending|approved|rejected|applied|all")
+	cmd.Flags().String("flow-id", "", "filter by flow id")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addDDLShowFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().Int64("id", 0, "DDL event ID")
+	cmd.Flags().String("status", "all", "status filter: pending|approved|rejected|applied|all")
+	cmd.Flags().String("flow-id", "", "optional filter by flow id")
+	addJSONOutputFlags(cmd, true)
+}
+
+func addDDLApproveFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().Int64("id", 0, "DDL event ID")
+}
+
+func addDDLRejectFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().Int64("id", 0, "DDL event ID")
+}
+
+func addDDLApplyFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().Int64("id", 0, "DDL event ID")
+}
+
+func addStreamReplayFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("stream", "", "stream name")
+	cmd.Flags().String("group", "", "consumer group")
+	cmd.Flags().String("from-lsn", "", "replay events from this LSN (optional)")
+	cmd.Flags().String("since", "", "replay events since RFC3339 time (optional)")
+}
+
+func addCertifyFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id to load source/destination DSNs")
+	cmd.Flags().String("destination", "", "destination name (required when flow has multiple destinations)")
+	cmd.Flags().String("source-dsn", "", "source Postgres DSN (overrides flow)")
+	cmd.Flags().String("dest-dsn", "", "destination Postgres DSN (overrides flow)")
+	cmd.Flags().String("table", "", "table name (schema.table)")
+	cmd.Flags().String("tables", "", "comma-separated table list (schema.table)")
+	cmd.Flags().String("primary-keys", "", "comma-separated primary key columns (optional)")
+	cmd.Flags().String("columns", "", "comma-separated columns to hash (optional)")
+	cmd.Flags().Float64("sample-rate", 1, "sample rate 0..1 (uses deterministic PK hash)")
+	cmd.Flags().Int("sample-limit", 0, "max rows to hash per table")
+	addJSONOutputFlags(cmd, false)
+	addAWSIAMFlags(cmd)
+
+	var sourceOpts keyValueFlag
+	cmd.Flags().Var(&sourceOpts, "source-opt", "source option key=value (repeatable)")
+	var destOpts keyValueFlag
+	cmd.Flags().Var(&destOpts, "dest-opt", "destination option key=value (repeatable)")
+}
+
+func addFlowCreateFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("file", "", "flow config JSON file")
+	cmd.Flags().Bool("start", false, "start flow immediately")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addFlowUpdateFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("file", "", "flow config JSON file")
+	cmd.Flags().String("flow-id", "", "flow id override")
+	cmd.Flags().Bool("pause", false, "pause flow before update")
+	cmd.Flags().Bool("resume", false, "resume flow after update")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addFlowReconfigureFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("file", "", "flow config JSON file")
+	cmd.Flags().String("flow-id", "", "flow id override")
+	cmd.Flags().Bool("pause", true, "pause flow before reconfigure")
+	cmd.Flags().Bool("resume", true, "resume flow after reconfigure")
+	cmd.Flags().Bool("sync-publication", false, "sync publication tables after update")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addFlowRunOnceFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addFlowStartFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addFlowStopFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addFlowResumeFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addFlowCleanupFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id")
+	cmd.Flags().Bool("drop-slot", true, "drop replication slot")
+	cmd.Flags().Bool("drop-publication", false, "drop publication")
+	cmd.Flags().Bool("drop-source-state", true, "delete source state row")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addStreamPullFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("stream", "", "stream name")
+	cmd.Flags().String("group", "", "consumer group")
+	cmd.Flags().Int("max", 10, "max messages to pull")
+	cmd.Flags().Int("visibility", 30, "visibility timeout seconds")
+	cmd.Flags().String("consumer", "", "consumer id")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addStreamAckFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("stream", "", "stream name")
+	cmd.Flags().String("group", "", "consumer group")
+	cmd.Flags().String("ids", "", "comma-separated message ids")
+}
+
+func addPublicationListFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id (optional if --dsn and --publication provided)")
+	cmd.Flags().String("dsn", "", "postgres source dsn")
+	cmd.Flags().String("publication", "", "publication name")
+	addJSONOutputFlags(cmd, false)
+	addAWSIAMFlags(cmd)
+}
+
+func addPublicationAddFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id (optional if --dsn and --publication provided)")
+	cmd.Flags().String("dsn", "", "postgres source dsn")
+	cmd.Flags().String("publication", "", "publication name")
+	cmd.Flags().String("tables", "", "comma-separated schema.table list")
+	addAWSIAMFlags(cmd)
+}
+
+func addPublicationRemoveFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id (optional if --dsn and --publication provided)")
+	cmd.Flags().String("dsn", "", "postgres source dsn")
+	cmd.Flags().String("publication", "", "publication name")
+	cmd.Flags().String("tables", "", "comma-separated schema.table list")
+	addAWSIAMFlags(cmd)
+}
+
+func addPublicationSyncFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id")
+	cmd.Flags().String("dsn", "", "postgres source dsn override")
+	cmd.Flags().String("publication", "", "publication name override")
+	cmd.Flags().String("tables", "", "comma-separated schema.table list")
+	cmd.Flags().String("schemas", "", "comma-separated schemas for auto-discovery")
+	cmd.Flags().String("mode", "add", "sync mode: add or sync")
+	cmd.Flags().Bool("pause", true, "pause flow before sync")
+	cmd.Flags().Bool("resume", true, "resume flow after sync")
+	cmd.Flags().Bool("snapshot", false, "run backfill for newly added tables")
+	cmd.Flags().Int("snapshot-workers", 0, "parallel workers for backfill snapshots")
+	cmd.Flags().String("partition-column", "", "partition column for backfill hashing")
+	cmd.Flags().Int("partition-count", 0, "partition count per table for backfill hashing")
+	cmd.Flags().String("snapshot-state-backend", "", "snapshot state backend (postgres|file|none)")
+	cmd.Flags().String("snapshot-state-path", "", "snapshot state path (file backend)")
+	addAWSIAMFlags(cmd)
+}
+
+func addPublicationScrapeFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id (optional if --dsn and --publication provided)")
+	cmd.Flags().String("dsn", "", "postgres source dsn")
+	cmd.Flags().String("publication", "", "publication name")
+	cmd.Flags().String("schemas", "", "comma-separated schemas")
+	cmd.Flags().Bool("apply", false, "add newly discovered tables to publication")
+	addAWSIAMFlags(cmd)
+}
+
+func addFlowResolveStagingFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id")
+	cmd.Flags().String("tables", "", "comma-separated tables (schema.table)")
+	cmd.Flags().String("schemas", "", "comma-separated schemas to resolve")
+	cmd.Flags().String("dest", "", "destination name (optional)")
+}
+
+func addFlowListFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().Int("page-size", 0, "max flows per request (0 = server default)")
+	cmd.Flags().String("page-token", "", "pagination token")
+	cmd.Flags().String("state", "", "optional state filter: created|running|paused|stopping|failed")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addFlowGetFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addFlowDeleteFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addFlowWaitFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "localhost:8080")
+	cmd.Flags().String("flow-id", "", "flow id")
+	cmd.Flags().String("state", "", "target state: created|running|paused|stopping|failed")
+	cmd.Flags().Duration("timeout", 60*time.Second, "max time to wait")
+	cmd.Flags().Duration("interval", 2*time.Second, "poll interval")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addFlowValidateFlags(cmd *cobra.Command) {
+	cmd.Flags().String("file", "", "flow config JSON file")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addFlowDryRunFlags(cmd *cobra.Command) {
+	cmd.Flags().String("file", "", "flow config JSON file")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addFlowPlanFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "")
+	cmd.Flags().String("file", "", "flow config JSON file")
+	addJSONOutputFlags(cmd, false)
+}
+
+func addFlowCheckFlags(cmd *cobra.Command) {
+	addAdminConnectionFlags(cmd, "")
+	cmd.Flags().String("file", "", "flow config JSON file")
+	addJSONOutputFlags(cmd, false)
+}
+
+func stringFlag(cmd *cobra.Command, name string) (*string, error) {
+	v, err := cli.ResolveStringFlagValue(cmd, name)
+	if err != nil {
+		return nil, fmt.Errorf("read --%s: %w", name, err)
+	}
+	return v, nil
+}
+
+func boolFlag(cmd *cobra.Command, name string) (*bool, error) {
+	v, err := cli.ResolveBoolFlagValue(cmd, name)
+	if err != nil {
+		return nil, fmt.Errorf("read --%s: %w", name, err)
+	}
+	return v, nil
+}
+
+func durationFlag(cmd *cobra.Command, name string) (*time.Duration, error) {
+	v, err := cli.ResolveDurationFlagValue(cmd, name)
+	if err != nil {
+		return nil, fmt.Errorf("read --%s: %w", name, err)
+	}
+	return v, nil
+}
+
+func intFlag(cmd *cobra.Command, name string) (*int, error) {
+	v, err := cli.ResolveIntFlagValue(cmd, name)
+	if err != nil {
+		return nil, fmt.Errorf("read --%s: %w", name, err)
+	}
+	return v, nil
+}
+
+func int64Flag(cmd *cobra.Command, _ string) (*int64, error) {
+	v, err := cli.ResolveInt64FlagValue(cmd, "id")
+	if err != nil {
+		return nil, fmt.Errorf("read --id: %w", err)
+	}
+	return v, nil
+}
+
+func float64Flag(cmd *cobra.Command, name string) (*float64, error) {
+	v, err := cli.ResolveFloat64FlagValue(cmd, name)
+	if err != nil {
+		return nil, fmt.Errorf("read --%s: %w", name, err)
+	}
+	return v, nil
+}
+
+func keyValueFlagValue(cmd *cobra.Command, name string) (*keyValueFlag, error) {
+	f := cmd.Flags().Lookup(name)
+	if f == nil {
+		return nil, fmt.Errorf("read --%s: missing flag", name)
+	}
+	kv, ok := f.Value.(*keyValueFlag)
+	if !ok {
+		return nil, fmt.Errorf("read --%s: invalid flag type", name)
+	}
+	return kv, nil
+}
+
+func awsIAMOptions(cmd *cobra.Command) (*awsIAMFlags, error) {
+	enabled, err := boolFlag(cmd, "aws-rds-iam")
+	if err != nil {
+		return nil, err
+	}
+	region, err := stringFlag(cmd, "aws-region")
+	if err != nil {
+		return nil, err
+	}
+	profile, err := stringFlag(cmd, "aws-profile")
+	if err != nil {
+		return nil, err
+	}
+	roleARN, err := stringFlag(cmd, "aws-role-arn")
+	if err != nil {
+		return nil, err
+	}
+	roleSessionName, err := stringFlag(cmd, "aws-role-session-name")
+	if err != nil {
+		return nil, err
+	}
+	roleExternalID, err := stringFlag(cmd, "aws-role-external-id")
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err := stringFlag(cmd, "aws-endpoint")
+	if err != nil {
+		return nil, err
+	}
+	return &awsIAMFlags{
+		enabled:         enabled,
+		region:          region,
+		profile:         profile,
+		roleARN:         roleARN,
+		roleSessionName: roleSessionName,
+		roleExternalID:  roleExternalID,
+		endpoint:        endpoint,
+	}, nil
+}
+
+func renderTextTable(headers []string, rows [][]string) {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	header := make(table.Row, len(headers))
+	for i, value := range headers {
+		header[i] = value
+	}
+	t.AppendHeader(header)
+	for _, rowValues := range rows {
+		row := make(table.Row, len(rowValues))
+		for i, value := range rowValues {
+			row[i] = value
+		}
+		t.AppendRow(row)
+	}
+	t.Render()
+}
+
+func runVersion() error {
+	fmt.Printf("wallaby-admin %s\n", cliVersion)
+	return nil
+}
+
+var adminFileSystem = afero.NewOsFs()
+
+func readFile(path string) ([]byte, error) {
+	return afero.ReadFile(adminFileSystem, path)
+}
+
+func runCheck(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	configPath, err := stringFlag(cmd, "file")
+	if err != nil {
+		return err
+	}
+	checkConnectivity, err := boolFlag(cmd, "connectivity")
+	if err != nil {
+		return err
+	}
+	connectTimeout, err := durationFlag(cmd, "timeout")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	yamlOutput, err := boolFlag(cmd, "yaml")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+	type checkArgs struct {
+		Endpoint   string `validate:"required_without_all=FlowID ConfigPath"`
+		FlowID     string `validate:"required_without_all=Endpoint ConfigPath"`
+		ConfigPath string `validate:"required_without_all=Endpoint FlowID"`
+	}
+
+	validation := validator.New()
+	if err := validation.Struct(checkArgs{
+		Endpoint:   *endpoint,
+		FlowID:     *flowID,
+		ConfigPath: *configPath,
+	}); err != nil {
+		return errors.New("--flow-id, --file, or --endpoint is required")
+	}
+	if *flowID == "" && *configPath == "" && *endpoint == "" {
+		return errors.New("--flow-id, --file, or --endpoint is required")
+	}
+	if *flowID != "" && *endpoint == "" {
+		return errors.New("--endpoint is required when --flow-id is set")
+	}
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput && *yamlOutput {
+		return errors.New("use either --json or --yaml")
+	}
+
+	result := checkResult{
+		CheckedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), *connectTimeout)
+	defer cancel()
+
+	var endpoints []*wallabypb.Endpoint
+	var flow *wallabypb.Flow
+
+	if *endpoint != "" {
+		client, closeConn, err := flowClient(*endpoint, *insecureConn)
+		if err != nil {
+			result.AdminReachable = false
+			result.Endpoint = *endpoint
+			result.EndpointError = err.Error()
+			if *flowID != "" {
+				return fmt.Errorf("admin endpoint check: %w", err)
+			}
+		} else {
+			result.Endpoint = *endpoint
+			result.AdminReachable = true
+			defer func() { _ = closeConn() }()
+			if *flowID != "" {
+				resp, err := client.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: *flowID})
+				if err != nil {
+					return fmt.Errorf("get flow: %w", err)
+				}
+				flow = resp
+			}
+		}
+	}
+
+	if *flowID != "" && flow == nil {
+		return errors.New("flow load failed")
+	}
+	if flow != nil {
+		result.FlowID = flow.Id
+		result.FlowName = flow.Name
+		endpoints = append(endpoints, flow.Source)
+		endpoints = append(endpoints, flow.Destinations...)
+	}
+
+	if *configPath != "" {
+		fsys := afero.NewOsFs()
+		payload, err := afero.ReadFile(fsys, *configPath)
+		if err != nil {
+			return fmt.Errorf("read flow config: %w", err)
+		}
+		var cfg flowConfig
+		if err := json.Unmarshal(payload, &cfg); err != nil {
+			return fmt.Errorf("parse flow config: %w", err)
+		}
+		if _, err := flowConfigToProto(cfg); err != nil {
+			return fmt.Errorf("flow config: %w", err)
+		}
+		result.ConfigFile = *configPath
+
+		pbFlow, err := flowConfigToProto(cfg)
+		if err != nil {
+			return fmt.Errorf("flow config: %w", err)
+		}
+		// Keep config file details in the output even if flow-id mode was used.
+		if result.FlowID == "" {
+			result.FlowID = pbFlow.Id
+		}
+		if result.FlowName == "" {
+			result.FlowName = pbFlow.Name
+		}
+		cfgEndpoints := make([]*wallabypb.Endpoint, 0, len(pbFlow.Destinations)+1)
+		if pbFlow.Source != nil {
+			cfgEndpoints = append(cfgEndpoints, pbFlow.Source)
+		}
+		cfgEndpoints = append(cfgEndpoints, pbFlow.Destinations...)
+		endpoints = append(endpoints, cfgEndpoints...)
+	}
+
+	if len(endpoints) == 0 {
+		result.AdminReachable = result.AdminReachable || *endpoint == ""
+		if *endpoint == "" {
+			result.Endpoint = "offline"
+		}
+	}
+
+	if result.Endpoint == "" {
+		result.Endpoint = "offline"
+	}
+
+	for idx, item := range endpoints {
+		if item == nil {
+			continue
+		}
+		isSource := flow != nil && flow.Source != nil && item == flow.Source
+		if !isSource && flow == nil && idx == 0 {
+			isSource = true
+		}
+		record := checkEndpointResult(item.Name, endpointTypeFromProto(item.Type), isSource, item.Options, *checkConnectivity, *connectTimeout)
+		if record.Source {
+			result.Source = record
+		} else {
+			result.Destinations = append(result.Destinations, record)
+		}
+	}
+
+	if *jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(result); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	if *yamlOutput {
+		out, err := yaml.Marshal(result)
+		if err != nil {
+			return fmt.Errorf("encode yaml: %w", err)
+		}
+		_, err = os.Stdout.Write(out)
+		return err
+	}
+
+	fmt.Printf("check ok: flow=%q endpoint=%q admin=%t\n", result.FlowID, result.Endpoint, result.AdminReachable)
+	if len(result.Source.Name) > 0 {
+		fmt.Printf("source: %s (%s) reachable=%t\n", result.Source.Name, result.Source.Type, result.Source.Reachable)
+	}
+	for _, dest := range result.Destinations {
+		fmt.Printf("destination: %s (%s) reachable=%t\n", dest.Name, dest.Type, dest.Reachable)
 	}
 	return nil
 }
 
-func ddlList(args []string) error {
-	fs := flag.NewFlagSet("ddl list", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	status := fs.String("status", "pending", "status filter: pending|approved|rejected|applied|all")
-	flowID := fs.String("flow-id", "", "filter by flow id")
-	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
-	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	if err := fs.Parse(args); err != nil {
+func checkEndpointResult(name string, endpointType connector.EndpointType, isSource bool, options map[string]string, checkConnectivity bool, checkTimeout time.Duration) endpointCheckResult {
+	result := endpointCheckResult{
+		Name:      name,
+		Type:      string(endpointType),
+		Source:    isSource,
+		Checked:   false,
+		Reachable: true,
+	}
+	if !checkConnectivity {
+		return result
+	}
+
+	result.Checked = true
+	start := time.Now()
+	if err := checkEndpointConnectivity(endpointType, options, checkTimeout); err != nil {
+		result.Reachable = false
+		result.Error = err.Error()
+		return result
+	}
+	result.Reachable = true
+	result.LatencyMs = time.Since(start).Milliseconds()
+	return result
+}
+
+func checkEndpointConnectivity(endpointType connector.EndpointType, options map[string]string, timeout time.Duration) error {
+	switch endpointType {
+	case connector.EndpointPostgres, connector.EndpointPGStream:
+		dsn := strings.TrimSpace(optionValue(options, "dsn"))
+		if dsn == "" {
+			return errors.New("dsn is required for connectivity check")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		conn, err := pgx.Connect(ctx, dsn)
+		if err != nil {
+			return fmt.Errorf("connect postgres: %w", err)
+		}
+		defer func() {
+			_ = conn.Close(context.Background())
+		}()
+		var one int
+		if err := conn.QueryRow(ctx, "SELECT 1").Scan(&one); err != nil {
+			return fmt.Errorf("postgres query: %w", err)
+		}
+		return nil
+
+	case connector.EndpointKafka:
+		brokers := strings.TrimSpace(optionValue(options, "brokers"))
+		if brokers == "" {
+			return errors.New("brokers is required for connectivity check")
+		}
+		target, _, err := firstCSVValue(brokers)
+		if err != nil {
+			return err
+		}
+		if err := checkNetworkConnectivity(target, timeout); err != nil {
+			return fmt.Errorf("connect kafka broker: %w", err)
+		}
+		return nil
+
+	case connector.EndpointHTTP:
+		target := firstOption(options, []string{"url", "endpoint", "target", "server"}, "")
+		if target == "" {
+			return errors.New("url is required for connectivity check")
+		}
+		return checkHTTPConnectivity(target, timeout)
+
+	case connector.EndpointGRPC, connector.EndpointS3, connector.EndpointSnowflake, connector.EndpointSnowpipe, connector.EndpointParquet, connector.EndpointDuckLake, connector.EndpointDuckDB, connector.EndpointBufStream, connector.EndpointClickHouse, connector.EndpointProto:
+		target := firstOption(options, []string{"url", "endpoint", "target", "address", "addr", "host", "dsn"}, "")
+		if target == "" {
+			return fmt.Errorf("connectivity target is required for endpoint type %q", endpointType)
+		}
+		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+			return checkHTTPConnectivity(target, timeout)
+		}
+		return checkNetworkConnectivity(target, timeout)
+	default:
+		return fmt.Errorf("connectivity check unsupported for endpoint type %q", endpointType)
+	}
+}
+
+func checkHTTPConnectivity(target string, timeout time.Duration) error {
+	urlValue := strings.TrimSpace(target)
+	if urlValue == "" {
+		return errors.New("url is required")
+	}
+	if !strings.Contains(urlValue, "://") {
+		urlValue = "http://" + urlValue
+	}
+	parsed, err := url.Parse(urlValue)
+	if err != nil {
+		return fmt.Errorf("parse url: %w", err)
+	}
+	if parsed.Host == "" {
+		return errors.New("url must include host")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "HEAD", parsed.String(), nil)
+	if err != nil {
+		return fmt.Errorf("http request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("http check: %w", err)
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+func checkNetworkConnectivity(target string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", target)
+	if err != nil {
+		return fmt.Errorf("tcp dial: %w", err)
+	}
+	_ = conn.Close()
+	return nil
+}
+
+func firstCSVValue(value string) (string, bool, error) {
+	pieces := parseCSVValue(value)
+	if len(pieces) == 0 {
+		return "", false, errors.New("no endpoint specified")
+	}
+	return pieces[0], true, nil
+}
+
+func firstOption(options map[string]string, keys []string, fallback string) string {
+	for _, key := range keys {
+		if val := strings.TrimSpace(optionValue(options, key)); val != "" {
+			return val
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return ""
+}
+
+func optionValue(options map[string]string, key string) string {
+	if len(options) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(options[key])
+}
+
+func ddlHistory(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	status, err := stringFlag(cmd, "status")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	yamlOutput, err := boolFlag(cmd, "yaml")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(*flowID) == "" {
+		return errors.New("--flow-id is required")
+	}
+
+	client, closeConn, err := ddlClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := client.ListDDL(ctx, &wallabypb.ListDDLRequest{
+		Status: *status,
+		FlowId: *flowID,
+	})
+	if err != nil {
+		return fmt.Errorf("list ddl: %w", err)
+	}
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	out := ddlHistoryOutput{
+		FlowID: *flowID,
+		Status: *status,
+		Count:  len(resp.Events),
+		Events: ddlListEvents(resp.Events),
+	}
+
+	if *yamlOutput {
+		if *jsonOutput {
+			return errors.New("cannot use --json and --yaml together")
+		}
+		yamlPayload, err := yaml.Marshal(out)
+		if err != nil {
+			return fmt.Errorf("encode yaml: %w", err)
+		}
+		_, err = os.Stdout.Write(yamlPayload)
+		return err
+	}
+
+	if *jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	if len(out.Events) == 0 {
+		fmt.Printf("No ddl history for flow %s.\n", *flowID)
+		return nil
+	}
+
+	fmt.Printf("DDL history for flow=%s status=%s:\n", *flowID, *status)
+	for _, event := range out.Events {
+		line := fmt.Sprintf("%-6d %-10s %-18s %s", event.ID, event.Status, event.LSN, truncate(ddlListRecordSummary(event), 140))
+		fmt.Println(line)
+	}
+	return nil
+}
+
+func ddlListRecordSummary(event ddlListRecord) string {
+	if event.DDL != "" {
+		return event.DDL
+	}
+	if event.PlanJSON != "" {
+		return "plan:" + event.PlanJSON
+	}
+	return "(no ddl)"
+}
+
+func slotUsage() {
+	fmt.Println("Slot subcommands:")
+	fmt.Println("  wallaby-admin slot list --flow-id <id> [--slot <name>] [--json|--pretty]")
+	fmt.Println("  wallaby-admin slot list --dsn <dsn> [--slot <name>] [--aws-* flags] [--json|--pretty]")
+	fmt.Println("  wallaby-admin slot show --flow-id <id> [--slot <name>] [--json|--pretty]")
+	fmt.Println("  wallaby-admin slot show --dsn <dsn> --slot <name> [--aws-* flags] [--json|--pretty]")
+	fmt.Println("  wallaby-admin slot drop --flow-id <id> [--slot <name>] [--if-exists] [--json|--pretty]")
+	fmt.Println("  wallaby-admin slot drop --dsn <dsn> --slot <name> [--if-exists] [--aws-* flags]")
+	fmt.Println("  IAM flags: --aws-rds-iam --aws-region <region> --aws-profile <profile> --aws-role-arn <arn>")
+	os.Exit(1)
+}
+
+func slotList(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	dsn, err := stringFlag(cmd, "dsn")
+	if err != nil {
+		return err
+	}
+	slot, err := stringFlag(cmd, "slot")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+	awsFlags, err := awsIAMOptions(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cfg, err := resolveSlotConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, "", false, awsFlags.options())
+	if err != nil {
+		return err
+	}
+
+	var records []slotListRecord
+	slotName := strings.TrimSpace(*slot)
+	if cfg.flow != nil {
+		flowSvc, closeConn, err := flowClient(*endpoint, *insecureConn)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = closeConn() }()
+
+		if slotName == "" {
+			resp, err := flowSvc.ListReplicationSlots(ctx, &wallabypb.ListReplicationSlotsRequest{
+				FlowId:  cfg.flow.Id,
+				Dsn:     cfg.dsn,
+				Slot:    slotName,
+				Options: cfg.options,
+			})
+			if err != nil {
+				return fmt.Errorf("list replication slots: %w", err)
+			}
+			for _, item := range resp.Slots {
+				records = append(records, slotListRecordFromProto(item))
+			}
+		} else {
+			resp, err := flowSvc.GetReplicationSlot(ctx, &wallabypb.GetReplicationSlotRequest{
+				FlowId:  cfg.flow.Id,
+				Dsn:     cfg.dsn,
+				Slot:    slotName,
+				Options: cfg.options,
+			})
+			if err != nil {
+				return fmt.Errorf("get replication slot: %w", err)
+			}
+			records = append(records, slotListRecordFromProto(resp.Slot))
+		}
+	} else {
+		if slotName == "" {
+			slots, err := postgres.ListReplicationSlots(ctx, cfg.dsn, cfg.options)
+			if err != nil {
+				return err
+			}
+			for _, item := range slots {
+				records = append(records, slotListRecordFromInfo(item))
+			}
+		} else {
+			item, ok, err := postgres.GetReplicationSlot(ctx, cfg.dsn, slotName, cfg.options)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("slot %q not found", slotName)
+			}
+			records = append(records, slotListRecordFromInfo(item))
+		}
+	}
+
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		out := slotListOutput{
+			Count: len(records),
+			Slots: records,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	if len(records) == 0 {
+		fmt.Println("No replication slots found.")
+		return nil
+	}
+
+	rows := make([][]string, 0, len(records))
+	for _, item := range records {
+		pid := "n/a"
+		if item.ActivePID != nil {
+			pid = fmt.Sprintf("%d", *item.ActivePID)
+		}
+		rows = append(rows, []string{
+			item.SlotName,
+			item.Plugin,
+			item.SlotType,
+			item.Database,
+			fmt.Sprintf("%t", item.Active),
+			pid,
+			fmt.Sprintf("%t", item.Temporary),
+			item.WalStatus,
+			item.RestartLSN,
+		})
+	}
+	renderTextTable([]string{
+		"SLOT",
+		"PLUGIN",
+		"TYPE",
+		"DB",
+		"ACTIVE",
+		"ACTIVE_PID",
+		"TEMP",
+		"WAL_STATUS",
+		"RESTART_LSN",
+	}, rows)
+	return nil
+}
+
+func slotShow(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	dsn, err := stringFlag(cmd, "dsn")
+	if err != nil {
+		return err
+	}
+	slot, err := stringFlag(cmd, "slot")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+	awsFlags, err := awsIAMOptions(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cfg, err := resolveSlotConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *slot, true, awsFlags.options())
+	if err != nil {
+		return err
+	}
+
+	var record slotListRecord
+	if cfg.flow != nil {
+		flowSvc, closeConn, err := flowClient(*endpoint, *insecureConn)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = closeConn() }()
+		resp, err := flowSvc.GetReplicationSlot(ctx, &wallabypb.GetReplicationSlotRequest{
+			FlowId:  cfg.flow.Id,
+			Dsn:     cfg.dsn,
+			Slot:    cfg.slot,
+			Options: cfg.options,
+		})
+		if err != nil {
+			return fmt.Errorf("get replication slot: %w", err)
+		}
+		record = slotListRecordFromProto(resp.Slot)
+	} else {
+		item, ok, err := postgres.GetReplicationSlot(ctx, cfg.dsn, cfg.slot, cfg.options)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("slot %q not found", cfg.slot)
+		}
+		record = slotListRecordFromInfo(item)
+	}
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(record); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	pid := "n/a"
+	if record.ActivePID != nil {
+		pid = fmt.Sprintf("%d", *record.ActivePID)
+	}
+	fmt.Printf("slot=%s plugin=%s type=%s db=%s active=%t active_pid=%s temp=%t wal_status=%s restart_lsn=%s confirmed_flush_lsn=%s\n",
+		record.SlotName, record.Plugin, record.SlotType, record.Database, record.Active, pid, record.Temporary, record.WalStatus, record.RestartLSN, record.ConfirmedFlushLSN)
+	return nil
+}
+
+func slotDrop(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	dsn, err := stringFlag(cmd, "dsn")
+	if err != nil {
+		return err
+	}
+	slot, err := stringFlag(cmd, "slot")
+	if err != nil {
+		return err
+	}
+	ifExists, err := boolFlag(cmd, "if-exists")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+	awsFlags, err := awsIAMOptions(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cfg, err := resolveSlotConfig(ctx, *endpoint, *insecureConn, *flowID, *dsn, *slot, true, awsFlags.options())
+	if err != nil {
+		return err
+	}
+
+	var found bool
+	var dropped bool
+	if cfg.flow != nil {
+		flowSvc, closeConn, err := flowClient(*endpoint, *insecureConn)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = closeConn() }()
+		resp, err := flowSvc.DropReplicationSlot(ctx, &wallabypb.DropReplicationSlotRequest{
+			FlowId:   cfg.flow.Id,
+			Dsn:      cfg.dsn,
+			Slot:     cfg.slot,
+			IfExists: *ifExists,
+			Options:  cfg.options,
+		})
+		if err != nil {
+			return fmt.Errorf("drop replication slot: %w", err)
+		}
+		found = resp.Found
+		dropped = resp.Dropped
+	} else {
+		_, ok, getErr := postgres.GetReplicationSlot(ctx, cfg.dsn, cfg.slot, cfg.options)
+		if getErr != nil {
+			return getErr
+		}
+		if !*ifExists && !ok {
+			return fmt.Errorf("slot %q not found", cfg.slot)
+		}
+		if err := postgres.DropReplicationSlot(ctx, cfg.dsn, cfg.slot, cfg.options); err != nil {
+			return fmt.Errorf("drop replication slot: %w", err)
+		}
+		found = true
+		dropped = true
+	}
+
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		out := slotDropOutput{
+			SlotName: cfg.slot,
+			Dropped:  dropped,
+			Found:    found,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	if dropped && found {
+		fmt.Printf("Dropped slot %s\n", cfg.slot)
+		return nil
+	}
+	if *ifExists {
+		fmt.Printf("Slot %s was already absent\n", cfg.slot)
+	} else {
+		fmt.Printf("Dropped slot %s\n", cfg.slot)
+	}
+	return nil
+}
+
+func ddlList(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	status, err := stringFlag(cmd, "status")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
 		return err
 	}
 
@@ -137,29 +1531,171 @@ func ddlList(args []string) error {
 		return nil
 	}
 
-	fmt.Printf("%-6s %-10s %-18s %-12s %-s\n", "ID", "STATUS", "LSN", "FLOW", "DDL/PLAN")
+	rows := make([][]string, 0, len(events))
 	for _, event := range events {
 		flagged := statusFlag(event.Status)
-		line := fmt.Sprintf("%-6d %-10s %-18s %-12s %-s", event.Id, event.Status, event.Lsn, event.FlowId, ddlSummary(event))
+		summary := ddlSummary(event)
 		if flagged != "" {
-			line = fmt.Sprintf("%s [%s]", line, flagged)
+			summary = fmt.Sprintf("%s [%s]", summary, flagged)
 		}
-		fmt.Println(line)
+		rows = append(rows, []string{
+			fmt.Sprintf("%d", event.Id),
+			event.Status,
+			event.Lsn,
+			event.FlowId,
+			summary,
+		})
 	}
+	renderTextTable([]string{"ID", "STATUS", "LSN", "FLOW", "DDL/PLAN"}, rows)
 	return nil
 }
 
-func ddlApprove(args []string) error {
-	fs := flag.NewFlagSet("ddl approve", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	id := fs.Int64("id", 0, "DDL event ID")
-	if err := fs.Parse(args); err != nil {
+func ddlShow(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	id, err := int64Flag(cmd, "id")
+	if err != nil {
+		return err
+	}
+	status, err := stringFlag(cmd, "status")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
 		return err
 	}
 
 	if *id == 0 {
-		return errors.New("-id is required")
+		return errors.New("--id is required")
+	}
+
+	client, closeConn, err := ddlClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	event, err := loadDDLByID(ctx, client, *id, *status, *flowID)
+	if err != nil {
+		return err
+	}
+	return printDDLEvent(event, jsonOutput, prettyOutput)
+}
+
+func loadDDLByID(ctx context.Context, client wallabypb.DDLServiceClient, id int64, status string, flowID string) (*wallabypb.DDLEvent, error) {
+	requestedStatus := strings.TrimSpace(strings.ToLower(status))
+	if requestedStatus == "" {
+		requestedStatus = "all"
+	}
+
+	switch requestedStatus {
+	case "pending":
+		resp, err := client.ListPendingDDL(ctx, &wallabypb.ListPendingDDLRequest{FlowId: flowID})
+		if err != nil {
+			return nil, fmt.Errorf("list pending ddl: %w", err)
+		}
+		if event := findDDLEventByID(resp.Events, id, flowID); event != nil {
+			return event, nil
+		}
+		return nil, fmt.Errorf("ddl event %d not found", id)
+	case "approved", "rejected", "applied", "all", "":
+		resp, err := client.ListDDL(ctx, &wallabypb.ListDDLRequest{Status: requestedStatus, FlowId: flowID})
+		if err != nil {
+			return nil, fmt.Errorf("list ddl: %w", err)
+		}
+		if event := findDDLEventByID(resp.Events, id, flowID); event != nil {
+			return event, nil
+		}
+		return nil, fmt.Errorf("ddl event %d not found", id)
+	default:
+		return nil, fmt.Errorf("invalid status %q", status)
+	}
+}
+
+func findDDLEventByID(events []*wallabypb.DDLEvent, id int64, flowID string) *wallabypb.DDLEvent {
+	for _, event := range events {
+		if event == nil || event.Id != id {
+			continue
+		}
+		if flowID != "" && event.FlowId != flowID {
+			continue
+		}
+		return event
+	}
+	return nil
+}
+
+func printDDLEvent(event *wallabypb.DDLEvent, jsonOutput, prettyOutput *bool) error {
+	if event == nil {
+		return errors.New("nil ddl event")
+	}
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		out := ddlListRecord{
+			ID:        event.Id,
+			FlowID:    event.FlowId,
+			Status:    event.Status,
+			LSN:       event.Lsn,
+			DDL:       event.Ddl,
+			PlanJSON:  event.PlanJson,
+			CreatedAt: formatProtoTime(event.CreatedAt),
+		}
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	fmt.Printf("DDL %d status=%s flow=%s lsn=%s created=%s\n", event.Id, event.Status, event.FlowId, event.Lsn, formatProtoTime(event.CreatedAt))
+	if event.Ddl != "" {
+		fmt.Printf("%s\n", event.Ddl)
+	}
+	if event.PlanJson != "" {
+		fmt.Printf("plan=%s\n", event.PlanJson)
+	}
+	return nil
+}
+
+func ddlApprove(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	id, err := int64Flag(cmd, "id")
+	if err != nil {
+		return err
+	}
+
+	if *id == 0 {
+		return errors.New("--id is required")
 	}
 
 	client, closeConn, err := ddlClient(*endpoint, *insecureConn)
@@ -179,17 +1715,22 @@ func ddlApprove(args []string) error {
 	return nil
 }
 
-func ddlReject(args []string) error {
-	fs := flag.NewFlagSet("ddl reject", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	id := fs.Int64("id", 0, "DDL event ID")
-	if err := fs.Parse(args); err != nil {
+func ddlReject(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	id, err := int64Flag(cmd, "id")
+	if err != nil {
 		return err
 	}
 
 	if *id == 0 {
-		return errors.New("-id is required")
+		return errors.New("--id is required")
 	}
 
 	client, closeConn, err := ddlClient(*endpoint, *insecureConn)
@@ -209,17 +1750,22 @@ func ddlReject(args []string) error {
 	return nil
 }
 
-func ddlApply(args []string) error {
-	fs := flag.NewFlagSet("ddl apply", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	id := fs.Int64("id", 0, "DDL event ID")
-	if err := fs.Parse(args); err != nil {
+func ddlApply(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	id, err := int64Flag(cmd, "id")
+	if err != nil {
 		return err
 	}
 
 	if *id == 0 {
-		return errors.New("-id is required")
+		return errors.New("--id is required")
 	}
 
 	client, closeConn, err := ddlClient(*endpoint, *insecureConn)
@@ -274,6 +1820,13 @@ func truncate(value string, max int) string {
 	return value[:max-3] + "..."
 }
 
+func formatProtoTime(ts *timestamppb.Timestamp) string {
+	if ts == nil {
+		return ""
+	}
+	return ts.AsTime().Format(time.RFC3339Nano)
+}
+
 func statusFlag(status string) string {
 	switch strings.ToLower(status) {
 	case "rejected", "failed":
@@ -285,54 +1838,57 @@ func statusFlag(status string) string {
 
 func usage() {
 	fmt.Println("Usage:")
-	fmt.Println("  wallaby-admin ddl <list|approve|reject|apply> [flags]")
+	fmt.Println("  wallaby-admin slot <list|show|drop> [flags]")
+	fmt.Println("  wallaby-admin ddl <list|history|show|approve|reject|apply> [flags]")
+	fmt.Println("  wallaby-admin check [flags]")
 	fmt.Println("  wallaby-admin stream <replay|pull|ack> [flags]")
 	fmt.Println("  wallaby-admin publication <list|add|remove|sync|scrape> [flags]")
-	fmt.Println("  wallaby-admin flow <create|update|reconfigure|start|run-once|stop|resume|cleanup|resolve-staging> [flags]")
+	fmt.Println("  wallaby-admin flow <create|update|reconfigure|start|run-once|stop|resume|cleanup|resolve-staging|get|list|delete|wait|validate|check|plan|dry-run> [flags]")
+	fmt.Println("  wallaby-admin completion [bash|zsh|fish|powershell|powershell_core]")
+	fmt.Println("  wallaby-admin version")
 	fmt.Println("  wallaby-admin certify [flags]")
 	os.Exit(1)
 }
 
 func ddlUsage() {
 	fmt.Println("DDL subcommands:")
-	fmt.Println("  wallaby-admin ddl list -status pending|approved|rejected|applied|all [-flow-id <flow_id>]")
-	fmt.Println("  wallaby-admin ddl approve -id <event_id>")
-	fmt.Println("  wallaby-admin ddl reject -id <event_id>")
-	fmt.Println("  wallaby-admin ddl apply -id <event_id>")
+	fmt.Println("  wallaby-admin ddl list --status pending|approved|rejected|applied|all [--flow-id <flow_id>]")
+	fmt.Println("  wallaby-admin ddl history --flow-id <flow_id> [--json|--pretty|--yaml]")
+	fmt.Println("  wallaby-admin ddl show --id <event_id> [--status pending|approved|rejected|applied|all] [--flow-id <flow_id>] [--json|--pretty]")
+	fmt.Println("  wallaby-admin ddl approve --id <event_id>")
+	fmt.Println("  wallaby-admin ddl reject --id <event_id>")
+	fmt.Println("  wallaby-admin ddl apply --id <event_id>")
 	os.Exit(1)
 }
 
-func runStream(args []string) error {
-	if len(args) < 1 {
-		streamUsage()
+func streamReplay(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
 	}
-	switch args[0] {
-	case "replay":
-		return streamReplay(args[1:])
-	case "pull":
-		return streamPull(args[1:])
-	case "ack":
-		return streamAck(args[1:])
-	default:
-		streamUsage()
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
 	}
-	return nil
-}
-
-func streamReplay(args []string) error {
-	fs := flag.NewFlagSet("stream replay", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	stream := fs.String("stream", "", "stream name")
-	consumerGroup := fs.String("group", "", "consumer group")
-	fromLSN := fs.String("from-lsn", "", "replay events from this LSN (optional)")
-	since := fs.String("since", "", "replay events since RFC3339 time (optional)")
-	if err := fs.Parse(args); err != nil {
+	stream, err := stringFlag(cmd, "stream")
+	if err != nil {
+		return err
+	}
+	consumerGroup, err := stringFlag(cmd, "group")
+	if err != nil {
+		return err
+	}
+	fromLSN, err := stringFlag(cmd, "from-lsn")
+	if err != nil {
+		return err
+	}
+	since, err := stringFlag(cmd, "since")
+	if err != nil {
 		return err
 	}
 
 	if *stream == "" || *consumerGroup == "" {
-		return errors.New("-stream and -group are required")
+		return errors.New("--stream and --group are required")
 	}
 
 	client, closeConn, err := streamClient(*endpoint, *insecureConn)
@@ -369,76 +1925,87 @@ func streamReplay(args []string) error {
 
 func streamUsage() {
 	fmt.Println("Stream subcommands:")
-	fmt.Println("  wallaby-admin stream replay -stream <name> -group <name> [-from-lsn <lsn>] [-since <rfc3339>]")
-	fmt.Println("  wallaby-admin stream pull -stream <name> -group <name> [-max 10] [-visibility 30] [-consumer <id>] [--json|--pretty]")
-	fmt.Println("  wallaby-admin stream ack -stream <name> -group <name> -ids 1,2,3")
+	fmt.Println("  wallaby-admin stream replay --stream <name> --group <name> [--from-lsn <lsn>] [--since <rfc3339>]")
+	fmt.Println("  wallaby-admin stream pull --stream <name> --group <name> [--max 10] [--visibility 30] [--consumer <id>] [--json|--pretty]")
+	fmt.Println("  wallaby-admin stream ack --stream <name> --group <name> --ids 1,2,3")
 	os.Exit(1)
 }
 
-func runFlow(args []string) error {
-	if len(args) < 1 {
-		flowUsage()
+func runCertify(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
 	}
-	switch args[0] {
-	case "create":
-		return flowCreate(args[1:])
-	case "update":
-		return flowUpdate(args[1:])
-	case "reconfigure":
-		return flowReconfigure(args[1:])
-	case "start":
-		return flowStart(args[1:])
-	case "run-once":
-		return flowRunOnce(args[1:])
-	case "stop":
-		return flowStop(args[1:])
-	case "resume":
-		return flowResume(args[1:])
-	case "cleanup":
-		return flowCleanup(args[1:])
-	case "resolve-staging":
-		return flowResolveStaging(args[1:])
-	default:
-		flowUsage()
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
 	}
-	return nil
-}
-
-func runCertify(args []string) error {
-	fs := flag.NewFlagSet("certify", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	flowID := fs.String("flow-id", "", "flow id to load source/destination DSNs")
-	destName := fs.String("destination", "", "destination name (required when flow has multiple destinations)")
-	sourceDSN := fs.String("source-dsn", "", "source Postgres DSN (overrides flow)")
-	destDSN := fs.String("dest-dsn", "", "destination Postgres DSN (overrides flow)")
-	table := fs.String("table", "", "table name (schema.table)")
-	tables := fs.String("tables", "", "comma-separated table list (schema.table)")
-	primaryKeys := fs.String("primary-keys", "", "comma-separated primary key columns (optional)")
-	columns := fs.String("columns", "", "comma-separated columns to hash (optional)")
-	sampleRate := fs.Float64("sample-rate", 1, "sample rate 0..1 (uses deterministic PK hash)")
-	sampleLimit := fs.Int("sample-limit", 0, "max rows to hash per table")
-	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
-	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-
-	var sourceOpts keyValueFlag
-	var destOpts keyValueFlag
-	fs.Var(&sourceOpts, "source-opt", "source option key=value (repeatable)")
-	fs.Var(&destOpts, "dest-opt", "destination option key=value (repeatable)")
-
-	if err := fs.Parse(args); err != nil {
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	destName, err := stringFlag(cmd, "destination")
+	if err != nil {
+		return err
+	}
+	sourceDSN, err := stringFlag(cmd, "source-dsn")
+	if err != nil {
+		return err
+	}
+	destDSN, err := stringFlag(cmd, "dest-dsn")
+	if err != nil {
+		return err
+	}
+	table, err := stringFlag(cmd, "table")
+	if err != nil {
+		return err
+	}
+	tables, err := stringFlag(cmd, "tables")
+	if err != nil {
+		return err
+	}
+	primaryKeys, err := stringFlag(cmd, "primary-keys")
+	if err != nil {
+		return err
+	}
+	columns, err := stringFlag(cmd, "columns")
+	if err != nil {
+		return err
+	}
+	sampleRate, err := float64Flag(cmd, "sample-rate")
+	if err != nil {
+		return err
+	}
+	sampleLimit, err := intFlag(cmd, "sample-limit")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+	sourceOpts, err := keyValueFlagValue(cmd, "source-opt")
+	if err != nil {
+		return err
+	}
+	destOpts, err := keyValueFlagValue(cmd, "dest-opt")
+	if err != nil {
 		return err
 	}
 
 	tableList := parseCSVValue(*tables)
 	if *table != "" {
 		if len(tableList) > 0 {
-			return errors.New("-table and -tables are mutually exclusive")
+			return errors.New("--table and --tables are mutually exclusive")
 		}
 		tableList = []string{*table}
 	}
 	if len(tableList) == 0 {
-		return errors.New("-table or -tables is required")
+		return errors.New("--table or --tables is required")
 	}
 
 	var sourceOptions map[string]string
@@ -488,10 +2055,10 @@ func runCertify(args []string) error {
 		Columns:     parseCSVValue(*columns),
 	}
 	if len(opts.PrimaryKeys) > 0 && len(tableList) > 1 {
-		return errors.New("-primary-keys can only be used with a single table")
+		return errors.New("--primary-keys can only be used with a single table")
 	}
 	if len(opts.Columns) > 0 && len(tableList) > 1 {
-		return errors.New("-columns can only be used with a single table")
+		return errors.New("--columns can only be used with a single table")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -537,35 +2104,57 @@ func runCertify(args []string) error {
 
 func flowUsage() {
 	fmt.Println("Flow subcommands:")
-	fmt.Println("  wallaby-admin flow create -file <path> [-start] [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow update -file <path> [-flow-id <id>] [-pause] [-resume] [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow reconfigure -file <path> [-flow-id <id>] [-pause] [-resume] [-sync-publication] [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow start -flow-id <id> [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow run-once -flow-id <id>")
-	fmt.Println("  wallaby-admin flow stop -flow-id <id> [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow resume -flow-id <id> [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow cleanup -flow-id <id> [-drop-slot] [-drop-publication] [-drop-source-state] [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow resolve-staging -flow-id <id> [-tables schema.table,...] [-schemas public,...] [-dest <name>]")
+	fmt.Println("  wallaby-admin flow create --file <path> [--start] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow update --file <path> [--flow-id <id>] [--pause] [--resume] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow reconfigure --file <path> [--flow-id <id>] [--pause] [--resume] [--sync-publication] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow start --flow-id <id> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow run-once --flow-id <id>")
+	fmt.Println("  wallaby-admin flow get --flow-id <id> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow list [--page-size 100] [--page-token <token>] [--state created|running|paused|stopping|failed] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow plan --file <path> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow dry-run --file <path> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow check --file <path> [--endpoint <addr>] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow delete --flow-id <id> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow wait --flow-id <id> --state <state> [--timeout 60s] [--interval 2s] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow validate --file <path> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow stop --flow-id <id> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow resume --flow-id <id> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow cleanup --flow-id <id> [--drop-slot] [--drop-publication] [--drop-source-state] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow resolve-staging --flow-id <id> [--tables schema.table,...] [--schemas public,...] [--dest <name>]")
 	os.Exit(1)
 }
 
-func flowCreate(args []string) error {
-	fs := flag.NewFlagSet("flow create", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	path := fs.String("file", "", "flow config JSON file")
-	start := fs.Bool("start", false, "start flow immediately")
-	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
-	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	if err := fs.Parse(args); err != nil {
+func flowCreate(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	path, err := stringFlag(cmd, "file")
+	if err != nil {
+		return err
+	}
+	start, err := boolFlag(cmd, "start")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
 		return err
 	}
 
 	if *path == "" {
-		return errors.New("-file is required")
+		return errors.New("--file is required")
 	}
 
-	payload, err := os.ReadFile(*path)
+	payload, err := readFile(*path)
 	if err != nil {
 		return fmt.Errorf("read flow file: %w", err)
 	}
@@ -621,25 +2210,45 @@ func flowCreate(args []string) error {
 	return nil
 }
 
-func flowUpdate(args []string) error {
-	fs := flag.NewFlagSet("flow update", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	path := fs.String("file", "", "flow config JSON file")
-	flowID := fs.String("flow-id", "", "flow id override")
-	pause := fs.Bool("pause", false, "pause flow before update")
-	resume := fs.Bool("resume", false, "resume flow after update")
-	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
-	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	if err := fs.Parse(args); err != nil {
+func flowUpdate(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	path, err := stringFlag(cmd, "file")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	pause, err := boolFlag(cmd, "pause")
+	if err != nil {
+		return err
+	}
+	resume, err := boolFlag(cmd, "resume")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
 		return err
 	}
 
 	if *path == "" {
-		return errors.New("-file is required")
+		return errors.New("--file is required")
 	}
 
-	payload, err := os.ReadFile(*path)
+	payload, err := readFile(*path)
 	if err != nil {
 		return fmt.Errorf("read flow file: %w", err)
 	}
@@ -652,7 +2261,7 @@ func flowUpdate(args []string) error {
 		cfg.ID = *flowID
 	}
 	if cfg.ID == "" {
-		return errors.New("flow id is required (provide in file or -flow-id)")
+		return errors.New("flow id is required (provide in file or --flow-id)")
 	}
 
 	pbFlow, err := flowConfigToProto(cfg)
@@ -710,26 +2319,49 @@ func flowUpdate(args []string) error {
 	return nil
 }
 
-func flowReconfigure(args []string) error {
-	fs := flag.NewFlagSet("flow reconfigure", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	path := fs.String("file", "", "flow config JSON file")
-	flowID := fs.String("flow-id", "", "flow id override")
-	pause := fs.Bool("pause", true, "pause flow before reconfigure")
-	resume := fs.Bool("resume", true, "resume flow after reconfigure")
-	syncPublication := fs.Bool("sync-publication", false, "sync publication tables after update")
-	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
-	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	if err := fs.Parse(args); err != nil {
+func flowReconfigure(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	path, err := stringFlag(cmd, "file")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	pause, err := boolFlag(cmd, "pause")
+	if err != nil {
+		return err
+	}
+	resume, err := boolFlag(cmd, "resume")
+	if err != nil {
+		return err
+	}
+	syncPublication, err := boolFlag(cmd, "sync-publication")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
 		return err
 	}
 
 	if *path == "" {
-		return errors.New("-file is required")
+		return errors.New("--file is required")
 	}
 
-	payload, err := os.ReadFile(*path)
+	payload, err := readFile(*path)
 	if err != nil {
 		return fmt.Errorf("read flow file: %w", err)
 	}
@@ -742,7 +2374,7 @@ func flowReconfigure(args []string) error {
 		cfg.ID = *flowID
 	}
 	if cfg.ID == "" {
-		return errors.New("flow id is required (provide in file or -flow-id)")
+		return errors.New("flow id is required (provide in file or --flow-id)")
 	}
 
 	pbFlow, err := flowConfigToProto(cfg)
@@ -793,19 +2425,30 @@ func flowReconfigure(args []string) error {
 	return nil
 }
 
-func flowRunOnce(args []string) error {
-	fs := flag.NewFlagSet("flow run-once", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	flowID := fs.String("flow-id", "", "flow id")
-	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
-	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	if err := fs.Parse(args); err != nil {
+func flowRunOnce(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
 		return err
 	}
 
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	client, closeConn, err := flowClient(*endpoint, *insecureConn)
@@ -844,19 +2487,30 @@ func flowRunOnce(args []string) error {
 	return nil
 }
 
-func flowStart(args []string) error {
-	fs := flag.NewFlagSet("flow start", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	flowID := fs.String("flow-id", "", "flow id")
-	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
-	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	if err := fs.Parse(args); err != nil {
+func flowStart(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
 		return err
 	}
 
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	client, closeConn, err := flowClient(*endpoint, *insecureConn)
@@ -895,19 +2549,30 @@ func flowStart(args []string) error {
 	return nil
 }
 
-func flowStop(args []string) error {
-	fs := flag.NewFlagSet("flow stop", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	flowID := fs.String("flow-id", "", "flow id")
-	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
-	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	if err := fs.Parse(args); err != nil {
+func flowStop(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
 		return err
 	}
 
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	client, closeConn, err := flowClient(*endpoint, *insecureConn)
@@ -946,19 +2611,30 @@ func flowStop(args []string) error {
 	return nil
 }
 
-func flowResume(args []string) error {
-	fs := flag.NewFlagSet("flow resume", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	flowID := fs.String("flow-id", "", "flow id")
-	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
-	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	if err := fs.Parse(args); err != nil {
+func flowResume(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
 		return err
 	}
 
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	client, closeConn, err := flowClient(*endpoint, *insecureConn)
@@ -997,22 +2673,42 @@ func flowResume(args []string) error {
 	return nil
 }
 
-func flowCleanup(args []string) error {
-	fs := flag.NewFlagSet("flow cleanup", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	flowID := fs.String("flow-id", "", "flow id")
-	dropSlot := fs.Bool("drop-slot", true, "drop replication slot")
-	dropPublication := fs.Bool("drop-publication", false, "drop publication")
-	dropState := fs.Bool("drop-source-state", true, "delete source state row")
-	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
-	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	if err := fs.Parse(args); err != nil {
+func flowCleanup(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	dropSlot, err := boolFlag(cmd, "drop-slot")
+	if err != nil {
+		return err
+	}
+	dropPublication, err := boolFlag(cmd, "drop-publication")
+	if err != nil {
+		return err
+	}
+	dropState, err := boolFlag(cmd, "drop-source-state")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
 		return err
 	}
 
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	client, closeConn, err := flowClient(*endpoint, *insecureConn)
@@ -1071,23 +2767,45 @@ func streamClient(endpoint string, insecureConn bool) (wallabypb.StreamServiceCl
 	return wallabypb.NewStreamServiceClient(conn), conn.Close, nil
 }
 
-func streamPull(args []string) error {
-	fs := flag.NewFlagSet("stream pull", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	stream := fs.String("stream", "", "stream name")
-	consumerGroup := fs.String("group", "", "consumer group")
-	max := fs.Int("max", 10, "max messages to pull")
-	visibility := fs.Int("visibility", 30, "visibility timeout seconds")
-	consumerID := fs.String("consumer", "", "consumer id")
-	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
-	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	if err := fs.Parse(args); err != nil {
+func streamPull(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
 		return err
 	}
-
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	stream, err := stringFlag(cmd, "stream")
+	if err != nil {
+		return err
+	}
+	consumerGroup, err := stringFlag(cmd, "group")
+	if err != nil {
+		return err
+	}
+	max, err := intFlag(cmd, "max")
+	if err != nil {
+		return err
+	}
+	visibility, err := intFlag(cmd, "visibility")
+	if err != nil {
+		return err
+	}
+	consumerID, err := stringFlag(cmd, "consumer")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
 	if *stream == "" || *consumerGroup == "" {
-		return errors.New("-stream and -group are required")
+		return errors.New("--stream and --group are required")
 	}
 
 	client, closeConn, err := streamClient(*endpoint, *insecureConn)
@@ -1152,22 +2870,33 @@ func streamPull(args []string) error {
 	return nil
 }
 
-func streamAck(args []string) error {
-	fs := flag.NewFlagSet("stream ack", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	stream := fs.String("stream", "", "stream name")
-	consumerGroup := fs.String("group", "", "consumer group")
-	ids := fs.String("ids", "", "comma-separated message ids")
-	if err := fs.Parse(args); err != nil {
+func streamAck(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	stream, err := stringFlag(cmd, "stream")
+	if err != nil {
+		return err
+	}
+	consumerGroup, err := stringFlag(cmd, "group")
+	if err != nil {
+		return err
+	}
+	ids, err := stringFlag(cmd, "ids")
+	if err != nil {
 		return err
 	}
 
 	if *stream == "" || *consumerGroup == "" {
-		return errors.New("-stream and -group are required")
+		return errors.New("--stream and --group are required")
 	}
 	if *ids == "" {
-		return errors.New("-ids is required")
+		return errors.New("--ids is required")
 	}
 
 	parsed, err := parseIDs(*ids)
@@ -1225,50 +2954,48 @@ func int32Arg(name string, value int) (int32, error) {
 	return int32(value), nil
 }
 
-func runPublication(args []string) error {
-	if len(args) < 1 {
-		publicationUsage()
-	}
-
-	switch args[0] {
-	case "list":
-		return publicationList(args[1:])
-	case "add":
-		return publicationAdd(args[1:])
-	case "remove":
-		return publicationRemove(args[1:])
-	case "sync":
-		return publicationSync(args[1:])
-	case "scrape":
-		return publicationScrape(args[1:])
-	default:
-		publicationUsage()
-	}
-	return nil
-}
-
 func publicationUsage() {
 	fmt.Println("Publication subcommands:")
-	fmt.Println("  wallaby-admin publication list -flow-id <id> [--json|--pretty]")
-	fmt.Println("  wallaby-admin publication add -flow-id <id> -tables schema.table,...")
-	fmt.Println("  wallaby-admin publication remove -flow-id <id> -tables schema.table,...")
-	fmt.Println("  wallaby-admin publication sync -flow-id <id> [-tables ...] [-schemas ...] [-mode add|sync] [-pause] [-resume] [-snapshot]")
-	fmt.Println("  wallaby-admin publication scrape -flow-id <id> -schemas public,app [-apply]")
-	fmt.Println("  IAM flags: -aws-rds-iam -aws-region <region> -aws-profile <profile> -aws-role-arn <arn>")
+	fmt.Println("  wallaby-admin publication list --flow-id <id> [--json|--pretty]")
+	fmt.Println("  wallaby-admin publication add --flow-id <id> --tables schema.table,...")
+	fmt.Println("  wallaby-admin publication remove --flow-id <id> --tables schema.table,...")
+	fmt.Println("  wallaby-admin publication sync --flow-id <id> [--tables ...] [--schemas ...] [--mode add|sync] [--pause] [--resume] [--snapshot]")
+	fmt.Println("  wallaby-admin publication scrape --flow-id <id> --schemas public,app [--apply]")
+	fmt.Println("  IAM flags: --aws-rds-iam --aws-region <region> --aws-profile <profile> --aws-role-arn <arn>")
 	os.Exit(1)
 }
 
-func publicationList(args []string) error {
-	fs := flag.NewFlagSet("publication list", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	flowID := fs.String("flow-id", "", "flow id (optional if -dsn and -publication provided)")
-	dsn := fs.String("dsn", "", "postgres source dsn")
-	publication := fs.String("publication", "", "publication name")
-	jsonOutput := fs.Bool("json", false, "output JSON for scripting")
-	prettyOutput := fs.Bool("pretty", false, "pretty-print JSON output")
-	awsFlags := addAWSIAMFlags(fs)
-	if err := fs.Parse(args); err != nil {
+func publicationList(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	dsn, err := stringFlag(cmd, "dsn")
+	if err != nil {
+		return err
+	}
+	publication, err := stringFlag(cmd, "publication")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+	awsFlags, err := awsIAMOptions(cmd)
+	if err != nil {
 		return err
 	}
 
@@ -1280,9 +3007,28 @@ func publicationList(args []string) error {
 		return err
 	}
 
-	tables, err := postgres.ListPublicationTables(ctx, cfg.dsn, cfg.publication, cfg.options)
-	if err != nil {
-		return fmt.Errorf("list publication tables: %w", err)
+	var tables []string
+	if cfg.flow != nil {
+		flowSvc, closeConn, err := flowClient(*endpoint, *insecureConn)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = closeConn() }()
+		resp, err := flowSvc.ListPublicationTables(ctx, &wallabypb.ListPublicationTablesRequest{
+			FlowId:      cfg.flow.Id,
+			Dsn:         cfg.dsn,
+			Publication: cfg.publication,
+			Options:     cfg.options,
+		})
+		if err != nil {
+			return fmt.Errorf("list publication tables: %w", err)
+		}
+		tables = resp.Tables
+	} else {
+		tables, err = postgres.ListPublicationTables(ctx, cfg.dsn, cfg.publication, cfg.options)
+		if err != nil {
+			return fmt.Errorf("list publication tables: %w", err)
+		}
 	}
 
 	if *prettyOutput {
@@ -1315,21 +3061,38 @@ func publicationList(args []string) error {
 	return nil
 }
 
-func publicationAdd(args []string) error {
-	fs := flag.NewFlagSet("publication add", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	flowID := fs.String("flow-id", "", "flow id (optional if -dsn and -publication provided)")
-	dsn := fs.String("dsn", "", "postgres source dsn")
-	publication := fs.String("publication", "", "publication name")
-	tables := fs.String("tables", "", "comma-separated schema.table list")
-	awsFlags := addAWSIAMFlags(fs)
-	if err := fs.Parse(args); err != nil {
+func publicationAdd(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	dsn, err := stringFlag(cmd, "dsn")
+	if err != nil {
+		return err
+	}
+	publication, err := stringFlag(cmd, "publication")
+	if err != nil {
+		return err
+	}
+	tables, err := stringFlag(cmd, "tables")
+	if err != nil {
+		return err
+	}
+	awsFlags, err := awsIAMOptions(cmd)
+	if err != nil {
 		return err
 	}
 
 	if *tables == "" {
-		return errors.New("-tables is required")
+		return errors.New("--tables is required")
 	}
 	tableList := parseCSVValue(*tables)
 	if len(tableList) == 0 {
@@ -1344,28 +3107,62 @@ func publicationAdd(args []string) error {
 		return err
 	}
 
-	if err := postgres.AddPublicationTables(ctx, cfg.dsn, cfg.publication, tableList, cfg.options); err != nil {
-		return fmt.Errorf("add publication tables: %w", err)
+	if cfg.flow != nil {
+		flowSvc, closeConn, err := flowClient(*endpoint, *insecureConn)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = closeConn() }()
+		if _, err := flowSvc.AddPublicationTables(ctx, &wallabypb.AddPublicationTablesRequest{
+			FlowId:      cfg.flow.Id,
+			Dsn:         cfg.dsn,
+			Publication: cfg.publication,
+			Tables:      tableList,
+			Options:     cfg.options,
+		}); err != nil {
+			return fmt.Errorf("add publication tables: %w", err)
+		}
+	} else {
+		if err := postgres.AddPublicationTables(ctx, cfg.dsn, cfg.publication, tableList, cfg.options); err != nil {
+			return fmt.Errorf("add publication tables: %w", err)
+		}
 	}
 	fmt.Printf("Added %d tables to publication %s\n", len(tableList), cfg.publication)
 	return nil
 }
 
-func publicationRemove(args []string) error {
-	fs := flag.NewFlagSet("publication remove", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	flowID := fs.String("flow-id", "", "flow id (optional if -dsn and -publication provided)")
-	dsn := fs.String("dsn", "", "postgres source dsn")
-	publication := fs.String("publication", "", "publication name")
-	tables := fs.String("tables", "", "comma-separated schema.table list")
-	awsFlags := addAWSIAMFlags(fs)
-	if err := fs.Parse(args); err != nil {
+func publicationRemove(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	dsn, err := stringFlag(cmd, "dsn")
+	if err != nil {
+		return err
+	}
+	publication, err := stringFlag(cmd, "publication")
+	if err != nil {
+		return err
+	}
+	tables, err := stringFlag(cmd, "tables")
+	if err != nil {
+		return err
+	}
+	awsFlags, err := awsIAMOptions(cmd)
+	if err != nil {
 		return err
 	}
 
 	if *tables == "" {
-		return errors.New("-tables is required")
+		return errors.New("--tables is required")
 	}
 	tableList := parseCSVValue(*tables)
 	if len(tableList) == 0 {
@@ -1380,38 +3177,102 @@ func publicationRemove(args []string) error {
 		return err
 	}
 
-	if err := postgres.DropPublicationTables(ctx, cfg.dsn, cfg.publication, tableList, cfg.options); err != nil {
-		return fmt.Errorf("drop publication tables: %w", err)
+	if cfg.flow != nil {
+		flowSvc, closeConn, err := flowClient(*endpoint, *insecureConn)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = closeConn() }()
+		if _, err := flowSvc.DropPublicationTables(ctx, &wallabypb.DropPublicationTablesRequest{
+			FlowId:      cfg.flow.Id,
+			Dsn:         cfg.dsn,
+			Publication: cfg.publication,
+			Tables:      tableList,
+			Options:     cfg.options,
+		}); err != nil {
+			return fmt.Errorf("drop publication tables: %w", err)
+		}
+	} else {
+		if err := postgres.DropPublicationTables(ctx, cfg.dsn, cfg.publication, tableList, cfg.options); err != nil {
+			return fmt.Errorf("drop publication tables: %w", err)
+		}
 	}
 	fmt.Printf("Removed %d tables from publication %s\n", len(tableList), cfg.publication)
 	return nil
 }
 
-func publicationSync(args []string) error {
-	fs := flag.NewFlagSet("publication sync", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	flowID := fs.String("flow-id", "", "flow id")
-	dsn := fs.String("dsn", "", "postgres source dsn override")
-	publication := fs.String("publication", "", "publication name override")
-	tables := fs.String("tables", "", "comma-separated schema.table list")
-	schemas := fs.String("schemas", "", "comma-separated schemas for auto-discovery")
-	mode := fs.String("mode", "add", "sync mode: add or sync")
-	pause := fs.Bool("pause", true, "pause flow before sync")
-	resume := fs.Bool("resume", true, "resume flow after sync")
-	snapshot := fs.Bool("snapshot", false, "run backfill for newly added tables")
-	snapshotWorkers := fs.Int("snapshot-workers", 0, "parallel workers for backfill snapshots")
-	partitionColumn := fs.String("partition-column", "", "partition column for backfill hashing")
-	partitionCount := fs.Int("partition-count", 0, "partition count per table for backfill hashing")
-	snapshotStateBackend := fs.String("snapshot-state-backend", "", "snapshot state backend (postgres|file|none)")
-	snapshotStatePath := fs.String("snapshot-state-path", "", "snapshot state path (file backend)")
-	awsFlags := addAWSIAMFlags(fs)
-	if err := fs.Parse(args); err != nil {
+func publicationSync(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	dsn, err := stringFlag(cmd, "dsn")
+	if err != nil {
+		return err
+	}
+	publication, err := stringFlag(cmd, "publication")
+	if err != nil {
+		return err
+	}
+	tables, err := stringFlag(cmd, "tables")
+	if err != nil {
+		return err
+	}
+	schemas, err := stringFlag(cmd, "schemas")
+	if err != nil {
+		return err
+	}
+	mode, err := stringFlag(cmd, "mode")
+	if err != nil {
+		return err
+	}
+	pause, err := boolFlag(cmd, "pause")
+	if err != nil {
+		return err
+	}
+	resume, err := boolFlag(cmd, "resume")
+	if err != nil {
+		return err
+	}
+	snapshot, err := boolFlag(cmd, "snapshot")
+	if err != nil {
+		return err
+	}
+	snapshotWorkers, err := intFlag(cmd, "snapshot-workers")
+	if err != nil {
+		return err
+	}
+	partitionColumn, err := stringFlag(cmd, "partition-column")
+	if err != nil {
+		return err
+	}
+	partitionCount, err := intFlag(cmd, "partition-count")
+	if err != nil {
+		return err
+	}
+	snapshotStateBackend, err := stringFlag(cmd, "snapshot-state-backend")
+	if err != nil {
+		return err
+	}
+	snapshotStatePath, err := stringFlag(cmd, "snapshot-state-path")
+	if err != nil {
+		return err
+	}
+	awsFlags, err := awsIAMOptions(cmd)
+	if err != nil {
 		return err
 	}
 
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -1429,6 +3290,12 @@ func publicationSync(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	modeValue, err := postgres.NormalizeSyncPublicationMode(*mode)
+	if err != nil {
+		return err
+	}
+
 	if len(desired) == 0 {
 		return errors.New("no tables provided for sync")
 	}
@@ -1445,10 +3312,20 @@ func publicationSync(args []string) error {
 		}
 	}
 
-	added, removed, err := postgres.SyncPublicationTables(ctx, cfg.dsn, cfg.publication, desired, *mode, cfg.options)
+	resp, err := flowSvc.SyncPublicationTables(ctx, &wallabypb.SyncPublicationTablesRequest{
+		FlowId:      cfg.flow.Id,
+		Dsn:         cfg.dsn,
+		Publication: cfg.publication,
+		Tables:      desired,
+		Mode:        modeValue,
+		Options:     cfg.options,
+	})
 	if err != nil {
 		return fmt.Errorf("sync publication: %w", err)
 	}
+
+	added := resp.Added
+	removed := resp.Removed
 
 	if *snapshot && len(added) > 0 {
 		if err := runBackfill(context.Background(), cfg.flow, added, *snapshotWorkers, *partitionColumn, *partitionCount, *snapshotStateBackend, *snapshotStatePath); err != nil {
@@ -1466,22 +3343,42 @@ func publicationSync(args []string) error {
 	return nil
 }
 
-func publicationScrape(args []string) error {
-	fs := flag.NewFlagSet("publication scrape", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	flowID := fs.String("flow-id", "", "flow id (optional if -dsn and -publication provided)")
-	dsn := fs.String("dsn", "", "postgres source dsn")
-	publication := fs.String("publication", "", "publication name")
-	schemas := fs.String("schemas", "", "comma-separated schemas")
-	apply := fs.Bool("apply", false, "add newly discovered tables to publication")
-	awsFlags := addAWSIAMFlags(fs)
-	if err := fs.Parse(args); err != nil {
+func publicationScrape(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	dsn, err := stringFlag(cmd, "dsn")
+	if err != nil {
+		return err
+	}
+	publication, err := stringFlag(cmd, "publication")
+	if err != nil {
+		return err
+	}
+	schemas, err := stringFlag(cmd, "schemas")
+	if err != nil {
+		return err
+	}
+	apply, err := boolFlag(cmd, "apply")
+	if err != nil {
+		return err
+	}
+	awsFlags, err := awsIAMOptions(cmd)
+	if err != nil {
 		return err
 	}
 
 	if *schemas == "" {
-		return errors.New("-schemas is required")
+		return errors.New("--schemas is required")
 	}
 	schemaList := parseCSVValue(*schemas)
 	if len(schemaList) == 0 {
@@ -1496,29 +3393,52 @@ func publicationScrape(args []string) error {
 		return err
 	}
 
-	allTables, err := postgres.ScrapeTables(ctx, cfg.dsn, schemaList, cfg.options)
-	if err != nil {
-		return fmt.Errorf("scrape tables: %w", err)
-	}
-	current, err := postgres.ListPublicationTables(ctx, cfg.dsn, cfg.publication, cfg.options)
-	if err != nil {
-		return fmt.Errorf("list publication tables: %w", err)
-	}
-
-	currentSet := make(map[string]struct{}, len(current))
-	for _, table := range current {
-		currentSet[strings.ToLower(table)] = struct{}{}
-	}
 	var missing []string
-	for _, table := range allTables {
-		if _, ok := currentSet[strings.ToLower(table)]; !ok {
-			missing = append(missing, table)
+	if cfg.flow != nil {
+		flowSvc, closeConn, err := flowClient(*endpoint, *insecureConn)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = closeConn() }()
+		resp, err := flowSvc.ScrapePublicationTables(ctx, &wallabypb.ScrapePublicationTablesRequest{
+			FlowId:      cfg.flow.Id,
+			Dsn:         cfg.dsn,
+			Publication: cfg.publication,
+			Schemas:     schemaList,
+			Apply:       *apply,
+			Options:     cfg.options,
+		})
+		if err != nil {
+			return fmt.Errorf("scrape publication tables: %w", err)
+		}
+		missing = resp.MissingTables
+	} else {
+		discoveredTables, err := postgres.ScrapeTables(ctx, cfg.dsn, schemaList, cfg.options)
+		if err != nil {
+			return fmt.Errorf("scrape tables: %w", err)
+		}
+		current, err := postgres.ListPublicationTables(ctx, cfg.dsn, cfg.publication, cfg.options)
+		if err != nil {
+			return fmt.Errorf("list publication tables: %w", err)
+		}
+
+		currentSet := make(map[string]struct{}, len(current))
+		for _, table := range current {
+			currentSet[strings.ToLower(table)] = struct{}{}
+		}
+		missing = make([]string, 0)
+		for _, table := range discoveredTables {
+			if _, ok := currentSet[strings.ToLower(table)]; !ok {
+				missing = append(missing, table)
+			}
 		}
 	}
 
 	if *apply && len(missing) > 0 {
-		if err := postgres.AddPublicationTables(ctx, cfg.dsn, cfg.publication, missing, cfg.options); err != nil {
-			return fmt.Errorf("add publication tables: %w", err)
+		if cfg.flow == nil {
+			if err := postgres.AddPublicationTables(ctx, cfg.dsn, cfg.publication, missing, cfg.options); err != nil {
+				return fmt.Errorf("add publication tables: %w", err)
+			}
 		}
 		fmt.Printf("Added %d tables to publication %s\n", len(missing), cfg.publication)
 		return nil
@@ -1535,20 +3455,34 @@ func publicationScrape(args []string) error {
 	return nil
 }
 
-func flowResolveStaging(args []string) error {
-	fs := flag.NewFlagSet("flow resolve-staging", flag.ExitOnError)
-	endpoint := fs.String("endpoint", "localhost:8080", "gRPC endpoint host:port")
-	insecureConn := fs.Bool("insecure", true, "use insecure gRPC")
-	flowID := fs.String("flow-id", "", "flow id")
-	tables := fs.String("tables", "", "comma-separated tables (schema.table)")
-	schemas := fs.String("schemas", "", "comma-separated schemas to resolve")
-	destName := fs.String("dest", "", "destination name (optional)")
-	if err := fs.Parse(args); err != nil {
+func flowResolveStaging(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	tables, err := stringFlag(cmd, "tables")
+	if err != nil {
+		return err
+	}
+	schemas, err := stringFlag(cmd, "schemas")
+	if err != nil {
+		return err
+	}
+	destName, err := stringFlag(cmd, "dest")
+	if err != nil {
 		return err
 	}
 
 	if *flowID == "" {
-		return errors.New("-flow-id is required")
+		return errors.New("--flow-id is required")
 	}
 
 	ctx := context.Background()
@@ -1623,11 +3557,1019 @@ func flowResolveStaging(args []string) error {
 	return nil
 }
 
+func flowList(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	pageSize, err := intFlag(cmd, "page-size")
+	if err != nil {
+		return err
+	}
+	pageToken, err := stringFlag(cmd, "page-token")
+	if err != nil {
+		return err
+	}
+	state, err := stringFlag(cmd, "state")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+
+	client, closeConn, err := flowClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	filterState := wallabypb.FlowState_FLOW_STATE_UNSPECIFIED
+	if strings.TrimSpace(*state) != "" {
+		parsed, err := parseFlowState(*state)
+		if err != nil {
+			return err
+		}
+		filterState = parsed
+	}
+
+	req := &wallabypb.ListFlowsRequest{PageSize: 0, PageToken: *pageToken}
+	if *pageSize > 0 {
+		if value, ok := safeInt32(*pageSize); ok {
+			req.PageSize = value
+		} else {
+			return fmt.Errorf("invalid page-size: %d", *pageSize)
+		}
+	}
+
+	resp, err := client.ListFlows(ctx, req)
+	if err != nil {
+		return fmt.Errorf("list flows: %w", err)
+	}
+	flows := make([]flowSummary, 0, len(resp.Flows))
+	for _, item := range resp.Flows {
+		if item == nil {
+			continue
+		}
+		if filterState != wallabypb.FlowState_FLOW_STATE_UNSPECIFIED && item.State != filterState {
+			continue
+		}
+		flows = append(flows, flowSummaryFromProto(item))
+	}
+
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		out := flowListOutput{
+			Count:         len(flows),
+			NextPageToken: resp.NextPageToken,
+			Flows:         flows,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	if len(flows) == 0 {
+		if filterState != wallabypb.FlowState_FLOW_STATE_UNSPECIFIED {
+			fmt.Printf("No flows in state %q.\n", flowStateName(filterState))
+		} else {
+			fmt.Println("No flows found.")
+		}
+		return nil
+	}
+	rows := make([][]string, 0, len(flows))
+	for _, item := range flows {
+		rows = append(rows, []string{
+			item.ID,
+			item.State,
+			item.Source.Name,
+			fmt.Sprintf("%d", len(item.Destinations)),
+			item.Name,
+		})
+	}
+	renderTextTable([]string{"ID", "STATE", "SOURCE", "DST", "NAME"}, rows)
+	return nil
+}
+
+func flowGet(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+	if *flowID == "" {
+		return errors.New("--flow-id is required")
+	}
+
+	client, closeConn, err := flowClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := client.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: *flowID})
+	if err != nil {
+		return fmt.Errorf("get flow: %w", err)
+	}
+
+	output := flowDetailFromProto(resp)
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(output); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	fmt.Printf("Flow: %s\n", output.ID)
+	fmt.Printf("  Name:    %s\n", output.Name)
+	fmt.Printf("  State:   %s\n", output.State)
+	fmt.Printf("  Source:  %s (%s)\n", output.Source.Name, output.Source.Type)
+	fmt.Printf("  Wire:    %s\n", output.WireFormat)
+	fmt.Printf("  Destinations: %d\n", len(output.Destinations))
+	for _, dest := range output.Destinations {
+		fmt.Printf("  - %s (%s)\n", dest.Name, dest.Type)
+	}
+	return nil
+}
+
+func flowDelete(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+	if *flowID == "" {
+		return errors.New("--flow-id is required")
+	}
+
+	client, closeConn, err := flowClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := client.DeleteFlow(ctx, &wallabypb.DeleteFlowRequest{FlowId: *flowID})
+	if err != nil {
+		return fmt.Errorf("delete flow: %w", err)
+	}
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		out := flowDeleteOutput{FlowID: *flowID, Deleted: resp.Deleted}
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+	fmt.Printf("Deleted flow %s\n", *flowID)
+	return nil
+}
+
+func flowWait(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	targetState, err := stringFlag(cmd, "state")
+	if err != nil {
+		return err
+	}
+	timeout, err := durationFlag(cmd, "timeout")
+	if err != nil {
+		return err
+	}
+	interval, err := durationFlag(cmd, "interval")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+
+	if *flowID == "" {
+		return errors.New("--flow-id is required")
+	}
+	if *targetState == "" {
+		return errors.New("--state is required")
+	}
+	if *interval <= 0 {
+		return errors.New("--interval must be greater than 0")
+	}
+	if *timeout <= 0 {
+		return errors.New("--timeout must be greater than 0")
+	}
+
+	target, err := parseFlowState(*targetState)
+	if err != nil {
+		return err
+	}
+
+	client, closeConn, err := flowClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
+
+	deadline := time.Now().Add(*timeout)
+	start := time.Now()
+	ticker := time.NewTicker(*interval)
+	defer ticker.Stop()
+
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		resp, err := client.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: *flowID})
+		cancel()
+		if err != nil {
+			return fmt.Errorf("wait flow: %w", err)
+		}
+		if resp.State == target {
+			out := flowWaitOutput{
+				FlowID:    *flowID,
+				StateRaw:  int32(resp.State),
+				State:     flowStateName(resp.State),
+				Name:      resp.Name,
+				Elapsed:   time.Since(start).String(),
+				StateName: flowStateName(resp.State),
+			}
+			if *prettyOutput {
+				*jsonOutput = true
+			}
+			if *jsonOutput {
+				enc := json.NewEncoder(os.Stdout)
+				if *prettyOutput {
+					enc.SetIndent("", "  ")
+				}
+				if err := enc.Encode(out); err != nil {
+					return fmt.Errorf("encode json: %w", err)
+				}
+				return nil
+			}
+			fmt.Printf("Flow %s reached state %s\n", *flowID, out.State)
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for flow %s to reach %s", *flowID, flowStateName(target))
+		}
+		<-ticker.C
+	}
+}
+
+func flowValidate(cmd *cobra.Command, _ []string) error {
+	path, err := stringFlag(cmd, "file")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+	if *path == "" {
+		return errors.New("--file is required")
+	}
+
+	payload, err := readFile(*path)
+	if err != nil {
+		return fmt.Errorf("read flow file: %w", err)
+	}
+
+	var cfg flowConfig
+	if err := json.Unmarshal(payload, &cfg); err != nil {
+		return fmt.Errorf("parse flow json: %w", err)
+	}
+	if cfg.Name == "" {
+		return errors.New("flow name is required")
+	}
+	if cfg.Source.Type == "" {
+		return errors.New("source.type is required")
+	}
+	if len(cfg.Destinations) == 0 {
+		return errors.New("at least one destination is required")
+	}
+
+	_, err = flowConfigToProto(cfg)
+	if err != nil {
+		return fmt.Errorf("validate flow config: %w", err)
+	}
+
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	out := flowValidateOutput{
+		Valid:            true,
+		ID:               cfg.ID,
+		Name:             cfg.Name,
+		Source:           cfg.Source,
+		DestinationCount: len(cfg.Destinations),
+	}
+	if *jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	fmt.Printf("Flow config is valid: %s (%s -> %d destination)\n", out.Name, out.Source.Type, out.DestinationCount)
+	return nil
+}
+
+func flowDryRun(cmd *cobra.Command, _ []string) error {
+	path, err := stringFlag(cmd, "file")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+	if *path == "" {
+		return errors.New("--file is required")
+	}
+
+	payload, err := readFile(*path)
+	if err != nil {
+		return fmt.Errorf("read flow file: %w", err)
+	}
+
+	var cfg flowConfig
+	if err := json.Unmarshal(payload, &cfg); err != nil {
+		return fmt.Errorf("parse flow json: %w", err)
+	}
+
+	pbFlow, err := flowConfigToProto(cfg)
+	if err != nil {
+		return fmt.Errorf("flow config: %w", err)
+	}
+
+	out := flowDetailFromProto(pbFlow)
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	fmt.Printf("Flow dry-run: %s -> %s (%s destination)\n", out.Name, out.State, out.WireFormat)
+	fmt.Printf("Source: %s (%s)\n", out.Source.Name, out.Source.Type)
+	for _, dest := range out.Destinations {
+		fmt.Printf("Destination: %s (%s)\n", dest.Name, dest.Type)
+	}
+	return nil
+}
+
+func flowPlan(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	path, err := stringFlag(cmd, "file")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+	if *path == "" {
+		return errors.New("--file is required")
+	}
+
+	payload, err := readFile(*path)
+	if err != nil {
+		return fmt.Errorf("read flow file: %w", err)
+	}
+	var cfg flowConfig
+	if err := json.Unmarshal(payload, &cfg); err != nil {
+		return fmt.Errorf("parse flow json: %w", err)
+	}
+
+	pbFlow, err := flowConfigToProto(cfg)
+	if err != nil {
+		return fmt.Errorf("flow config: %w", err)
+	}
+	plan := flowPlanOutput{
+		FlowID:      pbFlow.Id,
+		FlowName:    pbFlow.Name,
+		Desired:     flowDetailFromProto(pbFlow),
+		Compared:    false,
+		ChangeCount: 0,
+	}
+	if *endpoint != "" {
+		client, closeConn, err := flowClient(*endpoint, *insecureConn)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = closeConn() }()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		resp, err := client.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: pbFlow.Id})
+		if err == nil && resp != nil {
+			current := flowDetailFromProto(resp)
+			plan.Current = &current
+			plan.Compared = true
+			plan.Changes = append(plan.Changes, flowPlanDiff("name", current.Name, plan.Desired.Name)...)
+			plan.Changes = append(plan.Changes, flowPlanDiff("wire_format", current.WireFormat, plan.Desired.WireFormat)...)
+			plan.Changes = append(plan.Changes, flowPlanDiffInt("state_raw", int(current.StateRaw), int(plan.Desired.StateRaw))...)
+			plan.Changes = append(plan.Changes, compareFlowEndpointList("destinations", current.Destinations, plan.Desired.Destinations)...)
+			plan.ChangeCount = len(plan.Changes)
+		} else if err != nil {
+			return fmt.Errorf("load flow for plan: %w", err)
+		}
+	}
+
+	plan.ChangeCount = len(plan.Changes)
+
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(plan); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	fmt.Printf("Flow plan for %q (%s)\n", plan.FlowName, plan.FlowID)
+	if !plan.Compared {
+		fmt.Println("No existing flow provided for diff; planning from local config only.")
+		return nil
+	}
+	if plan.ChangeCount == 0 {
+		fmt.Println("No changes detected.")
+		return nil
+	}
+	for _, change := range plan.Changes {
+		fmt.Printf("- %s: %s -> %s\n", change.Path, change.Before, change.After)
+	}
+	return nil
+}
+
+func flowPlanDiff(field, before, after string) []flowPlanChange {
+	if before == after {
+		return nil
+	}
+	return []flowPlanChange{{Path: field, Before: before, After: after}}
+}
+
+func flowPlanDiffInt(field string, before, after int) []flowPlanChange {
+	if before == after {
+		return nil
+	}
+	return []flowPlanChange{{Path: field, Before: fmt.Sprintf("%d", before), After: fmt.Sprintf("%d", after)}}
+}
+
+func compareFlowEndpointList(field string, before, after []flowEndpointInfoDetail) []flowPlanChange {
+	beforeEncoded, err := json.Marshal(before)
+	if err != nil {
+		return []flowPlanChange{{Path: field, Before: "(invalid)", After: "(invalid)"}}
+	}
+	afterEncoded, err := json.Marshal(after)
+	if err != nil {
+		return []flowPlanChange{{Path: field, Before: "(invalid)", After: "(invalid)"}}
+	}
+	if string(beforeEncoded) == string(afterEncoded) {
+		return nil
+	}
+	return []flowPlanChange{
+		{
+			Path:   field,
+			Before: string(beforeEncoded),
+			After:  string(afterEncoded),
+		},
+	}
+}
+
+func flowCheck(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	path, err := stringFlag(cmd, "file")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+	if *path == "" {
+		return errors.New("--file is required")
+	}
+
+	payload, err := readFile(*path)
+	if err != nil {
+		return fmt.Errorf("read flow file: %w", err)
+	}
+
+	var cfg flowConfig
+	if err := json.Unmarshal(payload, &cfg); err != nil {
+		return fmt.Errorf("parse flow json: %w", err)
+	}
+	if cfg.Name == "" {
+		return errors.New("flow name is required")
+	}
+	if cfg.Source.Type == "" {
+		return errors.New("source.type is required")
+	}
+	if len(cfg.Destinations) == 0 {
+		return errors.New("at least one destination is required")
+	}
+
+	if _, err := flowConfigToProto(cfg); err != nil {
+		return fmt.Errorf("validate flow config: %w", err)
+	}
+
+	var endpointMsg string
+	if *endpoint != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		client, closeConn, err := flowClient(*endpoint, *insecureConn)
+		if err != nil {
+			return fmt.Errorf("flow endpoint check: %w", err)
+		}
+		defer func() { _ = closeConn() }()
+		_, err = client.ListFlows(ctx, &wallabypb.ListFlowsRequest{PageSize: 1})
+		if err != nil {
+			return fmt.Errorf("flow endpoint check: %w", err)
+		}
+		endpointMsg = *endpoint
+	}
+
+	out := map[string]any{
+		"valid":              true,
+		"name":               cfg.Name,
+		"flow_id":            cfg.ID,
+		"source_type":        cfg.Source.Type,
+		"destination_count":  len(cfg.Destinations),
+		"endpoint_checked":   *endpoint != "",
+		"endpoint_reachable": true,
+		"endpoint":           endpointMsg,
+	}
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		if err := enc.Encode(out); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+
+	fmt.Printf("Flow config is valid: %s (%d destination)\n", cfg.Name, len(cfg.Destinations))
+	if *endpoint != "" {
+		fmt.Printf("Endpoint reachable: %s\n", endpointMsg)
+	}
+	return nil
+}
+
+func flowSummaryFromProto(pbFlow *wallabypb.Flow) flowSummary {
+	if pbFlow == nil {
+		return flowSummary{}
+	}
+
+	item := flowSummary{
+		ID:          pbFlow.Id,
+		Name:        pbFlow.Name,
+		State:       flowStateName(pbFlow.State),
+		StateRaw:    int32(pbFlow.State),
+		WireFormat:  wireFormatName(pbFlow.WireFormat),
+		Parallelism: pbFlow.Parallelism,
+	}
+	if pbFlow.Source != nil {
+		item.Source = flowEndpointInfoFromProto(pbFlow.Source)
+	}
+	for _, dest := range pbFlow.Destinations {
+		item.Destinations = append(item.Destinations, flowEndpointInfoFromProto(dest))
+	}
+	return item
+}
+
+func flowDetailFromProto(pbFlow *wallabypb.Flow) flowDetail {
+	if pbFlow == nil {
+		return flowDetail{}
+	}
+
+	item := flowDetail{
+		ID:          pbFlow.Id,
+		Name:        pbFlow.Name,
+		State:       flowStateName(pbFlow.State),
+		StateRaw:    int32(pbFlow.State),
+		Source:      flowEndpointInfoDetailFromProto(pbFlow.Source),
+		WireFormat:  wireFormatName(pbFlow.WireFormat),
+		Parallelism: pbFlow.Parallelism,
+	}
+	if pbFlow.Config != nil {
+		item.Config = flowConfigInfo{
+			AckPolicy:                       ackPolicyName(pbFlow.Config.AckPolicy),
+			PrimaryDestination:              pbFlow.Config.PrimaryDestination,
+			FailureMode:                     failureModeName(pbFlow.Config.FailureMode),
+			GiveUpPolicy:                    giveUpPolicyName(pbFlow.Config.GiveUpPolicy),
+			SchemaRegistrySubject:           pbFlow.Config.SchemaRegistrySubject,
+			SchemaRegistryProtoTypesSubject: pbFlow.Config.SchemaRegistryProtoTypesSubject,
+			SchemaRegistrySubjectMode:       pbFlow.Config.SchemaRegistrySubjectMode,
+		}
+	}
+	for _, dest := range pbFlow.Destinations {
+		item.Destinations = append(item.Destinations, flowEndpointInfoDetailFromProto(dest))
+	}
+	return item
+}
+
+func flowEndpointInfoFromProto(endpoint *wallabypb.Endpoint) flowEndpointInfo {
+	if endpoint == nil {
+		return flowEndpointInfo{}
+	}
+	return flowEndpointInfo{
+		Name:    endpoint.Name,
+		Type:    strings.TrimPrefix(strings.ToLower(endpoint.Type.String()), "endpoint_type_"),
+		TypeRaw: int32(endpoint.Type),
+	}
+}
+
+func flowEndpointInfoDetailFromProto(endpoint *wallabypb.Endpoint) flowEndpointInfoDetail {
+	if endpoint == nil {
+		return flowEndpointInfoDetail{}
+	}
+	return flowEndpointInfoDetail{
+		Name:    endpoint.Name,
+		Type:    strings.TrimPrefix(strings.ToLower(endpoint.Type.String()), "endpoint_type_"),
+		TypeRaw: int32(endpoint.Type),
+		Options: endpoint.Options,
+	}
+}
+
+func wireFormatName(format wallabypb.WireFormat) string {
+	switch format {
+	case wallabypb.WireFormat_WIRE_FORMAT_ARROW:
+		return "arrow"
+	case wallabypb.WireFormat_WIRE_FORMAT_PARQUET:
+		return "parquet"
+	case wallabypb.WireFormat_WIRE_FORMAT_PROTO:
+		return "proto"
+	case wallabypb.WireFormat_WIRE_FORMAT_AVRO:
+		return "avro"
+	case wallabypb.WireFormat_WIRE_FORMAT_JSON:
+		return "json"
+	default:
+		return "unspecified"
+	}
+}
+
+func ackPolicyName(policy wallabypb.AckPolicy) string {
+	switch policy {
+	case wallabypb.AckPolicy_ACK_POLICY_ALL:
+		return "all"
+	case wallabypb.AckPolicy_ACK_POLICY_PRIMARY:
+		return "primary"
+	default:
+		return "unspecified"
+	}
+}
+
+func failureModeName(mode wallabypb.FailureMode) string {
+	switch mode {
+	case wallabypb.FailureMode_FAILURE_MODE_HOLD_SLOT:
+		return "hold_slot"
+	case wallabypb.FailureMode_FAILURE_MODE_DROP_SLOT:
+		return "drop_slot"
+	default:
+		return "unspecified"
+	}
+}
+
+func giveUpPolicyName(policy wallabypb.GiveUpPolicy) string {
+	switch policy {
+	case wallabypb.GiveUpPolicy_GIVE_UP_POLICY_NEVER:
+		return "never"
+	case wallabypb.GiveUpPolicy_GIVE_UP_POLICY_ON_RETRY_EXHAUSTION:
+		return "on_retry_exhaustion"
+	default:
+		return "unspecified"
+	}
+}
+
+func parseFlowState(value string) (wallabypb.FlowState, error) {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "created", "flow_state_created":
+		return wallabypb.FlowState_FLOW_STATE_CREATED, nil
+	case "running", "flow_state_running":
+		return wallabypb.FlowState_FLOW_STATE_RUNNING, nil
+	case "paused", "flow_state_paused":
+		return wallabypb.FlowState_FLOW_STATE_PAUSED, nil
+	case "stopping", "flow_state_stopping":
+		return wallabypb.FlowState_FLOW_STATE_STOPPING, nil
+	case "failed", "flow_state_failed":
+		return wallabypb.FlowState_FLOW_STATE_FAILED, nil
+	default:
+		return wallabypb.FlowState_FLOW_STATE_UNSPECIFIED, fmt.Errorf("invalid state %q", value)
+	}
+}
+
+func flowStateName(state wallabypb.FlowState) string {
+	switch state {
+	case wallabypb.FlowState_FLOW_STATE_CREATED:
+		return "created"
+	case wallabypb.FlowState_FLOW_STATE_RUNNING:
+		return "running"
+	case wallabypb.FlowState_FLOW_STATE_PAUSED:
+		return "paused"
+	case wallabypb.FlowState_FLOW_STATE_STOPPING:
+		return "stopping"
+	case wallabypb.FlowState_FLOW_STATE_FAILED:
+		return "failed"
+	default:
+		return "unspecified"
+	}
+}
+
+func safeInt32(value int) (int32, bool) {
+	if value <= 0 || value > math.MaxInt32 {
+		return 0, false
+	}
+	return int32(value), true
+}
+
+type flowListOutput struct {
+	Count         int           `json:"count"`
+	NextPageToken string        `json:"next_page_token,omitempty"`
+	Flows         []flowSummary `json:"flows"`
+}
+
+type flowSummary struct {
+	ID           string             `json:"id"`
+	Name         string             `json:"name"`
+	State        string             `json:"state"`
+	StateRaw     int32              `json:"state_raw"`
+	WireFormat   string             `json:"wire_format"`
+	Parallelism  int32              `json:"parallelism"`
+	Source       flowEndpointInfo   `json:"source"`
+	Destinations []flowEndpointInfo `json:"destinations"`
+}
+
+type flowDetail struct {
+	ID           string                   `json:"id"`
+	Name         string                   `json:"name"`
+	State        string                   `json:"state"`
+	StateRaw     int32                    `json:"state_raw"`
+	Source       flowEndpointInfoDetail   `json:"source"`
+	Destinations []flowEndpointInfoDetail `json:"destinations"`
+	WireFormat   string                   `json:"wire_format"`
+	Parallelism  int32                    `json:"parallelism"`
+	Config       flowConfigInfo           `json:"config"`
+}
+
+type flowEndpointInfo struct {
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	TypeRaw int32  `json:"type_raw"`
+}
+
+type flowEndpointInfoDetail struct {
+	Name    string            `json:"name"`
+	Type    string            `json:"type"`
+	TypeRaw int32             `json:"type_raw"`
+	Options map[string]string `json:"options,omitempty"`
+}
+
+type flowConfigInfo struct {
+	AckPolicy                       string `json:"ack_policy,omitempty"`
+	PrimaryDestination              string `json:"primary_destination,omitempty"`
+	FailureMode                     string `json:"failure_mode,omitempty"`
+	GiveUpPolicy                    string `json:"give_up_policy,omitempty"`
+	SchemaRegistrySubject           string `json:"schema_registry_subject,omitempty"`
+	SchemaRegistryProtoTypesSubject string `json:"schema_registry_proto_types_subject,omitempty"`
+	SchemaRegistrySubjectMode       string `json:"schema_registry_subject_mode,omitempty"`
+}
+
+type flowDeleteOutput struct {
+	FlowID  string `json:"flow_id"`
+	Deleted bool   `json:"deleted"`
+}
+
+type flowWaitOutput struct {
+	FlowID    string `json:"flow_id"`
+	Name      string `json:"name"`
+	StateRaw  int32  `json:"state_raw"`
+	State     string `json:"state"`
+	StateName string `json:"state_name"`
+	Elapsed   string `json:"elapsed"`
+}
+
+type checkResult struct {
+	CheckedAt         string                `json:"checked_at"`
+	Endpoint          string                `json:"endpoint"`
+	AdminReachable    bool                  `json:"admin_reachable"`
+	EndpointError     string                `json:"endpoint_error,omitempty"`
+	FlowID            string                `json:"flow_id,omitempty"`
+	FlowName          string                `json:"flow_name,omitempty"`
+	ConfigFile        string                `json:"config_file,omitempty"`
+	Source            endpointCheckResult   `json:"source"`
+	Destinations      []endpointCheckResult `json:"destinations"`
+	EndpointReachable bool                  `json:"endpoint_reachable,omitempty"`
+	EndpointChecked   bool                  `json:"endpoint_checked,omitempty"`
+}
+
+type endpointCheckResult struct {
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	Source    bool   `json:"source"`
+	Checked   bool   `json:"checked"`
+	Reachable bool   `json:"reachable"`
+	Error     string `json:"error,omitempty"`
+	LatencyMs int64  `json:"latency_ms,omitempty"`
+}
+
+type ddlHistoryOutput struct {
+	FlowID string          `json:"flow_id"`
+	Status string          `json:"status"`
+	Count  int             `json:"count"`
+	Events []ddlListRecord `json:"events"`
+}
+
+type flowPlanOutput struct {
+	FlowID      string           `json:"flow_id"`
+	FlowName    string           `json:"flow_name"`
+	Compared    bool             `json:"compared"`
+	ChangeCount int              `json:"change_count"`
+	Current     *flowDetail      `json:"current,omitempty"`
+	Desired     flowDetail       `json:"desired"`
+	Changes     []flowPlanChange `json:"changes"`
+}
+
+type flowPlanChange struct {
+	Path   string `json:"path"`
+	Before string `json:"before"`
+	After  string `json:"after"`
+}
+
+type slotListOutput struct {
+	Count int              `json:"count"`
+	Slots []slotListRecord `json:"slots"`
+}
+
+type slotListRecord struct {
+	SlotName          string `json:"slot_name"`
+	Plugin            string `json:"plugin"`
+	SlotType          string `json:"slot_type"`
+	Database          string `json:"database"`
+	Active            bool   `json:"active"`
+	ActivePID         *int32 `json:"active_pid,omitempty"`
+	Temporary         bool   `json:"temporary"`
+	WalStatus         string `json:"wal_status"`
+	RestartLSN        string `json:"restart_lsn,omitempty"`
+	ConfirmedFlushLSN string `json:"confirmed_flush_lsn,omitempty"`
+}
+
+type slotDropOutput struct {
+	SlotName string `json:"slot"`
+	Found    bool   `json:"found"`
+	Dropped  bool   `json:"dropped"`
+}
+
 type publicationConfig struct {
 	dsn         string
 	publication string
 	flow        *wallabypb.Flow
 	options     map[string]string
+}
+
+type slotConfig struct {
+	dsn     string
+	slot    string
+	options map[string]string
+	flow    *wallabypb.Flow
+}
+
+type flowValidateOutput struct {
+	Valid            bool           `json:"valid"`
+	ID               string         `json:"id"`
+	Name             string         `json:"name"`
+	Source           endpointConfig `json:"source"`
+	DestinationCount int            `json:"destination_count"`
 }
 
 func resolvePublicationConfig(ctx context.Context, endpoint string, insecureConn bool, flowID, dsn, publication string, options map[string]string) (publicationConfig, error) {
@@ -1661,6 +4603,89 @@ func resolvePublicationConfig(ctx context.Context, endpoint string, insecureConn
 		return cfg, errors.New("source dsn/publication not found on flow")
 	}
 	return cfg, nil
+}
+
+func resolveSlotConfig(ctx context.Context, endpoint string, insecureConn bool, flowID, dsn, slot string, requireSlot bool, options map[string]string) (slotConfig, error) {
+	cfg := slotConfig{dsn: dsn, slot: slot, options: options}
+	if flowID == "" {
+		if cfg.dsn == "" {
+			return cfg, errors.New("flow-id or dsn is required")
+		}
+		if requireSlot && cfg.slot == "" {
+			return cfg, errors.New("slot is required when --flow-id is not provided")
+		}
+		return cfg, nil
+	}
+
+	client, closeConn, err := flowClient(endpoint, insecureConn)
+	if err != nil {
+		return cfg, err
+	}
+	defer func() { _ = closeConn() }()
+
+	flowResp, err := client.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: flowID})
+	if err != nil {
+		return cfg, fmt.Errorf("load flow: %w", err)
+	}
+	if flowResp.Source == nil {
+		return cfg, errors.New("flow has no source")
+	}
+	if flowResp.Source.Type != wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES {
+		return cfg, errors.New("flow source is not postgres")
+	}
+	cfg.options = mergeOptionMaps(flowResp.Source.Options, cfg.options)
+	if cfg.dsn == "" {
+		cfg.dsn = flowResp.Source.Options["dsn"]
+	}
+	cfg.flow = flowResp
+	if cfg.slot == "" {
+		cfg.slot = flowResp.Source.Options["slot"]
+	}
+	if cfg.dsn == "" {
+		return cfg, errors.New("source dsn not found on flow")
+	}
+	if requireSlot && cfg.slot == "" {
+		return cfg, errors.New("source slot not found on flow")
+	}
+	return cfg, nil
+}
+
+func slotListRecordFromInfo(info postgres.ReplicationSlotInfo) slotListRecord {
+	return slotListRecord{
+		SlotName:          info.SlotName,
+		Plugin:            info.Plugin,
+		SlotType:          info.SlotType,
+		Database:          info.Database,
+		Active:            info.Active,
+		ActivePID:         info.ActivePID,
+		Temporary:         info.Temporary,
+		WalStatus:         info.WalStatus,
+		RestartLSN:        info.RestartLSN,
+		ConfirmedFlushLSN: info.ConfirmedLSN,
+	}
+}
+
+func slotListRecordFromProto(info *wallabypb.ReplicationSlotInfo) slotListRecord {
+	if info == nil {
+		return slotListRecord{}
+	}
+	var activePID *int32
+	if info.ActivePidPresent {
+		value := info.ActivePid
+		activePID = &value
+	}
+	return slotListRecord{
+		SlotName:          info.SlotName,
+		Plugin:            info.Plugin,
+		SlotType:          info.SlotType,
+		Database:          info.Database,
+		Active:            info.Active,
+		ActivePID:         activePID,
+		Temporary:         info.Temporary,
+		WalStatus:         info.WalStatus,
+		RestartLSN:        info.RestartLsn,
+		ConfirmedFlushLSN: info.ConfirmedFlushLsn,
+	}
 }
 
 func resolveDesiredTables(ctx context.Context, cfg publicationConfig, options map[string]string, tables, schemas string) ([]string, error) {
@@ -1743,16 +4768,15 @@ type awsIAMFlags struct {
 	endpoint        *string
 }
 
-func addAWSIAMFlags(fs *flag.FlagSet) *awsIAMFlags {
-	return &awsIAMFlags{
-		enabled:         fs.Bool("aws-rds-iam", false, "use AWS RDS IAM authentication"),
-		region:          fs.String("aws-region", "", "AWS region for RDS IAM authentication"),
-		profile:         fs.String("aws-profile", "", "AWS profile for RDS IAM authentication"),
-		roleARN:         fs.String("aws-role-arn", "", "AWS role ARN to assume for RDS IAM"),
-		roleSessionName: fs.String("aws-role-session-name", "", "AWS role session name for RDS IAM"),
-		roleExternalID:  fs.String("aws-role-external-id", "", "AWS role external id for RDS IAM"),
-		endpoint:        fs.String("aws-endpoint", "", "AWS endpoint override for RDS IAM"),
-	}
+func addAWSIAMFlags(cmd *cobra.Command) {
+	fs := cmd.Flags()
+	fs.Bool("aws-rds-iam", false, "use AWS RDS IAM authentication")
+	fs.String("aws-region", "", "AWS region for RDS IAM authentication")
+	fs.String("aws-profile", "", "AWS profile for RDS IAM authentication")
+	fs.String("aws-role-arn", "", "AWS role ARN to assume for RDS IAM")
+	fs.String("aws-role-session-name", "", "AWS role session name for RDS IAM")
+	fs.String("aws-role-external-id", "", "AWS role external id for RDS IAM")
+	fs.String("aws-endpoint", "", "AWS endpoint override for RDS IAM")
 }
 
 func (f *awsIAMFlags) options() map[string]string {
@@ -1832,7 +4856,7 @@ func runBackfill(ctx context.Context, flowPB *wallabypb.Flow, tables []string, w
 	if model.Source.Options == nil {
 		model.Source.Options = map[string]string{}
 	}
-	model.Source.Options["mode"] = "backfill"
+	model.Source.Options["mode"] = connector.SourceModeBackfill
 	model.Source.Options["tables"] = strings.Join(tables, ",")
 	if workers > 0 {
 		model.Source.Options["snapshot_workers"] = fmt.Sprintf("%d", workers)
@@ -2078,6 +5102,10 @@ func (k *keyValueFlag) Set(value string) error {
 	}
 	k.values[key] = strings.TrimSpace(parts[1])
 	return nil
+}
+
+func (k *keyValueFlag) Type() string {
+	return "key=value"
 }
 
 func copyStringMap(values map[string]string) map[string]string {

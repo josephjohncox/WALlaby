@@ -16,9 +16,18 @@ import (
 	"github.com/google/uuid"
 	"github.com/josephjohncox/wallaby/internal/ddl"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 	"github.com/josephjohncox/wallaby/pkg/wire"
 	_ "github.com/snowflakedb/gosnowflake"
 )
+
+func safeMetaCapacity(base, extra int) int {
+	maxInt := int(^uint(0) >> 1)
+	if extra > maxInt-base {
+		return maxInt
+	}
+	return base + extra
+}
 
 const (
 	optDSN              = "dsn"
@@ -77,6 +86,8 @@ type Destination struct {
 	metaPKPrefix     string
 	flowID           string
 	metaColumns      map[string]struct{}
+	registry         schemaregistry.Registry
+	registrySubject  string
 	warehouse        string
 	warehouseSize    string
 	warehouseSuspend *int
@@ -169,6 +180,18 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	}
 	d.flowID = spec.Options[optFlowID]
 	d.metaColumns = map[string]struct{}{}
+	d.registrySubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistrySubject])
+
+	registryCfg := schemaregistry.ConfigFromOptions(spec.Options)
+	registry, err := schemaregistry.NewRegistry(ctx, registryCfg)
+	if err != nil && !errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+		_ = d.db.Close()
+		return err
+	}
+	if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+		registry = nil
+	}
+	d.registry = registry
 
 	d.warehouse = strings.TrimSpace(spec.Options[optWarehouse])
 	if raw := strings.TrimSpace(spec.Options[optWarehouseSize]); raw != "" {
@@ -282,6 +305,14 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	if len(batch.Records) == 0 {
 		return nil
 	}
+	meta, err := d.ensureSchema(ctx, batch.Schema)
+	if err != nil {
+		if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+			meta = nil
+		} else {
+			return err
+		}
+	}
 
 	payload, err := d.codec.Encode(batch)
 	if err != nil {
@@ -305,14 +336,14 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 
 	putStmt := fmt.Sprintf("PUT file://%s %s AUTO_COMPRESS=FALSE", filePath, stageLocation)
 	if _, err := d.db.ExecContext(ctx, putStmt); err != nil {
-		return d.fallbackIfCompat(ctx, batch, err, "put to stage")
+		return d.fallbackIfCompat(ctx, batch, meta, err, "put to stage")
 	}
 
 	if d.copyOnWrite {
 		// #nosec G201 -- identifiers are quoted and derived from schema/config.
 		copyStmt := fmt.Sprintf("COPY INTO %s FROM %s FILES = ('%s') %s", d.targetTable(batch.Schema, batch.Records[0]), stageLocation, fileName, d.copyOptionsClause())
 		if _, err := d.db.ExecContext(ctx, copyStmt); err != nil {
-			return d.fallbackIfCompat(ctx, batch, err, "copy into")
+			return d.fallbackIfCompat(ctx, batch, meta, err, "copy into")
 		}
 	}
 
@@ -322,7 +353,7 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 			return fmt.Errorf("begin metadata transaction: %w", err)
 		}
 		for _, record := range batch.Records {
-			if err := d.upsertMetadata(ctx, tx, batch.Schema, record, batch.Checkpoint); err != nil {
+			if err := d.upsertMetadata(ctx, tx, batch.Schema, record, batch.Checkpoint, meta); err != nil {
 				_ = tx.Rollback()
 				return err
 			}
@@ -335,15 +366,15 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	return nil
 }
 
-func (d *Destination) fallbackIfCompat(ctx context.Context, batch connector.Batch, err error, action string) error {
+func (d *Destination) fallbackIfCompat(ctx context.Context, batch connector.Batch, meta *schemaMeta, err error, action string) error {
 	if d.compatMode != compatModeFakesnow {
 		return fmt.Errorf("%s: %w", action, err)
 	}
 	log.Printf("snowpipe compat fallback (%s): %v", action, err)
-	return d.writeCompat(ctx, batch)
+	return d.writeCompat(ctx, batch, meta)
 }
 
-func (d *Destination) writeCompat(ctx context.Context, batch connector.Batch) error {
+func (d *Destination) writeCompat(ctx context.Context, batch connector.Batch, meta *schemaMeta) error {
 	if d.compatNoTx {
 		exec := execer(d.db)
 		for _, record := range batch.Records {
@@ -358,7 +389,7 @@ func (d *Destination) writeCompat(ctx context.Context, batch connector.Batch) er
 				return fmt.Errorf("compat insert: %w", err)
 			}
 			if d.metaEnabled {
-				if err := d.upsertMetadata(ctx, exec, batch.Schema, record, batch.Checkpoint); err != nil {
+				if err := d.upsertMetadata(ctx, exec, batch.Schema, record, batch.Checkpoint, meta); err != nil {
 					return err
 				}
 			}
@@ -383,7 +414,7 @@ func (d *Destination) writeCompat(ctx context.Context, batch connector.Batch) er
 			return fmt.Errorf("compat insert: %w", err)
 		}
 		if d.metaEnabled {
-			if err := d.upsertMetadata(ctx, tx, batch.Schema, record, batch.Checkpoint); err != nil {
+			if err := d.upsertMetadata(ctx, tx, batch.Schema, record, batch.Checkpoint, meta); err != nil {
 				_ = tx.Rollback()
 				return err
 			}
@@ -420,7 +451,14 @@ func (d *Destination) TypeMappings() map[string]string {
 
 func (d *Destination) Close(_ context.Context) error {
 	if d.db != nil {
-		return d.db.Close()
+		if err := d.db.Close(); err != nil {
+			return err
+		}
+	}
+	if d.registry != nil {
+		if err := d.registry.Close(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -438,6 +476,43 @@ func (d *Destination) Capabilities() connector.Capabilities {
 			connector.WireFormatJSON,
 		},
 	}
+}
+
+type schemaMeta struct {
+	Subject string
+	ID      string
+	Version int
+}
+
+func (d *Destination) ensureSchema(ctx context.Context, schema connector.Schema) (*schemaMeta, error) {
+	if d.registry == nil {
+		return nil, schemaregistry.ErrRegistryDisabled
+	}
+	subject := d.registrySubjectFor(schema)
+	return d.registerAvroSchema(ctx, subject, schema)
+}
+
+func (d *Destination) registerAvroSchema(ctx context.Context, subject string, schema connector.Schema) (*schemaMeta, error) {
+	req := schemaregistry.RegisterRequest{
+		Subject:    subject,
+		Schema:     wire.AvroSchema(schema),
+		SchemaType: schemaregistry.SchemaTypeAvro,
+	}
+	result, err := d.registry.Register(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &schemaMeta{Subject: subject, ID: result.ID, Version: result.Version}, nil
+}
+
+func (d *Destination) registrySubjectFor(schema connector.Schema) string {
+	if d.registrySubject != "" {
+		return d.registrySubject
+	}
+	if schema.Namespace != "" {
+		return fmt.Sprintf("%s.%s", schema.Namespace, schema.Name)
+	}
+	return schema.Name
 }
 
 func (d *Destination) resolveStage(batch connector.Batch) string {
@@ -699,7 +774,7 @@ func (d *Destination) refreshMetaColumns(ctx context.Context) error {
 	return nil
 }
 
-func (d *Destination) upsertMetadata(ctx context.Context, exec execer, schema connector.Schema, record connector.Record, checkpoint connector.Checkpoint) error {
+func (d *Destination) upsertMetadata(ctx context.Context, exec execer, schema connector.Schema, record connector.Record, checkpoint connector.Checkpoint, meta *schemaMeta) error {
 	key, err := decodeKeyForSchema(schema, record.Key)
 	if err != nil {
 		return err
@@ -740,10 +815,36 @@ func (d *Destination) upsertMetadata(ctx context.Context, exec execer, schema co
 		keyJSON = string(raw)
 	}
 
-	columns := make([]string, 0, 8+len(pkCols))
+	columns := make([]string, 0, safeMetaCapacity(11, len(pkCols)))
 	columns = append(columns, "FLOW_ID", "SOURCE_SCHEMA", "SOURCE_TABLE", "SYNCED_AT", "IS_DELETED", "LSN", "OPERATION", "KEY_JSON")
-	values := make([]any, 0, 8+len(pkVals))
+	values := make([]any, 0, safeMetaCapacity(11, len(pkVals)))
 	values = append(values, d.flowID, schema.Namespace, record.Table, syncedAt, record.Operation == connector.OpDelete, checkpoint.LSN, string(record.Operation), keyJSON)
+	regSubject := ""
+	regID := ""
+	regVersion := ""
+	if meta != nil {
+		regSubject = meta.Subject
+		regID = meta.ID
+		if meta.Version > 0 {
+			regVersion = strconv.Itoa(meta.Version)
+		}
+	}
+	const (
+		registrySubjectCol = "REGISTRY_SUBJECT"
+		registryIDCol      = "REGISTRY_ID"
+		registryVersionCol = "REGISTRY_VERSION"
+	)
+	if err := d.ensureMetaColumn(ctx, registrySubjectCol); err != nil {
+		return err
+	}
+	if err := d.ensureMetaColumn(ctx, registryIDCol); err != nil {
+		return err
+	}
+	if err := d.ensureMetaColumn(ctx, registryVersionCol); err != nil {
+		return err
+	}
+	columns = append(columns, registrySubjectCol, registryIDCol, registryVersionCol)
+	values = append(values, regSubject, regID, regVersion)
 	columns = append(columns, pkCols...)
 	values = append(values, pkVals...)
 

@@ -21,9 +21,9 @@ func TestApplyRegistryDefaults(t *testing.T) {
 		},
 	}
 	cfg := Config{
-		SchemaRegistrySubject:          "flow.subject",
+		SchemaRegistrySubject:           "flow.subject",
 		SchemaRegistryProtoTypesSubject: "flow.proto",
-		SchemaRegistrySubjectMode:      "topic_table",
+		SchemaRegistrySubjectMode:       "topic_table",
 	}
 
 	applied := ApplyRegistryDefaults(specs, cfg)

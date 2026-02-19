@@ -11,14 +11,26 @@ func Diff(oldSchema, newSchema connector.Schema) Plan {
 	changes := make([]Change, 0)
 	oldColumns := make(map[string]connector.Column)
 	for _, col := range oldSchema.Columns {
-		oldColumns[strings.ToLower(col.Name)] = col
+		name := strings.ToLower(strings.TrimSpace(col.Name))
+		if name == "" {
+			continue
+		}
+		oldColumns[name] = col
 	}
 	newColumns := make(map[string]connector.Column)
 	for _, col := range newSchema.Columns {
-		newColumns[strings.ToLower(col.Name)] = col
+		name := strings.ToLower(strings.TrimSpace(col.Name))
+		if name == "" {
+			continue
+		}
+		newColumns[name] = col
 	}
 
-	for name, newCol := range newColumns {
+	for _, newCol := range newSchema.Columns {
+		name := strings.ToLower(strings.TrimSpace(newCol.Name))
+		if name == "" {
+			continue
+		}
 		oldCol, ok := oldColumns[name]
 		if !ok {
 			changes = append(changes, Change{
@@ -34,13 +46,14 @@ func Diff(oldSchema, newSchema connector.Schema) Plan {
 
 		if oldCol.Type != newCol.Type || oldCol.Nullable != newCol.Nullable {
 			changes = append(changes, Change{
-				Type:      ChangeAlterColumn,
-				Namespace: newSchema.Namespace,
-				Table:     newSchema.Name,
-				Column:    newCol.Name,
-				FromType:  oldCol.Type,
-				ToType:    newCol.Type,
-				Nullable:  newCol.Nullable,
+				Type:         ChangeAlterColumn,
+				Namespace:    newSchema.Namespace,
+				Table:        newSchema.Name,
+				Column:       newCol.Name,
+				FromType:     oldCol.Type,
+				ToType:       newCol.Type,
+				FromNullable: oldCol.Nullable,
+				Nullable:     newCol.Nullable,
 			})
 		}
 
@@ -59,7 +72,11 @@ func Diff(oldSchema, newSchema connector.Schema) Plan {
 		}
 	}
 
-	for name, oldCol := range oldColumns {
+	for _, oldCol := range oldSchema.Columns {
+		name := strings.ToLower(strings.TrimSpace(oldCol.Name))
+		if name == "" {
+			continue
+		}
 		if _, ok := newColumns[name]; !ok {
 			changes = append(changes, Change{
 				Type:      ChangeDropColumn,
