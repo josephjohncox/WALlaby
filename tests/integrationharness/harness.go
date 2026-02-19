@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -350,22 +351,14 @@ func (h *integrationHarness) stop() error {
 		h.dumpManagedServiceLogs()
 	}
 	if shouldDeleteInfrastructure {
-		if err := h.stopOwnPostgresAndServices(); err != nil {
-			_ = h.persistSharedState(state)
-			h.restoreCapturedEnv()
-			return err
-		}
+		h.stopOwnPostgresAndServices()
 		h.deleteManagedInfrastructure()
 		state.Active = false
 	}
 
 	if shouldDeleteInfrastructure && h.shouldCleanup(state) {
 		state.Active = false
-		if err := h.cleanupSharedInfrastructure(state); err != nil {
-			_ = h.persistSharedState(state)
-			h.restoreCapturedEnv()
-			return err
-		}
+		h.cleanupSharedInfrastructure(state)
 		_ = os.Remove(h.statePath)
 	}
 
@@ -430,7 +423,7 @@ func (h *integrationHarness) startKind() error {
 		if err != nil {
 			return fmt.Errorf("resolve existing kind cluster %q kubeconfig: %w", h.config.kindCluster, err)
 		}
-		if err := h.validateKindCluster(ctx, kubeconfigPath); err == nil {
+		if err := h.validateKindCluster(kubeconfigPath); err == nil {
 			h.kindKubePath = kubeconfigPath
 			_ = os.Setenv("WALLABY_TEST_K8S_KUBECONFIG", h.kindKubePath)
 			_ = os.Setenv("KUBECONFIG", h.kindKubePath)
@@ -460,7 +453,7 @@ func (h *integrationHarness) startKind() error {
 	return nil
 }
 
-func (h *integrationHarness) validateKindCluster(ctx context.Context, kubeconfigPath string) error {
+func (h *integrationHarness) validateKindCluster(kubeconfigPath string) error {
 	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	if err != nil {
 		return err
@@ -499,7 +492,7 @@ func (h *integrationHarness) createKindCluster(ctx context.Context) (string, err
 	if kubeErr != nil {
 		return "", kubeErr
 	}
-	if vErr := h.validateKindCluster(ctx, kubeconfigPath); vErr != nil {
+	if vErr := h.validateKindCluster(kubeconfigPath); vErr != nil {
 		return "", vErr
 	}
 
@@ -533,8 +526,10 @@ func (h *integrationHarness) getExistingKindKubeconfig(ctx context.Context, clus
 		return "", fmt.Errorf("create temp kubeconfig: %w", err)
 	}
 	if _, err := temp.WriteString(trimmed); err != nil {
-		temp.Close()
 		_ = os.Remove(temp.Name())
+		if closeErr := temp.Close(); closeErr != nil {
+			return "", fmt.Errorf("write temp kubeconfig: %w", errors.Join(err, closeErr))
+		}
 		return "", fmt.Errorf("write temp kubeconfig: %w", err)
 	}
 	if err := temp.Close(); err != nil {
@@ -763,27 +758,24 @@ func (h *integrationHarness) startFakesnow(namespace string) error {
 	return nil
 }
 
-func (h *integrationHarness) stopOwnPostgresAndServices() error {
+func (h *integrationHarness) stopOwnPostgresAndServices() {
 	if !h.ownsInfra {
-		return nil
+		return
 	}
 
 	if h.pgPortForwardStop != nil {
 		h.pgPortForwardStop()
 		h.pgPortForwardStop = nil
 		if h.pgLocalPort != "" {
-			_ = waitForPortRelease(defaultPostgresLocalBindHost, h.pgLocalPort, 5*time.Second)
+			waitForPortRelease(defaultPostgresLocalBindHost, h.pgLocalPort, 5*time.Second)
 		}
 	}
-	for service := range h.services {
-		h.stopManagedService(service)
-	}
-	return nil
+	h.stopManagedServices()
 }
 
 func (h *integrationHarness) deleteManagedInfrastructure() {
 	namespace := defaultK8sNamespace()
-	_ = h.deleteServiceAndDeployment(namespace, defaultPostgresName)
+	h.cleanupPostgres()
 	_ = h.deleteServiceAndDeployment(namespace, defaultClickHouseName)
 	_ = h.deleteServiceAndDeployment(namespace, defaultMinioName)
 	_ = h.deleteServiceAndDeployment(namespace, defaultKafkaName)
@@ -876,9 +868,9 @@ func (h *integrationHarness) shouldCleanup(state *integrationHarnessSharedState)
 	return state.Participants == 0 && !state.Active
 }
 
-func (h *integrationHarness) cleanupSharedInfrastructure(state *integrationHarnessSharedState) error {
+func (h *integrationHarness) cleanupSharedInfrastructure(state *integrationHarnessSharedState) {
 	if state == nil {
-		return nil
+		return
 	}
 	if state.KindCreated && !state.KindKeep && !h.config.kindKeep {
 		if err := h.deleteKindCluster(context.Background(), h.config.kindCluster); err != nil && harnessVerbose() {
@@ -888,7 +880,6 @@ func (h *integrationHarness) cleanupSharedInfrastructure(state *integrationHarne
 	if state.KindKubePath != "" {
 		_ = os.Remove(state.KindKubePath)
 	}
-	return nil
 }
 
 func (h *integrationHarness) restoreCapturedEnv() {
@@ -899,6 +890,7 @@ func (h *integrationHarness) restoreCapturedEnv() {
 
 func (h *integrationHarness) acquireGlobalLock() error {
 	lockPath := filepath.Join(os.TempDir(), defaultIntegrationHarnessLock)
+	// #nosec G304 -- lockPath is a fixed lock filename in the temporary directory.
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return fmt.Errorf("acquire integration harness lock: open lock file %s: %w", lockPath, err)
@@ -942,7 +934,7 @@ func (h *integrationHarness) stopManagedService(name string) {
 		svc.portForwardStop()
 		svc.portForwardStop = nil
 		if svc.localPort != "" {
-			_ = waitForPortRelease(defaultPostgresLocalBindHost, svc.localPort, 5*time.Second)
+			waitForPortRelease(defaultPostgresLocalBindHost, svc.localPort, 5*time.Second)
 		}
 	}
 	if svc.created {
@@ -1188,7 +1180,7 @@ func (h *integrationHarness) waitForServiceReady(namespace, name string) error {
 		// exists for the service label selector.
 		if podErr == nil && podReadyCount > 0 && depErr != nil {
 			h.printServiceReadyStatus(namespace, name)
-			return nil
+			return waitErr
 		}
 
 		if time.Now().After(deadline) {
@@ -1222,18 +1214,16 @@ func (h *integrationHarness) printServiceReadyStatus(namespace, name string) {
 		podNames = append(podNames, pod.Name)
 	}
 	fmt.Fprintf(os.Stderr, "service %s ready with pods: %s\n", name, strings.Join(podNames, ", "))
-	for _, pod := range pods.Items {
-		var ready, restartTotal int32
-		for _, containerStatus := range pod.Status.ContainerStatuses {
-			if containerStatus.Ready {
-				ready++
-			}
-			restartTotal += containerStatus.RestartCount
+	pod := pods.Items[0]
+	var ready, restartTotal int32
+	for _, containerStatus := range pod.Status.ContainerStatuses {
+		if containerStatus.Ready {
+			ready++
 		}
-		fmt.Fprintf(os.Stderr, "pod status:\n")
-		fmt.Fprintf(os.Stderr, "%s\t%d/%d\t%s\t%d\n", pod.Name, ready, len(pod.Status.ContainerStatuses), pod.Status.Phase, restartTotal)
-		break
+		restartTotal += containerStatus.RestartCount
 	}
+	fmt.Fprintf(os.Stderr, "pod status:\n")
+	fmt.Fprintf(os.Stderr, "%s\t%d/%d\t%s\t%d\n", pod.Name, ready, len(pod.Status.ContainerStatuses), pod.Status.Phase, restartTotal)
 }
 
 func (h *integrationHarness) printServiceDiagnostics(namespace, name string, timeout time.Duration, waitOutput []byte, waitErr error) {
@@ -1490,7 +1480,11 @@ func (h *integrationHarness) fetchPodLogs(namespace, pod string, previous bool) 
 	if err != nil {
 		return "", err
 	}
-	defer stream.Close()
+	defer func() {
+		if err := stream.Close(); err != nil && harnessVerbose() {
+			fmt.Fprintf(os.Stderr, "failed to close logs stream for %s: %v\n", pod, err)
+		}
+	}()
 
 	data, err := io.ReadAll(stream)
 	if err != nil {
@@ -1647,7 +1641,7 @@ func (h *integrationHarness) startLocalPortForward(namespace, name, localPort, s
 	localAddress := net.JoinHostPort(defaultPostgresLocalBindHost, resolvedLocalPort)
 	if err := waitForLocalPort(localAddress, 45*time.Second); err != nil {
 		stop()
-		_ = waitForPortRelease(defaultPostgresLocalBindHost, resolvedLocalPort, 5*time.Second)
+		waitForPortRelease(defaultPostgresLocalBindHost, resolvedLocalPort, 5*time.Second)
 		return "", nil, err
 	}
 
@@ -1674,14 +1668,14 @@ func isPortAvailable(host, port string) bool {
 	return true
 }
 
-func waitForPortRelease(host, port string, timeout time.Duration) bool {
+func waitForPortRelease(host, port string, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for {
 		if isPortAvailable(host, port) {
-			return true
+			return
 		}
 		if time.Now().After(deadline) {
-			return false
+			return
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
