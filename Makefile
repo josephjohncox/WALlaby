@@ -266,7 +266,7 @@ tla-coverage:
 	PATH="$(GOBIN):$$PATH" JAVA_TOOL_OPTIONS="$(TLC_JAVA_OPTS)" $(TLC) -coverage 1 -config "specs/CDCFlowFanout.cfg" "specs/CDCFlowFanout.tla" > "$(TLC_COVERAGE_DIR)/CDCFlowFanout.txt" 2>&1
 
 tla-coverage-check:
-	$(GOENV) $(GO) run ./cmd/wallaby-tla-coverage -dir "$(TLC_COVERAGE_DIR)" -min "$(TLA_COVERAGE_MIN)" -ignore "$(TLA_COVERAGE_IGNORE)" -json "$(TLC_COVERAGE_DIR)/report.json"
+	$(GOENV) $(GO) run ./cmd/wallaby-tla-coverage --dir "$(TLC_COVERAGE_DIR)" --min "$(TLA_COVERAGE_MIN)" --ignore "$(TLA_COVERAGE_IGNORE)" --json "$(TLC_COVERAGE_DIR)/report.json"
 
 trace-suite:
 	TRACE_CASES=$(TRACE_CASES) TRACE_SEED=$(TRACE_SEED) TRACE_MAX_BATCHES=$(TRACE_MAX_BATCHES) TRACE_MAX_RECORDS=$(TRACE_MAX_RECORDS) $(GOENV) $(GO) test ./pkg/stream -run TestTraceSuite -count=1
