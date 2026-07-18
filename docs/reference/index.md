@@ -23,8 +23,8 @@ Packages under `internal/`, command implementations, and concrete connectors are
 ## Regenerate locally
 
 ```bash
-make docs-generate
-make docs-verify
+just docs-generate
+just docs-verify
 ```
 
 Edit comments in Go or Protobuf source files. Do not edit files under `docs/reference/generated/` by hand.

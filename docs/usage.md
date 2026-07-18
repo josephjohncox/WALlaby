@@ -601,11 +601,11 @@ Checkpoints are stored in Postgres and are used to resume streams from the last 
 Run the unit test suite:
 
 ```bash
-make test
+just test
 ```
 
 Run property tests with Rapid (default in CI uses `RAPID_CHECKS=100`):
 
 ```bash
-make test-rapid RAPID_CHECKS=100
+RAPID_CHECKS=100 just test-rapid
 ```

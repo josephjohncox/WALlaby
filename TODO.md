@@ -5,8 +5,8 @@
   - Return structured validation errors for malformed env/config values (including numeric/range checks and string enums).
 - [x] Worker command mutates persisted flow source options in place.
   - Apply CLI overrides via copy-on-write into local flow copies.
-- [x] `make check` remains usable in environments where TLC cannot open JMX/RMI sockets.
-  - Added `SKIP_TLA_CHECKS` switch in Makefile for sandboxed checks.
+- [x] `just check` remains usable in environments where TLC cannot open JMX/RMI sockets.
+  - Added the `SKIP_TLA_CHECKS` recipe input for sandboxed checks.
 - [x] WAL replication frame handling can panic on malformed/empty payloads (`msg.Data[0]`).
   - Add explicit length checks and robust error accounting/metrics for malformed protocol frames.
 - [x] App shutdown teardown is path-dependent and can skip closes.

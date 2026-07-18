@@ -10,8 +10,7 @@ for tag in \
 	v1.2.3-alpha.1 \
 	v1.2.3-0 \
 	v1.2.3+build.5 \
-	v1.2.3-rc.1+build.5
-do
+	v1.2.3-rc.1+build.5; do
 	"$validator" "$tag"
 done
 
@@ -24,8 +23,7 @@ for tag in \
 	v1.2.3-01 \
 	v1.2.3-.. \
 	v1.2.3-alpha..1 \
-	v1.2.3+..
-do
+	v1.2.3+..; do
 	if "$validator" "$tag" >/dev/null 2>&1; then
 		echo "validator accepted invalid tag: $tag" >&2
 		exit 1

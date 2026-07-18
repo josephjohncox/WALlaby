@@ -13,19 +13,19 @@ WALlaby treats protocol specs and trace validation as first-class artifacts. The
 Run a full spec + trace verification pass:
 
 ```bash
-make tla                 # TLA+ model checks (flow, state machine, fan-out, liveness)
-make tla-coverage         # action coverage from TLC
-make tla-coverage-check   # enforce minimum coverage
-make trace-suite          # randomized trace suite (CI-friendly)
-make trace-suite-large    # larger randomized trace suite
+just tla                 # TLA+ model checks (flow, state machine, fan-out, liveness)
+just tla-coverage         # action coverage from TLC
+just tla-coverage-check   # enforce minimum coverage
+just trace-suite          # randomized trace suite (CI-friendly)
+just trace-suite-large    # larger randomized trace suite
 ```
 
 Regenerate and verify the manifest contracts:
 
 ```bash
-make spec-verify
-make spec-sync
-make spec-lint
+just spec-verify
+just spec-sync
+just spec-lint
 ```
 
 ## Trace validation

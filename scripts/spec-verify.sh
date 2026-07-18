@@ -16,7 +16,7 @@ for actual in specs/coverage*.json; do
 	name=$(basename "$actual")
 	if ! diff -u "$actual" "$temporary/$name"; then
 		echo "spec manifest differs from a fresh generation: $actual" >&2
-		echo "run make spec-sync and make spec-manifest, then include every changed manifest" >&2
+		echo "run just spec-sync and just spec-manifest, then include every changed manifest" >&2
 		exit 1
 	fi
 done

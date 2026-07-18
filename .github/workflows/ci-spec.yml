@@ -26,6 +26,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Setup just
+        uses: ./.github/actions/setup-just
+
       - name: Setup Go
         id: setup-go
         # actions/setup-go v6.5.0
@@ -82,27 +85,27 @@ jobs:
           key: ${{ steps.cache-go-tools.outputs.cache-primary-key }}
 
       - name: Spec manifest
-        run: make spec-verify
+        run: just spec-verify
 
       - name: Generate protobufs
-        run: make proto
+        run: just proto
 
       - name: Spec analyzer
-        run: make spec-lint
+        run: just spec-lint
 
       - name: Spec sync
-        run: make spec-sync
+        run: just spec-sync
 
       - name: TLA+ model check
         run: |
-          make tla-tools
-          make tla
+          just tla-tools
+          just tla
 
       - name: TLA+ coverage
         run: |
           set -euo pipefail
-          make tla-coverage
-          if ! make tla-coverage-check; then
+          just tla-coverage
+          if ! just tla-coverage-check; then
             echo "==== TLA coverage outputs ===="
             for f in specs/coverage/*.txt; do
               echo "---- ${f} ----"
@@ -113,7 +116,7 @@ jobs:
 
       - name: Trace suite coverage
         run: |
-          TRACE_CASES=200 TRACE_COVERAGE_REPORT=1 make trace-suite
+          TRACE_CASES=200 TRACE_COVERAGE_REPORT=1 just trace-suite
 
       - name: Save Go build cache
         if: always() && steps.cache-go-build.outputs.cache-hit != 'true'

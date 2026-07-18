@@ -11,7 +11,7 @@ trap 'rm -rf "$temporary_root"' EXIT HUP INT TERM
 expected="$temporary_root/docs/reference/generated"
 actual="$root/docs/reference/generated"
 if ! diff -ru "$expected" "$actual"; then
-	echo "generated documentation differs from a fresh generation; run make docs-generate and include all modified, removed, and new outputs" >&2
+	echo "generated documentation differs from a fresh generation; run just docs-generate and include all modified, removed, and new outputs" >&2
 	exit 1
 fi
 
@@ -27,7 +27,7 @@ if [ "${CI:-}" = "true" ]; then
 		relative=${relative#./}
 		if ! git -C "$root" ls-files --error-unmatch -- "docs/reference/generated/$relative" >/dev/null 2>&1; then
 			echo "generated documentation is not tracked in CI: docs/reference/generated/$relative" >&2
-			echo "run make docs-generate and commit every generated output" >&2
+			echo "run just docs-generate and commit every generated output" >&2
 			exit 1
 		fi
 	done <"$list"

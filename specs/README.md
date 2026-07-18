@@ -24,13 +24,13 @@ What it models:
 Run TLC (from the TLA+ tools) for all specs:
 
 ```
-make tla
+just tla
 ```
 
 To run only this module:
 
 ```
-TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlow.cfg make tla-single
+TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlow.cfg just tla-single
 ```
 
 The default config lives at `specs/CDCFlow.cfg` and intentionally uses a small
@@ -40,20 +40,20 @@ exploration rather than making the default model check unbounded.
 For a liveness/fairness check, use:
 
 ```
-TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowLiveness.cfg make tla-single
+TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowLiveness.cfg just tla-single
 ```
 
 For a DDL witness run (ensures approval/applied are reachable under fairness):
 
 ```
-TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowWitness.cfg make tla-single
+TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowWitness.cfg just tla-single
 ```
 
 To produce coverage reports:
 
 ```
-make tla-coverage
-make tla-coverage-check
+just tla-coverage
+just tla-coverage-check
 ```
 
 `tla-coverage-check` respects `TLA_COVERAGE_MIN` and writes a JSON report to
@@ -75,7 +75,7 @@ What it models:
 Run TLC:
 
 ```
-TLA_MODULE=specs/FlowStateMachine.tla TLA_CONFIG=specs/FlowStateMachine.cfg make tla-single
+TLA_MODULE=specs/FlowStateMachine.tla TLA_CONFIG=specs/FlowStateMachine.cfg just tla-single
 ```
 
 ## Fan-out Spec (TLA+)
@@ -91,7 +91,7 @@ What it models:
 Run TLC:
 
 ```
-TLA_MODULE=specs/CDCFlowFanout.tla TLA_CONFIG=specs/CDCFlowFanout.cfg make tla-single
+TLA_MODULE=specs/CDCFlowFanout.tla TLA_CONFIG=specs/CDCFlowFanout.cfg just tla-single
 ```
 
 ## Trace Validation
@@ -115,17 +115,17 @@ unreachable items for the trace suite:
 Regenerate them with:
 
 ```
-make spec-manifest
+just spec-manifest
 ```
 
 To ensure the manifests stay in sync with the TLA+ `Next` blocks and config
 invariants, run:
 
 ```
-make spec-sync
+just spec-sync
 ```
 
-Static analysis (`make spec-lint`) enforces that `SpecAction` values in code are
+Static analysis (`just spec-lint`) enforces that `SpecAction` values in code are
 constants from the manifest.
 
 To emit traces from a worker run, set `WALLABY_TRACE_PATH` (supports `{flow_id}`

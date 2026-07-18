@@ -39,19 +39,21 @@ Verification and benchmark binaries live under `cmd/`; they are development tool
 
 ## Develop
 
+Install [`just`](https://just.systems) (CI pins version 1.56.0), then run:
+
 ```bash
-make proto
-make fmt
-make lint
-make test
-make test-rapid RAPID_CHECKS=100
-make docs-verify
+just proto
+just fmt
+just lint
+just test
+RAPID_CHECKS=100 just test-rapid
+just docs-verify
 ```
 
 Run the live integration harness with:
 
 ```bash
-make test-integration
+just test-integration
 ```
 
 See the [contributor guide](https://josephjohncox.github.io/WALlaby/development/) for PostgreSQL-backed store tests, TLA+ checks, Helm validation, and generated-file rules.

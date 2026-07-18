@@ -1,10 +1,13 @@
 # Repository Guidelines
 
 ## Project Overview
+
 WALlaby is a Go-first CDC adapter for Postgres logical replication. It is API-driven (gRPC), supports multiple sources and destinations, and uses a workflow engine. Priorities: performance, lifecycle management, DDL handling, schema evolution, checkpointing, and OTEL.
 
 ## Project Structure & Module Organization
+
 Keep new code organized as follows:
+
 - `cmd/wallaby/`: API server entrypoint.
 - `cmd/wallaby-worker/`: per-flow worker process (run a single flow in its own process).
 - `internal/`: core engine (replication, workflow, schema evolution, checkpoints).
@@ -19,15 +22,18 @@ Keep new code organized as follows:
 - `tools/benchreport/`: benchmark output converter (JSON/CSV).
 
 ## Build, Test, and Development Commands
-Use the Makefile for consistent workflows:
-- `make fmt` — gofmt all packages.
-- `make lint` — run golangci-lint.
-- `make test` — run unit tests.
-- `make test-integration` — run integration tests (requires logical replication enabled).
-- `make proto` — regenerate Protobuf/gRPC stubs.
-- `make tidy` — sync module dependencies (includes tools).
+
+Use the root `justfile` for consistent workflows:
+
+- `just fmt` — gofmt all packages.
+- `just lint` — run golangci-lint.
+- `just test` — run unit tests.
+- `just test-integration` — run integration tests (requires logical replication enabled).
+- `just proto` — regenerate Protobuf/gRPC stubs.
+- `just tidy` — sync module dependencies (includes tools).
 
 ## Coding Style & Naming Conventions
+
 - Go formatting: `gofmt` is required; use `goimports` for import cleanup.
 - Indentation: tabs per Go conventions.
 - Packages: short, lowercase; avoid `util`/`common` unless scoped.
@@ -35,15 +41,18 @@ Use the Makefile for consistent workflows:
 - Protobuf: snake_case file names; `service` and `rpc` names in UpperCamel.
 
 ## Testing Guidelines
+
 - Prefer table-driven unit tests in `internal/` and `pkg/`.
 - Integration tests should validate logical replication, DDL changes, and checkpoints.
 - Include cases for schema evolution (add/drop/alter column, generated columns).
 
 ## Commit & Pull Request Guidelines
+
 No Git history exists yet. Use Conventional Commits (e.g., `feat: add wal streaming`), and keep commits focused.
 PRs should include description, test evidence, and performance/compatibility notes.
 
 ## Pending Tasks / Roadmap
+
 - Orchestration & lifecycle: DBOS integration while keeping the lifecycle engine; separate consumer processes per flow (standalone + DBOS tasks); run-once RPC; durable K8s job dispatch (client-go, kubeconfig/out-of-cluster).
 - Sources & snapshots: automate logical replication setup (wal_level, slots, publications, cleanup); initial snapshotting with `pg_export_snapshot()`; resumeable snapshot state + ack policy; publication/table add/remove lifecycle; schema/type compatibility (including extensions).
 - Schema & DDL: schema registry; pg_catalog diffs + DDL capture stream; DDL approval/auto-apply gating with CLI; full DDL apply per destination with dialect mapping; evolution semantics (add/drop/alter/rename/typed changes).
@@ -54,9 +63,13 @@ PRs should include description, test evidence, and performance/compatibility not
 - Linting & analysis: golangci-lint config (Go-only) with CI blocking; property-based protocol invariants; statistical regression checks for bench results.
 - CLI/admin & docs: stream pull/ack CLI with pretty JSON, DDL list/approve/apply, staging resolve flag; examples under `examples/`; usage/tutorial/architecture docs and `docs/streams.md`.
 - [done] Data certificates: production-safe sampling + count/hash validation between source and destination.
+
 ### Formal Verification
+
 - [in progress] Lightweight TLA+/PlusCal spec for CDC protocol + flow lifecycle (now includes DDL gating + retry bounds); mirror invariants in property tests; trace log validation tool.
+
 ### Execution Order (current focus)
+
 1) [done] Type system completeness + extension mapping (pgvector, postgis, hstore, citext, ltree); centralize type mapping + casts; round-trip tests per destination.
 2) [done] Schema evolution lifecycle: DDL capture → approval → apply → checkpointed DDL stream; apply tests for Snowflake/ClickHouse/DuckLake/Postgres.
 3) [done] Snapshot/backfill: `pg_export_snapshot()` + persistent snapshot state + resume; parallel snapshot workers; snapshot→stream switch tests.
@@ -70,14 +83,19 @@ PRs should include description, test evidence, and performance/compatibility not
 11) [done] IAM support on the CLI endpoints as flags (so wallaby-admin publication ... can auth to RDS directly)
 
 ## Remaining Gaps (detailed)
+
 ### Destination parity (step 5)
+
 - Audit remaining DDL/mutation edge cases across destinations.
 
 ### Wire format + schema registry (step 6)
+
 - Evolution tests across any remaining destinations.
 
 ### Trace/spec coverage
+
 - Monitor coverage thresholds as invariants/actions evolve.
 
 ## Observability & Lifecycle Expectations
+
 All new components must emit OpenTelemetry traces/metrics and honor flow lifecycle state transitions. Checkpointing and recovery paths should be tested and documented.

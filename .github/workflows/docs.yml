@@ -14,7 +14,8 @@ on:
       - "uv.lock"
       - "buf.gen.docs.yaml"
       - "lychee.toml"
-      - "Makefile"
+      - "justfile"
+      - ".github/actions/setup-just/**"
       - "scripts/docs-*"
       - ".github/workflows/docs.yml"
   push:
@@ -31,7 +32,8 @@ on:
       - "uv.lock"
       - "buf.gen.docs.yaml"
       - "lychee.toml"
-      - "Makefile"
+      - "justfile"
+      - ".github/actions/setup-just/**"
       - "scripts/docs-*"
       - ".github/workflows/docs.yml"
   schedule:
@@ -59,6 +61,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Setup just
+        uses: ./.github/actions/setup-just
+
       - name: Setup Go
         # actions/setup-go v6.5.0
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
@@ -80,10 +85,10 @@ jobs:
           enable-cache: true
 
       - name: Verify generated documentation
-        run: make docs-verify
+        run: just docs-verify
 
       - name: Refresh, build, and check documentation
-        run: make docs-check
+        run: just docs-check
 
       - name: Check links in all repository Markdown
         # lycheeverse/lychee-action v2.9.0

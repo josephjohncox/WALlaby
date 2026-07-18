@@ -50,7 +50,7 @@ logical
 ## 2. Build WALlaby
 
 ```bash
-make proto
+just proto
 mkdir -p bin
 go build -o bin/wallaby ./cmd/wallaby
 go build -o bin/wallaby-admin ./cmd/wallaby-admin

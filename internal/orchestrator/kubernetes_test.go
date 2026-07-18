@@ -28,7 +28,7 @@ func TestKubernetesDispatcherCancelFlowForeground(t *testing.T) {
 	flowID := "flow-1"
 	prefix := "wallaby-worker"
 	jobName := buildJobName(prefix, flowID)
-	client := fake.NewSimpleClientset(&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: "default"}})
+	client := fake.NewClientset(&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: "default"}})
 	dispatcher := &KubernetesDispatcher{client: client, namespace: "default", cfg: KubernetesConfig{JobNamePrefix: prefix}}
 	if err := dispatcher.CancelFlow(ctx, flowID); err != nil {
 		t.Fatalf("CancelFlow() error = %v", err)
@@ -50,7 +50,7 @@ func TestKubernetesDispatcherCancelFlowForeground(t *testing.T) {
 func TestKubernetesDispatcherGenerationIdentityAndFence(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	client := fake.NewSimpleClientset()
+	client := fake.NewClientset()
 	dispatcher := &KubernetesDispatcher{client: client, namespace: "default", cfg: KubernetesConfig{
 		JobImage: "wallaby:test", JobNamePrefix: "wallaby-worker", JobServiceAccount: "wallaby-worker",
 	}}
@@ -85,7 +85,7 @@ func TestKubernetesDispatcherGenerationIdentityAndFence(t *testing.T) {
 func TestKubernetesDispatcherRunOnceUsesUniqueGenerationFencedJobs(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	client := fake.NewSimpleClientset()
+	client := fake.NewClientset()
 	dispatcher := &KubernetesDispatcher{client: client, namespace: "default", cfg: KubernetesConfig{
 		JobImage: "wallaby:test", JobNamePrefix: "wallaby-worker",
 	}}
@@ -126,7 +126,7 @@ func TestKubernetesDispatcherCancelThroughGeneration(t *testing.T) {
 	job := func(name, generation string) *batchv1.Job {
 		return authoritativeJob(name, flowID, generation)
 	}
-	client := fake.NewSimpleClientset(job(oldName, "1"), job(newName, "2"))
+	client := fake.NewClientset(job(oldName, "1"), job(newName, "2"))
 	dispatcher := &KubernetesDispatcher{client: client, namespace: "default"}
 	receipt, err := dispatcher.CancelThroughGeneration(ctx, flowID, 1)
 	if err != nil {
@@ -151,7 +151,7 @@ func TestKubernetesDispatcherCancelThroughGeneration(t *testing.T) {
 func TestKubernetesDispatcherReservedOwnershipCannotBeOverridden(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	client := fake.NewSimpleClientset()
+	client := fake.NewClientset()
 	dispatcher := &KubernetesDispatcher{client: client, namespace: "default", cfg: KubernetesConfig{
 		JobImage:      "wallaby:test",
 		JobNamePrefix: "wallaby-worker",
@@ -202,7 +202,7 @@ func TestKubernetesCancellationRejectsMalformedOwnershipMetadata(t *testing.T) {
 	flowID := "orders"
 	name := buildGenerationJobName("wallaby-worker", flowID, 1)
 	malformed := authoritativeJob(name, flowID, "not-a-generation")
-	client := fake.NewSimpleClientset(malformed)
+	client := fake.NewClientset(malformed)
 	dispatcher := &KubernetesDispatcher{client: client, namespace: "default", cfg: KubernetesConfig{JobNamePrefix: "wallaby-worker"}}
 	receipt, err := dispatcher.CancelThroughGeneration(ctx, flowID, 1)
 	if err == nil || receipt.Terminal {

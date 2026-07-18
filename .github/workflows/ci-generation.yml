@@ -24,6 +24,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Setup just
+        uses: ./.github/actions/setup-just
+
       - name: Setup Go
         # actions/setup-go v6.5.0
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
@@ -45,10 +48,10 @@ jobs:
           enable-cache: true
 
       - name: Verify generated protobuf and Go artifacts
-        run: make generate-check
+        run: just generate-check
 
       - name: Verify generated documentation
-        run: make docs-verify
+        run: just docs-verify
 
       - name: Test release tag validation
         run: ./scripts/validate-release-tag-selftest.sh

@@ -26,6 +26,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Setup just
+        uses: ./.github/actions/setup-just
+
       - name: Setup Go
         id: setup-go
         # actions/setup-go v6.5.0
@@ -102,10 +105,10 @@ jobs:
           key: ${{ steps.cache-go-tools.outputs.cache-primary-key }}
 
       - name: Generate protobufs
-        run: make proto
+        run: just proto
 
       - name: Lint
-        run: make lint
+        run: just lint
 
       - name: Govulncheck
         run: govulncheck ./...
@@ -114,15 +117,15 @@ jobs:
         run: staticcheck ./...
 
       - name: Proto lint
-        run: make proto-lint
+        run: just proto-lint
 
       - name: Proto breaking
-        run: make proto-breaking
+        run: just proto-breaking
         env:
           BUF_BREAKING_REF: ${{ github.event.pull_request.base.sha }}
 
       - name: Unit tests
-        run: make test-rapid RAPID_CHECKS=100
+        run: RAPID_CHECKS=100 just test-rapid
 
       - name: Helm chart checks
         run: ./scripts/helm-check.sh

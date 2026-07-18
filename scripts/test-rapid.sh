@@ -10,7 +10,7 @@ if [ -z "$RAPID_PACKAGES" ]; then
 	exit 2
 fi
 
-# Package lists are intentionally whitespace-delimited Make inputs.
+# Package lists are intentionally whitespace-delimited recipe inputs.
 # shellcheck disable=SC2086
 "$GO" test $RAPID_PACKAGES -args -rapid.checks="$RAPID_CHECKS"
 

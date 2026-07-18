@@ -26,6 +26,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Setup just
+        uses: ./.github/actions/setup-just
+
       - name: Validate release tag and commit
         run: |
           ./scripts/validate-release-tag.sh "${GITHUB_REF_NAME}"
@@ -58,8 +61,8 @@ jobs:
 
       - name: Verify generated artifacts
         run: |
-          make generate-check
-          make docs-verify
+          just generate-check
+          just docs-verify
           git diff --exit-code HEAD -- gen/go docs/reference/generated
 
       - name: Test root Go module
@@ -73,7 +76,7 @@ jobs:
           git diff --exit-code HEAD -- go.mod go.sum
 
       - name: Run Rapid property tests
-        run: make test-rapid RAPID_CHECKS=100
+        run: RAPID_CHECKS=100 just test-rapid
 
       - name: Run full Helm chart checks
         run: ./scripts/helm-check.sh
