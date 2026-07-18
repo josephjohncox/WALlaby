@@ -289,11 +289,13 @@ func (h *integrationHarness) start() error {
 		h.releaseGlobalLock()
 		return err
 	}
-	if err := h.startPostgres(); err != nil {
+	if err := h.startManagedDependencies(defaultK8sNamespace()); err != nil {
 		h.releaseGlobalLock()
 		return err
 	}
-	if err := h.startManagedDependencies(defaultK8sNamespace()); err != nil {
+	// Start PostgreSQL last. On cold CI runners, pulling the other dependency
+	// images can leave its API-server port-forward idle long enough to be closed.
+	if err := h.startPostgres(); err != nil {
 		h.releaseGlobalLock()
 		return err
 	}
