@@ -127,25 +127,26 @@ jobs:
           printf '%s\n' "${output}" | grep -q -- \
             '--- PASS: TestPostgresCatalogChangeSerializesVersions'
 
-      - name: Configure integration PostgreSQL
-        env:
-          POSTGRES_INTEGRATION_PORT: >-
-            ${{ job.services.postgres.ports['5432'] }}
+      - name: Start integration PostgreSQL
         run: |
-          postgres_id=$(docker ps \
-            --filter 'ancestor=postgres:16-alpine' \
-            --format '{{.ID}}' | head -n 1)
-          test -n "${postgres_id}"
-          docker exec "${postgres_id}" \
-            psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
-            -c "ALTER SYSTEM SET wal_level = 'logical'"
-          docker restart "${postgres_id}"
+          docker run --detach \
+            --name wallaby-integration-postgres \
+            --env POSTGRES_USER=postgres \
+            --env POSTGRES_PASSWORD=postgres \
+            --env POSTGRES_DB=postgres \
+            --publish 127.0.0.1::5432 \
+            postgres:16-alpine \
+            -c wal_level=logical
+          postgres_port=$(docker port wallaby-integration-postgres 5432/tcp \
+            | awk -F: '{print $NF}')
+          test -n "${postgres_port}"
           for attempt in $(seq 1 60); do
-            if docker exec "${postgres_id}" \
+            if docker exec wallaby-integration-postgres \
               pg_isready -U postgres -d postgres >/dev/null 2>&1; then
               break
             fi
             if [ "${attempt}" -eq 60 ]; then
+              docker logs wallaby-integration-postgres >&2
               echo 'integration PostgreSQL did not become ready' >&2
               exit 1
             fi
@@ -155,7 +156,7 @@ jobs:
             printf '%s:%s@localhost:%s/%s?sslmode=disable' \
               'postgres://postgres' \
               'postgres' \
-              "${POSTGRES_INTEGRATION_PORT}" \
+              "${postgres_port}" \
               'postgres'
           )
           printf 'TEST_PG_DSN=%s\n' "${test_pg_dsn}" >> "${GITHUB_ENV}"
@@ -166,6 +167,10 @@ jobs:
         env:
           WALLABY_TEST_K8S_NAMESPACE: default
         run: just test-integration-ci
+
+      - name: Stop integration PostgreSQL
+        if: always()
+        run: docker rm --force wallaby-integration-postgres || true
 
       - name: Save Go + tools cache
         if: always() && steps.cache-go-tools.outputs.cache-hit != 'true'
