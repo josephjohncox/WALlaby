@@ -14,6 +14,21 @@ serviceAccount:
   create: true
   name: ""
 
+# Workers do not need Kubernetes API credentials by default. The dispatcher
+# service account above alone receives Job-management RBAC.
+workerServiceAccount:
+  create: true
+  name: ""
+  automountServiceAccountToken: false
+
+# Production-safe defaults: the control plane requires a durable workflow
+# store. Set workflowStore=memory only with environment=dev/test.
+environment: production
+workflowStore: postgres
+
+kubernetesDispatch:
+  enabled: false
+
 podAnnotations: {}
 
 podLabels: {}
@@ -105,4 +120,4 @@ workers:
   #     schedule: "0 * * * *"
   #     command: ["/usr/local/bin/wallaby-worker"]
   #     args: ["--flow-id=hourly-sync"]
-items: []
+  items: []

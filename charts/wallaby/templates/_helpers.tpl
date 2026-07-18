@@ -23,6 +23,14 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "wallaby.workerServiceAccountName" -}}
+{{- if .Values.workerServiceAccount.create -}}
+{{- default (printf "%s-worker" (include "wallaby.fullname" .)) .Values.workerServiceAccount.name -}}
+{{- else -}}
+{{- default "default" .Values.workerServiceAccount.name -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "wallaby.otelEnv" -}}
 {{- $metrics := .Values.observability.metrics -}}
 {{- $traces := .Values.observability.traces -}}

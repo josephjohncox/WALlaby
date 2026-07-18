@@ -67,13 +67,18 @@ func (l *eventLog) snapshot() []event {
 }
 
 type fakeSource struct {
-	batches []connector.Batch
-	idx     int
-	acks    []connector.Checkpoint
-	log     *eventLog
+	batches  []connector.Batch
+	idx      int
+	acks     []connector.Checkpoint
+	log      *eventLog
+	ackErr   error
+	openSpec connector.Spec
 }
 
-func (s *fakeSource) Open(context.Context, connector.Spec) error { return nil }
+func (s *fakeSource) Open(_ context.Context, spec connector.Spec) error {
+	s.openSpec = spec
+	return nil
+}
 
 func (s *fakeSource) Read(context.Context) (connector.Batch, error) {
 	if s.idx >= len(s.batches) {
@@ -85,8 +90,13 @@ func (s *fakeSource) Read(context.Context) (connector.Batch, error) {
 }
 
 func (s *fakeSource) Ack(_ context.Context, checkpoint connector.Checkpoint) error {
+	if s.ackErr != nil {
+		return s.ackErr
+	}
 	seq := seqForCheckpoint(checkpoint)
-	s.log.add("ack", seq, "")
+	if s.log != nil {
+		s.log.add("ack", seq, "")
+	}
 	s.acks = append(s.acks, checkpoint)
 	return nil
 }
@@ -125,20 +135,78 @@ func (d *recordingDest) Capabilities() connector.Capabilities {
 }
 
 type recordingCheckpointStore struct {
-	puts []connector.Checkpoint
+	puts       []connector.Checkpoint
+	checkpoint connector.Checkpoint
+	outbox     []connector.OutboxEntry
+	getErr     error
+	putErr     error
+	gets       int
 }
 
 func (s *recordingCheckpointStore) Get(context.Context, string) (connector.Checkpoint, error) {
-	return connector.Checkpoint{}, fmt.Errorf("no checkpoint")
+	s.gets++
+	if s.getErr != nil {
+		return connector.Checkpoint{}, s.getErr
+	}
+	if s.checkpoint.LSN == "" && len(s.checkpoint.Metadata) == 0 {
+		return connector.Checkpoint{}, connector.ErrCheckpointNotFound
+	}
+	return s.checkpoint, nil
 }
 
 func (s *recordingCheckpointStore) Put(_ context.Context, _ string, checkpoint connector.Checkpoint) error {
+	if s.putErr != nil {
+		return s.putErr
+	}
 	s.puts = append(s.puts, checkpoint)
+	s.checkpoint = checkpoint
 	return nil
 }
 
 func (s *recordingCheckpointStore) List(context.Context) ([]connector.FlowCheckpoint, error) {
 	return nil, nil
+}
+
+func (s *recordingCheckpointStore) PersistCheckpointAndOutbox(_ context.Context, flowID string, checkpoint connector.Checkpoint, entries []connector.OutboxEntry) error {
+	if s.putErr != nil {
+		return s.putErr
+	}
+	s.puts = append(s.puts, checkpoint)
+	s.checkpoint = checkpoint
+	for _, entry := range entries {
+		entry.FlowID = flowID
+		duplicate := false
+		for _, existing := range s.outbox {
+			if existing.FlowID == flowID && existing.Destination == entry.Destination && existing.PositionID == entry.PositionID {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			s.outbox = append(s.outbox, entry)
+		}
+	}
+	return nil
+}
+
+func (s *recordingCheckpointStore) ListOutbox(_ context.Context, flowID string) ([]connector.OutboxEntry, error) {
+	var entries []connector.OutboxEntry
+	for _, entry := range s.outbox {
+		if entry.FlowID == flowID {
+			entries = append(entries, entry)
+		}
+	}
+	return entries, nil
+}
+
+func (s *recordingCheckpointStore) DeleteOutbox(_ context.Context, flowID, destination, positionID string) error {
+	for index, entry := range s.outbox {
+		if entry.FlowID == flowID && entry.Destination == destination && entry.PositionID == positionID {
+			s.outbox = append(s.outbox[:index], s.outbox[index+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("outbox entry not found")
 }
 
 func TestRunnerProtocolInvariantsQuick(t *testing.T) {

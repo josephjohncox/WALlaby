@@ -437,6 +437,7 @@ func (h *integrationHarness) validateKubeconfig(kubeconfigPath string) error {
 	if kubeconfigPath == "" || kubeconfigPath == "/dev/null" {
 		return fmt.Errorf("empty kubeconfig path")
 	}
+	// #nosec G703 -- this integration harness intentionally validates an operator-supplied kubeconfig path.
 	if _, err := os.Stat(kubeconfigPath); err != nil {
 		return fmt.Errorf("kubeconfig path %q is not readable: %w", kubeconfigPath, err)
 	}
@@ -539,6 +540,7 @@ func (h *integrationHarness) deleteKindCluster(ctx context.Context, cluster stri
 func (h *integrationHarness) getExistingKindKubeconfig(ctx context.Context, clusterName string) (string, error) {
 	kubeconfigPath := strings.TrimSpace(os.Getenv("WALLABY_TEST_K8S_KUBECONFIG"))
 	if kubeconfigPath != "" {
+		// #nosec G703 -- this integration harness intentionally probes an operator-supplied kubeconfig path.
 		_, err := os.Stat(kubeconfigPath)
 		if err == nil {
 			return kubeconfigPath, nil
@@ -2465,6 +2467,7 @@ func commandOutput(ctx context.Context, dir string, name string, args ...string)
 		fmt.Fprintf(os.Stderr, "$ %s %s\n", name, strings.Join(args, " "))
 	}
 	var output bytes.Buffer
+	// #nosec G204 -- command names and arguments are fixed by the repository's integration harness call sites.
 	cmd := exec.CommandContext(ctx, name, args...)
 	if dir != "" {
 		cmd.Dir = dir

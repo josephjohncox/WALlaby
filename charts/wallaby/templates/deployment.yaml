@@ -52,24 +52,50 @@ spec:
               protocol: TCP
 {{- end }}
 {{- $envFrom := list }}
+{{- $jobEnvFrom := list }}
 {{- if .Values.config.enabled }}
-{{- $envFrom = append $envFrom (dict "configMapRef" (dict "name" (include "wallaby.fullname" .))) }}
+{{- $configMapName := include "wallaby.fullname" . }}
+{{- $envFrom = append $envFrom (dict "configMapRef" (dict "name" $configMapName)) }}
+{{- $jobEnvFrom = append $jobEnvFrom (printf "configmap:%s" $configMapName) }}
 {{- end }}
 {{- range .Values.envFrom }}
 {{- $envFrom = append $envFrom . }}
+{{- if .secretRef }}
+{{- $jobEnvFrom = append $jobEnvFrom (printf "secret:%s" .secretRef.name) }}
+{{- else if .configMapRef }}
+{{- $jobEnvFrom = append $jobEnvFrom (printf "configmap:%s" .configMapRef.name) }}
+{{- end }}
 {{- end }}
 {{- if $envFrom }}
           envFrom:
 {{ toYaml $envFrom | indent 12 }}
 {{- end }}
 {{- $otelEnv := include "wallaby.otelEnv" . }}
-{{- if or .Values.env $otelEnv }}
           env:
+            - name: WALLABY_ENV
+              value: {{ .Values.environment | quote }}
+            - name: WALLABY_WORKFLOW_STORE
+              value: {{ .Values.workflowStore | quote }}
+{{- if .Values.kubernetesDispatch.enabled }}
+            - name: WALLABY_K8S_ENABLED
+              value: "true"
+            - name: WALLABY_K8S_JOB_IMAGE
+              value: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}
+            - name: WALLABY_K8S_JOB_IMAGE_PULL_POLICY
+              value: {{ .Values.image.pullPolicy | quote }}
+            - name: WALLABY_K8S_JOB_SERVICE_ACCOUNT
+              value: {{ include "wallaby.workerServiceAccountName" . | quote }}
+            - name: WALLABY_K8S_JOB_AUTOMOUNT_SERVICE_ACCOUNT_TOKEN
+              value: {{ .Values.workerServiceAccount.automountServiceAccountToken | quote }}
+{{- if $jobEnvFrom }}
+            - name: WALLABY_K8S_JOB_ENV_FROM
+              value: {{ join "," $jobEnvFrom | quote }}
+{{- end }}
+{{- end }}
 {{- with .Values.env }}
 {{ toYaml . | indent 12 }}
 {{- end }}
 {{ $otelEnv | indent 12 }}
-{{- end }}
 {{- with .Values.resources }}
           resources:
 {{ toYaml . | indent 12 }}

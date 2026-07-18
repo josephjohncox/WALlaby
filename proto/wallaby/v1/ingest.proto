@@ -19,6 +19,7 @@ message IngestBatchResponse {
   string message = 2;
 }
 
+// IngestService accepts an encoded batch from a remote WALlaby destination.
 service IngestService {
   rpc IngestBatch(IngestBatchRequest) returns (IngestBatchResponse);
 }

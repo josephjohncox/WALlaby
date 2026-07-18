@@ -1,15 +1,15 @@
-# Usage
+# Configuration and command reference
 
-This guide covers how to run WALlaby and operate flows using the gRPC API, worker mode, and DBOS scheduling.
-
-Workflow mode templates live in `examples/workflows/` and a longer overview is in `docs/workflows.md`.
+Use this page to look up configuration keys and command syntax. For a runnable first flow, use the [quickstart](getting-started/quickstart.md). For runtime selection, use [choose a runtime](deployment/index.md).
 
 ## Prerequisites
+
 - PostgreSQL with logical replication enabled (`wal_level=logical`).
-- A replication slot + publication for the source database (WALlaby can create the publication/slot when permitted).
-- Destinations (Kafka, S3) reachable from the WALlaby process.
+- A named replication slot and publication. WALlaby can create them when its database role has permission.
+- Network access from each worker to its source, destinations, workflow store, and checkpoint store.
 
 ## API Server
+
 Start the gRPC API server:
 
 ```bash
@@ -22,6 +22,7 @@ export WALLABY_WIRE_ENFORCE="true"
 ```
 
 ## Kubernetes / Helm
+
 Install the OCI Helm chart from GHCR (published on tagged releases):
 
 ```bash
@@ -47,6 +48,7 @@ workers:
 Use `kind: job` for one-off runs or `kind: cronjob` with `schedule` for periodic backfills.
 
 ### Create a Flow (gRPC)
+
 Use `grpcurl` with local proto files:
 
 ```bash
@@ -56,6 +58,7 @@ examples/grpc/create_flow.sh
 Flow definitions can also be copied from `examples/flows/*.json`.
 
 Flow fields you can set:
+
 - `wire_format` — default wire format for the flow
 - `parallelism` — max concurrent destination writes per batch (default `1`)
 - `config.ack_policy` — `all` (default) or `primary`
@@ -67,40 +70,45 @@ Flow fields you can set:
 - `config.schema_registry_subject_mode` — Kafka subject mode (`topic`, `table`, `topic_table`)
 
 Why fan‑out instead of multiple replication slots?
+
 - One slot means WAL is decoded once, reducing CPU/I/O on the primary.
 - Fewer slots reduces WAL retention risk and slot‑quota pressure.
 - A single stream preserves ordering and shares DDL gating across destinations.
-- `ack_policy=primary` lets the primary destination advance the slot while secondaries replay.
+- `ack_policy=primary` atomically stores the checkpoint and durable per-secondary outbox entries before advancing the slot. It requires a SQLite or PostgreSQL checkpoint store, stable destination names, and idempotent writes at every destination.
 
 To reconfigure destinations or wire format, call `UpdateFlow` with a full `Flow` payload; state is preserved.
-From the CLI, use `wallaby-admin flow update -file <path> [-pause] [-resume]` to pause, update, and resume in one step,
-or `wallaby-admin flow reconfigure -file <path> [-sync-publication]` to let the server orchestrate the pause/update/resume cycle.
+From the CLI, use `wallaby-admin flow update --file <path> [--pause] [--resume]` to pause, update, and resume in one step,
+or `wallaby-admin flow reconfigure --file <path> [--sync-publication]` to let the server orchestrate the pause/update/resume cycle.
 Additional CLI operations:
-- `wallaby-admin flow list [-state created|running|paused|stopping|failed]` to inspect all flows.
-- `wallaby-admin flow get -flow-id <id>` to print flow definition and state.
-- `wallaby-admin flow wait -flow-id <id> -state <state>` for automation/scripting.
-- `wallaby-admin flow dry-run -file <path>` to normalize/inspect flow config without applying.
-- `wallaby-admin flow check -file <path> [-endpoint <addr>]` for config pre-flight checks.
-- `wallaby-admin flow delete -flow-id <id>` to remove a flow.
-- `wallaby-admin flow validate -file <path>` to validate config before create/update.
-- `wallaby-admin ddl show -id <event_id> [-status ...]` to inspect a single DDL event.
-When decommissioning a flow, `wallaby-admin flow cleanup -flow-id <id> [-drop-slot] [-drop-publication] [-drop-source-state]`
-removes replication slots/publications and clears source state entries.
-- `wallaby-admin slot list -flow-id <id> [-slot <name>]` to inspect logical replication slot state.
-- `wallaby-admin slot show -flow-id <id> [-slot <name>]` to print the state for one slot.
-- `wallaby-admin slot drop -flow-id <id> [-slot <name>] [-if-exists]` to drop a logical replication slot.
+
+- `wallaby-admin flow list [--state created|running|paused|stopping|stopped|failed]` to inspect all flows.
+- `wallaby-admin flow get --flow-id <id>` to print flow definition and state.
+- `wallaby-admin flow wait --flow-id <id> --state <state>` for automation/scripting.
+- `wallaby-admin flow dry-run --file <path>` to normalize/inspect flow config without applying.
+- `wallaby-admin flow check --file <path> [--endpoint <addr>]` for config pre-flight checks.
+- `wallaby-admin flow delete --flow-id <id>` to remove a flow.
+- `wallaby-admin flow validate --file <path>` to validate config before create/update.
+- `wallaby-admin ddl show --id <event_id> [--status ...]` to inspect a single DDL event.
+When decommissioning a flow, `wallaby-admin flow cleanup --flow-id <id>` defaults to `--drop-slot=true`,
+`--drop-publication=false`, and `--drop-source-state=true`. Retain the slot or source-state row with
+`--drop-slot=false` or `--drop-source-state=false`; remove the publication with `--drop-publication=true`.
+- `wallaby-admin slot list --flow-id <id> [--slot <name>]` to inspect logical replication slot state.
+- `wallaby-admin slot show --flow-id <id> [--slot <name>]` to print the state for one slot.
+- `wallaby-admin slot drop --flow-id <id> [--slot <name>] [--if-exists]` to drop a logical replication slot.
 
 ## Worker Mode (Per-Flow Process)
+
 Run a single flow in its own process. This is recommended for Kubernetes or when you want isolated scaling per flow.
 
 ```bash
-./bin/wallaby-worker -flow-id "<flow-id>"
+./bin/wallaby-worker --flow-id "<flow-id>"
 ```
 
-Add `-max-empty-reads 1` to stop after one empty poll. This is useful for periodic/scheduled runs.
-For backfill runs that land in staging tables, add `-resolve-staging` to apply staged data without relying on process shutdown.
+Add `--max-empty-reads 1` to stop after one empty poll. This is useful for periodic/scheduled runs.
+For backfill runs that land in staging tables, add `--resolve-staging` to apply staged data without relying on process shutdown.
 
 ## DBOS Scheduling
+
 Enable DBOS and (optionally) a schedule to run flows as durable jobs:
 
 ```bash
@@ -114,6 +122,7 @@ export WALLABY_DBOS_MAX_RETRIES="5" # workflow recovery retries (optional)
 If `WALLABY_DBOS_SCHEDULE` is set, DBOS enqueues one run for each flow in `running` state.
 
 ## Kubernetes Job Dispatch
+
 If the API server runs inside Kubernetes, it can launch per-flow workers as Jobs when you call `StartFlow` or `ResumeFlow`:
 
 ```bash
@@ -124,8 +133,9 @@ export WALLABY_K8S_JOB_ENV_FROM="secret:wallaby-secrets,configmap:wallaby-config
 ```
 
 Optional settings:
+
 - `WALLABY_K8S_NAMESPACE` (defaults to the in-cluster namespace)
-- `WALLABY_K8S_JOB_MAX_EMPTY_READS` (appends `-max-empty-reads` to workers)
+- `WALLABY_K8S_JOB_MAX_EMPTY_READS` (appends `--max-empty-reads` to workers)
 - `WALLABY_K8S_JOB_ARGS` / `WALLABY_K8S_JOB_COMMAND` (comma-separated list)
 - `WALLABY_K8S_JOB_LABELS` / `WALLABY_K8S_JOB_ANNOTATIONS` (`key=value` comma list)
 - `WALLABY_K8S_KUBECONFIG` / `WALLABY_K8S_CONTEXT` for out-of-cluster kubeconfig usage
@@ -140,7 +150,8 @@ grpcurl -plaintext -d '{"flow_id":"<id>"}' localhost:8080 wallaby.v1.FlowService
 ```
 
 ## Checkpoint Store
-By default, checkpoints use Postgres when `WALLABY_POSTGRES_DSN` is set. For standalone runs, SQLite is supported:
+
+By default, checkpoints use Postgres when `WALLABY_POSTGRES_DSN` is set. A local worker can use SQLite for checkpoints, but the production control plane still requires the PostgreSQL workflow store:
 
 ```bash
 export WALLABY_CHECKPOINT_BACKEND="sqlite"
@@ -150,6 +161,7 @@ export WALLABY_CHECKPOINT_PATH="$HOME/.wallaby/checkpoints.db"
 Set `WALLABY_CHECKPOINT_DSN` to override the full SQLite DSN.
 
 ## Wire Formats
+
 WALlaby supports multiple wire formats. Set the default at the service level or per-flow:
 
 ```bash
@@ -162,7 +174,9 @@ Per-flow overrides are supported via `flow.wire_format` or connector `options.fo
 For connector-specific caveats (Snowpipe auto-ingest, DuckLake, Kafka payloads), see `docs/connectors.md`.
 
 ## Kafka Destination
+
 Kafka destination options (connector `options`):
+
 - `brokers` (required) — comma-separated list
 - `topic` (required)
 - `format` (default `arrow`)
@@ -186,7 +200,9 @@ Kafka destination options (connector `options`):
 Kafka payload details and headers are documented in `docs/connectors.md`.
 
 ## S3 Destination
+
 S3 destination options (connector `options`):
+
 - `bucket` (required)
 - `prefix` (optional)
 - `endpoint` (optional, for MinIO/local S3)
@@ -214,7 +230,9 @@ Example partitioning:
 ```
 
 ## HTTP / Webhook Destination
+
 HTTP destination options (connector `options`):
+
 - `url` (required)
 - `method` (`POST` default)
 - `format` (default `json`)
@@ -231,10 +249,13 @@ HTTP destination options (connector `options`):
 The idempotency key is derived from `(table, key, lsn)` and hashed to a fixed string.
 
 ## Runbooks
+
 For operational playbooks (DDL gating and recovery), see `docs/runbooks.md`.
 
 ## gRPC Destination
+
 gRPC destination options (connector `options`):
+
 - `endpoint` (required, e.g. `host:port`)
 - `format` (default `json`)
 - `payload_mode` (`wire` default, or `record_json`/`raw`, `wal`)
@@ -247,7 +268,9 @@ gRPC destination options (connector `options`):
 The client calls `IngestService/IngestBatch` and sends `payload_mode` as gRPC metadata (`x-wallaby-payload-mode`).
 
 ## Type Mapping (Schema Translation)
+
 Destinations that materialize tables (Snowflake, Snowpipe, ClickHouse, DuckDB) apply default Postgres → destination type mappings. Override per destination with:
+
 - `type_mappings` — JSON or YAML map of `postgres_type` → `dest_type`
 - `type_mappings_file` — path to a JSON or YAML map file
 
@@ -270,7 +293,9 @@ ext:vector: ARRAY
 ```
 
 ## DuckLake Destination
+
 DuckLake options (connector `options`):
+
 - `dsn` (required) — DuckDB connection string
 - `catalog` (required) — DuckLake metadata location (e.g. `metadata.ducklake`, `postgres:...`, `sqlite:...`)
 - `catalog_name` (default `ducklake`)
@@ -281,7 +306,9 @@ DuckLake options (connector `options`):
 DuckLake uses DuckDB for execution and stores data as Parquet with a separate metadata catalog.
 
 ## Postgres Source Options
+
 Key Postgres source options (connector `options`):
+
 - `dsn` (required)
 - `slot` (required; created automatically when `create_slot=true`)
 - `publication` (required)
@@ -318,25 +345,28 @@ RDS IAM uses the AWS SDK default credential chain (IRSA, env vars, shared config
 **TOAST rehydration**: Postgres may omit large unchanged columns on UPDATE. By default WALlaby emits partial updates plus `unchanged` fields. Use `toast_fetch=source` to reselect only those columns by primary key, `toast_fetch=full` to reselect the full row, or `toast_fetch=cache` for a best‑effort in‑memory merge.
 
 ## Publication Lifecycle
+
 Use `sync_publication` with `publication_tables` or `publication_schemas` to add/drop tables when a flow starts. For ad-hoc changes, the admin CLI can update the publication:
 
 ```bash
-./bin/wallaby-admin publication list -flow-id "<flow-id>"
-./bin/wallaby-admin publication sync -flow-id "<flow-id>" -schemas public -mode add -pause -resume
+./bin/wallaby-admin publication list --flow-id "<flow-id>"
+./bin/wallaby-admin publication sync --flow-id "<flow-id>" --schemas public --mode add --pause --resume
 ```
 
-For RDS IAM sources, pass `-aws-rds-iam` plus region/role flags (these override flow defaults).
+For RDS IAM sources, pass `--aws-rds-iam` plus region/role flags (these override flow defaults).
 
 To add tables and snapshot them:
 
 ```bash
-./bin/wallaby-admin publication sync -flow-id "<flow-id>" -tables public.new_table -snapshot -pause -resume
+./bin/wallaby-admin publication sync --flow-id "<flow-id>" --tables public.new_table --snapshot --pause --resume
 ```
 
 ## Postgres Stream Destination
+
 The `pgstream` destination writes events into a Postgres-backed stream with consumer groups and visibility timeouts.
 
 Destination options:
+
 - `dsn` (required)
 - `stream` (defaults to the destination name)
 - `format` (default `json`)
@@ -344,19 +374,21 @@ Destination options:
 Consumers can pull from the stream using the StreamService or the admin CLI:
 
 ```bash
-./bin/wallaby-admin stream pull -stream orders -group search -max 10 -visibility 30
+./bin/wallaby-admin stream pull --stream orders --group search --max 10 --visibility 30
 ```
 
 Ack messages when processed:
 
 ```bash
-./bin/wallaby-admin stream ack -stream orders -group search -ids 1,2,3
+./bin/wallaby-admin stream ack --stream orders --group search --ids 1,2,3
 ```
 
 ## Snowflake Destination
+
 Write directly into Snowflake tables with row-level change application.
 
 Options:
+
 - `dsn` (required)
 - `schema`, `table` (optional; defaults to source schema/table)
 - `write_mode` (`target` default, or `append`)
@@ -371,9 +403,11 @@ Options:
 Snowflake options are passed through the DSN. For GovCloud or private endpoints, use the appropriate account/host in the DSN; WALlaby does not rewrite hosts.
 
 ## Snowpipe Destination
+
 Bulk-load batches to a Snowflake stage and optionally trigger `COPY INTO`.
 
 Options:
+
 - `dsn` (required)
 - `stage` (required unless using table stage via `@%schema.table`)
 - `stage_path` (optional prefix inside the stage)
@@ -387,9 +421,11 @@ Options:
 Snowpipe only supports `write_mode=append`; use metadata columns to preserve operation semantics.
 
 ## DuckDB Destination
+
 Write directly into DuckDB (local file or in-memory).
 
 Options:
+
 - `dsn` (required; e.g. `./data/warehouse.duckdb`)
 - `schema`, `table` (optional; defaults to source schema/table)
 - `write_mode` (`target` default, or `append`)
@@ -399,9 +435,11 @@ Options:
 - `meta_table_enabled` (default `true`)
 
 ## ClickHouse Destination
+
 Apply changes using ClickHouse mutations.
 
 Options:
+
 - `dsn` (required)
 - `database` or `schema`, `table` (optional; defaults to source namespace/table)
 - `write_mode` (`target` default, or `append`)
@@ -413,12 +451,15 @@ Options:
 - `meta_order_by` (default `flow_id, source_schema, source_table, key_json`)
 
 ## Bufstream Destination
+
 Bufstream is Kafka-compatible; use the same options as the Kafka destination (`brokers`, `topic`, `format`, `compression`, `acks`).
 
 ## Destination Metadata + Append/Soft Delete
+
 Destinations can opt into metadata columns (synced time, soft-delete flags, watermarks) and append-only behavior:
 
 Options (on destination `options`):
+
 - `meta_enabled` (default `false`) — enable metadata columns
 - `meta_synced_at` (default `__ds_synced_at`)
 - `meta_deleted` (default `__ds_is_deleted`)
@@ -431,9 +472,11 @@ Options (on destination `options`):
 Metadata columns are added to the destination schema; choose names that do not collide with source columns.
 
 ## Destination Type Mappings
+
 Destinations can override source types for downstream compatibility:
 
 Options (on destination `options`):
+
 - `type_mappings` — JSON or YAML map of source type → destination type
 - `type_mappings_file` — path to a JSON or YAML map
 
@@ -451,6 +494,7 @@ jsonb: VARIANT
 ```
 
 ## DDL Governance
+
 DDL approval is configured per flow. When unset, the default is accept/apply (gate=false, auto_approve=true, auto_apply=true). Environment variables act as global defaults.
 
 Flow config example:
@@ -478,9 +522,9 @@ export WALLABY_DDL_AUTO_APPLY="true"
 Use the admin CLI to list and approve DDL events:
 
 ```bash
-./bin/wallaby-admin ddl list -status pending [-flow-id <flow-id>]
-./bin/wallaby-admin ddl approve -id 1
-./bin/wallaby-admin ddl apply -id 1
+./bin/wallaby-admin ddl list --status pending [--flow-id <flow-id>]
+./bin/wallaby-admin ddl approve --id 1
+./bin/wallaby-admin ddl apply --id 1
 ```
 
 When a DDL gate blocks a flow, WALlaby emits an OpenTelemetry event (`ddl.gated`)
@@ -501,22 +545,25 @@ rate(wallaby_ddl_gated_total[5m]) > 0
 Note: exporters may sanitize metric names (e.g., `wallaby_ddl_gated_total` in Prometheus).
 
 ## Resolve Staging Tables (Admin)
+
 If backfill loads landed in staging tables, resolve them without running a flow:
 
 ```bash
-./bin/wallaby-admin flow resolve-staging -flow-id "<flow-id>" -tables public.users,public.orders
+./bin/wallaby-admin flow resolve-staging --flow-id "<flow-id>" --tables public.users,public.orders
 ```
 
-Use `-schemas` to resolve all tables in schemas, and `-dest` to scope to a single destination.
+Use `--schemas` to resolve all tables in schemas, and `--dest` to scope to a single destination.
 
 ## Backfill + Replay
+
 Run a backfill by switching the worker to `backfill` mode and providing tables:
 
 ```bash
-./bin/wallaby-worker -flow-id \"<flow-id>\" -mode backfill -tables public.users,public.orders
+./bin/wallaby-worker --flow-id "<flow-id>" --mode backfill --tables public.users,public.orders
 ```
 
 Backfill performance options (source `options`):
+
 - `snapshot_workers` (default `1`) — parallel table/partition workers
 - `parallel_tables` (alias of `snapshot_workers`)
 - `partition_column` (optional) — column used to hash-partition a table
@@ -530,25 +577,27 @@ Backfill performance options (source `options`):
 Example with parallel workers and hash partitions:
 
 ```bash
-./bin/wallaby-worker -flow-id \"<flow-id>\" -mode backfill -tables public.users -snapshot-workers 4 -partition-column id -partition-count 8
+./bin/wallaby-worker --flow-id "<flow-id>" --mode backfill --tables public.users --snapshot-workers 4 --partition-column id --partition-count 8
 ```
 
 Replay from a specific LSN (if your replication slot retains WAL):
 
 ```bash
-./bin/wallaby-worker -flow-id \"<flow-id>\" -start-lsn \"0/16B6C50\"
+./bin/wallaby-worker --flow-id "<flow-id>" --start-lsn "0/16B6C50"
 ```
 
 For Postgres stream consumers, use the admin CLI to reset deliveries:
 
 ```bash
-./bin/wallaby-admin stream replay -stream orders -group search -since 2025-01-01T00:00:00Z
+./bin/wallaby-admin stream replay --stream orders --group search --since 2025-01-01T00:00:00Z
 ```
 
 ## Checkpointing
+
 Checkpoints are stored in Postgres and are used to resume streams from the last confirmed LSN. If a checkpoint exists, the runner sets `start_lsn` on the source before opening the replication stream.
 
 ## Testing (Developer)
+
 Run the unit test suite:
 
 ```bash

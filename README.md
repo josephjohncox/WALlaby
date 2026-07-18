@@ -1,164 +1,71 @@
 # WALlaby
 
-![Wallaby logo. Kicking a WAL block](./wallaby-small.png)
+![WALlaby logo](./wallaby-small.png)
 
-WALlaby is a Go-first CDC adapter for PostgreSQL logical replication. It is API-driven (gRPC + Terraform-friendly setup), supports multiple sources and destinations, and uses a durable workflow engine backed by Postgres. The focus is on performance, reliability, schema evolution, and observability.
+WALlaby replicates PostgreSQL changes through a small control plane and per-flow workers. A flow has one PostgreSQL source, one or more destination adapters, a lifecycle state, and a durable checkpoint.
 
-## Goals
-- High-throughput logical replication with checkpointing and recovery.
-- Multi-source, multi-destination routing with lifecycle management.
-- Efficient wire formats (Arrow, Parquet, Avro, Protobuf) and full DDL support.
-- Best-in-class Go libraries with minimal custom reinvention.
+The core contract is narrow:
 
-## Why WALlaby (vs Airbyte/Fivetran/Debezium/PeerDB/Sequin)
-- API-first control plane with desired-state flow configuration and lifecycle (start/stop/resume, publication sync, backfill/replay).
-- Multi-sink fan-out with durable checkpoints and per-destination reconciliation.
-- Schema fidelity via binary wire formats plus DDL capture/gating and evolution hooks.
-- Lightweight Go services and per-flow workers (DBOS/K8s/CLI) instead of heavyweight runtimes.
-- Built for streaming and API delivery without forcing Kafka as the control plane.
+1. Read a logical-replication batch.
+2. Write the required destinations.
+3. Persist progress before acknowledging PostgreSQL.
+4. Fence workers when lifecycle generation changes.
 
-Quick contrasts:
-- Airbyte/Fivetran: broad managed ELT catalogs; WALlaby focuses on streaming CDC with explicit lifecycle control.
-- Debezium: JVM + Kafka-centric; WALlaby is Go-native with API-driven flows and multi-sink fan-out.
-- PeerDB: strong warehouse replication; WALlaby is API-first with desired-state config and multiple destination types.
-- Sequin: webhook-first; WALlaby includes HTTP delivery plus durable flows, DDL gating, and multiple sink types.
+## Run the first flow
 
-## Status
-Active development. Interfaces and specs are stable, connectors and workflows are iterating quickly. See `AGENTS.md` for the current roadmap and TODOs.
+The local tutorial creates three PostgreSQL databases, replicates `public.orders`, verifies the destination row, and removes the slot:
 
-## Specs & Verification
-Specs are first-class artifacts in `specs/` (TLA+ models, coverage manifests). Runtime traces are validated against the spec and coverage is enforced.
+[Replicate your first table](https://josephjohncox.github.io/WALlaby/getting-started/quickstart/)
 
-Key targets:
+The source files are under [`examples/quickstart/`](examples/quickstart/).
+
+## Understand the system
+
+- [Core model](https://josephjohncox.github.io/WALlaby/concepts/core-model/)
+- [Lifecycle](https://josephjohncox.github.io/WALlaby/concepts/lifecycle/)
+- [Delivery and checkpoints](https://josephjohncox.github.io/WALlaby/concepts/delivery/)
+- [Architecture](https://josephjohncox.github.io/WALlaby/architecture/)
+- [PostgreSQL connector reference](https://josephjohncox.github.io/WALlaby/connectors/postgres/)
+
+## Commands
+
+| Command | Responsibility |
+| --- | --- |
+| `wallaby` | Run the gRPC control plane. |
+| `wallaby-admin` | Create and operate flows, publications, slots, DDL gates, and streams. |
+| `wallaby-worker` | Execute one flow against a captured lifecycle generation. |
+
+Verification and benchmark binaries live under `cmd/`; they are development tools, not part of the first-run path.
+
+## Develop
+
 ```bash
-make tla                 # run TLA+ model checks (flow, state machine, fan-out, liveness)
-make tla-coverage         # generate action coverage for specs
-make tla-coverage-check   # enforce minimum coverage
-make trace-suite          # quick randomized trace suite (CI-friendly)
-make trace-suite-large    # large randomized trace suite
-make spec-verify          # regenerate spec manifests and verify they are checked in
-```
-
-Trace validation:
-- `cmd/wallaby-trace-validate` validates trace files against spec invariants.
-- `specs/coverage*.json` defines the shared action/invariant contract between spec and Go.
-
-## CLI Tools
-Core:
-- `wallaby` — gRPC API server.
-- `wallaby-admin` — flow/DDL/stream/publication admin CLI.
-- `wallaby-worker` — run a single flow (standalone or scheduled).
-
-Dev/validation helpers:
-- `wallaby-speccheck` — runs `specaction` static checks.
-- `wallaby-spec-sync` — validates local TLA spec declarations against manifests.
-- `wallaby-spec-manifest` — regenerates local spec coverage manifests.
-- `wallaby-tla-coverage` — computes and validates TLA+ action/invariant coverage.
-- `wallaby-trace-validate` — validates traces against spec manifests.
-- `wallaby-bench` / `wallaby-bench-summary` — benchmark tooling.
-
-Examples:
-```bash
-wallaby-admin flow create -file examples/flows/postgres_to_s3_parquet.json
-wallaby-admin stream pull -stream orders -group g1 -max 10 -json
-wallaby-admin ddl list -status pending
-wallaby-admin ddl approve -id 1
-wallaby-admin version
-wallaby-worker -flow-id <flow-id> -max-empty-reads 1
-wallaby-speccheck --version
-```
-
-### Configuration references
-- `wallaby` reads config from:
-  - `--config path`
-  - `WALLABY_CONFIG`
-  - `wallaby.yaml` / `wallaby.yml` in current working directory (when `--config`/env path is not set)
-- `wallaby-admin` reads config from:
-  - `--config path`
-  - `WALLABY_ADMIN_CONFIG`
-  - `wallaby-admin.yaml` / `wallaby-admin.yml` in the current directory or `$HOME/.config/wallaby` (when no explicit config path is set)
-- `wallaby-worker` reads config from:
-  - `--config path`
-  - `WALLABY_WORKER_CONFIG`
-  - `wallaby-worker.yaml` / `wallaby-worker.yml` in the current working directory
-- `wallaby-speccheck` reads config from:
-  - `--config path`
-  - environment-backed flags via `WALLABY_SPECCHECK_*` (for example: `WALLABY_SPECCHECK_MANIFEST`, `WALLABY_SPECCHECK_VERBOSE`)
-- `wallaby-spec-sync` reads flag values from:
-  - environment-backed flags via `WALLABY_SPEC_SYNC_*` (for example: `WALLABY_SPEC_SYNC_SPEC_DIR`, `WALLABY_SPEC_SYNC_MANIFEST_DIR`)
-- `wallaby-spec-manifest` reads flag values from:
-  - environment-backed flags via `WALLABY_SPEC_MANIFEST_*` (for example: `WALLABY_SPEC_MANIFEST_DIR`, `WALLABY_SPEC_MANIFEST_OUT`)
-- `wallaby-tla-coverage` reads flag values from:
-  - environment-backed flags via `WALLABY_TLA_COVERAGE_*` (for example: `WALLABY_TLA_COVERAGE_DIR`, `WALLABY_TLA_COVERAGE_MIN`)
-- `wallaby-trace-validate` reads flag values from:
-  - environment-backed flags via `WALLABY_TRACE_VALIDATE_*` (for example: `WALLABY_TRACE_VALIDATE_INPUT`, `WALLABY_TRACE_VALIDATE_MANIFEST`)
-- `wallaby-bench` reads flag values from:
-  - environment-backed flags via `BENCH_*` (for example: `BENCH_PG_DSN`, `BENCH_CLICKHOUSE_DSN`, `BENCH_KAFKA_BROKERS`)
-- `wallaby-bench-summary` reads flag values from:
-  - environment-backed flags via `WALLABY_BENCH_SUMMARY_*` (for example: `WALLABY_BENCH_SUMMARY_DIR`, `WALLABY_BENCH_SUMMARY_FORMAT`)
-
-## Examples
-See `examples/README.md` for gRPC, Terraform, and worker usage examples.
-
-Flow specs you can copy from `examples/flows/`:
-- Postgres → Kafka / HTTP / S3 (Parquet)
-- Postgres → Snowflake / Snowpipe
-- Postgres → ClickHouse / DuckDB / DuckLake
-- Postgres → Bufstream / gRPC / pgstream
-
-Snowpipe auto-ingest (upload-only) snippet:
-```json
-{
-  "name": "snowpipe-out",
-  "type": "snowpipe",
-  "options": {
-    "dsn": "user:pass@account/db/schema?role=SYSADMIN",
-    "stage": "@my_external_stage",
-    "format": "parquet",
-    "auto_ingest": "true",
-    "copy_on_write": "false"
-  }
-}
-```
-
-## Documentation
-- `docs/usage.md` — operational usage and configuration.
-- `docs/tutorials.md` — step-by-step tutorials.
-- `docs/architecture.md` — system architecture overview.
-- `docs/streams.md` — stream consumer operations and recovery playbooks.
-- `docs/workflows.md` — DBOS/Kubernetes/CLI workflow modes.
-- `docs/specs.md` — TLA+ specs and trace verification flow.
-- `docs/connectors.md` — connector configuration notes and caveats.
-- `docs/runbooks.md` — operational runbooks (DDL gating, recovery).
-- `docs/benchmarks.md` — benchmark harness and results.
-
-## Development & Testing
-Common commands:
-```bash
+make proto
 make fmt
 make lint
 make test
 make test-rapid RAPID_CHECKS=100
-make test-integration-ci
-make check            # spec + TLA + unit tests
-make check-coverage   # trace + TLA coverage + e2e
+make docs-verify
 ```
 
-Benchmarking:
+Run the live integration harness with:
+
 ```bash
-make benchmark
-make benchmark-profile
-make benchstat BASELINE=bench/results/<baseline> CANDIDATE=bench/results/<candidate>
+make test-integration
 ```
 
-## Helm (OCI via GHCR)
-Once a tagged release is published, install via OCI Helm chart:
-```bash
-helm install wallaby oci://ghcr.io/josephjohncox/wallaby/charts/wallaby --version <tag>
-```
+See the [contributor guide](https://josephjohncox.github.io/WALlaby/development/) for PostgreSQL-backed store tests, TLA+ checks, Helm validation, and generated-file rules.
 
-An example values file is at `charts/wallaby/values.example.yaml`.
-For production-style values (ConfigMap + Secret pattern), see `charts/wallaby/values-prod.yaml`.
+## Repository map
+
+- `pkg/`: stable connector, stream, wire, and certification interfaces.
+- `connectors/`: source and destination adapters.
+- `internal/`: lifecycle, dispatch, checkpoint, registry, and runner implementations.
+- `proto/`: gRPC wire contracts.
+- `specs/`: TLA+ models and action-coverage manifests.
+- `examples/`: runnable flow definitions and local fixtures.
+- `docs/`: user guide and generated reference.
 
 ## License
-PolyForm Perimeter License 1.0.1. See `LICENSE` for details.
+
+WALlaby uses the PolyForm Perimeter License 1.0.1. See [LICENSE](LICENSE).

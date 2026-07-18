@@ -190,6 +190,14 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 	}
 
 	waitFor(t, 30*time.Second, 200*time.Millisecond, func() (bool, error) {
+		select {
+		case runnerErr := <-errCh:
+			if runnerErr == nil {
+				return false, errors.New("runner exited before applying DDL")
+			}
+			return false, fmt.Errorf("runner exited before applying DDL: %w", runnerErr)
+		default:
+		}
 		var exists bool
 		err := dstPool.QueryRow(ctx,
 			`SELECT EXISTS (

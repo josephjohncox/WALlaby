@@ -49,7 +49,7 @@ func TestKubernetesDispatcherIntegration(t *testing.T) {
 	}
 
 	flowID := fmt.Sprintf("flow-%d", time.Now().UnixNano())
-	if err := dispatcher.EnqueueFlow(ctx, flowID); err != nil {
+	if err := dispatcher.EnqueueRunOnce(ctx, flowID, 1); err != nil {
 		t.Fatalf("enqueue flow: %v", err)
 	}
 
@@ -59,22 +59,18 @@ func TestKubernetesDispatcherIntegration(t *testing.T) {
 	}
 
 	waitFor(t, 30*time.Second, 2*time.Second, func() (bool, error) {
-		list, err := client.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("wallaby.flow-id=%s", flowID),
-		})
+		jobs, err := listJobsForFlow(ctx, client, namespace, flowID)
 		if err != nil {
 			return false, err
 		}
-		return len(list.Items) > 0, nil
+		return len(jobs) > 0, nil
 	})
 
-	jobs, err := client.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("wallaby.flow-id=%s", flowID),
-	})
+	jobs, err := listJobsForFlow(ctx, client, namespace, flowID)
 	if err != nil {
 		t.Fatalf("list jobs: %v", err)
 	}
-	for _, job := range jobs.Items {
+	for _, job := range jobs {
 		_ = deleteJob(ctx, client, namespace, job.Name)
 	}
 }
@@ -160,22 +156,20 @@ func TestKubernetesDispatcherJobSpec(t *testing.T) {
 	}
 
 	flowID := fmt.Sprintf("flow-%d", time.Now().UnixNano())
-	if err := dispatcher.EnqueueFlow(ctx, flowID); err != nil {
+	if err := dispatcher.EnqueueRunOnce(ctx, flowID, 1); err != nil {
 		t.Fatalf("enqueue flow: %v", err)
 	}
 
 	var jobName string
 	waitFor(t, 30*time.Second, 2*time.Second, func() (bool, error) {
-		list, err := client.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("wallaby.flow-id=%s", flowID),
-		})
+		jobs, err := listJobsForFlow(ctx, client, namespace, flowID)
 		if err != nil {
 			return false, err
 		}
-		if len(list.Items) == 0 {
+		if len(jobs) == 0 {
 			return false, nil
 		}
-		jobName = list.Items[0].Name
+		jobName = jobs[0].Name
 		return true, nil
 	})
 
@@ -193,8 +187,8 @@ func TestKubernetesDispatcherJobSpec(t *testing.T) {
 	if job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished != 30 {
 		t.Fatalf("expected ttl 30, got %+v", job.Spec.TTLSecondsAfterFinished)
 	}
-	if job.Labels["wallaby.flow-id"] != flowID {
-		t.Fatalf("expected flow label %s, got %s", flowID, job.Labels["wallaby.flow-id"])
+	if job.Annotations["wallaby.flow-id"] != flowID {
+		t.Fatalf("expected authoritative flow annotation %s, got %s", flowID, job.Annotations["wallaby.flow-id"])
 	}
 	if job.Labels["wallaby.test-label"] != "true" {
 		t.Fatalf("expected custom label, got %v", job.Labels)
@@ -213,10 +207,13 @@ func TestKubernetesDispatcherJobSpec(t *testing.T) {
 	if ctr.ImagePullPolicy != corev1.PullPolicy("IfNotPresent") {
 		t.Fatalf("expected pull policy IfNotPresent, got %s", ctr.ImagePullPolicy)
 	}
-	if !argPresent(ctr.Args, "--flow-id="+flowID) {
-		t.Fatalf("expected --flow-id arg, got %v", ctr.Args)
+	if !argValuePresent(ctr.Args, "flow-id", flowID) {
+		t.Fatalf("expected authoritative --flow-id arg, got %v", ctr.Args)
 	}
-	if !argPresent(ctr.Args, "--max-empty-reads=3") {
+	if !argValuePresent(ctr.Args, "generation", "1") {
+		t.Fatalf("expected generation fence arg, got %v", ctr.Args)
+	}
+	if !argValuePresent(ctr.Args, "max-empty-reads", "3") {
 		t.Fatalf("expected --max-empty-reads arg, got %v", ctr.Args)
 	}
 	if !envPresent(ctr.Env, "WALLABY_ENV", "test") {
@@ -263,7 +260,7 @@ func TestKubernetesDispatcherRetry(t *testing.T) {
 	}
 
 	flowID := fmt.Sprintf("flow-%d", time.Now().UnixNano())
-	if err := dispatcher.EnqueueFlow(ctx, flowID); err != nil {
+	if err := dispatcher.EnqueueRunOnce(ctx, flowID, 1); err != nil {
 		t.Fatalf("enqueue flow: %v", err)
 	}
 
@@ -274,16 +271,14 @@ func TestKubernetesDispatcherRetry(t *testing.T) {
 
 	var jobName string
 	waitFor(t, 30*time.Second, 2*time.Second, func() (bool, error) {
-		list, err := client.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("wallaby.flow-id=%s", flowID),
-		})
+		jobs, err := listJobsForFlow(ctx, client, namespace, flowID)
 		if err != nil {
 			return false, err
 		}
-		if len(list.Items) == 0 {
+		if len(jobs) == 0 {
 			return false, nil
 		}
-		jobName = list.Items[0].Name
+		jobName = jobs[0].Name
 		return true, nil
 	})
 
@@ -346,24 +341,22 @@ func TestKubernetesDispatcherRecovery(t *testing.T) {
 	}
 
 	flowID := fmt.Sprintf("flow-%d", time.Now().UnixNano())
-	if err := dispatcher.EnqueueFlow(ctx, flowID); err != nil {
+	if err := dispatcher.EnqueueRunOnce(ctx, flowID, 1); err != nil {
 		t.Fatalf("enqueue flow: %v", err)
 	}
 
 	var firstJob string
 	var firstUID string
 	waitFor(t, 30*time.Second, 2*time.Second, func() (bool, error) {
-		list, err := client.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("wallaby.flow-id=%s", flowID),
-		})
+		jobs, err := listJobsForFlow(ctx, client, namespace, flowID)
 		if err != nil {
 			return false, err
 		}
-		if len(list.Items) == 0 {
+		if len(jobs) == 0 {
 			return false, nil
 		}
-		firstJob = list.Items[0].Name
-		firstUID = string(list.Items[0].UID)
+		firstJob = jobs[0].Name
+		firstUID = string(jobs[0].UID)
 		return true, nil
 	})
 
@@ -383,25 +376,36 @@ func TestKubernetesDispatcherRecovery(t *testing.T) {
 		return false, nil
 	})
 
-	if err := dispatcher.EnqueueFlow(ctx, flowID); err != nil {
+	if err := dispatcher.EnqueueRunOnce(ctx, flowID, 1); err != nil {
 		t.Fatalf("enqueue flow after completion: %v", err)
 	}
 
+	var secondJob string
 	waitFor(t, 30*time.Second, 2*time.Second, func() (bool, error) {
-		job, err := client.BatchV1().Jobs(namespace).Get(ctx, firstJob, metav1.GetOptions{})
+		jobs, err := listJobsForFlow(ctx, client, namespace, flowID)
 		if err != nil {
-			return false, nil
+			return false, err
 		}
-		return string(job.UID) != firstUID, nil
+		for _, job := range jobs {
+			if job.Name != firstJob {
+				secondJob = job.Name
+				if string(job.UID) == firstUID {
+					t.Fatalf("separate run-once attempts reused UID %s", firstUID)
+				}
+				return true, nil
+			}
+		}
+		return false, nil
 	})
+	if secondJob == "" {
+		t.Fatal("second run-once job was not created")
+	}
 
-	jobs, err := client.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("wallaby.flow-id=%s", flowID),
-	})
+	jobs, err := listJobsForFlow(ctx, client, namespace, flowID)
 	if err != nil {
 		t.Fatalf("list jobs: %v", err)
 	}
-	for _, job := range jobs.Items {
+	for _, job := range jobs {
 		_ = deleteJob(ctx, client, namespace, job.Name)
 	}
 }
@@ -429,9 +433,27 @@ func deleteJob(ctx context.Context, client *kubernetes.Clientset, namespace, nam
 	return client.BatchV1().Jobs(namespace).Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &policy})
 }
 
-func argPresent(args []string, value string) bool {
-	for _, arg := range args {
-		if arg == value {
+func listJobsForFlow(ctx context.Context, client kubernetes.Interface, namespace, flowID string) ([]batchv1.Job, error) {
+	list, err := client.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	jobs := make([]batchv1.Job, 0, len(list.Items))
+	for _, job := range list.Items {
+		if job.Annotations["wallaby.flow-id"] == flowID {
+			jobs = append(jobs, job)
+		}
+	}
+	return jobs, nil
+}
+
+func argValuePresent(args []string, name, value string) bool {
+	flag := "--" + name
+	for index, arg := range args {
+		if arg == flag && index+1 < len(args) && args[index+1] == value {
+			return true
+		}
+		if arg == flag+"="+value {
 			return true
 		}
 	}

@@ -12,6 +12,20 @@ on:
 jobs:
   integration:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
     env:
       GOBIN: ${{ github.workspace }}/.cache/bin
       GOMODCACHE: ${{ github.workspace }}/.cache/gomod
@@ -19,42 +33,53 @@ jobs:
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.cache/golangci-lint
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        # actions/checkout v5.0.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Go
         id: setup-go
-        uses: actions/setup-go@v6
+        # actions/setup-go v6.5.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
           go-version-file: go.mod
           cache: false
 
       - name: Setup Buf
-        uses: bufbuild/buf-setup-action@v1
+        # bufbuild/buf-setup-action v1.50.0
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99
         with:
           version: "1.63.0"
 
       - name: Restore Go + tools cache
         id: cache-go-tools
-        uses: actions/cache/restore@v4
+        # actions/cache v4.3.0
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             .cache/bin
             .cache/gomod
             .cache/golangci-lint
-          key: ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-tools-${{ hashFiles('go.sum') }}
+          key: >-
+            ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-tools-
+            ${{ hashFiles('go.sum') }}
 
       - name: Restore Go build cache
         id: cache-go-build
-        uses: actions/cache/restore@v4
+        # actions/cache v4.3.0
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: .cache/gocache
-          key: ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-build-${{ hashFiles('go.sum') }}
+          key: >-
+            ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-build-
+            ${{ hashFiles('go.sum') }}
 
       - name: Create kind cluster
-        uses: helm/kind-action@v1
+        # helm/kind-action v1.13.0
+        uses: helm/kind-action@92086f6be054225fa813e0a4b13787fc9088faab
         with:
           node_image: kindest/node:v1.35.0
           cluster_name: wallaby-test
@@ -62,14 +87,32 @@ jobs:
       - name: Generate protobufs
         run: make proto
 
-      - name: Integration tests (Postgres, ClickHouse, DBOS, K8s)
+      - name: PostgreSQL-backed store contract tests
+        env:
+          TEST_PG_DSN: >-
+            postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        run: |
+          output=$(go test -count=1 -v \
+            ./internal/checkpoint \
+            ./internal/workflow \
+            ./pkg/schemaregistry)
+          printf '%s\n' "${output}"
+          printf '%s\n' "${output}" | grep -q -- \
+            '--- PASS: TestPostgresStoreRejectsCheckpointRegression'
+          printf '%s\n' "${output}" | grep -q -- \
+            '--- PASS: TestPostgresLifecycleStoreContract'
+          printf '%s\n' "${output}" | grep -q -- \
+            '--- PASS: TestPostgresRegistryConcurrentRegistration'
+
+      - name: Integration tests (PostgreSQL, ClickHouse, DBOS, Kubernetes)
         run: |
           WALLABY_TEST_K8S_NAMESPACE=default \
           make test-integration-ci
 
       - name: Save Go + tools cache
         if: always() && steps.cache-go-tools.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        # actions/cache v4.3.0
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             .cache/bin
@@ -79,7 +122,8 @@ jobs:
 
       - name: Save Go build cache
         if: always() && steps.cache-go-build.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        # actions/cache v4.3.0
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: .cache/gocache
           key: ${{ steps.cache-go-build.outputs.cache-primary-key }}

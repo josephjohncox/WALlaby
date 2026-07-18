@@ -18,6 +18,7 @@ type Config struct {
 	Environment string
 	API         APIConfig
 	Postgres    PostgresConfig
+	Workflow    WorkflowConfig
 	Telemetry   TelemetryConfig
 	Trace       TraceConfig
 	Profiling   ProfilingConfig
@@ -35,6 +36,12 @@ type APIConfig struct {
 
 type PostgresConfig struct {
 	DSN string
+}
+
+// WorkflowConfig selects the lifecycle metadata store. Memory is explicitly
+// development/test-only and is never an implicit production fallback.
+type WorkflowConfig struct {
+	Store string `validate:"oneof=postgres memory"`
 }
 
 type TelemetryConfig struct {
@@ -67,30 +74,31 @@ type DBOSConfig struct {
 }
 
 type KubernetesConfig struct {
-	Enabled            bool
-	KubeconfigPath     string
-	KubeContext        string
-	APIServer          string
-	BearerToken        string
-	CAFile             string
-	CAData             string
-	ClientCertFile     string
-	ClientKeyFile      string
-	InsecureSkipTLS    bool
-	Namespace          string
-	JobImage           string
-	JobImagePullPolicy string
-	JobServiceAccount  string
-	JobNamePrefix      string
-	JobTTLSeconds      int `validate:"gte=0"`
-	JobBackoffLimit    int `validate:"gte=0"`
-	MaxEmptyReads      int `validate:"gte=0"`
-	JobLabels          map[string]string
-	JobAnnotations     map[string]string
-	JobCommand         []string
-	JobArgs            []string
-	JobEnv             map[string]string
-	JobEnvFrom         []string
+	Enabled                         bool
+	KubeconfigPath                  string
+	KubeContext                     string
+	APIServer                       string
+	BearerToken                     string
+	CAFile                          string
+	CAData                          string
+	ClientCertFile                  string
+	ClientKeyFile                   string
+	InsecureSkipTLS                 bool
+	Namespace                       string
+	JobImage                        string
+	JobImagePullPolicy              string
+	JobServiceAccount               string
+	JobAutomountServiceAccountToken bool
+	JobNamePrefix                   string
+	JobTTLSeconds                   int `validate:"gte=0"`
+	JobBackoffLimit                 int `validate:"gte=0"`
+	MaxEmptyReads                   int `validate:"gte=0"`
+	JobLabels                       map[string]string
+	JobAnnotations                  map[string]string
+	JobCommand                      []string
+	JobArgs                         []string
+	JobEnv                          map[string]string
+	JobEnvFrom                      []string
 }
 
 type WireConfig struct {
@@ -138,6 +146,9 @@ func Load(configPath string) (*Config, error) {
 		Postgres: PostgresConfig{
 			DSN: "",
 		},
+		Workflow: WorkflowConfig{
+			Store: "postgres",
+		},
 		Telemetry: TelemetryConfig{
 			ServiceName:     "wallaby",
 			OTLPEndpoint:    "",
@@ -162,30 +173,31 @@ func Load(configPath string) (*Config, error) {
 			MaxEmptyReads: 1,
 		},
 		Kubernetes: KubernetesConfig{
-			Enabled:            false,
-			KubeconfigPath:     "",
-			KubeContext:        "",
-			APIServer:          "",
-			BearerToken:        "",
-			CAFile:             "",
-			CAData:             "",
-			ClientCertFile:     "",
-			ClientKeyFile:      "",
-			InsecureSkipTLS:    false,
-			Namespace:          "",
-			JobImage:           "",
-			JobImagePullPolicy: "IfNotPresent",
-			JobServiceAccount:  "",
-			JobNamePrefix:      "wallaby-worker",
-			JobTTLSeconds:      0,
-			JobBackoffLimit:    1,
-			MaxEmptyReads:      0,
-			JobLabels:          nil,
-			JobAnnotations:     nil,
-			JobCommand:         nil,
-			JobArgs:            nil,
-			JobEnv:             nil,
-			JobEnvFrom:         nil,
+			Enabled:                         false,
+			KubeconfigPath:                  "",
+			KubeContext:                     "",
+			APIServer:                       "",
+			BearerToken:                     "",
+			CAFile:                          "",
+			CAData:                          "",
+			ClientCertFile:                  "",
+			ClientKeyFile:                   "",
+			InsecureSkipTLS:                 false,
+			Namespace:                       "",
+			JobImage:                        "",
+			JobImagePullPolicy:              "IfNotPresent",
+			JobServiceAccount:               "",
+			JobAutomountServiceAccountToken: false,
+			JobNamePrefix:                   "wallaby-worker",
+			JobTTLSeconds:                   0,
+			JobBackoffLimit:                 1,
+			MaxEmptyReads:                   0,
+			JobLabels:                       nil,
+			JobAnnotations:                  nil,
+			JobCommand:                      nil,
+			JobArgs:                         nil,
+			JobEnv:                          nil,
+			JobEnvFrom:                      nil,
 		},
 		Wire: WireConfig{
 			DefaultFormat: "",
@@ -215,6 +227,7 @@ func Load(configPath string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Postgres.DSN = stringValue(fileCfg, []string{"postgres.dsn"}, []string{"WALLABY_POSTGRES_DSN", "WALLABY_WORKER_POSTGRES_DSN"}, cfg.Postgres.DSN)
+	cfg.Workflow.Store = stringValue(fileCfg, []string{"workflow.store", "workflow_store"}, []string{"WALLABY_WORKFLOW_STORE", "WALLABY_WORKER_WORKFLOW_STORE"}, cfg.Workflow.Store)
 
 	cfg.Telemetry.ServiceName = stringValue(fileCfg, []string{"telemetry.service_name", "telemetry.service-name"}, []string{"OTEL_SERVICE_NAME", "WALLABY_OTEL_SERVICE"}, cfg.Telemetry.ServiceName)
 	cfg.Telemetry.OTLPEndpoint = stringValue(fileCfg, []string{"telemetry.otlp_endpoint", "telemetry.otlp-endpoint", "telemetry.endpoint", "telemetry.otel_endpoint"}, []string{"OTEL_EXPORTER_OTLP_ENDPOINT", "WALLABY_OTEL_ENDPOINT", "WALLABY_WORKER_OTEL_ENDPOINT"}, cfg.Telemetry.OTLPEndpoint)
@@ -284,6 +297,10 @@ func Load(configPath string) (*Config, error) {
 	cfg.Kubernetes.JobImage = stringValue(fileCfg, []string{"kubernetes.job_image", "kubernetes.job-image", "k8s.job_image", "k8s.job-image"}, []string{"WALLABY_K8S_JOB_IMAGE", "WALLABY_WORKER_K8S_JOB_IMAGE"}, cfg.Kubernetes.JobImage)
 	cfg.Kubernetes.JobImagePullPolicy = stringValue(fileCfg, []string{"kubernetes.job_image_pull_policy", "kubernetes.job-image-pull-policy", "k8s.job_image_pull_policy", "k8s.job-image-pull-policy"}, []string{"WALLABY_K8S_JOB_IMAGE_PULL_POLICY", "WALLABY_WORKER_K8S_JOB_IMAGE_PULL_POLICY"}, cfg.Kubernetes.JobImagePullPolicy)
 	cfg.Kubernetes.JobServiceAccount = stringValue(fileCfg, []string{"kubernetes.job_service_account", "kubernetes.job-service-account", "k8s.job_service_account", "k8s.job-service-account"}, []string{"WALLABY_K8S_JOB_SERVICE_ACCOUNT", "WALLABY_WORKER_K8S_JOB_SERVICE_ACCOUNT"}, cfg.Kubernetes.JobServiceAccount)
+	cfg.Kubernetes.JobAutomountServiceAccountToken, err = boolValue(fileCfg, []string{"kubernetes.job_automount_service_account_token", "kubernetes.job-automount-service-account-token"}, []string{"WALLABY_K8S_JOB_AUTOMOUNT_SERVICE_ACCOUNT_TOKEN", "WALLABY_WORKER_K8S_JOB_AUTOMOUNT_SERVICE_ACCOUNT_TOKEN"}, cfg.Kubernetes.JobAutomountServiceAccountToken)
+	if err != nil {
+		return nil, err
+	}
 	cfg.Kubernetes.JobNamePrefix = stringValue(fileCfg, []string{"kubernetes.job_name_prefix", "kubernetes.job-name-prefix", "k8s.job_name_prefix", "k8s.job-name-prefix"}, []string{"WALLABY_K8S_JOB_NAME_PREFIX", "WALLABY_WORKER_K8S_JOB_NAME_PREFIX"}, cfg.Kubernetes.JobNamePrefix)
 	cfg.Kubernetes.JobTTLSeconds, err = intValue(fileCfg, []string{"kubernetes.job_ttl_seconds", "kubernetes.job-ttl-seconds", "k8s.job_ttl_seconds", "k8s.job-ttl-seconds"}, []string{"WALLABY_K8S_JOB_TTL_SECONDS", "WALLABY_WORKER_K8S_JOB_TTL_SECONDS"}, cfg.Kubernetes.JobTTLSeconds)
 	if err != nil {
@@ -373,6 +390,8 @@ func validateConfig(cfg *Config) error {
 	cfg.Telemetry.MetricsExporter = strings.ToLower(strings.TrimSpace(cfg.Telemetry.MetricsExporter))
 	cfg.Telemetry.TracesExporter = strings.ToLower(strings.TrimSpace(cfg.Telemetry.TracesExporter))
 	cfg.Wire.DefaultFormat = strings.ToLower(strings.TrimSpace(cfg.Wire.DefaultFormat))
+	cfg.Workflow.Store = strings.ToLower(strings.TrimSpace(cfg.Workflow.Store))
+	cfg.Environment = strings.ToLower(strings.TrimSpace(cfg.Environment))
 	k8sImagePullPolicy := strings.TrimSpace(cfg.Kubernetes.JobImagePullPolicy)
 	cfg.Kubernetes.JobImagePullPolicy = k8sImagePullPolicy
 
@@ -397,6 +416,19 @@ func validateConfig(cfg *Config) error {
 
 	if cfg.DDL.CatalogEnabled && cfg.DDL.CatalogInterval <= 0 {
 		errs = append(errs, "ddl.catalog_interval must be greater than 0 when ddl catalog scanning is enabled")
+	}
+	if cfg.Workflow.Store == "postgres" && strings.TrimSpace(cfg.Postgres.DSN) == "" {
+		errs = append(errs, "postgres dsn is required when workflow.store=postgres")
+	}
+	if cfg.Workflow.Store == "memory" {
+		switch cfg.Environment {
+		case "dev", "development", "test":
+		default:
+			errs = append(errs, "workflow.store=memory is allowed only in dev, development, or test")
+		}
+		if cfg.DBOS.Enabled || cfg.Kubernetes.Enabled {
+			errs = append(errs, "workflow.store=memory cannot be used with DBOS or Kubernetes dispatch")
+		}
 	}
 
 	if len(errs) == 0 {

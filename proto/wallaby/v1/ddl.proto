@@ -57,6 +57,7 @@ message MarkDDLAppliedResponse {
   DDLEvent event = 1;
 }
 
+// DDLService lists schema changes and manages approval and application state.
 service DDLService {
   rpc ListPendingDDL(ListPendingDDLRequest) returns (ListPendingDDLResponse);
   rpc ListDDL(ListDDLRequest) returns (ListDDLResponse);

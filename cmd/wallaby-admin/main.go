@@ -155,6 +155,7 @@ func newAdminCommand() *cobra.Command {
 	addLeaf(flowCommand, "reconfigure", "reconfigure flow", addFlowReconfigureFlags, flowReconfigure)
 	addLeaf(flowCommand, "start", "start flow", addFlowStartFlags, flowStart)
 	addLeaf(flowCommand, "run-once", "run flow once", addFlowRunOnceFlags, flowRunOnce)
+	addLeaf(flowCommand, "pause", "pause flow", addFlowStopFlags, flowPause)
 	addLeaf(flowCommand, "stop", "stop flow", addFlowStopFlags, flowStop)
 	addLeaf(flowCommand, "resume", "resume flow", addFlowResumeFlags, flowResume)
 	addLeaf(flowCommand, "cleanup", "cleanup flow", addFlowCleanupFlags, flowCleanup)
@@ -461,7 +462,7 @@ func addFlowListFlags(cmd *cobra.Command) {
 	addAdminConnectionFlags(cmd, "localhost:8080")
 	cmd.Flags().Int("page-size", 0, "max flows per request (0 = server default)")
 	cmd.Flags().String("page-token", "", "pagination token")
-	cmd.Flags().String("state", "", "optional state filter: created|running|paused|stopping|failed")
+	cmd.Flags().String("state", "", "optional state filter: created|running|paused|stopping|stopped|failed")
 	addJSONOutputFlags(cmd, false)
 }
 
@@ -480,7 +481,7 @@ func addFlowDeleteFlags(cmd *cobra.Command) {
 func addFlowWaitFlags(cmd *cobra.Command) {
 	addAdminConnectionFlags(cmd, "localhost:8080")
 	cmd.Flags().String("flow-id", "", "flow id")
-	cmd.Flags().String("state", "", "target state: created|running|paused|stopping|failed")
+	cmd.Flags().String("state", "", "target state: created|running|paused|stopping|stopped|failed")
 	cmd.Flags().Duration("timeout", 60*time.Second, "max time to wait")
 	cmd.Flags().Duration("interval", 2*time.Second, "poll interval")
 	addJSONOutputFlags(cmd, false)
@@ -2110,13 +2111,14 @@ func flowUsage() {
 	fmt.Println("  wallaby-admin flow start --flow-id <id> [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow run-once --flow-id <id>")
 	fmt.Println("  wallaby-admin flow get --flow-id <id> [--json|--pretty]")
-	fmt.Println("  wallaby-admin flow list [--page-size 100] [--page-token <token>] [--state created|running|paused|stopping|failed] [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow list [--page-size 100] [--page-token <token>] [--state created|running|paused|stopping|stopped|failed] [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow plan --file <path> [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow dry-run --file <path> [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow check --file <path> [--endpoint <addr>] [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow delete --flow-id <id> [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow wait --flow-id <id> --state <state> [--timeout 60s] [--interval 2s] [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow validate --file <path> [--json|--pretty]")
+	fmt.Println("  wallaby-admin flow pause --flow-id <id> [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow stop --flow-id <id> [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow resume --flow-id <id> [--json|--pretty]")
 	fmt.Println("  wallaby-admin flow cleanup --flow-id <id> [--drop-slot] [--drop-publication] [--drop-source-state] [--json|--pretty]")
@@ -2279,7 +2281,7 @@ func flowUpdate(cmd *cobra.Command, _ []string) error {
 	defer cancel()
 
 	if *pause {
-		if _, err := client.StopFlow(ctx, &wallabypb.StopFlowRequest{FlowId: cfg.ID}); err != nil {
+		if _, err := client.PauseFlow(ctx, &wallabypb.PauseFlowRequest{FlowId: cfg.ID}); err != nil {
 			log.Printf("pause flow: %v", err)
 		}
 	}
@@ -2546,6 +2548,56 @@ func flowStart(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Printf("Started flow %s (state=%s)\n", resp.Id, resp.State.String())
+	return nil
+}
+
+func flowPause(cmd *cobra.Command, _ []string) error {
+	endpoint, err := stringFlag(cmd, "endpoint")
+	if err != nil {
+		return err
+	}
+	insecureConn, err := boolFlag(cmd, "insecure")
+	if err != nil {
+		return err
+	}
+	flowID, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
+	jsonOutput, err := boolFlag(cmd, "json")
+	if err != nil {
+		return err
+	}
+	prettyOutput, err := boolFlag(cmd, "pretty")
+	if err != nil {
+		return err
+	}
+	if *flowID == "" {
+		return errors.New("--flow-id is required")
+	}
+	client, closeConn, err := flowClient(*endpoint, *insecureConn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeConn() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := client.PauseFlow(ctx, &wallabypb.PauseFlowRequest{FlowId: *flowID})
+	if err != nil {
+		return fmt.Errorf("pause flow: %w", err)
+	}
+	if *prettyOutput {
+		*jsonOutput = true
+	}
+	if *jsonOutput {
+		out := map[string]any{"id": resp.Id, "state": resp.State.String()}
+		enc := json.NewEncoder(os.Stdout)
+		if *prettyOutput {
+			enc.SetIndent("", "  ")
+		}
+		return enc.Encode(out)
+	}
+	fmt.Printf("Paused flow %s (state=%s)\n", resp.Id, resp.State.String())
 	return nil
 }
 
@@ -3307,7 +3359,7 @@ func publicationSync(cmd *cobra.Command, _ []string) error {
 	defer func() { _ = closeConn() }()
 
 	if *pause {
-		if _, err := flowSvc.StopFlow(ctx, &wallabypb.StopFlowRequest{FlowId: cfg.flow.Id}); err != nil {
+		if _, err := flowSvc.PauseFlow(ctx, &wallabypb.PauseFlowRequest{FlowId: cfg.flow.Id}); err != nil {
 			log.Printf("pause flow: %v", err)
 		}
 	}
@@ -4382,6 +4434,8 @@ func parseFlowState(value string) (wallabypb.FlowState, error) {
 		return wallabypb.FlowState_FLOW_STATE_PAUSED, nil
 	case "stopping", "flow_state_stopping":
 		return wallabypb.FlowState_FLOW_STATE_STOPPING, nil
+	case "stopped", "flow_state_stopped":
+		return wallabypb.FlowState_FLOW_STATE_STOPPED, nil
 	case "failed", "flow_state_failed":
 		return wallabypb.FlowState_FLOW_STATE_FAILED, nil
 	default:
@@ -4399,6 +4453,8 @@ func flowStateName(state wallabypb.FlowState) string {
 		return "paused"
 	case wallabypb.FlowState_FLOW_STATE_STOPPING:
 		return "stopping"
+	case wallabypb.FlowState_FLOW_STATE_STOPPED:
+		return "stopped"
 	case wallabypb.FlowState_FLOW_STATE_FAILED:
 		return "failed"
 	default:
@@ -4884,27 +4940,11 @@ func runBackfill(ctx context.Context, flowPB *wallabypb.Flow, tables []string, w
 		return err
 	}
 
-	runner := stream.Runner{
-		Source:       source,
-		SourceSpec:   model.Source,
-		Destinations: destinations,
-		FlowID:       model.ID,
-		WireFormat:   model.WireFormat,
-		Parallelism:  model.Parallelism,
+	streamRunner, err := runner.NewStreamRunner(model, source, destinations, runner.StreamRunnerConfig{})
+	if err != nil {
+		return err
 	}
-	if model.Config.AckPolicy != "" {
-		runner.AckPolicy = model.Config.AckPolicy
-	}
-	if model.Config.PrimaryDestination != "" {
-		runner.PrimaryDestination = model.Config.PrimaryDestination
-	}
-	if model.Config.FailureMode != "" {
-		runner.FailureMode = model.Config.FailureMode
-	}
-	if model.Config.GiveUpPolicy != "" {
-		runner.GiveUpPolicy = model.Config.GiveUpPolicy
-	}
-	return runner.Run(ctx)
+	return streamRunner.Run(ctx)
 }
 
 func flowClient(endpoint string, insecureConn bool) (wallabypb.FlowServiceClient, func() error, error) {

@@ -1,0 +1,33 @@
+{
+  "name": "quickstart-orders",
+  "wire_format": "json",
+  "parallelism": 1,
+  "source": {
+    "name": "orders-source",
+    "type": "postgres",
+    "options": {
+      "dsn": "postgres://wallaby:wallaby@localhost:55432/source?sslmode=disable",
+      "slot": "wallaby_quickstart_slot",
+      "publication": "wallaby_quickstart_pub",
+      "publication_tables": "public.orders",
+      "ensure_publication": "true",
+      "sync_publication": "true",
+      "create_slot": "true",
+      "batch_size": "100",
+      "batch_timeout": "250ms",
+      "emit_empty": "false"
+    }
+  },
+  "destinations": [
+    {
+      "name": "orders-postgres",
+      "type": "postgres",
+      "options": {
+        "dsn": "postgres://wallaby:wallaby@localhost:55432/destination?sslmode=disable",
+        "schema": "public",
+        "write_mode": "target",
+        "synchronous_commit": "on"
+      }
+    }
+  ]
+}

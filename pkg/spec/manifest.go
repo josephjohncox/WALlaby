@@ -22,27 +22,34 @@ const (
 )
 
 const (
-	ActionNone        Action = ""
-	ActionStart       Action = "Start"
-	ActionPause       Action = "Pause"
-	ActionResume      Action = "Resume"
-	ActionStop        Action = "Stop"
-	ActionFail        Action = "Fail"
-	ActionRunOnce     Action = "RunOnce"
-	ActionReadBatch   Action = "ReadBatch"
-	ActionReadDDL     Action = "ReadDDL"
-	ActionReadFail    Action = "ReadFail"
-	ActionReadGiveUp  Action = "ReadGiveUp"
-	ActionDeliver     Action = "Deliver"
-	ActionWriteFail   Action = "WriteFail"
-	ActionWriteGiveUp Action = "WriteGiveUp"
-	ActionAck         Action = "Ack"
-	ActionAckDest     Action = "AckDest"
-	ActionAckSource   Action = "AckSource"
-	ActionApproveDDL  Action = "ApproveDDL"
-	ActionApplyDDL    Action = "ApplyDDL"
-	ActionResumeAfter Action = "ResumeAfterDDL"
-	ActionIdle        Action = "Idle"
+	ActionNone              Action = ""
+	ActionStart             Action = "Start"
+	ActionPause             Action = "Pause"
+	ActionResume            Action = "Resume"
+	ActionStop              Action = "Stop"
+	ActionStopBegin         Action = "StopBegin"
+	ActionStopComplete      Action = "StopComplete"
+	ActionFail              Action = "Fail"
+	ActionRunOnce           Action = "RunOnce"
+	ActionReadBatch         Action = "ReadBatch"
+	ActionReadDDL           Action = "ReadDDL"
+	ActionReadFail          Action = "ReadFail"
+	ActionReadGiveUp        Action = "ReadGiveUp"
+	ActionDeliver           Action = "Deliver"
+	ActionWriteFail         Action = "WriteFail"
+	ActionWriteGiveUp       Action = "WriteGiveUp"
+	ActionCheckpointFail    Action = "CheckpointFail"
+	ActionPersistCheckpoint Action = "PersistCheckpoint"
+	ActionAck               Action = "Ack"
+	ActionRestoreAck        Action = "RestoreAck"
+	ActionCrash             Action = "Crash"
+	ActionRestart           Action = "Restart"
+	ActionAckDest           Action = "AckDest"
+	ActionAckSource         Action = "AckSource"
+	ActionApproveDDL        Action = "ApproveDDL"
+	ActionApplyDDL          Action = "ApplyDDL"
+	ActionResumeAfter       Action = "ResumeAfterDDL"
+	ActionIdle              Action = "Idle"
 )
 
 const (
@@ -69,7 +76,8 @@ var CDCFlowActions = []Action{
 	ActionStart,
 	ActionPause,
 	ActionResume,
-	ActionStop,
+	ActionStopBegin,
+	ActionStopComplete,
 	ActionFail,
 	ActionReadBatch,
 	ActionReadDDL,
@@ -78,7 +86,12 @@ var CDCFlowActions = []Action{
 	ActionDeliver,
 	ActionWriteFail,
 	ActionWriteGiveUp,
+	ActionCheckpointFail,
+	ActionPersistCheckpoint,
 	ActionAck,
+	ActionRestoreAck,
+	ActionCrash,
+	ActionRestart,
 	ActionApproveDDL,
 	ActionApplyDDL,
 	ActionResumeAfter,
@@ -99,8 +112,10 @@ var CDCFlowInvariants = []Invariant{
 
 var FlowStateActions = []Action{
 	ActionStart,
-	ActionStop,
+	ActionPause,
 	ActionResume,
+	ActionStopBegin,
+	ActionStopComplete,
 	ActionFail,
 	ActionRunOnce,
 }
@@ -118,7 +133,11 @@ var FanoutActions = []Action{
 	ActionReadBatch,
 	ActionDeliver,
 	ActionAckDest,
+	ActionPersistCheckpoint,
+	ActionCheckpointFail,
 	ActionAckSource,
+	ActionCrash,
+	ActionRestart,
 	ActionIdle,
 }
 
@@ -134,12 +153,17 @@ var CDCFlowTraceUnreachableActions = []Action{
 	ActionStart,
 	ActionPause,
 	ActionResume,
-	ActionStop,
+	ActionStopBegin,
+	ActionStopComplete,
 	ActionFail,
 	ActionReadFail,
 	ActionReadGiveUp,
 	ActionWriteFail,
 	ActionWriteGiveUp,
+	ActionCheckpointFail,
+	ActionRestoreAck,
+	ActionCrash,
+	ActionRestart,
 	ActionApproveDDL,
 	ActionResumeAfter,
 	ActionIdle,

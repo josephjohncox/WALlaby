@@ -49,6 +49,9 @@ func newWallabyWorkerCommand() *cobra.Command {
 	}
 	command.PersistentFlags().String("config", "", "path to config file")
 	command.Flags().String("flow-id", "", "flow id to run")
+	command.Flags().Int64("generation", 0, "expected lifecycle generation (0 resolves current generation for standalone runs)")
+	command.Flags().String("execution-backend", "worker", "authoritative execution backend")
+	command.Flags().String("execution-id", "", "authoritative execution id (injected by managed dispatchers)")
 	command.Flags().Int("max-empty-reads", 0, "stop after N empty reads (0 = continuous)")
 	command.Flags().String("mode", connector.SourceModeCDC, "source mode: cdc or backfill")
 	command.Flags().String("tables", "", "comma-separated tables for backfill (schema.table)")
@@ -78,6 +81,18 @@ func initWallabyWorkerConfig(cmd *cobra.Command) error {
 func runWallabyWorker(cmd *cobra.Command) error {
 	configPath := cli.ResolveStringFlag(cmd, "config")
 	flowID := cli.ResolveStringFlag(cmd, "flow-id")
+	generation, err := cmd.Flags().GetInt64("generation")
+	if err != nil {
+		return err
+	}
+	executionBackend := cli.ResolveStringFlag(cmd, "execution-backend")
+	executionID := cli.ResolveStringFlag(cmd, "execution-id")
+	if executionBackend == "" {
+		executionBackend = "worker"
+	}
+	if executionBackend == "kubernetes" && executionID == "" {
+		return errors.New("kubernetes execution backend requires an exact execution-id")
+	}
 	maxEmptyReads := cli.ResolveIntFlag(cmd, "max-empty-reads")
 	mode := cli.ResolveStringFlag(cmd, "mode")
 	tables := cli.ResolveStringFlag(cmd, "tables")
@@ -244,13 +259,16 @@ func runWallabyWorker(cmd *cobra.Command) error {
 	}
 
 	flowRunner := runner.FlowRunner{
-		Engine:         engine,
-		Checkpoints:    checkpoints,
-		Tracer:         tracer,
-		Meters:         telemetryProvider.Meters(),
-		StrictWire:     cfg.Wire.Enforce,
-		MaxEmpty:       maxEmptyReads,
-		ResolveStaging: resolveStaging,
+		Engine:             engine,
+		Checkpoints:        checkpoints,
+		Tracer:             tracer,
+		Meters:             telemetryProvider.Meters(),
+		StrictWire:         cfg.Wire.Enforce,
+		MaxEmpty:           maxEmptyReads,
+		ResolveStaging:     resolveStaging,
+		ExecutionBackend:   executionBackend,
+		ExecutionID:        executionID,
+		ExpectedGeneration: generation,
 	}
 	if cfg.Trace.Path != "" {
 		tracePath := strings.ReplaceAll(cfg.Trace.Path, "{flow_id}", flowDef.ID)

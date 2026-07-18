@@ -1,0 +1,29 @@
+{{- if .Values.kubernetesDispatch.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "wallaby.fullname" . }}-job-dispatcher
+  labels:
+    app.kubernetes.io/name: {{ include "wallaby.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "wallaby.fullname" . }}-job-dispatcher
+  labels:
+    app.kubernetes.io/name: {{ include "wallaby.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "wallaby.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "wallaby.fullname" . }}-job-dispatcher
+{{- end }}

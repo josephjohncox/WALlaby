@@ -73,8 +73,8 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 
 	tracer := telemetry.Tracer(cfg.Telemetry.ServiceName)
-	var engine workflow.Engine = workflow.NewNoopEngine()
-	baseEngine := engine
+	var baseEngine workflow.LifecycleStore
+	var engine workflow.ControlEngine
 	var checkpoints connector.CheckpointStore
 	var registryStore registry.Store
 	var ddlApplied func(context.Context, string, string, string) error
@@ -85,17 +85,23 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	var traceClose func() error
 	tracePath := cfg.Trace.Path
 	postgresDSN := cfg.Postgres.DSN
-	if postgresDSN != "" {
-		postgresEngine, err := workflow.NewPostgresEngine(ctx, cfg.Postgres.DSN)
+	if cfg.Workflow.Store == "memory" && (cfg.DBOS.Enabled || cfg.Kubernetes.Enabled) {
+		return errors.New("memory workflow store cannot be used with DBOS or Kubernetes dispatch")
+	}
+	switch cfg.Workflow.Store {
+	case "postgres":
+		postgresEngine, err := workflow.NewPostgresEngine(ctx, postgresDSN)
 		if err != nil {
 			return err
 		}
-		engine = postgresEngine
 		baseEngine = postgresEngine
-		addCleanup(func() {
-			postgresEngine.Close()
-		})
-
+		addCleanup(postgresEngine.Close)
+	case "memory":
+		baseEngine = workflow.NewMemoryEngine()
+	default:
+		return fmt.Errorf("unsupported workflow store: %s", cfg.Workflow.Store)
+	}
+	if postgresDSN != "" {
 		store, err := registry.NewPostgresStore(ctx, cfg.Postgres.DSN)
 		if err != nil {
 			return err
@@ -245,50 +251,61 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			return err
 		}
 		dbosOrchestrator = dbosRunner
-		engine = workflow.NewOrchestratedEngine(baseEngine, dbosRunner, telemetryProvider.Meters())
 		addCleanup(func() {
 			dbosOrchestrator.Shutdown(30 * time.Second)
 		})
 	}
 	if cfg.Kubernetes.Enabled {
 		dispatcher, err := orchestrator.NewKubernetesDispatcher(ctx, orchestrator.KubernetesConfig{
-			KubeconfigPath:     cfg.Kubernetes.KubeconfigPath,
-			KubeContext:        cfg.Kubernetes.KubeContext,
-			APIServer:          cfg.Kubernetes.APIServer,
-			BearerToken:        cfg.Kubernetes.BearerToken,
-			CAFile:             cfg.Kubernetes.CAFile,
-			CAData:             cfg.Kubernetes.CAData,
-			ClientCertFile:     cfg.Kubernetes.ClientCertFile,
-			ClientKeyFile:      cfg.Kubernetes.ClientKeyFile,
-			InsecureSkipTLS:    cfg.Kubernetes.InsecureSkipTLS,
-			Namespace:          cfg.Kubernetes.Namespace,
-			JobImage:           cfg.Kubernetes.JobImage,
-			JobImagePullPolicy: cfg.Kubernetes.JobImagePullPolicy,
-			JobServiceAccount:  cfg.Kubernetes.JobServiceAccount,
-			JobNamePrefix:      cfg.Kubernetes.JobNamePrefix,
-			JobTTLSeconds:      cfg.Kubernetes.JobTTLSeconds,
-			JobBackoffLimit:    cfg.Kubernetes.JobBackoffLimit,
-			MaxEmptyReads:      cfg.Kubernetes.MaxEmptyReads,
-			JobLabels:          cfg.Kubernetes.JobLabels,
-			JobAnnotations:     cfg.Kubernetes.JobAnnotations,
-			JobCommand:         cfg.Kubernetes.JobCommand,
-			JobArgs:            cfg.Kubernetes.JobArgs,
-			JobEnv:             cfg.Kubernetes.JobEnv,
-			JobEnvFrom:         cfg.Kubernetes.JobEnvFrom,
+			KubeconfigPath:                  cfg.Kubernetes.KubeconfigPath,
+			KubeContext:                     cfg.Kubernetes.KubeContext,
+			APIServer:                       cfg.Kubernetes.APIServer,
+			BearerToken:                     cfg.Kubernetes.BearerToken,
+			CAFile:                          cfg.Kubernetes.CAFile,
+			CAData:                          cfg.Kubernetes.CAData,
+			ClientCertFile:                  cfg.Kubernetes.ClientCertFile,
+			ClientKeyFile:                   cfg.Kubernetes.ClientKeyFile,
+			InsecureSkipTLS:                 cfg.Kubernetes.InsecureSkipTLS,
+			Namespace:                       cfg.Kubernetes.Namespace,
+			JobImage:                        cfg.Kubernetes.JobImage,
+			JobImagePullPolicy:              cfg.Kubernetes.JobImagePullPolicy,
+			JobServiceAccount:               cfg.Kubernetes.JobServiceAccount,
+			JobAutomountServiceAccountToken: cfg.Kubernetes.JobAutomountServiceAccountToken,
+			JobNamePrefix:                   cfg.Kubernetes.JobNamePrefix,
+			JobTTLSeconds:                   cfg.Kubernetes.JobTTLSeconds,
+			JobBackoffLimit:                 cfg.Kubernetes.JobBackoffLimit,
+			MaxEmptyReads:                   cfg.Kubernetes.MaxEmptyReads,
+			JobLabels:                       cfg.Kubernetes.JobLabels,
+			JobAnnotations:                  cfg.Kubernetes.JobAnnotations,
+			JobCommand:                      cfg.Kubernetes.JobCommand,
+			JobArgs:                         cfg.Kubernetes.JobArgs,
+			JobEnv:                          cfg.Kubernetes.JobEnv,
+			JobEnvFrom:                      cfg.Kubernetes.JobEnvFrom,
 		})
 		if err != nil {
 			return err
 		}
 		kubeDispatcher = dispatcher
-		engine = workflow.NewOrchestratedEngine(baseEngine, dispatcher, telemetryProvider.Meters())
 	}
+
+	var lifecycleDispatcher workflow.Dispatcher = workflow.PassiveDispatcher{}
+	if dbosOrchestrator != nil {
+		lifecycleDispatcher = dbosOrchestrator
+	}
+	if kubeDispatcher != nil {
+		lifecycleDispatcher = kubeDispatcher
+	}
+	orchestratedEngine := workflow.NewOrchestratedEngine(baseEngine, lifecycleDispatcher, telemetryProvider.Meters())
+	engine = orchestratedEngine
+	// Reconciliation is started before the server accepts lifecycle requests.
+	go orchestratedEngine.RunReconciler(ctx, time.Second)
 
 	listener, err := net.Listen("tcp", cfg.API.GRPCListen)
 	if err != nil {
 		return err
 	}
 
-	var dispatcher apigrpc.FlowDispatcher
+	var dispatcher apigrpc.RunOnceDispatcher
 	if dbosOrchestrator != nil {
 		dispatcher = dbosOrchestrator
 	}

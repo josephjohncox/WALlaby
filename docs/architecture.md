@@ -1,75 +1,115 @@
 # Architecture
 
-WALlaby is organized as a small set of composable subsystems designed for high‑throughput CDC and flexible deployment topologies.
+WALlaby has a gRPC control plane and generation-scoped execution attempts. The control plane stores intent. Supervised workers and Kubernetes Jobs run as separate processes; DBOS executes attempts in the server process.
 
-## High-Level Flow
+## One flow
 
-1. **Source** reads logical replication events from Postgres.
-2. **Decoder** converts tuples into structured records with typed values and schema metadata.
-3. **Runner** batches records and writes to one or more destinations.
-4. **Checkpoint Store** persists LSNs for recovery and replay.
-5. **Lifecycle Engine** manages flow state (created, running, paused, failed).
-6. **Registry + DDL** store schema versions and DDL events for governance.
-7. **Orchestrator (DBOS)** optionally schedules durable, periodic runs.
+A flow contains:
 
-## Components
+- one PostgreSQL source;
+- one or more destination adapters;
+- one wire format and delivery policy;
+- one public lifecycle state;
+- one internal lifecycle generation;
+- one durable checkpoint position.
 
-### Sources
-- `connectors/sources/postgres` uses `pgoutput` logical replication.
-- Records include `before`, `after`, and `unchanged` fields to handle TOAST and updates.
+The generation prevents delayed work from crossing a lifecycle transition. A worker created for generation 3 cannot register after a pause and resume creates generation 4.
 
-### Destinations
-- Kafka, S3, HTTP webhooks, and Postgres streams are implemented with wire‑format encoding.
-- Each destination advertises capabilities and supported wire formats.
+## Control plane
 
-### Wire Formats
-- Supported formats: Arrow, Parquet, Avro, Proto, JSON.
-- The runner can enforce a single format across the source and all destinations.
+```text
+wallaby-admin or gRPC client
+            │
+            ▼
+        Flow service
+            │
+            ▼
+  Orchestrated lifecycle engine
+       │                 │
+       ▼                 ▼
+workflow store       dispatcher
+                         │
+             worker / DBOS / Kubernetes Job
+```
 
-### Workflow + Orchestration
-- The Postgres-backed workflow engine stores flow metadata and lifecycle transitions.
-- DBOS (optional) runs scheduled workflows and queues per‑flow executions.
-- Worker mode runs a single flow in a dedicated process without DBOS.
-- Fan‑out is explicit: each destination is written independently, and consumers can scale separately.
+The workflow store is the source of truth for flow state, lifecycle target, generation, dispatch intent, and active execution leases. Production uses PostgreSQL. The memory store is for development and tests only.
 
-### Fan‑out vs Multiple Replication Slots
-Fan‑out keeps a single logical replication slot per flow and multiplexes downstream writes. Compared to multiple slots:
-- **Lower source load:** WAL is decoded once, not N times, reducing CPU and I/O on the primary.
-- **Lower WAL retention risk:** one slot means one acknowledged LSN; fewer slots reduces “stuck slot” risk and WAL bloat.
-- **Consistent ordering + DDL gating:** a single read stream preserves ordering across destinations and shares DDL approval gates.
-- **Centralized lifecycle:** one place to pause/resume/fail and coordinate backfill/stream handoff.
+Lifecycle operations follow one rule: record intent before performing an external effect. After a crash, reconciliation reads the durable intent and finishes dispatch or cancellation. Pause and stop do not report a quiescent state while an execution lease can still continue.
 
-Multiple slots are still valid when destinations must be fully isolated (independent retention, separate lag policies, or separate ownership), but they multiply decoding cost and operational overhead.
+Read [flow lifecycle](concepts/lifecycle.md) for the state machine.
 
-### Schema Registry + DDL
-- The registry stores schema snapshots and DDL events.
-- DDL events can be gated for approval and marked applied.
-- A catalog scanner can diff `pg_catalog` for schema drift or generated column changes.
-- DDL gating is per‑flow; blocked gates emit log lines and an OpenTelemetry event (`ddl.gated`) for alerting.
+## Data plane
 
-## Deployment Modes
+```text
+PostgreSQL logical replication
+            │
+            ▼
+       source adapter
+            │ Batch
+            ▼
+        stream runner
+       │      │       │
+       ▼      ▼       ▼
+ destination adapters  checkpoint/outbox store
+                              │
+                              ▼
+                    source acknowledgement
+```
 
-### API Server + Workers
-- Run the API server (`wallaby`) for control plane.
-- Run per‑flow workers (`wallaby-worker`) for data plane.
+The source adapter decodes `pgoutput` messages into WALlaby records. The stream runner owns batching, retry policy, destination ordering, schema-change application, checkpoint persistence, and source acknowledgement. Destination adapters translate a batch into the target system.
 
-### DBOS Scheduling
-- The API server can also run DBOS to schedule flow runs.
-- Each scheduled run processes a batch and exits when no data is available.
+A connector does not own lifecycle state or dispatch. A workflow runtime does not own record delivery. The runner is the only module that joins those concerns, and it does so through narrow interfaces.
 
-## Data Model
+## Delivery order
 
-- **Flow**: source + destinations + lifecycle state + wire format.
-- **Record**: operation + timestamps + before/after data.
-- **Checkpoint**: LSN + timestamp.
-- **DDLEvent**: DDL text, schema diff plan, status.
-- **StreamMessage**: stream event with visibility timeout and consumer group state.
+With acknowledgement policy `all`:
 
-## Extensibility
+1. Read a source batch.
+2. Write every destination.
+3. Persist the checkpoint.
+4. Acknowledge the source.
 
-- Add connectors by implementing `connector.Source` or `connector.Destination`.
-- Add wire formats by implementing `wire.Codec`.
-- Add orchestration by implementing `workflow.Engine` and `workflow.FlowDispatcher`.
+With acknowledgement policy `primary`:
 
-## Delivery Semantics
-The runner acknowledges a source checkpoint after **all** destinations succeed by default. When `ack_policy=primary`, it acknowledges after the primary destination succeeds and queues secondary destinations for replay. This trades off per‑destination durability for source progress and lower WAL retention.
+1. Write the primary destination.
+2. Atomically persist the checkpoint and one outbox row per secondary destination.
+3. Acknowledge the source.
+4. Drain secondary deliveries and delete each completed outbox row.
+
+Startup restores and drains pending outbox entries before reading new source data. Writes must be idempotent because a crash can replay a batch. Read [delivery and checkpoints](concepts/delivery.md) for the crash boundaries.
+
+## Storage responsibilities
+
+| Store | Owns | Does not own |
+| --- | --- | --- |
+| Workflow store | Flow definitions, lifecycle intent, generations, execution leases | Record batches |
+| Checkpoint store | Last durable source position | Flow lifecycle |
+| Checkpoint/outbox store | Atomic primary-ack checkpoint and secondary deliveries | Destination-specific state |
+| Schema registry | Schema versions and compatibility metadata | Lifecycle or checkpoints |
+| PostgreSQL stream store | Pull/ack message delivery state | Source acknowledgement policy |
+
+A single PostgreSQL cluster can host several stores, but the schemas have separate responsibilities.
+
+## Runtime choices
+
+The data path is the same in every runtime. Only process ownership changes.
+
+- **Supervised worker:** an external supervisor starts one `wallaby-worker` process per running flow.
+- **DBOS:** DBOS schedules durable workflow attempts.
+- **Kubernetes:** the control plane creates generation-scoped Jobs.
+
+Read [choose a runtime](deployment/index.md) for operational differences.
+
+## Adapter seams
+
+The stable Go seams live under `pkg/`:
+
+- `connector.Source` reads and acknowledges batches.
+- `connector.Destination` writes batches.
+- `connector.CheckpointStore` restores and persists progress.
+- `connector.CheckpointOutboxStore` provides atomic primary-ack durability.
+- `wire.Codec` encodes a batch for a destination.
+
+The lifecycle and dispatch interfaces are internal because they define WALlaby's own control-plane invariants rather than a connector extension contract.
+
+Read [the core model](concepts/core-model.md) for the complete interface hierarchy and [the generated Go reference](reference/index.md) for method signatures.

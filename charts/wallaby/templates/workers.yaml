@@ -48,7 +48,8 @@ spec:
           imagePullSecrets:
 {{ toYaml $root.Values.imagePullSecrets | indent 12 }}
 {{- end }}
-          serviceAccountName: {{ include "wallaby.serviceAccountName" $root }}
+          serviceAccountName: {{ include "wallaby.workerServiceAccountName" $root }}
+          automountServiceAccountToken: {{ $root.Values.workerServiceAccount.automountServiceAccountToken }}
           containers:
             - name: wallaby-worker
               image: "{{ $imageRepo }}:{{ $imageTag }}"
@@ -129,7 +130,8 @@ spec:
       imagePullSecrets:
 {{ toYaml $root.Values.imagePullSecrets | indent 8 }}
 {{- end }}
-      serviceAccountName: {{ include "wallaby.serviceAccountName" $root }}
+      serviceAccountName: {{ include "wallaby.workerServiceAccountName" $root }}
+      automountServiceAccountToken: {{ $root.Values.workerServiceAccount.automountServiceAccountToken }}
       containers:
         - name: wallaby-worker
           image: "{{ $imageRepo }}:{{ $imageTag }}"
@@ -215,7 +217,8 @@ spec:
       imagePullSecrets:
 {{ toYaml $root.Values.imagePullSecrets | indent 8 }}
 {{- end }}
-      serviceAccountName: {{ include "wallaby.serviceAccountName" $root }}
+      serviceAccountName: {{ include "wallaby.workerServiceAccountName" $root }}
+      automountServiceAccountToken: {{ $root.Values.workerServiceAccount.automountServiceAccountToken }}
       containers:
         - name: wallaby-worker
           image: "{{ $imageRepo }}:{{ $imageTag }}"

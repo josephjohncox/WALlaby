@@ -114,7 +114,7 @@ func TestScanFlowRapid(t *testing.T) {
 func rapidFlow(t *rapid.T) flow.Flow {
 	id := rapid.StringMatching(`[a-z]{4,8}`).Draw(t, "id")
 	name := rapid.StringMatching(`[a-z]{0,8}`).Draw(t, "name")
-	state := rapid.SampledFrom([]flow.State{flow.StateCreated, flow.StateRunning, flow.StatePaused, flow.StateStopping, flow.StateFailed}).Draw(t, "state")
+	state := rapid.SampledFrom([]flow.State{flow.StateCreated, flow.StateRunning, flow.StatePaused, flow.StateStopping, flow.StateStopped, flow.StateFailed}).Draw(t, "state")
 	parallelism := rapid.IntRange(-1, 4).Draw(t, "parallelism")
 
 	source := rapidSpec(t, "source")

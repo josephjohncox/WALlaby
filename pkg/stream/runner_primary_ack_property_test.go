@@ -94,9 +94,12 @@ func TestRunnerPrimaryAckInvariantsRapid(t *testing.T) {
 			failures:      failuresFor(),
 		}
 
+		checkpointStore := &recordingCheckpointStore{}
 		runner := Runner{
-			Source:     source,
-			SourceSpec: connector.Spec{Options: map[string]string{"mode": "backfill"}},
+			Source:           source,
+			SourceSpec:       connector.Spec{Options: map[string]string{"mode": "backfill"}},
+			Checkpoints:      checkpointStore,
+			CheckpointOutbox: checkpointStore,
 			Destinations: []DestinationConfig{
 				{Spec: connector.Spec{Name: "primary"}, Dest: primaryDest},
 				{Spec: connector.Spec{Name: "secondary-a"}, Dest: secondaryDestA},

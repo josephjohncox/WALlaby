@@ -11,9 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -21,37 +23,47 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+
+	"github.com/josephjohncox/wallaby/internal/workflow"
 )
 
 const (
 	serviceAccountPath = "/var/run/secrets/kubernetes.io/serviceaccount"
+
+	flowIDMetadataKey      = "wallaby.flow-id"
+	flowHashMetadataKey    = "wallaby.flow-hash"
+	generationMetadataKey  = "wallaby.generation"
+	backendMetadataKey     = "wallaby.backend"
+	executionIDMetadataKey = "wallaby.execution-id"
+	kubernetesBackend      = "kubernetes"
 )
 
 // KubernetesConfig configures the Kubernetes job dispatcher.
 type KubernetesConfig struct {
-	KubeconfigPath     string
-	KubeContext        string
-	APIServer          string
-	BearerToken        string
-	CAFile             string
-	CAData             string
-	ClientCertFile     string
-	ClientKeyFile      string
-	InsecureSkipTLS    bool
-	Namespace          string
-	JobImage           string
-	JobImagePullPolicy string
-	JobServiceAccount  string
-	JobNamePrefix      string
-	JobTTLSeconds      int
-	JobBackoffLimit    int
-	MaxEmptyReads      int
-	JobLabels          map[string]string
-	JobAnnotations     map[string]string
-	JobCommand         []string
-	JobArgs            []string
-	JobEnv             map[string]string
-	JobEnvFrom         []string
+	KubeconfigPath                  string
+	KubeContext                     string
+	APIServer                       string
+	BearerToken                     string
+	CAFile                          string
+	CAData                          string
+	ClientCertFile                  string
+	ClientKeyFile                   string
+	InsecureSkipTLS                 bool
+	Namespace                       string
+	JobImage                        string
+	JobImagePullPolicy              string
+	JobServiceAccount               string
+	JobAutomountServiceAccountToken bool
+	JobNamePrefix                   string
+	JobTTLSeconds                   int
+	JobBackoffLimit                 int
+	MaxEmptyReads                   int
+	JobLabels                       map[string]string
+	JobAnnotations                  map[string]string
+	JobCommand                      []string
+	JobArgs                         []string
+	JobEnv                          map[string]string
+	JobEnvFrom                      []string
 }
 
 // KubernetesDispatcher triggers flow workers as Kubernetes Jobs.
@@ -90,57 +102,125 @@ func NewKubernetesDispatcher(ctx context.Context, cfg KubernetesConfig) (*Kubern
 	}, nil
 }
 
-// EnqueueFlow creates a Job for the given flow.
-func (k *KubernetesDispatcher) EnqueueFlow(ctx context.Context, flowID string) error {
-	if flowID == "" {
-		return errors.New("flow id is required")
+// EnqueueGeneration creates an idempotent Job identity for (flow,generation).
+func (k *KubernetesDispatcher) EnqueueGeneration(ctx context.Context, flowID string, generation int64) error {
+	if flowID == "" || generation <= 0 {
+		return errors.New("flow id and positive generation are required")
 	}
+	return k.enqueue(ctx, flowID, generation, buildGenerationJobName(k.cfg.JobNamePrefix, flowID, generation))
+}
 
-	jobName := buildJobName(k.cfg.JobNamePrefix, flowID)
-	if err := k.createJob(ctx, flowID, jobName); err == nil {
+// EnqueueRunOnce schedules one uniquely identified Job against the lifecycle
+// generation captured by the caller.
+func (k *KubernetesDispatcher) EnqueueRunOnce(ctx context.Context, flowID string, generation int64) error {
+	if flowID == "" || generation <= 0 {
+		return errors.New("flow id and positive generation are required")
+	}
+	jobName := buildRunOnceJobName(k.cfg.JobNamePrefix, flowID, generation, uuid.NewString())
+	return k.enqueue(ctx, flowID, generation, jobName)
+}
+
+func (k *KubernetesDispatcher) enqueue(ctx context.Context, flowID string, generation int64, jobName string) error {
+	if err := k.createJob(ctx, flowID, jobName, generation); err == nil {
 		return nil
 	} else if !apierrors.IsAlreadyExists(err) {
 		return err
 	}
-
 	existing, err := k.client.BatchV1().Jobs(k.namespace).Get(ctx, jobName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("get existing job: %w", err)
 	}
-	if jobActive(existing) {
-		return nil
+	existingGeneration, executionID, err := validateJobOwnership(existing, flowID)
+	if err != nil || existingGeneration != generation || executionID != jobName {
+		if err == nil {
+			err = fmt.Errorf("unexpected generation %d or execution id %q", existingGeneration, executionID)
+		}
+		return fmt.Errorf("existing kubernetes job %q has non-authoritative ownership: %w", jobName, err)
 	}
-	if jobFinished(existing) {
-		if err := k.deleteJob(ctx, jobName); err != nil {
-			return err
-		}
-		if err := k.waitForJobDeletion(ctx, jobName, 30*time.Second); err != nil {
-			return err
-		}
-		if err := k.createJob(ctx, flowID, jobName); err != nil {
-			return err
-		}
-		return nil
-	}
-
+	// An existing generation Job is durable proof that lifecycle dispatch
+	// happened. Run-once Jobs use unique names and do not share this path.
 	return nil
 }
 
-func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName string) error {
-	labels := mergeLabels(map[string]string{
+// CancelThroughGeneration foreground-deletes every matching Job through the
+// requested generation and returns terminal proof only after all are absent.
+func (k *KubernetesDispatcher) CancelThroughGeneration(ctx context.Context, flowID string, generation int64) (workflow.CancellationReceipt, error) {
+	receipt := workflow.CancellationReceipt{ThroughGeneration: generation, Backend: kubernetesBackend}
+	if flowID == "" || generation <= 0 {
+		return receipt, errors.New("flow id and positive generation are required")
+	}
+	jobs, err := k.client.BatchV1().Jobs(k.namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return receipt, fmt.Errorf("list kubernetes jobs: %w", err)
+	}
+	terminalIDs := map[string]struct{}{
+		generationExecutionID(k.jobNamePrefix(), flowID, generation): {},
+		buildJobName(k.jobNamePrefix(), flowID):                      {},
+	}
+	for i := range jobs.Items {
+		job := &jobs.Items[i]
+		if job.Annotations[flowIDMetadataKey] != flowID && job.Labels[flowHashMetadataKey] != flowLabelValue(flowID) {
+			continue
+		}
+		jobGeneration, executionID, metadataErr := validateJobOwnership(job, flowID)
+		if metadataErr != nil {
+			return receipt, metadataErr
+		}
+		if jobGeneration > generation {
+			continue
+		}
+		if err := k.deleteJob(ctx, job.Name); err != nil {
+			return receipt, err
+		}
+		if err := k.waitForJobDeletion(ctx, job.Name, 30*time.Second); err != nil {
+			return receipt, err
+		}
+		terminalIDs[executionID] = struct{}{}
+	}
+	receipt.TerminalExecutionIDs = make([]string, 0, len(terminalIDs))
+	for executionID := range terminalIDs {
+		receipt.TerminalExecutionIDs = append(receipt.TerminalExecutionIDs, executionID)
+	}
+	sort.Strings(receipt.TerminalExecutionIDs)
+	receipt.Terminal = true
+	return receipt, nil
+}
+func (k *KubernetesDispatcher) CancelFlow(ctx context.Context, flowID string) error {
+	if flowID == "" {
+		return errors.New("flow id is required")
+	}
+	jobName := buildJobName(k.cfg.JobNamePrefix, flowID)
+	if err := k.deleteJob(ctx, jobName); err != nil {
+		return err
+	}
+	return k.waitForJobDeletion(ctx, jobName, 30*time.Second)
+}
+
+func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName string, generation int64) error {
+	executionID := jobName
+	generationText := strconv.FormatInt(generation, 10)
+	// User metadata is applied first. The authoritative ownership keys are
+	// always written last and therefore cannot be overridden.
+	labels := mergeLabels(k.cfg.JobLabels, map[string]string{
 		"app.kubernetes.io/name":      "wallaby-worker",
 		"app.kubernetes.io/component": "worker",
-		"wallaby.flow-id":             flowID,
-	}, k.cfg.JobLabels)
-	annotations := mergeLabels(map[string]string{
-		"wallaby.flow-id": flowID,
-	}, k.cfg.JobAnnotations)
+		flowHashMetadataKey:           flowLabelValue(flowID),
+		generationMetadataKey:         generationText,
+		backendMetadataKey:            kubernetesBackend,
+		executionIDMetadataKey:        executionID,
+	})
+	annotations := mergeLabels(k.cfg.JobAnnotations, map[string]string{
+		flowIDMetadataKey:      flowID,
+		generationMetadataKey:  generationText,
+		backendMetadataKey:     kubernetesBackend,
+		executionIDMetadataKey: executionID,
+	})
 
 	command := k.cfg.JobCommand
 	if len(command) == 0 {
 		command = []string{"/usr/local/bin/wallaby-worker"}
 	}
-	args := ensureFlowArgs(k.cfg.JobArgs, flowID, k.cfg.MaxEmptyReads)
+	args := authoritativeWorkerArgs(k.cfg.JobArgs, flowID, generation, executionID, k.cfg.MaxEmptyReads)
 
 	env := mapToEnvVars(k.cfg.JobEnv)
 	envFrom := parseEnvFrom(k.cfg.JobEnvFrom)
@@ -162,8 +242,9 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: k.cfg.JobServiceAccount,
-					RestartPolicy:      corev1.RestartPolicyNever,
+					ServiceAccountName:           k.cfg.JobServiceAccount,
+					AutomountServiceAccountToken: boolPtr(k.cfg.JobAutomountServiceAccountToken),
+					RestartPolicy:                corev1.RestartPolicyNever,
 					Containers: []corev1.Container{
 						{
 							Name:            "worker",
@@ -186,31 +267,6 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 	}
 
 	return nil
-}
-
-func jobActive(job *batchv1.Job) bool {
-	if job == nil {
-		return false
-	}
-	return job.Status.Active > 0
-}
-
-func jobFinished(job *batchv1.Job) bool {
-	if job == nil {
-		return false
-	}
-	if job.Status.Succeeded > 0 || job.Status.Failed > 0 {
-		return true
-	}
-	for _, condition := range job.Status.Conditions {
-		if condition.Type == batchv1.JobComplete && condition.Status == corev1.ConditionTrue {
-			return true
-		}
-		if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
-			return true
-		}
-	}
-	return false
 }
 
 func resolveKubeClient(cfg KubernetesConfig) (kubernetes.Interface, string, error) {
@@ -340,7 +396,7 @@ func readNamespace() (string, error) {
 	// #nosec G304 -- path is fixed within the service account mount.
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read service account namespace: %w", err)
 	}
 	return strings.TrimSpace(string(data)), nil
 }
@@ -364,6 +420,48 @@ func buildJobName(prefix, flowID string) string {
 	return base + "-" + suffix
 }
 
+func buildGenerationJobName(prefix, flowID string, generation int64) string {
+	return buildJobName(prefix, fmt.Sprintf("%s@generation:%d", flowID, generation))
+}
+
+func buildRunOnceJobName(prefix, flowID string, generation int64, attemptID string) string {
+	return buildJobName(prefix, fmt.Sprintf("%s@generation:%d@run:%s", flowID, generation, attemptID))
+}
+
+func generationExecutionID(prefix, flowID string, generation int64) string {
+	return buildGenerationJobName(prefix, flowID, generation)
+}
+
+func (k *KubernetesDispatcher) jobNamePrefix() string {
+	if strings.TrimSpace(k.cfg.JobNamePrefix) == "" {
+		return "wallaby-worker"
+	}
+	return k.cfg.JobNamePrefix
+}
+
+func validateJobOwnership(job *batchv1.Job, flowID string) (int64, string, error) {
+	if job == nil {
+		return 0, "", errors.New("malformed kubernetes ownership metadata: nil job")
+	}
+	annotations := job.Annotations
+	labels := job.Labels
+	generationText := annotations[generationMetadataKey]
+	generation, err := strconv.ParseInt(generationText, 10, 64)
+	if annotations[flowIDMetadataKey] != flowID || err != nil || generation < 0 ||
+		annotations[backendMetadataKey] != kubernetesBackend || annotations[executionIDMetadataKey] == "" ||
+		annotations[executionIDMetadataKey] != job.Name || labels[flowHashMetadataKey] != flowLabelValue(flowID) ||
+		labels[generationMetadataKey] != generationText || labels[backendMetadataKey] != kubernetesBackend ||
+		labels[executionIDMetadataKey] != annotations[executionIDMetadataKey] {
+		return 0, "", fmt.Errorf("malformed kubernetes ownership metadata for job %q", job.Name)
+	}
+	return generation, annotations[executionIDMetadataKey], nil
+}
+
+func flowLabelValue(flowID string) string {
+	hash := sha256.Sum256([]byte(flowID))
+	return hex.EncodeToString(hash[:8])
+}
+
 func jobNameSuffix(prefix, flowID string) string {
 	seed := strings.TrimSpace(prefix) + "|" + strings.TrimSpace(flowID)
 	hash := sha256.Sum256([]byte(seed))
@@ -372,7 +470,7 @@ func jobNameSuffix(prefix, flowID string) string {
 }
 
 func (k *KubernetesDispatcher) deleteJob(ctx context.Context, name string) error {
-	policy := metav1.DeletePropagationBackground
+	policy := metav1.DeletePropagationForeground
 	if err := k.client.BatchV1().Jobs(k.namespace).Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &policy}); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
@@ -445,13 +543,33 @@ func mergeLabels(base, override map[string]string) map[string]string {
 	return out
 }
 
-func ensureFlowArgs(args []string, flowID string, maxEmpty int) []string {
-	out := append([]string{}, args...)
-	if !hasFlag(out, "flow-id") {
-		out = append(out, fmt.Sprintf("--flow-id=%s", flowID))
+func authoritativeWorkerArgs(args []string, flowID string, generation int64, executionID string, maxEmpty int) []string {
+	reserved := map[string]struct{}{
+		"flow-id":           {},
+		"generation":        {},
+		"execution-backend": {},
+		"execution-id":      {},
 	}
+	out := make([]string, 0, len(args)+8)
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		name := strings.TrimPrefix(strings.SplitN(arg, "=", 2)[0], "--")
+		if _, isReserved := reserved[name]; !isReserved || !strings.HasPrefix(arg, "--") {
+			out = append(out, arg)
+			continue
+		}
+		if !strings.Contains(arg, "=") && index+1 < len(args) && !strings.HasPrefix(args[index+1], "--") {
+			index++
+		}
+	}
+	out = append(out,
+		"--flow-id", flowID,
+		"--generation", strconv.FormatInt(generation, 10),
+		"--execution-backend", kubernetesBackend,
+		"--execution-id", executionID,
+	)
 	if maxEmpty > 0 && !hasFlag(out, "max-empty-reads") {
-		out = append(out, fmt.Sprintf("--max-empty-reads=%d", maxEmpty))
+		out = append(out, "--max-empty-reads", strconv.Itoa(maxEmpty))
 	}
 	return out
 }
@@ -513,6 +631,8 @@ func parseEnvFrom(entries []string) []corev1.EnvFromSource {
 	}
 	return out
 }
+
+func boolPtr(value bool) *bool { return &value }
 
 func optionalInt32(value int) *int32 {
 	if value <= 0 {

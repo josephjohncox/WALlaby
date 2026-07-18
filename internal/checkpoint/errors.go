@@ -1,5 +1,6 @@
 package checkpoint
 
-import "errors"
+import "github.com/josephjohncox/wallaby/pkg/connector"
 
-var ErrNotFound = errors.New("checkpoint not found")
+// ErrNotFound is retained for compatibility with callers of internal/checkpoint.
+var ErrNotFound = connector.ErrCheckpointNotFound

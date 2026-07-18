@@ -50,6 +50,7 @@ type Runner struct {
 	SourceSpec         connector.Spec
 	Destinations       []DestinationConfig
 	Checkpoints        connector.CheckpointStore
+	CheckpointOutbox   connector.CheckpointOutboxStore
 	FlowID             string
 	ResolveStaging     bool
 	Tracer             trace.Tracer
@@ -100,6 +101,27 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	if err := r.normalizeWireFormat(); err != nil {
 		return err
 	}
+
+	ackPolicy := r.effectiveAckPolicy()
+	checkpointStore := r.Checkpoints
+	var outbox connector.CheckpointOutboxStore
+	var primary DestinationConfig
+	var secondary []DestinationConfig
+	if ackPolicy == AckPolicyPrimary {
+		if r.FlowID == "" {
+			return errors.New("primary acknowledgement requires a non-empty flow id")
+		}
+		outbox = r.CheckpointOutbox
+		if outbox == nil {
+			return errors.New("primary acknowledgement requires a durable checkpoint store with atomic outbox support")
+		}
+		checkpointStore = outbox
+		var err error
+		primary, secondary, err = r.partitionDestinations()
+		if err != nil {
+			return err
+		}
+	}
 	if r.FlowID != "" {
 		if r.SourceSpec.Options == nil {
 			r.SourceSpec.Options = map[string]string{}
@@ -119,14 +141,30 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		}
 	}
 
-	if r.Checkpoints != nil && r.FlowID != "" {
-		if cp, err := r.Checkpoints.Get(ctx, r.FlowID); err == nil && cp.LSN != "" {
-			if r.SourceSpec.Options == nil {
-				r.SourceSpec.Options = map[string]string{}
+	var restoredCheckpoint *connector.Checkpoint
+	ackRestoredCheckpoint := false
+	explicitStartLSN := ""
+	if r.SourceSpec.Options != nil {
+		explicitStartLSN = r.SourceSpec.Options["start_lsn"]
+	}
+	if checkpointStore != nil && r.FlowID != "" {
+		cp, err := checkpointStore.Get(ctx, r.FlowID)
+		switch {
+		case err == nil:
+			restoredCheckpoint = &cp
+			ackRestoredCheckpoint = explicitStartLSN == "" || checkpointPositionsEqual(explicitStartLSN, cp.LSN)
+			if cp.LSN != "" {
+				if r.SourceSpec.Options == nil {
+					r.SourceSpec.Options = map[string]string{}
+				}
+				if explicitStartLSN == "" {
+					r.SourceSpec.Options["start_lsn"] = cp.LSN
+				}
 			}
-			if r.SourceSpec.Options["start_lsn"] == "" {
-				r.SourceSpec.Options["start_lsn"] = cp.LSN
-			}
+		case errors.Is(err, connector.ErrCheckpointNotFound):
+			// A new flow has no restore position yet.
+		default:
+			return fmt.Errorf("restore checkpoint: %w", err)
 		}
 	}
 
@@ -145,26 +183,28 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		defer func() { _ = dest.Dest.Close(ctx) }()
 	}
 
-	if r.Checkpoints != nil && r.FlowID != "" {
-		if cp, err := r.Checkpoints.Get(ctx, r.FlowID); err == nil {
-			_ = r.Source.Ack(ctx, cp)
-		}
-	}
-
-	ackPolicy := r.effectiveAckPolicy()
-	var primary DestinationConfig
 	var secondaryQueues []*secondaryQueue
-	if ackPolicy == AckPolicyPrimary && len(r.Destinations) > 1 {
-		var secondary []DestinationConfig
+	if ackPolicy == AckPolicyPrimary {
 		var err error
-		primary, secondary, err = r.partitionDestinations()
+		secondaryQueues, err = r.restoreSecondaryQueues(ctx, outbox, secondary)
 		if err != nil {
 			return err
 		}
-		secondaryQueues = make([]*secondaryQueue, 0, len(secondary))
-		for _, dest := range secondary {
-			secondaryQueues = append(secondaryQueues, &secondaryQueue{dest: dest})
+		if err := r.flushSecondaryQueues(ctx, secondaryQueues); err != nil {
+			return fmt.Errorf("drain restored primary-ack outbox: %w", err)
 		}
+	}
+
+	if restoredCheckpoint != nil {
+		r.emitCheckpointTrace(ctx, "restore_checkpoint", *restoredCheckpoint, "", spec.ActionNone, nil)
+	}
+	if restoredCheckpoint != nil && ackRestoredCheckpoint {
+		if err := r.Source.Ack(ctx, *restoredCheckpoint); err != nil {
+			r.emitCheckpointTrace(ctx, "restore_ack_error", *restoredCheckpoint, "", spec.ActionNone, err)
+			r.Meters.RecordError(ctx, "source_restore_ack")
+			return fmt.Errorf("ack restored checkpoint: %w", err)
+		}
+		r.emitCheckpointTrace(ctx, "restore_ack", *restoredCheckpoint, "", spec.ActionRestoreAck, nil)
 	}
 
 	emptyReads := 0
@@ -237,41 +277,10 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			continue
 		}
 		readFailures = 0
-		if len(ddlRecordsInBatch(batch)) > 0 {
-			r.emitTrace(batchCtx, "read", batch.Checkpoint.LSN, "", spec.ActionReadDDL, nil)
-		} else {
-			r.emitTrace(batchCtx, "read", batch.Checkpoint.LSN, "", spec.ActionReadBatch, nil)
-		}
-		if r.WireFormat != "" {
-			batch.WireFormat = r.WireFormat
-		}
-
-		if len(batch.Records) == 0 {
-			if isControlCheckpoint(batch.Checkpoint) {
-				r.emitTrace(batchCtx, "deliver", batch.Checkpoint.LSN, "", spec.ActionDeliver, nil)
-				if err := r.Source.Ack(batchCtx, batch.Checkpoint); err != nil {
-					r.emitTrace(batchCtx, "ack_error", batch.Checkpoint.LSN, "", spec.ActionNone, err)
-					r.Meters.RecordError(ctx, "source_ack")
-					span.RecordError(err)
-					span.End()
-					return fmt.Errorf("ack source: %w", err)
-				}
-				r.emitTrace(batchCtx, "ack", batch.Checkpoint.LSN, "", spec.ActionAck, nil)
-				r.emitTrace(batchCtx, "control_checkpoint", batch.Checkpoint.LSN, "", spec.ActionNone, nil)
-				if r.Checkpoints != nil && r.FlowID != "" && shouldPersistCheckpoint(batch.Checkpoint) {
-					if err := r.Checkpoints.Put(batchCtx, r.FlowID, batch.Checkpoint); err != nil {
-						r.Meters.RecordError(ctx, "checkpoint_persist")
-						span.RecordError(err)
-						span.End()
-						return fmt.Errorf("persist checkpoint: %w", err)
-					}
-					r.emitTrace(batchCtx, "checkpoint", batch.Checkpoint.LSN, "", spec.ActionNone, nil)
-					r.Meters.RecordCheckpoint(ctx, r.FlowID)
-				}
-				span.End()
-				continue
-			}
-
+		if len(batch.Records) == 0 && !isControlCheckpoint(batch.Checkpoint) {
+			// Sources may emit an empty heartbeat before they have a durable
+			// position. It carries no data and must not be traced, persisted, or
+			// acknowledged as a checkpoint.
 			emptyReads++
 			span.End()
 			if r.MaxEmptyReads > 0 && emptyReads >= r.MaxEmptyReads {
@@ -289,6 +298,38 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			}
 			continue
 		}
+
+		tracePosition, positionErr := connector.CheckpointPositionID(batch.Checkpoint)
+		if positionErr != nil {
+			span.RecordError(positionErr)
+			span.End()
+			return fmt.Errorf("identify checkpoint: %w", positionErr)
+		}
+		if len(ddlRecordsInBatch(batch)) > 0 {
+			r.emitCheckpointTrace(batchCtx, "read", batch.Checkpoint, tracePosition, spec.ActionReadDDL, nil)
+		} else {
+			r.emitCheckpointTrace(batchCtx, "read", batch.Checkpoint, tracePosition, spec.ActionReadBatch, nil)
+		}
+		if r.WireFormat != "" {
+			batch.WireFormat = r.WireFormat
+		}
+
+		if len(batch.Records) == 0 {
+			r.emitCheckpointTrace(batchCtx, "deliver", batch.Checkpoint, tracePosition, spec.ActionDeliver, nil)
+			var err error
+			if ackPolicy == AckPolicyPrimary {
+				err = r.ackPrimaryAndOutbox(batchCtx, outbox, batch, nil, tracePosition, true)
+			} else {
+				err = r.ackAndCheckpoint(batchCtx, batch.Checkpoint, tracePosition, true)
+			}
+			if err != nil {
+				span.RecordError(err)
+				span.End()
+				return err
+			}
+			span.End()
+			continue
+		}
 		emptyReads = 0
 
 		span.SetAttributes(
@@ -298,25 +339,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 
 		ddlRecords := ddlRecordsInBatch(batch)
 
-		ackAndCheckpoint := func() error {
-			if err := r.Source.Ack(batchCtx, batch.Checkpoint); err != nil {
-				r.emitTrace(batchCtx, "ack_error", batch.Checkpoint.LSN, "", spec.ActionNone, err)
-				r.Meters.RecordError(ctx, "source_ack")
-				return fmt.Errorf("ack source: %w", err)
-			}
-			r.emitTrace(batchCtx, "ack", batch.Checkpoint.LSN, "", spec.ActionAck, nil)
-			if r.Checkpoints != nil && r.FlowID != "" && shouldPersistCheckpoint(batch.Checkpoint) {
-				if err := r.Checkpoints.Put(batchCtx, r.FlowID, batch.Checkpoint); err != nil {
-					r.Meters.RecordError(ctx, "checkpoint_persist")
-					return fmt.Errorf("persist checkpoint: %w", err)
-				}
-				r.emitTrace(batchCtx, "checkpoint", batch.Checkpoint.LSN, "", spec.ActionNone, nil)
-				r.Meters.RecordCheckpoint(ctx, r.FlowID)
-			}
-			return nil
-		}
-
-		if ackPolicy == AckPolicyPrimary && len(secondaryQueues) > 0 {
+		if ackPolicy == AckPolicyPrimary {
 			writeStart := time.Now()
 			if err := r.writeWithRetry(batchCtx, batch, []DestinationConfig{primary}); err != nil {
 				r.emitTrace(batchCtx, "write_error", batch.Checkpoint.LSN, "", spec.ActionWriteFail, err)
@@ -326,15 +349,17 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				return err
 			}
 			r.Meters.RecordDestinationWrite(ctx, r.FlowID, float64(time.Since(writeStart).Milliseconds()))
-			r.emitTrace(batchCtx, "deliver", batch.Checkpoint.LSN, "", spec.ActionDeliver, nil)
-			if err := ackAndCheckpoint(); err != nil {
+			r.emitCheckpointTrace(batchCtx, "deliver", batch.Checkpoint, tracePosition, spec.ActionDeliver, nil)
+			if err := r.ackPrimaryAndOutbox(batchCtx, outbox, batch, secondary, tracePosition, false); err != nil {
 				span.RecordError(err)
 				span.End()
 				return err
 			}
-			pending := newPendingBatch(batch, ddlRecords, len(secondaryQueues))
-			for _, queue := range secondaryQueues {
-				queue.pending = append(queue.pending, pending)
+			if len(secondaryQueues) > 0 {
+				pending := newPendingBatch(batch, ddlRecords, len(secondaryQueues), tracePosition)
+				for _, queue := range secondaryQueues {
+					queue.pending = append(queue.pending, pending)
+				}
 			}
 			if _, err := r.drainSecondaryQueues(batchCtx, secondaryQueues); err != nil {
 				span.RecordError(err)
@@ -373,8 +398,8 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			span.End()
 			return err
 		}
-		r.emitTrace(batchCtx, "deliver", batch.Checkpoint.LSN, "", spec.ActionDeliver, nil)
-		if err := ackAndCheckpoint(); err != nil {
+		r.emitCheckpointTrace(batchCtx, "deliver", batch.Checkpoint, tracePosition, spec.ActionDeliver, nil)
+		if err := r.ackAndCheckpoint(batchCtx, batch.Checkpoint, tracePosition, false); err != nil {
 			span.RecordError(err)
 			span.End()
 			return err
@@ -387,6 +412,65 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		)
 		span.End()
 	}
+}
+
+func checkpointPositionsEqual(left, right string) bool {
+	if left == "" || right == "" {
+		return left == right
+	}
+	cmp, err := connector.CompareCheckpointLSN(left, right)
+	return err == nil && cmp == 0
+}
+
+func (r *Runner) ackPrimaryAndOutbox(ctx context.Context, outbox connector.OutboxStore, batch connector.Batch, secondary []DestinationConfig, tracePosition string, emitControlCheckpoint bool) error {
+	entries := make([]connector.OutboxEntry, 0, len(secondary))
+	for _, destination := range secondary {
+		entries = append(entries, connector.OutboxEntry{
+			FlowID:      r.FlowID,
+			Destination: destination.Spec.Name,
+			PositionID:  tracePosition,
+			Batch:       batch,
+		})
+	}
+	if err := outbox.PersistCheckpointAndOutbox(ctx, r.FlowID, batch.Checkpoint, entries); err != nil {
+		r.emitCheckpointTrace(ctx, "checkpoint_error", batch.Checkpoint, tracePosition, spec.ActionCheckpointFail, err)
+		r.Meters.RecordError(ctx, "checkpoint_outbox_persist")
+		return fmt.Errorf("persist checkpoint and primary-ack outbox: %w", err)
+	}
+	r.emitCheckpointTrace(ctx, "checkpoint", batch.Checkpoint, tracePosition, spec.ActionPersistCheckpoint, nil)
+	r.Meters.RecordCheckpoint(ctx, r.FlowID)
+	if err := r.Source.Ack(ctx, batch.Checkpoint); err != nil {
+		r.emitCheckpointTrace(ctx, "ack_error", batch.Checkpoint, tracePosition, spec.ActionNone, err)
+		r.Meters.RecordError(ctx, "source_ack")
+		return fmt.Errorf("ack source: %w", err)
+	}
+	r.emitCheckpointTrace(ctx, "ack", batch.Checkpoint, tracePosition, spec.ActionAck, nil)
+	if emitControlCheckpoint {
+		r.emitCheckpointTrace(ctx, "control_checkpoint", batch.Checkpoint, tracePosition, spec.ActionNone, nil)
+	}
+	return nil
+}
+
+func (r *Runner) ackAndCheckpoint(ctx context.Context, checkpoint connector.Checkpoint, tracePosition string, emitControlCheckpoint bool) error {
+	if r.Checkpoints != nil && r.FlowID != "" && shouldPersistCheckpoint(checkpoint) {
+		if err := r.Checkpoints.Put(ctx, r.FlowID, checkpoint); err != nil {
+			r.emitCheckpointTrace(ctx, "checkpoint_error", checkpoint, tracePosition, spec.ActionCheckpointFail, err)
+			r.Meters.RecordError(ctx, "checkpoint_persist")
+			return fmt.Errorf("persist checkpoint: %w", err)
+		}
+		r.emitCheckpointTrace(ctx, "checkpoint", checkpoint, tracePosition, spec.ActionPersistCheckpoint, nil)
+		r.Meters.RecordCheckpoint(ctx, r.FlowID)
+	}
+	if err := r.Source.Ack(ctx, checkpoint); err != nil {
+		r.emitCheckpointTrace(ctx, "ack_error", checkpoint, tracePosition, spec.ActionNone, err)
+		r.Meters.RecordError(ctx, "source_ack")
+		return fmt.Errorf("ack source: %w", err)
+	}
+	r.emitCheckpointTrace(ctx, "ack", checkpoint, tracePosition, spec.ActionAck, nil)
+	if emitControlCheckpoint {
+		r.emitCheckpointTrace(ctx, "control_checkpoint", checkpoint, tracePosition, spec.ActionNone, nil)
+	}
+	return nil
 }
 
 func (r *Runner) resolveStaging(ctx context.Context) error {
@@ -462,6 +546,16 @@ func (r *Runner) partitionDestinations() (DestinationConfig, []DestinationConfig
 	if len(r.Destinations) == 0 {
 		return DestinationConfig{}, nil, errors.New("at least one destination is required")
 	}
+	seen := make(map[string]struct{}, len(r.Destinations))
+	for _, destination := range r.Destinations {
+		if destination.Spec.Name == "" {
+			return DestinationConfig{}, nil, errors.New("primary acknowledgement requires a stable name for every destination")
+		}
+		if _, duplicate := seen[destination.Spec.Name]; duplicate {
+			return DestinationConfig{}, nil, fmt.Errorf("duplicate destination identity %q", destination.Spec.Name)
+		}
+		seen[destination.Spec.Name] = struct{}{}
+	}
 	if r.PrimaryDestination == "" {
 		return r.Destinations[0], append([]DestinationConfig(nil), r.Destinations[1:]...), nil
 	}
@@ -493,6 +587,54 @@ func (r *Runner) writeWithRetry(ctx context.Context, batch connector.Batch, dest
 	}
 }
 
+func (r *Runner) restoreSecondaryQueues(ctx context.Context, outbox connector.OutboxStore, secondary []DestinationConfig) ([]*secondaryQueue, error) {
+	queues := make([]*secondaryQueue, 0, len(secondary))
+	byDestination := make(map[string]*secondaryQueue, len(secondary))
+	for _, destination := range secondary {
+		if destination.Spec.Name == "" {
+			return nil, errors.New("primary-ack secondary destination name is required")
+		}
+		if _, duplicate := byDestination[destination.Spec.Name]; duplicate {
+			return nil, fmt.Errorf("duplicate secondary destination identity %q", destination.Spec.Name)
+		}
+		queue := &secondaryQueue{dest: destination, outbox: outbox}
+		queues = append(queues, queue)
+		byDestination[destination.Spec.Name] = queue
+	}
+	entries, err := outbox.ListOutbox(ctx, r.FlowID)
+	if err != nil {
+		return nil, fmt.Errorf("restore primary-ack outbox: %w", err)
+	}
+	groups := make(map[string]*pendingBatch)
+	for _, entry := range entries {
+		queue, ok := byDestination[entry.Destination]
+		if !ok {
+			return nil, fmt.Errorf("primary-ack outbox contains destination %q not configured as a secondary for flow %q; restore or explicitly reconcile that destination", entry.Destination, r.FlowID)
+		}
+		positionID, err := connector.CheckpointPositionID(entry.Batch.Checkpoint)
+		if err != nil {
+			return nil, fmt.Errorf("validate restored outbox entry for %s: %w", entry.Destination, err)
+		}
+		if entry.FlowID != r.FlowID || entry.PositionID != positionID {
+			return nil, fmt.Errorf("invalid restored outbox identity flow=%q destination=%q position=%q batch_position=%q", entry.FlowID, entry.Destination, entry.PositionID, positionID)
+		}
+		if entry.BatchHash == "" {
+			return nil, fmt.Errorf("restored outbox entry for %s at %s has no durable batch hash", entry.Destination, entry.PositionID)
+		}
+		pending := groups[entry.PositionID]
+		if pending == nil {
+			pending = newPendingBatch(entry.Batch, ddlRecordsInBatch(entry.Batch), 0, entry.PositionID)
+			pending.batchHash = entry.BatchHash
+			groups[entry.PositionID] = pending
+		} else if pending.batchHash != entry.BatchHash {
+			return nil, fmt.Errorf("primary-ack outbox position %q contains different batches across destinations", entry.PositionID)
+		}
+		pending.remaining++
+		queue.pending = append(queue.pending, pending)
+	}
+	return queues, nil
+}
+
 func (r *Runner) drainSecondaryQueues(ctx context.Context, queues []*secondaryQueue) (bool, error) {
 	progressed := false
 	for _, queue := range queues {
@@ -505,14 +647,17 @@ func (r *Runner) drainSecondaryQueues(ctx context.Context, queues []*secondaryQu
 				}
 				break
 			}
-			queue.pending = queue.pending[1:]
-			pending.remaining--
-			progressed = true
-			if pending.remaining == 0 && len(pending.ddlRecords) > 0 {
+			if pending.remaining == 1 && len(pending.ddlRecords) > 0 {
 				if err := r.markDDLApplied(ctx, pending.batch.Checkpoint, pending.ddlRecords); err != nil {
 					return progressed, err
 				}
 			}
+			if err := queue.outbox.DeleteOutbox(ctx, r.FlowID, queue.dest.Spec.Name, pending.positionID); err != nil {
+				return progressed, fmt.Errorf("delete delivered primary-ack outbox entry for %s: %w", queue.dest.Spec.Name, err)
+			}
+			queue.pending = queue.pending[1:]
+			pending.remaining--
+			progressed = true
 		}
 	}
 	return progressed, nil
@@ -550,14 +695,17 @@ type pendingBatch struct {
 	batch      connector.Batch
 	ddlRecords []connector.Record
 	remaining  int
+	positionID string
+	batchHash  string
 	attempts   map[string]int
 }
 
-func newPendingBatch(batch connector.Batch, ddlRecords []connector.Record, remaining int) *pendingBatch {
+func newPendingBatch(batch connector.Batch, ddlRecords []connector.Record, remaining int, positionID string) *pendingBatch {
 	return &pendingBatch{
 		batch:      batch,
 		ddlRecords: ddlRecords,
 		remaining:  remaining,
+		positionID: positionID,
 		attempts:   make(map[string]int),
 	}
 }
@@ -568,6 +716,7 @@ func (p *pendingBatch) bumpAttempt(dest string) {
 
 type secondaryQueue struct {
 	dest    DestinationConfig
+	outbox  connector.OutboxStore
 	pending []*pendingBatch
 }
 
@@ -621,16 +770,7 @@ func isControlCheckpoint(cp connector.Checkpoint) bool {
 }
 
 func shouldPersistCheckpoint(cp connector.Checkpoint) bool {
-	if cp.LSN != "" {
-		return true
-	}
-	if cp.Metadata == nil {
-		return false
-	}
-	if cp.Metadata["mode"] == "backfill" {
-		return false
-	}
-	return true
+	return cp.LSN != "" || len(cp.Metadata) > 0
 }
 
 func (r *Runner) writeDestinations(ctx context.Context, batch connector.Batch, dests []DestinationConfig) error {
@@ -852,13 +992,32 @@ func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, b
 	return nil
 }
 
+func (r *Runner) emitCheckpointTrace(ctx context.Context, kind string, checkpoint connector.Checkpoint, positionID string, specAction spec.Action, err error) {
+	if positionID == "" {
+		var positionErr error
+		positionID, positionErr = connector.CheckpointPositionID(checkpoint)
+		if positionErr != nil {
+			return
+		}
+	}
+	if checkpoint.LSN != "" {
+		r.emitTracePosition(ctx, kind, positionID, "", "", specAction, err)
+		return
+	}
+	r.emitTracePosition(ctx, kind, "", positionID, "", specAction, err)
+}
+
 func (r *Runner) emitTrace(ctx context.Context, kind, lsn, destination string, specAction spec.Action, err error) {
+	r.emitTracePosition(ctx, kind, lsn, "", destination, specAction, err)
+}
+
+func (r *Runner) emitTracePosition(ctx context.Context, kind, lsn, position, destination string, specAction spec.Action, err error) {
 	if r.TraceSink == nil {
 		return
 	}
-	if lsn == "" {
+	if lsn == "" && position == "" {
 		switch kind {
-		case "read", "deliver", "ack", "ack_error", "checkpoint", "write", "write_error", "ddl_error", "control_checkpoint":
+		case "read", "deliver", "ack", "ack_error", "checkpoint", "restore_checkpoint", "restore_ack", "restore_ack_error", "write", "write_error", "ddl_error", "control_checkpoint":
 			return
 		}
 	}
@@ -867,6 +1026,7 @@ func (r *Runner) emitTrace(ctx context.Context, kind, lsn, destination string, s
 		Spec:        spec.SpecCDCFlow,
 		SpecAction:  specAction,
 		LSN:         lsn,
+		Position:    position,
 		FlowID:      r.FlowID,
 		Destination: destination,
 	}

@@ -1,0 +1,5 @@
+version: v1
+plugins:
+  - name: doc
+    out: docs/reference/generated
+    opt: markdown,grpc.md

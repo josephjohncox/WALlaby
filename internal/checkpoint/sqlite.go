@@ -23,7 +23,19 @@ const (
   metadata TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );`
-	sqliteInitIndex = `CREATE INDEX IF NOT EXISTS checkpoints_updated_at_idx ON checkpoints (updated_at);`
+	sqliteInitIndex  = `CREATE INDEX IF NOT EXISTS checkpoints_updated_at_idx ON checkpoints (updated_at);`
+	sqliteInitOutbox = `CREATE TABLE IF NOT EXISTS checkpoint_outbox (
+  flow_id TEXT NOT NULL,
+  destination_id TEXT NOT NULL,
+  position_id TEXT NOT NULL,
+  batch_hash TEXT NOT NULL,
+  codec TEXT NOT NULL,
+  batch_json BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (flow_id, destination_id, position_id)
+);`
+	sqliteInitOutboxIndex = `CREATE INDEX IF NOT EXISTS checkpoint_outbox_flow_created_idx
+  ON checkpoint_outbox (flow_id, created_at, destination_id);`
 )
 
 // SQLiteStore persists checkpoints in a single-file SQLite database.
@@ -43,6 +55,9 @@ func NewSQLiteStore(ctx context.Context, dsn string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	// A checkpoint store is deliberately serialized. This also keeps :memory:
+	// databases bound to the connection on which their schema was created.
+	db.SetMaxOpenConns(1)
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping sqlite: %w", err)
@@ -59,6 +74,14 @@ func NewSQLiteStore(ctx context.Context, dsn string) (*SQLiteStore, error) {
 	if _, err := db.ExecContext(ctx, sqliteInitIndex); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("create checkpoints index: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, sqliteInitOutbox); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create checkpoint outbox table: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, sqliteInitOutboxIndex); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create checkpoint outbox index: %w", err)
 	}
 
 	return &SQLiteStore{db: db}, nil
@@ -91,6 +114,10 @@ func (s *SQLiteStore) Get(ctx context.Context, flowID string) (connector.Checkpo
 	}
 
 	checkpoint := connector.Checkpoint{LSN: lsn, Metadata: metadata}
+	checkpoint, err := canonicalizeCheckpoint(checkpoint)
+	if err != nil {
+		return connector.Checkpoint{}, fmt.Errorf("canonicalize stored checkpoint: %w", err)
+	}
 	if updatedAt != "" {
 		if parsed, err := time.Parse(time.RFC3339Nano, updatedAt); err == nil {
 			checkpoint.Timestamp = parsed
@@ -101,29 +128,181 @@ func (s *SQLiteStore) Get(ctx context.Context, flowID string) (connector.Checkpo
 }
 
 func (s *SQLiteStore) Put(ctx context.Context, flowID string, checkpoint connector.Checkpoint) error {
+	checkpoint, err := prepareCheckpointWrite(checkpoint)
+	if err != nil {
+		return err
+	}
+	return s.withImmediateTransaction(ctx, "checkpoint update", func(conn *sql.Conn) error {
+		return upsertSQLiteCheckpoint(ctx, conn, flowID, checkpoint)
+	})
+}
+
+func prepareCheckpointWrite(checkpoint connector.Checkpoint) (connector.Checkpoint, error) {
+	checkpoint, err := canonicalizeCheckpoint(checkpoint)
+	if err != nil {
+		return connector.Checkpoint{}, err
+	}
 	if checkpoint.Timestamp.IsZero() {
 		checkpoint.Timestamp = time.Now().UTC()
 	}
 	if checkpoint.Metadata == nil {
 		checkpoint.Metadata = map[string]string{}
 	}
+	return checkpoint, nil
+}
+
+func (s *SQLiteStore) withImmediateTransaction(ctx context.Context, operation string, fn func(*sql.Conn) error) error {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire sqlite %s connection: %w", operation, err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("begin %s transaction: %w", operation, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
+		}
+	}()
+	if err := fn(conn); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("commit %s transaction: %w", operation, err)
+	}
+	committed = true
+	return nil
+}
+
+func upsertSQLiteCheckpoint(ctx context.Context, conn *sql.Conn, flowID string, checkpoint connector.Checkpoint) error {
+	var currentLSN string
+	err := conn.QueryRowContext(ctx, "SELECT lsn FROM checkpoints WHERE flow_id = ?", flowID).Scan(&currentLSN)
+	switch {
+	case err == nil:
+		if err := validateCheckpointAdvance(flowID, currentLSN, checkpoint.LSN); err != nil {
+			return err
+		}
+	case errors.Is(err, sql.ErrNoRows):
+		// First checkpoint for this flow.
+	default:
+		return fmt.Errorf("read current checkpoint: %w", err)
+	}
 	metadataJSON, err := json.Marshal(checkpoint.Metadata)
 	if err != nil {
 		return fmt.Errorf("encode metadata: %w", err)
 	}
-	updatedAt := checkpoint.Timestamp.Format(time.RFC3339Nano)
-
-	_, err = s.db.ExecContext(ctx,
+	if _, err := conn.ExecContext(ctx,
 		`INSERT INTO checkpoints (flow_id, lsn, metadata, updated_at)
 		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(flow_id) DO UPDATE SET
 		 lsn = excluded.lsn,
 		 metadata = excluded.metadata,
 		 updated_at = excluded.updated_at`,
-		flowID, checkpoint.LSN, string(metadataJSON), updatedAt,
-	)
-	if err != nil {
+		flowID, checkpoint.LSN, string(metadataJSON), checkpoint.Timestamp.Format(time.RFC3339Nano),
+	); err != nil {
 		return fmt.Errorf("upsert checkpoint: %w", err)
+	}
+	return nil
+}
+
+// PersistCheckpointAndOutbox atomically advances the checkpoint and inserts
+// one durable row for each secondary destination.
+func (s *SQLiteStore) PersistCheckpointAndOutbox(ctx context.Context, flowID string, checkpoint connector.Checkpoint, entries []connector.OutboxEntry) error {
+	checkpoint, err := prepareCheckpointWrite(checkpoint)
+	if err != nil {
+		return err
+	}
+	encoded, err := encodeOutboxEntries(flowID, checkpoint, entries)
+	if err != nil {
+		return err
+	}
+	return s.withImmediateTransaction(ctx, "checkpoint outbox", func(conn *sql.Conn) error {
+		if err := upsertSQLiteCheckpoint(ctx, conn, flowID, checkpoint); err != nil {
+			return err
+		}
+		for _, item := range encoded {
+			var positionHash string
+			err := conn.QueryRowContext(ctx,
+				"SELECT batch_hash FROM checkpoint_outbox WHERE flow_id=? AND position_id=? LIMIT 1",
+				flowID, item.entry.PositionID).Scan(&positionHash)
+			switch {
+			case err == nil && positionHash != item.batchHash:
+				return fmt.Errorf("%w: flow=%s position=%s identifies different batches", connector.ErrOutboxConflict, flowID, item.entry.PositionID)
+			case err == nil, errors.Is(err, sql.ErrNoRows):
+			default:
+				return fmt.Errorf("read outbox batch identity: %w", err)
+			}
+			result, err := conn.ExecContext(ctx,
+				`INSERT INTO checkpoint_outbox (flow_id, destination_id, position_id, batch_hash, codec, batch_json, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(flow_id, destination_id, position_id) DO NOTHING`,
+				flowID, item.entry.Destination, item.entry.PositionID, item.batchHash, outboxCodecGobV1, item.batchData, item.entry.CreatedAt.Format(time.RFC3339Nano))
+			if err != nil {
+				return fmt.Errorf("insert outbox entry for %s: %w", item.entry.Destination, err)
+			}
+			rows, err := result.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("inspect outbox insert for %s: %w", item.entry.Destination, err)
+			}
+			if rows == 0 {
+				var existingHash string
+				if err := conn.QueryRowContext(ctx,
+					"SELECT batch_hash FROM checkpoint_outbox WHERE flow_id=? AND destination_id=? AND position_id=?",
+					flowID, item.entry.Destination, item.entry.PositionID).Scan(&existingHash); err != nil {
+					return fmt.Errorf("read existing outbox entry for %s: %w", item.entry.Destination, err)
+				}
+				if existingHash != item.batchHash {
+					return fmt.Errorf("%w: flow=%s destination=%s position=%s", connector.ErrOutboxConflict, flowID, item.entry.Destination, item.entry.PositionID)
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func (s *SQLiteStore) ListOutbox(ctx context.Context, flowID string) ([]connector.OutboxEntry, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT destination_id, position_id, batch_hash, codec, batch_json, created_at FROM checkpoint_outbox
+		 WHERE flow_id=? ORDER BY created_at, destination_id`, flowID)
+	if err != nil {
+		return nil, fmt.Errorf("list checkpoint outbox: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	entries := make([]connector.OutboxEntry, 0)
+	for rows.Next() {
+		var destination, position, batchHash, codec, createdAt string
+		var batchJSON []byte
+		if err := rows.Scan(&destination, &position, &batchHash, &codec, &batchJSON, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan checkpoint outbox: %w", err)
+		}
+		batch, err := decodeOutboxBatch(codec, batchJSON)
+		if err != nil {
+			return nil, err
+		}
+		entry := connector.OutboxEntry{FlowID: flowID, Destination: destination, PositionID: position, BatchHash: batchHash, Batch: batch}
+		entry.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate checkpoint outbox: %w", err)
+	}
+	return entries, nil
+}
+
+func (s *SQLiteStore) DeleteOutbox(ctx context.Context, flowID, destination, positionID string) error {
+	result, err := s.db.ExecContext(ctx,
+		"DELETE FROM checkpoint_outbox WHERE flow_id=? AND destination_id=? AND position_id=?",
+		flowID, destination, positionID)
+	if err != nil {
+		return fmt.Errorf("delete checkpoint outbox entry: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("inspect checkpoint outbox delete: %w", err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("delete checkpoint outbox entry flow=%s destination=%s position=%s: entry not found", flowID, destination, positionID)
 	}
 	return nil
 }
@@ -155,6 +334,10 @@ func (s *SQLiteStore) List(ctx context.Context) ([]connector.FlowCheckpoint, err
 			}
 		}
 		cp := connector.Checkpoint{LSN: lsn, Metadata: metadata}
+		cp, err = canonicalizeCheckpoint(cp)
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize stored checkpoint for %s: %w", flowID, err)
+		}
 		if updatedAt != "" {
 			if parsed, err := time.Parse(time.RFC3339Nano, updatedAt); err == nil {
 				cp.Timestamp = parsed

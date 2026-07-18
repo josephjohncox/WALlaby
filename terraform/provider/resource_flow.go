@@ -341,7 +341,7 @@ func endpointFromProto(item *wallabypb.Endpoint) endpointModel {
 	for key, value := range item.Options {
 		options[key] = value
 	}
-	optionsValue, _ := types.MapValue(types.StringType, options)
+	optionsValue, _ := types.MapValueFrom(context.Background(), types.StringType, options)
 	return endpointModel{
 		Name:    types.StringValue(item.Name),
 		Type:    types.StringValue(endpointTypeToString(item.Type)),
@@ -665,6 +665,8 @@ func flowStateToString(value wallabypb.FlowState) string {
 		return "paused"
 	case wallabypb.FlowState_FLOW_STATE_STOPPING:
 		return "stopping"
+	case wallabypb.FlowState_FLOW_STATE_STOPPED:
+		return "stopped"
 	case wallabypb.FlowState_FLOW_STATE_FAILED:
 		return "failed"
 	default:

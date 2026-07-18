@@ -18,7 +18,7 @@ type Server struct {
 	server *gogrpc.Server
 }
 
-func New(engine workflow.Engine, dispatcher FlowDispatcher, checkpoints connector.CheckpointStore, registryStore registry.Store, streamStore *pgstream.Store, enableReflection bool, meters *telemetry.Meters) *Server {
+func New(engine workflow.ControlEngine, dispatcher RunOnceDispatcher, checkpoints connector.CheckpointStore, registryStore registry.Store, streamStore *pgstream.Store, enableReflection bool, meters *telemetry.Meters) *Server {
 	var opts []gogrpc.ServerOption
 	if meters != nil {
 		opts = append(opts, gogrpc.UnaryInterceptor(MetricsInterceptor(meters)))

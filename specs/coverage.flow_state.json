@@ -2,8 +2,10 @@
   "spec": "FlowStateMachine",
   "actions": [
     "Start",
-    "Stop",
+    "Pause",
     "Resume",
+    "StopBegin",
+    "StopComplete",
     "Fail",
     "RunOnce"
   ],
@@ -12,8 +14,10 @@
   ],
   "unreachable_actions": [
     "Start",
-    "Stop",
+    "Pause",
     "Resume",
+    "StopBegin",
+    "StopComplete",
     "Fail",
     "RunOnce"
   ],

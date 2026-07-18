@@ -6,6 +6,7 @@ import "wallaby/v1/types.proto";
 
 option go_package = "github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabypb";
 
+// CheckpointService reads and writes durable flow positions.
 service CheckpointService {
   rpc GetCheckpoint(GetCheckpointRequest) returns (FlowCheckpoint);
   rpc PutCheckpoint(PutCheckpointRequest) returns (FlowCheckpoint);

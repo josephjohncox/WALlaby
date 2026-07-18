@@ -143,7 +143,11 @@ func TestDBOSIntegrationBackfill(t *testing.T) {
 	}
 	defer orch.Shutdown(5 * time.Second)
 
-	if err := orch.EnqueueFlow(ctx, flowID); err != nil {
+	control, err := engine.Control(ctx, flowID)
+	if err != nil {
+		t.Fatalf("read flow control: %v", err)
+	}
+	if err := orch.EnqueueRunOnce(ctx, flowID, control.Generation); err != nil {
 		t.Fatalf("enqueue flow: %v", err)
 	}
 
@@ -274,7 +278,11 @@ func TestDBOSIntegrationStreaming(t *testing.T) {
 	}
 	defer orch.Shutdown(5 * time.Second)
 
-	if err := orch.EnqueueFlow(ctx, flowID); err != nil {
+	control, err := engine.Control(ctx, flowID)
+	if err != nil {
+		t.Fatalf("read flow control: %v", err)
+	}
+	if err := orch.EnqueueRunOnce(ctx, flowID, control.Generation); err != nil {
 		t.Fatalf("enqueue flow: %v", err)
 	}
 
@@ -377,7 +385,11 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 	}
 	defer orch.Shutdown(5 * time.Second)
 
-	if err := orch.EnqueueFlow(ctx, flowID); err != nil {
+	control, err := engine.Control(ctx, flowID)
+	if err != nil {
+		t.Fatalf("read flow control: %v", err)
+	}
+	if err := orch.EnqueueRunOnce(ctx, flowID, control.Generation); err != nil {
 		t.Fatalf("enqueue flow: %v", err)
 	}
 

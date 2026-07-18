@@ -20,11 +20,11 @@ Use `grpcurl` with local proto files. If you enable reflection (`WALLABY_GRPC_RE
 Run a single flow in its own process (useful for Kubernetes deployments or per-flow scaling):
 
 ```bash
-./bin/wallaby-worker -flow-id "<flow-id>" -max-empty-reads 1
+./bin/wallaby-worker --flow-id "<flow-id>" --max-empty-reads 1
 ```
 
-`-max-empty-reads 1` tells the worker to stop when no changes are available, which is useful for periodic scheduling (DBOS or cron). Omit it for continuous streaming.
-For backfill runs that land in staging tables, add `-resolve-staging` to apply staged data before the worker exits.
+`--max-empty-reads 1` tells the worker to stop when no changes are available, which is useful for periodic scheduling (DBOS or cron). Omit it for continuous streaming.
+For backfill runs that land in staging tables, add `--resolve-staging` to apply staged data before the worker exits.
 
 ## DBOS Scheduling (Durable Runs)
 Enable DBOS and optional scheduling to run flow batches durably:
@@ -49,9 +49,9 @@ Use the DDLService to list and approve/reject DDL events (see `examples/grpc/ddl
 Or use the CLI admin tool:
 
 ```bash
-./bin/wallaby-admin ddl list -status pending
-./bin/wallaby-admin ddl approve -id 1
-./bin/wallaby-admin ddl apply -id 1
+./bin/wallaby-admin ddl list --status pending
+./bin/wallaby-admin ddl approve --id 1
+./bin/wallaby-admin ddl apply --id 1
 ```
 
 ## Terraform Provider
