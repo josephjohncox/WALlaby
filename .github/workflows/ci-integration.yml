@@ -92,11 +92,17 @@ jobs:
           TEST_PG_DSN: >-
             postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
         run: |
+          set +e
           output=$(go test -count=1 -v \
             ./internal/checkpoint \
             ./internal/workflow \
             ./pkg/schemaregistry)
+          test_rc=$?
+          set -e
           printf '%s\n' "${output}"
+          if [ "${test_rc}" -ne 0 ]; then
+            exit "${test_rc}"
+          fi
           printf '%s\n' "${output}" | grep -q -- \
             '--- PASS: TestPostgresStoreRejectsCheckpointRegression'
           printf '%s\n' "${output}" | grep -q -- \
