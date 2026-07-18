@@ -123,9 +123,11 @@ jobs:
             '--- PASS: TestPostgresRegistryConcurrentRegistration'
 
       - name: Integration tests (PostgreSQL, ClickHouse, DBOS, Kubernetes)
-        run: |
-          WALLABY_TEST_K8S_NAMESPACE=default \
-          just test-integration-ci
+        env:
+          IT_EXPECTED_HARNESS_PARTICIPANTS: "2"
+          IT_PACKAGE_PARALLELISM: "2"
+          WALLABY_TEST_K8S_NAMESPACE: default
+        run: just test-integration-ci
 
       - name: Save Go + tools cache
         if: always() && steps.cache-go-tools.outputs.cache-hit != 'true'
