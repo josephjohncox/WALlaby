@@ -35,3 +35,7 @@ func (d *Destination) Close(ctx context.Context) error {
 func (d *Destination) Capabilities() connector.Capabilities {
 	return d.inner.Capabilities()
 }
+
+func (d *Destination) CapabilitiesFor(spec connector.Spec) connector.Capabilities {
+	return d.inner.CapabilitiesFor(spec)
+}

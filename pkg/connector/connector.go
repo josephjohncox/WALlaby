@@ -56,6 +56,9 @@ type Spec struct {
 
 // Capabilities describe what a connector can handle.
 type Capabilities struct {
+	Support               SupportLevel
+	Evidence              ContractEvidence
+	Delivery              DeliverySemantics
 	SupportsDDL           bool
 	SupportsSchemaChanges bool
 	SupportsStreaming     bool

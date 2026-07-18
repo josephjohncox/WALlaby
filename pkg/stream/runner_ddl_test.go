@@ -11,6 +11,30 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+func TestRunnerSkipsDDLExecutionWhenPolicyDisabled(t *testing.T) {
+	t.Parallel()
+
+	destination := &ddlPolicyDestination{}
+	runner := Runner{Destinations: []DestinationConfig{{
+		Spec: connector.Spec{Name: "dest"},
+		Dest: destination,
+	}}}
+	batch := connector.Batch{
+		Schema: connector.Schema{Name: "widgets"},
+		Records: []connector.Record{{
+			Table:     "widgets",
+			Operation: connector.OpDDL,
+			DDL:       "ALTER TABLE widgets ADD COLUMN extra text",
+		}},
+	}
+	if err := runner.writeDestinations(context.Background(), batch, runner.Destinations); err != nil {
+		t.Fatal(err)
+	}
+	if destination.applied != 0 {
+		t.Fatalf("ApplyDDL calls=%d, want 0", destination.applied)
+	}
+}
+
 func TestRunnerMarksDDLApplied(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
@@ -55,7 +79,8 @@ func TestRunnerMarksDDLApplied(t *testing.T) {
 			var applied int64
 			dest := &benchDestination{}
 			runner := Runner{
-				Destinations: []DestinationConfig{{Spec: connector.Spec{Name: "dest"}, Dest: dest}},
+				Destinations:        []DestinationConfig{{Spec: connector.Spec{Name: "dest"}, Dest: dest}},
+				RequireDDLExecution: true,
 				DDLApplied: func(_ context.Context, flowID string, lsn string, ddl string) error {
 					if lsn == "" || ddl == "" {
 						t.Fatalf("expected lsn+ddl, got lsn=%q ddl=%q", lsn, ddl)
@@ -79,5 +104,24 @@ func TestRunnerMarksDDLApplied(t *testing.T) {
 				t.Fatalf("expected ddl applied once, got %d", got)
 			}
 		})
+	}
+}
+
+type ddlPolicyDestination struct {
+	applied int
+}
+
+func (*ddlPolicyDestination) Open(context.Context, connector.Spec) error   { return nil }
+func (*ddlPolicyDestination) Write(context.Context, connector.Batch) error { return nil }
+func (d *ddlPolicyDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
+	d.applied++
+	return nil
+}
+func (*ddlPolicyDestination) TypeMappings() map[string]string { return nil }
+func (*ddlPolicyDestination) Close(context.Context) error     { return nil }
+func (*ddlPolicyDestination) Capabilities() connector.Capabilities {
+	return connector.Capabilities{
+		Delivery:    connector.DeliverySemantics{Declared: true, ExecutesDDL: true},
+		SupportsDDL: true,
 	}
 }

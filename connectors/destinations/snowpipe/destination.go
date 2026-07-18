@@ -465,6 +465,11 @@ func (d *Destination) Close(_ context.Context) error {
 
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
+		Support: connector.SupportExperimental,
+		Delivery: connector.DeliverySemantics{
+			Declared:    true,
+			ExecutesDDL: true,
+		},
 		SupportsDDL:           true,
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     false,

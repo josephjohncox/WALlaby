@@ -22,14 +22,21 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [func NormalizeSourceMode\(raw string\) \(string, error\)](<#NormalizeSourceMode>)
 - [type Batch](<#Batch>)
 - [type Capabilities](<#Capabilities>)
+  - [func ResolveDestinationCapabilities\(destination Destination, spec Spec\) Capabilities](<#ResolveDestinationCapabilities>)
+  - [func \(c Capabilities\) ExecutesDDL\(\) bool](<#Capabilities.ExecutesDDL>)
+  - [func \(c Capabilities\) ValidateSupport\(\) error](<#Capabilities.ValidateSupport>)
 - [type Checkpoint](<#Checkpoint>)
 - [type CheckpointOutboxStore](<#CheckpointOutboxStore>)
 - [type CheckpointStore](<#CheckpointStore>)
 - [type Column](<#Column>)
+- [type ConfiguredDestinationCapabilities](<#ConfiguredDestinationCapabilities>)
+- [type ContractEvidence](<#ContractEvidence>)
+  - [func \(e ContractEvidence\) Complete\(\) bool](<#ContractEvidence.Complete>)
 - [type DDLGateError](<#DDLGateError>)
   - [func AsDDLGate\(err error\) \(\*DDLGateError, bool\)](<#AsDDLGate>)
   - [func \(e \*DDLGateError\) Error\(\) string](<#DDLGateError.Error>)
   - [func \(e \*DDLGateError\) Unwrap\(\) error](<#DDLGateError.Unwrap>)
+- [type DeliverySemantics](<#DeliverySemantics>)
 - [type Destination](<#Destination>)
 - [type EndpointType](<#EndpointType>)
 - [type FlowCheckpoint](<#FlowCheckpoint>)
@@ -42,6 +49,7 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [type SlotDropper](<#SlotDropper>)
 - [type Source](<#Source>)
 - [type Spec](<#Spec>)
+- [type SupportLevel](<#SupportLevel>)
 - [type WireFormat](<#WireFormat>)
 
 
@@ -132,7 +140,7 @@ NormalizeSourceMode normalizes and validates source modes for worker flow source
 It is case\-insensitive, trims whitespace, and defaults empty values to cdc.
 
 <a name="Batch"></a>
-## type [Batch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L117-L122>)
+## type [Batch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L120-L125>)
 
 Batch is the unit passed between sources and destinations.
 
@@ -146,12 +154,15 @@ type Batch struct {
 ```
 
 <a name="Capabilities"></a>
-## type [Capabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L58-L65>)
+## type [Capabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L58-L68>)
 
 Capabilities describe what a connector can handle.
 
 ```go
 type Capabilities struct {
+    Support               SupportLevel
+    Evidence              ContractEvidence
+    Delivery              DeliverySemantics
     SupportsDDL           bool
     SupportsSchemaChanges bool
     SupportsStreaming     bool
@@ -161,8 +172,35 @@ type Capabilities struct {
 }
 ```
 
+<a name="ResolveDestinationCapabilities"></a>
+### func [ResolveDestinationCapabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L49>)
+
+```go
+func ResolveDestinationCapabilities(destination Destination, spec Spec) Capabilities
+```
+
+ResolveDestinationCapabilities returns the guarantees for one configured destination, falling back to its static declaration.
+
+<a name="Capabilities.ExecutesDDL"></a>
+### func \(Capabilities\) [ExecutesDDL](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L74>)
+
+```go
+func (c Capabilities) ExecutesDDL() bool
+```
+
+ExecutesDDL reports whether ApplyDDL performs a downstream schema mutation. Undeclared legacy adapters retain the historical SupportsDDL behavior.
+
+<a name="Capabilities.ValidateSupport"></a>
+### func \(Capabilities\) [ValidateSupport](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L58>)
+
+```go
+func (c Capabilities) ValidateSupport() error
+```
+
+ValidateSupport rejects unsupported levels and maintained classifications that lack one or more required executable contract suites.
+
 <a name="Checkpoint"></a>
-## type [Checkpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L89-L93>)
+## type [Checkpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L92-L96>)
 
 Checkpoint identifies a durable offset for a flow.
 
@@ -175,7 +213,7 @@ type Checkpoint struct {
 ```
 
 <a name="CheckpointOutboxStore"></a>
-## type [CheckpointOutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L187-L190>)
+## type [CheckpointOutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L190-L193>)
 
 CheckpointOutboxStore is the atomic durability seam required by primary acknowledgement. A single adapter must own both checkpoint and outbox state.
 
@@ -187,7 +225,7 @@ type CheckpointOutboxStore interface {
 ```
 
 <a name="CheckpointStore"></a>
-## type [CheckpointStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L155-L159>)
+## type [CheckpointStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L158-L162>)
 
 CheckpointStore persists checkpoints for recovery. Get returns ErrCheckpointNotFound when a flow has no durable position yet.
 
@@ -200,7 +238,7 @@ type CheckpointStore interface {
 ```
 
 <a name="Column"></a>
-## type [Column](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L78-L86>)
+## type [Column](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L81-L89>)
 
 Column defines a schema field.
 
@@ -215,6 +253,40 @@ type Column struct {
     TypeMetadata map[string]string
 }
 ```
+
+<a name="ConfiguredDestinationCapabilities"></a>
+## type [ConfiguredDestinationCapabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L43-L45>)
+
+ConfiguredDestinationCapabilities allows an adapter to refine guarantees that depend on options such as append mode or a lossy oversize policy.
+
+```go
+type ConfiguredDestinationCapabilities interface {
+    CapabilitiesFor(spec Spec) Capabilities
+}
+```
+
+<a name="ContractEvidence"></a>
+## type [ContractEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L17-L22>)
+
+ContractEvidence records the executable contract suites required before a connector can be classified as maintained.
+
+```go
+type ContractEvidence struct {
+    Restart         bool
+    Replay          bool
+    SchemaEvolution bool
+    Integration     bool
+}
+```
+
+<a name="ContractEvidence.Complete"></a>
+### func \(ContractEvidence\) [Complete](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L25>)
+
+```go
+func (e ContractEvidence) Complete() bool
+```
+
+Complete reports whether every maintained\-connector gate has evidence.
 
 <a name="DDLGateError"></a>
 ## type [DDLGateError](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/errors.go#L22-L29>)
@@ -259,8 +331,24 @@ func (e *DDLGateError) Unwrap() error
 
 
 
+<a name="DeliverySemantics"></a>
+## type [DeliverySemantics](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L32-L39>)
+
+DeliverySemantics describes the guarantees a configured destination provides. Declared distinguishes an explicit contract from the zero value used by legacy third\-party adapters.
+
+```go
+type DeliverySemantics struct {
+    Declared           bool
+    TransactionalBatch bool
+    IdempotentReplay   bool
+    ReplaySafe         bool
+    ExecutesDDL        bool
+    Lossy              bool
+}
+```
+
 <a name="Destination"></a>
-## type [Destination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L144-L151>)
+## type [Destination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L147-L154>)
 
 Destination writes to a downstream system.
 
@@ -306,7 +394,7 @@ const (
 ```
 
 <a name="FlowCheckpoint"></a>
-## type [FlowCheckpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L96-L99>)
+## type [FlowCheckpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L99-L102>)
 
 FlowCheckpoint ties a checkpoint to a flow ID.
 
@@ -339,7 +427,7 @@ const (
 ```
 
 <a name="OutboxEntry"></a>
-## type [OutboxEntry](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L167-L174>)
+## type [OutboxEntry](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L170-L177>)
 
 OutboxEntry is one durable secondary\-destination delivery. PositionID is derived with CheckpointPositionID. BatchHash is populated by stores when listing entries and identifies the exact, type\-preserving batch contents. Every destination used with primary acknowledgement must implement idempotent writes because a crash after Write and before durable persistence or deletion can replay a batch.
 
@@ -355,7 +443,7 @@ type OutboxEntry struct {
 ```
 
 <a name="OutboxStore"></a>
-## type [OutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L179-L183>)
+## type [OutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L182-L186>)
 
 OutboxStore atomically advances a flow checkpoint and records secondary deliveries. Implementations must make insertion idempotent for an identical \(flow, destination, position\) and reject conflicting batch content.
 
@@ -368,7 +456,7 @@ type OutboxStore interface {
 ```
 
 <a name="Record"></a>
-## type [Record](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L102-L114>)
+## type [Record](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L105-L117>)
 
 Record represents a single change or DDL event.
 
@@ -389,7 +477,7 @@ type Record struct {
 ```
 
 <a name="ReplicationLagProvider"></a>
-## type [ReplicationLagProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L134-L136>)
+## type [ReplicationLagProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L137-L139>)
 
 ReplicationLagProvider exposes replication lag metrics for sources that can report it.
 
@@ -400,7 +488,7 @@ type ReplicationLagProvider interface {
 ```
 
 <a name="Schema"></a>
-## type [Schema](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L68-L75>)
+## type [Schema](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L71-L78>)
 
 Schema describes a table\-level schema snapshot.
 
@@ -416,7 +504,7 @@ type Schema struct {
 ```
 
 <a name="SlotDropper"></a>
-## type [SlotDropper](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L139-L141>)
+## type [SlotDropper](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L142-L144>)
 
 SlotDropper is implemented by sources that can drop replication slots.
 
@@ -427,7 +515,7 @@ type SlotDropper interface {
 ```
 
 <a name="Source"></a>
-## type [Source](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L125-L131>)
+## type [Source](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L128-L134>)
 
 Source reads from an upstream system.
 
@@ -452,6 +540,26 @@ type Spec struct {
     Type    EndpointType
     Options map[string]string
 }
+```
+
+<a name="SupportLevel"></a>
+## type [SupportLevel](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L6>)
+
+SupportLevel states the operational support commitment for a connector.
+
+```go
+type SupportLevel string
+```
+
+<a name="SupportMaintained"></a>
+
+```go
+const (
+    SupportMaintained   SupportLevel = "maintained"
+    SupportExperimental SupportLevel = "experimental"
+    SupportDeprecated   SupportLevel = "deprecated"
+    SupportPlaceholder  SupportLevel = "placeholder"
+)
 ```
 
 <a name="WireFormat"></a>

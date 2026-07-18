@@ -239,6 +239,12 @@ func (d *Destination) ResolveStagingFor(ctx context.Context, schemas []connector
 
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
+		Support: connector.SupportExperimental,
+		Delivery: connector.DeliverySemantics{
+			Declared:           true,
+			TransactionalBatch: true,
+			ExecutesDDL:        true,
+		},
 		SupportsDDL:           true,
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
@@ -252,6 +258,17 @@ func (d *Destination) Capabilities() connector.Capabilities {
 			connector.WireFormatJSON,
 		},
 	}
+}
+
+// CapabilitiesFor refines replay guarantees for the configured write mode.
+func (d *Destination) CapabilitiesFor(spec connector.Spec) connector.Capabilities {
+	capabilities := d.Capabilities()
+	mode := strings.ToLower(strings.TrimSpace(spec.Options[optWriteMode]))
+	if mode == "" || mode == writeModeTarget {
+		capabilities.Delivery.IdempotentReplay = true
+		capabilities.Delivery.ReplaySafe = true
+	}
+	return capabilities
 }
 
 func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, record connector.Record) error {

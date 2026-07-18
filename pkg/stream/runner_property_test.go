@@ -131,7 +131,17 @@ func (d *recordingDest) TypeMappings() map[string]string { return nil }
 func (d *recordingDest) Close(context.Context) error { return nil }
 
 func (d *recordingDest) Capabilities() connector.Capabilities {
-	return connector.Capabilities{SupportsStreaming: true, SupportsDDL: true}
+	return connector.Capabilities{
+		Delivery: connector.DeliverySemantics{
+			Declared:           true,
+			TransactionalBatch: true,
+			IdempotentReplay:   true,
+			ReplaySafe:         true,
+			ExecutesDDL:        true,
+		},
+		SupportsStreaming: true,
+		SupportsDDL:       true,
+	}
 }
 
 type recordingCheckpointStore struct {

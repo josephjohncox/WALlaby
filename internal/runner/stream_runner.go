@@ -70,6 +70,8 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 		return stream.Runner{}, fmt.Errorf("streaming requires a non-empty flow id for durable checkpoints")
 	}
 
+	requireDDLExecution := f.Config.DDL.AutoApply != nil && *f.Config.DDL.AutoApply
+
 	var checkpointOutbox connector.CheckpointOutboxStore
 	if f.Config.AckPolicy == stream.AckPolicyPrimary {
 		store, ok := cfg.Checkpoints.(connector.CheckpointOutboxStore)
@@ -79,26 +81,36 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 		checkpointOutbox = store
 	}
 
+	if err := stream.ValidateDestinationContracts(
+		clonedDestinations,
+		f.Config.AckPolicy,
+		f.Config.PrimaryDestination,
+		requireDDLExecution,
+	); err != nil {
+		return stream.Runner{}, fmt.Errorf("validate flow destination contracts: %w", err)
+	}
+
 	return stream.Runner{
-		Source:             source,
-		SourceSpec:         sourceSpec,
-		Destinations:       clonedDestinations,
-		Checkpoints:        cfg.Checkpoints,
-		CheckpointOutbox:   checkpointOutbox,
-		FlowID:             f.ID,
-		ResolveStaging:     cfg.ResolveStaging,
-		Tracer:             cfg.Tracer,
-		Meters:             cfg.Meters,
-		MaxEmptyReads:      cfg.MaxEmptyReads,
-		WireFormat:         wireFormat,
-		StrictFormat:       cfg.StrictFormat,
-		Parallelism:        parallelism,
-		AckPolicy:          f.Config.AckPolicy,
-		PrimaryDestination: f.Config.PrimaryDestination,
-		FailureMode:        f.Config.FailureMode,
-		GiveUpPolicy:       f.Config.GiveUpPolicy,
-		DDLApplied:         cfg.DDLApplied,
-		TraceSink:          cfg.TraceSink,
+		Source:              source,
+		SourceSpec:          sourceSpec,
+		Destinations:        clonedDestinations,
+		Checkpoints:         cfg.Checkpoints,
+		CheckpointOutbox:    checkpointOutbox,
+		FlowID:              f.ID,
+		ResolveStaging:      cfg.ResolveStaging,
+		Tracer:              cfg.Tracer,
+		Meters:              cfg.Meters,
+		MaxEmptyReads:       cfg.MaxEmptyReads,
+		WireFormat:          wireFormat,
+		StrictFormat:        cfg.StrictFormat,
+		Parallelism:         parallelism,
+		AckPolicy:           f.Config.AckPolicy,
+		PrimaryDestination:  f.Config.PrimaryDestination,
+		RequireDDLExecution: requireDDLExecution,
+		FailureMode:         f.Config.FailureMode,
+		GiveUpPolicy:        f.Config.GiveUpPolicy,
+		DDLApplied:          cfg.DDLApplied,
+		TraceSink:           cfg.TraceSink,
 	}, nil
 }
 

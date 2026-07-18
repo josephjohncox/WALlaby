@@ -46,26 +46,27 @@ type StagingResolverFor interface {
 
 // Runner streams data from a source to destinations.
 type Runner struct {
-	Source             connector.Source
-	SourceSpec         connector.Spec
-	Destinations       []DestinationConfig
-	Checkpoints        connector.CheckpointStore
-	CheckpointOutbox   connector.CheckpointOutboxStore
-	FlowID             string
-	ResolveStaging     bool
-	Tracer             trace.Tracer
-	Meters             *telemetry.Meters
-	BatchTimeout       time.Duration
-	MaxEmptyReads      int
-	WireFormat         connector.WireFormat
-	StrictFormat       bool
-	Parallelism        int
-	AckPolicy          AckPolicy
-	PrimaryDestination string
-	FailureMode        FailureMode
-	GiveUpPolicy       GiveUpPolicy
-	DDLApplied         func(ctx context.Context, flowID string, lsn string, ddl string) error
-	TraceSink          TraceSink
+	Source              connector.Source
+	SourceSpec          connector.Spec
+	Destinations        []DestinationConfig
+	Checkpoints         connector.CheckpointStore
+	CheckpointOutbox    connector.CheckpointOutboxStore
+	FlowID              string
+	ResolveStaging      bool
+	Tracer              trace.Tracer
+	Meters              *telemetry.Meters
+	BatchTimeout        time.Duration
+	MaxEmptyReads       int
+	WireFormat          connector.WireFormat
+	StrictFormat        bool
+	Parallelism         int
+	AckPolicy           AckPolicy
+	PrimaryDestination  string
+	RequireDDLExecution bool
+	FailureMode         FailureMode
+	GiveUpPolicy        GiveUpPolicy
+	DDLApplied          func(ctx context.Context, flowID string, lsn string, ddl string) error
+	TraceSink           TraceSink
 }
 
 // Run executes the streaming loop until context cancellation or error. It requires
@@ -82,6 +83,14 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	}
 	if r.effectiveAckPolicy() != AckPolicyPrimary && r.Checkpoints == nil {
 		return errors.New("a durable checkpoint store is required before source acknowledgement")
+	}
+	if err := ValidateDestinationContracts(
+		r.Destinations,
+		r.effectiveAckPolicy(),
+		r.PrimaryDestination,
+		r.RequireDDLExecution,
+	); err != nil {
+		return fmt.Errorf("validate destination contracts: %w", err)
 	}
 
 	defer func() {
@@ -968,7 +977,7 @@ func ddlGatedMetric() metric.Int64Counter {
 
 func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, batch connector.Batch) error {
 	if len(batch.Records) > 0 {
-		if dest.Dest.Capabilities().SupportsDDL {
+		if r.RequireDDLExecution && connector.ResolveDestinationCapabilities(dest.Dest, dest.Spec).ExecutesDDL() {
 			for _, record := range batch.Records {
 				if record.Operation != connector.OpDDL && record.DDL == "" && len(record.DDLPlan) == 0 {
 					continue

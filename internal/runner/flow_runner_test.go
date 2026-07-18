@@ -158,6 +158,13 @@ func (flowRunnerDestination) Write(context.Context, connector.Batch) error { ret
 func (flowRunnerDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
 	return nil
 }
-func (flowRunnerDestination) TypeMappings() map[string]string      { return nil }
-func (flowRunnerDestination) Close(context.Context) error          { return nil }
-func (flowRunnerDestination) Capabilities() connector.Capabilities { return connector.Capabilities{} }
+func (flowRunnerDestination) TypeMappings() map[string]string { return nil }
+func (flowRunnerDestination) Close(context.Context) error     { return nil }
+func (flowRunnerDestination) Capabilities() connector.Capabilities {
+	return connector.Capabilities{Delivery: connector.DeliverySemantics{
+		Declared:           true,
+		TransactionalBatch: true,
+		IdempotentReplay:   true,
+		ReplaySafe:         true,
+	}}
+}

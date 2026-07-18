@@ -472,6 +472,13 @@ func (s *Source) DropSlot(ctx context.Context) error {
 
 func (s *Source) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
+		Support: connector.SupportMaintained,
+		Evidence: connector.ContractEvidence{
+			Restart:         true,
+			Replay:          true,
+			SchemaEvolution: true,
+			Integration:     true,
+		},
 		SupportsDDL:           true,
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,

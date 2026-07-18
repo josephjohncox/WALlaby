@@ -166,12 +166,13 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 
 	traceSink := &stream.MemoryTraceSink{}
 	runner := &stream.Runner{
-		Source:       &pgsource.Source{},
-		SourceSpec:   sourceSpec,
-		Destinations: []stream.DestinationConfig{{Spec: destSpec, Dest: &pgdest.Destination{}}},
-		Checkpoints:  checkpointStore,
-		FlowID:       "e2e-flow",
-		TraceSink:    traceSink,
+		Source:              &pgsource.Source{},
+		SourceSpec:          sourceSpec,
+		Destinations:        []stream.DestinationConfig{{Spec: destSpec, Dest: &pgdest.Destination{}}},
+		Checkpoints:         checkpointStore,
+		FlowID:              "e2e-flow",
+		RequireDDLExecution: true,
+		TraceSink:           traceSink,
 	}
 
 	errCh := make(chan error, 1)

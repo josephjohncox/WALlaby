@@ -37,8 +37,10 @@ type Provider struct {
 func NewProvider(ctx context.Context, cfg config.TelemetryConfig) (*Provider, error) {
 	metricsExporter := strings.ToLower(strings.TrimSpace(cfg.MetricsExporter))
 	tracesExporter := strings.ToLower(strings.TrimSpace(cfg.TracesExporter))
-	metricsEnabled := cfg.OTLPEndpoint != "" && metricsExporter != "" && metricsExporter != "none"
-	tracesEnabled := cfg.OTLPEndpoint != "" && tracesExporter != "" && tracesExporter != "none"
+	metricsEndpoint := signalEndpoint(cfg.MetricsEndpoint, cfg.OTLPEndpoint)
+	tracesEndpoint := signalEndpoint(cfg.TracesEndpoint, cfg.OTLPEndpoint)
+	metricsEnabled := metricsEndpoint != "" && metricsExporter != "" && metricsExporter != "none"
+	tracesEnabled := tracesEndpoint != "" && tracesExporter != "" && tracesExporter != "none"
 
 	if !metricsEnabled && !tracesEnabled {
 		meters, err := newMeters(otel.Meter("noop"))
@@ -170,39 +172,61 @@ const (
 )
 
 func newExporter(ctx context.Context, cfg config.TelemetryConfig, typ exporterType) (any, error) {
-	endpoint := strings.TrimPrefix(strings.TrimPrefix(cfg.OTLPEndpoint, "http://"), "https://")
-	protocol := strings.ToLower(cfg.OTLPProtocol)
+	endpoint := cfg.TracesEndpoint
+	protocol := cfg.TracesProtocol
+	insecure := cfg.TracesInsecure
+	if typ == exporterMetric {
+		endpoint = cfg.MetricsEndpoint
+		protocol = cfg.MetricsProtocol
+		insecure = cfg.MetricsInsecure
+	}
+	if strings.TrimSpace(endpoint) == "" {
+		endpoint = cfg.OTLPEndpoint
+		protocol = cfg.OTLPProtocol
+		insecure = cfg.OTLPInsecure
+	} else if strings.TrimSpace(protocol) == "" {
+		protocol = cfg.OTLPProtocol
+	}
+	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
+	protocol = strings.ToLower(protocol)
 	useHTTP := protocol == "http/protobuf" || protocol == "http"
 
 	switch {
 	case typ == exporterMetric && useHTTP:
 		opts := []otlpmetrichttp.Option{otlpmetrichttp.WithEndpoint(endpoint)}
-		if cfg.OTLPInsecure {
+		if insecure {
 			opts = append(opts, otlpmetrichttp.WithInsecure())
 		}
 		return otlpmetrichttp.New(ctx, opts...)
 
 	case typ == exporterMetric:
 		opts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(endpoint)}
-		if cfg.OTLPInsecure {
+		if insecure {
 			opts = append(opts, otlpmetricgrpc.WithInsecure())
 		}
 		return otlpmetricgrpc.New(ctx, opts...)
 
 	case typ == exporterTrace && useHTTP:
 		opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(endpoint)}
-		if cfg.OTLPInsecure {
+		if insecure {
 			opts = append(opts, otlptracehttp.WithInsecure())
 		}
 		return otlptracehttp.New(ctx, opts...)
 
 	default: // exporterTrace + gRPC
 		opts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(endpoint)}
-		if cfg.OTLPInsecure {
+		if insecure {
 			opts = append(opts, otlptracegrpc.WithInsecure())
 		}
 		return otlptracegrpc.New(ctx, opts...)
 	}
+}
+
+func signalEndpoint(signal, fallback string) string {
+	if strings.TrimSpace(signal) != "" {
+		return signal
+	}
+	return fallback
 }
 
 // ----------------------------------------------------------------------------

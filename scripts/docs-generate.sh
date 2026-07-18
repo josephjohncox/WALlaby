@@ -35,9 +35,11 @@ for package in certify connector pgstream schemaregistry spec stream wire; do
 	rm -f "$temporary"
 done
 
+go run ./cmd/wallaby-connector-matrix >"$generated/connector-support.md"
+
 # Normalize generator whitespace so generated references are stable and pass
 # git diff --check on every platform.
-for document in "$generated/grpc.md" "$generated/go/"*.md; do
+for document in "$generated/grpc.md" "$generated/connector-support.md" "$generated/go/"*.md; do
 	awk '
 		{sub(/[[:space:]]+$/, ""); lines[NR]=$0}
 		END {

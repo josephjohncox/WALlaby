@@ -4,22 +4,37 @@ WALlaby exposes OpenTelemetry metrics and tracing plus optional `pprof` profilin
 
 ## OpenTelemetry Configuration
 
-Set standard OTLP environment variables:
+Set signal-specific OTLP environment variables when metrics and traces use different collectors:
 
-- `OTEL_EXPORTER_OTLP_ENDPOINT` (e.g. `http://otel-collector:4317`)
-- `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc` or `http/protobuf`)
-- `OTEL_EXPORTER_OTLP_INSECURE` (`true`/`false`)
-- `OTEL_SERVICE_NAME` (defaults to `wallaby`)
+- `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`
+- `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` (`grpc` or `http/protobuf`)
+- `WALLABY_OTEL_METRICS_INSECURE` (`true` or `false`)
+- `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`
+- `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` (`grpc` or `http/protobuf`)
+- `WALLABY_OTEL_TRACES_INSECURE` (`true` or `false`)
 - `OTEL_METRICS_EXPORTER` (`otlp` to enable, `none` to disable)
 - `OTEL_TRACES_EXPORTER` (`otlp` to enable, `none` to disable)
-- `WALLABY_OTEL_METRICS_INTERVAL` (e.g. `30s`)
+- `WALLABY_OTEL_METRICS_INTERVAL` (for example, `30s`)
+- `OTEL_SERVICE_NAME` (defaults to `wallaby`)
+
+`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, and `OTEL_EXPORTER_OTLP_INSECURE` remain shared fallbacks for existing deployments.
+
+## Health contracts
+
+WALlaby registers the standard gRPC health service. Kubernetes and external checks can query these service names:
+
+- `wallaby.startup` — process initialization completed.
+- `wallaby.readiness` — initialized dependencies are ready to serve API traffic.
+- `wallaby.liveness` — the gRPC process is running.
+
+The Helm chart enables native gRPC startup, readiness, and liveness probes by default. Its Helm test queries `wallaby.readiness` rather than checking only whether the TCP port is open.
 
 ## Metrics
 
 ### Stream Runner
 
 | Metric | Type | Labels |
-|--------|------|--------|
+| -------- | ------ | -------- |
 | `wallaby.records.processed` | Counter | `flow_id` |
 | `wallaby.batches.processed` | Counter | `flow_id` |
 | `wallaby.batch.latency` | Histogram | `flow_id` |
@@ -34,7 +49,7 @@ Error types include: `source_read`, `source_ack`, `destination_write`, `checkpoi
 ### gRPC API
 
 | Metric | Type | Labels |
-|--------|------|--------|
+| -------- | ------ | -------- |
 | `wallaby.grpc.requests.total` | Counter | `method`, `status` |
 | `wallaby.grpc.request.latency` | Histogram | `method` |
 | `wallaby.grpc.errors.total` | Counter | `method`, `code` |
@@ -42,7 +57,7 @@ Error types include: `source_read`, `source_ack`, `destination_write`, `checkpoi
 ### Workflow Engine
 
 | Metric | Type | Labels |
-|--------|------|--------|
+| -------- | ------ | -------- |
 | `wallaby.flows.active` | UpDownCounter | - |
 | `wallaby.flow.state.transitions` | Counter | `from_state`, `to_state` |
 | `wallaby.flow.create.total` | Counter | - |
@@ -57,7 +72,7 @@ Error types include: `source_read`, `source_ack`, `destination_write`, `checkpoi
 ### Source & Destination
 
 | Metric | Type | Labels |
-|--------|------|--------|
+| -------- | ------ | -------- |
 | `wallaby.source.replication.lag` | Gauge | `slot` |
 | `wallaby.source.read.latency` | Histogram | - |
 | `wallaby.destination.write.total` | Counter | `type` |

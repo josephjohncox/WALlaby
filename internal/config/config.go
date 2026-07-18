@@ -48,7 +48,13 @@ type TelemetryConfig struct {
 	ServiceName     string
 	OTLPEndpoint    string
 	OTLPInsecure    bool
-	OTLPProtocol    string        `validate:"omitempty,oneof=grpc http http/protobuf"` // "grpc" or "http/protobuf"
+	OTLPProtocol    string `validate:"omitempty,oneof=grpc http http/protobuf"`
+	MetricsEndpoint string
+	MetricsInsecure bool
+	MetricsProtocol string `validate:"omitempty,oneof=grpc http http/protobuf"`
+	TracesEndpoint  string
+	TracesInsecure  bool
+	TracesProtocol  string        `validate:"omitempty,oneof=grpc http http/protobuf"`
 	MetricsExporter string        `validate:"omitempty,oneof=otlp none"`
 	TracesExporter  string        `validate:"omitempty,oneof=otlp none"`
 	MetricsInterval time.Duration `validate:"gt=0"`
@@ -154,6 +160,10 @@ func Load(configPath string) (*Config, error) {
 			OTLPEndpoint:    "",
 			OTLPInsecure:    true,
 			OTLPProtocol:    "grpc",
+			MetricsInsecure: true,
+			MetricsProtocol: "grpc",
+			TracesInsecure:  true,
+			TracesProtocol:  "grpc",
 			MetricsExporter: "none",
 			TracesExporter:  "none",
 			MetricsInterval: 30 * time.Second,
@@ -236,6 +246,18 @@ func Load(configPath string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Telemetry.OTLPProtocol = stringValue(fileCfg, []string{"telemetry.otlp_protocol", "telemetry.otlp-protocol"}, []string{"OTEL_EXPORTER_OTLP_PROTOCOL", "WALLABY_OTEL_EXPORTER_OTLP_PROTOCOL", "WALLABY_WORKER_OTEL_EXPORTER_OTLP_PROTOCOL"}, cfg.Telemetry.OTLPProtocol)
+	cfg.Telemetry.MetricsEndpoint = stringValue(fileCfg, []string{"telemetry.metrics_endpoint", "telemetry.metrics-endpoint"}, []string{"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "WALLABY_OTEL_METRICS_ENDPOINT", "WALLABY_WORKER_OTEL_METRICS_ENDPOINT"}, cfg.Telemetry.OTLPEndpoint)
+	cfg.Telemetry.MetricsInsecure, err = boolValue(fileCfg, []string{"telemetry.metrics_insecure", "telemetry.metrics-insecure"}, []string{"WALLABY_OTEL_METRICS_INSECURE", "WALLABY_WORKER_OTEL_METRICS_INSECURE"}, cfg.Telemetry.OTLPInsecure)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Telemetry.MetricsProtocol = stringValue(fileCfg, []string{"telemetry.metrics_protocol", "telemetry.metrics-protocol"}, []string{"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "WALLABY_OTEL_METRICS_PROTOCOL", "WALLABY_WORKER_OTEL_METRICS_PROTOCOL"}, cfg.Telemetry.OTLPProtocol)
+	cfg.Telemetry.TracesEndpoint = stringValue(fileCfg, []string{"telemetry.traces_endpoint", "telemetry.traces-endpoint"}, []string{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "WALLABY_OTEL_TRACES_ENDPOINT", "WALLABY_WORKER_OTEL_TRACES_ENDPOINT"}, cfg.Telemetry.OTLPEndpoint)
+	cfg.Telemetry.TracesInsecure, err = boolValue(fileCfg, []string{"telemetry.traces_insecure", "telemetry.traces-insecure"}, []string{"WALLABY_OTEL_TRACES_INSECURE", "WALLABY_WORKER_OTEL_TRACES_INSECURE"}, cfg.Telemetry.OTLPInsecure)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Telemetry.TracesProtocol = stringValue(fileCfg, []string{"telemetry.traces_protocol", "telemetry.traces-protocol"}, []string{"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "WALLABY_OTEL_TRACES_PROTOCOL", "WALLABY_WORKER_OTEL_TRACES_PROTOCOL"}, cfg.Telemetry.OTLPProtocol)
 	cfg.Telemetry.MetricsExporter = stringValue(fileCfg, []string{"telemetry.metrics_exporter", "telemetry.metrics-exporter"}, []string{"OTEL_METRICS_EXPORTER", "WALLABY_OTEL_METRICS_EXPORTER", "WALLABY_WORKER_OTEL_METRICS_EXPORTER"}, cfg.Telemetry.MetricsExporter)
 	cfg.Telemetry.TracesExporter = stringValue(fileCfg, []string{"telemetry.traces_exporter", "telemetry.traces-exporter"}, []string{"OTEL_TRACES_EXPORTER", "WALLABY_OTEL_TRACES_EXPORTER", "WALLABY_WORKER_OTEL_TRACES_EXPORTER"}, cfg.Telemetry.TracesExporter)
 	cfg.Telemetry.MetricsInterval, err = durationValue(fileCfg, []string{"telemetry.metrics_interval", "telemetry.metrics-interval"}, []string{"WALLABY_OTEL_METRICS_INTERVAL", "WALLABY_WORKER_OTEL_METRICS_INTERVAL"}, cfg.Telemetry.MetricsInterval)
@@ -387,6 +409,20 @@ func validateConfig(cfg *Config) error {
 
 	protocol := strings.ToLower(strings.TrimSpace(cfg.Telemetry.OTLPProtocol))
 	cfg.Telemetry.OTLPProtocol = protocol
+	if cfg.Telemetry.MetricsEndpoint == "" {
+		cfg.Telemetry.MetricsEndpoint = cfg.Telemetry.OTLPEndpoint
+	}
+	if cfg.Telemetry.TracesEndpoint == "" {
+		cfg.Telemetry.TracesEndpoint = cfg.Telemetry.OTLPEndpoint
+	}
+	if cfg.Telemetry.MetricsProtocol == "" {
+		cfg.Telemetry.MetricsProtocol = protocol
+	}
+	if cfg.Telemetry.TracesProtocol == "" {
+		cfg.Telemetry.TracesProtocol = protocol
+	}
+	cfg.Telemetry.MetricsProtocol = strings.ToLower(strings.TrimSpace(cfg.Telemetry.MetricsProtocol))
+	cfg.Telemetry.TracesProtocol = strings.ToLower(strings.TrimSpace(cfg.Telemetry.TracesProtocol))
 	cfg.Telemetry.MetricsExporter = strings.ToLower(strings.TrimSpace(cfg.Telemetry.MetricsExporter))
 	cfg.Telemetry.TracesExporter = strings.ToLower(strings.TrimSpace(cfg.Telemetry.TracesExporter))
 	cfg.Wire.DefaultFormat = strings.ToLower(strings.TrimSpace(cfg.Wire.DefaultFormat))
@@ -404,8 +440,11 @@ func validateConfig(cfg *Config) error {
 	metricsEnabled := cfg.Telemetry.MetricsExporter != "none" && cfg.Telemetry.MetricsExporter != ""
 	tracesEnabled := cfg.Telemetry.TracesExporter != "none" && cfg.Telemetry.TracesExporter != ""
 
-	if cfg.Telemetry.OTLPEndpoint == "" && (metricsEnabled || tracesEnabled) {
-		errs = append(errs, "telemetry endpoint is required when telemetry exporters are enabled")
+	if cfg.Telemetry.MetricsEndpoint == "" && metricsEnabled {
+		errs = append(errs, "telemetry metrics endpoint is required when the metrics exporter is enabled")
+	}
+	if cfg.Telemetry.TracesEndpoint == "" && tracesEnabled {
+		errs = append(errs, "telemetry traces endpoint is required when the traces exporter is enabled")
 	}
 	jobImagePullPolicy, err := normalizeKubernetesImagePullPolicy(cfg.Kubernetes.JobImagePullPolicy)
 	if err != nil {
@@ -465,6 +504,10 @@ func normalizedConfigField(namespace string) string {
 	switch namespace {
 	case "Config.Telemetry.OTLPProtocol":
 		return "telemetry.otlp_protocol"
+	case "Config.Telemetry.MetricsProtocol":
+		return "telemetry.metrics_protocol"
+	case "Config.Telemetry.TracesProtocol":
+		return "telemetry.traces_protocol"
 	case "Config.Telemetry.MetricsExporter":
 		return "telemetry.metrics_exporter"
 	case "Config.Telemetry.TracesExporter":

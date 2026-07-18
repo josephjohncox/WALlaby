@@ -1,5 +1,30 @@
 # WALlaby backlog and context notes
 
+## Production-readiness contracts
+
+- [x] **P0 — Destination capability contract**
+  - [x] Declare transactional-batch, idempotent, replay-safe, DDL-executing, and lossy behavior for every destination.
+  - [x] Validate acknowledgement and DDL policies before opening connectors or starting execution.
+  - [x] Add table-driven capability and invalid-flow contract tests.
+- [ ] **P0 — DDL execution receipt/outbox**
+  - [ ] Persist replay-safe destination DDL execution receipts.
+  - [ ] Couple receipt persistence, registry transition, and checkpoint advancement through one durable protocol.
+  - [ ] Reject administrative `applied` transitions without an execution receipt.
+  - [ ] Add crash-boundary, replay, and integration tests.
+- [x] **P1 — Connector support matrix**
+  - [x] Classify every connector as maintained, experimental, deprecated, or placeholder.
+  - [x] Require restart, replay, schema-evolution, and integration contracts before maintained status.
+  - [x] Generate user-facing support documentation from the executable matrix.
+- [x] **P1 — CI execution completeness**
+  - [x] Enumerate expected Go tests deterministically.
+  - [x] Fail CI when an expected test or package is omitted from machine-readable test results.
+  - [x] Keep flaky-test quarantine explicit; never infer success from automatic reruns.
+- [x] **P1 — Health contracts**
+  - [x] Add startup, readiness, and liveness endpoints and Kubernetes probes.
+  - [x] Replace the TCP-only Helm test with a readiness assertion.
+  - [x] Support independent OTLP metrics and traces endpoints.
+  - [x] Add configuration, server, chart, and deployment tests.
+
 - [x] Config precedence contract confirmed and documented: `--config`/`WALLABY*_CONFIG` uses `config file > env > defaults`.
 - [x] `WALLABY_DBOS_MAX_RETRIES` parsing is now fail-fast on malformed values (no silent disable).
   - Return structured validation errors for malformed env/config values (including numeric/range checks and string enums).

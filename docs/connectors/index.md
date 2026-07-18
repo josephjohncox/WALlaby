@@ -1,6 +1,6 @@
 # Connectors
 
-A connector is an adapter at the data-path seam. It translates WALlaby batches to or from one external system. Connectors do not own flow lifecycle, dispatch, or checkpoint ordering.
+A connector is an adapter at the data-path seam. It translates WALlaby batches to or from one external system. Connectors do not own flow lifecycle, dispatch, or checkpoint ordering. The generated [support matrix](../reference/generated/connector-support.md) is authoritative for support level and default delivery guarantees.
 
 ## Start with PostgreSQL
 
@@ -19,7 +19,7 @@ Read [PostgreSQL connectors](postgres.md) before using any of those three roles.
 | Call an application endpoint | `http` or `grpc` | Idempotency key and retry behavior |
 | Load an analytical store | `snowflake`, `snowpipe`, `clickhouse`, `duckdb`, or `ducklake` | Type mapping, DDL behavior, and mutation support |
 
-WALlaby includes these adapters, but the core documentation does not treat breadth as the product model. Validate the exact adapter against your schema and failure mode before production use.
+WALlaby includes these adapters, but destination adapters remain experimental until restart, replay, schema-evolution, and integration contracts all pass. Startup validation rejects lossy acknowledgement paths, unsafe primary acknowledgement, and automatic DDL execution through destinations that do not execute DDL.
 
 ## Flow shape
 

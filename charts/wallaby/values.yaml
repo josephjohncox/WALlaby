@@ -39,6 +39,29 @@ service:
 
 serviceAnnotations: {}
 
+probes:
+  startup:
+    enabled: true
+    periodSeconds: 2
+    timeoutSeconds: 1
+    failureThreshold: 30
+  readiness:
+    enabled: true
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+  liveness:
+    enabled: true
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+tests:
+  grpcHealthProbeImage:
+    repository: ghcr.io/grpc-ecosystem/grpc-health-probe
+    digest: >-
+      sha256:a732f1b3a737926c2902393809b344c9f293b62f7069dbd0614caebd298b2e8d
+
 # env:
 #   - name: WALLABY_POSTGRES_DSN
 #     value: "postgres://user:pass@postgres:5432/wallaby?sslmode=disable"

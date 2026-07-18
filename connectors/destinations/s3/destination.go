@@ -351,6 +351,10 @@ func (d *Destination) protoReferenceSubject(subject, ref string) string {
 
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
+		Support: connector.SupportExperimental,
+		Delivery: connector.DeliverySemantics{
+			Declared: true,
+		},
 		SupportsDDL:           true,
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     false,

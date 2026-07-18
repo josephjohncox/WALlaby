@@ -58,6 +58,7 @@ nav:
       - Runbooks: runbooks.md
   - Connectors:
       - Overview: connectors/index.md
+      - Support matrix: reference/generated/connector-support.md
       - PostgreSQL: connectors/postgres.md
       - Extended connector notes: connectors.md
   - Reference:

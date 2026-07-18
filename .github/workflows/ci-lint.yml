@@ -125,8 +125,19 @@ jobs:
         env:
           BUF_BREAKING_REF: ${{ github.event.pull_request.base.sha }}
 
-      - name: Unit tests
-        run: RAPID_CHECKS=100 just test-rapid
+      - name: Unit tests with completeness accounting
+        run: |
+          go test ./tools/testcomplete
+          just test
+
+      - name: Upload machine-readable Go test results
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: go-test-results
+          path: .cache/test-results/
+          if-no-files-found: error
 
       - name: Helm chart checks
         run: ./scripts/helm-check.sh

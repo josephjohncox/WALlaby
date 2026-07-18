@@ -83,6 +83,7 @@ func TestNewStreamRunnerClonesConfigurationAndAppliesPolicies(t *testing.T) {
 	}
 	destinations := []stream.DestinationConfig{{
 		Spec: connector.Spec{Name: "primary", Options: map[string]string{"dest": "original"}},
+		Dest: flowRunnerDestination{},
 	}}
 
 	got, err := NewStreamRunner(f, nil, destinations, StreamRunnerConfig{

@@ -12,6 +12,7 @@ Package stream delivers source batches to destinations, persists checkpoints, ap
 
 ## Index
 
+- [func ValidateDestinationContracts\(destinations \[\]DestinationConfig, ackPolicy AckPolicy, primaryDestination string, requireDDLExecution bool\) error](<#ValidateDestinationContracts>)
 - [func ValidateTrace\(events \[\]TraceEvent, opts TraceValidationOptions\) error](<#ValidateTrace>)
 - [type AckPolicy](<#AckPolicy>)
 - [type DestinationConfig](<#DestinationConfig>)
@@ -36,6 +37,15 @@ Package stream delivers source batches to destinations, persists checkpoints, ap
 - [type TraceValidationOptions](<#TraceValidationOptions>)
 - [type TraceViolation](<#TraceViolation>)
 
+
+<a name="ValidateDestinationContracts"></a>
+## func [ValidateDestinationContracts](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/destination_contract.go#L12-L17>)
+
+```go
+func ValidateDestinationContracts(destinations []DestinationConfig, ackPolicy AckPolicy, primaryDestination string, requireDDLExecution bool) error
+```
+
+ValidateDestinationContracts checks whether configured destinations can honor the flow's acknowledgement and DDL policies before any connector is opened.
 
 <a name="ValidateTrace"></a>
 ## func [ValidateTrace](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace_validate.go#L332>)
@@ -171,37 +181,38 @@ func (s *MemoryTraceSink) Events() []TraceEvent
 Events returns a snapshot of captured events.
 
 <a name="Runner"></a>
-## type [Runner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L48-L69>)
+## type [Runner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L48-L70>)
 
 Runner streams data from a source to destinations.
 
 ```go
 type Runner struct {
-    Source             connector.Source
-    SourceSpec         connector.Spec
-    Destinations       []DestinationConfig
-    Checkpoints        connector.CheckpointStore
-    CheckpointOutbox   connector.CheckpointOutboxStore
-    FlowID             string
-    ResolveStaging     bool
-    Tracer             trace.Tracer
-    Meters             *telemetry.Meters
-    BatchTimeout       time.Duration
-    MaxEmptyReads      int
-    WireFormat         connector.WireFormat
-    StrictFormat       bool
-    Parallelism        int
-    AckPolicy          AckPolicy
-    PrimaryDestination string
-    FailureMode        FailureMode
-    GiveUpPolicy       GiveUpPolicy
-    DDLApplied         func(ctx context.Context, flowID string, lsn string, ddl string) error
-    TraceSink          TraceSink
+    Source              connector.Source
+    SourceSpec          connector.Spec
+    Destinations        []DestinationConfig
+    Checkpoints         connector.CheckpointStore
+    CheckpointOutbox    connector.CheckpointOutboxStore
+    FlowID              string
+    ResolveStaging      bool
+    Tracer              trace.Tracer
+    Meters              *telemetry.Meters
+    BatchTimeout        time.Duration
+    MaxEmptyReads       int
+    WireFormat          connector.WireFormat
+    StrictFormat        bool
+    Parallelism         int
+    AckPolicy           AckPolicy
+    PrimaryDestination  string
+    RequireDDLExecution bool
+    FailureMode         FailureMode
+    GiveUpPolicy        GiveUpPolicy
+    DDLApplied          func(ctx context.Context, flowID string, lsn string, ddl string) error
+    TraceSink           TraceSink
 }
 ```
 
 <a name="Runner.Run"></a>
-### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L73>)
+### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L74>)
 
 ```go
 func (r *Runner) Run(ctx context.Context) (retErr error)

@@ -31,30 +31,20 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "wallaby.grpcHealthProbeImage" -}}
+{{- printf "%s@%s" .Values.tests.grpcHealthProbeImage.repository (.Values.tests.grpcHealthProbeImage.digest | trim) -}}
+{{- end -}}
+
 {{- define "wallaby.otelEnv" -}}
 {{- $metrics := .Values.observability.metrics -}}
 {{- $traces := .Values.observability.traces -}}
-{{- $endpoint := "" -}}
-{{- $insecure := "" -}}
-{{- $protocol := "" -}}
-{{- if and $metrics.enabled $metrics.otel.endpoint -}}
-{{- $endpoint = $metrics.otel.endpoint -}}
-{{- $insecure = $metrics.otel.insecure -}}
-{{- $protocol = $metrics.otel.protocol -}}
-{{- else if and $traces.enabled $traces.otel.endpoint -}}
-{{- $endpoint = $traces.otel.endpoint -}}
-{{- $insecure = $traces.otel.insecure -}}
-{{- $protocol = $traces.otel.protocol -}}
-{{- end -}}
-{{- if $endpoint }}
-- name: OTEL_EXPORTER_OTLP_ENDPOINT
-  value: {{ $endpoint | quote }}
-- name: OTEL_EXPORTER_OTLP_INSECURE
-  value: {{ $insecure | toString | quote }}
-- name: OTEL_EXPORTER_OTLP_PROTOCOL
-  value: {{ $protocol | default "grpc" | quote }}
-{{- end }}
-{{- if and $metrics.enabled $endpoint }}
+{{- if and $metrics.enabled $metrics.otel.endpoint }}
+- name: OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+  value: {{ $metrics.otel.endpoint | quote }}
+- name: WALLABY_OTEL_METRICS_INSECURE
+  value: {{ $metrics.otel.insecure | toString | quote }}
+- name: OTEL_EXPORTER_OTLP_METRICS_PROTOCOL
+  value: {{ $metrics.otel.protocol | default "grpc" | quote }}
 - name: OTEL_METRICS_EXPORTER
   value: "otlp"
 {{- if $metrics.otel.interval }}
@@ -62,7 +52,13 @@
   value: {{ $metrics.otel.interval | quote }}
 {{- end }}
 {{- end }}
-{{- if and $traces.enabled $endpoint }}
+{{- if and $traces.enabled $traces.otel.endpoint }}
+- name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+  value: {{ $traces.otel.endpoint | quote }}
+- name: WALLABY_OTEL_TRACES_INSECURE
+  value: {{ $traces.otel.insecure | toString | quote }}
+- name: OTEL_EXPORTER_OTLP_TRACES_PROTOCOL
+  value: {{ $traces.otel.protocol | default "grpc" | quote }}
 - name: OTEL_TRACES_EXPORTER
   value: "otlp"
 {{- end }}

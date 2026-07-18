@@ -51,6 +51,33 @@ spec:
               containerPort: {{ .Values.observability.profiling.port }}
               protocol: TCP
 {{- end }}
+{{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            grpc:
+              port: {{ .Values.service.port }}
+              service: wallaby.startup
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+{{- end }}
+{{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            grpc:
+              port: {{ .Values.service.port }}
+              service: wallaby.readiness
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+{{- end }}
+{{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            grpc:
+              port: {{ .Values.service.port }}
+              service: wallaby.liveness
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+{{- end }}
 {{- $envFrom := list }}
 {{- $jobEnvFrom := list }}
 {{- if .Values.config.enabled }}
