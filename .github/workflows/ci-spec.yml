@@ -42,6 +42,7 @@ jobs:
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99
         with:
           version: "1.63.0"
+          github_token: ${{ github.token }}
 
       - name: Setup Java
         # actions/setup-java v5.1.0

@@ -76,6 +76,7 @@ jobs:
         uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99
         with:
           version: "1.63.0"
+          github_token: ${{ github.token }}
 
       - name: Setup uv
         # astral-sh/setup-uv v8.3.2
