@@ -127,6 +127,41 @@ jobs:
           printf '%s\n' "${output}" | grep -q -- \
             '--- PASS: TestPostgresCatalogChangeSerializesVersions'
 
+      - name: Configure integration PostgreSQL
+        env:
+          POSTGRES_INTEGRATION_PORT: >-
+            ${{ job.services.postgres.ports['5432'] }}
+        run: |
+          postgres_id=$(docker ps \
+            --filter 'ancestor=postgres:16-alpine' \
+            --format '{{.ID}}' | head -n 1)
+          test -n "${postgres_id}"
+          docker exec "${postgres_id}" \
+            psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET wal_level = 'logical'"
+          docker restart "${postgres_id}"
+          for attempt in $(seq 1 60); do
+            if docker exec "${postgres_id}" \
+              pg_isready -U postgres -d postgres >/dev/null 2>&1; then
+              break
+            fi
+            if [ "${attempt}" -eq 60 ]; then
+              echo 'integration PostgreSQL did not become ready' >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          test_pg_dsn=$(
+            printf '%s:%s@localhost:%s/%s?sslmode=disable' \
+              'postgres://postgres' \
+              'postgres' \
+              "${POSTGRES_INTEGRATION_PORT}" \
+              'postgres'
+          )
+          printf 'TEST_PG_DSN=%s\n' "${test_pg_dsn}" >> "${GITHUB_ENV}"
+          printf 'WALLABY_TEST_DBOS_DSN=%s\n' "${test_pg_dsn}" \
+            >> "${GITHUB_ENV}"
+
       - name: Integration tests (PostgreSQL, ClickHouse, DBOS, Kubernetes)
         env:
           WALLABY_TEST_K8S_NAMESPACE: default
