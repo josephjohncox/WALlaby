@@ -79,7 +79,7 @@ func (r *postgresRegistry) Register(ctx context.Context, req RegisterRequest) (R
 
 	var id int64
 	if err := tx.QueryRow(ctx, `INSERT INTO wallaby_schema_registry
-		(subject, schema_type, schema, schema_hash, references, references_hash, version)
+		(subject, schema_type, schema, schema_hash, schema_references, references_hash, version)
 		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
 		req.Subject, string(req.SchemaType), req.Schema, schemaHash, string(refsJSON), refsHash, nextVersion).Scan(&id); err != nil {
 		return RegisterResult{}, fmt.Errorf("insert schema: %w", err)
