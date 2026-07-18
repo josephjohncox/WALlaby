@@ -27,7 +27,8 @@ type StreamRunnerConfig struct {
 }
 
 // NewStreamRunner constructs a stream runner without mutating the flow or
-// destination configuration supplied by the caller.
+// destination configuration supplied by the caller. Construction fails unless
+// the flow has durable checkpoint storage and a stable identity.
 func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream.DestinationConfig, cfg StreamRunnerConfig) (stream.Runner, error) {
 	sourceSpec := cloneSpec(f.Source)
 	if sourceSpec.Type == connector.EndpointPostgres {
@@ -60,6 +61,13 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 	parallelism := f.Parallelism
 	if parallelism <= 0 {
 		parallelism = cfg.DefaultParallelism
+	}
+
+	if cfg.Checkpoints == nil {
+		return stream.Runner{}, fmt.Errorf("streaming requires a durable checkpoint store before source acknowledgement")
+	}
+	if f.ID == "" {
+		return stream.Runner{}, fmt.Errorf("streaming requires a non-empty flow id for durable checkpoints")
 	}
 
 	var checkpointOutbox connector.CheckpointOutboxStore

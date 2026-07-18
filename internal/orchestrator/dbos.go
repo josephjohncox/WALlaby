@@ -83,6 +83,9 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Lifecy
 	if engine == nil {
 		return nil, errors.New("workflow engine is required")
 	}
+	if checkpoints == nil {
+		return nil, errors.New("durable checkpoint storage is required")
+	}
 	if cfg.DatabaseURL == "" {
 		return nil, errors.New("dbos database url is required")
 	}

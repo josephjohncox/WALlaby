@@ -204,13 +204,17 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 
 	if cfg.DDL.CatalogEnabled && cfg.Postgres.DSN != "" && registryStore != nil {
+		catalogRegistry, ok := registryStore.(ddl.CatalogRegistry)
+		if !ok {
+			return errors.New("configured DDL registry does not support atomic catalog changes")
+		}
 		pool, err := pgxpool.New(ctx, cfg.Postgres.DSN)
 		if err != nil {
 			return err
 		}
 		scanner := &ddl.CatalogScanner{
 			Pool:        pool,
-			Registry:    registryStore,
+			Registry:    catalogRegistry,
 			Schemas:     cfg.DDL.CatalogSchemas,
 			AutoApprove: cfg.DDL.AutoApprove,
 		}

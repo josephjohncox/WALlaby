@@ -143,6 +143,7 @@ func TestRunnerDropsSlotOnFailure(t *testing.T) {
 			Spec: connector.Spec{Name: "dest"},
 			Dest: dest,
 		}},
+		Checkpoints:  &recordingCheckpointStore{},
 		FlowID:       "flow-test",
 		FailureMode:  FailureModeDropSlot,
 		GiveUpPolicy: GiveUpPolicyOnRetryExhaustion,

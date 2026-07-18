@@ -473,8 +473,9 @@ func TestRunnerStopsOnWriteFailureQuick(t *testing.T) {
 				Spec: connector.Spec{Name: "dest"},
 				Dest: dest,
 			}},
-			FlowID:    "flow-fail",
-			TraceSink: traceSink,
+			Checkpoints: &recordingCheckpointStore{},
+			FlowID:      "flow-fail",
+			TraceSink:   traceSink,
 		}
 
 		if err := runner.Run(ctx); err == nil {
@@ -570,6 +571,7 @@ func TestRunnerMultiDestAckOrderingQuick(t *testing.T) {
 			Source:       source,
 			SourceSpec:   connector.Spec{Options: map[string]string{"mode": "backfill"}},
 			Destinations: destinations,
+			Checkpoints:  &recordingCheckpointStore{},
 			FlowID:       "flow-multi",
 		}
 

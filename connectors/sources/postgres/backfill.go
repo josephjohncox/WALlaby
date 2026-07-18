@@ -547,28 +547,37 @@ func (b *BackfillSource) emitControlDone(ctx context.Context, schema connector.S
 	}
 }
 
-func (b *BackfillSource) queryTablePartition(ctx context.Context, schema, table string, task backfillTask) (pgx.Rows, func(), error) {
-	identifier := pgx.Identifier{schema, table}.Sanitize()
+func buildBackfillQuery(identifier, partitionColumn string, task backfillTask) (string, []any) {
 	query := fmt.Sprintf("SELECT * FROM %s", identifier)
 	var args []any
 	clauses := make([]string, 0, 2)
-	if b.partitionCol != "" && task.partitionCount > 1 {
-		columnIdent := pgx.Identifier{b.partitionCol}.Sanitize()
-		clauses = append(clauses, fmt.Sprintf("mod(hashtext(%s::text), $1) = $2", columnIdent))
+	if partitionColumn != "" && task.partitionCount > 1 {
+		columnIdent := pgx.Identifier{partitionColumn}.Sanitize()
+		// PostgreSQL hashtext returns a signed integer and mod preserves its sign.
+		// Normalize the remainder so every row maps to [0, partitionCount).
+		clauses = append(clauses, fmt.Sprintf("mod(mod(hashtext(COALESCE(%s::text, '<wallaby:null>')), $1) + $1, $1) = $2", columnIdent))
 		args = append(args, task.partitionCount, task.partitionIndex)
 	}
-	if b.partitionCol != "" && task.cursor != "" {
-		columnIdent := pgx.Identifier{b.partitionCol}.Sanitize()
-		clauses = append(clauses, fmt.Sprintf("%s > $%d", columnIdent, len(args)+1))
+	if partitionColumn != "" && task.cursor != "" {
+		columnIdent := pgx.Identifier{partitionColumn}.Sanitize()
+		// Resume inclusively. Equal cursor values may replay after a crash, but an
+		// exclusive predicate could permanently skip rows when the column is not unique.
+		clauses = append(clauses, fmt.Sprintf("(%s >= $%d OR %s IS NULL)", columnIdent, len(args)+1, columnIdent))
 		args = append(args, task.cursor)
 	}
 	if len(clauses) > 0 {
 		query = fmt.Sprintf("%s WHERE %s", query, strings.Join(clauses, " AND "))
 	}
-	if b.partitionCol != "" {
-		columnIdent := pgx.Identifier{b.partitionCol}.Sanitize()
-		query = fmt.Sprintf("%s ORDER BY %s", query, columnIdent)
+	if partitionColumn != "" {
+		columnIdent := pgx.Identifier{partitionColumn}.Sanitize()
+		query = fmt.Sprintf("%s ORDER BY %s NULLS LAST", query, columnIdent)
 	}
+	return query, args
+}
+
+func (b *BackfillSource) queryTablePartition(ctx context.Context, schema, table string, task backfillTask) (pgx.Rows, func(), error) {
+	identifier := pgx.Identifier{schema, table}.Sanitize()
+	query, args := buildBackfillQuery(identifier, b.partitionCol, task)
 
 	if b.snapshotName == "" {
 		rows, err := b.pool.Query(ctx, query, args...)

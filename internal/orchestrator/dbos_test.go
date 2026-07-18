@@ -1,12 +1,23 @@
 package orchestrator
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/dbos-inc/dbos-transact-golang/dbos"
+	"github.com/josephjohncox/wallaby/internal/runner"
+	"github.com/josephjohncox/wallaby/internal/workflow"
 )
+
+func TestNewDBOSOrchestratorRequiresCheckpointStore(t *testing.T) {
+	t.Parallel()
+	_, err := NewDBOSOrchestrator(context.Background(), Config{}, workflow.NewMemoryEngine(), nil, runner.Factory{})
+	if err == nil || !strings.Contains(err.Error(), "durable checkpoint storage is required") {
+		t.Fatalf("NewDBOSOrchestrator() error=%v, want durable checkpoint requirement", err)
+	}
+}
 
 func TestDBOSWorkflowGenerationIdentity(t *testing.T) {
 	t.Parallel()

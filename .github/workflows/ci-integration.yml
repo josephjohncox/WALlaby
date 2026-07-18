@@ -99,7 +99,9 @@ jobs:
           export TEST_PG_DSN
           set +e
           output=$(go test -count=1 -v \
+            ./connectors/sources/postgres \
             ./internal/checkpoint \
+            ./internal/registry \
             ./internal/workflow \
             ./pkg/schemaregistry)
           test_rc=$?
@@ -114,6 +116,12 @@ jobs:
             '--- PASS: TestPostgresLifecycleStoreContract'
           printf '%s\n' "${output}" | grep -q -- \
             '--- PASS: TestPostgresRegistryConcurrentRegistration'
+          printf '%s\n' "${output}" | grep -q -- \
+            '--- PASS: TestBackfillHashPartitionsCoverEveryRow'
+          printf '%s\n' "${output}" | grep -q -- \
+            '--- PASS: TestPostgresCatalogChangeAllocatesVersions'
+          printf '%s\n' "${output}" | grep -q -- \
+            '--- PASS: TestPostgresCatalogChangeSerializesVersions'
 
       - name: Integration tests (PostgreSQL, ClickHouse, DBOS, Kubernetes)
         env:

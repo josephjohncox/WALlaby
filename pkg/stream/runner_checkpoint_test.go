@@ -10,6 +10,29 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+func TestRunnerRejectsMissingCheckpointStore(t *testing.T) {
+	t.Parallel()
+
+	source := &fakeSource{batches: []connector.Batch{{Checkpoint: connector.Checkpoint{LSN: "1"}}}}
+	runner := Runner{
+		Source:     source,
+		SourceSpec: connector.Spec{Options: map[string]string{"mode": connector.SourceModeBackfill}},
+		Destinations: []DestinationConfig{{
+			Spec: connector.Spec{Name: "dest"},
+			Dest: &recordingDest{name: "dest"},
+		}},
+		FlowID: "flow-no-checkpoint-store",
+	}
+
+	err := runner.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "checkpoint") {
+		t.Fatalf("Run() error = %v, want checkpoint durability error", err)
+	}
+	if len(source.acks) != 0 {
+		t.Fatalf("source acknowledgements = %v, want none", source.acks)
+	}
+}
+
 func TestRunnerPersistsBeforeSourceAck(t *testing.T) {
 	t.Parallel()
 

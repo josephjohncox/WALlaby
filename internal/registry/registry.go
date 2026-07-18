@@ -103,6 +103,83 @@ func (p *PostgresStore) RecordDDL(ctx context.Context, flowID string, ddl string
 	return id, nil
 }
 
+// RecordCatalogChange serializes changes per table and atomically stores the
+// next schema version with its DDL event. An already-current snapshot is a
+// no-op and returns event ID zero.
+func (p *PostgresStore) RecordCatalogChange(
+	ctx context.Context,
+	schemaSnapshot connector.Schema,
+	plan schema.Plan,
+	status string,
+) (int64, error) {
+	if status == "" {
+		status = StatusPending
+	}
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		return 0, fmt.Errorf("marshal catalog plan: %w", err)
+	}
+
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin catalog change: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	lockKey := schemaSnapshot.Namespace + "\x1f" + schemaSnapshot.Name
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", lockKey); err != nil {
+		return 0, fmt.Errorf("lock catalog schema version: %w", err)
+	}
+	var latestVersion int64
+	var latestSchema connector.Schema
+	err = tx.QueryRow(ctx,
+		`SELECT version, schema_json
+		 FROM schema_versions
+		 WHERE namespace = $1 AND name = $2
+		 ORDER BY version DESC
+		 LIMIT 1`,
+		schemaSnapshot.Namespace, schemaSnapshot.Name,
+	).Scan(&latestVersion, &latestSchema)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		schemaSnapshot.Version = 0
+	case err != nil:
+		return 0, fmt.Errorf("read latest catalog schema version: %w", err)
+	case !schema.Diff(latestSchema, schemaSnapshot).HasChanges():
+		if err := tx.Commit(ctx); err != nil {
+			return 0, fmt.Errorf("commit duplicate catalog change: %w", err)
+		}
+		return 0, nil
+	default:
+		schemaSnapshot.Version = latestVersion + 1
+	}
+	schemaJSON, err := json.Marshal(schemaSnapshot)
+	if err != nil {
+		return 0, fmt.Errorf("marshal catalog schema: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO schema_versions (namespace, name, version, schema_json)
+		 VALUES ($1, $2, $3, $4)`,
+		schemaSnapshot.Namespace, schemaSnapshot.Name, schemaSnapshot.Version, schemaJSON,
+	); err != nil {
+		return 0, fmt.Errorf("insert catalog schema: %w", err)
+	}
+
+	var id int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO ddl_events (flow_id, ddl, plan_json, lsn, status)
+		 VALUES (NULL, NULL, $1, '', $2)
+		 RETURNING id`,
+		planJSON, status,
+	).Scan(&id); err != nil {
+		return 0, fmt.Errorf("insert catalog DDL event: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit catalog change: %w", err)
+	}
+	return id, nil
+}
+
 func (p *PostgresStore) SetDDLStatus(ctx context.Context, id int64, status string) error {
 	_, err := p.pool.Exec(ctx,
 		"UPDATE ddl_events SET status = $2, applied_at = $3 WHERE id = $1",

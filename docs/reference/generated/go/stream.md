@@ -201,13 +201,13 @@ type Runner struct {
 ```
 
 <a name="Runner.Run"></a>
-### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L72>)
+### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L73>)
 
 ```go
 func (r *Runner) Run(ctx context.Context) (retErr error)
 ```
 
-Run executes the streaming loop until context cancellation or error.
+Run executes the streaming loop until context cancellation or error. It requires a stable flow ID and durable checkpoint storage before acknowledging the source.
 
 <a name="StagingResolver"></a>
 ## type [StagingResolver](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L38-L40>)

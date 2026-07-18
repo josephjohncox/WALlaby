@@ -44,7 +44,7 @@ func TestFlowRunnerPreservesExecutionSourceOverrides(t *testing.T) {
 		"start_lsn":        "0/16B6C50",
 	}
 	source := &flowRunnerSource{}
-	runner := FlowRunner{Engine: engine}
+	runner := FlowRunner{Engine: engine, Checkpoints: testCheckpointOutboxStore{}}
 	err := runner.Run(ctx, execution, source, []stream.DestinationConfig{{
 		Spec: connector.Spec{Name: "dest"},
 		Dest: flowRunnerDestination{},
@@ -85,7 +85,8 @@ func TestFlowRunnerRegistersProvidedExecutionIdentity(t *testing.T) {
 	}
 	control, _ := engine.Control(ctx, f.ID)
 	runner := FlowRunner{
-		Engine: engine, ExecutionBackend: "kubernetes", ExecutionID: "job-exact-id", ExpectedGeneration: control.Generation,
+		Engine: engine, Checkpoints: testCheckpointOutboxStore{}, ExecutionBackend: "kubernetes",
+		ExecutionID: "job-exact-id", ExpectedGeneration: control.Generation,
 	}
 	if err := runner.Run(ctx, f, &flowRunnerSource{}, []stream.DestinationConfig{{
 		Spec: connector.Spec{Name: "dest"}, Dest: flowRunnerDestination{},

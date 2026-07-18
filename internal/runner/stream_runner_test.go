@@ -48,6 +48,7 @@ func TestNewStreamRunnerPrecedence(t *testing.T) {
 				WireFormat:  tt.flowWire,
 				Parallelism: tt.flowParallel,
 			}, nil, nil, StreamRunnerConfig{
+				Checkpoints:        testCheckpointOutboxStore{},
 				DefaultWireFormat:  tt.defaultWire,
 				DefaultParallelism: tt.defaultParallel,
 			})
@@ -119,6 +120,26 @@ func TestNewStreamRunnerClonesConfigurationAndAppliesPolicies(t *testing.T) {
 	}
 	if len(destinations) != 1 {
 		t.Fatalf("destination slice mutated: len=%d", len(destinations))
+	}
+}
+
+func TestNewStreamRunnerRejectsMissingCheckpointStore(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewStreamRunner(flow.Flow{ID: "flow-all"}, nil, nil, StreamRunnerConfig{})
+	if err == nil {
+		t.Fatal("NewStreamRunner() error = nil, want checkpoint durability error")
+	}
+}
+
+func TestNewStreamRunnerRejectsMissingFlowID(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewStreamRunner(flow.Flow{}, nil, nil, StreamRunnerConfig{
+		Checkpoints: testCheckpointOutboxStore{},
+	})
+	if err == nil {
+		t.Fatal("NewStreamRunner() error = nil, want durable flow identity error")
 	}
 }
 

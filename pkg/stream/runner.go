@@ -68,13 +68,20 @@ type Runner struct {
 	TraceSink          TraceSink
 }
 
-// Run executes the streaming loop until context cancellation or error.
+// Run executes the streaming loop until context cancellation or error. It requires
+// a stable flow ID and durable checkpoint storage before acknowledging the source.
 func (r *Runner) Run(ctx context.Context) (retErr error) {
 	if r.Source == nil {
 		return errors.New("source is required")
 	}
 	if len(r.Destinations) == 0 {
 		return errors.New("at least one destination is required")
+	}
+	if r.FlowID == "" {
+		return errors.New("a non-empty flow id is required for durable checkpoints")
+	}
+	if r.effectiveAckPolicy() != AckPolicyPrimary && r.Checkpoints == nil {
+		return errors.New("a durable checkpoint store is required before source acknowledgement")
 	}
 
 	defer func() {
