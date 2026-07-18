@@ -20,7 +20,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: postgres
         ports:
-          - 5432:5432
+          - 5432/tcp
         options: >-
           --health-cmd "pg_isready -U postgres -d postgres"
           --health-interval 2s
@@ -93,9 +93,17 @@ jobs:
 
       - name: PostgreSQL-backed store contract tests
         env:
-          TEST_PG_DSN: >-
-            postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+          POSTGRES_CONTRACT_PORT: >-
+            ${{ job.services.postgres.ports['5432'] }}
         run: |
+          TEST_PG_DSN=$(
+            printf '%s:%s@localhost:%s/%s?sslmode=disable' \
+              'postgres://postgres' \
+              'postgres' \
+              "${POSTGRES_CONTRACT_PORT}" \
+              'postgres'
+          )
+          export TEST_PG_DSN
           set +e
           output=$(go test -count=1 -v \
             ./internal/checkpoint \
