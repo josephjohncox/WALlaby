@@ -24,6 +24,14 @@ At startup the runner reads the checkpoint once. A missing checkpoint means the 
 
 After opening the source and destinations, the runner first drains any restored primary-ack outbox work and then acknowledges the restored checkpoint. These operations are intentionally idempotent.
 
+## DDL execution receipts
+
+Automatic DDL execution requires a durable registry receipt store. Before calling a destination, the runner validates any existing immutable destination manifest and checks for a receipt at `(flow, position, destination)`. The first preparation fixes the manifest before any downstream side effect. After the destination accepts both the DDL and its batch, WALlaby stores that destination's receipt. The registry changes the event to `applied` in the same transaction that records the final receipt. Checkpoint persistence follows receipt completion, so a crash before the checkpoint replays the batch but skips already-receipted DDL. A batch that spans source positions carries a position on each record; ambiguous duplicate DDL positions fail before destination execution.
+
+Administrators may approve or reject DDL before execution preparation, but cannot change status once the immutable manifest exists, assert `applied`, or change a receipt-backed applied event. The deprecated `MarkDDLApplied` RPC fails with `FailedPrecondition`, and the CLI no longer exposes a manual apply command. Legacy applied rows without receipts fail closed during replay instead of causing unverified DDL re-execution.
+
+A receipt cannot atomically cover an external database commit. A process failure after downstream DDL commits but before WALlaby stores the receipt can still replay that DDL. Destination-specific schema reconciliation remains required to close that final window; the support matrix therefore does not claim blanket exactly-once DDL execution.
+
 ## Verification
 
 Runtime JSONL traces record delivery, checkpoint, acknowledgement, restore, and failure actions. `wallaby-trace-validate` partitions checks by flow ID and validates PostgreSQL LSN order. The TLA+ models separate delivery, persistence, source acknowledgement, persistence failure, crash, and restart.

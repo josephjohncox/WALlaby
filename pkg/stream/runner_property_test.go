@@ -270,6 +270,13 @@ func TestRunnerProtocolInvariantsQuick(t *testing.T) {
 		checkpoints := &recordingCheckpointStore{}
 		traceSink := &MemoryTraceSink{}
 		ddlApplied := make([]string, 0)
+		ddlReceipts := &testDDLReceiptStore{onRecord: func(_ string, lsn, ddl, _ string, _ []string) error {
+			if lsn == "" || ddl == "" {
+				return fmt.Errorf("invalid ddl applied event")
+			}
+			ddlApplied = append(ddlApplied, lsn)
+			return nil
+		}}
 
 		runner := Runner{
 			Source:     source,
@@ -278,18 +285,12 @@ func TestRunnerProtocolInvariantsQuick(t *testing.T) {
 				Spec: connector.Spec{Name: "dest"},
 				Dest: dest,
 			}},
-			Checkpoints: checkpoints,
-			FlowID:      "flow-test",
-			Parallelism: 1,
-			TraceSink:   traceSink,
-			DDLApplied: func(_ context.Context, flowID string, lsn string, ddl string) error {
-				if lsn == "" || ddl == "" {
-					return fmt.Errorf("invalid ddl applied event")
-				}
-				_ = flowID
-				ddlApplied = append(ddlApplied, lsn)
-				return nil
-			},
+			Checkpoints:         checkpoints,
+			FlowID:              "flow-test",
+			Parallelism:         1,
+			TraceSink:           traceSink,
+			RequireDDLExecution: true,
+			DDLExecutions:       ddlReceipts,
 		}
 
 		if err := runner.Run(ctx); err != nil {

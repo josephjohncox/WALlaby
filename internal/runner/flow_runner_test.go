@@ -161,10 +161,14 @@ func (flowRunnerDestination) ApplyDDL(context.Context, connector.Schema, connect
 func (flowRunnerDestination) TypeMappings() map[string]string { return nil }
 func (flowRunnerDestination) Close(context.Context) error     { return nil }
 func (flowRunnerDestination) Capabilities() connector.Capabilities {
-	return connector.Capabilities{Delivery: connector.DeliverySemantics{
-		Declared:           true,
-		TransactionalBatch: true,
-		IdempotentReplay:   true,
-		ReplaySafe:         true,
-	}}
+	return connector.Capabilities{
+		Delivery: connector.DeliverySemantics{
+			Declared:           true,
+			TransactionalBatch: true,
+			IdempotentReplay:   true,
+			ReplaySafe:         true,
+			ExecutesDDL:        true,
+		},
+		SupportsDDL: true,
+	}
 }

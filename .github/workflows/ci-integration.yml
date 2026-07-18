@@ -119,6 +119,10 @@ jobs:
           printf '%s\n' "${output}" | grep -q -- \
             '--- PASS: TestBackfillHashPartitionsCoverEveryRow'
           printf '%s\n' "${output}" | grep -q -- \
+            '--- PASS: TestPostgresDDLExecutionReceiptsGateAppliedStatus'
+          printf '%s\n' "${output}" | grep -q -- \
+            '--- PASS: TestPostgresDDLPreparationSerializesStatus'
+          printf '%s\n' "${output}" | grep -q -- \
             '--- PASS: TestPostgresCatalogChangeAllocatesVersions'
           printf '%s\n' "${output}" | grep -q -- \
             '--- PASS: TestPostgresCatalogChangeSerializesVersions'

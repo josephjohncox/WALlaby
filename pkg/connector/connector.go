@@ -103,17 +103,18 @@ type FlowCheckpoint struct {
 
 // Record represents a single change or DDL event.
 type Record struct {
-	Table         string
-	Operation     Operation
-	SchemaVersion int64
-	Key           []byte
-	Payload       []byte
-	Before        map[string]any
-	After         map[string]any
-	Unchanged     []string
-	DDL           string
-	DDLPlan       []byte // Structured plan-driven DDL when raw SQL is unavailable
-	Timestamp     time.Time
+	Table          string
+	Operation      Operation
+	SchemaVersion  int64
+	Key            []byte
+	Payload        []byte
+	Before         map[string]any
+	After          map[string]any
+	Unchanged      []string
+	DDL            string
+	DDLPlan        []byte // Structured plan-driven DDL when raw SQL is unavailable
+	SourcePosition string // Durable source position for this record when a batch spans positions
+	Timestamp      time.Time
 }
 
 // Batch is the unit passed between sources and destinations.

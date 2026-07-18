@@ -55,15 +55,16 @@ If you forward logs to a system like Loki, alert on DDL gate log records rather 
 {app="wallaby"} |= "ddl gate"
 ```
 
-### Approve and apply DDL
+### Approve DDL
 
 Use the CLI:
 
 ```bash
 wallaby-admin ddl list --status pending
 wallaby-admin ddl approve --id <id>
-wallaby-admin ddl apply --id <id>
 ```
+
+Resume the flow after approval. The runner applies the DDL, records one durable execution receipt per destination, and changes the event to `applied` only after all expected receipts exist. Administrators cannot assert `applied` without those receipts.
 
 Or with gRPC:
 
@@ -73,7 +74,7 @@ grpcurl -plaintext -d '{"status":"pending"}' localhost:8080 wallaby.v1.DDLServic
 
 ### Resume flow
 
-After approval + apply:
+After approval:
 
 ```bash
 wallaby-admin flow resume --flow-id <id>

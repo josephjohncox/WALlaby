@@ -41,6 +41,9 @@ func ValidateDestinationContracts(
 		if requireDDLExecution && !capabilities.ExecutesDDL() {
 			return fmt.Errorf("destination %s cannot execute DDL required by the flow policy", label)
 		}
+		if requireDDLExecution && strings.TrimSpace(destination.Spec.Name) == "" {
+			return fmt.Errorf("automatic DDL execution requires a stable destination name")
+		}
 
 		if ackPolicy != AckPolicyPrimary {
 			continue

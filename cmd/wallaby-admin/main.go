@@ -98,7 +98,6 @@ func newAdminCommand() *cobra.Command {
 	addLeaf(ddlCommand, "show", "show a DDL event", addDDLShowFlags, ddlShow)
 	addLeaf(ddlCommand, "approve", "approve a DDL event", addDDLApproveFlags, ddlApprove)
 	addLeaf(ddlCommand, "reject", "reject a DDL event", addDDLRejectFlags, ddlReject)
-	addLeaf(ddlCommand, "apply", "apply a DDL event", addDDLApplyFlags, ddlApply)
 	command.AddCommand(ddlCommand)
 
 	streamCommand := &cobra.Command{
@@ -280,11 +279,6 @@ func addDDLApproveFlags(cmd *cobra.Command) {
 }
 
 func addDDLRejectFlags(cmd *cobra.Command) {
-	addAdminConnectionFlags(cmd, "localhost:8080")
-	cmd.Flags().Int64("id", 0, "DDL event ID")
-}
-
-func addDDLApplyFlags(cmd *cobra.Command) {
 	addAdminConnectionFlags(cmd, "localhost:8080")
 	cmd.Flags().Int64("id", 0, "DDL event ID")
 }
@@ -1751,41 +1745,6 @@ func ddlReject(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func ddlApply(cmd *cobra.Command, _ []string) error {
-	endpoint, err := stringFlag(cmd, "endpoint")
-	if err != nil {
-		return err
-	}
-	insecureConn, err := boolFlag(cmd, "insecure")
-	if err != nil {
-		return err
-	}
-	id, err := int64Flag(cmd, "id")
-	if err != nil {
-		return err
-	}
-
-	if *id == 0 {
-		return errors.New("--id is required")
-	}
-
-	client, closeConn, err := ddlClient(*endpoint, *insecureConn)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = closeConn() }()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	resp, err := client.MarkDDLApplied(ctx, &wallabypb.MarkDDLAppliedRequest{Id: *id})
-	if err != nil {
-		return fmt.Errorf("mark ddl applied: %w", err)
-	}
-	fmt.Printf("Marked DDL %d applied (status=%s)\n", resp.Event.Id, resp.Event.Status)
-	return nil
-}
-
 func ddlClient(endpoint string, insecureConn bool) (wallabypb.DDLServiceClient, func() error, error) {
 	if endpoint == "" {
 		return nil, nil, errors.New("endpoint is required")
@@ -1840,7 +1799,7 @@ func statusFlag(status string) string {
 func usage() {
 	fmt.Println("Usage:")
 	fmt.Println("  wallaby-admin slot <list|show|drop> [flags]")
-	fmt.Println("  wallaby-admin ddl <list|history|show|approve|reject|apply> [flags]")
+	fmt.Println("  wallaby-admin ddl <list|history|show|approve|reject> [flags]")
 	fmt.Println("  wallaby-admin check [flags]")
 	fmt.Println("  wallaby-admin stream <replay|pull|ack> [flags]")
 	fmt.Println("  wallaby-admin publication <list|add|remove|sync|scrape> [flags]")
@@ -1858,7 +1817,6 @@ func ddlUsage() {
 	fmt.Println("  wallaby-admin ddl show --id <event_id> [--status pending|approved|rejected|applied|all] [--flow-id <flow_id>] [--json|--pretty]")
 	fmt.Println("  wallaby-admin ddl approve --id <event_id>")
 	fmt.Println("  wallaby-admin ddl reject --id <event_id>")
-	fmt.Println("  wallaby-admin ddl apply --id <event_id>")
 	os.Exit(1)
 }
 

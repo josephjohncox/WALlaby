@@ -359,11 +359,13 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 				_, processSpan = tracer.Start(ctx, "source.process")
 			}
 			if change.Record != nil {
-				if err := s.handleToast(ctx, change, change.Record); err != nil {
+				record := *change.Record
+				record.SourcePosition = change.LSN.String()
+				if err := s.handleToast(ctx, change, &record); err != nil {
 					processSpan.End()
 					return connector.Batch{}, err
 				}
-				records = append(records, *change.Record)
+				records = append(records, record)
 			}
 			if change.SchemaDef != nil {
 				schema = *change.SchemaDef

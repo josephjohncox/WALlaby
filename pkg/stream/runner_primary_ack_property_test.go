@@ -95,6 +95,17 @@ func TestRunnerPrimaryAckInvariantsRapid(t *testing.T) {
 		}
 
 		checkpointStore := &recordingCheckpointStore{}
+		ddlReceipts := &testDDLReceiptStore{}
+		ddlReceipts.onRecord = func(flowID, lsn, _ string, _ string, expected []string) error {
+			for _, destination := range expected {
+				exists, err := ddlReceipts.PrepareDDLExecution(context.Background(), flowID, lsn, destination, expected)
+				if err != nil || !exists {
+					return err
+				}
+			}
+			log.add("ddl_applied", lsn, "")
+			return nil
+		}
 		runner := Runner{
 			Source:           source,
 			SourceSpec:       connector.Spec{Options: map[string]string{"mode": "backfill"}},
@@ -105,15 +116,12 @@ func TestRunnerPrimaryAckInvariantsRapid(t *testing.T) {
 				{Spec: connector.Spec{Name: "secondary-a"}, Dest: secondaryDestA},
 				{Spec: connector.Spec{Name: "secondary-b"}, Dest: secondaryDestB},
 			},
-			FlowID:             "flow-primary-ack",
-			AckPolicy:          AckPolicyPrimary,
-			PrimaryDestination: "primary",
-			GiveUpPolicy:       GiveUpPolicyNever,
-			DDLApplied: func(_ context.Context, flowID string, lsn string, _ string) error {
-				log.add("ddl_applied", lsn, "")
-				_ = flowID
-				return nil
-			},
+			FlowID:              "flow-primary-ack",
+			AckPolicy:           AckPolicyPrimary,
+			PrimaryDestination:  "primary",
+			GiveUpPolicy:        GiveUpPolicyNever,
+			RequireDDLExecution: true,
+			DDLExecutions:       ddlReceipts,
 		}
 
 		if err := runner.Run(ctx); err != nil {

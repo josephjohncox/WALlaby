@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/josephjohncox/wallaby/internal/flow"
@@ -121,6 +122,22 @@ func TestNewStreamRunnerClonesConfigurationAndAppliesPolicies(t *testing.T) {
 	}
 	if len(destinations) != 1 {
 		t.Fatalf("destination slice mutated: len=%d", len(destinations))
+	}
+}
+
+func TestNewStreamRunnerRejectsAutoApplyWithoutReceiptStore(t *testing.T) {
+	t.Parallel()
+
+	autoApply := true
+	_, err := NewStreamRunner(flow.Flow{
+		ID:     "flow-ddl",
+		Config: flow.Config{DDL: flow.DDLPolicy{AutoApply: &autoApply}},
+	}, nil, []stream.DestinationConfig{{
+		Spec: connector.Spec{Name: "destination"},
+		Dest: flowRunnerDestination{},
+	}}, StreamRunnerConfig{Checkpoints: testCheckpointOutboxStore{}})
+	if err == nil || !strings.Contains(err.Error(), "execution receipt storage") {
+		t.Fatalf("NewStreamRunner() error=%v, want receipt storage requirement", err)
 	}
 }
 

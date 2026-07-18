@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -11,6 +12,167 @@ import (
 	"github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
+
+func TestPostgresDDLExecutionReceiptsGateAppliedStatus(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	flowID := fmt.Sprintf("receipt-flow-%d", time.Now().UnixNano())
+	lsn := fmt.Sprintf("receipt-lsn-%d", time.Now().UnixNano())
+	ddl := "ALTER TABLE events ADD COLUMN receipt_test text"
+	eventID, err := store.RecordDDL(ctx, flowID, ddl, schema.Plan{}, lsn, StatusApproved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = store.pool.Exec(ctx, "DELETE FROM ddl_events WHERE id = $1", eventID) }()
+
+	if err := store.SetDDLStatus(ctx, eventID, StatusApplied); !errors.Is(err, ErrExecutionReceiptRequired) {
+		t.Fatalf("SetDDLStatus(applied) error=%v, want execution receipt requirement", err)
+	}
+	expected := []string{"destination-a", "destination-b"}
+	if err := store.RecordDDLExecution(ctx, flowID, lsn, ddl, "destination-a", expected); !errors.Is(err, ErrDDLExecutionNotPrepared) {
+		t.Fatalf("unprepared receipt error=%v, want preparation requirement", err)
+	}
+	prepared, err := store.PrepareDDLExecution(ctx, flowID, lsn, "destination-a", expected)
+	if err != nil || prepared {
+		t.Fatalf("initial execution preparation receipt=%v error=%v, want no receipt", prepared, err)
+	}
+	if err := store.SetDDLStatus(ctx, eventID, StatusRejected); !errors.Is(err, ErrDDLExecutionStarted) {
+		t.Fatalf("SetDDLStatus(rejected) after execution start error=%v, want immutable execution status", err)
+	}
+	if err := store.RecordDDLExecution(ctx, flowID, lsn, ddl, "destination-a", expected); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PrepareDDLExecution(ctx, flowID, lsn, "destination-a", []string{"destination-a"}); !errors.Is(err, ErrExecutionManifestChanged) {
+		t.Fatalf("changed manifest preflight error=%v, want immutable manifest failure", err)
+	}
+	event, err := store.GetDDL(ctx, eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Status != StatusApproved {
+		t.Fatalf("status after partial receipts=%s, want approved", event.Status)
+	}
+	if err := store.RecordDDLExecution(ctx, flowID, lsn, ddl, "destination-b", expected); err != nil {
+		t.Fatal(err)
+	}
+	event, err = store.GetDDL(ctx, eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Status != StatusApplied || event.AppliedAt.IsZero() {
+		t.Fatalf("completed receipt event=%+v, want applied with timestamp", event)
+	}
+	for _, destination := range expected {
+		exists, err := store.PrepareDDLExecution(ctx, flowID, lsn, destination, expected)
+		if err != nil || !exists {
+			t.Fatalf("receipt %s exists=%v error=%v", destination, exists, err)
+		}
+	}
+	reopened, err := NewPostgresStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if exists, err := reopened.PrepareDDLExecution(ctx, flowID, lsn, "destination-a", expected); err != nil || !exists {
+		t.Fatalf("reopened receipt exists=%v error=%v", exists, err)
+	}
+	if err := store.RecordDDLExecution(ctx, flowID, lsn, ddl, "destination-a", expected); err != nil {
+		t.Fatalf("idempotent receipt replay: %v", err)
+	}
+	if err := store.RecordDDLExecution(ctx, flowID, lsn, ddl, "destination-a", []string{"destination-a"}); err == nil {
+		t.Fatal("changed execution manifest accepted")
+	}
+	for _, administrativeStatus := range []string{StatusApproved, StatusRejected} {
+		if err := store.SetDDLStatus(ctx, eventID, administrativeStatus); !errors.Is(err, ErrAppliedStatusImmutable) {
+			t.Fatalf("SetDDLStatus(%s) error=%v, want immutable applied status", administrativeStatus, err)
+		}
+	}
+	event, err = store.GetDDL(ctx, eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Status != StatusApplied || event.AppliedAt.IsZero() {
+		t.Fatalf("administrative transition changed receipt-backed event: %+v", event)
+	}
+
+	legacyLSN := lsn + "-legacy"
+	if _, err := store.RecordDDL(ctx, flowID, ddl, schema.Plan{}, legacyLSN, StatusApplied); !errors.Is(err, ErrExecutionReceiptRequired) {
+		t.Fatalf("RecordDDL(applied) error=%v, want execution receipt requirement", err)
+	}
+	var legacyID int64
+	if err := store.pool.QueryRow(ctx,
+		`INSERT INTO ddl_events (flow_id, ddl, plan_json, lsn, status, applied_at)
+		 VALUES ($1, $2, '{}'::jsonb, $3, $4, now()) RETURNING id`,
+		flowID, ddl, legacyLSN, StatusApplied,
+	).Scan(&legacyID); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = store.pool.Exec(ctx, "DELETE FROM ddl_events WHERE id = $1", legacyID) }()
+	if _, err := store.PrepareDDLExecution(ctx, flowID, legacyLSN, "destination-a", expected); !errors.Is(err, ErrAppliedReceiptMissing) {
+		t.Fatalf("legacy applied receipt check error=%v, want fail-closed missing receipt", err)
+	}
+}
+
+func TestPostgresDDLPreparationSerializesStatus(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	flowID := fmt.Sprintf("receipt-race-flow-%d", time.Now().UnixNano())
+	const attempts = 16
+	for attempt := range attempts {
+		lsn := fmt.Sprintf("receipt-race-lsn-%d-%d", time.Now().UnixNano(), attempt)
+		eventID, err := store.RecordDDL(ctx, flowID, "ALTER TABLE events ADD COLUMN race_test text", schema.Plan{}, lsn, StatusApproved)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		start := make(chan struct{})
+		prepareResult := make(chan error, 1)
+		statusResult := make(chan error, 1)
+		go func() {
+			<-start
+			_, prepareErr := store.PrepareDDLExecution(ctx, flowID, lsn, "destination", []string{"destination"})
+			prepareResult <- prepareErr
+		}()
+		go func() {
+			<-start
+			statusResult <- store.SetDDLStatus(ctx, eventID, StatusRejected)
+		}()
+		close(start)
+		prepareErr := <-prepareResult
+		statusErr := <-statusResult
+		_, isDDLGate := connector.AsDDLGate(prepareErr)
+
+		switch {
+		case prepareErr == nil && errors.Is(statusErr, ErrDDLExecutionStarted):
+		case statusErr == nil && isDDLGate:
+		default:
+			t.Fatalf("attempt %d produced non-serialized results: prepare=%v status=%v", attempt, prepareErr, statusErr)
+		}
+		if _, err := store.pool.Exec(ctx, "DELETE FROM ddl_events WHERE id = $1", eventID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestPostgresCatalogChangeAllocatesVersions(t *testing.T) {
 	dsn := os.Getenv("TEST_PG_DSN")

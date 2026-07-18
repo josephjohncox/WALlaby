@@ -140,7 +140,7 @@ NormalizeSourceMode normalizes and validates source modes for worker flow source
 It is case\-insensitive, trims whitespace, and defaults empty values to cdc.
 
 <a name="Batch"></a>
-## type [Batch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L120-L125>)
+## type [Batch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L121-L126>)
 
 Batch is the unit passed between sources and destinations.
 
@@ -213,7 +213,7 @@ type Checkpoint struct {
 ```
 
 <a name="CheckpointOutboxStore"></a>
-## type [CheckpointOutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L190-L193>)
+## type [CheckpointOutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L191-L194>)
 
 CheckpointOutboxStore is the atomic durability seam required by primary acknowledgement. A single adapter must own both checkpoint and outbox state.
 
@@ -225,7 +225,7 @@ type CheckpointOutboxStore interface {
 ```
 
 <a name="CheckpointStore"></a>
-## type [CheckpointStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L158-L162>)
+## type [CheckpointStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L159-L163>)
 
 CheckpointStore persists checkpoints for recovery. Get returns ErrCheckpointNotFound when a flow has no durable position yet.
 
@@ -348,7 +348,7 @@ type DeliverySemantics struct {
 ```
 
 <a name="Destination"></a>
-## type [Destination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L147-L154>)
+## type [Destination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L148-L155>)
 
 Destination writes to a downstream system.
 
@@ -427,7 +427,7 @@ const (
 ```
 
 <a name="OutboxEntry"></a>
-## type [OutboxEntry](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L170-L177>)
+## type [OutboxEntry](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L171-L178>)
 
 OutboxEntry is one durable secondary\-destination delivery. PositionID is derived with CheckpointPositionID. BatchHash is populated by stores when listing entries and identifies the exact, type\-preserving batch contents. Every destination used with primary acknowledgement must implement idempotent writes because a crash after Write and before durable persistence or deletion can replay a batch.
 
@@ -443,7 +443,7 @@ type OutboxEntry struct {
 ```
 
 <a name="OutboxStore"></a>
-## type [OutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L182-L186>)
+## type [OutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L183-L187>)
 
 OutboxStore atomically advances a flow checkpoint and records secondary deliveries. Implementations must make insertion idempotent for an identical \(flow, destination, position\) and reject conflicting batch content.
 
@@ -456,28 +456,29 @@ type OutboxStore interface {
 ```
 
 <a name="Record"></a>
-## type [Record](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L105-L117>)
+## type [Record](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L105-L118>)
 
 Record represents a single change or DDL event.
 
 ```go
 type Record struct {
-    Table         string
-    Operation     Operation
-    SchemaVersion int64
-    Key           []byte
-    Payload       []byte
-    Before        map[string]any
-    After         map[string]any
-    Unchanged     []string
-    DDL           string
-    DDLPlan       []byte // Structured plan-driven DDL when raw SQL is unavailable
-    Timestamp     time.Time
+    Table          string
+    Operation      Operation
+    SchemaVersion  int64
+    Key            []byte
+    Payload        []byte
+    Before         map[string]any
+    After          map[string]any
+    Unchanged      []string
+    DDL            string
+    DDLPlan        []byte // Structured plan-driven DDL when raw SQL is unavailable
+    SourcePosition string // Durable source position for this record when a batch spans positions
+    Timestamp      time.Time
 }
 ```
 
 <a name="ReplicationLagProvider"></a>
-## type [ReplicationLagProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L137-L139>)
+## type [ReplicationLagProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L138-L140>)
 
 ReplicationLagProvider exposes replication lag metrics for sources that can report it.
 
@@ -504,7 +505,7 @@ type Schema struct {
 ```
 
 <a name="SlotDropper"></a>
-## type [SlotDropper](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L142-L144>)
+## type [SlotDropper](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L143-L145>)
 
 SlotDropper is implemented by sources that can drop replication slots.
 
@@ -515,7 +516,7 @@ type SlotDropper interface {
 ```
 
 <a name="Source"></a>
-## type [Source](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L128-L134>)
+## type [Source](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L129-L135>)
 
 Source reads from an upstream system.
 

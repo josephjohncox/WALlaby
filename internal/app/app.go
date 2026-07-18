@@ -77,7 +77,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	var engine workflow.ControlEngine
 	var checkpoints connector.CheckpointStore
 	var registryStore registry.Store
-	var ddlApplied func(context.Context, string, string, string) error
+	var ddlExecutions stream.DDLExecutionStore
 	var dbosOrchestrator *orchestrator.DBOSOrchestrator
 	var kubeDispatcher *orchestrator.KubernetesDispatcher
 	var streamStore *pgstream.Store
@@ -107,10 +107,8 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			return err
 		}
 		registryStore = store
+		ddlExecutions = store
 		addCleanup(store.Close)
-		ddlApplied = func(ctx context.Context, flowID string, lsn string, _ string) error {
-			return registry.MarkDDLAppliedByLSN(ctx, registryStore, flowID, lsn)
-		}
 
 		streamStore, err = pgstream.NewStore(ctx, cfg.Postgres.DSN)
 		if err != nil {
@@ -247,7 +245,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			StrictWire:    cfg.Wire.Enforce,
 			Tracer:        tracer,
 			Meters:        telemetryProvider.Meters(),
-			DDLApplied:    ddlApplied,
+			DDLExecutions: ddlExecutions,
 			TraceSink:     traceSink,
 			TracePath:     tracePath,
 		}, baseEngine, checkpoints, factory)

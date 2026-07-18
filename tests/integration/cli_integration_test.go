@@ -241,7 +241,7 @@ func TestCLIIntegrationDDLShow(t *testing.T) {
 	}
 }
 
-func TestCLIIntegrationDDLApproveRejectApply(t *testing.T) {
+func TestCLIIntegrationDDLApprovalRejectsManualApply(t *testing.T) {
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
 	if baseDSN == "" {
 		t.Skip("TEST_PG_DSN not set")
@@ -305,15 +305,15 @@ func TestCLIIntegrationDDLApproveRejectApply(t *testing.T) {
 		t.Fatalf("expected approved status, got %s", approved.Status)
 	}
 
-	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "apply", "--id", fmt.Sprintf("%d", eventID)); err != nil {
-		t.Fatalf("wallaby-admin ddl apply: %v", err)
+	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "apply", "--id", fmt.Sprintf("%d", eventID)); err == nil {
+		t.Fatal("wallaby-admin ddl apply succeeded without execution receipts")
 	}
-	applied, err := store.GetDDL(ctx, eventID)
+	stillApproved, err := store.GetDDL(ctx, eventID)
 	if err != nil {
 		t.Fatalf("get ddl: %v", err)
 	}
-	if applied.Status != registry.StatusApplied {
-		t.Fatalf("expected applied status, got %s", applied.Status)
+	if stillApproved.Status != registry.StatusApproved {
+		t.Fatalf("expected approved status without receipts, got %s", stillApproved.Status)
 	}
 
 	rejectID, err := store.RecordDDL(ctx, "flow-cli", `ALTER TABLE "public"."widgets" ADD COLUMN "rejected" text`, plan, "0/1", registry.StatusPending)

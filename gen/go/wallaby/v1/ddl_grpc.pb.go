@@ -30,12 +30,15 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// DDLService lists schema changes and manages approval and application state.
+// DDLService lists schema changes and manages approval state. Applied state is
+// advanced only by durable data-plane execution receipts.
 type DDLServiceClient interface {
 	ListPendingDDL(ctx context.Context, in *ListPendingDDLRequest, opts ...grpc.CallOption) (*ListPendingDDLResponse, error)
 	ListDDL(ctx context.Context, in *ListDDLRequest, opts ...grpc.CallOption) (*ListDDLResponse, error)
 	ApproveDDL(ctx context.Context, in *ApproveDDLRequest, opts ...grpc.CallOption) (*ApproveDDLResponse, error)
 	RejectDDL(ctx context.Context, in *RejectDDLRequest, opts ...grpc.CallOption) (*RejectDDLResponse, error)
+	// Deprecated: Do not use.
+	// Deprecated: administrative applied transitions are rejected.
 	MarkDDLApplied(ctx context.Context, in *MarkDDLAppliedRequest, opts ...grpc.CallOption) (*MarkDDLAppliedResponse, error)
 }
 
@@ -87,6 +90,7 @@ func (c *dDLServiceClient) RejectDDL(ctx context.Context, in *RejectDDLRequest, 
 	return out, nil
 }
 
+// Deprecated: Do not use.
 func (c *dDLServiceClient) MarkDDLApplied(ctx context.Context, in *MarkDDLAppliedRequest, opts ...grpc.CallOption) (*MarkDDLAppliedResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(MarkDDLAppliedResponse)
@@ -101,12 +105,15 @@ func (c *dDLServiceClient) MarkDDLApplied(ctx context.Context, in *MarkDDLApplie
 // All implementations must embed UnimplementedDDLServiceServer
 // for forward compatibility.
 //
-// DDLService lists schema changes and manages approval and application state.
+// DDLService lists schema changes and manages approval state. Applied state is
+// advanced only by durable data-plane execution receipts.
 type DDLServiceServer interface {
 	ListPendingDDL(context.Context, *ListPendingDDLRequest) (*ListPendingDDLResponse, error)
 	ListDDL(context.Context, *ListDDLRequest) (*ListDDLResponse, error)
 	ApproveDDL(context.Context, *ApproveDDLRequest) (*ApproveDDLResponse, error)
 	RejectDDL(context.Context, *RejectDDLRequest) (*RejectDDLResponse, error)
+	// Deprecated: Do not use.
+	// Deprecated: administrative applied transitions are rejected.
 	MarkDDLApplied(context.Context, *MarkDDLAppliedRequest) (*MarkDDLAppliedResponse, error)
 	mustEmbedUnimplementedDDLServiceServer()
 }

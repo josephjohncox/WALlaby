@@ -524,8 +524,9 @@ Use the admin CLI to list and approve DDL events:
 ```bash
 ./bin/wallaby-admin ddl list --status pending [--flow-id <flow-id>]
 ./bin/wallaby-admin ddl approve --id 1
-./bin/wallaby-admin ddl apply --id 1
 ```
+
+Only the data-plane runner can mark an event applied. It records a durable receipt for every DDL-executing destination and changes the event to `applied` after the complete immutable destination manifest has receipts. The administrative `ddl apply` command fails with `FailedPrecondition` when no execution receipts exist.
 
 When a DDL gate blocks a flow, WALlaby emits an OpenTelemetry event (`ddl.gated`)
 and a trace event (`ddl_gate`). It also increments the `wallaby.ddl.gated_total` metric.

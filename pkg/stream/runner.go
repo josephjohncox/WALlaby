@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,7 +66,7 @@ type Runner struct {
 	RequireDDLExecution bool
 	FailureMode         FailureMode
 	GiveUpPolicy        GiveUpPolicy
-	DDLApplied          func(ctx context.Context, flowID string, lsn string, ddl string) error
+	DDLExecutions       DDLExecutionStore
 	TraceSink           TraceSink
 }
 
@@ -91,6 +92,9 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		r.RequireDDLExecution,
 	); err != nil {
 		return fmt.Errorf("validate destination contracts: %w", err)
+	}
+	if r.RequireDDLExecution && r.DDLExecutions == nil {
+		return errors.New("automatic DDL execution requires durable execution receipt storage")
 	}
 
 	defer func() {
@@ -409,11 +413,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		span.SetAttributes(
 			attribute.Float64("destination.write_latency_ms", writeLatencyMs),
 		)
-		if err := r.markDDLApplied(batchCtx, batch.Checkpoint, ddlRecords); err != nil {
-			span.RecordError(err)
-			span.End()
-			return err
-		}
+		r.emitDDLAppliedTrace(batchCtx, batch.Checkpoint, ddlRecords)
 		r.emitCheckpointTrace(batchCtx, "deliver", batch.Checkpoint, tracePosition, spec.ActionDeliver, nil)
 		if err := r.ackAndCheckpoint(batchCtx, batch.Checkpoint, tracePosition, false); err != nil {
 			span.RecordError(err)
@@ -664,9 +664,7 @@ func (r *Runner) drainSecondaryQueues(ctx context.Context, queues []*secondaryQu
 				break
 			}
 			if pending.remaining == 1 && len(pending.ddlRecords) > 0 {
-				if err := r.markDDLApplied(ctx, pending.batch.Checkpoint, pending.ddlRecords); err != nil {
-					return progressed, err
-				}
+				r.emitDDLAppliedTrace(ctx, pending.batch.Checkpoint, pending.ddlRecords)
 			}
 			if err := queue.outbox.DeleteOutbox(ctx, r.FlowID, queue.dest.Spec.Name, pending.positionID); err != nil {
 				return progressed, fmt.Errorf("delete delivered primary-ack outbox entry for %s: %w", queue.dest.Spec.Name, err)
@@ -851,36 +849,26 @@ func ddlRecordsInBatch(batch connector.Batch) []connector.Record {
 	return records
 }
 
-func (r *Runner) markDDLApplied(ctx context.Context, checkpoint connector.Checkpoint, records []connector.Record) error {
-	if r.DDLApplied == nil || len(records) == 0 {
-		return nil
-	}
-	if checkpoint.LSN == "" {
-		return nil
+func (r *Runner) emitDDLAppliedTrace(ctx context.Context, checkpoint connector.Checkpoint, records []connector.Record) {
+	if len(records) == 0 || checkpoint.LSN == "" {
+		return
 	}
 	for _, record := range records {
 		ddlText := record.DDL
 		if ddlText == "" && len(record.DDLPlan) > 0 {
 			ddlText = string(record.DDLPlan)
 		}
-		if err := r.DDLApplied(ctx, r.FlowID, checkpoint.LSN, ddlText); err != nil {
-			if errors.Is(err, connector.ErrDDLApprovalRequired) {
-				r.handleDDLGate(ctx, trace.SpanFromContext(ctx), err)
-			}
-			return err
-		}
 		if r.TraceSink != nil {
 			r.TraceSink.Emit(ctx, TraceEvent{
 				Kind:       "ddl_applied",
 				Spec:       spec.SpecCDCFlow,
 				SpecAction: spec.ActionApplyDDL,
-				LSN:        checkpoint.LSN,
+				LSN:        ddlRecordPosition(record, checkpoint),
 				FlowID:     r.FlowID,
 				DDL:        ddlText,
 			})
 		}
 	}
-	return nil
 }
 
 func (r *Runner) handleDDLGate(ctx context.Context, span trace.Span, err error) {
@@ -976,16 +964,41 @@ func ddlGatedMetric() metric.Int64Counter {
 }
 
 func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, batch connector.Batch) error {
+	type ddlExecution struct {
+		position string
+		ddl      string
+	}
+	var executedDDL []ddlExecution
+	expectedDestinations := r.ddlExecutionDestinations()
 	if len(batch.Records) > 0 {
 		if r.RequireDDLExecution && connector.ResolveDestinationCapabilities(dest.Dest, dest.Spec).ExecutesDDL() {
+			if err := validateDDLRecordPositions(batch); err != nil {
+				return err
+			}
+			if r.DDLExecutions == nil {
+				return errors.New("automatic DDL execution requires durable execution receipt storage")
+			}
 			for _, record := range batch.Records {
 				if record.Operation != connector.OpDDL && record.DDL == "" && len(record.DDLPlan) == 0 {
+					continue
+				}
+				position := ddlRecordPosition(record, batch.Checkpoint)
+				receipted, err := r.DDLExecutions.PrepareDDLExecution(ctx, r.FlowID, position, dest.Spec.Name, expectedDestinations)
+				if err != nil {
+					return fmt.Errorf("prepare ddl execution destination %s: %w", dest.Spec.Name, err)
+				}
+				if receipted {
 					continue
 				}
 				if err := dest.Dest.ApplyDDL(ctx, batch.Schema, record); err != nil {
 					r.emitTrace(ctx, "ddl_error", batch.Checkpoint.LSN, dest.Spec.Name, spec.ActionNone, err)
 					return fmt.Errorf("apply ddl destination %s: %w", dest.Spec.Name, err)
 				}
+				ddlText := record.DDL
+				if ddlText == "" && len(record.DDLPlan) > 0 {
+					ddlText = string(record.DDLPlan)
+				}
+				executedDDL = append(executedDDL, ddlExecution{position: position, ddl: ddlText})
 				r.Meters.RecordDestinationDDL(ctx, string(dest.Spec.Type))
 			}
 		}
@@ -1002,6 +1015,18 @@ func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, b
 	if err := dest.Dest.Write(ctx, destBatch); err != nil {
 		r.emitTrace(ctx, "write_error", batch.Checkpoint.LSN, dest.Spec.Name, spec.ActionWriteFail, err)
 		return fmt.Errorf("write destination %s: %w", dest.Spec.Name, err)
+	}
+	for _, execution := range executedDDL {
+		if err := r.DDLExecutions.RecordDDLExecution(
+			ctx,
+			r.FlowID,
+			execution.position,
+			execution.ddl,
+			dest.Spec.Name,
+			expectedDestinations,
+		); err != nil {
+			return fmt.Errorf("persist ddl receipt destination %s: %w", dest.Spec.Name, err)
+		}
 	}
 	r.emitTrace(ctx, "write", batch.Checkpoint.LSN, dest.Spec.Name, spec.ActionNone, nil)
 	r.Meters.RecordDestinationWriteCount(ctx, string(dest.Spec.Type))
@@ -1021,6 +1046,48 @@ func (r *Runner) emitCheckpointTrace(ctx context.Context, kind string, checkpoin
 		return
 	}
 	r.emitTracePosition(ctx, kind, "", positionID, "", specAction, err)
+}
+
+func validateDDLRecordPositions(batch connector.Batch) error {
+	positions := make(map[string]struct{})
+	for _, record := range ddlRecordsInBatch(batch) {
+		position := ddlRecordPosition(record, batch.Checkpoint)
+		if strings.TrimSpace(position) == "" {
+			return errors.New("DDL record requires a durable source position")
+		}
+		if _, duplicate := positions[position]; duplicate {
+			return fmt.Errorf("multiple DDL records share source position %q", position)
+		}
+		positions[position] = struct{}{}
+	}
+	return nil
+}
+
+func ddlRecordPosition(record connector.Record, checkpoint connector.Checkpoint) string {
+	if record.SourcePosition != "" {
+		return record.SourcePosition
+	}
+	return checkpoint.LSN
+}
+
+func (r *Runner) ddlExecutionDestinations() []string {
+	seen := make(map[string]struct{}, len(r.Destinations))
+	destinations := make([]string, 0, len(r.Destinations))
+	for _, destination := range r.Destinations {
+		if destination.Dest == nil || destination.Spec.Name == "" {
+			continue
+		}
+		capabilities := connector.ResolveDestinationCapabilities(destination.Dest, destination.Spec)
+		if !capabilities.ExecutesDDL() {
+			continue
+		}
+		if _, ok := seen[destination.Spec.Name]; ok {
+			continue
+		}
+		seen[destination.Spec.Name] = struct{}{}
+		destinations = append(destinations, destination.Spec.Name)
+	}
+	return destinations
 }
 
 func (r *Runner) emitTrace(ctx context.Context, kind, lsn, destination string, specAction spec.Action, err error) {

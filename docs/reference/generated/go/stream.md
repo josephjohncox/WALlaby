@@ -15,6 +15,7 @@ Package stream delivers source batches to destinations, persists checkpoints, ap
 - [func ValidateDestinationContracts\(destinations \[\]DestinationConfig, ackPolicy AckPolicy, primaryDestination string, requireDDLExecution bool\) error](<#ValidateDestinationContracts>)
 - [func ValidateTrace\(events \[\]TraceEvent, opts TraceValidationOptions\) error](<#ValidateTrace>)
 - [type AckPolicy](<#AckPolicy>)
+- [type DDLExecutionStore](<#DDLExecutionStore>)
 - [type DestinationConfig](<#DestinationConfig>)
 - [type FailureMode](<#FailureMode>)
 - [type GiveUpPolicy](<#GiveUpPolicy>)
@@ -74,8 +75,28 @@ const (
 )
 ```
 
+<a name="DDLExecutionStore"></a>
+## type [DDLExecutionStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/ddl_execution.go#L7-L18>)
+
+DDLExecutionStore establishes immutable destination manifests before DDL side effects and persists per\-destination execution receipts afterward.
+
+```go
+type DDLExecutionStore interface {
+    PrepareDDLExecution(
+        ctx context.Context,
+        flowID, position, destination string,
+        expectedDestinations []string,
+    ) (alreadyExecuted bool, err error)
+    RecordDDLExecution(
+        ctx context.Context,
+        flowID, position, ddl, destination string,
+        expectedDestinations []string,
+    ) error
+}
+```
+
 <a name="DestinationConfig"></a>
-## type [DestinationConfig](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L32-L35>)
+## type [DestinationConfig](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L33-L36>)
 
 DestinationConfig binds a destination to its spec.
 
@@ -181,7 +202,7 @@ func (s *MemoryTraceSink) Events() []TraceEvent
 Events returns a snapshot of captured events.
 
 <a name="Runner"></a>
-## type [Runner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L48-L70>)
+## type [Runner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L49-L71>)
 
 Runner streams data from a source to destinations.
 
@@ -206,13 +227,13 @@ type Runner struct {
     RequireDDLExecution bool
     FailureMode         FailureMode
     GiveUpPolicy        GiveUpPolicy
-    DDLApplied          func(ctx context.Context, flowID string, lsn string, ddl string) error
+    DDLExecutions       DDLExecutionStore
     TraceSink           TraceSink
 }
 ```
 
 <a name="Runner.Run"></a>
-### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L74>)
+### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L75>)
 
 ```go
 func (r *Runner) Run(ctx context.Context) (retErr error)
@@ -221,7 +242,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error)
 Run executes the streaming loop until context cancellation or error. It requires a stable flow ID and durable checkpoint storage before acknowledging the source.
 
 <a name="StagingResolver"></a>
-## type [StagingResolver](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L38-L40>)
+## type [StagingResolver](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L39-L41>)
 
 StagingResolver is implemented by destinations that can resolve staging tables.
 
@@ -232,7 +253,7 @@ type StagingResolver interface {
 ```
 
 <a name="StagingResolverFor"></a>
-## type [StagingResolverFor](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L43-L45>)
+## type [StagingResolverFor](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L44-L46>)
 
 StagingResolverFor lets destinations resolve staging tables for known schemas.
 

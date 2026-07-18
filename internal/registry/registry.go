@@ -2,9 +2,11 @@ package registry
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,6 +34,14 @@ type Store interface {
 	GetDDL(ctx context.Context, id int64) (DDLEvent, error)
 	GetDDLByLSN(ctx context.Context, flowID string, lsn string) (DDLEvent, error)
 	ListDDL(ctx context.Context, flowID string, status string) ([]DDLEvent, error)
+}
+
+// DDLExecutionStore establishes immutable execution manifests and persists
+// replay-safe per-destination execution receipts.
+type DDLExecutionStore interface {
+	Store
+	PrepareDDLExecution(ctx context.Context, flowID, lsn, destination string, expectedDestinations []string) (bool, error)
+	RecordDDLExecution(ctx context.Context, flowID, lsn, ddl, destination string, expectedDestinations []string) error
 }
 
 // PostgresStore stores registry data in Postgres.
@@ -86,6 +96,9 @@ func (p *PostgresStore) RecordDDL(ctx context.Context, flowID string, ddl string
 	if status == "" {
 		status = StatusPending
 	}
+	if status == StatusApplied {
+		return 0, ErrExecutionReceiptRequired
+	}
 	planJSON, err := json.Marshal(plan)
 	if err != nil {
 		return 0, fmt.Errorf("marshal plan: %w", err)
@@ -114,6 +127,9 @@ func (p *PostgresStore) RecordCatalogChange(
 ) (int64, error) {
 	if status == "" {
 		status = StatusPending
+	}
+	if status == StatusApplied {
+		return 0, ErrExecutionReceiptRequired
 	}
 	planJSON, err := json.Marshal(plan)
 	if err != nil {
@@ -181,12 +197,44 @@ func (p *PostgresStore) RecordCatalogChange(
 }
 
 func (p *PostgresStore) SetDDLStatus(ctx context.Context, id int64, status string) error {
-	_, err := p.pool.Exec(ctx,
-		"UPDATE ddl_events SET status = $2, applied_at = $3 WHERE id = $1",
-		id, status, appliedAt(status),
-	)
+	if status == StatusApplied {
+		return ErrExecutionReceiptRequired
+	}
+	tx, err := p.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("update ddl status: %w", err)
+		return fmt.Errorf("begin DDL status update: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	event, err := scanDDLEvent(tx.QueryRow(ctx,
+		`SELECT id, flow_id, ddl, plan_json, lsn, status, created_at, applied_at
+		 FROM ddl_events WHERE id = $1 FOR UPDATE`,
+		id,
+	))
+	if err != nil {
+		return err
+	}
+	if event.Status == StatusApplied {
+		return ErrAppliedStatusImmutable
+	}
+	var executionStarted bool
+	if err := tx.QueryRow(ctx,
+		"SELECT EXISTS (SELECT 1 FROM ddl_execution_manifests WHERE event_id = $1)",
+		id,
+	).Scan(&executionStarted); err != nil {
+		return fmt.Errorf("check DDL execution start: %w", err)
+	}
+	if executionStarted {
+		return ErrDDLExecutionStarted
+	}
+	if _, err := tx.Exec(ctx,
+		"UPDATE ddl_events SET status = $2, applied_at = NULL WHERE id = $1",
+		id, status,
+	); err != nil {
+		return fmt.Errorf("set DDL status: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit DDL status update: %w", err)
 	}
 	return nil
 }
@@ -275,6 +323,220 @@ func (p *PostgresStore) GetDDLByLSN(ctx context.Context, flowID string, lsn stri
 	query += " ORDER BY id DESC LIMIT 1"
 	row := p.pool.QueryRow(ctx, query, args...)
 	return scanDDLEvent(row)
+}
+
+// PrepareDDLExecution atomically fixes the destination manifest before any
+// downstream side effect and reports whether this destination already has a
+// durable receipt.
+func (p *PostgresStore) PrepareDDLExecution(
+	ctx context.Context,
+	flowID, lsn, destination string,
+	expectedDestinations []string,
+) (bool, error) {
+	expected := normalizedDestinations(expectedDestinations)
+	if strings.TrimSpace(lsn) == "" || strings.TrimSpace(destination) == "" || len(expected) == 0 {
+		return false, errors.New("DDL execution flow position, destination, and manifest are required")
+	}
+	if !containsDestination(expected, destination) {
+		return false, fmt.Errorf("DDL destination %q is not in the execution manifest", destination)
+	}
+
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin DDL execution preparation: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	query := `SELECT id, flow_id, ddl, plan_json, lsn, status, created_at, applied_at
+		FROM ddl_events WHERE lsn = $1`
+	args := []any{lsn}
+	if flowID != "" {
+		query += " AND flow_id = $2"
+		args = append(args, flowID)
+	}
+	query += " ORDER BY id DESC LIMIT 1 FOR UPDATE"
+	event, err := scanDDLEvent(tx.QueryRow(ctx, query, args...))
+	if err != nil {
+		return false, err
+	}
+	if event.Status != StatusApproved && event.Status != StatusApplied {
+		return false, &connector.DDLGateError{
+			FlowID: flowID, LSN: lsn, DDL: event.DDL,
+			Status: event.Status, EventID: event.ID,
+		}
+	}
+
+	manifestHash := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(expected, "\x00"))))
+	var storedDestinations []string
+	var storedManifestHash string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO ddl_execution_manifests (event_id, destinations, manifest_hash)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (event_id) DO UPDATE
+		 SET manifest_hash = ddl_execution_manifests.manifest_hash
+		 RETURNING destinations, manifest_hash`,
+		event.ID, expected, manifestHash,
+	).Scan(&storedDestinations, &storedManifestHash); err != nil {
+		return false, fmt.Errorf("prepare DDL execution manifest: %w", err)
+	}
+	if storedManifestHash != manifestHash || !equalDestinations(storedDestinations, expected) {
+		return false, ErrExecutionManifestChanged
+	}
+
+	var exists bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (
+		   SELECT 1 FROM ddl_execution_receipts
+		   WHERE event_id = $1 AND destination = $2
+		 )`,
+		event.ID, destination,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check DDL execution receipt: %w", err)
+	}
+	if event.Status == StatusApplied && !exists {
+		return false, ErrAppliedReceiptMissing
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit DDL execution preparation: %w", err)
+	}
+	return exists, nil
+}
+
+// RecordDDLExecution stores one destination receipt and marks the DDL event
+// applied only when every destination in the immutable execution manifest has
+// a receipt. Receipt insertion and the applied transition share one transaction.
+func (p *PostgresStore) RecordDDLExecution(
+	ctx context.Context,
+	flowID, lsn, ddl, destination string,
+	expectedDestinations []string,
+) error {
+	expected := normalizedDestinations(expectedDestinations)
+	if strings.TrimSpace(destination) == "" || len(expected) == 0 {
+		return errors.New("DDL execution destination manifest is required")
+	}
+	if !containsDestination(expected, destination) {
+		return fmt.Errorf("DDL destination %q is not in the execution manifest", destination)
+	}
+
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin DDL execution receipt: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	query := `SELECT id, flow_id, ddl, plan_json, lsn, status, created_at, applied_at
+		FROM ddl_events WHERE lsn = $1`
+	args := []any{lsn}
+	if flowID != "" {
+		query += " AND flow_id = $2"
+		args = append(args, flowID)
+	}
+	query += " ORDER BY id DESC LIMIT 1 FOR UPDATE"
+	event, err := scanDDLEvent(tx.QueryRow(ctx, query, args...))
+	if err != nil {
+		return err
+	}
+	if event.Status != StatusApproved && event.Status != StatusApplied {
+		return &connector.DDLGateError{
+			FlowID: flowID, LSN: lsn, DDL: event.DDL,
+			Status: event.Status, EventID: event.ID,
+		}
+	}
+
+	manifestHash := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(expected, "\x00"))))
+	var storedManifestHash string
+	var storedDestinations []string
+	if err := tx.QueryRow(ctx,
+		`SELECT destinations, manifest_hash
+		 FROM ddl_execution_manifests WHERE event_id = $1`,
+		event.ID,
+	).Scan(&storedDestinations, &storedManifestHash); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrDDLExecutionNotPrepared
+		}
+		return fmt.Errorf("read prepared DDL execution manifest: %w", err)
+	}
+	if storedManifestHash != manifestHash || !equalDestinations(storedDestinations, expected) {
+		return ErrExecutionManifestChanged
+	}
+
+	ddlText := ddl
+	if ddlText == "" {
+		ddlText = event.DDL
+	}
+	receiptHash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf(
+		"%d\x00%s\x00%s\x00%s\x00%s", event.ID, flowID, lsn, destination, ddlText,
+	))))
+	var storedReceiptHash string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO ddl_execution_receipts (
+		   event_id, destination, flow_id, lsn, receipt_hash
+		 ) VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (event_id, destination) DO UPDATE
+		 SET receipt_hash = ddl_execution_receipts.receipt_hash
+		 RETURNING receipt_hash`,
+		event.ID, destination, flowIDOrNull(flowID), lsn, receiptHash,
+	).Scan(&storedReceiptHash); err != nil {
+		return fmt.Errorf("persist DDL execution receipt: %w", err)
+	}
+	if storedReceiptHash != receiptHash {
+		return fmt.Errorf("conflicting DDL execution receipt for destination %q", destination)
+	}
+
+	var receiptCount int
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM ddl_execution_receipts
+		 WHERE event_id = $1 AND destination = ANY($2::text[])`,
+		event.ID, expected,
+	).Scan(&receiptCount); err != nil {
+		return fmt.Errorf("count DDL execution receipts: %w", err)
+	}
+	if receiptCount == len(expected) {
+		if _, err := tx.Exec(ctx,
+			"UPDATE ddl_events SET status = $2, applied_at = now() WHERE id = $1",
+			event.ID, StatusApplied,
+		); err != nil {
+			return fmt.Errorf("mark DDL applied from execution receipts: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit DDL execution receipt: %w", err)
+	}
+	return nil
+}
+
+func normalizedDestinations(destinations []string) []string {
+	set := make(map[string]struct{}, len(destinations))
+	for _, destination := range destinations {
+		if destination = strings.TrimSpace(destination); destination != "" {
+			set[destination] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(set))
+	for destination := range set {
+		result = append(result, destination)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func containsDestination(destinations []string, target string) bool {
+	index := sort.SearchStrings(destinations, target)
+	return index < len(destinations) && destinations[index] == target
+}
+
+func equalDestinations(left, right []string) bool {
+	left = normalizedDestinations(left)
+	right = normalizedDestinations(right)
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 // DDLEvent captures a DDL change request.
@@ -430,41 +692,58 @@ func flowIDOrNull(flowID string) interface{} {
 	return flowID
 }
 
-// MarkDDLAppliedByLSN updates a DDL event to applied for the given LSN.
-func MarkDDLAppliedByLSN(ctx context.Context, store Store, flowID string, lsn string) error {
-	if store == nil || strings.TrimSpace(lsn) == "" {
-		return nil
+// PrepareDDLExecution fixes the manifest and checks replay state through the
+// receipt-capable store before downstream execution.
+func PrepareDDLExecution(
+	ctx context.Context,
+	store Store,
+	flowID, lsn, destination string,
+	expectedDestinations []string,
+) (bool, error) {
+	receipts, ok := store.(DDLExecutionStore)
+	if !ok {
+		return false, ErrExecutionReceiptRequired
 	}
-	event, err := store.GetDDLByLSN(ctx, flowID, lsn)
+	exists, err := receipts.PrepareDDLExecution(ctx, flowID, lsn, destination, expectedDestinations)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil
-		}
-		return err
+		return false, fmt.Errorf("prepare DDL execution: %w", err)
 	}
-	if event.Status == StatusApplied || event.Status == StatusRejected {
-		return nil
-	}
-	if event.Status != StatusApproved {
-		return &connector.DDLGateError{
-			FlowID:  flowID,
-			LSN:     lsn,
-			DDL:     event.DDL,
-			Status:  event.Status,
-			EventID: event.ID,
-		}
-	}
-	return store.SetDDLStatus(ctx, event.ID, StatusApplied)
+	return exists, nil
 }
 
-func appliedAt(status string) interface{} {
-	if status == StatusApplied {
-		return time.Now().UTC()
+// RecordDDLExecution persists one destination receipt and advances the registry
+// only after the complete immutable destination manifest has receipts.
+func RecordDDLExecution(
+	ctx context.Context,
+	store Store,
+	flowID, lsn, ddl, destination string,
+	expectedDestinations []string,
+) error {
+	receipts, ok := store.(DDLExecutionStore)
+	if !ok {
+		return ErrExecutionReceiptRequired
+	}
+	if err := receipts.RecordDDLExecution(ctx, flowID, lsn, ddl, destination, expectedDestinations); err != nil {
+		return fmt.Errorf("record DDL execution receipt: %w", err)
 	}
 	return nil
 }
 
-var ErrNotFound = errors.New("registry entry not found")
+// MarkDDLAppliedByLSN is retained as a fail-closed compatibility shim. Applied
+// transitions require destination execution receipts.
+func MarkDDLAppliedByLSN(context.Context, Store, string, string) error {
+	return ErrExecutionReceiptRequired
+}
+
+var (
+	ErrNotFound                 = errors.New("registry entry not found")
+	ErrExecutionReceiptRequired = errors.New("DDL applied status requires execution receipts")
+	ErrAppliedStatusImmutable   = errors.New("receipt-backed DDL applied status is immutable")
+	ErrAppliedReceiptMissing    = errors.New("applied DDL event is missing a destination execution receipt")
+	ErrExecutionManifestChanged = errors.New("DDL execution destination manifest changed during replay")
+	ErrDDLExecutionStarted      = errors.New("DDL execution has started; administrative status is immutable")
+	ErrDDLExecutionNotPrepared  = errors.New("DDL execution manifest was not prepared before destination execution")
+)
 
 // ErrApprovalRequired indicates DDL gating requires approval before continuing.
 var ErrApprovalRequired = connector.ErrDDLApprovalRequired

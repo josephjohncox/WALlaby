@@ -597,15 +597,15 @@ const file_wallaby_v1_ddl_proto_rawDesc = "" +
 	"\x15MarkDDLAppliedRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\"D\n" +
 	"\x16MarkDDLAppliedResponse\x12*\n" +
-	"\x05event\x18\x01 \x01(\v2\x14.wallaby.v1.DDLEventR\x05event2\x99\x03\n" +
+	"\x05event\x18\x01 \x01(\v2\x14.wallaby.v1.DDLEventR\x05event2\x9e\x03\n" +
 	"\n" +
 	"DDLService\x12W\n" +
 	"\x0eListPendingDDL\x12!.wallaby.v1.ListPendingDDLRequest\x1a\".wallaby.v1.ListPendingDDLResponse\x12B\n" +
 	"\aListDDL\x12\x1a.wallaby.v1.ListDDLRequest\x1a\x1b.wallaby.v1.ListDDLResponse\x12K\n" +
 	"\n" +
 	"ApproveDDL\x12\x1d.wallaby.v1.ApproveDDLRequest\x1a\x1e.wallaby.v1.ApproveDDLResponse\x12H\n" +
-	"\tRejectDDL\x12\x1c.wallaby.v1.RejectDDLRequest\x1a\x1d.wallaby.v1.RejectDDLResponse\x12W\n" +
-	"\x0eMarkDDLApplied\x12!.wallaby.v1.MarkDDLAppliedRequest\x1a\".wallaby.v1.MarkDDLAppliedResponseB>Z<github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabypbb\x06proto3"
+	"\tRejectDDL\x12\x1c.wallaby.v1.RejectDDLRequest\x1a\x1d.wallaby.v1.RejectDDLResponse\x12\\\n" +
+	"\x0eMarkDDLApplied\x12!.wallaby.v1.MarkDDLAppliedRequest\x1a\".wallaby.v1.MarkDDLAppliedResponse\"\x03\x88\x02\x01B>Z<github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabypbb\x06proto3"
 
 var (
 	file_wallaby_v1_ddl_proto_rawDescOnce sync.Once

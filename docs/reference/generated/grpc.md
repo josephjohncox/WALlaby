@@ -736,7 +736,8 @@ CheckpointService reads and writes durable flow positions.
 <a name="wallaby-v1-DDLService"></a>
 
 ### DDLService
-DDLService lists schema changes and manages approval and application state.
+DDLService lists schema changes and manages approval state. Applied state is
+advanced only by durable data-plane execution receipts.
 
 | Method Name | Request Type | Response Type | Description |
 | ----------- | ------------ | ------------- | ------------|
@@ -744,7 +745,7 @@ DDLService lists schema changes and manages approval and application state.
 | ListDDL | [ListDDLRequest](#wallaby-v1-ListDDLRequest) | [ListDDLResponse](#wallaby-v1-ListDDLResponse) |  |
 | ApproveDDL | [ApproveDDLRequest](#wallaby-v1-ApproveDDLRequest) | [ApproveDDLResponse](#wallaby-v1-ApproveDDLResponse) |  |
 | RejectDDL | [RejectDDLRequest](#wallaby-v1-RejectDDLRequest) | [RejectDDLResponse](#wallaby-v1-RejectDDLResponse) |  |
-| MarkDDLApplied | [MarkDDLAppliedRequest](#wallaby-v1-MarkDDLAppliedRequest) | [MarkDDLAppliedResponse](#wallaby-v1-MarkDDLAppliedResponse) |  |
+| MarkDDLApplied | [MarkDDLAppliedRequest](#wallaby-v1-MarkDDLAppliedRequest) | [MarkDDLAppliedResponse](#wallaby-v1-MarkDDLAppliedResponse) | Deprecated: administrative applied transitions are rejected. |
 
 
 

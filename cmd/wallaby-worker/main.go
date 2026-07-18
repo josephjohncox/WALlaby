@@ -280,11 +280,7 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		defer func() { _ = traceFile.Close() }()
 		flowRunner.TraceSink = stream.NewJSONTraceSink(traceFile)
 	}
-	if registryStore != nil {
-		flowRunner.DDLApplied = func(ctx context.Context, flowID string, lsn string, _ string) error {
-			return registry.MarkDDLAppliedByLSN(ctx, registryStore, flowID, lsn)
-		}
-	}
+	flowRunner.DDLExecutions = registryStore
 	if flowRunner.WireFormat == "" && cfg.Wire.DefaultFormat != "" {
 		flowRunner.WireFormat = connector.WireFormat(cfg.Wire.DefaultFormat)
 	}

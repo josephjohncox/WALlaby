@@ -91,7 +91,7 @@ func run(goCommand, outputPath, expectedPath string) error {
 		return fmt.Errorf("go test exited with status %d", returnCode)
 	}
 	if len(missingPackages) > 0 || len(missing) > 0 {
-		return errors.New("Go test completeness check failed")
+		return errors.New("go test completeness check failed")
 	}
 	return nil
 }
@@ -126,10 +126,11 @@ func enumerateTests(goCommand string) (map[string]map[string]struct{}, error) {
 }
 
 func runTests(goCommand, outputPath string) (int, map[string]struct{}, map[string]map[string]struct{}, error) {
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o750); err != nil {
 		return 0, nil, nil, fmt.Errorf("create Go test results directory: %w", err)
 	}
-	output, err := os.Create(outputPath)
+	// #nosec G304 -- the result path is explicit operator or CI configuration.
+	output, err := os.OpenFile(filepath.Clean(outputPath), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("create Go test results: %w", err)
 	}
@@ -191,7 +192,7 @@ func consumeCommand(command *exec.Cmd, copyTo io.Writer, consume func(testEvent)
 }
 
 func writeExpected(path string, packages map[string]struct{}, tests map[string]map[string]struct{}) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("create expected results directory: %w", err)
 	}
 	payload := expectedResults{Packages: sortedSet(packages), Tests: make(map[string][]string, len(tests))}
@@ -203,7 +204,8 @@ func writeExpected(path string, packages map[string]struct{}, tests map[string]m
 		return fmt.Errorf("encode expected Go tests: %w", err)
 	}
 	encoded = append(encoded, '\n')
-	if err := os.WriteFile(path, encoded, 0o644); err != nil {
+	// #nosec G304 -- the manifest path is explicit operator or CI configuration.
+	if err := os.WriteFile(filepath.Clean(path), encoded, 0o600); err != nil {
 		return fmt.Errorf("write expected Go tests: %w", err)
 	}
 	return nil

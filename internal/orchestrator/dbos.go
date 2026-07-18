@@ -41,7 +41,7 @@ type Config struct {
 	AdminPort     int
 	Tracer        trace.Tracer
 	Meters        *telemetry.Meters
-	DDLApplied    func(ctx context.Context, flowID string, lsn string, ddl string) error
+	DDLExecutions stream.DDLExecutionStore
 	TraceSink     stream.TraceSink
 	TracePath     string
 }
@@ -67,7 +67,7 @@ type DBOSOrchestrator struct {
 	strictWire    bool
 	tracer        trace.Tracer
 	meters        *telemetry.Meters
-	ddlApplied    func(ctx context.Context, flowID string, lsn string, ddl string) error
+	ddlExecutions stream.DDLExecutionStore
 	traceSink     stream.TraceSink
 	tracePath     string
 }
@@ -120,7 +120,7 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Lifecy
 		strictWire:    cfg.StrictWire,
 		tracer:        cfg.Tracer,
 		meters:        cfg.Meters,
-		ddlApplied:    cfg.DDLApplied,
+		ddlExecutions: cfg.DDLExecutions,
 		traceSink:     cfg.TraceSink,
 		tracePath:     cfg.TracePath,
 	}
@@ -313,7 +313,8 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunIn
 	flowRunner := runner.FlowRunner{
 		Engine: o.engine, Checkpoints: o.checkpoints, Tracer: tracer, Meters: o.meters,
 		WireFormat: o.defaultWire, StrictWire: o.strictWire, MaxEmpty: maxEmptyReads,
-		DDLApplied: o.ddlApplied, TraceSink: traceSink, ExecutionBackend: "dbos",
+		DDLExecutions: o.ddlExecutions,
+		TraceSink:     traceSink, ExecutionBackend: "dbos",
 		ExecutionID: executionID, ExpectedGeneration: input.Generation,
 	}
 	if err := flowRunner.Run(ctx, f, source, destinations); err != nil {

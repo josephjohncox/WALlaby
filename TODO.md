@@ -7,10 +7,12 @@
   - [x] Validate acknowledgement and DDL policies before opening connectors or starting execution.
   - [x] Add table-driven capability and invalid-flow contract tests.
 - [ ] **P0 — DDL execution receipt/outbox**
-  - [ ] Persist replay-safe destination DDL execution receipts.
-  - [ ] Couple receipt persistence, registry transition, and checkpoint advancement through one durable protocol.
-  - [ ] Reject administrative `applied` transitions without an execution receipt.
-  - [ ] Add crash-boundary, replay, and integration tests.
+  - [x] Persist replay-safe destination DDL execution receipts and immutable destination manifests.
+  - [x] Couple receipt persistence, registry transition, and checkpoint advancement through one recoverable protocol.
+  - [x] Reject administrative `applied` transitions without an execution receipt.
+  - [x] Add receipt-before-checkpoint crash recovery, replay, and integration tests.
+  - [x] Preserve per-record source positions and validate immutable manifests before destination execution.
+  - [ ] Add destination-specific reconciliation for the external-commit-before-receipt window.
 - [x] **P1 — Connector support matrix**
   - [x] Classify every connector as maintained, experimental, deprecated, or placeholder.
   - [x] Require restart, replay, schema-evolution, and integration contracts before maintained status.

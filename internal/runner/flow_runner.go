@@ -35,7 +35,7 @@ type FlowRunner struct {
 	MaxEmpty           int
 	Parallelism        int
 	ResolveStaging     bool
-	DDLApplied         func(ctx context.Context, flowID string, lsn string, ddl string) error
+	DDLExecutions      stream.DDLExecutionStore
 	TraceSink          stream.TraceSink
 	ExecutionBackend   string
 	ExecutionID        string
@@ -81,7 +81,7 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		MaxEmptyReads:      r.MaxEmpty,
 		DefaultParallelism: r.Parallelism,
 		ResolveStaging:     r.ResolveStaging,
-		DDLApplied:         r.DDLApplied,
+		DDLExecutions:      r.DDLExecutions,
 		TraceSink:          r.TraceSink,
 	})
 	if err != nil {

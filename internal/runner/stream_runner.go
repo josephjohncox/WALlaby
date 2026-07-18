@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/josephjohncox/wallaby/internal/flow"
@@ -22,7 +21,7 @@ type StreamRunnerConfig struct {
 	MaxEmptyReads      int
 	DefaultParallelism int
 	ResolveStaging     bool
-	DDLApplied         func(ctx context.Context, flowID string, lsn string, ddl string) error
+	DDLExecutions      stream.DDLExecutionStore
 	TraceSink          stream.TraceSink
 }
 
@@ -89,6 +88,9 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 	); err != nil {
 		return stream.Runner{}, fmt.Errorf("validate flow destination contracts: %w", err)
 	}
+	if requireDDLExecution && cfg.DDLExecutions == nil {
+		return stream.Runner{}, fmt.Errorf("automatic DDL execution requires durable execution receipt storage")
+	}
 
 	return stream.Runner{
 		Source:              source,
@@ -109,7 +111,7 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 		RequireDDLExecution: requireDDLExecution,
 		FailureMode:         f.Config.FailureMode,
 		GiveUpPolicy:        f.Config.GiveUpPolicy,
-		DDLApplied:          cfg.DDLApplied,
+		DDLExecutions:       cfg.DDLExecutions,
 		TraceSink:           cfg.TraceSink,
 	}, nil
 }
