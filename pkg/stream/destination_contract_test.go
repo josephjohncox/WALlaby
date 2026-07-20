@@ -30,10 +30,31 @@ func TestValidateDestinationContracts(t *testing.T) {
 		wantError  string
 	}{
 		{
-			name: "all acknowledgement accepts declared non-lossy at-least-once destination",
+			name: "all acknowledgement accepts one declared at-least-once destination",
 			dests: []DestinationConfig{{
 				Spec: connector.Spec{Name: "sink", Type: connector.EndpointHTTP},
 				Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true}}},
+			}},
+		},
+		{
+			name: "all acknowledgement rejects unsafe fan-out",
+			dests: []DestinationConfig{
+				{
+					Spec: connector.Spec{Name: "safe", Type: connector.EndpointPostgres},
+					Dest: contractDestination{capabilities: safeSecondary},
+				},
+				{
+					Spec: connector.Spec{Name: "unsafe", Type: connector.EndpointHTTP},
+					Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true}}},
+				},
+			},
+			wantError: "all acknowledgement fan-out requires replay-safe idempotent",
+		},
+		{
+			name: "all acknowledgement accepts replay-safe idempotent destination",
+			dests: []DestinationConfig{{
+				Spec: connector.Spec{Name: "sink", Type: connector.EndpointPostgres},
+				Dest: contractDestination{capabilities: safeSecondary},
 			}},
 		},
 		{

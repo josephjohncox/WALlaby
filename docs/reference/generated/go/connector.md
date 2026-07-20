@@ -14,12 +14,14 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 
 - [Constants](<#constants>)
 - [Variables](<#variables>)
+- [func BatchContentHash\(batch Batch\) \(string, error\)](<#BatchContentHash>)
 - [func CanonicalizeCheckpointPosition\(raw string\) \(string, error\)](<#CanonicalizeCheckpointPosition>)
 - [func CheckpointPositionID\(checkpoint Checkpoint\) \(string, error\)](<#CheckpointPositionID>)
 - [func CompareCheckpointLSN\(left, right string\) \(int, error\)](<#CompareCheckpointLSN>)
 - [func NormalizeKeyForSchema\(schema Schema, key map\[string\]any\) \(map\[string\]any, error\)](<#NormalizeKeyForSchema>)
 - [func NormalizePostgresRecord\(schema Schema, values map\[string\]any\) error](<#NormalizePostgresRecord>)
 - [func NormalizeSourceMode\(raw string\) \(string, error\)](<#NormalizeSourceMode>)
+- [func ValidateBatch\(batch Batch\) error](<#ValidateBatch>)
 - [type Batch](<#Batch>)
 - [type Capabilities](<#Capabilities>)
   - [func ResolveDestinationCapabilities\(destination Destination, spec Spec\) Capabilities](<#ResolveDestinationCapabilities>)
@@ -97,6 +99,21 @@ var (
 )
 ```
 
+<a name="ErrInvalidBatch"></a>ErrInvalidBatch identifies a connector batch that cannot be interpreted against one table\-level schema without reordering or guessing.
+
+```go
+var ErrInvalidBatch = errors.New("invalid connector batch")
+```
+
+<a name="BatchContentHash"></a>
+## func [BatchContentHash](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/hash.go#L37>)
+
+```go
+func BatchContentHash(batch Batch) (string, error)
+```
+
+BatchContentHash returns a deterministic, type\-sensitive SHA\-256 identity for a logical connector batch. Map iteration order and checkpoint observation timestamps do not affect the result. The encoding is the compatibility format historically used by the durable checkpoint outbox.
+
 <a name="CanonicalizeCheckpointPosition"></a>
 ## func [CanonicalizeCheckpointPosition](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/checkpoint.go#L25>)
 
@@ -152,6 +169,15 @@ func NormalizeSourceMode(raw string) (string, error)
 NormalizeSourceMode normalizes and validates source modes for worker flow sources.
 
 It is case\-insensitive, trims whitespace, and defaults empty values to cdc.
+
+<a name="ValidateBatch"></a>
+## func [ValidateBatch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/batch_validation.go#L19>)
+
+```go
+func ValidateBatch(batch Batch) error
+```
+
+ValidateBatch enforces the source\-to\-runner batch contract. Data batches describe exactly one table and one logical schema. DDL/control records may be grouped together, but never with data records. Tableless control batches are valid because PostgreSQL logical messages carry ordered DDL text and a source position without relation metadata. A zero record schema version is treated as inherited from Batch.Schema for adapters that omit the redundant field.
 
 <a name="Batch"></a>
 ## type [Batch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L121-L126>)

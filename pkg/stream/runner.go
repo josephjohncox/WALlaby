@@ -302,6 +302,14 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			}
 			continue
 		}
+		if err := connector.ValidateBatch(batch); err != nil {
+			validationErr := fmt.Errorf("validate source batch: %w", err)
+			r.emitTrace(batchCtx, "read_error", batch.Checkpoint.LSN, "", spec.ActionReadFail, validationErr)
+			r.Meters.RecordError(ctx, "source_batch_validation")
+			span.RecordError(validationErr)
+			span.End()
+			return validationErr
+		}
 		readFailures = 0
 		if len(batch.Records) == 0 && !shouldPersistCheckpoint(batch.Checkpoint) {
 			// Sources may emit an empty heartbeat before they have a durable
@@ -595,19 +603,24 @@ func (r *Runner) partitionDestinations() (DestinationConfig, []DestinationConfig
 }
 
 func (r *Runner) writeWithRetry(ctx context.Context, batch connector.Batch, dests []DestinationConfig) error {
+	remaining := append([]DestinationConfig(nil), dests...)
 	attempts := 0
 	for {
-		if err := r.writeDestinations(ctx, batch, dests); err != nil {
-			attempts++
-			if r.shouldGiveUp(attempts) {
-				return err
-			}
-			if err := r.sleepRetry(ctx); err != nil {
-				return err
-			}
-			continue
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		return nil
+		result := r.attemptDestinations(ctx, batch, remaining)
+		if result.err == nil {
+			return nil
+		}
+		remaining = result.remaining
+		attempts++
+		if r.shouldGiveUp(attempts) {
+			return result.err
+		}
+		if err := r.sleepRetry(ctx); err != nil {
+			return err
+		}
 	}
 }
 
@@ -795,9 +808,17 @@ func shouldPersistCheckpoint(cp connector.Checkpoint) bool {
 	return cp.LSN != "" || len(cp.Metadata) > 0
 }
 
-func (r *Runner) writeDestinations(ctx context.Context, batch connector.Batch, dests []DestinationConfig) error {
+type destinationAttemptResult struct {
+	remaining []DestinationConfig
+	err       error
+}
+
+func (r *Runner) attemptDestinations(ctx context.Context, batch connector.Batch, dests []DestinationConfig) destinationAttemptResult {
 	if len(dests) == 0 {
-		return nil
+		return destinationAttemptResult{}
+	}
+	if err := ctx.Err(); err != nil {
+		return destinationAttemptResult{remaining: append([]DestinationConfig(nil), dests...), err: err}
 	}
 
 	parallelism := r.Parallelism
@@ -805,12 +826,21 @@ func (r *Runner) writeDestinations(ctx context.Context, batch connector.Batch, d
 		parallelism = 1
 	}
 	if parallelism == 1 || len(dests) == 1 {
-		for _, dest := range dests {
+		for index, dest := range dests {
+			if err := ctx.Err(); err != nil {
+				return destinationAttemptResult{
+					remaining: append([]DestinationConfig(nil), dests[index:]...),
+					err:       err,
+				}
+			}
 			if err := r.writeDestination(ctx, dest, batch); err != nil {
-				return err
+				return destinationAttemptResult{
+					remaining: append([]DestinationConfig(nil), dests[index:]...),
+					err:       err,
+				}
 			}
 		}
-		return nil
+		return destinationAttemptResult{}
 	}
 
 	if parallelism > len(dests) {
@@ -818,30 +848,41 @@ func (r *Runner) writeDestinations(ctx context.Context, batch connector.Batch, d
 	}
 
 	sem := make(chan struct{}, parallelism)
-	errCh := make(chan error, len(dests))
+	attemptErrors := make([]error, len(dests))
 	var wg sync.WaitGroup
-
-	for _, dest := range dests {
-		sem <- struct{}{}
+	for index, dest := range dests {
 		wg.Add(1)
-		go func(dest DestinationConfig) {
+		go func(index int, dest DestinationConfig) {
 			defer wg.Done()
-			defer func() { <-sem }()
-			if err := r.writeDestination(ctx, dest, batch); err != nil {
-				errCh <- err
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				attemptErrors[index] = ctx.Err()
+				return
 			}
-		}(dest)
+			if err := ctx.Err(); err != nil {
+				attemptErrors[index] = err
+				return
+			}
+			attemptErrors[index] = r.writeDestination(ctx, dest, batch)
+		}(index, dest)
 	}
-
 	wg.Wait()
-	close(errCh)
 
-	for err := range errCh {
-		if err != nil {
-			return err
+	remaining := make([]DestinationConfig, 0, len(dests))
+	failures := make([]error, 0, len(dests))
+	for index, err := range attemptErrors {
+		if err == nil {
+			continue
 		}
+		remaining = append(remaining, dests[index])
+		failures = append(failures, err)
 	}
-	return nil
+	if len(failures) == 0 {
+		return destinationAttemptResult{}
+	}
+	return destinationAttemptResult{remaining: remaining, err: errors.Join(failures...)}
 }
 
 func ddlRecordsInBatch(batch connector.Batch) []connector.Record {

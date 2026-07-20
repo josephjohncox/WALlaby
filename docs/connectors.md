@@ -122,14 +122,15 @@ HTTP delivery supports retries + exponential backoff and idempotency headers.
 
 - `payload_mode=record_json` sends one-record JSON envelopes.
 - `payload_mode=wal` sends raw pgoutput bytes.
-- Idempotency key is derived from `(table, key, lsn)`.
+- The idempotency key includes table, operation, per-record source position, key, and encoded payload.
 - `transaction_header` (default `X-Wallaby-Transaction-Id`) carries the LSN or a hash fallback.
-- `dedupe_window` (duration) skips duplicate idempotency keys within a window.
+- `dedupe_window` is process-local and remembers only confirmed sends; failures and cancellations remain retryable.
 - When using `payload_mode=wire` with Avro/Proto and `schema_registry` enabled, WALlaby emits
   `X-Wallaby-Registry-*` headers.
 
 ## S3
 
 S3 supports Parquet/Arrow/Avro/JSON with optional partitioning. Use `region` values that match your AWS partition (GovCloud/China supported).
+Exact in-memory batch retries converge through deterministic keys, conditional creation, and SHA-256 reconciliation; conflicting content at one identity fails closed. Direct S3 remains experimental and at least once because crash-time rebatching can change the terminal checkpoint identity.
 If `schema_registry` is enabled with Avro/Proto, WALlaby writes registry metadata into object metadata keys
 (`wallaby-registry-*`).

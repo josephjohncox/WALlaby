@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -94,7 +95,7 @@ func TestHTTPDestinationRecordJSON(t *testing.T) {
 		t.Fatalf("expected insert operation, got %v", payload["operation"])
 	}
 
-	expectedKey := buildIdempotencyKey(batch.Records[0], batch.Checkpoint.LSN)
+	expectedKey := buildIdempotencyKey(batch.Records[0], batch.Checkpoint.LSN, body)
 	gotKey := headerLookup(last.Headers, "Idempotency-Key")
 	if gotKey == "" {
 		t.Fatalf("missing Idempotency-Key header: %v", last.Headers)
@@ -245,11 +246,24 @@ func fetchHTTPRecord(baseURL string) (httpCapture, error) {
 	return capture, nil
 }
 
-func buildIdempotencyKey(record connector.Record, lsn string) string {
-	keyPart := string(record.Key)
-	base := fmt.Sprintf("%s|%s|%s", record.Table, keyPart, lsn)
-	sum := sha256.Sum256([]byte(base))
-	return hex.EncodeToString(sum[:])
+func buildIdempotencyKey(record connector.Record, lsn string, payload []byte) string {
+	position := strings.TrimSpace(record.SourcePosition)
+	if position == "" {
+		position = lsn
+	}
+	hash := sha256.New()
+	writePart := func(value []byte) {
+		var size [8]byte
+		binary.BigEndian.PutUint64(size[:], uint64(len(value)))
+		_, _ = hash.Write(size[:])
+		_, _ = hash.Write(value)
+	}
+	writePart([]byte(record.Table))
+	writePart([]byte(record.Operation))
+	writePart([]byte(position))
+	writePart(record.Key)
+	writePart(payload)
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func headerLookup(headers map[string]string, key string) string {

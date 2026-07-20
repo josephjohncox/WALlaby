@@ -39,7 +39,14 @@ func (d *failingDest) ApplyDDL(context.Context, connector.Schema, connector.Reco
 func (d *failingDest) TypeMappings() map[string]string { return nil }
 func (d *failingDest) Close(context.Context) error     { return nil }
 func (d *failingDest) Capabilities() connector.Capabilities {
-	return connector.Capabilities{SupportsStreaming: true}
+	return connector.Capabilities{
+		Delivery: connector.DeliverySemantics{
+			Declared:         true,
+			IdempotentReplay: true,
+			ReplaySafe:       true,
+		},
+		SupportsStreaming: true,
+	}
 }
 
 type dropSource struct {

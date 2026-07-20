@@ -18,6 +18,9 @@ func ValidateDestinationContracts(
 	if ackPolicy == "" {
 		ackPolicy = AckPolicyAll
 	}
+	if ackPolicy != AckPolicyAll && ackPolicy != AckPolicyPrimary {
+		return fmt.Errorf("unsupported acknowledgement policy %q", ackPolicy)
+	}
 
 	primaryFound := false
 	for _, destination := range destinations {
@@ -50,11 +53,21 @@ func ValidateDestinationContracts(
 			}
 		}
 
+		if !capabilities.Delivery.IdempotentReplay || !capabilities.Delivery.ReplaySafe {
+			if ackPolicy == AckPolicyAll {
+				// A single destination may duplicate after a downstream commit and
+				// pre-checkpoint crash; that is the explicit at-least-once mode. It
+				// cannot amplify partial fan-out success into sibling replays, so
+				// reject only unsafe fan-out until delivery state is durable per sink.
+				if len(destinations) > 1 {
+					return fmt.Errorf("all acknowledgement fan-out requires replay-safe idempotent destination %s", label)
+				}
+				continue
+			}
+			return fmt.Errorf("primary acknowledgement requires replay-safe idempotent destination %s", label)
+		}
 		if ackPolicy != AckPolicyPrimary {
 			continue
-		}
-		if !capabilities.Delivery.IdempotentReplay || !capabilities.Delivery.ReplaySafe {
-			return fmt.Errorf("primary acknowledgement requires replay-safe idempotent destination %s", label)
 		}
 		if destination.Spec.Name == primaryDestination {
 			primaryFound = true

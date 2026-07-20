@@ -61,25 +61,69 @@ const (
 
 // Source implements Postgres logical replication as a connector.Source.
 type Source struct {
-	spec         connector.Spec
-	dsn          string
-	stream       *replication.PostgresStream
-	changes      <-chan replication.Change
-	batchSize    int
-	batchTimeout time.Duration
-	slot         string
-	publication  string
-	wireFormat   connector.WireFormat
-	emitEmpty    bool
-	SchemaHook   replication.SchemaHook
-	stateStore   *sourceStateStore
-	stateID      string
-	typeResolver *pgTypeResolver
-	toastFetch   string
-	toastPool    *pgxpool.Pool
-	toastCache   *toastCache
-	lagPool      *pgxpool.Pool
-	Meters       *telemetry.Meters
+	spec          connector.Spec
+	dsn           string
+	stream        *replication.PostgresStream
+	changes       <-chan replication.Change
+	batchSize     int
+	batchTimeout  time.Duration
+	slot          string
+	publication   string
+	wireFormat    connector.WireFormat
+	emitEmpty     bool
+	SchemaHook    replication.SchemaHook
+	stateStore    *sourceStateStore
+	stateID       string
+	typeResolver  *pgTypeResolver
+	toastFetch    string
+	toastPool     *pgxpool.Pool
+	toastCache    *toastCache
+	lagPool       *pgxpool.Pool
+	pendingChange *replication.Change
+	Meters        *telemetry.Meters
+}
+
+type changeBatchIdentity struct {
+	control       bool
+	namespace     string
+	table         string
+	schemaVersion int64
+}
+
+func identityForChange(change replication.Change) (changeBatchIdentity, bool) {
+	if change.Record == nil {
+		return changeBatchIdentity{}, false
+	}
+
+	record := change.Record
+	identity := changeBatchIdentity{
+		control:       record.Operation == connector.OpDDL || record.DDL != "" || len(record.DDLPlan) > 0,
+		namespace:     change.Schema,
+		table:         record.Table,
+		schemaVersion: record.SchemaVersion,
+	}
+	if identity.table == "" {
+		identity.table = change.Table
+	}
+	if change.SchemaDef != nil {
+		identity.namespace = change.SchemaDef.Namespace
+		identity.table = change.SchemaDef.Name
+		identity.schemaVersion = change.SchemaDef.Version
+	}
+	return identity, true
+}
+
+func changeEndsBatch(current changeBatchIdentity, change replication.Change) bool {
+	next, ok := identityForChange(change)
+	if ok {
+		return current != next
+	}
+	if change.SchemaDef == nil {
+		return false
+	}
+	return current.namespace != change.SchemaDef.Namespace ||
+		current.table != change.SchemaDef.Name ||
+		current.schemaVersion != change.SchemaDef.Version
 }
 
 func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
@@ -303,91 +347,108 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 	var records []connector.Record
 	var schema connector.Schema
 	var checkpoint connector.Checkpoint
+	var identity changeBatchIdentity
+	identitySet := false
 
 	timer := time.NewTimer(s.batchTimeout)
 	defer timer.Stop()
 
 	_, waitSpan := tracer.Start(ctx, "source.wait")
 	var processSpan trace.Span
-
-	for {
-		select {
-		case <-ctx.Done():
-			waitSpan.End()
-			if processSpan != nil {
-				processSpan.End()
-			}
-			return connector.Batch{}, ctx.Err()
-		case <-timer.C:
-			if len(records) == 0 {
-				waitSpan.SetAttributes(attribute.Bool("timeout", true))
-				// Always surface observed WAL progress, even when every change was
-				// filtered. emit_empty_batches controls only positionless polling
-				// heartbeats; suppressing a durable position would retain WAL forever.
-				if checkpoint.LSN != "" || s.emitEmpty {
-					waitSpan.End()
-					return connector.Batch{
-						Records:    nil,
-						Schema:     schema,
-						Checkpoint: checkpoint,
-						WireFormat: s.wireFormat,
-					}, nil
-				}
-				timer.Reset(s.batchTimeout)
-				continue
-			}
+	finishBatch := func() connector.Batch {
+		if processSpan != nil {
 			processSpan.SetAttributes(attribute.Int("records", len(records)))
 			processSpan.End()
-			return connector.Batch{
-				Records:    records,
-				Schema:     schema,
-				Checkpoint: checkpoint,
-				WireFormat: s.wireFormat,
-			}, nil
-		case change, ok := <-s.changes:
-			if !ok {
+		} else {
+			waitSpan.End()
+		}
+		return connector.Batch{
+			Records:    records,
+			Schema:     schema,
+			Checkpoint: checkpoint,
+			WireFormat: s.wireFormat,
+		}
+	}
+
+	for {
+		var change replication.Change
+		var ok bool
+		if s.pendingChange != nil {
+			change = *s.pendingChange
+			s.pendingChange = nil
+			ok = true
+		} else {
+			select {
+			case <-ctx.Done():
 				waitSpan.End()
 				if processSpan != nil {
 					processSpan.End()
 				}
-				if s.stream != nil {
-					if err := s.stream.Err(); err != nil {
-						return connector.Batch{}, err
+				return connector.Batch{}, ctx.Err()
+			case <-timer.C:
+				if len(records) == 0 {
+					// Always surface observed WAL progress, even when every change was
+					// filtered. emit_empty_batches controls only positionless polling
+					// heartbeats; suppressing a durable position would retain WAL forever.
+					if checkpoint.LSN != "" || s.emitEmpty {
+						return finishBatch(), nil
 					}
+					waitSpan.SetAttributes(attribute.Bool("timeout", true))
+					timer.Reset(s.batchTimeout)
+					continue
 				}
-				return connector.Batch{}, io.EOF
+				return finishBatch(), nil
+			case change, ok = <-s.changes:
 			}
-			if processSpan == nil {
-				waitSpan.End()
-				_, processSpan = tracer.Start(ctx, "source.process")
+		}
+
+		if !ok {
+			if len(records) > 0 || checkpoint.LSN != "" {
+				return finishBatch(), nil
 			}
-			if change.Record != nil {
-				record := *change.Record
-				record.SourcePosition = change.LSN.String()
-				if err := s.handleToast(ctx, change, &record); err != nil {
-					processSpan.End()
+			waitSpan.End()
+			if processSpan != nil {
+				processSpan.End()
+			}
+			if s.stream != nil {
+				if err := s.stream.Err(); err != nil {
 					return connector.Batch{}, err
 				}
-				records = append(records, record)
 			}
-			if change.SchemaDef != nil {
-				schema = *change.SchemaDef
-			}
-			checkpoint = connector.Checkpoint{
-				LSN:       change.LSN.String(),
-				Timestamp: time.Now().UTC(),
-			}
+			return connector.Batch{}, io.EOF
+		}
 
-			if len(records) >= s.batchSize {
-				processSpan.SetAttributes(attribute.Int("records", len(records)))
-				processSpan.End()
-				return connector.Batch{
-					Records:    records,
-					Schema:     schema,
-					Checkpoint: checkpoint,
-					WireFormat: s.wireFormat,
-				}, nil
+		if identitySet && changeEndsBatch(identity, change) {
+			deferred := change
+			s.pendingChange = &deferred
+			return finishBatch(), nil
+		}
+		if processSpan == nil {
+			waitSpan.End()
+			_, processSpan = tracer.Start(ctx, "source.process")
+		}
+		if change.Record != nil {
+			if !identitySet {
+				identity, identitySet = identityForChange(change)
 			}
+			record := *change.Record
+			record.SourcePosition = change.LSN.String()
+			if err := s.handleToast(ctx, change, &record); err != nil {
+				processSpan.End()
+				return connector.Batch{}, err
+			}
+			records = append(records, record)
+		}
+		if change.SchemaDef != nil {
+			schema = *change.SchemaDef
+		}
+		checkpoint = connector.Checkpoint{
+			LSN:       change.LSN.String(),
+			Timestamp: time.Now().UTC(),
+		}
+
+		if len(records) >= s.batchSize {
+			return finishBatch(), nil
 		}
 	}
 }

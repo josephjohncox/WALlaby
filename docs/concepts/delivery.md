@@ -6,6 +6,8 @@ The runner reads a batch, writes it to the destinations required by the acknowle
 
 With `ack_policy=all`, every configured destination must accept the batch before WALlaby persists its checkpoint. A destination error leaves the source position unacknowledged so the batch can be retried.
 
+A single declared, non-lossy destination may use this policy without replay safety; that is an explicit at-least-once mode, so a crash after downstream commit but before checkpoint persistence can duplicate delivery. Multi-destination `all` fan-out is rejected unless every destination is replay-safe and idempotent, because partial success otherwise amplifies replay across sinks. `ack_policy=primary` also requires replay-safe, idempotent destinations.
+
 ## Primary policy
 
 With `ack_policy=primary`, the named primary destination controls source progress. After the primary succeeds, WALlaby atomically persists the checkpoint and one durable outbox entry per secondary before acknowledging the source. It drains restored outbox entries before reading new source data and deletes each entry only after that destination accepts the batch.

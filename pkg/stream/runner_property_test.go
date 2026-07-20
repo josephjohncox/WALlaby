@@ -427,7 +427,15 @@ func (d *flakyDest) TypeMappings() map[string]string { return nil }
 func (d *flakyDest) Close(context.Context) error { return nil }
 
 func (d *flakyDest) Capabilities() connector.Capabilities {
-	return connector.Capabilities{SupportsStreaming: true, SupportsDDL: true}
+	return connector.Capabilities{
+		Delivery: connector.DeliverySemantics{
+			Declared:         true,
+			IdempotentReplay: true,
+			ReplaySafe:       true,
+		},
+		SupportsStreaming: true,
+		SupportsDDL:       true,
+	}
 }
 
 func TestRunnerStopsOnWriteFailureQuick(t *testing.T) {

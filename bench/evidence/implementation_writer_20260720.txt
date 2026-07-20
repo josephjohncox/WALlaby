@@ -1,0 +1,93 @@
+$ go test ./pkg/connector -run ^$ -bench ^BenchmarkBatchContentHash$ -benchmem -count=10
+goos: darwin
+goarch: arm64
+pkg: github.com/josephjohncox/wallaby/pkg/connector
+cpu: Apple M5 Max
+BenchmarkBatchContentHash-18    	     427	   2771284 ns/op	 5088760 B/op	   58949 allocs/op
+BenchmarkBatchContentHash-18    	     423	   2784565 ns/op	 5088769 B/op	   58949 allocs/op
+BenchmarkBatchContentHash-18    	     428	   2786029 ns/op	 5088758 B/op	   58949 allocs/op
+BenchmarkBatchContentHash-18    	     427	   2826497 ns/op	 5088758 B/op	   58949 allocs/op
+BenchmarkBatchContentHash-18    	     433	   2788810 ns/op	 5088757 B/op	   58949 allocs/op
+BenchmarkBatchContentHash-18    	     430	   2796049 ns/op	 5088759 B/op	   58949 allocs/op
+BenchmarkBatchContentHash-18    	     433	   2784982 ns/op	 5088762 B/op	   58949 allocs/op
+BenchmarkBatchContentHash-18    	     391	   2919956 ns/op	 5088753 B/op	   58949 allocs/op
+BenchmarkBatchContentHash-18    	     421	   2952481 ns/op	 5088754 B/op	   58949 allocs/op
+BenchmarkBatchContentHash-18    	     357	   3332015 ns/op	 5088757 B/op	   58949 allocs/op
+PASS
+ok  	github.com/josephjohncox/wallaby/pkg/connector	14.913s
+
+$ go test ./pkg/stream -run ^$ -bench ^BenchmarkWriteWithRetryOneFailureAmong(Four|Eight)$ -benchmem -count=10
+goos: darwin
+goarch: arm64
+pkg: github.com/josephjohncox/wallaby/pkg/stream
+cpu: Apple M5 Max
+BenchmarkWriteWithRetryOneFailureAmongFour-18     	      22	  51690367 ns/op	         5.000 destination-calls/op	    3633 B/op	      36 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongFour-18     	      22	  51825036 ns/op	         5.000 destination-calls/op	    3569 B/op	      36 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongFour-18     	      22	  51722866 ns/op	         5.000 destination-calls/op	    3349 B/op	      36 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongFour-18     	      22	  51731805 ns/op	         5.000 destination-calls/op	    3454 B/op	      36 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongFour-18     	      22	  51875288 ns/op	         5.000 destination-calls/op	    3345 B/op	      36 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongFour-18     	      22	  51846858 ns/op	         5.000 destination-calls/op	    3307 B/op	      35 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongFour-18     	      22	  51610487 ns/op	         5.000 destination-calls/op	    3351 B/op	      36 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongFour-18     	      22	  51807991 ns/op	         5.000 destination-calls/op	    3258 B/op	      35 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongFour-18     	      22	  51776085 ns/op	         5.000 destination-calls/op	    3258 B/op	      35 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongFour-18     	      22	  51502794 ns/op	         5.000 destination-calls/op	    3258 B/op	      35 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongEight-18    	      22	  51806905 ns/op	         9.000 destination-calls/op	    6515 B/op	      53 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongEight-18    	      22	  51773140 ns/op	         9.000 destination-calls/op	    6257 B/op	      52 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongEight-18    	      22	  51883116 ns/op	         9.000 destination-calls/op	    5925 B/op	      51 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongEight-18    	      22	  51775203 ns/op	         9.000 destination-calls/op	    6440 B/op	      52 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongEight-18    	      22	  51886188 ns/op	         9.000 destination-calls/op	    6681 B/op	      53 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongEight-18    	      22	  51814248 ns/op	         9.000 destination-calls/op	    5951 B/op	      51 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongEight-18    	      22	  51859138 ns/op	         9.000 destination-calls/op	    5964 B/op	      52 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongEight-18    	      22	  51908360 ns/op	         9.000 destination-calls/op	    5969 B/op	      52 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongEight-18    	      22	  51781795 ns/op	         9.000 destination-calls/op	    5946 B/op	      51 allocs/op
+BenchmarkWriteWithRetryOneFailureAmongEight-18    	      22	  51930981 ns/op	         9.000 destination-calls/op	    6357 B/op	      52 allocs/op
+PASS
+ok  	github.com/josephjohncox/wallaby/pkg/stream	25.057s
+
+$ go test ./connectors/destinations/s3 -run ^$ -bench ^BenchmarkDestinationWrite$ -benchmem -count=10
+goos: darwin
+goarch: arm64
+pkg: github.com/josephjohncox/wallaby/connectors/destinations/s3
+cpu: Apple M5 Max
+BenchmarkDestinationWrite/json/new-18         	  135298	      8769 ns/op	         1.000 object-requests/op	   11956 B/op	     133 allocs/op
+BenchmarkDestinationWrite/json/new-18         	  138392	      8310 ns/op	         1.000 object-requests/op	   11956 B/op	     133 allocs/op
+BenchmarkDestinationWrite/json/new-18         	  147688	      8395 ns/op	         1.000 object-requests/op	   11955 B/op	     133 allocs/op
+BenchmarkDestinationWrite/json/new-18         	  145526	      8223 ns/op	         1.000 object-requests/op	   11956 B/op	     133 allocs/op
+BenchmarkDestinationWrite/json/new-18         	  145500	      8285 ns/op	         1.000 object-requests/op	   11956 B/op	     133 allocs/op
+BenchmarkDestinationWrite/json/new-18         	  146774	      8247 ns/op	         1.000 object-requests/op	   11956 B/op	     133 allocs/op
+BenchmarkDestinationWrite/json/new-18         	  147196	      8311 ns/op	         1.000 object-requests/op	   11954 B/op	     133 allocs/op
+BenchmarkDestinationWrite/json/new-18         	  148657	      8288 ns/op	         1.000 object-requests/op	   11955 B/op	     133 allocs/op
+BenchmarkDestinationWrite/json/new-18         	  147568	      8303 ns/op	         1.000 object-requests/op	   11955 B/op	     133 allocs/op
+BenchmarkDestinationWrite/json/new-18         	  139384	      8290 ns/op	         1.000 object-requests/op	   11956 B/op	     133 allocs/op
+BenchmarkDestinationWrite/json/replay-18      	  130372	      9340 ns/op	         2.000 object-requests/op	   14545 B/op	     145 allocs/op
+BenchmarkDestinationWrite/json/replay-18      	  131674	      9415 ns/op	         2.000 object-requests/op	   14543 B/op	     145 allocs/op
+BenchmarkDestinationWrite/json/replay-18      	  124608	      9539 ns/op	         2.000 object-requests/op	   14545 B/op	     145 allocs/op
+BenchmarkDestinationWrite/json/replay-18      	  128228	      9298 ns/op	         2.000 object-requests/op	   14545 B/op	     145 allocs/op
+BenchmarkDestinationWrite/json/replay-18      	  130671	      9743 ns/op	         2.000 object-requests/op	   14544 B/op	     145 allocs/op
+BenchmarkDestinationWrite/json/replay-18      	  122982	      9767 ns/op	         2.000 object-requests/op	   14543 B/op	     145 allocs/op
+BenchmarkDestinationWrite/json/replay-18      	  121999	      9876 ns/op	         2.000 object-requests/op	   14544 B/op	     145 allocs/op
+BenchmarkDestinationWrite/json/replay-18      	  123496	      9790 ns/op	         2.000 object-requests/op	   14544 B/op	     145 allocs/op
+BenchmarkDestinationWrite/json/replay-18      	  120914	      9840 ns/op	         2.000 object-requests/op	   14543 B/op	     145 allocs/op
+BenchmarkDestinationWrite/json/replay-18      	  123624	      9756 ns/op	         2.000 object-requests/op	   14543 B/op	     145 allocs/op
+BenchmarkDestinationWrite/parquet/new-18      	   10874	    112680 ns/op	         1.000 object-requests/op	  277875 B/op	    1878 allocs/op
+BenchmarkDestinationWrite/parquet/new-18      	   10000	    106266 ns/op	         1.000 object-requests/op	  277853 B/op	    1878 allocs/op
+BenchmarkDestinationWrite/parquet/new-18      	   10000	    103483 ns/op	         1.000 object-requests/op	  277808 B/op	    1878 allocs/op
+BenchmarkDestinationWrite/parquet/new-18      	   10000	    106257 ns/op	         1.000 object-requests/op	  278010 B/op	    1878 allocs/op
+BenchmarkDestinationWrite/parquet/new-18      	   10000	    104163 ns/op	         1.000 object-requests/op	  277894 B/op	    1878 allocs/op
+BenchmarkDestinationWrite/parquet/new-18      	   10000	    103616 ns/op	         1.000 object-requests/op	  277913 B/op	    1878 allocs/op
+BenchmarkDestinationWrite/parquet/new-18      	   10000	    118987 ns/op	         1.000 object-requests/op	  277910 B/op	    1878 allocs/op
+BenchmarkDestinationWrite/parquet/new-18      	   10000	    103781 ns/op	         1.000 object-requests/op	  277876 B/op	    1878 allocs/op
+BenchmarkDestinationWrite/parquet/new-18      	   10000	    151419 ns/op	         1.000 object-requests/op	  276635 B/op	    1878 allocs/op
+BenchmarkDestinationWrite/parquet/new-18      	    8263	    153986 ns/op	         1.000 object-requests/op	  276398 B/op	    1877 allocs/op
+BenchmarkDestinationWrite/parquet/replay-18   	    7236	    161782 ns/op	         2.000 object-requests/op	  284709 B/op	    1895 allocs/op
+BenchmarkDestinationWrite/parquet/replay-18   	    9433	    116770 ns/op	         2.000 object-requests/op	  286304 B/op	    1895 allocs/op
+BenchmarkDestinationWrite/parquet/replay-18   	   10000	    107565 ns/op	         2.000 object-requests/op	  286117 B/op	    1895 allocs/op
+BenchmarkDestinationWrite/parquet/replay-18   	   10000	    108030 ns/op	         2.000 object-requests/op	  286102 B/op	    1895 allocs/op
+BenchmarkDestinationWrite/parquet/replay-18   	   10000	    111181 ns/op	         2.000 object-requests/op	  286058 B/op	    1895 allocs/op
+BenchmarkDestinationWrite/parquet/replay-18   	   10000	    110896 ns/op	         2.000 object-requests/op	  286038 B/op	    1895 allocs/op
+BenchmarkDestinationWrite/parquet/replay-18   	   10000	    110304 ns/op	         2.000 object-requests/op	  285861 B/op	    1895 allocs/op
+BenchmarkDestinationWrite/parquet/replay-18   	   10000	    110539 ns/op	         2.000 object-requests/op	  286061 B/op	    1895 allocs/op
+BenchmarkDestinationWrite/parquet/replay-18   	   10000	    119430 ns/op	         2.000 object-requests/op	  285520 B/op	    1895 allocs/op
+BenchmarkDestinationWrite/parquet/replay-18   	    9178	    110210 ns/op	         2.000 object-requests/op	  285838 B/op	    1895 allocs/op
+PASS
+ok  	github.com/josephjohncox/wallaby/connectors/destinations/s3	50.769s

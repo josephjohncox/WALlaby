@@ -130,6 +130,7 @@ func TestRunnerTraceValidatesActualBackfillCheckpointShape(t *testing.T) {
 		"done":  "true",
 	}}
 	source := &fakeSource{batches: []connector.Batch{{
+		Schema:     connector.Schema{Name: "accounts", Namespace: "public"},
 		Records:    []connector.Record{{Table: "accounts", Operation: connector.OpLoad}},
 		Checkpoint: checkpoint,
 	}}, log: &eventLog{}}
@@ -156,7 +157,7 @@ func TestRunnerBackfillTraceIdentitySurvivesRestart(t *testing.T) {
 		"mode": connector.SourceModeBackfill, "table": "public.accounts", "partition_index": "1", "partition_count": "4", "partition": "1/4", "cursor": "100",
 	}}
 	firstSource := &fakeSource{batches: []connector.Batch{{
-		Records: []connector.Record{{Table: "accounts", Operation: connector.OpLoad}}, Checkpoint: firstCheckpoint,
+		Schema: connector.Schema{Name: "accounts", Namespace: "public"}, Records: []connector.Record{{Table: "accounts", Operation: connector.OpLoad}}, Checkpoint: firstCheckpoint,
 	}}, log: &eventLog{}}
 	first := checkpointTestRunner(firstSource, store, traceSink)
 	if err := first.Run(context.Background()); err != nil {
@@ -167,7 +168,7 @@ func TestRunnerBackfillTraceIdentitySurvivesRestart(t *testing.T) {
 		"cursor": "200", "partition": "1/4", "partition_count": "4", "partition_index": "1", "table": "public.accounts", "mode": connector.SourceModeBackfill, "done": "true",
 	}}
 	secondSource := &fakeSource{batches: []connector.Batch{{
-		Records: []connector.Record{{Table: "accounts", Operation: connector.OpLoad}}, Checkpoint: secondCheckpoint,
+		Schema: connector.Schema{Name: "accounts", Namespace: "public"}, Records: []connector.Record{{Table: "accounts", Operation: connector.OpLoad}}, Checkpoint: secondCheckpoint,
 	}}, log: &eventLog{}}
 	second := checkpointTestRunner(secondSource, store, traceSink)
 	if err := second.Run(context.Background()); err != nil {

@@ -215,6 +215,8 @@ S3 destination options (connector `options`):
 
 Set `region` to GovCloud/China regions (e.g., `us-gov-west-1`, `cn-north-1`) to use the correct AWS partition.
 
+Direct writes use deterministic checkpoint-derived keys, conditional creation, and stored SHA-256 metadata. Repeating the same in-memory batch converges on the existing object; different content at the same identity fails closed. This remains an experimental at-least-once path because a crash can rebatch records under a different terminal checkpoint. Partition values use typed, reversible path encoding rather than human-readable lossy names.
+
 Example partitioning:
 
 ```json
@@ -246,7 +248,7 @@ HTTP destination options (connector `options`):
 
 `payload_mode=record_json` (alias `raw`) sends a single-record JSON envelope (table, operation, key, before/after, etc.) and ignores `format`.
 `payload_mode=wal` sends raw pgoutput bytes (requires a Postgres logical source).
-The idempotency key is derived from `(table, key, lsn)` and hashed to a fixed string.
+The idempotency key hashes the table, operation, per-record source position (with checkpoint fallback), key, and encoded payload. The dedupe window is process-local and records only confirmed sends: failed or cancelled requests release their reservation, while concurrent duplicates wait for the active request. Restart delivery remains at least once.
 
 ## Runbooks
 

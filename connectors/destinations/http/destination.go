@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -44,6 +45,12 @@ const (
 	payloadModeWAL        = "wal"
 )
 
+type dedupeEntry struct {
+	done        chan struct{}
+	completed   bool
+	completedAt time.Time
+}
+
 // Destination delivers records to an HTTP endpoint.
 type Destination struct {
 	spec              connector.Spec
@@ -60,8 +67,9 @@ type Destination struct {
 	idempotencyHeader string
 	dedupeWindow      time.Duration
 	transactionHeader string
-	dedupe            map[string]time.Time
+	dedupe            map[string]*dedupeEntry
 	dedupeMu          sync.Mutex
+	now               func() time.Time
 	registry          schemaregistry.Registry
 	registrySubject   string
 	protoTypesSubject string
@@ -133,8 +141,10 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		d.transactionHeader = "X-Wallaby-Transaction-Id"
 	}
 	d.dedupeWindow = parseDuration(spec.Options[optDedupeWindow], 0)
+	d.dedupe = nil
+	d.now = time.Now
 	if d.dedupeWindow > 0 {
-		d.dedupe = make(map[string]time.Time)
+		d.dedupe = make(map[string]*dedupeEntry)
 	}
 
 	return nil
@@ -173,11 +183,17 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		}
 
 		idempotencyKey := d.buildIdempotencyKey(record, batch.Checkpoint.LSN, payload)
-		if d.shouldSkip(idempotencyKey) {
+		reservation, skip, err := d.reserveDelivery(ctx, idempotencyKey)
+		if err != nil {
+			return err
+		}
+		if skip {
 			continue
 		}
 		txnID := d.transactionID(record, batch.Checkpoint.LSN)
-		if err := d.sendWithRetry(ctx, payload, contentType, idempotencyKey, txnID, meta); err != nil {
+		err = d.sendWithRetry(ctx, payload, contentType, idempotencyKey, txnID, meta)
+		d.finishDelivery(idempotencyKey, reservation, err == nil)
+		if err != nil {
 			return err
 		}
 	}
@@ -462,25 +478,65 @@ func (d *Destination) backoffDuration(attempt int) time.Duration {
 	return time.Duration(float64(delay) * jitter)
 }
 
-func (d *Destination) shouldSkip(idempotencyKey string) bool {
+func (d *Destination) reserveDelivery(ctx context.Context, idempotencyKey string) (*dedupeEntry, bool, error) {
 	if d.dedupeWindow <= 0 || idempotencyKey == "" {
-		return false
+		return nil, false, nil
 	}
+
+	for {
+		d.dedupeMu.Lock()
+		now := d.currentTime()
+		for key, entry := range d.dedupe {
+			if entry.completed && now.Sub(entry.completedAt) > d.dedupeWindow {
+				delete(d.dedupe, key)
+			}
+		}
+		entry, exists := d.dedupe[idempotencyKey]
+		if !exists {
+			entry = &dedupeEntry{done: make(chan struct{})}
+			d.dedupe[idempotencyKey] = entry
+			d.dedupeMu.Unlock()
+			return entry, false, nil
+		}
+		if entry.completed {
+			d.dedupeMu.Unlock()
+			return nil, true, nil
+		}
+		done := entry.done
+		d.dedupeMu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		case <-done:
+		}
+	}
+}
+
+func (d *Destination) finishDelivery(idempotencyKey string, reservation *dedupeEntry, delivered bool) {
+	if reservation == nil {
+		return
+	}
+
 	d.dedupeMu.Lock()
 	defer d.dedupeMu.Unlock()
-	now := time.Now()
-	for key, ts := range d.dedupe {
-		if now.Sub(ts) > d.dedupeWindow {
-			delete(d.dedupe, key)
-		}
+	if d.dedupe[idempotencyKey] != reservation {
+		return
 	}
-	if ts, ok := d.dedupe[idempotencyKey]; ok {
-		if now.Sub(ts) <= d.dedupeWindow {
-			return true
-		}
+	if delivered {
+		reservation.completed = true
+		reservation.completedAt = d.currentTime()
+	} else {
+		delete(d.dedupe, idempotencyKey)
 	}
-	d.dedupe[idempotencyKey] = now
-	return false
+	close(reservation.done)
+}
+
+func (d *Destination) currentTime() time.Time {
+	if d.now != nil {
+		return d.now()
+	}
+	return time.Now()
 }
 
 func (d *Destination) buildIdempotencyKey(record connector.Record, lsn string, payload []byte) string {
@@ -488,13 +544,23 @@ func (d *Destination) buildIdempotencyKey(record connector.Record, lsn string, p
 		return ""
 	}
 
-	keyPart := string(record.Key)
-	if keyPart == "" {
-		keyPart = string(payload)
+	position := strings.TrimSpace(record.SourcePosition)
+	if position == "" {
+		position = lsn
 	}
-	base := fmt.Sprintf("%s|%s|%s", record.Table, keyPart, lsn)
-	sum := sha256.Sum256([]byte(base))
-	return hex.EncodeToString(sum[:])
+	hash := sha256.New()
+	writePart := func(value []byte) {
+		var size [8]byte
+		binary.BigEndian.PutUint64(size[:], uint64(len(value)))
+		_, _ = hash.Write(size[:])
+		_, _ = hash.Write(value)
+	}
+	writePart([]byte(record.Table))
+	writePart([]byte(record.Operation))
+	writePart([]byte(position))
+	writePart(record.Key)
+	writePart(payload)
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func (d *Destination) transactionID(record connector.Record, lsn string) string {
