@@ -40,20 +40,25 @@ type Store interface {
 // replay-safe per-destination execution receipts.
 type DDLExecutionStore interface {
 	Store
-	PrepareDDLExecution(ctx context.Context, flowID, lsn, destination string, expectedDestinations []string) (bool, error)
+	PrepareDDLExecution(ctx context.Context, flowID, lsn, destination string, expectedDestinations []string) (connector.DDLExecutionState, error)
 	RecordDDLExecution(ctx context.Context, flowID, lsn, ddl, destination string, expectedDestinations []string) error
 }
 
 // PostgresStore stores registry data in Postgres.
 type PostgresStore struct {
-	pool *pgxpool.Pool
+	pool     *pgxpool.Pool
+	lockPool *pgxpool.Pool
 }
 
 func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
 	if dsn == "" {
 		return nil, errors.New("postgres DSN is required")
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	poolConfig, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse postgres registry DSN: %w", err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
@@ -61,14 +66,32 @@ func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
+	lockPoolConfig, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("parse postgres registry lock DSN: %w", err)
+	}
+	lockPoolConfig.MinConns = 0
+	if lockPoolConfig.MaxConns > 4 {
+		lockPoolConfig.MaxConns = 4
+	}
+	lockPool, err := pgxpool.NewWithConfig(ctx, lockPoolConfig)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("connect postgres registry lock pool: %w", err)
+	}
 	if err := runMigrations(ctx, pool); err != nil {
+		lockPool.Close()
 		pool.Close()
 		return nil, err
 	}
-	return &PostgresStore{pool: pool}, nil
+	return &PostgresStore{pool: pool, lockPool: lockPool}, nil
 }
 
 func (p *PostgresStore) Close() {
+	if p.lockPool != nil {
+		p.lockPool.Close()
+	}
 	if p.pool != nil {
 		p.pool.Close()
 	}
@@ -325,25 +348,84 @@ func (p *PostgresStore) GetDDLByLSN(ctx context.Context, flowID string, lsn stri
 	return scanDDLEvent(row)
 }
 
-// PrepareDDLExecution atomically fixes the destination manifest before any
-// downstream side effect and reports whether this destination already has a
-// durable receipt.
+// WithDDLExecutionLock holds a session-scoped advisory lock across the
+// non-transactional destination boundary. A process crash releases the lock,
+// while the already-committed attempt tells the next owner to reconcile.
+func (p *PostgresStore) WithDDLExecutionLock(
+	ctx context.Context,
+	flowID, destination string,
+	fn func() error,
+) (resultErr error) {
+	if fn == nil {
+		return errors.New("DDL execution callback is required")
+	}
+	if p.lockPool == nil {
+		return errors.New("DDL execution lock pool is not initialized")
+	}
+	conn, err := p.lockPool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire DDL execution lock connection: %w", err)
+	}
+	releaseConnection := true
+	defer func() {
+		if releaseConnection {
+			conn.Release()
+		}
+	}()
+
+	lockIdentity := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join([]string{flowID, destination}, "\x00"))))
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtextextended($1, 0))", lockIdentity); err != nil {
+		return fmt.Errorf("acquire DDL execution lock: %w", err)
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var unlocked bool
+		unlockErr := conn.QueryRow(unlockCtx,
+			"SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+			lockIdentity,
+		).Scan(&unlocked)
+		if unlockErr == nil && unlocked {
+			return
+		}
+		// Never return a session that may still own an advisory lock to the pool.
+		releaseConnection = false
+		raw := conn.Hijack()
+		closeErr := raw.Close(unlockCtx)
+		if resultErr == nil {
+			switch {
+			case unlockErr != nil:
+				resultErr = fmt.Errorf("release DDL execution lock: %w", unlockErr)
+			case !unlocked:
+				resultErr = errors.New("release DDL execution lock: lock was not held")
+			case closeErr != nil:
+				resultErr = fmt.Errorf("close DDL execution lock connection: %w", closeErr)
+			}
+		}
+	}()
+
+	return fn()
+}
+
+// PrepareDDLExecution atomically fixes the destination manifest and records
+// the first execution attempt before any downstream side effect. A repeated
+// attempt is returned explicitly so the destination can reconcile state.
 func (p *PostgresStore) PrepareDDLExecution(
 	ctx context.Context,
 	flowID, lsn, destination string,
 	expectedDestinations []string,
-) (bool, error) {
+) (connector.DDLExecutionState, error) {
 	expected := normalizedDestinations(expectedDestinations)
 	if strings.TrimSpace(lsn) == "" || strings.TrimSpace(destination) == "" || len(expected) == 0 {
-		return false, errors.New("DDL execution flow position, destination, and manifest are required")
+		return connector.DDLExecutionUnknown, errors.New("DDL execution flow position, destination, and manifest are required")
 	}
 	if !containsDestination(expected, destination) {
-		return false, fmt.Errorf("DDL destination %q is not in the execution manifest", destination)
+		return connector.DDLExecutionUnknown, fmt.Errorf("DDL destination %q is not in the execution manifest", destination)
 	}
 
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
-		return false, fmt.Errorf("begin DDL execution preparation: %w", err)
+		return connector.DDLExecutionUnknown, fmt.Errorf("begin DDL execution preparation: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -357,10 +439,10 @@ func (p *PostgresStore) PrepareDDLExecution(
 	query += " ORDER BY id DESC LIMIT 1 FOR UPDATE"
 	event, err := scanDDLEvent(tx.QueryRow(ctx, query, args...))
 	if err != nil {
-		return false, err
+		return connector.DDLExecutionUnknown, err
 	}
 	if event.Status != StatusApproved && event.Status != StatusApplied {
-		return false, &connector.DDLGateError{
+		return connector.DDLExecutionUnknown, &connector.DDLGateError{
 			FlowID: flowID, LSN: lsn, DDL: event.DDL,
 			Status: event.Status, EventID: event.ID,
 		}
@@ -377,29 +459,47 @@ func (p *PostgresStore) PrepareDDLExecution(
 		 RETURNING destinations, manifest_hash`,
 		event.ID, expected, manifestHash,
 	).Scan(&storedDestinations, &storedManifestHash); err != nil {
-		return false, fmt.Errorf("prepare DDL execution manifest: %w", err)
+		return connector.DDLExecutionUnknown, fmt.Errorf("prepare DDL execution manifest: %w", err)
 	}
 	if storedManifestHash != manifestHash || !equalDestinations(storedDestinations, expected) {
-		return false, ErrExecutionManifestChanged
+		return connector.DDLExecutionUnknown, ErrExecutionManifestChanged
 	}
 
-	var exists bool
+	var receiptExists bool
 	if err := tx.QueryRow(ctx,
 		`SELECT EXISTS (
 		   SELECT 1 FROM ddl_execution_receipts
 		   WHERE event_id = $1 AND destination = $2
 		 )`,
 		event.ID, destination,
-	).Scan(&exists); err != nil {
-		return false, fmt.Errorf("check DDL execution receipt: %w", err)
+	).Scan(&receiptExists); err != nil {
+		return connector.DDLExecutionUnknown, fmt.Errorf("check DDL execution receipt: %w", err)
 	}
-	if event.Status == StatusApplied && !exists {
-		return false, ErrAppliedReceiptMissing
+	if event.Status == StatusApplied && !receiptExists {
+		return connector.DDLExecutionUnknown, ErrAppliedReceiptMissing
+	}
+
+	state := connector.DDLExecutionComplete
+	if !receiptExists {
+		result, err := tx.Exec(ctx,
+			`INSERT INTO ddl_execution_attempts (event_id, destination, flow_id, lsn)
+			 VALUES ($1, $2, $3, $4)
+			 ON CONFLICT (event_id, destination) DO NOTHING`,
+			event.ID, destination, flowIDOrNull(flowID), lsn,
+		)
+		if err != nil {
+			return connector.DDLExecutionUnknown, fmt.Errorf("persist DDL execution attempt: %w", err)
+		}
+		if result.RowsAffected() == 1 {
+			state = connector.DDLExecutionNew
+		} else {
+			state = connector.DDLExecutionRetry
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit DDL execution preparation: %w", err)
+		return connector.DDLExecutionUnknown, fmt.Errorf("commit DDL execution preparation: %w", err)
 	}
-	return exists, nil
+	return state, nil
 }
 
 // RecordDDLExecution stores one destination receipt and marks the DDL event
@@ -458,6 +558,19 @@ func (p *PostgresStore) RecordDDLExecution(
 	}
 	if storedManifestHash != manifestHash || !equalDestinations(storedDestinations, expected) {
 		return ErrExecutionManifestChanged
+	}
+	var attemptExists bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (
+		   SELECT 1 FROM ddl_execution_attempts
+		   WHERE event_id = $1 AND destination = $2
+		 )`,
+		event.ID, destination,
+	).Scan(&attemptExists); err != nil {
+		return fmt.Errorf("check prepared DDL execution attempt: %w", err)
+	}
+	if !attemptExists {
+		return ErrDDLExecutionNotPrepared
 	}
 
 	ddlText := ddl
@@ -699,16 +812,16 @@ func PrepareDDLExecution(
 	store Store,
 	flowID, lsn, destination string,
 	expectedDestinations []string,
-) (bool, error) {
+) (connector.DDLExecutionState, error) {
 	receipts, ok := store.(DDLExecutionStore)
 	if !ok {
-		return false, ErrExecutionReceiptRequired
+		return connector.DDLExecutionUnknown, ErrExecutionReceiptRequired
 	}
-	exists, err := receipts.PrepareDDLExecution(ctx, flowID, lsn, destination, expectedDestinations)
+	state, err := receipts.PrepareDDLExecution(ctx, flowID, lsn, destination, expectedDestinations)
 	if err != nil {
-		return false, fmt.Errorf("prepare DDL execution: %w", err)
+		return connector.DDLExecutionUnknown, fmt.Errorf("prepare DDL execution: %w", err)
 	}
-	return exists, nil
+	return state, nil
 }
 
 // RecordDDLExecution persists one destination receipt and advances the registry

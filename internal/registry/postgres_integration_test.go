@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,68 @@ import (
 	"github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
+
+func TestPostgresDDLExecutionAdvisoryLockSerializesOwners(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+
+	ctx := context.Background()
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	store, err := NewPostgresStore(ctx, dsn+separator+"pool_max_conns=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	acquired := make(chan struct{})
+	release := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- store.WithDDLExecutionLock(ctx, "flow", "destination", func() error {
+			close(acquired)
+			<-release
+			return nil
+		})
+	}()
+	select {
+	case <-acquired:
+	case err := <-firstDone:
+		t.Fatalf("first lock owner failed before entering: %v", err)
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	secondEntered := false
+	err = store.WithDDLExecutionLock(waitCtx, "flow", "destination", func() error {
+		secondEntered = true
+		return nil
+	})
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("contending lock error=%v, want context deadline", err)
+	}
+	if secondEntered {
+		t.Fatal("contending DDL execution entered before the first owner released")
+	}
+
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithDDLExecutionLock(ctx, "flow", "destination", func() error {
+		secondEntered = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !secondEntered {
+		t.Fatal("next DDL execution owner did not enter after release")
+	}
+}
 
 func TestPostgresDDLExecutionReceiptsGateAppliedStatus(t *testing.T) {
 	dsn := os.Getenv("TEST_PG_DSN")
@@ -42,9 +105,13 @@ func TestPostgresDDLExecutionReceiptsGateAppliedStatus(t *testing.T) {
 	if err := store.RecordDDLExecution(ctx, flowID, lsn, ddl, "destination-a", expected); !errors.Is(err, ErrDDLExecutionNotPrepared) {
 		t.Fatalf("unprepared receipt error=%v, want preparation requirement", err)
 	}
-	prepared, err := store.PrepareDDLExecution(ctx, flowID, lsn, "destination-a", expected)
-	if err != nil || prepared {
-		t.Fatalf("initial execution preparation receipt=%v error=%v, want no receipt", prepared, err)
+	state, err := store.PrepareDDLExecution(ctx, flowID, lsn, "destination-a", expected)
+	if err != nil || state != connector.DDLExecutionNew {
+		t.Fatalf("initial execution state=%v error=%v, want new", state, err)
+	}
+	retryState, err := store.PrepareDDLExecution(ctx, flowID, lsn, "destination-a", expected)
+	if err != nil || retryState != connector.DDLExecutionRetry {
+		t.Fatalf("repeated execution state=%v error=%v, want retry", retryState, err)
 	}
 	if err := store.SetDDLStatus(ctx, eventID, StatusRejected); !errors.Is(err, ErrDDLExecutionStarted) {
 		t.Fatalf("SetDDLStatus(rejected) after execution start error=%v, want immutable execution status", err)
@@ -62,6 +129,10 @@ func TestPostgresDDLExecutionReceiptsGateAppliedStatus(t *testing.T) {
 	if event.Status != StatusApproved {
 		t.Fatalf("status after partial receipts=%s, want approved", event.Status)
 	}
+	state, err = store.PrepareDDLExecution(ctx, flowID, lsn, "destination-b", expected)
+	if err != nil || state != connector.DDLExecutionNew {
+		t.Fatalf("second destination state=%v error=%v, want new", state, err)
+	}
 	if err := store.RecordDDLExecution(ctx, flowID, lsn, ddl, "destination-b", expected); err != nil {
 		t.Fatal(err)
 	}
@@ -73,9 +144,9 @@ func TestPostgresDDLExecutionReceiptsGateAppliedStatus(t *testing.T) {
 		t.Fatalf("completed receipt event=%+v, want applied with timestamp", event)
 	}
 	for _, destination := range expected {
-		exists, err := store.PrepareDDLExecution(ctx, flowID, lsn, destination, expected)
-		if err != nil || !exists {
-			t.Fatalf("receipt %s exists=%v error=%v", destination, exists, err)
+		state, err := store.PrepareDDLExecution(ctx, flowID, lsn, destination, expected)
+		if err != nil || state != connector.DDLExecutionComplete {
+			t.Fatalf("receipt %s state=%v error=%v, want complete", destination, state, err)
 		}
 	}
 	reopened, err := NewPostgresStore(ctx, dsn)
@@ -83,8 +154,8 @@ func TestPostgresDDLExecutionReceiptsGateAppliedStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	if exists, err := reopened.PrepareDDLExecution(ctx, flowID, lsn, "destination-a", expected); err != nil || !exists {
-		t.Fatalf("reopened receipt exists=%v error=%v", exists, err)
+	if state, err := reopened.PrepareDDLExecution(ctx, flowID, lsn, "destination-a", expected); err != nil || state != connector.DDLExecutionComplete {
+		t.Fatalf("reopened receipt state=%v error=%v, want complete", state, err)
 	}
 	if err := store.RecordDDLExecution(ctx, flowID, lsn, ddl, "destination-a", expected); err != nil {
 		t.Fatalf("idempotent receipt replay: %v", err)

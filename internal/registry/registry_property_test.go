@@ -15,6 +15,7 @@ import (
 type memoryStore struct {
 	events    []DDLEvent
 	nextID    int64
+	attempts  map[int64]map[string]struct{}
 	receipts  map[int64]map[string]struct{}
 	manifests map[int64][]string
 }
@@ -58,16 +59,36 @@ func (m *memoryStore) SetDDLStatus(_ context.Context, id int64, status string) e
 	return nil
 }
 
-func (m *memoryStore) PrepareDDLExecution(_ context.Context, flowID, lsn, destination string, _ []string) (bool, error) {
+func (m *memoryStore) PrepareDDLExecution(_ context.Context, flowID, lsn, destination string, expectedDestinations []string) (connector.DDLExecutionState, error) {
 	event, err := m.GetDDLByLSN(context.Background(), flowID, lsn)
 	if err != nil {
-		return false, err
+		return connector.DDLExecutionUnknown, err
 	}
 	if event.Status != StatusApproved && event.Status != StatusApplied {
-		return false, &connector.DDLGateError{FlowID: flowID, LSN: lsn, Status: event.Status, EventID: event.ID}
+		return connector.DDLExecutionUnknown, &connector.DDLGateError{FlowID: flowID, LSN: lsn, Status: event.Status, EventID: event.ID}
 	}
-	_, ok := m.receipts[event.ID][destination]
-	return ok, nil
+	expected := normalizedDestinations(expectedDestinations)
+	if manifest := m.manifests[event.ID]; manifest != nil && !equalDestinations(manifest, expected) {
+		return connector.DDLExecutionUnknown, ErrExecutionManifestChanged
+	}
+	if m.manifests == nil {
+		m.manifests = make(map[int64][]string)
+	}
+	m.manifests[event.ID] = expected
+	if _, ok := m.receipts[event.ID][destination]; ok {
+		return connector.DDLExecutionComplete, nil
+	}
+	if _, ok := m.attempts[event.ID][destination]; ok {
+		return connector.DDLExecutionRetry, nil
+	}
+	if m.attempts == nil {
+		m.attempts = make(map[int64]map[string]struct{})
+	}
+	if m.attempts[event.ID] == nil {
+		m.attempts[event.ID] = make(map[string]struct{})
+	}
+	m.attempts[event.ID][destination] = struct{}{}
+	return connector.DDLExecutionNew, nil
 }
 
 func (m *memoryStore) RecordDDLExecution(
@@ -90,6 +111,9 @@ func (m *memoryStore) RecordDDLExecution(
 		m.manifests = make(map[int64][]string)
 	}
 	m.manifests[event.ID] = expected
+	if _, ok := m.attempts[event.ID][destination]; !ok {
+		return ErrDDLExecutionNotPrepared
+	}
 	if m.receipts == nil {
 		m.receipts = make(map[int64]map[string]struct{})
 	}
@@ -172,7 +196,10 @@ func TestRegistryAppliedImpliesApprovedRapid(t *testing.T) {
 			if !rapid.Bool().Draw(t, "apply") {
 				continue
 			}
-			err := RecordDDLExecution(context.Background(), store, "", lsn, "ddl", "destination", []string{"destination"})
+			_, err := PrepareDDLExecution(context.Background(), store, "", lsn, "destination", []string{"destination"})
+			if err == nil {
+				err = RecordDDLExecution(context.Background(), store, "", lsn, "ddl", "destination", []string{"destination"})
+			}
 			switch status {
 			case StatusApproved:
 				if err != nil {

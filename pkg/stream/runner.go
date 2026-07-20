@@ -193,14 +193,20 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	}
 	defer func() { _ = r.Source.Close(ctx) }()
 
-	for _, dest := range r.Destinations {
-		if dest.Dest == nil {
+	openedDestinations := make([]connector.Destination, 0, len(r.Destinations))
+	defer func() {
+		for index := len(openedDestinations) - 1; index >= 0; index-- {
+			_ = openedDestinations[index].Close(ctx)
+		}
+	}()
+	for _, destination := range r.Destinations {
+		if destination.Dest == nil {
 			return errors.New("destination is required")
 		}
-		if err := dest.Dest.Open(ctx, dest.Spec); err != nil {
-			return fmt.Errorf("open destination %s: %w", dest.Spec.Name, err)
+		if err := destination.Dest.Open(ctx, destination.Spec); err != nil {
+			return fmt.Errorf("open destination %s: %w", destination.Spec.Name, err)
 		}
-		defer func() { _ = dest.Dest.Close(ctx) }()
+		openedDestinations = append(openedDestinations, destination.Dest)
 	}
 
 	var secondaryQueues []*secondaryQueue
@@ -297,10 +303,11 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			continue
 		}
 		readFailures = 0
-		if len(batch.Records) == 0 && !isControlCheckpoint(batch.Checkpoint) {
+		if len(batch.Records) == 0 && !shouldPersistCheckpoint(batch.Checkpoint) {
 			// Sources may emit an empty heartbeat before they have a durable
 			// position. It carries no data and must not be traced, persisted, or
-			// acknowledged as a checkpoint.
+			// acknowledged as a checkpoint. Empty batches with a source position
+			// are durable progress and must advance the slot.
 			emptyReads++
 			span.End()
 			if r.MaxEmptyReads > 0 && emptyReads >= r.MaxEmptyReads {
@@ -336,11 +343,12 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 
 		if len(batch.Records) == 0 {
 			r.emitCheckpointTrace(batchCtx, "deliver", batch.Checkpoint, tracePosition, spec.ActionDeliver, nil)
+			emitControlCheckpoint := isControlCheckpoint(batch.Checkpoint)
 			var err error
 			if ackPolicy == AckPolicyPrimary {
-				err = r.ackPrimaryAndOutbox(batchCtx, outbox, batch, nil, tracePosition, true)
+				err = r.ackPrimaryAndOutbox(batchCtx, outbox, batch, nil, tracePosition, emitControlCheckpoint)
 			} else {
-				err = r.ackAndCheckpoint(batchCtx, batch.Checkpoint, tracePosition, true)
+				err = r.ackAndCheckpoint(batchCtx, batch.Checkpoint, tracePosition, emitControlCheckpoint)
 			}
 			if err != nil {
 				span.RecordError(err)
@@ -964,6 +972,36 @@ func ddlGatedMetric() metric.Int64Counter {
 }
 
 func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, batch connector.Batch) error {
+	if !r.RequireDDLExecution || !connector.ResolveDestinationCapabilities(dest.Dest, dest.Spec).ExecutesDDL() {
+		return r.writeDestinationLocked(ctx, dest, batch)
+	}
+	if r.DDLExecutions == nil {
+		return errors.New("automatic DDL execution requires durable execution receipt storage")
+	}
+	if err := validateDDLRecordPositions(batch); err != nil {
+		return err
+	}
+	if !batchContainsDDL(batch) {
+		return r.writeDestinationLocked(ctx, dest, batch)
+	}
+	return r.DDLExecutions.WithDDLExecutionLock(
+		ctx,
+		r.FlowID,
+		dest.Spec.Name,
+		func() error { return r.writeDestinationLocked(ctx, dest, batch) },
+	)
+}
+
+func batchContainsDDL(batch connector.Batch) bool {
+	for _, record := range batch.Records {
+		if record.Operation == connector.OpDDL || record.DDL != "" || len(record.DDLPlan) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runner) writeDestinationLocked(ctx context.Context, dest DestinationConfig, batch connector.Batch) error {
 	type ddlExecution struct {
 		position string
 		ddl      string
@@ -983,23 +1021,46 @@ func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, b
 					continue
 				}
 				position := ddlRecordPosition(record, batch.Checkpoint)
-				receipted, err := r.DDLExecutions.PrepareDDLExecution(ctx, r.FlowID, position, dest.Spec.Name, expectedDestinations)
+				state, err := r.DDLExecutions.PrepareDDLExecution(ctx, r.FlowID, position, dest.Spec.Name, expectedDestinations)
 				if err != nil {
 					return fmt.Errorf("prepare ddl execution destination %s: %w", dest.Spec.Name, err)
 				}
-				if receipted {
+				if state == connector.DDLExecutionComplete {
 					continue
 				}
-				if err := dest.Dest.ApplyDDL(ctx, batch.Schema, record); err != nil {
-					r.emitTrace(ctx, "ddl_error", batch.Checkpoint.LSN, dest.Spec.Name, spec.ActionNone, err)
-					return fmt.Errorf("apply ddl destination %s: %w", dest.Spec.Name, err)
+				applyDDL := state == connector.DDLExecutionNew
+				if state == connector.DDLExecutionRetry {
+					reconciler, ok := dest.Dest.(connector.DDLReconciler)
+					if !ok {
+						return fmt.Errorf("reconcile ddl destination %s: %w", dest.Spec.Name, connector.ErrDDLReconciliationRequired)
+					}
+					result, reconcileErr := reconciler.ReconcileDDL(ctx, batch.Schema, record)
+					if reconcileErr != nil {
+						return fmt.Errorf("reconcile ddl destination %s: %w", dest.Spec.Name, reconcileErr)
+					}
+					switch result {
+					case connector.DDLReconcileApplied:
+						r.emitTrace(ctx, "ddl_reconciled", position, dest.Spec.Name, spec.ActionApplyDDL, nil)
+					case connector.DDLReconcileNotApplied:
+						applyDDL = true
+					default:
+						return fmt.Errorf("reconcile ddl destination %s: %w", dest.Spec.Name, connector.ErrDDLReconciliationIndeterminate)
+					}
+				} else if !state.Valid() {
+					return fmt.Errorf("prepare ddl execution destination %s returned invalid state %d", dest.Spec.Name, state)
+				}
+				if applyDDL {
+					if err := dest.Dest.ApplyDDL(ctx, batch.Schema, record); err != nil {
+						r.emitTrace(ctx, "ddl_error", position, dest.Spec.Name, spec.ActionNone, err)
+						return fmt.Errorf("apply ddl destination %s: %w", dest.Spec.Name, err)
+					}
+					r.Meters.RecordDestinationDDL(ctx, string(dest.Spec.Type))
 				}
 				ddlText := record.DDL
 				if ddlText == "" && len(record.DDLPlan) > 0 {
 					ddlText = string(record.DDLPlan)
 				}
 				executedDDL = append(executedDDL, ddlExecution{position: position, ddl: ddlText})
-				r.Meters.RecordDestinationDDL(ctx, string(dest.Spec.Type))
 			}
 		}
 	}

@@ -47,7 +47,7 @@ trace_seed := env_var_or_default("TRACE_SEED", "1")
 trace_max_batches := env_var_or_default("TRACE_MAX_BATCHES", "10")
 trace_max_records := env_var_or_default("TRACE_MAX_RECORDS", "3")
 rapid_checks := env_var_or_default("RAPID_CHECKS", "100")
-rapid_packages := env_var_or_default("RAPID_PACKAGES", "./pkg/stream ./pkg/wire ./internal/ddl ./internal/registry ./internal/workflow ./connectors/sources/postgres")
+rapid_packages := env_var_or_default("RAPID_PACKAGES", "./pkg/stream ./pkg/wire ./internal/ddl ./internal/registry ./internal/schema ./internal/workflow ./connectors/sources/postgres ./connectors/destinations/postgres")
 spec_lint_verbose := env_var_or_default("SPEC_LINT_VERBOSE", "")
 spec_lint_verbose_mode := env_var_or_default("SPEC_LINT_VERBOSE_MODE", "checks")
 
@@ -222,7 +222,7 @@ benchstat:
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-bench-summary -dir "{{ candidate }}" -format benchstat -latest=false -output "{{ candidate }}/benchstat.txt"
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run golang.org/x/perf/cmd/benchstat@latest "{{ baseline }}/benchstat.txt" "{{ candidate }}/benchstat.txt"
 
-tla: tla-flow tla-state tla-fanout tla-liveness tla-witness
+tla: tla-flow tla-state tla-fanout tla-ddl-execution tla-lifecycle-generation tla-snapshot-transition tla-liveness tla-witness
 
 tla-single:
     PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} {{ tlc_args }} -config "{{ tla_config }}" "{{ tla_module }}"
@@ -236,6 +236,15 @@ tla-state:
 tla-fanout:
     TLA_MODULE=specs/CDCFlowFanout.tla TLA_CONFIG=specs/CDCFlowFanout.cfg just tla-single
 
+tla-ddl-execution:
+    TLA_MODULE=specs/DDLExecution.tla TLA_CONFIG=specs/DDLExecution.cfg just tla-single
+
+tla-lifecycle-generation:
+    TLA_MODULE=specs/LifecycleGeneration.tla TLA_CONFIG=specs/LifecycleGeneration.cfg just tla-single
+
+tla-snapshot-transition:
+    TLA_MODULE=specs/SnapshotTransition.tla TLA_CONFIG=specs/SnapshotTransition.cfg just tla-single
+
 tla-liveness:
     TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowLiveness.cfg just tla-single
 
@@ -247,6 +256,9 @@ tla-coverage:
     PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} -coverage 1 -config specs/CDCFlow.cfg specs/CDCFlow.tla > "{{ tlc_coverage_dir }}/CDCFlow.txt" 2>&1
     PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} -coverage 1 -config specs/FlowStateMachine.cfg specs/FlowStateMachine.tla > "{{ tlc_coverage_dir }}/FlowStateMachine.txt" 2>&1
     PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} -coverage 1 -config specs/CDCFlowFanout.cfg specs/CDCFlowFanout.tla > "{{ tlc_coverage_dir }}/CDCFlowFanout.txt" 2>&1
+    PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} -coverage 1 -config specs/DDLExecution.cfg specs/DDLExecution.tla > "{{ tlc_coverage_dir }}/DDLExecution.txt" 2>&1
+    PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} -coverage 1 -config specs/LifecycleGeneration.cfg specs/LifecycleGeneration.tla > "{{ tlc_coverage_dir }}/LifecycleGeneration.txt" 2>&1
+    PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} -coverage 1 -config specs/SnapshotTransition.cfg specs/SnapshotTransition.tla > "{{ tlc_coverage_dir }}/SnapshotTransition.txt" 2>&1
 
 tla-coverage-check:
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-tla-coverage --dir "{{ tlc_coverage_dir }}" --min "{{ tla_coverage_min }}" --ignore "{{ tla_coverage_ignore }}" --json "{{ tlc_coverage_dir }}/report.json"

@@ -158,6 +158,9 @@ func (flowRunnerDestination) Write(context.Context, connector.Batch) error { ret
 func (flowRunnerDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
 	return nil
 }
+func (flowRunnerDestination) ReconcileDDL(context.Context, connector.Schema, connector.Record) (connector.DDLReconcileResult, error) {
+	return connector.DDLReconcileNotApplied, nil
+}
 func (flowRunnerDestination) TypeMappings() map[string]string { return nil }
 func (flowRunnerDestination) Close(context.Context) error     { return nil }
 func (flowRunnerDestination) Capabilities() connector.Capabilities {

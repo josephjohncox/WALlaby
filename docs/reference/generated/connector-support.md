@@ -13,21 +13,21 @@
 
 ## Destinations
 
-| Connector | Status | Runtime | Transactional batch | Idempotent replay | Replay safe | Executes DDL | Lossy |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `postgres` | experimental | yes | yes | yes | yes | yes | no |
-| `pgstream` | experimental | yes | no | no | no | no | no |
-| `kafka` | experimental | yes | no | no | no | no | no |
-| `bufstream` | experimental | yes | no | no | no | no | no |
-| `s3` | experimental | yes | no | no | no | no | no |
-| `http` | experimental | yes | no | no | no | no | no |
-| `grpc` | experimental | yes | no | no | no | no | no |
-| `snowflake` | experimental | yes | no | no | no | yes | no |
-| `snowpipe` | experimental | yes | no | no | no | yes | no |
-| `clickhouse` | experimental | yes | no | no | no | yes | no |
-| `duckdb` | experimental | yes | yes | no | no | yes | no |
-| `ducklake` | experimental | yes | yes | no | no | yes | no |
-| `proto` | placeholder | no | no | no | no | no | no |
-| `parquet` | placeholder | no | no | no | no | no | no |
+| Connector | Status | Runtime | Transactional batch | Idempotent replay | Replay safe | Executes DDL | Reconciles DDL | Lossy |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `postgres` | experimental | yes | yes | yes | yes | yes | yes | no |
+| `pgstream` | experimental | yes | no | no | no | no | no | no |
+| `kafka` | experimental | yes | no | no | no | no | no | no |
+| `bufstream` | experimental | yes | no | no | no | no | no | no |
+| `s3` | experimental | yes | no | no | no | no | no | no |
+| `http` | experimental | yes | no | no | no | no | no | no |
+| `grpc` | experimental | yes | no | no | no | no | no | no |
+| `snowflake` | experimental | yes | no | no | no | yes | no | no |
+| `snowpipe` | experimental | yes | no | no | no | yes | no | no |
+| `clickhouse` | experimental | yes | no | no | no | yes | no | no |
+| `duckdb` | experimental | yes | yes | no | no | yes | no | no |
+| `ducklake` | experimental | yes | yes | no | no | yes | no | no |
+| `proto` | placeholder | no | no | no | no | no | no | no |
+| `parquet` | placeholder | no | no | no | no | no | no | no |
 
 These are guaranteed defaults. Options can reduce guarantees; startup validation resolves configured capabilities before execution.

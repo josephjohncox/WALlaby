@@ -15,61 +15,98 @@ type Action string
 type Invariant string
 
 const (
-	SpecCDCFlow       SpecName = "CDCFlow"
-	SpecFlowState     SpecName = "FlowStateMachine"
-	SpecCDCFlowFanout SpecName = "CDCFlowFanout"
-	SpecUnknown       SpecName = ""
+	SpecCDCFlow             SpecName = "CDCFlow"
+	SpecFlowState           SpecName = "FlowStateMachine"
+	SpecCDCFlowFanout       SpecName = "CDCFlowFanout"
+	SpecDDLExecution        SpecName = "DDLExecution"
+	SpecLifecycleGeneration SpecName = "LifecycleGeneration"
+	SpecSnapshotTransition  SpecName = "SnapshotTransition"
+	SpecUnknown             SpecName = ""
 )
 
 const (
-	ActionNone              Action = ""
-	ActionStart             Action = "Start"
-	ActionPause             Action = "Pause"
-	ActionResume            Action = "Resume"
-	ActionStop              Action = "Stop"
-	ActionStopBegin         Action = "StopBegin"
-	ActionStopComplete      Action = "StopComplete"
-	ActionFail              Action = "Fail"
-	ActionRunOnce           Action = "RunOnce"
-	ActionReadBatch         Action = "ReadBatch"
-	ActionReadDDL           Action = "ReadDDL"
-	ActionReadFail          Action = "ReadFail"
-	ActionReadGiveUp        Action = "ReadGiveUp"
-	ActionDeliver           Action = "Deliver"
-	ActionWriteFail         Action = "WriteFail"
-	ActionWriteGiveUp       Action = "WriteGiveUp"
-	ActionCheckpointFail    Action = "CheckpointFail"
-	ActionPersistCheckpoint Action = "PersistCheckpoint"
-	ActionAck               Action = "Ack"
-	ActionRestoreAck        Action = "RestoreAck"
-	ActionCrash             Action = "Crash"
-	ActionRestart           Action = "Restart"
-	ActionAckDest           Action = "AckDest"
-	ActionAckSource         Action = "AckSource"
-	ActionApproveDDL        Action = "ApproveDDL"
-	ActionApplyDDL          Action = "ApplyDDL"
-	ActionResumeAfter       Action = "ResumeAfterDDL"
-	ActionIdle              Action = "Idle"
+	ActionNone                   Action = ""
+	ActionStart                  Action = "Start"
+	ActionPause                  Action = "Pause"
+	ActionResume                 Action = "Resume"
+	ActionStop                   Action = "Stop"
+	ActionStopBegin              Action = "StopBegin"
+	ActionStopComplete           Action = "StopComplete"
+	ActionFail                   Action = "Fail"
+	ActionRunOnce                Action = "RunOnce"
+	ActionReadBatch              Action = "ReadBatch"
+	ActionReadDDL                Action = "ReadDDL"
+	ActionReadFail               Action = "ReadFail"
+	ActionReadGiveUp             Action = "ReadGiveUp"
+	ActionDeliver                Action = "Deliver"
+	ActionWriteFail              Action = "WriteFail"
+	ActionWriteGiveUp            Action = "WriteGiveUp"
+	ActionCheckpointFail         Action = "CheckpointFail"
+	ActionPersistCheckpoint      Action = "PersistCheckpoint"
+	ActionAck                    Action = "Ack"
+	ActionRestoreAck             Action = "RestoreAck"
+	ActionCrash                  Action = "Crash"
+	ActionRestart                Action = "Restart"
+	ActionAckDest                Action = "AckDest"
+	ActionAckSource              Action = "AckSource"
+	ActionApproveDDL             Action = "ApproveDDL"
+	ActionApplyDDL               Action = "ApplyDDL"
+	ActionResumeAfter            Action = "ResumeAfterDDL"
+	ActionIdle                   Action = "Idle"
+	ActionPrepare                Action = "Prepare"
+	ActionApply                  Action = "Apply"
+	ActionRecordReceipt          Action = "RecordReceipt"
+	ActionAcquireExecutionLock   Action = "AcquireExecutionLock"
+	ActionReleaseExecutionLock   Action = "ReleaseExecutionLock"
+	ActionReconcileApplied       Action = "ReconcileApplied"
+	ActionReconcileNotApplied    Action = "ReconcileNotApplied"
+	ActionReconcileIndeterminate Action = "ReconcileIndeterminate"
+	ActionPauseIntent            Action = "PauseIntent"
+	ActionStopIntent             Action = "StopIntent"
+	ActionExecutionFinished      Action = "ExecutionFinished"
+	ActionPauseComplete          Action = "PauseComplete"
+	ActionRestartExecution       Action = "RestartExecution"
+	ActionReadSnapshot           Action = "ReadSnapshot"
+	ActionPersistPartition       Action = "PersistPartition"
+	ActionCompleteSnapshot       Action = "CompleteSnapshot"
+	ActionStartStreaming         Action = "StartStreaming"
+	ActionReadStream             Action = "ReadStream"
 )
 
 const (
-	InvTypeInvariant         Invariant = "TypeInvariant"
-	InvNoAckWithoutDeliver   Invariant = "NoAckWithoutDeliver"
-	InvAckMonotonic          Invariant = "AckMonotonic"
-	InvCheckpointMonotonic   Invariant = "CheckpointMonotonic"
-	InvReadAheadBounded      Invariant = "ReadAheadBounded"
-	InvRetryBounds           Invariant = "RetryBounds"
-	InvDDLAppliedAfter       Invariant = "DDLAppliedAfterApproval"
-	InvDDLGatedPausesFlow    Invariant = "DDLGatedPausesFlow"
-	InvFlowTransitionsValid  Invariant = "FlowTransitionsValid"
-	InvAckedImpliesDelivered Invariant = "AckedImpliesDelivered"
-	InvSourceAckRequires     Invariant = "SourceAckRequiresPolicy"
+	InvTypeInvariant                 Invariant = "TypeInvariant"
+	InvNoAckWithoutDeliver           Invariant = "NoAckWithoutDeliver"
+	InvAckMonotonic                  Invariant = "AckMonotonic"
+	InvCheckpointMonotonic           Invariant = "CheckpointMonotonic"
+	InvReadAheadBounded              Invariant = "ReadAheadBounded"
+	InvRetryBounds                   Invariant = "RetryBounds"
+	InvDDLAppliedAfter               Invariant = "DDLAppliedAfterApproval"
+	InvDDLGatedPausesFlow            Invariant = "DDLGatedPausesFlow"
+	InvFlowTransitionsValid          Invariant = "FlowTransitionsValid"
+	InvAckedImpliesDelivered         Invariant = "AckedImpliesDelivered"
+	InvSourceAckRequires             Invariant = "SourceAckRequiresPolicy"
+	InvExternalCommitRequiresAttempt Invariant = "ExternalCommitRequiresAttempt"
+	InvReceiptRequiresExternalCommit Invariant = "ReceiptRequiresExternalCommit"
+	InvExternalCommitExactlyOnce     Invariant = "ExternalCommitExactlyOnce"
+	InvCommitCountMatchesState       Invariant = "CommitCountMatchesState"
+	InvLeaseMatchesExecution         Invariant = "LeaseMatchesExecution"
+	InvQuiescentTerminalState        Invariant = "QuiescentTerminalState"
+	InvRegistrationCurrentGeneration Invariant = "RegistrationUsesCurrentGeneration"
+	InvPendingPauseIsNotPaused       Invariant = "PendingPauseIsNotPaused"
+	InvPendingStopIsStopping         Invariant = "PendingStopIsStopping"
+	InvRowsStayAssignedPartition     Invariant = "RowsStayInAssignedPartition"
+	InvDurableRowsWereScanned        Invariant = "DurableRowsWereScanned"
+	InvTransitionCompleteSnapshot    Invariant = "TransitionRequiresCompleteSnapshot"
+	InvStreamingSnapshotBoundary     Invariant = "StreamingStartsAtSnapshotBoundary"
 )
 
 var DefaultManifestFiles = map[SpecName]string{
-	SpecCDCFlow:       "coverage.json",
-	SpecFlowState:     "coverage.flow_state.json",
-	SpecCDCFlowFanout: "coverage.fanout.json",
+	SpecCDCFlow:             "coverage.json",
+	SpecFlowState:           "coverage.flow_state.json",
+	SpecCDCFlowFanout:       "coverage.fanout.json",
+	SpecDDLExecution:        "coverage.ddl_execution.json",
+	SpecLifecycleGeneration: "coverage.lifecycle_generation.json",
+	SpecSnapshotTransition:  "coverage.snapshot_transition.json",
 }
 
 var CDCFlowActions = []Action{
@@ -148,6 +185,67 @@ var FanoutInvariants = []Invariant{
 	InvCheckpointMonotonic,
 }
 
+var DDLExecutionActions = []Action{
+	ActionAcquireExecutionLock,
+	ActionReleaseExecutionLock,
+	ActionPrepare,
+	ActionApply,
+	ActionRecordReceipt,
+	ActionCrash,
+	ActionRestart,
+	ActionReconcileApplied,
+	ActionReconcileNotApplied,
+	ActionReconcileIndeterminate,
+}
+
+var DDLExecutionInvariants = []Invariant{
+	InvTypeInvariant,
+	InvExternalCommitRequiresAttempt,
+	InvReceiptRequiresExternalCommit,
+	InvExternalCommitExactlyOnce,
+	InvCommitCountMatchesState,
+}
+
+var LifecycleGenerationActions = []Action{
+	ActionStart,
+	ActionPauseIntent,
+	ActionStopIntent,
+	ActionExecutionFinished,
+	ActionPauseComplete,
+	ActionStopComplete,
+	ActionRestartExecution,
+	ActionFail,
+	ActionRunOnce,
+}
+
+var LifecycleGenerationInvariants = []Invariant{
+	InvTypeInvariant,
+	InvLeaseMatchesExecution,
+	InvQuiescentTerminalState,
+	InvRegistrationCurrentGeneration,
+	InvPendingPauseIsNotPaused,
+	InvPendingStopIsStopping,
+}
+
+var SnapshotTransitionActions = []Action{
+	ActionReadSnapshot,
+	ActionPersistPartition,
+	ActionCrash,
+	ActionRestart,
+	ActionCompleteSnapshot,
+	ActionStartStreaming,
+	ActionReadStream,
+	ActionIdle,
+}
+
+var SnapshotTransitionInvariants = []Invariant{
+	InvTypeInvariant,
+	InvRowsStayAssignedPartition,
+	InvDurableRowsWereScanned,
+	InvTransitionCompleteSnapshot,
+	InvStreamingSnapshotBoundary,
+}
+
 // CDCFlowTraceUnreachableActions documents actions not emitted by the trace suite.
 var CDCFlowTraceUnreachableActions = []Action{
 	ActionStart,
@@ -190,6 +288,13 @@ var FanoutTraceUnreachableActions = append([]Action(nil), FanoutActions...)
 // FanoutTraceUnreachableInvariants documents invariants not covered by trace checks.
 var FanoutTraceUnreachableInvariants = append([]Invariant(nil), FanoutInvariants...)
 
+var DDLExecutionTraceUnreachableActions = append([]Action(nil), DDLExecutionActions...)
+var DDLExecutionTraceUnreachableInvariants = append([]Invariant(nil), DDLExecutionInvariants...)
+var LifecycleGenerationTraceUnreachableActions = append([]Action(nil), LifecycleGenerationActions...)
+var LifecycleGenerationTraceUnreachableInvariants = append([]Invariant(nil), LifecycleGenerationInvariants...)
+var SnapshotTransitionTraceUnreachableActions = append([]Action(nil), SnapshotTransitionActions...)
+var SnapshotTransitionTraceUnreachableInvariants = append([]Invariant(nil), SnapshotTransitionInvariants...)
+
 // Manifest defines the spec coverage contract shared by TLC and Go tests.
 type Manifest struct {
 	Spec                  SpecName          `json:"spec"`
@@ -209,11 +314,14 @@ func TraceSuiteManifest() Manifest {
 
 // AllManifests returns manifests for all known specs.
 func AllManifests() []Manifest {
-	manifests := make([]Manifest, 0, 3)
+	manifests := make([]Manifest, 0, 6)
 	for _, specName := range []SpecName{
 		SpecCDCFlow,
 		SpecFlowState,
 		SpecCDCFlowFanout,
+		SpecDDLExecution,
+		SpecLifecycleGeneration,
+		SpecSnapshotTransition,
 	} {
 		manifest, ok := ManifestForSpec(specName)
 		if !ok {
@@ -233,6 +341,12 @@ func ManifestForSpec(spec SpecName) (Manifest, bool) {
 		return newManifest(spec, FlowStateActions, FlowStateInvariants, FlowStateTraceUnreachableActions, FlowStateTraceUnreachableInvariants), true
 	case SpecCDCFlowFanout:
 		return newManifest(spec, FanoutActions, FanoutInvariants, FanoutTraceUnreachableActions, FanoutTraceUnreachableInvariants), true
+	case SpecDDLExecution:
+		return newManifest(spec, DDLExecutionActions, DDLExecutionInvariants, DDLExecutionTraceUnreachableActions, DDLExecutionTraceUnreachableInvariants), true
+	case SpecLifecycleGeneration:
+		return newManifest(spec, LifecycleGenerationActions, LifecycleGenerationInvariants, LifecycleGenerationTraceUnreachableActions, LifecycleGenerationTraceUnreachableInvariants), true
+	case SpecSnapshotTransition:
+		return newManifest(spec, SnapshotTransitionActions, SnapshotTransitionInvariants, SnapshotTransitionTraceUnreachableActions, SnapshotTransitionTraceUnreachableInvariants), true
 	default:
 		return Manifest{}, false
 	}
@@ -346,6 +460,12 @@ func ParseSpecName(value string) (SpecName, bool) {
 		return SpecFlowState, true
 	case "fanout", "cdcflowfanout":
 		return SpecCDCFlowFanout, true
+	case "ddl", "ddlexecution":
+		return SpecDDLExecution, true
+	case "lifecycle", "lifecyclegeneration":
+		return SpecLifecycleGeneration, true
+	case "snapshot", "snapshottransition":
+		return SpecSnapshotTransition, true
 	default:
 		return SpecUnknown, false
 	}

@@ -48,6 +48,7 @@ type BackfillSource struct {
 	stateStore     snapshotStateStore
 	flowID         string
 	taskStates     map[snapshotTaskKey]snapshotTaskState
+	primaryKeys    map[string][]string
 }
 
 func (b *BackfillSource) Open(ctx context.Context, spec connector.Spec) error {
@@ -129,6 +130,20 @@ func (b *BackfillSource) Open(ctx context.Context, spec connector.Spec) error {
 		return errors.New("no tables configured for backfill")
 	}
 	b.tables = tables
+	if b.partitionCol != "" {
+		b.primaryKeys = make(map[string][]string, len(tables))
+		for _, qualifiedTable := range tables {
+			namespace, table, err := splitTable(qualifiedTable)
+			if err != nil {
+				return err
+			}
+			primaryKey, err := b.loadPrimaryKeyColumns(ctx, namespace, table)
+			if err != nil {
+				return err
+			}
+			b.primaryKeys[qualifiedTable] = primaryKey
+		}
+	}
 	b.startWorkers(ctx)
 	return nil
 }
@@ -342,7 +357,8 @@ func splitTable(value string) (string, string, error) {
 	if len(parts) == 2 {
 		return parts[0], parts[1], nil
 	}
-	return "", "", fmt.Errorf("invalid table name %q", value)
+	err := fmt.Errorf("invalid table name %q", value)
+	return "", "", err
 }
 
 type backfillTask struct {
@@ -459,7 +475,12 @@ func (b *BackfillSource) runTask(ctx context.Context, task backfillTask) error {
 		})
 	}
 
-	rows, cleanup, err := b.queryTablePartition(ctx, namespace, table, task)
+	cursorColumns := []string(nil)
+	if b.partitionCol != "" {
+		cursorColumns = backfillCursorColumns(b.partitionCol, b.primaryKeys[task.table])
+	}
+
+	rows, cleanup, err := b.queryTablePartition(ctx, namespace, table, task, cursorColumns)
 	if err != nil {
 		return err
 	}
@@ -483,9 +504,10 @@ func (b *BackfillSource) runTask(ctx context.Context, task backfillTask) error {
 		if err := connector.NormalizePostgresRecord(schema, row); err != nil {
 			return err
 		}
-		if b.partitionCol != "" {
-			if value, ok := row[b.partitionCol]; ok && value != nil {
-				lastCursor = fmt.Sprint(value)
+		if len(cursorColumns) > 0 {
+			lastCursor, err = encodeBackfillCursor(row, cursorColumns)
+			if err != nil {
+				return err
 			}
 		}
 
@@ -554,7 +576,7 @@ func (b *BackfillSource) emitControlDone(ctx context.Context, schema connector.S
 	}
 }
 
-func buildBackfillQuery(identifier, partitionColumn string, task backfillTask) (string, []any) {
+func buildBackfillQueryWithCursor(identifier, partitionColumn string, cursorColumns []string, task backfillTask) (string, []any, error) {
 	query := fmt.Sprintf("SELECT * FROM %s", identifier)
 	var args []any
 	clauses := make([]string, 0, 2)
@@ -566,25 +588,45 @@ func buildBackfillQuery(identifier, partitionColumn string, task backfillTask) (
 		args = append(args, task.partitionCount, task.partitionIndex)
 	}
 	if partitionColumn != "" && task.cursor != "" {
-		columnIdent := pgx.Identifier{partitionColumn}.Sanitize()
-		// Resume inclusively. Equal cursor values may replay after a crash, but an
-		// exclusive predicate could permanently skip rows when the column is not unique.
-		clauses = append(clauses, fmt.Sprintf("(%s >= $%d OR %s IS NULL)", columnIdent, len(args)+1, columnIdent))
-		args = append(args, task.cursor)
+		values, encoded, err := decodeBackfillCursor(task.cursor, len(cursorColumns))
+		if err != nil {
+			return "", nil, err
+		}
+		resumeColumns := cursorColumns
+		if !encoded {
+			resumeColumns = []string{partitionColumn}
+			values = []backfillCursorValue{{Text: task.cursor}}
+		}
+		clause, resumeArgs, err := buildBackfillResumeClause(resumeColumns, values, len(args)+1)
+		if err != nil {
+			return "", nil, err
+		}
+		clauses = append(clauses, clause)
+		args = append(args, resumeArgs...)
 	}
 	if len(clauses) > 0 {
 		query = fmt.Sprintf("%s WHERE %s", query, strings.Join(clauses, " AND "))
 	}
-	if partitionColumn != "" {
-		columnIdent := pgx.Identifier{partitionColumn}.Sanitize()
-		query = fmt.Sprintf("%s ORDER BY %s NULLS LAST", query, columnIdent)
+	if len(cursorColumns) > 0 {
+		order := make([]string, 0, len(cursorColumns))
+		for index, column := range cursorColumns {
+			identifier := pgx.Identifier{column}.Sanitize()
+			if index == 0 {
+				identifier += " NULLS LAST"
+			}
+			order = append(order, identifier)
+		}
+		query = fmt.Sprintf("%s ORDER BY %s", query, strings.Join(order, ", "))
 	}
-	return query, args
+	return query, args, nil
 }
 
-func (b *BackfillSource) queryTablePartition(ctx context.Context, schema, table string, task backfillTask) (pgx.Rows, func(), error) {
+func (b *BackfillSource) queryTablePartition(ctx context.Context, schema, table string, task backfillTask, cursorColumns []string) (pgx.Rows, func(), error) {
 	identifier := pgx.Identifier{schema, table}.Sanitize()
-	query, args := buildBackfillQuery(identifier, b.partitionCol, task)
+	query, args, err := buildBackfillQueryWithCursor(identifier, b.partitionCol, cursorColumns, task)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build backfill query for %s: %w", identifier, err)
+	}
 
 	if b.snapshotName == "" {
 		rows, err := b.pool.Query(ctx, query, args...)

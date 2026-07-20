@@ -47,6 +47,14 @@ func TestDestinationCatalogCoversEveryEndpointType(t *testing.T) {
 	if len(got) != len(allTypes) {
 		t.Fatalf("destination contract count=%d, want %d", len(got), len(allTypes))
 	}
+	if !got[connector.EndpointPostgres].ReconcilesDDL {
+		t.Fatal("postgres destination must reconcile ambiguous DDL execution")
+	}
+	for endpointType, contract := range got {
+		if endpointType != connector.EndpointPostgres && contract.ReconcilesDDL {
+			t.Errorf("%s unexpectedly declares DDL reconciliation", endpointType)
+		}
+	}
 }
 
 func TestFactoryDestinationsDeclareOperationalContracts(t *testing.T) {

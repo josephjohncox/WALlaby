@@ -93,6 +93,34 @@ func TestRunnerIgnoresEmptyHeartbeatWithoutCheckpointPosition(t *testing.T) {
 	}
 }
 
+func TestRunnerAdvancesEmptyBatchWithDurableSourcePosition(t *testing.T) {
+	t.Parallel()
+
+	checkpoint := connector.Checkpoint{LSN: "0/20"}
+	source := &fakeSource{batches: []connector.Batch{{Checkpoint: checkpoint}}, log: &eventLog{}}
+	checkpoints := &recordingCheckpointStore{}
+	traceSink := &MemoryTraceSink{}
+	runner := checkpointTestRunner(source, checkpoints, traceSink)
+
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(source.acks) != 1 || source.acks[0].LSN != checkpoint.LSN {
+		t.Fatalf("source acknowledgements = %v, want empty-batch position %s", source.acks, checkpoint.LSN)
+	}
+	if len(checkpoints.puts) != 1 || checkpoints.puts[0].LSN != checkpoint.LSN {
+		t.Fatalf("persisted checkpoints = %v, want empty-batch position %s", checkpoints.puts, checkpoint.LSN)
+	}
+	var got []string
+	for _, event := range traceSink.Events() {
+		got = append(got, event.Kind)
+	}
+	want := []string{"read", "deliver", "checkpoint", "ack"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("trace order = %v, want %v", got, want)
+	}
+}
+
 func TestRunnerTraceValidatesActualBackfillCheckpointShape(t *testing.T) {
 	t.Parallel()
 

@@ -4,7 +4,7 @@ WALlaby treats protocol specs and trace validation as first-class artifacts. The
 
 ## What’s in `specs/`
 
-- **TLA+ models**: `CDCFlow.tla`, `FlowStateMachine.tla`, `CDCFlowFanout.tla`, and liveness/witness configs.
+- **TLA+ models**: `CDCFlow.tla`, `FlowStateMachine.tla`, `CDCFlowFanout.tla`, `DDLExecution.tla`, `LifecycleGeneration.tla`, and `SnapshotTransition.tla`, plus liveness/witness configs.
 - **Coverage manifests**: `specs/coverage*.json` define the contract between spec actions/invariants and runtime trace actions.
 - **Coverage output**: generated into `specs/coverage/` when running TLC with coverage enabled.
 
@@ -13,7 +13,7 @@ WALlaby treats protocol specs and trace validation as first-class artifacts. The
 Run a full spec + trace verification pass:
 
 ```bash
-just tla                 # TLA+ model checks (flow, state machine, fan-out, liveness)
+just tla                 # all flow, receipt, lifecycle, snapshot, and liveness models
 just tla-coverage         # action coverage from TLC
 just tla-coverage-check   # enforce minimum coverage
 just trace-suite          # randomized trace suite (CI-friendly)

@@ -76,17 +76,24 @@ const (
 ```
 
 <a name="DDLExecutionStore"></a>
-## type [DDLExecutionStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/ddl_execution.go#L7-L18>)
+## type [DDLExecutionStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/ddl_execution.go#L11-L29>)
 
 DDLExecutionStore establishes immutable destination manifests before DDL side effects and persists per\-destination execution receipts afterward.
 
 ```go
 type DDLExecutionStore interface {
+    // WithDDLExecutionLock serializes a flow's destination DDL stream across
+    // attempt preparation, external side effects, batch write, and receipts.
+    WithDDLExecutionLock(
+        ctx context.Context,
+        flowID, destination string,
+        fn func() error,
+    ) error
     PrepareDDLExecution(
         ctx context.Context,
         flowID, position, destination string,
         expectedDestinations []string,
-    ) (alreadyExecuted bool, err error)
+    ) (connector.DDLExecutionState, error)
     RecordDDLExecution(
         ctx context.Context,
         flowID, position, ddl, destination string,

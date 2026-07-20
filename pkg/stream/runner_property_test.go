@@ -126,6 +126,10 @@ func (d *recordingDest) ApplyDDL(context.Context, connector.Schema, connector.Re
 	return nil
 }
 
+func (d *recordingDest) ReconcileDDL(context.Context, connector.Schema, connector.Record) (connector.DDLReconcileResult, error) {
+	return connector.DDLReconcileNotApplied, nil
+}
+
 func (d *recordingDest) TypeMappings() map[string]string { return nil }
 
 func (d *recordingDest) Close(context.Context) error { return nil }
@@ -301,7 +305,7 @@ func TestRunnerProtocolInvariantsQuick(t *testing.T) {
 		expectedCheckpoint := make([]string, 0)
 		expectedDDL := 0
 		for _, batch := range batches {
-			if len(batch.Records) > 0 || isControlCheckpoint(batch.Checkpoint) {
+			if len(batch.Records) > 0 || shouldPersistCheckpoint(batch.Checkpoint) {
 				expectedAck = append(expectedAck, seqForCheckpoint(batch.Checkpoint))
 				if shouldPersistCheckpoint(batch.Checkpoint) {
 					expectedCheckpoint = append(expectedCheckpoint, seqForCheckpoint(batch.Checkpoint))
@@ -498,7 +502,7 @@ func TestRunnerStopsOnWriteFailureQuick(t *testing.T) {
 			if idx == plan.FailIndex {
 				break
 			}
-			if len(batch.Records) > 0 || isControlCheckpoint(batch.Checkpoint) {
+			if len(batch.Records) > 0 || shouldPersistCheckpoint(batch.Checkpoint) {
 				expectedAck = append(expectedAck, seqForCheckpoint(batch.Checkpoint))
 			}
 		}

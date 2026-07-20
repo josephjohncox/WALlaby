@@ -62,6 +62,23 @@ func TestValidateDestinationContracts(t *testing.T) {
 			wantError:  "cannot execute DDL",
 		},
 		{
+			name: "auto apply requires DDL reconciliation",
+			dests: []DestinationConfig{{
+				Spec: connector.Spec{Name: "sink"},
+				Dest: contractDestination{capabilities: safePrimary},
+			}},
+			requireDDL: true,
+			wantError:  "cannot reconcile DDL",
+		},
+		{
+			name: "auto apply accepts replay-safe DDL destination",
+			dests: []DestinationConfig{{
+				Spec: connector.Spec{Name: "sink"},
+				Dest: reconcilingContractDestination{contractDestination{capabilities: safePrimary}},
+			}},
+			requireDDL: true,
+		},
+		{
 			name: "primary acknowledgement requires replay safety",
 			dests: []DestinationConfig{{
 				Spec: connector.Spec{Name: "primary"},
@@ -142,4 +159,12 @@ func (contractDestination) TypeMappings() map[string]string { return nil }
 func (contractDestination) Close(context.Context) error     { return nil }
 func (d contractDestination) Capabilities() connector.Capabilities {
 	return d.capabilities
+}
+
+type reconcilingContractDestination struct {
+	contractDestination
+}
+
+func (reconcilingContractDestination) ReconcileDDL(context.Context, connector.Schema, connector.Record) (connector.DDLReconcileResult, error) {
+	return connector.DDLReconcileNotApplied, nil
 }

@@ -32,15 +32,15 @@ func run() error {
 	fmt.Println()
 	fmt.Println("## Destinations")
 	fmt.Println()
-	fmt.Println("| Connector | Status | Runtime | Transactional batch | Idempotent replay | Replay safe | Executes DDL | Lossy |")
-	fmt.Println("| --- | --- | --- | --- | --- | --- | --- | --- |")
+	fmt.Println("| Connector | Status | Runtime | Transactional batch | Idempotent replay | Replay safe | Executes DDL | Reconciles DDL | Lossy |")
+	fmt.Println("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 	contracts, err := runner.DestinationContracts()
 	if err != nil {
 		return err
 	}
 	for _, contract := range contracts {
 		capabilities := contract.Capabilities
-		fmt.Printf("| `%s` | %s | %s | %s | %s | %s | %s | %s |\n",
+		fmt.Printf("| `%s` | %s | %s | %s | %s | %s | %s | %s | %s |\n",
 			contract.Type,
 			capabilities.Support,
 			yesNo(contract.Runtime),
@@ -48,6 +48,7 @@ func run() error {
 			yesNo(capabilities.Delivery.IdempotentReplay),
 			yesNo(capabilities.Delivery.ReplaySafe),
 			yesNo(capabilities.Delivery.ExecutesDDL),
+			yesNo(contract.ReconcilesDDL),
 			yesNo(capabilities.Delivery.Lossy),
 		)
 	}

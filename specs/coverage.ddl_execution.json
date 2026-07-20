@@ -1,0 +1,41 @@
+{
+  "spec": "DDLExecution",
+  "actions": [
+    "AcquireExecutionLock",
+    "ReleaseExecutionLock",
+    "Prepare",
+    "Apply",
+    "RecordReceipt",
+    "Crash",
+    "Restart",
+    "ReconcileApplied",
+    "ReconcileNotApplied",
+    "ReconcileIndeterminate"
+  ],
+  "invariants": [
+    "TypeInvariant",
+    "ExternalCommitRequiresAttempt",
+    "ReceiptRequiresExternalCommit",
+    "ExternalCommitExactlyOnce",
+    "CommitCountMatchesState"
+  ],
+  "unreachable_actions": [
+    "AcquireExecutionLock",
+    "ReleaseExecutionLock",
+    "Prepare",
+    "Apply",
+    "RecordReceipt",
+    "Crash",
+    "Restart",
+    "ReconcileApplied",
+    "ReconcileNotApplied",
+    "ReconcileIndeterminate"
+  ],
+  "unreachable_invariants": [
+    "TypeInvariant",
+    "ExternalCommitRequiresAttempt",
+    "ReceiptRequiresExternalCommit",
+    "ExternalCommitExactlyOnce",
+    "CommitCountMatchesState"
+  ]
+}

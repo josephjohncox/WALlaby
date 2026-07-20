@@ -48,6 +48,116 @@ func TestRunnerDDLReceiptPreventsReapplicationAfterReplay(t *testing.T) {
 	}
 }
 
+func TestRunnerSerializesConcurrentDDLAttemptThroughReceipt(t *testing.T) {
+	t.Parallel()
+
+	applyEntered := make(chan struct{})
+	allowCommit := make(chan struct{})
+	secondLockAttempt := make(chan struct{})
+	destination := &blockingDDLPolicyDestination{
+		applyEntered: applyEntered,
+		allowCommit:  allowCommit,
+	}
+	var lockAttempts atomic.Int32
+	receipts := &testDDLReceiptStore{beforeLock: func(string, string) {
+		if lockAttempts.Add(1) == 2 {
+			close(secondLockAttempt)
+		}
+	}}
+	runner := Runner{
+		FlowID: "flow-ddl-concurrent",
+		Destinations: []DestinationConfig{{
+			Spec: connector.Spec{Name: "dest"},
+			Dest: destination,
+		}},
+		RequireDDLExecution: true,
+		DDLExecutions:       receipts,
+	}
+	batch := connector.Batch{
+		Schema: connector.Schema{Name: "widgets"},
+		Records: []connector.Record{{
+			Operation: connector.OpDDL,
+			DDL:       "ALTER TABLE widgets ADD COLUMN extra text",
+		}},
+		Checkpoint: connector.Checkpoint{LSN: "0/10"},
+	}
+
+	errorsCh := make(chan error, 2)
+	go func() { errorsCh <- runner.writeDestination(context.Background(), runner.Destinations[0], batch) }()
+	<-applyEntered
+	go func() { errorsCh <- runner.writeDestination(context.Background(), runner.Destinations[0], batch) }()
+	<-secondLockAttempt
+	if got := destination.reconciliations.Load(); got != 0 {
+		t.Fatalf("reconciliation calls while first execution active=%d, want 0", got)
+	}
+	close(allowCommit)
+	for range 2 {
+		if err := <-errorsCh; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := destination.externalCommits.Load(); got != 1 {
+		t.Fatalf("external commits=%d, want exactly one", got)
+	}
+	if got := destination.reconciliations.Load(); got != 0 {
+		t.Fatalf("reconciliation calls=%d, want completed receipt to skip reconciliation", got)
+	}
+	if got := destination.writes.Load(); got != 2 {
+		t.Fatalf("writes=%d, want replayed batch write", got)
+	}
+}
+
+func TestRunnerReconcilesCommitBeforeReceiptOnReplay(t *testing.T) {
+	t.Parallel()
+
+	destination := &ddlPolicyDestination{reconcileResult: connector.DDLReconcileApplied}
+	receiptFailures := 1
+	receipts := &testDDLReceiptStore{beforeRecord: func(string, string, string, string, []string) error {
+		if receiptFailures > 0 {
+			receiptFailures--
+			return errors.New("receipt unavailable")
+		}
+		return nil
+	}}
+	runner := Runner{
+		FlowID: "flow-ddl-crash-window",
+		Destinations: []DestinationConfig{{
+			Spec: connector.Spec{Name: "dest"},
+			Dest: destination,
+		}},
+		RequireDDLExecution: true,
+		DDLExecutions:       receipts,
+	}
+	batch := connector.Batch{
+		Schema: connector.Schema{Name: "widgets"},
+		Records: []connector.Record{{
+			Operation: connector.OpDDL,
+			DDL:       "ALTER TABLE widgets ADD COLUMN extra text",
+		}},
+		Checkpoint: connector.Checkpoint{LSN: "0/10"},
+	}
+
+	if err := runner.writeDestination(context.Background(), runner.Destinations[0], batch); err == nil || !strings.Contains(err.Error(), "receipt unavailable") {
+		t.Fatalf("first write error=%v, want receipt persistence failure", err)
+	}
+	if err := runner.writeDestination(context.Background(), runner.Destinations[0], batch); err != nil {
+		t.Fatalf("replay write: %v", err)
+	}
+	if destination.applied != 1 {
+		t.Fatalf("ApplyDDL calls=%d, want one external commit", destination.applied)
+	}
+	if destination.reconciliations != 1 {
+		t.Fatalf("ReconcileDDL calls=%d, want one replay reconciliation", destination.reconciliations)
+	}
+	if destination.writes != 2 {
+		t.Fatalf("Write calls=%d, want replay-safe batch write", destination.writes)
+	}
+	state, err := receipts.PrepareDDLExecution(context.Background(), runner.FlowID, "0/10", "dest", []string{"dest"})
+	if err != nil || state != connector.DDLExecutionComplete {
+		t.Fatalf("receipt state=%v error=%v, want complete", state, err)
+	}
+}
+
 func TestRunnerUsesPerRecordPositionsForDDLReceipts(t *testing.T) {
 	t.Parallel()
 
@@ -99,9 +209,9 @@ func TestRunnerRejectsDuplicateDDLSourcePositionsBeforeExecution(t *testing.T) {
 
 	destination := &ddlPolicyDestination{}
 	receipts := &testDDLReceiptStore{
-		onPrepare: func(string, string, string, []string) (bool, error) {
+		onPrepare: func(string, string, string, []string) (connector.DDLExecutionState, error) {
 			t.Fatal("execution prepared for ambiguous DDL positions")
-			return false, nil
+			return connector.DDLExecutionUnknown, nil
 		},
 		onRecord: func(string, string, string, string, []string) error {
 			t.Fatal("receipt persisted for ambiguous DDL positions")
@@ -140,8 +250,8 @@ func TestRunnerValidatesDDLManifestBeforeDestinationExecution(t *testing.T) {
 	destination := &ddlPolicyDestination{}
 	manifestErr := errors.New("execution manifest changed")
 	receipts := &testDDLReceiptStore{
-		onPrepare: func(string, string, string, []string) (bool, error) {
-			return false, manifestErr
+		onPrepare: func(string, string, string, []string) (connector.DDLExecutionState, error) {
+			return connector.DDLExecutionUnknown, manifestErr
 		},
 		onRecord: func(string, string, string, string, []string) error {
 			t.Fatal("receipt persisted after manifest preflight failed")
@@ -268,9 +378,44 @@ func TestRunnerMarksDDLApplied(t *testing.T) {
 	}
 }
 
+type blockingDDLPolicyDestination struct {
+	applyEntered    chan struct{}
+	allowCommit     chan struct{}
+	externalCommits atomic.Int32
+	reconciliations atomic.Int32
+	writes          atomic.Int32
+}
+
+func (*blockingDDLPolicyDestination) Open(context.Context, connector.Spec) error { return nil }
+func (d *blockingDDLPolicyDestination) Write(context.Context, connector.Batch) error {
+	d.writes.Add(1)
+	return nil
+}
+func (d *blockingDDLPolicyDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
+	close(d.applyEntered)
+	<-d.allowCommit
+	d.externalCommits.Add(1)
+	return nil
+}
+func (d *blockingDDLPolicyDestination) ReconcileDDL(context.Context, connector.Schema, connector.Record) (connector.DDLReconcileResult, error) {
+	d.reconciliations.Add(1)
+	return connector.DDLReconcileIndeterminate, nil
+}
+func (*blockingDDLPolicyDestination) TypeMappings() map[string]string { return nil }
+func (*blockingDDLPolicyDestination) Close(context.Context) error     { return nil }
+func (*blockingDDLPolicyDestination) Capabilities() connector.Capabilities {
+	return connector.Capabilities{
+		Delivery:    connector.DeliverySemantics{Declared: true, ExecutesDDL: true},
+		SupportsDDL: true,
+	}
+}
+
 type ddlPolicyDestination struct {
-	applied int
-	writes  int
+	applied         int
+	writes          int
+	reconciliations int
+	reconcileResult connector.DDLReconcileResult
+	reconcileErr    error
 }
 
 func (*ddlPolicyDestination) Open(context.Context, connector.Spec) error { return nil }
@@ -281,6 +426,10 @@ func (d *ddlPolicyDestination) Write(context.Context, connector.Batch) error {
 func (d *ddlPolicyDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
 	d.applied++
 	return nil
+}
+func (d *ddlPolicyDestination) ReconcileDDL(context.Context, connector.Schema, connector.Record) (connector.DDLReconcileResult, error) {
+	d.reconciliations++
+	return d.reconcileResult, d.reconcileErr
 }
 func (*ddlPolicyDestination) TypeMappings() map[string]string { return nil }
 func (*ddlPolicyDestination) Close(context.Context) error     { return nil }

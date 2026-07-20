@@ -97,13 +97,9 @@ func TestRunnerPrimaryAckInvariantsRapid(t *testing.T) {
 		checkpointStore := &recordingCheckpointStore{}
 		ddlReceipts := &testDDLReceiptStore{}
 		ddlReceipts.onRecord = func(flowID, lsn, _ string, _ string, expected []string) error {
-			for _, destination := range expected {
-				exists, err := ddlReceipts.PrepareDDLExecution(context.Background(), flowID, lsn, destination, expected)
-				if err != nil || !exists {
-					return err
-				}
+			if ddlReceipts.allReceipted(flowID, lsn, expected) {
+				log.add("ddl_applied", lsn, "")
 			}
-			log.add("ddl_applied", lsn, "")
 			return nil
 		}
 		runner := Runner{

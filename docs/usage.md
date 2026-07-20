@@ -575,6 +575,8 @@ Backfill performance options (source `options`):
 - `snapshot_state_table` (default `snapshot_state`)
 - `snapshot_state_path` (required for `file` backend)
 
+Snapshot checkpoints use the partition value plus the table primary key as a composite cursor. This bounds crash replay when many rows share one partition value and preserves deterministic `NULLS LAST` ordering. Tables without a primary key fall back to an inclusive partition cursor: recovery may replay every row equal to that value, but does not omit them.
+
 Example with parallel workers and hash partitions:
 
 ```bash

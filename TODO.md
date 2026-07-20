@@ -6,13 +6,16 @@
   - [x] Declare transactional-batch, idempotent, replay-safe, DDL-executing, and lossy behavior for every destination.
   - [x] Validate acknowledgement and DDL policies before opening connectors or starting execution.
   - [x] Add table-driven capability and invalid-flow contract tests.
-- [ ] **P0 — DDL execution receipt/outbox**
+- [x] **P0 — DDL execution receipt/outbox**
   - [x] Persist replay-safe destination DDL execution receipts and immutable destination manifests.
   - [x] Couple receipt persistence, registry transition, and checkpoint advancement through one recoverable protocol.
   - [x] Reject administrative `applied` transitions without an execution receipt.
   - [x] Add receipt-before-checkpoint crash recovery, replay, and integration tests.
   - [x] Preserve per-record source positions and validate immutable manifests before destination execution.
-  - [ ] Add destination-specific reconciliation for the external-commit-before-receipt window.
+  - [x] Persist attempts before side effects and reconcile PostgreSQL structured plans after an external-commit-before-receipt crash.
+  - [x] Fail closed for raw SQL, conflicting schemas, and automatic-DDL destinations without a reconciler.
+- [ ] **P1 — Remaining destination DDL reconcilers**
+  - [ ] Add catalog reconciliation to each remaining destination before enabling its automatic-DDL path.
 - [x] **P1 — Connector support matrix**
   - [x] Classify every connector as maintained, experimental, deprecated, or placeholder.
   - [x] Require restart, replay, schema-evolution, and integration contracts before maintained status.
@@ -21,6 +24,14 @@
   - [x] Enumerate expected Go tests deterministically.
   - [x] Fail CI when an expected test or package is omitted from machine-readable test results.
   - [x] Keep flaky-test quarantine explicit; never infer success from automatic reruns.
+- [x] **P1 — Property and formal verification expansion**
+  - [x] Add randomized DDL crash-boundary, schema-diff, lifecycle-generation, and composite-cursor properties.
+  - [x] Model DDL execution locks/receipts, generation-fenced lifecycle, and snapshot-to-stream handoff in TLA+.
+  - [x] Enforce nonzero TLC action coverage for the new models.
+- [x] **P1 — Bounded snapshot replay**
+  - [x] Use primary-key tie-breakers in versioned backfill cursors.
+  - [x] Preserve legacy cursor compatibility and `NULLS LAST` recovery.
+  - [x] Cover duplicate partition values, null partitions, binary keys, and malformed cursors.
 - [x] **P1 — Health contracts**
   - [x] Add startup, readiness, and liveness endpoints and Kubernetes probes.
   - [x] Replace the TCP-only Helm test with a readiness assertion.

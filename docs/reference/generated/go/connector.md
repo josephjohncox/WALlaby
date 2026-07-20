@@ -32,10 +32,15 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [type ConfiguredDestinationCapabilities](<#ConfiguredDestinationCapabilities>)
 - [type ContractEvidence](<#ContractEvidence>)
   - [func \(e ContractEvidence\) Complete\(\) bool](<#ContractEvidence.Complete>)
+- [type DDLExecutionState](<#DDLExecutionState>)
+  - [func \(s DDLExecutionState\) Valid\(\) bool](<#DDLExecutionState.Valid>)
 - [type DDLGateError](<#DDLGateError>)
   - [func AsDDLGate\(err error\) \(\*DDLGateError, bool\)](<#AsDDLGate>)
   - [func \(e \*DDLGateError\) Error\(\) string](<#DDLGateError.Error>)
   - [func \(e \*DDLGateError\) Unwrap\(\) error](<#DDLGateError.Unwrap>)
+- [type DDLReconcileResult](<#DDLReconcileResult>)
+  - [func \(r DDLReconcileResult\) Valid\(\) bool](<#DDLReconcileResult.Valid>)
+- [type DDLReconciler](<#DDLReconciler>)
 - [type DeliverySemantics](<#DeliverySemantics>)
 - [type Destination](<#Destination>)
 - [type EndpointType](<#EndpointType>)
@@ -65,6 +70,15 @@ const (
 ```
 
 ## Variables
+
+<a name="ErrDDLReconciliationRequired"></a>
+
+```go
+var (
+    ErrDDLReconciliationRequired      = errors.New("destination DDL reconciliation is required after an ambiguous attempt")
+    ErrDDLReconciliationIndeterminate = errors.New("destination DDL reconciliation was indeterminate")
+)
+```
 
 <a name="ErrDDLApprovalRequired"></a>
 
@@ -288,6 +302,35 @@ func (e ContractEvidence) Complete() bool
 
 Complete reports whether every maintained\-connector gate has evidence.
 
+<a name="DDLExecutionState"></a>
+## type [DDLExecutionState](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/ddl.go#L10>)
+
+DDLExecutionState is the durable state returned before a destination DDL side effect. A retry requires destination reconciliation before execution.
+
+```go
+type DDLExecutionState uint8
+```
+
+<a name="DDLExecutionUnknown"></a>
+
+```go
+const (
+    DDLExecutionUnknown DDLExecutionState = iota
+    DDLExecutionNew
+    DDLExecutionRetry
+    DDLExecutionComplete
+)
+```
+
+<a name="DDLExecutionState.Valid"></a>
+### func \(DDLExecutionState\) [Valid](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/ddl.go#L20>)
+
+```go
+func (s DDLExecutionState) Valid() bool
+```
+
+Valid reports whether the state is a runnable protocol state.
+
 <a name="DDLGateError"></a>
 ## type [DDLGateError](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/errors.go#L22-L29>)
 
@@ -330,6 +373,45 @@ func (e *DDLGateError) Unwrap() error
 ```
 
 
+
+<a name="DDLReconcileResult"></a>
+## type [DDLReconcileResult](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/ddl.go#L26>)
+
+DDLReconcileResult describes whether the intended DDL effect is already visible at a destination after an ambiguous prior attempt.
+
+```go
+type DDLReconcileResult uint8
+```
+
+<a name="DDLReconcileIndeterminate"></a>
+
+```go
+const (
+    DDLReconcileIndeterminate DDLReconcileResult = iota
+    DDLReconcileNotApplied
+    DDLReconcileApplied
+)
+```
+
+<a name="DDLReconcileResult.Valid"></a>
+### func \(DDLReconcileResult\) [Valid](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/ddl.go#L35>)
+
+```go
+func (r DDLReconcileResult) Valid() bool
+```
+
+Valid reports whether the result is a recognized reconciliation outcome.
+
+<a name="DDLReconciler"></a>
+## type [DDLReconciler](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/ddl.go#L41-L43>)
+
+DDLReconciler inspects destination state after an ambiguous DDL attempt. Implementations must not mutate the destination.
+
+```go
+type DDLReconciler interface {
+    ReconcileDDL(ctx context.Context, schema Schema, record Record) (DDLReconcileResult, error)
+}
+```
 
 <a name="DeliverySemantics"></a>
 ## type [DeliverySemantics](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L32-L39>)

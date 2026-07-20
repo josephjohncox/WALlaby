@@ -8,9 +8,10 @@ import (
 
 // DestinationContract is one executable support-matrix row.
 type DestinationContract struct {
-	Type         connector.EndpointType
-	Capabilities connector.Capabilities
-	Runtime      bool
+	Type          connector.EndpointType
+	Capabilities  connector.Capabilities
+	Runtime       bool
+	ReconcilesDDL bool
 }
 
 // DestinationContracts returns every declared destination, including endpoint
@@ -38,10 +39,12 @@ func DestinationContracts() ([]DestinationContract, error) {
 		if err != nil {
 			return nil, fmt.Errorf("construct %s destination contract: %w", endpointType, err)
 		}
+		_, reconcilesDDL := destination.(connector.DDLReconciler)
 		contracts = append(contracts, DestinationContract{
-			Type:         endpointType,
-			Capabilities: connector.ResolveDestinationCapabilities(destination, spec),
-			Runtime:      true,
+			Type:          endpointType,
+			Capabilities:  connector.ResolveDestinationCapabilities(destination, spec),
+			Runtime:       true,
+			ReconcilesDDL: reconcilesDDL,
 		})
 	}
 	for _, endpointType := range []connector.EndpointType{connector.EndpointProto, connector.EndpointParquet} {

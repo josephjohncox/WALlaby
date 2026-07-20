@@ -10,6 +10,30 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+func TestReadEmitsObservedWALPositionWhenEmptyBatchesDisabled(t *testing.T) {
+	t.Parallel()
+
+	changes := make(chan replication.Change, 1)
+	changes <- replication.Change{LSN: pglogrepl.LSN(0x30)}
+	source := &Source{
+		changes:      changes,
+		batchSize:    10,
+		batchTimeout: 5 * time.Millisecond,
+		emitEmpty:    false,
+	}
+
+	batch, err := source.Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Records) != 0 {
+		t.Fatalf("records=%d, want empty WAL advancement batch", len(batch.Records))
+	}
+	if batch.Checkpoint.LSN != "0/30" {
+		t.Fatalf("checkpoint=%q, want observed WAL position 0/30", batch.Checkpoint.LSN)
+	}
+}
+
 func TestReadPreservesPerRecordSourcePositions(t *testing.T) {
 	t.Parallel()
 

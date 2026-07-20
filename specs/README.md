@@ -78,6 +78,23 @@ Run TLC:
 TLA_MODULE=specs/FlowStateMachine.tla TLA_CONFIG=specs/FlowStateMachine.cfg just tla-single
 ```
 
+## Lifecycle Generation Spec (TLA+)
+
+File: `specs/LifecycleGeneration.tla`
+
+What it models:
+
+- Generation-scoped execution registration and leases.
+- Pause intent while the public state remains `Running` until execution quiesces.
+- Two-phase stop through `Stopping`.
+- Terminal-state quiescence, generation matching, and stopped-state finality.
+
+Run TLC:
+
+```
+TLA_MODULE=specs/LifecycleGeneration.tla TLA_CONFIG=specs/LifecycleGeneration.cfg just tla-single
+```
+
 ## Fan-out Spec (TLA+)
 
 File: `specs/CDCFlowFanout.tla`
@@ -92,6 +109,42 @@ Run TLC:
 
 ```
 TLA_MODULE=specs/CDCFlowFanout.tla TLA_CONFIG=specs/CDCFlowFanout.cfg just tla-single
+```
+
+## Snapshot Transition Spec (TLA+)
+
+File: `specs/SnapshotTransition.tla`
+
+What it models:
+
+- Partition assignment and durable per-partition coverage.
+- Crash loss of volatile rows followed by replay from durable state.
+- A snapshot-to-stream transition only after every source row is durable.
+- Streaming start at the exported snapshot boundary.
+
+Run TLC:
+
+```
+TLA_MODULE=specs/SnapshotTransition.tla TLA_CONFIG=specs/SnapshotTransition.cfg just tla-single
+```
+
+## DDL Execution Receipt Spec (TLA+)
+
+File: `specs/DDLExecution.tla`
+
+What it models:
+
+- Session-scoped execution locks around attempt, downstream DDL, batch write, and receipt persistence.
+- Durable attempt preparation before any downstream DDL side effect.
+- Crashes before and after the downstream commit.
+- Destination reconciliation after restart.
+- Receipt persistence only after a confirmed external commit.
+- Fail-closed indeterminate reconciliation and at-most-once external application.
+
+Run TLC:
+
+```
+TLA_MODULE=specs/DDLExecution.tla TLA_CONFIG=specs/DDLExecution.cfg just tla-single
 ```
 
 ## Trace Validation
@@ -111,6 +164,9 @@ unreachable items for the trace suite:
 - `specs/coverage.json` (CDCFlow)
 - `specs/coverage.flow_state.json` (FlowStateMachine)
 - `specs/coverage.fanout.json` (CDCFlowFanout)
+- `specs/coverage.ddl_execution.json` (DDLExecution)
+- `specs/coverage.lifecycle_generation.json` (LifecycleGeneration)
+- `specs/coverage.snapshot_transition.json` (SnapshotTransition)
 
 Regenerate them with:
 
@@ -136,8 +192,9 @@ replaced with `server`. Then validate (defaults to `specs/coverage.json`):
 wallaby-trace-validate --input /path/to/trace.jsonl
 ```
 
-## Next (Deeper Model)
+## Model Boundaries
 
-The remaining planned extension is a deeper model of backfill-to-stream mode
-transitions. Fan-out, DDL gating, retry bounds, checkpoint failure, and crash/restart
-recovery are already covered by the current modules.
+The current modules cover fan-out, generation-fenced lifecycle leases, DDL gating,
+DDL receipt recovery, partitioned snapshot durability, snapshot-to-stream handoff,
+retry bounds, checkpoint failure, and crash/restart recovery. Destination-specific
+schema semantics remain executable Go contracts rather than TLA+ constants.

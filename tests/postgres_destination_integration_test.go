@@ -250,12 +250,19 @@ func TestPostgresDestinationPlanDDL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal plan add: %v", err)
 	}
-	if err := dest.ApplyDDL(ctx, schemaDef, connector.Record{
+	addRecord := connector.Record{
 		Table:     tableName,
 		Operation: connector.OpDDL,
 		DDLPlan:   planAddBytes,
-	}); err != nil {
+	}
+	if result, err := dest.ReconcileDDL(ctx, schemaDef, addRecord); err != nil || result != connector.DDLReconcileNotApplied {
+		t.Fatalf("reconcile unapplied add result=%v error=%v", result, err)
+	}
+	if err := dest.ApplyDDL(ctx, schemaDef, addRecord); err != nil {
 		t.Fatalf("apply plan add ddl: %v", err)
+	}
+	if result, err := dest.ReconcileDDL(ctx, schemaDef, addRecord); err != nil || result != connector.DDLReconcileApplied {
+		t.Fatalf("reconcile applied add result=%v error=%v", result, err)
 	}
 
 	schemaDef.Columns = append(schemaDef.Columns, connector.Column{
@@ -309,12 +316,19 @@ func TestPostgresDestinationPlanDDL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal plan alter/rename: %v", err)
 	}
-	if err := dest.ApplyDDL(ctx, schemaDef, connector.Record{
+	alterRenameRecord := connector.Record{
 		Table:     tableName,
 		Operation: connector.OpDDL,
 		DDLPlan:   planAlterRenameBytes,
-	}); err != nil {
+	}
+	if result, err := dest.ReconcileDDL(ctx, schemaDef, alterRenameRecord); err != nil || result != connector.DDLReconcileNotApplied {
+		t.Fatalf("reconcile unapplied alter/rename result=%v error=%v", result, err)
+	}
+	if err := dest.ApplyDDL(ctx, schemaDef, alterRenameRecord); err != nil {
 		t.Fatalf("apply plan alter/rename ddl: %v", err)
+	}
+	if result, err := dest.ReconcileDDL(ctx, schemaDef, alterRenameRecord); err != nil || result != connector.DDLReconcileApplied {
+		t.Fatalf("reconcile applied alter/rename result=%v error=%v", result, err)
 	}
 
 	schemaDef.Columns = []connector.Column{
@@ -359,12 +373,19 @@ func TestPostgresDestinationPlanDDL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal plan drop: %v", err)
 	}
-	if err := dest.ApplyDDL(ctx, schemaDef, connector.Record{
+	dropRecord := connector.Record{
 		Table:     tableName,
 		Operation: connector.OpDDL,
 		DDLPlan:   planDropBytes,
-	}); err != nil {
+	}
+	if result, err := dest.ReconcileDDL(ctx, schemaDef, dropRecord); err != nil || result != connector.DDLReconcileNotApplied {
+		t.Fatalf("reconcile unapplied drop result=%v error=%v", result, err)
+	}
+	if err := dest.ApplyDDL(ctx, schemaDef, dropRecord); err != nil {
 		t.Fatalf("apply plan drop ddl: %v", err)
+	}
+	if result, err := dest.ReconcileDDL(ctx, schemaDef, dropRecord); err != nil || result != connector.DDLReconcileApplied {
+		t.Fatalf("reconcile applied drop result=%v error=%v", result, err)
 	}
 
 	var columnCount int

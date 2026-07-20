@@ -321,7 +321,10 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 		case <-timer.C:
 			if len(records) == 0 {
 				waitSpan.SetAttributes(attribute.Bool("timeout", true))
-				if s.emitEmpty {
+				// Always surface observed WAL progress, even when every change was
+				// filtered. emit_empty_batches controls only positionless polling
+				// heartbeats; suppressing a durable position would retain WAL forever.
+				if checkpoint.LSN != "" || s.emitEmpty {
 					waitSpan.End()
 					return connector.Batch{
 						Records:    nil,

@@ -44,6 +44,11 @@ func ValidateDestinationContracts(
 		if requireDDLExecution && strings.TrimSpace(destination.Spec.Name) == "" {
 			return fmt.Errorf("automatic DDL execution requires a stable destination name")
 		}
+		if requireDDLExecution {
+			if _, ok := destination.Dest.(connector.DDLReconciler); !ok {
+				return fmt.Errorf("destination %s cannot reconcile DDL after an ambiguous execution", label)
+			}
+		}
 
 		if ackPolicy != AckPolicyPrimary {
 			continue
