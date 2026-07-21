@@ -94,7 +94,8 @@ DROP TABLE IF EXISTS public.wallaby_managed_target`)
 	}
 	created.Source = connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "slot": slotName, "publication": "wallaby_managed_e2e_publication",
-		"ensure_publication": "false", "managed": "true", "bootstrap": "never",
+		"ensure_publication": "false", "sync_publication": "false", "create_slot": "false",
+		"managed": "true", "bootstrap": "never",
 		"status_interval": "10ms", "batch_timeout": "10ms", "ensure_state": "false",
 		"source_system_identifier": sourceSystemID, "source_lineage_id": sourceSystemID + ":wallaby_managed_e2e_publication:v1",
 		"publication_revision": publicationRevision,
@@ -116,6 +117,24 @@ DROP TABLE IF EXISTS public.wallaby_managed_target`)
 	started.Destinations = created.Destinations
 	started.Config.AckPolicy = stream.AckPolicyAll
 
+	var provisionedSlot, provisionedLSN string
+	if err := pool.QueryRow(ctx, `SELECT slot_name,lsn::text FROM pg_catalog.pg_create_logical_replication_slot($1,'pgoutput')`, slotName).Scan(&provisionedSlot, &provisionedLSN); err != nil {
+		t.Fatal(err)
+	}
+	if provisionedSlot != slotName || provisionedLSN == "" {
+		t.Fatalf("provisioned slot=(%q,%q), want exact slot and cut", provisionedSlot, provisionedLSN)
+	}
+	seedFence, err := authorityStore.AcquireProducer(ctx, flowID, "managed-e2e-seed", "test", control.Generation, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coordinator.AuthorizeAck(ctx, seedFence, connector.Checkpoint{LSN: provisionedLSN}); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorityStore.FinishProducer(ctx, seedFence, "checkpoint_seeded"); err != nil {
+		t.Fatal(err)
+	}
+
 	runCtx, stopRun := context.WithCancel(ctx)
 	runErr := make(chan error, 1)
 	go func() {
@@ -123,7 +142,7 @@ DROP TABLE IF EXISTS public.wallaby_managed_target`)
 			Engine: engine, Checkpoints: checkpoints, Authority: authorityStore, Deliveries: coordinator,
 			ExpectedGeneration: control.Generation, ExecutionID: "managed-e2e", ExecutionBackend: "test",
 		}
-		runErr <- flowRunner.Run(runCtx, started, &pgsource.Source{}, []stream.DestinationConfig{{Spec: started.Destinations[0], Dest: &pgdest.Destination{}}})
+		runErr <- flowRunner.Run(runCtx, started, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: started.Destinations[0], Dest: &pgdest.Destination{}}})
 	}()
 
 	waitForCondition(t, ctx, runErr, "managed replication slot activation", func() (bool, error) {
@@ -186,7 +205,7 @@ WHERE checkpoint.flow_incarnation_id=$1`, incarnationID).Scan(&checkpointLSN, &r
 			Engine: engine, Checkpoints: checkpoints, Authority: authorityStore, Deliveries: coordinator,
 			ExpectedGeneration: control.Generation, ExecutionID: "managed-e2e-restart", ExecutionBackend: "test",
 		}
-		restartErr <- flowRunner.Run(restartCtx, started, &pgsource.Source{}, []stream.DestinationConfig{{Spec: started.Destinations[0], Dest: &pgdest.Destination{}}})
+		restartErr <- flowRunner.Run(restartCtx, started, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: started.Destinations[0], Dest: &pgdest.Destination{}}})
 	}()
 	waitForCondition(t, ctx, restartErr, "managed replication slot reactivation from authoritative checkpoint", func() (bool, error) {
 		var active bool

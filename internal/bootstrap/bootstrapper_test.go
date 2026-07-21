@@ -28,11 +28,11 @@ func TestImportSnapshotCommandRejectsUntrustedNames(t *testing.T) {
 	}
 	for _, name := range validNames {
 		want := "SET TRANSACTION SNAPSHOT '" + name + "'"
-		if got, err := importSnapshotCommand(name); err != nil || got != want {
-			t.Fatalf("valid snapshot command=(%q,%v), want %q", got, err, want)
+		if got, ok := importSnapshotCommand(name); !ok || got != want {
+			t.Fatalf("valid snapshot command=(%q,%v), want %q", got, ok, want)
 		}
 	}
-	if _, err := importSnapshotCommand("x'; DROP TABLE flows; --"); err == nil {
+	if _, ok := importSnapshotCommand("x'; DROP TABLE flows; --"); ok {
 		t.Fatal("expected untrusted snapshot name to be rejected")
 	}
 }

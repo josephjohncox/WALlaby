@@ -8,15 +8,210 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/authority"
+	"github.com/josephjohncox/wallaby/internal/bootstrap"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
+	"github.com/josephjohncox/wallaby/internal/controlplane"
 	"github.com/josephjohncox/wallaby/internal/controlstore"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
+
+func TestAuthorityV2CatalogAndRepresentativeMutations(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := newAuthorityTestPool(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err := controlplane.ApplyMigrations(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	expectedTables := []string{
+		"flows", "flow_incarnations", "flow_state_events", "flow_executions", "execution_acquisitions", "producer_leases", "work_claims",
+		"checkpoints", "checkpoint_outbox", "authoritative_checkpoints", "authoritative_checkpoint_outbox",
+		"schema_versions", "ddl_events", "ddl_execution_attempts", "ddl_execution_receipts", "ddl_execution_manifests", "ddl_execution_run_attempts", "schema_publication_operations",
+		"destination_revisions", "delivery_manifests", "delivery_attempts", "delivery_attempt_evidence", "delivery_receipts", "source_ack_intents", "source_ack_receipts",
+		"source_bootstraps", "source_bootstrap_tasks", "snapshot_publication_receipts", "source_resources", "source_resource_operations", "snapshot_delivery_attempts", "snapshot_delivery_evidence", "snapshot_delivery_receipts",
+		"canonical_schemas", "artifact_streams", "artifact_objects", "artifact_upload_attempts", "artifact_publications", "artifact_publication_objects", "artifact_deliveries", "artifact_quota_accounts", "artifact_quota_reservations", "artifact_gc_claims", "artifact_delivery_attempts", "artifact_delivery_receipts",
+	}
+	for _, table := range expectedTables {
+		var count int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_trigger AS trigger JOIN pg_proc AS procedure ON procedure.oid=trigger.tgfoid WHERE trigger.tgrelid=to_regclass($1) AND NOT trigger.tgisinternal AND procedure.proname='wallaby_require_authority_protocol_v2'`, table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Errorf("table %s authority-v2 trigger count=%d, want 1", table, count)
+		}
+	}
+
+	staleCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleCfg.ConnConfig.RuntimeParams["wallaby.authority_protocol"] = "v1"
+	stale, err := pgxpool.NewWithConfig(ctx, staleCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stale.Close()
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	engine, err := workflow.NewPostgresEngineWithPool(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowID := "authority-v2-workflow-" + suffix
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+		t.Fatal(err)
+	}
+	defer cleanupAuthorityTest(context.Background(), pool, flowID)
+	if _, err := stale.Exec(ctx, `UPDATE flows SET updated_at=clock_timestamp() WHERE id=$1`, flowID); err == nil || !isSQLState(err, "42501") {
+		t.Fatalf("workflow v1 mutation error=%v, want SQLSTATE 42501", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE flows SET updated_at=clock_timestamp() WHERE id=$1`, flowID); err != nil {
+		t.Fatalf("workflow v2 mutation rejected: %v", err)
+	}
+	tests := []struct {
+		name string
+		sql  string
+		args []any
+	}{
+		{name: "checkpoint", sql: `INSERT INTO checkpoints(flow_id,lsn,metadata) VALUES($1,'0/1','{}')`, args: []any{"authority-v2-checkpoint-" + suffix}},
+		{name: "registry", sql: `INSERT INTO schema_versions(namespace,name,version,schema_json) VALUES($1,'table',1,'{}')`, args: []any{"authority_v2_registry_" + suffix}},
+		{name: "delivery", sql: `INSERT INTO destination_revisions(destination_revision_id,destination_name,config_fingerprint) VALUES($1,'target','hash')`, args: []any{"authority-v2-delivery-" + suffix}},
+		{name: "artifact", sql: `INSERT INTO canonical_schemas(schema_id,projection_id,schema_json) VALUES($1,'projection','{}')`, args: []any{"authority-v2-artifact-" + suffix}},
+		{name: "bootstrap", sql: `INSERT INTO source_bootstraps(bootstrap_id,flow_incarnation_id,flow_id,generation,bootstrap_generation,acquisition_id,lease_epoch,source_system_id,database_name,slot_name,publication_name,plugin,consistent_lsn,snapshot_name,manifest_hash,selection_hash,phase,owner_generation,owner_acquisition_id,owner_lease_epoch) VALUES($1,$2,'flow',1,1,$3,1,'system','database',$4,'publication','pgoutput','0/1','snapshot','hash','selection','abandoned',1,$3,1)`, args: []any{uuid.New(), uuid.New(), uuid.New(), "authority_v2_slot_" + suffix}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := stale.Exec(ctx, tt.sql, tt.args...); err == nil || !isSQLState(err, "42501") {
+				t.Fatalf("v1 mutation error=%v, want SQLSTATE 42501", err)
+			}
+			if _, err := pool.Exec(ctx, tt.sql, tt.args...); err != nil {
+				t.Fatalf("v2 mutation rejected: %v", err)
+			}
+		})
+	}
+	_, _ = pool.Exec(ctx, `DELETE FROM checkpoints WHERE flow_id=$1`, "authority-v2-checkpoint-"+suffix)
+	_, _ = pool.Exec(ctx, `DELETE FROM schema_versions WHERE namespace=$1`, "authority_v2_registry_"+suffix)
+	_, _ = pool.Exec(ctx, `DELETE FROM destination_revisions WHERE destination_revision_id=$1`, "authority-v2-delivery-"+suffix)
+	_, _ = pool.Exec(ctx, `DELETE FROM canonical_schemas WHERE schema_id=$1`, "authority-v2-artifact-"+suffix)
+	_, _ = pool.Exec(ctx, `DELETE FROM source_bootstraps WHERE slot_name=$1`, "authority_v2_slot_"+suffix)
+}
+
+func isSQLState(err error, state string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == state
+}
+
+func TestExternalCheckpointPutSerializesProducerAcquisition(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	engine, err := workflow.NewPostgresEngine(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	checkpointStore, err := checkpoint.NewPostgresStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer checkpointStore.Close()
+	pool, err := newAuthorityTestPool(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	authorityStore, _ := authority.NewPostgresStore(pool)
+	flowID := fmt.Sprintf("external-checkpoint-atomic-%d", time.Now().UnixNano())
+	defer cleanupAuthorityTest(context.Background(), pool, flowID)
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+		t.Fatal(err)
+	}
+	_, control, err := engine.PlanStart(ctx, flowID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.MarkDispatched(ctx, flowID, control.Generation); err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close(context.Background())
+	if _, err := blocker.Exec(ctx, `SELECT pg_advisory_lock(hashtext($1))`, flowID); err != nil {
+		t.Fatal(err)
+	}
+	putDone := make(chan error, 1)
+	go func() { putDone <- checkpointStore.PutExternal(ctx, flowID, connector.Checkpoint{LSN: "0/10"}) }()
+	waitForAdvisoryWaiters(t, ctx, pool, blocker.PgConn().PID(), 1)
+	type acquisitionResult struct {
+		fence authority.RunFence
+		err   error
+	}
+	acquireDone := make(chan acquisitionResult, 1)
+	go func() {
+		fence, acquireErr := authorityStore.AcquireProducer(ctx, flowID, "worker", "test", control.Generation, time.Minute)
+		acquireDone <- acquisitionResult{fence: fence, err: acquireErr}
+	}()
+	waitForAdvisoryWaiters(t, ctx, pool, blocker.PgConn().PID(), 2)
+	if _, err := blocker.Exec(ctx, `SELECT pg_advisory_unlock(hashtext($1))`, flowID); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-putDone; err != nil {
+		t.Fatalf("PutExternal: %v", err)
+	}
+	acquired := <-acquireDone
+	if acquired.err != nil {
+		t.Fatalf("AcquireProducer after external checkpoint commit: %v", acquired.err)
+	}
+	if err := authorityStore.FinishProducer(ctx, acquired.fence, "test complete"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForAdvisoryWaiters(t *testing.T, ctx context.Context, pool *pgxpool.Pool, holderPID uint32, want int) {
+	t.Helper()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var count int
+		err := pool.QueryRow(ctx, `
+SELECT count(*)
+FROM pg_locks AS waiter
+JOIN pg_locks AS holder
+  ON holder.locktype=waiter.locktype AND holder.database IS NOT DISTINCT FROM waiter.database
+ AND holder.classid IS NOT DISTINCT FROM waiter.classid AND holder.objid IS NOT DISTINCT FROM waiter.objid
+ AND holder.objsubid IS NOT DISTINCT FROM waiter.objsubid
+WHERE holder.pid=$1 AND holder.locktype='advisory' AND holder.granted AND NOT waiter.granted`, holderPID).Scan(&count)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count >= want {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for %d advisory waiters: %v", want, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
 
 func TestPostgresGenerationFenceRejectsStaleCommit(t *testing.T) {
 	dsn := os.Getenv("TEST_PG_DSN")
@@ -265,10 +460,30 @@ func TestPostgresFlowIDReuseDoesNotRestoreOldState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.RegisterExecutionGeneration(ctx, flowID, "kubernetes-stable-id", "kubernetes", control.Generation, time.Minute); err != nil {
+	bootstrapper, err := bootstrap.NewBootstrapper(ctx, pool, dsn, pool, bootstrap.Hooks{})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.FinishExecutionReason(ctx, flowID, "kubernetes-stable-id", "old incarnation complete"); err != nil {
+	oldBootstrap, err := bootstrapper.Start(ctx, oldFence, "old_incarnation_publication", "old-manifest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := oldBootstrap.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := bootstrapper.Abandon(ctx, oldFence, oldBootstrap.Snapshot, "flow reuse test"); err != nil {
+		t.Fatal(err)
+	}
+	oldExecutionFence, err := engine.RegisterExecutionFence(ctx, flowID, "kubernetes-stable-id", "kubernetes", control.Generation, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleGeneration := oldExecutionFence
+	staleGeneration.Generation++
+	if err := engine.RenewExecutionFence(ctx, staleGeneration, time.Minute); !errors.Is(err, workflow.ErrInvalidState) {
+		t.Fatalf("stale compatibility generation renew error=%v, want ErrInvalidState", err)
+	}
+	if err := engine.FinishExecutionFence(ctx, oldExecutionFence, "old incarnation complete"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE producer_leases SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE incarnation_id = $1`, oldFence.FlowIncarnationID); err != nil {
@@ -291,11 +506,17 @@ func TestPostgresFlowIDReuseDoesNotRestoreOldState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.RegisterExecutionGeneration(ctx, flowID, "kubernetes-stable-id", "kubernetes", newControl.Generation, time.Minute); err != nil {
+	if _, err := engine.RegisterExecutionFence(ctx, flowID, "kubernetes-stable-id", "kubernetes", newControl.Generation, time.Minute); err != nil {
 		t.Fatalf("recreated incarnation could not reuse deterministic execution ID: %v", err)
+	}
+	if err := engine.FinishExecutionFence(ctx, oldExecutionFence, "stale old incarnation"); !errors.Is(err, workflow.ErrInvalidState) {
+		t.Fatalf("recreated flow accepted old compatibility execution fence: %v", err)
 	}
 	if newFence.FlowIncarnationID == oldFence.FlowIncarnationID {
 		t.Fatalf("recreated flow reused incarnation %s", newFence.FlowIncarnationID)
+	}
+	if _, _, err := bootstrapper.LoadLatest(ctx, newFence); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("new incarnation restored old bootstrap: %v", err)
 	}
 	if err := store.RenewProducer(ctx, oldFence, time.Minute); !errors.Is(err, authority.ErrLeaseExpired) {
 		t.Fatalf("old incarnation RenewProducer error=%v, want ErrLeaseExpired", err)
@@ -325,7 +546,12 @@ func TestAuthorityProtocolGateRejectsStaleBinarySession(t *testing.T) {
 	defer currentPool.Close()
 	defer cleanupAuthorityTest(ctx, currentPool, flowID)
 
-	stalePool, err := pgxpool.New(ctx, dsn)
+	staleConfig, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleConfig.ConnConfig.RuntimeParams["wallaby.authority_protocol"] = "v1"
+	stalePool, err := pgxpool.NewWithConfig(ctx, staleConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,8 +598,20 @@ func cleanupAuthorityTest(ctx context.Context, pool *pgxpool.Pool, flowID string
 		_, _ = pool.Exec(ctx, "DELETE FROM artifact_quota_accounts WHERE flow_incarnation_id=$1", incarnation)
 		_, _ = pool.Exec(ctx, "DELETE FROM artifact_streams WHERE flow_incarnation_id=$1", incarnation)
 		_, _ = pool.Exec(ctx, "DELETE FROM snapshot_publication_receipts WHERE bootstrap_id IN (SELECT bootstrap_id FROM source_bootstraps WHERE flow_incarnation_id=$1)", incarnation)
+		_, _ = pool.Exec(ctx, "DELETE FROM snapshot_delivery_receipts WHERE bootstrap_id IN (SELECT bootstrap_id FROM source_bootstraps WHERE flow_incarnation_id=$1)", incarnation)
+		_, _ = pool.Exec(ctx, "DELETE FROM snapshot_delivery_evidence WHERE attempt_id IN (SELECT attempt_id FROM snapshot_delivery_attempts WHERE flow_incarnation_id=$1)", incarnation)
+		_, _ = pool.Exec(ctx, "DELETE FROM snapshot_delivery_attempts WHERE flow_incarnation_id=$1", incarnation)
 		_, _ = pool.Exec(ctx, "DELETE FROM source_bootstrap_tasks WHERE bootstrap_id IN (SELECT bootstrap_id FROM source_bootstraps WHERE flow_incarnation_id=$1)", incarnation)
+		_, _ = pool.Exec(ctx, "DELETE FROM source_resource_operations WHERE flow_incarnation_id=$1", incarnation)
+		_, _ = pool.Exec(ctx, "DELETE FROM source_resources WHERE flow_incarnation_id=$1", incarnation)
 		_, _ = pool.Exec(ctx, "DELETE FROM source_bootstraps WHERE flow_incarnation_id=$1", incarnation)
+		_, _ = pool.Exec(ctx, "DELETE FROM schema_publication_operations WHERE flow_incarnation_id=$1", incarnation)
+		_, _ = pool.Exec(ctx, "DELETE FROM ddl_execution_run_attempts WHERE flow_incarnation_id=$1", incarnation)
+		_, _ = pool.Exec(ctx, "DELETE FROM ddl_execution_receipts WHERE flow_incarnation_id=$1", incarnation)
+		_, _ = pool.Exec(ctx, "DELETE FROM ddl_execution_attempts WHERE flow_incarnation_id=$1", incarnation)
+		_, _ = pool.Exec(ctx, "DELETE FROM ddl_execution_manifests WHERE event_id IN (SELECT id FROM ddl_events WHERE flow_incarnation_id=$1)", incarnation)
+		_, _ = pool.Exec(ctx, "DELETE FROM ddl_events WHERE flow_incarnation_id=$1", incarnation)
+		_, _ = pool.Exec(ctx, "DELETE FROM schema_versions WHERE flow_incarnation_id=$1", incarnation)
 		_, _ = pool.Exec(ctx, "DELETE FROM source_ack_receipts WHERE flow_incarnation_id=$1", incarnation)
 		_, _ = pool.Exec(ctx, "DELETE FROM source_ack_intents WHERE flow_incarnation_id=$1", incarnation)
 		_, _ = pool.Exec(ctx, "DELETE FROM delivery_receipts WHERE flow_incarnation_id=$1", incarnation)

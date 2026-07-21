@@ -125,11 +125,11 @@
 - [x] Add fenced PostgreSQL checkpoints/outbox state isolated by flow incarnation.
 - [x] Add durable destination manifests, immutable configuration-qualified destination revisions, append-only attempts/evidence, immutable receipts, checkpoint/ACK-intent coupling, and PostgreSQL target-marker reconciliation.
 - [x] Add the managed PostgreSQL worker path and a live PostgreSQL-to-PostgreSQL transaction-end/feedback test.
-- [ ] Wire slot-exported bootstrap into `wallaby-worker`. The primitives now require durable task receipts, persisted-cut equality, retryable cleanup, and a new physical generation after exporter loss; production admission rejects `bootstrap=auto|required` until the worker copies and publishes snapshot rows end to end.
+- [x] Wire slot-exported bootstrap into `wallaby-worker` and in-process DBOS. `bootstrap=auto|required` now uses a pre-slot DDL barrier, publication create/adopt journal, imported snapshot tasks, receipt-backed exclusive cursors, atomic PostgreSQL target publication, exact-LSN handoff, and whole-generation restart after exporter loss.
 - [ ] Wire canonical artifacts into managed execution. The package now validates source transaction identity, exact-version checksums, monotonic publication, quota conversion, and consumer claims, but no worker constructs a publisher.
 - [x] Downgrade PostgreSQL CDC and legacy backfill source capability claims to experimental pending the complete promotion matrix.
 - [x] Add the `ManagedDurability` TLA+ model and required PR, live-integration, and scheduled nightly recipes/jobs.
-- [ ] Thread the managed fence through DBOS and every remaining DDL, schema-registry, source-resource, and staging mutation. Managed admission currently rejects source publication/state changes and DDL capture.
+- [ ] Finish every remaining managed mutation seam. DBOS, source DDL/catalog rows, DDL attempts/receipts, bootstrap staging, checkpoints, delivery, and owned slot/publication operations now carry the fence; legacy managed administrative resource mutation fails closed. External schema-registry publication, DDL-capture resource creation, generic staging, and automatic structured DDL application remain unadmitted.
 - [x] Add an authority-protocol session gate to workflow, checkpoint, and registry mutations so a pre-authority binary is rejected after the quiesced migration.
 - [ ] Support multi-table PostgreSQL source transactions in one target transaction; the initial managed runner fails closed when a transaction has multiple table/schema fragments.
 - [ ] Reconcile and release old `reserved` artifact objects that have no exact `VersionId`. The conservative collector deletes only unrooted `uploaded`/`verified` exact versions.

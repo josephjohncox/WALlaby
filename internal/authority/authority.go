@@ -21,6 +21,12 @@ var (
 )
 
 type RunFence = connector.RunFence
+
+// CleanupFence is a purpose-built terminal source-resource capability. It is
+// acquired only after lifecycle cancellation has quiesced a stopping/stopped
+// generation and is rejected by ordinary managed data-plane repositories.
+type CleanupFence = connector.CleanupFence
+
 type ClaimKind = connector.ClaimKind
 type ClaimFence = connector.ClaimFence
 
@@ -41,6 +47,14 @@ type Store interface {
 	AcquireClaim(context.Context, RunFence, ClaimKind, string, time.Duration) (ClaimFence, error)
 	RenewClaim(context.Context, ClaimFence, time.Duration) error
 	ReleaseClaim(context.Context, ClaimFence) error
+}
+
+// CleanupStore exposes only terminal lifecycle authority operations. Keeping
+// it separate from Store prevents data-plane fakes and callers from acquiring
+// cleanup authority.
+type CleanupStore interface {
+	AcquireCleanupFence(context.Context, string, int64, time.Duration) (CleanupFence, error)
+	FinishCleanup(context.Context, CleanupFence, string) error
 }
 
 // PostgresStore keeps generations, acquisitions, leases, and claims in the
@@ -148,6 +162,153 @@ ON CONFLICT (incarnation_id) DO UPDATE SET
 		ExecutionID:       executionID,
 		LeaseEpoch:        leaseEpoch,
 	}, nil
+}
+
+// AcquireCleanupFence acquires exclusive terminal-cleanup authority for a
+// quiescent stopping or stopped flow generation. It deliberately cannot be
+// used as ordinary running producer authority.
+func (s *PostgresStore) AcquireCleanupFence(ctx context.Context, flowID string, generation int64, lease time.Duration) (CleanupFence, error) {
+	if flowID == "" || generation <= 0 || lease <= 0 {
+		return CleanupFence{}, errors.New("flow, positive generation, and cleanup lease are required")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return CleanupFence{}, fmt.Errorf("begin cleanup acquisition: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockFlowAuthority(ctx, tx, flowID); err != nil {
+		return CleanupFence{}, err
+	}
+	var incarnationID uuid.UUID
+	var currentGeneration int64
+	var state, target string
+	if err := tx.QueryRow(ctx, `
+SELECT incarnation_id,lifecycle_generation,state,lifecycle_target
+FROM flows WHERE id=$1 FOR UPDATE`, flowID).Scan(&incarnationID, &currentGeneration, &state, &target); err != nil {
+		return CleanupFence{}, fmt.Errorf("load cleanup flow authority: %w", err)
+	}
+	if currentGeneration != generation || target != "stopped" || (state != "stopping" && state != "stopped") {
+		return CleanupFence{}, fmt.Errorf("%w: cleanup requires stopping/stopped target at generation %d, got state=%s target=%s generation=%d", ErrFenceRejected, generation, state, target, currentGeneration)
+	}
+	var active int
+	if err := tx.QueryRow(ctx, `
+SELECT count(*) FROM flow_executions
+WHERE incarnation_id=$1 AND generation<=$2 AND status='running'
+  AND lease_expires_at>clock_timestamp()`, incarnationID, generation).Scan(&active); err != nil {
+		return CleanupFence{}, fmt.Errorf("inspect active cleanup executions: %w", err)
+	}
+	if active != 0 {
+		return CleanupFence{}, fmt.Errorf("%w: terminal cleanup requires quiescent executions", ErrLeaseHeld)
+	}
+	leaseEpoch := int64(1)
+	var previousEpoch int64
+	var leaseLive bool
+	err = tx.QueryRow(ctx, `
+SELECT lease_epoch,lease_expires_at>clock_timestamp()
+FROM producer_leases WHERE incarnation_id=$1 FOR UPDATE`, incarnationID).Scan(&previousEpoch, &leaseLive)
+	switch {
+	case err == nil:
+		if leaseLive {
+			return CleanupFence{}, fmt.Errorf("%w: flow %q cleanup", ErrLeaseHeld, flowID)
+		}
+		leaseEpoch = previousEpoch + 1
+	case !errors.Is(err, pgx.ErrNoRows):
+		return CleanupFence{}, fmt.Errorf("load cleanup lease: %w", err)
+	}
+	acquisitionID := uuid.New()
+	executionID := "lifecycle-cleanup-" + uuid.NewString()
+	if _, err := tx.Exec(ctx, `
+INSERT INTO execution_acquisitions(acquisition_id,incarnation_id,generation,execution_id,backend,lease_epoch)
+VALUES($1,$2,$3,$4,'lifecycle_cleanup',$5)`, acquisitionID, incarnationID, generation, executionID, leaseEpoch); err != nil {
+		return CleanupFence{}, fmt.Errorf("insert cleanup acquisition: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+INSERT INTO producer_leases(incarnation_id,generation,acquisition_id,lease_epoch,lease_expires_at)
+VALUES($1,$2,$3,$4,clock_timestamp()+$5::interval)
+ON CONFLICT(incarnation_id) DO UPDATE SET generation=EXCLUDED.generation,
+ acquisition_id=EXCLUDED.acquisition_id,lease_epoch=EXCLUDED.lease_epoch,
+ lease_expires_at=EXCLUDED.lease_expires_at,updated_at=clock_timestamp()`, incarnationID, generation, acquisitionID, leaseEpoch, lease.String()); err != nil {
+		return CleanupFence{}, fmt.Errorf("store cleanup lease: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return CleanupFence{}, fmt.Errorf("commit cleanup acquisition: %w", err)
+	}
+	return CleanupFence{RunFence: RunFence{
+		FlowIncarnationID: incarnationID,
+		FlowID:            flowID,
+		Generation:        generation,
+		AcquisitionID:     acquisitionID,
+		ExecutionID:       executionID,
+		LeaseEpoch:        leaseEpoch,
+	}}, nil
+}
+
+// FinishCleanup releases terminal cleanup authority after the lifecycle
+// process has either proved cleanup or recorded a recoverable failure.
+func (s *PostgresStore) FinishCleanup(ctx context.Context, fence CleanupFence, reason string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin cleanup finish: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := ValidateCleanupFence(ctx, tx, fence); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `
+UPDATE execution_acquisitions
+SET finished_at=clock_timestamp(),finish_reason=$6
+WHERE acquisition_id=$1 AND incarnation_id=$2 AND generation=$3
+  AND lease_epoch=$4 AND execution_id=$5 AND backend='lifecycle_cleanup'
+  AND finished_at IS NULL`, fence.AcquisitionID, fence.FlowIncarnationID, fence.Generation, fence.LeaseEpoch, fence.ExecutionID, reason)
+	if err != nil {
+		return fmt.Errorf("finish cleanup acquisition: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("%w: finish cleanup", ErrFenceRejected)
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE producer_leases SET lease_expires_at=clock_timestamp(),updated_at=clock_timestamp()
+WHERE incarnation_id=$1 AND acquisition_id=$2 AND lease_epoch=$3`, fence.FlowIncarnationID, fence.AcquisitionID, fence.LeaseEpoch); err != nil {
+		return fmt.Errorf("expire cleanup lease: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit cleanup finish: %w", err)
+	}
+	return nil
+}
+
+// ValidateCleanupFence guards terminal cleanup mutations in their PostgreSQL
+// transaction without broadening ordinary RunFence validity to stopped flows.
+func ValidateCleanupFence(ctx context.Context, tx pgx.Tx, fence CleanupFence) error {
+	if err := fence.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", ErrFenceRejected, err)
+	}
+	if tx == nil {
+		return errors.New("cleanup fence validation requires a PostgreSQL transaction")
+	}
+	if err := lockFlowAuthority(ctx, tx, fence.FlowID); err != nil {
+		return err
+	}
+	var valid bool
+	if err := tx.QueryRow(ctx, `
+SELECT EXISTS(
+ SELECT 1 FROM flows AS flow
+ JOIN producer_leases AS producer ON producer.incarnation_id=flow.incarnation_id
+ JOIN execution_acquisitions AS acquisition ON acquisition.acquisition_id=producer.acquisition_id
+ WHERE flow.id=$1 AND flow.incarnation_id=$2 AND flow.lifecycle_generation=$3
+   AND flow.lifecycle_target='stopped' AND flow.state IN ('stopping','stopped')
+   AND producer.generation=$3 AND producer.acquisition_id=$4 AND producer.lease_epoch=$5
+   AND producer.lease_expires_at>clock_timestamp()
+   AND acquisition.execution_id=$6 AND acquisition.backend='lifecycle_cleanup'
+   AND acquisition.finished_at IS NULL
+)`, fence.FlowID, fence.FlowIncarnationID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, fence.ExecutionID).Scan(&valid); err != nil {
+		return fmt.Errorf("validate cleanup fence: %w", err)
+	}
+	if !valid {
+		telemetry.RecordFenceRejection(ctx, fence.FlowID)
+		return fmt.Errorf("%w: invalid terminal cleanup fence for flow=%s generation=%d", ErrFenceRejected, fence.FlowID, fence.Generation)
+	}
+	return nil
 }
 
 func (s *PostgresStore) RenewProducer(ctx context.Context, fence RunFence, lease time.Duration) error {
@@ -391,6 +552,12 @@ SELECT EXISTS (
 // advisory lock is the same lock used by producer acquisition, so a takeover
 // cannot commit between this validation and the guarded mutation.
 func ValidateRunFence(ctx context.Context, tx pgx.Tx, fence RunFence) error {
+	if err := fence.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", ErrFenceRejected, err)
+	}
+	if tx == nil {
+		return errors.New("run fence validation requires a PostgreSQL transaction")
+	}
 	if err := lockFlowAuthority(ctx, tx, fence.FlowID); err != nil {
 		return err
 	}
@@ -424,6 +591,38 @@ SELECT EXISTS (
 	return nil
 }
 
+// ValidateClaimFence validates both the producer and exact work-claim epochs in
+// the transaction that records task progress or a receipt.
+func ValidateClaimFence(ctx context.Context, tx pgx.Tx, claim ClaimFence) error {
+	if err := claim.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", ErrFenceRejected, err)
+	}
+	if err := ValidateRunFence(ctx, tx, claim.RunFence); err != nil {
+		return err
+	}
+	var valid bool
+	if err := tx.QueryRow(ctx, `
+SELECT EXISTS (
+  SELECT 1 FROM work_claims
+  WHERE incarnation_id=$1
+    AND claim_kind=$2
+    AND work_id=$3
+    AND generation=$4
+    AND acquisition_id=$5
+    AND lease_epoch=$6
+    AND claim_epoch=$7
+    AND released_at IS NULL
+    AND claim_expires_at > clock_timestamp()
+)`, claim.FlowIncarnationID, claim.Kind, claim.WorkID, claim.Generation, claim.AcquisitionID, claim.LeaseEpoch, claim.ClaimEpoch).Scan(&valid); err != nil {
+		return fmt.Errorf("validate claim fence: %w", err)
+	}
+	if !valid {
+		telemetry.RecordFenceRejection(ctx, claim.FlowID)
+		return fmt.Errorf("%w: claim=%s/%s epoch=%d", ErrFenceRejected, claim.Kind, claim.WorkID, claim.ClaimEpoch)
+	}
+	return nil
+}
+
 func lockFlowAuthority(ctx context.Context, tx pgx.Tx, flowID string) error {
 	if flowID == "" {
 		return fmt.Errorf("%w: empty flow ID", ErrFenceRejected)
@@ -435,3 +634,4 @@ func lockFlowAuthority(ctx context.Context, tx pgx.Tx, flowID string) error {
 }
 
 var _ Store = (*PostgresStore)(nil)
+var _ CleanupStore = (*PostgresStore)(nil)

@@ -46,14 +46,14 @@ func (s *CheckpointService) PutCheckpoint(ctx context.Context, req *wallabypb.Pu
 	}
 	cp := checkpointFromProto(req.Checkpoint)
 	start := time.Now()
-	if guard, ok := s.store.(interface {
-		CheckExternalOverrideAllowed(context.Context, string) error
-	}); ok {
-		if err := guard.CheckExternalOverrideAllowed(ctx, req.FlowId); err != nil {
-			return nil, mapCheckpointError(err)
-		}
+	var err error
+	if external, ok := s.store.(checkpoint.ExternalStore); ok {
+		err = external.PutExternal(ctx, req.FlowId, cp)
+	} else {
+		// SQLite and explicit unmanaged stores retain their compatibility path.
+		err = s.store.Put(ctx, req.FlowId, cp)
 	}
-	if err := s.store.Put(ctx, req.FlowId, cp); err != nil {
+	if err != nil {
 		return nil, mapCheckpointError(err)
 	}
 	if s.meters != nil {

@@ -15,9 +15,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	apigrpc "github.com/josephjohncox/wallaby/internal/api/grpc"
+	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/config"
+	"github.com/josephjohncox/wallaby/internal/controlplane"
+	"github.com/josephjohncox/wallaby/internal/controlstore"
 	"github.com/josephjohncox/wallaby/internal/ddl"
+	"github.com/josephjohncox/wallaby/internal/delivery"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/orchestrator"
 	"github.com/josephjohncox/wallaby/internal/registry"
@@ -85,12 +89,37 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	var traceClose func() error
 	tracePath := cfg.Trace.Path
 	postgresDSN := cfg.Postgres.DSN
+	var controlPool *pgxpool.Pool
+	var authorityStore authority.Store
+	var deliveryCoordinator *delivery.Coordinator
+	if postgresDSN != "" {
+		control, err := controlstore.New(ctx, postgresDSN)
+		if err != nil {
+			return fmt.Errorf("start shared control store: %w", err)
+		}
+		addCleanup(control.Close)
+		controlPool = control.Pool()
+		if err := controlplane.ApplyMigrations(ctx, controlPool); err != nil {
+			return fmt.Errorf("migrate shared control store: %w", err)
+		}
+		authorityStore, err = authority.NewPostgresStore(controlPool)
+		if err != nil {
+			return fmt.Errorf("start authority store: %w", err)
+		}
+		deliveryCoordinator, err = delivery.NewCoordinator(ctx, controlPool)
+		if err != nil {
+			return fmt.Errorf("start delivery coordinator: %w", err)
+		}
+	}
 	if cfg.Workflow.Store == "memory" && (cfg.DBOS.Enabled || cfg.Kubernetes.Enabled) {
 		return errors.New("memory workflow store cannot be used with DBOS or Kubernetes dispatch")
 	}
 	switch cfg.Workflow.Store {
 	case "postgres":
-		postgresEngine, err := workflow.NewPostgresEngine(ctx, postgresDSN)
+		if controlPool == nil {
+			return errors.New("postgres workflow store requires WALLABY_POSTGRES_DSN")
+		}
+		postgresEngine, err := workflow.NewPostgresEngineWithPool(ctx, controlPool)
 		if err != nil {
 			return err
 		}
@@ -101,8 +130,8 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	default:
 		return fmt.Errorf("unsupported workflow store: %s", cfg.Workflow.Store)
 	}
-	if postgresDSN != "" {
-		store, err := registry.NewPostgresStore(ctx, cfg.Postgres.DSN)
+	if controlPool != nil {
+		store, err := registry.NewPostgresStoreWithPool(ctx, controlPool)
 		if err != nil {
 			return err
 		}
@@ -144,7 +173,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		if postgresDSN == "" {
 			return errors.New("checkpoint backend postgres requires WALLABY_POSTGRES_DSN")
 		}
-		checkpointStore, err := checkpoint.NewPostgresStore(ctx, postgresDSN)
+		checkpointStore, err := checkpoint.NewPostgresStoreWithPool(ctx, controlPool)
 		if err != nil {
 			return err
 		}
@@ -175,7 +204,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 
 	factory := runner.Factory{
-		Meters: telemetryProvider.Meters(),
+		Meters: telemetryProvider.Meters(), ManagedControl: controlPool, ManagedAuthority: authorityStore,
 	}
 	if registryStore != nil {
 		defaults := flow.DDLPolicyDefaults{
@@ -248,6 +277,8 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			DDLExecutions: ddlExecutions,
 			TraceSink:     traceSink,
 			TracePath:     tracePath,
+			Authority:     authorityStore,
+			Deliveries:    deliveryCoordinator,
 		}, baseEngine, checkpoints, factory)
 		if err != nil {
 			return err
@@ -297,7 +328,11 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	if kubeDispatcher != nil {
 		lifecycleDispatcher = kubeDispatcher
 	}
-	orchestratedEngine := workflow.NewOrchestratedEngine(baseEngine, lifecycleDispatcher, telemetryProvider.Meters())
+	var resourceCleaners []workflow.SourceResourceCleaner
+	if cleanupAuthority, ok := authorityStore.(authority.CleanupStore); ok {
+		resourceCleaners = append(resourceCleaners, runner.ManagedSourceCleanup{Factory: factory, Authority: cleanupAuthority})
+	}
+	orchestratedEngine := workflow.NewOrchestratedEngine(baseEngine, lifecycleDispatcher, telemetryProvider.Meters(), resourceCleaners...)
 	engine = orchestratedEngine
 	// Reconciliation is started before the server accepts lifecycle requests.
 	go orchestratedEngine.RunReconciler(ctx, time.Second)

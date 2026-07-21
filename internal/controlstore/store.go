@@ -10,12 +10,15 @@ import (
 
 const (
 	defaultWorkerMaxConns int32 = 12
-	authorityProtocol           = "v1"
+	// AuthorityProtocol is the canonical mutable-control-store protocol spoken
+	// by this binary. PostgreSQL triggers reject every other value, including
+	// the explicit v1 value used by pre-cutover workers.
+	AuthorityProtocol = "v2"
 )
 
-// ConfigurePool marks connections as understanding the authority-v1 mutation
-// protocol. Database triggers use this session parameter to reject older
-// binaries after the managed-durability migration is installed.
+// ConfigurePool marks connections as understanding the canonical authority
+// mutation protocol. Database triggers use this session parameter to reject
+// stale binaries after the managed-durability cutover is installed.
 func ConfigurePool(cfg *pgxpool.Config) {
 	if cfg == nil {
 		return
@@ -23,7 +26,7 @@ func ConfigurePool(cfg *pgxpool.Config) {
 	if cfg.ConnConfig.RuntimeParams == nil {
 		cfg.ConnConfig.RuntimeParams = make(map[string]string)
 	}
-	cfg.ConnConfig.RuntimeParams["wallaby.authority_protocol"] = authorityProtocol
+	cfg.ConnConfig.RuntimeParams["wallaby.authority_protocol"] = AuthorityProtocol
 }
 
 // Store owns the worker's shared PostgreSQL control pool. Domain repositories

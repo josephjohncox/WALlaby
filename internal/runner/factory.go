@@ -3,6 +3,7 @@ package runner
 import (
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/connectors/destinations/bufstream"
 	"github.com/josephjohncox/wallaby/connectors/destinations/clickhouse"
 	"github.com/josephjohncox/wallaby/connectors/destinations/duckdb"
@@ -16,6 +17,8 @@ import (
 	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
 	"github.com/josephjohncox/wallaby/connectors/destinations/snowpipe"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
+	"github.com/josephjohncox/wallaby/internal/authority"
+	"github.com/josephjohncox/wallaby/internal/bootstrap"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/replication"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
@@ -28,6 +31,9 @@ type Factory struct {
 	SchemaHook        replication.SchemaHook
 	SchemaHookForFlow func(flow.Flow) replication.SchemaHook
 	Meters            *telemetry.Meters
+	ManagedControl    *pgxpool.Pool
+	ManagedAuthority  authority.Store
+	BootstrapHooks    bootstrap.Hooks
 }
 
 func (f Factory) Source(spec connector.Spec) (connector.Source, error) {
@@ -59,8 +65,11 @@ func (f Factory) source(spec connector.Spec, hook replication.SchemaHook) (conne
 		if mode == connector.SourceModeBackfill {
 			return &pgsource.BackfillSource{}, nil
 		}
-		source := &pgsource.Source{SchemaHook: hook}
-		source.Meters = f.Meters
+		source := &pgsource.Source{
+			SchemaHook: hook, Meters: f.Meters,
+			ManagedControl: f.ManagedControl, ManagedAuthority: f.ManagedAuthority,
+			BootstrapHooks: f.BootstrapHooks,
+		}
 		return source, nil
 	default:
 		return nil, fmt.Errorf("unsupported source type: %s", spec.Type)

@@ -3,9 +3,11 @@ package grpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/flow"
@@ -80,6 +82,9 @@ func (s *FlowService) UpdateFlow(ctx context.Context, req *wallabypb.UpdateFlowR
 	if err != nil {
 		return nil, mapWorkflowError(err)
 	}
+	if parseBool(existing.Source.Options["managed"]) {
+		return nil, status.Error(codes.FailedPrecondition, "managed flow updates require a fenced source-resource revision")
+	}
 	model.State = existing.State
 	if model.Name == "" {
 		model.Name = existing.Name
@@ -119,6 +124,9 @@ func (s *FlowService) ReconfigureFlow(ctx context.Context, req *wallabypb.Reconf
 	if err != nil {
 		return nil, mapWorkflowError(err)
 	}
+	if parseBool(existing.Source.Options["managed"]) || parseBool(model.Source.Options["managed"]) {
+		return nil, status.Error(codes.FailedPrecondition, "managed flow reconfiguration requires a fenced source-resource revision")
+	}
 	model.State = existing.State
 	if model.Name == "" {
 		model.Name = existing.Name
@@ -135,7 +143,12 @@ func (s *FlowService) ReconfigureFlow(ctx context.Context, req *wallabypb.Reconf
 
 	pauseFirst := optionalBool(req.PauseFirst, true)
 	resumeAfter := optionalBool(req.ResumeAfter, true)
-	syncPublication := optionalBool(req.SyncPublication, parseBool(existing.Source.Options["sync_publication"], false))
+	syncPublication := optionalBool(req.SyncPublication, parseBool(existing.Source.Options["sync_publication"]))
+	if syncPublication {
+		if err := checkFlowPublicationMutation(ctx, s.engine, model); err != nil {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
+	}
 
 	wasRunning := existing.State == flow.StateRunning
 	if pauseFirst && wasRunning {
@@ -151,7 +164,7 @@ func (s *FlowService) ReconfigureFlow(ctx context.Context, req *wallabypb.Reconf
 	current := updated
 
 	if syncPublication {
-		if err := syncFlowPublication(ctx, updated); err != nil {
+		if err := syncFlowPublication(ctx, s.engine, updated); err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 	}
@@ -278,6 +291,9 @@ func (s *FlowService) CleanupFlow(ctx context.Context, req *wallabypb.CleanupFlo
 	if f.Source.Type != connector.EndpointPostgres {
 		return &wallabypb.CleanupFlowResponse{Cleaned: true}, nil
 	}
+	if parseBool(f.Source.Options["managed"]) {
+		return nil, status.Error(codes.FailedPrecondition, "managed source cleanup requires exact fenced ownership and cannot use the legacy cleanup RPC")
+	}
 
 	dropSlot := optionalBool(req.DropSlot, true)
 	dropPublication := optionalBool(req.DropPublication, false)
@@ -289,6 +305,19 @@ func (s *FlowService) CleanupFlow(ctx context.Context, req *wallabypb.CleanupFlo
 
 	if dsn == "" {
 		return nil, status.Error(codes.InvalidArgument, "postgres dsn is required for cleanup")
+	}
+	// Legacy cleanup may not discover managed physical names by consulting the
+	// source. Authorize every configured resource against control PostgreSQL
+	// before the first source-network operation.
+	if dropSlot {
+		if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, "", "", nil, "slot"); err != nil {
+			return nil, err
+		}
+	}
+	if dropPublication {
+		if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, "", "", nil, "publication"); err != nil {
+			return nil, err
+		}
 	}
 
 	if dropSlot || dropPublication {
@@ -392,13 +421,16 @@ func (s *FlowService) DropReplicationSlot(ctx context.Context, req *wallabypb.Dr
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
-	if strings.TrimSpace(req.Slot) == "" {
-		return nil, status.Error(codes.InvalidArgument, "slot is required")
+	if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, req.Dsn, req.Slot, req.Options, "slot"); err != nil {
+		return nil, err
 	}
 
 	cfg, err := s.resolveSlotCommandConfig(ctx, req.FlowId, req.Dsn, req.Slot, true, req.Options)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.managed {
+		return nil, status.Error(codes.FailedPrecondition, "managed slot cleanup requires the current fenced resource owner")
 	}
 
 	_, exists, err := pgsource.GetReplicationSlot(ctx, cfg.dsn, cfg.slot, cfg.options)
@@ -437,6 +469,9 @@ func (s *FlowService) AddPublicationTables(ctx context.Context, req *wallabypb.A
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
+	if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, req.Dsn, req.Publication, req.Options, "publication"); err != nil {
+		return nil, err
+	}
 	if len(req.Tables) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "tables are required")
 	}
@@ -444,6 +479,9 @@ func (s *FlowService) AddPublicationTables(ctx context.Context, req *wallabypb.A
 	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, req.Options)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.managed {
+		return nil, status.Error(codes.FailedPrecondition, "managed publication changes require a fenced source-resource revision")
 	}
 
 	if err := pgsource.AddPublicationTables(ctx, cfg.dsn, cfg.publication, req.Tables, cfg.options); err != nil {
@@ -456,6 +494,9 @@ func (s *FlowService) DropPublicationTables(ctx context.Context, req *wallabypb.
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
+	if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, req.Dsn, req.Publication, req.Options, "publication"); err != nil {
+		return nil, err
+	}
 	if len(req.Tables) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "tables are required")
 	}
@@ -463,6 +504,9 @@ func (s *FlowService) DropPublicationTables(ctx context.Context, req *wallabypb.
 	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, req.Options)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.managed {
+		return nil, status.Error(codes.FailedPrecondition, "managed publication changes require a fenced source-resource revision")
 	}
 
 	if err := pgsource.DropPublicationTables(ctx, cfg.dsn, cfg.publication, req.Tables, cfg.options); err != nil {
@@ -475,10 +519,16 @@ func (s *FlowService) SyncPublicationTables(ctx context.Context, req *wallabypb.
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
+	if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, req.Dsn, req.Publication, req.Options, "publication"); err != nil {
+		return nil, err
+	}
 
 	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, req.Options)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.managed {
+		return nil, status.Error(codes.FailedPrecondition, "managed publication synchronization requires a fenced source-resource revision")
 	}
 	mode, err := pgsource.NormalizeSyncPublicationMode(req.Mode)
 	if err != nil {
@@ -496,6 +546,11 @@ func (s *FlowService) ScrapePublicationTables(ctx context.Context, req *wallabyp
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
+	if req.Apply {
+		if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, req.Dsn, req.Publication, req.Options, "publication"); err != nil {
+			return nil, err
+		}
+	}
 	if len(req.Schemas) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "schemas are required")
 	}
@@ -503,6 +558,9 @@ func (s *FlowService) ScrapePublicationTables(ctx context.Context, req *wallabyp
 	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, req.Options)
 	if err != nil {
 		return nil, err
+	}
+	if req.Apply && cfg.managed {
+		return nil, status.Error(codes.FailedPrecondition, "managed publication changes require a fenced source-resource revision")
 	}
 
 	allTables, err := pgsource.ScrapeTables(ctx, cfg.dsn, req.Schemas, cfg.options)
@@ -543,11 +601,55 @@ func (s *FlowService) ScrapePublicationTables(ctx context.Context, req *wallabyp
 	}, nil
 }
 
+type legacyResourceMutationGuard interface {
+	CheckLegacySourceResourceMutation(context.Context, string, string, string, string) error
+}
+
+func (s *FlowService) authorizeLegacyResourceMutation(ctx context.Context, flowID, dsn, physicalName string, options map[string]string, resourceKind string) error {
+	if strings.TrimSpace(flowID) == "" {
+		return status.Error(codes.FailedPrecondition, "direct-DSN source-resource mutation is disabled; bind the operation to an unmanaged flow")
+	}
+	if strings.TrimSpace(dsn) != "" || len(options) != 0 {
+		return status.Error(codes.InvalidArgument, "flow-bound source-resource mutation rejects DSN and connection-option overrides")
+	}
+	f, err := flowServiceGetFlow(ctx, s.engine, flowID)
+	if err != nil {
+		return err
+	}
+	if f.Source.Type != connector.EndpointPostgres {
+		return status.Error(codes.InvalidArgument, "flow source is not postgres")
+	}
+	if parseBool(f.Source.Options["managed"]) {
+		return status.Error(codes.FailedPrecondition, "managed source-resource mutation requires the current fenced resource owner")
+	}
+	optionName := resourceKind
+	if resourceKind == "publication" {
+		optionName = "publication"
+	}
+	expectedName := strings.TrimSpace(f.Source.Options[optionName])
+	if expectedName == "" || strings.TrimSpace(physicalName) != "" {
+		return status.Error(codes.InvalidArgument, "flow-bound source-resource mutation rejects physical-name overrides")
+	}
+	guard, ok := s.engine.(legacyResourceMutationGuard)
+	if !ok {
+		return nil
+	}
+	databaseName := ""
+	if config, parseErr := pgx.ParseConfig(strings.TrimSpace(f.Source.Options["dsn"])); parseErr == nil {
+		databaseName = config.Database
+	}
+	if err := guard.CheckLegacySourceResourceMutation(ctx, strings.TrimSpace(f.Source.Options["source_system_identifier"]), databaseName, resourceKind, expectedName); err != nil {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	return nil
+}
+
 type postgresHelperConfig struct {
 	dsn         string
 	slot        string
 	publication string
 	options     map[string]string
+	managed     bool
 }
 
 func (s *FlowService) resolveSlotCommandConfig(ctx context.Context, flowID, dsn, slot string, requireSlot bool, options map[string]string) (postgresHelperConfig, error) {
@@ -598,6 +700,7 @@ func (s *FlowService) resolveSlotCommandConfig(ctx context.Context, flowID, dsn,
 		slot:        resolvedSlot,
 		publication: strings.TrimSpace(flowModel.Source.Options["publication"]),
 		options:     mergeOptionMaps(flowModel.Source.Options, options),
+		managed:     parseBool(flowModel.Source.Options["managed"]),
 	}, nil
 }
 
@@ -648,6 +751,7 @@ func (s *FlowService) resolvePublicationCommandConfig(ctx context.Context, flowI
 		dsn:         resolvedDSN,
 		publication: resolvedPublication,
 		options:     mergeOptionMaps(flowModel.Source.Options, options),
+		managed:     parseBool(flowModel.Source.Options["managed"]),
 	}, nil
 }
 
@@ -716,28 +820,23 @@ func optionalBool(value *bool, fallback bool) bool {
 	return *value
 }
 
-func parseBool(raw string, fallback bool) bool {
-	if raw == "" {
-		return fallback
-	}
+func parseBool(raw string) bool {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "1", "true", "yes", "y":
 		return true
-	case "0", "false", "no", "n":
-		return false
 	default:
-		return fallback
+		return false
 	}
 }
 
-func syncFlowPublication(ctx context.Context, f flow.Flow) error {
-	if f.Source.Type != connector.EndpointPostgres {
+func syncFlowPublication(ctx context.Context, engine workflow.ControlEngine, f flow.Flow) error {
+	if err := checkFlowPublicationMutation(ctx, engine, f); err != nil {
+		return err
+	}
+	if f.Source.Type != connector.EndpointPostgres || f.Source.Options == nil {
 		return nil
 	}
 	opts := f.Source.Options
-	if opts == nil {
-		return nil
-	}
 	dsn := strings.TrimSpace(opts["dsn"])
 	publication := strings.TrimSpace(opts["publication"])
 	if dsn == "" || publication == "" {
@@ -767,6 +866,30 @@ func syncFlowPublication(ctx context.Context, f flow.Flow) error {
 	}
 	_, _, err = pgsource.SyncPublicationTables(ctx, dsn, publication, tables, mode, opts)
 	return err
+}
+
+func checkFlowPublicationMutation(ctx context.Context, engine workflow.ControlEngine, f flow.Flow) error {
+	if f.Source.Type != connector.EndpointPostgres || f.Source.Options == nil {
+		return nil
+	}
+	opts := f.Source.Options
+	dsn := strings.TrimSpace(opts["dsn"])
+	publication := strings.TrimSpace(opts["publication"])
+	if dsn == "" || publication == "" {
+		return nil
+	}
+	guard, ok := engine.(legacyResourceMutationGuard)
+	if !ok {
+		return errors.New("publication synchronization requires the managed source-resource ownership guard")
+	}
+	databaseName := ""
+	if config, parseErr := pgx.ParseConfig(dsn); parseErr == nil {
+		databaseName = config.Database
+	}
+	if err := guard.CheckLegacySourceResourceMutation(ctx, strings.TrimSpace(opts["source_system_identifier"]), databaseName, "publication", publication); err != nil {
+		return fmt.Errorf("publication synchronization ownership check: %w", err)
+	}
+	return nil
 }
 
 func splitCSV(value string) []string {

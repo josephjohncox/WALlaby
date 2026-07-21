@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/josephjohncox/wallaby/internal/flow"
 )
 
@@ -98,23 +99,38 @@ type LifecycleStore interface {
 	Fail(ctx context.Context, flowID string) (flow.Flow, error)
 	PendingControls(ctx context.Context) ([]LifecycleControl, error)
 	RegisterExecutionGeneration(ctx context.Context, flowID, executionID, backend string, generation int64, lease time.Duration) error
+	RegisterExecutionFence(ctx context.Context, flowID, executionID, backend string, generation int64, lease time.Duration) (ExecutionFence, error)
+	RenewExecutionFence(ctx context.Context, fence ExecutionFence, lease time.Duration) error
+	FinishExecutionFence(ctx context.Context, fence ExecutionFence, reason string) error
+	FailExecutionFence(ctx context.Context, fence ExecutionFence, reason string) error
 	RenewExecution(ctx context.Context, flowID, executionID string, generation int64, lease time.Duration) error
 	FinishExecutionReason(ctx context.Context, flowID, executionID, reason string) error
 	ActiveExecutionsThrough(ctx context.Context, flowID string, generation int64) (int, error)
 	ReconcileTerminatedExecutions(ctx context.Context, flowID string, generation int64, backend string, executionIDs []string, reason string) error
 }
 
+// ExecutionFence is the immutable compatibility-worker capability returned by
+// registration. Every worker-originated lifecycle mutation must present all
+// fields; flow IDs and execution IDs alone are not authority.
+type ExecutionFence struct {
+	FlowID        string
+	IncarnationID uuid.UUID
+	Generation    int64
+	ExecutionID   string
+	Backend       string
+}
+
 // ExecutionEngine is the narrow data-plane seam used by FlowRunner. It omits
-// control-plane mutation methods that a worker must never call.
+// unrestricted control-plane failure and legacy execution mutation methods.
 type ExecutionEngine interface {
 	ControlReader
 	Get(ctx context.Context, flowID string) (flow.Flow, error)
 	WithFlowLock(ctx context.Context, flowID string, try bool, fn func() error) (acquired bool, err error)
 	RequestPause(ctx context.Context, flowID string) (flow.Flow, LifecycleControl, error)
-	Fail(ctx context.Context, flowID string) (flow.Flow, error)
-	RegisterExecutionGeneration(ctx context.Context, flowID, executionID, backend string, generation int64, lease time.Duration) error
-	RenewExecution(ctx context.Context, flowID, executionID string, generation int64, lease time.Duration) error
-	FinishExecutionReason(ctx context.Context, flowID, executionID, reason string) error
+	RegisterExecutionFence(ctx context.Context, flowID, executionID, backend string, generation int64, lease time.Duration) (ExecutionFence, error)
+	RenewExecutionFence(ctx context.Context, fence ExecutionFence, lease time.Duration) error
+	FinishExecutionFence(ctx context.Context, fence ExecutionFence, reason string) error
+	FailExecutionFence(ctx context.Context, fence ExecutionFence, reason string) error
 }
 
 type memoryExecution struct {
@@ -127,20 +143,22 @@ type memoryExecution struct {
 // MemoryEngine is an explicit development/test workflow store. It is not
 // durable and must not be selected implicitly in production.
 type MemoryEngine struct {
-	mu         sync.RWMutex
-	flows      map[string]flow.Flow
-	controls   map[string]LifecycleControl
-	executions map[string]map[string]memoryExecution
-	opMu       sync.Mutex
-	opLocks    map[string]*sync.Mutex
+	mu           sync.RWMutex
+	flows        map[string]flow.Flow
+	controls     map[string]LifecycleControl
+	executions   map[string]map[string]memoryExecution
+	incarnations map[string]uuid.UUID
+	opMu         sync.Mutex
+	opLocks      map[string]*sync.Mutex
 }
 
 func NewMemoryEngine() *MemoryEngine {
 	return &MemoryEngine{
-		flows:      make(map[string]flow.Flow),
-		controls:   make(map[string]LifecycleControl),
-		executions: make(map[string]map[string]memoryExecution),
-		opLocks:    make(map[string]*sync.Mutex),
+		flows:        make(map[string]flow.Flow),
+		controls:     make(map[string]LifecycleControl),
+		executions:   make(map[string]map[string]memoryExecution),
+		incarnations: make(map[string]uuid.UUID),
+		opLocks:      make(map[string]*sync.Mutex),
 	}
 }
 
@@ -200,6 +218,7 @@ func (m *MemoryEngine) Create(_ context.Context, f flow.Flow) (flow.Flow, error)
 		f.Parallelism = 1
 	}
 	m.flows[f.ID] = f
+	m.incarnations[f.ID] = uuid.New()
 	m.controls[f.ID] = LifecycleControl{FlowID: f.ID, State: f.State, Target: TargetCreated}
 	return f, nil
 }
@@ -407,6 +426,7 @@ func (m *MemoryEngine) Delete(_ context.Context, flowID string) error {
 	delete(m.flows, flowID)
 	delete(m.controls, flowID)
 	delete(m.executions, flowID)
+	delete(m.incarnations, flowID)
 	return nil
 }
 
@@ -457,9 +477,19 @@ func (m *MemoryEngine) PendingControls(_ context.Context) ([]LifecycleControl, e
 }
 
 func (m *MemoryEngine) RegisterExecutionGeneration(ctx context.Context, flowID, executionID, backend string, generation int64, lease time.Duration) error {
+	_, err := m.registerExecutionFence(ctx, flowID, executionID, backend, generation, lease)
+	return err
+}
+
+func (m *MemoryEngine) RegisterExecutionFence(ctx context.Context, flowID, executionID, backend string, generation int64, lease time.Duration) (ExecutionFence, error) {
+	return m.registerExecutionFence(ctx, flowID, executionID, backend, generation, lease)
+}
+
+func (m *MemoryEngine) registerExecutionFence(ctx context.Context, flowID, executionID, backend string, generation int64, lease time.Duration) (ExecutionFence, error) {
 	if executionID == "" {
-		return errors.New("execution id is required")
+		return ExecutionFence{}, errors.New("execution id is required")
 	}
+	var registered ExecutionFence
 	_, err := m.WithFlowLock(ctx, flowID, false, func() error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -482,10 +512,59 @@ func (m *MemoryEngine) RegisterExecutionGeneration(ctx context.Context, flowID, 
 		}
 		now := time.Now()
 		m.executions[flowID][executionID] = memoryExecution{backend: backend, generation: generation, heartbeat: now, leaseUntil: now.Add(lease)}
+		registered = ExecutionFence{FlowID: flowID, IncarnationID: m.incarnations[flowID], Generation: generation, ExecutionID: executionID, Backend: backend}
 		return nil
 	})
-	return err
+	if err != nil {
+		return ExecutionFence{}, err
+	}
+	return registered, nil
 }
+
+func (m *MemoryEngine) RenewExecutionFence(_ context.Context, fence ExecutionFence, lease time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	control, ok := m.controls[fence.FlowID]
+	record, executionOK := m.executions[fence.FlowID][fence.ExecutionID]
+	if !ok || !executionOK || m.incarnations[fence.FlowID] != fence.IncarnationID || record.generation != fence.Generation || record.backend != fence.Backend || control.Generation != fence.Generation || control.Target != TargetRunning || control.State != flow.StateRunning {
+		return fmt.Errorf("%w: execution fence is stale", ErrInvalidState)
+	}
+	if lease <= 0 {
+		lease = 15 * time.Second
+	}
+	record.heartbeat = time.Now()
+	record.leaseUntil = record.heartbeat.Add(lease)
+	m.executions[fence.FlowID][fence.ExecutionID] = record
+	return nil
+}
+
+func (m *MemoryEngine) FinishExecutionFence(_ context.Context, fence ExecutionFence, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, ok := m.executions[fence.FlowID][fence.ExecutionID]
+	control, flowOK := m.controls[fence.FlowID]
+	if !ok || !flowOK || m.incarnations[fence.FlowID] != fence.IncarnationID || control.Generation != fence.Generation || record.generation != fence.Generation || record.backend != fence.Backend {
+		return fmt.Errorf("%w: execution fence is stale", ErrInvalidState)
+	}
+	delete(m.executions[fence.FlowID], fence.ExecutionID)
+	return nil
+}
+
+func (m *MemoryEngine) FailExecutionFence(_ context.Context, fence ExecutionFence, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, ok := m.executions[fence.FlowID][fence.ExecutionID]
+	current, flowOK := m.flows[fence.FlowID]
+	control := m.controls[fence.FlowID]
+	if !ok || !flowOK || m.incarnations[fence.FlowID] != fence.IncarnationID || record.generation != fence.Generation || record.backend != fence.Backend || control.Generation != fence.Generation || control.State != flow.StateRunning || control.Target != TargetRunning {
+		return fmt.Errorf("%w: execution fence is stale", ErrInvalidState)
+	}
+	current.State = flow.StateFailed
+	control.State, control.Target, control.DispatchPending = flow.StateFailed, TargetFailed, false
+	m.flows[fence.FlowID], m.controls[fence.FlowID] = current, control
+	return nil
+}
+
 func (m *MemoryEngine) RenewExecution(_ context.Context, flowID, executionID string, generation int64, lease time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

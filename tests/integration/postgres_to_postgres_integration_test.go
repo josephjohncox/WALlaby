@@ -17,6 +17,7 @@ import (
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
+	"github.com/josephjohncox/wallaby/internal/controlplane"
 	"github.com/josephjohncox/wallaby/internal/registry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/spec"
@@ -159,6 +160,9 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 		},
 	}
 
+	if err := controlplane.ApplyMigrations(ctx, srcPool); err != nil {
+		t.Fatalf("apply centralized control migrations: %v", err)
+	}
 	checkpointStore, err := checkpoint.NewPostgresStore(ctx, srcDSN)
 	if err != nil {
 		t.Fatalf("create checkpoint store: %v", err)

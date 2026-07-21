@@ -22,6 +22,30 @@ type fakeDispatcher struct {
 	cancelled   []dispatchCall
 }
 
+type fakeSourceResourceCleaner struct {
+	base       *MemoryEngine
+	err        error
+	calls      int
+	generation int64
+	state      flow.State
+}
+
+func (c *fakeSourceResourceCleaner) CleanupSourceResources(ctx context.Context, f flow.Flow, generation int64) error {
+	c.calls++
+	c.generation = generation
+	c.state = f.State
+	if c.base != nil {
+		active, err := c.base.ActiveExecutionsThrough(ctx, f.ID, generation)
+		if err != nil {
+			return err
+		}
+		if active != 0 {
+			return errors.New("cleanup called before execution quiescence")
+		}
+	}
+	return c.err
+}
+
 func (d *fakeDispatcher) EnqueueGeneration(_ context.Context, flowID string, generation int64) error {
 	if d.err != nil {
 		return d.err
@@ -179,6 +203,87 @@ func TestStopIsIdempotentAndDeleteRejectsIncompleteWork(t *testing.T) {
 	}
 	if err := engine.Delete(ctx, "stop"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStopCleansResourcesAfterQuiescenceBeforePublishingStopped(t *testing.T) {
+	ctx := context.Background()
+	base := newCreatedMemoryFlow(t, "cleanup-stop")
+	cleaner := &fakeSourceResourceCleaner{base: base}
+	engine := NewOrchestratedEngine(base, &fakeDispatcher{terminal: true}, nil, cleaner)
+	if _, err := engine.Start(ctx, "cleanup-stop"); err != nil {
+		t.Fatal(err)
+	}
+	control, _ := base.Control(ctx, "cleanup-stop")
+	if err := base.RegisterExecutionGeneration(ctx, "cleanup-stop", "done", "fake", control.Generation, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.FinishExecutionReason(ctx, "cleanup-stop", "done", "completed"); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := engine.Stop(ctx, "cleanup-stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.State != flow.StateStopped || cleaner.calls != 1 || cleaner.state != flow.StateStopping || cleaner.generation != control.Generation {
+		t.Fatalf("stop=(%s,%v) cleanup=(calls=%d state=%s generation=%d)", stopped.State, err, cleaner.calls, cleaner.state, cleaner.generation)
+	}
+	if _, err := engine.Stop(ctx, "cleanup-stop"); err != nil {
+		t.Fatal(err)
+	}
+	if cleaner.calls != 1 {
+		t.Fatalf("idempotent stopped call repeated cleanup: calls=%d", cleaner.calls)
+	}
+}
+
+func TestStopCleanupFailureRemainsStoppingAndReconciles(t *testing.T) {
+	ctx := context.Background()
+	base := newCreatedMemoryFlow(t, "cleanup-retry")
+	injected := errors.New("cleanup outcome indeterminate")
+	cleaner := &fakeSourceResourceCleaner{base: base, err: injected}
+	engine := NewOrchestratedEngine(base, &fakeDispatcher{terminal: true}, nil, cleaner)
+	if _, err := engine.Start(ctx, "cleanup-retry"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Stop(ctx, "cleanup-retry"); !errors.Is(err, injected) {
+		t.Fatalf("Stop() error=%v, want cleanup failure", err)
+	}
+	current, _ := base.Get(ctx, "cleanup-retry")
+	if current.State != flow.StateStopping || cleaner.calls != 1 {
+		t.Fatalf("failed cleanup state=%s calls=%d", current.State, cleaner.calls)
+	}
+	cleaner.err = nil
+	if err := engine.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	current, _ = base.Get(ctx, "cleanup-retry")
+	if current.State != flow.StateStopped || cleaner.calls != 2 {
+		t.Fatalf("reconciled cleanup state=%s calls=%d", current.State, cleaner.calls)
+	}
+}
+
+func TestPauseAndFailureNeverRunTerminalCleanup(t *testing.T) {
+	ctx := context.Background()
+	base := newCreatedMemoryFlow(t, "cleanup-nonterminal")
+	cleaner := &fakeSourceResourceCleaner{base: base}
+	engine := NewOrchestratedEngine(base, &fakeDispatcher{}, nil, cleaner)
+	if _, err := engine.Start(ctx, "cleanup-nonterminal"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Pause(ctx, "cleanup-nonterminal"); err != nil {
+		t.Fatal(err)
+	}
+	if cleaner.calls != 0 {
+		t.Fatalf("pause ran terminal cleanup: calls=%d", cleaner.calls)
+	}
+	if _, err := engine.Resume(ctx, "cleanup-nonterminal"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Fail(ctx, "cleanup-nonterminal"); err != nil {
+		t.Fatal(err)
+	}
+	if cleaner.calls != 0 {
+		t.Fatalf("failure ran terminal cleanup: calls=%d", cleaner.calls)
 	}
 }
 

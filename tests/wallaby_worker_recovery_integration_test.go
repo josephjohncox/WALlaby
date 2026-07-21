@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
-	"github.com/josephjohncox/wallaby/internal/bootstrap"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -46,6 +45,7 @@ DROP TABLE IF EXISTS public.wallaby_worker_kill_source;
 DROP TABLE IF EXISTS public.wallaby_worker_kill_target;
 CREATE TABLE public.wallaby_worker_kill_source (id bigint PRIMARY KEY, value text);
 CREATE TABLE public.wallaby_worker_kill_target (id bigint PRIMARY KEY, value text);
+INSERT INTO public.wallaby_worker_kill_source VALUES (0,'snapshot-before-worker');
 CREATE PUBLICATION wallaby_worker_kill_publication FOR TABLE public.wallaby_worker_kill_source`); err != nil {
 		t.Fatal(err)
 	}
@@ -64,17 +64,19 @@ DROP TABLE IF EXISTS public.wallaby_worker_kill_target`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	slotName := bootstrap.GenerationSlotName(flowID, uuid.New(), 1)
+	var slotName string
 	defer func() {
-		_, _ = pool.Exec(context.Background(), "SELECT pg_catalog.pg_drop_replication_slot($1) WHERE EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name=$1)", slotName)
+		if slotName != "" {
+			_, _ = pool.Exec(context.Background(), "SELECT pg_catalog.pg_drop_replication_slot($1) WHERE EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name=$1)", slotName)
+		}
 	}()
 	destinationRevisionID := "wallaby-worker-kill-" + uuid.NewString()
 
 	definition := flow.Flow{
 		ID: flowID,
 		Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
-			"dsn": dsn, "slot": slotName, "publication": publication,
-			"ensure_publication": "false", "managed": "true", "bootstrap": "never",
+			"dsn": dsn, "publication": publication, "tables": "public.wallaby_worker_kill_source",
+			"ensure_publication": "false", "managed": "true", "bootstrap": "required",
 			"status_interval": "10ms", "batch_timeout": "10ms", "ensure_state": "false",
 			"source_system_identifier": sourceSystemID,
 			"source_lineage_id":        sourceSystemID + ":" + publication + ":v1",
@@ -93,6 +95,7 @@ DROP TABLE IF EXISTS public.wallaby_worker_kill_target`)
 	}
 	defer engine.Close()
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
+	defer cleanupBootstrapSlotsForFlow(t, pool, flowID)
 	if _, err := engine.Create(ctx, definition); err != nil {
 		t.Fatal(err)
 	}
@@ -103,10 +106,23 @@ DROP TABLE IF EXISTS public.wallaby_worker_kill_target`)
 
 	first := startWorkerProcess(t, workerBinary, dsn, flowID, control.Generation, "process-kill-first")
 	defer first.stopAbruptly()
-	waitForWorkerProcessCondition(t, ctx, first, "first worker slot activation", func() (bool, error) {
+	waitForWorkerProcessCondition(t, ctx, first, "first worker managed bootstrap handoff", func() (bool, error) {
+		var ready bool
+		if err := pool.QueryRow(ctx, `SELECT to_regclass('source_bootstraps') IS NOT NULL`).Scan(&ready); err != nil || !ready {
+			return false, err
+		}
+		var phase string
+		if err := pool.QueryRow(ctx, `SELECT phase,slot_name FROM source_bootstraps WHERE flow_incarnation_id=(SELECT incarnation_id FROM flows WHERE id=$1) ORDER BY bootstrap_generation DESC LIMIT 1`, flowID).Scan(&phase, &slotName); err != nil {
+			return false, nil
+		}
 		var active bool
 		err := pool.QueryRow(ctx, `SELECT active FROM pg_replication_slots WHERE slot_name=$1`, slotName).Scan(&active)
-		return active, err
+		return phase == "streaming" && active, err
+	})
+	waitForWorkerProcessCondition(t, ctx, first, "first worker snapshot publication", func() (bool, error) {
+		var value string
+		err := pool.QueryRow(ctx, "SELECT value FROM public.wallaby_worker_kill_target WHERE id=0").Scan(&value)
+		return value == "snapshot-before-worker", err
 	})
 	if _, err := pool.Exec(ctx, "INSERT INTO public.wallaby_worker_kill_source VALUES (1,'before-kill')"); err != nil {
 		t.Fatal(err)

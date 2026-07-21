@@ -3,6 +3,7 @@ package runner
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
@@ -48,29 +49,39 @@ func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec c
 		return errors.New("managed execution rejects legacy mode=backfill")
 	}
 	bootstrapMode := strings.ToLower(strings.TrimSpace(sourceSpec.Options["bootstrap"]))
+	if bootstrapMode == "" {
+		bootstrapMode = "auto"
+	}
 	switch bootstrapMode {
 	case "never":
-		// The production worker does not yet wire the slot-exported bootstrap
-		// coordinator. Admitting auto/required would silently omit existing rows.
-	case "", "auto", "required":
-		return errors.New("managed bootstrap is not wired into production execution; set bootstrap=never and provision the initial dataset separately")
+		for _, option := range []string{"create_slot", "ensure_state", "ensure_publication", "sync_publication"} {
+			if raw, present := sourceSpec.Options[option]; !present || parseEnabledOption(raw, true) {
+				return fmt.Errorf("managed bootstrap=never requires explicit %s=false; resource mutation/adoption must be fenced", option)
+			}
+		}
+	case "auto", "required":
+		if raw := strings.TrimSpace(sourceSpec.Options["pool_max_conns"]); raw != "" {
+			maxConns, err := strconv.Atoi(raw)
+			if err != nil || maxConns < 2 {
+				return errors.New("managed bootstrap requires pool_max_conns>=2 before connector side effects")
+			}
+		}
+		if _, ok := source.(connector.ManagedBootstrapSource); !ok {
+			return errors.New("managed bootstrap requires a slot-anchored bootstrap source")
+		}
+		if len(destinations) == 1 {
+			if _, ok := destinations[0].Dest.(connector.ManagedBootstrapDestination); !ok {
+				return errors.New("managed bootstrap requires an atomically publishable destination snapshot")
+			}
+		}
 	default:
 		return fmt.Errorf("unsupported managed bootstrap mode %q", bootstrapMode)
 	}
 	if backend := strings.ToLower(strings.TrimSpace(sourceSpec.Options["snapshot_state_backend"])); backend == "file" || backend == "none" {
 		return fmt.Errorf("managed execution rejects snapshot authority backend %q", backend)
 	}
-	if parseEnabledOption(sourceSpec.Options["ensure_publication"], true) {
-		return errors.New("managed execution requires ensure_publication=false; publication changes are not yet fenced")
-	}
-	if parseEnabledOption(sourceSpec.Options["sync_publication"], false) {
-		return errors.New("managed execution rejects sync_publication until source-resource operations are fenced")
-	}
 	if parseEnabledOption(sourceSpec.Options["capture_ddl"], false) {
 		return errors.New("managed execution rejects capture_ddl until registry mutations carry the run fence")
-	}
-	if parseEnabledOption(sourceSpec.Options["ensure_state"], true) {
-		return errors.New("managed execution requires ensure_state=false; the legacy slot-keyed source-state table is unfenced")
 	}
 	if f.Config.FailureMode == stream.FailureModeDropSlot {
 		return errors.New("managed execution rejects failure_mode=drop_slot; cleanup requires fenced source-resource ownership")

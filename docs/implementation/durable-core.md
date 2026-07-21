@@ -37,9 +37,9 @@ An ACK receipt means the source adapter accepted an authorized position for feed
 
 ### Slot-anchored bootstrap
 
-`internal/bootstrap` creates a bootstrap-generation-qualified logical slot with `EXPORT_SNAPSHOT`, retains the exporter connection, and lets replacement workers import the same snapshot in read-only repeatable-read transactions. Task cursor/receipt updates are atomic. Publication requires at least one completed task receipt, and handoff locks the persisted slot, manifest, source identity, and consistent LSN. Exporter loss uses a retryable `abandoning` cleanup phase and a new physical generation on restart.
+`internal/bootstrap` creates a bootstrap-generation-qualified logical slot with `EXPORT_SNAPSHOT` and retains the exporter connection while bounded tasks import that snapshot in read-only repeatable-read transactions. Task cursor/receipt updates are atomic. A replacement process cannot import the lost exporter's snapshot: exporter loss uses a retryable `abandoning` cleanup phase, starts a new exported snapshot generation and physical slot, and restarts every task from zero.
 
-These primitives are not wired into `wallaby-worker`. Managed admission accepts only `bootstrap=never`; `auto` and `required` fail closed.
+The production worker and in-process DBOS path now run these primitives for `bootstrap=auto|required`. A pre-slot relation barrier prevents DDL from crossing planning; the publication is created or exactly adopted before slot creation so it is visible at the decoding consistent point. Bounded table tasks import the slot snapshot, write generation-qualified PostgreSQL staging tables, and publish every table in one destination transaction. Exporter loss abandons all cursors and restarts from zero with a new physical slot. `bootstrap=never` remains an explicit pre-provisioned mode.
 
 ### Canonical artifact log
 
@@ -49,7 +49,7 @@ The package also provides claimed append-only catalog consumption and conservati
 
 ## PostgreSQL migrations
 
-`internal/controlstore` owns the worker's shared control pool. All changed migration domains delegate to one checksum-verifying coordinator, import legacy workflow/checkpoint/registry history, and apply SQL plus history in one transaction under `wallaby_control_migrations`. The pool also sets the `wallaby.authority_protocol=v1` session capability; workflow, checkpoint, and registry triggers reject pre-authority clients after the quiesced cutover.
+`internal/controlstore` owns the worker's shared control pool. All changed migration domains delegate to one checksum-verifying coordinator, import legacy workflow/checkpoint/registry history, and apply SQL plus history in one transaction under `wallaby_control_migrations`. Runtime pools set the `wallaby.authority_protocol=v2` session capability; workflow, checkpoint, registry, delivery, bootstrap, and artifact-log mutation tables have exact enabled v2 trigger coverage after the quiesced cutover. A separately ledgered controlplane repair promotes historical registry-only 006/007 histories, and central startup verifies required tables, columns, constraints, indexes, and triggers before workers start.
 
 - `internal/workflow/migrations/006_authority_fences.sql`
   - flow incarnations, execution acquisitions, producer leases, and work claims;
@@ -58,12 +58,16 @@ The package also provides claimed append-only catalog consumption and conservati
   - incarnation-scoped authoritative checkpoints and retained outbox completion.
 - `internal/delivery/migrations/001_attempts_receipts.sql`
   - destination revisions, delivery manifests, attempts, evidence, receipts, ACK intents, and ACK receipts.
-- `internal/bootstrap/migrations/001_bootstraps.sql`
-  - bootstrap sessions, snapshot tasks, and publication receipts.
+- `internal/bootstrap/migrations/001_bootstraps.sql` and `002_managed_bootstrap.sql`
+  - bootstrap sessions, fenced multi-table tasks and delivery receipts, source-resource ownership/operations, and publication receipts.
+- `internal/registry/migrations/006_run_fencing.sql`
+  - complete-or-legacy DDL/catalog provenance, takeover-safe attempts, and schema-publication operations.
+- `internal/delivery/migrations/002_authority_protocol.sql`
+  - positive delivery/ACK provenance and stale-client protocol gates.
 - `internal/artifactlog/migrations/001_artifacts.sql`
   - streams, quotas, objects, upload attempts, GC claims, publications, and publication objects.
-- `internal/artifactlog/migrations/002_consumers.sql`
-  - artifact delivery queues, attempts, and receipts.
+- `internal/artifactlog/migrations/002_consumers.sql` and `003_authority_protocol_v2.sql`
+  - artifact delivery queues, attempts, and receipts; authority-v2 triggers cover canonical schemas, streams, objects, upload attempts, publications, publication objects, deliveries, quota accounts/reservations, GC claims, and delivery attempts/receipts.
 
 ## Runtime admission
 
@@ -71,38 +75,38 @@ The worker constructs workflow, checkpoint, authority, delivery, and registry re
 
 Managed admission currently requires:
 
-- PostgreSQL transactional source with `managed=true`, `bootstrap=never`, `ensure_publication=false`, and `ensure_state=false`;
+- PostgreSQL transactional source with `managed=true` and `bootstrap=auto|required|never`; `never` additionally requires publication creation to be disabled;
 - explicit source system, lineage, and publication revision identities;
 - one PostgreSQL destination revision;
 - `ack_policy=all`;
 - target write and batch modes;
 - explicit durable `synchronous_commit`;
-- no arbitrary `start_lsn`, legacy backfill, managed bootstrap, source publication/state mutation, file snapshot authority, drop-slot failure mode, generic staging, or raw automatic DDL; and
+- no arbitrary `start_lsn`, legacy backfill, file/disabled snapshot authority, drop-slot failure mode, generic staging, DDL-capture resource creation, or raw automatic DDL; and
 - one table/schema fragment per source transaction.
 
 ## Executable evidence
 
-The following gates passed on this branch:
+The acceptance workflow requires the following gates; a gate is not evidence of a pass unless its command completed successfully in the reviewed revision:
 
+- `just fmt-check` and `just lint`;
 - `go test -count=1 ./...`;
-- `just lint` — zero golangci-lint issues;
-- `go test -race` across the changed replication, source, target, runner, stream, artifact, and bootstrap packages;
+- `just test-rapid` and `just test-durable-race`;
 - `just test-durable-pr`;
-- `just test-durable-integration` — 17 required live PostgreSQL/MinIO tests ran with no skips, including a built `wallaby-worker` process kill and replacement;
-- `just check-tla`; the managed-durability model explored 32,028 distinct states with all configured invariants satisfied;
-- `just spec-verify`;
+- `just test-durable-integration` — requires every named live PostgreSQL/MinIO worker, bootstrap, and fencing test to run without skips;
+- `just test-durable-dbos-integration` — requires the named in-process DBOS bootstrap test to run without a skip;
+- `just check-tla` and `just spec-verify`;
 - `just generate-check`; and
 - `just docs-check`.
 
-The process recovery test sends SIGKILL to the built worker, expires its abandoned lease, starts a replacement process, reopens the existing logical slot at the authoritative checkpoint, and delivers a subsequent transaction. This test exposed and fixed a replay-unstable record timestamp: managed records now use PostgreSQL's commit timestamp rather than the transport observation time.
+The process recovery test starts the built worker with `bootstrap=required`, proves an existing source row is atomically published before CDC, sends SIGKILL, expires the abandoned lease, starts a replacement process, reopens the generated logical slot at the authoritative checkpoint, and delivers a subsequent transaction. This test also covers the replay-stable PostgreSQL commit timestamp used by managed records.
 
 ## Deferred work
 
 The following requested outcomes remain open and are not represented as maintained support:
 
-- DBOS and every administrative/source-resource mutation using the new fence;
-- multi-table PostgreSQL transactions delivered in one target transaction;
-- structured DDL and schema-registry mutations under the managed fence;
+- managed multi-fragment CDC transactions delivered in one target transaction;
+- external schema-registry publication intents/receipts and structured automatic DDL application (source DDL/catalog rows and DDL attempts/receipts are fenced, but automatic application remains unadmitted);
+- a fenced administrative resource-revision workflow; legacy managed slot/publication mutation RPCs currently fail closed;
 - reconciliation and cleanup for reserved artifact objects that lack exact-version evidence, plus published-artifact retention GC;
 - an Iceberg REST catalog implementation and live catalog recovery tests;
 - the append-only ClickHouse managed changelog connector;
