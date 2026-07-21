@@ -59,8 +59,9 @@ func (t SourceTransaction) Validate() error {
 	if checkpointLSN != endLSN {
 		return fmt.Errorf("source transaction checkpoint %s does not match end LSN %s", checkpointLSN, endLSN)
 	}
+	var expectedOrdinal uint64
 	for index, fragment := range t.Fragments {
-		if fragment.Ordinal != uint64(index) {
+		if fragment.Ordinal != expectedOrdinal {
 			return fmt.Errorf("source transaction fragment ordinal %d at index %d is not contiguous", fragment.Ordinal, index)
 		}
 		if fragment.Batch.Checkpoint.LSN != "" || len(fragment.Batch.Checkpoint.Metadata) != 0 {
@@ -72,6 +73,7 @@ func (t SourceTransaction) Validate() error {
 		if err := ValidateBatch(fragment.Batch); err != nil {
 			return fmt.Errorf("validate source transaction fragment %d: %w", index, err)
 		}
+		expectedOrdinal++
 	}
 	return nil
 }

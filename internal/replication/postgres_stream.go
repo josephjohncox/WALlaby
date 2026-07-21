@@ -1266,6 +1266,7 @@ func (p *PostgresStream) commitPendingTransaction(ctx context.Context, transacti
 		return nil
 	}
 
+	var ordinal uint64
 	for index := range transaction.changes {
 		change := transaction.changes[index]
 		// Transfer ownership as the transaction is emitted so the decoder does
@@ -1277,7 +1278,8 @@ func (p *PostgresStream) commitPendingTransaction(ctx context.Context, transacti
 		change.TransactionBeginLSN = transaction.beginLSN
 		change.TransactionCommitLSN = commitLSN
 		change.TransactionEndLSN = transactionEndLSN
-		change.TransactionOrdinal = uint64(index)
+		change.TransactionOrdinal = ordinal
+		ordinal++
 		change.TransactionFinal = index == len(transaction.changes)-1
 		if change.Record != nil {
 			// XLogData.ServerTime is an observation timestamp and changes on

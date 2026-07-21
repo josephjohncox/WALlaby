@@ -244,10 +244,13 @@ func TestCancellationReleasesReservation(t *testing.T) {
 	<-firstEntered
 	go func() { waitingResult <- destination.Write(context.Background(), batch) }()
 	cancelLeader()
+	leaderErr := <-leaderResult
+	// Do not let the test server complete the request before the HTTP client has
+	// observed cancellation; otherwise response completion and cancellation race.
 	close(releaseFirst)
 
-	if err := <-leaderResult; !errors.Is(err, context.Canceled) {
-		t.Fatalf("leader Write() error = %v, want context canceled", err)
+	if !errors.Is(leaderErr, context.Canceled) {
+		t.Fatalf("leader Write() error = %v, want context canceled", leaderErr)
 	}
 	if err := <-waitingResult; err != nil {
 		t.Fatalf("waiting Write() error = %v", err)
