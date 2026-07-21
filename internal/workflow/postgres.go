@@ -26,13 +26,16 @@ const (
 	stateFailReason         = "fail"
 )
 
+const minimumLifecycleLockConnections int32 = 4
+
 // PostgresEngine stores flow metadata and internal lifecycle fencing in Postgres.
-// lockPool may be the same shared control pool; advisory locks are held by one
-// acquired connection while callbacks use another pooled connection.
+// Advisory locks use a separate pool because each lock must remain pinned to one
+// session while its callback uses the control pool.
 type PostgresEngine struct {
-	pool     *pgxpool.Pool
-	lockPool *pgxpool.Pool
-	ownsPool bool
+	pool         *pgxpool.Pool
+	lockPool     *pgxpool.Pool
+	ownsPool     bool
+	ownsLockPool bool
 }
 
 func NewPostgresEngine(ctx context.Context, dsn string) (*PostgresEngine, error) {
@@ -61,7 +64,8 @@ func NewPostgresEngine(ctx context.Context, dsn string) (*PostgresEngine, error)
 	return engine, nil
 }
 
-// NewPostgresEngineWithPool borrows one shared control PostgreSQL pool.
+// NewPostgresEngineWithPool borrows the shared control PostgreSQL pool and
+// owns a separate pool for session-scoped lifecycle advisory locks.
 func NewPostgresEngineWithPool(ctx context.Context, pool *pgxpool.Pool) (*PostgresEngine, error) {
 	if pool == nil {
 		return nil, errors.New("postgres control pool is required")
@@ -69,10 +73,27 @@ func NewPostgresEngineWithPool(ctx context.Context, pool *pgxpool.Pool) (*Postgr
 	if err := runMigrations(ctx, pool); err != nil {
 		return nil, err
 	}
-	return &PostgresEngine{pool: pool, lockPool: pool}, nil
+	lockCfg := pool.Config().Copy()
+	if lockCfg.MaxConns < minimumLifecycleLockConnections {
+		lockCfg.MaxConns = minimumLifecycleLockConnections
+	}
+	lockCfg.MinConns = 0
+	lockCfg.MinIdleConns = 0
+	lockPool, err := pgxpool.NewWithConfig(ctx, lockCfg)
+	if err != nil {
+		return nil, fmt.Errorf("create lifecycle lock pool: %w", err)
+	}
+	if err := lockPool.Ping(ctx); err != nil {
+		lockPool.Close()
+		return nil, fmt.Errorf("ping lifecycle lock pool: %w", err)
+	}
+	return &PostgresEngine{pool: pool, lockPool: lockPool, ownsLockPool: true}, nil
 }
 
 func (p *PostgresEngine) Close() {
+	if p.ownsLockPool && p.lockPool != nil {
+		p.lockPool.Close()
+	}
 	if p.ownsPool && p.pool != nil {
 		p.pool.Close()
 	}

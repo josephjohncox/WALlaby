@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/josephjohncox/wallaby/internal/controlstore"
 	"github.com/josephjohncox/wallaby/internal/flow"
 )
 
@@ -292,6 +293,7 @@ func newMigrationFixturePool(t *testing.T, ctx context.Context, admin *pgxpool.P
 		cfg.ConnConfig.RuntimeParams = make(map[string]string)
 	}
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	controlstore.ConfigurePool(cfg)
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
