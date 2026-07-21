@@ -163,7 +163,11 @@ DROP TABLE IF EXISTS public.wallaby_managed_target`)
 	waitForCondition(t, ctx, runErr, "managed checkpoint and source ACK receipt", func() (bool, error) {
 		var receipts int
 		err := pool.QueryRow(ctx, `
-SELECT checkpoint.lsn,(SELECT count(*) FROM source_ack_receipts AS receipt WHERE receipt.flow_incarnation_id=checkpoint.flow_incarnation_id)
+SELECT checkpoint.lsn,(
+  SELECT count(*) FROM source_ack_receipts AS receipt
+  WHERE receipt.flow_incarnation_id=checkpoint.flow_incarnation_id
+    AND receipt.checkpoint_lsn=checkpoint.lsn
+)
 FROM authoritative_checkpoints AS checkpoint
 WHERE checkpoint.flow_incarnation_id=$1`, incarnationID).Scan(&checkpointLSN, &receipts)
 		return receipts == 1 && checkpointLSN != "", err

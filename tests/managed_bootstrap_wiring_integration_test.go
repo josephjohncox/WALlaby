@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,6 +23,14 @@ import (
 )
 
 func TestManagedBootstrapWorkerWiringConcurrentBoundary(t *testing.T) {
+	runManagedBootstrapWorkerWiringConcurrentBoundary(t)
+}
+
+func TestPostgresManagedProfileSourceSchemaEvolutionAfterRestart(t *testing.T) {
+	runManagedBootstrapWorkerWiringConcurrentBoundary(t)
+}
+
+func runManagedBootstrapWorkerWiringConcurrentBoundary(t *testing.T) {
 	ctx, dsn, engine, pool, authorityStore := setupBootstrapControl(t)
 	defer engine.Close()
 	defer pool.Close()
@@ -57,6 +66,7 @@ DROP TABLE IF EXISTS public.wallaby_bootstrap_wiring_b`)
 		ID: flowID,
 		Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
 			"dsn": dsn, "managed": "true", "bootstrap": "required",
+			"managed_profile": connector.ManagedProfilePostgresToPostgresV1, "streaming_transactions": "true",
 			"ensure_publication": "true", "ensure_state": "true",
 			"tables":           "public.wallaby_bootstrap_wiring_a,public.wallaby_bootstrap_wiring_b",
 			"snapshot_workers": "2", "batch_size": "1", "batch_timeout": "20ms", "status_interval": "20ms",
@@ -64,6 +74,7 @@ DROP TABLE IF EXISTS public.wallaby_bootstrap_wiring_b`)
 		}},
 		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
 			"dsn": dsn, "schema": "wallaby_bootstrap_target", "write_mode": "target", "batch_mode": "target",
+			"managed_profile":         connector.ManagedProfilePostgresToPostgresV1,
 			"destination_revision_id": destinationRevisionID, "synchronous_commit": "on", "meta_table_enabled": "false",
 		}}},
 		Config: flow.Config{AckPolicy: stream.AckPolicyAll},
@@ -193,23 +204,37 @@ FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a`).Scan(&count, &values)
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkpointDeadline := time.Now().Add(10 * time.Second)
-	for {
-		err := pool.QueryRow(ctx, `SELECT lsn FROM authoritative_checkpoints WHERE flow_incarnation_id=(SELECT incarnation_id FROM flows WHERE id=$1)`, flowID).Scan(&advancedCheckpoint)
-		if err == nil {
-			advanced, parseErr := pglogrepl.ParseLSN(advancedCheckpoint)
-			if parseErr != nil {
-				t.Fatal(parseErr)
+	waitForCheckpointReceipt := func(minimum pglogrepl.LSN, deadline time.Time, label string) string {
+		t.Helper()
+		for {
+			var checkpointLSN string
+			var flushRecorded bool
+			err := pool.QueryRow(ctx, `
+SELECT checkpoint.lsn,
+       EXISTS(
+         SELECT 1 FROM source_ack_receipts AS receipt
+         WHERE receipt.flow_incarnation_id=checkpoint.flow_incarnation_id
+           AND receipt.checkpoint_lsn=checkpoint.lsn
+           AND receipt.observed_flush_lsn IS NOT NULL
+       )
+FROM authoritative_checkpoints AS checkpoint
+WHERE checkpoint.flow_incarnation_id=(SELECT incarnation_id FROM flows WHERE id=$1)`, flowID).Scan(&checkpointLSN, &flushRecorded)
+			if err == nil {
+				checkpointPosition, parseErr := pglogrepl.ParseLSN(checkpointLSN)
+				if parseErr != nil {
+					t.Fatal(parseErr)
+				}
+				if checkpointPosition > minimum && flushRecorded {
+					return checkpointLSN
+				}
 			}
-			if advanced > cut {
-				break
+			if time.Now().After(deadline) {
+				t.Fatalf("%s checkpoint %s did not advance beyond %s with a source flush receipt: %v", label, checkpointLSN, minimum, err)
 			}
+			time.Sleep(25 * time.Millisecond)
 		}
-		if time.Now().After(checkpointDeadline) {
-			t.Fatalf("authoritative checkpoint %s did not advance beyond bootstrap cut %s before pause: %v", advancedCheckpoint, cut, err)
-		}
-		time.Sleep(25 * time.Millisecond)
 	}
+	advancedCheckpoint = waitForCheckpointReceipt(cut, time.Now().Add(10*time.Second), "pre-pause")
 
 	_, pauseControl, err := engine.RequestPause(ctx, flowID)
 	if err != nil {
@@ -316,6 +341,7 @@ FROM source_bootstraps WHERE flow_incarnation_id=(SELECT incarnation_id FROM flo
 	if exporterAttempts.Load() != 2 {
 		t.Fatalf("resume regressed into bootstrap: exporter attempts=%d", exporterAttempts.Load())
 	}
+	preEvolutionCheckpoint := waitForCheckpointReceipt(advanced, time.Now().Add(10*time.Second), "pre-schema-restart")
 	cancelResumed()
 	select {
 	case err := <-resumedErrCh:
@@ -324,6 +350,100 @@ FROM source_bootstraps WHERE flow_incarnation_id=(SELECT incarnation_id FROM flo
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("resumed managed runner did not stop")
+	}
+
+	// Change the source schema while no decoder is running. The replacement's
+	// first Relation message contains only the new shape, so successful target
+	// evolution proves that the authoritative checkpoint schema baseline—not a
+	// process-local cache—drives the diff after restart.
+	if _, err := pool.Exec(ctx, `
+ALTER TABLE public.wallaby_bootstrap_wiring_a ADD COLUMN note text;
+UPDATE public.wallaby_bootstrap_wiring_a SET value='evolved-after-restart',note='durable-baseline' WHERE id=3`); err != nil {
+		t.Fatal(err)
+	}
+	evolutionSource := &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}
+	evolutionCtx, cancelEvolution := context.WithCancel(ctx)
+	evolutionErrCh := make(chan error, 1)
+	go func() {
+		evolutionErrCh <- (&runner.FlowRunner{
+			Engine: engine, Checkpoints: checkpoints, ExpectedGeneration: resumeControl.Generation,
+			ExecutionBackend: "integration", ExecutionID: "managed-schema-evolution-restart",
+			Authority: authorityStore, Deliveries: coordinator,
+		}).Run(evolutionCtx, flowDef, evolutionSource, []stream.DestinationConfig{{Spec: flowDef.Destinations[0], Dest: &pgdest.Destination{}}})
+	}()
+	evolutionDeadline := time.Now().Add(20 * time.Second)
+	for {
+		var value, note string
+		err := pool.QueryRow(ctx, `SELECT value,note FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a WHERE id=3`).Scan(&value, &note)
+		if err == nil && value == "evolved-after-restart" && note == "durable-baseline" {
+			break
+		}
+		select {
+		case runErr := <-evolutionErrCh:
+			t.Fatalf("restart schema-evolution runner exited before convergence: %v", runErr)
+		default:
+		}
+		if time.Now().After(evolutionDeadline) {
+			t.Fatalf("restart schema evolution did not converge: value=%q note=%q err=%v", value, note, err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	initial, ok := evolutionSource.InitialCheckpoint()
+	if !ok {
+		t.Fatal("schema-evolution restart did not restore an authoritative checkpoint")
+	}
+	preEvolutionPosition, err := pglogrepl.ParseLSN(preEvolutionCheckpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialPosition, err := pglogrepl.ParseLSN(initial.LSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initialPosition < preEvolutionPosition {
+		t.Fatalf("schema-evolution restart checkpoint=%s, want at least %s", initial.LSN, preEvolutionCheckpoint)
+	}
+	for {
+		var checkpointLSN, baselineJSON string
+		var flushRecorded bool
+		err := pool.QueryRow(ctx, `
+SELECT checkpoint.lsn,
+       COALESCE(checkpoint.metadata->>$2,''),
+       EXISTS(
+         SELECT 1 FROM source_ack_receipts AS receipt
+         WHERE receipt.flow_incarnation_id=checkpoint.flow_incarnation_id
+           AND receipt.checkpoint_lsn=checkpoint.lsn
+           AND receipt.observed_flush_lsn IS NOT NULL
+       )
+FROM authoritative_checkpoints AS checkpoint
+WHERE checkpoint.flow_incarnation_id=(SELECT incarnation_id FROM flows WHERE id=$1)`, flowID, connector.ManagedSchemaBaselinesMetadataKey).Scan(&checkpointLSN, &baselineJSON, &flushRecorded)
+		if err == nil {
+			checkpointPosition, parseErr := pglogrepl.ParseLSN(checkpointLSN)
+			if parseErr != nil {
+				t.Fatal(parseErr)
+			}
+			if checkpointPosition > preEvolutionPosition && flushRecorded && strings.Contains(baselineJSON, "note") {
+				break
+			}
+		}
+		select {
+		case runErr := <-evolutionErrCh:
+			t.Fatalf("schema-evolution runner exited before checkpoint and source receipt: %v", runErr)
+		default:
+		}
+		if time.Now().After(evolutionDeadline) {
+			t.Fatalf("schema-evolution checkpoint/flush did not converge after target commit: %v", err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	cancelEvolution()
+	select {
+	case err := <-evolutionErrCh:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("schema-evolution managed runner exit: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("schema-evolution managed runner did not stop")
 	}
 
 	if err := pool.QueryRow(ctx, `SELECT ownership FROM source_resources WHERE physical_name=$1 AND resource_kind='slot'`, slot).Scan(&slotOwnership); err != nil {

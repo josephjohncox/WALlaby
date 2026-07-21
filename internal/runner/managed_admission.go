@@ -16,6 +16,9 @@ func managedSourceSpec(spec connector.Spec) bool {
 	if spec.Options == nil {
 		return false
 	}
+	if strings.TrimSpace(spec.Options["managed_profile"]) != "" {
+		return true
+	}
 	switch strings.ToLower(strings.TrimSpace(spec.Options["managed"])) {
 	case "1", "true", "yes", "on":
 		return true
@@ -25,11 +28,18 @@ func managedSourceSpec(spec connector.Spec) bool {
 }
 
 func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec connector.Spec, destinations []stream.DestinationConfig, cfg StreamRunnerConfig) error {
+	profileName := strings.TrimSpace(sourceSpec.Options["managed_profile"])
+	if profileName != "" && profileName != connector.ManagedProfilePostgresToPostgresV1 {
+		return fmt.Errorf("unsupported managed_profile %q", profileName)
+	}
 	if sourceSpec.Type != connector.EndpointPostgres {
 		return errors.New("managed execution currently requires a PostgreSQL source")
 	}
 	if _, ok := source.(connector.TransactionalSource); !ok {
 		return errors.New("managed PostgreSQL execution requires the transactional source interface")
+	}
+	if _, ok := source.(connector.FlushEvidenceSource); !ok {
+		return errors.New("managed PostgreSQL execution requires source flush evidence")
 	}
 	if cfg.RunFence == nil || cfg.DeliveryCoordinator == nil {
 		return errors.New("managed execution requires PostgreSQL run authority and delivery coordination")
@@ -105,8 +115,8 @@ func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec c
 	if destination.Spec.Type != connector.EndpointPostgres {
 		return fmt.Errorf("managed destination type %q is not admitted by the initial profile", destination.Spec.Type)
 	}
-	if _, ok := destination.Dest.(connector.ManagedDestination); !ok {
-		return errors.New("managed destination does not implement durable reconciliation")
+	if _, ok := destination.Dest.(connector.ManagedTransactionDestination); !ok {
+		return errors.New("managed destination does not implement full-transaction durable reconciliation")
 	}
 	if strings.TrimSpace(destination.Spec.Options["destination_revision_id"]) == "" {
 		return errors.New("managed destination_revision_id is required")
@@ -119,6 +129,24 @@ func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec c
 	}
 	if syncCommit := strings.ToLower(strings.TrimSpace(destination.Spec.Options["synchronous_commit"])); syncCommit != "on" && syncCommit != "remote_apply" {
 		return fmt.Errorf("managed PostgreSQL destination requires explicit durable synchronous_commit=on or remote_apply; got %q", syncCommit)
+	}
+	if profileName == connector.ManagedProfilePostgresToPostgresV1 {
+		profile := connector.PostgresToPostgresV1Profile()
+		if err := profile.ValidatePromotion(); err != nil {
+			return fmt.Errorf("managed profile promotion contract: %w", err)
+		}
+		if bootstrapMode != "required" {
+			return fmt.Errorf("%s requires bootstrap=required", profileName)
+		}
+		if !parseEnabledOption(sourceSpec.Options["streaming_transactions"], false) {
+			return fmt.Errorf("%s requires streaming_transactions=true", profileName)
+		}
+		if parseEnabledOption(sourceSpec.Options["capture_ddl"], false) {
+			return fmt.Errorf("%s admits relation-diff DDL plans, not raw capture_ddl", profileName)
+		}
+		if destinationProfile := strings.TrimSpace(destination.Spec.Options["managed_profile"]); destinationProfile != profileName {
+			return fmt.Errorf("destination managed_profile %q does not match source profile %q", destinationProfile, profileName)
+		}
 	}
 	return nil
 }

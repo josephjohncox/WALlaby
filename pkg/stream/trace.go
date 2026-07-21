@@ -19,6 +19,7 @@ type TraceEvent struct {
 	LSN         string        `json:"lsn,omitempty"`
 	Position    string        `json:"position,omitempty"`
 	FlowID      string        `json:"flow_id,omitempty"`
+	Managed     bool          `json:"managed,omitempty"`
 	Destination string        `json:"destination,omitempty"`
 	DDL         string        `json:"ddl,omitempty"`
 	EventID     int64         `json:"event_id,omitempty"`

@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	"github.com/josephjohncox/wallaby/internal/runner"
@@ -53,7 +55,33 @@ func run() error {
 		)
 	}
 	fmt.Println()
-	fmt.Println("These are guaranteed defaults. Options can reduce guarantees; startup validation resolves configured capabilities before execution.")
+	fmt.Println("## Managed profiles")
+	fmt.Println()
+	profile := connector.PostgresToPostgresV1Profile()
+	if err := profile.ValidatePromotion(); err != nil {
+		return err
+	}
+	versions := make([]string, 0, len(profile.PostgresVersions))
+	for _, version := range profile.PostgresVersions {
+		versions = append(versions, strconv.Itoa(version))
+	}
+	fmt.Println("| Profile | Status | Source | Destination | PostgreSQL | Pairing | Ack | Sinks | Delivery |")
+	fmt.Println("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+	pairing := "mixed majors"
+	if profile.SameMajorOnly {
+		pairing = "same major"
+	}
+	fmt.Printf("| `%s` | %s | `%s` | `%s` | %s | %s | %s | one | %s |\n",
+		profile.Name, profile.Support, profile.Source, profile.Destination,
+		strings.Join(versions, ", "), pairing, strings.Join(profile.AckPolicies, ", "), profile.DeliveryGuarantee)
+	fmt.Println()
+	fmt.Println("| Admission/evidence gate | Real service | Required test |")
+	fmt.Println("| --- | --- | --- |")
+	for _, gate := range profile.Gates {
+		fmt.Printf("| %s | %s | `%s` |\n", gate.Capability, yesNo(gate.Live), gate.Test)
+	}
+	fmt.Println()
+	fmt.Println("These are guaranteed defaults. Options can reduce guarantees; startup validation resolves configured capabilities before execution. Generic PostgreSQL modes remain experimental; maintained status applies only to the exact named managed profile above.")
 	return nil
 }
 

@@ -44,7 +44,14 @@ func Diff(oldSchema, newSchema connector.Schema) Plan {
 			continue
 		}
 
-		if oldCol.Type != newCol.Type || oldCol.Nullable != newCol.Nullable {
+		typeChanged := oldCol.Type != newCol.Type
+		nullabilityKnown := newCol.TypeMetadata["nullability_known"] != "false"
+		nullabilityChanged := nullabilityKnown && oldCol.Nullable != newCol.Nullable
+		if typeChanged || nullabilityChanged {
+			targetNullable := newCol.Nullable
+			if !nullabilityKnown {
+				targetNullable = oldCol.Nullable
+			}
 			changes = append(changes, Change{
 				Type:         ChangeAlterColumn,
 				Namespace:    newSchema.Namespace,
@@ -53,11 +60,12 @@ func Diff(oldSchema, newSchema connector.Schema) Plan {
 				FromType:     oldCol.Type,
 				ToType:       newCol.Type,
 				FromNullable: oldCol.Nullable,
-				Nullable:     newCol.Nullable,
+				Nullable:     targetNullable,
 			})
 		}
 
-		if oldCol.Generated != newCol.Generated || oldCol.Expression != newCol.Expression {
+		generatedKnown := newCol.TypeMetadata["generated_known"] != "false"
+		if generatedKnown && (oldCol.Generated != newCol.Generated || oldCol.Expression != newCol.Expression) {
 			changeType := ChangeSetGenerated
 			if !newCol.Generated {
 				changeType = ChangeDropGenerated

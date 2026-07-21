@@ -1,6 +1,6 @@
 # PostgreSQL slot-anchored bootstrap
 
-`internal/bootstrap` and the PostgreSQL source implement the experimental managed bootstrap used by `wallaby-worker` and in-process DBOS execution. Managed admission accepts `bootstrap=auto|required`; `bootstrap=never` remains available for explicitly pre-provisioned datasets.
+`internal/bootstrap` and the PostgreSQL source implement the slot-anchored managed bootstrap used by `wallaby-worker` and in-process DBOS execution. The exact maintained `postgresql-to-postgresql-v1` profile requires `bootstrap=required`. Generic managed execution may use `bootstrap=auto|required|never`, but those broader configurations remain experimental.
 
 The bootstrapper creates a bootstrap-generation-qualified logical slot with `EXPORT_SNAPSHOT`. PostgreSQL stores the returned system identity, slot, publication, manifest hash, consistent point, and snapshot name under the producer fence while the exporter connection stays open.
 
@@ -16,8 +16,8 @@ Exporter lifetime is strict:
 - A failed drop remains retryable.
 - A restart allocates a new bootstrap generation and physical slot name, even within the same lifecycle generation.
 
-The experimental profile rejects source pools smaller than two sessions, partitioned/partition relations, and destination targets connected by foreign keys. Snapshot concurrency is capped to the source pool sessions left after reserving the schema-barrier session.
+The bootstrap contract rejects source pools smaller than two sessions, partitioned/partition relations, and destination targets connected by foreign keys. Snapshot concurrency is capped to the source pool sessions left after reserving the schema-barrier session. Those restrictions are part of the exact named profile; configurations outside them are not promoted.
 
-Publication requires all frozen tasks and destination receipts. Handoff locks and reloads the persisted snapshot cut; caller-supplied slot, source, publication revision, manifest, or LSN differences fail as conflicts. PostgreSQL commits the exact persisted checkpoint, ACK intent, and private `streaming` phase together. The exporter then closes and CDC opens the same owned slot at that exact point. Delivery remains at-least-once with reconciliation; this is not an exactly-once claim.
+Publication requires all frozen tasks and destination receipts. Handoff locks and reloads the persisted snapshot cut; caller-supplied slot, source, publication revision, manifest, or LSN differences fail as conflicts. PostgreSQL commits the exact persisted checkpoint, frozen relation-schema baselines, ACK intent, and private `streaming` phase together. The exporter then closes and CDC opens the same owned slot at that exact point. If the first pgoutput `Relation` message after a later restart contains a changed schema, the decoder compares it with this delivered baseline and emits structured DDL before dependent DML. Delivery remains at-least-once with reconciliation; this is not an exactly-once claim.
 
 The legacy `mode=backfill` source remains experimental and is not this protocol.

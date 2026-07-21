@@ -14,3 +14,16 @@ type ManagedDeliveryCoordinator interface {
 	ValidateAckGrant(context.Context, connector.RunFence, connector.AckGrant) error
 	RecordAckReceipt(context.Context, connector.RunFence, connector.AckGrant, string) error
 }
+
+// ManagedTransactionDeliveryCoordinator is the optional full-transaction
+// extension required by the named PostgreSQL profile. Keeping it separate
+// preserves compatibility for existing ManagedDeliveryCoordinator adapters.
+type ManagedTransactionDeliveryCoordinator interface {
+	DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedTransactionDestination) (connector.AckGrant, error)
+}
+
+// ManagedSourceFeedbackCoordinator is the optional observed-flush extension
+// required by the named PostgreSQL profile.
+type ManagedSourceFeedbackCoordinator interface {
+	CommitSourceFeedback(context.Context, connector.RunFence, connector.AckGrant, connector.FlushEvidenceSource) error
+}

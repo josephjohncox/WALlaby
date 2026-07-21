@@ -10,35 +10,76 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/authority"
+	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 type AckGrant = connector.AckGrant
 
+const (
+	maxDeliveryAttempts       = 16
+	maxReconciliationAttempts = 16
+)
+
 type deliveryState struct {
-	receipt    bool
-	attemptID  uuid.UUID
-	hasAttempt bool
-	externalID string
+	receipt                bool
+	attemptID              uuid.UUID
+	hasAttempt             bool
+	attemptState           string
+	attemptNumber          int
+	reconciliationAttempts int
+	nextAttemptAt          time.Time
+	externalID             string
 }
 
 // Coordinator implements the durable prepare -> external side effect ->
 // evidence -> receipt/checkpoint protocol for managed destinations.
 type Coordinator struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	hooks CoordinatorHooks
 }
 
-func NewCoordinator(ctx context.Context, pool *pgxpool.Pool) (*Coordinator, error) {
+// CoordinatorHooks exposes deterministic crash boundaries to integration
+// tests without changing production ordering or relying on timing.
+type CoordinatorHooks struct {
+	AfterSourceFlush       func(context.Context, authority.RunFence, AckGrant, string) error
+	AfterRetentionRootLock func(context.Context, authority.RunFence, string) error
+}
+
+// CoordinatorOption configures optional coordinator behavior.
+type CoordinatorOption func(*Coordinator)
+
+// WithCoordinatorHooks installs deterministic failure-injection hooks.
+func WithCoordinatorHooks(hooks CoordinatorHooks) CoordinatorOption {
+	return func(coordinator *Coordinator) {
+		coordinator.hooks = hooks
+	}
+}
+
+func NewCoordinator(ctx context.Context, pool *pgxpool.Pool, options ...CoordinatorOption) (*Coordinator, error) {
 	if pool == nil {
 		return nil, errors.New("delivery postgres pool is required")
+	}
+	// Delivery finalization writes the authoritative checkpoint and ACK-intent
+	// tables directly, so the coordinator owns this migration dependency when
+	// constructed outside centralized production startup as well.
+	if err := checkpoint.ApplyMigrations(ctx, pool); err != nil {
+		return nil, fmt.Errorf("prepare delivery checkpoint authority: %w", err)
 	}
 	if err := runMigrations(ctx, pool); err != nil {
 		return nil, err
 	}
-	return &Coordinator{pool: pool}, nil
+	coordinator := &Coordinator{pool: pool}
+	for _, option := range options {
+		if option != nil {
+			option(coordinator)
+		}
+	}
+	return coordinator, nil
 }
 
 // RegisterDestinationRevision binds a stable revision ID to one immutable
@@ -106,7 +147,7 @@ func (c *Coordinator) AuthorizeAck(ctx context.Context, fence authority.RunFence
 }
 
 // Recover reconciles one unfinished delivery. Applied evidence is adopted by
-// the current fence; indeterminate evidence always fails closed.
+// the current fence; indeterminate evidence is durably backed off and bounded.
 func (c *Coordinator) Recover(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint, driver connector.ManagedDestination) (AckGrant, error) {
 	if driver == nil {
 		return AckGrant{}, errors.New("managed delivery driver is required")
@@ -121,13 +162,16 @@ func (c *Coordinator) Recover(ctx context.Context, fence authority.RunFence, int
 	if !state.hasAttempt {
 		return AckGrant{}, errors.New("no unfinished delivery attempt to recover")
 	}
-	disposition, evidence, err := driver.Reconcile(ctx, intent)
+	disposition, evidence, err := c.reconcileUnfinished(ctx, fence, intent, state, driver)
 	if err != nil {
 		return AckGrant{}, err
 	}
 	switch disposition {
 	case connector.DeliveryApplied:
 		if err := c.recordEvidence(ctx, fence, intent, state.attemptID, evidence); err != nil {
+			return AckGrant{}, err
+		}
+		if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "applied", ""); err != nil {
 			return AckGrant{}, err
 		}
 		return c.finalize(ctx, fence, intent, state.attemptID, checkpoint)
@@ -156,20 +200,30 @@ func (c *Coordinator) Deliver(ctx context.Context, fence authority.RunFence, int
 		return AckGrant{Checkpoint: batch.Checkpoint, PositionID: intent.PositionID}, nil
 	}
 	if state.hasAttempt {
-		disposition, evidence, reconcileErr := driver.Reconcile(ctx, intent)
-		if reconcileErr != nil {
-			return AckGrant{}, reconcileErr
+		disposition, evidence, err := c.reconcileUnfinished(ctx, fence, intent, state, driver)
+		if err != nil {
+			return AckGrant{}, err
 		}
 		switch disposition {
 		case connector.DeliveryApplied:
 			if err := c.recordEvidence(ctx, fence, intent, state.attemptID, evidence); err != nil {
 				return AckGrant{}, err
 			}
+			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "applied", ""); err != nil {
+				return AckGrant{}, err
+			}
 			return c.finalize(ctx, fence, intent, state.attemptID, batch.Checkpoint)
-		case connector.DeliveryIndeterminate:
-			return AckGrant{}, fmt.Errorf("%w: unfinished delivery %s", connector.ErrDeliveryIndeterminate, intent.PositionID)
 		case connector.DeliveryNotApplied:
-			// A new append-only attempt may be prepared below.
+			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "not_applied", "target marker absent"); err != nil {
+				return AckGrant{}, err
+			}
+			retryState, err := c.inspect(ctx, fence, intent, batch.Checkpoint)
+			if err != nil {
+				return AckGrant{}, err
+			}
+			if err := waitForDeliveryRetry(ctx, retryState.nextAttemptAt); err != nil {
+				return AckGrant{}, err
+			}
 		}
 	}
 
@@ -184,13 +238,90 @@ func (c *Coordinator) Deliver(ctx context.Context, fence authority.RunFence, int
 			telemetry.RecordDeliveryOutcome(ctx, "indeterminate")
 		} else {
 			telemetry.RecordDeliveryOutcome(ctx, "apply_failed")
+			_ = c.markAttemptTerminal(context.WithoutCancel(ctx), fence, attemptID, "failed", err.Error())
 		}
 		return AckGrant{}, err
 	}
 	if err := c.recordEvidence(ctx, fence, intent, attemptID, evidence); err != nil {
 		return AckGrant{}, err
 	}
+	if err := c.markAttemptTerminal(ctx, fence, attemptID, "applied", ""); err != nil {
+		return AckGrant{}, err
+	}
 	return c.finalize(ctx, fence, intent, attemptID, batch.Checkpoint)
+}
+
+// DeliverTransaction applies one complete committed source transaction. The
+// immutable logical batch and attempt are durable before target I/O, while the
+// target receipt, checkpoint, and ACK intent are finalized under one fence.
+func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, transaction connector.SourceTransaction, driver connector.ManagedTransactionDestination) (AckGrant, error) {
+	if driver == nil {
+		return AckGrant{}, errors.New("managed transaction delivery driver is required")
+	}
+	if err := validateTransactionDeliveryInput(fence, intent, transaction); err != nil {
+		return AckGrant{}, err
+	}
+	state, err := c.inspect(ctx, fence, intent, transaction.Checkpoint)
+	if err != nil {
+		return AckGrant{}, err
+	}
+	if state.receipt {
+		telemetry.RecordDeliveryOutcome(ctx, "receipt_reused")
+		return AckGrant{Checkpoint: transaction.Checkpoint, PositionID: intent.PositionID}, nil
+	}
+	if state.hasAttempt {
+		disposition, evidence, err := c.reconcileUnfinished(ctx, fence, intent, state, driver)
+		if err != nil {
+			return AckGrant{}, err
+		}
+		switch disposition {
+		case connector.DeliveryApplied:
+			if err := c.recordEvidence(ctx, fence, intent, state.attemptID, evidence); err != nil {
+				return AckGrant{}, err
+			}
+			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "applied", ""); err != nil {
+				return AckGrant{}, err
+			}
+			return c.finalize(ctx, fence, intent, state.attemptID, transaction.Checkpoint)
+		case connector.DeliveryNotApplied:
+			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "not_applied", "target marker absent"); err != nil {
+				return AckGrant{}, err
+			}
+			retryState, err := c.inspect(ctx, fence, intent, transaction.Checkpoint)
+			if err != nil {
+				return AckGrant{}, err
+			}
+			if err := waitForDeliveryRetry(ctx, retryState.nextAttemptAt); err != nil {
+				return AckGrant{}, err
+			}
+		}
+	}
+	if err := driver.ValidateTransaction(ctx, transaction); err != nil {
+		return AckGrant{}, fmt.Errorf("validate managed target transaction: %w", err)
+	}
+
+	attemptID, err := c.prepareAttempt(ctx, fence, intent, transaction.Checkpoint)
+	if err != nil {
+		return AckGrant{}, err
+	}
+	telemetry.RecordDeliveryOutcome(ctx, "attempt_prepared")
+	evidence, err := driver.ApplyTransaction(ctx, intent, transaction)
+	if err != nil {
+		if errors.Is(err, connector.ErrDeliveryIndeterminate) {
+			telemetry.RecordDeliveryOutcome(ctx, "indeterminate")
+		} else {
+			telemetry.RecordDeliveryOutcome(ctx, "apply_failed")
+			_ = c.markAttemptTerminal(context.WithoutCancel(ctx), fence, attemptID, "failed", err.Error())
+		}
+		return AckGrant{}, err
+	}
+	if err := c.recordEvidence(ctx, fence, intent, attemptID, evidence); err != nil {
+		return AckGrant{}, err
+	}
+	if err := c.markAttemptTerminal(ctx, fence, attemptID, "applied", ""); err != nil {
+		return AckGrant{}, err
+	}
+	return c.finalize(ctx, fence, intent, attemptID, transaction.Checkpoint)
 }
 
 // ValidateAckGrant proves that PostgreSQL contains both the ACK intent and the
@@ -229,6 +360,53 @@ func (c *Coordinator) RecordAckReceipt(ctx context.Context, fence authority.RunF
 	if err := validateAckGrant(ctx, tx, fence, grant); err != nil {
 		return err
 	}
+	if err := recordAckReceipt(ctx, tx, fence, grant, observedFlushLSN); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit source ack receipt: %w", err)
+	}
+	return nil
+}
+
+// CommitSourceFeedback validates authority on both sides of external source
+// I/O. PostgreSQL slot feedback is monotonic, so a crash or takeover after the
+// source flush is repaired by re-sending the authoritative checkpoint; no
+// control transaction or advisory lock is held while waiting on the source.
+func (c *Coordinator) CommitSourceFeedback(ctx context.Context, fence authority.RunFence, grant AckGrant, source connector.FlushEvidenceSource) error {
+	if source == nil {
+		return errors.New("managed source flush evidence is required")
+	}
+	if err := c.ValidateAckGrant(ctx, fence, grant); err != nil {
+		return err
+	}
+	evidence, err := source.AckWithEvidence(ctx, grant.Checkpoint)
+	if err != nil {
+		return fmt.Errorf("send authorized source feedback: %w", err)
+	}
+	observed, err := connector.CanonicalizeCheckpointPosition(evidence.ObservedFlushLSN)
+	if err != nil {
+		return fmt.Errorf("canonicalize observed source flush: %w", err)
+	}
+	authorized, err := connector.CanonicalizeCheckpointPosition(grant.Checkpoint.LSN)
+	if err != nil {
+		return fmt.Errorf("canonicalize authorized source flush: %w", err)
+	}
+	if observed != authorized {
+		return fmt.Errorf("observed source flush %s differs from authorized checkpoint %s", observed, authorized)
+	}
+	if c.hooks.AfterSourceFlush != nil {
+		if err := c.hooks.AfterSourceFlush(ctx, fence, grant, observed); err != nil {
+			return err
+		}
+	}
+	if err := c.RecordAckReceipt(ctx, fence, grant, observed); err != nil {
+		return fmt.Errorf("commit authorized source feedback receipt: %w", err)
+	}
+	return nil
+}
+
+func recordAckReceipt(ctx context.Context, tx pgx.Tx, fence authority.RunFence, grant AckGrant, observedFlushLSN string) error {
 	if _, err := tx.Exec(ctx, `
 INSERT INTO source_ack_receipts (
   flow_incarnation_id,position_id,checkpoint_lsn,observed_flush_lsn,acquisition_id,lease_epoch,generation
@@ -241,9 +419,6 @@ ON CONFLICT (flow_incarnation_id,position_id) DO UPDATE SET
   recorded_at=clock_timestamp()
 WHERE source_ack_receipts.checkpoint_lsn=EXCLUDED.checkpoint_lsn`, fence.FlowIncarnationID, grant.PositionID, grant.Checkpoint.LSN, observedFlushLSN, fence.AcquisitionID, fence.LeaseEpoch, fence.Generation); err != nil {
 		return fmt.Errorf("record source ack receipt: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit source ack receipt: %w", err)
 	}
 	return nil
 }
@@ -267,6 +442,122 @@ WHERE intent.flow_incarnation_id=$1 AND intent.position_id=$2`, fence.FlowIncarn
 	}
 	if authorizedLSN != canonical || checkpointLSN != canonical {
 		return fmt.Errorf("source ack grant %s does not match intent=%s checkpoint=%s", canonical, authorizedLSN, checkpointLSN)
+	}
+	return nil
+}
+
+func (c *Coordinator) reconcileUnfinished(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, state deliveryState, driver connector.ManagedDestination) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
+	if state.reconciliationAttempts >= maxReconciliationAttempts {
+		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, fmt.Errorf(
+			"%w: logical batch %s exhausted %d reconciliation attempts",
+			connector.ErrDeliveryRetryExhausted,
+			deliveryLogicalBatchID(intent),
+			maxReconciliationAttempts,
+		)
+	}
+	if err := waitForDeliveryRetry(ctx, state.nextAttemptAt); err != nil {
+		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
+	}
+	disposition, evidence, reconcileErr := driver.Reconcile(ctx, intent)
+	if reconcileErr == nil && disposition != connector.DeliveryIndeterminate {
+		return disposition, evidence, nil
+	}
+	detail := "target reconciliation remained indeterminate"
+	if reconcileErr != nil {
+		detail = reconcileErr.Error()
+	}
+	attempts, recordErr := c.recordReconciliationFailure(context.WithoutCancel(ctx), fence, state.attemptID, detail)
+	if recordErr != nil {
+		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, recordErr
+	}
+	if attempts >= maxReconciliationAttempts {
+		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, fmt.Errorf(
+			"%w: logical batch %s exhausted %d reconciliation attempts: %s",
+			connector.ErrDeliveryRetryExhausted,
+			deliveryLogicalBatchID(intent),
+			attempts,
+			detail,
+		)
+	}
+	return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, fmt.Errorf(
+		"%w: reconcile logical batch %s attempt %d/%d: %s",
+		connector.ErrDeliveryIndeterminate,
+		deliveryLogicalBatchID(intent),
+		attempts,
+		maxReconciliationAttempts,
+		detail,
+	)
+}
+
+func (c *Coordinator) recordReconciliationFailure(ctx context.Context, fence authority.RunFence, attemptID uuid.UUID, detail string) (int, error) {
+	tx, err := c.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin delivery reconciliation failure: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
+		return 0, err
+	}
+	var attempts int
+	if err := tx.QueryRow(ctx, `
+UPDATE delivery_attempts
+SET reconciliation_attempts=reconciliation_attempts+1,
+    last_reconciled_at=clock_timestamp(),
+    last_error=NULLIF($2,''),
+    next_attempt_at=clock_timestamp() + LEAST(
+      interval '1 minute',
+      interval '100 milliseconds' * power(2,GREATEST(reconciliation_attempts,0))
+    )
+WHERE attempt_id=$1
+  AND flow_incarnation_id=$3
+  AND attempt_state IN ('pending','applied','failed','not_applied')
+RETURNING reconciliation_attempts`, attemptID, detail, fence.FlowIncarnationID).Scan(&attempts); err != nil {
+		return 0, fmt.Errorf("record delivery reconciliation failure: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit delivery reconciliation failure: %w", err)
+	}
+	return attempts, nil
+}
+
+func waitForDeliveryRetry(ctx context.Context, retryAt time.Time) error {
+	delay := time.Until(retryAt)
+	if retryAt.IsZero() || delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func validateTransactionDeliveryInput(fence authority.RunFence, intent connector.DeliveryIntent, transaction connector.SourceTransaction) error {
+	if err := intent.Validate(); err != nil {
+		return err
+	}
+	if err := transaction.Validate(); err != nil {
+		return err
+	}
+	if intent.FlowID != fence.FlowID || intent.FlowIncarnationID != fence.FlowIncarnationID.String() || intent.Generation != fence.Generation || intent.AcquisitionID != fence.AcquisitionID.String() || intent.LeaseEpoch != fence.LeaseEpoch {
+		return fmt.Errorf("%w: delivery intent does not match run fence", authority.ErrFenceRejected)
+	}
+	contentHash, logicalBatchID, err := connector.SourceTransactionIdentity(transaction)
+	if err != nil {
+		return err
+	}
+	if contentHash != intent.ContentHash || logicalBatchID != intent.LogicalBatchID {
+		return fmt.Errorf("%w: logical transaction identity mismatch", connector.ErrDeliveryConflict)
+	}
+	positionID, err := connector.CheckpointPositionID(transaction.Checkpoint)
+	if err != nil {
+		return err
+	}
+	if positionID != intent.PositionID {
+		return fmt.Errorf("%w: intent position %s does not match transaction position %s", connector.ErrDeliveryConflict, intent.PositionID, positionID)
 	}
 	return nil
 }
@@ -314,16 +605,35 @@ func (c *Coordinator) inspect(ctx context.Context, fence authority.RunFence, int
 		return deliveryState{}, err
 	}
 	state := deliveryState{}
+	var receiptHash string
+	var receiptLogicalBatchID pgtype.Text
 	err = tx.QueryRow(ctx, `
-SELECT attempt_id,external_id
+SELECT attempt_id,external_id,content_hash,logical_batch_id
 FROM delivery_receipts
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND source_lineage_id=$3 AND position_id=$4`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.PositionID).Scan(&state.attemptID, &state.externalID)
+WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND source_lineage_id=$3 AND position_id=$4
+FOR UPDATE`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.PositionID).Scan(&state.attemptID, &state.externalID, &receiptHash, &receiptLogicalBatchID)
 	switch {
 	case err == nil:
+		expectedLogicalBatchID := deliveryLogicalBatchID(intent)
+		legacyLogicalBatch := !receiptLogicalBatchID.Valid || receiptLogicalBatchID.String == "legacy:"+intent.PositionID
+		if receiptHash != intent.ContentHash || (!legacyLogicalBatch && receiptLogicalBatchID.String != expectedLogicalBatchID) {
+			return deliveryState{}, fmt.Errorf("%w: immutable delivery receipt differs", connector.ErrDeliveryConflict)
+		}
+		if legacyLogicalBatch {
+			if _, err := tx.Exec(ctx, `
+WITH adopted AS (
+  UPDATE delivery_receipts SET logical_batch_id=$2 WHERE attempt_id=$1 RETURNING attempt_id
+)
+UPDATE delivery_attempts SET logical_batch_id=$2
+WHERE attempt_id IN (SELECT attempt_id FROM adopted)`, state.attemptID, expectedLogicalBatchID); err != nil {
+				return deliveryState{}, fmt.Errorf("upgrade legacy delivery receipt identity: %w", err)
+			}
+		}
 		state.receipt = true
 	case errors.Is(err, pgx.ErrNoRows):
 		err = tx.QueryRow(ctx, `
-SELECT attempt.attempt_id
+SELECT attempt.attempt_id,attempt.attempt_state,attempt.attempt_number,
+       attempt.reconciliation_attempts,attempt.next_attempt_at
 FROM delivery_attempts AS attempt
 LEFT JOIN delivery_receipts AS receipt ON receipt.attempt_id=attempt.attempt_id
 WHERE attempt.flow_incarnation_id=$1
@@ -332,7 +642,13 @@ WHERE attempt.flow_incarnation_id=$1
   AND attempt.position_id=$4
   AND receipt.attempt_id IS NULL
 ORDER BY attempt.prepared_at DESC,attempt.attempt_id DESC
-LIMIT 1`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.PositionID).Scan(&state.attemptID)
+LIMIT 1`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.PositionID).Scan(
+			&state.attemptID,
+			&state.attemptState,
+			&state.attemptNumber,
+			&state.reconciliationAttempts,
+			&state.nextAttemptAt,
+		)
 		if err == nil {
 			state.hasAttempt = true
 		} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -363,21 +679,32 @@ SELECT 1 FROM destination_revisions WHERE destination_revision_id=$1`, intent.De
 	sourceTransactionID := intent.SourceLineageID + ":" + position
 	tag, err := tx.Exec(ctx, `
 INSERT INTO delivery_manifests (
-  flow_incarnation_id,destination_revision_id,source_lineage_id,position_id,source_transaction_id,content_hash,checkpoint_lsn
-) VALUES ($1,$2,$3,$4,$5,$6,$7)
-ON CONFLICT (flow_incarnation_id,destination_revision_id,position_id) DO NOTHING`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.PositionID, sourceTransactionID, intent.ContentHash, position)
+  flow_incarnation_id,destination_revision_id,source_lineage_id,logical_batch_id,position_id,source_transaction_id,content_hash,checkpoint_lsn
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+ON CONFLICT (flow_incarnation_id,destination_revision_id,position_id) DO NOTHING`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, deliveryLogicalBatchID(intent), intent.PositionID, sourceTransactionID, intent.ContentHash, position)
 	if err != nil {
 		return fmt.Errorf("insert delivery manifest: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		var existingHash, existingLSN, existingLineage string
+		var existingLogicalBatchID pgtype.Text
 		if err := tx.QueryRow(ctx, `
-SELECT content_hash,checkpoint_lsn,source_lineage_id FROM delivery_manifests
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.PositionID).Scan(&existingHash, &existingLSN, &existingLineage); err != nil {
+SELECT content_hash,checkpoint_lsn,source_lineage_id,logical_batch_id FROM delivery_manifests
+WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3
+FOR UPDATE`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.PositionID).Scan(&existingHash, &existingLSN, &existingLineage, &existingLogicalBatchID); err != nil {
 			return fmt.Errorf("load delivery manifest: %w", err)
 		}
-		if existingHash != intent.ContentHash || existingLSN != position || existingLineage != intent.SourceLineageID {
+		expectedLogicalBatchID := deliveryLogicalBatchID(intent)
+		legacyLogicalBatch := !existingLogicalBatchID.Valid || existingLogicalBatchID.String == "legacy:"+intent.PositionID
+		if existingHash != intent.ContentHash || existingLSN != position || existingLineage != intent.SourceLineageID || (!legacyLogicalBatch && existingLogicalBatchID.String != expectedLogicalBatchID) {
 			return fmt.Errorf("%w: immutable delivery manifest differs", connector.ErrDeliveryConflict)
+		}
+		if legacyLogicalBatch {
+			if _, err := tx.Exec(ctx, `
+UPDATE delivery_manifests SET logical_batch_id=$4
+WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.PositionID, expectedLogicalBatchID); err != nil {
+				return fmt.Errorf("upgrade legacy delivery manifest identity: %w", err)
+			}
 		}
 	}
 	return nil
@@ -395,18 +722,71 @@ func (c *Coordinator) prepareAttempt(ctx context.Context, fence authority.RunFen
 	if err := ensureManifest(ctx, tx, fence, intent, checkpoint); err != nil {
 		return uuid.Nil, err
 	}
+	if _, err := tx.Exec(ctx, `
+UPDATE delivery_attempts
+SET logical_batch_id=$3
+WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$4
+  AND source_lineage_id=$5 AND content_hash=$6
+  AND (logical_batch_id IS NULL OR logical_batch_id='legacy:' || position_id)`, fence.FlowIncarnationID, intent.DestinationRevisionID, deliveryLogicalBatchID(intent), intent.PositionID, intent.SourceLineageID, intent.ContentHash); err != nil {
+		return uuid.Nil, fmt.Errorf("upgrade legacy delivery attempt identity: %w", err)
+	}
+	var priorAttempts int
+	if err := tx.QueryRow(ctx, `
+SELECT COALESCE(max(attempt_number),0)
+FROM delivery_attempts
+WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND logical_batch_id=$3`, fence.FlowIncarnationID, intent.DestinationRevisionID, deliveryLogicalBatchID(intent)).Scan(&priorAttempts); err != nil {
+		return uuid.Nil, fmt.Errorf("count logical batch delivery attempts: %w", err)
+	}
+	if priorAttempts >= maxDeliveryAttempts {
+		return uuid.Nil, fmt.Errorf("managed delivery exhausted %d attempts for logical batch %s", maxDeliveryAttempts, deliveryLogicalBatchID(intent))
+	}
 	attemptID := uuid.New()
 	if _, err := tx.Exec(ctx, `
 INSERT INTO delivery_attempts (
   attempt_id,flow_incarnation_id,flow_id,generation,acquisition_id,lease_epoch,
-  destination_revision_id,source_lineage_id,position_id,content_hash
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, attemptID, fence.FlowIncarnationID, fence.FlowID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, intent.DestinationRevisionID, intent.SourceLineageID, intent.PositionID, intent.ContentHash); err != nil {
+  destination_revision_id,source_lineage_id,logical_batch_id,position_id,content_hash,attempt_number
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, attemptID, fence.FlowIncarnationID, fence.FlowID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, intent.DestinationRevisionID, intent.SourceLineageID, deliveryLogicalBatchID(intent), intent.PositionID, intent.ContentHash, priorAttempts+1); err != nil {
 		return uuid.Nil, fmt.Errorf("prepare delivery attempt: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return uuid.Nil, fmt.Errorf("commit delivery attempt: %w", err)
 	}
 	return attemptID, nil
+}
+
+func (c *Coordinator) markAttemptTerminal(ctx context.Context, fence authority.RunFence, attemptID uuid.UUID, state, detail string) error {
+	switch state {
+	case "applied", "not_applied", "failed":
+	default:
+		return fmt.Errorf("invalid delivery attempt terminal state %q", state)
+	}
+	tx, err := c.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin delivery attempt terminal transition: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `
+UPDATE delivery_attempts
+SET attempt_state=$2,terminal_at=clock_timestamp(),last_error=NULLIF($3,''),
+    next_attempt_at=CASE WHEN $2 IN ('failed','not_applied')
+      THEN clock_timestamp() + LEAST(interval '1 minute',interval '100 milliseconds' * power(2,GREATEST(attempt_number-1,0)))
+      ELSE clock_timestamp() END
+WHERE attempt_id=$1
+  AND flow_incarnation_id=$4
+  AND (attempt_state IN ('pending','failed','not_applied') OR attempt_state=$2)`, attemptID, state, detail, fence.FlowIncarnationID)
+	if err != nil {
+		return fmt.Errorf("mark delivery attempt terminal: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("delivery attempt %s is not mutable under the current fence", attemptID)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit delivery attempt terminal transition: %w", err)
+	}
+	return nil
 }
 
 func (c *Coordinator) recordEvidence(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, attemptID uuid.UUID, evidence connector.DeliveryEvidence) error {
@@ -479,14 +859,15 @@ WHERE evidence.attempt_id=$1
 	}
 	tag, err := tx.Exec(ctx, `
 INSERT INTO delivery_receipts (
-  flow_incarnation_id,destination_revision_id,source_lineage_id,position_id,content_hash,attempt_id,external_id,
+  flow_incarnation_id,destination_revision_id,source_lineage_id,logical_batch_id,position_id,content_hash,attempt_id,external_id,
   adopted_by_acquisition_id,adopted_by_lease_epoch
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 ON CONFLICT (flow_incarnation_id,destination_revision_id,position_id) DO UPDATE SET
   source_lineage_id=EXCLUDED.source_lineage_id
 WHERE delivery_receipts.source_lineage_id=EXCLUDED.source_lineage_id
+  AND delivery_receipts.logical_batch_id=EXCLUDED.logical_batch_id
   AND delivery_receipts.content_hash=EXCLUDED.content_hash
-  AND delivery_receipts.external_id=EXCLUDED.external_id`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.PositionID, contentHash, attemptID, externalID, fence.AcquisitionID, fence.LeaseEpoch)
+  AND delivery_receipts.external_id=EXCLUDED.external_id`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, deliveryLogicalBatchID(intent), intent.PositionID, contentHash, attemptID, externalID, fence.AcquisitionID, fence.LeaseEpoch)
 	if err != nil {
 		return AckGrant{}, fmt.Errorf("adopt delivery receipt: %w", err)
 	}
@@ -503,6 +884,162 @@ WHERE delivery_receipts.source_lineage_id=EXCLUDED.source_lineage_id
 	}
 	telemetry.RecordDeliveryOutcome(ctx, "receipt_committed")
 	return AckGrant{Checkpoint: checkpoint, PositionID: intent.PositionID}, nil
+}
+
+// PruneTerminalDeliveryState bounds retained attempts and receipts while
+// preserving the current authoritative checkpoint as an explicit GC root.
+// Only batches with observed source flush evidence are eligible.
+func (c *Coordinator) PruneTerminalDeliveryState(ctx context.Context, fence authority.RunFence, retention time.Duration, limit int) (int64, error) {
+	if retention <= 0 {
+		return 0, errors.New("delivery retention must be positive")
+	}
+	if limit < 1 || limit > 10_000 {
+		return 0, errors.New("delivery retention limit must be between 1 and 10000")
+	}
+	tx, err := c.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin delivery retention: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
+		return 0, err
+	}
+	var checkpointLSN string
+	if err := tx.QueryRow(ctx, `SELECT lsn FROM authoritative_checkpoints WHERE flow_incarnation_id=$1 FOR UPDATE`, fence.FlowIncarnationID).Scan(&checkpointLSN); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("load delivery retention root: %w", err)
+	}
+	if c.hooks.AfterRetentionRootLock != nil {
+		if err := c.hooks.AfterRetentionRootLock(ctx, fence, checkpointLSN); err != nil {
+			return 0, err
+		}
+	}
+	positionID, err := connector.CheckpointPositionID(connector.Checkpoint{LSN: checkpointLSN})
+	if err != nil {
+		return 0, err
+	}
+	cutoff := time.Now().UTC().Add(-retention)
+	if _, err := tx.Exec(ctx, `
+INSERT INTO delivery_retention_roots (flow_incarnation_id,minimum_position_id,retained_after)
+VALUES ($1,$2,$3)
+ON CONFLICT (flow_incarnation_id) DO UPDATE SET
+  minimum_position_id=EXCLUDED.minimum_position_id,
+  retained_after=EXCLUDED.retained_after,
+  updated_at=clock_timestamp()`, fence.FlowIncarnationID, positionID, cutoff); err != nil {
+		return 0, fmt.Errorf("record delivery retention root: %w", err)
+	}
+	var deleted int64
+	if err := tx.QueryRow(ctx, `
+WITH candidates AS MATERIALIZED (
+  SELECT manifest.destination_revision_id,manifest.logical_batch_id,manifest.position_id
+  FROM delivery_manifests AS manifest
+  JOIN source_ack_receipts AS ack
+    ON ack.flow_incarnation_id=manifest.flow_incarnation_id
+   AND ack.position_id=manifest.position_id
+  WHERE manifest.flow_incarnation_id=$1
+    AND manifest.position_id<>$2
+    AND manifest.created_at<$3
+    AND ack.observed_flush_lsn IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM delivery_attempts AS pending
+      WHERE pending.flow_incarnation_id=manifest.flow_incarnation_id
+        AND pending.destination_revision_id=manifest.destination_revision_id
+        AND pending.position_id=manifest.position_id
+        AND pending.attempt_state='pending'
+    )
+  ORDER BY manifest.created_at,manifest.destination_revision_id,manifest.logical_batch_id
+  LIMIT $4
+  FOR UPDATE OF manifest
+), deleted_evidence AS (
+  DELETE FROM delivery_attempt_evidence AS evidence
+  USING delivery_attempts AS attempt,candidates
+  WHERE evidence.attempt_id=attempt.attempt_id
+    AND attempt.flow_incarnation_id=$1
+    AND attempt.destination_revision_id=candidates.destination_revision_id
+    AND attempt.position_id=candidates.position_id
+), deleted_attempts AS (
+  DELETE FROM delivery_attempts AS attempt USING candidates
+  WHERE attempt.flow_incarnation_id=$1
+    AND attempt.destination_revision_id=candidates.destination_revision_id
+    AND attempt.position_id=candidates.position_id
+    AND attempt.attempt_state<>'pending'
+), deleted_receipts AS (
+  DELETE FROM delivery_receipts AS receipt USING candidates
+  WHERE receipt.flow_incarnation_id=$1
+    AND receipt.destination_revision_id=candidates.destination_revision_id
+    AND receipt.position_id=candidates.position_id
+), deleted_manifests AS (
+  DELETE FROM delivery_manifests AS manifest USING candidates
+  WHERE manifest.flow_incarnation_id=$1
+    AND manifest.destination_revision_id=candidates.destination_revision_id
+    AND manifest.position_id=candidates.position_id
+  RETURNING 1
+)
+SELECT count(*) FROM deleted_manifests`, fence.FlowIncarnationID, positionID, cutoff, limit).Scan(&deleted); err != nil {
+		return 0, fmt.Errorf("prune terminal delivery state: %w", err)
+	}
+	intentTag, err := tx.Exec(ctx, `
+WITH candidates AS (
+  SELECT intent.position_id
+  FROM source_ack_intents AS intent
+  JOIN source_ack_receipts AS receipt
+    ON receipt.flow_incarnation_id=intent.flow_incarnation_id
+   AND receipt.position_id=intent.position_id
+  WHERE intent.flow_incarnation_id=$1
+    AND intent.position_id<>$2
+    AND intent.authorized_at<$3
+    AND receipt.observed_flush_lsn IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM delivery_manifests AS manifest
+      WHERE manifest.flow_incarnation_id=intent.flow_incarnation_id
+        AND manifest.position_id=intent.position_id
+    )
+  ORDER BY intent.authorized_at,intent.position_id
+  LIMIT $4
+)
+DELETE FROM source_ack_intents AS intent USING candidates
+WHERE intent.flow_incarnation_id=$1
+  AND intent.position_id=candidates.position_id`, fence.FlowIncarnationID, positionID, cutoff, limit)
+	if err != nil {
+		return 0, fmt.Errorf("prune source feedback intents: %w", err)
+	}
+	deleted += intentTag.RowsAffected()
+	receiptTag, err := tx.Exec(ctx, `
+WITH candidates AS (
+  SELECT ack.position_id
+  FROM source_ack_receipts AS ack
+  WHERE ack.flow_incarnation_id=$1
+    AND ack.position_id<>$2
+    AND ack.recorded_at<$3
+    AND ack.observed_flush_lsn IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM delivery_manifests AS manifest
+      WHERE manifest.flow_incarnation_id=ack.flow_incarnation_id
+        AND manifest.position_id=ack.position_id
+    )
+  ORDER BY ack.recorded_at,ack.position_id
+  LIMIT $4
+)
+DELETE FROM source_ack_receipts AS ack USING candidates
+WHERE ack.flow_incarnation_id=$1
+  AND ack.position_id=candidates.position_id`, fence.FlowIncarnationID, positionID, cutoff, limit)
+	if err != nil {
+		return 0, fmt.Errorf("prune source feedback receipts: %w", err)
+	}
+	deleted += receiptTag.RowsAffected()
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit delivery retention: %w", err)
+	}
+	return deleted, nil
+}
+
+func deliveryLogicalBatchID(intent connector.DeliveryIntent) string {
+	if value := strings.TrimSpace(intent.LogicalBatchID); value != "" {
+		return value
+	}
+	return "legacy:" + intent.PositionID
 }
 
 func finalizeCheckpointAndAck(ctx context.Context, tx pgx.Tx, fence authority.RunFence, positionID string, checkpoint connector.Checkpoint) (connector.Checkpoint, error) {

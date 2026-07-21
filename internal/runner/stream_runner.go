@@ -73,6 +73,11 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 	}
 
 	requireDDLExecution := f.Config.DDL.AutoApply != nil && *f.Config.DDL.AutoApply
+	if managedSourceSpec(sourceSpec) {
+		if err := validateManagedAdmission(f, source, sourceSpec, clonedDestinations, cfg); err != nil {
+			return stream.Runner{}, err
+		}
+	}
 
 	var checkpointOutbox connector.CheckpointOutboxStore
 	if f.Config.AckPolicy == stream.AckPolicyPrimary {
@@ -93,11 +98,6 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 	}
 	if requireDDLExecution && cfg.DDLExecutions == nil {
 		return stream.Runner{}, fmt.Errorf("automatic DDL execution requires durable execution receipt storage")
-	}
-	if managedSourceSpec(sourceSpec) {
-		if err := validateManagedAdmission(f, source, sourceSpec, clonedDestinations, cfg); err != nil {
-			return stream.Runner{}, err
-		}
 	}
 
 	return stream.Runner{

@@ -1,26 +1,152 @@
 # PostgreSQL managed profile
 
-Status: **experimental**. No maintained-support or exactly-once claim applies.
+## Support status
 
-## Admitted runtime profile
+`postgresql-to-postgresql-v1` is the maintained managed profile. The generic
+PostgreSQL source and destination modes remain **experimental**. Maintained
+status applies only when startup admits the exact profile and the generated
+real-service gates pass for the reviewed revision.
 
-Managed execution requires:
+The profile provides at-least-once delivery with durable reconciliation. It
+does not claim exactly-once delivery.
 
-- an explicit positive lifecycle generation;
-- a PostgreSQL source with `managed=true` and `bootstrap=auto|required|never`; managed runtime state is always PostgreSQL-authoritative even if legacy source-state options remain parseable;
-- `source_system_identifier`, `source_lineage_id`, and `publication_revision` values that match the live PostgreSQL system and publication definition;
-- PostgreSQL authority, fenced checkpoints, and the delivery coordinator;
+## Exact admission contract
+
+The source and destination must both set:
+
+```json
+{
+  "managed_profile": "postgresql-to-postgresql-v1"
+}
+```
+
+On the source, the named profile implies managed execution; the older
+`managed=true` switch is accepted but is not required. A profile declaration
+can never fall through to the generic runner.
+
+The admitted configuration is deliberately narrow:
+
+- PostgreSQL 14, 15, 16, or 17 at both ends, with matching source and
+  destination majors; mixed-major pairs remain unpromoted;
+- one PostgreSQL source and exactly one PostgreSQL destination revision;
 - `ack_policy=all`;
-- one PostgreSQL destination revision with `destination_revision_id`;
-- target write mode and target batch mode; and
-- explicit `synchronous_commit=on` or `remote_apply`.
+- `bootstrap=required` and PostgreSQL-backed snapshot state;
+- `streaming_transactions=true`;
+- target write and batch modes;
+- explicit `synchronous_commit=on` or `remote_apply`;
+- a stable source system identifier, source lineage, publication revision, and
+  destination revision;
+- source primary/replica identity columns matched by a valid, non-partial,
+  non-deferrable target primary or unique constraint usable by `ON CONFLICT`;
+  and
+- compatible target columns, types, nullability, generated-column status, and
+  required defaults before snapshot publication or CDC side effects.
 
-For `auto|required`, the coordinator creates or exactly adopts the frozen publication under the current fence and supplies runtime-only slot/publication/start options. For `never`, publication creation must remain disabled and the operator must supply a compatible initial dataset and slot. Managed admission rejects arbitrary `start_lsn`, legacy backfill, file/disabled snapshot authority, generic staging, drop-slot failure mode, ClickHouse mutation delivery, DDL-capture resource creation, and automatic raw SQL DDL. The experimental bootstrap also rejects `pool_max_conns<2`, partitioned or partition relations, and destination target tables connected by foreign keys. Snapshot workers are capped to the source sessions available after reserving one session for the schema barrier.
+Admission rejects arbitrary `start_lsn`, legacy backfill, file/disabled
+snapshot authority, generic staging, drop-slot failure mode, raw DDL capture,
+automatic raw SQL DDL, unsupported PostgreSQL versions, multiple sinks, and
+`ack_policy=primary`. Those modes remain experimental even when the underlying
+connectors are usable.
 
-## Durability behavior
+## Transaction and recovery protocol
 
-The source buffers pgoutput changes until `COMMIT`, enforces transaction record and byte limits, and checkpoints only at `TransactionEndLSN`. Managed bootstrap creates the publication before the logical slot cut, imports the slot-exported snapshot in every bounded table task, atomically publishes PostgreSQL destination staging tables, and seeds the CDC checkpoint and ACK intent at the exact consistent point. Exporter loss abandons the whole unpublished generation. On restart, the worker verifies the ACK intent before scheduling feedback.
+The source uses pgoutput protocol v2 and buffers both normal and streamed
+transactions through the PostgreSQL commit record. One `SourceTransaction`
+retains contiguous fragment ordinals across tables, schemas, structured DDL,
+and control barriers. Only `TransactionEndLSN` can become a checkpoint.
 
-The destination writes DML, metadata, and a deterministic marker in one target transaction. An ambiguous commit remains recoverable: the flow stays `running`, a later producer reconciles the marker, and PostgreSQL adopts matching evidence. Delivery remains at-least-once.
+For each transaction, the delivery coordinator:
 
-The profile currently admits one table/schema fragment per source transaction. It fails closed on a multi-fragment transaction.
+1. validates the full transaction and target schema contract;
+2. persists the immutable logical batch manifest and numbered destination
+   attempt under the current `RunFence`;
+3. applies every fragment in source order and writes a deterministic Wallaby
+   logical-batch marker in the same target transaction;
+4. reconciles an ambiguous target commit from that marker after restart;
+5. records evidence and a terminal attempt state;
+6. commits the destination receipt, authoritative checkpoint, and source ACK
+   intent in one fenced control-PostgreSQL transaction;
+7. validates the ACK grant, sends monotonic standby feedback without holding a
+   control transaction open, and observes the exact slot
+   `confirmed_flush_lsn`; and
+8. revalidates the fence before recording the source-flush receipt.
+
+A crash after the target commit but before the control receipt reuses the target
+marker. A missing marker permits a numbered retry after persisted exponential
+backoff. New side-effect attempts and reconciliation attempts each have a
+persisted 16-attempt limit. Transient indeterminate evidence leaves the public
+flow `running` for a later owner; exhausted reconciliation fails the flow for
+operator recovery rather than restarting without bound.
+
+The target protocol preserves operation order. It does not coalesce a
+multi-table transaction, reorder repeated table fragments, or move DML across a
+structured DDL barrier. Contiguous records for one target are applied as a
+batch, so a large source transaction does not create a temporary table per
+record. Metadata schema changes use the active target transaction and therefore
+work with an admitted one-connection pool. Relation-diff DDL plans resolve the
+configured destination schema and table before executing in the same target
+transaction as dependent DML. Raw SQL DDL and unsupported controls fail before
+checkpoint advancement.
+
+## Bootstrap and source feedback
+
+The profile creates or exactly adopts the publication under the current fence,
+creates a logical slot with `EXPORT_SNAPSHOT`, keeps the exporter session open,
+and imports the snapshot in bounded worker transactions. The destination
+publishes all snapshot stages atomically before CDC opens at the consistent
+point.
+
+Source feedback is not inferred from an in-process call. The coordinator first
+validates the ACK grant and fence, the replication connection sends the
+authorized LSN, and the source catalog reports the exact
+`confirmed_flush_lsn`. It then revalidates the fence before storing the receipt.
+No control transaction or takeover lock spans source network I/O. A crash or
+takeover after the source flush but before its receipt is repaired by re-sending
+the same authoritative checkpoint; the slot flush is monotonic. A stale
+acquisition is rejected before feedback or at receipt recording.
+
+The authoritative checkpoint also carries the last delivered schema for each
+source relation. Bootstrap handoff seeds those baselines from the frozen
+snapshot manifest. On restart, the first pgoutput `Relation` message is diffed
+against that delivered baseline, so an `ALTER TABLE` committed while the worker
+was down still produces ordered structured DDL before dependent DML.
+
+## Retention and observability
+
+Terminal attempts, evidence, receipts, manifests, and old ACK records become
+eligible for bounded pruning only after observed source flush evidence exists.
+The current authoritative checkpoint is stored as a PostgreSQL retention root
+and is never pruned. Workers prune at startup and periodically while streaming.
+Each invocation is capped at eight 1,000-row accounting batches, renews the
+producer lease between saturated batches, and leaves any remainder for the next
+sweep. The default retention window is seven days and the default
+sweep interval is one minute; set `delivery_retention` or
+`delivery_prune_interval` to positive Go durations. The target keeps only the
+latest deterministic marker per flow incarnation and destination revision:
+committing a later source transaction proves the previous transaction already
+has an authoritative control receipt, so its target marker is no longer a
+reconciliation root.
+
+Logical-batch identity is an additive rolling migration. Control-domain
+migration files commit under one coordinator transaction, and the new columns
+remain nullable for authority-v2 checkpoint-1 writers. Current workers adopt a
+matching legacy manifest or target marker to the new logical identity before
+continuing; partial unique indexes enforce new identities without rejecting an
+old writer that omits the column.
+
+Managed delivery emits bounded outcome metrics for attempt preparation,
+receipt commit/reuse, indeterminate results, and apply failures. Runner traces
+include `deliver`, `checkpoint`, `source_flush`, and `ack` in that order; the
+trace validator rejects ACKs without flush evidence on managed traces.
+
+## Executable promotion matrix
+
+The generated [connector support matrix](../reference/generated/connector-support.md)
+contains the exact PostgreSQL versions, executable test, and whether each gate
+requires a real service. Schema evolution, DDL reconciliation,
+snapshot-to-CDC handoff, process kill, pool exhaustion, restart,
+retry/retention, and upgrade migrations run against PostgreSQL; the bounded
+metric-label contract is deterministic SDK evidence. CI runs
+`just test-checkpoint2-postgres-profile` against every admitted PostgreSQL
+major twice and rejects missing or skipped named tests. Removing or disabling a
+gate makes the maintained profile declaration invalid.

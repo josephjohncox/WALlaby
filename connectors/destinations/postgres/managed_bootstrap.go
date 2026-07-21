@@ -37,6 +37,11 @@ func (d *Destination) PrepareBootstrap(ctx context.Context, intent connector.Boo
 		if err := d.rejectForeignKeyBootstrapTarget(ctx, targetSchema, targetTable); err != nil {
 			return err
 		}
+		if d.spec.Options[optManagedProfile] == connector.ManagedProfilePostgresToPostgresV1 {
+			if err := d.validateManagedTargetSchema(ctx, d.pool, schema); err != nil {
+				return fmt.Errorf("admit managed bootstrap target %s: %w", target, err)
+			}
+		}
 	}
 	tx, err := d.beginWriteTransaction(ctx)
 	if err != nil {

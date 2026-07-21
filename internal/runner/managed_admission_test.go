@@ -36,6 +36,53 @@ func TestManagedAdmissionAcceptsInitialPostgresProfile(t *testing.T) {
 	}
 }
 
+func TestManagedProfileCannotBypassManagedAdmission(t *testing.T) {
+	f := managedAdmissionFlow()
+	delete(f.Source.Options, "managed")
+	f.Source.Options["managed_profile"] = connector.ManagedProfilePostgresToPostgresV1
+	f.Source.Options["bootstrap"] = "required"
+	f.Source.Options["streaming_transactions"] = "true"
+	destinations := managedAdmissionDestinations()
+	destinations[0].Spec.Options["managed_profile"] = connector.ManagedProfilePostgresToPostgresV1
+
+	_, err := NewStreamRunner(f, &pgsource.Source{}, destinations, StreamRunnerConfig{Checkpoints: managedCheckpointStore{}})
+	if err == nil || !strings.Contains(err.Error(), "PostgreSQL run authority") {
+		t.Fatalf("named profile admission error=%v, want managed authority requirement", err)
+	}
+	fence := managedAdmissionFence()
+	runner, err := NewStreamRunner(f, &pgsource.Source{}, destinations, StreamRunnerConfig{
+		Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runner.ManagedProfileEnabled() {
+		t.Fatal("named profile passed admission but fell through to generic stream execution")
+	}
+}
+
+func TestManagedAdmissionAcceptsNamedPostgresProfileOnlyWithExactContract(t *testing.T) {
+	f := managedAdmissionFlow()
+	f.Source.Options["managed_profile"] = connector.ManagedProfilePostgresToPostgresV1
+	f.Source.Options["bootstrap"] = "required"
+	f.Source.Options["streaming_transactions"] = "true"
+	destinations := managedAdmissionDestinations()
+	destinations[0].Spec.Options["managed_profile"] = connector.ManagedProfilePostgresToPostgresV1
+	fence := managedAdmissionFence()
+	if _, err := NewStreamRunner(f, &pgsource.Source{}, destinations, StreamRunnerConfig{
+		Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	f.Source.Options["streaming_transactions"] = "false"
+	if _, err := NewStreamRunner(f, &pgsource.Source{}, destinations, StreamRunnerConfig{
+		Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{},
+	}); err == nil || !strings.Contains(err.Error(), "streaming_transactions=true") {
+		t.Fatalf("named profile error=%v", err)
+	}
+}
+
 func TestManagedAdmissionRejectsUnsafeOptions(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -64,6 +111,12 @@ func TestManagedAdmissionRejectsUnsafeOptions(t *testing.T) {
 		{name: "drop slot", mutate: func(f *flow.Flow, _ *[]stream.DestinationConfig, _ *StreamRunnerConfig) {
 			f.Config.FailureMode = stream.FailureModeDropSlot
 		}, want: "drop_slot"},
+		{name: "primary acknowledgement", mutate: func(f *flow.Flow, _ *[]stream.DestinationConfig, _ *StreamRunnerConfig) {
+			f.Config.AckPolicy = stream.AckPolicyPrimary
+		}, want: "requires ack_policy=all"},
+		{name: "multiple sinks", mutate: func(_ *flow.Flow, destinations *[]stream.DestinationConfig, _ *StreamRunnerConfig) {
+			*destinations = append(*destinations, (*destinations)[0])
+		}, want: "exactly one destination revision"},
 		{name: "staging", mutate: func(_ *flow.Flow, destinations *[]stream.DestinationConfig, _ *StreamRunnerConfig) {
 			(*destinations)[0].Spec.Options["batch_mode"] = "staging"
 		}, want: "batch_mode"},

@@ -55,9 +55,12 @@ const (
 	optManaged             = "managed"
 	optMaxTxnRecords       = "max_transaction_records"
 	optMaxTxnBytes         = "max_transaction_bytes"
+	optStreamingTxns       = "streaming_transactions"
 	optSourceSystemID      = "source_system_identifier"
 	optSourceLineageID     = "source_lineage_id"
 	optPublicationRevision = "publication_revision"
+	optManagedProfile      = "managed_profile"
+	optSchemaBaselines     = connector.ManagedSchemaBaselinesMetadataKey
 	optAWSRDSIAM           = "aws_rds_iam"
 	optAWSRegion           = "aws_region"
 	optAWSProfile          = "aws_profile"
@@ -69,30 +72,31 @@ const (
 
 // Source implements Postgres logical replication as a connector.Source.
 type Source struct {
-	spec             connector.Spec
-	dsn              string
-	stream           *replication.PostgresStream
-	changes          <-chan replication.Change
-	batchSize        int
-	batchTimeout     time.Duration
-	slot             string
-	publication      string
-	wireFormat       connector.WireFormat
-	emitEmpty        bool
-	SchemaHook       replication.SchemaHook
-	stateStore       *sourceStateStore
-	stateID          string
-	typeResolver     *pgTypeResolver
-	toastFetch       string
-	toastPool        *pgxpool.Pool
-	toastCache       *toastCache
-	lagPool          *pgxpool.Pool
-	sourceLineage    string
-	pendingChange    *replication.Change
-	Meters           *telemetry.Meters
-	ManagedControl   *pgxpool.Pool
-	ManagedAuthority authority.Store
-	BootstrapHooks   bootstrap.Hooks
+	spec                 connector.Spec
+	dsn                  string
+	stream               *replication.PostgresStream
+	changes              <-chan replication.Change
+	batchSize            int
+	batchTimeout         time.Duration
+	slot                 string
+	publication          string
+	wireFormat           connector.WireFormat
+	emitEmpty            bool
+	SchemaHook           replication.SchemaHook
+	stateStore           *sourceStateStore
+	stateID              string
+	typeResolver         *pgTypeResolver
+	toastFetch           string
+	toastPool            *pgxpool.Pool
+	toastCache           *toastCache
+	lagPool              *pgxpool.Pool
+	sourceLineage        string
+	managedPostgresMajor int
+	pendingChange        *replication.Change
+	Meters               *telemetry.Meters
+	ManagedControl       *pgxpool.Pool
+	ManagedAuthority     authority.Store
+	BootstrapHooks       bootstrap.Hooks
 }
 
 type changeBatchIdentity struct {
@@ -166,7 +170,8 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	if s.publication == "" {
 		return errors.New("publication is required")
 	}
-	if parseBool(spec.Options[optManaged], false) {
+	managed := parseBool(spec.Options[optManaged], false) || strings.TrimSpace(spec.Options[optManagedProfile]) != ""
+	if managed {
 		for _, option := range []string{optCreateSlot, optEnsureState, optEnsurePublication, optSyncPublication} {
 			raw, present := spec.Options[option]
 			if !present || parseBool(raw, true) {
@@ -267,7 +272,7 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		return err
 	}
 
-	managed := parseBool(spec.Options[optManaged], false)
+	streamingTransactions := parseBool(spec.Options[optStreamingTxns], managed)
 	s.sourceLineage = strings.TrimSpace(spec.Options[optSourceLineageID])
 	maxTransactionRecords := parseInt(spec.Options[optMaxTxnRecords], 1_000_000)
 	maxTransactionBytes := parseInt(spec.Options[optMaxTxnBytes], 256<<20)
@@ -279,12 +284,20 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		replication.WithRequireAuthorizedStart(managed),
 		replication.WithExpectedSystemID(spec.Options[optSourceSystemID]),
 		replication.WithTransactionLimits(maxTransactionRecords, int64(maxTransactionBytes)),
+		replication.WithStreamingTransactions(streamingTransactions),
 	}
 	if iamProvider != nil {
 		opts = append(opts, replication.WithConnConfigFunc(iamProvider.ApplyToConnConfig))
 	}
 	if s.SchemaHook != nil {
 		opts = append(opts, replication.WithSchemaHook(s.SchemaHook))
+	}
+	if managed {
+		baselines, err := connector.DecodeManagedSchemaBaselines(spec.Options[optSchemaBaselines])
+		if err != nil {
+			return err
+		}
+		opts = append(opts, replication.WithSchemaBaselines(baselines))
 	}
 	if parseBool(spec.Options[optResolveTypes], true) {
 		resolver, err := newTypeResolver(ctx, dsn, spec.Options)
@@ -311,11 +324,19 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		opts = append(opts, replication.WithCreateSlot(false))
 	}
 	if captureDDL {
-		opts = append(opts, replication.WithPluginArgs([]string{
-			"proto_version '1'",
+		protocolVersion := 1
+		if streamingTransactions {
+			protocolVersion = 2
+		}
+		pluginArgs := []string{
+			fmt.Sprintf("proto_version '%d'", protocolVersion),
 			fmt.Sprintf("publication_names '%s'", s.publication),
 			"messages 'true'",
-		}))
+		}
+		if streamingTransactions {
+			pluginArgs = append(pluginArgs, "streaming 'on'")
+		}
+		opts = append(opts, replication.WithPluginArgs(pluginArgs))
 	}
 
 	lagPool, err := newPool(ctx, dsn, spec.Options)
@@ -323,6 +344,10 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		return fmt.Errorf("create lag pool: %w", err)
 	}
 	s.lagPool = lagPool
+	s.managedPostgresMajor, err = validateManagedPostgresServerVersion(ctx, lagPool, spec.Options[optManagedProfile])
+	if err != nil {
+		return err
+	}
 	if managed {
 		expectedRevision := strings.TrimSpace(spec.Options[optPublicationRevision])
 		actualRevision, err := PublicationFingerprint(ctx, lagPool, s.publication)
@@ -636,6 +661,52 @@ func (s *Source) Ack(ctx context.Context, checkpoint connector.Checkpoint) error
 	return nil
 }
 
+// AckWithEvidence sends feedback immediately and waits until PostgreSQL exposes
+// the exact confirmed_flush_lsn for this logical slot.
+func (s *Source) AckWithEvidence(ctx context.Context, checkpoint connector.Checkpoint) (connector.SourceFlushEvidence, error) {
+	if s.stream == nil || s.lagPool == nil {
+		return connector.SourceFlushEvidence{}, errors.New("postgres source feedback evidence requires an open stream and catalog pool")
+	}
+	target, err := pglogrepl.ParseLSN(checkpoint.LSN)
+	if err != nil {
+		return connector.SourceFlushEvidence{}, fmt.Errorf("parse source feedback checkpoint: %w", err)
+	}
+	if err := s.stream.AckWithEvidence(ctx, target); err != nil {
+		return connector.SourceFlushEvidence{}, err
+	}
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var observed *string
+		if err := s.lagPool.QueryRow(ctx, `
+SELECT confirmed_flush_lsn::text
+FROM pg_catalog.pg_replication_slots
+WHERE slot_name=$1`, s.slot).Scan(&observed); err != nil {
+			return connector.SourceFlushEvidence{}, fmt.Errorf("observe source slot flush: %w", err)
+		}
+		if observed != nil && strings.TrimSpace(*observed) != "" {
+			observedLSN, err := pglogrepl.ParseLSN(*observed)
+			if err != nil {
+				return connector.SourceFlushEvidence{}, fmt.Errorf("parse observed source slot flush: %w", err)
+			}
+			if observedLSN >= target {
+				if s.stateStore != nil {
+					if err := s.stateStore.RecordAck(ctx, s.stateID, observedLSN.String()); err != nil {
+						return connector.SourceFlushEvidence{}, err
+					}
+				}
+				return connector.SourceFlushEvidence{ObservedFlushLSN: observedLSN.String()}, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return connector.SourceFlushEvidence{}, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func (s *Source) Close(ctx context.Context) error {
 	return s.closeResources(ctx, true)
 }
@@ -745,6 +816,34 @@ func (s *Source) ReplicationLag(ctx context.Context) (string, int64, error) {
 	}
 
 	return s.slot, lagBytes, nil
+}
+
+// ManagedPostgresMajor reports the live source major admitted during Open.
+func (s *Source) ManagedPostgresMajor() int {
+	return s.managedPostgresMajor
+}
+
+func validateManagedPostgresServerVersion(ctx context.Context, pool *pgxpool.Pool, profileName string) (int, error) {
+	profileName = strings.TrimSpace(profileName)
+	if profileName == "" {
+		return 0, nil
+	}
+	if profileName != connector.ManagedProfilePostgresToPostgresV1 {
+		return 0, fmt.Errorf("unsupported PostgreSQL managed profile %q", profileName)
+	}
+	var raw string
+	if err := pool.QueryRow(ctx, "SHOW server_version_num").Scan(&raw); err != nil {
+		return 0, fmt.Errorf("read PostgreSQL server version for managed profile: %w", err)
+	}
+	versionNumber, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("parse PostgreSQL server_version_num %q: %w", raw, err)
+	}
+	major := versionNumber / 10000
+	if !connector.PostgresToPostgresV1Profile().SupportsPostgresVersion(major) {
+		return 0, fmt.Errorf("managed profile %s does not admit PostgreSQL %d", profileName, major)
+	}
+	return major, nil
 }
 
 func parseInt(raw string, fallback int) int {

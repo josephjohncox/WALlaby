@@ -77,6 +77,7 @@ DROP TABLE IF EXISTS public.wallaby_worker_kill_target`)
 		Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
 			"dsn": dsn, "publication": publication, "tables": "public.wallaby_worker_kill_source",
 			"ensure_publication": "false", "managed": "true", "bootstrap": "required",
+			"managed_profile": connector.ManagedProfilePostgresToPostgresV1, "streaming_transactions": "true",
 			"status_interval": "10ms", "batch_timeout": "10ms", "ensure_state": "false",
 			"source_system_identifier": sourceSystemID,
 			"source_lineage_id":        sourceSystemID + ":" + publication + ":v1",
@@ -85,6 +86,7 @@ DROP TABLE IF EXISTS public.wallaby_worker_kill_target`)
 		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
 			"dsn": dsn, "schema": "public", "table": targetTable,
 			"write_mode": "target", "batch_mode": "target", "meta_table_enabled": "false",
+			"managed_profile":    connector.ManagedProfilePostgresToPostgresV1,
 			"synchronous_commit": "on", "destination_revision_id": destinationRevisionID,
 		}}},
 		Config: flow.Config{AckPolicy: stream.AckPolicyAll},

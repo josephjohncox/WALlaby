@@ -166,6 +166,24 @@ Run TLC:
 TLA_MODULE=specs/ManagedDurability.tla TLA_CONFIG=specs/ManagedDurability.cfg just tla-single
 ```
 
+## Managed PostgreSQL Delivery Spec (TLA+)
+
+File: `specs/ManagedPostgresDelivery.tla`
+
+What it models:
+
+- bounded per-logical-batch delivery and reconciliation attempts;
+- target-marker reconciliation followed by fenced receipt/checkpoint/ACK intent finalization;
+- separate authorized source flush and observed-receipt steps, including takeover or crash between them and idempotent repair;
+- stale-owner rejection; and
+- retention roots that cannot prune the current checkpoint.
+
+Run TLC:
+
+```
+TLA_MODULE=specs/ManagedPostgresDelivery.tla TLA_CONFIG=specs/ManagedPostgresDelivery.cfg just tla-single
+```
+
 ## Trace Validation
 
 We emit optional JSONL traces from the Go runner and validate them offline against

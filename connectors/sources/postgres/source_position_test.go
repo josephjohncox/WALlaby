@@ -253,6 +253,40 @@ func TestReadTransactionPreservesOrderedTableFragments(t *testing.T) {
 	}
 }
 
+func TestReadTransactionPreservesMultiSchemaDDLBarrier(t *testing.T) {
+	t.Parallel()
+	changes := make(chan replication.Change, 3)
+	first := transactionChange(88, 0, 0x68, "widgets", false)
+	first.Schema = "public"
+	first.SchemaDef.Namespace = "public"
+	barrier := transactionChange(88, 1, 0x68, "widgets", false)
+	barrier.Schema = "public"
+	barrier.SchemaDef.Namespace = "public"
+	barrier.Record.Operation = connector.OpDDL
+	barrier.Record.DDL = "ALTER TABLE public.widgets ADD COLUMN note text"
+	last := transactionChange(88, 2, 0x68, "events", true)
+	last.Schema = "audit"
+	last.SchemaDef.Namespace = "audit"
+	changes <- first
+	changes <- barrier
+	changes <- last
+
+	source := &Source{changes: changes, batchSize: 100, batchTimeout: time.Second, sourceLineage: "lineage-1"}
+	transaction, err := source.ReadTransaction(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transaction.Fragments) != 3 {
+		t.Fatalf("fragments=%d, want DML/DDL/DML barriers", len(transaction.Fragments))
+	}
+	if transaction.Fragments[0].Batch.Schema.Namespace != "public" || transaction.Fragments[1].Batch.Records[0].Operation != connector.OpDDL || transaction.Fragments[2].Batch.Schema.Namespace != "audit" {
+		t.Fatalf("ordered transaction fragments=%+v", transaction.Fragments)
+	}
+	if transaction.Checkpoint.LSN != "0/68" {
+		t.Fatalf("transaction checkpoint=%q", transaction.Checkpoint.LSN)
+	}
+}
+
 func transactionChange(xid uint32, ordinal uint64, end pglogrepl.LSN, table string, final bool) replication.Change {
 	change := sourceChange(end, table, 1, connector.OpInsert)
 	change.TransactionID = xid

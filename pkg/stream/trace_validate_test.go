@@ -107,6 +107,30 @@ func TestValidateTraceAckAndCheckpointOrdering(t *testing.T) {
 	}
 }
 
+func TestValidateTraceRequiresManagedSourceFlushEvidence(t *testing.T) {
+	t.Parallel()
+	valid := []TraceEvent{
+		{Kind: "deliver", FlowID: "managed", LSN: "0/10"},
+		{Kind: "checkpoint", FlowID: "managed", LSN: "0/10"},
+		{Kind: "source_flush", FlowID: "managed", LSN: "0/10"},
+		{Kind: "ack", FlowID: "managed", LSN: "0/10"},
+	}
+	coverage, err := EvaluateTrace(valid, TraceValidationOptions{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coverage.Invariants[spec.InvSourceFlushRequiresCheckpoint] != 1 {
+		t.Fatalf("source flush invariant coverage=%v", coverage.Invariants)
+	}
+
+	invalid := []TraceEvent{
+		{Kind: "deliver", FlowID: "managed", LSN: "0/10", Managed: true},
+		{Kind: "checkpoint", FlowID: "managed", LSN: "0/10", Managed: true},
+		{Kind: "ack", FlowID: "managed", LSN: "0/10", Managed: true},
+	}
+	assertTraceViolation(t, ValidateTrace(invalid, TraceValidationOptions{}), spec.InvSourceFlushRequiresCheckpoint)
+}
+
 func TestValidateTracePartitionsStateByFlow(t *testing.T) {
 	t.Parallel()
 

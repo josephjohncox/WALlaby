@@ -69,7 +69,7 @@ var authorityMutableTables = []string{
 	"flows", "flow_incarnations", "flow_state_events", "flow_executions", "execution_acquisitions", "producer_leases", "work_claims",
 	"checkpoints", "checkpoint_outbox", "authoritative_checkpoints", "authoritative_checkpoint_outbox",
 	"schema_versions", "ddl_events", "ddl_execution_attempts", "ddl_execution_receipts", "ddl_execution_manifests", "ddl_execution_run_attempts", "schema_publication_operations",
-	"destination_revisions", "delivery_manifests", "delivery_attempts", "delivery_attempt_evidence", "delivery_receipts", "source_ack_intents", "source_ack_receipts",
+	"destination_revisions", "delivery_manifests", "delivery_attempts", "delivery_attempt_evidence", "delivery_receipts", "source_ack_intents", "source_ack_receipts", "delivery_retention_roots",
 	"source_bootstraps", "source_bootstrap_tasks", "snapshot_publication_receipts", "source_resources", "source_resource_operations", "snapshot_delivery_attempts", "snapshot_delivery_evidence", "snapshot_delivery_receipts",
 	"canonical_schemas", "artifact_streams", "artifact_objects", "artifact_upload_attempts", "artifact_publications", "artifact_publication_objects", "artifact_deliveries", "artifact_quota_accounts", "artifact_quota_reservations", "artifact_gc_claims", "artifact_delivery_attempts", "artifact_delivery_receipts",
 }
@@ -88,9 +88,12 @@ var requiredManagedColumns = map[string][]string{
 	"source_resource_operations":    {"operation_id", "flow_incarnation_id", "resource_kind", "resource_id", "operation", "desired_revision", "generation", "acquisition_id", "lease_epoch", "status"},
 	"snapshot_delivery_attempts":    {"attempt_id", "bootstrap_id", "relation_id", "task_id", "batch_ordinal", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "claim_epoch"},
 	"snapshot_delivery_receipts":    {"bootstrap_id", "relation_id", "task_id", "batch_ordinal", "attempt_id", "durable_cursor", "completed_task"},
-	"delivery_attempts":             {"attempt_id", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "position_id", "content_hash"},
-	"delivery_receipts":             {"flow_incarnation_id", "position_id", "destination_revision_id", "attempt_id", "content_hash"},
+	"delivery_manifests":            {"flow_incarnation_id", "destination_revision_id", "source_lineage_id", "logical_batch_id", "position_id", "content_hash", "checkpoint_lsn"},
+	"delivery_attempts":             {"attempt_id", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "logical_batch_id", "position_id", "content_hash", "attempt_number", "attempt_state", "next_attempt_at"},
+	"delivery_receipts":             {"flow_incarnation_id", "position_id", "destination_revision_id", "logical_batch_id", "attempt_id", "content_hash"},
 	"source_ack_intents":            {"flow_incarnation_id", "position_id", "checkpoint_lsn", "generation", "acquisition_id", "lease_epoch"},
+	"source_ack_receipts":           {"flow_incarnation_id", "position_id", "checkpoint_lsn", "observed_flush_lsn", "generation", "acquisition_id", "lease_epoch"},
+	"delivery_retention_roots":      {"flow_incarnation_id", "minimum_position_id", "retained_after", "updated_at"},
 	"artifact_publications":         {"publication_id", "flow_incarnation_id", "source_lineage_id", "source_transaction_id", "source_xid", "begin_lsn", "commit_lsn", "source_position", "checkpoint_lsn", "position_id", "content_hash", "generation", "acquisition_id", "lease_epoch", "rooted_bytes", "published_at"},
 }
 
@@ -121,6 +124,8 @@ var requiredManagedConstraints = []requiredManagedObject{
 	{table: "snapshot_delivery_attempts", name: "snapshot_delivery_attempts_flow_incarnation_id_fkey"},
 	{table: "snapshot_delivery_attempts", name: "snapshot_delivery_attempts_acquisition_id_fkey"},
 	{table: "snapshot_delivery_receipts", name: "snapshot_delivery_receipts_attempt_id_fkey"},
+	{table: "delivery_attempts", name: "delivery_attempts_state_valid"},
+	{table: "delivery_attempts", name: "delivery_attempts_number_positive"},
 }
 
 var requiredManagedIndexes = []requiredManagedObject{
@@ -132,6 +137,9 @@ var requiredManagedIndexes = []requiredManagedObject{
 	{table: "schema_publication_operations", name: "schema_publication_operations_acquisition_idx"},
 	{table: "source_resources", name: "source_resources_current_kind_idx"},
 	{table: "source_resources", name: "source_resources_active_physical_name_unique"},
+	{table: "delivery_manifests", name: "delivery_manifests_logical_batch_idx"},
+	{table: "delivery_receipts", name: "delivery_receipts_logical_batch_idx"},
+	{table: "delivery_attempts", name: "delivery_attempts_retry_idx"},
 }
 
 func verifyManagedAuthoritySchema(ctx context.Context, pool *pgxpool.Pool) error {

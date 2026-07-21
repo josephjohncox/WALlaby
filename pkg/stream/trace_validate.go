@@ -60,9 +60,11 @@ type traceFlowState struct {
 	pendingDDL            map[string]struct{}
 	approvedDDL           map[string]struct{}
 	restoreEvidence       map[string]struct{}
+	sourceFlushEvidence   map[int]struct{}
+	requireSourceFlush    bool
 }
 
-func newTraceFlowState(hasDurableCheckpoints bool) *traceFlowState {
+func newTraceFlowState(hasDurableCheckpoints, requireSourceFlush bool) *traceFlowState {
 	return &traceFlowState{
 		persistedDelivery:     make(map[int]struct{}),
 		lastPersistedDelivery: -1,
@@ -71,6 +73,8 @@ func newTraceFlowState(hasDurableCheckpoints bool) *traceFlowState {
 		pendingDDL:            make(map[string]struct{}),
 		approvedDDL:           make(map[string]struct{}),
 		restoreEvidence:       make(map[string]struct{}),
+		sourceFlushEvidence:   make(map[int]struct{}),
+		requireSourceFlush:    requireSourceFlush,
 	}
 }
 
@@ -86,9 +90,14 @@ func EvaluateTrace(events []TraceEvent, opts TraceValidationOptions, manifest *s
 	}
 
 	durableFlows := make(map[string]bool)
+	flushEvidenceFlows := make(map[string]bool)
 	for _, event := range events {
+		flowKey := traceFlowKey(event.FlowID)
 		if event.Kind == "checkpoint" {
-			durableFlows[traceFlowKey(event.FlowID)] = true
+			durableFlows[flowKey] = true
+		}
+		if event.Managed || event.Kind == "source_flush" {
+			flushEvidenceFlows[flowKey] = true
 		}
 	}
 	states := make(map[string]*traceFlowState)
@@ -107,7 +116,7 @@ func EvaluateTrace(events []TraceEvent, opts TraceValidationOptions, manifest *s
 		flowKey := traceFlowKey(event.FlowID)
 		state := states[flowKey]
 		if state == nil {
-			state = newTraceFlowState(durableFlows[flowKey])
+			state = newTraceFlowState(durableFlows[flowKey], flushEvidenceFlows[flowKey])
 			states[flowKey] = state
 		}
 
@@ -181,6 +190,24 @@ func EvaluateTrace(events []TraceEvent, opts TraceValidationOptions, manifest *s
 			}
 			coverage.Invariants[spec.InvCheckpointMonotonic]++
 
+		case "source_flush":
+			position, ok := traceEventPosition(event)
+			if !ok {
+				addViolation(string(spec.InvSourceFlushRequiresCheckpoint), event.FlowID, "source flush missing position")
+				continue
+			}
+			deliveryIndex := deliveredPosition(state.delivered, position)
+			if deliveryIndex < 0 {
+				addViolation(string(spec.InvSourceFlushRequiresCheckpoint), event.FlowID, fmt.Sprintf("source flush without delivery position=%s", position))
+				continue
+			}
+			if _, ok := state.persistedDelivery[deliveryIndex]; !ok {
+				addViolation(string(spec.InvSourceFlushRequiresCheckpoint), event.FlowID, fmt.Sprintf("source flush before durable checkpoint position=%s", position))
+				continue
+			}
+			state.sourceFlushEvidence[deliveryIndex] = struct{}{}
+			coverage.Invariants[spec.InvSourceFlushRequiresCheckpoint]++
+
 		case "ack":
 			position, ok := traceEventPosition(event)
 			if !ok {
@@ -195,6 +222,12 @@ func EvaluateTrace(events []TraceEvent, opts TraceValidationOptions, manifest *s
 			if state.hasDurableCheckpoints {
 				if _, ok := state.persistedDelivery[deliveryIndex]; !ok {
 					addViolation(string(spec.InvCheckpointMonotonic), event.FlowID, fmt.Sprintf("source ack before durable checkpoint position=%s", position))
+					continue
+				}
+			}
+			if state.requireSourceFlush {
+				if _, ok := state.sourceFlushEvidence[deliveryIndex]; !ok {
+					addViolation(string(spec.InvSourceFlushRequiresCheckpoint), event.FlowID, fmt.Sprintf("ack without source flush evidence position=%s", position))
 					continue
 				}
 			}

@@ -124,20 +124,20 @@
 - [x] Add immutable flow incarnations, producer acquisitions, lease epochs, work claims, and stale-owner integration tests.
 - [x] Add fenced PostgreSQL checkpoints/outbox state isolated by flow incarnation.
 - [x] Add durable destination manifests, immutable configuration-qualified destination revisions, append-only attempts/evidence, immutable receipts, checkpoint/ACK-intent coupling, and PostgreSQL target-marker reconciliation.
-- [x] Add the managed PostgreSQL worker path and a live PostgreSQL-to-PostgreSQL transaction-end/feedback test.
+- [x] Add the managed PostgreSQL worker path, full source-transaction delivery, target-marker reconciliation, and observed source-flush evidence.
 - [x] Wire slot-exported bootstrap into `wallaby-worker` and in-process DBOS. `bootstrap=auto|required` now uses a pre-slot DDL barrier, publication create/adopt journal, imported snapshot tasks, receipt-backed exclusive cursors, atomic PostgreSQL target publication, exact-LSN handoff, and whole-generation restart after exporter loss.
 - [ ] Wire canonical artifacts into managed execution. The package now validates source transaction identity, exact-version checksums, monotonic publication, quota conversion, and consumer claims, but no worker constructs a publisher.
 - [x] Downgrade PostgreSQL CDC and legacy backfill source capability claims to experimental pending the complete promotion matrix.
-- [x] Add the `ManagedDurability` TLA+ model and required PR, live-integration, and scheduled nightly recipes/jobs.
-- [ ] Finish every remaining managed mutation seam. DBOS, source DDL/catalog rows, DDL attempts/receipts, bootstrap staging, checkpoints, delivery, and owned slot/publication operations now carry the fence; legacy managed administrative resource mutation fails closed. External schema-registry publication, DDL-capture resource creation, generic staging, and automatic structured DDL application remain unadmitted.
+- [x] Add the `ManagedDurability` and `ManagedPostgresDelivery` TLA+ models plus required PR, multi-version live-integration, and scheduled nightly recipes/jobs.
+- [ ] Finish every remaining managed mutation seam. DBOS, source DDL/catalog rows, DDL attempts/receipts, bootstrap staging, checkpoints, delivery, and owned slot/publication operations now carry the fence; legacy managed administrative resource mutation fails closed. The named PostgreSQL profile admits ordered relation-diff DDL plans, while external schema-registry publication, raw DDL-capture resource creation, and generic staging remain unadmitted.
 - [x] Add an authority-protocol session gate to workflow, checkpoint, and registry mutations so a pre-authority binary is rejected after the quiesced migration.
-- [ ] Support multi-table PostgreSQL source transactions in one target transaction; the initial managed runner fails closed when a transaction has multiple table/schema fragments.
+- [x] Support normal and streamed multi-table/multi-schema PostgreSQL source transactions, preserving ordered DDL/control barriers in one target transaction.
 - [ ] Reconcile and release old `reserved` artifact objects that have no exact `VersionId`. The conservative collector deletes only unrooted `uploaded`/`verified` exact versions.
 - [ ] Add published-artifact retention GC and long-running publisher/GC race tests. The hard retained-byte ceiling is fail-stop containment, not retention.
 - [ ] Implement and live-test an Iceberg REST catalog adapter. The current code supplies only the PostgreSQL queue and catalog abstraction.
 - [ ] Implement the append-only ClickHouse managed changelog profile. Managed admission currently rejects the mutation connector.
 - [x] Share one bounded worker control pool and one checksum-verifying migration coordinator; import and dual-record legacy workflow/checkpoint/registry history.
-- [ ] Export observable gauges for active leases, bootstrap progress, artifact backlog count/bytes/age, retained bytes, and GC lag. The current durable telemetry records transition/outcome counters only.
+- [ ] Export observable gauges for active leases, bootstrap progress, artifact backlog count/bytes/age, retained bytes, and GC lag. The named PostgreSQL profile now has bounded delivery outcome metrics; the remaining gauges are still open.
 
 ## Direct S3 follow-up
 

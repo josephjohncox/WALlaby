@@ -27,6 +27,7 @@ const (
 type managedDeliveryRuntime interface {
 	stream.ManagedDeliveryCoordinator
 	RegisterDestinationRevision(context.Context, authority.RunFence, string, string, string) error
+	PruneTerminalDeliveryState(context.Context, authority.RunFence, time.Duration, int) (int64, error)
 }
 
 // FlowRunner executes one already-running flow. It never changes desired
@@ -142,6 +143,8 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		}
 		return err
 	}
+	deliveryRetention := 7 * 24 * time.Hour
+	deliveryPruneInterval := time.Minute
 	if managed {
 		destinationSpec := streamRunner.Destinations[0].Spec
 		revisionID := strings.TrimSpace(destinationSpec.Options["destination_revision_id"])
@@ -152,6 +155,29 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		if fingerprintErr != nil {
 			_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
 			return fingerprintErr
+		}
+		if raw := strings.TrimSpace(f.Source.Options["delivery_retention"]); raw != "" {
+			parsed, parseErr := time.ParseDuration(raw)
+			if parseErr != nil || parsed <= 0 {
+				_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
+				return fmt.Errorf("parse managed delivery_retention %q", raw)
+			}
+			deliveryRetention = parsed
+		}
+		if raw := strings.TrimSpace(f.Source.Options["delivery_prune_interval"]); raw != "" {
+			parsed, parseErr := time.ParseDuration(raw)
+			if parseErr != nil || parsed <= 0 {
+				_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
+				return fmt.Errorf("parse managed delivery_prune_interval %q", raw)
+			}
+			deliveryPruneInterval = parsed
+		}
+		renewDuringPrune := func(pruneCtx context.Context) error {
+			return r.Authority.RenewProducer(pruneCtx, *runFence, executionLease)
+		}
+		if pruneErr := pruneManagedDeliveryState(ctx, r.Deliveries, *runFence, deliveryRetention, renewDuringPrune); pruneErr != nil {
+			_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
+			return pruneErr
 		}
 	}
 	if !managed {
@@ -188,13 +214,27 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		ticker := time.NewTicker(executionHeartbeat)
-		defer ticker.Stop()
+		heartbeatTicker := time.NewTicker(executionHeartbeat)
+		defer heartbeatTicker.Stop()
+		var pruneTicker *time.Ticker
+		var pruneC <-chan time.Time
+		if runFence != nil {
+			pruneTicker = time.NewTicker(deliveryPruneInterval)
+			pruneC = pruneTicker.C
+			defer pruneTicker.Stop()
+		}
+		fail := func(err error) {
+			select {
+			case watchErr <- err:
+			default:
+			}
+			cancelRun()
+		}
 		for {
 			select {
 			case <-watchCtx.Done():
 				return
-			case <-ticker.C:
+			case <-heartbeatTicker.C:
 				var renewErr error
 				if runFence != nil {
 					renewErr = r.Authority.RenewProducer(watchCtx, *runFence, executionLease)
@@ -202,11 +242,15 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 					renewErr = r.Engine.RenewExecutionFence(watchCtx, *executionFence, executionLease)
 				}
 				if renewErr != nil {
-					select {
-					case watchErr <- renewErr:
-					default:
-					}
-					cancelRun()
+					fail(fmt.Errorf("renew execution authority: %w", renewErr))
+					return
+				}
+			case <-pruneC:
+				renewDuringPrune := func(pruneCtx context.Context) error {
+					return r.Authority.RenewProducer(pruneCtx, *runFence, executionLease)
+				}
+				if err := pruneManagedDeliveryState(watchCtx, r.Deliveries, *runFence, deliveryRetention, renewDuringPrune); err != nil {
+					fail(fmt.Errorf("prune managed delivery state: %w", err))
 					return
 				}
 			}
@@ -248,8 +292,8 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		}
 		if errors.Is(err, context.Canceled) {
 			select {
-			case renewErr := <-watchErr:
-				return fmt.Errorf("renew execution authority: %w", renewErr)
+			case watchFailure := <-watchErr:
+				return watchFailure
 			default:
 			}
 		}
@@ -264,6 +308,28 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 			}
 		}
 		return err
+	}
+	return nil
+}
+
+func pruneManagedDeliveryState(ctx context.Context, deliveries managedDeliveryRuntime, fence authority.RunFence, retention time.Duration, renew func(context.Context) error) error {
+	const (
+		pruneBatchSize  = 1000
+		maxPruneBatches = 8
+	)
+	for batch := 0; batch < maxPruneBatches; batch++ {
+		pruned, err := deliveries.PruneTerminalDeliveryState(ctx, fence, retention, pruneBatchSize)
+		if err != nil {
+			return err
+		}
+		if pruned < pruneBatchSize {
+			return nil
+		}
+		if renew != nil {
+			if err := renew(ctx); err != nil {
+				return fmt.Errorf("renew producer while pruning managed delivery state: %w", err)
+			}
+		}
 	}
 	return nil
 }

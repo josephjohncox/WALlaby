@@ -31,7 +31,7 @@ type durableMetricSet struct {
 	initErr                error
 }
 
-var durableMetrics durableMetricSet
+var durableMetrics = &durableMetricSet{}
 
 func initDurableMetrics() bool {
 	durableMetrics.once.Do(func() {
@@ -69,25 +69,34 @@ func initDurableMetrics() bool {
 	return durableMetrics.initErr == nil
 }
 
-func RecordFenceRejection(ctx context.Context, flowID string) {
+func RecordFenceRejection(ctx context.Context, _ string) {
 	if !initDurableMetrics() {
 		return
 	}
-	durableMetrics.fenceRejections.Add(ctx, 1, metric.WithAttributes(attribute.String("flow.id", flowID)))
+	durableMetrics.fenceRejections.Add(ctx, 1)
 }
 
-func RecordLeaseTakeover(ctx context.Context, flowID string) {
+func RecordLeaseTakeover(ctx context.Context, _ string) {
 	if !initDurableMetrics() {
 		return
 	}
-	durableMetrics.leaseTakeovers.Add(ctx, 1, metric.WithAttributes(attribute.String("flow.id", flowID)))
+	durableMetrics.leaseTakeovers.Add(ctx, 1)
 }
 
 func RecordDeliveryOutcome(ctx context.Context, outcome string) {
 	if !initDurableMetrics() {
 		return
 	}
-	durableMetrics.deliveryOutcomes.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
+	durableMetrics.deliveryOutcomes.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", boundedDeliveryOutcome(outcome))))
+}
+
+func boundedDeliveryOutcome(outcome string) string {
+	switch outcome {
+	case "attempt_prepared", "receipt_committed", "receipt_reused", "indeterminate", "apply_failed":
+		return outcome
+	default:
+		return "other"
+	}
 }
 
 func RecordBootstrapEvent(ctx context.Context, event string) {

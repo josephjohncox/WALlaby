@@ -33,6 +33,7 @@ const (
 	optMetaTable       = "meta_table"
 	optMetaSchema      = "meta_schema"
 	optMetaEnabled     = "meta_table_enabled"
+	optManagedProfile  = "managed_profile"
 	optMetaPKPrefix    = "meta_pk_prefix"
 	optFlowID          = "flow_id"
 	optSyncCommit      = "synchronous_commit"
@@ -52,23 +53,24 @@ const (
 
 // Destination writes change events into Postgres tables.
 type Destination struct {
-	spec             connector.Spec
-	pool             *pgxpool.Pool
-	writeMode        string
-	batchMode        string
-	batchResolve     string
-	stagingSchema    string
-	stagingTableName string
-	stagingSuffix    string
-	metaEnabled      bool
-	metaSchema       string
-	metaTable        string
-	metaPKPrefix     string
-	flowID           string
-	syncCommit       string
-	metaColumns      map[string]struct{}
-	stagingTables    map[string]tableInfo
-	stagingResolved  bool
+	spec                 connector.Spec
+	pool                 *pgxpool.Pool
+	writeMode            string
+	batchMode            string
+	batchResolve         string
+	stagingSchema        string
+	stagingTableName     string
+	stagingSuffix        string
+	metaEnabled          bool
+	metaSchema           string
+	metaTable            string
+	metaPKPrefix         string
+	flowID               string
+	syncCommit           string
+	managedPostgresMajor int
+	metaColumns          map[string]struct{}
+	stagingTables        map[string]tableInfo
+	stagingResolved      bool
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
@@ -112,6 +114,10 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		return fmt.Errorf("ping postgres: %w", err)
 	}
 	d.pool = pool
+	d.managedPostgresMajor, err = validateManagedPostgresServerVersion(ctx, pool, spec.Options[optManagedProfile])
+	if err != nil {
+		return err
+	}
 
 	d.writeMode = strings.ToLower(spec.Options[optWriteMode])
 	if d.writeMode == "" {
@@ -951,7 +957,7 @@ func (d *Destination) upsertMetadataBatch(ctx context.Context, tx pgx.Tx, schema
 	pkColumns := make([]string, len(keys))
 	for index, column := range keys {
 		pkColumns[index] = d.metaPKPrefix + column
-		if err := d.ensureMetaColumn(ctx, pkColumns[index]); err != nil {
+		if err := d.ensureMetaColumn(ctx, tx, pkColumns[index]); err != nil {
 			return err
 		}
 	}
@@ -994,7 +1000,7 @@ func (d *Destination) upsertMetadataBatch(ctx context.Context, tx pgx.Tx, schema
 	return nil
 }
 
-func (d *Destination) ensureMetaColumn(ctx context.Context, column string) error {
+func (d *Destination) ensureMetaColumn(ctx context.Context, tx pgx.Tx, column string) error {
 	if column == "" {
 		return nil
 	}
@@ -1004,7 +1010,7 @@ func (d *Destination) ensureMetaColumn(ctx context.Context, column string) error
 	}
 	target := quoteIdent(d.metaSchema, '"') + "." + quoteIdent(d.metaTable, '"')
 	stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s TEXT", target, quoteIdent(column, '"'))
-	if _, err := d.pool.Exec(ctx, stmt); err != nil {
+	if _, err := tx.Exec(ctx, stmt); err != nil {
 		return fmt.Errorf("add meta column: %w", err)
 	}
 	d.metaColumns[key] = struct{}{}
@@ -1018,6 +1024,9 @@ func recordColumns(schema connector.Schema, record connector.Record) ([]string, 
 	cols := make([]string, 0, len(schema.Columns))
 	vals := make([]any, 0, len(schema.Columns))
 	for _, col := range schema.Columns {
+		if col.Generated {
+			continue
+		}
 		val, ok := record.After[col.Name]
 		if !ok {
 			continue
@@ -1574,6 +1583,35 @@ func parseInt(value string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+// ManagedPostgresMajor reports the live destination major admitted during Open.
+func (d *Destination) ManagedPostgresMajor() int {
+	return d.managedPostgresMajor
+}
+
+func validateManagedPostgresServerVersion(ctx context.Context, pool *pgxpool.Pool, profileName string) (int, error) {
+	profileName = strings.TrimSpace(profileName)
+	if profileName == "" {
+		return 0, nil
+	}
+	if profileName != connector.ManagedProfilePostgresToPostgresV1 {
+		return 0, fmt.Errorf("unsupported PostgreSQL managed profile %q", profileName)
+	}
+	var raw string
+	if err := pool.QueryRow(ctx, "SHOW server_version_num").Scan(&raw); err != nil {
+		return 0, fmt.Errorf("read PostgreSQL server version for managed profile: %w", err)
+	}
+	versionNumber, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("parse PostgreSQL server_version_num %q: %w", raw, err)
+	}
+	major := versionNumber / 10000
+	profile := connector.PostgresToPostgresV1Profile()
+	if !profile.SupportsPostgresVersion(major) {
+		return 0, fmt.Errorf("managed profile %s does not admit PostgreSQL %d", profileName, major)
+	}
+	return major, nil
 }
 
 func normalizeSyncCommit(value string) string {
