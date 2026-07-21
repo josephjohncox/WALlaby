@@ -2,11 +2,23 @@ package checkpoint
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
+
+func TestValidateCheckpointAdvanceRejectsPostgresRegression(t *testing.T) {
+	t.Parallel()
+	if err := validateCheckpointAdvance("flow", "0/10", "0/20"); err != nil {
+		t.Fatalf("forward checkpoint: %v", err)
+	}
+	err := validateCheckpointAdvance("flow", "0/20", "0/10")
+	if err == nil || !strings.Contains(err.Error(), "regression") {
+		t.Fatalf("regression error=%v", err)
+	}
+}
 
 func TestHashOutboxBatchIsDeterministicAndTypeSensitive(t *testing.T) {
 	t.Parallel()

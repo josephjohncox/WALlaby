@@ -41,6 +41,22 @@ func TestWorkflowMigrationsIncludeLifecycleFencingAfterExecutions(t *testing.T) 
 			t.Fatalf("migration 005 is missing %q", required)
 		}
 	}
+	authorityContents, err := migrationFS.ReadFile("migrations/006_authority_fences.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityMigration := string(authorityContents)
+	for _, required := range []string{
+		"requires a quiesced upgrade",
+		"state IN ('running', 'stopping')",
+		"PRIMARY KEY (incarnation_id, execution_id)",
+		"execution_acquisitions",
+		"producer_leases",
+	} {
+		if !strings.Contains(authorityMigration, required) {
+			t.Fatalf("migration 006 is missing %q", required)
+		}
+	}
 	if strings.Contains(migration, "WHEN 'stopping' THEN 'stopped'") {
 		t.Fatal("migration 005 must not hide interrupted stopping rows by translating stopping to stopped")
 	}

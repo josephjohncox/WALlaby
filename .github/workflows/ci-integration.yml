@@ -8,6 +8,9 @@ on:
   push:
     branches:
       - main
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
 
 jobs:
   integration:
@@ -167,6 +170,14 @@ jobs:
         env:
           WALLABY_TEST_K8S_NAMESPACE: default
         run: just test-integration-ci
+
+      - name: Required durable profile evidence
+        if: github.event_name != 'schedule'
+        run: just test-durable-integration
+
+      - name: Nightly durability and repeated recovery evidence
+        if: github.event_name == 'schedule'
+        run: just test-durable-nightly
 
       - name: Stop integration PostgreSQL
         if: always()

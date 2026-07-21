@@ -65,6 +65,7 @@ it_count := env_var_or_default("IT_COUNT", "")
 it_package_parallelism := env_var_or_default("IT_PACKAGE_PARALLELISM", "1")
 it_expected_harness_participants := env_var_or_default("IT_EXPECTED_HARNESS_PARTICIPANTS", it_package_parallelism)
 integration_package := env_var_or_default("INTEGRATION_PACKAGE", "./tests/...")
+integration_worker_binary := root + "/" + cache_dir + "/wallaby-worker-integration"
 
 # List available recipes.
 default:
@@ -106,9 +107,25 @@ test-rapid:
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" GO="{{ go }}" RAPID_PACKAGES="{{ rapid_packages }}" RAPID_CHECKS="{{ rapid_checks }}" ./scripts/test-rapid.sh
 
 test-integration:
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" GO="{{ go }}" GO_TEST_TIMEOUT="{{ go_test_timeout }}" GO_TEST_VERBOSE="{{ go_test_verbose }}" GO_TEST_VERBOSE_FLAG="{{ go_test_verbose_flag }}" IT_KIND="{{ it_kind }}" IT_KEEP="{{ it_keep }}" IT_KIND_CLUSTER="{{ it_kind_cluster }}" IT_KIND_NODE_IMAGE="{{ it_kind_node_image }}" IT_SERVICE_READY_TIMEOUT_SECONDS="{{ it_service_ready_timeout_seconds }}" IT_RUN_FILTER="{{ it_run_filter }}" IT_COUNT="{{ it_count }}" IT_PACKAGE_PARALLELISM="{{ it_package_parallelism }}" IT_EXPECTED_HARNESS_PARTICIPANTS="{{ it_expected_harness_participants }}" INTEGRATION_PACKAGE="{{ integration_package }}" ./scripts/test-integration.sh
+    mkdir -p "$(dirname '{{ integration_worker_binary }}')"
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} build -o "{{ integration_worker_binary }}" ./cmd/wallaby-worker
+    WALLABY_WORKER_BINARY="${WALLABY_WORKER_BINARY:-{{ integration_worker_binary }}}" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" GO="{{ go }}" GO_TEST_TIMEOUT="{{ go_test_timeout }}" GO_TEST_VERBOSE="{{ go_test_verbose }}" GO_TEST_VERBOSE_FLAG="{{ go_test_verbose_flag }}" IT_KIND="{{ it_kind }}" IT_KEEP="{{ it_keep }}" IT_KIND_CLUSTER="{{ it_kind_cluster }}" IT_KIND_NODE_IMAGE="{{ it_kind_node_image }}" IT_SERVICE_READY_TIMEOUT_SECONDS="{{ it_service_ready_timeout_seconds }}" IT_RUN_FILTER="{{ it_run_filter }}" IT_COUNT="{{ it_count }}" IT_PACKAGE_PARALLELISM="{{ it_package_parallelism }}" IT_EXPECTED_HARNESS_PARTICIPANTS="{{ it_expected_harness_participants }}" INTEGRATION_PACKAGE="{{ integration_package }}" ./scripts/test-integration.sh
 
 test-integration-ci: test-integration
+
+# Durable-core unit and contract gate. Real-service evidence runs separately.
+test-durable-pr:
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./internal/authority ./internal/delivery ./internal/bootstrap ./internal/artifactlog ./internal/workflow ./internal/checkpoint ./internal/replication ./internal/runner ./pkg/connector ./pkg/stream ./connectors/sources/postgres ./connectors/destinations/postgres ./connectors/destinations/clickhouse
+
+# Required live PostgreSQL/MinIO durability profiles. The harness provisions
+# services, so these named tests must run rather than skip.
+test-durable-integration:
+    WALLABY_WORKER_BINARY="{{ integration_worker_binary }}" IT_REQUIRED_TESTS='TestWallabyWorkerProcessKillRecovery,TestAuthorityProtocolGateRejectsStaleBinarySession,TestPostgresGenerationFenceRejectsStaleCommit,TestPostgresRunFenceValidationSerializesTakeover,TestPostgresCheckpointGenerationFenceRejectsStaleCommit,TestPostgresFlowIDReuseDoesNotRestoreOldState,TestPostgresDestinationRevisionIsImmutable,TestPostgresAckOnlyCheckpointHasIntentAndReceipt,TestPostgresCommitBeforeReceiptReconciles,TestPostgresManagedDriverMarkerReconciles,TestPostgresTargetReplayConvergesIncludingMetadata,TestPostgresTargetPreservesSameKeyOperationOrderIntegration,TestLogicalSlotExportedSnapshotContract,TestBootstrapConcurrentWritesBoundary,TestBootstrapRecoveryFailpoints,TestCanonicalArtifactPublicationRecovery,TestPostgresToPostgresManagedRecoveryContract' IT_RUN_FILTER='^(TestWallabyWorkerProcessKillRecovery|TestAuthorityProtocolGateRejectsStaleBinarySession|TestPostgresGenerationFenceRejectsStaleCommit|TestPostgresRunFenceValidationSerializesTakeover|TestPostgresCheckpointGenerationFenceRejectsStaleCommit|TestPostgresFlowIDReuseDoesNotRestoreOldState|TestPostgresDestinationRevisionIsImmutable|TestPostgresAckOnlyCheckpointHasIntentAndReceipt|TestPostgresCommitBeforeReceiptReconciles|TestPostgresManagedDriverMarkerReconciles|TestPostgresTargetReplayConvergesIncludingMetadata|TestPostgresTargetPreservesSameKeyOperationOrderIntegration|TestLogicalSlotExportedSnapshotContract|TestBootstrapConcurrentWritesBoundary|TestBootstrapRecoveryFailpoints|TestCanonicalArtifactPublicationRecovery|TestPostgresToPostgresManagedRecoveryContract)$' INTEGRATION_PACKAGE='./tests' just test-integration
+
+# Nightly increases property checks and repeats the executable durability gate.
+test-durable-nightly:
+    RAPID_CHECKS=20000 just test-rapid
+    IT_COUNT=10 just test-durable-integration
 
 test-integration-kind:
     IT_RUN_FILTER="^TestKubernetesDispatcher" IT_COUNT=1 just test-integration
@@ -222,7 +239,7 @@ benchstat:
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-bench-summary -dir "{{ candidate }}" -format benchstat -latest=false -output "{{ candidate }}/benchstat.txt"
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run golang.org/x/perf/cmd/benchstat@latest "{{ baseline }}/benchstat.txt" "{{ candidate }}/benchstat.txt"
 
-tla: tla-flow tla-state tla-fanout tla-ddl-execution tla-lifecycle-generation tla-snapshot-transition tla-liveness tla-witness
+tla: tla-flow tla-state tla-fanout tla-ddl-execution tla-lifecycle-generation tla-snapshot-transition tla-managed-durability tla-liveness tla-witness
 
 tla-single:
     PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} {{ tlc_args }} -config "{{ tla_config }}" "{{ tla_module }}"
@@ -244,6 +261,9 @@ tla-lifecycle-generation:
 
 tla-snapshot-transition:
     TLA_MODULE=specs/SnapshotTransition.tla TLA_CONFIG=specs/SnapshotTransition.cfg just tla-single
+
+tla-managed-durability:
+    TLA_MODULE=specs/ManagedDurability.tla TLA_CONFIG=specs/ManagedDurability.cfg just tla-single
 
 tla-liveness:
     TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowLiveness.cfg just tla-single

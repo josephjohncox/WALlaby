@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -361,6 +363,42 @@ func listTables(ctx context.Context, pool *pgxpool.Pool, schemas []string) ([]st
 		return nil, fmt.Errorf("iterate tables: %w", err)
 	}
 	return out, nil
+}
+
+// PublicationFingerprint returns a deterministic revision over publication
+// behavior, table membership, column lists, and row filters.
+func PublicationFingerprint(ctx context.Context, pool *pgxpool.Pool, name string) (string, error) {
+	if pool == nil || name == "" {
+		return "", errors.New("publication pool and name are required")
+	}
+	hash := sha256.New()
+	var allTables, insert, update, deleteRows, truncate bool
+	if err := pool.QueryRow(ctx, `
+SELECT puballtables,pubinsert,pubupdate,pubdelete,pubtruncate
+FROM pg_publication WHERE pubname=$1`, name).Scan(&allTables, &insert, &update, &deleteRows, &truncate); err != nil {
+		return "", fmt.Errorf("read publication revision: %w", err)
+	}
+	_, _ = fmt.Fprintf(hash, "%s\x00%t\x00%t\x00%t\x00%t\x00%t\n", name, allTables, insert, update, deleteRows, truncate)
+	rows, err := pool.Query(ctx, `
+SELECT schemaname,tablename,COALESCE(array_to_string(attnames,','),''),COALESCE(rowfilter,'')
+FROM pg_publication_tables
+WHERE pubname=$1
+ORDER BY schemaname,tablename`, name)
+	if err != nil {
+		return "", fmt.Errorf("read publication membership revision: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var schema, table, columns, filter string
+		if err := rows.Scan(&schema, &table, &columns, &filter); err != nil {
+			return "", fmt.Errorf("scan publication membership revision: %w", err)
+		}
+		_, _ = fmt.Fprintf(hash, "%s\x00%s\x00%s\x00%s\n", schema, table, columns, filter)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("iterate publication membership revision: %w", err)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func listPublicationTables(ctx context.Context, pool *pgxpool.Pool, name string) ([]string, error) {

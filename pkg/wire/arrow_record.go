@@ -63,13 +63,13 @@ func buildArrowRecord(batch connector.Batch) (arrow.RecordBatch, error) {
 
 func arrowSchemaFor(schema connector.Schema) (*arrow.Schema, map[string]int, error) {
 	fields := []arrow.Field{
-		{Name: "__op", Type: arrow.BinaryTypes.String, Nullable: false},
-		{Name: "__ts", Type: arrow.FixedWidthTypes.Timestamp_ms, Nullable: true},
-		{Name: "__schema_version", Type: arrow.PrimitiveTypes.Int64, Nullable: false},
-		{Name: "__table", Type: arrow.BinaryTypes.String, Nullable: true},
-		{Name: "__namespace", Type: arrow.BinaryTypes.String, Nullable: true},
-		{Name: "__key", Type: arrow.BinaryTypes.Binary, Nullable: true},
-		{Name: "__before_json", Type: arrow.BinaryTypes.Binary, Nullable: true},
+		{Name: "__op", Type: arrow.BinaryTypes.String, Nullable: false, Metadata: canonicalFieldMetadata("1")},
+		{Name: "__ts", Type: arrow.FixedWidthTypes.Timestamp_us, Nullable: true, Metadata: canonicalFieldMetadata("2")},
+		{Name: "__schema_version", Type: arrow.PrimitiveTypes.Int64, Nullable: false, Metadata: canonicalFieldMetadata("3")},
+		{Name: "__table", Type: arrow.BinaryTypes.String, Nullable: true, Metadata: canonicalFieldMetadata("4")},
+		{Name: "__namespace", Type: arrow.BinaryTypes.String, Nullable: true, Metadata: canonicalFieldMetadata("5")},
+		{Name: "__key", Type: arrow.BinaryTypes.Binary, Nullable: true, Metadata: canonicalFieldMetadata("6")},
+		{Name: "__before_json", Type: arrow.BinaryTypes.Binary, Nullable: true, Metadata: canonicalFieldMetadata("7")},
 	}
 
 	fieldIndex := map[string]int{}
@@ -104,6 +104,10 @@ func arrowSchemaFor(schema connector.Schema) (*arrow.Schema, map[string]int, err
 	}
 
 	return arrow.NewSchema(fields, nil), fieldIndex, nil
+}
+
+func canonicalFieldMetadata(id string) arrow.Metadata {
+	return arrow.NewMetadata([]string{"wallaby.field_id"}, []string{id})
 }
 
 func arrowTypeFor(pgType string) arrow.DataType {
@@ -141,7 +145,7 @@ func arrowTypeFor(pgType string) arrow.DataType {
 	case "json", "jsonb":
 		return arrow.BinaryTypes.Binary
 	case "timestamp", "timestamptz", "timestamp without time zone", "timestamp with time zone":
-		return arrow.FixedWidthTypes.Timestamp_ms
+		return arrow.FixedWidthTypes.Timestamp_us
 	case "date":
 		return arrow.FixedWidthTypes.Date32
 	default:
@@ -162,7 +166,7 @@ func appendTimestamp(builder *array.TimestampBuilder, value time.Time) {
 		builder.AppendNull()
 		return
 	}
-	builder.Append(arrow.Timestamp(value.UnixMilli()))
+	builder.Append(arrow.Timestamp(value.UnixMicro()))
 }
 
 func appendInt64(builder *array.Int64Builder, value int64) {

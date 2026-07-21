@@ -192,6 +192,14 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	waitFor(t, 10*time.Second, 200*time.Millisecond, func() (bool, error) {
+		select {
+		case runnerErr := <-errCh:
+			if runnerErr == nil {
+				return false, errors.New("runner exited before source-state registration")
+			}
+			return false, fmt.Errorf("runner exited before source-state registration: %w", runnerErr)
+		default:
+		}
 		var count int
 		err := srcPool.QueryRow(ctx,
 			"SELECT COUNT(*) FROM wallaby.source_state WHERE slot_name = $1 AND publication_name = $2",

@@ -179,7 +179,7 @@ func (c *JSONCodec) Name() connector.WireFormat
 
 
 <a name="ParquetCodec"></a>
-## type [ParquetCodec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/wire/parquet.go#L15>)
+## type [ParquetCodec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/wire/parquet.go#L16>)
 
 ParquetCodec encodes batches as Parquet via Arrow.
 
@@ -188,7 +188,7 @@ type ParquetCodec struct{}
 ```
 
 <a name="ParquetCodec.ContentType"></a>
-### func \(\*ParquetCodec\) [ContentType](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/wire/parquet.go#L21>)
+### func \(\*ParquetCodec\) [ContentType](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/wire/parquet.go#L22>)
 
 ```go
 func (c *ParquetCodec) ContentType() string
@@ -197,7 +197,7 @@ func (c *ParquetCodec) ContentType() string
 
 
 <a name="ParquetCodec.Encode"></a>
-### func \(\*ParquetCodec\) [Encode](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/wire/parquet.go#L25>)
+### func \(\*ParquetCodec\) [Encode](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/wire/parquet.go#L26>)
 
 ```go
 func (c *ParquetCodec) Encode(batch connector.Batch) ([]byte, error)
@@ -206,7 +206,7 @@ func (c *ParquetCodec) Encode(batch connector.Batch) ([]byte, error)
 
 
 <a name="ParquetCodec.Name"></a>
-### func \(\*ParquetCodec\) [Name](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/wire/parquet.go#L17>)
+### func \(\*ParquetCodec\) [Name](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/wire/parquet.go#L18>)
 
 ```go
 func (c *ParquetCodec) Name() connector.WireFormat

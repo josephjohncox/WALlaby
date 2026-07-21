@@ -117,12 +117,34 @@
       canonical files can be reused directly inside a managed table bucket.
     - [ ] Defer current-state tables, deletes/merges, compaction, retained-manifest GC, multi-source/vector-frontier support, and universal destination routing until append-only changelog recovery and soak tests pass.
 
+### Implemented durable-core vertical slice (current branch)
+
+- [x] Buffer PostgreSQL pgoutput changes through `COMMIT`, checkpoint at `TransactionEndLSN`, and remove received-WAL feedback fallback.
+- [x] Validate existing logical-slot plugin/database/health, reject an authorized checkpoint behind `confirmed_flush_lsn`, and require an authoritative checkpoint for managed existing-slot startup.
+- [x] Add immutable flow incarnations, producer acquisitions, lease epochs, work claims, and stale-owner integration tests.
+- [x] Add fenced PostgreSQL checkpoints/outbox state isolated by flow incarnation.
+- [x] Add durable destination manifests, immutable configuration-qualified destination revisions, append-only attempts/evidence, immutable receipts, checkpoint/ACK-intent coupling, and PostgreSQL target-marker reconciliation.
+- [x] Add the managed PostgreSQL worker path and a live PostgreSQL-to-PostgreSQL transaction-end/feedback test.
+- [ ] Wire slot-exported bootstrap into `wallaby-worker`. The primitives now require durable task receipts, persisted-cut equality, retryable cleanup, and a new physical generation after exporter loss; production admission rejects `bootstrap=auto|required` until the worker copies and publishes snapshot rows end to end.
+- [ ] Wire canonical artifacts into managed execution. The package now validates source transaction identity, exact-version checksums, monotonic publication, quota conversion, and consumer claims, but no worker constructs a publisher.
+- [x] Downgrade PostgreSQL CDC and legacy backfill source capability claims to experimental pending the complete promotion matrix.
+- [x] Add the `ManagedDurability` TLA+ model and required PR, live-integration, and scheduled nightly recipes/jobs.
+- [ ] Thread the managed fence through DBOS and every remaining DDL, schema-registry, source-resource, and staging mutation. Managed admission currently rejects source publication/state changes and DDL capture.
+- [x] Add an authority-protocol session gate to workflow, checkpoint, and registry mutations so a pre-authority binary is rejected after the quiesced migration.
+- [ ] Support multi-table PostgreSQL source transactions in one target transaction; the initial managed runner fails closed when a transaction has multiple table/schema fragments.
+- [ ] Reconcile and release old `reserved` artifact objects that have no exact `VersionId`. The conservative collector deletes only unrooted `uploaded`/`verified` exact versions.
+- [ ] Add published-artifact retention GC and long-running publisher/GC race tests. The hard retained-byte ceiling is fail-stop containment, not retention.
+- [ ] Implement and live-test an Iceberg REST catalog adapter. The current code supplies only the PostgreSQL queue and catalog abstraction.
+- [ ] Implement the append-only ClickHouse managed changelog profile. Managed admission currently rejects the mutation connector.
+- [x] Share one bounded worker control pool and one checksum-verifying migration coordinator; import and dual-record legacy workflow/checkpoint/registry history.
+- [ ] Export observable gauges for active leases, bootstrap progress, artifact backlog count/bytes/age, retained bytes, and GC lag. The current durable telemetry records transition/outcome counters only.
+
 ## Direct S3 follow-up
 
 - [x] Preserve explicit single-destination at-least-once operation under
   `ack_policy=all`; reject replay-unsafe multi-destination fan-out and every
   replay-unsafe `ack_policy=primary` configuration at startup.
-- [ ] Direct S3 writes remain experimental and at-least-once.
+- [ ] Direct S3 writes remain experimental and at-least-once. Add a replay-safe multipart protocol before admitting objects above the explicit 5 GiB conditional single-PUT limit.
   Conditional object creation, full partition-set identity markers, and stored
   checksum verification make an exact batch retry converge, but a restart may
   regroup the same records under different terminal checkpoints. Do not declare

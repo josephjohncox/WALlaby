@@ -9,12 +9,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/josephjohncox/wallaby/internal/controlstore"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 // PostgresStore persists checkpoints in Postgres.
 type PostgresStore struct {
-	pool *pgxpool.Pool
+	pool     *pgxpool.Pool
+	ownsPool bool
 }
 
 func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
@@ -22,7 +24,12 @@ func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
 		return nil, errors.New("postgres DSN is required")
 	}
 
-	pool, err := pgxpool.New(ctx, dsn)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse postgres DSN: %w", err)
+	}
+	controlstore.ConfigurePool(cfg)
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
@@ -32,23 +39,79 @@ func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 
-	if err := runMigrations(ctx, pool); err != nil {
+	store, err := NewPostgresStoreWithPool(ctx, pool)
+	if err != nil {
 		pool.Close()
 		return nil, err
 	}
+	store.ownsPool = true
+	return store, nil
+}
 
+// NewPostgresStoreWithPool borrows the worker's shared control pool.
+func NewPostgresStoreWithPool(ctx context.Context, pool *pgxpool.Pool) (*PostgresStore, error) {
+	if pool == nil {
+		return nil, errors.New("postgres control pool is required")
+	}
+	if err := runMigrations(ctx, pool); err != nil {
+		return nil, err
+	}
 	return &PostgresStore{pool: pool}, nil
 }
 
 func (p *PostgresStore) Close() {
-	if p.pool != nil {
+	if p.ownsPool && p.pool != nil {
 		p.pool.Close()
 	}
+	p.pool = nil
 }
 
 func (p *PostgresStore) Get(ctx context.Context, flowID string) (connector.Checkpoint, error) {
 	row := p.pool.QueryRow(ctx, "SELECT lsn, metadata, updated_at FROM checkpoints WHERE flow_id = $1", flowID)
 	return scanCheckpoint(row)
+}
+
+// CheckExternalOverrideAllowed rejects gRPC/admin checkpoint writes while a
+// producer lease, execution, or pending dispatch can still mutate progress.
+func (p *PostgresStore) CheckExternalOverrideAllowed(ctx context.Context, flowID string) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin checkpoint override guard: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", flowID); err != nil {
+		return fmt.Errorf("lock checkpoint override guard: %w", err)
+	}
+	var active bool
+	if err := tx.QueryRow(ctx, `
+SELECT EXISTS (
+  SELECT 1
+  FROM flows AS flow
+  WHERE flow.id=$1
+    AND (
+      flow.dispatch_pending
+      OR EXISTS (
+        SELECT 1 FROM flow_executions AS execution
+        WHERE execution.incarnation_id=flow.incarnation_id
+          AND execution.status='running'
+          AND (execution.lease_expires_at IS NULL OR execution.lease_expires_at > clock_timestamp())
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM producer_leases AS producer
+        JOIN execution_acquisitions AS acquisition ON acquisition.acquisition_id=producer.acquisition_id
+        WHERE producer.incarnation_id=flow.incarnation_id
+          AND producer.lease_expires_at > clock_timestamp()
+          AND acquisition.finished_at IS NULL
+      )
+    )
+)`, flowID).Scan(&active); err != nil {
+		return fmt.Errorf("check active checkpoint authority: %w", err)
+	}
+	if active {
+		return ErrManagedProducerActive
+	}
+	return tx.Commit(ctx)
 }
 
 func (p *PostgresStore) Put(ctx context.Context, flowID string, checkpoint connector.Checkpoint) error {

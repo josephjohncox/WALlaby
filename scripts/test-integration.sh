@@ -13,6 +13,7 @@ IT_KIND_CLUSTER=${IT_KIND_CLUSTER:-${KIND_CLUSTER:-wallaby-test}}
 IT_KIND_NODE_IMAGE=${IT_KIND_NODE_IMAGE:-${KIND_NODE_IMAGE:-kindest/node:v1.35.0}}
 IT_SERVICE_READY_TIMEOUT_SECONDS=${IT_SERVICE_READY_TIMEOUT_SECONDS:-240}
 IT_RUN_FILTER=${IT_RUN_FILTER:-}
+IT_REQUIRED_TESTS=${IT_REQUIRED_TESTS:-}
 IT_COUNT=${IT_COUNT:-}
 IT_PACKAGE_PARALLELISM=${IT_PACKAGE_PARALLELISM:-1}
 IT_EXPECTED_HARNESS_PARTICIPANTS=${IT_EXPECTED_HARNESS_PARTICIPANTS:-$IT_PACKAGE_PARALLELISM}
@@ -38,4 +39,19 @@ fi
 export IT_VERBOSE=$GO_TEST_VERBOSE
 export WALLABY_IT_VERBOSE=$GO_TEST_VERBOSE
 export WALLABY_IT_SERVICE_READY_TIMEOUT_SECONDS=$IT_SERVICE_READY_TIMEOUT_SECONDS
-exec "$@"
+
+if [ -z "$IT_REQUIRED_TESTS" ]; then
+	exec "$@"
+fi
+
+results=$(mktemp "${TMPDIR:-/tmp}/wallaby-go-test.XXXXXX.json")
+trap 'rm -f "$results"' EXIT HUP INT TERM
+set +e
+"$@" -json >"$results"
+status=$?
+set -e
+cat "$results"
+if [ "$status" -ne 0 ]; then
+	exit "$status"
+fi
+"$GO" run ./scripts/verify-go-test-json.go -results "$results" -required "$IT_REQUIRED_TESTS"

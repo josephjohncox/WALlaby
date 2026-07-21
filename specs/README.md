@@ -147,6 +147,25 @@ Run TLC:
 TLA_MODULE=specs/DDLExecution.tla TLA_CONFIG=specs/DDLExecution.cfg just tla-single
 ```
 
+## Managed Durability Spec (TLA+)
+
+File: `specs/ManagedDurability.tla`
+
+What it models:
+
+- producer takeover and lease-epoch ownership;
+- durable attempts before external target commits;
+- atomic destination receipt, checkpoint, and source ACK-intent publication;
+- atomic artifact root, checkpoint, and source ACK-intent publication;
+- source ACK safety; and
+- orphan collection that cannot delete a PostgreSQL-rooted artifact.
+
+Run TLC:
+
+```
+TLA_MODULE=specs/ManagedDurability.tla TLA_CONFIG=specs/ManagedDurability.cfg just tla-single
+```
+
 ## Trace Validation
 
 We emit optional JSONL traces from the Go runner and validate them offline against

@@ -3,6 +3,7 @@ package runner
 import (
 	"fmt"
 
+	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -13,16 +14,18 @@ import (
 // StreamRunnerConfig contains process-level defaults and dependencies used to
 // construct a stream runner for a flow.
 type StreamRunnerConfig struct {
-	Checkpoints        connector.CheckpointStore
-	Tracer             trace.Tracer
-	Meters             *telemetry.Meters
-	DefaultWireFormat  connector.WireFormat
-	StrictFormat       bool
-	MaxEmptyReads      int
-	DefaultParallelism int
-	ResolveStaging     bool
-	DDLExecutions      stream.DDLExecutionStore
-	TraceSink          stream.TraceSink
+	Checkpoints         connector.CheckpointStore
+	Tracer              trace.Tracer
+	Meters              *telemetry.Meters
+	DefaultWireFormat   connector.WireFormat
+	StrictFormat        bool
+	MaxEmptyReads       int
+	DefaultParallelism  int
+	ResolveStaging      bool
+	DDLExecutions       stream.DDLExecutionStore
+	TraceSink           stream.TraceSink
+	RunFence            *authority.RunFence
+	DeliveryCoordinator stream.ManagedDeliveryCoordinator
 }
 
 // NewStreamRunner constructs a stream runner without mutating the flow or
@@ -91,6 +94,11 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 	if requireDDLExecution && cfg.DDLExecutions == nil {
 		return stream.Runner{}, fmt.Errorf("automatic DDL execution requires durable execution receipt storage")
 	}
+	if managedSourceSpec(sourceSpec) {
+		if err := validateManagedAdmission(f, source, sourceSpec, clonedDestinations, cfg); err != nil {
+			return stream.Runner{}, err
+		}
+	}
 
 	return stream.Runner{
 		Source:              source,
@@ -113,6 +121,8 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 		GiveUpPolicy:        f.Config.GiveUpPolicy,
 		DDLExecutions:       cfg.DDLExecutions,
 		TraceSink:           cfg.TraceSink,
+		RunFence:            cfg.RunFence,
+		DeliveryCoordinator: cfg.DeliveryCoordinator,
 	}, nil
 }
 

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/josephjohncox/wallaby/internal/checkpoint"
+	"github.com/josephjohncox/wallaby/internal/replication"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/spec"
@@ -68,6 +70,8 @@ type Runner struct {
 	GiveUpPolicy        GiveUpPolicy
 	DDLExecutions       DDLExecutionStore
 	TraceSink           TraceSink
+	RunFence            *connector.RunFence
+	DeliveryCoordinator ManagedDeliveryCoordinator
 }
 
 // Run executes the streaming loop until context cancellation or error. It requires
@@ -95,6 +99,26 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	}
 	if r.RequireDDLExecution && r.DDLExecutions == nil {
 		return errors.New("automatic DDL execution requires durable execution receipt storage")
+	}
+	if r.managed() {
+		if r.RunFence == nil || r.DeliveryCoordinator == nil {
+			return errors.New("managed execution requires a run fence and delivery coordinator")
+		}
+		if r.effectiveAckPolicy() != AckPolicyAll {
+			return errors.New("managed PostgreSQL execution currently requires ack_policy=all")
+		}
+		if len(r.Destinations) != 1 {
+			return errors.New("managed PostgreSQL execution currently requires exactly one destination revision")
+		}
+		if _, ok := r.Source.(connector.TransactionalSource); !ok {
+			return errors.New("managed PostgreSQL execution requires a transactional source")
+		}
+		if _, ok := r.Destinations[0].Dest.(connector.ManagedDestination); !ok {
+			return errors.New("managed execution requires a reconcilable destination driver")
+		}
+		if _, ok := r.Checkpoints.(checkpoint.FencedStore); !ok {
+			return errors.New("managed execution requires a generation-fenced PostgreSQL checkpoint store")
+		}
 	}
 
 	defer func() {
@@ -168,7 +192,13 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		explicitStartLSN = r.SourceSpec.Options["start_lsn"]
 	}
 	if checkpointStore != nil && r.FlowID != "" {
-		cp, err := checkpointStore.Get(ctx, r.FlowID)
+		var cp connector.Checkpoint
+		var err error
+		if r.managed() {
+			cp, err = checkpointStore.(checkpoint.FencedStore).GetFenced(ctx, *r.RunFence)
+		} else {
+			cp, err = checkpointStore.Get(ctx, r.FlowID)
+		}
 		switch {
 		case err == nil:
 			restoredCheckpoint = &cp
@@ -188,10 +218,38 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		}
 	}
 
-	if err := r.Source.Open(ctx, r.SourceSpec); err != nil {
+	if err := r.openSource(ctx); err != nil {
 		return fmt.Errorf("open source: %w", err)
 	}
 	defer func() { _ = r.Source.Close(ctx) }()
+
+	if r.managed() {
+		if restoredCheckpoint == nil {
+			initialSource, ok := r.Source.(connector.InitialCheckpointSource)
+			if !ok {
+				return errors.New("managed source does not expose its validated initial checkpoint")
+			}
+			initial, ok := initialSource.InitialCheckpoint()
+			if !ok {
+				return errors.New("managed source did not expose a validated initial checkpoint after open")
+			}
+			grant, err := r.DeliveryCoordinator.AuthorizeAck(ctx, *r.RunFence, initial)
+			if err != nil {
+				return fmt.Errorf("persist managed initial checkpoint: %w", err)
+			}
+			restoredCheckpoint = &grant.Checkpoint
+			ackRestoredCheckpoint = true
+		}
+		if restoredCheckpoint != nil && ackRestoredCheckpoint {
+			positionID, err := connector.CheckpointPositionID(*restoredCheckpoint)
+			if err != nil {
+				return fmt.Errorf("identify restored managed checkpoint: %w", err)
+			}
+			if err := r.ackManagedGrant(ctx, connector.AckGrant{Checkpoint: *restoredCheckpoint, PositionID: positionID}); err != nil {
+				return fmt.Errorf("restore managed source feedback: %w", err)
+			}
+		}
+	}
 
 	openedDestinations := make([]connector.Destination, 0, len(r.Destinations))
 	defer func() {
@@ -207,6 +265,10 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			return fmt.Errorf("open destination %s: %w", destination.Spec.Name, err)
 		}
 		openedDestinations = append(openedDestinations, destination.Dest)
+	}
+
+	if r.managed() {
+		return r.runManaged(ctx)
 	}
 
 	var secondaryQueues []*secondaryQueue
@@ -311,6 +373,29 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			return validationErr
 		}
 		readFailures = 0
+		if len(batch.Records) > 0 && !shouldPersistCheckpoint(batch.Checkpoint) {
+			if r.SourceSpec.Type != connector.EndpointPostgres {
+				span.End()
+				return errors.New("source emitted records without a durable checkpoint")
+			}
+			if ackPolicy == AckPolicyPrimary {
+				span.End()
+				return errors.New("primary acknowledgement cannot durably queue a positionless PostgreSQL transaction fragment")
+			}
+			// PostgreSQL compatibility reads may split one committed transaction
+			// into table-scoped fragments. Deliver intermediate fragments but do
+			// not checkpoint or acknowledge until the final fragment carries the
+			// transaction-end LSN. A crash may replay an intermediate fragment;
+			// the legacy path remains at-least-once.
+			if err := r.writeWithRetry(batchCtx, batch, r.Destinations); err != nil {
+				span.RecordError(err)
+				span.End()
+				return err
+			}
+			r.Meters.RecordBatch(ctx, r.FlowID, int64(len(batch.Records)), float64(time.Since(batchStart).Milliseconds()))
+			span.End()
+			continue
+		}
 		if len(batch.Records) == 0 && !shouldPersistCheckpoint(batch.Checkpoint) {
 			// Sources may emit an empty heartbeat before they have a durable
 			// position. It carries no data and must not be traced, persisted, or
@@ -444,6 +529,116 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		)
 		span.End()
 	}
+}
+
+func (r *Runner) managed() bool {
+	if r.SourceSpec.Options == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(r.SourceSpec.Options["managed"])) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *Runner) openSource(ctx context.Context) error {
+	for {
+		err := r.Source.Open(ctx, r.SourceSpec)
+		if err == nil {
+			return nil
+		}
+		if !r.managed() || !errors.Is(err, replication.ErrReplicationSlotActive) {
+			return err
+		}
+		if r.Meters != nil {
+			r.Meters.RecordError(ctx, "source_slot_active")
+		}
+		if err := r.sleepRetry(ctx); err != nil {
+			return err
+		}
+	}
+}
+
+func (r *Runner) runManaged(ctx context.Context) error {
+	source := r.Source.(connector.TransactionalSource)
+	destination := r.Destinations[0]
+	driver := destination.Dest.(connector.ManagedDestination)
+	fence := *r.RunFence
+
+	for {
+		transaction, err := source.ReadTransaction(ctx)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("read managed source transaction: %w", err)
+		}
+		expectedLineage := strings.TrimSpace(r.SourceSpec.Options["source_lineage_id"])
+		if transaction.SourceLineageID == "" || transaction.SourceLineageID != expectedLineage {
+			return fmt.Errorf("managed source transaction lineage %q does not match configured %q", transaction.SourceLineageID, expectedLineage)
+		}
+		if len(transaction.Fragments) == 0 {
+			grant, err := r.DeliveryCoordinator.AuthorizeAck(ctx, fence, transaction.Checkpoint)
+			if err != nil {
+				return fmt.Errorf("authorize empty managed source transaction ack: %w", err)
+			}
+			if err := r.ackManagedGrant(ctx, grant); err != nil {
+				return fmt.Errorf("ack empty managed source transaction: %w", err)
+			}
+			continue
+		}
+		if len(transaction.Fragments) != 1 {
+			return fmt.Errorf("managed PostgreSQL destination currently admits one table/schema fragment per source transaction; got %d", len(transaction.Fragments))
+		}
+		batch := transaction.Fragments[0].Batch
+		batch.Checkpoint = transaction.Checkpoint
+		contentHash, err := connector.BatchContentHash(batch)
+		if err != nil {
+			return fmt.Errorf("hash managed delivery: %w", err)
+		}
+		positionID, err := connector.CheckpointPositionID(transaction.Checkpoint)
+		if err != nil {
+			return fmt.Errorf("identify managed delivery: %w", err)
+		}
+		destinationRevisionID := strings.TrimSpace(destination.Spec.Options["destination_revision_id"])
+		if destinationRevisionID == "" {
+			return errors.New("managed destination_revision_id is required")
+		}
+		intent := connector.DeliveryIntent{
+			FlowID:                fence.FlowID,
+			FlowIncarnationID:     fence.FlowIncarnationID.String(),
+			SourceLineageID:       transaction.SourceLineageID,
+			Generation:            fence.Generation,
+			AcquisitionID:         fence.AcquisitionID.String(),
+			LeaseEpoch:            fence.LeaseEpoch,
+			DestinationRevisionID: destinationRevisionID,
+			PositionID:            positionID,
+			ContentHash:           contentHash,
+		}
+		grant, err := r.DeliveryCoordinator.Deliver(ctx, fence, intent, batch, driver)
+		if err != nil {
+			return fmt.Errorf("deliver managed source transaction: %w", err)
+		}
+		if err := r.ackManagedGrant(ctx, grant); err != nil {
+			return fmt.Errorf("ack managed source transaction: %w", err)
+		}
+	}
+}
+
+func (r *Runner) ackManagedGrant(ctx context.Context, grant connector.AckGrant) error {
+	fence := *r.RunFence
+	if err := r.DeliveryCoordinator.ValidateAckGrant(ctx, fence, grant); err != nil {
+		return fmt.Errorf("validate managed source ack grant: %w", err)
+	}
+	if err := r.Source.Ack(ctx, grant.Checkpoint); err != nil {
+		return err
+	}
+	if err := r.DeliveryCoordinator.RecordAckReceipt(ctx, fence, grant, ""); err != nil {
+		return fmt.Errorf("record managed source ack receipt: %w", err)
+	}
+	return nil
 }
 
 func checkpointPositionsEqual(left, right string) bool {

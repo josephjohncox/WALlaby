@@ -46,6 +46,13 @@ func (s *CheckpointService) PutCheckpoint(ctx context.Context, req *wallabypb.Pu
 	}
 	cp := checkpointFromProto(req.Checkpoint)
 	start := time.Now()
+	if guard, ok := s.store.(interface {
+		CheckExternalOverrideAllowed(context.Context, string) error
+	}); ok {
+		if err := guard.CheckExternalOverrideAllowed(ctx, req.FlowId); err != nil {
+			return nil, mapCheckpointError(err)
+		}
+	}
 	if err := s.store.Put(ctx, req.FlowId, cp); err != nil {
 		return nil, mapCheckpointError(err)
 	}
@@ -94,6 +101,8 @@ func mapCheckpointError(err error) error {
 	switch {
 	case errors.Is(err, checkpoint.ErrNotFound):
 		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, checkpoint.ErrManagedProducerActive):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}

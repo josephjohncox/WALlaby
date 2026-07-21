@@ -13,9 +13,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/internal/config"
+	"github.com/josephjohncox/wallaby/internal/controlstore"
+	"github.com/josephjohncox/wallaby/internal/delivery"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/registry"
 	"github.com/josephjohncox/wallaby/internal/replication"
@@ -149,19 +152,35 @@ func runWallabyWorker(cmd *cobra.Command) error {
 
 	tracer := telemetry.Tracer(cfg.Telemetry.ServiceName)
 
-	engine, err := workflow.NewPostgresEngine(ctx, cfg.Postgres.DSN)
+	control, err := controlstore.New(ctx, cfg.Postgres.DSN)
+	if err != nil {
+		return fmt.Errorf("start shared control store: %w", err)
+	}
+	defer control.Close()
+	controlPool := control.Pool()
+
+	engine, err := workflow.NewPostgresEngineWithPool(ctx, controlPool)
 	if err != nil {
 		return fmt.Errorf("start workflow engine: %w", err)
 	}
 	defer engine.Close()
 
-	checkpoints, err := checkpoint.NewPostgresStore(ctx, cfg.Postgres.DSN)
+	checkpoints, err := checkpoint.NewPostgresStoreWithPool(ctx, controlPool)
 	if err != nil {
 		return fmt.Errorf("start checkpoint store: %w", err)
 	}
 	defer checkpoints.Close()
 
-	registryStore, err := registry.NewPostgresStore(ctx, cfg.Postgres.DSN)
+	authorityStore, err := authority.NewPostgresStore(controlPool)
+	if err != nil {
+		return fmt.Errorf("start authority store: %w", err)
+	}
+	deliveryCoordinator, err := delivery.NewCoordinator(ctx, controlPool)
+	if err != nil {
+		return fmt.Errorf("start delivery coordinator: %w", err)
+	}
+
+	registryStore, err := registry.NewPostgresStoreWithPool(ctx, controlPool)
 	if err != nil {
 		return fmt.Errorf("start registry store: %w", err)
 	}
@@ -231,6 +250,11 @@ func runWallabyWorker(cmd *cobra.Command) error {
 	}
 	factory := runner.Factory{
 		SchemaHookForFlow: func(f flow.Flow) replication.SchemaHook {
+			if strings.EqualFold(strings.TrimSpace(f.Source.Options["managed"]), "true") {
+				// Managed admission currently rejects DDL capture because registry
+				// mutations do not yet carry the acquired RunFence.
+				return nil
+			}
 			policy := f.Config.DDL.Resolve(defaults)
 			return &registry.Hook{
 				Store:        registryStore,
@@ -269,6 +293,8 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		ExecutionBackend:   executionBackend,
 		ExecutionID:        executionID,
 		ExpectedGeneration: generation,
+		Authority:          authorityStore,
+		Deliveries:         deliveryCoordinator,
 	}
 	if cfg.Trace.Path != "" {
 		tracePath := strings.ReplaceAll(cfg.Trace.Path, "{flow_id}", flowDef.ID)

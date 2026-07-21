@@ -400,3 +400,190 @@ func TestPostgresDestinationPlanDDL(t *testing.T) {
 		t.Fatalf("expected title column dropped from plan change, got %d", columnCount)
 	}
 }
+
+func TestPostgresManagedDriverMarkerReconciles(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	const tableName = "wallaby_managed_receipt_test"
+	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS public.wallaby_managed_receipt_test; CREATE TABLE public.wallaby_managed_receipt_test (id bigint PRIMARY KEY, value text)`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS public.wallaby_managed_receipt_test")
+	}()
+
+	destination := &pgdest.Destination{}
+	if err := destination.Open(ctx, connector.Spec{Name: "managed", Options: map[string]string{
+		"dsn": dsn, "schema": "public", "write_mode": "target", "meta_table_enabled": "false",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	defer destination.Close(ctx)
+
+	batch := connector.Batch{
+		Schema:     connector.Schema{Namespace: "public", Name: tableName, Version: 1, Columns: []connector.Column{{Name: "id", Type: "bigint"}, {Name: "value", Type: "text"}}},
+		Records:    []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "applied"}}},
+		Checkpoint: connector.Checkpoint{LSN: "0/80"},
+	}
+	intent := managedIntent(t, batch, fmt.Sprintf("commit-before-receipt-%d", time.Now().UnixNano()))
+	evidence, err := destination.Apply(ctx, intent, batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disposition, reconciled, err := destination.Reconcile(ctx, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disposition != connector.DeliveryApplied || reconciled != evidence {
+		t.Fatalf("reconcile=(%v,%+v), want applied/%+v", disposition, reconciled, evidence)
+	}
+
+	// A restart would construct a new destination instance. Reopen and prove
+	// that the target marker makes the same delivery a no-op.
+	if err := destination.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	destination = &pgdest.Destination{}
+	if err := destination.Open(ctx, connector.Spec{Name: "managed", Options: map[string]string{
+		"dsn": dsn, "schema": "public", "write_mode": "target", "meta_table_enabled": "false",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := destination.Apply(ctx, intent, batch); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM public.wallaby_managed_receipt_test").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("row count=%d, want one replay-convergent row", count)
+	}
+}
+
+func TestPostgresTargetReplayConvergesIncludingMetadata(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	const tableName = "wallaby_meta_replay_test"
+	flowID := fmt.Sprintf("managed-flow-%d", time.Now().UnixNano())
+	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS public.wallaby_meta_replay_test; CREATE TABLE public.wallaby_meta_replay_test (id bigint PRIMARY KEY, value text)`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS public.wallaby_meta_replay_test") }()
+
+	destination := &pgdest.Destination{}
+	if err := destination.Open(ctx, connector.Spec{Name: "managed", Options: map[string]string{
+		"dsn": dsn, "schema": "public", "write_mode": "target", "flow_id": flowID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	defer destination.Close(ctx)
+
+	batch := connector.Batch{
+		Schema:     connector.Schema{Namespace: "public", Name: tableName, Version: 1, Columns: []connector.Column{{Name: "id", Type: "bigint"}, {Name: "value", Type: "text"}}},
+		Records:    []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "once"}}},
+		Checkpoint: connector.Checkpoint{LSN: "0/90"},
+	}
+	intent := managedIntent(t, batch, fmt.Sprintf("metadata-replay-%d", time.Now().UnixNano()))
+	if _, err := destination.Apply(ctx, intent, batch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := destination.Apply(ctx, intent, batch); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM wallaby_meta.__metadata WHERE flow_id = $1 AND lsn = $2`, flowID, batch.Checkpoint.LSN).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("metadata rows=%d, want one after managed replay", count)
+	}
+}
+
+func TestPostgresTargetPreservesSameKeyOperationOrderIntegration(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	const tableName = "wallaby_operation_order_test"
+	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS public.wallaby_operation_order_test; CREATE TABLE public.wallaby_operation_order_test (id bigint PRIMARY KEY, value text); INSERT INTO public.wallaby_operation_order_test VALUES (1, 'old')`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS public.wallaby_operation_order_test")
+	}()
+
+	destination := &pgdest.Destination{}
+	if err := destination.Open(ctx, connector.Spec{Name: "managed", Options: map[string]string{
+		"dsn": dsn, "schema": "public", "write_mode": "target", "meta_table_enabled": "false",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	defer destination.Close(ctx)
+	key := recordKey(t, map[string]any{"id": 1})
+	batch := connector.Batch{
+		Schema: connector.Schema{Namespace: "public", Name: tableName, Version: 1, Columns: []connector.Column{{Name: "id", Type: "bigint"}, {Name: "value", Type: "text"}}},
+		Records: []connector.Record{
+			{Table: tableName, Operation: connector.OpDelete, Key: key},
+			{Table: tableName, Operation: connector.OpInsert, Key: key, After: map[string]any{"id": 1, "value": "new"}},
+		},
+		Checkpoint: connector.Checkpoint{LSN: "0/A0"},
+	}
+	if _, err := destination.Apply(ctx, managedIntent(t, batch, fmt.Sprintf("same-key-order-%d", time.Now().UnixNano())), batch); err != nil {
+		t.Fatal(err)
+	}
+	var value string
+	if err := pool.QueryRow(ctx, "SELECT value FROM public.wallaby_operation_order_test WHERE id = 1").Scan(&value); err != nil {
+		t.Fatal(err)
+	}
+	if value != "new" {
+		t.Fatalf("value=%q, want new after delete then insert", value)
+	}
+}
+
+func managedIntent(t *testing.T, batch connector.Batch, suffix string) connector.DeliveryIntent {
+	t.Helper()
+	hash, err := connector.BatchContentHash(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return connector.DeliveryIntent{
+		FlowID:                "managed-flow",
+		FlowIncarnationID:     "incarnation-" + suffix,
+		Generation:            1,
+		AcquisitionID:         "acquisition-1",
+		LeaseEpoch:            1,
+		DestinationRevisionID: "postgres-target-1",
+		SourceLineageID:       "source-lineage-1",
+		PositionID:            "position-" + suffix,
+		ContentHash:           hash,
+	}
+}

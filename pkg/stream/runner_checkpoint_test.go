@@ -3,12 +3,46 @@ package stream
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/josephjohncox/wallaby/internal/replication"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
+
+func TestManagedRunnerRetriesTransientActiveSlotOnOpen(t *testing.T) {
+	t.Parallel()
+
+	source := &fakeSource{openErrs: []error{
+		fmt.Errorf("validate replication slot: %w", replication.ErrReplicationSlotActive),
+		fmt.Errorf("validate replication slot: %w", replication.ErrReplicationSlotActive),
+	}}
+	runner := Runner{
+		Source:     source,
+		SourceSpec: connector.Spec{Options: map[string]string{"managed": "true"}},
+	}
+	if err := runner.openSource(context.Background()); err != nil {
+		t.Fatalf("openSource() error = %v", err)
+	}
+	if source.opens != 3 {
+		t.Fatalf("source open attempts = %d, want 3", source.opens)
+	}
+}
+
+func TestLegacyRunnerDoesNotRetryActiveSlotOnOpen(t *testing.T) {
+	t.Parallel()
+
+	source := &fakeSource{openErrs: []error{replication.ErrReplicationSlotActive}}
+	runner := Runner{Source: source}
+	if err := runner.openSource(context.Background()); !errors.Is(err, replication.ErrReplicationSlotActive) {
+		t.Fatalf("openSource() error = %v, want active-slot error", err)
+	}
+	if source.opens != 1 {
+		t.Fatalf("source open attempts = %d, want 1", source.opens)
+	}
+}
 
 func TestRunnerRejectsMissingCheckpointStore(t *testing.T) {
 	t.Parallel()
@@ -90,6 +124,33 @@ func TestRunnerIgnoresEmptyHeartbeatWithoutCheckpointPosition(t *testing.T) {
 	}
 	if len(traceSink.Events()) != 0 {
 		t.Fatalf("trace events = %v, want none", traceSink.Events())
+	}
+}
+
+func TestRunnerDeliversCheckpointlessPostgresFragmentsWithoutEarlyAck(t *testing.T) {
+	t.Parallel()
+	log := &eventLog{}
+	source := &fakeSource{log: log, batches: []connector.Batch{
+		{Schema: connector.Schema{Name: "events", Namespace: "public", Version: 1}, Records: []connector.Record{{Table: "events", Operation: connector.OpInsert, After: map[string]any{"id": int64(1)}}}},
+		{Schema: connector.Schema{Name: "events", Namespace: "public", Version: 1}, Records: []connector.Record{{Table: "events", Operation: connector.OpInsert, After: map[string]any{"id": int64(2)}}}, Checkpoint: connector.Checkpoint{LSN: "0/20"}},
+		{},
+	}}
+	store := &recordingCheckpointStore{}
+	destination := &recordingDest{log: log, name: "dest"}
+	runner := checkpointTestRunner(source, store, nil)
+	runner.SourceSpec.Type = connector.EndpointPostgres
+	runner.SourceSpec.Options["mode"] = connector.SourceModeCDC
+	runner.MaxEmptyReads = 1
+	runner.Destinations[0].Dest = destination
+
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(destination.writes) != 2 || len(destination.writes[0].Records) != 1 || len(destination.writes[1].Records) != 1 {
+		t.Fatalf("destination writes=%v, want both transaction fragments delivered", destination.writes)
+	}
+	if len(source.acks) != 1 || source.acks[0].LSN != "0/20" {
+		t.Fatalf("source ACKs=%v, want only the transaction-end checkpoint", source.acks)
 	}
 }
 
