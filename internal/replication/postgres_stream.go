@@ -650,6 +650,7 @@ func (p *PostgresStream) commitTransaction(ctx context.Context, msg *pglogrepl.C
 		})
 	}
 
+	var transactionOrdinal uint64
 	for index := range transaction.changes {
 		change := transaction.changes[index]
 		change.LSN = msg.TransactionEndLSN
@@ -657,7 +658,8 @@ func (p *PostgresStream) commitTransaction(ctx context.Context, msg *pglogrepl.C
 		change.TransactionBeginLSN = transaction.beginLSN
 		change.TransactionCommitLSN = msg.CommitLSN
 		change.TransactionEndLSN = msg.TransactionEndLSN
-		change.TransactionOrdinal = uint64(index)
+		change.TransactionOrdinal = transactionOrdinal
+		transactionOrdinal++
 		change.TransactionFinal = index == len(transaction.changes)-1
 		if change.Record != nil {
 			// XLogData.ServerTime is an observation timestamp and changes on

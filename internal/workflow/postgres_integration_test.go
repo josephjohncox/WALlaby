@@ -235,6 +235,18 @@ func TestMigration005RejectsLegacyRunningRowsAndMigratesStableRows(t *testing.T)
 	if _, err := stablePool.Exec(ctx, string(migration005)); err != nil {
 		t.Fatal(err)
 	}
+	// Upgrade the fixture through the current authority protocol before using
+	// current PostgresEngine methods. The assertions above remain specific to
+	// migration 005; migrations 006-007 add the provenance those methods require.
+	for _, name := range []string{"006_authority_fences.sql", "007_authority_protocol_v2.sql"} {
+		contents, err := migrationFS.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stablePool.Exec(ctx, string(contents)); err != nil {
+			t.Fatalf("apply fixture migration %s: %v", name, err)
+		}
+	}
 	lockCfg := stablePool.Config()
 	lockCfg.MaxConns = 4
 	lockPool, err := pgxpool.NewWithConfig(ctx, lockCfg)

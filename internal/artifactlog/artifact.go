@@ -115,10 +115,12 @@ func (e *Encoder) EncodeTransaction(_ context.Context, incarnationID uuid.UUID, 
 	artifacts := make([]Artifact, 0, len(transaction.Fragments))
 	var totalInput, totalEncoded int64
 	var totalRecords int
+	var expectedOrdinal uint64
 	for index, fragment := range transaction.Fragments {
-		if fragment.Ordinal != uint64(index) {
+		if fragment.Ordinal != expectedOrdinal {
 			return nil, fmt.Errorf("fragment %d has non-deterministic ordinal %d", index, fragment.Ordinal)
 		}
+		expectedOrdinal++
 		batch := fragment.Batch
 		if len(batch.Records) == 0 {
 			return nil, fmt.Errorf("fragment %d is empty", index)
@@ -242,6 +244,7 @@ func canonicalizeSchema(lineage string, schema connector.Schema) (connector.Sche
 
 func stableFieldID(lineage string, relationID uint32, columnID int16) int32 {
 	digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d", lineage, relationID, columnID)))
+	// #nosec G115 -- shifting an unsigned 32-bit value right yields at most MaxInt32.
 	value := int32(binary.BigEndian.Uint32(digest[:4]) >> 1)
 	if value <= canonicalSystemFieldCount {
 		value += canonicalSystemFieldCount + 1
