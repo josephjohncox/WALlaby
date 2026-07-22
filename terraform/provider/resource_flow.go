@@ -36,11 +36,16 @@ type endpointModel struct {
 }
 
 type flowConfigModel struct {
-	AckPolicy          types.String        `tfsdk:"ack_policy"`
-	PrimaryDestination types.String        `tfsdk:"primary_destination"`
-	FailureMode        types.String        `tfsdk:"failure_mode"`
-	GiveUpPolicy       types.String        `tfsdk:"give_up_policy"`
-	DDL                *flowDDLConfigModel `tfsdk:"ddl"`
+	AckPolicy          types.String                    `tfsdk:"ack_policy"`
+	PrimaryDestination types.String                    `tfsdk:"primary_destination"`
+	FailureMode        types.String                    `tfsdk:"failure_mode"`
+	GiveUpPolicy       types.String                    `tfsdk:"give_up_policy"`
+	DDL                *flowDDLConfigModel             `tfsdk:"ddl"`
+	Materialization    *flowMaterializationPolicyModel `tfsdk:"materialization"`
+}
+
+type flowMaterializationPolicyModel struct {
+	ProjectionID types.String `tfsdk:"projection_id"`
 }
 
 type flowDDLConfigModel struct {
@@ -141,10 +146,92 @@ func (r *flowResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 							},
 						},
 					},
+					"materialization": schema.SingleNestedAttribute{
+						Optional: true,
+						Attributes: map[string]schema.Attribute{
+							"projection_id": schema.StringAttribute{Required: true},
+						},
+					},
 				},
 			},
 		},
 	}
+}
+
+func (r *flowResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var model flowResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &model)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(validateFlowResourceModel(ctx, model)...)
+}
+
+func validateFlowResourceModel(ctx context.Context, model flowResourceModel) diag.Diagnostics {
+	var diagnostics diag.Diagnostics
+	if model.Config == nil {
+		return diagnostics
+	}
+	config := model.Config
+	ackPolicy := "all"
+	if !config.AckPolicy.IsNull() && !config.AckPolicy.IsUnknown() && strings.TrimSpace(config.AckPolicy.ValueString()) != "" {
+		ackPolicy = strings.ToLower(strings.TrimSpace(config.AckPolicy.ValueString()))
+	}
+	switch ackPolicy {
+	case "all", "primary", "materialized":
+	default:
+		diagnostics.AddError("Invalid acknowledgement policy", "ack_policy must be one of all, primary, or materialized")
+	}
+	if !config.FailureMode.IsNull() && !config.FailureMode.IsUnknown() {
+		switch strings.ToLower(strings.TrimSpace(config.FailureMode.ValueString())) {
+		case "", "hold_slot", "drop_slot":
+		default:
+			diagnostics.AddError("Invalid failure mode", "failure_mode must be hold_slot or drop_slot")
+		}
+	}
+	if !config.GiveUpPolicy.IsNull() && !config.GiveUpPolicy.IsUnknown() {
+		switch strings.ToLower(strings.TrimSpace(config.GiveUpPolicy.ValueString())) {
+		case "", "never", "on_retry_exhaustion":
+		default:
+			diagnostics.AddError("Invalid give-up policy", "give_up_policy must be never or on_retry_exhaustion")
+		}
+	}
+	if ackPolicy != "materialized" {
+		if config.Materialization != nil {
+			diagnostics.AddError("Invalid materialization policy", "materialization requires ack_policy=materialized")
+		}
+		return diagnostics
+	}
+	if config.Materialization == nil || config.Materialization.ProjectionID.IsNull() {
+		diagnostics.AddError("Missing materialization policy", "ack_policy=materialized requires materialization.projection_id=canonical_cdc_parquet_v1")
+		return diagnostics
+	}
+	if !config.Materialization.ProjectionID.IsUnknown() && strings.TrimSpace(config.Materialization.ProjectionID.ValueString()) != "canonical_cdc_parquet_v1" {
+		diagnostics.AddError("Invalid materialization projection", "ack_policy=materialized requires materialization.projection_id=canonical_cdc_parquet_v1")
+	}
+	if !config.PrimaryDestination.IsNull() && !config.PrimaryDestination.IsUnknown() && strings.TrimSpace(config.PrimaryDestination.ValueString()) != "" {
+		diagnostics.AddError("Invalid primary destination", "primary_destination is not valid with ack_policy=materialized")
+	}
+	if !model.Source.Type.IsUnknown() && !model.Source.Type.IsNull() && !strings.EqualFold(strings.TrimSpace(model.Source.Type.ValueString()), "postgres") {
+		diagnostics.AddError("Invalid materialized source", "ack_policy=materialized requires a PostgreSQL source")
+	}
+	if !model.Source.Options.IsNull() && !model.Source.Options.IsUnknown() {
+		options := map[string]string{}
+		diagnostics.Append(model.Source.Options.ElementsAs(ctx, &options, false)...)
+		if !diagnostics.HasError() {
+			switch strings.ToLower(strings.TrimSpace(options["managed"])) {
+			case "1", "true", "yes", "on":
+			default:
+				diagnostics.AddError("Invalid materialized source", "ack_policy=materialized requires managed PostgreSQL transactional execution")
+			}
+			if strings.TrimSpace(options["managed_profile"]) != "" {
+				diagnostics.AddError("Invalid materialized profile", "ack_policy=materialized is not admitted by named managed profiles")
+			}
+		}
+	} else if !model.Source.Options.IsUnknown() {
+		diagnostics.AddError("Invalid materialized source", "ack_policy=materialized requires source.options.managed=true")
+	}
+	return diagnostics
 }
 
 func (r *flowResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
@@ -391,6 +478,13 @@ func flowConfigModelToProto(model *flowConfigModel) *wallabypb.FlowConfig {
 			has = true
 		}
 	}
+	if model.Materialization != nil && !model.Materialization.ProjectionID.IsNull() && !model.Materialization.ProjectionID.IsUnknown() {
+		projectionID := strings.TrimSpace(model.Materialization.ProjectionID.ValueString())
+		if projectionID != "" {
+			cfg.Materialization = &wallabypb.MaterializationPolicy{ProjectionId: projectionID}
+			has = true
+		}
+	}
 	if !has {
 		return nil
 	}
@@ -426,6 +520,10 @@ func flowConfigModelFromProto(pb *wallabypb.FlowConfig) *flowConfigModel {
 	}
 	if ddl := ddlPolicyModelFromProto(pb.Ddl); ddl != nil {
 		model.DDL = ddl
+		has = true
+	}
+	if pb.Materialization != nil && pb.Materialization.ProjectionId != "" {
+		model.Materialization = &flowMaterializationPolicyModel{ProjectionID: types.StringValue(pb.Materialization.ProjectionId)}
 		has = true
 	}
 	if !has {
@@ -528,6 +626,8 @@ func ackPolicyFromString(value string) wallabypb.AckPolicy {
 		return wallabypb.AckPolicy_ACK_POLICY_ALL
 	case "primary":
 		return wallabypb.AckPolicy_ACK_POLICY_PRIMARY
+	case "materialized":
+		return wallabypb.AckPolicy_ACK_POLICY_MATERIALIZED
 	default:
 		return wallabypb.AckPolicy_ACK_POLICY_UNSPECIFIED
 	}
@@ -539,6 +639,8 @@ func ackPolicyToString(value wallabypb.AckPolicy) string {
 		return "all"
 	case wallabypb.AckPolicy_ACK_POLICY_PRIMARY:
 		return "primary"
+	case wallabypb.AckPolicy_ACK_POLICY_MATERIALIZED:
+		return "materialized"
 	default:
 		return ""
 	}

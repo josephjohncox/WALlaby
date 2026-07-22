@@ -232,7 +232,7 @@ func DeliveryConfigFingerprint(spec Spec) (string, error)
 DeliveryConfigFingerprint returns a deterministic identity for the behavior of one destination revision. The revision ID itself is excluded so callers can compare two independently named revisions with identical configuration.
 
 <a name="MergeManagedSchemaBaselines"></a>
-## func [MergeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L157>)
+## func [MergeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L165>)
 
 ```go
 func MergeManagedSchemaBaselines(metadata map[string]string, transaction SourceTransaction) (map[string]string, error)
@@ -279,7 +279,7 @@ func SourceTransactionContentHash(transaction SourceTransaction) (string, error)
 SourceTransactionContentHash returns the stable logical identity of a full committed transaction. Observation timestamps on the checkpoint do not participate, while transaction and fragment order always do.
 
 <a name="SourceTransactionIdentity"></a>
-## func [SourceTransactionIdentity](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L129>)
+## func [SourceTransactionIdentity](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L137>)
 
 ```go
 func SourceTransactionIdentity(transaction SourceTransaction) (string, string, error)
@@ -288,7 +288,7 @@ func SourceTransactionIdentity(transaction SourceTransaction) (string, string, e
 SourceTransactionIdentity computes the content hash and logical batch ID in one pass. Callers at each trust seam can validate independently without hashing the same transaction twice at that seam.
 
 <a name="SourceTransactionLogicalBatchID"></a>
-## func [SourceTransactionLogicalBatchID](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L144>)
+## func [SourceTransactionLogicalBatchID](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L152>)
 
 ```go
 func SourceTransactionLogicalBatchID(transaction SourceTransaction) (string, error)
@@ -804,7 +804,7 @@ type FlowCheckpoint struct {
 ```
 
 <a name="FlushEvidenceSource"></a>
-## type [FlushEvidenceSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L251-L254>)
+## type [FlushEvidenceSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L259-L262>)
 
 FlushEvidenceSource sends source feedback and proves the resulting logical slot flush position. The managed coordinator validates authority before and after this external source operation; feedback itself is monotonic.
 
@@ -816,7 +816,7 @@ type FlushEvidenceSource interface {
 ```
 
 <a name="InitialCheckpointSource"></a>
-## type [InitialCheckpointSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L237-L240>)
+## type [InitialCheckpointSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L245-L248>)
 
 InitialCheckpointSource exposes the validated stream start after Open. A managed coordinator persists this cut and an ACK intent before the first source transaction, so a crash immediately after slot creation is recoverable.
 
@@ -1175,7 +1175,7 @@ type Schema struct {
 ```
 
 <a name="DecodeManagedSchemaBaselines"></a>
-### func [DecodeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L193>)
+### func [DecodeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L201>)
 
 ```go
 func DecodeManagedSchemaBaselines(raw string) ([]Schema, error)
@@ -1210,7 +1210,7 @@ type Source interface {
 ```
 
 <a name="SourceFlushEvidence"></a>
-## type [SourceFlushEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L244-L246>)
+## type [SourceFlushEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L252-L254>)
 
 SourceFlushEvidence is the source PostgreSQL position observed after a standby\-status update, not merely an in\-process scheduling acknowledgement.
 
@@ -1280,7 +1280,7 @@ const (
 ```
 
 <a name="TransactionFragment"></a>
-## type [TransactionFragment](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L221-L224>)
+## type [TransactionFragment](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L229-L232>)
 
 TransactionFragment is a deterministic, ordered table/schema fragment of a committed source transaction.
 
@@ -1292,7 +1292,7 @@ type TransactionFragment struct {
 ```
 
 <a name="TransactionalSource"></a>
-## type [TransactionalSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L229-L232>)
+## type [TransactionalSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L237-L240>)
 
 TransactionalSource is an optional source contract for managed execution. Legacy Source.Read remains available for compatibility, but managed PostgreSQL execution consumes complete transactions through this interface.
 

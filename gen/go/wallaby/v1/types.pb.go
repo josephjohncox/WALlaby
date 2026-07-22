@@ -231,6 +231,12 @@ const (
 	AckPolicy_ACK_POLICY_UNSPECIFIED AckPolicy = 0
 	AckPolicy_ACK_POLICY_ALL         AckPolicy = 1
 	AckPolicy_ACK_POLICY_PRIMARY     AckPolicy = 2
+	// ACK_POLICY_MATERIALIZED acknowledges a CDC transaction only after its
+	// canonical immutable objects and fenced PostgreSQL publication/checkpoint
+	// commit. A data-free startup cut is rooted as an object-free canonical
+	// publication before feedback. The configured destination is not committed
+	// on the CDC path, and this release registers no production catalog consumer.
+	AckPolicy_ACK_POLICY_MATERIALIZED AckPolicy = 3
 )
 
 // Enum value maps for AckPolicy.
@@ -239,11 +245,13 @@ var (
 		0: "ACK_POLICY_UNSPECIFIED",
 		1: "ACK_POLICY_ALL",
 		2: "ACK_POLICY_PRIMARY",
+		3: "ACK_POLICY_MATERIALIZED",
 	}
 	AckPolicy_value = map[string]int32{
-		"ACK_POLICY_UNSPECIFIED": 0,
-		"ACK_POLICY_ALL":         1,
-		"ACK_POLICY_PRIMARY":     2,
+		"ACK_POLICY_UNSPECIFIED":  0,
+		"ACK_POLICY_ALL":          1,
+		"ACK_POLICY_PRIMARY":      2,
+		"ACK_POLICY_MATERIALIZED": 3,
 	}
 )
 
@@ -442,6 +450,7 @@ type FlowConfig struct {
 	SchemaRegistrySubject           string                 `protobuf:"bytes,6,opt,name=schema_registry_subject,json=schemaRegistrySubject,proto3" json:"schema_registry_subject,omitempty"`
 	SchemaRegistryProtoTypesSubject string                 `protobuf:"bytes,7,opt,name=schema_registry_proto_types_subject,json=schemaRegistryProtoTypesSubject,proto3" json:"schema_registry_proto_types_subject,omitempty"`
 	SchemaRegistrySubjectMode       string                 `protobuf:"bytes,8,opt,name=schema_registry_subject_mode,json=schemaRegistrySubjectMode,proto3" json:"schema_registry_subject_mode,omitempty"`
+	Materialization                 *MaterializationPolicy `protobuf:"bytes,9,opt,name=materialization,proto3" json:"materialization,omitempty"`
 	unknownFields                   protoimpl.UnknownFields
 	sizeCache                       protoimpl.SizeCache
 }
@@ -532,6 +541,58 @@ func (x *FlowConfig) GetSchemaRegistrySubjectMode() string {
 	return ""
 }
 
+func (x *FlowConfig) GetMaterialization() *MaterializationPolicy {
+	if x != nil {
+		return x.Materialization
+	}
+	return nil
+}
+
+type MaterializationPolicy struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The first admitted projection is exactly canonical_cdc_parquet_v1.
+	ProjectionId  string `protobuf:"bytes,1,opt,name=projection_id,json=projectionId,proto3" json:"projection_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MaterializationPolicy) Reset() {
+	*x = MaterializationPolicy{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MaterializationPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MaterializationPolicy) ProtoMessage() {}
+
+func (x *MaterializationPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MaterializationPolicy.ProtoReflect.Descriptor instead.
+func (*MaterializationPolicy) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *MaterializationPolicy) GetProjectionId() string {
+	if x != nil {
+		return x.ProjectionId
+	}
+	return ""
+}
+
 type DDLPolicy struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Gate          *bool                  `protobuf:"varint,1,opt,name=gate,proto3,oneof" json:"gate,omitempty"`
@@ -543,7 +604,7 @@ type DDLPolicy struct {
 
 func (x *DDLPolicy) Reset() {
 	*x = DDLPolicy{}
-	mi := &file_wallaby_v1_types_proto_msgTypes[2]
+	mi := &file_wallaby_v1_types_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -555,7 +616,7 @@ func (x *DDLPolicy) String() string {
 func (*DDLPolicy) ProtoMessage() {}
 
 func (x *DDLPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_types_proto_msgTypes[2]
+	mi := &file_wallaby_v1_types_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -568,7 +629,7 @@ func (x *DDLPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DDLPolicy.ProtoReflect.Descriptor instead.
 func (*DDLPolicy) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{2}
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *DDLPolicy) GetGate() bool {
@@ -608,7 +669,7 @@ type Flow struct {
 
 func (x *Flow) Reset() {
 	*x = Flow{}
-	mi := &file_wallaby_v1_types_proto_msgTypes[3]
+	mi := &file_wallaby_v1_types_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -620,7 +681,7 @@ func (x *Flow) String() string {
 func (*Flow) ProtoMessage() {}
 
 func (x *Flow) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_types_proto_msgTypes[3]
+	mi := &file_wallaby_v1_types_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -633,7 +694,7 @@ func (x *Flow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Flow.ProtoReflect.Descriptor instead.
 func (*Flow) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{3}
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *Flow) GetId() string {
@@ -703,7 +764,7 @@ type Checkpoint struct {
 
 func (x *Checkpoint) Reset() {
 	*x = Checkpoint{}
-	mi := &file_wallaby_v1_types_proto_msgTypes[4]
+	mi := &file_wallaby_v1_types_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -715,7 +776,7 @@ func (x *Checkpoint) String() string {
 func (*Checkpoint) ProtoMessage() {}
 
 func (x *Checkpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_types_proto_msgTypes[4]
+	mi := &file_wallaby_v1_types_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -728,7 +789,7 @@ func (x *Checkpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Checkpoint.ProtoReflect.Descriptor instead.
 func (*Checkpoint) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{4}
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Checkpoint) GetLsn() string {
@@ -764,7 +825,7 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\aoptions\x18\x03 \x03(\v2!.wallaby.v1.Endpoint.OptionsEntryR\aoptions\x1a:\n" +
 	"\fOptionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdf\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xac\x04\n" +
 	"\n" +
 	"FlowConfig\x124\n" +
 	"\n" +
@@ -775,7 +836,10 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\x03ddl\x18\x05 \x01(\v2\x15.wallaby.v1.DDLPolicyR\x03ddl\x126\n" +
 	"\x17schema_registry_subject\x18\x06 \x01(\tR\x15schemaRegistrySubject\x12L\n" +
 	"#schema_registry_proto_types_subject\x18\a \x01(\tR\x1fschemaRegistryProtoTypesSubject\x12?\n" +
-	"\x1cschema_registry_subject_mode\x18\b \x01(\tR\x19schemaRegistrySubjectMode\"\x99\x01\n" +
+	"\x1cschema_registry_subject_mode\x18\b \x01(\tR\x19schemaRegistrySubjectMode\x12K\n" +
+	"\x0fmaterialization\x18\t \x01(\v2!.wallaby.v1.MaterializationPolicyR\x0fmaterialization\"<\n" +
+	"\x15MaterializationPolicy\x12#\n" +
+	"\rprojection_id\x18\x01 \x01(\tR\fprojectionId\"\x99\x01\n" +
 	"\tDDLPolicy\x12\x17\n" +
 	"\x04gate\x18\x01 \x01(\bH\x00R\x04gate\x88\x01\x01\x12&\n" +
 	"\fauto_approve\x18\x02 \x01(\bH\x01R\vautoApprove\x88\x01\x01\x12\"\n" +
@@ -834,11 +898,12 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\x13WIRE_FORMAT_PARQUET\x10\x02\x12\x15\n" +
 	"\x11WIRE_FORMAT_PROTO\x10\x03\x12\x14\n" +
 	"\x10WIRE_FORMAT_AVRO\x10\x04\x12\x14\n" +
-	"\x10WIRE_FORMAT_JSON\x10\x05*S\n" +
+	"\x10WIRE_FORMAT_JSON\x10\x05*p\n" +
 	"\tAckPolicy\x12\x1a\n" +
 	"\x16ACK_POLICY_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eACK_POLICY_ALL\x10\x01\x12\x16\n" +
-	"\x12ACK_POLICY_PRIMARY\x10\x02*c\n" +
+	"\x12ACK_POLICY_PRIMARY\x10\x02\x12\x1b\n" +
+	"\x17ACK_POLICY_MATERIALIZED\x10\x03*c\n" +
 	"\vFailureMode\x12\x1c\n" +
 	"\x18FAILURE_MODE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16FAILURE_MODE_HOLD_SLOT\x10\x01\x12\x1a\n" +
@@ -861,40 +926,42 @@ func file_wallaby_v1_types_proto_rawDescGZIP() []byte {
 }
 
 var file_wallaby_v1_types_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_wallaby_v1_types_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_wallaby_v1_types_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_wallaby_v1_types_proto_goTypes = []any{
-	(FlowState)(0),     // 0: wallaby.v1.FlowState
-	(EndpointType)(0),  // 1: wallaby.v1.EndpointType
-	(WireFormat)(0),    // 2: wallaby.v1.WireFormat
-	(AckPolicy)(0),     // 3: wallaby.v1.AckPolicy
-	(FailureMode)(0),   // 4: wallaby.v1.FailureMode
-	(GiveUpPolicy)(0),  // 5: wallaby.v1.GiveUpPolicy
-	(*Endpoint)(nil),   // 6: wallaby.v1.Endpoint
-	(*FlowConfig)(nil), // 7: wallaby.v1.FlowConfig
-	(*DDLPolicy)(nil),  // 8: wallaby.v1.DDLPolicy
-	(*Flow)(nil),       // 9: wallaby.v1.Flow
-	(*Checkpoint)(nil), // 10: wallaby.v1.Checkpoint
-	nil,                // 11: wallaby.v1.Endpoint.OptionsEntry
-	nil,                // 12: wallaby.v1.Checkpoint.MetadataEntry
+	(FlowState)(0),                // 0: wallaby.v1.FlowState
+	(EndpointType)(0),             // 1: wallaby.v1.EndpointType
+	(WireFormat)(0),               // 2: wallaby.v1.WireFormat
+	(AckPolicy)(0),                // 3: wallaby.v1.AckPolicy
+	(FailureMode)(0),              // 4: wallaby.v1.FailureMode
+	(GiveUpPolicy)(0),             // 5: wallaby.v1.GiveUpPolicy
+	(*Endpoint)(nil),              // 6: wallaby.v1.Endpoint
+	(*FlowConfig)(nil),            // 7: wallaby.v1.FlowConfig
+	(*MaterializationPolicy)(nil), // 8: wallaby.v1.MaterializationPolicy
+	(*DDLPolicy)(nil),             // 9: wallaby.v1.DDLPolicy
+	(*Flow)(nil),                  // 10: wallaby.v1.Flow
+	(*Checkpoint)(nil),            // 11: wallaby.v1.Checkpoint
+	nil,                           // 12: wallaby.v1.Endpoint.OptionsEntry
+	nil,                           // 13: wallaby.v1.Checkpoint.MetadataEntry
 }
 var file_wallaby_v1_types_proto_depIdxs = []int32{
 	1,  // 0: wallaby.v1.Endpoint.type:type_name -> wallaby.v1.EndpointType
-	11, // 1: wallaby.v1.Endpoint.options:type_name -> wallaby.v1.Endpoint.OptionsEntry
+	12, // 1: wallaby.v1.Endpoint.options:type_name -> wallaby.v1.Endpoint.OptionsEntry
 	3,  // 2: wallaby.v1.FlowConfig.ack_policy:type_name -> wallaby.v1.AckPolicy
 	4,  // 3: wallaby.v1.FlowConfig.failure_mode:type_name -> wallaby.v1.FailureMode
 	5,  // 4: wallaby.v1.FlowConfig.give_up_policy:type_name -> wallaby.v1.GiveUpPolicy
-	8,  // 5: wallaby.v1.FlowConfig.ddl:type_name -> wallaby.v1.DDLPolicy
-	6,  // 6: wallaby.v1.Flow.source:type_name -> wallaby.v1.Endpoint
-	6,  // 7: wallaby.v1.Flow.destinations:type_name -> wallaby.v1.Endpoint
-	0,  // 8: wallaby.v1.Flow.state:type_name -> wallaby.v1.FlowState
-	2,  // 9: wallaby.v1.Flow.wire_format:type_name -> wallaby.v1.WireFormat
-	7,  // 10: wallaby.v1.Flow.config:type_name -> wallaby.v1.FlowConfig
-	12, // 11: wallaby.v1.Checkpoint.metadata:type_name -> wallaby.v1.Checkpoint.MetadataEntry
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	9,  // 5: wallaby.v1.FlowConfig.ddl:type_name -> wallaby.v1.DDLPolicy
+	8,  // 6: wallaby.v1.FlowConfig.materialization:type_name -> wallaby.v1.MaterializationPolicy
+	6,  // 7: wallaby.v1.Flow.source:type_name -> wallaby.v1.Endpoint
+	6,  // 8: wallaby.v1.Flow.destinations:type_name -> wallaby.v1.Endpoint
+	0,  // 9: wallaby.v1.Flow.state:type_name -> wallaby.v1.FlowState
+	2,  // 10: wallaby.v1.Flow.wire_format:type_name -> wallaby.v1.WireFormat
+	7,  // 11: wallaby.v1.Flow.config:type_name -> wallaby.v1.FlowConfig
+	13, // 12: wallaby.v1.Checkpoint.metadata:type_name -> wallaby.v1.Checkpoint.MetadataEntry
+	13, // [13:13] is the sub-list for method output_type
+	13, // [13:13] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_wallaby_v1_types_proto_init() }
@@ -902,14 +969,14 @@ func file_wallaby_v1_types_proto_init() {
 	if File_wallaby_v1_types_proto != nil {
 		return
 	}
-	file_wallaby_v1_types_proto_msgTypes[2].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wallaby_v1_types_proto_rawDesc), len(file_wallaby_v1_types_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -47,6 +47,23 @@ func TestSourceTransactionContentHashPreservesFragmentOrder(t *testing.T) {
 		t.Fatalf("process-local schema version changed replay identity: %s != %s", first, versionHash)
 	}
 
+	runtimeReplayed := transaction
+	runtimeReplayed.Checkpoint.Metadata = map[string]string{
+		"artifact_publication_id":       "9d5f8653-2bc9-4a83-a967-3da7b4ca68bb",
+		"artifact_publication_sequence": "41",
+		"managed_schema_baselines":      `[{"namespace":"public","name":"widgets"}]`,
+	}
+	runtimeReplayed.Fragments = append([]TransactionFragment(nil), transaction.Fragments...)
+	runtimeReplayed.Fragments[0].Batch = transaction.Fragments[0].Batch
+	runtimeReplayed.Fragments[0].Batch.WireFormat = WireFormatJSON
+	runtimeHash, err := SourceTransactionContentHash(runtimeReplayed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != runtimeHash {
+		t.Fatalf("runtime checkpoint metadata or wire format changed logical identity: %s != %s", first, runtimeHash)
+	}
+
 	reordered := transaction
 	reordered.Fragments = []TransactionFragment{transaction.Fragments[1], transaction.Fragments[0]}
 	reordered.Fragments[0].Ordinal = 0

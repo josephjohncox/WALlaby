@@ -26,6 +26,7 @@ type StreamRunnerConfig struct {
 	TraceSink           stream.TraceSink
 	RunFence            *authority.RunFence
 	DeliveryCoordinator stream.ManagedDeliveryCoordinator
+	ArtifactLog         stream.ManagedArtifactLog
 }
 
 // NewStreamRunner constructs a stream runner without mutating the flow or
@@ -73,6 +74,9 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 	}
 
 	requireDDLExecution := f.Config.DDL.AutoApply != nil && *f.Config.DDL.AutoApply
+	if f.Config.AckPolicy == stream.AckPolicyMaterialized && !managedSourceSpec(sourceSpec) {
+		return stream.Runner{}, fmt.Errorf("ack_policy=materialized requires managed PostgreSQL transactional execution")
+	}
 	if managedSourceSpec(sourceSpec) {
 		if err := validateManagedAdmission(f, source, sourceSpec, clonedDestinations, cfg); err != nil {
 			return stream.Runner{}, err
@@ -123,6 +127,7 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 		TraceSink:           cfg.TraceSink,
 		RunFence:            cfg.RunFence,
 		DeliveryCoordinator: cfg.DeliveryCoordinator,
+		ArtifactLog:         cfg.ArtifactLog,
 	}, nil
 }
 

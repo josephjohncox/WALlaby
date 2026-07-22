@@ -72,6 +72,7 @@ type Runner struct {
 	TraceSink           TraceSink
 	RunFence            *connector.RunFence
 	DeliveryCoordinator ManagedDeliveryCoordinator
+	ArtifactLog         ManagedArtifactLog
 }
 
 // Run executes the streaming loop until context cancellation or error. It requires
@@ -100,12 +101,15 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	if r.RequireDDLExecution && r.DDLExecutions == nil {
 		return errors.New("automatic DDL execution requires durable execution receipt storage")
 	}
+	if r.effectiveAckPolicy() == AckPolicyMaterialized && !r.managed() {
+		return errors.New("ack_policy=materialized requires managed PostgreSQL transactional execution")
+	}
 	if r.managed() {
 		if r.RunFence == nil || r.DeliveryCoordinator == nil {
 			return errors.New("managed execution requires a run fence and delivery coordinator")
 		}
-		if r.effectiveAckPolicy() != AckPolicyAll {
-			return errors.New("managed PostgreSQL execution currently requires ack_policy=all")
+		if r.effectiveAckPolicy() != AckPolicyAll && r.effectiveAckPolicy() != AckPolicyMaterialized {
+			return errors.New("managed PostgreSQL execution requires ack_policy=all or materialized")
 		}
 		if len(r.Destinations) != 1 {
 			return errors.New("managed PostgreSQL execution currently requires exactly one destination revision")
@@ -116,11 +120,17 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		if _, ok := r.Source.(connector.FlushEvidenceSource); !ok {
 			return errors.New("managed PostgreSQL execution requires observed source flush evidence")
 		}
-		if _, ok := r.Destinations[0].Dest.(connector.ManagedTransactionDestination); !ok {
-			return errors.New("managed execution requires a full-transaction reconcilable destination driver")
-		}
-		if _, ok := r.DeliveryCoordinator.(ManagedTransactionDeliveryCoordinator); !ok {
-			return errors.New("managed execution requires a full-transaction delivery coordinator extension")
+		if r.effectiveAckPolicy() == AckPolicyMaterialized {
+			if r.ArtifactLog == nil {
+				return errors.New("materialized acknowledgement requires the PostgreSQL-authoritative artifact log")
+			}
+		} else {
+			if _, ok := r.Destinations[0].Dest.(connector.ManagedTransactionDestination); !ok {
+				return errors.New("managed execution requires a full-transaction reconcilable destination driver")
+			}
+			if _, ok := r.DeliveryCoordinator.(ManagedTransactionDeliveryCoordinator); !ok {
+				return errors.New("managed execution requires a full-transaction delivery coordinator extension")
+			}
 		}
 		if _, ok := r.DeliveryCoordinator.(ManagedSourceFeedbackCoordinator); !ok {
 			return errors.New("managed execution requires an observed source-feedback coordinator extension")
@@ -195,6 +205,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	}
 
 	var restoredCheckpoint *connector.Checkpoint
+	var restoredArtifactGrant *connector.AckGrant
 	ackRestoredCheckpoint := false
 	explicitStartLSN := ""
 	if r.SourceSpec.Options != nil {
@@ -247,6 +258,15 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			openedDestinations = append(openedDestinations, destination.Dest)
 		}
 		return nil
+	}
+
+	if r.managed() && r.effectiveAckPolicy() == AckPolicyMaterialized {
+		if err := r.ArtifactLog.Recover(ctx, *r.RunFence); err != nil {
+			return fmt.Errorf("recover canonical artifact publication: %w", err)
+		}
+		if err := r.ArtifactLog.WaitForReadAdmission(ctx, *r.RunFence); err != nil {
+			return fmt.Errorf("restore canonical artifact backpressure: %w", err)
+		}
 	}
 
 	bootstrapMode := "never"
@@ -305,6 +325,14 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		}
 	}
 
+	if r.managed() && r.effectiveAckPolicy() == AckPolicyMaterialized && restoredCheckpoint != nil && strings.TrimSpace(restoredCheckpoint.Metadata["artifact_publication_id"]) != "" {
+		grant, err := r.ArtifactLog.RestoreCheckpoint(ctx, *r.RunFence, *restoredCheckpoint)
+		if err != nil {
+			return fmt.Errorf("restore canonical artifact checkpoint: %w", err)
+		}
+		restoredArtifactGrant = &grant
+	}
+
 	if err := r.openSource(ctx); err != nil {
 		return fmt.Errorf("open source: %w", err)
 	}
@@ -320,26 +348,55 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			if !ok {
 				return errors.New("managed source did not expose a validated initial checkpoint after open")
 			}
-			grant, err := r.DeliveryCoordinator.AuthorizeAck(ctx, *r.RunFence, initial)
-			if err != nil {
-				return fmt.Errorf("persist managed initial checkpoint: %w", err)
+			if r.effectiveAckPolicy() == AckPolicyMaterialized {
+				restoredCheckpoint = &initial
+				ackRestoredCheckpoint = true
+			} else {
+				grant, err := r.DeliveryCoordinator.AuthorizeAck(ctx, *r.RunFence, initial)
+				if err != nil {
+					return fmt.Errorf("persist managed initial checkpoint: %w", err)
+				}
+				restoredCheckpoint = &grant.Checkpoint
+				ackRestoredCheckpoint = true
 			}
-			restoredCheckpoint = &grant.Checkpoint
-			ackRestoredCheckpoint = true
 		}
 		if restoredCheckpoint != nil && ackRestoredCheckpoint {
 			positionID, err := connector.CheckpointPositionID(*restoredCheckpoint)
 			if err != nil {
 				return fmt.Errorf("identify restored managed checkpoint: %w", err)
 			}
-			if err := r.ackManagedGrant(ctx, connector.AckGrant{Checkpoint: *restoredCheckpoint, PositionID: positionID}); err != nil {
+			grant := connector.AckGrant{Checkpoint: *restoredCheckpoint, PositionID: positionID}
+			if r.effectiveAckPolicy() == AckPolicyMaterialized {
+				if strings.TrimSpace(restoredCheckpoint.Metadata["artifact_publication_id"]) == "" {
+					grant, err = r.ArtifactLog.Append(ctx, *r.RunFence, connector.SourceTransaction{
+						SourceLineageID: r.SourceSpec.Options["source_lineage_id"],
+						TransactionID:   ^uint32(0),
+						BeginLSN:        restoredCheckpoint.LSN,
+						CommitLSN:       restoredCheckpoint.LSN,
+						EndLSN:          restoredCheckpoint.LSN,
+						Checkpoint:      *restoredCheckpoint,
+					})
+					if err != nil {
+						return fmt.Errorf("materialize managed startup checkpoint: %w", err)
+					}
+					restoredCheckpoint = &grant.Checkpoint
+				} else {
+					if restoredArtifactGrant == nil {
+						return errors.New("restored artifact checkpoint was not validated before source open")
+					}
+					grant = *restoredArtifactGrant
+				}
+			}
+			if err := r.ackManagedGrant(ctx, grant); err != nil {
 				return fmt.Errorf("restore managed source feedback: %w", err)
 			}
 		}
 	}
 
-	if err := openDestinations(); err != nil {
-		return err
+	if r.effectiveAckPolicy() != AckPolicyMaterialized {
+		if err := openDestinations(); err != nil {
+			return err
+		}
 	}
 
 	if r.managed() {
@@ -689,10 +746,16 @@ func (r *Runner) openSource(ctx context.Context) error {
 
 func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint) error {
 	source := r.Source.(connector.TransactionalSource)
-	destination := r.Destinations[0]
-	driver := destination.Dest.(connector.ManagedTransactionDestination)
-	coordinator := r.DeliveryCoordinator.(ManagedTransactionDeliveryCoordinator)
 	fence := *r.RunFence
+	materialized := r.effectiveAckPolicy() == AckPolicyMaterialized
+	var destination DestinationConfig
+	var driver connector.ManagedTransactionDestination
+	var coordinator ManagedTransactionDeliveryCoordinator
+	if !materialized {
+		destination = r.Destinations[0]
+		driver = destination.Dest.(connector.ManagedTransactionDestination)
+		coordinator = r.DeliveryCoordinator.(ManagedTransactionDeliveryCoordinator)
+	}
 	managedMetadata := map[string]string{}
 	if restored != nil {
 		for key, value := range restored.Metadata {
@@ -701,6 +764,13 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 	}
 
 	for {
+		if materialized {
+			// Durable backlog is restored before source open and rechecked before
+			// every subsequent read. No in-memory batch is needed to enforce it.
+			if err := r.ArtifactLog.WaitForReadAdmission(ctx, fence); err != nil {
+				return fmt.Errorf("wait for canonical artifact backlog: %w", err)
+			}
+		}
 		transaction, err := source.ReadTransaction(ctx)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -731,6 +801,29 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 			readAction = spec.ActionReadDDL
 		}
 		r.emitCheckpointTrace(ctx, "read", transaction.Checkpoint, positionID, readAction, nil)
+
+		if materialized {
+			grant, err := r.ArtifactLog.Append(ctx, fence, transaction)
+			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return fmt.Errorf("publish canonical source transaction: %w", err)
+			}
+			r.emitCheckpointTrace(ctx, "deliver", grant.Checkpoint, grant.PositionID, spec.ActionDeliver, nil)
+			r.emitCheckpointTrace(ctx, "checkpoint", grant.Checkpoint, grant.PositionID, spec.ActionPersistCheckpoint, nil)
+			// Append has committed the immutable roots, delivery rows, quota,
+			// checkpoint, and ACK intent. Source feedback is strictly later.
+			if err := r.ackManagedGrant(ctx, grant); err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return fmt.Errorf("ack materialized source transaction: %w", err)
+			}
+			managedMetadata = grant.Checkpoint.Metadata
+			continue
+		}
+
 		if len(transaction.Fragments) == 0 {
 			grant, err := r.DeliveryCoordinator.AuthorizeAck(ctx, fence, transaction.Checkpoint)
 			if err != nil {

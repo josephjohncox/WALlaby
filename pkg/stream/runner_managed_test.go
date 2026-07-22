@@ -121,6 +121,31 @@ func TestManagedBootstrapPublishesBeforeCDCSourceOpen(t *testing.T) {
 	}
 }
 
+func TestManagedMaterializedRestoresBackpressureBeforeBootstrapWork(t *testing.T) {
+	t.Parallel()
+
+	events := []string{}
+	source := &managedTestSource{
+		events: &events,
+		bootstrapResult: connector.ManagedBootstrapResult{
+			SourceOptions: map[string]string{"slot": "owned-slot", "start_lsn": "0/18"},
+			Checkpoint:    connector.Checkpoint{LSN: "0/18"}, CheckpointValid: true,
+		},
+	}
+	runner := managedTestRunner(source, &managedTestDestination{events: &events}, &managedTestCoordinator{events: &events}, managedTestCheckpointStore{err: connector.ErrCheckpointNotFound})
+	runner.SourceSpec.Options["bootstrap"] = "required"
+	runner.AckPolicy = AckPolicyMaterialized
+	runner.ArtifactLog = &managedTestArtifactLog{events: &events}
+
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wantPrefix := []string{"artifact.recover", "artifact.wait", "destination.open", "source.bootstrap"}
+	if len(events) < len(wantPrefix) || !reflect.DeepEqual(events[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("materialized bootstrap startup events=%v, want prefix %v", events, wantPrefix)
+	}
+}
+
 func TestManagedNewSlotPersistsInitialCutBeforeDestinationOpen(t *testing.T) {
 	t.Parallel()
 	events := []string{}
@@ -135,6 +160,116 @@ func TestManagedNewSlotPersistsInitialCutBeforeDestinationOpen(t *testing.T) {
 	if len(events) < len(wantPrefix) || !reflect.DeepEqual(events[:len(wantPrefix)], wantPrefix) {
 		t.Fatalf("managed startup events=%v, want prefix %v", events, wantPrefix)
 	}
+}
+
+func TestManagedMaterializedRestoredPublicationIsValidatedBeforeSourceOpen(t *testing.T) {
+	t.Parallel()
+
+	events := []string{}
+	restored := connector.Checkpoint{LSN: "0/18", Metadata: map[string]string{
+		"artifact_publication_id": "9d5f8653-2bc9-4a83-a967-3da7b4ca68bb",
+	}}
+	source := &managedTestSource{events: &events}
+	coordinator := &managedTestCoordinator{events: &events}
+	artifactLog := &managedTestArtifactLog{events: &events}
+	runner := managedTestRunner(source, &managedTestDestination{events: &events}, coordinator, managedTestCheckpointStore{checkpoint: restored})
+	runner.AckPolicy = AckPolicyMaterialized
+	runner.ArtifactLog = artifactLog
+
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	restoreIndex := eventIndex(events, "artifact.restore")
+	openIndex := eventIndex(events, "source.open")
+	ackIndex := eventIndex(events, "source.ack")
+	if restoreIndex < 0 || openIndex < 0 || ackIndex < 0 || restoreIndex >= openIndex || restoreIndex >= ackIndex {
+		t.Fatalf("events=%v, want artifact restore validation before source open and feedback", events)
+	}
+	if artifactLog.restores != 1 || artifactLog.appends != 0 {
+		t.Fatalf("artifact restore/append=%d/%d, want 1/0", artifactLog.restores, artifactLog.appends)
+	}
+}
+
+func TestManagedMaterializedPublishesBeforeSourceFeedbackWithoutOpeningDestination(t *testing.T) {
+	t.Parallel()
+
+	events := []string{}
+	source := &managedTestSource{events: &events, transactions: []connector.SourceTransaction{{
+		SourceLineageID: "lineage-1", TransactionID: 10,
+		BeginLSN: "0/11", CommitLSN: "0/17", EndLSN: "0/18",
+		Checkpoint: connector.Checkpoint{LSN: "0/18"},
+		Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: connector.Batch{
+			Schema: connector.Schema{Namespace: "public", Name: "events", Columns: []connector.Column{{
+				Name: "id", Type: "int8", TypeMetadata: map[string]string{"source_relation_id": "42", "source_column_id": "1"},
+			}}},
+			Records: []connector.Record{{Table: "events", Operation: connector.OpInsert, After: map[string]any{"id": int64(1)}}},
+		}}},
+	}}}
+	destination := &managedTestDestination{events: &events}
+	coordinator := &managedTestCoordinator{events: &events}
+	artifactLog := &managedTestArtifactLog{events: &events}
+	runner := managedTestRunner(source, destination, coordinator, managedTestCheckpointStore{
+		checkpoint: connector.Checkpoint{LSN: "0/10"},
+	})
+	runner.AckPolicy = AckPolicyMaterialized
+	runner.ArtifactLog = artifactLog
+
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if containsEvent(events, "destination.open") {
+		t.Fatalf("materialized worker opened synchronous destination: %v", events)
+	}
+	appendIndexes := make([]int, 0, 2)
+	ackIndexes := make([]int, 0, 2)
+	for index, event := range events {
+		switch event {
+		case "artifact.append":
+			appendIndexes = append(appendIndexes, index)
+		case "source.ack":
+			ackIndexes = append(ackIndexes, index)
+		}
+	}
+	if len(appendIndexes) != 2 || len(ackIndexes) != 2 || appendIndexes[0] >= ackIndexes[0] || appendIndexes[1] >= ackIndexes[1] {
+		t.Fatalf("events=%v, want startup and transaction publication before corresponding source ACKs", events)
+	}
+	if artifactLog.recoveries != 1 || artifactLog.waits < 2 || artifactLog.appends != 2 {
+		t.Fatalf("artifact calls recover/wait/append=%d/%d/%d", artifactLog.recoveries, artifactLog.waits, artifactLog.appends)
+	}
+}
+
+type managedTestArtifactLog struct {
+	events     *[]string
+	recoveries int
+	restores   int
+	waits      int
+	appends    int
+}
+
+func (l *managedTestArtifactLog) Recover(context.Context, connector.RunFence) error {
+	l.recoveries++
+	*l.events = append(*l.events, "artifact.recover")
+	return nil
+}
+
+func (l *managedTestArtifactLog) RestoreCheckpoint(_ context.Context, _ connector.RunFence, checkpoint connector.Checkpoint) (connector.AckGrant, error) {
+	l.restores++
+	*l.events = append(*l.events, "artifact.restore")
+	positionID, err := connector.CheckpointPositionID(checkpoint)
+	return connector.AckGrant{Checkpoint: checkpoint, PositionID: positionID}, err
+}
+
+func (l *managedTestArtifactLog) WaitForReadAdmission(context.Context, connector.RunFence) error {
+	l.waits++
+	*l.events = append(*l.events, "artifact.wait")
+	return nil
+}
+
+func (l *managedTestArtifactLog) Append(_ context.Context, _ connector.RunFence, transaction connector.SourceTransaction) (connector.AckGrant, error) {
+	l.appends++
+	*l.events = append(*l.events, "artifact.append")
+	positionID, err := connector.CheckpointPositionID(transaction.Checkpoint)
+	return connector.AckGrant{Checkpoint: transaction.Checkpoint, PositionID: positionID}, err
 }
 
 func managedTestRunner(source connector.Source, destination connector.Destination, coordinator ManagedDeliveryCoordinator, checkpoints connector.CheckpointStore) Runner {
@@ -325,6 +460,15 @@ func (managedTestCheckpointStore) ListOutboxFenced(context.Context, authority.Ru
 }
 func (managedTestCheckpointStore) CompleteOutboxFenced(context.Context, authority.RunFence, string, string) error {
 	return nil
+}
+
+func eventIndex(events []string, want string) int {
+	for index, event := range events {
+		if event == want {
+			return index
+		}
+	}
+	return -1
 }
 
 func containsEvent(events []string, want string) bool {

@@ -69,9 +69,9 @@ var authorityMutableTables = []string{
 	"flows", "flow_incarnations", "flow_state_events", "flow_executions", "execution_acquisitions", "producer_leases", "work_claims",
 	"checkpoints", "checkpoint_outbox", "authoritative_checkpoints", "authoritative_checkpoint_outbox",
 	"schema_versions", "ddl_events", "ddl_execution_attempts", "ddl_execution_receipts", "ddl_execution_manifests", "ddl_execution_run_attempts", "schema_publication_operations",
-	"destination_revisions", "delivery_manifests", "delivery_attempts", "delivery_attempt_evidence", "delivery_receipts", "source_ack_intents", "source_ack_receipts", "delivery_retention_roots",
+	"destination_revisions", "delivery_manifests", "delivery_attempts", "delivery_attempt_evidence", "delivery_receipts", "source_ack_intents", "source_ack_receipts", "delivery_retention_roots", "source_ack_retention_roots",
 	"source_bootstraps", "source_bootstrap_tasks", "snapshot_publication_receipts", "source_resources", "source_resource_operations", "snapshot_delivery_attempts", "snapshot_delivery_evidence", "snapshot_delivery_receipts",
-	"canonical_schemas", "artifact_streams", "artifact_objects", "artifact_upload_attempts", "artifact_publications", "artifact_publication_objects", "artifact_deliveries", "artifact_quota_accounts", "artifact_quota_reservations", "artifact_gc_claims", "artifact_delivery_attempts", "artifact_delivery_receipts",
+	"canonical_schemas", "artifact_streams", "artifact_objects", "artifact_upload_attempts", "artifact_publications", "artifact_publication_objects", "artifact_barriers", "artifact_deliveries", "artifact_quota_accounts", "artifact_quota_reservations", "artifact_gc_claims", "artifact_delivery_attempts", "artifact_delivery_receipts",
 }
 
 var requiredManagedColumns = map[string][]string{
@@ -94,7 +94,13 @@ var requiredManagedColumns = map[string][]string{
 	"source_ack_intents":            {"flow_incarnation_id", "position_id", "checkpoint_lsn", "generation", "acquisition_id", "lease_epoch"},
 	"source_ack_receipts":           {"flow_incarnation_id", "position_id", "checkpoint_lsn", "observed_flush_lsn", "generation", "acquisition_id", "lease_epoch"},
 	"delivery_retention_roots":      {"flow_incarnation_id", "minimum_position_id", "retained_after", "updated_at"},
-	"artifact_publications":         {"publication_id", "flow_incarnation_id", "source_lineage_id", "source_transaction_id", "source_xid", "begin_lsn", "commit_lsn", "source_position", "checkpoint_lsn", "position_id", "content_hash", "generation", "acquisition_id", "lease_epoch", "rooted_bytes", "published_at"},
+	"source_ack_retention_roots":    {"flow_incarnation_id", "position_id", "root_kind", "root_id", "created_at", "released_at"},
+	"artifact_streams":              {"flow_incarnation_id", "flow_id", "projection_id", "consumer_fingerprint", "next_publication_sequence", "gc_epoch", "hard_retained_bytes", "backlog_count_high", "backlog_bytes_high", "backlog_age_high_seconds"},
+	"artifact_objects":              {"artifact_id", "flow_incarnation_id", "logical_batch_id", "source_position", "fragment_ordinal", "namespace", "table_name", "schema_id", "partition_value", "shard", "first_record_ordinal", "record_count", "logical_content_hash", "encoded_byte_hash", "encoded_length", "bucket", "object_key", "version_id", "checksum_sha256", "state"},
+	"artifact_publications":         {"publication_id", "flow_incarnation_id", "source_lineage_id", "source_transaction_id", "source_xid", "begin_lsn", "commit_lsn", "source_position", "checkpoint_lsn", "position_id", "content_hash", "logical_batch_id", "sequence", "checkpoint_metadata", "generation", "acquisition_id", "lease_epoch", "rooted_bytes", "published_at"},
+	"artifact_publication_objects":  {"publication_id", "artifact_id", "ordinal", "release_marked_at", "released_at"},
+	"artifact_barriers":             {"publication_id", "ordinal", "fragment_ordinal", "record_ordinal", "kind", "namespace", "table_name", "schema_id", "ddl", "ddl_plan", "content_hash"},
+	"artifact_gc_claims":            {"artifact_id", "claim_epoch", "generation", "acquisition_id", "lease_epoch", "claim_kind", "publication_id"},
 }
 
 type requiredManagedObject struct {
@@ -126,6 +132,10 @@ var requiredManagedConstraints = []requiredManagedObject{
 	{table: "snapshot_delivery_receipts", name: "snapshot_delivery_receipts_attempt_id_fkey"},
 	{table: "delivery_attempts", name: "delivery_attempts_state_valid"},
 	{table: "delivery_attempts", name: "delivery_attempts_number_positive"},
+	{table: "artifact_objects", name: "artifact_objects_version_evidence"},
+	{table: "artifact_objects", name: "artifact_objects_record_count_positive"},
+	{table: "artifact_gc_claims", name: "artifact_gc_claims_kind_valid"},
+	{table: "artifact_gc_claims", name: "artifact_gc_claims_publication_kind"},
 }
 
 var requiredManagedIndexes = []requiredManagedObject{
@@ -140,6 +150,11 @@ var requiredManagedIndexes = []requiredManagedObject{
 	{table: "delivery_manifests", name: "delivery_manifests_logical_batch_idx"},
 	{table: "delivery_receipts", name: "delivery_receipts_logical_batch_idx"},
 	{table: "delivery_attempts", name: "delivery_attempts_retry_idx"},
+	{table: "source_ack_retention_roots", name: "source_ack_retention_roots_active_idx"},
+	{table: "artifact_objects", name: "artifact_objects_logical_shard_idx"},
+	{table: "artifact_publications", name: "artifact_publications_logical_batch_idx"},
+	{table: "artifact_publications", name: "artifact_publications_sequence_idx"},
+	{table: "artifact_publication_objects", name: "artifact_publication_objects_active_roots_idx"},
 }
 
 func verifyManagedAuthoritySchema(ctx context.Context, pool *pgxpool.Pool) error {

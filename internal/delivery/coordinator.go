@@ -1007,6 +1007,12 @@ WITH candidates AS (
       WHERE manifest.flow_incarnation_id=intent.flow_incarnation_id
         AND manifest.position_id=intent.position_id
     )
+    AND NOT EXISTS (
+      SELECT 1 FROM source_ack_retention_roots AS retention_root
+      WHERE retention_root.flow_incarnation_id=intent.flow_incarnation_id
+        AND retention_root.position_id=intent.position_id
+        AND retention_root.released_at IS NULL
+    )
   ORDER BY intent.authorized_at,intent.position_id
   LIMIT $4
 )
@@ -1029,6 +1035,12 @@ WITH candidates AS (
       SELECT 1 FROM delivery_manifests AS manifest
       WHERE manifest.flow_incarnation_id=ack.flow_incarnation_id
         AND manifest.position_id=ack.position_id
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM source_ack_retention_roots AS retention_root
+      WHERE retention_root.flow_incarnation_id=ack.flow_incarnation_id
+        AND retention_root.position_id=ack.position_id
+        AND retention_root.released_at IS NULL
     )
   ORDER BY ack.recorded_at,ack.position_id
   LIMIT $4

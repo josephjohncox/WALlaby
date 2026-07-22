@@ -75,9 +75,11 @@
     - Ordinary S3 stores immutable payload objects, schemas, and manifests. Do
       not implement S3-only workflow/checkpoint/outbox authority or a mutable
       `latest.json` publication head.
-    - Intercept only after `connector.ValidateBatch`, ordered data/control
-      separation, and DDL/schema barriers. Materialize once per validated source
-      batch, outside the per-destination transform and retry loops; do not
+    - Intercept only after `connector.ValidateBatch` and ordered data/control
+      separation. DDL records become barriers; schema changes split artifacts by
+      fingerprint rather than emitting a separate schema-barrier record.
+      Materialize once per validated source batch, outside the per-destination
+      transform and retry loops; do not
       intercept destination-specific wire bytes.
     - The first projection is `canonical_cdc_parquet_v1`: PostgreSQL CDC only,
       CDC-only ingestion, append-only changelog, one compatible
@@ -86,7 +88,7 @@
       checksums.
     - `ack_policy=materialized` means the canonical artifact and its fenced PostgreSQL publication are durable; it does not mean every downstream table committed the batch.
   - Required invariants:
-    - Every acknowledged source position maps to exactly one published `LogicalBatchID`, independent of worker generation.
+    - Every acknowledged source position has one immutable published `LogicalBatchID`; retries must reuse that identity, independent of worker generation.
     - `ArtifactID` is deterministic from projection ID, schema fingerprint, source/table, partition, shard, and logical batch identity; generation identifies an attempt, never a new logical delivery.
     - Every published manifest references present checksum-valid immutable objects. A matching object is reusable; the same identity with different logical content fails closed.
     - A fenced PostgreSQL transaction publishes the manifest, delivery rows, outbox state, quota accounting, and checkpoint together. A stale worker cannot publish or advance any of them.
@@ -99,13 +101,13 @@
     - Backlog byte, batch-count, and age high-water marks stop checkpoint advancement before source acknowledgement; restart restores accounting before new reads.
     - Encode-once means once per identical projection ID and shard, not one universal encoding for all destinations.
   - Milestones:
-    - [ ] Define `LogicalBatchID`, `ArtifactID`, canonical schema fingerprinting, deterministic record ordinals, projection compatibility, and property tests under `internal/artifactlog`.
-    - [ ] Implement a pure planner that splits validated batches by ordered DDL barrier, table, schema fingerprint, partition, shard, and size; unsupported records fail before upload.
-    - [ ] Implement deterministic `canonical_cdc_parquet_v1` encoding with per-record source position and operation envelope; prove repeated encoding and mixed-table/schema failure properties.
+    - [x] Define `LogicalBatchID`, `ArtifactID`, canonical schema fingerprinting, deterministic record ordinals, projection compatibility, and property tests under `internal/artifactlog`.
+    - [x] Implement a pure planner that splits validated batches by ordered DDL barrier, table, schema fingerprint, partition, shard, and size; unsupported records fail before upload.
+    - [x] Implement deterministic `canonical_cdc_parquet_v1` encoding with per-record source position and operation envelope; prove repeated encoding and mixed-table/schema failure properties.
     - [ ] Upload immutable objects and manifests with conditional creation, SHA-256 verification, durable upload intents, and package-local plus real-S3 ambiguous-response, conflict, concurrent-writer, and partial-upload tests.
-    - [ ] In one generation-fenced PostgreSQL transaction publish manifests, downstream delivery rows, outbox state, quota accounting, and checkpoint; acknowledge the source only after commit.
-    - [ ] Crash-test upload, manifest, PostgreSQL commit, checkpoint, and source-ACK boundaries; inject delayed stale workers and verify lifecycle/spec invariants.
-    - [ ] Add artifact-reference delivery queues, conservative orphan GC, and quota recovery; in-memory queues must not duplicate batch payloads.
+    - [x] In one generation-fenced PostgreSQL transaction publish manifest roots, downstream delivery rows, quota accounting, checkpoint, and the materialized ACK intent; acknowledge the source only after commit.
+    - [x] Crash-test upload intent, object PUT/evidence/verification, PostgreSQL publication commit, and source-ACK ordering; inject delayed stale workers and verify lifecycle/spec invariants.
+    - [x] Add artifact-reference delivery queues, reserved/uploaded orphan reconciliation, rooted-retention mark/sweep, and quota recovery; in-memory queues do not duplicate batch payloads.
     - [ ] Add an append-only ordinary-Iceberg changelog consumer using
       `Commit`/`Reconcile`, stable WALlaby batch IDs in snapshot summaries, and
       catalog-commit crash recovery. Reuse immutable files only when the
@@ -126,14 +128,15 @@
 - [x] Add durable destination manifests, immutable configuration-qualified destination revisions, append-only attempts/evidence, immutable receipts, checkpoint/ACK-intent coupling, and PostgreSQL target-marker reconciliation.
 - [x] Add the managed PostgreSQL worker path, full source-transaction delivery, target-marker reconciliation, and observed source-flush evidence.
 - [x] Wire slot-exported bootstrap into `wallaby-worker` and in-process DBOS. `bootstrap=auto|required` now uses a pre-slot DDL barrier, publication create/adopt journal, imported snapshot tasks, receipt-backed exclusive cursors, atomic PostgreSQL target publication, exact-LSN handoff, and whole-generation restart after exporter loss.
-- [ ] Wire canonical artifacts into managed execution. The package now validates source transaction identity, exact-version checksums, monotonic publication, quota conversion, and consumer claims, but no worker constructs a publisher.
+- [x] Wire `ack_policy=materialized` canonical artifacts into managed worker and in-process DBOS execution with exact projection admission, pre-read restored backpressure, and post-commit source feedback. Named maintained profiles remain on `ack_policy=all`.
 - [x] Downgrade PostgreSQL CDC and legacy backfill source capability claims to experimental pending the complete promotion matrix.
 - [x] Add the `ManagedDurability` and `ManagedPostgresDelivery` TLA+ models plus required PR, multi-version live-integration, and scheduled nightly recipes/jobs.
 - [ ] Finish every remaining managed mutation seam. DBOS, source DDL/catalog rows, DDL attempts/receipts, bootstrap staging, checkpoints, delivery, and owned slot/publication operations now carry the fence; legacy managed administrative resource mutation fails closed. The named PostgreSQL profile admits ordered relation-diff DDL plans, while external schema-registry publication, raw DDL-capture resource creation, and generic staging remain unadmitted.
 - [x] Add an authority-protocol session gate to workflow, checkpoint, and registry mutations so a pre-authority binary is rejected after the quiesced migration.
 - [x] Support normal and streamed multi-table/multi-schema PostgreSQL source transactions, preserving ordered DDL/control barriers in one target transaction.
-- [ ] Reconcile and release old `reserved` artifact objects that have no exact `VersionId`. The conservative collector deletes only unrooted `uploaded`/`verified` exact versions.
-- [ ] Add published-artifact retention GC and long-running publisher/GC race tests. The hard retained-byte ceiling is fail-stop containment, not retention.
+- [x] Reconcile old `reserved` artifact intents by exact version on replay; conflicting versions fail closed, and prepared PUTs without evidence remain quota-charged because a stale in-flight request may still complete after takeover.
+- [ ] Add a transport-level proof for requests that were never sent before releasing no-evidence prepared PUT reservations; do not infer this from a single not-found listing.
+- [x] Add fenced rooted-retention mark/sweep with source-ACK, delivery-receipt, age, and newer-checkpoint roots plus publisher/GC claim revalidation tests.
 - [ ] Implement and live-test an Iceberg REST catalog adapter. The current code supplies only the PostgreSQL queue and catalog abstraction.
 - [ ] Implement the append-only ClickHouse managed changelog profile. Managed admission currently rejects the mutation connector.
 - [x] Share one bounded worker control pool and one checksum-verifying migration coordinator; import and dual-record legacy workflow/checkpoint/registry history.
@@ -150,10 +153,10 @@
   regroup the same records under different terminal checkpoints. Do not declare
   `IdempotentReplay` or `ReplaySafe` until stable per-record/logical-batch
   identity survives rebatching.
-- [ ] Treat the existing Arrow/Parquet codecs as destination encodings, not
-  `canonical_cdc_parquet_v1`. The canonical artifact envelope must include
-  per-record source position, deterministic ordinal, operation, and ordered
-  control/DDL separation.
+- [x] Treat the existing Arrow/Parquet codecs as destination encodings, not
+  `canonical_cdc_parquet_v1`. The canonical artifact envelope includes
+  per-record source position, deterministic ordinal, logical batch identity,
+  unchanged-column markers, operation, and ordered control/DDL separation.
 - [ ] Establish performance acceptance separately from local seam benchmarks.
   Bound retained benchmark state; record command, Go version, repository
   identity, environment, custom request/call metrics, and baseline/candidate

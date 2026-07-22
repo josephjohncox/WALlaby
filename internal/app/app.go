@@ -279,6 +279,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			TracePath:     tracePath,
 			Authority:     authorityStore,
 			Deliveries:    deliveryCoordinator,
+			Artifacts:     runner.NewArtifactLogFactory(controlPool, cfg.Artifacts),
 		}, baseEngine, checkpoints, factory)
 		if err != nil {
 			return err

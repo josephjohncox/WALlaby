@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,57 @@ import (
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
+
+func TestCanonicalArtifactS3AdmissionRequiresEnabledVersioning(t *testing.T) {
+	endpoint := os.Getenv("WALLABY_TEST_S3_ENDPOINT")
+	accessKey := os.Getenv("WALLABY_TEST_S3_ACCESS_KEY")
+	secretKey := os.Getenv("WALLABY_TEST_S3_SECRET_KEY")
+	region := os.Getenv("WALLABY_TEST_S3_REGION")
+	if endpoint == "" || accessKey == "" || secretKey == "" {
+		t.Skip("S3 integration environment is required")
+	}
+	if region == "" {
+		region = "us-east-1"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client, err := newS3Client(ctx, endpoint, region, accessKey, secretKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bucket := "wallaby-v-" + strings.ToLower(uuid.NewString())
+	if _, err := client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = client.DeleteBucket(context.Background(), &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
+	})
+	config := artifactlog.S3Config{
+		Bucket: bucket, Region: region, Endpoint: endpoint,
+		AccessKey: accessKey, SecretKey: secretKey, ForcePathStyle: true,
+	}
+	if _, err := artifactlog.NewS3Store(ctx, config); err == nil {
+		t.Fatal("unversioned bucket was admitted for immutable artifacts")
+	}
+	if _, err := client.PutBucketVersioning(ctx, &s3.PutBucketVersioningInput{
+		Bucket:                  aws.String(bucket),
+		VersioningConfiguration: &types.VersioningConfiguration{Status: types.BucketVersioningStatusEnabled},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := artifactlog.NewS3Store(ctx, config); err != nil {
+		t.Fatalf("enabled versioning was rejected: %v", err)
+	}
+	if _, err := client.PutBucketVersioning(ctx, &s3.PutBucketVersioningInput{
+		Bucket:                  aws.String(bucket),
+		VersioningConfiguration: &types.VersioningConfiguration{Status: types.BucketVersioningStatusSuspended},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := artifactlog.NewS3Store(ctx, config); err == nil {
+		t.Fatal("versioning-suspended bucket was admitted for immutable artifacts")
+	}
+}
 
 func TestCanonicalArtifactPublicationRecovery(t *testing.T) {
 	endpoint := os.Getenv("WALLABY_TEST_S3_ENDPOINT")
@@ -201,7 +253,7 @@ func TestCanonicalArtifactPublicationRecovery(t *testing.T) {
 	if _, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: aws.String(artifact.ObjectKey)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := objects.HeadVersion(ctx, evidence); err != nil {
+	if _, err := objects.HeadVersion(ctx, evidence); err != nil {
 		t.Fatalf("exact rooted version was hidden by a later delete marker: %v", err)
 	}
 	if err := publisher.RecomputeQuota(ctx, fence); err != nil {
@@ -223,15 +275,19 @@ func TestCanonicalArtifactPublicationRecovery(t *testing.T) {
 }
 
 type recordingAppendCatalog struct {
-	commit      artifactlog.CatalogCommit
-	appendCalls int
+	commit       artifactlog.CatalogCommit
+	appendCalls  int
+	objectCount  int
+	barrierCount int
 }
 
-func (c *recordingAppendCatalog) Append(_ context.Context, _ string, _ uuid.UUID, objects []artifactlog.ObjectEvidence) (artifactlog.CatalogCommit, error) {
-	if len(objects) == 0 {
-		return artifactlog.CatalogCommit{}, errors.New("append received no rooted objects")
+func (c *recordingAppendCatalog) Append(_ context.Context, _ string, _ uuid.UUID, objects []artifactlog.RootedArtifact, barriers []artifactlog.Barrier) (artifactlog.CatalogCommit, error) {
+	if len(objects) == 0 && len(barriers) == 0 {
+		return artifactlog.CatalogCommit{}, errors.New("append received no rooted objects or barriers")
 	}
 	c.appendCalls++
+	c.objectCount += len(objects)
+	c.barrierCount += len(barriers)
 	return c.commit, nil
 }
 
@@ -246,7 +302,6 @@ type failBeforePutStore struct {
 
 func (s *failBeforePutStore) PutImmutable(ctx context.Context, key string, body []byte, digest string) (artifactlog.ObjectEvidence, error) {
 	if s.fail {
-		s.fail = false
 		return artifactlog.ObjectEvidence{}, errors.New("injected crash before immutable PUT")
 	}
 	return s.ObjectStore.PutImmutable(ctx, key, body, digest)

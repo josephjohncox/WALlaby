@@ -100,8 +100,27 @@ func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec c
 	if f.Config.FailureMode == stream.FailureModeDropSlot {
 		return errors.New("managed execution rejects failure_mode=drop_slot; cleanup requires fenced source-resource ownership")
 	}
-	if f.Config.AckPolicy != "" && f.Config.AckPolicy != stream.AckPolicyAll {
-		return errors.New("managed PostgreSQL profile currently requires ack_policy=all")
+	ackPolicy := f.Config.AckPolicy
+	if ackPolicy == "" {
+		ackPolicy = stream.AckPolicyAll
+	}
+	switch ackPolicy {
+	case stream.AckPolicyAll:
+		if f.Config.Materialization != (flow.MaterializationPolicy{}) {
+			return errors.New("materialization policy requires ack_policy=materialized")
+		}
+	case stream.AckPolicyMaterialized:
+		if profileName != "" {
+			return fmt.Errorf("named managed profile %s requires ack_policy=all; materialized publication remains experimental", profileName)
+		}
+		if cfg.ArtifactLog == nil {
+			return errors.New("ack_policy=materialized requires a configured PostgreSQL-authoritative artifact log")
+		}
+		if f.Config.Materialization.ProjectionID != "canonical_cdc_parquet_v1" {
+			return fmt.Errorf("ack_policy=materialized requires materialization.projection_id=canonical_cdc_parquet_v1; got %q", f.Config.Materialization.ProjectionID)
+		}
+	default:
+		return errors.New("managed PostgreSQL profile currently requires ack_policy=all or the explicit materialized artifact contract")
 	}
 	if f.Config.DDL.AutoApply != nil && *f.Config.DDL.AutoApply {
 		return errors.New("managed PostgreSQL profile rejects automatic raw-SQL DDL; structured receipt-backed DDL is not yet admitted")

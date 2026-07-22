@@ -101,6 +101,10 @@ func SourceTransactionContentHash(transaction SourceTransaction) (string, error)
 		}
 		write(canonical)
 	}
+	canonicalEndLSN, err := CanonicalizeCheckpointPosition(transaction.EndLSN)
+	if err != nil {
+		return "", err
+	}
 	for index := range transaction.Fragments {
 		fragment := transaction.Fragments[index]
 		batch := fragment.Batch
@@ -112,7 +116,11 @@ func SourceTransactionContentHash(transaction SourceTransaction) (string, error)
 		for recordIndex := range batch.Records {
 			batch.Records[recordIndex].SchemaVersion = 0
 		}
-		batch.Checkpoint = transaction.Checkpoint
+		// Runtime transport and checkpoint metadata are not part of the source
+		// transaction. They may change after publication or across a worker
+		// restart without changing the canonical rows or barriers.
+		batch.Checkpoint = Checkpoint{LSN: canonicalEndLSN}
+		batch.WireFormat = ""
 		batchHash, err := BatchContentHash(batch)
 		if err != nil {
 			return "", fmt.Errorf("hash source transaction fragment %d: %w", index, err)

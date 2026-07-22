@@ -4297,6 +4297,7 @@ func flowDetailFromProto(pbFlow *wallabypb.Flow) flowDetail {
 	if pbFlow.Config != nil {
 		item.Config = flowConfigInfo{
 			AckPolicy:                       ackPolicyName(pbFlow.Config.AckPolicy),
+			Materialization:                 flowMaterializationInfoFromProto(pbFlow.Config.Materialization),
 			PrimaryDestination:              pbFlow.Config.PrimaryDestination,
 			FailureMode:                     failureModeName(pbFlow.Config.FailureMode),
 			GiveUpPolicy:                    giveUpPolicyName(pbFlow.Config.GiveUpPolicy),
@@ -4357,6 +4358,8 @@ func ackPolicyName(policy wallabypb.AckPolicy) string {
 		return "all"
 	case wallabypb.AckPolicy_ACK_POLICY_PRIMARY:
 		return "primary"
+	case wallabypb.AckPolicy_ACK_POLICY_MATERIALIZED:
+		return "materialized"
 	default:
 		return "unspecified"
 	}
@@ -4472,13 +4475,25 @@ type flowEndpointInfoDetail struct {
 }
 
 type flowConfigInfo struct {
-	AckPolicy                       string `json:"ack_policy,omitempty"`
-	PrimaryDestination              string `json:"primary_destination,omitempty"`
-	FailureMode                     string `json:"failure_mode,omitempty"`
-	GiveUpPolicy                    string `json:"give_up_policy,omitempty"`
-	SchemaRegistrySubject           string `json:"schema_registry_subject,omitempty"`
-	SchemaRegistryProtoTypesSubject string `json:"schema_registry_proto_types_subject,omitempty"`
-	SchemaRegistrySubjectMode       string `json:"schema_registry_subject_mode,omitempty"`
+	AckPolicy                       string                  `json:"ack_policy,omitempty"`
+	Materialization                 flowMaterializationInfo `json:"materialization,omitempty"`
+	PrimaryDestination              string                  `json:"primary_destination,omitempty"`
+	FailureMode                     string                  `json:"failure_mode,omitempty"`
+	GiveUpPolicy                    string                  `json:"give_up_policy,omitempty"`
+	SchemaRegistrySubject           string                  `json:"schema_registry_subject,omitempty"`
+	SchemaRegistryProtoTypesSubject string                  `json:"schema_registry_proto_types_subject,omitempty"`
+	SchemaRegistrySubjectMode       string                  `json:"schema_registry_subject_mode,omitempty"`
+}
+
+type flowMaterializationInfo struct {
+	ProjectionID string `json:"projection_id,omitempty"`
+}
+
+func flowMaterializationInfoFromProto(policy *wallabypb.MaterializationPolicy) flowMaterializationInfo {
+	if policy == nil {
+		return flowMaterializationInfo{}
+	}
+	return flowMaterializationInfo{ProjectionID: policy.ProjectionId}
 }
 
 type flowDeleteOutput struct {
@@ -4965,12 +4980,16 @@ func flowConfigFromProto(cfg *wallabypb.FlowConfig) flow.Config {
 	if cfg == nil {
 		return flow.Config{}
 	}
-	return flow.Config{
+	result := flow.Config{
 		AckPolicy:          ackPolicyFromProto(cfg.AckPolicy),
 		PrimaryDestination: cfg.PrimaryDestination,
 		FailureMode:        failureModeFromProto(cfg.FailureMode),
 		GiveUpPolicy:       giveUpPolicyFromProto(cfg.GiveUpPolicy),
 	}
+	if cfg.Materialization != nil {
+		result.Materialization.ProjectionID = cfg.Materialization.ProjectionId
+	}
+	return result
 }
 
 func ackPolicyFromProto(policy wallabypb.AckPolicy) stream.AckPolicy {
@@ -4979,6 +4998,8 @@ func ackPolicyFromProto(policy wallabypb.AckPolicy) stream.AckPolicy {
 		return stream.AckPolicyAll
 	case wallabypb.AckPolicy_ACK_POLICY_PRIMARY:
 		return stream.AckPolicyPrimary
+	case wallabypb.AckPolicy_ACK_POLICY_MATERIALIZED:
+		return stream.AckPolicyMaterialized
 	default:
 		return ""
 	}
@@ -5178,13 +5199,14 @@ type endpointConfig struct {
 }
 
 type flowRuntimeConfig struct {
-	AckPolicy                       string `json:"ack_policy"`
-	PrimaryDestination              string `json:"primary_destination"`
-	FailureMode                     string `json:"failure_mode"`
-	GiveUpPolicy                    string `json:"give_up_policy"`
-	SchemaRegistrySubject           string `json:"schema_registry_subject,omitempty"`
-	SchemaRegistryProtoTypesSubject string `json:"schema_registry_proto_types_subject,omitempty"`
-	SchemaRegistrySubjectMode       string `json:"schema_registry_subject_mode,omitempty"`
+	AckPolicy                       string                  `json:"ack_policy"`
+	Materialization                 flowMaterializationInfo `json:"materialization,omitempty"`
+	PrimaryDestination              string                  `json:"primary_destination"`
+	FailureMode                     string                  `json:"failure_mode"`
+	GiveUpPolicy                    string                  `json:"give_up_policy"`
+	SchemaRegistrySubject           string                  `json:"schema_registry_subject,omitempty"`
+	SchemaRegistryProtoTypesSubject string                  `json:"schema_registry_proto_types_subject,omitempty"`
+	SchemaRegistrySubjectMode       string                  `json:"schema_registry_subject_mode,omitempty"`
 }
 
 func flowConfigToProto(cfg flowConfig) (*wallabypb.Flow, error) {
@@ -5216,7 +5238,7 @@ func flowRuntimeConfigToProto(cfg flowRuntimeConfig) *wallabypb.FlowConfig {
 	if cfg == (flowRuntimeConfig{}) {
 		return nil
 	}
-	return &wallabypb.FlowConfig{
+	pb := &wallabypb.FlowConfig{
 		AckPolicy:                       ackPolicyStringToProto(cfg.AckPolicy),
 		PrimaryDestination:              cfg.PrimaryDestination,
 		FailureMode:                     failureModeStringToProto(cfg.FailureMode),
@@ -5225,6 +5247,10 @@ func flowRuntimeConfigToProto(cfg flowRuntimeConfig) *wallabypb.FlowConfig {
 		SchemaRegistryProtoTypesSubject: cfg.SchemaRegistryProtoTypesSubject,
 		SchemaRegistrySubjectMode:       cfg.SchemaRegistrySubjectMode,
 	}
+	if cfg.Materialization.ProjectionID != "" {
+		pb.Materialization = &wallabypb.MaterializationPolicy{ProjectionId: cfg.Materialization.ProjectionID}
+	}
+	return pb
 }
 
 func endpointConfigToProto(cfg endpointConfig) (*wallabypb.Endpoint, error) {
@@ -5280,6 +5306,8 @@ func ackPolicyStringToProto(value string) wallabypb.AckPolicy {
 		return wallabypb.AckPolicy_ACK_POLICY_ALL
 	case "primary":
 		return wallabypb.AckPolicy_ACK_POLICY_PRIMARY
+	case "materialized":
+		return wallabypb.AckPolicy_ACK_POLICY_MATERIALIZED
 	default:
 		return wallabypb.AckPolicy_ACK_POLICY_UNSPECIFIED
 	}

@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,40 +21,83 @@ import (
 )
 
 const (
-	ProjectionID                = "wallaby-canonical-parquet-arrow18-zstd3-us-v2"
+	// ProjectionID is the frozen logical contract of the first canonical CDC
+	// artifact projection. Destination Parquet encodings are not this format.
+	ProjectionID                = "canonical_cdc_parquet_v1"
+	TargetEncodedObject         = 32 << 20
 	MaxEncodedObject            = 64 << 20
 	DefaultMaxRecords           = 1_000_000
 	DefaultMaxNesting           = 32
 	DefaultMaxInput             = 256 << 20
 	DefaultMaxFragments         = 128
 	DefaultMaxTransactionEncode = 256 << 20
+	UnpartitionedValue          = "unpartitioned"
+
+	canonicalSourcePositionColumn = "__wallaby_source_position"
+	canonicalRecordOrdinalColumn  = "__wallaby_record_ordinal"
+	canonicalLogicalBatchColumn   = "__wallaby_logical_batch_id"
+	canonicalUnchangedColumn      = "__wallaby_unchanged"
 )
 
 // CanonicalField records stable logical field identity independently of
 // Parquet's physical column ordering.
 type CanonicalField struct {
-	ID       int32  `json:"id"`
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Nullable bool   `json:"nullable"`
+	ID         int32             `json:"id"`
+	Name       string            `json:"name"`
+	Type       string            `json:"type"`
+	Nullable   bool              `json:"nullable"`
+	Generated  bool              `json:"generated,omitempty"`
+	Expression string            `json:"expression,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	Quoted     bool              `json:"quoted,omitempty"`
 }
 
 type canonicalSchema struct {
-	ProjectionID string           `json:"projection_id"`
-	Namespace    string           `json:"namespace"`
-	Table        string           `json:"table"`
-	Version      int64            `json:"version"`
-	Fields       []CanonicalField `json:"fields"`
+	ProjectionID    string           `json:"projection_id"`
+	Namespace       string           `json:"namespace"`
+	Table           string           `json:"table"`
+	QuotedNamespace bool             `json:"quoted_namespace,omitempty"`
+	QuotedTable     bool             `json:"quoted_table,omitempty"`
+	Fields          []CanonicalField `json:"fields"`
+}
+
+// Barrier is an ordered control record. DDL is rooted in PostgreSQL and is
+// never encoded as an ordinary changelog row in a canonical Parquet object.
+type Barrier struct {
+	FragmentOrdinal uint64
+	RecordOrdinal   uint64
+	Kind            string
+	Namespace       string
+	Table           string
+	SchemaID        string
+	DDL             string
+	DDLPlan         []byte
+	ContentHash     string
+}
+
+// Plan is one deterministic logical source transaction projection.
+type Plan struct {
+	LogicalBatchID string
+	ContentHash    string
+	Artifacts      []Artifact
+	Barriers       []Barrier
 }
 
 // Artifact is a deterministic local candidate; PostgreSQL reservation occurs
 // before it may be uploaded.
 type Artifact struct {
 	ID                 string
+	LogicalBatchID     string
 	SchemaID           string
 	SchemaJSON         []byte
+	Namespace          string
+	Table              string
+	Partition          string
+	Shard              uint32
 	SourcePosition     string
 	FragmentOrdinal    uint64
+	FirstRecordOrdinal uint64
+	RecordCount        uint64
 	LogicalContentHash string
 	EncodedByteHash    string
 	ChecksumSHA256     string
@@ -64,6 +109,7 @@ type Artifact struct {
 type Encoder struct {
 	maxRecords            int
 	maxInput              int64
+	targetEncoded         int
 	maxEncoded            int
 	maxFragments          int
 	maxTransactionEncoded int64
@@ -74,6 +120,7 @@ func NewEncoder() *Encoder {
 	return &Encoder{
 		maxRecords:            DefaultMaxRecords,
 		maxInput:              DefaultMaxInput,
+		targetEncoded:         TargetEncodedObject,
 		maxEncoded:            MaxEncodedObject,
 		maxFragments:          DefaultMaxFragments,
 		maxTransactionEncoded: DefaultMaxTransactionEncode,
@@ -81,111 +128,242 @@ func NewEncoder() *Encoder {
 	}
 }
 
-func (e *Encoder) EncodeTransaction(_ context.Context, incarnationID uuid.UUID, transaction connector.SourceTransaction) ([]Artifact, error) {
-	checkpointLSN, err := connector.CanonicalizeCheckpointPosition(transaction.Checkpoint.LSN)
-	if err != nil {
-		return nil, errors.New("canonical artifacts require a committed transaction-end checkpoint")
-	}
-	endLSN, err := connector.CanonicalizeCheckpointPosition(transaction.EndLSN)
-	if err != nil || checkpointLSN != endLSN {
-		return nil, fmt.Errorf("canonical artifact checkpoint %q must equal transaction end %q", checkpointLSN, transaction.EndLSN)
-	}
-	if strings.TrimSpace(transaction.SourceLineageID) == "" || transaction.TransactionID == 0 || transaction.BeginLSN == "" || transaction.CommitLSN == "" {
-		return nil, errors.New("canonical artifacts require source lineage, XID, begin LSN, and commit LSN")
-	}
-	beginLSN, err := connector.CanonicalizeCheckpointPosition(transaction.BeginLSN)
-	if err != nil {
-		return nil, fmt.Errorf("canonicalize transaction begin LSN: %w", err)
-	}
-	commitLSN, err := connector.CanonicalizeCheckpointPosition(transaction.CommitLSN)
-	if err != nil {
-		return nil, fmt.Errorf("canonicalize transaction commit LSN: %w", err)
-	}
-	transaction.BeginLSN = beginLSN
-	transaction.CommitLSN = commitLSN
-	transaction.EndLSN = endLSN
-	transaction.Checkpoint.LSN = checkpointLSN
-	if len(transaction.Fragments) == 0 || len(transaction.Fragments) > e.maxFragments {
-		return nil, fmt.Errorf("canonical artifact fragment count %d outside 1..%d", len(transaction.Fragments), e.maxFragments)
-	}
-	codec, err := wire.NewCodec(string(connector.WireFormatParquet))
+// EncodeTransaction preserves the original package interface for callers that
+// only need object candidates. New publication code uses PlanTransaction so it
+// also roots the logical batch and ordered barriers.
+func (e *Encoder) EncodeTransaction(ctx context.Context, incarnationID uuid.UUID, transaction connector.SourceTransaction) ([]Artifact, error) {
+	plan, err := e.PlanTransaction(ctx, incarnationID, transaction)
 	if err != nil {
 		return nil, err
 	}
-	artifacts := make([]Artifact, 0, len(transaction.Fragments))
+	return plan.Artifacts, nil
+}
+
+// PlanTransaction validates the complete committed transaction, separates
+// ordered DDL barriers, assigns replay-stable record ordinals, and creates
+// bounded deterministic table/schema/partition shards.
+func (e *Encoder) PlanTransaction(_ context.Context, incarnationID uuid.UUID, transaction connector.SourceTransaction) (Plan, error) {
+	transaction, err := canonicalSourceTransaction(transaction)
+	if err != nil {
+		return Plan{}, err
+	}
+	if err := transaction.Validate(); err != nil {
+		return Plan{}, fmt.Errorf("validate canonical source transaction: %w", err)
+	}
+	if len(transaction.Fragments) > e.maxFragments {
+		return Plan{}, fmt.Errorf("canonical artifact fragment count %d exceeds %d", len(transaction.Fragments), e.maxFragments)
+	}
+	contentHash, logicalBatchID, err := connector.SourceTransactionIdentity(transaction)
+	if err != nil {
+		return Plan{}, fmt.Errorf("identify canonical source transaction: %w", err)
+	}
+	codec, err := wire.NewCodec(string(connector.WireFormatParquet))
+	if err != nil {
+		return Plan{}, err
+	}
+
+	plan := Plan{LogicalBatchID: logicalBatchID, ContentHash: contentHash}
+	shards := make(map[string]uint32)
 	var totalInput, totalEncoded int64
 	var totalRecords int
-	var expectedOrdinal uint64
-	for index, fragment := range transaction.Fragments {
-		if fragment.Ordinal != expectedOrdinal {
-			return nil, fmt.Errorf("fragment %d has non-deterministic ordinal %d", index, fragment.Ordinal)
-		}
-		expectedOrdinal++
+	var recordOrdinal uint64
+	for fragmentIndex, fragment := range transaction.Fragments {
 		batch := fragment.Batch
-		if len(batch.Records) == 0 {
-			return nil, fmt.Errorf("fragment %d is empty", index)
-		}
 		totalRecords += len(batch.Records)
 		if totalRecords > e.maxRecords {
-			return nil, fmt.Errorf("transaction has %d records, limit %d", totalRecords, e.maxRecords)
-		}
-		batch.Checkpoint = transaction.Checkpoint
-		batch.WireFormat = connector.WireFormatParquet
-		var schemaJSON []byte
-		var schemaID string
-		batch.Schema, schemaJSON, schemaID, err = canonicalizeSchema(transaction.SourceLineageID, batch.Schema)
-		if err != nil {
-			return nil, fmt.Errorf("canonicalize fragment %d schema: %w", index, err)
-		}
-		logicalHash, err := connector.BatchContentHash(batch)
-		if err != nil {
-			return nil, fmt.Errorf("hash fragment %d: %w", index, err)
+			return Plan{}, fmt.Errorf("transaction has %d records, limit %d", totalRecords, e.maxRecords)
 		}
 		inputEstimate, err := estimateBatchInput(batch, e.maxNesting)
 		if err != nil {
-			return nil, fmt.Errorf("measure fragment %d: %w", index, err)
+			return Plan{}, fmt.Errorf("measure fragment %d: %w", fragmentIndex, err)
 		}
 		totalInput += inputEstimate
 		if totalInput > e.maxInput {
-			return nil, fmt.Errorf("transaction uncompressed input %d exceeds limit %d", totalInput, e.maxInput)
+			return Plan{}, fmt.Errorf("transaction uncompressed input %d exceeds limit %d", totalInput, e.maxInput)
 		}
-		encoded, err := codec.Encode(batch)
-		if err != nil {
-			return nil, fmt.Errorf("encode fragment %d parquet: %w", index, err)
+
+		var run []ordinalRecord
+		flushRun := func() error {
+			if len(run) == 0 {
+				return nil
+			}
+			canonical, schemaJSON, schemaID, err := canonicalizeSchema(transaction.SourceLineageID, batch.Schema)
+			if err != nil {
+				return fmt.Errorf("canonicalize fragment %d schema: %w", fragmentIndex, err)
+			}
+			encodedShards, err := e.encodeShards(codec, transaction, logicalBatchID, canonical, run)
+			if err != nil {
+				return fmt.Errorf("encode fragment %d: %w", fragmentIndex, err)
+			}
+			partition := UnpartitionedValue
+			group := strings.Join([]string{transaction.SourceLineageID, canonical.Namespace, canonical.Name, schemaID, partition}, "\x00")
+			for _, encodedShard := range encodedShards {
+				shard := shards[group]
+				shards[group] = shard + 1
+				totalEncoded += int64(len(encodedShard.encoded))
+				if totalEncoded > e.maxTransactionEncoded {
+					return fmt.Errorf("transaction encoded bytes %d exceed limit %d", totalEncoded, e.maxTransactionEncoded)
+				}
+				encodedDigest := sha256.Sum256(encodedShard.encoded)
+				encodedHash := hex.EncodeToString(encodedDigest[:])
+				artifactID := artifactIdentity(incarnationID, transaction.SourceLineageID, logicalBatchID, canonical.Namespace, canonical.Name, schemaID, partition, shard)
+				plan.Artifacts = append(plan.Artifacts, Artifact{
+					ID:                 artifactID,
+					LogicalBatchID:     logicalBatchID,
+					SchemaID:           schemaID,
+					SchemaJSON:         schemaJSON,
+					Namespace:          canonical.Namespace,
+					Table:              canonical.Name,
+					Partition:          partition,
+					Shard:              shard,
+					SourcePosition:     transaction.EndLSN,
+					FragmentOrdinal:    fragment.Ordinal,
+					FirstRecordOrdinal: encodedShard.records[0].ordinal,
+					RecordCount:        uint64(len(encodedShard.records)),
+					LogicalContentHash: encodedShard.logicalHash,
+					EncodedByteHash:    encodedHash,
+					ChecksumSHA256:     encodedHash,
+					Encoded:            encodedShard.encoded,
+					ObjectKey: artifactObjectKey(
+						incarnationID, transaction.SourceLineageID, canonical.Namespace, canonical.Name,
+						schemaID, partition, shard, artifactID,
+					),
+				})
+			}
+			run = nil
+			return nil
 		}
-		if len(encoded) == 0 || len(encoded) > e.maxEncoded {
-			return nil, fmt.Errorf("fragment %d encoded size %d outside 1..%d", index, len(encoded), e.maxEncoded)
+
+		for _, record := range batch.Records {
+			if record.Operation == connector.OpDDL {
+				if err := flushRun(); err != nil {
+					return Plan{}, err
+				}
+				barrierBatch := batch
+				barrierBatch.Schema.Version = 0
+				barrierRecord := record
+				barrierRecord.SchemaVersion = 0
+				barrierBatch.Records = []connector.Record{barrierRecord}
+				barrierBatch.Checkpoint = transaction.Checkpoint
+				barrierHash, hashErr := connector.BatchContentHash(barrierBatch)
+				if hashErr != nil {
+					return Plan{}, fmt.Errorf("hash DDL barrier at ordinal %d: %w", recordOrdinal, hashErr)
+				}
+				plan.Barriers = append(plan.Barriers, Barrier{
+					FragmentOrdinal: fragment.Ordinal,
+					RecordOrdinal:   recordOrdinal,
+					Kind:            "ddl",
+					Namespace:       batch.Schema.Namespace,
+					Table:           record.Table,
+					DDL:             record.DDL,
+					DDLPlan:         append([]byte(nil), record.DDLPlan...),
+					ContentHash:     barrierHash,
+				})
+				recordOrdinal++
+				continue
+			}
+			run = append(run, ordinalRecord{record: record, ordinal: recordOrdinal})
+			recordOrdinal++
 		}
-		totalEncoded += int64(len(encoded))
-		if totalEncoded > e.maxTransactionEncoded {
-			return nil, fmt.Errorf("transaction encoded bytes %d exceed limit %d", totalEncoded, e.maxTransactionEncoded)
+		if err := flushRun(); err != nil {
+			return Plan{}, err
 		}
-		encodedDigest := sha256.Sum256(encoded)
-		artifactID := artifactIdentity(incarnationID, transaction, fragment.Ordinal, schemaID, logicalHash)
-		artifacts = append(artifacts, Artifact{
-			ID:                 artifactID,
-			SchemaID:           schemaID,
-			SchemaJSON:         schemaJSON,
-			SourcePosition:     endLSN,
-			FragmentOrdinal:    fragment.Ordinal,
-			LogicalContentHash: logicalHash,
-			EncodedByteHash:    hex.EncodeToString(encodedDigest[:]),
-			ChecksumSHA256:     hex.EncodeToString(encodedDigest[:]),
-			Encoded:            encoded,
-			ObjectKey: fmt.Sprintf(
-				"wallaby/artifacts/%s/lineage=%s/position=%s/fragment=%06d/%s.parquet",
-				incarnationID,
-				shortHash(transaction.SourceLineageID),
-				strings.ReplaceAll(endLSN, "/", "_"),
-				fragment.Ordinal,
-				artifactID,
-			),
-		})
 	}
-	return artifacts, nil
+	return plan, nil
 }
 
-const canonicalSystemFieldCount int32 = 7
+type ordinalRecord struct {
+	record  connector.Record
+	ordinal uint64
+}
+
+type encodedShard struct {
+	records     []ordinalRecord
+	encoded     []byte
+	logicalHash string
+}
+
+func (e *Encoder) encodeShards(codec wire.Codec, transaction connector.SourceTransaction, logicalBatchID string, schema connector.Schema, records []ordinalRecord) ([]encodedShard, error) {
+	batch, err := canonicalArtifactBatch(transaction, logicalBatchID, schema, records)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := codec.Encode(batch)
+	if err != nil {
+		return nil, fmt.Errorf("encode canonical Parquet: %w", err)
+	}
+	if len(encoded) == 0 {
+		return nil, errors.New("canonical Parquet encoder returned an empty object")
+	}
+	if len(encoded) > e.targetEncoded && len(records) > 1 {
+		middle := len(records) / 2
+		left, err := e.encodeShards(codec, transaction, logicalBatchID, schema, records[:middle])
+		if err != nil {
+			return nil, err
+		}
+		right, err := e.encodeShards(codec, transaction, logicalBatchID, schema, records[middle:])
+		if err != nil {
+			return nil, err
+		}
+		return append(left, right...), nil
+	}
+	if len(encoded) > e.maxEncoded {
+		return nil, fmt.Errorf("one canonical shard encoded to %d bytes, hard limit %d", len(encoded), e.maxEncoded)
+	}
+	logicalHash, err := connector.BatchContentHash(batch)
+	if err != nil {
+		return nil, err
+	}
+	return []encodedShard{{records: append([]ordinalRecord(nil), records...), encoded: encoded, logicalHash: logicalHash}}, nil
+}
+
+func canonicalArtifactBatch(transaction connector.SourceTransaction, logicalBatchID string, schema connector.Schema, records []ordinalRecord) (connector.Batch, error) {
+	canonical := schema
+	canonical.Version = 0
+	canonical.Columns = append(append([]connector.Column(nil), schema.Columns...),
+		connector.Column{Name: canonicalSourcePositionColumn, Type: "text", TypeMetadata: map[string]string{"wallaby.field_id": "8"}},
+		connector.Column{Name: canonicalRecordOrdinalColumn, Type: "int8", TypeMetadata: map[string]string{"wallaby.field_id": "9"}},
+		connector.Column{Name: canonicalLogicalBatchColumn, Type: "text", TypeMetadata: map[string]string{"wallaby.field_id": "10"}},
+		connector.Column{Name: canonicalUnchangedColumn, Type: "jsonb", TypeMetadata: map[string]string{"wallaby.field_id": "11"}},
+	)
+	changes := make([]connector.Record, 0, len(records))
+	for _, item := range records {
+		record := item.record
+		record.SchemaVersion = 0
+		record.Key = append([]byte(nil), record.Key...)
+		record.Payload = append([]byte(nil), record.Payload...)
+		record.Unchanged = append([]string{}, record.Unchanged...)
+		sort.Strings(record.Unchanged)
+		unchanged, err := json.Marshal(record.Unchanged)
+		if err != nil {
+			return connector.Batch{}, fmt.Errorf("encode unchanged columns at record ordinal %d: %w", item.ordinal, err)
+		}
+		after := make(map[string]any, len(record.After)+4)
+		for key, value := range record.After {
+			after[key] = value
+		}
+		position := strings.TrimSpace(record.SourcePosition)
+		if position == "" {
+			position = transaction.EndLSN
+		} else {
+			canonicalPosition, err := connector.CanonicalizeCheckpointPosition(position)
+			if err != nil {
+				return connector.Batch{}, fmt.Errorf("canonicalize record ordinal %d source position: %w", item.ordinal, err)
+			}
+			position = canonicalPosition
+		}
+		record.SourcePosition = position
+		after[canonicalSourcePositionColumn] = position
+		after[canonicalRecordOrdinalColumn] = int64(item.ordinal) // #nosec G115 -- bounded by maxRecords.
+		after[canonicalLogicalBatchColumn] = logicalBatchID
+		after[canonicalUnchangedColumn] = json.RawMessage(unchanged)
+		record.After = after
+		changes = append(changes, record)
+	}
+	return connector.Batch{Schema: canonical, Records: changes, Checkpoint: transaction.Checkpoint, WireFormat: connector.WireFormatParquet}, nil
+}
+
+const canonicalSystemFieldCount int32 = 11
 
 var canonicalSystemFields = []CanonicalField{
 	{ID: 1, Name: "__op", Type: "text", Nullable: false},
@@ -195,23 +373,34 @@ var canonicalSystemFields = []CanonicalField{
 	{ID: 5, Name: "__namespace", Type: "text", Nullable: true},
 	{ID: 6, Name: "__key", Type: "bytea", Nullable: true},
 	{ID: 7, Name: "__before_json", Type: "bytea", Nullable: true},
+	{ID: 8, Name: canonicalSourcePositionColumn, Type: "text", Nullable: false},
+	{ID: 9, Name: canonicalRecordOrdinalColumn, Type: "bigint", Nullable: false},
+	{ID: 10, Name: canonicalLogicalBatchColumn, Type: "text", Nullable: false},
+	{ID: 11, Name: canonicalUnchangedColumn, Type: "jsonb", Nullable: false},
 }
 
 func canonicalizeSchema(lineage string, schema connector.Schema) (connector.Schema, []byte, string, error) {
 	canonical := canonicalSchema{
-		ProjectionID: ProjectionID,
-		Namespace:    schema.Namespace,
-		Table:        schema.Name,
-		Version:      schema.Version,
-		Fields:       append([]CanonicalField(nil), canonicalSystemFields...),
+		ProjectionID:    ProjectionID,
+		Namespace:       schema.Namespace,
+		Table:           schema.Name,
+		QuotedNamespace: schema.QuotedIdentifiers["namespace"],
+		QuotedTable:     schema.QuotedIdentifiers["table"],
+		Fields:          append([]CanonicalField(nil), canonicalSystemFields...),
 	}
 	result := schema
+	result.Version = 0
 	result.Columns = append([]connector.Column(nil), schema.Columns...)
 	seen := make(map[int32]string, len(schema.Columns)+len(canonicalSystemFields))
+	reservedNames := make(map[string]struct{}, len(canonicalSystemFields))
 	for _, field := range canonicalSystemFields {
 		seen[field.ID] = field.Name
+		reservedNames[strings.ToLower(field.Name)] = struct{}{}
 	}
 	for index, column := range result.Columns {
+		if _, reserved := reservedNames[strings.ToLower(column.Name)]; reserved {
+			return connector.Schema{}, nil, "", fmt.Errorf("column %q collides with canonical envelope", column.Name)
+		}
 		relationID, err := strconv.ParseUint(column.TypeMetadata["source_relation_id"], 10, 32)
 		if err != nil || relationID == 0 {
 			return connector.Schema{}, nil, "", fmt.Errorf("column %q lacks source_relation_id", column.Name)
@@ -232,7 +421,11 @@ func canonicalizeSchema(lineage string, schema connector.Schema) (connector.Sche
 		metadata["wallaby.field_id"] = strconv.FormatInt(int64(fieldID), 10)
 		column.TypeMetadata = metadata
 		result.Columns[index] = column
-		canonical.Fields = append(canonical.Fields, CanonicalField{ID: fieldID, Name: column.Name, Type: column.Type, Nullable: column.Nullable})
+		canonical.Fields = append(canonical.Fields, CanonicalField{
+			ID: fieldID, Name: column.Name, Type: column.Type, Nullable: column.Nullable,
+			Generated: column.Generated, Expression: column.Expression, Metadata: metadata,
+			Quoted: schema.QuotedIdentifiers[column.Name],
+		})
 	}
 	encoded, err := json.Marshal(canonical)
 	if err != nil {
@@ -252,21 +445,21 @@ func stableFieldID(lineage string, relationID uint32, columnID int16) int32 {
 	return value
 }
 
-func artifactIdentity(incarnationID uuid.UUID, transaction connector.SourceTransaction, ordinal uint64, schemaID, logicalHash string) string {
-	digest := sha256.Sum256([]byte(fmt.Sprintf(
-		"%s\x00%s\x00%s\x00%d\x00%s\x00%s\x00%s\x00%d\x00%s\x00%s",
-		ProjectionID,
-		incarnationID,
-		transaction.SourceLineageID,
-		transaction.TransactionID,
-		transaction.BeginLSN,
-		transaction.CommitLSN,
-		transaction.EndLSN,
-		ordinal,
-		schemaID,
-		logicalHash,
-	)))
+func artifactIdentity(incarnationID uuid.UUID, lineage, logicalBatchID, namespace, table, schemaID, partition string, shard uint32) string {
+	sourceIdentity := incarnationID.String() + "\x00" + lineage
+	digest := sha256.Sum256([]byte(strings.Join([]string{
+		"wallaby.artifact.v1", ProjectionID, schemaID, sourceIdentity, namespace, table,
+		"unpartitioned-v1", partition, strconv.FormatUint(uint64(shard), 10), logicalBatchID,
+	}, "\x00")))
 	return hex.EncodeToString(digest[:])
+}
+
+func artifactObjectKey(incarnationID uuid.UUID, lineage, namespace, table, schemaID, partition string, shard uint32, artifactID string) string {
+	return fmt.Sprintf(
+		"wallaby/artifacts/%s/source=%s/namespace=%s/table=%s/schema=%s/partition=%s/shard=%06d/%s.parquet",
+		incarnationID, shortHash(lineage), url.PathEscape(namespace), url.PathEscape(table), schemaID,
+		url.PathEscape(partition), shard, artifactID,
+	)
 }
 
 func shortHash(value string) string {
@@ -295,6 +488,23 @@ func canonicalSourceTransaction(transaction connector.SourceTransaction) (connec
 	transaction.EndLSN = endLSN
 	transaction.BeginLSN = beginLSN
 	transaction.CommitLSN = commitLSN
+	var recordOrdinal uint64
+	for fragmentIndex := range transaction.Fragments {
+		for recordIndex := range transaction.Fragments[fragmentIndex].Batch.Records {
+			record := &transaction.Fragments[fragmentIndex].Batch.Records[recordIndex]
+			position := strings.TrimSpace(record.SourcePosition)
+			if position == "" {
+				position = endLSN
+			} else {
+				position, err = connector.CanonicalizeCheckpointPosition(position)
+				if err != nil {
+					return connector.SourceTransaction{}, fmt.Errorf("canonicalize record ordinal %d source position: %w", recordOrdinal, err)
+				}
+			}
+			record.SourcePosition = position
+			recordOrdinal++
+		}
+	}
 	return transaction, nil
 }
 
@@ -332,8 +542,13 @@ func estimateValue(value any, depth, maxDepth int) (int64, error) {
 		return 16, nil
 	case map[string]any:
 		var total int64
-		for key, nested := range typed {
-			size, err := estimateValue(nested, depth+1, maxDepth)
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			size, err := estimateValue(typed[key], depth+1, maxDepth)
 			if err != nil {
 				return 0, err
 			}

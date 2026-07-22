@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"errors"
+	"fmt"
 	"math"
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
@@ -34,6 +35,16 @@ func endpointsToProto(specs []connector.Spec) []*wallabypb.Endpoint {
 func flowFromProto(pb *wallabypb.Flow) (flow.Flow, error) {
 	if pb == nil {
 		return flow.Flow{}, errors.New("flow is required")
+	}
+	if pb.Config != nil {
+		switch pb.Config.AckPolicy {
+		case wallabypb.AckPolicy_ACK_POLICY_UNSPECIFIED,
+			wallabypb.AckPolicy_ACK_POLICY_ALL,
+			wallabypb.AckPolicy_ACK_POLICY_PRIMARY,
+			wallabypb.AckPolicy_ACK_POLICY_MATERIALIZED:
+		default:
+			return flow.Flow{}, fmt.Errorf("unsupported acknowledgement policy %d", pb.Config.AckPolicy)
+		}
 	}
 
 	source, err := endpointFromProto(pb.Source)
@@ -86,6 +97,7 @@ func flowConfigToProto(cfg flow.Config) *wallabypb.FlowConfig {
 		SchemaRegistrySubject:           cfg.SchemaRegistrySubject,
 		SchemaRegistryProtoTypesSubject: cfg.SchemaRegistryProtoTypesSubject,
 		SchemaRegistrySubjectMode:       cfg.SchemaRegistrySubjectMode,
+		Materialization:                 materializationPolicyToProto(cfg.Materialization),
 	}
 }
 
@@ -102,7 +114,22 @@ func flowConfigFromProto(cfg *wallabypb.FlowConfig) flow.Config {
 		SchemaRegistrySubject:           cfg.SchemaRegistrySubject,
 		SchemaRegistryProtoTypesSubject: cfg.SchemaRegistryProtoTypesSubject,
 		SchemaRegistrySubjectMode:       cfg.SchemaRegistrySubjectMode,
+		Materialization:                 materializationPolicyFromProto(cfg.Materialization),
 	}
+}
+
+func materializationPolicyToProto(policy flow.MaterializationPolicy) *wallabypb.MaterializationPolicy {
+	if policy == (flow.MaterializationPolicy{}) {
+		return nil
+	}
+	return &wallabypb.MaterializationPolicy{ProjectionId: policy.ProjectionID}
+}
+
+func materializationPolicyFromProto(policy *wallabypb.MaterializationPolicy) flow.MaterializationPolicy {
+	if policy == nil {
+		return flow.MaterializationPolicy{}
+	}
+	return flow.MaterializationPolicy{ProjectionID: policy.ProjectionId}
 }
 
 func ddlPolicyToProto(policy flow.DDLPolicy) *wallabypb.DDLPolicy {
@@ -139,6 +166,8 @@ func ackPolicyToProto(policy stream.AckPolicy) wallabypb.AckPolicy {
 		return wallabypb.AckPolicy_ACK_POLICY_ALL
 	case stream.AckPolicyPrimary:
 		return wallabypb.AckPolicy_ACK_POLICY_PRIMARY
+	case stream.AckPolicyMaterialized:
+		return wallabypb.AckPolicy_ACK_POLICY_MATERIALIZED
 	default:
 		return wallabypb.AckPolicy_ACK_POLICY_UNSPECIFIED
 	}
@@ -150,6 +179,8 @@ func ackPolicyFromProto(policy wallabypb.AckPolicy) stream.AckPolicy {
 		return stream.AckPolicyAll
 	case wallabypb.AckPolicy_ACK_POLICY_PRIMARY:
 		return stream.AckPolicyPrimary
+	case wallabypb.AckPolicy_ACK_POLICY_MATERIALIZED:
+		return stream.AckPolicyMaterialized
 	default:
 		return ""
 	}
