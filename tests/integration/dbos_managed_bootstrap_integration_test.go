@@ -235,14 +235,15 @@ WHERE receipt.bootstrap_id=$1::uuid
  AND receipt.durable_cursor #>> '{keys,0,value}'='1'`, bootstrapID).Scan(&snapshotRowReceipts); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `
+	waitFor(t, 15*time.Second, 100*time.Millisecond, func() (bool, error) {
+		err := pool.QueryRow(ctx, `
 SELECT count(*) FROM delivery_manifests manifest
 JOIN delivery_receipts receipt USING(flow_incarnation_id,destination_revision_id,position_id)
 WHERE manifest.flow_incarnation_id=(SELECT incarnation_id FROM flows WHERE id=$1)
  AND manifest.checkpoint_lsn::pg_lsn>$2::pg_lsn
- AND manifest.content_hash=receipt.content_hash`, flowID, cutLSN).Scan(&cdcReceipts); err != nil {
-		t.Fatal(err)
-	}
+ AND manifest.content_hash=receipt.content_hash`, flowID, cutLSN).Scan(&cdcReceipts)
+		return cdcReceipts >= 1, err
+	})
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM source_ack_intents WHERE flow_incarnation_id=(SELECT incarnation_id FROM flows WHERE id=$1) AND checkpoint_lsn::pg_lsn=$2::pg_lsn`, flowID, cutLSN).Scan(&cutAckIntents); err != nil {
 		t.Fatal(err)
 	}
