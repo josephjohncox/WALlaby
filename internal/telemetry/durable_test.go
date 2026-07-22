@@ -76,6 +76,66 @@ func TestPostgresManagedProfileMetrics(t *testing.T) {
 	}
 }
 
+func TestClickHouseManagedProfileTelemetry(t *testing.T) {
+	oldTracerProvider := otel.GetTracerProvider()
+	oldMeterProvider := otel.GetMeterProvider()
+	oldMetrics := durableMetrics
+	defer func() {
+		otel.SetTracerProvider(oldTracerProvider)
+		otel.SetMeterProvider(oldMeterProvider)
+		durableMetrics = oldMetrics
+	}()
+
+	spanRecorder := tracetest.NewSpanRecorder()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder)))
+	reader := sdkmetric.NewManualReader()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	durableMetrics = &durableMetricSet{}
+
+	ctx, end := StartClickHouseManagedSpan(context.Background(), "fragment", "wallaby-ch-query-id", "logical-batch-secret", 1000, 8192)
+	end(nil)
+	_, end = StartClickHouseManagedSpan(ctx, "flow-specific-unbounded-operation", "query-2", "logical-2", 1, 10)
+	end(context.Canceled)
+
+	spans := spanRecorder.Ended()
+	if len(spans) != 2 || spans[0].Name() != "clickhouse.managed.fragment" || spans[1].Name() != "clickhouse.managed.other" {
+		t.Fatalf("spans=%v", spans)
+	}
+	attributes := map[string]string{}
+	for _, attr := range spans[0].Attributes() {
+		attributes[string(attr.Key)] = attr.Value.AsString()
+	}
+	if attributes["clickhouse.query.id"] != "wallaby-ch-query-id" || attributes["wallaby.logical_batch.id"] != "logical-batch-secret" {
+		t.Fatalf("missing ClickHouse correlation attributes: %v", attributes)
+	}
+
+	var metrics metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &metrics); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, scope := range metrics.ScopeMetrics {
+		for _, measurement := range scope.Metrics {
+			seen[measurement.Name] = true
+			if sum, ok := measurement.Data.(metricdata.Sum[int64]); ok {
+				for _, point := range sum.DataPoints {
+					if _, leaked := point.Attributes.Value(attribute.Key("clickhouse.query.id")); leaked {
+						t.Fatalf("query ID leaked into metric %s", measurement.Name)
+					}
+					if _, leaked := point.Attributes.Value(attribute.Key("wallaby.logical_batch.id")); leaked {
+						t.Fatalf("logical batch ID leaked into metric %s", measurement.Name)
+					}
+				}
+			}
+		}
+	}
+	for _, name := range []string{"wallaby.clickhouse.managed.outcomes", "wallaby.clickhouse.managed.rows", "wallaby.clickhouse.managed.bytes", "wallaby.clickhouse.managed.duration"} {
+		if !seen[name] {
+			t.Fatalf("missing metric %s: %v", name, seen)
+		}
+	}
+}
+
 func TestBootstrapTelemetrySDKRecordsRequiredBoundedSignals(t *testing.T) {
 	oldTracerProvider := otel.GetTracerProvider()
 	oldMeterProvider := otel.GetMeterProvider()

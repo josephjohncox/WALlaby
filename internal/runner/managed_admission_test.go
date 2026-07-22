@@ -83,6 +83,75 @@ func TestManagedAdmissionAcceptsNamedPostgresProfileOnlyWithExactContract(t *tes
 	}
 }
 
+func TestManagedAdmissionAcceptsClickHouseAppendProfileOnlyWithExactContract(t *testing.T) {
+	f := managedAdmissionFlow()
+	delete(f.Source.Options, "managed")
+	f.Source.Options["managed_profile"] = connector.ManagedProfilePostgresToClickHouseAppendV1
+	f.Source.Options["streaming_transactions"] = "true"
+	f.Source.Options["max_transaction_records"] = "100000"
+	f.Source.Options["max_transaction_bytes"] = "134217728"
+	f.Source.Options["max_transaction_fragments"] = "128"
+	destinations := managedClickHouseAdmissionDestinations()
+	fence := managedAdmissionFence()
+	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}}
+	if _, err := NewStreamRunner(f, &pgsource.Source{}, destinations, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name  string
+		key   string
+		value string
+		want  string
+	}{
+		{name: "mutation mode", key: "write_mode", value: "target", want: "write_mode=managed_append"},
+		{name: "staging", key: "batch_mode", value: "staging", want: "batch_mode=target"},
+		{name: "metadata mutations", key: "meta_table_enabled", value: "true", want: "meta_table_enabled=false"},
+		{name: "async insert", key: "async_insert", value: "true", want: "async_insert=false"},
+		{name: "fire and forget", key: "wait_for_async_insert", value: "false", want: "wait_for_async_insert=true"},
+		{name: "unmanaged engine", key: "managed_deployment", value: "standalone", want: "self-managed-keeper"},
+		{name: "cloud without evidence", key: "managed_deployment", value: "clickhouse-cloud", want: "self-managed-keeper"},
+		{name: "generic staging resolution", key: "batch_resolution", value: "replace", want: "batch_resolution=none"},
+		{name: "plaintext transport", key: "dsn", value: "clickhouse://localhost:9000/wallaby", want: "verified native TLS"},
+		{name: "unverified transport", key: "dsn", value: "clickhouse://localhost:9440/wallaby?secure=true&skip_verify=true", want: "skip_verify"},
+		{name: "missing replica endpoint", key: "managed_replica_dsn", value: "", want: "managed_replica_dsn"},
+		{name: "plaintext replica", key: "managed_replica_dsn", value: "clickhouse://replica-2:9000/wallaby", want: "verified native TLS"},
+		{name: "same replica endpoint", key: "managed_replica_dsn", value: "clickhouse://localhost:9440/wallaby?secure=true", want: "distinct primary and replica"},
+		{name: "single replica", key: "managed_replica_names", value: "replica-1", want: "exactly two"},
+		{name: "missing Keeper endpoint", key: "managed_keeper_address", value: "", want: "managed_keeper_address"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			copyDestinations := managedClickHouseAdmissionDestinations()
+			copyDestinations[0].Spec.Options[tt.key] = tt.value
+			_, err := NewStreamRunner(f, &pgsource.Source{}, copyDestinations, cfg)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error=%v, want substring %q", err, tt.want)
+			}
+		})
+	}
+	for _, tt := range []struct {
+		key, value, want string
+	}{
+		{key: "max_transaction_records", value: "100001", want: "max_transaction_records"},
+		{key: "max_transaction_bytes", value: "134217729", want: "max_transaction_bytes"},
+		{key: "max_transaction_fragments", value: "129", want: "max_transaction_fragments"},
+	} {
+		t.Run("source "+tt.key, func(t *testing.T) {
+			copyFlow := f
+			copyFlow.Source.Options = make(map[string]string, len(f.Source.Options))
+			for key, value := range f.Source.Options {
+				copyFlow.Source.Options[key] = value
+			}
+			copyFlow.Source.Options[tt.key] = tt.value
+			_, err := NewStreamRunner(copyFlow, &pgsource.Source{}, managedClickHouseAdmissionDestinations(), cfg)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error=%v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestManagedAdmissionRejectsUnsafeOptions(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -166,6 +235,41 @@ func managedAdmissionDestinations() []stream.DestinationConfig {
 		Spec: connector.Spec{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
 			"write_mode": "target", "batch_mode": "target", "destination_revision_id": "postgres-target-v1", "synchronous_commit": "on",
 		}},
+		Dest: &pgdest.Destination{},
+	}}
+}
+
+func managedClickHouseAdmissionDestinations() []stream.DestinationConfig {
+	return []stream.DestinationConfig{{
+		Spec: connector.Spec{Name: "clickhouse-append", Type: connector.EndpointClickHouse, Options: map[string]string{
+			"dsn":                               "clickhouse://localhost:9440/wallaby?secure=true",
+			"managed_profile":                   connector.ManagedProfilePostgresToClickHouseAppendV1,
+			"destination_revision_id":           "clickhouse-append-v1",
+			"write_mode":                        "managed_append",
+			"batch_mode":                        "target",
+			"batch_resolution":                  "none",
+			"meta_table_enabled":                "false",
+			"managed_database":                  "wallaby",
+			"managed_changelog_table":           "cdc_log",
+			"managed_receipts_table":            "delivery_receipts",
+			"managed_final_view":                "cdc_log_final",
+			"managed_deployment":                "self-managed-keeper",
+			"managed_keeper_path_prefix":        "/clickhouse/tables/01",
+			"managed_keeper_address":            "127.0.0.1:9181",
+			"managed_replica_dsn":               "clickhouse://replica-2:9440/wallaby?secure=true",
+			"managed_replica_names":             "replica-1,replica-2",
+			"managed_max_active_parts":          "180",
+			"managed_max_transaction_rows":      "100000",
+			"managed_max_transaction_bytes":     "134217728",
+			"managed_max_transaction_fragments": "128",
+			"managed_max_rows_per_batch":        "10000",
+			"managed_max_batch_bytes":           "16777216",
+			"insert_quorum":                     "1",
+			"async_insert":                      "false",
+			"wait_for_async_insert":             "true",
+		}},
+		// Admission is intentionally interface-based and runs before Open. The
+		// ClickHouse implementation proves the same interface at compile time.
 		Dest: &pgdest.Destination{},
 	}}
 }

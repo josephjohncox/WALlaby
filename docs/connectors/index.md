@@ -17,9 +17,9 @@ Read [PostgreSQL connectors](postgres.md) before using any of those three roles.
 | Publish ordered records | `kafka` or `bufstream` | Partition key, registry, and idempotent producer settings |
 | Write objects | `s3` or `parquet` | Object naming, partitioning, and replay behavior |
 | Call an application endpoint | `http` or `grpc` | Idempotency key and retry behavior |
-| Load an analytical store | `snowflake`, `snowpipe`, `clickhouse`, `duckdb`, or `ducklake` | Type mapping, DDL behavior, and mutation support |
+| Load an analytical store | `snowflake`, `snowpipe`, [`clickhouse`](clickhouse.md), `duckdb`, or `ducklake` | Type mapping, DDL behavior, and mutation support |
 
-WALlaby includes these adapters, but destination adapters remain experimental until restart, replay, schema-evolution, and integration contracts all pass. Startup validation rejects lossy acknowledgement paths, unsafe primary acknowledgement, and automatic DDL execution through destinations that do not execute DDL.
+WALlaby includes these adapters, but destination adapters remain experimental until restart, replay, schema-evolution, and integration contracts all pass. Maintained status applies only to exact named managed profiles, including `postgresql-to-postgres-v1` and `postgresql-to-clickhouse-append-v1`; it does not promote every mode of the underlying adapter. Startup validation rejects lossy acknowledgement paths, unsafe primary acknowledgement, and automatic DDL execution through destinations that do not execute DDL.
 
 ## Flow shape
 

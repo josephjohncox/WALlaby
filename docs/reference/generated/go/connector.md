@@ -70,18 +70,23 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [type ManagedBootstrapPublicationReconciler](<#ManagedBootstrapPublicationReconciler>)
 - [type ManagedBootstrapResult](<#ManagedBootstrapResult>)
 - [type ManagedBootstrapSource](<#ManagedBootstrapSource>)
+- [type ManagedClickHouseVersionProvider](<#ManagedClickHouseVersionProvider>)
 - [type ManagedDestination](<#ManagedDestination>)
 - [type ManagedPostgresVersionProvider](<#ManagedPostgresVersionProvider>)
 - [type ManagedProfileContract](<#ManagedProfileContract>)
+  - [func PostgresToClickHouseAppendV1Profile\(\) ManagedProfileContract](<#PostgresToClickHouseAppendV1Profile>)
   - [func PostgresToPostgresV1Profile\(\) ManagedProfileContract](<#PostgresToPostgresV1Profile>)
+  - [func \(c ManagedProfileContract\) SupportsClickHouseVersion\(version string\) bool](<#ManagedProfileContract.SupportsClickHouseVersion>)
   - [func \(c ManagedProfileContract\) SupportsPostgresVersion\(major int\) bool](<#ManagedProfileContract.SupportsPostgresVersion>)
   - [func \(c ManagedProfileContract\) ValidatePromotion\(\) error](<#ManagedProfileContract.ValidatePromotion>)
 - [type ManagedProfileGate](<#ManagedProfileGate>)
 - [type ManagedSourceResourceCleaner](<#ManagedSourceResourceCleaner>)
 - [type ManagedTransactionDestination](<#ManagedTransactionDestination>)
+- [type ManagedTransactionPreparer](<#ManagedTransactionPreparer>)
 - [type Operation](<#Operation>)
 - [type OutboxEntry](<#OutboxEntry>)
 - [type OutboxStore](<#OutboxStore>)
+- [type PreparedManagedTransaction](<#PreparedManagedTransaction>)
 - [type Record](<#Record>)
 - [type ReplicationLagProvider](<#ReplicationLagProvider>)
 - [type RunFence](<#RunFence>)
@@ -103,22 +108,25 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 
 ## Constants
 
+<a name="ManagedProfilePostgresToPostgresV1"></a>
+
+```go
+const (
+    // ManagedProfilePostgresToPostgresV1 promotes only the named PostgreSQL
+    // source/target contract. Generic PostgreSQL connector modes remain experimental.
+    ManagedProfilePostgresToPostgresV1 = "postgresql-to-postgresql-v1"
+    // ManagedProfilePostgresToClickHouseAppendV1 promotes only the Keeper-backed,
+    // append-only changelog contract. Generic ClickHouse mutation modes remain experimental.
+    ManagedProfilePostgresToClickHouseAppendV1 = "postgresql-to-clickhouse-append-v1"
+)
+```
+
 <a name="SourceModeCDC"></a>Source modes supported by PostgreSQL source options.
 
 ```go
 const (
     SourceModeCDC      = "cdc"
     SourceModeBackfill = "backfill"
-)
-```
-
-<a name="ManagedProfilePostgresToPostgresV1"></a>
-
-```go
-const (
-    // ManagedProfilePostgresToPostgresV1 is the only promoted managed runtime
-    // profile. The generic postgres connector modes remain experimental.
-    ManagedProfilePostgresToPostgresV1 = "postgresql-to-postgresql-v1"
 )
 ```
 
@@ -870,6 +878,17 @@ type ManagedBootstrapSource interface {
 }
 ```
 
+<a name="ManagedClickHouseVersionProvider"></a>
+## type [ManagedClickHouseVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L245-L247>)
+
+ManagedClickHouseVersionProvider exposes the admitted live server version after connector Open.
+
+```go
+type ManagedClickHouseVersionProvider interface {
+    ManagedClickHouseVersion() string
+}
+```
+
 <a name="ManagedDestination"></a>
 ## type [ManagedDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L105-L109>)
 
@@ -884,7 +903,7 @@ type ManagedDestination interface {
 ```
 
 <a name="ManagedPostgresVersionProvider"></a>
-## type [ManagedPostgresVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L140-L142>)
+## type [ManagedPostgresVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L239-L241>)
 
 SupportsPostgresVersion reports whether the named profile admits a live PostgreSQL server\_version\_num major. ManagedPostgresVersionProvider exposes the admitted live server major after connector Open. The runner compares both endpoints before managed delivery.
 
@@ -895,27 +914,38 @@ type ManagedPostgresVersionProvider interface {
 ```
 
 <a name="ManagedProfileContract"></a>
-## type [ManagedProfileContract](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L24-L35>)
+## type [ManagedProfileContract](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L29-L42>)
 
 ManagedProfileContract is the executable support and admission declaration rendered into the generated connector support matrix.
 
 ```go
 type ManagedProfileContract struct {
-    Name              string
-    Support           SupportLevel
-    Source            EndpointType
-    Destination       EndpointType
-    PostgresVersions  []int
-    SameMajorOnly     bool
-    AckPolicies       []string
-    SingleSink        bool
-    DeliveryGuarantee string
-    Gates             []ManagedProfileGate
+    Name               string
+    Support            SupportLevel
+    Source             EndpointType
+    Destination        EndpointType
+    PostgresVersions   []int
+    ClickHouseVersions []string
+    Deployment         string
+    SameMajorOnly      bool
+    AckPolicies        []string
+    SingleSink         bool
+    DeliveryGuarantee  string
+    Gates              []ManagedProfileGate
 }
 ```
 
+<a name="PostgresToClickHouseAppendV1Profile"></a>
+### func [PostgresToClickHouseAppendV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L80>)
+
+```go
+func PostgresToClickHouseAppendV1Profile() ManagedProfileContract
+```
+
+PostgresToClickHouseAppendV1Profile returns the exact promoted append\-only ClickHouse profile. Version support is deliberately limited to the exact PostgreSQL and ClickHouse patch pairing exercised by the real\-service gate.
+
 <a name="PostgresToPostgresV1Profile"></a>
-### func [PostgresToPostgresV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L38>)
+### func [PostgresToPostgresV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L45>)
 
 ```go
 func PostgresToPostgresV1Profile() ManagedProfileContract
@@ -923,8 +953,17 @@ func PostgresToPostgresV1Profile() ManagedProfileContract
 
 PostgresToPostgresV1Profile returns a defensive copy of the promoted profile.
 
+<a name="ManagedProfileContract.SupportsClickHouseVersion"></a>
+### func \(ManagedProfileContract\) [SupportsClickHouseVersion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L225>)
+
+```go
+func (c ManagedProfileContract) SupportsClickHouseVersion(version string) bool
+```
+
+SupportsClickHouseVersion reports whether the server version is one exact ClickHouse patch build admitted by this profile.
+
 <a name="ManagedProfileContract.SupportsPostgresVersion"></a>
-### func \(ManagedProfileContract\) [SupportsPostgresVersion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L144>)
+### func \(ManagedProfileContract\) [SupportsPostgresVersion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L249>)
 
 ```go
 func (c ManagedProfileContract) SupportsPostgresVersion(major int) bool
@@ -933,7 +972,7 @@ func (c ManagedProfileContract) SupportsPostgresVersion(major int) bool
 
 
 <a name="ManagedProfileContract.ValidatePromotion"></a>
-### func \(ManagedProfileContract\) [ValidatePromotion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L72>)
+### func \(ManagedProfileContract\) [ValidatePromotion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L118>)
 
 ```go
 func (c ManagedProfileContract) ValidatePromotion() error
@@ -942,7 +981,7 @@ func (c ManagedProfileContract) ValidatePromotion() error
 ValidatePromotion rejects maintained status unless every required admission and real\-service evidence gate is named and enabled.
 
 <a name="ManagedProfileGate"></a>
-## type [ManagedProfileGate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L16-L20>)
+## type [ManagedProfileGate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L21-L25>)
 
 ManagedProfileGate binds one support claim to a required real\-service test.
 
@@ -968,13 +1007,24 @@ type ManagedSourceResourceCleaner interface {
 <a name="ManagedTransactionDestination"></a>
 ## type [ManagedTransactionDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L116-L120>)
 
-ManagedTransactionDestination is the full\-transaction extension used by the named PostgreSQL delivery profile. Validation runs immediately before a new control\-plane attempt is prepared, but never blocks adoption of an already committed target marker. ApplyTransaction must commit every ordered fragment and the destination marker in one target transaction.
+ManagedTransactionDestination is the full\-transaction extension used by named managed profiles. Validation runs immediately before a new control\-plane attempt is prepared, but never blocks adoption of an already committed target marker. Transactional targets commit all fragments with the marker; append\-only targets insert ordered, replay\-convergent fragments and write the marker last.
 
 ```go
 type ManagedTransactionDestination interface {
     ManagedDestination
     ValidateTransaction(context.Context, SourceTransaction) error
     ApplyTransaction(context.Context, DeliveryIntent, SourceTransaction) (DeliveryEvidence, error)
+}
+```
+
+<a name="ManagedTransactionPreparer"></a>
+## type [ManagedTransactionPreparer](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L133-L135>)
+
+ManagedTransactionPreparer is an optional deep interface implemented by managed destinations that can validate and retain one bounded transaction plan before PostgreSQL persists the external attempt.
+
+```go
+type ManagedTransactionPreparer interface {
+    PrepareTransaction(context.Context, DeliveryIntent, SourceTransaction) (PreparedManagedTransaction, error)
 }
 ```
 
@@ -1025,6 +1075,17 @@ type OutboxStore interface {
     PersistCheckpointAndOutbox(ctx context.Context, flowID string, checkpoint Checkpoint, entries []OutboxEntry) error
     ListOutbox(ctx context.Context, flowID string) ([]OutboxEntry, error)
     DeleteOutbox(ctx context.Context, flowID, destination, positionID string) error
+}
+```
+
+<a name="PreparedManagedTransaction"></a>
+## type [PreparedManagedTransaction](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L126-L128>)
+
+PreparedManagedTransaction is a bounded, validated destination operation. The implementation hides destination\-specific planning behind one Apply method so the coordinator does not ask an adapter to materialize a full transaction twice around the durable attempt boundary.
+
+```go
+type PreparedManagedTransaction interface {
+    Apply(context.Context) (DeliveryEvidence, error)
 }
 ```
 

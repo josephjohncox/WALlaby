@@ -32,9 +32,12 @@
 
 ## Managed profiles
 
-| Profile | Status | Source | Destination | PostgreSQL | Pairing | Ack | Sinks | Delivery |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `postgresql-to-postgresql-v1` | maintained | `postgres` | `postgres` | 14, 15, 16, 17 | same major | all | one | at-least-once |
+| Profile | Status | Source | Destination | PostgreSQL | ClickHouse | Deployment | Pairing | Ack | Sinks | Delivery |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `postgresql-to-postgresql-v1` | maintained | `postgres` | `postgres` | 14, 15, 16, 17 | — | — | same major | all | one | at-least-once |
+| `postgresql-to-clickhouse-append-v1` | maintained | `postgres` | `clickhouse` | 16 | 25.12.1.649 | self-managed-keeper | mixed majors | all | one | at-least-once |
+
+### `postgresql-to-postgresql-v1` evidence gates
 
 | Admission/evidence gate | Real service | Required test |
 | --- | --- | --- |
@@ -51,4 +54,23 @@
 | metrics | no | `TestPostgresManagedProfileMetrics` |
 | upgrade migrations | yes | `TestPostgresManagedProfileUpgradeMigrations` |
 
-These are guaranteed defaults. Options can reduce guarantees; startup validation resolves configured capabilities before execution. Generic PostgreSQL modes remain experimental; maintained status applies only to the exact named managed profile above.
+### `postgresql-to-clickhouse-append-v1` evidence gates
+
+| Admission/evidence gate | Real service | Required test |
+| --- | --- | --- |
+| clickhouse versions | yes | `TestClickHouseManagedProfileVersionMatrix` |
+| target admission | yes | `TestClickHouseManagedProfileAdmission` |
+| ambiguous response | yes | `TestClickHouseManagedProfileCommitBeforeReceipt` |
+| deduplication window | yes | `TestClickHouseManagedProfileDedupWindowEviction` |
+| ordered fragments | yes | `TestClickHouseManagedProfileOrderingAndConcurrency` |
+| key changes and tombstones | yes | `TestClickHouseManagedProfileKeyChangesAndTombstones` |
+| schema and types | yes | `TestClickHouseManagedProfileSchemaEvolutionAndTypes` |
+| PostgreSQL recovery | yes | `TestPostgresToClickHouseManagedProfileRecoveryContract` |
+| bounded load | yes | `TestClickHouseManagedProfileBoundedLoad` |
+| process kill | yes | `TestClickHouseManagedProfileProcessKillRecovery` |
+| keeper recovery | yes | `TestClickHouseManagedProfileKeeperFailureRecovery` |
+| backpressure | yes | `TestClickHouseManagedProfileBackpressure` |
+| TLS | yes | `TestClickHouseManagedProfileTLS` |
+| telemetry | no | `TestClickHouseManagedProfileTelemetry` |
+
+These are guaranteed defaults. Options can reduce guarantees; startup validation resolves configured capabilities before execution. Generic PostgreSQL and ClickHouse modes remain experimental; maintained status applies only to the exact named managed profiles above.

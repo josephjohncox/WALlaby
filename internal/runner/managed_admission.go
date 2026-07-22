@@ -3,9 +3,11 @@ package runner
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 
+	chclient "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -29,7 +31,9 @@ func managedSourceSpec(spec connector.Spec) bool {
 
 func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec connector.Spec, destinations []stream.DestinationConfig, cfg StreamRunnerConfig) error {
 	profileName := strings.TrimSpace(sourceSpec.Options["managed_profile"])
-	if profileName != "" && profileName != connector.ManagedProfilePostgresToPostgresV1 {
+	switch profileName {
+	case "", connector.ManagedProfilePostgresToPostgresV1, connector.ManagedProfilePostgresToClickHouseAppendV1:
+	default:
 		return fmt.Errorf("unsupported managed_profile %q", profileName)
 	}
 	if sourceSpec.Type != connector.EndpointPostgres {
@@ -109,17 +113,29 @@ func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec c
 		return errors.New("managed PostgreSQL profile currently requires exactly one destination revision")
 	}
 	destination := destinations[0]
-	if destination.Spec.Type == connector.EndpointClickHouse {
-		return errors.New("managed ClickHouse mutation delivery is experimental and has no admitted reconciliation contract")
-	}
-	if destination.Spec.Type != connector.EndpointPostgres {
-		return fmt.Errorf("managed destination type %q is not admitted by the initial profile", destination.Spec.Type)
-	}
 	if _, ok := destination.Dest.(connector.ManagedTransactionDestination); !ok {
 		return errors.New("managed destination does not implement full-transaction durable reconciliation")
 	}
 	if strings.TrimSpace(destination.Spec.Options["destination_revision_id"]) == "" {
 		return errors.New("managed destination_revision_id is required")
+	}
+
+	switch profileName {
+	case connector.ManagedProfilePostgresToClickHouseAppendV1:
+		return validateManagedClickHouseAdmission(sourceSpec, destination, bootstrapMode)
+	case "", connector.ManagedProfilePostgresToPostgresV1:
+		return validateManagedPostgresDestinationAdmission(sourceSpec, destination, bootstrapMode, profileName)
+	default:
+		return fmt.Errorf("unsupported managed_profile %q", profileName)
+	}
+}
+
+func validateManagedPostgresDestinationAdmission(sourceSpec connector.Spec, destination stream.DestinationConfig, bootstrapMode, profileName string) error {
+	if destination.Spec.Type == connector.EndpointClickHouse {
+		return errors.New("generic ClickHouse mutation delivery is experimental; use the exact append-only managed profile")
+	}
+	if destination.Spec.Type != connector.EndpointPostgres {
+		return fmt.Errorf("managed destination type %q is not admitted by the PostgreSQL profile", destination.Spec.Type)
 	}
 	if mode := strings.ToLower(strings.TrimSpace(destination.Spec.Options["write_mode"])); mode != "" && mode != "target" {
 		return fmt.Errorf("managed PostgreSQL destination rejects write_mode=%q", mode)
@@ -130,25 +146,156 @@ func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec c
 	if syncCommit := strings.ToLower(strings.TrimSpace(destination.Spec.Options["synchronous_commit"])); syncCommit != "on" && syncCommit != "remote_apply" {
 		return fmt.Errorf("managed PostgreSQL destination requires explicit durable synchronous_commit=on or remote_apply; got %q", syncCommit)
 	}
-	if profileName == connector.ManagedProfilePostgresToPostgresV1 {
-		profile := connector.PostgresToPostgresV1Profile()
-		if err := profile.ValidatePromotion(); err != nil {
-			return fmt.Errorf("managed profile promotion contract: %w", err)
+	if profileName == "" {
+		return nil
+	}
+	profile := connector.PostgresToPostgresV1Profile()
+	if err := profile.ValidatePromotion(); err != nil {
+		return fmt.Errorf("managed profile promotion contract: %w", err)
+	}
+	if bootstrapMode != "required" {
+		return fmt.Errorf("%s requires bootstrap=required", profileName)
+	}
+	if !parseEnabledOption(sourceSpec.Options["streaming_transactions"], false) {
+		return fmt.Errorf("%s requires streaming_transactions=true", profileName)
+	}
+	if destinationProfile := strings.TrimSpace(destination.Spec.Options["managed_profile"]); destinationProfile != profileName {
+		return fmt.Errorf("destination managed_profile %q does not match source profile %q", destinationProfile, profileName)
+	}
+	return nil
+}
+
+func validateManagedClickHouseAdmission(sourceSpec connector.Spec, destination stream.DestinationConfig, bootstrapMode string) error {
+	const profileName = connector.ManagedProfilePostgresToClickHouseAppendV1
+	if destination.Spec.Type != connector.EndpointClickHouse {
+		return fmt.Errorf("%s requires a ClickHouse destination", profileName)
+	}
+	if destinationProfile := strings.TrimSpace(destination.Spec.Options["managed_profile"]); destinationProfile != profileName {
+		return fmt.Errorf("destination managed_profile %q does not match source profile %q", destinationProfile, profileName)
+	}
+	profile := connector.PostgresToClickHouseAppendV1Profile()
+	if err := profile.ValidatePromotion(); err != nil {
+		return fmt.Errorf("managed profile promotion contract: %w", err)
+	}
+	if bootstrapMode != "never" {
+		return fmt.Errorf("%s currently requires bootstrap=never; the promoted profile is an append-only CDC stream", profileName)
+	}
+	if !parseEnabledOption(sourceSpec.Options["streaming_transactions"], false) {
+		return fmt.Errorf("%s requires streaming_transactions=true", profileName)
+	}
+	options := destination.Spec.Options
+	dsnOptions, err := chclient.ParseDSN(strings.TrimSpace(options["dsn"]))
+	if err != nil {
+		return fmt.Errorf("%s requires a valid native ClickHouse DSN: %w", profileName, err)
+	}
+	if dsnOptions.Protocol != chclient.Native || dsnOptions.TLS == nil {
+		return fmt.Errorf("%s requires verified native TLS", profileName)
+	}
+	if dsnOptions.TLS.InsecureSkipVerify {
+		return fmt.Errorf("%s rejects TLS skip_verify", profileName)
+	}
+	replicaDSNOptions, err := chclient.ParseDSN(strings.TrimSpace(options["managed_replica_dsn"]))
+	if err != nil {
+		return fmt.Errorf("%s requires a valid managed_replica_dsn: %w", profileName, err)
+	}
+	if replicaDSNOptions.Protocol != chclient.Native || replicaDSNOptions.TLS == nil {
+		return fmt.Errorf("%s requires verified native TLS for managed_replica_dsn", profileName)
+	}
+	if replicaDSNOptions.TLS.InsecureSkipVerify {
+		return fmt.Errorf("%s rejects managed replica TLS skip_verify", profileName)
+	}
+	if strings.Join(dsnOptions.Addr, ",") == strings.Join(replicaDSNOptions.Addr, ",") {
+		return fmt.Errorf("%s requires distinct primary and replica endpoints", profileName)
+	}
+	if mode := strings.ToLower(strings.TrimSpace(options["write_mode"])); mode != "managed_append" {
+		return fmt.Errorf("%s requires write_mode=managed_append; got %q", profileName, mode)
+	}
+	if mode := strings.ToLower(strings.TrimSpace(options["batch_mode"])); mode != "target" {
+		return fmt.Errorf("%s requires batch_mode=target; got %q", profileName, mode)
+	}
+	if resolution := strings.ToLower(strings.TrimSpace(options["batch_resolution"])); resolution != "" && resolution != "none" {
+		return fmt.Errorf("%s requires batch_resolution=none; got %q", profileName, resolution)
+	}
+	if parseEnabledOption(options["meta_table_enabled"], true) {
+		return fmt.Errorf("%s requires meta_table_enabled=false; target metadata is the immutable changelog and receipt tables", profileName)
+	}
+	if parseEnabledOption(options["async_insert"], false) {
+		return fmt.Errorf("%s requires async_insert=false", profileName)
+	}
+	if !parseEnabledOption(options["wait_for_async_insert"], false) {
+		return fmt.Errorf("%s requires wait_for_async_insert=true", profileName)
+	}
+	if deployment := strings.ToLower(strings.TrimSpace(options["managed_deployment"])); deployment != profile.Deployment {
+		return fmt.Errorf("%s requires managed_deployment=%s; got %q", profileName, profile.Deployment, deployment)
+	}
+	keeperPathPrefix := strings.TrimSuffix(strings.TrimSpace(options["managed_keeper_path_prefix"]), "/")
+	if keeperPathPrefix == "" || !strings.HasPrefix(keeperPathPrefix, "/") || strings.ContainsAny(keeperPathPrefix, "'\\") {
+		return fmt.Errorf("%s requires an absolute managed_keeper_path_prefix", profileName)
+	}
+	keeperHost, keeperPort, err := net.SplitHostPort(strings.TrimSpace(options["managed_keeper_address"]))
+	if err != nil || strings.TrimSpace(keeperHost) == "" || strings.TrimSpace(keeperPort) == "" {
+		return fmt.Errorf("%s requires managed_keeper_address as host:port", profileName)
+	}
+	replicas := make(map[string]struct{})
+	for _, raw := range strings.Split(options["managed_replica_names"], ",") {
+		if name := strings.TrimSpace(raw); name != "" {
+			replicas[name] = struct{}{}
 		}
-		if bootstrapMode != "required" {
-			return fmt.Errorf("%s requires bootstrap=required", profileName)
+	}
+	if len(replicas) != 2 {
+		return fmt.Errorf("%s requires exactly two unique managed_replica_names", profileName)
+	}
+	if quorum := strings.TrimSpace(options["insert_quorum"]); quorum != "1" {
+		return fmt.Errorf("%s currently requires insert_quorum=1; got %q", profileName, quorum)
+	}
+	for _, key := range []string{"managed_database", "managed_changelog_table", "managed_receipts_table", "managed_final_view"} {
+		if strings.TrimSpace(options[key]) == "" {
+			return fmt.Errorf("%s requires %s", profileName, key)
 		}
-		if !parseEnabledOption(sourceSpec.Options["streaming_transactions"], false) {
-			return fmt.Errorf("%s requires streaming_transactions=true", profileName)
+	}
+	destinationLimits := make(map[string]uint64)
+	for _, key := range []string{
+		"managed_max_active_parts", "managed_max_transaction_rows", "managed_max_transaction_bytes",
+		"managed_max_transaction_fragments", "managed_max_rows_per_batch", "managed_max_batch_bytes",
+	} {
+		value, err := requiredManagedLimit(options, key)
+		if err != nil {
+			return fmt.Errorf("%s: %w", profileName, err)
 		}
-		if parseEnabledOption(sourceSpec.Options["capture_ddl"], false) {
-			return fmt.Errorf("%s admits relation-diff DDL plans, not raw capture_ddl", profileName)
+		destinationLimits[key] = value
+	}
+	if destinationLimits["managed_max_active_parts"] >= 200 {
+		return fmt.Errorf("%s requires managed_max_active_parts below the admitted parts_to_throw_insert floor 200", profileName)
+	}
+	if destinationLimits["managed_max_rows_per_batch"] > destinationLimits["managed_max_transaction_rows"] {
+		return fmt.Errorf("%s managed_max_rows_per_batch exceeds managed_max_transaction_rows", profileName)
+	}
+	if destinationLimits["managed_max_batch_bytes"] > destinationLimits["managed_max_transaction_bytes"] {
+		return fmt.Errorf("%s managed_max_batch_bytes exceeds managed_max_transaction_bytes", profileName)
+	}
+	for sourceKey, destinationKey := range map[string]string{
+		"max_transaction_records":   "managed_max_transaction_rows",
+		"max_transaction_bytes":     "managed_max_transaction_bytes",
+		"max_transaction_fragments": "managed_max_transaction_fragments",
+	} {
+		sourceLimit, err := requiredManagedLimit(sourceSpec.Options, sourceKey)
+		if err != nil {
+			return fmt.Errorf("%s: %w", profileName, err)
 		}
-		if destinationProfile := strings.TrimSpace(destination.Spec.Options["managed_profile"]); destinationProfile != profileName {
-			return fmt.Errorf("destination managed_profile %q does not match source profile %q", destinationProfile, profileName)
+		if sourceLimit > destinationLimits[destinationKey] {
+			return fmt.Errorf("%s source %s=%d exceeds destination %s=%d", profileName, sourceKey, sourceLimit, destinationKey, destinationLimits[destinationKey])
 		}
 	}
 	return nil
+}
+
+func requiredManagedLimit(options map[string]string, key string) (uint64, error) {
+	raw := strings.TrimSpace(options[key])
+	value, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || value == 0 {
+		return 0, fmt.Errorf("%s must be an explicit positive integer", key)
+	}
+	return value, nil
 }
 
 // parseEnabledOption is intentionally fail-closed: an unknown non-empty value

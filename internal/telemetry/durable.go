@@ -28,6 +28,10 @@ type durableMetricSet struct {
 	artifactBytes          metric.Int64Histogram
 	consumerOutcomes       metric.Int64Counter
 	gcOutcomes             metric.Int64Counter
+	clickHouseOutcomes     metric.Int64Counter
+	clickHouseRows         metric.Int64Histogram
+	clickHouseBytes        metric.Int64Histogram
+	clickHouseLatency      metric.Float64Histogram
 	initErr                error
 }
 
@@ -63,6 +67,14 @@ func initDurableMetrics() bool {
 		durableMetrics.consumerOutcomes, err = meter.Int64Counter("wallaby.artifact.consumer.outcomes")
 		errs = append(errs, err)
 		durableMetrics.gcOutcomes, err = meter.Int64Counter("wallaby.artifact.gc.outcomes")
+		errs = append(errs, err)
+		durableMetrics.clickHouseOutcomes, err = meter.Int64Counter("wallaby.clickhouse.managed.outcomes")
+		errs = append(errs, err)
+		durableMetrics.clickHouseRows, err = meter.Int64Histogram("wallaby.clickhouse.managed.rows")
+		errs = append(errs, err)
+		durableMetrics.clickHouseBytes, err = meter.Int64Histogram("wallaby.clickhouse.managed.bytes", metric.WithUnit("By"))
+		errs = append(errs, err)
+		durableMetrics.clickHouseLatency, err = meter.Float64Histogram("wallaby.clickhouse.managed.duration", metric.WithUnit("s"))
 		errs = append(errs, err)
 		durableMetrics.initErr = errors.Join(errs...)
 	})
@@ -189,4 +201,49 @@ func RecordArtifactGCOutcome(ctx context.Context, outcome string) {
 		return
 	}
 	durableMetrics.gcOutcomes.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
+}
+
+// StartClickHouseManagedSpan correlates one native ClickHouse query with its
+// immutable logical delivery. Query and batch identities are trace attributes,
+// never metric labels.
+func StartClickHouseManagedSpan(ctx context.Context, operation, queryID, logicalBatchID string, rows, bytes int64) (context.Context, func(error)) {
+	operation = boundedClickHouseOperation(operation)
+	started := time.Now()
+	ctx, span := otel.Tracer("wallaby/clickhouse").Start(ctx, "clickhouse.managed."+operation, trace.WithAttributes(
+		attribute.String("db.system", "clickhouse"),
+		attribute.String("db.operation.name", "INSERT"),
+		attribute.String("clickhouse.query.id", queryID),
+		attribute.String("wallaby.logical_batch.id", logicalBatchID),
+		attribute.Int64("db.operation.batch.size", rows),
+	))
+	return ctx, func(err error) {
+		outcome := "success"
+		if err != nil {
+			outcome = "failure"
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+		if !initDurableMetrics() {
+			return
+		}
+		attrs := metric.WithAttributes(attribute.String("operation", operation), attribute.String("outcome", outcome))
+		durableMetrics.clickHouseOutcomes.Add(ctx, 1, attrs)
+		if rows > 0 {
+			durableMetrics.clickHouseRows.Record(ctx, rows, metric.WithAttributes(attribute.String("operation", operation)))
+		}
+		if bytes > 0 {
+			durableMetrics.clickHouseBytes.Record(ctx, bytes, metric.WithAttributes(attribute.String("operation", operation)))
+		}
+		durableMetrics.clickHouseLatency.Record(ctx, time.Since(started).Seconds(), attrs)
+	}
+}
+
+func boundedClickHouseOperation(operation string) string {
+	switch operation {
+	case "fragment", "receipt", "reconcile", "admission":
+		return operation
+	default:
+		return "other"
+	}
 }

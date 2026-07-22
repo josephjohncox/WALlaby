@@ -296,7 +296,13 @@ func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.Ru
 			}
 		}
 	}
-	if err := driver.ValidateTransaction(ctx, transaction); err != nil {
+	var prepared connector.PreparedManagedTransaction
+	if preparer, ok := driver.(connector.ManagedTransactionPreparer); ok {
+		prepared, err = preparer.PrepareTransaction(ctx, intent, transaction)
+	} else {
+		err = driver.ValidateTransaction(ctx, transaction)
+	}
+	if err != nil {
 		return AckGrant{}, fmt.Errorf("validate managed target transaction: %w", err)
 	}
 
@@ -305,7 +311,12 @@ func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.Ru
 		return AckGrant{}, err
 	}
 	telemetry.RecordDeliveryOutcome(ctx, "attempt_prepared")
-	evidence, err := driver.ApplyTransaction(ctx, intent, transaction)
+	var evidence connector.DeliveryEvidence
+	if prepared != nil {
+		evidence, err = prepared.Apply(ctx)
+	} else {
+		evidence, err = driver.ApplyTransaction(ctx, intent, transaction)
+	}
 	if err != nil {
 		if errors.Is(err, connector.ErrDeliveryIndeterminate) {
 			telemetry.RecordDeliveryOutcome(ctx, "indeterminate")

@@ -343,13 +343,23 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	}
 
 	if r.managed() {
-		if strings.TrimSpace(r.SourceSpec.Options["managed_profile"]) == connector.ManagedProfilePostgresToPostgresV1 {
+		switch strings.TrimSpace(r.SourceSpec.Options["managed_profile"]) {
+		case connector.ManagedProfilePostgresToPostgresV1:
 			sourceVersion, sourceOK := r.Source.(connector.ManagedPostgresVersionProvider)
 			destinationVersion, destinationOK := r.Destinations[0].Dest.(connector.ManagedPostgresVersionProvider)
 			if !sourceOK || !destinationOK {
 				return errors.New("named managed PostgreSQL profile requires live endpoint version evidence")
 			}
 			if err := validateManagedPostgresMajorPair(sourceVersion.ManagedPostgresMajor(), destinationVersion.ManagedPostgresMajor()); err != nil {
+				return err
+			}
+		case connector.ManagedProfilePostgresToClickHouseAppendV1:
+			sourceVersion, sourceOK := r.Source.(connector.ManagedPostgresVersionProvider)
+			destinationVersion, destinationOK := r.Destinations[0].Dest.(connector.ManagedClickHouseVersionProvider)
+			if !sourceOK || !destinationOK {
+				return errors.New("named managed ClickHouse profile requires live endpoint version evidence")
+			}
+			if err := validateManagedClickHouseVersionPair(sourceVersion.ManagedPostgresMajor(), destinationVersion.ManagedClickHouseVersion()); err != nil {
 				return err
 			}
 		}
@@ -625,6 +635,17 @@ func validateManagedPostgresMajorPair(sourceMajor, destinationMajor int) error {
 	}
 	if connector.PostgresToPostgresV1Profile().SameMajorOnly && sourceMajor != destinationMajor {
 		return fmt.Errorf("managed PostgreSQL profile requires matching source and destination majors; got %d and %d", sourceMajor, destinationMajor)
+	}
+	return nil
+}
+
+func validateManagedClickHouseVersionPair(sourceMajor int, clickHouseVersion string) error {
+	profile := connector.PostgresToClickHouseAppendV1Profile()
+	if !profile.SupportsPostgresVersion(sourceMajor) {
+		return fmt.Errorf("managed profile %s does not admit PostgreSQL %d", profile.Name, sourceMajor)
+	}
+	if !profile.SupportsClickHouseVersion(clickHouseVersion) {
+		return fmt.Errorf("managed profile %s does not admit ClickHouse %s", profile.Name, clickHouseVersion)
 	}
 	return nil
 }

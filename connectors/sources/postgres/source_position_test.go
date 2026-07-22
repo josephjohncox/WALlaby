@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -250,6 +251,21 @@ func TestReadTransactionPreservesOrderedTableFragments(t *testing.T) {
 		if fragment.Batch.Checkpoint.LSN != "" {
 			t.Fatalf("fragment %d checkpoint=%q, transaction checkpoint must be carried only by SourceTransaction", index, fragment.Batch.Checkpoint.LSN)
 		}
+	}
+}
+
+func TestReadTransactionRejectsFragmentAmplificationBeforeBufferingMoreRows(t *testing.T) {
+	t.Parallel()
+
+	changes := make(chan replication.Change, 3)
+	changes <- transactionChange(78, 0x10, 0x58, "widgets", false)
+	changes <- transactionChange(78, 0x20, 0x58, "gadgets", false)
+	changes <- transactionChange(78, 0x30, 0x58, "widgets", true)
+
+	source := &Source{changes: changes, batchSize: 1, batchTimeout: time.Millisecond, maxTransactionFragments: 2}
+	_, err := source.ReadTransaction(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "transaction fragments") {
+		t.Fatalf("fragment bound error=%v", err)
 	}
 }
 
