@@ -881,6 +881,8 @@ func (h *integrationHarness) deleteManagedInfrastructure() {
 	namespace := defaultK8sNamespace()
 	h.cleanupPostgres()
 	_ = h.deleteServiceAndDeployment(namespace, defaultClickHouseName)
+	_ = h.deleteServiceAndDeployment(namespace, defaultClickHouseReplicaName)
+	_ = h.deleteServiceAndDeployment(namespace, defaultClickHouseKeeperName)
 	_ = h.deleteServiceAndDeployment(namespace, defaultMinioName)
 	_ = h.deleteServiceAndDeployment(namespace, defaultKafkaName)
 	_ = h.deleteServiceAndDeployment(namespace, defaultLocalStackName)
@@ -1054,6 +1056,7 @@ func (h *integrationHarness) stopManagedService(name string) {
 	if svc.created {
 		_ = h.deleteServiceAndDeployment(namespace, name)
 		if name == defaultClickHouseName {
+			_ = h.deleteServiceAndDeployment(namespace, defaultClickHouseReplicaName)
 			_ = h.deleteServiceAndDeployment(namespace, defaultClickHouseKeeperName)
 		}
 		svc.created = false
@@ -1457,10 +1460,18 @@ func (h *integrationHarness) pickPodForService(namespace, name string) (string, 
 			LabelSelector: label,
 		})
 		if err == nil {
-			for _, pod := range podList.Items {
-				if isPodReady(&pod) {
-					return pod.Name, nil
+			var newestReady *corev1.Pod
+			for index := range podList.Items {
+				pod := &podList.Items[index]
+				if !isPodReady(pod) {
+					continue
 				}
+				if newestReady == nil || pod.CreationTimestamp.After(newestReady.CreationTimestamp.Time) {
+					newestReady = pod
+				}
+			}
+			if newestReady != nil {
+				return newestReady.Name, nil
 			}
 		}
 		if time.Now().After(deadline) {

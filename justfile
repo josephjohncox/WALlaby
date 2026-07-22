@@ -208,6 +208,15 @@ test-checkpoint2-postgres-profile:
 test-clickhouse-managed-profile:
     #!/usr/bin/env bash
     set -euo pipefail
+    harness_cluster="${IT_KIND_CLUSTER:-wallaby-test}-clickhouse-profile-$$"
+    cleanup() {
+        status=$?
+        if [[ "${IT_KEEP:-0}" != "1" ]] && command -v kind >/dev/null 2>&1; then
+            kind delete cluster --name "${harness_cluster}" || true
+        fi
+        return "$status"
+    }
+    trap cleanup EXIT
     required=
     required+='TestClickHouseManagedProfileVersionMatrix'
     required+=',TestClickHouseManagedProfileAdmission'
@@ -223,7 +232,7 @@ test-clickhouse-managed-profile:
     required+=',TestClickHouseManagedProfileKeeperFailureRecovery'
     required+=',TestClickHouseManagedProfileBackpressure'
     filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
-    IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' just test-integration
+    IT_KIND_CLUSTER="${harness_cluster}" IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' just test-integration
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 \
       ./internal/telemetry -run '^TestClickHouseManagedProfileTelemetry$'
 
