@@ -123,14 +123,18 @@ func planManagedTransactionWithLimits(intent connector.DeliveryIntent, transacti
 	}
 
 	plan := managedTransactionPlan{Fragments: make([]managedFragmentPlan, 0, 1), RecordCount: recordCount}
-	queryIDs := make([]string, 0, (int(recordCount)+limits.maxRowsPerInsert-1)/limits.maxRowsPerInsert)
+	// #nosec G115 -- recordCount is rejected above when it exceeds maxRows (100000 maximum).
+	recordCountInt := int(recordCount)
+	queryIDs := make([]string, 0, (recordCountInt+limits.maxRowsPerInsert-1)/limits.maxRowsPerInsert)
 	for _, fragment := range transaction.Fragments {
 		schemaJSON, schemaFingerprint, schemaVersion, err := managedSchemaIdentity(fragment.Batch.Schema)
 		if err != nil {
 			return managedTransactionPlan{}, fmt.Errorf("plan managed fragment %d schema: %w", fragment.Ordinal, err)
 		}
 		for recordOrdinal, record := range fragment.Batch.Records {
-			row, err := buildManagedChangelogRow(intent, transaction, fragment, uint64(recordOrdinal), record, version, schemaJSON, schemaFingerprint, schemaVersion)
+			// #nosec G115 -- fragment records contribute to the bounded 100000-row transaction maximum.
+			boundedRecordOrdinal := uint64(recordOrdinal)
+			row, err := buildManagedChangelogRow(intent, transaction, fragment, boundedRecordOrdinal, record, version, schemaJSON, schemaFingerprint, schemaVersion)
 			if err != nil {
 				return managedTransactionPlan{}, fmt.Errorf("plan managed fragment %d record %d: %w", fragment.Ordinal, recordOrdinal, err)
 			}
@@ -253,6 +257,7 @@ func managedSchemaIdentity(schema connector.Schema) (string, string, int64, erro
 		return "", "", 0, fmt.Errorf("encode source schema: %w", err)
 	}
 	digest := sha256.Sum256(encoded)
+	// #nosec G115 -- the sign bit is masked, so the value is at most math.MaxInt64.
 	version := int64(binary.BigEndian.Uint64(digest[:8]) & (^uint64(0) >> 1))
 	return string(encoded), hex.EncodeToString(digest[:]), version, nil
 }
