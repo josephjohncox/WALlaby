@@ -23,6 +23,7 @@ const (
 	EndpointDuckLake   EndpointType = "ducklake"
 	EndpointBufStream  EndpointType = "bufstream"
 	EndpointClickHouse EndpointType = "clickhouse"
+	EndpointIceberg    EndpointType = "iceberg"
 )
 
 // WireFormat describes the wire encoding used between connectors.

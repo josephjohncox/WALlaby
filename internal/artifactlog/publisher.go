@@ -1170,24 +1170,3 @@ FROM artifact_barriers WHERE publication_id=$1 ORDER BY ordinal`, publicationID)
 		AckGrant:  connector.AckGrant{Checkpoint: checkpoint, PositionID: positionID},
 	}, true, nil
 }
-
-// Catalog is the sole seam through which Iceberg and S3 Tables consume rooted
-// canonical artifacts. S3 Tables implementations belong behind this Iceberg
-// catalog abstraction; managed table files are never Wallaby GC roots.
-type Catalog interface {
-	Append(context.Context, string, uuid.UUID, []RootedArtifact, []Barrier) (CatalogCommit, error)
-	Reconcile(context.Context, string, uuid.UUID) (CatalogDisposition, CatalogCommit, error)
-}
-
-type CatalogCommit struct {
-	SnapshotID  string
-	ContentHash string
-}
-
-type CatalogDisposition uint8
-
-const (
-	CatalogIndeterminate CatalogDisposition = iota
-	CatalogNotApplied
-	CatalogApplied
-)

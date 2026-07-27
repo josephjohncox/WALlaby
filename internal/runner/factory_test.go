@@ -38,6 +38,7 @@ func TestDestinationCatalogCoversEveryEndpointType(t *testing.T) {
 		connector.EndpointDuckLake,
 		connector.EndpointBufStream,
 		connector.EndpointClickHouse,
+		connector.EndpointIceberg,
 	}
 	for _, endpointType := range allTypes {
 		if _, ok := got[endpointType]; !ok {
@@ -74,6 +75,7 @@ func TestFactoryDestinationsDeclareOperationalContracts(t *testing.T) {
 		connector.EndpointDuckLake,
 		connector.EndpointBufStream,
 		connector.EndpointClickHouse,
+		connector.EndpointIceberg,
 	}
 	for _, endpointType := range types {
 		t.Run(string(endpointType), func(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"github.com/josephjohncox/wallaby/connectors/destinations/ducklake"
 	grpcdest "github.com/josephjohncox/wallaby/connectors/destinations/grpc"
 	httpdest "github.com/josephjohncox/wallaby/connectors/destinations/http"
+	icebergdest "github.com/josephjohncox/wallaby/connectors/destinations/iceberg"
 	"github.com/josephjohncox/wallaby/connectors/destinations/kafka"
 	"github.com/josephjohncox/wallaby/connectors/destinations/pgstream"
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
@@ -116,6 +117,8 @@ func (f Factory) destination(spec connector.Spec) (connector.Destination, error)
 		return &ducklake.Destination{}, nil
 	case connector.EndpointClickHouse:
 		return &clickhouse.Destination{}, nil
+	case connector.EndpointIceberg:
+		return &icebergdest.Destination{}, nil
 	case connector.EndpointPostgres:
 		return &pgdest.Destination{}, nil
 	case connector.EndpointBufStream:

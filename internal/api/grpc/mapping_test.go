@@ -5,6 +5,7 @@ import (
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 )
 
@@ -27,6 +28,17 @@ func TestMaterializedAckPolicyAndProjectionRoundTrip(t *testing.T) {
 	}
 	if got := int32(wallabypb.AckPolicy_ACK_POLICY_MATERIALIZED); got != 3 {
 		t.Fatalf("ACK_POLICY_MATERIALIZED=%d, want wire value 3", got)
+	}
+}
+
+func TestIcebergEndpointWireValueAndRoundTrip(t *testing.T) {
+	t.Parallel()
+	wire := endpointTypeToProto(connector.EndpointIceberg)
+	if wire != wallabypb.EndpointType_ENDPOINT_TYPE_ICEBERG || int32(wire) != 15 {
+		t.Fatalf("Iceberg endpoint wire value=%d", wire)
+	}
+	if model := endpointTypeFromProto(wire); model != connector.EndpointIceberg {
+		t.Fatalf("Iceberg endpoint round trip=%q", model)
 	}
 }
 

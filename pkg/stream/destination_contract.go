@@ -28,8 +28,10 @@ func ValidateDestinationContracts(
 		if len(destinations) != 1 {
 			return fmt.Errorf("materialized acknowledgement currently requires exactly one destination revision; got %d", len(destinations))
 		}
-		if _, ok := destinations[0].Dest.(connector.ManagedTransactionDestination); !ok {
-			return fmt.Errorf("materialized destination %s must implement full-transaction durable reconciliation", destinationLabel(destinations[0].Spec))
+		if _, managed := destinations[0].Dest.(connector.ManagedTransactionDestination); !managed {
+			if _, artifactConsumer := destinations[0].Dest.(connector.CanonicalArtifactDestination); !artifactConsumer {
+				return fmt.Errorf("materialized destination %s must implement full-transaction reconciliation or canonical artifact consumption", destinationLabel(destinations[0].Spec))
+			}
 		}
 	}
 

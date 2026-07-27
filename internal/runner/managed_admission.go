@@ -132,11 +132,22 @@ func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec c
 		return errors.New("managed PostgreSQL profile currently requires exactly one destination revision")
 	}
 	destination := destinations[0]
-	if _, ok := destination.Dest.(connector.ManagedTransactionDestination); !ok {
-		return errors.New("managed destination does not implement full-transaction durable reconciliation")
-	}
 	if strings.TrimSpace(destination.Spec.Options["destination_revision_id"]) == "" {
 		return errors.New("managed destination_revision_id is required")
+	}
+	if ackPolicy == stream.AckPolicyMaterialized {
+		if _, ok := destination.Dest.(connector.CanonicalArtifactDestination); ok {
+			if destination.Spec.Type != connector.EndpointIceberg {
+				return errors.New("canonical artifact consumer must use the iceberg endpoint type")
+			}
+			if bootstrapMode != "never" {
+				return errors.New("iceberg canonical consumption currently requires bootstrap=never; snapshot rows are not yet published through the artifact log")
+			}
+			return nil
+		}
+	}
+	if _, ok := destination.Dest.(connector.ManagedTransactionDestination); !ok {
+		return errors.New("managed destination does not implement full-transaction durable reconciliation")
 	}
 
 	switch profileName {

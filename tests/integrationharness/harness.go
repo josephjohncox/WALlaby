@@ -28,6 +28,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -126,17 +131,26 @@ const (
 	defaultFakesnowLocalPort   = "8000"
 	defaultFakesnowServicePort = "8000"
 
+	defaultIcebergRESTName        = "wallaby-it-iceberg-rest"
+	defaultIcebergRESTImage       = "apache/iceberg-rest-fixture:1.9.1"
+	defaultIcebergRESTLocalPort   = "8182"
+	defaultIcebergRESTServicePort = "8181"
+	defaultIcebergWarehouseBucket = "wallaby-iceberg"
+	defaultIcebergWarehouse       = "s3://wallaby-iceberg/warehouse"
+	defaultIcebergNamespace       = "wallaby_live"
+
 	defaultIntegrationHarnessLock = "wallaby-it-integration-harness.lock"
 )
 
 var (
-	activePostgresLocalPort   = defaultPostgresPort
-	activeClickHouseLocalPort = defaultClickHouseLocalPort
-	activeMinioLocalPort      = defaultMinioLocalPort
-	activeKafkaLocalPort      = defaultKafkaLocalPort
-	activeLocalStackLocalPort = defaultLocalStackLocalPort
-	activeHTTPTestLocalPort   = defaultHTTPTestLocalPort
-	activeFakesnowLocalPort   = defaultFakesnowLocalPort
+	activePostgresLocalPort    = defaultPostgresPort
+	activeClickHouseLocalPort  = defaultClickHouseLocalPort
+	activeMinioLocalPort       = defaultMinioLocalPort
+	activeKafkaLocalPort       = defaultKafkaLocalPort
+	activeLocalStackLocalPort  = defaultLocalStackLocalPort
+	activeHTTPTestLocalPort    = defaultHTTPTestLocalPort
+	activeFakesnowLocalPort    = defaultFakesnowLocalPort
+	activeIcebergRESTLocalPort = defaultIcebergRESTLocalPort
 )
 
 type integrationHarnessConfig struct {
@@ -641,6 +655,9 @@ func (h *integrationHarness) startManagedDependencies(namespace string) error {
 	if err := h.startS3(namespace); err != nil {
 		return err
 	}
+	if err := h.startIcebergREST(namespace); err != nil {
+		return err
+	}
 	if err := h.startKafka(namespace); err != nil {
 		return err
 	}
@@ -753,11 +770,90 @@ func (h *integrationHarness) startS3(namespace string) error {
 		return err
 	}
 	activeMinioLocalPort = localPort
-	setenv("WALLABY_TEST_S3_ENDPOINT", localURL(defaultPostgresLocalBindHost, activeMinioLocalPort))
+	setenv("WALLABY_TEST_S3_ENDPOINT", localURL(activeMinioLocalPort))
 	setenv("WALLABY_TEST_S3_BUCKET", getenvString("WALLABY_TEST_S3_BUCKET", "wallaby-test"))
 	setenv("WALLABY_TEST_S3_ACCESS_KEY", getenvString("WALLABY_TEST_S3_ACCESS_KEY", "wallaby"))
 	setenv("WALLABY_TEST_S3_SECRET_KEY", getenvString("WALLABY_TEST_S3_SECRET_KEY", "wallabysecret"))
 	setenv("WALLABY_TEST_S3_REGION", getenvString("WALLABY_TEST_S3_REGION", "us-east-1"))
+	return nil
+}
+
+// ensureMinioBucket creates a bucket in the port-forwarded MinIO if it does not
+// already exist. MinIO shares one storage backend across its in-cluster service
+// and the host port-forward, so a bucket created here is visible to the
+// in-cluster catalog server.
+func (h *integrationHarness) ensureMinioBucket(bucket string) error {
+	endpoint := localURL(activeMinioLocalPort)
+	accessKey := getenvString("WALLABY_TEST_S3_ACCESS_KEY", defaultMinioUser)
+	secretKey := getenvString("WALLABY_TEST_S3_SECRET_KEY", defaultMinioSecret)
+	region := getenvString("WALLABY_TEST_S3_REGION", "us-east-1")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cfg, err := awsconfig.LoadDefaultConfig(
+		ctx,
+		awsconfig.WithRegion(region),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+	)
+	if err != nil {
+		return fmt.Errorf("load minio aws config: %w", err)
+	}
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(endpoint)
+		o.UsePathStyle = true
+	})
+	deadline := time.Now().Add(serviceReadyTimeout())
+	var lastErr error
+	for time.Now().Before(deadline) {
+		_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+		if err == nil {
+			return nil
+		}
+		var owned *s3types.BucketAlreadyOwnedByYou
+		var exists *s3types.BucketAlreadyExists
+		if errors.As(err, &owned) || errors.As(err, &exists) {
+			return nil
+		}
+		lastErr = err
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("create minio bucket %q: %w", bucket, lastErr)
+}
+
+func (h *integrationHarness) startIcebergREST(namespace string) error {
+	if strings.TrimSpace(os.Getenv("WALLABY_TEST_ICEBERG_REST_URI")) != "" {
+		return nil
+	}
+	// The catalog server persists metadata into the MinIO warehouse bucket, so
+	// the bucket must exist before any table is created.
+	if err := h.ensureMinioBucket(defaultIcebergWarehouseBucket); err != nil {
+		return fmt.Errorf("create iceberg warehouse bucket: %w", err)
+	}
+	manifest, err := icebergRESTKindManifest(namespace)
+	if err != nil {
+		return err
+	}
+	localPort, err := h.startManagedService(
+		namespace,
+		defaultIcebergRESTName,
+		defaultIcebergRESTLocalPort,
+		defaultIcebergRESTServicePort,
+		manifest,
+		"iceberg-rest",
+	)
+	if err != nil {
+		return err
+	}
+	activeIcebergRESTLocalPort = localPort
+	// The catalog server reads and writes metadata through the in-cluster MinIO
+	// service; the host-side committer reaches the same MinIO storage through the
+	// port-forward, so the REST URI and the S3 FileIO endpoint differ.
+	setenv("WALLABY_TEST_ICEBERG_REST_URI", localURL(activeIcebergRESTLocalPort))
+	setenv("WALLABY_TEST_ICEBERG_WAREHOUSE", getenvString("WALLABY_TEST_ICEBERG_WAREHOUSE", defaultIcebergWarehouse))
+	setenv("WALLABY_TEST_ICEBERG_NAMESPACE", getenvString("WALLABY_TEST_ICEBERG_NAMESPACE", defaultIcebergNamespace))
+	setenv("WALLABY_TEST_ICEBERG_S3_ENDPOINT", localURL(activeMinioLocalPort))
+	setenv("WALLABY_TEST_ICEBERG_S3_ACCESS_KEY", getenvString("WALLABY_TEST_S3_ACCESS_KEY", defaultMinioUser))
+	setenv("WALLABY_TEST_ICEBERG_S3_SECRET_KEY", getenvString("WALLABY_TEST_S3_SECRET_KEY", defaultMinioSecret))
+	setenv("WALLABY_TEST_ICEBERG_S3_REGION", getenvString("WALLABY_TEST_S3_REGION", "us-east-1"))
 	return nil
 }
 
@@ -805,7 +901,7 @@ func (h *integrationHarness) startLocalStack(namespace string) error {
 		return err
 	}
 	activeLocalStackLocalPort = localPort
-	setenv("WALLABY_TEST_GLUE_ENDPOINT", localURL(defaultPostgresLocalBindHost, activeLocalStackLocalPort))
+	setenv("WALLABY_TEST_GLUE_ENDPOINT", localURL(activeLocalStackLocalPort))
 	setenv("WALLABY_TEST_GLUE_REGION", getenvString("WALLABY_TEST_GLUE_REGION", defaultLocalStackRegion))
 	return nil
 }
@@ -830,7 +926,7 @@ func (h *integrationHarness) startHTTPTestService(namespace string) error {
 		return err
 	}
 	activeHTTPTestLocalPort = localPort
-	setenv("WALLABY_TEST_HTTP_URL", localURL(defaultPostgresLocalBindHost, activeHTTPTestLocalPort))
+	setenv("WALLABY_TEST_HTTP_URL", localURL(activeHTTPTestLocalPort))
 	return nil
 }
 
@@ -884,6 +980,7 @@ func (h *integrationHarness) deleteManagedInfrastructure() {
 	_ = h.deleteServiceAndDeployment(namespace, defaultClickHouseReplicaName)
 	_ = h.deleteServiceAndDeployment(namespace, defaultClickHouseKeeperName)
 	_ = h.deleteServiceAndDeployment(namespace, defaultMinioName)
+	_ = h.deleteServiceAndDeployment(namespace, defaultIcebergRESTName)
 	_ = h.deleteServiceAndDeployment(namespace, defaultKafkaName)
 	_ = h.deleteServiceAndDeployment(namespace, defaultLocalStackName)
 	_ = h.deleteServiceAndDeployment(namespace, defaultHTTPTestName)
@@ -1092,6 +1189,13 @@ func integrationManagedEnvKeys() []string {
 		"WALLABY_TEST_DUCKLAKE",
 		"WALLABY_TEST_KAFKA_BROKERS",
 		"WALLABY_TEST_HTTP_URL",
+		"WALLABY_TEST_ICEBERG_REST_URI",
+		"WALLABY_TEST_ICEBERG_WAREHOUSE",
+		"WALLABY_TEST_ICEBERG_NAMESPACE",
+		"WALLABY_TEST_ICEBERG_S3_ENDPOINT",
+		"WALLABY_TEST_ICEBERG_S3_ACCESS_KEY",
+		"WALLABY_TEST_ICEBERG_S3_SECRET_KEY",
+		"WALLABY_TEST_ICEBERG_S3_REGION",
 		"WALLABY_TEST_GLUE_ENDPOINT",
 		"WALLABY_TEST_GLUE_REGION",
 		"WALLABY_TEST_SNOWFLAKE_DSN",
@@ -1784,8 +1888,8 @@ func localBrokers() string {
 	return defaultBrokers()
 }
 
-func localURL(host, port string) string {
-	return fmt.Sprintf("http://%s:%s", host, port)
+func localURL(port string) string {
+	return fmt.Sprintf("http://%s:%s", defaultPostgresLocalBindHost, port)
 }
 
 func (h *integrationHarness) startPostgresPortForward(namespace, localPort string) (string, error) {
@@ -2241,6 +2345,85 @@ func minioKindManifest(namespace string) (string, error) {
 								PeriodSeconds:       2,
 								TimeoutSeconds:      probeTimeoutSeconds,
 								FailureThreshold:    30,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	return asManifestYAML(&service, &deployment)
+}
+
+func icebergRESTKindManifest(namespace string) (string, error) {
+	probeTimeoutSeconds := int32(5)
+	replicas := int32(1)
+	servicePort := mustInt32(defaultIcebergRESTServicePort)
+	service := corev1.Service{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Service",
+		},
+		ObjectMeta: manifestMetadata(defaultIcebergRESTName, namespace),
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: manifestSelector(defaultIcebergRESTName),
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "rest",
+					Protocol:   corev1.ProtocolTCP,
+					Port:       servicePort,
+					TargetPort: intstr.FromInt(mustInt(defaultIcebergRESTServicePort)),
+				},
+			},
+		},
+	}
+
+	minioEndpoint := fmt.Sprintf("http://%s:%s", defaultMinioName, defaultMinioServicePort)
+
+	deployment := appsv1.Deployment{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "apps/v1",
+			Kind:       "Deployment",
+		},
+		ObjectMeta: manifestMetadata(defaultIcebergRESTName, namespace),
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: manifestSelector(defaultIcebergRESTName),
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: manifestSelector(defaultIcebergRESTName),
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:            "iceberg-rest",
+							Image:           defaultIcebergRESTImage,
+							ImagePullPolicy: corev1.PullIfNotPresent,
+							Env: []corev1.EnvVar{
+								{Name: "CATALOG_WAREHOUSE", Value: defaultIcebergWarehouse},
+								{Name: "CATALOG_IO__IMPL", Value: "org.apache.iceberg.aws.s3.S3FileIO"},
+								{Name: "CATALOG_S3_ENDPOINT", Value: minioEndpoint},
+								{Name: "CATALOG_S3_PATH__STYLE__ACCESS", Value: "true"},
+								{Name: "AWS_ACCESS_KEY_ID", Value: defaultMinioUser},
+								{Name: "AWS_SECRET_ACCESS_KEY", Value: defaultMinioSecret},
+								{Name: "AWS_REGION", Value: "us-east-1"},
+							},
+							Ports: []corev1.ContainerPort{
+								{Name: "rest", ContainerPort: servicePort, Protocol: corev1.ProtocolTCP},
+							},
+							ReadinessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									TCPSocket: &corev1.TCPSocketAction{
+										Port: intstr.FromString("rest"),
+									},
+								},
+								InitialDelaySeconds: 3,
+								PeriodSeconds:       2,
+								TimeoutSeconds:      probeTimeoutSeconds,
+								FailureThreshold:    45,
 							},
 						},
 					},

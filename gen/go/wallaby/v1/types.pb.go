@@ -100,6 +100,9 @@ const (
 	EndpointType_ENDPOINT_TYPE_BUFSTREAM   EndpointType = 12
 	EndpointType_ENDPOINT_TYPE_CLICKHOUSE  EndpointType = 13
 	EndpointType_ENDPOINT_TYPE_DUCKLAKE    EndpointType = 14
+	// Iceberg is an asynchronous consumer of the canonical artifact log. It is
+	// never a direct current-state/upsert destination.
+	EndpointType_ENDPOINT_TYPE_ICEBERG EndpointType = 15
 )
 
 // Enum value maps for EndpointType.
@@ -120,6 +123,7 @@ var (
 		12: "ENDPOINT_TYPE_BUFSTREAM",
 		13: "ENDPOINT_TYPE_CLICKHOUSE",
 		14: "ENDPOINT_TYPE_DUCKLAKE",
+		15: "ENDPOINT_TYPE_ICEBERG",
 	}
 	EndpointType_value = map[string]int32{
 		"ENDPOINT_TYPE_UNSPECIFIED": 0,
@@ -137,6 +141,7 @@ var (
 		"ENDPOINT_TYPE_BUFSTREAM":   12,
 		"ENDPOINT_TYPE_CLICKHOUSE":  13,
 		"ENDPOINT_TYPE_DUCKLAKE":    14,
+		"ENDPOINT_TYPE_ICEBERG":     15,
 	}
 )
 
@@ -234,8 +239,8 @@ const (
 	// ACK_POLICY_MATERIALIZED acknowledges a CDC transaction only after its
 	// canonical immutable objects and fenced PostgreSQL publication/checkpoint
 	// commit. A data-free startup cut is rooted as an object-free canonical
-	// publication before feedback. The configured destination is not committed
-	// on the CDC path, and this release registers no production catalog consumer.
+	// publication before feedback. A configured Iceberg endpoint consumes the
+	// publication asynchronously and never delays source acknowledgement.
 	AckPolicy_ACK_POLICY_MATERIALIZED AckPolicy = 3
 )
 
@@ -873,7 +878,7 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\x11FLOW_STATE_PAUSED\x10\x03\x12\x17\n" +
 	"\x13FLOW_STATE_STOPPING\x10\x04\x12\x15\n" +
 	"\x11FLOW_STATE_FAILED\x10\x05\x12\x16\n" +
-	"\x12FLOW_STATE_STOPPED\x10\x06*\xa2\x03\n" +
+	"\x12FLOW_STATE_STOPPED\x10\x06*\xbd\x03\n" +
 	"\fEndpointType\x12\x1d\n" +
 	"\x19ENDPOINT_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16ENDPOINT_TYPE_POSTGRES\x10\x01\x12\x1b\n" +
@@ -890,7 +895,8 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\x14ENDPOINT_TYPE_DUCKDB\x10\v\x12\x1b\n" +
 	"\x17ENDPOINT_TYPE_BUFSTREAM\x10\f\x12\x1c\n" +
 	"\x18ENDPOINT_TYPE_CLICKHOUSE\x10\r\x12\x1a\n" +
-	"\x16ENDPOINT_TYPE_DUCKLAKE\x10\x0e*\x9c\x01\n" +
+	"\x16ENDPOINT_TYPE_DUCKLAKE\x10\x0e\x12\x19\n" +
+	"\x15ENDPOINT_TYPE_ICEBERG\x10\x0f*\x9c\x01\n" +
 	"\n" +
 	"WireFormat\x12\x1b\n" +
 	"\x17WIRE_FORMAT_UNSPECIFIED\x10\x00\x12\x15\n" +

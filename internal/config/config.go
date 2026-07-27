@@ -28,6 +28,7 @@ type Config struct {
 	DDL         DDLConfig
 	Checkpoints CheckpointConfig
 	Artifacts   ArtifactConfig
+	Iceberg     IcebergConfig
 }
 
 type APIConfig struct {
@@ -149,6 +150,38 @@ type ArtifactConfig struct {
 	GCInterval               time.Duration `validate:"omitempty,gt=0"`
 }
 
+// IcebergConfig supplies deployment-level REST authentication, TLS, timeout,
+// and S3 Tables maintenance defaults. Flow options select non-secret target
+// mapping and catalog profile values.
+type IcebergConfig struct {
+	URI                          string
+	Warehouse                    string
+	Prefix                       string
+	Namespace                    string
+	TablePrefix                  string
+	ControlTable                 string
+	Region                       string
+	SigningName                  string
+	SigV4                        bool
+	AllowHTTP                    bool
+	OAuthToken                   string
+	OAuthCredential              string
+	OAuthScope                   string
+	OAuthURI                     string
+	CAFile                       string
+	CAData                       string
+	ClientCertFile               string
+	ClientKeyFile                string
+	ServerName                   string
+	MaxCommitRetries             int           `validate:"omitempty,gt=0,lte=32"`
+	RequestTimeout               time.Duration `validate:"omitempty,gt=0"`
+	ReconciliationHorizon        time.Duration `validate:"omitempty,gt=0"`
+	S3TablesTableBucketARN       string
+	S3TablesConfigureMaintenance bool
+	S3TablesMinSnapshotsToKeep   int `validate:"omitempty,gt=1,lte=2147483647"`
+	S3TablesMaxSnapshotAgeHours  int `validate:"omitempty,gt=0,lte=2147483647"`
+}
+
 // Load loads config from a config file when provided or active viper configfile, then falls back to environment and defaults.
 // Precedence is file > environment > default.
 func Load(configPath string) (*Config, error) {
@@ -258,6 +291,15 @@ func Load(configPath string) (*Config, error) {
 			OrphanGrace:              time.Hour,
 			Retention:                7 * 24 * time.Hour,
 			GCInterval:               time.Minute,
+		},
+		Iceberg: IcebergConfig{
+			ControlTable:                "__wallaby_control",
+			SigningName:                 "execute-api",
+			MaxCommitRetries:            4,
+			RequestTimeout:              30 * time.Second,
+			ReconciliationHorizon:       24 * time.Hour,
+			S3TablesMinSnapshotsToKeep:  100,
+			S3TablesMaxSnapshotAgeHours: 24,
 		},
 	}
 
@@ -467,6 +509,57 @@ func Load(configPath string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Artifacts.GCInterval, err = durationValue(fileCfg, []string{"artifacts.gc_interval", "artifact.gc_interval"}, []string{"WALLABY_ARTIFACT_GC_INTERVAL", "WALLABY_WORKER_ARTIFACT_GC_INTERVAL"}, cfg.Artifacts.GCInterval)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg.Iceberg.URI = stringValue(fileCfg, []string{"iceberg.uri"}, []string{"WALLABY_ICEBERG_URI", "WALLABY_WORKER_ICEBERG_URI"}, cfg.Iceberg.URI)
+	cfg.Iceberg.Warehouse = stringValue(fileCfg, []string{"iceberg.warehouse"}, []string{"WALLABY_ICEBERG_WAREHOUSE", "WALLABY_WORKER_ICEBERG_WAREHOUSE"}, cfg.Iceberg.Warehouse)
+	cfg.Iceberg.Prefix = stringValue(fileCfg, []string{"iceberg.prefix"}, []string{"WALLABY_ICEBERG_PREFIX", "WALLABY_WORKER_ICEBERG_PREFIX"}, cfg.Iceberg.Prefix)
+	cfg.Iceberg.Namespace = stringValue(fileCfg, []string{"iceberg.namespace"}, []string{"WALLABY_ICEBERG_NAMESPACE", "WALLABY_WORKER_ICEBERG_NAMESPACE"}, cfg.Iceberg.Namespace)
+	cfg.Iceberg.TablePrefix = stringValue(fileCfg, []string{"iceberg.table_prefix"}, []string{"WALLABY_ICEBERG_TABLE_PREFIX", "WALLABY_WORKER_ICEBERG_TABLE_PREFIX"}, cfg.Iceberg.TablePrefix)
+	cfg.Iceberg.ControlTable = stringValue(fileCfg, []string{"iceberg.control_table"}, []string{"WALLABY_ICEBERG_CONTROL_TABLE", "WALLABY_WORKER_ICEBERG_CONTROL_TABLE"}, cfg.Iceberg.ControlTable)
+	cfg.Iceberg.Region = stringValue(fileCfg, []string{"iceberg.region"}, []string{"WALLABY_ICEBERG_REGION", "WALLABY_WORKER_ICEBERG_REGION"}, cfg.Iceberg.Region)
+	cfg.Iceberg.SigningName = stringValue(fileCfg, []string{"iceberg.signing_name"}, []string{"WALLABY_ICEBERG_SIGNING_NAME", "WALLABY_WORKER_ICEBERG_SIGNING_NAME"}, cfg.Iceberg.SigningName)
+	cfg.Iceberg.OAuthToken = stringValue(fileCfg, []string{"iceberg.oauth_token"}, []string{"WALLABY_ICEBERG_OAUTH_TOKEN", "WALLABY_WORKER_ICEBERG_OAUTH_TOKEN"}, cfg.Iceberg.OAuthToken)
+	cfg.Iceberg.OAuthCredential = stringValue(fileCfg, []string{"iceberg.oauth_credential"}, []string{"WALLABY_ICEBERG_OAUTH_CREDENTIAL", "WALLABY_WORKER_ICEBERG_OAUTH_CREDENTIAL"}, cfg.Iceberg.OAuthCredential)
+	cfg.Iceberg.OAuthScope = stringValue(fileCfg, []string{"iceberg.oauth_scope"}, []string{"WALLABY_ICEBERG_OAUTH_SCOPE", "WALLABY_WORKER_ICEBERG_OAUTH_SCOPE"}, cfg.Iceberg.OAuthScope)
+	cfg.Iceberg.OAuthURI = stringValue(fileCfg, []string{"iceberg.oauth_uri"}, []string{"WALLABY_ICEBERG_OAUTH_URI", "WALLABY_WORKER_ICEBERG_OAUTH_URI"}, cfg.Iceberg.OAuthURI)
+	cfg.Iceberg.CAFile = stringValue(fileCfg, []string{"iceberg.ca_file"}, []string{"WALLABY_ICEBERG_CA_FILE", "WALLABY_WORKER_ICEBERG_CA_FILE"}, cfg.Iceberg.CAFile)
+	cfg.Iceberg.CAData = stringValue(fileCfg, []string{"iceberg.ca_data"}, []string{"WALLABY_ICEBERG_CA_DATA", "WALLABY_WORKER_ICEBERG_CA_DATA"}, cfg.Iceberg.CAData)
+	cfg.Iceberg.ClientCertFile = stringValue(fileCfg, []string{"iceberg.client_cert_file"}, []string{"WALLABY_ICEBERG_CLIENT_CERT", "WALLABY_WORKER_ICEBERG_CLIENT_CERT"}, cfg.Iceberg.ClientCertFile)
+	cfg.Iceberg.ClientKeyFile = stringValue(fileCfg, []string{"iceberg.client_key_file"}, []string{"WALLABY_ICEBERG_CLIENT_KEY", "WALLABY_WORKER_ICEBERG_CLIENT_KEY"}, cfg.Iceberg.ClientKeyFile)
+	cfg.Iceberg.ServerName = stringValue(fileCfg, []string{"iceberg.server_name"}, []string{"WALLABY_ICEBERG_SERVER_NAME", "WALLABY_WORKER_ICEBERG_SERVER_NAME"}, cfg.Iceberg.ServerName)
+	cfg.Iceberg.S3TablesTableBucketARN = stringValue(fileCfg, []string{"iceberg.s3tables_table_bucket_arn"}, []string{"WALLABY_ICEBERG_S3TABLES_TABLE_BUCKET_ARN", "WALLABY_WORKER_ICEBERG_S3TABLES_TABLE_BUCKET_ARN"}, cfg.Iceberg.S3TablesTableBucketARN)
+	cfg.Iceberg.SigV4, err = boolValue(fileCfg, []string{"iceberg.sigv4"}, []string{"WALLABY_ICEBERG_SIGV4", "WALLABY_WORKER_ICEBERG_SIGV4"}, cfg.Iceberg.SigV4)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Iceberg.AllowHTTP, err = boolValue(fileCfg, []string{"iceberg.allow_http"}, []string{"WALLABY_ICEBERG_ALLOW_HTTP", "WALLABY_WORKER_ICEBERG_ALLOW_HTTP"}, cfg.Iceberg.AllowHTTP)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Iceberg.S3TablesConfigureMaintenance, err = boolValue(fileCfg, []string{"iceberg.s3tables_configure_maintenance"}, []string{"WALLABY_ICEBERG_S3TABLES_CONFIGURE_MAINTENANCE", "WALLABY_WORKER_ICEBERG_S3TABLES_CONFIGURE_MAINTENANCE"}, cfg.Iceberg.S3TablesConfigureMaintenance)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Iceberg.MaxCommitRetries, err = intValue(fileCfg, []string{"iceberg.max_commit_retries"}, []string{"WALLABY_ICEBERG_MAX_COMMIT_RETRIES", "WALLABY_WORKER_ICEBERG_MAX_COMMIT_RETRIES"}, cfg.Iceberg.MaxCommitRetries)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Iceberg.S3TablesMinSnapshotsToKeep, err = intValue(fileCfg, []string{"iceberg.s3tables_min_snapshots_to_keep"}, []string{"WALLABY_ICEBERG_S3TABLES_MIN_SNAPSHOTS_TO_KEEP", "WALLABY_WORKER_ICEBERG_S3TABLES_MIN_SNAPSHOTS_TO_KEEP"}, cfg.Iceberg.S3TablesMinSnapshotsToKeep)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Iceberg.S3TablesMaxSnapshotAgeHours, err = intValue(fileCfg, []string{"iceberg.s3tables_max_snapshot_age_hours"}, []string{"WALLABY_ICEBERG_S3TABLES_MAX_SNAPSHOT_AGE_HOURS", "WALLABY_WORKER_ICEBERG_S3TABLES_MAX_SNAPSHOT_AGE_HOURS"}, cfg.Iceberg.S3TablesMaxSnapshotAgeHours)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Iceberg.RequestTimeout, err = durationValue(fileCfg, []string{"iceberg.request_timeout"}, []string{"WALLABY_ICEBERG_REQUEST_TIMEOUT", "WALLABY_WORKER_ICEBERG_REQUEST_TIMEOUT"}, cfg.Iceberg.RequestTimeout)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Iceberg.ReconciliationHorizon, err = durationValue(fileCfg, []string{"iceberg.reconciliation_horizon"}, []string{"WALLABY_ICEBERG_RECONCILIATION_HORIZON", "WALLABY_WORKER_ICEBERG_RECONCILIATION_HORIZON"}, cfg.Iceberg.ReconciliationHorizon)
 	if err != nil {
 		return nil, err
 	}

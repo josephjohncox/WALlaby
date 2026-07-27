@@ -76,6 +76,57 @@ func TestPostgresManagedProfileMetrics(t *testing.T) {
 	}
 }
 
+func TestIcebergConsumerTelemetry(t *testing.T) {
+	oldTracerProvider := otel.GetTracerProvider()
+	oldMeterProvider := otel.GetMeterProvider()
+	oldMetrics := durableMetrics
+	defer func() {
+		otel.SetTracerProvider(oldTracerProvider)
+		otel.SetMeterProvider(oldMeterProvider)
+		durableMetrics = oldMetrics
+	}()
+
+	spanRecorder := tracetest.NewSpanRecorder()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder)))
+	reader := sdkmetric.NewManualReader()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	durableMetrics = &durableMetricSet{}
+
+	ctx, end := StartIcebergConsumerSpan(context.Background(), "commit", "flow-secret", "batch-secret", "commit-secret")
+	end(nil)
+	_, end = StartIcebergConsumerSpan(ctx, "unbounded-operation", "flow-two", "batch-two", "commit-two")
+	end(context.Canceled)
+	spans := spanRecorder.Ended()
+	if len(spans) != 2 || spans[0].Name() != "iceberg.consumer.commit" || spans[1].Name() != "iceberg.consumer.other" {
+		t.Fatalf("spans=%v", spans)
+	}
+
+	var metrics metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &metrics); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, scope := range metrics.ScopeMetrics {
+		for _, measurement := range scope.Metrics {
+			seen[measurement.Name] = true
+			if sum, ok := measurement.Data.(metricdata.Sum[int64]); ok {
+				for _, point := range sum.DataPoints {
+					for _, key := range []attribute.Key{"flow.id", "wallaby.logical_batch.id", "wallaby.commit.id"} {
+						if _, leaked := point.Attributes.Value(key); leaked {
+							t.Fatalf("identity %s leaked into metric %s", key, measurement.Name)
+						}
+					}
+				}
+			}
+		}
+	}
+	for _, name := range []string{"wallaby.iceberg.consumer.outcomes", "wallaby.iceberg.consumer.duration"} {
+		if !seen[name] {
+			t.Fatalf("missing metric %s: %v", name, seen)
+		}
+	}
+}
+
 func TestClickHouseManagedProfileTelemetry(t *testing.T) {
 	oldTracerProvider := otel.GetTracerProvider()
 	oldMeterProvider := otel.GetMeterProvider()

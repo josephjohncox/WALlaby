@@ -30,6 +30,9 @@ enum EndpointType {
   ENDPOINT_TYPE_BUFSTREAM = 12;
   ENDPOINT_TYPE_CLICKHOUSE = 13;
   ENDPOINT_TYPE_DUCKLAKE = 14;
+  // Iceberg is an asynchronous consumer of the canonical artifact log. It is
+  // never a direct current-state/upsert destination.
+  ENDPOINT_TYPE_ICEBERG = 15;
 }
 
 enum WireFormat {
@@ -48,8 +51,8 @@ enum AckPolicy {
   // ACK_POLICY_MATERIALIZED acknowledges a CDC transaction only after its
   // canonical immutable objects and fenced PostgreSQL publication/checkpoint
   // commit. A data-free startup cut is rooted as an object-free canonical
-  // publication before feedback. The configured destination is not committed
-  // on the CDC path, and this release registers no production catalog consumer.
+  // publication before feedback. A configured Iceberg endpoint consumes the
+  // publication asynchronously and never delays source acknowledgement.
   ACK_POLICY_MATERIALIZED = 3;
 }
 

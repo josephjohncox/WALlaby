@@ -6,6 +6,28 @@ import (
 	"time"
 )
 
+func TestLoadIcebergCatalogConfig(t *testing.T) {
+	t.Setenv("WALLABY_ENV", "test")
+	t.Setenv("WALLABY_WORKFLOW_STORE", "memory")
+	t.Setenv("WALLABY_ICEBERG_URI", "https://catalog.example.test")
+	t.Setenv("WALLABY_ICEBERG_WAREHOUSE", "warehouse")
+	t.Setenv("WALLABY_ICEBERG_OAUTH_TOKEN", "secret-token")
+	t.Setenv("WALLABY_ICEBERG_REQUEST_TIMEOUT", "12s")
+	t.Setenv("WALLABY_ICEBERG_RECONCILIATION_HORIZON", "48h")
+	t.Setenv("WALLABY_ICEBERG_S3TABLES_TABLE_BUCKET_ARN", "arn:aws:s3tables:us-east-1:123456789012:bucket/wallaby")
+	t.Setenv("WALLABY_ICEBERG_S3TABLES_MIN_SNAPSHOTS_TO_KEEP", "250")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Iceberg.URI != "https://catalog.example.test" || cfg.Iceberg.Warehouse != "warehouse" ||
+		cfg.Iceberg.OAuthToken != "secret-token" || cfg.Iceberg.RequestTimeout != 12*time.Second ||
+		cfg.Iceberg.ReconciliationHorizon != 48*time.Hour || cfg.Iceberg.S3TablesMinSnapshotsToKeep != 250 {
+		t.Fatalf("iceberg config=%+v", cfg.Iceberg)
+	}
+}
+
 func TestLoadArtifactPublicationConfig(t *testing.T) {
 	t.Setenv("WALLABY_ENV", "test")
 	t.Setenv("WALLABY_WORKFLOW_STORE", "memory")

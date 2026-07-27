@@ -108,15 +108,16 @@
     - [x] In one generation-fenced PostgreSQL transaction publish manifest roots, downstream delivery rows, quota accounting, checkpoint, and the materialized ACK intent; acknowledge the source only after commit.
     - [x] Crash-test upload intent, object PUT/evidence/verification, PostgreSQL publication commit, and source-ACK ordering; inject delayed stale workers and verify lifecycle/spec invariants.
     - [x] Add artifact-reference delivery queues, reserved/uploaded orphan reconciliation, rooted-retention mark/sweep, and quota recovery; in-memory queues do not duplicate batch payloads.
-    - [ ] Add an append-only ordinary-Iceberg changelog consumer using
-      `Commit`/`Reconcile`, stable WALlaby batch IDs in snapshot summaries, and
-      catalog-commit crash recovery. Reuse immutable files only when the
-      canonical schema carries stable Iceberg field IDs and compatible partition
-      semantics; otherwise rewrite them for the table projection.
-    - [ ] Add S3 Tables only as an Iceberg REST backend. Keep canonical recovery
-      objects in ordinary S3 under independent retention; do not rely on S3
-      Tables maintenance to pin WALlaby recovery data or assume ordinary-S3
-      canonical files can be reused directly inside a managed table bucket.
+    - [x] Add an append-only ordinary-Iceberg changelog consumer using
+      `Commit`/`Reconcile`, stable Wallaby batch IDs in snapshot summaries, and
+      catalog-commit crash recovery. Canonical v1 files are always rewritten
+      with the catalog-assigned Iceberg field IDs (the catalog owns field IDs;
+      Wallaby rebuilds an authoritative canonical-to-catalog mapping keyed on
+      stable source identity and rewrites data-file PARQUET:field_id) and target
+      partition semantics.
+    - [x] Add S3 Tables only as an Iceberg REST backend. Canonical recovery
+      objects remain in ordinary S3 under independent retention; S3 Tables
+      maintenance is configured and monitored through current AWS APIs.
     - [ ] Defer current-state tables, deletes/merges, compaction, retained-manifest GC, multi-source/vector-frontier support, and universal destination routing until append-only changelog recovery and soak tests pass.
 
 ### Implemented durable-core vertical slice (current branch)
@@ -137,7 +138,7 @@
 - [x] Reconcile old `reserved` artifact intents by exact version on replay; conflicting versions fail closed, and prepared PUTs without evidence remain quota-charged because a stale in-flight request may still complete after takeover.
 - [ ] Add a transport-level proof for requests that were never sent before releasing no-evidence prepared PUT reservations; do not infer this from a single not-found listing.
 - [x] Add fenced rooted-retention mark/sweep with source-ACK, delivery-receipt, age, and newer-checkpoint roots plus publisher/GC claim revalidation tests.
-- [ ] Implement and live-test an Iceberg REST catalog adapter. The current code supplies only the PostgreSQL queue and catalog abstraction.
+- [x] Implement the Iceberg REST catalog adapter with catalog-owned field IDs: load/create/evolve the table, build an authoritative canonical-to-catalog field mapping from the catalog-returned schema (validating names/types/requiredness/stable identity/renames/collisions), and rewrite committed data files with the catalog-assigned PARQUET:field_id. Additive evolution and identity-tracked renames are applied through the catalog; stable source identity is carried in each field's doc so renames survive fresh field-ID reassignment. The REST connector blank-imports the iceberg-go gocloud FileIO driver so the committer can read and write table data/metadata on s3:// warehouses (MinIO locally, AWS in production). The integration harness provisions a real Apache Iceberg REST catalog + MinIO so `TestIcebergRESTLiveAppendProjection` and `TestIcebergRESTLiveSchemaEvolutionRename` (doc-survival across a real catalog's ID reassignment) run (not skip) under `just test-checkpoint5-iceberg-integration`; AWS S3 Tables stays credential-gated and experimental pending live evidence.
 - [ ] Implement the append-only ClickHouse managed changelog profile. Managed admission currently rejects the mutation connector.
 - [x] Share one bounded worker control pool and one checksum-verifying migration coordinator; import and dual-record legacy workflow/checkpoint/registry history.
 - [ ] Export observable gauges for active leases, bootstrap progress, artifact backlog count/bytes/age, retained bytes, and GC lag. The named PostgreSQL profile now has bounded delivery outcome metrics; the remaining gauges are still open.

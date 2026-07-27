@@ -6,7 +6,16 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 )
+
+func TestIcebergEndpointTerraformRoundTrip(t *testing.T) {
+	t.Parallel()
+	wire := endpointTypeFromString("iceberg")
+	if wire != wallabypb.EndpointType_ENDPOINT_TYPE_ICEBERG || endpointTypeToString(wire) != "iceberg" {
+		t.Fatalf("Iceberg Terraform endpoint round trip=%d/%q", wire, endpointTypeToString(wire))
+	}
+}
 
 func TestValidateFlowResourceModel(t *testing.T) {
 	t.Parallel()

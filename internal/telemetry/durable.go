@@ -28,6 +28,8 @@ type durableMetricSet struct {
 	artifactBytes          metric.Int64Histogram
 	consumerOutcomes       metric.Int64Counter
 	gcOutcomes             metric.Int64Counter
+	icebergOutcomes        metric.Int64Counter
+	icebergLatency         metric.Float64Histogram
 	clickHouseOutcomes     metric.Int64Counter
 	clickHouseRows         metric.Int64Histogram
 	clickHouseBytes        metric.Int64Histogram
@@ -67,6 +69,10 @@ func initDurableMetrics() bool {
 		durableMetrics.consumerOutcomes, err = meter.Int64Counter("wallaby.artifact.consumer.outcomes")
 		errs = append(errs, err)
 		durableMetrics.gcOutcomes, err = meter.Int64Counter("wallaby.artifact.gc.outcomes")
+		errs = append(errs, err)
+		durableMetrics.icebergOutcomes, err = meter.Int64Counter("wallaby.iceberg.consumer.outcomes")
+		errs = append(errs, err)
+		durableMetrics.icebergLatency, err = meter.Float64Histogram("wallaby.iceberg.consumer.duration", metric.WithUnit("s"))
 		errs = append(errs, err)
 		durableMetrics.clickHouseOutcomes, err = meter.Int64Counter("wallaby.clickhouse.managed.outcomes")
 		errs = append(errs, err)
@@ -201,6 +207,36 @@ func RecordArtifactGCOutcome(ctx context.Context, outcome string) {
 		return
 	}
 	durableMetrics.gcOutcomes.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
+}
+
+// StartIcebergConsumerSpan correlates catalog work with immutable publication
+// identity. Batch and commit IDs remain trace attributes, never metric labels.
+func StartIcebergConsumerSpan(ctx context.Context, operation, flowID, logicalBatchID, commitID string) (context.Context, func(error)) {
+	operation = boundedBootstrapLabel(operation, map[string]struct{}{
+		"commit": {}, "reconcile": {}, "append_group": {}, "admission": {},
+	})
+	started := time.Now()
+	ctx, span := otel.Tracer("wallaby/iceberg").Start(ctx, "iceberg.consumer."+operation, trace.WithAttributes(
+		attribute.String("db.system", "iceberg"),
+		attribute.String("flow.id", flowID),
+		attribute.String("wallaby.logical_batch.id", logicalBatchID),
+		attribute.String("wallaby.commit.id", commitID),
+	))
+	return ctx, func(err error) {
+		outcome := "success"
+		if err != nil {
+			outcome = "failure"
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+		if !initDurableMetrics() {
+			return
+		}
+		attrs := metric.WithAttributes(attribute.String("operation", operation), attribute.String("outcome", outcome))
+		durableMetrics.icebergOutcomes.Add(ctx, 1, attrs)
+		durableMetrics.icebergLatency.Record(ctx, time.Since(started).Seconds(), attrs)
+	}
 }
 
 // StartClickHouseManagedSpan correlates one native ClickHouse query with its

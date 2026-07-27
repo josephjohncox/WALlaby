@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -223,6 +224,39 @@ func (s *S3Store) HeadVersion(ctx context.Context, evidence ObjectEvidence) (Obj
 		return ObjectEvidence{}, fmt.Errorf("%w: exact version Object Lock evidence differs", ErrObjectConflict)
 	}
 	return observed, nil
+}
+
+// ReadVersion returns one exact canonical object version after revalidating its
+// immutable checksum, projection metadata, and length. Consumers never read by
+// key without the PostgreSQL-rooted VersionId.
+func (s *S3Store) ReadVersion(ctx context.Context, evidence ObjectEvidence) ([]byte, error) {
+	if _, err := s.HeadVersion(ctx, evidence); err != nil {
+		return nil, err
+	}
+	output, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(evidence.Bucket), Key: aws.String(evidence.Key),
+		VersionId: aws.String(evidence.VersionID), ChecksumMode: types.ChecksumModeEnabled,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get exact artifact version: %w", err)
+	}
+	defer func() { _ = output.Body.Close() }()
+	if evidence.Length <= 0 {
+		return nil, fmt.Errorf("%w: invalid rooted artifact length %d", ErrObjectConflict, evidence.Length)
+	}
+	body, err := io.ReadAll(io.LimitReader(output.Body, evidence.Length+1))
+	if err != nil {
+		return nil, fmt.Errorf("read exact artifact version: %w", err)
+	}
+	if int64(len(body)) != evidence.Length {
+		return nil, fmt.Errorf("%w: exact artifact body length %d, expected %d", ErrObjectConflict, len(body), evidence.Length)
+	}
+	digest := sha256.Sum256(body)
+	actual := hex.EncodeToString(digest[:])
+	if actual != evidence.ChecksumSHA256 {
+		return nil, fmt.Errorf("%w: exact artifact body checksum %s, expected %s", ErrObjectConflict, actual, evidence.ChecksumSHA256)
+	}
+	return body, nil
 }
 
 func formatObjectLockEvidence(mode types.ObjectLockMode, retainUntil *time.Time, legalHold types.ObjectLockLegalHoldStatus) string {
