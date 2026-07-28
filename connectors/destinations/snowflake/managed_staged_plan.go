@@ -131,7 +131,9 @@ func planManagedStagedTransaction(cfg stagedConfig, intent connector.DeliveryInt
 			}
 		}
 		for recordIndex, record := range fragment.Batch.Records {
-			row, size, err := buildStagedChangelogRow(cfg, intent, transaction, fragment, keyColumns, uint64(recordIndex), record)
+			// #nosec G115 -- recordIndex is a non-negative slice index and each record contributes to the bounded maxTransactionRows maximum enforced below.
+			boundedRecordIndex := uint64(recordIndex)
+			row, size, err := buildStagedChangelogRow(cfg, intent, transaction, fragment, keyColumns, boundedRecordIndex, record)
 			if err != nil {
 				return managedStagedPlan{}, fmt.Errorf("plan staged Snowflake fragment %d record %d: %w", fragment.Ordinal, recordIndex, err)
 			}
