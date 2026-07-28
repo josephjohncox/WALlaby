@@ -2,9 +2,9 @@
 
 ## Status
 
-This branch implements the maintained `postgresql-to-postgresql-v1` managed profile plus experimental generic connector and `ack_policy=materialized` artifact publication. The named profile remains at-least-once with reconciliation and still requires `ack_policy=all`; it does not claim exactly-once delivery.
+This branch implements maintained PostgreSQL and ClickHouse managed profiles, the experimental constrained `postgresql-to-snowflake-sql-v1` profile, generic experimental connectors, and experimental `ack_policy=materialized` artifact publication. Every named profile remains at-least-once and requires `ack_policy=all`; none claims exactly-once delivery.
 
-The maintained profile fails closed outside its exact admission contract. Generic PostgreSQL modes, raw automatic DDL, generic staging, ClickHouse mutations, and the incomplete Iceberg path remain experimental.
+Maintained profiles fail closed outside their exact admission contracts. The Snowflake SQL profile also fails closed, but it has no reviewed Snowflake service version or deployment cell. Unit tests, PostgreSQL-only runs, mocks, and fakesnow cannot promote it. Generic PostgreSQL, ClickHouse, Snowflake, and Snowpipe modes remain experimental.
 
 ## Implemented slices
 
@@ -24,7 +24,7 @@ The managed source rejects an existing slot without a PostgreSQL-authoritative c
 
 ### Managed destination delivery
 
-`internal/delivery` and `connectors/destinations/postgres` implement:
+`internal/delivery` and the PostgreSQL, ClickHouse, and Snowflake managed drivers implement:
 
 1. immutable destination revision registration with a configuration fingerprint;
 2. durable manifest and append-only attempt preparation before external I/O;
@@ -33,7 +33,7 @@ The managed source rejects an existing slot without a PostgreSQL-authoritative c
 5. evidence adoption and terminal retry state under the current fence; and
 6. one PostgreSQL transaction for the receipt, authoritative checkpoint, and source ACK intent.
 
-The managed target requires explicit `synchronous_commit=on` or `remote_apply`. Omission, `off`, `local`, and `remote_write` are rejected.
+The PostgreSQL target requires explicit `synchronous_commit=on` or `remote_apply`. The Snowflake SQL profile requires hybrid target and receipt tables owned by a role distinct from the execution role, exact object creation identities, narrow direct grants, disabled secondary roles, no owner-role inheritance in execution sessions, no task visible to that role, an exact schema contract, and a configured service-version pin. Snowflake role visibility cannot yet prove the absence of hidden automation or global writer paths, so those remain live promotion blockers. The adapter inserts the receipt first and then applies ordered DML in one pinned Snowflake transaction. Any ambiguous commit discards that physical session before receipt reconciliation. SQL v1 rejects raw and structured DDL.
 
 The named profile validates the ACK grant before source feedback and revalidates the fence before committing the observed `confirmed_flush_lsn` as the ACK receipt. No control transaction or takeover lock spans source I/O. A crash after slot flush but before the receipt is repaired by reissuing the same authoritative checkpoint. A stale acquisition is rejected before feedback or at receipt recording.
 
@@ -43,7 +43,7 @@ Attempts use persisted numbering, bounded exponential backoff, and a 16-attempt 
 
 `internal/bootstrap` creates a bootstrap-generation-qualified logical slot with `EXPORT_SNAPSHOT` and retains the exporter connection while bounded tasks import that snapshot in read-only repeatable-read transactions. Task cursor/receipt updates are atomic. A replacement process cannot import the lost exporter's snapshot: exporter loss uses a retryable `abandoning` cleanup phase, starts a new exported snapshot generation and physical slot, and restarts every task from zero.
 
-The production worker and in-process DBOS path now run these primitives for `bootstrap=auto|required`. A pre-slot relation barrier prevents DDL from crossing planning; the publication is created or exactly adopted before slot creation so it is visible at the decoding consistent point. Bounded table tasks import the slot snapshot, write generation-qualified PostgreSQL staging tables, and publish every table in one destination transaction. Exporter loss abandons all cursors and restarts from zero with a new physical slot. `bootstrap=never` remains an explicit pre-provisioned mode.
+The production worker and in-process DBOS path now run these primitives for `bootstrap=auto|required`. A pre-slot relation barrier prevents DDL from crossing planning; the publication is created or exactly adopted before slot creation so it is visible at the decoding consistent point. Bounded table tasks import the slot snapshot, write generation-qualified PostgreSQL staging tables, and publish every table in one destination transaction. Exporter loss abandons all cursors and restarts from zero with a new physical slot. `bootstrap=never` is normally pre-provisioned. The experimental Snowflake SQL profile is the narrow exception: `slot=managed` proves the source relation and bound Snowflake objects are empty, then creates and roots a flow-incarnation-specific slot under the run fence without taking a snapshot.
 
 ### Canonical artifact log
 
@@ -90,7 +90,7 @@ The maintained profile admission requires:
 - target write and batch modes plus explicit durable `synchronous_commit`; and
 - no arbitrary `start_lsn`, legacy backfill, file/disabled snapshot authority, drop-slot failure mode, generic staging, raw DDL capture, or raw automatic DDL.
 
-Generic managed modes remain experimental even when they pass their narrower startup checks.
+The experimental Snowflake SQL profile requires PostgreSQL 16, `bootstrap=never`, `slot=managed`, `create_slot=true`, `toast_fetch=off`, one source relation, two pre-provisioned hybrid tables, distinct owner and execution roles, exact grants and creation identities, no schema tasks, enforced identity constraints, an immutable schema contract and hash, and a live `CURRENT_VERSION()` equal to its configured pin. Its complete type cell and transaction bounds are documented in the Snowflake connector reference. Generic managed modes remain experimental even when they pass narrower startup checks.
 
 ## Executable evidence
 
@@ -118,6 +118,6 @@ The following requested outcomes remain open and are not represented as maintain
 - an Iceberg REST catalog implementation and live catalog recovery tests;
 - the append-only ClickHouse managed changelog connector;
 - a 100-cycle process-kill chaos profile and long-running soak gate; and
-- maintained profiles for any connector combination other than `postgresql-to-postgresql-v1`.
+- maintained Snowflake or Snowpipe profiles; `postgresql-to-snowflake-sql-v1` has no reviewed service version or deployment cell and still lacks same-SHA proof for every required network fault, detached transaction takeover, full worker `SIGKILL`, account edition/type, bounded-load, telemetry, redaction, and cleanup gate.
 
 Those deferred connectors and modes remain experimental.

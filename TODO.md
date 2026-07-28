@@ -138,7 +138,8 @@
 - [ ] Add a transport-level proof for requests that were never sent before releasing no-evidence prepared PUT reservations; do not infer this from a single not-found listing.
 - [x] Add fenced rooted-retention mark/sweep with source-ACK, delivery-receipt, age, and newer-checkpoint roots plus publisher/GC claim revalidation tests.
 - [ ] Implement and live-test an Iceberg REST catalog adapter. The current code supplies only the PostgreSQL queue and catalog abstraction.
-- [ ] Implement the append-only ClickHouse managed changelog profile. Managed admission currently rejects the mutation connector.
+- [x] Implement the append-only ClickHouse managed changelog profile with its real-service Keeper gate.
+- [ ] Promote the constrained Snowflake SQL profile only after one reviewed service version and deployment cell passes every same-SHA live gate without skips, including network faults, detached-transaction takeover, full worker `SIGKILL`, account edition/type, bounded load, telemetry, redaction, and cleanup. Unit tests, PostgreSQL-only runs, mocks, and fakesnow are not Snowflake promotion evidence.
 - [x] Share one bounded worker control pool and one checksum-verifying migration coordinator; import and dual-record legacy workflow/checkpoint/registry history.
 - [ ] Export observable gauges for active leases, bootstrap progress, artifact backlog count/bytes/age, retained bytes, and GC lag. The named PostgreSQL profile now has bounded delivery outcome metrics; the remaining gauges are still open.
 

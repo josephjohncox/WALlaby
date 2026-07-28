@@ -9,6 +9,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/josephjohncox/wallaby/internal/ddl"
@@ -63,37 +64,50 @@ const (
 
 // Destination writes change events into Snowflake tables.
 type Destination struct {
-	spec             connector.Spec
-	db               *sql.DB
-	disableTx        bool
-	writeMode        string
-	batchMode        string
-	batchResolve     string
-	stagingSchema    string
-	stagingTableName string
-	stagingSuffix    string
-	metaEnabled      bool
-	metaSchema       string
-	metaTable        string
-	metaPKPrefix     string
-	flowID           string
-	metaColumns      map[string]struct{}
-	registry         schemaregistry.Registry
-	registrySubject  string
-	stagingTables    map[string]tableInfo
-	stagingResolved  bool
-	warehouse        string
-	warehouseSize    string
-	warehouseSuspend *int
-	warehouseResume  *bool
-	sessionKeepAlive *bool
+	spec                   connector.Spec
+	db                     *sql.DB
+	managedProfile         string
+	managedConfig          managedConfig
+	managedHooksMu         sync.RWMutex
+	managedHooks           ManagedHooks
+	managedScopeMu         sync.Mutex
+	managedFlowIncarnation string
+	disableTx              bool
+	writeMode              string
+	batchMode              string
+	batchResolve           string
+	stagingSchema          string
+	stagingTableName       string
+	stagingSuffix          string
+	metaEnabled            bool
+	metaSchema             string
+	metaTable              string
+	metaPKPrefix           string
+	flowID                 string
+	metaColumns            map[string]struct{}
+	registry               schemaregistry.Registry
+	registrySubject        string
+	stagingTables          map[string]tableInfo
+	stagingResolved        bool
+	warehouse              string
+	warehouseSize          string
+	warehouseSuspend       *int
+	warehouseResume        *bool
+	sessionKeepAlive       *bool
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.spec = spec
+	d.managedProfile = strings.TrimSpace(spec.Options["managed_profile"])
 	dsn := spec.Options[optDSN]
 	if dsn == "" {
 		return errors.New("snowflake dsn is required")
+	}
+	if d.managedProfile != "" {
+		if d.managedProfile != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+			return fmt.Errorf("unsupported Snowflake managed profile %q", d.managedProfile)
+		}
+		return d.openManaged(ctx, dsn, spec)
 	}
 
 	db, err := sql.Open("snowflake", dsn)
@@ -265,6 +279,9 @@ type execer interface {
 }
 
 func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
+	if d.managedProfile != "" {
+		return errors.New("managed Snowflake SQL profile requires full-transaction delivery; legacy Write is disabled")
+	}
 	if d.db == nil {
 		return errors.New("snowflake destination not initialized")
 	}
@@ -331,6 +348,17 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 }
 
 func (d *Destination) Close(ctx context.Context) error {
+	if d.managedProfile != "" {
+		if d.db == nil {
+			return nil
+		}
+		err := d.db.Close()
+		d.db = nil
+		d.managedScopeMu.Lock()
+		d.managedFlowIncarnation = ""
+		d.managedScopeMu.Unlock()
+		return err
+	}
 	if d.db != nil {
 		if err := d.finalizeStaging(ctx); err != nil {
 			_ = d.db.Close()
@@ -393,7 +421,25 @@ func (d *Destination) Capabilities() connector.Capabilities {
 	}
 }
 
+// CapabilitiesFor scopes durable transaction/reconciliation claims to the
+// exact named profile. Generic Snowflake and all Snowpipe modes stay experimental
+// without replay-safe capability claims.
+func (d *Destination) CapabilitiesFor(spec connector.Spec) connector.Capabilities {
+	capabilities := d.Capabilities()
+	if strings.TrimSpace(spec.Options["managed_profile"]) != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+		return capabilities
+	}
+	capabilities.Delivery.TransactionalBatch = true
+	capabilities.Delivery.IdempotentReplay = true
+	capabilities.Delivery.ReplaySafe = true
+	capabilities.Delivery.ExecutesDDL = false
+	return capabilities
+}
+
 func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, record connector.Record) error {
+	if d.managedProfile != "" {
+		return errors.New("managed Snowflake SQL profile rejects DDL; provision a new object and destination revision")
+	}
 	if d.db == nil {
 		return errors.New("snowflake destination not initialized")
 	}
@@ -591,7 +637,7 @@ func (d *Destination) insertRow(ctx context.Context, exec execer, target string,
 	if len(cols) == 0 {
 		return nil
 	}
-	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols, '"'), strings.Join(exprs, ", "))
+	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols), strings.Join(exprs, ", "))
 	if _, err := exec.ExecContext(ctx, stmt, vals...); err != nil {
 		return fmt.Errorf("insert row: %w", err)
 	}
@@ -636,7 +682,7 @@ func (d *Destination) resolveStagingTable(ctx context.Context, info tableInfo) e
 	if len(cols) == 0 {
 		return nil
 	}
-	colList := quoteColumns(cols, '"')
+	colList := quoteColumns(cols)
 	if d.batchResolve == batchResolveReplace {
 		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("TRUNCATE TABLE %s", target)); err != nil {
 			return fmt.Errorf("truncate target: %w", err)
@@ -884,7 +930,7 @@ func (d *Destination) upsertMetadata(ctx context.Context, exec execer, schema co
 	columns = append(columns, pkCols...)
 	values = append(values, pkVals...)
 
-	insertStmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(columns, '"'), placeholders(len(columns)))
+	insertStmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(columns), placeholders(len(columns)))
 	if _, err := exec.ExecContext(ctx, insertStmt, values...); err != nil {
 		return fmt.Errorf("insert meta row: %w", err)
 	}
@@ -1013,10 +1059,10 @@ func whereFromKey(key map[string]any, quote rune, prefix string) (string, []any)
 	return strings.Join(parts, " AND "), args
 }
 
-func quoteColumns(cols []string, quote rune) string {
+func quoteColumns(cols []string) string {
 	quoted := make([]string, 0, len(cols))
 	for _, col := range cols {
-		quoted = append(quoted, quoteIdent(col, quote))
+		quoted = append(quoted, quoteIdent(col, '"'))
 	}
 	return strings.Join(quoted, ", ")
 }

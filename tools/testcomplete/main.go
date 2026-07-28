@@ -59,12 +59,16 @@ func run(goCommand, outputPath, expectedPath string) error {
 		return err
 	}
 
-	returnCode, seenPackages, seenTests, err := runTests(goCommand, outputPath)
+	returnCode, seenPackages, accountedTests, passedTests, err := runTests(goCommand, outputPath)
 	if err != nil {
 		return err
 	}
 	missingPackages := setDifference(packages, seenPackages)
-	missing := missingTests(expected, seenTests)
+	// A test is "missing" only when it never reported a terminal event. A test
+	// that skipped (credential- or environment-gated) is accounted for and must
+	// not be treated as omitted; the completeness count below still reports only
+	// tests that actually passed, so a silently disappeared test is caught.
+	missing := missingTests(expected, accountedTests)
 	if len(missingPackages) > 0 {
 		fmt.Fprintln(os.Stderr, "missing Go test packages:")
 		for _, pkg := range missingPackages {
@@ -79,12 +83,15 @@ func run(goCommand, outputPath, expectedPath string) error {
 	}
 
 	expectedCount := testCount(expected)
-	seenCount := intersectingTestCount(expected, seenTests)
+	passedCount := intersectingTestCount(expected, passedTests)
+	accountedCount := intersectingTestCount(expected, accountedTests)
 	fmt.Printf(
-		"Go test completeness: packages=%d/%d tests=%d/%d\n",
+		"Go test completeness: packages=%d/%d passed=%d/%d accounted=%d/%d\n",
 		len(seenPackages),
 		len(packages),
-		seenCount,
+		passedCount,
+		expectedCount,
+		accountedCount,
 		expectedCount,
 	)
 	if returnCode != 0 {
@@ -125,39 +132,67 @@ func enumerateTests(goCommand string) (map[string]map[string]struct{}, error) {
 	return expected, nil
 }
 
-func runTests(goCommand, outputPath string) (int, map[string]struct{}, map[string]map[string]struct{}, error) {
+func runTests(goCommand, outputPath string) (int, map[string]struct{}, map[string]map[string]struct{}, map[string]map[string]struct{}, error) {
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o750); err != nil {
-		return 0, nil, nil, fmt.Errorf("create Go test results directory: %w", err)
+		return 0, nil, nil, nil, fmt.Errorf("create Go test results directory: %w", err)
 	}
 	// #nosec G304 -- the result path is explicit operator or CI configuration.
 	output, err := os.OpenFile(filepath.Clean(outputPath), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("create Go test results: %w", err)
+		return 0, nil, nil, nil, fmt.Errorf("create Go test results: %w", err)
 	}
 	defer func() { _ = output.Close() }()
 
 	packages := make(map[string]struct{})
-	tests := make(map[string]map[string]struct{})
+	accounted := make(map[string]map[string]struct{})
+	passed := make(map[string]map[string]struct{})
 	command := exec.Command(goCommand, "test", "-json", "-count=1", "./...")
 	err = consumeCommand(command, output, func(event testEvent) {
-		if event.Package != "" {
-			packages[event.Package] = struct{}{}
-		}
-		if event.Package != "" && event.Test != "" {
-			addTest(tests, event.Package, strings.SplitN(event.Test, "/", 2)[0])
-		}
+		recordCompletedPackage(packages, event)
+		recordAccountedTest(accounted, event)
+		recordPassedTest(passed, event)
 		if event.Output != "" {
 			fmt.Print(event.Output)
 		}
 	})
 	if err == nil {
-		return 0, packages, tests, nil
+		return 0, packages, accounted, passed, nil
 	}
 	var exitError *exec.ExitError
 	if errors.As(err, &exitError) {
-		return exitError.ExitCode(), packages, tests, nil
+		return exitError.ExitCode(), packages, accounted, passed, nil
 	}
-	return 0, nil, nil, fmt.Errorf("run Go tests: %w", err)
+	return 0, nil, nil, nil, fmt.Errorf("run Go tests: %w", err)
+}
+
+func recordCompletedPackage(packages map[string]struct{}, event testEvent) {
+	if event.Package == "" || event.Test != "" || (event.Action != "pass" && event.Action != "skip") {
+		return
+	}
+	packages[event.Package] = struct{}{}
+}
+
+func recordPassedTest(tests map[string]map[string]struct{}, event testEvent) {
+	if event.Action != "pass" || event.Package == "" || event.Test == "" || strings.Contains(event.Test, "/") {
+		return
+	}
+	addTest(tests, event.Package, event.Test)
+}
+
+// recordAccountedTest records every top-level test that reached a terminal
+// state: pass, skip, or fail. It answers "did this enumerated test actually
+// run to a decision?" so a genuinely omitted test (build break, disappeared
+// name) is caught while a credential-gated skip is not misreported as missing.
+// The exit code and the passed-test count still surface failures and silent
+// skips of tests that were supposed to execute.
+func recordAccountedTest(tests map[string]map[string]struct{}, event testEvent) {
+	if event.Package == "" || event.Test == "" || strings.Contains(event.Test, "/") {
+		return
+	}
+	switch event.Action {
+	case "pass", "skip", "fail":
+		addTest(tests, event.Package, event.Test)
+	}
 }
 
 func consumeCommand(command *exec.Cmd, copyTo io.Writer, consume func(testEvent)) error {

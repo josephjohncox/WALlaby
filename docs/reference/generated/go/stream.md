@@ -303,7 +303,7 @@ type Runner struct {
 ```
 
 <a name="Runner.ManagedProfileEnabled"></a>
-### func \(\*Runner\) [ManagedProfileEnabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L710>)
+### func \(\*Runner\) [ManagedProfileEnabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L771>)
 
 ```go
 func (r *Runner) ManagedProfileEnabled() bool

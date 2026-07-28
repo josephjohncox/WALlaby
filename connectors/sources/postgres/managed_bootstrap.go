@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -485,6 +486,88 @@ func runWithRenewedSnapshotClaim(ctx context.Context, store authority.Store, cla
 	return workErr
 }
 
+func loadManagedSnowflakePublicationContract(ctx context.Context, pool *pgxpool.Pool, publication string) ([]string, []connector.Schema, error) {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	var serverEncoding, integerDatetimes string
+	if err := tx.QueryRow(ctx, `SELECT current_setting('server_encoding'),current_setting('integer_datetimes')`).Scan(&serverEncoding, &integerDatetimes); err != nil {
+		return nil, nil, fmt.Errorf("inspect managed Snowflake PostgreSQL encoding contract: %w", err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(serverEncoding), "UTF8") || !strings.EqualFold(strings.TrimSpace(integerDatetimes), "on") {
+		return nil, nil, fmt.Errorf("managed Snowflake source requires server_encoding=UTF8 and integer_datetimes=on, got %s/%s", serverEncoding, integerDatetimes)
+	}
+	var allTables, publishInsert, publishUpdate, publishDelete, publishTruncate bool
+	if err := tx.QueryRow(ctx, `SELECT puballtables,pubinsert,pubupdate,pubdelete,pubtruncate
+FROM pg_catalog.pg_publication WHERE pubname=$1`, publication).Scan(
+		&allTables, &publishInsert, &publishUpdate, &publishDelete, &publishTruncate,
+	); err != nil {
+		return nil, nil, err
+	}
+	if allTables {
+		return nil, nil, fmt.Errorf("publication %s uses FOR ALL TABLES", publication)
+	}
+	if !publishInsert || !publishUpdate || !publishDelete || publishTruncate {
+		return nil, nil, fmt.Errorf("managed Snowflake publication requires insert/update/delete and rejects truncate; got insert=%t update=%t delete=%t truncate=%t", publishInsert, publishUpdate, publishDelete, publishTruncate)
+	}
+	rows, err := tx.Query(ctx, `
+SELECT c.oid,n.nspname,c.relname,c.relkind::text,c.relispartition,c.relreplident::text,
+       pr.prattrs IS NOT NULL,pr.prqual IS NOT NULL
+FROM pg_catalog.pg_publication p
+JOIN pg_catalog.pg_publication_rel pr ON pr.prpubid=p.oid
+JOIN pg_catalog.pg_class c ON c.oid=pr.prrelid
+JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+WHERE p.pubname=$1
+ORDER BY n.nspname,c.relname`, publication)
+	if err != nil {
+		return nil, nil, err
+	}
+	var relations []bootstrap.PublicationRelation
+	for rows.Next() {
+		var relation bootstrap.PublicationRelation
+		var replicaIdentity string
+		var hasColumnList, hasRowFilter bool
+		if err := rows.Scan(&relation.OID, &relation.Namespace, &relation.Table, &relation.RelationKind, &relation.IsPartition, &replicaIdentity, &hasColumnList, &hasRowFilter); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		if relation.RelationKind != "r" || relation.IsPartition {
+			rows.Close()
+			return nil, nil, fmt.Errorf("managed Snowflake profile rejects partitioned or partition relation %s.%s", relation.Namespace, relation.Table)
+		}
+		if replicaIdentity != "d" {
+			rows.Close()
+			return nil, nil, fmt.Errorf("managed Snowflake profile requires default primary-key replica identity on %s.%s", relation.Namespace, relation.Table)
+		}
+		if hasColumnList || hasRowFilter {
+			rows.Close()
+			return nil, nil, fmt.Errorf("managed Snowflake profile rejects publication column lists and row filters on %s.%s", relation.Namespace, relation.Table)
+		}
+		relations = append(relations, relation)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, nil, err
+	}
+	rows.Close()
+	if len(relations) == 0 {
+		return nil, nil, errors.New("managed Snowflake source publication contains no relations")
+	}
+	tables := make([]string, 0, len(relations))
+	schemas := make([]connector.Schema, 0, len(relations))
+	for _, relation := range relations {
+		schema, _, err := loadManagedSnapshotSchema(ctx, tx, relation)
+		if err != nil {
+			return nil, nil, err
+		}
+		tables = append(tables, relation.Namespace+"."+relation.Table)
+		schemas = append(schemas, schema)
+	}
+	return tables, schemas, nil
+}
+
 func discoverManagedSnapshotTasks(ctx context.Context, tx pgx.Tx, spec connector.Spec, maxTables int) ([]bootstrap.SnapshotTask, []bootstrap.PublicationRelation, error) {
 	requested := parseCSV(spec.Options[optPublicationTables])
 	if len(requested) == 0 {
@@ -590,9 +673,9 @@ ORDER BY a.attnum`, relation.OID)
 		return connector.Schema{}, nil, err
 	}
 	keyRows, err := tx.Query(ctx, `
-SELECT a.attname
+SELECT a.attname,i.indimmediate,i.indisvalid,i.indisready
 FROM pg_catalog.pg_index i
-JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS key(attnum,ord) ON true
+JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS key(attnum,ord) ON key.ord <= i.indnkeyatts
 JOIN pg_catalog.pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=key.attnum
 WHERE i.indrelid=$1 AND i.indisprimary
 ORDER BY key.ord`, relation.OID)
@@ -603,8 +686,12 @@ ORDER BY key.ord`, relation.OID)
 	var keys []string
 	for keyRows.Next() {
 		var key string
-		if err := keyRows.Scan(&key); err != nil {
+		var immediate, valid, ready bool
+		if err := keyRows.Scan(&key, &immediate, &valid, &ready); err != nil {
 			return connector.Schema{}, nil, err
+		}
+		if !immediate || !valid || !ready {
+			return connector.Schema{}, nil, fmt.Errorf("managed bootstrap requires an immediate, valid, ready primary key on %s.%s", relation.Namespace, relation.Table)
 		}
 		keys = append(keys, key)
 	}
@@ -614,18 +701,20 @@ ORDER BY key.ord`, relation.OID)
 	if len(keys) == 0 {
 		return connector.Schema{}, nil, fmt.Errorf("managed bootstrap requires a primary key on %s.%s", relation.Namespace, relation.Table)
 	}
-	primary := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
-		primary[key] = struct{}{}
+	primary := make(map[string]int, len(keys))
+	for ordinal, key := range keys {
+		primary[key] = ordinal + 1
 	}
 	for index := range columns {
-		if _, ok := primary[columns[index].Name]; !ok {
+		ordinal, ok := primary[columns[index].Name]
+		if !ok {
 			continue
 		}
 		if columns[index].TypeMetadata == nil {
 			columns[index].TypeMetadata = map[string]string{}
 		}
 		columns[index].TypeMetadata["primary_key"] = "true"
+		columns[index].TypeMetadata["primary_key_ordinal"] = strconv.Itoa(ordinal)
 		columns[index].TypeMetadata["replica_identity"] = "true"
 	}
 	return connector.Schema{Name: relation.Table, Namespace: relation.Namespace, Version: 1, Columns: columns}, keys, nil
@@ -791,12 +880,186 @@ func isInvalidSnapshotError(err error) bool {
 	return strings.Contains(text, "invalid snapshot identifier") || strings.Contains(text, "exported snapshot") || strings.Contains(text, "exporter lost")
 }
 
+func (s *Source) beginManagedSnowflakeSourceCut(ctx context.Context) (_ pgx.Tx, resultErr error) {
+	if s.ManagedControl == nil || s.managedFence == nil || s.lagPool == nil {
+		return nil, errors.New("managed Snowflake source-cut creation requires bound PostgreSQL authority and control/catalog pools")
+	}
+	if _, err := bootstrap.NewBootstrapper(ctx, s.ManagedControl, s.dsn, s.lagPool, s.BootstrapHooks); err != nil {
+		return nil, fmt.Errorf("initialize managed Snowflake source-cut authority: %w", err)
+	}
+	expectedSlot := bootstrap.GenerationSlotName(s.managedFence.FlowID, s.managedFence.FlowIncarnationID, 1)
+	if s.slot != expectedSlot {
+		return nil, fmt.Errorf("managed Snowflake clean start requires deterministic slot %s, got %s", expectedSlot, s.slot)
+	}
+	tx, err := s.ManagedControl.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin managed Snowflake source-cut authority: %w", err)
+	}
+	defer func() {
+		if resultErr != nil {
+			_ = tx.Rollback(context.WithoutCancel(ctx))
+		}
+	}()
+	if err = authority.ValidateRunFence(ctx, tx, *s.managedFence); err != nil {
+		return nil, err
+	}
+	var checkpointExists bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM authoritative_checkpoints WHERE flow_incarnation_id=$1)`, s.managedFence.FlowIncarnationID).Scan(&checkpointExists); err != nil {
+		return nil, fmt.Errorf("inspect managed Snowflake source-cut checkpoint: %w", err)
+	}
+	if checkpointExists {
+		return nil, errors.New("managed Snowflake source-cut creation rejects an existing authoritative checkpoint")
+	}
+	if err = s.lagPool.QueryRow(ctx, `SELECT system_identifier::text,current_database() FROM pg_catalog.pg_control_system()`).Scan(&s.managedSourceSystem, &s.managedDatabase); err != nil {
+		return nil, fmt.Errorf("identify managed Snowflake source cut: %w", err)
+	}
+	if expected := strings.TrimSpace(s.spec.Options[optSourceSystemID]); expected != s.managedSourceSystem {
+		return nil, fmt.Errorf("managed Snowflake source system %s differs from configured %s", s.managedSourceSystem, expected)
+	}
+	var slotExists bool
+	if err = s.lagPool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_replication_slots WHERE slot_name=$1)`, s.slot).Scan(&slotExists); err != nil {
+		return nil, fmt.Errorf("inspect managed Snowflake source-cut slot: %w", err)
+	}
+	if slotExists {
+		return nil, fmt.Errorf("%w: managed Snowflake source-cut slot %s already exists without an authoritative checkpoint; ownership must be reconciled explicitly", connector.ErrDeliveryConflict, s.slot)
+	}
+	if len(s.managedPublicationSchemas) != 1 {
+		return nil, fmt.Errorf("managed Snowflake source cut requires one admitted source relation, got %d", len(s.managedPublicationSchemas))
+	}
+	relation := s.managedPublicationSchemas[0]
+	guard, err := s.lagPool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin managed Snowflake source-cut relation guard: %w", err)
+	}
+	guarded := false
+	defer func() {
+		if !guarded {
+			_ = guard.Rollback(context.WithoutCancel(ctx))
+		}
+	}()
+	qualified := pgx.Identifier{relation.Namespace, relation.Name}.Sanitize()
+	if _, err = guard.Exec(ctx, "SET LOCAL lock_timeout = '60s'"); err != nil {
+		return nil, fmt.Errorf("set managed Snowflake source-cut lock timeout: %w", err)
+	}
+	if _, err = guard.Exec(ctx, "SET LOCAL statement_timeout = '120s'"); err != nil {
+		return nil, fmt.Errorf("set managed Snowflake source-cut statement timeout: %w", err)
+	}
+	if _, err = guard.Exec(ctx, "LOCK TABLE "+qualified+" IN SHARE MODE"); err != nil {
+		return nil, fmt.Errorf("lock managed Snowflake clean-start relation: %w", err)
+	}
+	var sourceHasRows bool
+	if err = guard.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM "+qualified+" LIMIT 1)").Scan(&sourceHasRows); err != nil {
+		return nil, fmt.Errorf("inspect managed Snowflake clean-start relation: %w", err)
+	}
+	if sourceHasRows {
+		return nil, errors.New("managed Snowflake clean start requires an empty PostgreSQL source relation")
+	}
+	s.managedSourceCutGuard = guard
+	guarded = true
+	return tx, nil
+}
+
+func (s *Source) releaseManagedSnowflakeSourceCutGuard(ctx context.Context) error {
+	if s.managedSourceCutGuard == nil {
+		return nil
+	}
+	guard := s.managedSourceCutGuard
+	s.managedSourceCutGuard = nil
+	if err := guard.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+		return fmt.Errorf("release managed Snowflake source-cut relation guard: %w", err)
+	}
+	return nil
+}
+
+func (s *Source) dropUncommittedManagedSnowflakeSourceCut(ctx context.Context) error {
+	if s.lagPool == nil || strings.TrimSpace(s.slot) == "" {
+		return nil
+	}
+	var database, plugin, slotType string
+	var active bool
+	err := s.lagPool.QueryRow(ctx, `
+SELECT database,plugin,slot_type,active
+FROM pg_catalog.pg_replication_slots
+WHERE slot_name=$1`, s.slot).Scan(&database, &plugin, &slotType, &active)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect uncommitted managed Snowflake source cut: %w", err)
+	}
+	if database != s.managedDatabase || plugin != "pgoutput" || slotType != "logical" || active {
+		return fmt.Errorf("%w: uncommitted managed Snowflake slot %s database=%s plugin=%s type=%s active=%t", connector.ErrDeliveryConflict, s.slot, database, plugin, slotType, active)
+	}
+	if _, err := s.lagPool.Exec(ctx, `SELECT pg_catalog.pg_drop_replication_slot($1)`, s.slot); err != nil {
+		return fmt.Errorf("drop uncommitted managed Snowflake source cut: %w", err)
+	}
+	return nil
+}
+
+func persistManagedSnowflakeSourceCut(ctx context.Context, tx pgx.Tx, fence connector.RunFence, checkpoint connector.Checkpoint) error {
+	positionID, err := connector.CheckpointPositionID(checkpoint)
+	if err != nil {
+		return err
+	}
+	metadata, err := json.Marshal(checkpoint.Metadata)
+	if err != nil {
+		return fmt.Errorf("encode managed Snowflake source-cut metadata: %w", err)
+	}
+	if len(metadata) == 0 || string(metadata) == "null" {
+		metadata = []byte("{}")
+	}
+	if _, err := tx.Exec(ctx, `
+INSERT INTO authoritative_checkpoints (
+  flow_incarnation_id,flow_id,generation,acquisition_id,lease_epoch,lsn,metadata
+) VALUES ($1,$2,$3,$4,$5,$6,$7)`, fence.FlowIncarnationID, fence.FlowID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, checkpoint.LSN, metadata); err != nil {
+		return fmt.Errorf("persist managed Snowflake source-cut checkpoint: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+INSERT INTO source_ack_intents (
+  flow_incarnation_id,position_id,checkpoint_lsn,generation,acquisition_id,lease_epoch
+) VALUES ($1,$2,$3,$4,$5,$6)`, fence.FlowIncarnationID, positionID, checkpoint.LSN, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch); err != nil {
+		return fmt.Errorf("persist managed Snowflake source-cut ACK intent: %w", err)
+	}
+	return nil
+}
+
+func (s *Source) persistManagedSnowflakeSourceCutResource(ctx context.Context, tx pgx.Tx, fence connector.RunFence, checkpoint connector.Checkpoint) error {
+	resourceID := uuid.New()
+	operationID := uuid.New()
+	digest := sha256.Sum256([]byte(s.managedSourceSystem + "\x00" + s.managedDatabase + "\x00" + s.slot + "\x00pgoutput"))
+	revision := hex.EncodeToString(digest[:])
+	if _, err := tx.Exec(ctx, `
+INSERT INTO source_resources (
+  flow_incarnation_id,resource_kind,resource_id,flow_id,generation,acquisition_id,lease_epoch,
+  created_generation,created_acquisition_id,created_lease_epoch,
+  source_system_id,database_name,physical_name,ownership,revision,state
+) VALUES ($1,'slot',$2,$3,$4,$5,$6,$4,$5,$6,$7,$8,$9,'owned',$10,'ready')`,
+		fence.FlowIncarnationID, resourceID, fence.FlowID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch,
+		s.managedSourceSystem, s.managedDatabase, s.slot, revision); err != nil {
+		return fmt.Errorf("persist managed Snowflake source-cut slot: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+INSERT INTO source_resource_operations (
+  operation_id,flow_incarnation_id,resource_kind,resource_id,operation,desired_revision,
+  generation,acquisition_id,lease_epoch,status,source_system_id,database_name,physical_name,
+  external_evidence,completed_at
+) VALUES ($1,$2,'slot',$3,'create',$4,$5,$6,$7,'applied',$8,$9,$10,
+  jsonb_build_object('consistent_lsn',$11::text),clock_timestamp())`,
+		operationID, fence.FlowIncarnationID, resourceID, revision, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch,
+		s.managedSourceSystem, s.managedDatabase, s.slot, checkpoint.LSN); err != nil {
+		return fmt.Errorf("persist managed Snowflake source-cut slot operation: %w", err)
+	}
+	return nil
+}
+
 // BindRunFence threads the producer capability into the registry hook before
 // logical replication can emit schema or DDL mutations.
 func (s *Source) BindRunFence(fence connector.RunFence) error {
 	if err := fence.Validate(); err != nil {
 		return err
 	}
+	bound := fence
+	s.managedFence = &bound
 	if s.SchemaHook == nil {
 		return nil
 	}

@@ -191,6 +191,12 @@ type envSnapshot map[string]*string
 
 func RunIntegrationHarness(m *testing.M) int {
 	flag.Parse()
+	if os.Getenv("WALLABY_TEST_SNOWFLAKE_MANAGED_DIRECT") == "1" && os.Getenv("WALLABY_TEST_SNOWFLAKE_MANAGED") == "1" {
+		// The opt-in Snowflake profile gate supplies both real external services.
+		// Bypass kind provisioning and credential sanitization only for that
+		// narrowly filtered command.
+		return m.Run()
+	}
 
 	config := loadIntegrationHarnessConfig()
 
@@ -1096,6 +1102,7 @@ func integrationManagedEnvKeys() []string {
 		"WALLABY_TEST_GLUE_REGION",
 		"WALLABY_TEST_SNOWFLAKE_DSN",
 		"WALLABY_TEST_SNOWFLAKE_SCHEMA",
+		"WALLABY_TEST_SNOWFLAKE_MANAGED",
 		"WALLABY_TEST_SNOWPIPE_DSN",
 		"WALLABY_TEST_SNOWPIPE_STAGE",
 		"AWS_ACCESS_KEY_ID",
@@ -1735,6 +1742,7 @@ func setIntegrationDefaults() {
 	setenv("WALLABY_TEST_FORCE_FAKESNOW", getenvString("WALLABY_TEST_FORCE_FAKESNOW", "0"))
 	setenv("WALLABY_TEST_RUN_FAKESNOW", getenvString("WALLABY_TEST_RUN_FAKESNOW", "0"))
 	setenv("WALLABY_TEST_CLI_LOG", getenvString("WALLABY_TEST_CLI_LOG", "1"))
+	setenv("WALLABY_TEST_SNOWFLAKE_MANAGED", "0")
 	setenv("WALLABY_TEST_S3_BUCKET", getenvString("WALLABY_TEST_S3_BUCKET", "wallaby-test"))
 	setenv("WALLABY_TEST_S3_ACCESS_KEY", getenvString("WALLABY_TEST_S3_ACCESS_KEY", "wallaby"))
 	setenv("WALLABY_TEST_S3_SECRET_KEY", getenvString("WALLABY_TEST_S3_SECRET_KEY", "wallabysecret"))
@@ -1757,8 +1765,17 @@ func setIntegrationDefaults() {
 	_ = os.Setenv("AWS_EC2_METADATA_DISABLED", "true")
 	_ = os.Setenv("AWS_SDK_LOAD_CONFIG", "0")
 
-	_ = os.Unsetenv("WALLABY_TEST_SNOWFLAKE_DSN")
-	_ = os.Unsetenv("WALLABY_TEST_SNOWFLAKE_SCHEMA")
+	// Never delete operator-supplied Snowflake credentials when the constrained
+	// managed Snowflake gate is explicitly enabled. The live evidence recipe sets
+	// WALLABY_TEST_SNOWFLAKE_MANAGED_DIRECT=1 and returns before this function, but
+	// a reviewer may also run the gate directly with WALLABY_TEST_SNOWFLAKE_MANAGED=1;
+	// in both cases the real DSN and schema must survive. The general suite still
+	// clears them so ordinary Snowflake tests fall back to fakesnow or skip instead
+	// of reaching a real account through mock infrastructure.
+	if getenvString("WALLABY_TEST_SNOWFLAKE_MANAGED", "0") != "1" {
+		_ = os.Unsetenv("WALLABY_TEST_SNOWFLAKE_DSN")
+		_ = os.Unsetenv("WALLABY_TEST_SNOWFLAKE_SCHEMA")
+	}
 }
 
 func defaultTestPostgresDSN() string {

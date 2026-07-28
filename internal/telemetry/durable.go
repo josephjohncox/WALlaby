@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +33,10 @@ type durableMetricSet struct {
 	clickHouseRows         metric.Int64Histogram
 	clickHouseBytes        metric.Int64Histogram
 	clickHouseLatency      metric.Float64Histogram
+	snowflakeOutcomes      metric.Int64Counter
+	snowflakeRows          metric.Int64Histogram
+	snowflakeBytes         metric.Int64Histogram
+	snowflakeLatency       metric.Float64Histogram
 	initErr                error
 }
 
@@ -75,6 +80,14 @@ func initDurableMetrics() bool {
 		durableMetrics.clickHouseBytes, err = meter.Int64Histogram("wallaby.clickhouse.managed.bytes", metric.WithUnit("By"))
 		errs = append(errs, err)
 		durableMetrics.clickHouseLatency, err = meter.Float64Histogram("wallaby.clickhouse.managed.duration", metric.WithUnit("s"))
+		errs = append(errs, err)
+		durableMetrics.snowflakeOutcomes, err = meter.Int64Counter("wallaby.snowflake.managed.outcomes")
+		errs = append(errs, err)
+		durableMetrics.snowflakeRows, err = meter.Int64Histogram("wallaby.snowflake.managed.rows")
+		errs = append(errs, err)
+		durableMetrics.snowflakeBytes, err = meter.Int64Histogram("wallaby.snowflake.managed.bytes", metric.WithUnit("By"))
+		errs = append(errs, err)
+		durableMetrics.snowflakeLatency, err = meter.Float64Histogram("wallaby.snowflake.managed.duration", metric.WithUnit("s"))
 		errs = append(errs, err)
 		durableMetrics.initErr = errors.Join(errs...)
 	})
@@ -236,6 +249,59 @@ func StartClickHouseManagedSpan(ctx context.Context, operation, queryID, logical
 			durableMetrics.clickHouseBytes.Record(ctx, bytes, metric.WithAttributes(attribute.String("operation", operation)))
 		}
 		durableMetrics.clickHouseLatency.Record(ctx, time.Since(started).Seconds(), attrs)
+	}
+}
+
+// StartSnowflakeManagedSpan records bounded operation/outcome metrics while
+// retaining query and logical-batch identities only as trace correlation data.
+func StartSnowflakeManagedSpan(ctx context.Context, operation, operationID, logicalBatchID string, rows, bytes int64) (context.Context, func(error)) {
+	operation = boundedSnowflakeOperation(operation)
+	started := time.Now()
+	ctx, span := otel.Tracer("wallaby/snowflake").Start(ctx, "snowflake.managed."+operation, trace.WithAttributes(
+		attribute.String("db.system", "snowflake"),
+		attribute.String("db.operation.name", strings.ToUpper(operation)),
+		attribute.String("wallaby.snowflake.operation.id", operationID),
+		attribute.String("wallaby.logical_batch.id", logicalBatchID),
+		attribute.Int64("db.operation.batch.size", rows),
+	))
+	return ctx, func(err error) {
+		outcome := "success"
+		if err != nil {
+			outcome = "failure"
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+		if !initDurableMetrics() {
+			return
+		}
+		attrs := metric.WithAttributes(attribute.String("operation", operation), attribute.String("outcome", outcome))
+		durableMetrics.snowflakeOutcomes.Add(ctx, 1, attrs)
+		if rows > 0 {
+			durableMetrics.snowflakeRows.Record(ctx, rows, metric.WithAttributes(attribute.String("operation", operation)))
+		}
+		if bytes > 0 {
+			durableMetrics.snowflakeBytes.Record(ctx, bytes, metric.WithAttributes(attribute.String("operation", operation)))
+		}
+		durableMetrics.snowflakeLatency.Record(ctx, time.Since(started).Seconds(), attrs)
+	}
+}
+
+// RecordSnowflakeQueryID adds the driver's server-issued query identifier to
+// the current trace only. Query IDs must never become metric attributes.
+func RecordSnowflakeQueryID(ctx context.Context, queryID string) {
+	if queryID == "" {
+		return
+	}
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("snowflake.query.id", queryID))
+}
+
+func boundedSnowflakeOperation(operation string) string {
+	switch operation {
+	case "dml", "receipt", "reconcile", "admission", "transaction":
+		return operation
+	default:
+		return "other"
 	}
 }
 

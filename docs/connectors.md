@@ -51,6 +51,8 @@ Payload format notes:
 
 ## Snowflake
 
+Read the [Snowflake destination reference](connectors/snowflake.md) before selecting a mode. The constrained `postgresql-to-snowflake-sql-v1` profile uses pre-provisioned hybrid tables and receipt-first target transactions, but it has no reviewed Snowflake service version or deployment cell and remains experimental. The generic direct-table mode below is also experimental and does not inherit the named profile's reconciliation contract.
+
 Snowflake is a direct table sink (UPSERT/DELETE in streaming mode). You can manage warehouse costs per destination.
 
 Options:
