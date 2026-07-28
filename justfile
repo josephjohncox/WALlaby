@@ -47,6 +47,12 @@ trace_seed := env_var_or_default("TRACE_SEED", "1")
 trace_max_batches := env_var_or_default("TRACE_MAX_BATCHES", "10")
 trace_max_records := env_var_or_default("TRACE_MAX_RECORDS", "3")
 rapid_checks := env_var_or_default("RAPID_CHECKS", "100")
+
+# Deterministic process-failure matrix and soak inputs.
+failure_cycles := env_var_or_default("FAILURE_CYCLES", "100")
+failure_seed := env_var_or_default("FAILURE_SEED", "20260728")
+soak_duration := env_var_or_default("SOAK_DURATION", "30s")
+soak_seed := env_var_or_default("SOAK_SEED", "20260728")
 rapid_packages := env_var_or_default("RAPID_PACKAGES", "./pkg/stream ./pkg/wire ./internal/artifactlog ./internal/ddl ./internal/registry ./internal/schema ./internal/workflow ./connectors/sources/postgres ./connectors/destinations/postgres")
 spec_lint_verbose := env_var_or_default("SPEC_LINT_VERBOSE", "")
 spec_lint_verbose_mode := env_var_or_default("SPEC_LINT_VERBOSE_MODE", "checks")
@@ -125,16 +131,16 @@ test-integration-ci: test-integration
 
 # Durable-core unit and contract gate. Real-service evidence runs separately.
 test-durable-pr:
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./internal/authority ./internal/controlplane ./internal/controlstore ./internal/delivery ./internal/bootstrap ./internal/artifactlog ./internal/workflow ./internal/checkpoint ./internal/registry ./internal/replication ./internal/runner ./pkg/connector ./pkg/stream ./connectors/sources/postgres ./connectors/destinations/postgres ./connectors/destinations/clickhouse ./connectors/destinations/iceberg
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./internal/authority ./internal/controlplane ./internal/controlstore ./internal/delivery ./internal/bootstrap ./internal/artifactlog ./internal/failmatrix ./internal/workflow ./internal/checkpoint ./internal/registry ./internal/replication ./internal/runner ./pkg/connector ./pkg/stream ./connectors/sources/postgres ./connectors/destinations/postgres ./connectors/destinations/clickhouse ./connectors/destinations/iceberg
 
 # Race detector coverage for the durable mutation and execution surfaces.
 test-durable-race:
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -race -count=1 ./internal/authority ./internal/controlplane ./internal/controlstore ./internal/delivery ./internal/bootstrap ./internal/artifactlog ./internal/workflow ./internal/checkpoint ./internal/registry ./internal/replication ./internal/runner ./pkg/connector ./pkg/stream ./connectors/sources/postgres ./connectors/destinations/postgres ./connectors/destinations/iceberg
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -race -count=1 ./internal/authority ./internal/controlplane ./internal/controlstore ./internal/delivery ./internal/bootstrap ./internal/artifactlog ./internal/failmatrix ./internal/workflow ./internal/checkpoint ./internal/registry ./internal/replication ./internal/runner ./pkg/connector ./pkg/stream ./connectors/sources/postgres ./connectors/destinations/postgres ./connectors/destinations/iceberg
 
 # Required live PostgreSQL/MinIO durability profiles. The harness provisions
 # services, so these named tests must run rather than skip.
 test-durable-integration:
-    WALLABY_WORKER_BINARY="{{ integration_worker_binary }}" IT_REQUIRED_TESTS='TestWallabyWorkerProcessKillRecovery,TestAuthorityProtocolGateRejectsStaleBinarySession,TestPostgresGenerationFenceRejectsStaleCommit,TestPostgresRunFenceValidationSerializesTakeover,TestPostgresCheckpointGenerationFenceRejectsStaleCommit,TestPostgresFlowIDReuseDoesNotRestoreOldState,TestPostgresDestinationRevisionIsImmutable,TestPostgresAckOnlyCheckpointHasIntentAndReceipt,TestPostgresCommitBeforeReceiptReconciles,TestPostgresManagedDriverMarkerReconciles,TestPostgresTargetReplayConvergesIncludingMetadata,TestPostgresTargetPreservesSameKeyOperationOrderIntegration,TestLogicalSlotExportedSnapshotContract,TestBootstrapConcurrentWritesBoundary,TestManagedTerminalStopHardCrashSlotBeforePersist,TestManagedTerminalStopHardCrashPublicationBeforePublish,TestBootstrapRecoveryFailpoints,TestManagedBootstrapWorkerWiringConcurrentBoundary,TestManagedBootstrapSnapshotBatchCommitBeforeReceiptRecovery,TestManagedBootstrapPublicationReceiptBeforeHandoffRecovery,TestManagedBootstrapHandoffBeforeCDCOpenRecovery,TestManagedBootstrapLiveAdmissionMatrix,TestCanonicalPublicationFingerprintLive,TestManagedTerminalStopOwnershipLive,TestRegistryAndDDLReceiptsRejectStaleTakeover,TestCanonicalArtifactS3AdmissionRequiresEnabledVersioning,TestCanonicalArtifactPublicationRecovery,TestCanonicalArtifactPublicationFailureBoundaries,TestCanonicalArtifactBarrierOnlyDelivery,TestCanonicalArtifactStalePublisherCannotCommit,TestCanonicalArtifactBackpressureAndRootedRetention,TestCanonicalArtifactOrphanMarkSweepCrashRecovery,TestCanonicalArtifactGCDoesNotClaimActiveUpload,TestCanonicalArtifactGCTakeoverDoesNotOrphanInFlightPut,TestCanonicalArtifactPublisherGCClaimRevalidation,TestWallabyWorkerMaterializedPublicationRecovery,TestPostgresToPostgresManagedRecoveryContract' IT_RUN_FILTER='^(TestWallabyWorkerProcessKillRecovery|TestAuthorityProtocolGateRejectsStaleBinarySession|TestPostgresGenerationFenceRejectsStaleCommit|TestPostgresRunFenceValidationSerializesTakeover|TestPostgresCheckpointGenerationFenceRejectsStaleCommit|TestPostgresFlowIDReuseDoesNotRestoreOldState|TestPostgresDestinationRevisionIsImmutable|TestPostgresAckOnlyCheckpointHasIntentAndReceipt|TestPostgresCommitBeforeReceiptReconciles|TestPostgresManagedDriverMarkerReconciles|TestPostgresTargetReplayConvergesIncludingMetadata|TestPostgresTargetPreservesSameKeyOperationOrderIntegration|TestLogicalSlotExportedSnapshotContract|TestBootstrapConcurrentWritesBoundary|TestManagedTerminalStopHardCrashSlotBeforePersist|TestManagedTerminalStopHardCrashPublicationBeforePublish|TestBootstrapRecoveryFailpoints|TestManagedBootstrapWorkerWiringConcurrentBoundary|TestManagedBootstrapSnapshotBatchCommitBeforeReceiptRecovery|TestManagedBootstrapPublicationReceiptBeforeHandoffRecovery|TestManagedBootstrapHandoffBeforeCDCOpenRecovery|TestManagedBootstrapLiveAdmissionMatrix|TestCanonicalPublicationFingerprintLive|TestManagedTerminalStopOwnershipLive|TestRegistryAndDDLReceiptsRejectStaleTakeover|TestCanonicalArtifactS3AdmissionRequiresEnabledVersioning|TestCanonicalArtifactPublicationRecovery|TestCanonicalArtifactPublicationFailureBoundaries|TestCanonicalArtifactBarrierOnlyDelivery|TestCanonicalArtifactStalePublisherCannotCommit|TestCanonicalArtifactBackpressureAndRootedRetention|TestCanonicalArtifactOrphanMarkSweepCrashRecovery|TestCanonicalArtifactGCDoesNotClaimActiveUpload|TestCanonicalArtifactGCTakeoverDoesNotOrphanInFlightPut|TestCanonicalArtifactPublisherGCClaimRevalidation|TestWallabyWorkerMaterializedPublicationRecovery|TestPostgresToPostgresManagedRecoveryContract)$' INTEGRATION_PACKAGE='./tests' just test-integration
+    WALLABY_WORKER_BINARY="{{ integration_worker_binary }}" IT_REQUIRED_TESTS='TestWallabyWorkerProcessKillRecovery,TestAuthorityProtocolGateRejectsStaleBinarySession,TestPostgresGenerationFenceRejectsStaleCommit,TestPostgresRunFenceValidationSerializesTakeover,TestPostgresCheckpointGenerationFenceRejectsStaleCommit,TestPostgresFlowIDReuseDoesNotRestoreOldState,TestPostgresDestinationRevisionIsImmutable,TestPostgresAckOnlyCheckpointHasIntentAndReceipt,TestPostgresCommitBeforeReceiptReconciles,TestPostgresManagedDriverMarkerReconciles,TestPostgresTargetReplayConvergesIncludingMetadata,TestPostgresTargetPreservesSameKeyOperationOrderIntegration,TestLogicalSlotExportedSnapshotContract,TestBootstrapConcurrentWritesBoundary,TestManagedTerminalStopHardCrashSlotBeforePersist,TestManagedTerminalStopHardCrashPublicationBeforePublish,TestBootstrapRecoveryFailpoints,TestManagedBootstrapWorkerWiringConcurrentBoundary,TestManagedBootstrapSnapshotBatchCommitBeforeReceiptRecovery,TestManagedBootstrapPublicationReceiptBeforeHandoffRecovery,TestManagedBootstrapHandoffBeforeCDCOpenRecovery,TestManagedBootstrapLiveAdmissionMatrix,TestCanonicalPublicationFingerprintLive,TestManagedTerminalStopOwnershipLive,TestRegistryAndDDLReceiptsRejectStaleTakeover,TestCanonicalArtifactS3AdmissionRequiresEnabledVersioning,TestCanonicalArtifactPublicationRecovery,TestCanonicalArtifactPublicationFailureBoundaries,TestCanonicalArtifactBarrierOnlyDelivery,TestCanonicalArtifactStalePublisherCannotCommit,TestCanonicalArtifactBackpressureAndRootedRetention,TestCanonicalArtifactOrphanMarkSweepCrashRecovery,TestCanonicalArtifactGCDoesNotClaimActiveUpload,TestCanonicalArtifactGCTakeoverDoesNotOrphanInFlightPut,TestCanonicalArtifactPublisherGCClaimRevalidation,TestCanonicalArtifactConsumerReceiptBoundaryRecovery,TestCanonicalArtifactConsumerReconcileBoundaryRecovery,TestCanonicalArtifactRandomizedCrashCycles,TestWallabyWorkerMaterializedPublicationRecovery,TestPostgresToPostgresManagedRecoveryContract' IT_RUN_FILTER='^(TestWallabyWorkerProcessKillRecovery|TestAuthorityProtocolGateRejectsStaleBinarySession|TestPostgresGenerationFenceRejectsStaleCommit|TestPostgresRunFenceValidationSerializesTakeover|TestPostgresCheckpointGenerationFenceRejectsStaleCommit|TestPostgresFlowIDReuseDoesNotRestoreOldState|TestPostgresDestinationRevisionIsImmutable|TestPostgresAckOnlyCheckpointHasIntentAndReceipt|TestPostgresCommitBeforeReceiptReconciles|TestPostgresManagedDriverMarkerReconciles|TestPostgresTargetReplayConvergesIncludingMetadata|TestPostgresTargetPreservesSameKeyOperationOrderIntegration|TestLogicalSlotExportedSnapshotContract|TestBootstrapConcurrentWritesBoundary|TestManagedTerminalStopHardCrashSlotBeforePersist|TestManagedTerminalStopHardCrashPublicationBeforePublish|TestBootstrapRecoveryFailpoints|TestManagedBootstrapWorkerWiringConcurrentBoundary|TestManagedBootstrapSnapshotBatchCommitBeforeReceiptRecovery|TestManagedBootstrapPublicationReceiptBeforeHandoffRecovery|TestManagedBootstrapHandoffBeforeCDCOpenRecovery|TestManagedBootstrapLiveAdmissionMatrix|TestCanonicalPublicationFingerprintLive|TestManagedTerminalStopOwnershipLive|TestRegistryAndDDLReceiptsRejectStaleTakeover|TestCanonicalArtifactS3AdmissionRequiresEnabledVersioning|TestCanonicalArtifactPublicationRecovery|TestCanonicalArtifactPublicationFailureBoundaries|TestCanonicalArtifactBarrierOnlyDelivery|TestCanonicalArtifactStalePublisherCannotCommit|TestCanonicalArtifactBackpressureAndRootedRetention|TestCanonicalArtifactOrphanMarkSweepCrashRecovery|TestCanonicalArtifactGCDoesNotClaimActiveUpload|TestCanonicalArtifactGCTakeoverDoesNotOrphanInFlightPut|TestCanonicalArtifactPublisherGCClaimRevalidation|TestCanonicalArtifactConsumerReceiptBoundaryRecovery|TestCanonicalArtifactConsumerReconcileBoundaryRecovery|TestCanonicalArtifactRandomizedCrashCycles|TestWallabyWorkerMaterializedPublicationRecovery|TestPostgresToPostgresManagedRecoveryContract)$' INTEGRATION_PACKAGE='./tests' just test-integration
 
 # Live DBOS evidence for the production managed-bootstrap wiring.
 test-durable-dbos-integration:
@@ -195,11 +201,12 @@ test-checkpoint2-postgres-profile:
     required+=',TestPostgresManagedProfilePoolExhaustion'
     required+=',TestPostgresManagedTargetReceiptRollingCompatibility'
     required+=',TestPostgresManagedProfileMetrics'
+    required+=',TestControlStoreLegacyLedgerImportDoesNotReplaySQL'
     filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
     set +e
     WALLABY_WORKER_BINARY="{{ integration_worker_binary }}" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" \
       {{ go }} test -p 1 -count=1 -json \
-      ./tests ./internal/runner ./internal/replication ./connectors/destinations/postgres ./internal/telemetry \
+      ./tests ./internal/runner ./internal/replication ./connectors/destinations/postgres ./internal/telemetry ./internal/controlstore \
       -run "${filter}" >"${results}"
     test_rc=$?
     set -e
@@ -355,8 +362,49 @@ fuzz-managed-snowflake:
 # DBOS bootstrap evidence. IT_REQUIRED_TESTS makes every named test no-skip.
 test-durable-nightly:
     RAPID_CHECKS=20000 just test-rapid
+    FAILURE_CYCLES=1000 just test-failure-matrix
+    SOAK_DURATION=5m just test-soak
     IT_COUNT=10 just test-durable-integration
     IT_COUNT=10 just test-durable-dbos-integration
+
+# Deterministic, credential-free process-failure matrix. Runs at least
+# FAILURE_CYCLES crash cycles per required boundary for every supported protocol
+# profile (kill / restart / overlapping takeover before and after the
+# destination side effect, destination receipt, PostgreSQL adoption, checkpoint,
+# source ACK, artifact publication, consumer receipt, retention release, GC).
+# It first runs the invariant tests, then emits NDJSON + summary evidence and
+# fails closed unless every cell reaches the target with zero violations. This
+# is a bounded required PR gate; it never counts skips as passes and never
+# claims exactly-once. Live cells stay in the real-service recipes below.
+test-failure-matrix:
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./internal/failmatrix
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-failmatrix \
+      -cycles {{ failure_cycles }} -seed {{ failure_seed }} -require-coverage
+
+# Race-detector pass over the failure-matrix model and runner.
+test-failure-matrix-race:
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -race -count=1 ./internal/failmatrix
+
+# Bounded in-process soak for the protocol model. Verifies bounded goroutine and
+# heap growth with no invariant violations over SOAK_DURATION and emits
+# timestamped JSON/text evidence under bench/evidence/soak. Live-service load and
+# soak for the exact maintained profiles (PostgreSQL, ClickHouse, artifact
+# publication, Iceberg REST/MinIO) run via test-bounded-load and the opt-in
+# managed-profile recipes; this gate carries no comparative winner claims.
+test-soak:
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-failmatrix \
+      -soak {{ soak_duration }} -seed {{ soak_seed }}
+
+# Bounded live-service load gate for the exact maintained profiles plus artifact
+# publication and Iceberg REST/MinIO. Requires the provisioned local harness
+# (TEST_PG_DSN + MinIO); the named tests are no-skip and JSON-verified so missing
+# services fail rather than pass vacuously.
+test-bounded-load:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    required='TestClickHouseManagedProfileBoundedLoad,TestCanonicalArtifactBackpressureAndRootedRetention,TestCanonicalArtifactRandomizedCrashCycles,TestPostgresManagedProfilePoolExhaustion'
+    filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
+    IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' just test-integration
 
 test-integration-kind:
     IT_RUN_FILTER="^TestKubernetesDispatcher" IT_COUNT=1 just test-integration
@@ -514,6 +562,7 @@ tla-coverage:
     PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} -coverage 1 -config specs/LifecycleGeneration.cfg specs/LifecycleGeneration.tla > "{{ tlc_coverage_dir }}/LifecycleGeneration.txt" 2>&1
     PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} -coverage 1 -config specs/SnapshotTransition.cfg specs/SnapshotTransition.tla > "{{ tlc_coverage_dir }}/SnapshotTransition.txt" 2>&1
     PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} -coverage 1 -config specs/ManagedPostgresDelivery.cfg specs/ManagedPostgresDelivery.tla > "{{ tlc_coverage_dir }}/ManagedPostgresDelivery.txt" 2>&1
+    PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} -coverage 1 -config specs/ManagedDurability.cfg specs/ManagedDurability.tla > "{{ tlc_coverage_dir }}/ManagedDurability.txt" 2>&1
 
 tla-coverage-check:
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-tla-coverage --dir "{{ tlc_coverage_dir }}" --min "{{ tla_coverage_min }}" --ignore "{{ tla_coverage_ignore }}" --json "{{ tlc_coverage_dir }}/report.json"

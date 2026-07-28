@@ -1,0 +1,45 @@
+{
+  "spec": "ManagedPostgresDelivery",
+  "actions": [
+    "Acquire",
+    "Prepare",
+    "ApplyExternal",
+    "ReconcileIndeterminate",
+    "Finalize",
+    "FlushSource",
+    "RecordFlushReceipt",
+    "AdvanceRetentionRoot",
+    "PruneTerminal"
+  ],
+  "invariants": [
+    "TypeInvariant",
+    "ExternalCommitRequiresAttempt",
+    "ReceiptRequiresExternalCommit",
+    "ReceiptCheckpointAckAtomic",
+    "SourceFlushRequiresAuthorization",
+    "FlushReceiptRequiresObservedSourceFlush",
+    "RetryBounded",
+    "RetentionRootProtectsCheckpoint"
+  ],
+  "unreachable_actions": [
+    "Acquire",
+    "Prepare",
+    "ApplyExternal",
+    "ReconcileIndeterminate",
+    "Finalize",
+    "FlushSource",
+    "RecordFlushReceipt",
+    "AdvanceRetentionRoot",
+    "PruneTerminal"
+  ],
+  "unreachable_invariants": [
+    "TypeInvariant",
+    "ExternalCommitRequiresAttempt",
+    "ReceiptRequiresExternalCommit",
+    "ReceiptCheckpointAckAtomic",
+    "SourceFlushRequiresAuthorization",
+    "FlushReceiptRequiresObservedSourceFlush",
+    "RetryBounded",
+    "RetentionRootProtectsCheckpoint"
+  ]
+}

@@ -134,6 +134,9 @@ jobs:
       - name: Durable-core race detector
         run: just test-durable-race
 
+      - name: Deterministic process-failure matrix (no credentials, no-skip)
+        run: just test-failure-matrix
+
       - name: Rapid property tests
         run: just test-rapid
 
@@ -141,6 +144,15 @@ jobs:
         run: |
           go test ./tools/testcomplete
           just test
+
+      - name: Upload failure-matrix evidence
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: failure-matrix-evidence
+          path: bench/evidence/failure_matrix/run_*
+          if-no-files-found: ignore
 
       - name: Upload machine-readable Go test results
         if: always()

@@ -95,6 +95,10 @@ PRs should include description, test evidence, and performance/compatibility not
 ### Trace/spec coverage
 
 - Monitor coverage thresholds as invariants/actions evolve.
+- [done] Register `ManagedDurability` (ArtifactPublication) and `ManagedPostgresDelivery` (SourceFeedback) in `pkg/spec` with coverage manifests; enforce nonzero TLC action coverage for both via `just tla-coverage`/`tla-coverage-check`; extend `just spec-sync` to catch managed Next-block/cfg drift.
+- [done] Deterministic, credential-free process-failure matrix (`internal/failmatrix`, `cmd/wallaby-failmatrix`, `just test-failure-matrix`): ≥100 seeded crash cycles per boundary per supported protocol profile (kill/restart/overlapping takeover across the full boundary chain), machine-readable NDJSON + summary evidence under `bench/evidence/failure_matrix`, no-skip accounting, and bounded in-process soak (`just test-soak`). It mirrors the managed-model safety invariants as executable runtime checks.
+- Reconcile LifecycleGeneration/SnapshotTransition manifest action names with their specs so `spec-sync` can cover all eight models; reformulate `DDLExecution.IndeterminateFailsClosed` as a checkable property.
+- Plumb managed runtime trace events (`Spec`/`SpecAction`) end-to-end so the managed manifests are also exercised by live traces, not only the executable matrix mirror.
 
 ## Observability & Lifecycle Expectations
 
