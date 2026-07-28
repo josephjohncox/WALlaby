@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -15,6 +16,10 @@ const (
 	// ManagedProfilePostgresToClickHouseAppendV1 promotes only the Keeper-backed,
 	// append-only changelog contract. Generic ClickHouse mutation modes remain experimental.
 	ManagedProfilePostgresToClickHouseAppendV1 = "postgresql-to-clickhouse-append-v1"
+	// ManagedProfilePostgresToSnowflakeSQLV1 names the constrained transactional
+	// Snowflake SQL contract. It remains experimental until its opt-in real-service
+	// recovery matrix has passed for a reviewed Snowflake service version.
+	ManagedProfilePostgresToSnowflakeSQLV1 = "postgresql-to-snowflake-sql-v1"
 )
 
 // ManagedProfileGate binds one support claim to a required real-service test.
@@ -27,18 +32,21 @@ type ManagedProfileGate struct {
 // ManagedProfileContract is the executable support and admission declaration
 // rendered into the generated connector support matrix.
 type ManagedProfileContract struct {
-	Name               string
-	Support            SupportLevel
-	Source             EndpointType
-	Destination        EndpointType
-	PostgresVersions   []int
-	ClickHouseVersions []string
-	Deployment         string
-	SameMajorOnly      bool
-	AckPolicies        []string
-	SingleSink         bool
-	DeliveryGuarantee  string
-	Gates              []ManagedProfileGate
+	Name                     string
+	Support                  SupportLevel
+	Source                   EndpointType
+	Destination              EndpointType
+	PostgresVersions         []int
+	ClickHouseVersions       []string
+	SnowflakeVersions        []string
+	SnowflakeVersionPolicy   string
+	SnowflakeDeploymentCells []string
+	Deployment               string
+	SameMajorOnly            bool
+	AckPolicies              []string
+	SingleSink               bool
+	DeliveryGuarantee        string
+	Gates                    []ManagedProfileGate
 }
 
 // PostgresToPostgresV1Profile returns a defensive copy of the promoted profile.
@@ -113,6 +121,52 @@ func PostgresToClickHouseAppendV1Profile() ManagedProfileContract {
 	return contract
 }
 
+// PostgresToSnowflakeSQLV1Profile returns the constrained but unpromoted
+// transactional Snowflake SQL profile. Admission compares a configured service
+// version with CURRENT_VERSION(), but no service version or deployment cell is
+// reviewed yet. Promotion requires complete same-SHA real-service evidence.
+func PostgresToSnowflakeSQLV1Profile() ManagedProfileContract {
+	contract := ManagedProfileContract{
+		Name:                   ManagedProfilePostgresToSnowflakeSQLV1,
+		Support:                SupportExperimental,
+		Source:                 EndpointPostgres,
+		Destination:            EndpointSnowflake,
+		PostgresVersions:       []int{16},
+		SnowflakeVersionPolicy: "configured-exact-version-unreviewed",
+		Deployment:             "commercial-aws-snowflake-hybrid-table",
+		AckPolicies:            []string{"all"},
+		SingleSink:             true,
+		DeliveryGuarantee:      "at-least-once",
+		Gates: []ManagedProfileGate{
+			{Capability: "runtime deployment", Test: "TestSnowflakeManagedProfileReviewedDeploymentCell", Live: true},
+			{Capability: "source catalog and clean cut", Test: "TestPostgresToSnowflakeManagedProfileRecoveryContract", Live: true},
+			{Capability: "target direct grants objects and constraints", Test: "TestSnowflakeManagedProfileLiveAdmission", Live: true},
+			{Capability: "role hierarchy and alternate writers", Test: "TestSnowflakeManagedProfileRoleIsolation", Live: true},
+			{Capability: "task visibility and automation isolation", Test: "TestSnowflakeManagedProfileTaskIsolation", Live: true},
+			{Capability: "rollback cardinality ordering and types", Test: "TestSnowflakeManagedProfileOrderedFragmentsAndTypes", Live: true},
+			{Capability: "confirmed commit reconciliation", Test: "TestSnowflakeManagedProfileAmbiguousCommit", Live: true},
+			{Capability: "commit transport loss and detached takeover", Test: "TestSnowflakeManagedProfileCommitTransportLossAndDetachedTakeover", Live: true},
+			{Capability: "DDL rejection and replacement", Test: "TestSnowflakeManagedProfileSchemaReconciliation", Live: true},
+			{Capability: "adapter process kill", Test: "TestSnowflakeManagedProfileProcessKillRecovery", Live: true},
+			{Capability: "full worker SIGKILL", Test: "TestSnowflakeManagedProfileWorkerSIGKILLRecovery", Live: true},
+			{Capability: "network fault matrix", Test: "TestSnowflakeManagedProfileNetworkFaultMatrix", Live: true},
+			{Capability: "cancellation and pool safety", Test: "TestSnowflakeManagedProfileCancellationAndPoolSafety", Live: true},
+			{Capability: "bounded load and backpressure", Test: "TestSnowflakeManagedProfileBoundedLoadAndBackpressure", Live: true},
+			{Capability: "PostgreSQL receipt checkpoint and feedback recovery", Test: "TestPostgresToSnowflakeManagedProfileRecoveryContract", Live: true},
+			{Capability: "TLS and JWT", Test: "TestSnowflakeManagedProfileLiveAdmission", Live: true},
+			{Capability: "secret redaction", Test: "TestSnowflakeManagedProfileSecretRedaction", Live: true},
+			{Capability: "cleanup", Test: "TestSnowflakeManagedProfileCleanup", Live: true},
+			{Capability: "telemetry", Test: "TestSnowflakeManagedProfileTelemetry", Live: false},
+		},
+	}
+	contract.PostgresVersions = append([]int(nil), contract.PostgresVersions...)
+	contract.SnowflakeVersions = append([]string(nil), contract.SnowflakeVersions...)
+	contract.SnowflakeDeploymentCells = append([]string(nil), contract.SnowflakeDeploymentCells...)
+	contract.AckPolicies = append([]string(nil), contract.AckPolicies...)
+	contract.Gates = append([]ManagedProfileGate(nil), contract.Gates...)
+	return contract
+}
+
 // ValidatePromotion rejects maintained status unless every required admission
 // and real-service evidence gate is named and enabled.
 func (c ManagedProfileContract) ValidatePromotion() error {
@@ -140,6 +194,24 @@ func (c ManagedProfileContract) ValidatePromotion() error {
 			return fmt.Errorf("managed profile %s repeats PostgreSQL %d", c.Name, version)
 		}
 		seenVersions[version] = struct{}{}
+	}
+	if c.Destination == EndpointSnowflake {
+		if c.SnowflakeVersionPolicy != "configured-exact-version-unreviewed" {
+			return fmt.Errorf("managed profile %s lacks fail-closed configured Snowflake runtime version admission", c.Name)
+		}
+		if c.Support == SupportMaintained && (len(c.SnowflakeVersions) == 0 || len(c.SnowflakeDeploymentCells) == 0) {
+			return fmt.Errorf("managed profile %s lacks reviewed Snowflake service versions or deployment cells", c.Name)
+		}
+		for _, version := range c.SnowflakeVersions {
+			if strings.TrimSpace(version) == "" {
+				return fmt.Errorf("managed profile %s contains an empty Snowflake version", c.Name)
+			}
+		}
+		for _, cell := range c.SnowflakeDeploymentCells {
+			if strings.TrimSpace(cell) == "" {
+				return fmt.Errorf("managed profile %s contains an empty Snowflake deployment cell", c.Name)
+			}
+		}
 	}
 	if c.Destination == EndpointClickHouse {
 		if c.Deployment != "self-managed-keeper" || len(c.ClickHouseVersions) == 0 {
@@ -215,6 +287,17 @@ func managedProfileRequiredGates(name string) (map[string]bool, error) {
 			"process kill": true, "keeper recovery": true, "backpressure": true,
 			"TLS": true, "telemetry": false,
 		}, nil
+	case ManagedProfilePostgresToSnowflakeSQLV1:
+		return map[string]bool{
+			"runtime deployment": true, "source catalog and clean cut": true,
+			"target direct grants objects and constraints": true, "role hierarchy and alternate writers": true,
+			"task visibility and automation isolation": true, "rollback cardinality ordering and types": true,
+			"confirmed commit reconciliation": true, "commit transport loss and detached takeover": true,
+			"DDL rejection and replacement": true, "adapter process kill": true, "full worker SIGKILL": true,
+			"network fault matrix": true, "cancellation and pool safety": true,
+			"bounded load and backpressure": true, "PostgreSQL receipt checkpoint and feedback recovery": true,
+			"TLS and JWT": true, "secret redaction": true, "cleanup": true, "telemetry": false,
+		}, nil
 	default:
 		return nil, fmt.Errorf("managed profile %s has no executable promotion gate set", name)
 	}
@@ -240,10 +323,35 @@ type ManagedPostgresVersionProvider interface {
 	ManagedPostgresMajor() int
 }
 
+// ManagedPostgresPublicationProvider exposes the exact live publication
+// relation set observed during named-profile source admission.
+type ManagedPostgresPublicationProvider interface {
+	ManagedPostgresPublicationTables() []string
+	ManagedPostgresPublicationSchemas() []Schema
+}
+
+// ManagedSourceSchemaValidator lets a named destination compare a live source
+// catalog schema with its immutable destination contract before reading WAL.
+type ManagedSourceSchemaValidator interface {
+	ValidateManagedSourceSchema(Schema) error
+}
+
+// ManagedFlowScopeValidator proves that an already-open destination contains
+// no receipts owned by another incarnation before the runner reads WAL.
+type ManagedFlowScopeValidator interface {
+	ValidateManagedFlowScope(context.Context, string, string) error
+}
+
 // ManagedClickHouseVersionProvider exposes the admitted live server version
 // after connector Open.
 type ManagedClickHouseVersionProvider interface {
 	ManagedClickHouseVersion() string
+}
+
+// ManagedSnowflakeVersionProvider exposes the exact CURRENT_VERSION() value
+// admitted by the constrained Snowflake SQL destination during Open.
+type ManagedSnowflakeVersionProvider interface {
+	ManagedSnowflakeVersion() string
 }
 
 func (c ManagedProfileContract) SupportsPostgresVersion(major int) bool {

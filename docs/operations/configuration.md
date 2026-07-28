@@ -98,6 +98,14 @@ The monotonic `artifactlog/004_materialized_publication.sql` migration backfills
 
 The coordinator intentionally serializes migrations with an advisory lock and does not impose a statement timeout. Do not deploy mixed binaries or use a rolling worker restart across this migration.
 
+## Managed Snowflake SQL
+
+`postgresql-to-snowflake-sql-v1` stores its account, object names and creation identities, owner and execution roles, revision, schema contract, session contract, transaction bounds, and configured Snowflake runtime pin in destination options. Mount the key-pair private key as a secret and reference it from the DSN; do not store key material in the flow document. PostgreSQL remains authoritative for generations, attempts, checkpoints, delivery receipts, and source acknowledgements.
+
+Changing the flow binding, target or receipt table, account, schema, role, warehouse, service-version pin, object creation identity, timeout, bound, or schema contract requires a new destination revision. Provision a new object pair and update `flow_id`, `destination_revision_id`, the schema contract and hash, creation identities, and ownership comments together. Do not reuse a destination revision for different configuration.
+
+See [Snowflake destination](../connectors/snowflake.md) for the exact options, table DDL, and opt-in real-service gate.
+
 ## Command-specific files
 
 - `wallaby-admin` reads `wallaby-admin.yaml` or `$HOME/.config/wallaby/wallaby-admin.yaml` and honors `WALLABY_ADMIN_CONFIG`.

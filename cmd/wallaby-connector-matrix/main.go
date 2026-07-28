@@ -60,9 +60,10 @@ func run() error {
 	profiles := []connector.ManagedProfileContract{
 		connector.PostgresToPostgresV1Profile(),
 		connector.PostgresToClickHouseAppendV1Profile(),
+		connector.PostgresToSnowflakeSQLV1Profile(),
 	}
-	fmt.Println("| Profile | Status | Source | Destination | PostgreSQL | ClickHouse | Deployment | Pairing | Ack | Sinks | Delivery |")
-	fmt.Println("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+	fmt.Println("| Profile | Status | Source | Destination | PostgreSQL | ClickHouse | Snowflake version | Deployment | Pairing | Ack | Sinks | Delivery |")
+	fmt.Println("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 	for _, profile := range profiles {
 		if err := profile.ValidatePromotion(); err != nil {
 			return err
@@ -75,17 +76,31 @@ func run() error {
 		if clickHouseVersions == "" {
 			clickHouseVersions = "—"
 		}
+		snowflakeVersion := strings.Join(profile.SnowflakeVersions, ", ")
+		if snowflakeVersion == "" && profile.SnowflakeVersionPolicy != "" {
+			snowflakeVersion = profile.SnowflakeVersionPolicy + " (reviewed versions: none)"
+		}
+		if snowflakeVersion == "" {
+			snowflakeVersion = "—"
+		}
 		deployment := profile.Deployment
+		if len(profile.SnowflakeDeploymentCells) > 0 {
+			deployment += " [" + strings.Join(profile.SnowflakeDeploymentCells, ", ") + "]"
+		} else if profile.Destination == connector.EndpointSnowflake {
+			deployment += " [reviewed cells: none]"
+		}
 		if deployment == "" {
 			deployment = "—"
 		}
 		pairing := "mixed majors"
 		if profile.SameMajorOnly {
 			pairing = "same major"
+		} else if profile.Destination == connector.EndpointSnowflake {
+			pairing = "configured runtime pin; unreviewed"
 		}
-		fmt.Printf("| `%s` | %s | `%s` | `%s` | %s | %s | %s | %s | %s | one | %s |\n",
+		fmt.Printf("| `%s` | %s | `%s` | `%s` | %s | %s | %s | %s | %s | %s | one | %s |\n",
 			profile.Name, profile.Support, profile.Source, profile.Destination,
-			strings.Join(versions, ", "), clickHouseVersions, deployment, pairing,
+			strings.Join(versions, ", "), clickHouseVersions, snowflakeVersion, deployment, pairing,
 			strings.Join(profile.AckPolicies, ", "), profile.DeliveryGuarantee)
 	}
 	for _, profile := range profiles {
@@ -99,7 +114,7 @@ func run() error {
 		}
 	}
 	fmt.Println()
-	fmt.Println("These are guaranteed defaults. Options can reduce guarantees; startup validation resolves configured capabilities before execution. Generic PostgreSQL and ClickHouse modes remain experimental; maintained status applies only to the exact named managed profiles above.")
+	fmt.Println("These are declared defaults. Options can reduce guarantees; startup validation resolves configured capabilities before execution. Generic PostgreSQL, ClickHouse, Snowflake, and Snowpipe modes remain experimental. Maintained status applies only to rows explicitly marked maintained; the named Snowflake SQL profile has no reviewed service version or deployment cell and remains experimental until every unskipped real-service recovery gate passes on one reviewed SHA.")
 	return nil
 }
 

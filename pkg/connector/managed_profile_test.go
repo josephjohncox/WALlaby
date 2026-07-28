@@ -47,6 +47,41 @@ func TestClickHouseManagedAppendProfilePromotionContract(t *testing.T) {
 	}
 }
 
+func TestSnowflakeSQLManagedProfileRemainsExperimentalWithoutLiveRecoveryEvidence(t *testing.T) {
+	t.Parallel()
+	profile := PostgresToSnowflakeSQLV1Profile()
+	if err := profile.ValidatePromotion(); err != nil {
+		t.Fatal(err)
+	}
+	if profile.Name != ManagedProfilePostgresToSnowflakeSQLV1 || profile.Support != SupportExperimental {
+		t.Fatalf("profile=%+v", profile)
+	}
+	if profile.Destination != EndpointSnowflake || profile.Deployment != "commercial-aws-snowflake-hybrid-table" {
+		t.Fatalf("endpoint/deployment=%s/%q", profile.Destination, profile.Deployment)
+	}
+	if profile.SnowflakeVersionPolicy != "configured-exact-version-unreviewed" {
+		t.Fatalf("Snowflake version policy=%q", profile.SnowflakeVersionPolicy)
+	}
+	if len(profile.SnowflakeVersions) != 0 || len(profile.SnowflakeDeploymentCells) != 0 {
+		t.Fatalf("unproven Snowflake profile contains reviewed live cells: versions=%v cells=%v", profile.SnowflakeVersions, profile.SnowflakeDeploymentCells)
+	}
+	if !profile.SupportsPostgresVersion(16) || profile.SupportsPostgresVersion(14) || profile.SupportsPostgresVersion(17) {
+		t.Fatalf("PostgreSQL version admission exceeds the unpromoted live pairing: %v", profile.PostgresVersions)
+	}
+	if profile.DeliveryGuarantee != "at-least-once" || !profile.SingleSink {
+		t.Fatalf("profile guarantee=%q single_sink=%t", profile.DeliveryGuarantee, profile.SingleSink)
+	}
+	for _, gate := range profile.Gates {
+		if gate.Capability != "telemetry" && !gate.Live {
+			t.Fatalf("recovery gate is not marked as requiring a real Snowflake service: %+v", gate)
+		}
+	}
+	profile.Support = SupportMaintained
+	if err := profile.ValidatePromotion(); err == nil {
+		t.Fatal("Snowflake profile was promoted without a reviewed executable promotion gate set")
+	}
+}
+
 func TestMaintainedManagedProfileRequiresEveryLiveGate(t *testing.T) {
 	t.Parallel()
 	for _, profile := range []ManagedProfileContract{PostgresToPostgresV1Profile(), PostgresToClickHouseAppendV1Profile()} {
