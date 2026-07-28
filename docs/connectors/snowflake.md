@@ -1,10 +1,11 @@
 # Snowflake destination
 
-WALlaby exposes two Snowflake modes:
+WALlaby exposes these Snowflake modes:
 
 | Contract | Status | Delivery contract |
 | --- | --- | --- |
 | `postgresql-to-snowflake-sql-v1` | experimental | PostgreSQL 16 CDC into one hybrid table, with external-commit reconciliation |
+| `postgresql-to-snowflake-staged-append-v1` | experimental | PostgreSQL 16 CDC into one append changelog table via deterministic internal-stage COPY, with load-history reconciliation |
 | Generic `snowflake` and `snowpipe` | experimental | Legacy direct-table and file-loading behavior |
 
 The named SQL profile has no reviewed Snowflake service version or deployment cell. Local tests, PostgreSQL tests, mocks, and fakesnow cannot promote it. A maintained declaration requires an unskipped real-service run on the reviewed SHA.
@@ -305,3 +306,52 @@ just test-snowflake-managed-profile
 The recipe rejects skipped or missing required tests. It records the PostgreSQL version, Snowflake version and region, Go driver version, and JWT auth mode. Fakesnow must fail managed admission and cannot satisfy this gate.
 
 The current tests still do not supply reviewed same-SHA evidence for every required network fault, detached-transaction takeover, full worker `SIGKILL`, account edition/type, bounded-load, telemetry, redaction, and cleanup cell. The profile therefore remains experimental.
+
+## Staged COPY append profile
+
+`postgresql-to-snowflake-staged-append-v1` is a second, independent experimental managed profile. Instead of transactional DML into a hybrid table, it serializes each committed PostgreSQL transaction into one deterministic, immutable internal-stage object and loads it with a fail-closed `COPY INTO` into an append-only changelog table. It provides **at-least-once delivery**; it never claims exactly-once. Like the SQL profile, fakesnow and mocks prove logic only and never promote it.
+
+### Delivery protocol
+
+A committed transaction becomes one newline-delimited JSON stage object whose byte content is a pure function of the transaction. Each line is a changelog row carrying the full delivery identity (`FLOW_ID`, `FLOW_INCARNATION_ID`, `SOURCE_LINEAGE_ID`, `DESTINATION_REVISION_ID`, `LOGICAL_BATCH_ID`, `CONTENT_HASH`, source position and LSNs, fragment/record ordinals), the operation, the key, before/after images as `VARIANT`, and a per-row `RECORD_HASH`.
+
+The stage-object path is a deterministic, immutable function of the flow incarnation, destination revision, logical batch, plan hash, and logical content hash, rooted under one per-incarnation retention prefix (`wallaby_staged_append_v1/<incarnation>/…`). Delivery proceeds as:
+
+1. **Adopt** — if a durable load receipt for the logical batch already exists, return it; a receipt whose identity, file digest, or transaction manifest differs is a conflict.
+2. **Stage** — `LIST`/`PUT` the immutable bytes. A `PUT` whose response is lost is reconciled by re-reading the stage; an object already present with a different MD5 is a **wrong-byte collision** and fails closed.
+3. **Load** — `COPY INTO … MATCH_BY_COLUMN_NAME=CASE_SENSITIVE ON_ERROR=ABORT_STATEMENT FORCE=FALSE PURGE=FALSE`. There is no lossy `ON_ERROR` continuation, so a partial file can never be mistaken for a complete load. For auto-ingest, the pipe is refreshed instead of running `COPY`.
+4. **Verify** — completion and the absence of a partial load are proven through Snowflake load history (`INFORMATION_SCHEMA.COPY_HISTORY`): the file must be `LOADED` with the exact expected row count and zero errors. A lost `COPY` response is reconciled through the same history. Auto-ingest cannot acknowledge until a completed load is verifiable.
+5. **Receipt** — insert one durable load receipt into an owned hybrid receipt table whose enforced primary key serializes concurrent generations; a duplicate key adopts the winning attempt.
+
+Because the durable receipt plus load history are the joint completion proof, `Reconcile` is read-only: an absent receipt is *not applied* so a replay converges idempotently (`COPY FORCE=FALSE` skips an already-loaded file), and only a fully matching receipt is *applied*.
+
+### Provisioned objects
+
+The profile admits, in one dedicated schema owned by a distinct object-owner role:
+
+- an **internal named stage** (execution role granted `READ, WRITE`);
+- a **JSON file format** (execution role granted `USAGE`);
+- a **standard append changelog table** with the exact wallaby column contract (execution role granted `SELECT, INSERT`); a hybrid target is rejected;
+- a **hybrid receipt table** with an enforced primary key on `(RECEIPT_KIND, FLOW_INCARNATION_ID, DESTINATION_REVISION_ID, LOGICAL_BATCH_ID)` and a unique `EXTERNAL_ID` (execution role granted `SELECT, INSERT`); and
+- optionally, when `managed_auto_ingest=true`, one owned **pipe** with `AUTO_INGEST=TRUE`.
+
+Every object carries an exact creation-identity timestamp and an ownership comment binding the destination revision, schema-contract hash, and flow. No task may be visible in the schema. The profile rejects generated columns, generic metadata/staging options, type-mapping overrides, DDL, arbitrary start LSNs, and multiple sinks. Admission requires key-pair JWT over verified HTTPS with OCSP fail-closed, DSN session parameters `READ_LATEST_WRITES=true` and `TIMEZONE=UTC`, and an inline-secret-free DSN.
+
+### Cleanup and retention
+
+Stage objects are released by a bounded, idempotent cleanup pass keyed on durable load receipts: only fully loaded, acknowledged batches older than the retention window are removed, each removal writes an idempotent release receipt, and an object without a durable load receipt is never removed.
+
+### Evidence gate
+
+The staged gate reuses the managed Snowflake credentials plus the provisioning DSN and skips closed without them:
+
+```bash
+WALLABY_TEST_SNOWFLAKE_MANAGED=1 \
+WALLABY_TEST_SNOWFLAKE_DSN='...' \
+WALLABY_TEST_SNOWFLAKE_PROVISION_DSN='...' \
+WALLABY_TEST_SNOWFLAKE_VERSION='<reviewed version>' \
+WALLABY_TEST_SNOWFLAKE_OWNER_ROLE='WALLABY_OWNER' \
+go test ./tests/ -run 'TestSnowflakeStagedManagedProfile|TestPostgresToSnowflakeStagedManagedProfileRecoveryContract'
+```
+
+Deterministic PUT/COPY/load-history/receipt recovery — including wrong-byte collisions, partial-load rejection, lost responses, receipt adoption, concurrent generations, and bounded cleanup — is proven against an in-memory protocol fake and property/fuzz tests. Live commercial-Snowflake evidence for every named gate is still absent, so the staged profile remains experimental and fails closed outside its exact admission contract.

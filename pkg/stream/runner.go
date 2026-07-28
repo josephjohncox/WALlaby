@@ -317,7 +317,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		// The Snowflake SQL clean-start path is the sole exception: Source.Open
 		// creates and roots one deterministic slot while holding the RunFence.
 		allowSnowflakeSourceCut := bootstrapMode == "never" && restoredCheckpoint == nil &&
-			strings.TrimSpace(r.SourceSpec.Options["managed_profile"]) == connector.ManagedProfilePostgresToSnowflakeSQLV1 &&
+			connector.IsManagedSnowflakeProfile(strings.TrimSpace(r.SourceSpec.Options["managed_profile"])) &&
 			strings.EqualFold(strings.TrimSpace(r.SourceSpec.Options["create_slot"]), "true")
 		for _, option := range []string{"ensure_state", "ensure_publication", "sync_publication"} {
 			r.SourceSpec.Options[option] = "false"
@@ -426,7 +426,8 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			if err := validateManagedClickHouseVersionPair(sourceVersion.ManagedPostgresMajor(), destinationVersion.ManagedClickHouseVersion()); err != nil {
 				return err
 			}
-		case connector.ManagedProfilePostgresToSnowflakeSQLV1:
+		case connector.ManagedProfilePostgresToSnowflakeSQLV1, connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
+			snowflakeProfileName := strings.TrimSpace(r.SourceSpec.Options["managed_profile"])
 			sourceVersion, sourceOK := r.Source.(connector.ManagedPostgresVersionProvider)
 			sourcePublication, publicationOK := r.Source.(connector.ManagedPostgresPublicationProvider)
 			destinationVersion, destinationOK := r.Destinations[0].Dest.(connector.ManagedSnowflakeVersionProvider)
@@ -436,6 +437,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				return errors.New("named managed Snowflake profile requires live endpoint version, publication, schema, and flow-scope evidence")
 			}
 			if err := validateManagedSnowflakeVersionPair(
+				snowflakeProfileName,
 				sourceVersion.ManagedPostgresMajor(),
 				destinationVersion.ManagedSnowflakeVersion(),
 				r.Destinations[0].Spec.Options["managed_snowflake_version"],
@@ -443,6 +445,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				return err
 			}
 			if err := validateManagedSnowflakePublicationRelation(
+				snowflakeProfileName,
 				sourcePublication.ManagedPostgresPublicationTables(),
 				r.Destinations[0].Spec.Options["managed_source_schema"],
 				r.Destinations[0].Spec.Options["managed_source_table"],
@@ -451,7 +454,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			}
 			publicationSchemas := sourcePublication.ManagedPostgresPublicationSchemas()
 			if len(publicationSchemas) != 1 {
-				return fmt.Errorf("managed profile %s requires one live PostgreSQL publication schema, got %d", connector.ManagedProfilePostgresToSnowflakeSQLV1, len(publicationSchemas))
+				return fmt.Errorf("managed profile %s requires one live PostgreSQL publication schema, got %d", snowflakeProfileName, len(publicationSchemas))
 			}
 			if err := destinationSchema.ValidateManagedSourceSchema(publicationSchemas[0]); err != nil {
 				return err
@@ -747,16 +750,23 @@ func validateManagedClickHouseVersionPair(sourceMajor int, clickHouseVersion str
 	return nil
 }
 
-func validateManagedSnowflakePublicationRelation(publicationTables []string, sourceSchema, sourceTable string) error {
+func validateManagedSnowflakePublicationRelation(profileName string, publicationTables []string, sourceSchema, sourceTable string) error {
 	expectedRelation := strings.TrimSpace(sourceSchema) + "." + strings.TrimSpace(sourceTable)
 	if len(publicationTables) != 1 || publicationTables[0] != expectedRelation {
-		return fmt.Errorf("managed profile %s requires live PostgreSQL publication relation [%s], got %v", connector.ManagedProfilePostgresToSnowflakeSQLV1, expectedRelation, publicationTables)
+		return fmt.Errorf("managed profile %s requires live PostgreSQL publication relation [%s], got %v", profileName, expectedRelation, publicationTables)
 	}
 	return nil
 }
 
-func validateManagedSnowflakeVersionPair(sourceMajor int, snowflakeVersion, exactPin string) error {
-	profile := connector.PostgresToSnowflakeSQLV1Profile()
+func managedSnowflakeProfileByName(profileName string) connector.ManagedProfileContract {
+	if profileName == connector.ManagedProfilePostgresToSnowflakeStagedAppendV1 {
+		return connector.PostgresToSnowflakeStagedAppendV1Profile()
+	}
+	return connector.PostgresToSnowflakeSQLV1Profile()
+}
+
+func validateManagedSnowflakeVersionPair(profileName string, sourceMajor int, snowflakeVersion, exactPin string) error {
+	profile := managedSnowflakeProfileByName(profileName)
 	if !profile.SupportsPostgresVersion(sourceMajor) {
 		return fmt.Errorf("managed profile %s does not admit PostgreSQL %d", profile.Name, sourceMajor)
 	}

@@ -37,6 +37,7 @@
 | `postgresql-to-postgresql-v1` | maintained | `postgres` | `postgres` | 14, 15, 16, 17 | — | — | — | same major | all | one | at-least-once |
 | `postgresql-to-clickhouse-append-v1` | maintained | `postgres` | `clickhouse` | 16 | 25.12.1.649 | — | self-managed-keeper | mixed majors | all | one | at-least-once |
 | `postgresql-to-snowflake-sql-v1` | experimental | `postgres` | `snowflake` | 16 | — | configured-exact-version-unreviewed (reviewed versions: none) | commercial-aws-snowflake-hybrid-table [reviewed cells: none] | configured runtime pin; unreviewed | all | one | at-least-once |
+| `postgresql-to-snowflake-staged-append-v1` | experimental | `postgres` | `snowflake` | 16 | — | configured-exact-version-unreviewed (reviewed versions: none) | commercial-aws-snowflake-internal-stage-copy [reviewed cells: none] | configured runtime pin; unreviewed | all | one | at-least-once |
 
 ### `postgresql-to-postgresql-v1` evidence gates
 
@@ -97,5 +98,32 @@
 | secret redaction | yes | `TestSnowflakeManagedProfileSecretRedaction` |
 | cleanup | yes | `TestSnowflakeManagedProfileCleanup` |
 | telemetry | no | `TestSnowflakeManagedProfileTelemetry` |
+
+### `postgresql-to-snowflake-staged-append-v1` evidence gates
+
+| Admission/evidence gate | Real service | Required test |
+| --- | --- | --- |
+| runtime deployment | yes | `TestSnowflakeStagedManagedProfileReviewedDeploymentCell` |
+| source catalog and clean cut | yes | `TestPostgresToSnowflakeStagedManagedProfileRecoveryContract` |
+| target stage grants objects and file format | yes | `TestSnowflakeStagedManagedProfileLiveAdmission` |
+| role hierarchy and alternate writers | yes | `TestSnowflakeStagedManagedProfileRoleIsolation` |
+| pipe visibility and auto-ingest isolation | yes | `TestSnowflakeStagedManagedProfilePipeIsolation` |
+| deterministic stage identity and wrong-byte collision | yes | `TestSnowflakeStagedManagedProfileStageIdentityCollision` |
+| PUT uncertainty reconciliation | yes | `TestSnowflakeStagedManagedProfilePutUncertainty` |
+| fail-closed COPY and partial-load rejection | yes | `TestSnowflakeStagedManagedProfileFailClosedCopy` |
+| load history verification and receipt adoption | yes | `TestSnowflakeStagedManagedProfileLoadHistoryAdoption` |
+| auto-ingest verified completion | yes | `TestSnowflakeStagedManagedProfileAutoIngestCompletion` |
+| copy transport loss and detached takeover | yes | `TestSnowflakeStagedManagedProfileCopyTransportLossAndDetachedTakeover` |
+| DDL rejection and replacement | yes | `TestSnowflakeStagedManagedProfileSchemaReconciliation` |
+| adapter process kill | yes | `TestSnowflakeStagedManagedProfileProcessKillRecovery` |
+| full worker SIGKILL | yes | `TestSnowflakeStagedManagedProfileWorkerSIGKILLRecovery` |
+| network fault matrix | yes | `TestSnowflakeStagedManagedProfileNetworkFaultMatrix` |
+| cancellation and pool safety | yes | `TestSnowflakeStagedManagedProfileCancellationAndPoolSafety` |
+| bounded load and backpressure | yes | `TestSnowflakeStagedManagedProfileBoundedLoadAndBackpressure` |
+| cleanup release receipts and retention roots | yes | `TestSnowflakeStagedManagedProfileCleanup` |
+| PostgreSQL receipt checkpoint and feedback recovery | yes | `TestPostgresToSnowflakeStagedManagedProfileRecoveryContract` |
+| TLS and JWT | yes | `TestSnowflakeStagedManagedProfileLiveAdmission` |
+| secret redaction | yes | `TestSnowflakeStagedManagedProfileSecretRedaction` |
+| telemetry | no | `TestSnowflakeStagedManagedProfileTelemetry` |
 
 These are declared defaults. Options can reduce guarantees; startup validation resolves configured capabilities before execution. Generic PostgreSQL, ClickHouse, Snowflake, and Snowpipe modes remain experimental. Maintained status applies only to rows explicitly marked maintained; the named Snowflake SQL profile has no reviewed service version or deployment cell and remains experimental until every unskipped real-service recovery gate passes on one reviewed SHA.
