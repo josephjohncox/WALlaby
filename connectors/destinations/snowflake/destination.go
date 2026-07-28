@@ -64,36 +64,40 @@ const (
 
 // Destination writes change events into Snowflake tables.
 type Destination struct {
-	spec                   connector.Spec
-	db                     *sql.DB
-	managedProfile         string
-	managedConfig          managedConfig
-	managedHooksMu         sync.RWMutex
-	managedHooks           ManagedHooks
-	managedScopeMu         sync.Mutex
-	managedFlowIncarnation string
-	disableTx              bool
-	writeMode              string
-	batchMode              string
-	batchResolve           string
-	stagingSchema          string
-	stagingTableName       string
-	stagingSuffix          string
-	metaEnabled            bool
-	metaSchema             string
-	metaTable              string
-	metaPKPrefix           string
-	flowID                 string
-	metaColumns            map[string]struct{}
-	registry               schemaregistry.Registry
-	registrySubject        string
-	stagingTables          map[string]tableInfo
-	stagingResolved        bool
-	warehouse              string
-	warehouseSize          string
-	warehouseSuspend       *int
-	warehouseResume        *bool
-	sessionKeepAlive       *bool
+	spec                     connector.Spec
+	db                       *sql.DB
+	managedProfile           string
+	managedConfig            managedConfig
+	managedHooksMu           sync.RWMutex
+	managedHooks             ManagedHooks
+	managedScopeMu           sync.Mutex
+	managedFlowIncarnation   string
+	stagedConfig             stagedConfig
+	stagedCatalogFingerprint string
+	stagedHooksMu            sync.RWMutex
+	stagedHooks              StagedHooks
+	disableTx                bool
+	writeMode                string
+	batchMode                string
+	batchResolve             string
+	stagingSchema            string
+	stagingTableName         string
+	stagingSuffix            string
+	metaEnabled              bool
+	metaSchema               string
+	metaTable                string
+	metaPKPrefix             string
+	flowID                   string
+	metaColumns              map[string]struct{}
+	registry                 schemaregistry.Registry
+	registrySubject          string
+	stagingTables            map[string]tableInfo
+	stagingResolved          bool
+	warehouse                string
+	warehouseSize            string
+	warehouseSuspend         *int
+	warehouseResume          *bool
+	sessionKeepAlive         *bool
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
@@ -104,10 +108,14 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		return errors.New("snowflake dsn is required")
 	}
 	if d.managedProfile != "" {
-		if d.managedProfile != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+		switch d.managedProfile {
+		case connector.ManagedProfilePostgresToSnowflakeSQLV1:
+			return d.openManaged(ctx, dsn, spec)
+		case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
+			return d.openManagedStaged(ctx, dsn, spec)
+		default:
 			return fmt.Errorf("unsupported Snowflake managed profile %q", d.managedProfile)
 		}
-		return d.openManaged(ctx, dsn, spec)
 	}
 
 	db, err := sql.Open("snowflake", dsn)
@@ -426,14 +434,18 @@ func (d *Destination) Capabilities() connector.Capabilities {
 // without replay-safe capability claims.
 func (d *Destination) CapabilitiesFor(spec connector.Spec) connector.Capabilities {
 	capabilities := d.Capabilities()
-	if strings.TrimSpace(spec.Options["managed_profile"]) != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+	switch strings.TrimSpace(spec.Options["managed_profile"]) {
+	case connector.ManagedProfilePostgresToSnowflakeSQLV1:
+		capabilities.Delivery.TransactionalBatch = true
+		capabilities.Delivery.IdempotentReplay = true
+		capabilities.Delivery.ReplaySafe = true
+		capabilities.Delivery.ExecutesDDL = false
+		return capabilities
+	case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
+		return d.capabilitiesForStaged(capabilities)
+	default:
 		return capabilities
 	}
-	capabilities.Delivery.TransactionalBatch = true
-	capabilities.Delivery.IdempotentReplay = true
-	capabilities.Delivery.ReplaySafe = true
-	capabilities.Delivery.ExecutesDDL = false
-	return capabilities
 }
 
 func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, record connector.Record) error {

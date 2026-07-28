@@ -20,7 +20,27 @@ const (
 	// Snowflake SQL contract. It remains experimental until its opt-in real-service
 	// recovery matrix has passed for a reviewed Snowflake service version.
 	ManagedProfilePostgresToSnowflakeSQLV1 = "postgresql-to-snowflake-sql-v1"
+	// ManagedProfilePostgresToSnowflakeStagedAppendV1 names the constrained staged
+	// COPY append-only Snowflake contract: each logical batch is serialized into a
+	// deterministic immutable stage object, loaded with fail-closed COPY options,
+	// and acknowledged only after Snowflake load history plus a durable destination
+	// receipt prove full, non-partial completion. It remains experimental until its
+	// opt-in real-service recovery matrix passes on one reviewed Snowflake SHA.
+	ManagedProfilePostgresToSnowflakeStagedAppendV1 = "postgresql-to-snowflake-staged-append-v1"
 )
+
+// IsManagedSnowflakeProfile reports whether name is one of the constrained
+// Snowflake managed profiles. Both share the same PostgreSQL-authoritative
+// source-cut, version-pin, and single-relation publication admission; they
+// differ only in how the destination materializes and reconciles a batch.
+func IsManagedSnowflakeProfile(name string) bool {
+	switch name {
+	case ManagedProfilePostgresToSnowflakeSQLV1, ManagedProfilePostgresToSnowflakeStagedAppendV1:
+		return true
+	default:
+		return false
+	}
+}
 
 // ManagedProfileGate binds one support claim to a required real-service test.
 type ManagedProfileGate struct {
@@ -167,6 +187,56 @@ func PostgresToSnowflakeSQLV1Profile() ManagedProfileContract {
 	return contract
 }
 
+// PostgresToSnowflakeStagedAppendV1Profile returns the constrained but unpromoted
+// staged COPY append-only Snowflake profile. Like the SQL profile, admission
+// compares a configured service version with CURRENT_VERSION() but reviews no
+// service version or deployment cell yet. Promotion requires complete same-SHA
+// real-service recovery evidence for the PUT/COPY/load-history/receipt protocol.
+func PostgresToSnowflakeStagedAppendV1Profile() ManagedProfileContract {
+	contract := ManagedProfileContract{
+		Name:                   ManagedProfilePostgresToSnowflakeStagedAppendV1,
+		Support:                SupportExperimental,
+		Source:                 EndpointPostgres,
+		Destination:            EndpointSnowflake,
+		PostgresVersions:       []int{16},
+		SnowflakeVersionPolicy: "configured-exact-version-unreviewed",
+		Deployment:             "commercial-aws-snowflake-internal-stage-copy",
+		AckPolicies:            []string{"all"},
+		SingleSink:             true,
+		DeliveryGuarantee:      "at-least-once",
+		Gates: []ManagedProfileGate{
+			{Capability: "runtime deployment", Test: "TestSnowflakeStagedManagedProfileReviewedDeploymentCell", Live: true},
+			{Capability: "source catalog and clean cut", Test: "TestPostgresToSnowflakeStagedManagedProfileRecoveryContract", Live: true},
+			{Capability: "target stage grants objects and file format", Test: "TestSnowflakeStagedManagedProfileLiveAdmission", Live: true},
+			{Capability: "role hierarchy and alternate writers", Test: "TestSnowflakeStagedManagedProfileRoleIsolation", Live: true},
+			{Capability: "pipe visibility and auto-ingest isolation", Test: "TestSnowflakeStagedManagedProfilePipeIsolation", Live: true},
+			{Capability: "deterministic stage identity and wrong-byte collision", Test: "TestSnowflakeStagedManagedProfileStageIdentityCollision", Live: true},
+			{Capability: "PUT uncertainty reconciliation", Test: "TestSnowflakeStagedManagedProfilePutUncertainty", Live: true},
+			{Capability: "fail-closed COPY and partial-load rejection", Test: "TestSnowflakeStagedManagedProfileFailClosedCopy", Live: true},
+			{Capability: "load history verification and receipt adoption", Test: "TestSnowflakeStagedManagedProfileLoadHistoryAdoption", Live: true},
+			{Capability: "auto-ingest verified completion", Test: "TestSnowflakeStagedManagedProfileAutoIngestCompletion", Live: true},
+			{Capability: "copy transport loss and detached takeover", Test: "TestSnowflakeStagedManagedProfileCopyTransportLossAndDetachedTakeover", Live: true},
+			{Capability: "DDL rejection and replacement", Test: "TestSnowflakeStagedManagedProfileSchemaReconciliation", Live: true},
+			{Capability: "adapter process kill", Test: "TestSnowflakeStagedManagedProfileProcessKillRecovery", Live: true},
+			{Capability: "full worker SIGKILL", Test: "TestSnowflakeStagedManagedProfileWorkerSIGKILLRecovery", Live: true},
+			{Capability: "network fault matrix", Test: "TestSnowflakeStagedManagedProfileNetworkFaultMatrix", Live: true},
+			{Capability: "cancellation and pool safety", Test: "TestSnowflakeStagedManagedProfileCancellationAndPoolSafety", Live: true},
+			{Capability: "bounded load and backpressure", Test: "TestSnowflakeStagedManagedProfileBoundedLoadAndBackpressure", Live: true},
+			{Capability: "cleanup release receipts and retention roots", Test: "TestSnowflakeStagedManagedProfileCleanup", Live: true},
+			{Capability: "PostgreSQL receipt checkpoint and feedback recovery", Test: "TestPostgresToSnowflakeStagedManagedProfileRecoveryContract", Live: true},
+			{Capability: "TLS and JWT", Test: "TestSnowflakeStagedManagedProfileLiveAdmission", Live: true},
+			{Capability: "secret redaction", Test: "TestSnowflakeStagedManagedProfileSecretRedaction", Live: true},
+			{Capability: "telemetry", Test: "TestSnowflakeStagedManagedProfileTelemetry", Live: false},
+		},
+	}
+	contract.PostgresVersions = append([]int(nil), contract.PostgresVersions...)
+	contract.SnowflakeVersions = append([]string(nil), contract.SnowflakeVersions...)
+	contract.SnowflakeDeploymentCells = append([]string(nil), contract.SnowflakeDeploymentCells...)
+	contract.AckPolicies = append([]string(nil), contract.AckPolicies...)
+	contract.Gates = append([]ManagedProfileGate(nil), contract.Gates...)
+	return contract
+}
+
 // ValidatePromotion rejects maintained status unless every required admission
 // and real-service evidence gate is named and enabled.
 func (c ManagedProfileContract) ValidatePromotion() error {
@@ -297,6 +367,20 @@ func managedProfileRequiredGates(name string) (map[string]bool, error) {
 			"network fault matrix": true, "cancellation and pool safety": true,
 			"bounded load and backpressure": true, "PostgreSQL receipt checkpoint and feedback recovery": true,
 			"TLS and JWT": true, "secret redaction": true, "cleanup": true, "telemetry": false,
+		}, nil
+	case ManagedProfilePostgresToSnowflakeStagedAppendV1:
+		return map[string]bool{
+			"runtime deployment": true, "source catalog and clean cut": true,
+			"target stage grants objects and file format": true, "role hierarchy and alternate writers": true,
+			"pipe visibility and auto-ingest isolation":             true,
+			"deterministic stage identity and wrong-byte collision": true, "PUT uncertainty reconciliation": true,
+			"fail-closed COPY and partial-load rejection": true, "load history verification and receipt adoption": true,
+			"auto-ingest verified completion": true, "copy transport loss and detached takeover": true,
+			"DDL rejection and replacement": true, "adapter process kill": true, "full worker SIGKILL": true,
+			"network fault matrix": true, "cancellation and pool safety": true,
+			"bounded load and backpressure": true, "cleanup release receipts and retention roots": true,
+			"PostgreSQL receipt checkpoint and feedback recovery": true,
+			"TLS and JWT": true, "secret redaction": true, "telemetry": false,
 		}, nil
 	default:
 		return nil, fmt.Errorf("managed profile %s has no executable promotion gate set", name)
