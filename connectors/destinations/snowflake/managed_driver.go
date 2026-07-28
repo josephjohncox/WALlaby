@@ -58,6 +58,8 @@ func (d *Destination) ValidateManagedSourceSchema(schema connector.Schema) error
 		contract = d.managedConfig.schemaContract
 	case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
 		contract = d.stagedConfig.schemaContract
+	case connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
+		contract = d.streamConfig.schemaContract
 	default:
 		return errors.New("managed Snowflake destination not initialized")
 	}
@@ -106,6 +108,9 @@ type preparedManagedSnowflakeTransaction struct {
 func (d *Destination) PrepareTransaction(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (connector.PreparedManagedTransaction, error) {
 	if d.managedProfile == connector.ManagedProfilePostgresToSnowflakeStagedAppendV1 {
 		return d.prepareManagedStaged(ctx, intent, transaction)
+	}
+	if d.managedProfile == connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 {
+		return d.prepareManagedStreaming(ctx, intent, transaction)
 	}
 	if d.db == nil || d.managedProfile != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
 		return nil, errors.New("managed Snowflake destination not initialized")
@@ -310,6 +315,9 @@ func (p *preparedManagedSnowflakeTransaction) Apply(ctx context.Context) (_ conn
 func (d *Destination) Reconcile(ctx context.Context, intent connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
 	if d.managedProfile == connector.ManagedProfilePostgresToSnowflakeStagedAppendV1 {
 		return d.reconcileManagedStaged(ctx, intent)
+	}
+	if d.managedProfile == connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 {
+		return d.reconcileManagedStreaming(ctx, intent)
 	}
 	if err := intent.Validate(); err != nil {
 		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err

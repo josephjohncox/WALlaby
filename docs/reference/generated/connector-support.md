@@ -38,6 +38,7 @@
 | `postgresql-to-clickhouse-append-v1` | maintained | `postgres` | `clickhouse` | 16 | 25.12.1.649 | — | self-managed-keeper | mixed majors | all | one | at-least-once |
 | `postgresql-to-snowflake-sql-v1` | experimental | `postgres` | `snowflake` | 16 | — | configured-exact-version-unreviewed (reviewed versions: none) | commercial-aws-snowflake-hybrid-table [reviewed cells: none] | configured runtime pin; unreviewed | all | one | at-least-once |
 | `postgresql-to-snowflake-staged-append-v1` | experimental | `postgres` | `snowflake` | 16 | — | configured-exact-version-unreviewed (reviewed versions: none) | commercial-aws-snowflake-internal-stage-copy [reviewed cells: none] | configured runtime pin; unreviewed | all | one | at-least-once |
+| `postgresql-to-snowflake-streaming-rest-append-v1` | experimental | `postgres` | `snowflake` | 16 | — | configured-exact-version-unreviewed (reviewed versions: none) | commercial-aws-snowpipe-streaming-highperf-rest [reviewed cells: none] | configured runtime pin; unreviewed | all | one | at-least-once |
 
 ### `postgresql-to-postgresql-v1` evidence gates
 
@@ -125,5 +126,33 @@
 | TLS and JWT | yes | `TestSnowflakeStagedManagedProfileLiveAdmission` |
 | secret redaction | yes | `TestSnowflakeStagedManagedProfileSecretRedaction` |
 | telemetry | no | `TestSnowflakeStagedManagedProfileTelemetry` |
+
+### `postgresql-to-snowflake-streaming-rest-append-v1` evidence gates
+
+| Admission/evidence gate | Real service | Required test |
+| --- | --- | --- |
+| reviewed high-performance append transport | yes | `TestSnowflakeStreamingManagedProfileReviewedTransport` |
+| runtime deployment | yes | `TestSnowflakeStreamingManagedProfileReviewedDeploymentCell` |
+| source catalog and clean cut | yes | `TestPostgresToSnowflakeStreamingManagedProfileRecoveryContract` |
+| target channel grants objects and pipe | yes | `TestSnowflakeStreamingManagedProfileLiveAdmission` |
+| role hierarchy and alternate writers | yes | `TestSnowflakeStreamingManagedProfileRoleIsolation` |
+| channel and pipe revision evidence | yes | `TestSnowflakeStreamingManagedProfileChannelRevisionEvidence` |
+| deterministic row identity and SQL-observed completeness | yes | `TestSnowflakeStreamingManagedProfileDeterministicRowObservation` |
+| reopen after uncommitted rows and append proven-missing | yes | `TestSnowflakeStreamingManagedProfileReopenAppendsProvenMissing` |
+| terminal token with rejected rows fails closed | yes | `TestSnowflakeStreamingManagedProfileRejectedRowsFailClosed` |
+| complete-unreceipted recovery and receipt adoption | yes | `TestSnowflakeStreamingManagedProfileCompleteUnreceiptedRecovery` |
+| receipt conflicts and channel invalidation | yes | `TestSnowflakeStreamingManagedProfileReceiptConflictAndChannelInvalidation` |
+| schema evolution and TOAST unchanged fields | yes | `TestSnowflakeStreamingManagedProfileSchemaEvolutionAndToast` |
+| auth expiry refresh | yes | `TestSnowflakeStreamingManagedProfileAuthExpiryRefresh` |
+| throttling and backpressure | yes | `TestSnowflakeStreamingManagedProfileThrottlingBackpressure` |
+| oversize rejection | yes | `TestSnowflakeStreamingManagedProfileOversizeRejection` |
+| adapter process kill | yes | `TestSnowflakeStreamingManagedProfileProcessKillRecovery` |
+| full worker SIGKILL | yes | `TestSnowflakeStreamingManagedProfileWorkerSIGKILLRecovery` |
+| cancellation and pool safety | yes | `TestSnowflakeStreamingManagedProfileCancellationAndPoolSafety` |
+| cleanup release receipts and channel state | yes | `TestSnowflakeStreamingManagedProfileCleanup` |
+| PostgreSQL receipt checkpoint and feedback recovery | yes | `TestPostgresToSnowflakeStreamingManagedProfileRecoveryContract` |
+| TLS and JWT | yes | `TestSnowflakeStreamingManagedProfileLiveAdmission` |
+| secret redaction | yes | `TestSnowflakeStreamingManagedProfileSecretRedaction` |
+| telemetry | no | `TestSnowflakeStreamingManagedProfileTelemetry` |
 
 These are declared defaults. Options can reduce guarantees; startup validation resolves configured capabilities before execution. Generic PostgreSQL, ClickHouse, Snowflake, and Snowpipe modes remain experimental. Maintained status applies only to rows explicitly marked maintained; the named Snowflake SQL profile has no reviewed service version or deployment cell and remains experimental until every unskipped real-service recovery gate passes on one reviewed SHA.
