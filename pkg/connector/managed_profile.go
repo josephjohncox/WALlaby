@@ -27,6 +27,17 @@ const (
 	// receipt prove full, non-partial completion. It remains experimental until its
 	// opt-in real-service recovery matrix passes on one reviewed Snowflake SHA.
 	ManagedProfilePostgresToSnowflakeStagedAppendV1 = "postgresql-to-snowflake-staged-append-v1"
+	// ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 names the constrained
+	// Snowpipe Streaming high-performance REST append contract: each committed
+	// source transaction becomes an ordered set of deterministic-identity rows,
+	// appended to a durable channel, and acknowledged only after the destination's
+	// SQL-observed row completeness plus a durable destination receipt prove full
+	// arrival. Continuation, request, and committed-offset tokens are persisted as
+	// evidence but are never sufficient deduplication proof on their own. It remains
+	// experimental and, absent a reviewed high-performance Go append transport with
+	// live commercial evidence, fails closed at admission rather than performing
+	// local-token theater.
+	ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 = "postgresql-to-snowflake-streaming-rest-append-v1"
 )
 
 // IsManagedSnowflakeProfile reports whether name is one of the constrained
@@ -35,7 +46,8 @@ const (
 // differ only in how the destination materializes and reconciles a batch.
 func IsManagedSnowflakeProfile(name string) bool {
 	switch name {
-	case ManagedProfilePostgresToSnowflakeSQLV1, ManagedProfilePostgresToSnowflakeStagedAppendV1:
+	case ManagedProfilePostgresToSnowflakeSQLV1, ManagedProfilePostgresToSnowflakeStagedAppendV1,
+		ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
 		return true
 	default:
 		return false
@@ -237,6 +249,60 @@ func PostgresToSnowflakeStagedAppendV1Profile() ManagedProfileContract {
 	return contract
 }
 
+// PostgresToSnowflakeStreamingRestAppendV1Profile returns the constrained but
+// unpromoted Snowpipe Streaming high-performance REST append profile. Admission
+// compares a configured service version with CURRENT_VERSION() but reviews no
+// service version or deployment cell yet. Promotion requires complete same-SHA
+// real-service recovery evidence for the channel append / SQL-observed
+// completeness / durable-receipt protocol executed through a reviewed
+// high-performance append transport. Until such a transport is linked and
+// proven, the profile fails closed at admission.
+func PostgresToSnowflakeStreamingRestAppendV1Profile() ManagedProfileContract {
+	contract := ManagedProfileContract{
+		Name:                   ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
+		Support:                SupportExperimental,
+		Source:                 EndpointPostgres,
+		Destination:            EndpointSnowflake,
+		PostgresVersions:       []int{16},
+		SnowflakeVersionPolicy: "configured-exact-version-unreviewed",
+		Deployment:             "commercial-aws-snowpipe-streaming-highperf-rest",
+		AckPolicies:            []string{"all"},
+		SingleSink:             true,
+		DeliveryGuarantee:      "at-least-once",
+		Gates: []ManagedProfileGate{
+			{Capability: "reviewed high-performance append transport", Test: "TestSnowflakeStreamingManagedProfileReviewedTransport", Live: true},
+			{Capability: "runtime deployment", Test: "TestSnowflakeStreamingManagedProfileReviewedDeploymentCell", Live: true},
+			{Capability: "source catalog and clean cut", Test: "TestPostgresToSnowflakeStreamingManagedProfileRecoveryContract", Live: true},
+			{Capability: "target channel grants objects and pipe", Test: "TestSnowflakeStreamingManagedProfileLiveAdmission", Live: true},
+			{Capability: "role hierarchy and alternate writers", Test: "TestSnowflakeStreamingManagedProfileRoleIsolation", Live: true},
+			{Capability: "channel and pipe revision evidence", Test: "TestSnowflakeStreamingManagedProfileChannelRevisionEvidence", Live: true},
+			{Capability: "deterministic row identity and SQL-observed completeness", Test: "TestSnowflakeStreamingManagedProfileDeterministicRowObservation", Live: true},
+			{Capability: "reopen after uncommitted rows and append proven-missing", Test: "TestSnowflakeStreamingManagedProfileReopenAppendsProvenMissing", Live: true},
+			{Capability: "terminal token with rejected rows fails closed", Test: "TestSnowflakeStreamingManagedProfileRejectedRowsFailClosed", Live: true},
+			{Capability: "complete-unreceipted recovery and receipt adoption", Test: "TestSnowflakeStreamingManagedProfileCompleteUnreceiptedRecovery", Live: true},
+			{Capability: "receipt conflicts and channel invalidation", Test: "TestSnowflakeStreamingManagedProfileReceiptConflictAndChannelInvalidation", Live: true},
+			{Capability: "schema evolution and TOAST unchanged fields", Test: "TestSnowflakeStreamingManagedProfileSchemaEvolutionAndToast", Live: true},
+			{Capability: "auth expiry refresh", Test: "TestSnowflakeStreamingManagedProfileAuthExpiryRefresh", Live: true},
+			{Capability: "throttling and backpressure", Test: "TestSnowflakeStreamingManagedProfileThrottlingBackpressure", Live: true},
+			{Capability: "oversize rejection", Test: "TestSnowflakeStreamingManagedProfileOversizeRejection", Live: true},
+			{Capability: "adapter process kill", Test: "TestSnowflakeStreamingManagedProfileProcessKillRecovery", Live: true},
+			{Capability: "full worker SIGKILL", Test: "TestSnowflakeStreamingManagedProfileWorkerSIGKILLRecovery", Live: true},
+			{Capability: "cancellation and pool safety", Test: "TestSnowflakeStreamingManagedProfileCancellationAndPoolSafety", Live: true},
+			{Capability: "cleanup release receipts and channel state", Test: "TestSnowflakeStreamingManagedProfileCleanup", Live: true},
+			{Capability: "PostgreSQL receipt checkpoint and feedback recovery", Test: "TestPostgresToSnowflakeStreamingManagedProfileRecoveryContract", Live: true},
+			{Capability: "TLS and JWT", Test: "TestSnowflakeStreamingManagedProfileLiveAdmission", Live: true},
+			{Capability: "secret redaction", Test: "TestSnowflakeStreamingManagedProfileSecretRedaction", Live: true},
+			{Capability: "telemetry", Test: "TestSnowflakeStreamingManagedProfileTelemetry", Live: false},
+		},
+	}
+	contract.PostgresVersions = append([]int(nil), contract.PostgresVersions...)
+	contract.SnowflakeVersions = append([]string(nil), contract.SnowflakeVersions...)
+	contract.SnowflakeDeploymentCells = append([]string(nil), contract.SnowflakeDeploymentCells...)
+	contract.AckPolicies = append([]string(nil), contract.AckPolicies...)
+	contract.Gates = append([]ManagedProfileGate(nil), contract.Gates...)
+	return contract
+}
+
 // ValidatePromotion rejects maintained status unless every required admission
 // and real-service evidence gate is named and enabled.
 func (c ManagedProfileContract) ValidatePromotion() error {
@@ -379,6 +445,23 @@ func managedProfileRequiredGates(name string) (map[string]bool, error) {
 			"DDL rejection and replacement": true, "adapter process kill": true, "full worker SIGKILL": true,
 			"network fault matrix": true, "cancellation and pool safety": true,
 			"bounded load and backpressure": true, "cleanup release receipts and retention roots": true,
+			"PostgreSQL receipt checkpoint and feedback recovery": true,
+			"TLS and JWT": true, "secret redaction": true, "telemetry": false,
+		}, nil
+	case ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
+		return map[string]bool{
+			"reviewed high-performance append transport": true, "runtime deployment": true,
+			"source catalog and clean cut": true, "target channel grants objects and pipe": true,
+			"role hierarchy and alternate writers": true, "channel and pipe revision evidence": true,
+			"deterministic row identity and SQL-observed completeness": true,
+			"reopen after uncommitted rows and append proven-missing":  true,
+			"terminal token with rejected rows fails closed":           true,
+			"complete-unreceipted recovery and receipt adoption":       true,
+			"receipt conflicts and channel invalidation":               true,
+			"schema evolution and TOAST unchanged fields":              true,
+			"auth expiry refresh":                                      true, "throttling and backpressure": true, "oversize rejection": true,
+			"adapter process kill": true, "full worker SIGKILL": true, "cancellation and pool safety": true,
+			"cleanup release receipts and channel state":          true,
 			"PostgreSQL receipt checkpoint and feedback recovery": true,
 			"TLS and JWT": true, "secret redaction": true, "telemetry": false,
 		}, nil

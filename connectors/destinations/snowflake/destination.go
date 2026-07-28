@@ -76,6 +76,10 @@ type Destination struct {
 	stagedCatalogFingerprint string
 	stagedHooksMu            sync.RWMutex
 	stagedHooks              StagedHooks
+	streamConfig             streamConfig
+	streamCatalogFingerprint string
+	streamHooksMu            sync.RWMutex
+	streamHooks              StreamingHooks
 	disableTx                bool
 	writeMode                string
 	batchMode                string
@@ -113,6 +117,8 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 			return d.openManaged(ctx, dsn, spec)
 		case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
 			return d.openManagedStaged(ctx, dsn, spec)
+		case connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
+			return d.openManagedStreaming(ctx, dsn, spec)
 		default:
 			return fmt.Errorf("unsupported Snowflake managed profile %q", d.managedProfile)
 		}
@@ -443,6 +449,8 @@ func (d *Destination) CapabilitiesFor(spec connector.Spec) connector.Capabilitie
 		return capabilities
 	case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
 		return d.capabilitiesForStaged(capabilities)
+	case connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
+		return d.capabilitiesForStreaming(capabilities)
 	default:
 		return capabilities
 	}
