@@ -130,7 +130,9 @@ func planManagedStreamTransaction(cfg streamConfig, intent connector.DeliveryInt
 			}
 		}
 		for recordIndex, record := range fragment.Batch.Records {
-			row, size, err := buildStreamChangelogRow(cfg, intent, transaction, fragment, keyColumns, offsetToken, appendOrdinal, uint64(recordIndex), record)
+			// #nosec G115 -- recordIndex is a non-negative slice index and each record contributes to the bounded maxTransactionRows maximum enforced below.
+			boundedRecordIndex := uint64(recordIndex)
+			row, size, err := buildStreamChangelogRow(cfg, intent, transaction, fragment, keyColumns, offsetToken, appendOrdinal, boundedRecordIndex, record)
 			if err != nil {
 				return managedStreamPlan{}, fmt.Errorf("plan streaming Snowflake fragment %d record %d: %w", fragment.Ordinal, recordIndex, err)
 			}
