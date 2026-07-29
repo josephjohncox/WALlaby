@@ -51,7 +51,7 @@ Payload format notes:
 
 ## Snowflake
 
-Read the [Snowflake destination reference](connectors/snowflake.md) before selecting a mode. The constrained `postgresql-to-snowflake-sql-v1` profile uses pre-provisioned hybrid tables and receipt-first target transactions, and `postgresql-to-snowflake-staged-append-v1` loads a deterministic immutable internal-stage object into an append changelog table with fail-closed COPY and load-history reconciliation. Both have no reviewed Snowflake service version or deployment cell and remain experimental. The generic direct-table mode below is also experimental and does not inherit the named profiles' reconciliation contracts.
+Read the [Snowflake destination reference](connectors/snowflake.md) before selecting a mode. WALlaby implements three experimental modeled protocol profiles: `postgresql-to-snowflake-sql-v1` uses pre-provisioned hybrid tables and receipt-first target transactions; `postgresql-to-snowflake-staged-append-v1` loads a deterministic immutable internal-stage object into an append changelog table with fail-closed COPY and load-history reconciliation; and `postgresql-to-snowflake-streaming-rest-append-v1` models SQL-observed append completeness but refuses admission because no reviewed append transport is linked. SQL and staged COPY have no reviewed Snowflake service version or deployment cell with complete same-SHA live evidence. Streaming has that promotion gap plus the missing transport. The generic direct-table mode below is also experimental and does not inherit the named profiles' reconciliation contracts.
 
 Snowflake is a direct table sink (UPSERT/DELETE in streaming mode). You can manage warehouse costs per destination.
 

@@ -70,13 +70,18 @@ func TestFailureMatrixConvergesAllProfilesBoundaries(t *testing.T) {
 	if recorded != summary.TotalCycles {
 		t.Fatalf("recorded=%d != total=%d", recorded, summary.TotalCycles)
 	}
-	// No-skip accounting: every (profile, boundary) cell must reach the target.
+	// No-skip accounting separates reachable boundary cells from the unlinked
+	// Streaming profile's unreachable downstream negative checks.
 	profiles := SupportedProfiles()
-	wantPerBoundary := cfg.CyclesPerBoundary * len(profiles)
 	for _, b := range RequiredBoundaries() {
+		wantPerBoundary := cfg.CyclesPerBoundary * (len(profiles) - 1)
 		if got := summary.PerBoundary[string(b)]; got != wantPerBoundary {
-			t.Fatalf("boundary %s cycles=%d, want %d (no-skip accounting)", b, got, wantPerBoundary)
+			t.Fatalf("applicable boundary %s cycles=%d, want %d (no-skip accounting)", b, got, wantPerBoundary)
 		}
+	}
+	wantNegative := cfg.CyclesPerBoundary * len(RequiredBoundaries())
+	if summary.NegativeCycles != wantNegative || summary.NegativeExpectedCycles != wantNegative {
+		t.Fatalf("negative fail-closed cycles=%d expected=%d, want %d", summary.NegativeCycles, summary.NegativeExpectedCycles, wantNegative)
 	}
 	wantPerProfile := cfg.CyclesPerBoundary * len(RequiredBoundaries())
 	for _, p := range profiles {
@@ -143,6 +148,45 @@ func TestFailureMatrixStreamingFailClosed(t *testing.T) {
 				t.Fatalf("streaming boundary=%s advanced durable state: checkpoint=%d adoptions=%d", boundary, r.CheckpointLSN, r.Adoptions)
 			}
 		}
+	}
+}
+
+// TestFailureMatrixOverlappingTakeoverRejectsStaleWorker asserts a fenced
+// (crashed) worker can never commit after an overlapping takeover.
+func TestStreamingFailClosedInvariantBranchesAreNonVacuous(t *testing.T) {
+	profile, ok := supportedProfile("snowpipe-streaming-v1")
+	if !ok {
+		t.Fatal("unlinked streaming profile missing")
+	}
+	cases := []struct {
+		name    string
+		mutate  func(*engine)
+		wantSub string
+	}{
+		{name: "attempt prepared", mutate: func(e *engine) { e.auth.attemptPrepared = true }, wantSub: "streaming_fail_closed_attempt_prepared"},
+		{name: "external apply", mutate: func(e *engine) { e.dest.committed = true }, wantSub: "streaming_fail_closed_external_apply"},
+		{name: "destination receipt", mutate: func(e *engine) { e.dest.receiptVisible = true }, wantSub: "streaming_fail_closed_destination_receipt"},
+		{name: "destination version", mutate: func(e *engine) { e.dest.version = 1 }, wantSub: "streaming_fail_closed_destination_version"},
+		{name: "adoption", mutate: func(e *engine) { e.auth.receiptAdopted = true }, wantSub: "streaming_fail_closed_adoption"},
+		{name: "checkpoint", mutate: func(e *engine) { e.auth.checkpoint = positionLSN }, wantSub: "streaming_fail_closed_checkpoint"},
+		{name: "ack intent", mutate: func(e *engine) { e.auth.ackIntent = true }, wantSub: "streaming_fail_closed_ack_intent"},
+		{name: "source flush", mutate: func(e *engine) { e.auth.sourceFlushLSN = positionLSN }, wantSub: "streaming_fail_closed_source_flush"},
+		{name: "source receipt", mutate: func(e *engine) { e.auth.flushReceipt = true }, wantSub: "streaming_fail_closed_source_receipt"},
+		{name: "publication", mutate: func(e *engine) { e.auth.publication = true }, wantSub: "streaming_fail_closed_publication"},
+		{name: "object version", mutate: func(e *engine) { e.auth.objectVersion = 1 }, wantSub: "streaming_fail_closed_artifact_progression"},
+		{name: "object sequence", mutate: func(e *engine) { e.objectSeq = 1 }, wantSub: "streaming_fail_closed_artifact_progression"},
+		{name: "consumer receipt", mutate: func(e *engine) { e.auth.consumerReceipt = true }, wantSub: "streaming_fail_closed_consumer_receipt"},
+		{name: "retention release", mutate: func(e *engine) { e.auth.retentionReleased = true }, wantSub: "streaming_fail_closed_retention_release"},
+		{name: "gc", mutate: func(e *engine) { e.auth.gcFinalized = true }, wantSub: "streaming_fail_closed_gc"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			e := newEngine(profile)
+			test.mutate(e)
+			if violations := e.checkInvariants(CycleResult{}); !containsSub(violations, test.wantSub) {
+				t.Fatalf("expected %q from negative mutation, got %v", test.wantSub, violations)
+			}
+		})
 	}
 }
 

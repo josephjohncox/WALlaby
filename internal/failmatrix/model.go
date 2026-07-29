@@ -71,9 +71,9 @@ type Profile struct {
 	StreamingTransportLinked bool
 }
 
-// SupportedProfiles is the required matrix of supported protocol boundaries.
-// Maintained cells mirror the exact maintained profiles; experimental cells
-// exercise the experimental protocols with protocol fakes only.
+// SupportedProfiles returns the modeled protocol profiles required by the
+// matrix. Maintained cells mirror exact maintained profiles; experimental cells
+// exercise modeled protocols with protocol fakes only and are not support claims.
 func SupportedProfiles() []Profile {
 	return []Profile{
 		{Name: "postgres-to-postgres-v1", Kind: Maintained, Visibility: Synchronous, StreamingTransportLinked: true},
@@ -125,8 +125,9 @@ const (
 	BoundaryGC                  Boundary = "gc"
 )
 
-// RequiredBoundaries is the full set of boundaries that must be exercised at
-// least the configured minimum number of cycles for every supported profile.
+// RequiredBoundaries is the full requested boundary set. Unlinked Streaming
+// boundaries after before-side-effect are unreachable negative fail-closed
+// checks and are accounted separately from applicable reached cells.
 func RequiredBoundaries() []Boundary {
 	return []Boundary{
 		BoundaryBeforeSideEffect,

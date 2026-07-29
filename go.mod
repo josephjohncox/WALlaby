@@ -661,8 +661,8 @@ require (
 
 // Security remediation for GO-2026-5046/5047/5048: the archived
 // github.com/hamba/avro/v2 has no fixed release. This local shim keeps the
-// hamba import path (still used by github.com/apache/iceberg-go) but forwards
-// every symbol to the patched github.com/iskorotkov/avro/v2 v2.33.1 via type
-// aliases, keeping a single Avro type universe. See
+// hamba import path (still used by github.com/apache/iceberg-go), aliases types
+// to the patched github.com/iskorotkov/avro/v2 v2.33.1, and mechanically exposes
+// its exported API. Mutable variables are initialization-time snapshots; see
 // third_party/hamba-avro-shim/README.md for full provenance.
 replace github.com/hamba/avro/v2 => ./third_party/hamba-avro-shim

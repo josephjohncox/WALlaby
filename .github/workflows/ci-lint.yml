@@ -105,6 +105,9 @@ jobs:
             .cache/golangci-lint
           key: ${{ steps.cache-go-tools.outputs.cache-primary-key }}
 
+      - name: Verify nested Avro compatibility shim
+        run: just avro-shim-check
+
       - name: Generate protobufs
         run: just proto
 
@@ -134,8 +137,11 @@ jobs:
       - name: Durable-core race detector
         run: just test-durable-race
 
-      - name: Deterministic process-failure matrix (no credentials, no-skip)
+      - name: OS-process protocol failure evidence (no credentials, no-skip)
         run: just test-failure-matrix
+
+      - name: Race-instrumented process runner and child
+        run: just test-failure-matrix-race
 
       - name: Rapid property tests
         run: just test-rapid
@@ -151,8 +157,11 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: failure-matrix-evidence
-          path: bench/evidence/failure_matrix/run_*
-          if-no-files-found: ignore
+          path: |
+            bench/evidence/failure_matrix/os_run_*
+            bench/evidence/failure_matrix/race-test.txt
+            bench/evidence/failure_matrix/race-worker.sha256
+          if-no-files-found: error
 
       - name: Upload machine-readable Go test results
         if: always()

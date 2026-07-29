@@ -71,6 +71,9 @@ bench/results/
 # Deterministic failure-matrix and soak run outputs (regenerate via just
 # test-failure-matrix / test-soak). A canonical sample run is committed.
 bench/evidence/failure_matrix/run_*
+bench/evidence/failure_matrix/os_run_*
+bench/evidence/failure_matrix/race-test.txt
+bench/evidence/failure_matrix/race-worker.sha256
 !bench/evidence/failure_matrix/run_canonical
 bench/evidence/soak/run_*
 

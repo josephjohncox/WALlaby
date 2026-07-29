@@ -9,9 +9,9 @@ WALlaby exposes these Snowflake modes:
 | `postgresql-to-snowflake-streaming-rest-append-v1` | experimental (fails closed) | PostgreSQL 16 CDC appended to a Snowpipe Streaming channel, adopted only on SQL-observed row completeness. Admission is refused until a reviewed high-performance append transport is linked |
 | Generic `snowflake` and `snowpipe` | experimental | Legacy direct-table and file-loading behavior |
 
-The named SQL profile has no reviewed Snowflake service version or deployment cell. Local tests, PostgreSQL tests, mocks, and fakesnow cannot promote it. A maintained declaration requires an unskipped real-service run on the reviewed SHA.
+These are implemented modeled protocol profiles, not blanket support claims for the Snowflake adapters. SQL and staged COPY have no reviewed Snowflake service version or deployment cell with every required same-SHA live recovery gate. Local tests, PostgreSQL tests, mocks, and fakesnow cannot promote them. Streaming additionally has no linked reviewed append transport, so it fails closed before external I/O. A maintained declaration requires complete unskipped real-service evidence on the reviewed SHA; Streaming also requires the concrete reviewed transport.
 
-The profile provides **at-least-once delivery with external-commit reconciliation**. It does not claim exactly-once delivery.
+The SQL profile provides **at-least-once delivery with external-commit reconciliation**. It does not claim exactly-once delivery.
 
 ## Admission contract
 
@@ -306,7 +306,7 @@ just test-snowflake-managed-profile
 
 The recipe rejects skipped or missing required tests. It records the PostgreSQL version, Snowflake version and region, Go driver version, and JWT auth mode. Fakesnow must fail managed admission and cannot satisfy this gate.
 
-The current tests still do not supply reviewed same-SHA evidence for every required network fault, detached-transaction takeover, full worker `SIGKILL`, account edition/type, bounded-load, telemetry, redaction, and cleanup cell. The profile therefore remains experimental.
+The SQL implementation still lacks reviewed same-SHA evidence for every required network fault, detached-transaction takeover, full worker `SIGKILL`, account edition/type, bounded-load, telemetry, redaction, and cleanup cell. Those are genuine promotion gaps rather than missing modeled-protocol code. The profile therefore remains experimental.
 
 ## Staged COPY append profile
 
@@ -355,7 +355,7 @@ WALLABY_TEST_SNOWFLAKE_OWNER_ROLE='WALLABY_OWNER' \
 go test ./tests/ -run 'TestSnowflakeStagedManagedProfile|TestPostgresToSnowflakeStagedManagedProfileRecoveryContract'
 ```
 
-Deterministic PUT/COPY/load-history/receipt recovery — including wrong-byte collisions, partial-load rejection, lost responses, receipt adoption, concurrent generations, and bounded cleanup — is proven against an in-memory protocol fake and property/fuzz tests. Live commercial-Snowflake evidence for every named gate is still absent, so the staged profile remains experimental and fails closed outside its exact admission contract.
+Deterministic PUT/COPY/load-history/receipt recovery — including wrong-byte collisions, partial-load rejection, lost responses, receipt adoption, concurrent generations, and bounded cleanup — is exercised against an in-memory protocol fake and property/fuzz tests. The modeled protocol profile is implemented, but live commercial-Snowflake evidence for every named gate is still absent. That evidence gap, not a claim of missing staged-COPY logic, keeps the profile experimental and fail-closed outside its exact admission contract.
 
 ## Snowpipe Streaming REST append profile
 
@@ -365,7 +365,7 @@ Deterministic PUT/COPY/load-history/receipt recovery — including wrong-byte co
 
 There is no officially supported Go SDK or high-performance REST client for Snowpipe Streaming: the `database/sql` gosnowflake driver speaks the query API, not the channel append protocol. Proving delivery from a build with no append transport would mean trusting local continuation/offset tokens — token theater. WALlaby refuses that. `ManagedStreamingTransportAvailable()` is a compile-time constant that is **false** until a reviewed high-performance append transport is linked, and both runner admission and destination `Open` **fail closed** with `ErrManagedStreamingTransportUnavailable` before any network side effect. The full admission contract (DSN, JWT, session parameters, identifiers, schema contract, limits, and the `managed_streaming_transport` declaration) is still validated first, so a misconfiguration produces its own precise error rather than the blanket refusal. Flipping the constant is a promotion action that must ship a concrete append transport and pass the same-SHA live recovery matrix.
 
-### Delivery protocol (proven against the in-memory fake)
+### Delivery protocol (exercised against the in-memory fake)
 
 A committed transaction becomes an ordered set of deterministic-identity append rows. Every row carries the full delivery identity, the operation, the key, before/after images, the sorted set of unchanged-TOAST columns, a deterministic per-batch `OFFSET_TOKEN`, an `APPEND_ORDINAL`, and a per-row `ROW_HASH`. The `ROW_HASH` — not any transport token — is the identity that SQL observation counts. Delivery proceeds as:
 
@@ -397,4 +397,4 @@ WALLABY_TEST_SNOWFLAKE_VERSION='<reviewed version>' \
 go test ./tests/ -run 'TestSnowflakeStreamingManagedProfile|TestPostgresToSnowflakeStreamingManagedProfileRecoveryContract'
 ```
 
-Deterministic channel/append/observe/receipt recovery — reopen after uncommitted rows, append-only-proven-missing, terminal-token rejection, complete-unreceipted recovery, receipt conflicts, channel invalidation, schema evolution, TOAST unchanged fields, auth expiry, throttling, oversize rejection, and bounded cleanup — is proven against an in-memory protocol fake and property/fuzz tests. Because no reviewed high-performance append transport exists, the profile remains experimental and **fails closed** at admission.
+Deterministic channel/append/observe/receipt recovery — reopen after uncommitted rows, append-only-proven-missing, terminal-token rejection, complete-unreceipted recovery, receipt conflicts, channel invalidation, schema evolution, TOAST unchanged fields, auth expiry, throttling, oversize rejection, and bounded cleanup — is exercised against an in-memory protocol fake and property/fuzz tests. This implements the modeled protocol profile only. The genuine runtime gap is the absent reviewed high-performance append transport; without it there can be no live delivery evidence, so the profile remains experimental and **fails closed** at admission.

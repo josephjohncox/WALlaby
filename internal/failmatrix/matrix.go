@@ -86,6 +86,12 @@ func isStreaming(p Profile) bool {
 // where a prior worker crashed.
 
 func (e *engine) doPrepare(epoch int64) error {
+	// An unlinked Streaming transport is rejected before even preparing a
+	// durable attempt. This is admission failure, not an external attempt whose
+	// outcome later became indeterminate.
+	if !e.profile.StreamingTransportLinked && isStreaming(e.profile) {
+		return errStreamingFailClosed
+	}
 	if e.auth.attemptPrepared {
 		return nil
 	}
@@ -407,11 +413,50 @@ func (e *engine) checkInvariants(r CycleResult) []string {
 	var v []string
 	a := &e.auth
 
-	// Streaming fail-closed: nothing durable may advance when the transport is
-	// unlinked. This is the correct behavior, not a defect.
+	// Streaming fail-closed: every listed downstream advancement is checked
+	// independently so negative tests prove that no branch is decorative.
 	if !e.profile.StreamingTransportLinked && isStreaming(e.profile) {
-		if a.receiptAdopted || a.checkpoint != 0 || a.ackIntent || a.flushReceipt || a.publication {
-			v = append(v, "streaming_fail_closed_violated: durable state advanced without a linked transport")
+		if a.attemptPrepared {
+			v = append(v, "streaming_fail_closed_attempt_prepared")
+		}
+		if e.dest.committed || e.dest.applyAttempts != 0 || a.externalApplyCount != 0 {
+			v = append(v, "streaming_fail_closed_external_apply")
+		}
+		if e.dest.receiptVisible || e.dest.reveal != 0 {
+			v = append(v, "streaming_fail_closed_destination_receipt")
+		}
+		if e.dest.version != 0 {
+			v = append(v, "streaming_fail_closed_destination_version")
+		}
+		if a.receiptAdopted || a.adoptionCount != 0 {
+			v = append(v, "streaming_fail_closed_adoption")
+		}
+		if a.checkpoint != 0 {
+			v = append(v, "streaming_fail_closed_checkpoint")
+		}
+		if a.ackIntent {
+			v = append(v, "streaming_fail_closed_ack_intent")
+		}
+		if a.sourceFlushLSN != 0 || e.confirmLSN != 0 {
+			v = append(v, "streaming_fail_closed_source_flush")
+		}
+		if a.flushReceipt {
+			v = append(v, "streaming_fail_closed_source_receipt")
+		}
+		if a.publication {
+			v = append(v, "streaming_fail_closed_publication")
+		}
+		if a.objectVersion != 0 || e.objectSeq != 0 {
+			v = append(v, "streaming_fail_closed_artifact_progression")
+		}
+		if a.consumerReceipt {
+			v = append(v, "streaming_fail_closed_consumer_receipt")
+		}
+		if a.retentionReleased {
+			v = append(v, "streaming_fail_closed_retention_release")
+		}
+		if a.gcMarked || a.gcFinalized {
+			v = append(v, "streaming_fail_closed_gc")
 		}
 		// A fail-closed pipeline is converged when it correctly halts.
 		return v
@@ -502,16 +547,19 @@ type Config struct {
 
 // Summary is the machine-readable roll-up for a matrix run.
 type Summary struct {
-	Seed              int64          `json:"seed"`
-	CyclesPerBoundary int            `json:"cycles_per_boundary"`
-	TotalCycles       int            `json:"total_cycles"`
-	Passed            int            `json:"passed"`
-	Failed            int            `json:"failed"`
-	FailClosedCycles  int            `json:"fail_closed_cycles"`
-	CoverageOK        bool           `json:"coverage_ok"`
-	PerBoundary       map[string]int `json:"per_boundary"`
-	PerProfile        map[string]int `json:"per_profile"`
-	Violations        []CycleResult  `json:"violations,omitempty"`
+	Seed                   int64          `json:"seed"`
+	CyclesPerBoundary      int            `json:"cycles_per_boundary"`
+	TotalCycles            int            `json:"total_cycles"`
+	Passed                 int            `json:"passed"`
+	Failed                 int            `json:"failed"`
+	FailClosedCycles       int            `json:"fail_closed_cycles"`
+	NegativeExpectedCycles int            `json:"negative_expected_cycles"`
+	NegativeCycles         int            `json:"negative_cycles"`
+	CoverageOK             bool           `json:"coverage_ok"`
+	PerBoundary            map[string]int `json:"per_boundary"`
+	PerProfile             map[string]int `json:"per_profile"`
+	PerNegativeCell        map[string]int `json:"per_negative_cell"`
+	Violations             []CycleResult  `json:"violations,omitempty"`
 }
 
 // Run executes the full deterministic matrix, invoking record for every cycle's
@@ -531,11 +579,16 @@ func Run(cfg Config, record func(CycleResult)) Summary {
 		CyclesPerBoundary: cfg.CyclesPerBoundary,
 		PerBoundary:       map[string]int{},
 		PerProfile:        map[string]int{},
+		PerNegativeCell:   map[string]int{},
 	}
 	coverageOK := true
 	cycleID := 0
 	for _, profile := range profiles {
 		for _, boundary := range RequiredBoundaries() {
+			negativeCell := isNegativeFailClosedCell(profile, boundary)
+			if negativeCell {
+				summary.NegativeExpectedCycles += cfg.CyclesPerBoundary
+			}
 			cellSeed := deriveSeed(cfg.Seed, profile.Name, string(boundary))
 			// #nosec G404 -- deterministic seeded PRNG for reproducible evidence, not security.
 			rng := rand.New(rand.NewSource(cellSeed))
@@ -547,8 +600,13 @@ func Run(cfg Config, record func(CycleResult)) Summary {
 				cycleID++
 				executed++
 				summary.TotalCycles++
-				summary.PerBoundary[string(boundary)]++
 				summary.PerProfile[profile.Name]++
+				if negativeCell {
+					summary.NegativeCycles++
+					summary.PerNegativeCell[profile.Name+"|"+string(boundary)]++
+				} else {
+					summary.PerBoundary[string(boundary)]++
+				}
 				if result.FailClosed {
 					summary.FailClosedCycles++
 				}
@@ -569,7 +627,7 @@ func Run(cfg Config, record func(CycleResult)) Summary {
 			}
 		}
 	}
-	summary.CoverageOK = coverageOK && summary.Failed == 0
+	summary.CoverageOK = coverageOK && summary.Failed == 0 && summary.NegativeCycles == summary.NegativeExpectedCycles
 	return summary
 }
 

@@ -1,71 +1,68 @@
-# Deterministic process-failure matrix evidence
+# Failure-matrix evidence classes
 
-This directory holds machine-readable evidence from the in-process
-process-failure matrix (`internal/failmatrix`, driven by `cmd/wallaby-failmatrix`
-and `just test-failure-matrix`).
+This directory contains credential-free protocol evidence. It does not contain
+proof that PostgreSQL, ClickHouse, Snowflake, Snowpipe, or any connector
+implementation ran.
 
-## What the matrix is
+## OS-process protocol evidence
 
-The matrix is an **executable specification** of WALlaby's durable delivery
-boundary chain: fence acquisition, durable attempt, external destination side
-effect (before and after), destination receipt, PostgreSQL adoption,
-authoritative checkpoint, source ACK (intent + flush + flush receipt), artifact
-publication, consumer receipt, retention release, and garbage collection. For
-each boundary it injects a `kill`, `restart`, or `overlapping_takeover` fault,
-runs recovery, and asserts the standing safety invariants.
+`just test-failure-matrix` prebuilds `wallaby-failmatrix` and
+`wallaby-failmatrix-worker`, reuses that real child executable, and writes fresh
+runs under `os_run_<timestamp>_seed<seed>/`.
 
-It requires no live services and no credentials, so it runs hundreds of
-randomized crash cycles per boundary deterministically and cheaply. It is a
-protocol-fake model — it does **not** replace the real local-service integration
-harnesses, which remain the promotion evidence for the exact maintained
-profiles. Experimental cells (`snowflake-sql-v1`, `snowpipe-copy-v1`,
-`snowpipe-streaming-*`) exercise the protocol only; live commercial cells remain
-credential-gated and are excluded from promotion evidence.
+For at least 100 deterministic cycles in every applicable modeled
+`(profile,boundary)` cell, plus separately counted unlinked-Streaming negative
+cells that reject before durable attempt preparation, the parent:
 
-The matrix never claims exactly-once. Replays converge by deterministic identity
-(at-least-once with idempotent dedupe); duplicates are bounded and gaps are
-impossible.
+- starts an initial child PID;
+- has the child persist protocol-model state with expected-generation CAS under
+  an inter-process file lock, file `fsync`, atomic rename, and directory `fsync`;
+- applies and verifies actual PID `SIGKILL`, planned restart, or overlapping
+  stale/new-generation execution;
+- starts a distinct recovery PID and executes seed-selected, expected-generation
+  CAS probes before, after, or on both sides of the real recovery/takeover
+  durable transition, producing distinct fsync-backed revision orderings;
+- reloads the durable state and checks convergence or explicit fail-closed state;
+- enforces timeout, state-size, child-count, no-skip, and no-vacuity bounds.
 
-## Files
+The overlapping mode keeps both PIDs alive, durably advances the new generation,
+and requires the old PID's real state-store mutation to receive a typed stale
+CAS rejection without changing the durable revision or SHA-256. The unlinked
+Streaming profile reports every requested boundary as a negative fail-closed
+check with `attempt_prepared=false`, zero advancement, and
+`boundary_reached=false`; they are
+never silently skipped or presented as reached boundary cells.
 
-- `cycles.ndjson` — one JSON object per crash cycle (schema below).
-- `summary.json` — machine-readable roll-up: pass/fail counts, per-boundary and
-  per-profile cycle counts (no-skip accounting), fail-closed cycle count, and a
-  coverage verdict.
-- `summary.txt` — the same roll-up rendered for humans.
+Each OS-process run contains:
 
-`run_canonical/` is a committed sample produced with `-cycles 100 -seed
-20260728` (6 profiles × 10 boundaries × 100 cycles = 6000 cycles). Fresh
-`run_*` directories are git-ignored; regenerate them with:
+- `cycles.ndjson` — raw per-cycle evidence including seed-derived schedule and
+  observed-order hashes, ordered CAS operation/generation/revision/state-hash
+  observations, PIDs/timing, fault
+  event, stale CAS before/after digest and revision, complete final protocol
+  state, and violations;
+- `normalized.ndjson` — stable protocol evidence with complete final state and
+  PID/CPU/timing noise removed;
+- `summary.json` — raw worker/platform, exact applicable/negative counts,
+  skips, failures, resource maxima, and verdicts;
+- `normalized-summary.json` — stable summary bytes without wall-clock,
+  executable-path, PID, or CPU data;
+- `summary.txt` — human-readable scope and roll-up.
 
-```bash
-just test-failure-matrix                 # bounded gate, 100 cycles/boundary
-FAILURE_CYCLES=1000 just test-failure-matrix   # deeper nightly sweep
-```
+Fresh `os_run_*` directories are Git-ignored and uploaded from CI.
 
-## `cycles.ndjson` schema
+## In-process model-only evidence
 
-```json
-{
-  "cycle": 0,
-  "seed": 2744588129839429875,
-  "profile": "postgres-to-postgres-v1",
-  "kind": "maintained",
-  "boundary": "before_side_effect",
-  "fault": "kill",
-  "injected": true,
-  "recovered": true,
-  "converged": true,
-  "fail_closed": false,
-  "external_applies": 1,
-  "adoptions": 1,
-  "checkpoint_lsn": 100,
-  "source_flush_lsn": 100,
-  "stale_rejected": true
-}
-```
+`run_canonical/` is the committed legacy sample from the fast in-process
+executable model (`just test-failure-matrix-model`). Its `cycles.ndjson` schema
+has no child PIDs because no child process was involved. It remains useful for
+model determinism, but it is not OS-process or destination implementation proof.
 
-`fail_closed` cycles are the unlinked streaming profile (`snowpipe-streaming-v1`)
-correctly refusing to advance any durable state without a linked transport. They
-are a passing outcome, not a defect, and are counted explicitly rather than
-skipped.
+The bounded `just test-soak` command is also in-process model evidence and writes
+to `bench/evidence/soak`.
+
+## Evidence boundaries
+
+Protocol profile names select model behavior; they do not imply a destination
+connection. Real-service integration and promotion commands are documented
+separately in the development guide. No failure-matrix evidence claims
+exactly-once or comparative performance.

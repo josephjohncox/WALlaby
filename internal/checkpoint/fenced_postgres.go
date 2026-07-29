@@ -217,23 +217,41 @@ func putFencedCheckpoint(ctx context.Context, tx pgx.Tx, fence authority.RunFenc
 	if checkpoint.Metadata == nil {
 		checkpoint.Metadata = map[string]string{}
 	}
-	metadataJSON, err := json.Marshal(checkpoint.Metadata)
-	if err != nil {
-		return fmt.Errorf("marshal fenced checkpoint metadata: %w", err)
-	}
-	var currentLSN string
-	err = tx.QueryRow(ctx, `
-SELECT lsn FROM authoritative_checkpoints
+	var current connector.Checkpoint
+	var currentMetadata []byte
+	err := tx.QueryRow(ctx, `
+SELECT lsn,metadata,updated_at FROM authoritative_checkpoints
 WHERE flow_incarnation_id=$1
-FOR UPDATE`, fence.FlowIncarnationID).Scan(&currentLSN)
+FOR UPDATE`, fence.FlowIncarnationID).Scan(&current.LSN, &currentMetadata, &current.Timestamp)
 	switch {
 	case err == nil:
-		if err := validateCheckpointAdvance(fence.FlowID, currentLSN, checkpoint.LSN); err != nil {
+		if err := validateCheckpointAdvance(fence.FlowID, current.LSN, checkpoint.LSN); err != nil {
 			return err
+		}
+		comparison, compareErr := connector.CompareCheckpointLSN(current.LSN, checkpoint.LSN)
+		if compareErr != nil {
+			return compareErr
+		}
+		if comparison == 0 {
+			if len(currentMetadata) > 0 {
+				if err := json.Unmarshal(currentMetadata, &current.Metadata); err != nil {
+					return fmt.Errorf("decode current fenced checkpoint metadata: %w", err)
+				}
+			}
+			if current.Metadata == nil {
+				current.Metadata = map[string]string{}
+			}
+			// Equal-position writes may rebind the current fence ownership, but
+			// caller metadata and timestamps must never replace authority payload.
+			checkpoint = current
 		}
 	case errors.Is(err, pgx.ErrNoRows):
 	default:
 		return fmt.Errorf("read current fenced checkpoint: %w", err)
+	}
+	metadataJSON, err := json.Marshal(checkpoint.Metadata)
+	if err != nil {
+		return fmt.Errorf("marshal fenced checkpoint metadata: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO authoritative_checkpoints (

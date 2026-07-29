@@ -137,6 +137,35 @@ test-durable-pr:
 test-durable-race:
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -race -count=1 ./internal/authority ./internal/controlplane ./internal/controlstore ./internal/delivery ./internal/bootstrap ./internal/artifactlog ./internal/failmatrix ./internal/workflow ./internal/checkpoint ./internal/registry ./internal/replication ./internal/runner ./pkg/connector ./pkg/stream ./connectors/sources/postgres ./connectors/destinations/postgres ./connectors/destinations/iceberg
 
+# Behavior-focused durable seam gate. The integration harness provisions real
+# PostgreSQL authority and versioned MinIO; IT_REQUIRED_TESTS makes every named
+# delivery, bootstrap, artifact, consumer, quota, fencing, and GC test no-skip.
+test-durable-seams:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    required=
+    required+='TestCoordinatorRecoverAbsentManifestFailsClosedWithoutPoisoningDeliver'
+    required+=',TestPostgresCommitBeforeReceiptReconciles'
+    required+=',TestCoordinatorRecoverReturnsPostgresAuthoritativeCheckpointMetadata'
+    required+=',TestPostgresGenerationFenceRejectsStaleCommit'
+    required+=',TestBootstrapRecoveryFailpoints'
+    required+=',TestManagedBootstrapPublicationReceiptBeforeHandoffRecovery'
+    required+=',TestManagedBootstrapHandoffBeforeCDCOpenRecovery'
+    required+=',TestManagedTerminalStopOwnershipLive'
+    required+=',TestCanonicalArtifactPublicationFailureBoundaries'
+    required+=',TestCanonicalArtifactStalePublisherCannotCommit'
+    required+=',TestCanonicalArtifactBackpressureAndRootedRetention'
+    required+=',TestCanonicalArtifactConsumerReceiptBoundaryRecovery'
+    required+=',TestCanonicalArtifactOrphanMarkSweepCrashRecovery'
+    filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
+    mkdir -p .cache/coverage
+    GO_TEST_COVERPKG='./internal/authority,./internal/delivery,./internal/bootstrap,./internal/artifactlog,./internal/checkpoint' \
+      GO_TEST_COVERPROFILE='.cache/coverage/durable-seams.out' \
+      IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' just test-integration
+    test -s .cache/coverage/durable-seams.out
+    {{ go }} tool cover -func=.cache/coverage/durable-seams.out > .cache/coverage/durable-seams.txt
+    test -s .cache/coverage/durable-seams.txt
+
 # Required live PostgreSQL/MinIO durability profiles. The harness provisions
 # services, so these named tests must run rather than skip.
 test-durable-integration:
@@ -367,23 +396,45 @@ test-durable-nightly:
     IT_COUNT=10 just test-durable-integration
     IT_COUNT=10 just test-durable-dbos-integration
 
-# Deterministic, credential-free process-failure matrix. Runs at least
-# FAILURE_CYCLES crash cycles per required boundary for every supported protocol
-# profile (kill / restart / overlapping takeover before and after the
-# destination side effect, destination receipt, PostgreSQL adoption, checkpoint,
-# source ACK, artifact publication, consumer receipt, retention release, GC).
-# It first runs the invariant tests, then emits NDJSON + summary evidence and
-# fails closed unless every cell reaches the target with zero violations. This
-# is a bounded required PR gate; it never counts skips as passes and never
-# claims exactly-once. Live cells stay in the real-service recipes below.
+# Deterministic, credential-free OS-process protocol evidence. Prebuilds the
+# parent and child executables once, then runs >= FAILURE_CYCLES real PID
+# SIGKILL/restart/overlap cycles per supported (profile,boundary) cell against
+# fsync-backed model state. It fails on skips, vacuity, invariant violations, or
+# resource bounds. This is process evidence, not destination implementation
+# proof; live destination cells remain in the real-service recipes below.
 test-failure-matrix:
+    #!/usr/bin/env bash
+    set -euo pipefail
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./internal/failmatrix
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-failmatrix \
+    bindir="$(mktemp -d)"
+    trap 'rm -rf "${bindir}"' EXIT
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} build -o "${bindir}/wallaby-failmatrix" ./cmd/wallaby-failmatrix
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} build -o "${bindir}/wallaby-failmatrix-worker" ./cmd/wallaby-failmatrix-worker
+    "${bindir}/wallaby-failmatrix" -worker "${bindir}/wallaby-failmatrix-worker" \
       -cycles {{ failure_cycles }} -seed {{ failure_seed }} -require-coverage
 
-# Race-detector pass over the failure-matrix model and runner.
+# Fast in-process executable-model evidence, explicitly separate from OS-process
+# evidence and destination implementation proof.
+test-failure-matrix-model:
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-failmatrix \
+      -model-only -cycles {{ failure_cycles }} -seed {{ failure_seed }} -require-coverage
+
+# Race-detector pass over both the parent runner and every spawned child. The
+# explicit worker override prevents tests from silently rebuilding an
+# uninstrumented child binary.
 test-failure-matrix-race:
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -race -count=1 ./internal/failmatrix
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bindir="$(mktemp -d)"
+    trap 'rm -rf "${bindir}"' EXIT
+    mkdir -p bench/evidence/failure_matrix
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} build -race -o "${bindir}/wallaby-failmatrix-worker" ./cmd/wallaby-failmatrix-worker
+    WALLABY_FAILMATRIX_WORKER="${bindir}/wallaby-failmatrix-worker" \
+      GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" \
+      {{ go }} test -race -count=1 ./internal/failmatrix 2>&1 | tee bench/evidence/failure_matrix/race-test.txt
+    shasum -a 256 "${bindir}/wallaby-failmatrix-worker" > bench/evidence/failure_matrix/race-worker.sha256
+    test -s bench/evidence/failure_matrix/race-test.txt
+    test -s bench/evidence/failure_matrix/race-worker.sha256
 
 # Bounded in-process soak for the protocol model. Verifies bounded goroutine and
 # heap growth with no invariant violations over SOAK_DURATION and emits
@@ -419,14 +470,34 @@ check-integration-core: test-integration
 
 check-integration-full: test-integration test-e2e
 
+avro-shim-generate:
+    cd third_party/hamba-avro-shim && {{ go }} run ./cmd/shimgen
+
+avro-shim-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd third_party/hamba-avro-shim
+    {{ go }} test ./...
+    {{ go }} mod tidy -diff
+    {{ go }} mod verify
+    {{ go }} run ./cmd/shimgen -check
+    cd ../..
+    template="$(printf '%s' '{''{range .Imports}''}{''{println .}''}{''{end}''}{''{range .TestImports}''}{''{println .}''}{''{end}''}{''{range .XTestImports}''}{''{println .}''}{''{end}''}')"
+    imports="$({{ go }} list -f "${template}" ./... | sort -u | grep '^github.com/hamba/avro/v2' || true)"
+    unexpected="$(printf '%s\n' "${imports}" | grep -Ev '^github.com/hamba/avro/v2(/ocf)?$' || true)"
+    if [[ -n "${unexpected}" ]]; then
+      printf 'unsupported hamba Avro subpackage import(s):\n%s\n' "${unexpected}" >&2
+      exit 1
+    fi
+
 proto: proto-tools
     rm -rf gen/go
     mkdir -p gen/go
     PATH="{{ gobin }}:$PATH" {{ buf }} generate
 
-generate: proto
+generate: proto avro-shim-generate
 
-generate-check: generate
+generate-check: generate avro-shim-check
     ./scripts/generate-check.sh
 
 proto-lint:

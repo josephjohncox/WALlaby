@@ -112,18 +112,25 @@ receipt (a crash after the side effect, before adoption).
    in-flight prepared upload. If GC is not making progress, look for a stuck
    prepared attempt or an indeterminate delivery pinning retention.
 
-## Verifying the invariants
+## Verifying the protocol model
 
 The deterministic process-failure matrix
-([development guide](../development/failure-matrix.md)) exercises every boundary
-in this document — stalled attempts, orphan artifacts, catalog conflicts, receipt
-reconciliation, retention release, and GC — under kill, restart, and overlapping
-takeover, and asserts the invariants above. Run it after any change to the
-durable core:
+([development guide](../development/failure-matrix.md)) starts real child
+processes, applies kill/restart/overlapping-takeover faults, and recovers an
+fsync-backed **protocol-model** state file at modeled delivery, feedback,
+publication, retention, and GC boundaries:
 
 ```bash
 just test-failure-matrix
 ```
+
+Its NDJSON records substantiate model transitions across OS-process death. They
+do **not** contain production delivery attempts, destination receipts, S3
+objects, PostgreSQL WAL, or live connector artifacts, and they do not prove that
+a production stalled attempt or orphan object recovered. Use the required
+PostgreSQL/MinIO integration profiles and destination-specific live gates for
+those claims. This runbook's SQL queries and external-system inspection remain
+the authority for an actual incident.
 
 ## Related
 
