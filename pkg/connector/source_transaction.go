@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // SourceTransaction is a committed source transaction. Fragments preserve
@@ -79,8 +80,9 @@ func (t SourceTransaction) Validate() error {
 }
 
 // SourceTransactionContentHash returns the stable logical identity of a full
-// committed transaction. Observation timestamps on the checkpoint do not
-// participate, while transaction and fragment order always do.
+// committed transaction. Observation timestamps, process-local schema counters,
+// and checkpoint recovery metadata do not participate, while WAL positions and
+// transaction and fragment order always do.
 func SourceTransactionContentHash(transaction SourceTransaction) (string, error) {
 	if err := transaction.Validate(); err != nil {
 		return "", err
@@ -115,10 +117,16 @@ func SourceTransactionContentHash(transaction SourceTransaction) (string, error)
 		batch.Records = append([]Record(nil), batch.Records...)
 		for recordIndex := range batch.Records {
 			batch.Records[recordIndex].SchemaVersion = 0
+			// pgoutput's XLogData server time is an observation timestamp. The
+			// same WAL transaction can receive a different value after restart,
+			// so it cannot participate in immutable delivery identity.
+			batch.Records[recordIndex].Timestamp = time.Time{}
 		}
 		// Runtime transport and checkpoint metadata are not part of the source
 		// transaction. They may change after publication or across a worker
-		// restart without changing the canonical rows or barriers.
+		// restart without changing the canonical rows or barriers. The prepared
+		// manifest remains authoritative for the checkpoint payload adopted after
+		// an identical WAL replay.
 		batch.Checkpoint = Checkpoint{LSN: canonicalEndLSN}
 		batch.WireFormat = ""
 		batchHash, err := BatchContentHash(batch)
@@ -133,7 +141,9 @@ func SourceTransactionContentHash(transaction SourceTransaction) (string, error)
 
 // SourceTransactionIdentity computes the content hash and logical batch ID in
 // one pass. Callers at each trust seam can validate independently without
-// hashing the same transaction twice at that seam.
+// hashing the same transaction twice at that seam. Process-local schema
+// counters, observation timestamps, and checkpoint recovery metadata do not
+// participate in the identity of an otherwise identical WAL replay.
 func SourceTransactionIdentity(transaction SourceTransaction) (string, string, error) {
 	contentHash, err := SourceTransactionContentHash(transaction)
 	if err != nil {
