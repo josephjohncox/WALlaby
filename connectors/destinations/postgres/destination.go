@@ -495,14 +495,19 @@ func (d *Destination) upsertRows(ctx context.Context, tx pgx.Tx, target string, 
 		return nil
 	}
 	if len(records) > 1 {
-		deduped, err := dedupeUpsertRecords(records, schema)
+		batches, err := partitionUpsertRecords(records, schema)
 		if err != nil {
 			return err
 		}
-		records = deduped
-		if len(records) == 0 {
+		if len(batches) > 1 {
+			for index, batch := range batches {
+				if err := d.upsertRows(ctx, tx, target, schema, batch); err != nil {
+					return fmt.Errorf("apply ordered upsert batch %d: %w", index, err)
+				}
+			}
 			return nil
 		}
+		records = batches[0]
 	}
 	colTypes := columnTypeMap(schema)
 	groups := map[string]*upsertGroup{}
@@ -1299,29 +1304,38 @@ func keyChanged(schema connector.Schema, record connector.Record) (bool, error) 
 	return false, nil
 }
 
-func dedupeUpsertRecords(records []connector.Record, schema connector.Schema) ([]connector.Record, error) {
+// partitionUpsertRecords preserves every source image while preventing a single
+// INSERT ... ON CONFLICT statement from affecting the same target row twice.
+// Repeated keys start a later statement instead of replacing an earlier partial
+// image: pgoutput may omit unchanged external TOAST columns from the later image.
+func partitionUpsertRecords(records []connector.Record, schema connector.Schema) ([][]connector.Record, error) {
+	if len(records) == 0 {
+		return nil, nil
+	}
 	colTypes := columnTypeMap(schema)
-	indexByKey := make(map[string]int, len(records))
-	out := make([]connector.Record, 0, len(records))
+	batches := make([][]connector.Record, 0, 1)
+	current := make([]connector.Record, 0, len(records))
+	seen := make(map[string]struct{}, len(records))
 	for _, record := range records {
 		key, err := upsertDedupKey(record, colTypes)
 		if err != nil {
 			return nil, err
 		}
 		if key == "" {
-			return records, nil
+			return [][]connector.Record{records}, nil
 		}
-		if idx, ok := indexByKey[key]; ok {
-			out[idx] = record
-			continue
+		if _, duplicate := seen[key]; duplicate {
+			batches = append(batches, current)
+			current = make([]connector.Record, 0, len(records))
+			clear(seen)
 		}
-		indexByKey[key] = len(out)
-		out = append(out, record)
+		seen[key] = struct{}{}
+		current = append(current, record)
 	}
-	if len(out) == 0 {
-		return records, nil
+	if len(current) > 0 {
+		batches = append(batches, current)
 	}
-	return out, nil
+	return batches, nil
 }
 
 func upsertDedupKey(record connector.Record, colTypes map[string]string) (string, error) {
