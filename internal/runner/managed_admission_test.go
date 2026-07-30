@@ -109,6 +109,7 @@ func TestManagedAdmissionAcceptsClickHouseAppendProfileOnlyWithExactContract(t *
 		{name: "metadata mutations", key: "meta_table_enabled", value: "true", want: "meta_table_enabled=false"},
 		{name: "async insert", key: "async_insert", value: "true", want: "async_insert=false"},
 		{name: "fire and forget", key: "wait_for_async_insert", value: "false", want: "wait_for_async_insert=true"},
+		{name: "single-replica quorum", key: "insert_quorum", value: "1", want: "insert_quorum=2"},
 		{name: "unmanaged engine", key: "managed_deployment", value: "standalone", want: "self-managed-keeper"},
 		{name: "cloud without evidence", key: "managed_deployment", value: "clickhouse-cloud", want: "self-managed-keeper"},
 		{name: "generic staging resolution", key: "batch_resolution", value: "replace", want: "batch_resolution=none"},
