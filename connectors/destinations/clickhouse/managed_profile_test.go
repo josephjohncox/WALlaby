@@ -19,6 +19,24 @@ func planManagedTransaction(intent connector.DeliveryIntent, transaction connect
 	})
 }
 
+func TestManagedWriteSettingsAllowConcurrentQuorumTwoInserts(t *testing.T) {
+	t.Parallel()
+
+	settings := managedWriteSettings(2, "dedup-token")
+	for name, want := range map[string]any{
+		"async_insert":               uint64(0),
+		"wait_for_async_insert":      uint64(1),
+		"insert_deduplicate":         uint64(1),
+		"insert_deduplication_token": "dedup-token",
+		"insert_quorum":              uint64(2),
+		"insert_quorum_parallel":     uint64(1),
+	} {
+		if got := settings[name]; got != want {
+			t.Fatalf("setting %s=%v (%T), want %v (%T)", name, got, got, want, want)
+		}
+	}
+}
+
 func TestManagedTransactionPlanPreservesOrderedFragmentsAndLogicalIdentity(t *testing.T) {
 	t.Parallel()
 	transaction := managedTestTransaction()
