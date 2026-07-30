@@ -71,6 +71,20 @@ func (c managedConfig) planLimits() managedPlanLimits {
 	}
 }
 
+func managedWriteSettings(insertQuorum uint64, deduplicationToken string) chclient.Settings {
+	settings := chclient.Settings{
+		"async_insert":           uint64(0),
+		"wait_for_async_insert":  uint64(1),
+		"insert_deduplicate":     uint64(1),
+		"insert_quorum":          insertQuorum,
+		"insert_quorum_parallel": uint64(1),
+	}
+	if deduplicationToken != "" {
+		settings["insert_deduplication_token"] = deduplicationToken
+	}
+	return settings
+}
+
 type managedTableContract struct {
 	columns        map[string]string
 	sortingKey     string
@@ -111,11 +125,9 @@ func (d *Destination) openManaged(ctx context.Context, dsn string, spec connecto
 	if options.Settings == nil {
 		options.Settings = chclient.Settings{}
 	}
-	options.Settings["async_insert"] = 0
-	options.Settings["wait_for_async_insert"] = 1
-	options.Settings["insert_deduplicate"] = 1
-	options.Settings["insert_quorum"] = cfg.insertQuorum
-	options.Settings["insert_quorum_parallel"] = 0
+	for name, value := range managedWriteSettings(cfg.insertQuorum, "") {
+		options.Settings[name] = value
+	}
 	options.Compression = &chclient.Compression{Method: chclient.CompressionLZ4}
 	if options.MaxOpenConns == 0 {
 		options.MaxOpenConns = 4
@@ -559,11 +571,7 @@ func (d *Destination) insertManagedReceipt(ctx context.Context, receipt managedR
 func (d *Destination) managedInsertContext(ctx context.Context, queryID, token string) context.Context {
 	return chclient.Context(ctx,
 		chclient.WithQueryID(queryID),
-		chclient.WithSettings(chclient.Settings{
-			"async_insert": 0, "wait_for_async_insert": 1, "insert_deduplicate": 1,
-			"insert_deduplication_token": token, "insert_quorum": d.managedConfig.insertQuorum,
-			"insert_quorum_parallel": 0,
-		}),
+		chclient.WithSettings(managedWriteSettings(d.managedConfig.insertQuorum, token)),
 	)
 }
 
