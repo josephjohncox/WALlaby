@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/josephjohncox/wallaby/internal/controlstore"
 	"github.com/josephjohncox/wallaby/internal/flow"
 )
 
@@ -235,6 +236,18 @@ func TestMigration005RejectsLegacyRunningRowsAndMigratesStableRows(t *testing.T)
 	if _, err := stablePool.Exec(ctx, string(migration005)); err != nil {
 		t.Fatal(err)
 	}
+	// Upgrade the fixture through the current authority protocol before using
+	// current PostgresEngine methods. The assertions above remain specific to
+	// migration 005; migration 006 adds the provenance those methods require.
+	for _, name := range []string{"006_authority_fences.sql"} {
+		contents, err := migrationFS.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stablePool.Exec(ctx, string(contents)); err != nil {
+			t.Fatalf("apply fixture migration %s: %v", name, err)
+		}
+	}
 	lockCfg := stablePool.Config()
 	lockCfg.MaxConns = 4
 	lockPool, err := pgxpool.NewWithConfig(ctx, lockCfg)
@@ -280,6 +293,7 @@ func newMigrationFixturePool(t *testing.T, ctx context.Context, admin *pgxpool.P
 		cfg.ConnConfig.RuntimeParams = make(map[string]string)
 	}
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	controlstore.ConfigurePool(cfg)
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
