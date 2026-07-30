@@ -295,8 +295,8 @@ func validateManagedClickHouseAdmission(sourceSpec connector.Spec, destination s
 	if len(replicas) != 2 {
 		return fmt.Errorf("%s requires exactly two unique managed_replica_names", profileName)
 	}
-	if quorum := strings.TrimSpace(options["insert_quorum"]); quorum != "1" {
-		return fmt.Errorf("%s currently requires insert_quorum=1; got %q", profileName, quorum)
+	if quorum := strings.TrimSpace(options["insert_quorum"]); quorum != "2" {
+		return fmt.Errorf("%s requires insert_quorum=2 so fragments and receipts reach both admitted replicas; got %q", profileName, quorum)
 	}
 	for _, key := range []string{"managed_database", "managed_changelog_table", "managed_receipts_table", "managed_final_view"} {
 		if strings.TrimSpace(options[key]) == "" {
