@@ -707,8 +707,12 @@ FOR UPDATE`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.Posit
 		}
 		expectedLogicalBatchID := deliveryLogicalBatchID(intent)
 		legacyLogicalBatch := !existingLogicalBatchID.Valid || existingLogicalBatchID.String == "legacy:"+intent.PositionID
-		if existingHash != intent.ContentHash || existingLSN != position || existingLineage != intent.SourceLineageID || (!legacyLogicalBatch && existingLogicalBatchID.String != expectedLogicalBatchID) {
-			return fmt.Errorf("%w: immutable delivery manifest differs", connector.ErrDeliveryConflict)
+		hashDiffers := existingHash != intent.ContentHash
+		checkpointDiffers := existingLSN != position
+		lineageDiffers := existingLineage != intent.SourceLineageID
+		logicalBatchDiffers := !legacyLogicalBatch && existingLogicalBatchID.String != expectedLogicalBatchID
+		if hashDiffers || checkpointDiffers || lineageDiffers || logicalBatchDiffers {
+			return fmt.Errorf("%w: immutable delivery manifest differs (content_hash=%t checkpoint=%t lineage=%t logical_batch=%t)", connector.ErrDeliveryConflict, hashDiffers, checkpointDiffers, lineageDiffers, logicalBatchDiffers)
 		}
 		if legacyLogicalBatch {
 			if _, err := tx.Exec(ctx, `
