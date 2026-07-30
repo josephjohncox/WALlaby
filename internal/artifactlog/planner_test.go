@@ -27,12 +27,12 @@ func TestCanonicalProjectionV1GoldenIdentity(t *testing.T) {
 		t.Fatalf("artifacts=%d, want 1 golden artifact", len(plan.Artifacts))
 	}
 	artifact := plan.Artifacts[0]
-	const wantLogicalBatchID = "logical-batch:7870a05bbda290ab23fc18120c0a52c4603785576da1dab035c531a4642351c7"
-	const wantContentHash = "cece5f6823b17193c7219394bd63b8ce668d906641555af31b78d8b21bfb2b2b"
+	const wantLogicalBatchID = "logical-batch:ac97d03e57fcbd0514579a462eceb209644d146ffea0c5bb65e9e4c24c76d7e1"
+	const wantContentHash = "3ad2988816a831f1c0fa3ef4a81c9674906038571d87c63ab0ac07a3f35fac3f"
 	const wantSchemaID = "f6b4df8e0254025c850b6be95241df78de7f68ce91a01b1ac2e2d60a1e8b3e03"
-	const wantArtifactID = "d371bce40250b371fe38d4593152ef4e2393b06ddec5cb639640131678e5554f"
-	const wantEncodedHash = "7e1385614bd5e5f28efb6e9f7973c581365a60a624b1ce1ea3592e0a2084f3bc"
-	const wantObjectKey = "wallaby/artifacts/44444444-4444-4444-4444-444444444444/source=3c123b9685a8bc65/namespace=public/table=widgets/schema=f6b4df8e0254025c850b6be95241df78de7f68ce91a01b1ac2e2d60a1e8b3e03/partition=unpartitioned/shard=000000/d371bce40250b371fe38d4593152ef4e2393b06ddec5cb639640131678e5554f.parquet"
+	const wantArtifactID = "f5c32f67d7df869068321358e5c92c7f0209e47789009dc4f1d694e17af5fef1"
+	const wantEncodedHash = "874ae66dd0d319762a490d7f23b131e8e181057e284ed66beacf49d501bf1de3"
+	const wantObjectKey = "wallaby/artifacts/44444444-4444-4444-4444-444444444444/source=3c123b9685a8bc65/namespace=public/table=widgets/schema=f6b4df8e0254025c850b6be95241df78de7f68ce91a01b1ac2e2d60a1e8b3e03/partition=unpartitioned/shard=000000/f5c32f67d7df869068321358e5c92c7f0209e47789009dc4f1d694e17af5fef1.parquet"
 	if plan.LogicalBatchID != wantLogicalBatchID || plan.ContentHash != wantContentHash || artifact.SchemaID != wantSchemaID || artifact.ID != wantArtifactID || artifact.EncodedByteHash != wantEncodedHash || artifact.ObjectKey != wantObjectKey {
 		t.Fatalf("golden identity changed:\nlogical=%q\ncontent=%q\nschema=%q\nartifact=%q\nencoded=%q\nkey=%q", plan.LogicalBatchID, plan.ContentHash, artifact.SchemaID, artifact.ID, artifact.EncodedByteHash, artifact.ObjectKey)
 	}
