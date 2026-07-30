@@ -205,6 +205,9 @@ type envSnapshot map[string]*string
 
 func RunIntegrationHarness(m *testing.M) int {
 	flag.Parse()
+	if isCrashHelperProcess() {
+		return m.Run()
+	}
 	if os.Getenv("WALLABY_TEST_SNOWFLAKE_MANAGED_DIRECT") == "1" && os.Getenv("WALLABY_TEST_SNOWFLAKE_MANAGED") == "1" {
 		// The opt-in Snowflake profile gate supplies both real external services.
 		// Bypass kind provisioning and credential sanitization only for that
@@ -264,6 +267,11 @@ func loadIntegrationHarnessConfig() integrationHarnessConfig {
 		kindNodeImage: *integrationKindNodeImage,
 		expectedPeers: peers,
 	}
+}
+
+func isCrashHelperProcess() bool {
+	return os.Getenv("WALLABY_TEST_BOOTSTRAP_SIGKILL_HELPER") == "1" ||
+		os.Getenv("WALLABY_TEST_PUBLICATION_SIGKILL_HELPER") == "1"
 }
 
 func (h *integrationHarness) start() error {
