@@ -49,6 +49,24 @@ func TestStartPortForwardSupervisorRestartsTerminatedSession(t *testing.T) {
 	}
 }
 
+func TestIsCrashHelperProcess(t *testing.T) {
+	t.Setenv("WALLABY_TEST_BOOTSTRAP_SIGKILL_HELPER", "")
+	t.Setenv("WALLABY_TEST_PUBLICATION_SIGKILL_HELPER", "")
+	if isCrashHelperProcess() {
+		t.Fatal("ordinary integration process identified as crash helper")
+	}
+
+	t.Setenv("WALLABY_TEST_BOOTSTRAP_SIGKILL_HELPER", "1")
+	if !isCrashHelperProcess() {
+		t.Fatal("bootstrap crash helper not identified")
+	}
+	t.Setenv("WALLABY_TEST_BOOTSTRAP_SIGKILL_HELPER", "")
+	t.Setenv("WALLABY_TEST_PUBLICATION_SIGKILL_HELPER", "1")
+	if !isCrashHelperProcess() {
+		t.Fatal("publication crash helper not identified")
+	}
+}
+
 func TestValidateLocalManagedEndpointsRejectsStaleListener(t *testing.T) {
 	t.Parallel()
 

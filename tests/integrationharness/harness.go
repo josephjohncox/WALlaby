@@ -205,6 +205,9 @@ type envSnapshot map[string]*string
 
 func RunIntegrationHarness(m *testing.M) int {
 	flag.Parse()
+	if isCrashHelperProcess() {
+		return m.Run()
+	}
 
 	config := loadIntegrationHarnessConfig()
 
@@ -258,6 +261,11 @@ func loadIntegrationHarnessConfig() integrationHarnessConfig {
 		kindNodeImage: *integrationKindNodeImage,
 		expectedPeers: peers,
 	}
+}
+
+func isCrashHelperProcess() bool {
+	return os.Getenv("WALLABY_TEST_BOOTSTRAP_SIGKILL_HELPER") == "1" ||
+		os.Getenv("WALLABY_TEST_PUBLICATION_SIGKILL_HELPER") == "1"
 }
 
 func (h *integrationHarness) start() error {
