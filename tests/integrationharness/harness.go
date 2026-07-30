@@ -973,7 +973,7 @@ func (h *integrationHarness) stopOwnPostgresAndServices() {
 		h.pgPortForwardStop()
 		h.pgPortForwardStop = nil
 		if h.pgLocalPort != "" {
-			waitForPortRelease(defaultPostgresLocalBindHost, h.pgLocalPort, 5*time.Second)
+			waitForPortRelease(h.pgLocalPort)
 		}
 	}
 	h.stopManagedServices()
@@ -1143,7 +1143,7 @@ func (h *integrationHarness) stopManagedService(name string) {
 		svc.portForwardStop()
 		svc.portForwardStop = nil
 		if svc.localPort != "" {
-			waitForPortRelease(defaultPostgresLocalBindHost, svc.localPort, 5*time.Second)
+			waitForPortRelease(svc.localPort)
 		}
 	}
 	for _, stop := range svc.extraPortForwardStops {
@@ -1610,10 +1610,10 @@ func isPodReady(pod *corev1.Pod) bool {
 	return false
 }
 
-func (h *integrationHarness) startPodPortForward(namespace, podName, localPort, servicePort string) (context.CancelFunc, error) {
+func (h *integrationHarness) startPodPortForward(namespace, podName, localPort, servicePort string) (context.CancelFunc, <-chan error, error) {
 	client, cfg, err := h.kubernetesClient()
 	if err != nil {
-		return nil, fmt.Errorf("connect to kubernetes for pod %s: %w", podName, err)
+		return nil, nil, fmt.Errorf("connect to kubernetes for pod %s: %w", podName, err)
 	}
 
 	requestURL := client.CoreV1().RESTClient().Post().
@@ -1625,7 +1625,7 @@ func (h *integrationHarness) startPodPortForward(namespace, podName, localPort, 
 
 	transport, upgrader, err := spdy.RoundTripperFor(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("prepare port-forward transport for pod %s: %w", podName, err)
+		return nil, nil, fmt.Errorf("prepare port-forward transport for pod %s: %w", podName, err)
 	}
 
 	dialer := spdy.NewDialer(
@@ -1656,7 +1656,7 @@ func (h *integrationHarness) startPodPortForward(namespace, podName, localPort, 
 	)
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("create port-forwarder for pod %s: %w", podName, err)
+		return nil, nil, fmt.Errorf("create port-forwarder for pod %s: %w", podName, err)
 	}
 
 	go func() {
@@ -1665,17 +1665,79 @@ func (h *integrationHarness) startPodPortForward(namespace, podName, localPort, 
 
 	select {
 	case <-ready:
-		return cancel, nil
+		return cancel, readyErr, nil
 	case err := <-readyErr:
 		cancel()
 		if err != nil {
-			return nil, fmt.Errorf("run port-forward for pod %s: %w", podName, err)
+			return nil, nil, fmt.Errorf("run port-forward for pod %s: %w", podName, err)
 		}
-		return nil, fmt.Errorf("port-forward for pod %s terminated unexpectedly", podName)
+		return nil, nil, fmt.Errorf("port-forward for pod %s terminated unexpectedly", podName)
 	case <-time.After(30 * time.Second):
 		cancel()
-		return nil, fmt.Errorf("timed out starting port-forward for pod %s", podName)
+		return nil, nil, fmt.Errorf("timed out starting port-forward for pod %s", podName)
 	}
+}
+
+func startPortForwardSupervisor(
+	start func() (context.CancelFunc, <-chan error, error),
+	retryDelay time.Duration,
+	report func(error),
+) (context.CancelFunc, error) {
+	currentStop, currentDone, err := start()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-ctx.Done():
+				currentStop()
+				return
+			case forwardErr := <-currentDone:
+				currentStop()
+				if ctx.Err() != nil {
+					return
+				}
+				if forwardErr == nil {
+					forwardErr = errors.New("port-forward terminated unexpectedly")
+				}
+				if report != nil {
+					report(forwardErr)
+				}
+				for {
+					timer := time.NewTimer(retryDelay)
+					select {
+					case <-ctx.Done():
+						if !timer.Stop() {
+							select {
+							case <-timer.C:
+							default:
+							}
+						}
+						return
+					case <-timer.C:
+					}
+					nextStop, nextDone, startErr := start()
+					if startErr != nil {
+						if report != nil {
+							report(startErr)
+						}
+						continue
+					}
+					currentStop = nextStop
+					currentDone = nextDone
+					break
+				}
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-stopped
+	}, nil
 }
 
 func (h *integrationHarness) printPodLogs(namespace, pod string) {
@@ -1926,23 +1988,31 @@ func (h *integrationHarness) startLocalPortForward(namespace, name, localPort, s
 		return "", nil, fmt.Errorf("local %s:%s is already in use for %s", defaultPostgresLocalBindHost, resolvedLocalPort, name)
 	}
 
-	podName, err := h.pickPodForService(namespace, name)
-	if err != nil {
-		return "", nil, err
-	}
-
-	stop, err := h.startPodPortForward(namespace, podName, resolvedLocalPort, servicePort)
-	if err != nil {
-		return "", nil, fmt.Errorf("start %s port-forward: %w", name, err)
-	}
-
 	localAddress := net.JoinHostPort(defaultPostgresLocalBindHost, resolvedLocalPort)
-	if err := waitForLocalPort(localAddress, 45*time.Second); err != nil {
-		stop()
-		waitForPortRelease(defaultPostgresLocalBindHost, resolvedLocalPort, 5*time.Second)
-		return "", nil, err
+	start := func() (context.CancelFunc, <-chan error, error) {
+		waitForPortRelease(resolvedLocalPort)
+		podName, err := h.pickPodForService(namespace, name)
+		if err != nil {
+			return nil, nil, err
+		}
+		stop, done, err := h.startPodPortForward(namespace, podName, resolvedLocalPort, servicePort)
+		if err != nil {
+			return nil, nil, fmt.Errorf("start %s port-forward: %w", name, err)
+		}
+		if err := waitForLocalPort(localAddress, 45*time.Second); err != nil {
+			stop()
+			waitForPortRelease(resolvedLocalPort)
+			return nil, nil, err
+		}
+		return stop, done, nil
 	}
 
+	stop, err := startPortForwardSupervisor(start, 250*time.Millisecond, func(err error) {
+		h.logf("restarting %s port-forward after failure: %v", name, err)
+	})
+	if err != nil {
+		return "", nil, err
+	}
 	return resolvedLocalPort, stop, nil
 }
 
@@ -1966,10 +2036,10 @@ func isPortAvailable(host, port string) bool {
 	return true
 }
 
-func waitForPortRelease(host, port string, timeout time.Duration) {
-	deadline := time.Now().Add(timeout)
+func waitForPortRelease(port string) {
+	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if isPortAvailable(host, port) {
+		if isPortAvailable(defaultPostgresLocalBindHost, port) {
 			return
 		}
 		if time.Now().After(deadline) {
