@@ -3,6 +3,7 @@ package integrationharness
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -45,6 +46,25 @@ func TestStartPortForwardSupervisorRestartsTerminatedSession(t *testing.T) {
 	case <-second.stopped:
 	case <-time.After(time.Second):
 		t.Fatal("active port-forward was not stopped with supervisor")
+	}
+}
+
+func TestValidateLocalManagedEndpointsRejectsStaleListener(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	endpoint := localManagedEndpoint{name: "test", address: listener.Addr().String()}
+	if err := validateLocalManagedEndpoints([]localManagedEndpoint{endpoint}); err != nil {
+		t.Fatalf("validate live endpoint: %v", err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	if err := validateLocalManagedEndpoints([]localManagedEndpoint{endpoint}); err == nil {
+		t.Fatal("stale endpoint validation succeeded")
 	}
 }
 
