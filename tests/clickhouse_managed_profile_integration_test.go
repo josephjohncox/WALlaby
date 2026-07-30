@@ -667,7 +667,7 @@ parts_to_delay_insert=100,parts_to_throw_insert=200,max_parts_in_total=1000`, da
 		"meta_table_enabled": "false", "managed_database": database, "managed_changelog_table": fixture.changelogTable,
 		"managed_receipts_table": fixture.receiptsTable, "managed_final_view": fixture.finalView,
 		"managed_deployment": "self-managed-keeper", "managed_keeper_path_prefix": "/clickhouse/tables/01",
-		"managed_keeper_address": fixture.keeperProxy.Address(), "managed_replica_dsn": replicaTLSDSN, "managed_replica_names": "wallaby-it-1,wallaby-it-2", "insert_quorum": "1", "async_insert": "false", "wait_for_async_insert": "true",
+		"managed_keeper_address": fixture.keeperProxy.Address(), "managed_replica_dsn": replicaTLSDSN, "managed_replica_names": "wallaby-it-1,wallaby-it-2", "insert_quorum": "2", "async_insert": "false", "wait_for_async_insert": "true",
 		"managed_max_active_parts":     fmt.Sprintf("%d", maxActiveParts),
 		"managed_max_transaction_rows": "100000", "managed_max_transaction_bytes": "134217728", "managed_max_transaction_fragments": "128",
 		"managed_max_rows_per_batch": fmt.Sprintf("%d", maxRowsPerInsert), "managed_max_batch_bytes": "16777216",

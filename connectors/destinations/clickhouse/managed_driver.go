@@ -254,7 +254,7 @@ func managedConfigFromSpec(spec connector.Spec) (managedConfig, error) {
 		keeperPathPrefix: strings.TrimSuffix(strings.TrimSpace(options["managed_keeper_path_prefix"]), "/"),
 		keeperAddress:    strings.TrimSpace(options["managed_keeper_address"]),
 		replicaDSN:       strings.TrimSpace(options["managed_replica_dsn"]),
-		insertQuorum:     1, maxActiveParts: 180,
+		insertQuorum:     2, maxActiveParts: 180,
 		maxTransactionRows: 100000, maxTransactionBytes: 128 << 20, maxFragments: 128,
 		maxRowsPerBatch: 10000, maxBatchBytes: 16 << 20,
 	}
@@ -283,7 +283,7 @@ func managedConfigFromSpec(spec connector.Spec) (managedConfig, error) {
 		return managedConfig{}, errors.New("managed ClickHouse profile requires exactly two unique managed_replica_names")
 	}
 	var err error
-	if cfg.insertQuorum, err = parseManagedUintOption(options, "insert_quorum", 1, 1, 1); err != nil {
+	if cfg.insertQuorum, err = parseManagedUintOption(options, "insert_quorum", 2, 2, 2); err != nil {
 		return managedConfig{}, err
 	}
 	if cfg.maxActiveParts, err = parseManagedUintOption(options, "managed_max_active_parts", 180, 1, 100000); err != nil {
