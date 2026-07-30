@@ -266,20 +266,30 @@ func (h *integrationHarness) start() error {
 		h.restoreManagedEnvFromState(state.Env)
 		h.kindKubePath = state.KindKubePath
 		h.kindCreated = false
-		h.config.kindKeep = h.config.kindKeep || state.KindKeep
 
-		state.Participants++
-		state.Active = true
-		state.UpdatedAt = time.Now()
-		state.ExpectedParticipants = h.config.expectedPeers
-		state.KindKeep = h.config.kindKeep
-		state.KindCreated = false
-		err = h.persistSharedState(state)
-		h.releaseGlobalLock()
-		if err != nil {
-			return err
+		if err := validateLocalManagedEndpoints(restoredLocalManagedEndpoints()); err == nil {
+			h.config.kindKeep = h.config.kindKeep || state.KindKeep
+			state.Participants++
+			state.Active = true
+			state.UpdatedAt = time.Now()
+			state.ExpectedParticipants = h.config.expectedPeers
+			state.KindKeep = h.config.kindKeep
+			state.KindCreated = false
+			err = h.persistSharedState(state)
+			h.releaseGlobalLock()
+			if err != nil {
+				return err
+			}
+			return nil
+		} else {
+			h.logf("discarding stale shared harness state: %v", err)
+			state.Active = false
+			state.Participants = 0
+			h.cleanupSharedInfrastructure(state)
+			_ = os.Remove(h.statePath)
+			h.restoreCapturedEnv()
+			h.kindKubePath = ""
 		}
-		return nil
 	}
 
 	h.ownsInfra = true
@@ -1926,6 +1936,54 @@ func waitForPortRelease(port string) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+type localManagedEndpoint struct {
+	name    string
+	address string
+}
+
+func restoredLocalManagedEndpoints() []localManagedEndpoint {
+	candidates := []struct {
+		env  string
+		port string
+	}{
+		{env: "TEST_PG_DSN", port: defaultPostgresPort},
+		{env: "WALLABY_TEST_CLICKHOUSE_DSN", port: defaultClickHouseLocalPort},
+		{env: "WALLABY_TEST_CLICKHOUSE_REPLICA_DSN", port: defaultClickHouseReplicaLocalPort},
+		{env: "WALLABY_TEST_CLICKHOUSE_TLS_DSN", port: defaultClickHouseTLSLocalPort},
+		{env: "WALLABY_TEST_CLICKHOUSE_REPLICA_TLS_DSN", port: defaultClickHouseReplicaTLSLocalPort},
+		{env: "WALLABY_TEST_CLICKHOUSE_KEEPER_ADDRESS", port: defaultClickHouseKeeperLocalPort},
+		{env: "WALLABY_TEST_S3_ENDPOINT", port: defaultMinioLocalPort},
+		{env: "WALLABY_TEST_KAFKA_BROKERS", port: defaultKafkaLocalPort},
+		{env: "WALLABY_TEST_GLUE_ENDPOINT", port: defaultLocalStackLocalPort},
+		{env: "WALLABY_TEST_HTTP_URL", port: defaultHTTPTestLocalPort},
+	}
+	endpoints := make([]localManagedEndpoint, 0, len(candidates)+1)
+	for _, candidate := range candidates {
+		address := net.JoinHostPort(defaultPostgresLocalBindHost, candidate.port)
+		if strings.Contains(strings.TrimSpace(os.Getenv(candidate.env)), address) {
+			endpoints = append(endpoints, localManagedEndpoint{name: candidate.env, address: address})
+		}
+	}
+	if strings.TrimSpace(os.Getenv("WALLABY_TEST_FAKESNOW_HOST")) == defaultPostgresLocalBindHost && strings.TrimSpace(os.Getenv("WALLABY_TEST_FAKESNOW_PORT")) == defaultFakesnowLocalPort {
+		endpoints = append(endpoints, localManagedEndpoint{
+			name:    "WALLABY_TEST_FAKESNOW_PORT",
+			address: net.JoinHostPort(defaultPostgresLocalBindHost, defaultFakesnowLocalPort),
+		})
+	}
+	return endpoints
+}
+
+func validateLocalManagedEndpoints(endpoints []localManagedEndpoint) error {
+	for _, endpoint := range endpoints {
+		conn, err := net.DialTimeout("tcp", endpoint.address, time.Second)
+		if err != nil {
+			return fmt.Errorf("restored endpoint %s at %s is unavailable: %w", endpoint.name, endpoint.address, err)
+		}
+		_ = conn.Close()
+	}
+	return nil
 }
 
 func waitForLocalPort(address string, timeout time.Duration) error {
