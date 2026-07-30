@@ -303,7 +303,7 @@ func managedClickHouseAdmissionDestinations() []stream.DestinationConfig {
 			"managed_max_transaction_fragments": "128",
 			"managed_max_rows_per_batch":        "10000",
 			"managed_max_batch_bytes":           "16777216",
-			"insert_quorum":                     "1",
+			"insert_quorum":                     "2",
 			"async_insert":                      "false",
 			"wait_for_async_insert":             "true",
 		}},
