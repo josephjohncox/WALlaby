@@ -228,6 +228,25 @@ FROM authoritative_checkpoints AS checkpoint
 WHERE checkpoint.flow_incarnation_id=$1`, incarnationID).Scan(&updatedCheckpointLSN, &receipts)
 		return receipts == 1 && updatedCheckpointLSN != "" && updatedCheckpointLSN != checkpointLSN, err
 	})
+	updatedCheckpointPosition, err := pglogrepl.ParseLSN(updatedCheckpointLSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, ctx, runErr, "same-transaction updates observed by source flush", func() (bool, error) {
+		var confirmed string
+		err := pool.QueryRow(ctx, `SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name=$1`, slotName).Scan(&confirmed)
+		if err != nil || confirmed == "" {
+			return false, err
+		}
+		confirmedPosition, err := pglogrepl.ParseLSN(confirmed)
+		if err != nil {
+			return false, err
+		}
+		if confirmedPosition > updatedCheckpointPosition {
+			return false, errors.New("slot confirmed_flush_lsn exceeded same-transaction checkpoint")
+		}
+		return confirmedPosition == updatedCheckpointPosition, nil
+	})
 
 	stopRun()
 	select {

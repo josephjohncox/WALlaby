@@ -27,6 +27,10 @@ func TestSourceTransactionContentHashPreservesFragmentOrder(t *testing.T) {
 	}
 	replayed := transaction
 	replayed.Checkpoint.Timestamp = time.Unix(999, 0)
+	replayed.Checkpoint.Metadata = map[string]string{"managed_postgres_schema_baselines_v1": `[{"Version":999}]`}
+	replayed.Fragments = append([]TransactionFragment(nil), transaction.Fragments...)
+	replayed.Fragments[0].Batch.Records = append([]Record(nil), transaction.Fragments[0].Batch.Records...)
+	replayed.Fragments[0].Batch.Records[0].Timestamp = time.Unix(999, 0)
 	second, err := SourceTransactionContentHash(replayed)
 	if err != nil {
 		t.Fatal(err)
