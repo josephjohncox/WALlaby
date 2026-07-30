@@ -1125,8 +1125,9 @@ WITH candidates AS MATERIALIZED (
 SELECT count(*) FROM deleted_manifests`, fence.FlowIncarnationID, positionID, cutoff, limit).Scan(&deleted); err != nil {
 		return 0, fmt.Errorf("prune terminal delivery state: %w", err)
 	}
-	intentTag, err := tx.Exec(ctx, `
-WITH candidates AS (
+	var feedbackDeleted int64
+	if err := tx.QueryRow(ctx, `
+WITH candidates AS MATERIALIZED (
   SELECT intent.position_id
   FROM source_ack_intents AS intent
   JOIN source_ack_receipts AS receipt
@@ -1135,6 +1136,7 @@ WITH candidates AS (
   WHERE intent.flow_incarnation_id=$1
     AND intent.position_id<>$2
     AND intent.authorized_at<$3
+    AND receipt.recorded_at<$3
     AND receipt.observed_flush_lsn IS NOT NULL
     AND NOT EXISTS (
       SELECT 1 FROM delivery_manifests AS manifest
@@ -1149,43 +1151,24 @@ WITH candidates AS (
     )
   ORDER BY intent.authorized_at,intent.position_id
   LIMIT $4
+  FOR UPDATE OF intent,receipt
+), deleted_receipts AS (
+  DELETE FROM source_ack_receipts AS receipt USING candidates
+  WHERE receipt.flow_incarnation_id=$1
+    AND receipt.position_id=candidates.position_id
+  RETURNING 1
+), deleted_intents AS (
+  DELETE FROM source_ack_intents AS intent USING candidates
+  WHERE intent.flow_incarnation_id=$1
+    AND intent.position_id=candidates.position_id
+  RETURNING 1
 )
-DELETE FROM source_ack_intents AS intent USING candidates
-WHERE intent.flow_incarnation_id=$1
-  AND intent.position_id=candidates.position_id`, fence.FlowIncarnationID, positionID, cutoff, limit)
-	if err != nil {
-		return 0, fmt.Errorf("prune source feedback intents: %w", err)
+SELECT
+  (SELECT count(*) FROM deleted_receipts) +
+  (SELECT count(*) FROM deleted_intents)`, fence.FlowIncarnationID, positionID, cutoff, limit).Scan(&feedbackDeleted); err != nil {
+		return 0, fmt.Errorf("prune source feedback pairs: %w", err)
 	}
-	deleted += intentTag.RowsAffected()
-	receiptTag, err := tx.Exec(ctx, `
-WITH candidates AS (
-  SELECT ack.position_id
-  FROM source_ack_receipts AS ack
-  WHERE ack.flow_incarnation_id=$1
-    AND ack.position_id<>$2
-    AND ack.recorded_at<$3
-    AND ack.observed_flush_lsn IS NOT NULL
-    AND NOT EXISTS (
-      SELECT 1 FROM delivery_manifests AS manifest
-      WHERE manifest.flow_incarnation_id=ack.flow_incarnation_id
-        AND manifest.position_id=ack.position_id
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM source_ack_retention_roots AS retention_root
-      WHERE retention_root.flow_incarnation_id=ack.flow_incarnation_id
-        AND retention_root.position_id=ack.position_id
-        AND retention_root.released_at IS NULL
-    )
-  ORDER BY ack.recorded_at,ack.position_id
-  LIMIT $4
-)
-DELETE FROM source_ack_receipts AS ack USING candidates
-WHERE ack.flow_incarnation_id=$1
-  AND ack.position_id=candidates.position_id`, fence.FlowIncarnationID, positionID, cutoff, limit)
-	if err != nil {
-		return 0, fmt.Errorf("prune source feedback receipts: %w", err)
-	}
-	deleted += receiptTag.RowsAffected()
+	deleted += feedbackDeleted
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit delivery retention: %w", err)
 	}

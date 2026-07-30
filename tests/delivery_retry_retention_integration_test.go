@@ -107,6 +107,17 @@ INSERT INTO delivery_manifests (
 		t.Fatalf("checkpoint-1 control writer rejected after additive upgrade: %v", err)
 	}
 	failing := &failFirstTransactionDriver{ManagedTransactionDestination: target, fail: true}
+	if _, err := coordinator.DeliverTransaction(ctx, fence, firstIntent, first, failing); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("checkpoint-1 manifest without immutable payload error=%v, want ErrDeliveryConflict", err)
+	}
+	// The additive migration accepts an old writer's row, but recovery cannot
+	// reconstruct absent historical checkpoint metadata from replay input. Remove
+	// the deliberately indeterminate fixture before testing current-writer retry.
+	if _, err := pool.Exec(ctx, `
+DELETE FROM delivery_manifests
+WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`, fence.FlowIncarnationID, revisionID, firstIntent.PositionID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := coordinator.DeliverTransaction(ctx, fence, firstIntent, first, failing); err == nil || errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("first deterministic failure=%v", err)
 	}
@@ -243,10 +254,20 @@ WHERE receipt.flow_incarnation_id=$1 AND receipt.destination_revision_id=$2 AND 
 	}
 	observedPositions = append(observedPositions, currentGrant.PositionID)
 	allPositions := append(append([]string{}, observedPositions...), unobservedGrant.PositionID)
-	if _, err := pool.Exec(ctx, `UPDATE source_ack_intents SET authorized_at=clock_timestamp()-interval '2 hours' WHERE flow_incarnation_id=$1 AND position_id=ANY($2)`, fence.FlowIncarnationID, allPositions); err != nil {
+	// Give intents and receipts opposite age order so bounded pruning must use
+	// one shared candidate set rather than independently orphaning each side.
+	if _, err := pool.Exec(ctx, `
+UPDATE source_ack_intents AS intent
+SET authorized_at=clock_timestamp()-interval '3 hours'+positions.ordinality*interval '1 minute'
+FROM unnest($2::text[]) WITH ORDINALITY AS positions(position_id,ordinality)
+WHERE intent.flow_incarnation_id=$1 AND intent.position_id=positions.position_id`, fence.FlowIncarnationID, allPositions); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE source_ack_receipts SET recorded_at=clock_timestamp()-interval '2 hours' WHERE flow_incarnation_id=$1 AND position_id=ANY($2)`, fence.FlowIncarnationID, observedPositions); err != nil {
+	if _, err := pool.Exec(ctx, `
+UPDATE source_ack_receipts AS receipt
+SET recorded_at=clock_timestamp()-interval '3 hours'+(100-positions.ordinality)*interval '1 minute'
+FROM unnest($2::text[]) WITH ORDINALITY AS positions(position_id,ordinality)
+WHERE receipt.flow_incarnation_id=$1 AND receipt.position_id=positions.position_id`, fence.FlowIncarnationID, observedPositions); err != nil {
 		t.Fatal(err)
 	}
 	feedbackPruned, err := coordinator.PruneTerminalDeliveryState(ctx, fence, time.Hour, 2)
@@ -269,7 +290,7 @@ WHERE receipt.flow_incarnation_id=$1 AND receipt.destination_revision_id=$2 AND 
 	if retainedObservedReceipts != 4 || retainedObservedIntents != 4 || retainedUnobservedIntent != 1 {
 		t.Fatalf("bounded feedback retention receipts/intents/unobserved=%d/%d/%d, want 4/4/1", retainedObservedReceipts, retainedObservedIntents, retainedUnobservedIntent)
 	}
-	for feedbackPruned >= 2 {
+	for feedbackPruned > 0 {
 		feedbackPruned, err = coordinator.PruneTerminalDeliveryState(ctx, fence, time.Hour, 2)
 		if err != nil {
 			t.Fatal(err)
