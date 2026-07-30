@@ -335,16 +335,20 @@ func TestManagedConfigRejectsUnsafeProtocolOptionsBeforeNetwork(t *testing.T) {
 	t.Parallel()
 	base := connector.Spec{Options: map[string]string{
 		"managed_database": "wallaby", "managed_changelog_table": "cdc_log", "managed_receipts_table": "delivery_receipts",
-		"managed_final_view": "cdc_log_final", "managed_deployment": "self-managed-keeper", "managed_keeper_path_prefix": "/clickhouse/tables/01", "managed_keeper_address": "127.0.0.1:9181", "managed_replica_dsn": "clickhouse://replica-2:9440/default?secure=true", "managed_replica_names": "replica-1,replica-2", "insert_quorum": "1",
+		"managed_final_view": "cdc_log_final", "managed_deployment": "self-managed-keeper", "managed_keeper_path_prefix": "/clickhouse/tables/01", "managed_keeper_address": "127.0.0.1:9181", "managed_replica_dsn": "clickhouse://replica-2:9440/default?secure=true", "managed_replica_names": "replica-1,replica-2", "insert_quorum": "2",
 		"write_mode": "managed_append", "batch_mode": "target", "batch_resolution": "none", "meta_table_enabled": "false",
 		"async_insert": "false", "wait_for_async_insert": "true",
 	}}
-	if _, err := managedConfigFromSpec(base); err != nil {
+	cfg, err := managedConfigFromSpec(base)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.insertQuorum != 2 {
+		t.Fatalf("insert quorum=%d, want both admitted replicas", cfg.insertQuorum)
 	}
 	for _, test := range []struct{ key, value, want string }{
 		{key: "managed_changelog_table", value: "other.cdc_log", want: "unqualified"},
-		{key: "insert_quorum", value: "2", want: "between 1 and 1"},
+		{key: "insert_quorum", value: "1", want: "between 2 and 2"},
 		{key: "managed_max_rows_per_batch", value: "100001", want: "between 1 and 100000"},
 		{key: "managed_replica_names", value: "replica-1", want: "exactly two"},
 		{key: "async_insert", value: "true", want: "async_insert=false"},

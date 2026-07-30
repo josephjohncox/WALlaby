@@ -159,7 +159,7 @@ Create the same tables on the second server with replica name `clickhouse-2`; ke
     "managed_keeper_address": "keeper:9181",
     "managed_replica_dsn": "clickhouse://wallaby:secret@clickhouse-2:9440/wallaby?secure=true",
     "managed_replica_names": "clickhouse-1,clickhouse-2",
-    "insert_quorum": "1",
+    "insert_quorum": "2",
     "async_insert": "false",
     "wait_for_async_insert": "true",
     "managed_max_active_parts": "180",
@@ -173,7 +173,7 @@ Create the same tables on the second server with replica name `clickhouse-2`; ke
 }
 ```
 
-The flow must also use `ack=all` and exactly one sink. Managed admission rejects staging, metadata mutations, asynchronous inserts, a different insert quorum, or generic batch delivery.
+The flow must also use `ack=all` and exactly one sink. Managed admission requires `insert_quorum=2`, so every fragment and its completion receipt reach both admitted replicas before source acknowledgement. It rejects staging, metadata mutations, asynchronous inserts, a different insert quorum, or generic batch delivery.
 
 ### TLS
 
