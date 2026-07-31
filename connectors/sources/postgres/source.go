@@ -189,7 +189,7 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	if s.publication == "" {
 		return errors.New("publication is required")
 	}
-	managed := parseBool(spec.Options[optManaged], false) || managedProfile != ""
+	managed := connector.IsManagedSourceSpec(spec)
 	managedSnowflakeCut := managed && managedProfile == connector.ManagedProfilePostgresToSnowflakeSQLV1 && parseBool(spec.Options[optCreateSlot], false)
 	if managed {
 		for _, option := range []string{optEnsureState, optEnsurePublication, optSyncPublication} {
