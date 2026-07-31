@@ -26,7 +26,7 @@ type ManagedSourceCleanup struct {
 // CleanupSourceResources acquires purpose-built cleanup authority only for a
 // managed flow whose stop generation has already quiesced.
 func (c ManagedSourceCleanup) CleanupSourceResources(ctx context.Context, f flow.Flow, generation int64) (retErr error) {
-	if !managedSourceSpec(f.Source) {
+	if !connector.IsManagedSourceSpec(f.Source) {
 		return nil
 	}
 	if c.Authority == nil {

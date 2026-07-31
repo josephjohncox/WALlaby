@@ -166,7 +166,8 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	if s.publication == "" {
 		return errors.New("publication is required")
 	}
-	if parseBool(spec.Options[optManaged], false) {
+	managed := connector.IsManagedSourceSpec(spec)
+	if managed {
 		for _, option := range []string{optCreateSlot, optEnsureState, optEnsurePublication, optSyncPublication} {
 			raw, present := spec.Options[option]
 			if !present || parseBool(raw, true) {
@@ -267,7 +268,6 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		return err
 	}
 
-	managed := parseBool(spec.Options[optManaged], false)
 	s.sourceLineage = strings.TrimSpace(spec.Options[optSourceLineageID])
 	maxTransactionRecords := parseInt(spec.Options[optMaxTxnRecords], 1_000_000)
 	maxTransactionBytes := parseInt(spec.Options[optMaxTxnBytes], 256<<20)
