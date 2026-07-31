@@ -8,10 +8,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/authority"
+	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 const recoverySweepLimit = 128
+
+var ErrConsumerRetryable = errors.New("artifact catalog consumer failure is retryable")
 
 // CatalogConsumerConfig binds one immutable destination revision to its
 // append-only changelog committer.
@@ -99,7 +102,10 @@ func (r *Runtime) Recover(ctx context.Context, fence connector.RunFence) error {
 		return err
 	}
 	if err := r.consume(ctx, fence, recoverySweepLimit); err != nil {
-		return err
+		if !errors.Is(err, ErrConsumerRetryable) {
+			return err
+		}
+		telemetry.RecordArtifactConsumerOutcome(ctx, "retry_deferred_during_recovery")
 	}
 	return r.maintain(ctx, fence, recoverySweepLimit)
 }
@@ -110,20 +116,25 @@ func (r *Runtime) RestoreCheckpoint(ctx context.Context, fence connector.RunFenc
 
 func (r *Runtime) WaitForReadAdmission(ctx context.Context, fence connector.RunFence) error {
 	for {
-		if err := r.consume(ctx, fence, 1); err != nil {
-			return err
-		}
+		consumerErr := r.consume(ctx, fence, 1)
 		if r.lastGC.IsZero() || time.Since(r.lastGC) >= r.config.GCInterval {
 			if err := r.maintain(ctx, fence, 2); err != nil {
 				return err
 			}
 		}
-		err := r.publisher.checkReadAdmission(ctx, fence)
-		if err == nil {
+		admissionErr := r.publisher.checkReadAdmission(ctx, fence)
+		admitted, wait, err := resolveRuntimeReadAdmission(consumerErr, admissionErr, len(r.consumers) > 0)
+		if err != nil {
+			return err
+		}
+		if admitted {
+			if consumerErr != nil {
+				telemetry.RecordArtifactConsumerOutcome(ctx, "retry_deferred_below_watermark")
+			}
 			return nil
 		}
-		if !errors.Is(err, ErrBackpressure) || len(r.consumers) == 0 {
-			return err
+		if wait {
+			telemetry.RecordArtifactConsumerOutcome(ctx, "retry_blocked_at_watermark")
 		}
 		timer := time.NewTimer(r.config.Stream.BackpressurePollInterval)
 		select {
@@ -133,6 +144,19 @@ func (r *Runtime) WaitForReadAdmission(ctx context.Context, fence connector.RunF
 		case <-timer.C:
 		}
 	}
+}
+
+func resolveRuntimeReadAdmission(consumerErr, admissionErr error, hasConsumers bool) (admitted, wait bool, err error) {
+	if consumerErr != nil && !errors.Is(consumerErr, ErrConsumerRetryable) {
+		return false, false, consumerErr
+	}
+	if admissionErr == nil {
+		return true, false, nil
+	}
+	if !errors.Is(admissionErr, ErrBackpressure) || !hasConsumers {
+		return false, false, admissionErr
+	}
+	return false, true, nil
 }
 
 func (r *Runtime) Append(ctx context.Context, fence connector.RunFence, transaction connector.SourceTransaction) (connector.AckGrant, error) {
