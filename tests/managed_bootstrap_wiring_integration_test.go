@@ -23,7 +23,7 @@ import (
 )
 
 func TestManagedBootstrapWorkerWiringConcurrentBoundary(t *testing.T) {
-	runManagedBootstrapWorkerWiringConcurrentBoundary(t)
+	t.Run("generated_column_snapshot_to_cdc", runManagedBootstrapWorkerWiringConcurrentBoundary)
 }
 
 func TestPostgresManagedProfileSourceSchemaEvolutionAfterRestart(t *testing.T) {
@@ -41,9 +41,13 @@ func runManagedBootstrapWorkerWiringConcurrentBoundary(t *testing.T) {
 DROP SCHEMA IF EXISTS wallaby_bootstrap_target CASCADE;
 DROP TABLE IF EXISTS public.wallaby_bootstrap_wiring_a;
 DROP TABLE IF EXISTS public.wallaby_bootstrap_wiring_b;
-CREATE TABLE public.wallaby_bootstrap_wiring_a(id bigint PRIMARY KEY,value text NOT NULL);
+CREATE TABLE public.wallaby_bootstrap_wiring_a(
+  id bigint PRIMARY KEY,
+  value text NOT NULL,
+  rendered text GENERATED ALWAYS AS (value || '-generated') STORED
+);
 CREATE TABLE public.wallaby_bootstrap_wiring_b(id bigint PRIMARY KEY,value text NOT NULL);
-INSERT INTO public.wallaby_bootstrap_wiring_a VALUES(1,'snapshot');
+INSERT INTO public.wallaby_bootstrap_wiring_a(id,value) VALUES(1,'snapshot');
 INSERT INTO public.wallaby_bootstrap_wiring_b VALUES(10,'second-table');
 CREATE SCHEMA wallaby_bootstrap_target;
 CREATE TABLE wallaby_bootstrap_target.wallaby_bootstrap_wiring_a(LIKE public.wallaby_bootstrap_wiring_a INCLUDING ALL);
@@ -143,7 +147,7 @@ DROP TABLE IF EXISTS public.wallaby_bootstrap_wiring_b`)
 	}
 	if _, err := pool.Exec(ctx, `
 UPDATE public.wallaby_bootstrap_wiring_a SET value='stream' WHERE id=1;
-INSERT INTO public.wallaby_bootstrap_wiring_a VALUES(2,'after-cut')`); err != nil {
+INSERT INTO public.wallaby_bootstrap_wiring_a(id,value) VALUES(2,'after-cut')`); err != nil {
 		t.Fatal(err)
 	}
 	close(continueBootstrap)
@@ -176,18 +180,18 @@ INSERT INTO public.wallaby_bootstrap_wiring_a VALUES(2,'after-cut')`); err != ni
 		default:
 		}
 		var count int
-		var values string
+		var values, rendered string
 		err := pool.QueryRow(ctx, `
-SELECT count(*),COALESCE(string_agg(value,',' ORDER BY id),'')
-FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a`).Scan(&count, &values)
-		if err == nil && count == 2 && values == "stream,after-cut" {
+SELECT count(*),COALESCE(string_agg(value,',' ORDER BY id),''),COALESCE(string_agg(rendered,',' ORDER BY id),'')
+FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a`).Scan(&count, &values, &rendered)
+		if err == nil && count == 2 && values == "stream,after-cut" && rendered == "stream-generated,after-cut-generated" {
 			var second string
 			if err := pool.QueryRow(ctx, `SELECT value FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_b WHERE id=10`).Scan(&second); err == nil && second == "second-table" {
 				break
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("managed bootstrap/CDC boundary did not converge: count=%d values=%q err=%v", count, values, err)
+			t.Fatalf("managed bootstrap/CDC boundary did not converge: count=%d values=%q rendered=%q err=%v", count, values, rendered, err)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -297,7 +301,7 @@ FROM source_bootstraps WHERE flow_incarnation_id=(SELECT incarnation_id FROM flo
 	if advanced <= cut {
 		t.Fatalf("authoritative checkpoint %s did not advance beyond bootstrap cut %s before pause", advanced, cut)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO public.wallaby_bootstrap_wiring_a VALUES(3,'resumed')`); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO public.wallaby_bootstrap_wiring_a(id,value) VALUES(3,'resumed')`); err != nil {
 		t.Fatal(err)
 	}
 	_, resumeControl, err := engine.PlanStart(ctx, flowID, true)
@@ -319,9 +323,9 @@ FROM source_bootstraps WHERE flow_incarnation_id=(SELECT incarnation_id FROM flo
 	}()
 	resumeDeadline := time.Now().Add(20 * time.Second)
 	for {
-		var resumedValue string
-		err := pool.QueryRow(ctx, `SELECT value FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a WHERE id=3`).Scan(&resumedValue)
-		if err == nil && resumedValue == "resumed" {
+		var resumedValue, resumedRendered string
+		err := pool.QueryRow(ctx, `SELECT value,rendered FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a WHERE id=3`).Scan(&resumedValue, &resumedRendered)
+		if err == nil && resumedValue == "resumed" && resumedRendered == "resumed-generated" {
 			break
 		}
 		select {
@@ -330,7 +334,7 @@ FROM source_bootstraps WHERE flow_incarnation_id=(SELECT incarnation_id FROM flo
 		default:
 		}
 		if time.Now().After(resumeDeadline) {
-			t.Fatalf("generation+1 did not continue CDC: value=%q err=%v", resumedValue, err)
+			t.Fatalf("generation+1 did not continue CDC: value=%q rendered=%q err=%v", resumedValue, resumedRendered, err)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -373,9 +377,9 @@ UPDATE public.wallaby_bootstrap_wiring_a SET value='evolved-after-restart',note=
 	}()
 	evolutionDeadline := time.Now().Add(20 * time.Second)
 	for {
-		var value, note string
-		err := pool.QueryRow(ctx, `SELECT value,note FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a WHERE id=3`).Scan(&value, &note)
-		if err == nil && value == "evolved-after-restart" && note == "durable-baseline" {
+		var value, note, rendered string
+		err := pool.QueryRow(ctx, `SELECT value,note,rendered FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a WHERE id=3`).Scan(&value, &note, &rendered)
+		if err == nil && value == "evolved-after-restart" && note == "durable-baseline" && rendered == "evolved-after-restart-generated" {
 			break
 		}
 		select {
@@ -384,7 +388,7 @@ UPDATE public.wallaby_bootstrap_wiring_a SET value='evolved-after-restart',note=
 		default:
 		}
 		if time.Now().After(evolutionDeadline) {
-			t.Fatalf("restart schema evolution did not converge: value=%q note=%q err=%v", value, note, err)
+			t.Fatalf("restart schema evolution did not converge: value=%q note=%q rendered=%q err=%v", value, note, rendered, err)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
