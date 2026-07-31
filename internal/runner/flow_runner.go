@@ -65,7 +65,7 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 	if err != nil {
 		return err
 	}
-	managed := managedSourceSpec(f.Source)
+	managed := connector.IsManagedSourceSpec(f.Source)
 	generation := r.ExpectedGeneration
 	if managed && generation <= 0 {
 		return errors.New("managed flow execution requires an explicit positive lifecycle generation")
