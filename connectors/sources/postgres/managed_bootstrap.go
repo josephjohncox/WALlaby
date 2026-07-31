@@ -259,17 +259,17 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 	defer func() { endSpan(retErr) }()
 	telemetry.RecordBootstrapEvent(ctx, "generation_started")
 	var schemas []connector.Schema
-	published := false
+	publicationAttempted := false
 	defer func() {
 		_ = session.Close(context.WithoutCancel(ctx))
 		if retErr == nil {
 			return
 		}
-		if len(schemas) > 0 {
+		if len(schemas) > 0 && !publicationAttempted {
 			intent := managedBootstrapIntent(fence, session.Snapshot, destinationRevisionID)
 			_ = driver.AbandonBootstrap(context.WithoutCancel(ctx), intent, schemas)
 		}
-		if !published {
+		if !publicationAttempted {
 			if abandonErr := coordinator.Abandon(context.WithoutCancel(ctx), fence, session.Snapshot, retErr.Error()); abandonErr != nil {
 				retErr = errors.Join(retErr, abandonErr)
 			}
@@ -343,6 +343,9 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 	if err := group.Wait(); err != nil {
 		return connector.ManagedBootstrapResult{}, !session.Alive() || isInvalidSnapshotError(err), err
 	}
+	// Once publication is attempted, neither source nor destination staging may
+	// be abandoned without reconciliation proving the marker absent.
+	publicationAttempted = true
 	evidence, err := driver.PublishBootstrap(ctx, bootstrapIntent, schemas)
 	if err != nil && errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		// PublishBootstrap is itself reconciliatory: a retry reads the marker
@@ -350,15 +353,14 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 		evidence, err = driver.PublishBootstrap(ctx, bootstrapIntent, schemas)
 	}
 	if err != nil {
-		return connector.ManagedBootstrapResult{}, false, err
+		return connector.ManagedBootstrapResult{}, false, recoverableBootstrapPublicationError("publish destination bootstrap", err)
 	}
 	if evidence.ContentHash != session.Snapshot.ManifestHash || strings.TrimSpace(evidence.ExternalID) == "" {
-		return connector.ManagedBootstrapResult{}, false, fmt.Errorf("%w: bootstrap publication evidence mismatch", connector.ErrDeliveryConflict)
+		return connector.ManagedBootstrapResult{}, false, recoverableBootstrapPublicationError("validate destination publication evidence", fmt.Errorf("%w: bootstrap publication evidence mismatch", connector.ErrDeliveryConflict))
 	}
 	// Destination publication is an irreversible external fact. From this
 	// point recovery must reconcile its immutable marker and must never abandon
 	// the source slot merely because the control receipt/handoff is interrupted.
-	published = true
 	if s.BootstrapHooks.AfterPublication != nil {
 		if err := s.BootstrapHooks.AfterPublication(ctx, session.Snapshot); err != nil {
 			return connector.ManagedBootstrapResult{}, false, recoverableBootstrapPublicationError("after destination publication", err)
