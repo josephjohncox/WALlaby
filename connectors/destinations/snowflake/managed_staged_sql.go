@@ -3,6 +3,7 @@ package snowflake
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -81,7 +82,9 @@ func scanStagedReceipt(rows stagedReceiptScanner) (managedStagedReceipt, error) 
 // stagedCopyStatement renders the deterministic, fail-closed COPY. The absence
 // of any ON_ERROR continuation is the load-safety invariant: no partial file is
 // ever accepted. MATCH_BY_COLUMN_NAME maps the changelog JSON keys onto the
-// admitted target columns by exact name.
+// admitted target columns by exact name. Every JSON parsing option is inlined so
+// a concurrent ALTER FILE FORMAT on the admitted named object cannot change how
+// this load parses the immutable staged bytes.
 func stagedCopyStatement(plan stagedCopyPlan) string {
 	var builder strings.Builder
 	builder.WriteString("COPY INTO ")
@@ -90,8 +93,22 @@ func stagedCopyStatement(plan stagedCopyPlan) string {
 	builder.WriteString(plan.stageRef)
 	builder.WriteString("/")
 	builder.WriteString(plan.relativePath)
-	builder.WriteString(" FILE_FORMAT = (FORMAT_NAME = ")
-	builder.WriteString(plan.fileFormatRef)
+	builder.WriteString(" FILE_FORMAT = (")
+	names := make([]string, 0, len(plan.formatOptions))
+	for name := range plan.formatOptions {
+		if name != "TYPE" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	builder.WriteString("TYPE = ")
+	builder.WriteString(plan.formatOptions["TYPE"])
+	for _, name := range names {
+		builder.WriteString(" ")
+		builder.WriteString(name)
+		builder.WriteString(" = ")
+		builder.WriteString(plan.formatOptions[name])
+	}
 	builder.WriteString(")")
 	builder.WriteString(" MATCH_BY_COLUMN_NAME = ")
 	builder.WriteString(plan.loadOptions["MATCH_BY_COLUMN_NAME"])

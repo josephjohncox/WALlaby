@@ -350,7 +350,10 @@ func (d *stagedDriver) reconcile(ctx context.Context, intent connector.DeliveryI
 	if intent.DestinationRevisionID != d.cfg.destinationRevision {
 		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, fmt.Errorf("%w: delivery destination revision differs from admitted staged Snowflake revision", connector.ErrDeliveryConflict)
 	}
-	copyPlan := newStagedCopyPlan(d.cfg)
+	copyPlan, err := newStagedCopyPlan(d.cfg)
+	if err != nil {
+		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
+	}
 	planHash := stagedPlanHash(copyPlan)
 	identity, err := newManagedStagedIdentity(d.cfg, intent, planHash, intent.ContentHash)
 	if err != nil {

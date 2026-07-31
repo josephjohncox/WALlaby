@@ -174,8 +174,9 @@ func stagedRecordHash(row stagedChangelogRow) (string, error) {
 }
 
 // stagedPlanHash binds the deterministic COPY plan (target, stage, file format,
-// ordered columns, and fail-closed load options) so any change to how a batch is
-// loaded changes the stage-object identity.
+// ordered columns, fail-closed load options, and the inlined JSON parsing
+// options) so any change to how a batch is loaded changes the stage-object
+// identity.
 func stagedPlanHash(plan stagedCopyPlan) string {
 	encoded, _ := json.Marshal(struct {
 		Profile       string            `json:"profile"`
@@ -184,10 +185,11 @@ func stagedPlanHash(plan stagedCopyPlan) string {
 		FileFormatRef string            `json:"file_format_ref"`
 		Columns       []string          `json:"columns"`
 		LoadOptions   map[string]string `json:"load_options"`
+		FormatOptions map[string]string `json:"format_options"`
 	}{
 		Profile: connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
 		Target:  plan.target, StageRef: plan.stageRef, FileFormatRef: plan.fileFormatRef,
-		Columns: plan.columns, LoadOptions: plan.loadOptions,
+		Columns: plan.columns, LoadOptions: plan.loadOptions, FormatOptions: plan.formatOptions,
 	})
 	digest := sha256.Sum256(encoded)
 	return hex.EncodeToString(digest[:])
