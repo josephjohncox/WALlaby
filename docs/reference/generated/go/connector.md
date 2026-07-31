@@ -19,6 +19,7 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [func CheckpointPositionID\(checkpoint Checkpoint\) \(string, error\)](<#CheckpointPositionID>)
 - [func CompareCheckpointLSN\(left, right string\) \(int, error\)](<#CompareCheckpointLSN>)
 - [func DeliveryConfigFingerprint\(spec Spec\) \(string, error\)](<#DeliveryConfigFingerprint>)
+- [func IsManagedSourceSpec\(spec Spec\) bool](<#IsManagedSourceSpec>)
 - [func MergeManagedSchemaBaselines\(metadata map\[string\]string, transaction SourceTransaction\) \(map\[string\]string, error\)](<#MergeManagedSchemaBaselines>)
 - [func NormalizeKeyForSchema\(schema Schema, key map\[string\]any\) \(map\[string\]any, error\)](<#NormalizeKeyForSchema>)
 - [func NormalizePostgresRecord\(schema Schema, values map\[string\]any\) error](<#NormalizePostgresRecord>)
@@ -231,6 +232,15 @@ func DeliveryConfigFingerprint(spec Spec) (string, error)
 
 DeliveryConfigFingerprint returns a deterministic identity for the behavior of one destination revision. The revision ID itself is excluded so callers can compare two independently named revisions with identical configuration.
 
+<a name="IsManagedSourceSpec"></a>
+## func [IsManagedSourceSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_mode.go#L17>)
+
+```go
+func IsManagedSourceSpec(spec Spec) bool
+```
+
+IsManagedSourceSpec reports whether a source requests either the legacy managed protocol or a named managed profile. Control\-plane and runtime gates must use this single predicate so profile\-only flows cannot bypass fencing.
+
 <a name="MergeManagedSchemaBaselines"></a>
 ## func [MergeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L175>)
 
@@ -259,7 +269,7 @@ func NormalizePostgresRecord(schema Schema, values map[string]any) error
 NormalizePostgresRecord coerces row values into stable, structure\-preserving types based on the Postgres column types in the provided schema.
 
 <a name="NormalizeSourceMode"></a>
-## func [NormalizeSourceMode](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_mode.go#L17>)
+## func [NormalizeSourceMode](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_mode.go#L35>)
 
 ```go
 func NormalizeSourceMode(raw string) (string, error)
