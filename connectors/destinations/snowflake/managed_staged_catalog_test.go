@@ -3,6 +3,8 @@ package snowflake
 import (
 	"context"
 	"regexp"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -150,6 +152,8 @@ func TestStagedFileFormatDefinitionOption(t *testing.T) {
 		"CREATE FILE FORMAT X TYPE=JSON NOT_MULTI_LINE=FALSE",
 		"CREATE FILE FORMAT X TYPE=JSON COMMENT='MULTI_LINE=FALSE '",
 		"CREATE FILE FORMAT X TYPE=JSON COMMENT='escaped '' MULTI_LINE=FALSE '",
+		"CREATE FILE FORMAT X TYPE=JSON /* MULTI_LINE=FALSE */",
+		"CREATE FILE FORMAT X TYPE=JSON -- MULTI_LINE=FALSE\n",
 	} {
 		if stagedFileFormatDefinitionOption(definition, "MULTI_LINE", "FALSE") {
 			t.Fatalf("accepted absent or wrong option in %q", definition)
@@ -195,16 +199,40 @@ func TestValidateManagedStagedCatalogAutoIngestRequiresPipe(t *testing.T) {
 	if err := validateManagedStagedCatalog(cfg, catalog); err == nil {
 		t.Fatal("auto-ingest catalog without a pipe was accepted")
 	}
-	catalog.pipe = validStagedAutoIngestPipe(cfg)
+	catalog.pipe = validStagedAutoIngestPipe(t, cfg)
 	if err := validateManagedStagedCatalog(cfg, catalog); err != nil {
 		t.Fatalf("valid auto-ingest catalog rejected: %v", err)
 	}
 }
 
-func validStagedAutoIngestPipe(cfg stagedConfig) managedPipeSnapshot {
+// stagedInlinePipeDefinition renders a pipe DEFINITION that inlines exactly the
+// JSON parsing options the synchronous COPY inlines, which is what admission
+// requires so an ALTER FILE FORMAT cannot change auto-ingest parsing.
+func stagedInlinePipeDefinition(t testing.TB) string {
+	t.Helper()
+	options, err := stagedInlineJSONFormatOptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(options))
+	for name := range options {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	rendered := make([]string, 0, len(names))
+	for _, name := range names {
+		rendered = append(rendered, name+" = "+options[name])
+	}
+	return "COPY INTO T FROM @S FILE_FORMAT = (" + strings.Join(rendered, " ") +
+		") MATCH_BY_COLUMN_NAME = CASE_SENSITIVE ON_ERROR = ABORT_STATEMENT FORCE = FALSE"
+}
+
+func validStagedAutoIngestPipe(t testing.TB, cfg stagedConfig) managedPipeSnapshot {
+	t.Helper()
 	return managedPipeSnapshot{
 		present: true, autoIngest: true, ownerRole: cfg.ownerRole, createdOn: cfg.pipeCreatedOn,
-		onError: "ABORT_STATEMENT", force: "FALSE", matchByColumnName: "CASE_SENSITIVE",
+		definition: stagedInlinePipeDefinition(t),
+		onError:    "ABORT_STATEMENT", force: "FALSE", matchByColumnName: "CASE_SENSITIVE",
 		comment: managedStagedOwnershipComment(cfg, "pipe"),
 		grants:  map[string][]string{cfg.executionRole: {"MONITOR", "OPERATE"}, cfg.ownerRole: {"OWNERSHIP"}},
 	}
@@ -223,19 +251,32 @@ func TestValidateManagedStagedPipeRejectsUnsafeCopyOptions(t *testing.T) {
 		"force true":           func(p *managedPipeSnapshot) { p.force = "TRUE" },
 		"loose column mapping": func(p *managedPipeSnapshot) { p.matchByColumnName = "CASE_INSENSITIVE" },
 		"absent column match":  func(p *managedPipeSnapshot) { p.matchByColumnName = "" },
+		"named file format": func(p *managedPipeSnapshot) {
+			p.definition = "COPY INTO T FROM @S FILE_FORMAT = (FORMAT_NAME = DB.PUBLIC.FF) ON_ERROR = ABORT_STATEMENT"
+		},
+		"multiline parsing": func(p *managedPipeSnapshot) {
+			p.definition = strings.ReplaceAll(p.definition, "MULTI_LINE = FALSE", "MULTI_LINE = TRUE")
+		},
+		"outer array stripping": func(p *managedPipeSnapshot) {
+			p.definition = strings.ReplaceAll(p.definition, "STRIP_OUTER_ARRAY = FALSE", "STRIP_OUTER_ARRAY = TRUE")
+		},
+		"format name hidden in comment": func(p *managedPipeSnapshot) {
+			p.definition = "COPY INTO T FROM @S FILE_FORMAT = (FORMAT_NAME = DB.PUBLIC.FF) /* " +
+				stagedInlinePipeDefinition(t) + " */"
+		},
 	}
 	for name, mutate := range cases {
 		name, mutate := name, mutate
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			pipe := validStagedAutoIngestPipe(cfg)
+			pipe := validStagedAutoIngestPipe(t, cfg)
 			mutate(&pipe)
 			if err := validateManagedStagedPipe(cfg, pipe); err == nil {
 				t.Fatalf("auto-ingest pipe validation accepted an unsafe COPY option (%s)", name)
 			}
 		})
 	}
-	if err := validateManagedStagedPipe(cfg, validStagedAutoIngestPipe(cfg)); err != nil {
+	if err := validateManagedStagedPipe(cfg, validStagedAutoIngestPipe(t, cfg)); err != nil {
 		t.Fatalf("fail-closed auto-ingest pipe rejected: %v", err)
 	}
 }
