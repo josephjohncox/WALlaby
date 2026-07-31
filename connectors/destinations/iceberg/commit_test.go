@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"maps"
+	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -21,11 +26,89 @@ import (
 	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 	iceberggo "github.com/apache/iceberg-go"
+	icecatalog "github.com/apache/iceberg-go/catalog"
+	icerest "github.com/apache/iceberg-go/catalog/rest"
 	"github.com/apache/iceberg-go/table"
 	"github.com/google/uuid"
 	"github.com/josephjohncox/wallaby/internal/artifactlog"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
+
+func TestRESTCommitClassificationPreservesPermanentTransportFailures(t *testing.T) {
+	t.Parallel()
+
+	for _, permanent := range []error{
+		&url.Error{Op: "POST", URL: "https://catalog.invalid", Err: x509.UnknownAuthorityError{}},
+		&url.Error{Op: "POST", URL: "https://catalog.invalid", Err: tls.RecordHeaderError{Msg: "server spoke plaintext"}},
+		&url.Error{Op: "POST", URL: "https://catalog.invalid", Err: tls.AlertError(40)},
+		errors.Join(icerest.ErrCommitFailed, &url.Error{Op: "POST", URL: "https://catalog.invalid", Err: tls.AlertError(40)}),
+		&url.Error{Op: "POST", URL: "catalog.invalid", Err: errors.New("unsupported protocol scheme")},
+		&net.DNSError{Err: "no such host", IsNotFound: true},
+		icerest.ErrUnauthorized,
+		icecatalog.ErrNoSuchTable,
+		icecatalog.ErrNoSuchNamespace,
+	} {
+		classified := classifyRESTCatalogCommitError(permanent)
+		if !errors.Is(classified, permanent) || errors.Is(classified, ErrCatalogIndeterminate) {
+			t.Fatalf("REST permanent classification=%v for %v", classified, permanent)
+		}
+		consumerErr := classifyConsumerRetryableError(context.Background(), classified)
+		if errors.Is(consumerErr, artifactlog.ErrConsumerRetryable) {
+			t.Fatalf("permanent REST error became consumer-retryable: %v", consumerErr)
+		}
+	}
+
+	for _, temporary := range []error{
+		icerest.ErrServerError,
+		&url.Error{Op: "POST", URL: "https://catalog.example", Err: &net.OpError{Op: "write", Net: "tcp", Err: syscall.ECONNRESET}},
+	} {
+		classified := classifyRESTCatalogCommitError(temporary)
+		if !errors.Is(classified, ErrCatalogIndeterminate) {
+			t.Fatalf("REST temporary classification=%v for %v, want ErrCatalogIndeterminate", classified, temporary)
+		}
+		if consumerErr := classifyConsumerRetryableError(context.Background(), classified); !errors.Is(consumerErr, artifactlog.ErrConsumerRetryable) {
+			t.Fatalf("temporary REST consumer classification=%v", consumerErr)
+		}
+	}
+}
+
+func TestClassifyConsumerRetryableError(t *testing.T) {
+	t.Parallel()
+
+	for _, retryable := range []error{
+		ErrCatalogConflict,
+		ErrCatalogIndeterminate,
+		icerest.ErrAuthorizationExpired,
+		icerest.ErrServiceUnavailable,
+		icerest.ErrServerError,
+		context.DeadlineExceeded,
+		&net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET},
+		&net.DNSError{Err: "temporary resolver failure", IsTemporary: true},
+	} {
+		err := classifyConsumerRetryableError(context.Background(), retryable)
+		if !errors.Is(err, artifactlog.ErrConsumerRetryable) || !errors.Is(err, retryable) {
+			t.Fatalf("classified error=%v, want retryable preserving %v", err, retryable)
+		}
+	}
+
+	for _, terminal := range []error{
+		errors.New("schema identity conflict"),
+		icerest.ErrUnauthorized,
+		&url.Error{Op: "Get", URL: "https://catalog.invalid", Err: x509.UnknownAuthorityError{}},
+		errors.Join(ErrCatalogIndeterminate, &url.Error{Op: "POST", URL: "https://catalog.invalid", Err: tls.RecordHeaderError{Msg: "server spoke plaintext"}}),
+		&net.DNSError{Err: "no such host", IsNotFound: true},
+		errors.Join(connector.ErrDeliveryConflict, &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}),
+	} {
+		if err := classifyConsumerRetryableError(context.Background(), terminal); !errors.Is(err, terminal) || errors.Is(err, artifactlog.ErrConsumerRetryable) {
+			t.Fatalf("terminal error classification=%v for %v", err, terminal)
+		}
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := classifyConsumerRetryableError(canceled, ErrCatalogIndeterminate); !errors.Is(err, ErrCatalogIndeterminate) || errors.Is(err, artifactlog.ErrConsumerRetryable) {
+		t.Fatalf("canceled context classification=%v", err)
+	}
+}
 
 // parquetNativeFieldIDs writes one record batch to Parquet and reads back the
 // native Parquet field IDs, proving a committed data file carries the
