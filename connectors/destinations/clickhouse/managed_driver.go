@@ -209,6 +209,16 @@ func (d *Destination) openManaged(ctx context.Context, dsn string, spec connecto
 		if survivor.endpointErr != nil || survivor.conn == nil {
 			continue
 		}
+		// Recovery-only admission exists to survive a lost peer, never to downgrade
+		// around a live but non-compliant one. When both endpoints opened, a survivor
+		// whose own Keeper view still reports the full replica set is not recovering
+		// anything, so the two-endpoint admission error stays authoritative.
+		if primaryErr == nil && replicaErr == nil {
+			if err := d.validateManagedConnectionTarget(ctx, survivor.conn, survivor.expectedReplica, false, false, false, 0, 0); err == nil {
+				validationErrs = append(validationErrs, fmt.Errorf("replica %s is live and undegraded, so recovery-only admission is refused", survivor.expectedReplica))
+				continue
+			}
+		}
 		d.managedVersion = survivor.version
 		if err := d.validateManagedConnectionTarget(ctx, survivor.conn, survivor.expectedReplica, true, true, true, 0, 0); err != nil {
 			validationErrs = append(validationErrs, fmt.Errorf("recovery-only replica %s admission: %w", survivor.expectedReplica, err))
