@@ -110,7 +110,7 @@ func (s *Source) PrepareManagedBootstrap(ctx context.Context, fence connector.Ru
 			}
 			return managedBootstrapResult(latest, checkpoint), nil
 		case "published":
-			checkpoint, err := coordinator.Handoff(ctx, fence, latest)
+			checkpoint, err := handoffRecoveredBootstrapPublication(ctx, coordinator, fence, latest, "handoff recovered published bootstrap")
 			if err != nil {
 				return connector.ManagedBootstrapResult{}, err
 			}
@@ -121,25 +121,25 @@ func (s *Source) PrepareManagedBootstrap(ctx context.Context, fence connector.Ru
 			// gone. It may, however, reconcile an atomic destination publication
 			// marker committed before the old owner recorded its control receipt.
 			schemas, schemaErr := coordinator.LoadSchemas(ctx, fence, latest)
-			if schemaErr == nil && latest.SourceLineageID != "" {
+			if latest.SourceLineageID != "" {
+				if schemaErr != nil {
+					return connector.ManagedBootstrapResult{}, recoverableBootstrapPublicationError("load schemas for publication recovery", schemaErr)
+				}
 				intent := managedBootstrapIntent(fence, latest, destinationRevisionID)
 				reconciler, ok := driver.(connector.ManagedBootstrapPublicationReconciler)
 				if !ok {
-					return connector.ManagedBootstrapResult{}, errors.New("managed bootstrap destination cannot reconcile publication after exporter loss")
+					return connector.ManagedBootstrapResult{}, recoverableBootstrapPublicationError("reconcile destination bootstrap publication", errors.New("managed bootstrap destination cannot reconcile publication after exporter loss"))
 				}
 				disposition, evidence, reconcileErr := reconciler.ReconcileBootstrapPublication(ctx, intent)
 				if reconcileErr != nil {
-					return connector.ManagedBootstrapResult{}, reconcileErr
+					return connector.ManagedBootstrapResult{}, recoverableBootstrapPublicationError("reconcile destination bootstrap publication", reconcileErr)
 				}
 				switch disposition {
 				case connector.DeliveryApplied:
 					if evidence.ContentHash != latest.ManifestHash || strings.TrimSpace(evidence.ExternalID) == "" {
-						return connector.ManagedBootstrapResult{}, fmt.Errorf("%w: recovered bootstrap publication evidence mismatch", connector.ErrDeliveryConflict)
+						return connector.ManagedBootstrapResult{}, recoverableBootstrapPublicationError("validate recovered destination publication evidence", fmt.Errorf("%w: recovered bootstrap publication evidence mismatch", connector.ErrDeliveryConflict))
 					}
-					if err := coordinator.RecordPublication(ctx, fence, latest, destinationRevisionID, evidence.ContentHash, uuid.New()); err != nil {
-						return connector.ManagedBootstrapResult{}, err
-					}
-					checkpoint, err := coordinator.Handoff(ctx, fence, latest)
+					checkpoint, err := finalizeRecoveredBootstrapPublication(ctx, coordinator, fence, latest, destinationRevisionID, evidence.ContentHash, uuid.New())
 					if err != nil {
 						return connector.ManagedBootstrapResult{}, err
 					}
@@ -387,6 +387,30 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 	}
 	result = managedBootstrapResult(session.Snapshot, checkpoint)
 	return result, false, nil
+}
+
+type recoveredBootstrapPublicationHandoff interface {
+	Handoff(context.Context, authority.RunFence, bootstrap.ExportedSnapshot) (connector.Checkpoint, error)
+}
+
+type recoveredBootstrapPublicationFinalizer interface {
+	recoveredBootstrapPublicationHandoff
+	RecordPublication(context.Context, authority.RunFence, bootstrap.ExportedSnapshot, string, string, uuid.UUID) error
+}
+
+func finalizeRecoveredBootstrapPublication(ctx context.Context, coordinator recoveredBootstrapPublicationFinalizer, fence authority.RunFence, snapshot bootstrap.ExportedSnapshot, destinationRevisionID, contentHash string, attemptID uuid.UUID) (connector.Checkpoint, error) {
+	if err := coordinator.RecordPublication(ctx, fence, snapshot, destinationRevisionID, contentHash, attemptID); err != nil {
+		return connector.Checkpoint{}, recoverableBootstrapPublicationError("record recovered destination publication", err)
+	}
+	return handoffRecoveredBootstrapPublication(ctx, coordinator, fence, snapshot, "handoff recovered destination publication")
+}
+
+func handoffRecoveredBootstrapPublication(ctx context.Context, coordinator recoveredBootstrapPublicationHandoff, fence authority.RunFence, snapshot bootstrap.ExportedSnapshot, stage string) (connector.Checkpoint, error) {
+	checkpoint, err := coordinator.Handoff(ctx, fence, snapshot)
+	if err != nil {
+		return connector.Checkpoint{}, recoverableBootstrapPublicationError(stage, err)
+	}
+	return checkpoint, nil
 }
 
 func recoverableBootstrapPublicationError(stage string, err error) error {
