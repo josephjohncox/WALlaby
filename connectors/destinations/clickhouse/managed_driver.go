@@ -29,6 +29,14 @@ var (
 	_ connector.ManagedTransactionPreparer    = (*Destination)(nil)
 )
 
+// errManagedReplicaLost marks the loss-class endpoint failure that recovery-only
+// admission exists for: the endpoint no longer has Keeper-backed metadata for a
+// managed table, which is what storage loss looks like. It deliberately does not
+// cover static contract violations (a missing FINAL view, a wrong deduplication
+// window, a bad table definition): those are operator misconfigurations that
+// must fail closed instead of silently degrading the destination.
+var errManagedReplicaLost = errors.New("managed ClickHouse replica metadata is lost")
+
 const (
 	managedDeploymentKeeper      = "self-managed-keeper"
 	managedMinDedupWindow        = uint64(1000)
@@ -187,12 +195,16 @@ func (d *Destination) openManaged(ctx context.Context, dsn string, spec connecto
 	d.managedConfig = cfg
 	d.managedRecoveryOnly = false
 	validationErrs := []error{primaryErr, replicaErr}
+	lossObserved := primaryErr != nil || replicaErr != nil
 	if primaryErr == nil && replicaErr == nil {
 		d.managedVersion = version
 		if err := d.validateManagedTarget(ctx, true, 0, 0); err == nil {
 			opened = true
 			return nil
 		} else {
+			if errors.Is(err, errManagedReplicaLost) {
+				lossObserved = true
+			}
 			validationErrs = append(validationErrs, fmt.Errorf("healthy two-replica admission: %w", err))
 		}
 	}
@@ -210,14 +222,14 @@ func (d *Destination) openManaged(ctx context.Context, dsn string, spec connecto
 			continue
 		}
 		// Recovery-only admission exists to survive a lost peer, never to downgrade
-		// around a live but non-compliant one. When both endpoints opened, a survivor
-		// whose own Keeper view still reports the full replica set is not recovering
-		// anything, so the two-endpoint admission error stays authoritative.
-		if primaryErr == nil && replicaErr == nil {
-			if err := d.validateManagedConnectionTarget(ctx, survivor.conn, survivor.expectedReplica, false, false, false, 0, 0); err == nil {
-				validationErrs = append(validationErrs, fmt.Errorf("replica %s is live and undegraded, so recovery-only admission is refused", survivor.expectedReplica))
-				continue
-			}
+		// around a live but non-compliant one. Proceed only when some endpoint failed
+		// in a loss class: an endpoint that would not open at all, or one whose
+		// Keeper-backed table metadata is gone. A static contract violation on either
+		// endpoint (for example a dropped FINAL view) is an operator misconfiguration
+		// and must keep the authoritative two-endpoint admission error.
+		if !lossObserved {
+			validationErrs = append(validationErrs, fmt.Errorf("replica %s admission refused: no endpoint reported lost replica metadata, so recovery-only admission does not apply", survivor.expectedReplica))
+			continue
 		}
 		d.managedVersion = survivor.version
 		if err := d.validateManagedConnectionTarget(ctx, survivor.conn, survivor.expectedReplica, true, true, true, 0, 0); err != nil {
@@ -954,7 +966,7 @@ func (d *Destination) validateManagedKeeper(ctx context.Context, conn chdriver.C
 			&status.keeperPath, &status.replicaName, &status.totalReplicas, &status.activeReplicas,
 			&status.readonly, &status.expired, &status.queueSize, &status.absoluteDelay, &status.lostPartCount,
 		); err != nil {
-			return fmt.Errorf("managed ClickHouse table %s lacks a Keeper-backed replica: %w", table, err)
+			return fmt.Errorf("%w: managed ClickHouse table %s lacks a Keeper-backed replica: %w", errManagedReplicaLost, table, err)
 		}
 		if err := validateManagedReplicaStatus(status, managedReplicaContract{keeperPath: expectedPath, replicaNames: replicaNames, allowDegraded: allowDegraded}); err != nil {
 			return fmt.Errorf("managed ClickHouse table %s: %w", table, err)
