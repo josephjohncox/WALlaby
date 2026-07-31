@@ -85,7 +85,7 @@ func (s *FlowService) UpdateFlow(ctx context.Context, req *wallabypb.UpdateFlowR
 	if err != nil {
 		return nil, mapWorkflowError(err)
 	}
-	if parseBool(existing.Source.Options["managed"]) {
+	if connector.IsManagedSourceSpec(existing.Source) || connector.IsManagedSourceSpec(model.Source) {
 		return nil, status.Error(codes.FailedPrecondition, "managed flow updates require a fenced source-resource revision")
 	}
 	model.State = existing.State
@@ -130,7 +130,7 @@ func (s *FlowService) ReconfigureFlow(ctx context.Context, req *wallabypb.Reconf
 	if err != nil {
 		return nil, mapWorkflowError(err)
 	}
-	if parseBool(existing.Source.Options["managed"]) || parseBool(model.Source.Options["managed"]) {
+	if connector.IsManagedSourceSpec(existing.Source) || connector.IsManagedSourceSpec(model.Source) {
 		return nil, status.Error(codes.FailedPrecondition, "managed flow reconfiguration requires a fenced source-resource revision")
 	}
 	model.State = existing.State
@@ -300,7 +300,7 @@ func (s *FlowService) CleanupFlow(ctx context.Context, req *wallabypb.CleanupFlo
 	if f.Source.Type != connector.EndpointPostgres {
 		return &wallabypb.CleanupFlowResponse{Cleaned: true}, nil
 	}
-	if parseBool(f.Source.Options["managed"]) {
+	if connector.IsManagedSourceSpec(f.Source) {
 		return nil, status.Error(codes.FailedPrecondition, "managed source cleanup requires exact fenced ownership and cannot use the legacy cleanup RPC")
 	}
 
@@ -628,7 +628,7 @@ func (s *FlowService) authorizeLegacyResourceMutation(ctx context.Context, flowI
 	if f.Source.Type != connector.EndpointPostgres {
 		return status.Error(codes.InvalidArgument, "flow source is not postgres")
 	}
-	if parseBool(f.Source.Options["managed"]) {
+	if connector.IsManagedSourceSpec(f.Source) {
 		return status.Error(codes.FailedPrecondition, "managed source-resource mutation requires the current fenced resource owner")
 	}
 	optionName := resourceKind
@@ -709,7 +709,7 @@ func (s *FlowService) resolveSlotCommandConfig(ctx context.Context, flowID, dsn,
 		slot:        resolvedSlot,
 		publication: strings.TrimSpace(flowModel.Source.Options["publication"]),
 		options:     mergeOptionMaps(flowModel.Source.Options, options),
-		managed:     parseBool(flowModel.Source.Options["managed"]),
+		managed:     connector.IsManagedSourceSpec(flowModel.Source),
 	}, nil
 }
 
@@ -760,7 +760,7 @@ func (s *FlowService) resolvePublicationCommandConfig(ctx context.Context, flowI
 		dsn:         resolvedDSN,
 		publication: resolvedPublication,
 		options:     mergeOptionMaps(flowModel.Source.Options, options),
-		managed:     parseBool(flowModel.Source.Options["managed"]),
+		managed:     connector.IsManagedSourceSpec(flowModel.Source),
 	}, nil
 }
 

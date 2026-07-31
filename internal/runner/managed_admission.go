@@ -18,21 +18,6 @@ import (
 	"github.com/snowflakedb/gosnowflake"
 )
 
-func managedSourceSpec(spec connector.Spec) bool {
-	if spec.Options == nil {
-		return false
-	}
-	if strings.TrimSpace(spec.Options["managed_profile"]) != "" {
-		return true
-	}
-	switch strings.ToLower(strings.TrimSpace(spec.Options["managed"])) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
-}
-
 func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec connector.Spec, destinations []stream.DestinationConfig, cfg StreamRunnerConfig) error {
 	profileName := strings.TrimSpace(sourceSpec.Options["managed_profile"])
 	switch profileName {

@@ -74,10 +74,10 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 	}
 
 	requireDDLExecution := f.Config.DDL.AutoApply != nil && *f.Config.DDL.AutoApply
-	if f.Config.AckPolicy == stream.AckPolicyMaterialized && !managedSourceSpec(sourceSpec) {
+	if f.Config.AckPolicy == stream.AckPolicyMaterialized && !connector.IsManagedSourceSpec(sourceSpec) {
 		return stream.Runner{}, fmt.Errorf("ack_policy=materialized requires managed PostgreSQL transactional execution")
 	}
-	if managedSourceSpec(sourceSpec) {
+	if connector.IsManagedSourceSpec(sourceSpec) {
 		if err := validateManagedAdmission(f, source, sourceSpec, clonedDestinations, cfg); err != nil {
 			return stream.Runner{}, err
 		}
@@ -103,7 +103,6 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 	if requireDDLExecution && cfg.DDLExecutions == nil {
 		return stream.Runner{}, fmt.Errorf("automatic DDL execution requires durable execution receipt storage")
 	}
-
 	return stream.Runner{
 		Source:              source,
 		SourceSpec:          sourceSpec,
