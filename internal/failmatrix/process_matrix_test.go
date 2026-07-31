@@ -333,10 +333,19 @@ func TestProcessCycleReapsFailingAndTimedOutChildren(t *testing.T) {
 		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
+		// This case asserts reaping after a deterministic recovery failure (the
+		// wrapper exits 23), not latency, so the timeout is a generous ceiling
+		// rather than a budget. The initial child here is the real worker and must
+		// be allowed to reach its durable checkpoint boundary even under the race
+		// detector on a slow shared runner; a sub-second ceiling produced only one
+		// child and failed with "wait initial durable boundary: context deadline
+		// exceeded". Raising it does not slow the passing path, because the cycle
+		// proceeds as soon as the boundary is observed. The two cases above keep
+		// deliberately tiny timeouts because they exist to force a timeout.
 		result := RunProcessCycle(ProcessCycleConfig{
 			WorkerExecutable: wrapper, CycleDir: filepath.Join(t.TempDir(), "cycle"),
 			Profile: profile, Boundary: BoundaryCheckpoint, Fault: FaultKill,
-			Timeout: 200 * time.Millisecond,
+			Timeout: 60 * time.Second,
 		})
 		if result.Ok() || len(result.ChildPIDs) != 2 {
 			t.Fatalf("expected initial and failing recovery children: %+v", result)
