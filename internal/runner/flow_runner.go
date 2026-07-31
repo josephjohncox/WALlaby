@@ -164,10 +164,14 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		destinationSpec := streamRunner.Destinations[0].Spec
 		revisionID := strings.TrimSpace(destinationSpec.Options["destination_revision_id"])
 		fingerprint, fingerprintErr := connector.DeliveryConfigFingerprint(destinationSpec)
+		// A materialized runtime that owns a deployment-merged catalog identity the
+		// flow spec cannot express (today: Iceberg) reports it here and it wins. A
+		// runtime with no such consumer reports the empty string, and the
+		// spec-derived fingerprint remains authoritative; construction already fails
+		// closed if a catalog consumer exists without an effective identity.
 		if identity, ok := artifactLog.(stream.ManagedArtifactIdentity); ok {
-			fingerprint = strings.TrimSpace(identity.EffectiveDestinationFingerprint())
-			if fingerprint == "" {
-				fingerprintErr = errors.New("materialized artifact runtime returned an empty effective destination fingerprint")
+			if effective := strings.TrimSpace(identity.EffectiveDestinationFingerprint()); effective != "" {
+				fingerprint = effective
 			}
 		}
 		if fingerprintErr == nil {
