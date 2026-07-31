@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgxpool"
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	"github.com/josephjohncox/wallaby/internal/bootstrap"
@@ -38,6 +39,47 @@ func TestManagedBootstrapWorkerWiringConcurrentBoundary(t *testing.T) {
 
 func TestPostgresManagedProfileSourceSchemaEvolutionAfterRestart(t *testing.T) {
 	runManagedBootstrapWorkerWiringConcurrentBoundary(t)
+}
+
+// describeBootstrapWiringShape renders the live source and destination column
+// shapes for a convergence failure. A missing destination column cannot be
+// diagnosed from the assertion alone, and these tests only run against live
+// PostgreSQL in CI, so the failure itself has to carry the evidence.
+func describeBootstrapWiringShape(ctx context.Context, pool *pgxpool.Pool) string {
+	var report strings.Builder
+	for _, target := range []struct{ schema, table string }{
+		{schema: "public", table: "wallaby_bootstrap_wiring_a"},
+		{schema: "wallaby_bootstrap_target", table: "wallaby_bootstrap_wiring_a"},
+	} {
+		report.WriteString(fmt.Sprintf("shape %s.%s: ", target.schema, target.table))
+		rows, err := pool.Query(ctx, `
+SELECT column_name, data_type, is_generated, COALESCE(generation_expression,'')
+FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 ORDER BY ordinal_position`,
+			target.schema, target.table)
+		if err != nil {
+			report.WriteString(fmt.Sprintf("query error: %v\n", err))
+			continue
+		}
+		columns := 0
+		for rows.Next() {
+			var name, dataType, generated, expression string
+			if scanErr := rows.Scan(&name, &dataType, &generated, &expression); scanErr != nil {
+				report.WriteString(fmt.Sprintf("scan error: %v ", scanErr))
+				break
+			}
+			columns++
+			report.WriteString(fmt.Sprintf("[%s %s generated=%s %q] ", name, dataType, generated, expression))
+		}
+		rows.Close()
+		if rowsErr := rows.Err(); rowsErr != nil {
+			report.WriteString(fmt.Sprintf("iterate error: %v ", rowsErr))
+		}
+		if columns == 0 {
+			report.WriteString("(no columns; table absent)")
+		}
+		report.WriteString("\n")
+	}
+	return report.String()
 }
 
 func runManagedBootstrapWorkerWiringConcurrentBoundary(t *testing.T) {
@@ -204,7 +246,7 @@ FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a`).Scan(&count, &values,
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("managed bootstrap/CDC boundary did not converge: count=%d values=%q rendered=%q err=%v", count, values, rendered, err)
+			t.Fatalf("managed bootstrap/CDC boundary did not converge: count=%d values=%q rendered=%q err=%v\n%s", count, values, rendered, err, describeBootstrapWiringShape(ctx, pool))
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
