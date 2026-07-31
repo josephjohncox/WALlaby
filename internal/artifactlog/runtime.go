@@ -3,6 +3,7 @@ package artifactlog
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,11 +24,12 @@ type CatalogConsumerConfig struct {
 // orphan and rooted-retention maintenance. PostgreSQL remains the only source
 // of quota, backlog, claim, and reachability state.
 type RuntimeConfig struct {
-	Stream      StreamConfig
-	OrphanGrace time.Duration
-	Retention   time.Duration
-	GCInterval  time.Duration
-	Consumers   []CatalogConsumerConfig
+	Stream                 StreamConfig
+	OrphanGrace            time.Duration
+	Retention              time.Duration
+	GCInterval             time.Duration
+	Consumers              []CatalogConsumerConfig
+	DestinationFingerprint string
 }
 
 type runtimeConsumer struct {
@@ -46,9 +48,21 @@ type Runtime struct {
 	lastGC    time.Time
 }
 
+// EffectiveDestinationFingerprint returns the deployment-merged non-secret
+// catalog identity pinned to the PostgreSQL destination revision.
+func (r *Runtime) EffectiveDestinationFingerprint() string {
+	if r == nil {
+		return ""
+	}
+	return r.config.DestinationFingerprint
+}
+
 func NewRuntime(ctx context.Context, pool *pgxpool.Pool, objects ObjectStore, config RuntimeConfig) (*Runtime, error) {
 	if config.OrphanGrace <= 0 || config.Retention <= 0 || config.GCInterval <= 0 {
 		return nil, errors.New("positive artifact orphan, retention, and GC intervals are required")
+	}
+	if len(config.Consumers) > 0 && strings.TrimSpace(config.DestinationFingerprint) == "" {
+		return nil, errors.New("artifact catalog consumers require a non-secret effective destination fingerprint")
 	}
 	consumerIDs := make([]string, 0, len(config.Consumers))
 	seen := make(map[string]struct{}, len(config.Consumers))

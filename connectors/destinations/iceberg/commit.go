@@ -377,20 +377,26 @@ type expectedProjectionGroup struct {
 }
 
 func expectedProjectionGroups(request artifactlog.CommitRequest, cfg Config) ([]expectedProjectionGroup, error) {
+	controlTarget, err := cfg.controlTarget()
+	if err != nil {
+		return nil, err
+	}
 	groups := make(map[string]expectedProjectionGroup)
+	targetSchemas := map[string]string{strings.Join(controlTarget, "\x00"): controlSchemaFingerprint}
 	if len(request.Barriers) > 0 {
-		target, err := cfg.controlTarget()
-		if err != nil {
-			return nil, err
-		}
-		id := projectionGroupID(target, controlSchemaFingerprint, true)
-		groups[id] = expectedProjectionGroup{id: id, target: target, schemaFingerprint: controlSchemaFingerprint}
+		id := projectionGroupID(controlTarget, controlSchemaFingerprint, true)
+		groups[id] = expectedProjectionGroup{id: id, target: controlTarget, schemaFingerprint: controlSchemaFingerprint}
 	}
 	for _, object := range request.Objects {
 		target, err := cfg.target(object.Namespace, object.Table)
 		if err != nil {
 			return nil, err
 		}
+		targetKey := strings.Join(target, "\x00")
+		if existingSchemaID, exists := targetSchemas[targetKey]; exists && existingSchemaID != object.SchemaID {
+			return nil, fmt.Errorf("%w: multiple schema projections target Iceberg table %s in publication %s", connector.ErrDeliveryConflict, strings.Join(target, "."), request.PublicationID)
+		}
+		targetSchemas[targetKey] = object.SchemaID
 		id := projectionGroupID(target, object.SchemaID, false)
 		groups[id] = expectedProjectionGroup{id: id, target: target, schemaFingerprint: object.SchemaID}
 	}
