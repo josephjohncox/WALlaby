@@ -21,6 +21,16 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/stream"
 )
 
+type abandonmentRecordingPostgresDestination struct {
+	*pgdest.Destination
+	abandonCalls atomic.Int32
+}
+
+func (d *abandonmentRecordingPostgresDestination) AbandonBootstrap(ctx context.Context, intent connector.BootstrapIntent, schemas []connector.Schema) error {
+	d.abandonCalls.Add(1)
+	return d.Destination.AbandonBootstrap(ctx, intent, schemas)
+}
+
 func TestManagedBootstrapWorkerWiringConcurrentBoundary(t *testing.T) {
 	ctx, dsn, engine, pool, authorityStore := setupBootstrapControl(t)
 	defer engine.Close()
@@ -111,7 +121,7 @@ DROP TABLE IF EXISTS public.wallaby_bootstrap_wiring_b`)
 			},
 		},
 	}
-	destination := &pgdest.Destination{}
+	destination := &abandonmentRecordingPostgresDestination{Destination: &pgdest.Destination{}}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errCh := make(chan error, 1)
@@ -144,6 +154,9 @@ INSERT INTO public.wallaby_bootstrap_wiring_a VALUES(2,'after-cut')`); err != ni
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("first runner did not stop at publish-before-control crash boundary")
+	}
+	if calls := destination.abandonCalls.Load(); calls != 0 {
+		t.Fatalf("destination abandonment calls after publication=%d, want zero", calls)
 	}
 	replacementSource := &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}
 	replacementCtx, cancelReplacement := context.WithCancel(ctx)
