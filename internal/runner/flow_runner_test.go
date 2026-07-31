@@ -157,6 +157,39 @@ func TestManagedHeartbeatFailureReturnsErrorWithoutFailingFlow(t *testing.T) {
 	}
 }
 
+func TestFlowRunnerPinsEffectiveArtifactDestinationFingerprint(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	engine := workflow.NewMemoryEngine()
+	f := managedAdmissionFlow()
+	f.Config.AckPolicy = stream.AckPolicyMaterialized
+	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v1"}
+	f.Destinations = []connector.Spec{{Name: "lake", Type: connector.EndpointIceberg, Options: map[string]string{"destination_revision_id": "iceberg-v1"}}}
+	if _, err := engine.Create(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Start(ctx, f.ID); err != nil {
+		t.Fatal(err)
+	}
+	control, _ := engine.Control(ctx, f.ID)
+	renewFailure := errors.New("stop after fingerprint registration")
+	deliveries := &blockingManagedDelivery{}
+	runner := FlowRunner{
+		Engine: engine, Checkpoints: managedCheckpointStore{}, Authority: &failingRenewAuthority{renewErr: renewFailure}, Deliveries: deliveries,
+		ExpectedGeneration: control.Generation, ExecutionID: "artifact-fingerprint", ExecutionBackend: "test",
+		Artifacts: func(context.Context, flow.Flow, []stream.DestinationConfig) (stream.ManagedArtifactLog, error) {
+			return &effectiveArtifactLog{fingerprint: "effective-deployment-fingerprint"}, nil
+		},
+	}
+	err := runner.Run(ctx, f, &blockingManagedSource{}, []stream.DestinationConfig{{Spec: f.Destinations[0], Dest: artifactMarkerDestination{}}})
+	if !errors.Is(err, renewFailure) {
+		t.Fatalf("Run() error=%v, want controlled heartbeat failure", err)
+	}
+	if deliveries.registeredFingerprint != "effective-deployment-fingerprint" {
+		t.Fatalf("registered fingerprint=%q, want effective deployment fingerprint", deliveries.registeredFingerprint)
+	}
+}
+
 func TestManagedDeliveryPruneIsBatchBoundedAndRenewsLease(t *testing.T) {
 	t.Parallel()
 	deliveries := &saturatedPruneDelivery{blockingManagedDelivery: &blockingManagedDelivery{}}
@@ -272,8 +305,9 @@ func (*failingRenewAuthority) RenewClaim(context.Context, authority.ClaimFence, 
 func (*failingRenewAuthority) ReleaseClaim(context.Context, authority.ClaimFence) error { return nil }
 
 type blockingManagedDelivery struct {
-	deliverErr error
-	pruneCalls atomic.Int32
+	deliverErr            error
+	pruneCalls            atomic.Int32
+	registeredFingerprint string
 }
 
 type saturatedPruneDelivery struct {
@@ -285,7 +319,8 @@ func (d *saturatedPruneDelivery) PruneTerminalDeliveryState(context.Context, aut
 	return 1000, nil
 }
 
-func (*blockingManagedDelivery) RegisterDestinationRevision(context.Context, authority.RunFence, string, string, string) error {
+func (d *blockingManagedDelivery) RegisterDestinationRevision(_ context.Context, _ authority.RunFence, _, _, fingerprint string) error {
+	d.registeredFingerprint = fingerprint
 	return nil
 }
 func (d *blockingManagedDelivery) PruneTerminalDeliveryState(context.Context, authority.RunFence, time.Duration, int) (int64, error) {
@@ -317,6 +352,46 @@ func (*blockingManagedDelivery) RecordAckReceipt(context.Context, connector.RunF
 func (*blockingManagedDelivery) CommitSourceFeedback(ctx context.Context, _ connector.RunFence, grant connector.AckGrant, source connector.FlushEvidenceSource) error {
 	_, err := source.AckWithEvidence(ctx, grant.Checkpoint)
 	return err
+}
+
+type effectiveArtifactLog struct {
+	fingerprint string
+}
+
+func (l *effectiveArtifactLog) EffectiveDestinationFingerprint() string { return l.fingerprint }
+func (*effectiveArtifactLog) Recover(context.Context, connector.RunFence) error {
+	return nil
+}
+func (*effectiveArtifactLog) RestoreCheckpoint(_ context.Context, _ connector.RunFence, checkpoint connector.Checkpoint) (connector.AckGrant, error) {
+	position, err := connector.CheckpointPositionID(checkpoint)
+	return connector.AckGrant{Checkpoint: checkpoint, PositionID: position}, err
+}
+func (*effectiveArtifactLog) WaitForReadAdmission(context.Context, connector.RunFence) error {
+	return nil
+}
+func (*effectiveArtifactLog) Append(_ context.Context, _ connector.RunFence, transaction connector.SourceTransaction) (connector.AckGrant, error) {
+	position, err := connector.CheckpointPositionID(transaction.Checkpoint)
+	return connector.AckGrant{Checkpoint: transaction.Checkpoint, PositionID: position}, err
+}
+
+type artifactMarkerDestination struct{}
+
+func (artifactMarkerDestination) Open(context.Context, connector.Spec) error { return nil }
+func (artifactMarkerDestination) Write(context.Context, connector.Batch) error {
+	return errors.New("unexpected direct artifact write")
+}
+func (artifactMarkerDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
+	return errors.New("unexpected direct artifact DDL")
+}
+func (artifactMarkerDestination) TypeMappings() map[string]string { return map[string]string{} }
+func (artifactMarkerDestination) Close(context.Context) error     { return nil }
+func (artifactMarkerDestination) CanonicalArtifactConsumer()      {}
+func (artifactMarkerDestination) Capabilities() connector.Capabilities {
+	return connector.Capabilities{
+		Support:           connector.SupportExperimental,
+		Delivery:          connector.DeliverySemantics{Declared: true, IdempotentReplay: true, ReplaySafe: true},
+		SupportsStreaming: true, SupportedWireFormats: []connector.WireFormat{connector.WireFormatParquet},
+	}
 }
 
 type blockingManagedSource struct{}

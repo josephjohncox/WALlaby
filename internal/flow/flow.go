@@ -99,6 +99,13 @@ func ValidateDefinition(definition Flow) error {
 	default:
 		return fmt.Errorf("unsupported acknowledgement policy %q", ackPolicy)
 	}
+	for _, destination := range definition.Destinations {
+		if destination.Type == connector.EndpointIceberg {
+			if err := connector.ValidatePersistedSpec(destination); err != nil {
+				return fmt.Errorf("validate persisted Iceberg destination: %w", err)
+			}
+		}
+	}
 	materialization := definition.Config.Materialization
 	if ackPolicy != stream.AckPolicyMaterialized {
 		if materialization != (MaterializationPolicy{}) {
@@ -120,10 +127,23 @@ func ValidateDefinition(definition Flow) error {
 	}
 	switch strings.ToLower(strings.TrimSpace(definition.Source.Options["managed"])) {
 	case "1", "true", "yes", "on":
-		return nil
 	default:
 		return errors.New("ack_policy=materialized requires managed PostgreSQL transactional execution")
 	}
+	if !strings.EqualFold(strings.TrimSpace(definition.Source.Options["bootstrap"]), "never") {
+		return errors.New("ack_policy=materialized currently requires source.options.bootstrap=never")
+	}
+	if len(definition.Destinations) != 1 {
+		return errors.New("ack_policy=materialized requires exactly one Iceberg destination revision")
+	}
+	destination := definition.Destinations[0]
+	if destination.Type != connector.EndpointIceberg {
+		return errors.New("ack_policy=materialized requires an Iceberg destination")
+	}
+	if strings.TrimSpace(destination.Options["destination_revision_id"]) == "" {
+		return errors.New("ack_policy=materialized Iceberg destination requires destination_revision_id")
+	}
+	return nil
 }
 
 // Equal compares flow configs, including optional DDL policy fields.

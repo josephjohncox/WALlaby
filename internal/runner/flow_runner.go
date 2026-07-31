@@ -164,6 +164,12 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		destinationSpec := streamRunner.Destinations[0].Spec
 		revisionID := strings.TrimSpace(destinationSpec.Options["destination_revision_id"])
 		fingerprint, fingerprintErr := connector.DeliveryConfigFingerprint(destinationSpec)
+		if identity, ok := artifactLog.(stream.ManagedArtifactIdentity); ok {
+			fingerprint = strings.TrimSpace(identity.EffectiveDestinationFingerprint())
+			if fingerprint == "" {
+				fingerprintErr = errors.New("materialized artifact runtime returned an empty effective destination fingerprint")
+			}
+		}
 		if fingerprintErr == nil {
 			fingerprintErr = r.Deliveries.RegisterDestinationRevision(ctx, *runFence, revisionID, destinationSpec.Name, fingerprint)
 		}

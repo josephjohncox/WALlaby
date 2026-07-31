@@ -1,9 +1,11 @@
 package iceberg
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -32,19 +34,20 @@ type Config struct {
 	RequestTimeout        time.Duration
 	ReconciliationHorizon time.Duration
 
-	OAuthToken      string
-	OAuthCredential string
-	OAuthScope      string
-	OAuthURI        string
-	Region          string
-	SigningName     string
-	SigV4           bool
-	AllowHTTP       bool
-	CAFile          string
-	CAData          string
-	ClientCertFile  string
-	ClientKeyFile   string
-	ServerName      string
+	OAuthToken         string
+	OAuthCredential    string
+	OAuthScope         string
+	OAuthURI           string
+	Region             string
+	SigningName        string
+	ExpectedAWSRoleARN string
+	SigV4              bool
+	AllowHTTP          bool
+	CAFile             string
+	CAData             string
+	ClientCertFile     string
+	ClientKeyFile      string
+	ServerName         string
 
 	S3TablesTableBucketARN       string
 	S3TablesConfigureMaintenance bool
@@ -56,16 +59,75 @@ type Config struct {
 	// objects (for example MinIO in local emulation). Production Glue / S3
 	// Tables deployments derive credentials from the AWS environment instead.
 	// Access and secret keys are secrets and are never read from connector
-	// options; only the endpoint and region may be supplied as flow options.
+	// options; endpoint and region are deployment-owned as well.
 	S3Endpoint        string
 	S3AccessKeyID     string
 	S3SecretAccessKey string
 	S3Region          string
 }
 
-// ParseSpec merges non-empty flow options over deployment defaults. Secrets are
-// deliberately not accepted from connector options.
+// ValidateFlowSpec validates the persisted, non-secret half of an Iceberg
+// destination through the connector-wide pre-persistence contract.
+func ValidateFlowSpec(spec connector.Spec) error {
+	return connector.ValidatePersistedSpec(spec)
+}
+
+func catalogAuthenticationConfigured(cfg Config) bool {
+	return cfg.SigV4 || cfg.OAuthToken != "" || cfg.OAuthCredential != "" || cfg.ClientKeyFile != ""
+}
+
+// ConfigFingerprint returns a non-secret identity for the effective catalog,
+// target mapping, security mode, and behavior controls used by one destination
+// revision. Credential rotation does not change the identity; changing the
+// catalog or materialization behavior does.
+func ConfigFingerprint(cfg Config) (string, error) {
+	type fingerprint struct {
+		Profile, URI, Warehouse, Prefix, TargetNamespace, TablePrefix, ControlTable string
+		Region, SigningName, ExpectedAWSRoleARN, OAuthScope, OAuthURI               string
+		S3TablesTableBucketARN, S3Endpoint, S3Region, ServerName                    string
+		MaxCommitRetries                                                            int
+		RequestTimeout, ReconciliationHorizon                                       int64
+		SigV4, AllowHTTP                                                            bool
+		OAuthToken, OAuthCredential, MTLS, S3StaticCredentials                      bool
+		S3TablesConfigureMaintenance                                                bool
+		S3TablesMinSnapshotsToKeep, S3TablesMaxSnapshotAgeHours                     int32
+		CADataHash                                                                  string
+		CAFile, ClientCertFile, ClientKeyFile                                       string
+	}
+	caHash := ""
+	if cfg.CAData != "" {
+		sum := sha256.Sum256([]byte(cfg.CAData))
+		caHash = hex.EncodeToString(sum[:])
+	}
+	encoded, err := json.Marshal(fingerprint{
+		Profile: strings.ToLower(strings.TrimSpace(cfg.Profile)), URI: strings.TrimSuffix(strings.TrimSpace(cfg.URI), "/"),
+		Warehouse: strings.TrimSpace(cfg.Warehouse), Prefix: strings.Trim(strings.TrimSpace(cfg.Prefix), "/"),
+		TargetNamespace: cfg.TargetNamespace, TablePrefix: cfg.TablePrefix, ControlTable: cfg.ControlTable,
+		Region: cfg.Region, SigningName: cfg.SigningName, ExpectedAWSRoleARN: cfg.ExpectedAWSRoleARN,
+		OAuthScope: cfg.OAuthScope, OAuthURI: strings.TrimSuffix(strings.TrimSpace(cfg.OAuthURI), "/"),
+		S3TablesTableBucketARN: cfg.S3TablesTableBucketARN, S3Endpoint: strings.TrimSuffix(strings.TrimSpace(cfg.S3Endpoint), "/"), S3Region: cfg.S3Region, ServerName: cfg.ServerName,
+		MaxCommitRetries: cfg.MaxCommitRetries, RequestTimeout: int64(cfg.RequestTimeout), ReconciliationHorizon: int64(cfg.ReconciliationHorizon),
+		SigV4: cfg.SigV4, AllowHTTP: cfg.AllowHTTP, OAuthToken: cfg.OAuthToken != "", OAuthCredential: cfg.OAuthCredential != "",
+		MTLS: cfg.ClientCertFile != "" || cfg.ClientKeyFile != "", S3StaticCredentials: cfg.S3AccessKeyID != "" || cfg.S3SecretAccessKey != "",
+		S3TablesConfigureMaintenance: cfg.S3TablesConfigureMaintenance, S3TablesMinSnapshotsToKeep: cfg.S3TablesMinSnapshotsToKeep,
+		S3TablesMaxSnapshotAgeHours: cfg.S3TablesMaxSnapshotAgeHours, CADataHash: caHash, CAFile: cfg.CAFile,
+		ClientCertFile: cfg.ClientCertFile, ClientKeyFile: cfg.ClientKeyFile,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode effective Iceberg config fingerprint: %w", err)
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// ParseSpec merges flow target mapping over deployment defaults. Authenticated
+// endpoint identity is deployment-bound: a flow may repeat an identical value
+// for readability, but it cannot redirect deployment OAuth, mTLS, SigV4, or S3
+// credentials to another catalog, region, warehouse, bucket, or object endpoint.
 func ParseSpec(spec connector.Spec, defaults Config) (Config, error) {
+	if err := ValidateFlowSpec(spec); err != nil {
+		return Config{}, err
+	}
 	cfg := defaults
 	option := func(key string) string { return strings.TrimSpace(spec.Options[key]) }
 	set := func(key string, target *string) {
@@ -73,19 +135,16 @@ func ParseSpec(spec connector.Spec, defaults Config) (Config, error) {
 			*target = value
 		}
 	}
-	set("catalog_profile", &cfg.Profile)
-	set("uri", &cfg.URI)
-	set("warehouse", &cfg.Warehouse)
-	set("prefix", &cfg.Prefix)
+	if profile := strings.ToLower(option("catalog_profile")); profile != "" {
+		if deploymentProfile := strings.ToLower(strings.TrimSpace(defaults.Profile)); deploymentProfile != "" && profile != deploymentProfile {
+			return Config{}, fmt.Errorf("iceberg catalog_profile is deployment-bound to %q", deploymentProfile)
+		}
+		cfg.Profile = profile
+	}
 	set("namespace", &cfg.TargetNamespace)
 	set("table_prefix", &cfg.TablePrefix)
-	set("table", &cfg.FixedTable)
 	set("control_table", &cfg.ControlTable)
 	set("destination_revision_id", &cfg.DestinationRevisionID)
-	set("region", &cfg.Region)
-	set("s3tables_table_bucket_arn", &cfg.S3TablesTableBucketARN)
-	set("s3_endpoint", &cfg.S3Endpoint)
-	set("s3_region", &cfg.S3Region)
 
 	if cfg.Profile == "" {
 		cfg.Profile = CatalogProfileREST
@@ -109,16 +168,11 @@ func ParseSpec(spec connector.Spec, defaults Config) (Config, error) {
 	if cfg.S3TablesMaxSnapshotAgeHours == 0 {
 		cfg.S3TablesMaxSnapshotAgeHours = int32((cfg.ReconciliationHorizon + time.Hour - 1) / time.Hour) // #nosec G115 -- reconciliation horizon is a bounded positive operational setting.
 	}
-	if raw := option("max_commit_retries"); raw != "" {
-		value, err := strconv.Atoi(raw)
-		if err != nil || value < 1 || value > 32 {
-			return Config{}, fmt.Errorf("iceberg max_commit_retries must be between 1 and 32")
-		}
-		cfg.MaxCommitRetries = value
-	}
-
 	if strings.TrimSpace(cfg.DestinationRevisionID) == "" {
 		return Config{}, errors.New("iceberg destination_revision_id is required")
+	}
+	if strings.TrimSpace(cfg.FixedTable) != "" {
+		return Config{}, errors.New("iceberg fixed table mapping is not admitted; map each source relation to a distinct catalog table")
 	}
 	if cfg.Profile != CatalogProfileREST && cfg.Profile != CatalogProfileS3Tables {
 		return Config{}, fmt.Errorf("unsupported Iceberg catalog_profile %q", cfg.Profile)
@@ -129,6 +183,12 @@ func ParseSpec(spec connector.Spec, defaults Config) (Config, error) {
 		}
 		cfg.URI = "https://glue." + cfg.Region + ".amazonaws.com/iceberg"
 	}
+	if cfg.Profile == CatalogProfileS3Tables && !cfg.AllowHTTP {
+		expectedURI := "https://glue." + strings.TrimSpace(cfg.Region) + ".amazonaws.com/iceberg"
+		if strings.TrimSuffix(strings.TrimSpace(cfg.URI), "/") != expectedURI {
+			return Config{}, fmt.Errorf("S3 Tables requires the regional AWS Glue Iceberg endpoint %q", expectedURI)
+		}
+	}
 	if strings.TrimSpace(cfg.Warehouse) == "" {
 		return Config{}, errors.New("iceberg warehouse is required")
 	}
@@ -138,6 +198,9 @@ func ParseSpec(spec connector.Spec, defaults Config) (Config, error) {
 	if cfg.Profile == CatalogProfileS3Tables {
 		if strings.TrimSpace(cfg.Region) == "" || strings.TrimSpace(cfg.S3TablesTableBucketARN) == "" {
 			return Config{}, errors.New("S3 Tables requires region and s3tables_table_bucket_arn")
+		}
+		if strings.TrimSpace(cfg.ExpectedAWSRoleARN) == "" {
+			return Config{}, errors.New("S3 Tables requires expected_aws_role_arn")
 		}
 		cfg.SigV4 = true
 		cfg.SigningName = "glue"

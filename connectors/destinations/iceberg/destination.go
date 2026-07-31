@@ -16,8 +16,7 @@ var ErrArtifactConsumerOnly = errors.New("iceberg is only available as a canonic
 type Destination struct{}
 
 func (*Destination) Open(_ context.Context, spec connector.Spec) error {
-	_, err := ParseSpec(spec, Config{})
-	return err
+	return ValidateFlowSpec(spec)
 }
 
 func (*Destination) Write(context.Context, connector.Batch) error { return ErrArtifactConsumerOnly }
