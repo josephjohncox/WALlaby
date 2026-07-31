@@ -1114,7 +1114,9 @@ func (p *PostgresStream) handleRelationMessage(ctx context.Context, xld pglogrep
 	schemaDef := p.schemaForRelation(ctx, msg)
 	plan := internalschema.Plan{}
 	if hasPrev {
-		plan = internalschema.Diff(prevSchema, schemaDef)
+		// A Relation message describes the published shape, not the relation, so an
+		// absent column must never become a destination DROP COLUMN.
+		plan = internalschema.DiffPublishedShape(prevSchema, schemaDef)
 	}
 	if fromDurableBaseline && !plan.HasChanges() {
 		schemaDef.Version = prevSchema.Version
