@@ -46,6 +46,7 @@ type Coordinator struct {
 // CoordinatorHooks exposes deterministic crash boundaries to integration
 // tests without changing production ordering or relying on timing.
 type CoordinatorHooks struct {
+	AfterTargetApply       func(context.Context, authority.RunFence, connector.DeliveryIntent) error
 	AfterSourceFlush       func(context.Context, authority.RunFence, AckGrant, string) error
 	AfterRetentionRootLock func(context.Context, authority.RunFence, string) error
 }
@@ -243,6 +244,11 @@ func (c *Coordinator) Deliver(ctx context.Context, fence authority.RunFence, int
 		}
 		return AckGrant{}, err
 	}
+	if c.hooks.AfterTargetApply != nil {
+		if err := c.hooks.AfterTargetApply(ctx, fence, intent); err != nil {
+			return AckGrant{}, recoverablePostCommitError("after target apply", err)
+		}
+	}
 	if err := c.recordEvidence(ctx, fence, intent, attemptID, evidence); err != nil {
 		return AckGrant{}, recoverablePostCommitError("record delivery evidence", err)
 	}
@@ -335,6 +341,11 @@ func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.Ru
 			_ = c.markAttemptTerminal(context.WithoutCancel(ctx), fence, attemptID, "failed", err.Error())
 		}
 		return AckGrant{}, err
+	}
+	if c.hooks.AfterTargetApply != nil {
+		if err := c.hooks.AfterTargetApply(ctx, fence, intent); err != nil {
+			return AckGrant{}, recoverablePostCommitError("after target transaction apply", err)
+		}
 	}
 	if err := c.recordEvidence(ctx, fence, intent, attemptID, evidence); err != nil {
 		return AckGrant{}, recoverablePostCommitError("record transaction evidence", err)
