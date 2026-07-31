@@ -118,6 +118,51 @@ func TestCommitterRewritesCanonicalProjectionWithCatalogOwnedFieldIDs(t *testing
 	}
 }
 
+func TestBuildProjectionRejectsMultipleSchemaGroupsForOneTarget(t *testing.T) {
+	t.Parallel()
+
+	transaction := connector.SourceTransaction{
+		SourceLineageID: "postgres-system/test-iceberg-v1", TransactionID: 72,
+		BeginLSN: "0/20", CommitLSN: "0/28", EndLSN: "0/30",
+		Checkpoint: connector.Checkpoint{LSN: "0/30", Timestamp: time.Unix(101, 0).UTC()},
+		Fragments: []connector.TransactionFragment{
+			{Ordinal: 0, Batch: connector.Batch{Schema: connector.Schema{Namespace: "public", Name: "events", Version: 1, Columns: []connector.Column{column("id", "int8", 1)}}, Records: []connector.Record{{Table: "events", Operation: connector.OpInsert, SchemaVersion: 1, SourcePosition: "0/30", After: map[string]any{"id": int64(1)}}}}},
+			{Ordinal: 1, Batch: connector.Batch{Schema: connector.Schema{Namespace: "public", Name: "audit", Version: 1, Columns: []connector.Column{column("id", "int8", 1), column("note", "text", 2)}}, Records: []connector.Record{{Table: "audit", Operation: connector.OpInsert, SchemaVersion: 1, SourcePosition: "0/30", After: map[string]any{"id": int64(2), "note": "two"}}}}},
+		},
+	}
+	request, objects, _ := assembleCommitRequest(t, uuid.MustParse("44444444-4444-4444-4444-444444444444"), uuid.MustParse("66666666-6666-6666-6666-666666666666"), 2, transaction)
+	cfg := testIcebergConfig()
+	cfg.FixedTable = "shared"
+	plan, err := buildProjection(context.Background(), request, objects, cfg)
+	if plan != nil {
+		plan.release()
+	}
+	if err == nil || !errors.Is(err, connector.ErrDeliveryConflict) || !strings.Contains(err.Error(), "multiple schema projections target") {
+		t.Fatalf("error=%v, want same-target projection conflict", err)
+	}
+}
+
+func TestBuildProjectionRejectsControlTableCollision(t *testing.T) {
+	t.Parallel()
+
+	for _, withBarriers := range []bool{false, true} {
+		request, objects, _ := testCommitRequest(t, withBarriers)
+		cfg := testIcebergConfig()
+		cfg.TargetNamespace = "public"
+		cfg.ControlTable = "events"
+		plan, err := buildProjection(context.Background(), request, objects, cfg)
+		if plan != nil {
+			plan.release()
+		}
+		if err == nil || !errors.Is(err, connector.ErrDeliveryConflict) || !strings.Contains(err.Error(), "multiple schema projections target") {
+			t.Fatalf("withBarriers=%t error=%v, want control-table projection conflict", withBarriers, err)
+		}
+		if _, err := expectedProjectionGroups(request, cfg); err == nil || !errors.Is(err, connector.ErrDeliveryConflict) {
+			t.Fatalf("withBarriers=%t expected projection groups error=%v, want control-table conflict", withBarriers, err)
+		}
+	}
+}
+
 func TestCommitterProcessesBarrierProjectionBeforeData(t *testing.T) {
 	t.Parallel()
 	request, objects, _ := testCommitRequest(t, true)
@@ -194,6 +239,30 @@ func TestCommitterRetriesOptimisticConflictAndConcurrentWriterConverges(t *testi
 	}
 	if backend.committedSnapshots() != 1 {
 		t.Fatalf("snapshots=%d, identical concurrent writers must converge", backend.committedSnapshots())
+	}
+}
+
+func TestCommitterBoundsOptimisticConflictRewrites(t *testing.T) {
+	t.Parallel()
+
+	request, objects, _ := testCommitRequest(t, false)
+	backend := newFakeCatalogBackend()
+	backend.conflicts = 100
+	cfg := testIcebergConfig()
+	cfg.MaxCommitRetries = 3
+	committer, err := NewCommitter(objects, backend, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = committer.Commit(context.Background(), request)
+	if !errors.Is(err, ErrCatalogConflict) || !strings.Contains(err.Error(), "exceeded 3 retries") {
+		t.Fatalf("error=%v, want bounded catalog conflict", err)
+	}
+	if backend.appendCalls != 3 {
+		t.Fatalf("append calls=%d, want exactly configured retry bound", backend.appendCalls)
+	}
+	if backend.committedSnapshots() != 0 {
+		t.Fatalf("snapshots=%d, exhausted conflicts must not report a commit", backend.committedSnapshots())
 	}
 }
 
@@ -281,6 +350,28 @@ func TestBuildFieldMappingRejectsMissingAndColliding(t *testing.T) {
 			t.Fatalf("requiredness error=%v, want delivery conflict", err)
 		}
 	})
+}
+
+func TestMappingFingerprintIsBoundedStableDigest(t *testing.T) {
+	t.Parallel()
+
+	first := mappingFingerprint(map[string]int{"nested.value": 17, "id": 3})
+	second := mappingFingerprint(map[string]int{"id": 3, "nested.value": 17})
+	if first != second {
+		t.Fatalf("mapping digest changed with map order: %q != %q", first, second)
+	}
+	if len(first) != sha256.Size*2 {
+		t.Fatalf("mapping digest length=%d, want %d", len(first), sha256.Size*2)
+	}
+	if _, err := hex.DecodeString(first); err != nil {
+		t.Fatalf("mapping digest is not lowercase hexadecimal: %q: %v", first, err)
+	}
+	if changed := mappingFingerprint(map[string]int{"id": 3, "nested.value": 18}); changed == first {
+		t.Fatal("field-ID change did not change mapping digest")
+	}
+	if ambiguous := mappingFingerprint(map[string]int{"id=3\x00nested.value": 17}); ambiguous == first {
+		t.Fatal("length-delimited mapping digest collided with delimiter-like field name")
+	}
 }
 
 func TestCommitterAppendsAdditiveSchemaEvolutionAcrossPublications(t *testing.T) {

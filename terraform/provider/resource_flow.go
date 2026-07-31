@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -11,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 type flowResource struct {
@@ -169,6 +171,27 @@ func (r *flowResource) ValidateConfig(ctx context.Context, req resource.Validate
 
 func validateFlowResourceModel(ctx context.Context, model flowResourceModel) diag.Diagnostics {
 	var diagnostics diag.Diagnostics
+	for index, destination := range model.Destinations {
+		if destination.Type.IsUnknown() || destination.Type.IsNull() || !strings.EqualFold(strings.TrimSpace(destination.Type.ValueString()), "iceberg") {
+			continue
+		}
+		if destination.Options.IsNull() {
+			diagnostics.AddError("Invalid Iceberg destination", fmt.Sprintf("destination %d requires destination_revision_id", index))
+			continue
+		}
+		if destination.Options.IsUnknown() {
+			continue
+		}
+		options := map[string]string{}
+		var optionDiagnostics diag.Diagnostics
+		optionDiagnostics.Append(destination.Options.ElementsAs(ctx, &options, false)...)
+		diagnostics.Append(optionDiagnostics...)
+		if !optionDiagnostics.HasError() {
+			if err := connector.ValidatePersistedSpec(connector.Spec{Type: connector.EndpointIceberg, Options: options}); err != nil {
+				diagnostics.AddError("Invalid Iceberg destination", err.Error())
+			}
+		}
+	}
 	if model.Config == nil {
 		return diagnostics
 	}
@@ -227,9 +250,20 @@ func validateFlowResourceModel(ctx context.Context, model flowResourceModel) dia
 			if strings.TrimSpace(options["managed_profile"]) != "" {
 				diagnostics.AddError("Invalid materialized profile", "ack_policy=materialized is not admitted by named managed profiles")
 			}
+			if !strings.EqualFold(strings.TrimSpace(options["bootstrap"]), "never") {
+				diagnostics.AddError("Invalid materialized bootstrap", "ack_policy=materialized currently requires source.options.bootstrap=never")
+			}
 		}
 	} else if !model.Source.Options.IsUnknown() {
 		diagnostics.AddError("Invalid materialized source", "ack_policy=materialized requires source.options.managed=true")
+	}
+	if len(model.Destinations) != 1 {
+		diagnostics.AddError("Invalid materialized destinations", "ack_policy=materialized requires exactly one Iceberg destination revision")
+		return diagnostics
+	}
+	destination := model.Destinations[0]
+	if !destination.Type.IsUnknown() && !destination.Type.IsNull() && !strings.EqualFold(strings.TrimSpace(destination.Type.ValueString()), "iceberg") {
+		diagnostics.AddError("Invalid materialized destination", "ack_policy=materialized requires an Iceberg destination")
 	}
 	return diagnostics
 }

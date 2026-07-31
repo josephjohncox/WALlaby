@@ -54,6 +54,7 @@ nav:
       - Canonical artifact log: concepts/artifact-log.md
   - How-to guides:
       - Manage flows: guides/flows.md
+      - Query S3 Tables from Snowflake: guides/s3-tables-snowflake.md
       - Consume streams: streams.md
       - Choose a runtime: deployment/index.md
   - Operations:

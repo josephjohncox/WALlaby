@@ -28,6 +28,7 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [func SourceTransactionIdentity\(transaction SourceTransaction\) \(string, string, error\)](<#SourceTransactionIdentity>)
 - [func SourceTransactionLogicalBatchID\(transaction SourceTransaction\) \(string, error\)](<#SourceTransactionLogicalBatchID>)
 - [func ValidateBatch\(batch Batch\) error](<#ValidateBatch>)
+- [func ValidatePersistedSpec\(spec Spec\) error](<#ValidatePersistedSpec>)
 - [type AckGrant](<#AckGrant>)
 - [type Batch](<#Batch>)
 - [type BootstrapIntent](<#BootstrapIntent>)
@@ -344,6 +345,15 @@ func ValidateBatch(batch Batch) error
 ```
 
 ValidateBatch enforces the source\-to\-runner batch contract. Data batches describe exactly one table and one logical schema. DDL/control records may be grouped together, but never with data records. Tableless control batches are valid because PostgreSQL logical messages carry ordered DDL text and a source position without relation metadata. A zero record schema version is treated as inherited from Batch.Schema for adapters that omit the redundant field.
+
+<a name="ValidatePersistedSpec"></a>
+## func [ValidatePersistedSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/spec_validation.go#L17>)
+
+```go
+func ValidatePersistedSpec(spec Spec) error
+```
+
+ValidatePersistedSpec rejects endpoint options that cannot safely become durable flow state. Deployment\-only credentials and behavior controls must never be smuggled through a connector's arbitrary option map.
 
 <a name="AckGrant"></a>
 ## type [AckGrant](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L102-L105>)

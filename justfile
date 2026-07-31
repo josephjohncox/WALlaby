@@ -316,6 +316,7 @@ test-s3tables-live:
     test -n "${WALLABY_TEST_S3TABLES_REGION:-}" || { echo 'WALLABY_TEST_S3TABLES_REGION is required' >&2; exit 2; }
     test -n "${WALLABY_TEST_S3TABLES_WAREHOUSE:-}" || { echo 'WALLABY_TEST_S3TABLES_WAREHOUSE is required' >&2; exit 2; }
     test -n "${WALLABY_TEST_S3TABLES_TABLE_BUCKET_ARN:-}" || { echo 'WALLABY_TEST_S3TABLES_TABLE_BUCKET_ARN is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN:-}" || { echo 'WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN is required' >&2; exit 2; }
     test -n "${WALLABY_TEST_S3TABLES_NAMESPACE:-}" || { echo 'WALLABY_TEST_S3TABLES_NAMESPACE is required' >&2; exit 2; }
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./tests -run '^TestS3TablesLiveAppendProjection$'
 
@@ -386,6 +387,19 @@ fuzz-managed-snowflake:
       GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -run '^$' \
         -fuzz="^${target}$" -fuzztime={{ snowflake_fuzz_time }} ./connectors/destinations/snowflake
     done
+
+# Cross-service promotion gate. The Snowflake catalog-linked database must
+# already be read-only and linked to the same S3 Tables bucket/namespace.
+test-s3tables-snowflake-live:
+    test "${WALLABY_TEST_S3TABLES_SNOWFLAKE:-}" = "1" || { echo 'WALLABY_TEST_S3TABLES_SNOWFLAKE=1 is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_REGION:-}" || { echo 'WALLABY_TEST_S3TABLES_REGION is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_WAREHOUSE:-}" || { echo 'WALLABY_TEST_S3TABLES_WAREHOUSE is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_TABLE_BUCKET_ARN:-}" || { echo 'WALLABY_TEST_S3TABLES_TABLE_BUCKET_ARN is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN:-}" || { echo 'WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_NAMESPACE:-}" || { echo 'WALLABY_TEST_S3TABLES_NAMESPACE is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_SNOWFLAKE_DSN:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_DSN is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_SNOWFLAKE_LINKED_DATABASE:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_LINKED_DATABASE is required' >&2; exit 2; }
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./tests -run '^TestS3TablesSnowflakeCatalogLinkedReadback$'
 
 # Nightly increases property checks and repeats worker bootstrap/fencing plus
 # DBOS bootstrap evidence. IT_REQUIRED_TESTS makes every named test no-skip.

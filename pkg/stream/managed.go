@@ -24,14 +24,21 @@ type ManagedTransactionDeliveryCoordinator interface {
 
 // ManagedArtifactLog is the deep publication seam used only by
 // ack_policy=materialized. Append returns after immutable objects and the
-// PostgreSQL publication/checkpoint/ACK intent commit. The production worker
-// registers no catalog consumer, so this seam authorizes canonical publication
-// only; direct Publisher users may opt into the experimental queue separately.
+// PostgreSQL publication/checkpoint/ACK intent commit. Catalog consumers, when
+// configured, run asynchronously behind PostgreSQL publication authority and do
+// not extend the source-ACK boundary.
 type ManagedArtifactLog interface {
 	Recover(context.Context, connector.RunFence) error
 	RestoreCheckpoint(context.Context, connector.RunFence, connector.Checkpoint) (connector.AckGrant, error)
 	WaitForReadAdmission(context.Context, connector.RunFence) error
 	Append(context.Context, connector.RunFence, connector.SourceTransaction) (connector.AckGrant, error)
+}
+
+// ManagedArtifactIdentity exposes the non-secret effective destination identity
+// after deployment defaults are merged. FlowRunner pins it to the PostgreSQL
+// destination revision before catalog recovery or consumption.
+type ManagedArtifactIdentity interface {
+	EffectiveDestinationFingerprint() string
 }
 
 // ManagedSourceFeedbackCoordinator is the optional observed-flush extension

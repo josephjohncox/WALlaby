@@ -66,6 +66,12 @@ func buildProjection(ctx context.Context, request artifactlog.CommitRequest, obj
 		return nil, errors.New("canonical object reader is required")
 	}
 	plan := &projectionPlan{}
+	controlTarget, err := cfg.controlTarget()
+	if err != nil {
+		return nil, err
+	}
+	groups := make(map[string]*projectionGroup)
+	targetSchemas := map[string]string{strings.Join(controlTarget, "\x00"): controlSchemaFingerprint}
 	if len(request.Barriers) > 0 {
 		group, err := projectBarriers(request, cfg)
 		if err != nil {
@@ -81,7 +87,6 @@ func buildProjection(ctx context.Context, request artifactlog.CommitRequest, obj
 		}
 		return rooted[i].FirstRecordOrdinal < rooted[j].FirstRecordOrdinal
 	})
-	groups := make(map[string]*projectionGroup)
 	var previousEnd uint64
 	for index, object := range rooted {
 		if object.LogicalBatchID != request.LogicalBatchID {
@@ -98,6 +103,12 @@ func buildProjection(ctx context.Context, request artifactlog.CommitRequest, obj
 			plan.release()
 			return nil, err
 		}
+		targetKey := strings.Join(target, "\x00")
+		if existingSchemaID, exists := targetSchemas[targetKey]; exists && existingSchemaID != object.SchemaID {
+			plan.release()
+			return nil, fmt.Errorf("%w: multiple schema projections target Iceberg table %s in publication %s", connector.ErrDeliveryConflict, strings.Join(target, "."), request.PublicationID)
+		}
+		targetSchemas[targetKey] = object.SchemaID
 		groupID := projectionGroupID(target, object.SchemaID, false)
 		projected, err := projectObject(ctx, request, object, objects)
 		if err != nil {
