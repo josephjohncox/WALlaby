@@ -30,12 +30,37 @@ type managedStageSnapshot struct {
 	grants    map[string][]string
 }
 
+type managedFileFormatPropertySnapshot struct {
+	propertyType    string
+	propertyValue   string
+	propertyDefault string
+}
+
 type managedFileFormatSnapshot struct {
 	formatType string
 	ownerRole  string
 	createdOn  string
 	comment    string
+	definition string
+	properties map[string]managedFileFormatPropertySnapshot
 	grants     map[string][]string
+}
+
+func managedStagedJSONFileFormatProperties() map[string]managedFileFormatPropertySnapshot {
+	values := map[string]struct{ propertyType, propertyValue string }{
+		"TYPE": {"String", "JSON"}, "FILE_EXTENSION": {"String", ""},
+		"DATE_FORMAT": {"String", "AUTO"}, "TIME_FORMAT": {"String", "AUTO"}, "TIMESTAMP_FORMAT": {"String", "AUTO"},
+		"BINARY_FORMAT": {"String", "HEX"}, "TRIM_SPACE": {"Boolean", "FALSE"}, "NULL_IF": {"List", "[]"},
+		"COMPRESSION": {"String", "AUTO"}, "ENABLE_OCTAL": {"Boolean", "FALSE"}, "ALLOW_DUPLICATE": {"Boolean", "FALSE"},
+		"STRIP_OUTER_ARRAY": {"Boolean", "FALSE"}, "STRIP_NULL_VALUES": {"Boolean", "FALSE"},
+		"IGNORE_UTF8_ERRORS": {"Boolean", "FALSE"}, "REPLACE_INVALID_CHARACTERS": {"Boolean", "FALSE"},
+		"SKIP_BYTE_ORDER_MARK": {"Boolean", "TRUE"},
+	}
+	properties := make(map[string]managedFileFormatPropertySnapshot, len(values))
+	for name, value := range values {
+		properties[name] = managedFileFormatPropertySnapshot{propertyType: value.propertyType, propertyValue: value.propertyValue}
+	}
+	return properties
 }
 
 type managedPipeSnapshot struct {
@@ -98,7 +123,93 @@ func validateManagedStagedFileFormat(cfg stagedConfig, format managedFileFormatS
 	if format.createdOn != cfg.fileFormatCreatedOn {
 		return fmt.Errorf("managed staged Snowflake file format creation identity %q differs from configured %q", format.createdOn, cfg.fileFormatCreatedOn)
 	}
+	if format.comment != managedStagedOwnershipComment(cfg, "file_format") {
+		return errors.New("managed staged Snowflake file format ownership comment differs from destination revision and schema contract")
+	}
+	if len(format.definition) == 0 || len(format.definition) > 64<<10 {
+		return fmt.Errorf("managed staged Snowflake file format definition has invalid length %d", len(format.definition))
+	}
+	if !stagedFileFormatDefinitionOption(format.definition, "MULTI_LINE", "FALSE") {
+		return errors.New("managed staged Snowflake JSON file format requires an explicit MULTI_LINE=FALSE definition")
+	}
+	expected := managedStagedJSONFileFormatProperties()
+	if len(format.properties) < len(expected) || len(format.properties) > len(expected)+1 {
+		return fmt.Errorf("managed staged Snowflake JSON file format exposes %d properties, want %d required properties and at most documented MULTI_LINE", len(format.properties), len(expected))
+	}
+	for name := range format.properties {
+		if _, required := expected[name]; !required && name != "MULTI_LINE" {
+			return fmt.Errorf("managed staged Snowflake JSON file format exposed unadmitted property %s", name)
+		}
+	}
+	for name, expectedProperty := range expected {
+		actual, ok := format.properties[name]
+		if !ok {
+			return fmt.Errorf("managed staged Snowflake JSON file format omitted property %s", name)
+		}
+		if actual.propertyType != expectedProperty.propertyType || actual.propertyValue != expectedProperty.propertyValue {
+			return fmt.Errorf("managed staged Snowflake JSON file format property %s=(type:%q value:%q), want (type:%q value:%q)", name, actual.propertyType, actual.propertyValue, expectedProperty.propertyType, expectedProperty.propertyValue)
+		}
+	}
+	if multiLine, present := format.properties["MULTI_LINE"]; present && (multiLine.propertyType != "Boolean" || multiLine.propertyValue != "FALSE") {
+		return fmt.Errorf("managed staged Snowflake JSON file format property MULTI_LINE=(type:%q value:%q), want (type:%q value:%q)", multiLine.propertyType, multiLine.propertyValue, "Boolean", "FALSE")
+	}
 	return validateManagedStagedGrants(cfg, format.grants, []string{"USAGE"}, []string{"OWNERSHIP", "USAGE"})
+}
+
+func stagedFileFormatDefinitionOption(definition, option, expected string) bool {
+	upper := strings.ToUpper(stripStagedSQLStringLiterals(definition))
+	option = strings.ToUpper(strings.TrimSpace(option))
+	expected = strings.ToUpper(strings.TrimSpace(expected))
+	identifierByte := func(value byte) bool { return value == '_' || value >= 'A' && value <= 'Z' }
+	for offset := 0; offset < len(upper); {
+		position := strings.Index(upper[offset:], option)
+		if position < 0 {
+			return false
+		}
+		position += offset
+		beforeOK := position == 0 || !identifierByte(upper[position-1])
+		after := position + len(option)
+		afterOK := after == len(upper) || !identifierByte(upper[after])
+		if beforeOK && afterOK {
+			rest := strings.TrimSpace(upper[after:])
+			if strings.HasPrefix(rest, "=") {
+				value := strings.TrimSpace(rest[1:])
+				if len(value) >= len(expected) && value[:len(expected)] == expected && (len(value) == len(expected) || strings.ContainsRune(" \t\r\n,);", rune(value[len(expected)]))) {
+					return true
+				}
+			}
+		}
+		offset = after
+	}
+	return false
+}
+
+func stripStagedSQLStringLiterals(statement string) string {
+	result := []byte(statement)
+	for position := 0; position < len(result); {
+		if result[position] != '\'' {
+			position++
+			continue
+		}
+		result[position] = ' '
+		position++
+		for position < len(result) {
+			if result[position] != '\'' {
+				result[position] = ' '
+				position++
+				continue
+			}
+			result[position] = ' '
+			if position+1 < len(result) && result[position+1] == '\'' {
+				result[position+1] = ' '
+				position += 2
+				continue
+			}
+			position++
+			break
+		}
+	}
+	return string(result)
 }
 
 func validateManagedStagedTarget(cfg stagedConfig, target managedTableSnapshot) error {
@@ -295,6 +406,11 @@ func managedStagedCatalogFingerprint(catalog managedStagedCatalogSnapshot) (stri
 		Enforced       bool     `json:"enforced"`
 		Columns        []string `json:"columns"`
 	}
+	type fingerprintFileFormatProperty struct {
+		PropertyType    string `json:"property_type"`
+		PropertyValue   string `json:"property_value"`
+		PropertyDefault string `json:"property_default"`
+	}
 	canonicalGrants := func(grants map[string][]string) map[string][]string {
 		result := make(map[string][]string, len(grants))
 		for role, privileges := range grants {
@@ -323,6 +439,12 @@ func managedStagedCatalogFingerprint(catalog managedStagedCatalogSnapshot) (stri
 			Grants      map[string][]string          `json:"grants"`
 		}{Kind: table.kind, OwnerRole: table.ownerRole, CreatedOn: table.createdOn, Comment: table.comment, Columns: columns, Constraints: constraints, Grants: canonicalGrants(table.grants)}
 	}
+	fileFormatProperties := make(map[string]fingerprintFileFormatProperty, len(catalog.fileFormat.properties))
+	for name, property := range catalog.fileFormat.properties {
+		fileFormatProperties[name] = fingerprintFileFormatProperty{
+			PropertyType: property.propertyType, PropertyValue: property.propertyValue, PropertyDefault: property.propertyDefault,
+		}
+	}
 	encoded, err := json.Marshal(struct {
 		Stage struct {
 			Kind      string              `json:"kind"`
@@ -332,11 +454,13 @@ func managedStagedCatalogFingerprint(catalog managedStagedCatalogSnapshot) (stri
 			Grants    map[string][]string `json:"grants"`
 		} `json:"stage"`
 		FileFormat struct {
-			FormatType string              `json:"format_type"`
-			OwnerRole  string              `json:"owner_role"`
-			CreatedOn  string              `json:"created_on"`
-			Comment    string              `json:"comment"`
-			Grants     map[string][]string `json:"grants"`
+			FormatType string                                   `json:"format_type"`
+			OwnerRole  string                                   `json:"owner_role"`
+			CreatedOn  string                                   `json:"created_on"`
+			Comment    string                                   `json:"comment"`
+			Definition string                                   `json:"definition"`
+			Properties map[string]fingerprintFileFormatProperty `json:"properties"`
+			Grants     map[string][]string                      `json:"grants"`
 		} `json:"file_format"`
 		Target   any `json:"target"`
 		Receipts any `json:"receipts"`
@@ -361,12 +485,14 @@ func managedStagedCatalogFingerprint(catalog managedStagedCatalogSnapshot) (stri
 			Grants    map[string][]string `json:"grants"`
 		}{Kind: catalog.stage.kind, OwnerRole: catalog.stage.ownerRole, CreatedOn: catalog.stage.createdOn, Comment: catalog.stage.comment, Grants: canonicalGrants(catalog.stage.grants)},
 		FileFormat: struct {
-			FormatType string              `json:"format_type"`
-			OwnerRole  string              `json:"owner_role"`
-			CreatedOn  string              `json:"created_on"`
-			Comment    string              `json:"comment"`
-			Grants     map[string][]string `json:"grants"`
-		}{FormatType: catalog.fileFormat.formatType, OwnerRole: catalog.fileFormat.ownerRole, CreatedOn: catalog.fileFormat.createdOn, Comment: catalog.fileFormat.comment, Grants: canonicalGrants(catalog.fileFormat.grants)},
+			FormatType string                                   `json:"format_type"`
+			OwnerRole  string                                   `json:"owner_role"`
+			CreatedOn  string                                   `json:"created_on"`
+			Comment    string                                   `json:"comment"`
+			Definition string                                   `json:"definition"`
+			Properties map[string]fingerprintFileFormatProperty `json:"properties"`
+			Grants     map[string][]string                      `json:"grants"`
+		}{FormatType: catalog.fileFormat.formatType, OwnerRole: catalog.fileFormat.ownerRole, CreatedOn: catalog.fileFormat.createdOn, Comment: catalog.fileFormat.comment, Definition: catalog.fileFormat.definition, Properties: fileFormatProperties, Grants: canonicalGrants(catalog.fileFormat.grants)},
 		Target:   canonicalTable(catalog.target),
 		Receipts: canonicalTable(catalog.receipts),
 		Pipe: struct {
@@ -458,13 +584,89 @@ func loadStagedFileFormat(ctx context.Context, queryer managedSnowflakeCatalogQu
 		}
 		return managedFileFormatSnapshot{}, fmt.Errorf("inspect managed staged Snowflake file format: %w", err)
 	}
-	owner, grants, err := loadStagedGrants(ctx, queryer, "FILE FORMAT", managedSnowflakeStagedQualified(cfg, cfg.fileFormat))
+	qualified := managedSnowflakeStagedQualified(cfg, cfg.fileFormat)
+	if err := queryer.QueryRowContext(ctx, "SELECT LEFT(GET_DDL('FILE_FORMAT', ?), 65537)", qualified).Scan(&snapshot.definition); err != nil {
+		return managedFileFormatSnapshot{}, fmt.Errorf("read managed staged Snowflake file format definition: %w", err)
+	}
+	if len(snapshot.definition) > 64<<10 {
+		return managedFileFormatSnapshot{}, errors.New("managed staged Snowflake file format definition exceeds 64 KiB")
+	}
+	properties, err := loadStagedFileFormatProperties(ctx, queryer, qualified)
+	if err != nil {
+		return managedFileFormatSnapshot{}, err
+	}
+	snapshot.properties = properties
+	owner, grants, err := loadStagedGrants(ctx, queryer, "FILE FORMAT", qualified)
 	if err != nil {
 		return managedFileFormatSnapshot{}, err
 	}
 	snapshot.ownerRole = owner
 	snapshot.grants = grants
 	return snapshot, nil
+}
+
+func loadStagedFileFormatProperties(ctx context.Context, queryer managedSnowflakeCatalogQueryer, qualified string) (map[string]managedFileFormatPropertySnapshot, error) {
+	rows, err := queryer.QueryContext(ctx, "DESCRIBE FILE FORMAT "+qualified)
+	if err != nil {
+		return nil, fmt.Errorf("describe managed staged Snowflake file format: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("read file format property columns: %w", err)
+	}
+	if len(columns) != 4 {
+		return nil, fmt.Errorf("snowflake DESCRIBE FILE FORMAT returned %d columns, want exactly 4", len(columns))
+	}
+	for _, column := range columns {
+		if len(column) == 0 || len(column) > 64 {
+			return nil, errors.New("snowflake DESCRIBE FILE FORMAT returned an invalid column label")
+		}
+	}
+	index := make(map[string]int, len(columns))
+	for position, column := range columns {
+		index[strings.ToLower(strings.TrimSpace(column))] = position
+	}
+	propertyIndex, hasProperty := index["property"]
+	typeIndex, hasType := index["property_type"]
+	valueIndex, hasValue := index["property_value"]
+	defaultIndex, hasDefault := index["property_default"]
+	if !hasProperty || !hasType || !hasValue || !hasDefault {
+		return nil, errors.New("snowflake DESCRIBE FILE FORMAT omitted required property columns")
+	}
+	properties := make(map[string]managedFileFormatPropertySnapshot)
+	for rows.Next() {
+		values := make([]any, len(columns))
+		pointers := make([]any, len(columns))
+		for position := range values {
+			pointers[position] = &values[position]
+		}
+		if err := rows.Scan(pointers...); err != nil {
+			return nil, fmt.Errorf("scan managed staged Snowflake file format property: %w", err)
+		}
+		name := strings.ToUpper(strings.TrimSpace(sqlValueString(values[propertyIndex])))
+		property := managedFileFormatPropertySnapshot{
+			propertyType: strings.TrimSpace(sqlValueString(values[typeIndex])), propertyValue: strings.TrimSpace(sqlValueString(values[valueIndex])),
+			propertyDefault: strings.TrimSpace(sqlValueString(values[defaultIndex])),
+		}
+		if name == "" {
+			return nil, errors.New("snowflake DESCRIBE FILE FORMAT returned an empty property name")
+		}
+		if len(name) > 128 || len(property.propertyType) > 128 || len(property.propertyValue) > 4096 || len(property.propertyDefault) > 4096 {
+			return nil, fmt.Errorf("snowflake file format property %s exceeds bounded catalog limits", name)
+		}
+		if _, duplicate := properties[name]; duplicate {
+			return nil, fmt.Errorf("snowflake DESCRIBE FILE FORMAT repeated property %s", name)
+		}
+		properties[name] = property
+		if len(properties) > 64 {
+			return nil, errors.New("snowflake DESCRIBE FILE FORMAT exceeded 64 properties")
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate managed staged Snowflake file format properties: %w", err)
+	}
+	return properties, nil
 }
 
 func loadStagedPipe(ctx context.Context, queryer managedSnowflakeCatalogQueryer, cfg stagedConfig, informationSchema string) (managedPipeSnapshot, error) {

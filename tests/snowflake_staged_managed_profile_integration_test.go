@@ -497,7 +497,7 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	receiptComment := snowflakeStagedOwnershipComment("receipts", revision, schemaHash, flowID)
 	statements := []string{
 		fmt.Sprintf("CREATE STAGE %s COMMENT = '%s'", stageQualified, stageComment),
-		fmt.Sprintf("CREATE FILE FORMAT %s TYPE = JSON STRIP_OUTER_ARRAY = FALSE COMMENT = '%s'", fileFormatQualified, fileFormatComment),
+		fmt.Sprintf("CREATE FILE FORMAT %s TYPE = JSON MULTI_LINE = FALSE STRIP_OUTER_ARRAY = FALSE COMMENT = '%s'", fileFormatQualified, fileFormatComment),
 		snowflakeStagedTargetDDL(targetQualified, targetComment),
 		snowflakeStagedReceiptsDDL(receiptQualified, suffix, receiptComment),
 		"GRANT READ, WRITE ON STAGE " + stageQualified + " TO ROLE " + q(role),
