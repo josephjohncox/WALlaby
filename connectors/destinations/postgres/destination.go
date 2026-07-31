@@ -1520,6 +1520,9 @@ func isPostgresArrayType(colType string) bool {
 func schemaColumns(schema connector.Schema) []string {
 	cols := make([]string, 0, len(schema.Columns))
 	for _, col := range schema.Columns {
+		if col.Generated {
+			continue
+		}
 		cols = append(cols, col.Name)
 	}
 	return cols
