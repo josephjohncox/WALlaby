@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -82,6 +84,9 @@ type stageProtocol interface {
 	// StatObject reports whether the deterministic stage path holds an object and
 	// its Snowflake-reported MD5 checksum and size.
 	StatObject(ctx context.Context, stageRef, relativePath string) (stageObjectStat, error)
+	// GetObject returns the decrypted, uncompressed object bytes through the
+	// Snowflake GET stream and fails if the bounded plaintext size is exceeded.
+	GetObject(ctx context.Context, stageRef, relativePath string, maxBytes int) ([]byte, error)
 	// PutObject uploads immutable bytes to the deterministic path. It must be
 	// idempotent for identical bytes and must return errStagedWrongByteCollision
 	// when a different-byte object already occupies the path.
@@ -133,6 +138,9 @@ func newSQLStageProtocol(db *sql.DB) *sqlStageProtocol {
 }
 
 func (p *sqlStageProtocol) StatObject(ctx context.Context, stageRef, relativePath string) (stageObjectStat, error) {
+	if err := validateStagedObjectReference(stageRef, relativePath); err != nil {
+		return stageObjectStat{}, err
+	}
 	rows, err := p.db.QueryContext(ctx, "LIST @"+stageRef+"/"+relativePath)
 	if err != nil {
 		return stageObjectStat{}, fmt.Errorf("list staged object: %w", err)
@@ -165,8 +173,12 @@ func (p *sqlStageProtocol) StatObject(ctx context.Context, stageRef, relativePat
 			return stageObjectStat{}, fmt.Errorf("scan staged listing: %w", err)
 		}
 		name := sqlValueString(values[nameIndex])
+		// LIST is prefix-scoped and so is GET. Any listed sibling that merely starts
+		// with the deterministic path (for example a foreign ".bak" copy) would be
+		// downloaded by the byte-equality GET, so it is named here as a conflict
+		// instead of surfacing later as an unexplained plaintext mismatch.
 		if !strings.HasSuffix(name, suffix) && !strings.HasSuffix(name, relativePath) {
-			continue
+			return stageObjectStat{}, fmt.Errorf("%w: staged path %s prefix also matches foreign object %s", connector.ErrDeliveryConflict, relativePath, name)
 		}
 		matches++
 		found = stageObjectStat{present: true, md5: strings.ToLower(strings.TrimSpace(sqlValueString(values[md5Index]))), sizeBytes: sqlValueInt64(values[sizeIndex])}
@@ -180,7 +192,95 @@ func (p *sqlStageProtocol) StatObject(ctx context.Context, stageRef, relativePat
 	return found, nil
 }
 
+var (
+	// stagedQualifiedObjectPattern is the exact shape produced by
+	// managedSnowflakeStagedQualified for validated unquoted uppercase identifiers.
+	stagedQualifiedObjectPattern = regexp.MustCompile(`^"[A-Z0-9_]+"\."[A-Z0-9_]+"\."[A-Z0-9_]+"$`)
+	// stagedRelativePathPattern is the exact shape produced by
+	// newManagedStagedIdentity: hashed, character-restricted path segments only.
+	stagedRelativePathPattern = regexp.MustCompile(`^[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*$`)
+)
+
+// errStagedPlaintextOversize means the staged object returned more plaintext
+// than the immutable plan contains. That is definite divergence, not ambiguity.
+var errStagedPlaintextOversize = errors.New("staged Snowflake GET exceeded the planned plaintext size")
+
+// validateStagedObjectReference is one allowlist shared by every statement that
+// interpolates a stage reference and object path, so no call site can diverge.
+func validateStagedObjectReference(stageRef, relativePath string) error {
+	if !stagedQualifiedObjectPattern.MatchString(stageRef) {
+		return fmt.Errorf("staged Snowflake stage reference %q is not a validated three-part quoted identifier", stageRef)
+	}
+	if len(relativePath) == 0 || len(relativePath) > 1024 || !stagedRelativePathPattern.MatchString(relativePath) || strings.Contains(relativePath, "..") {
+		return fmt.Errorf("staged Snowflake relative path %q is not a validated bounded stage path", relativePath)
+	}
+	return nil
+}
+
+// boundedStageObjectWriter caps what WALlaby retains from a streaming GET at the
+// exact planned plaintext size. It is the second of two bounds and not the only
+// one: the driver refuses to issue GET at all unless LIST already reported a
+// stored size within the planned plaintext plus a fixed encryption-envelope
+// allowance. That LIST precheck reduces, but cannot by itself eliminate,
+// gosnowflake's internal materialization of the downloaded and decrypted object,
+// because the object could in principle change between LIST and GET. Immutable
+// content-addressed paths and OVERWRITE=FALSE make that window remote.
+type boundedStageObjectWriter struct {
+	buffer bytes.Buffer
+	limit  int
+}
+
+func (w *boundedStageObjectWriter) Write(content []byte) (int, error) {
+	remaining := w.limit - w.buffer.Len()
+	if remaining <= 0 {
+		return 0, errStagedPlaintextOversize
+	}
+	if len(content) > remaining {
+		written, _ := w.buffer.Write(content[:remaining])
+		return written, errStagedPlaintextOversize
+	}
+	return w.buffer.Write(content)
+}
+
+// GetObject streams the decrypted, uncompressed object into a plan-sized writer.
+// gosnowflake validates the GET local location as an existing directory before it
+// runs, even in stream mode, so a private per-call directory is created and
+// removed around the statement. Stream-mode GET yields bytes only for a
+// client-side-encrypted object, which is why admission requires an INTERNAL
+// stage; relaxing that admission check would silently return empty plaintext and
+// turn every batch into a spurious conflict. The local location is Unix-shaped
+// and single-quoted, so this path assumes a POSIX deployment.
+func (p *sqlStageProtocol) GetObject(ctx context.Context, stageRef, relativePath string, maxBytes int) ([]byte, error) {
+	if maxBytes < 0 {
+		return nil, errors.New("staged Snowflake GET requires a non-negative plaintext bound")
+	}
+	if err := validateStagedObjectReference(stageRef, relativePath); err != nil {
+		return nil, err
+	}
+	directory, err := os.MkdirTemp("", "wallaby-stage-verify-")
+	if err != nil {
+		return nil, fmt.Errorf("create staged Snowflake GET download directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(directory) }()
+	if strings.ContainsAny(directory, "'\\\r\n") || !strings.HasPrefix(directory, "/") {
+		return nil, fmt.Errorf("staged Snowflake GET download directory %q is not a quotable absolute POSIX path", directory)
+	}
+	writer := &boundedStageObjectWriter{limit: maxBytes}
+	getCtx := gosnowflake.WithFileTransferOptions(ctx, &gosnowflake.SnowflakeFileTransferOptions{GetFileToStream: true, RaisePutGetError: true})
+	getCtx = gosnowflake.WithFileGetStream(getCtx, writer)
+	statement := "GET @" + stageRef + "/" + relativePath + " 'file://" + directory + "'"
+	if _, err := p.db.ExecContext(getCtx, statement); err != nil {
+		return nil, fmt.Errorf("get staged object for byte verification: %w", err)
+	}
+	// writer is call-local and never reused, so its buffer can be returned without
+	// an additional full-size copy of the plaintext.
+	return writer.buffer.Bytes(), nil
+}
+
 func (p *sqlStageProtocol) PutObject(ctx context.Context, stageRef, relativePath string, content []byte, expectedMD5 string) error {
+	if err := validateStagedObjectReference(stageRef, relativePath); err != nil {
+		return err
+	}
 	existing, err := p.StatObject(ctx, stageRef, relativePath)
 	if err != nil {
 		return err
