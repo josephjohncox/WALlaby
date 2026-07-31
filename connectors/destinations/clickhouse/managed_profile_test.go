@@ -3,14 +3,56 @@ package clickhouse
 import (
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"net"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	chclient "github.com/ClickHouse/clickhouse-go/v2"
+	chdriver "github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
+
+type managedReceiptTestQueryer struct {
+	row   managedReceiptTestRow
+	calls int
+}
+
+func (q *managedReceiptTestQueryer) QueryRow(context.Context, string, ...any) chdriver.Row {
+	q.calls++
+	return q.row
+}
+
+type managedReceiptTestRow struct {
+	contentHash string
+	externalID  string
+	err         error
+}
+
+func (r managedReceiptTestRow) Err() error { return r.err }
+
+func (r managedReceiptTestRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	if len(dest) != 2 {
+		return errors.New("managed receipt test row requires two destinations")
+	}
+	contentHash, contentOK := dest[0].(*string)
+	externalID, externalOK := dest[1].(*string)
+	if !contentOK || !externalOK {
+		return errors.New("managed receipt test row requires string destinations")
+	}
+	*contentHash = r.contentHash
+	*externalID = r.externalID
+	return nil
+}
+
+func (r managedReceiptTestRow) ScanStruct(any) error { return r.err }
 
 func planManagedTransaction(intent connector.DeliveryIntent, transaction connector.SourceTransaction) (managedTransactionPlan, error) {
 	return planManagedTransactionWithLimits(intent, transaction, managedPlanLimits{
@@ -34,6 +76,105 @@ func TestManagedWriteSettingsAllowConcurrentQuorumTwoInserts(t *testing.T) {
 		if got := settings[name]; got != want {
 			t.Fatalf("setting %s=%v (%T), want %v (%T)", name, got, got, want, want)
 		}
+	}
+}
+
+func TestManagedWriteTransportFailureFallsBackToReplica(t *testing.T) {
+	t.Parallel()
+
+	transportErr := &net.OpError{Op: "write", Net: "tcp", Err: syscall.ECONNRESET}
+	primaryCalls := 0
+	replicaCalls := 0
+	err := executeManagedWriteWithFailover(context.Background(), true, func() error {
+		primaryCalls++
+		return transportErr
+	}, func() error {
+		replicaCalls++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("transport failover: %v", err)
+	}
+	if primaryCalls != 1 || replicaCalls != 1 {
+		t.Fatalf("write calls=(primary:%d replica:%d), want (1,1)", primaryCalls, replicaCalls)
+	}
+
+	serverErr := errors.New("server rejected insert")
+	replicaCalls = 0
+	if err := executeManagedWriteWithFailover(context.Background(), true, func() error { return serverErr }, func() error {
+		replicaCalls++
+		return nil
+	}); !errors.Is(err, serverErr) {
+		t.Fatalf("server error=%v, want original error", err)
+	}
+	if replicaCalls != 0 {
+		t.Fatalf("replica calls for non-transport failure=%d, want zero", replicaCalls)
+	}
+
+	replicaErr := errors.New("replica rejected retry")
+	err = executeManagedWriteWithFailover(context.Background(), true, func() error { return transportErr }, func() error { return replicaErr })
+	if !errors.Is(err, connector.ErrDeliveryIndeterminate) || !errors.Is(err, transportErr) || !errors.Is(err, replicaErr) {
+		t.Fatalf("dual endpoint error=%v, want indeterminate preserving both causes", err)
+	}
+}
+
+func TestManagedReconcileFallsBackToSurvivingReplica(t *testing.T) {
+	t.Parallel()
+
+	transaction := managedTestTransaction()
+	intent := managedTestIntent(t, transaction)
+	transportErr := &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}
+	primary := &managedReceiptTestQueryer{row: managedReceiptTestRow{err: transportErr}}
+	replica := &managedReceiptTestQueryer{row: managedReceiptTestRow{
+		contentHash: intent.ContentHash,
+		externalID:  managedDeliveryExternalID(intent),
+	}}
+	disposition, evidence, err := reconcileManagedReceiptEndpoints(context.Background(), primary, replica, "SELECT receipt", "query-primary", intent)
+	if err != nil || disposition != connector.DeliveryApplied {
+		t.Fatalf("surviving replica reconciliation=(%v,%+v,%v)", disposition, evidence, err)
+	}
+	if evidence.ContentHash != intent.ContentHash || evidence.ExternalID != managedDeliveryExternalID(intent) {
+		t.Fatalf("surviving replica evidence=%+v", evidence)
+	}
+	if primary.calls != 1 || replica.calls != 1 {
+		t.Fatalf("reconcile calls=(primary:%d replica:%d), want (1,1)", primary.calls, replica.calls)
+	}
+
+	absentPrimary := &managedReceiptTestQueryer{row: managedReceiptTestRow{err: sql.ErrNoRows}}
+	matchingReplicaAfterAbsence := &managedReceiptTestQueryer{row: replica.row}
+	disposition, evidence, err = reconcileManagedReceiptEndpoints(context.Background(), absentPrimary, matchingReplicaAfterAbsence, "SELECT receipt", "query-primary", intent)
+	if err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
+		t.Fatalf("replica receipt after primary absence=(%v,%+v,%v)", disposition, evidence, err)
+	}
+
+	absentReplica := &managedReceiptTestQueryer{row: managedReceiptTestRow{err: sql.ErrNoRows}}
+	disposition, evidence, err = reconcileManagedReceiptEndpoints(context.Background(), primary, absentReplica, "SELECT receipt", "query-primary", intent)
+	if err != nil || disposition != connector.DeliveryNotApplied || evidence.ContentHash != "" {
+		t.Fatalf("survivor absence reconciliation=(%v,%+v,%v)", disposition, evidence, err)
+	}
+
+	unreadableReplicaErr := errors.New("replica query unavailable")
+	unreadableReplica := &managedReceiptTestQueryer{row: managedReceiptTestRow{err: unreadableReplicaErr}}
+	disposition, _, err = reconcileManagedReceiptEndpoints(context.Background(), primary, unreadableReplica, "SELECT receipt", "query-primary", intent)
+	if disposition != connector.DeliveryIndeterminate || !errors.Is(err, connector.ErrDeliveryIndeterminate) || !errors.Is(err, transportErr) || !errors.Is(err, unreadableReplicaErr) {
+		t.Fatalf("dual endpoint reconciliation=(%v,%v), want indeterminate preserving both causes", disposition, err)
+	}
+
+	matchingPrimary := &managedReceiptTestQueryer{row: replica.row}
+	conflictingReplica := &managedReceiptTestQueryer{row: managedReceiptTestRow{contentHash: strings.Repeat("f", 64), externalID: "wrong"}}
+	disposition, _, err = reconcileManagedReceiptEndpoints(context.Background(), matchingPrimary, conflictingReplica, "SELECT receipt", "query-primary", intent)
+	if disposition != connector.DeliveryIndeterminate || !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("replica conflict after matching primary=(%v,%v)", disposition, err)
+	}
+
+	conflictingPrimary := &managedReceiptTestQueryer{row: managedReceiptTestRow{contentHash: strings.Repeat("f", 64), externalID: "wrong"}}
+	matchingReplica := &managedReceiptTestQueryer{row: replica.row}
+	disposition, _, err = reconcileManagedReceiptEndpoints(context.Background(), conflictingPrimary, matchingReplica, "SELECT receipt", "query-primary", intent)
+	if disposition != connector.DeliveryIndeterminate || !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("conflicting primary reconciliation=(%v,%v)", disposition, err)
+	}
+	if matchingReplica.calls != 0 {
+		t.Fatalf("replica calls after immutable conflict=%d, want zero", matchingReplica.calls)
 	}
 }
 
@@ -316,6 +457,34 @@ func TestManagedKeeperReplicaAdmissionRequiresExactHealthyTwoNodeTopology(t *tes
 				t.Fatalf("error=%v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestManagedRecoveryOnlyAdmissionAllowsOneHealthyReplicaAndFencesWrites(t *testing.T) {
+	t.Parallel()
+
+	contract := managedReplicaContract{
+		keeperPath:    "/clickhouse/tables/01/wallaby/cdc_log",
+		replicaNames:  map[string]struct{}{"replica-1": {}, "replica-2": {}},
+		allowDegraded: true,
+	}
+	status := managedReplicaStatus{
+		keeperPath: contract.keeperPath, replicaName: "replica-2",
+		totalReplicas: 2, activeReplicas: 1,
+	}
+	if err := validateManagedReplicaStatus(status, contract); err != nil {
+		t.Fatalf("one-replica recovery admission: %v", err)
+	}
+	status.activeReplicas = 0
+	if err := validateManagedReplicaStatus(status, contract); err == nil || !strings.Contains(err.Error(), "for recovery") {
+		t.Fatalf("zero-replica recovery error=%v", err)
+	}
+
+	destination := &Destination{managedRecoveryOnly: true}
+	transaction := managedTestTransaction()
+	intent := managedTestIntent(t, transaction)
+	if _, err := destination.PrepareTransaction(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("recovery-only write error=%v, want ErrDeliveryIndeterminate", err)
 	}
 }
 
