@@ -1,6 +1,7 @@
 package snowflake
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -126,7 +127,7 @@ func (d *stagedDriver) ensureStageObject(ctx context.Context, plan managedStaged
 		return err
 	}
 	if stat.present {
-		return assertStagedBytes(stat, plan)
+		return d.verifyStagedBytes(ctx, stat, plan)
 	}
 	putErr := d.proto.PutObject(ctx, stageRef, path, plan.fileBytes, plan.fileMD5)
 	if putErr != nil {
@@ -142,7 +143,7 @@ func (d *stagedDriver) ensureStageObject(ctx context.Context, plan managedStaged
 		if !recheck.present {
 			return fmt.Errorf("%w: staged Snowflake PUT did not durably stage the object: %w", connector.ErrDeliveryIndeterminate, putErr)
 		}
-		return assertStagedBytes(recheck, plan)
+		return d.verifyStagedBytes(ctx, recheck, plan)
 	}
 	if hook := d.hooks.AfterPut; hook != nil {
 		if err := hook(); err != nil {
@@ -156,20 +157,53 @@ func (d *stagedDriver) ensureStageObject(ctx context.Context, plan managedStaged
 	if !confirm.present {
 		return fmt.Errorf("%w: staged Snowflake PUT reported success but the object is absent", connector.ErrDeliveryIndeterminate)
 	}
-	return assertStagedBytes(confirm, plan)
+	return d.verifyStagedBytes(ctx, confirm, plan)
 }
 
-// assertStagedBytes rejects a present stage object whose Snowflake-reported MD5
-// differs from the planned bytes, fail-closed. The MD5 equivalence assumes the
-// LIST checksum equals the plaintext ndjson MD5; that equivalence is unproven on
-// client-side-encrypted internal stages and MUST be validated on live commercial
-// Snowflake before this profile leaves experimental. stat.sizeBytes is captured
-// but intentionally NOT equality-checked here: internal-stage encryption pads the
-// stored object, so the reported size does not equal len(plan.fileBytes) and a
-// strict size check would spuriously fail a legitimate replay.
-func assertStagedBytes(stat stageObjectStat, plan managedStagedPlan) error {
+// maxStagedEncryptionOverheadBytes is the allowance added to the planned
+// plaintext size when bounding a download. Client-side stage encryption adds at
+// most a small header plus one AES block of padding, so 64 KiB is a deliberately
+// generous ceiling that can never reject a legitimate replay while still
+// refusing to download an object that is not plausibly this batch.
+const maxStagedEncryptionOverheadBytes = 64 << 10
+
+// verifyStagedBytes proves the staged object equals the immutable plan before
+// any load. It downloads on every attempt, including immediately after this
+// process staged the bytes, because LIST MD5 semantics on client-side-encrypted
+// internal stages are not a proven equality oracle. The cost is one extra
+// bounded download per transaction.
+func (d *stagedDriver) verifyStagedBytes(ctx context.Context, stat stageObjectStat, plan managedStagedPlan) (resultErr error) {
+	ctx, endSpan := telemetry.StartSnowflakeManagedSpan(ctx, "stage_verify", plan.identity.externalID, plan.receipt.logicalBatchID, int64(plan.rowCount), int64(len(plan.fileBytes)))
+	defer func() { endSpan(resultErr) }()
+	if stat.sizeBytes < 0 {
+		return fmt.Errorf("%w: Snowflake LIST reported a negative staged-object size", connector.ErrDeliveryIndeterminate)
+	}
+	if len(plan.fileBytes) > 0 && stat.sizeBytes == 0 {
+		return fmt.Errorf("%w: Snowflake LIST omitted the staged-object size needed to bound GET", connector.ErrDeliveryIndeterminate)
+	}
+	maxStoredBytes := int64(len(plan.fileBytes)) + maxStagedEncryptionOverheadBytes
+	if stat.sizeBytes > maxStoredBytes {
+		return fmt.Errorf("%w: staged Snowflake object size=%d exceeds planned plaintext plus encryption bound=%d", connector.ErrDeliveryConflict, stat.sizeBytes, maxStoredBytes)
+	}
+	content, err := d.proto.GetObject(ctx, plan.copyPlan.stageRef, plan.identity.relativePath, len(plan.fileBytes))
+	if errors.Is(err, errStagedPlaintextOversize) {
+		return fmt.Errorf("%w: staged Snowflake object holds more plaintext than the planned bytes: %w", connector.ErrDeliveryConflict, err)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: Snowflake could not provide bounded plaintext byte-equality evidence: %w", connector.ErrDeliveryIndeterminate, err)
+	}
+	return assertStagedBytes(stat, content, plan)
+}
+
+// assertStagedBytes requires exact decrypted GET bytes. LIST MD5 remains an
+// additional collision signal when Snowflake supplies it, but it is never the
+// sole equality proof because encrypted-stage size and checksum semantics vary.
+func assertStagedBytes(stat stageObjectStat, content []byte, plan managedStagedPlan) error {
 	if stat.md5 != "" && !strings.EqualFold(stat.md5, plan.fileMD5) {
 		return fmt.Errorf("%w: staged Snowflake object md5=%s does not match planned bytes md5=%s", connector.ErrDeliveryConflict, stat.md5, plan.fileMD5)
+	}
+	if !bytes.Equal(content, plan.fileBytes) {
+		return fmt.Errorf("%w: staged Snowflake GET plaintext does not equal the planned bytes", connector.ErrDeliveryConflict)
 	}
 	return nil
 }

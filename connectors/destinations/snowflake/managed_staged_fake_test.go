@@ -2,6 +2,7 @@ package snowflake
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -44,9 +45,14 @@ type fakeStageProtocol struct {
 	forcePartialLoad           bool  // COPY/history reports a partial load.
 	autoIngestDelayCalls       int   // Load history becomes visible only after this many LoadHistory calls.
 	historyEmitsSpaceStatus    bool  // LoadHistory reports Snowflake COPY_HISTORY space-form statuses (e.g. "Partially loaded").
+	getHardFail                error
+	getCorrupt                 bool
+	getOversize                bool
+	statOmitsMD5               bool
+	statSizeOverride           *int64
 
 	// Observability counters.
-	statCalls, putCalls, copyCalls, refreshCalls, historyCalls, insertCalls, removeCalls int
+	statCalls, getCalls, putCalls, copyCalls, refreshCalls, historyCalls, insertCalls, removeCalls int
 }
 
 func newFakeStageProtocol() *fakeStageProtocol {
@@ -85,7 +91,42 @@ func (f *fakeStageProtocol) StatObject(_ context.Context, stageRef, relativePath
 	if !present {
 		return stageObjectStat{}, nil
 	}
-	return stageObjectStat{present: true, md5: object.md5, sizeBytes: int64(len(object.content))}, nil
+	md5 := object.md5
+	if f.statOmitsMD5 {
+		md5 = ""
+	}
+	sizeBytes := int64(len(object.content))
+	if f.statSizeOverride != nil {
+		sizeBytes = *f.statSizeOverride
+	}
+	return stageObjectStat{present: true, md5: md5, sizeBytes: sizeBytes}, nil
+}
+
+func (f *fakeStageProtocol) GetObject(_ context.Context, stageRef, relativePath string, maxBytes int) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.getCalls++
+	if f.getHardFail != nil {
+		return nil, f.getHardFail
+	}
+	object, present := f.objects[fakeStageKey(stageRef, relativePath)]
+	if !present {
+		return nil, errors.New("staged object is absent")
+	}
+	if len(object.content) > maxBytes {
+		return nil, errors.New("staged object exceeds plaintext bound")
+	}
+	content := append([]byte(nil), object.content...)
+	if f.getCorrupt && len(content) != 0 {
+		content[0] ^= 0xff
+	}
+	if f.getOversize {
+		writer := &boundedStageObjectWriter{limit: maxBytes}
+		if _, err := writer.Write(append(content, 'x')); err != nil {
+			return nil, err
+		}
+	}
+	return content, nil
 }
 
 func (f *fakeStageProtocol) PutObject(_ context.Context, stageRef, relativePath string, content []byte, expectedMD5 string) error {

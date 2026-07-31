@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
@@ -110,6 +111,162 @@ func TestStagedDriverWrongByteCollisionFailsClosed(t *testing.T) {
 	}
 	if len(proto.receipts) != 0 {
 		t.Fatalf("wrong-byte collision must never write a receipt")
+	}
+}
+
+func TestValidateStagedObjectReferenceIsOneSharedAllowlist(t *testing.T) {
+	t.Parallel()
+	const stageRef = `"WALLABY_DB"."WALLABY_SCHEMA"."WALLABY_STAGE"`
+	const path = "wallaby_staged_append_v1/inc_0011223344556677/rev_0011223344556677/batch_0011223344556677/0123456789abcdef-" +
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.ndjson"
+	if err := validateStagedObjectReference(stageRef, path); err != nil {
+		t.Fatalf("rejected the production stage reference and path: %v", err)
+	}
+	for name, test := range map[string]struct{ stageRef, path string }{
+		"unquoted stage":     {stageRef: "WALLABY_DB.WALLABY_SCHEMA.WALLABY_STAGE", path: path},
+		"two part stage":     {stageRef: `"WALLABY_DB"."WALLABY_STAGE"`, path: path},
+		"stage injection":    {stageRef: `"A"."B"."C"; DROP TABLE X`, path: path},
+		"path traversal":     {stageRef: stageRef, path: "a/../../etc/passwd"},
+		"path whitespace":    {stageRef: stageRef, path: "a b/c.ndjson"},
+		"path quote":         {stageRef: stageRef, path: `a'/c.ndjson`},
+		"path leading slash": {stageRef: stageRef, path: "/a/c.ndjson"},
+		"path empty":         {stageRef: stageRef, path: ""},
+	} {
+		if err := validateStagedObjectReference(test.stageRef, test.path); err == nil {
+			t.Fatalf("accepted an unsafe stage reference or path (%s)", name)
+		}
+	}
+	protocol := &sqlStageProtocol{}
+	if _, err := protocol.StatObject(context.Background(), "bad", path); err == nil {
+		t.Fatal("StatObject accepted an unvalidated stage reference")
+	}
+	if err := protocol.PutObject(context.Background(), "bad", path, nil, ""); err == nil {
+		t.Fatal("PutObject accepted an unvalidated stage reference")
+	}
+	if _, err := protocol.GetObject(context.Background(), "bad", path, 1); err == nil {
+		t.Fatal("GetObject accepted an unvalidated stage reference")
+	}
+}
+
+func TestStatObjectRejectsPrefixSiblingBeforeAnyDownload(t *testing.T) {
+	t.Parallel()
+	const stageRef = `"WALLABY_DB"."WALLABY_SCHEMA"."WALLABY_STAGE"`
+	const path = "wallaby_staged_append_v1/inc_00/rev_00/batch_00/0123456789abcdef-abc.ndjson"
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	mock.ExpectQuery("LIST @").WillReturnRows(sqlmock.NewRows([]string{"name", "size", "md5", "last_modified"}).
+		AddRow("stage/"+path, 10, "abc", "now").
+		AddRow("stage/"+path+".bak", 10, "def", "now"))
+	protocol := &sqlStageProtocol{db: db}
+	if _, err := protocol.StatObject(context.Background(), stageRef, path); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("prefix sibling error=%v, want conflict before any GET", err)
+	}
+}
+
+func TestBoundedStageObjectWriterRejectsOversizePlaintext(t *testing.T) {
+	t.Parallel()
+	writer := &boundedStageObjectWriter{limit: 3}
+	written, err := writer.Write([]byte("four"))
+	if err == nil || written != 3 || writer.buffer.String() != "fou" {
+		t.Fatalf("bounded writer=(written:%d bytes:%q err:%v), want 3/\"fou\"/error", written, writer.buffer.String(), err)
+	}
+}
+
+func TestStagedDriverRequiresBoundedPlaintextByteEvidence(t *testing.T) {
+	t.Parallel()
+	cfg, intent, transaction := stagedFixture(t)
+	plan := stagedPlanFor(t, cfg, intent, transaction)
+
+	t.Run("LIST checksum absent but exact GET proves bytes", func(t *testing.T) {
+		proto := newFakeStageProtocol()
+		proto.statOmitsMD5 = true
+		evidence, err := newStagedTestDriver(cfg, proto).apply(context.Background(), intent, transaction)
+		assertStagedApplied(t, proto, intent, evidence, err)
+		if proto.getCalls != 1 {
+			t.Fatalf("GET calls=%d, want 1", proto.getCalls)
+		}
+	})
+
+	t.Run("LIST size exceeds bounded download", func(t *testing.T) {
+		proto := newFakeStageProtocol()
+		oversize := int64(len(plan.fileBytes) + maxStagedEncryptionOverheadBytes + 1)
+		proto.statSizeOverride = &oversize
+		_, err := newStagedTestDriver(cfg, proto).apply(context.Background(), intent, transaction)
+		if !errors.Is(err, connector.ErrDeliveryConflict) {
+			t.Fatalf("oversized LIST error=%v, want conflict", err)
+		}
+		if proto.getCalls != 0 || proto.copyCalls != 0 || proto.insertCalls != 0 {
+			t.Fatalf("oversized object reached GET/COPY/receipt: %d/%d/%d", proto.getCalls, proto.copyCalls, proto.insertCalls)
+		}
+	})
+
+	t.Run("LIST size missing", func(t *testing.T) {
+		proto := newFakeStageProtocol()
+		var missing int64
+		proto.statSizeOverride = &missing
+		_, err := newStagedTestDriver(cfg, proto).apply(context.Background(), intent, transaction)
+		if !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+			t.Fatalf("missing LIST size error=%v, want indeterminate", err)
+		}
+		if proto.getCalls != 0 || proto.copyCalls != 0 || proto.insertCalls != 0 {
+			t.Fatalf("unbounded object reached GET/COPY/receipt: %d/%d/%d", proto.getCalls, proto.copyCalls, proto.insertCalls)
+		}
+	})
+
+	t.Run("GET unavailable", func(t *testing.T) {
+		proto := newFakeStageProtocol()
+		proto.getHardFail = errors.New("GET unavailable")
+		_, err := newStagedTestDriver(cfg, proto).apply(context.Background(), intent, transaction)
+		if !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+			t.Fatalf("GET unavailable error=%v, want indeterminate", err)
+		}
+		if proto.copyCalls != 0 || proto.insertCalls != 0 {
+			t.Fatalf("unproved bytes reached copy/receipt: %d/%d", proto.copyCalls, proto.insertCalls)
+		}
+	})
+
+	t.Run("GET plaintext is longer than the plan", func(t *testing.T) {
+		proto := newFakeStageProtocol()
+		proto.getOversize = true
+		_, err := newStagedTestDriver(cfg, proto).apply(context.Background(), intent, transaction)
+		if !errors.Is(err, connector.ErrDeliveryConflict) {
+			t.Fatalf("oversize GET error=%v, want conflict rather than an unresolvable retry", err)
+		}
+		if proto.copyCalls != 0 || proto.insertCalls != 0 {
+			t.Fatalf("oversize plaintext reached copy/receipt: %d/%d", proto.copyCalls, proto.insertCalls)
+		}
+	})
+
+	t.Run("GET plaintext differs despite matching LIST", func(t *testing.T) {
+		proto := newFakeStageProtocol()
+		proto.getCorrupt = true
+		_, err := newStagedTestDriver(cfg, proto).apply(context.Background(), intent, transaction)
+		if !errors.Is(err, connector.ErrDeliveryConflict) {
+			t.Fatalf("corrupt GET error=%v, want conflict", err)
+		}
+		if proto.copyCalls != 0 || proto.insertCalls != 0 {
+			t.Fatalf("wrong GET bytes reached copy/receipt: %d/%d", proto.copyCalls, proto.insertCalls)
+		}
+	})
+}
+
+func TestStagedDriverEmptyTransactionStillProvesBytes(t *testing.T) {
+	t.Parallel()
+	cfg := stagedTestConfig(t)
+	transaction := connector.SourceTransaction{
+		SourceLineageID: "lineage-1", TransactionID: 7,
+		BeginLSN: "0/10", CommitLSN: "0/30", EndLSN: "0/38",
+		Checkpoint: connector.Checkpoint{LSN: "0/38"},
+	}
+	intent := stagedTestIntent(t, cfg, transaction)
+	proto := newFakeStageProtocol()
+	evidence, err := newStagedTestDriver(cfg, proto).apply(context.Background(), intent, transaction)
+	assertStagedApplied(t, proto, intent, evidence, err)
+	if proto.getCalls != 1 || proto.copyCalls != 1 {
+		t.Fatalf("zero-row transaction calls=(get:%d copy:%d), want 1/1", proto.getCalls, proto.copyCalls)
 	}
 }
 
