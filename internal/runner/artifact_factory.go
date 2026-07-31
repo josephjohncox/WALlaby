@@ -41,6 +41,7 @@ func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, iceber
 			return nil, err
 		}
 		catalogConsumers := make([]artifactlog.CatalogConsumerConfig, 0, 1)
+		effectiveFingerprint := ""
 		for _, destination := range destinations {
 			if destination.Spec.Type != connector.EndpointIceberg {
 				continue
@@ -48,6 +49,13 @@ func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, iceber
 			parsed, err := icebergdest.ParseSpec(destination.Spec, icebergDestinationConfig(icebergCfg))
 			if err != nil {
 				return nil, fmt.Errorf("configure Iceberg artifact consumer: %w", err)
+			}
+			if effectiveFingerprint != "" {
+				return nil, errors.New("artifact publication supports exactly one Iceberg destination revision")
+			}
+			effectiveFingerprint, err = icebergdest.ConfigFingerprint(parsed)
+			if err != nil {
+				return nil, fmt.Errorf("fingerprint effective Iceberg artifact consumer: %w", err)
 			}
 			var committer artifactlog.ChangelogCommitter
 			switch parsed.Profile {
@@ -73,23 +81,26 @@ func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, iceber
 				BacklogAgeHigh:           cfg.BacklogAgeHigh,
 				BackpressurePollInterval: cfg.BackpressurePollInterval,
 			},
-			OrphanGrace: cfg.OrphanGrace,
-			Retention:   cfg.Retention,
-			GCInterval:  cfg.GCInterval,
-			Consumers:   catalogConsumers,
+			OrphanGrace:            cfg.OrphanGrace,
+			Retention:              cfg.Retention,
+			GCInterval:             cfg.GCInterval,
+			Consumers:              catalogConsumers,
+			DestinationFingerprint: effectiveFingerprint,
 		})
 	}
 }
 
 func icebergDestinationConfig(cfg config.IcebergConfig) icebergdest.Config {
 	return icebergdest.Config{
-		URI: cfg.URI, Warehouse: cfg.Warehouse, Prefix: cfg.Prefix,
+		Profile: cfg.Profile, URI: cfg.URI, Warehouse: cfg.Warehouse, Prefix: cfg.Prefix,
 		TargetNamespace: cfg.Namespace, TablePrefix: cfg.TablePrefix, ControlTable: cfg.ControlTable,
 		MaxCommitRetries: cfg.MaxCommitRetries, RequestTimeout: cfg.RequestTimeout,
 		ReconciliationHorizon: cfg.ReconciliationHorizon,
 		OAuthToken:            cfg.OAuthToken, OAuthCredential: cfg.OAuthCredential,
 		OAuthScope: cfg.OAuthScope, OAuthURI: cfg.OAuthURI,
-		Region: cfg.Region, SigningName: cfg.SigningName, SigV4: cfg.SigV4,
+		Region: cfg.Region, SigningName: cfg.SigningName, ExpectedAWSRoleARN: cfg.ExpectedAWSRoleARN,
+		SigV4:      cfg.SigV4,
+		S3Endpoint: cfg.S3Endpoint, S3Region: cfg.S3Region,
 		AllowHTTP: cfg.AllowHTTP, CAFile: cfg.CAFile, CAData: cfg.CAData,
 		ClientCertFile: cfg.ClientCertFile, ClientKeyFile: cfg.ClientKeyFile,
 		ServerName: cfg.ServerName, S3TablesTableBucketARN: cfg.S3TablesTableBucketARN,

@@ -68,6 +68,7 @@ Iceberg OAuth, TLS, timeout, and S3 Tables maintenance settings belong to the wo
 
 ```yaml
 iceberg:
+  profile: rest
   uri: https://catalog.example.com
   warehouse: warehouse
   prefix: ""
@@ -84,7 +85,9 @@ iceberg:
   # client_key_file: /var/run/secrets/catalog-client-key.pem
 ```
 
-Use the `WALLABY_ICEBERG_*` or `WALLABY_WORKER_ICEBERG_*` environment forms for deployment secrets. S3 Tables also uses `region`, `s3tables_table_bucket_arn`, `s3tables_configure_maintenance`, `s3tables_min_snapshots_to_keep`, and `s3tables_max_snapshot_age_hours`. AWS authentication uses the default SDK chain, including IRSA and assumed roles. The flow endpoint may override only non-secret URI, warehouse, prefix, namespace, table mapping, region, and table-bucket ARN values.
+Use the `WALLABY_ICEBERG_*` or `WALLABY_WORKER_ICEBERG_*` environment forms for deployment secrets. S3 Tables sets `profile: s3tables` and also uses `region`, `s3tables_table_bucket_arn`, `s3tables_configure_maintenance`, `s3tables_min_snapshots_to_keep`, and `s3tables_max_snapshot_age_hours`. Local S3-compatible REST catalogs may use deployment `s3_endpoint` and `s3_region`. AWS authentication uses the default SDK chain, including IRSA and assumed roles.
+
+Catalog identity is deployment-bound. A persisted flow may select `catalog_profile`, namespace, table prefix, control table, and `destination_revision_id`; catalog URI, warehouse, REST prefix, region, table-bucket ARN, expected AWS role ARN, S3 endpoint/region, behavior controls, and every unknown or secret option are rejected before storage. OAuth, mTLS, ambient AWS, and static AWS credentials therefore cannot be redirected by a flow definition. The S3 Tables profile requires `iceberg.expected_aws_role_arn`; startup calls STS and fails before catalog recovery unless the active caller is that role. For the complete S3 Tables configuration and read-only Snowflake catalog link, see [Query WALlaby Iceberg tables from Snowflake](../guides/s3-tables-snowflake.md).
 
 ### Artifact schema upgrade
 

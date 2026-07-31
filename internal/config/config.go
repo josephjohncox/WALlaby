@@ -154,6 +154,7 @@ type ArtifactConfig struct {
 // and S3 Tables maintenance defaults. Flow options select non-secret target
 // mapping and catalog profile values.
 type IcebergConfig struct {
+	Profile                      string
 	URI                          string
 	Warehouse                    string
 	Prefix                       string
@@ -162,6 +163,7 @@ type IcebergConfig struct {
 	ControlTable                 string
 	Region                       string
 	SigningName                  string
+	ExpectedAWSRoleARN           string
 	SigV4                        bool
 	AllowHTTP                    bool
 	OAuthToken                   string
@@ -173,6 +175,8 @@ type IcebergConfig struct {
 	ClientCertFile               string
 	ClientKeyFile                string
 	ServerName                   string
+	S3Endpoint                   string
+	S3Region                     string
 	MaxCommitRetries             int           `validate:"omitempty,gt=0,lte=32"`
 	RequestTimeout               time.Duration `validate:"omitempty,gt=0"`
 	ReconciliationHorizon        time.Duration `validate:"omitempty,gt=0"`
@@ -513,6 +517,7 @@ func Load(configPath string) (*Config, error) {
 		return nil, err
 	}
 
+	cfg.Iceberg.Profile = stringValue(fileCfg, []string{"iceberg.profile"}, []string{"WALLABY_ICEBERG_PROFILE", "WALLABY_WORKER_ICEBERG_PROFILE"}, cfg.Iceberg.Profile)
 	cfg.Iceberg.URI = stringValue(fileCfg, []string{"iceberg.uri"}, []string{"WALLABY_ICEBERG_URI", "WALLABY_WORKER_ICEBERG_URI"}, cfg.Iceberg.URI)
 	cfg.Iceberg.Warehouse = stringValue(fileCfg, []string{"iceberg.warehouse"}, []string{"WALLABY_ICEBERG_WAREHOUSE", "WALLABY_WORKER_ICEBERG_WAREHOUSE"}, cfg.Iceberg.Warehouse)
 	cfg.Iceberg.Prefix = stringValue(fileCfg, []string{"iceberg.prefix"}, []string{"WALLABY_ICEBERG_PREFIX", "WALLABY_WORKER_ICEBERG_PREFIX"}, cfg.Iceberg.Prefix)
@@ -521,6 +526,7 @@ func Load(configPath string) (*Config, error) {
 	cfg.Iceberg.ControlTable = stringValue(fileCfg, []string{"iceberg.control_table"}, []string{"WALLABY_ICEBERG_CONTROL_TABLE", "WALLABY_WORKER_ICEBERG_CONTROL_TABLE"}, cfg.Iceberg.ControlTable)
 	cfg.Iceberg.Region = stringValue(fileCfg, []string{"iceberg.region"}, []string{"WALLABY_ICEBERG_REGION", "WALLABY_WORKER_ICEBERG_REGION"}, cfg.Iceberg.Region)
 	cfg.Iceberg.SigningName = stringValue(fileCfg, []string{"iceberg.signing_name"}, []string{"WALLABY_ICEBERG_SIGNING_NAME", "WALLABY_WORKER_ICEBERG_SIGNING_NAME"}, cfg.Iceberg.SigningName)
+	cfg.Iceberg.ExpectedAWSRoleARN = stringValue(fileCfg, []string{"iceberg.expected_aws_role_arn"}, []string{"WALLABY_ICEBERG_EXPECTED_AWS_ROLE_ARN", "WALLABY_WORKER_ICEBERG_EXPECTED_AWS_ROLE_ARN"}, cfg.Iceberg.ExpectedAWSRoleARN)
 	cfg.Iceberg.OAuthToken = stringValue(fileCfg, []string{"iceberg.oauth_token"}, []string{"WALLABY_ICEBERG_OAUTH_TOKEN", "WALLABY_WORKER_ICEBERG_OAUTH_TOKEN"}, cfg.Iceberg.OAuthToken)
 	cfg.Iceberg.OAuthCredential = stringValue(fileCfg, []string{"iceberg.oauth_credential"}, []string{"WALLABY_ICEBERG_OAUTH_CREDENTIAL", "WALLABY_WORKER_ICEBERG_OAUTH_CREDENTIAL"}, cfg.Iceberg.OAuthCredential)
 	cfg.Iceberg.OAuthScope = stringValue(fileCfg, []string{"iceberg.oauth_scope"}, []string{"WALLABY_ICEBERG_OAUTH_SCOPE", "WALLABY_WORKER_ICEBERG_OAUTH_SCOPE"}, cfg.Iceberg.OAuthScope)
@@ -530,6 +536,8 @@ func Load(configPath string) (*Config, error) {
 	cfg.Iceberg.ClientCertFile = stringValue(fileCfg, []string{"iceberg.client_cert_file"}, []string{"WALLABY_ICEBERG_CLIENT_CERT", "WALLABY_WORKER_ICEBERG_CLIENT_CERT"}, cfg.Iceberg.ClientCertFile)
 	cfg.Iceberg.ClientKeyFile = stringValue(fileCfg, []string{"iceberg.client_key_file"}, []string{"WALLABY_ICEBERG_CLIENT_KEY", "WALLABY_WORKER_ICEBERG_CLIENT_KEY"}, cfg.Iceberg.ClientKeyFile)
 	cfg.Iceberg.ServerName = stringValue(fileCfg, []string{"iceberg.server_name"}, []string{"WALLABY_ICEBERG_SERVER_NAME", "WALLABY_WORKER_ICEBERG_SERVER_NAME"}, cfg.Iceberg.ServerName)
+	cfg.Iceberg.S3Endpoint = stringValue(fileCfg, []string{"iceberg.s3_endpoint"}, []string{"WALLABY_ICEBERG_S3_ENDPOINT", "WALLABY_WORKER_ICEBERG_S3_ENDPOINT"}, cfg.Iceberg.S3Endpoint)
+	cfg.Iceberg.S3Region = stringValue(fileCfg, []string{"iceberg.s3_region"}, []string{"WALLABY_ICEBERG_S3_REGION", "WALLABY_WORKER_ICEBERG_S3_REGION"}, cfg.Iceberg.S3Region)
 	cfg.Iceberg.S3TablesTableBucketARN = stringValue(fileCfg, []string{"iceberg.s3tables_table_bucket_arn"}, []string{"WALLABY_ICEBERG_S3TABLES_TABLE_BUCKET_ARN", "WALLABY_WORKER_ICEBERG_S3TABLES_TABLE_BUCKET_ARN"}, cfg.Iceberg.S3TablesTableBucketARN)
 	cfg.Iceberg.SigV4, err = boolValue(fileCfg, []string{"iceberg.sigv4"}, []string{"WALLABY_ICEBERG_SIGV4", "WALLABY_WORKER_ICEBERG_SIGV4"}, cfg.Iceberg.SigV4)
 	if err != nil {

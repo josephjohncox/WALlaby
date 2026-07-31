@@ -3,7 +3,9 @@ package tests
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -293,6 +295,85 @@ func freshReadbackCatalog(t *testing.T, cfg icebergdest.Config) *icerest.Catalog
 	return cat
 }
 
+func TestS3TablesSnowflakeCatalogLinkedReadback(t *testing.T) {
+	if os.Getenv("WALLABY_TEST_S3TABLES_SNOWFLAKE") != "1" {
+		t.Skip("WALLABY_TEST_S3TABLES_SNOWFLAKE=1 is required")
+	}
+	region := strings.TrimSpace(os.Getenv("WALLABY_TEST_S3TABLES_REGION"))
+	warehouse := strings.TrimSpace(os.Getenv("WALLABY_TEST_S3TABLES_WAREHOUSE"))
+	bucketARN := strings.TrimSpace(os.Getenv("WALLABY_TEST_S3TABLES_TABLE_BUCKET_ARN"))
+	expectedRoleARN := strings.TrimSpace(os.Getenv("WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN"))
+	namespace := strings.TrimSpace(os.Getenv("WALLABY_TEST_S3TABLES_NAMESPACE"))
+	snowflakeDSN := strings.TrimSpace(os.Getenv("WALLABY_TEST_SNOWFLAKE_DSN"))
+	linkedDatabase := strings.TrimSpace(os.Getenv("WALLABY_TEST_SNOWFLAKE_LINKED_DATABASE"))
+	if region == "" || warehouse == "" || bucketARN == "" || expectedRoleARN == "" || namespace == "" || snowflakeDSN == "" || linkedDatabase == "" {
+		t.Fatal("S3 Tables Snowflake gate requires region, warehouse, table bucket ARN, expected writer role ARN, namespace, Snowflake DSN, and linked database")
+	}
+
+	request, objects := icebergLiveRequest(t)
+	prefix := "wallaby_sf_" + strings.ReplaceAll(uuid.NewString(), "-", "") + "_"
+	cfg := icebergdest.Config{
+		Profile: icebergdest.CatalogProfileS3Tables,
+		URI:     "https://glue." + region + ".amazonaws.com/iceberg", Warehouse: warehouse,
+		Region: region, SigV4: true, SigningName: "glue", ExpectedAWSRoleARN: expectedRoleARN, TargetNamespace: namespace,
+		TablePrefix: prefix, ControlTable: "__wallaby_control", DestinationRevisionID: request.ConsumerRevisionID,
+		MaxCommitRetries: 4, RequestTimeout: 30 * time.Second, ReconciliationHorizon: 24 * time.Hour,
+		S3TablesTableBucketARN: bucketARN, S3TablesConfigureMaintenance: true,
+		S3TablesMinSnapshotsToKeep: 100, S3TablesMaxSnapshotAgeHours: 24,
+	}
+	committer, err := icebergdest.NewS3TablesCommitter(context.Background(), objects, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := committer.Commit(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open("snowflake", snowflakeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var snowflakeVersion string
+	if err := db.QueryRowContext(ctx, "SELECT CURRENT_VERSION()").Scan(&snowflakeVersion); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("Snowflake external-catalog readback version=%s Iceberg snapshots=%v", snowflakeVersion, committed.SnapshotIDs)
+
+	if len(request.Objects) == 0 {
+		t.Fatal("S3 Tables Snowflake gate produced no canonical objects")
+	}
+	tableName := prefix + request.Objects[0].Table
+	qualified := strings.Join([]string{quoteSnowflakeCatalogIdentifier(linkedDatabase), quoteSnowflakeCatalogIdentifier(namespace), quoteSnowflakeCatalogIdentifier(tableName)}, ".")
+	query := fmt.Sprintf(`SELECT COUNT(*),COUNT_IF("__wallaby_logical_batch_id"=?),COUNT_IF("__op"='insert') FROM %s`, qualified)
+	expectedRows := int64(0)
+	for _, object := range request.Objects {
+		if object.Table == request.Objects[0].Table {
+			expectedRows += int64(object.RecordCount) // #nosec G115 -- canonical object record count is bounded by artifact admission.
+		}
+	}
+	var rows, matchingBatch, inserts int64
+	var lastErr error
+	for ctx.Err() == nil {
+		lastErr = db.QueryRowContext(ctx, query, request.LogicalBatchID).Scan(&rows, &matchingBatch, &inserts)
+		if lastErr == nil && rows == expectedRows && matchingBatch == expectedRows && inserts > 0 {
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("Snowflake did not expose exact S3 Tables changelog rows for %s: rows=%d matching_batch=%d inserts=%d expected=%d last_error=%v context=%v", qualified, rows, matchingBatch, inserts, expectedRows, lastErr, ctx.Err())
+}
+
+func quoteSnowflakeCatalogIdentifier(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
 func TestS3TablesLiveAppendProjection(t *testing.T) {
 	if os.Getenv("WALLABY_TEST_S3TABLES") != "1" {
 		t.Skip("WALLABY_TEST_S3TABLES=1 is required")
@@ -300,15 +381,16 @@ func TestS3TablesLiveAppendProjection(t *testing.T) {
 	region := os.Getenv("WALLABY_TEST_S3TABLES_REGION")
 	warehouse := os.Getenv("WALLABY_TEST_S3TABLES_WAREHOUSE")
 	bucketARN := os.Getenv("WALLABY_TEST_S3TABLES_TABLE_BUCKET_ARN")
+	expectedRoleARN := os.Getenv("WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN")
 	namespace := os.Getenv("WALLABY_TEST_S3TABLES_NAMESPACE")
-	if region == "" || warehouse == "" || bucketARN == "" || namespace == "" {
-		t.Fatal("S3 Tables live gate requires region, warehouse, table bucket ARN, and namespace")
+	if region == "" || warehouse == "" || bucketARN == "" || expectedRoleARN == "" || namespace == "" {
+		t.Fatal("S3 Tables live gate requires region, warehouse, table bucket ARN, expected writer role ARN, and namespace")
 	}
 	request, objects := icebergLiveRequest(t)
 	cfg := icebergdest.Config{
 		Profile: icebergdest.CatalogProfileS3Tables,
 		URI:     "https://glue." + region + ".amazonaws.com/iceberg", Warehouse: warehouse,
-		Region: region, SigV4: true, SigningName: "glue", TargetNamespace: namespace,
+		Region: region, SigV4: true, SigningName: "glue", ExpectedAWSRoleARN: expectedRoleARN, TargetNamespace: namespace,
 		TablePrefix:  "wallaby_live_" + strings.ReplaceAll(uuid.NewString(), "-", "") + "_",
 		ControlTable: "__wallaby_control", DestinationRevisionID: request.ConsumerRevisionID,
 		MaxCommitRetries: 4, RequestTimeout: 30 * time.Second, ReconciliationHorizon: 24 * time.Hour,
