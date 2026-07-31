@@ -3,18 +3,24 @@ package iceberg
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	iceberggo "github.com/apache/iceberg-go"
+	icecatalog "github.com/apache/iceberg-go/catalog"
+	icerest "github.com/apache/iceberg-go/catalog/rest"
 	"github.com/apache/iceberg-go/table"
 	"github.com/josephjohncox/wallaby/internal/artifactlog"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
@@ -43,6 +49,43 @@ var (
 	ErrCatalogIndeterminate = errors.New("iceberg catalog commit outcome indeterminate")
 	ErrTableNotFound        = errors.New("iceberg table not found")
 )
+
+func classifyConsumerRetryableError(ctx context.Context, err error) error {
+	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		return err
+	}
+	if errors.Is(err, connector.ErrDeliveryConflict) ||
+		errors.Is(err, icecatalog.ErrNoSuchTable) ||
+		errors.Is(err, icecatalog.ErrNoSuchNamespace) ||
+		errors.Is(err, icerest.ErrBadRequest) ||
+		errors.Is(err, icerest.ErrUnauthorized) ||
+		errors.Is(err, icerest.ErrForbidden) ||
+		isPermanentRESTTransportError(err) {
+		return err
+	}
+	var dnsErr *net.DNSError
+	retryableDNS := errors.As(err, &dnsErr) && (dnsErr.IsTimeout || dnsErr.IsTemporary)
+	retryable := errors.Is(err, ErrCatalogConflict) ||
+		errors.Is(err, ErrCatalogIndeterminate) ||
+		errors.Is(err, icerest.ErrAuthorizationExpired) ||
+		errors.Is(err, icerest.ErrServiceUnavailable) ||
+		errors.Is(err, icerest.ErrServerError) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, driver.ErrBadConn) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ETIMEDOUT) ||
+		retryableDNS
+	if !retryable {
+		return err
+	}
+	return fmt.Errorf("%w: %w", artifactlog.ErrConsumerRetryable, err)
+}
 
 type catalogSnapshot struct {
 	ID        int64
@@ -121,7 +164,7 @@ func (c *Committer) Commit(ctx context.Context, request artifactlog.CommitReques
 	}
 	plan, err := buildProjection(ctx, request, c.objects, c.config)
 	if err != nil {
-		return artifactlog.CommitResult{}, err
+		return artifactlog.CommitResult{}, classifyConsumerRetryableError(ctx, err)
 	}
 	defer plan.release()
 
@@ -129,7 +172,7 @@ func (c *Committer) Commit(ctx context.Context, request artifactlog.CommitReques
 	for _, group := range plan.groups {
 		snapshotID, groupErr := c.commitGroup(ctx, request, group)
 		if groupErr != nil {
-			return artifactlog.CommitResult{}, groupErr
+			return artifactlog.CommitResult{}, classifyConsumerRetryableError(ctx, groupErr)
 		}
 		snapshots[group.id] = snapshotID
 	}
@@ -239,7 +282,7 @@ func (c *Committer) Reconcile(ctx context.Context, request artifactlog.Reconcile
 			continue
 		}
 		if loadErr != nil {
-			return artifactlog.ReconcileResult{}, loadErr
+			return artifactlog.ReconcileResult{}, classifyConsumerRetryableError(ctx, loadErr)
 		}
 		disposition, snapshot, reconcileErr := reconcileGroup(state, request, group.id, group.schemaFingerprint)
 		if reconcileErr != nil {
