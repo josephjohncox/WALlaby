@@ -65,6 +65,7 @@ func managedStagedJSONFileFormatProperties() map[string]managedFileFormatPropert
 
 type managedPipeSnapshot struct {
 	present           bool
+	definition        string
 	ownerRole         string
 	createdOn         string
 	autoIngest        bool
@@ -184,9 +185,54 @@ func stagedFileFormatDefinitionOption(definition, option, expected string) bool 
 	return false
 }
 
+// stagedFileFormatDefinitionOptionPresent reports whether an option name appears
+// at all outside string literals, regardless of its value.
+func stagedFileFormatDefinitionOptionPresent(definition, option string) bool {
+	upper := strings.ToUpper(stripStagedSQLStringLiterals(definition))
+	option = strings.ToUpper(strings.TrimSpace(option))
+	identifierByte := func(value byte) bool { return value == '_' || value >= 'A' && value <= 'Z' }
+	for offset := 0; offset < len(upper); {
+		position := strings.Index(upper[offset:], option)
+		if position < 0 {
+			return false
+		}
+		position += offset
+		before := position == 0 || !identifierByte(upper[position-1])
+		after := position + len(option)
+		if before && (after == len(upper) || !identifierByte(upper[after])) {
+			return true
+		}
+		offset = after
+	}
+	return false
+}
+
+// stripStagedSQLStringLiterals blanks string literals and SQL comments so option
+// scanning can never be satisfied by text a provisioner placed inside a quoted
+// comment value, a line comment, or a block comment.
 func stripStagedSQLStringLiterals(statement string) string {
 	result := []byte(statement)
 	for position := 0; position < len(result); {
+		if position+1 < len(result) && result[position] == '/' && result[position+1] == '*' {
+			for position < len(result) {
+				closing := position+1 < len(result) && result[position] == '*' && result[position+1] == '/'
+				result[position] = ' '
+				position++
+				if closing {
+					result[position] = ' '
+					position++
+					break
+				}
+			}
+			continue
+		}
+		if position+1 < len(result) && result[position] == '-' && result[position+1] == '-' {
+			for position < len(result) && result[position] != '\n' {
+				result[position] = ' '
+				position++
+			}
+			continue
+		}
 		if result[position] != '\'' {
 			position++
 			continue
@@ -288,7 +334,21 @@ func validateManagedStagedPipe(cfg stagedConfig, pipe managedPipeSnapshot) error
 	// (newStagedCopyPlan) must also hold on an operator-provisioned pipe, because
 	// Snowpipe's default ON_ERROR is SKIP_FILE. Reject any pipe whose COPY
 	// DEFINITION would allow partial or skipped loads that wallaby never inspects.
-	plan := newStagedCopyPlan(cfg)
+	plan, err := newStagedCopyPlan(cfg)
+	if err != nil {
+		return err
+	}
+	// A pipe that references a named file format reopens exactly the mutation
+	// window the synchronous COPY closed by inlining its parsing options, so the
+	// pipe definition must inline the same options instead.
+	if stagedFileFormatDefinitionOptionPresent(pipe.definition, "FORMAT_NAME") {
+		return errors.New("managed staged Snowflake auto-ingest pipe must inline its JSON format options instead of referencing FORMAT_NAME")
+	}
+	for name, value := range plan.formatOptions {
+		if !stagedFileFormatDefinitionOption(pipe.definition, name, value) {
+			return fmt.Errorf("managed staged Snowflake auto-ingest pipe definition must inline %s = %s", name, value)
+		}
+	}
 	if pipe.onError != plan.loadOptions["ON_ERROR"] {
 		return fmt.Errorf("managed staged Snowflake auto-ingest pipe COPY must set ON_ERROR = %s (fail-closed), got %q", plan.loadOptions["ON_ERROR"], pipe.onError)
 	}
@@ -682,7 +742,11 @@ func loadStagedPipe(ctx context.Context, queryer managedSnowflakeCatalogQueryer,
 		}
 		return managedPipeSnapshot{}, fmt.Errorf("inspect managed staged Snowflake pipe: %w", err)
 	}
+	if len(definition) > 64<<10 {
+		return managedPipeSnapshot{}, errors.New("managed staged Snowflake pipe definition exceeds 64 KiB")
+	}
 	snapshot.present = true
+	snapshot.definition = definition
 	snapshot.comment = comment
 	snapshot.createdOn = createdOn
 	snapshot.autoIngest = strings.Contains(strings.ToUpper(strings.ReplaceAll(definition, " ", "")), "AUTO_INGEST=TRUE")

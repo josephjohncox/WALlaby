@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ type stagedCopyPlan struct {
 	relativePath  string
 	columns       []string
 	loadOptions   map[string]string
+	formatOptions map[string]string
 }
 
 // managedStagedReceipt is the durable destination proof that one immutable stage
@@ -156,7 +158,10 @@ func planManagedStagedTransaction(cfg stagedConfig, intent connector.DeliveryInt
 		return managedStagedPlan{}, fmt.Errorf("staged Snowflake object is %d bytes, exceeding admitted %d", len(fileBytes), cfg.maxTransactionBytes)
 	}
 
-	copyPlan := newStagedCopyPlan(cfg)
+	copyPlan, err := newStagedCopyPlan(cfg)
+	if err != nil {
+		return managedStagedPlan{}, err
+	}
 	planHash := stagedPlanHash(copyPlan)
 	identity, err := newManagedStagedIdentity(cfg, intent, planHash, intent.ContentHash)
 	if err != nil {
@@ -180,20 +185,81 @@ func planManagedStagedTransaction(cfg stagedConfig, intent connector.DeliveryInt
 	}, nil
 }
 
-func newStagedCopyPlan(cfg stagedConfig) stagedCopyPlan {
+// stagedInlineJSONFormatOptions renders the admitted JSON file-format behavior
+// directly into every COPY. A named FORMAT_NAME reference would let a concurrent
+// ALTER FILE FORMAT change parsing between admission and load; inlining removes
+// that window entirely instead of trying to observe it. The values are derived
+// from the same admitted property table the catalog validator enforces, so the
+// named object and the inline options cannot silently diverge. FILE_EXTENSION is
+// excluded because it only affects unloading and cannot change how this exact
+// object is parsed.
+func stagedInlineJSONFormatOptions() (map[string]string, error) {
+	options := map[string]string{"MULTI_LINE": "FALSE"}
+	for name, property := range managedStagedJSONFileFormatProperties() {
+		if name == "FILE_EXTENSION" {
+			continue
+		}
+		value, err := stagedInlineFormatValue(name, property)
+		if err != nil {
+			return nil, err
+		}
+		options[name] = value
+	}
+	for name, value := range options {
+		if !stagedInlineFormatTokenPattern.MatchString(name) || !stagedInlineFormatTokenPattern.MatchString(value) {
+			return nil, fmt.Errorf("staged Snowflake inline JSON option %q=%q is not a bare renderable token", name, value)
+		}
+	}
+	return options, nil
+}
+
+// stagedInlineFormatTokenPattern keeps every rendered option name and value a
+// bare keyword token, so the COPY statement can never be reshaped by a value.
+var stagedInlineFormatTokenPattern = regexp.MustCompile(`^[A-Z0-9_()]+$`)
+
+// stagedInlineFormatValue converts one DESCRIBE-shaped property into its COPY
+// literal using the property's declared type, so a future property with an
+// unconvertible shape fails in unit tests rather than in a production load.
+func stagedInlineFormatValue(name string, property managedFileFormatPropertySnapshot) (string, error) {
+	switch property.propertyType {
+	case "Boolean":
+		if property.propertyValue != "TRUE" && property.propertyValue != "FALSE" {
+			return "", fmt.Errorf("staged Snowflake JSON option %s is Boolean but has value %q", name, property.propertyValue)
+		}
+		return property.propertyValue, nil
+	case "String":
+		if property.propertyValue == "" {
+			return "", fmt.Errorf("staged Snowflake JSON option %s has no renderable String value", name)
+		}
+		return property.propertyValue, nil
+	case "List":
+		if property.propertyValue != "[]" {
+			return "", fmt.Errorf("staged Snowflake JSON option %s admits only the empty list, got %q", name, property.propertyValue)
+		}
+		return "()", nil
+	default:
+		return "", fmt.Errorf("staged Snowflake JSON option %s has unsupported property type %q", name, property.propertyType)
+	}
+}
+
+func newStagedCopyPlan(cfg stagedConfig) (stagedCopyPlan, error) {
+	formatOptions, err := stagedInlineJSONFormatOptions()
+	if err != nil {
+		return stagedCopyPlan{}, err
+	}
 	return stagedCopyPlan{
 		target:        managedSnowflakeStagedQualified(cfg, cfg.table),
 		stageRef:      managedSnowflakeStagedQualified(cfg, cfg.stage),
 		fileFormatRef: managedSnowflakeStagedQualified(cfg, cfg.fileFormat),
 		columns:       stagedChangelogColumns(),
+		formatOptions: formatOptions,
 		loadOptions: map[string]string{
 			"ON_ERROR":             "ABORT_STATEMENT",
 			"FORCE":                "FALSE",
 			"PURGE":                "FALSE",
 			"MATCH_BY_COLUMN_NAME": "CASE_SENSITIVE",
-			"TYPE":                 "JSON",
 		},
-	}
+	}, nil
 }
 
 func buildStagedChangelogRow(cfg stagedConfig, intent connector.DeliveryIntent, transaction connector.SourceTransaction, fragment connector.TransactionFragment, keyColumns []string, recordOrdinal uint64, record connector.Record) (stagedChangelogRow, int64, error) {

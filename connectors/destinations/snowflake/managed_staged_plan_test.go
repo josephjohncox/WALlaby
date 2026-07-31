@@ -72,6 +72,79 @@ func TestStagedPlanCopyOptionsAreFailClosed(t *testing.T) {
 	}
 }
 
+func TestStagedCopyInlinesEveryJSONParsingOption(t *testing.T) {
+	t.Parallel()
+	cfg, intent, transaction := stagedFixture(t)
+	plan := stagedPlanFor(t, cfg, intent, transaction)
+	statement := stagedCopyStatement(plan.copyPlan)
+	if strings.Contains(statement, "FORMAT_NAME") {
+		t.Fatalf("staged COPY still depends on a mutable named file format: %q", statement)
+	}
+	inline, err := stagedInlineJSONFormatOptions()
+	if err != nil {
+		t.Fatalf("inline JSON options: %v", err)
+	}
+	for name, value := range inline {
+		if !strings.Contains(statement, name+" = "+value) {
+			t.Fatalf("staged COPY omitted inline JSON option %s = %s: %q", name, value, statement)
+		}
+	}
+	if strings.Contains(statement, "FILE_EXTENSION") {
+		t.Fatalf("staged COPY inlined the unload-only FILE_EXTENSION option: %q", statement)
+	}
+	for name := range managedStagedJSONFileFormatProperties() {
+		if name == "FILE_EXTENSION" {
+			continue
+		}
+		if _, present := inline[name]; !present {
+			t.Fatalf("admitted JSON property %s is not inlined into COPY", name)
+		}
+	}
+	if inline["MULTI_LINE"] != "FALSE" {
+		t.Fatalf("inline MULTI_LINE=%q, want FALSE", inline["MULTI_LINE"])
+	}
+	baseline := stagedPlanHash(plan.copyPlan)
+	for name := range inline {
+		drifted := plan.copyPlan
+		drifted.formatOptions, err = stagedInlineJSONFormatOptions()
+		if err != nil {
+			t.Fatal(err)
+		}
+		drifted.formatOptions[name] += "_DRIFT"
+		if stagedPlanHash(drifted) == baseline {
+			t.Fatalf("staged plan hash ignored inline JSON parsing option %s", name)
+		}
+	}
+}
+
+func TestStagedInlineFormatValueIsTypeDriven(t *testing.T) {
+	t.Parallel()
+	for name, test := range map[string]struct {
+		property managedFileFormatPropertySnapshot
+		want     string
+		wantErr  bool
+	}{
+		"boolean":          {property: managedFileFormatPropertySnapshot{propertyType: "Boolean", propertyValue: "FALSE"}, want: "FALSE"},
+		"string":           {property: managedFileFormatPropertySnapshot{propertyType: "String", propertyValue: "AUTO"}, want: "AUTO"},
+		"empty list":       {property: managedFileFormatPropertySnapshot{propertyType: "List", propertyValue: "[]"}, want: "()"},
+		"empty string":     {property: managedFileFormatPropertySnapshot{propertyType: "String", propertyValue: ""}, wantErr: true},
+		"non empty list":   {property: managedFileFormatPropertySnapshot{propertyType: "List", propertyValue: `['\\N']`}, wantErr: true},
+		"bad boolean":      {property: managedFileFormatPropertySnapshot{propertyType: "Boolean", propertyValue: "MAYBE"}, wantErr: true},
+		"unsupported type": {property: managedFileFormatPropertySnapshot{propertyType: "Integer", propertyValue: "0"}, wantErr: true},
+	} {
+		value, err := stagedInlineFormatValue(name, test.property)
+		if test.wantErr {
+			if err == nil {
+				t.Fatalf("%s: accepted an unrenderable property value %q", name, test.property.propertyValue)
+			}
+			continue
+		}
+		if err != nil || value != test.want {
+			t.Fatalf("%s: value=%q err=%v, want %q", name, value, err, test.want)
+		}
+	}
+}
+
 func TestStagedPlanSerializedFileRoundTrips(t *testing.T) {
 	t.Parallel()
 	cfg, intent, transaction := stagedFixture(t)
