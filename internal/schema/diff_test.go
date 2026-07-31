@@ -7,6 +7,46 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+func TestDiffPublishedShapeNeverDropsUnpublishedColumns(t *testing.T) {
+	t.Parallel()
+	// PostgreSQL logical replication does not publish STORED generated columns
+	// before 18.0, and a table column list can exclude any column, so a Relation
+	// message that omits a column is not evidence the column was dropped.
+	full := connector.Schema{
+		Namespace: "public", Name: "widgets",
+		Columns: []connector.Column{
+			{Name: "id", Type: "bigint", Nullable: false},
+			{Name: "value", Type: "text", Nullable: true},
+			{Name: "rendered", Type: "text", Nullable: true, Generated: true, Expression: "(value || '-generated')"},
+		},
+	}
+	published := connector.Schema{
+		Namespace: "public", Name: "widgets",
+		Columns: []connector.Column{
+			{Name: "id", Type: "bigint", Nullable: false},
+			{Name: "value", Type: "text", Nullable: true},
+		},
+	}
+
+	if plan := DiffPublishedShape(full, published); plan.HasChanges() {
+		t.Fatalf("published-shape diff planned %+v; an unpublished column must never be dropped at the destination", plan.Changes)
+	}
+
+	// The authoritative pg_catalog scanner still reports real drops.
+	plan := Diff(full, published)
+	if len(plan.Changes) != 1 || plan.Changes[0].Type != ChangeDropColumn || plan.Changes[0].Column != "rendered" {
+		t.Fatalf("catalog diff changes=%+v, want exactly one drop of rendered", plan.Changes)
+	}
+
+	// Additive evolution still propagates through the published-shape diff.
+	evolved := published
+	evolved.Columns = append(append([]connector.Column(nil), published.Columns...), connector.Column{Name: "note", Type: "text", Nullable: true})
+	addPlan := DiffPublishedShape(published, evolved)
+	if len(addPlan.Changes) != 1 || addPlan.Changes[0].Type != ChangeAddColumn || addPlan.Changes[0].Column != "note" {
+		t.Fatalf("published-shape diff changes=%+v, want exactly one add of note", addPlan.Changes)
+	}
+}
+
 func TestDiffDetectsGeneratedFlagChanges(t *testing.T) {
 	oldSchema := connector.Schema{
 		Namespace: "public",

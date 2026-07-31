@@ -6,8 +6,29 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-// Diff compares two schemas and returns a change plan.
+// Diff compares two schemas and returns a change plan. It treats newSchema as a
+// complete description of the relation, so a column that disappears is a drop.
 func Diff(oldSchema, newSchema connector.Schema) Plan {
+	return diff(oldSchema, newSchema, true)
+}
+
+// DiffPublishedShape compares two schemas observed through a replication stream,
+// where newSchema describes only what the publication actually publishes rather
+// than the whole relation. Absence is therefore not evidence of a drop, so no
+// ChangeDropColumn is produced.
+//
+// This distinction is load-bearing, not cosmetic. PostgreSQL logical replication
+// does not publish STORED generated columns at all before 18.0, and a table
+// column list can exclude any column. Treating a Relation message as complete
+// makes the destination drop a column that still exists at the source, which is
+// destination data loss caused purely by publication scope. Real drops are
+// carried by the pg_catalog DDL scanner, which reads pg_attribute and does see
+// generated and unpublished columns.
+func DiffPublishedShape(oldSchema, newSchema connector.Schema) Plan {
+	return diff(oldSchema, newSchema, false)
+}
+
+func diff(oldSchema, newSchema connector.Schema, allowDrops bool) Plan {
 	changes := make([]Change, 0)
 	oldColumns := make(map[string]connector.Column)
 	for _, col := range oldSchema.Columns {
@@ -73,6 +94,9 @@ func Diff(oldSchema, newSchema connector.Schema) Plan {
 	}
 
 	for _, oldCol := range oldSchema.Columns {
+		if !allowDrops {
+			break
+		}
 		name := strings.ToLower(strings.TrimSpace(oldCol.Name))
 		if name == "" {
 			continue
