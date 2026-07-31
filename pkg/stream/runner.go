@@ -593,15 +593,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 }
 
 func (r *Runner) managed() bool {
-	if r.SourceSpec.Options == nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(r.SourceSpec.Options["managed"])) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
+	return connector.IsManagedSourceSpec(r.SourceSpec)
 }
 
 func (r *Runner) openSource(ctx context.Context) error {

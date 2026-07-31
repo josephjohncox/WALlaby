@@ -12,18 +12,6 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/stream"
 )
 
-func managedSourceSpec(spec connector.Spec) bool {
-	if spec.Options == nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(spec.Options["managed"])) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
-}
-
 func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec connector.Spec, destinations []stream.DestinationConfig, cfg StreamRunnerConfig) error {
 	if sourceSpec.Type != connector.EndpointPostgres {
 		return errors.New("managed execution currently requires a PostgreSQL source")
