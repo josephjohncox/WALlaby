@@ -61,31 +61,32 @@ const (
 
 // Destination writes change events into ClickHouse tables.
 type Destination struct {
-	spec               connector.Spec
-	db                 *sql.DB
-	managedConn        chdriver.Conn
-	managedReplicaConn chdriver.Conn
-	managedOptions     *chclient.Options
-	managedProfile     string
-	managedConfig      managedConfig
-	managedVersion     string
-	managedHooks       ManagedHooks
-	writeMode          string
-	batchMode          string
-	batchResolve       string
-	stagingSchema      string
-	stagingTableName   string
-	stagingSuffix      string
-	metaEnabled        bool
-	metaSchema         string
-	metaTable          string
-	metaPKPrefix       string
-	flowID             string
-	metaColumns        map[string]struct{}
-	metaEngine         string
-	metaOrderBy        string
-	stagingTables      map[string]tableInfo
-	stagingResolved    bool
+	spec                connector.Spec
+	db                  *sql.DB
+	managedConn         chdriver.Conn
+	managedReplicaConn  chdriver.Conn
+	managedOptions      *chclient.Options
+	managedProfile      string
+	managedConfig       managedConfig
+	managedVersion      string
+	managedRecoveryOnly bool
+	managedHooks        ManagedHooks
+	writeMode           string
+	batchMode           string
+	batchResolve        string
+	stagingSchema       string
+	stagingTableName    string
+	stagingSuffix       string
+	metaEnabled         bool
+	metaSchema          string
+	metaTable           string
+	metaPKPrefix        string
+	flowID              string
+	metaColumns         map[string]struct{}
+	metaEngine          string
+	metaOrderBy         string
+	stagingTables       map[string]tableInfo
+	stagingResolved     bool
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
@@ -212,6 +213,7 @@ func (d *Destination) Close(ctx context.Context) error {
 			closeErr = errors.Join(closeErr, d.managedConn.Close())
 			d.managedConn = nil
 		}
+		d.managedRecoveryOnly = false
 		return closeErr
 	}
 	if d.db != nil {
