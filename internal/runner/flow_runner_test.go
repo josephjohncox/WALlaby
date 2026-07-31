@@ -190,6 +190,44 @@ func TestFlowRunnerPinsEffectiveArtifactDestinationFingerprint(t *testing.T) {
 	}
 }
 
+func TestFlowRunnerFallsBackToSpecFingerprintWithoutCatalogConsumer(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	engine := workflow.NewMemoryEngine()
+	f := managedAdmissionFlow()
+	f.Config.AckPolicy = stream.AckPolicyMaterialized
+	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v1"}
+	if _, err := engine.Create(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Start(ctx, f.ID); err != nil {
+		t.Fatal(err)
+	}
+	control, _ := engine.Control(ctx, f.ID)
+	renewFailure := errors.New("stop after fingerprint registration")
+	deliveries := &blockingManagedDelivery{}
+	// A materialized barrier-only publication whose destination is not a canonical
+	// artifact consumer has no catalog identity, so the spec fingerprint must stand.
+	destination := stream.DestinationConfig{Spec: managedAdmissionDestinations()[0].Spec, Dest: blockingManagedDestination{}}
+	want, err := connector.DeliveryConfigFingerprint(destination.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := FlowRunner{
+		Engine: engine, Checkpoints: managedCheckpointStore{}, Authority: &failingRenewAuthority{renewErr: renewFailure}, Deliveries: deliveries,
+		ExpectedGeneration: control.Generation, ExecutionID: "artifact-no-catalog", ExecutionBackend: "test",
+		Artifacts: func(context.Context, flow.Flow, []stream.DestinationConfig) (stream.ManagedArtifactLog, error) {
+			return &effectiveArtifactLog{}, nil
+		},
+	}
+	if err := runner.Run(ctx, f, &blockingManagedSource{}, []stream.DestinationConfig{destination}); !errors.Is(err, renewFailure) {
+		t.Fatalf("Run() error=%v, want controlled heartbeat failure rather than empty-fingerprint admission refusal", err)
+	}
+	if deliveries.registeredFingerprint != want {
+		t.Fatalf("registered fingerprint=%q, want spec-derived %q", deliveries.registeredFingerprint, want)
+	}
+}
+
 func TestManagedDeliveryPruneIsBatchBoundedAndRenewsLease(t *testing.T) {
 	t.Parallel()
 	deliveries := &saturatedPruneDelivery{blockingManagedDelivery: &blockingManagedDelivery{}}
