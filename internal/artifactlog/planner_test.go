@@ -42,7 +42,7 @@ func TestPlanTransactionDeterminismRapid(t *testing.T) {
 	t.Parallel()
 
 	rapid.Check(t, func(t *rapid.T) {
-		records := rapid.IntRange(1, 32).Draw(t, "records")
+		records := rapid.IntRange(1, rapidPlannerMaxRecords).Draw(t, "records")
 		transaction := plannerTransaction(records)
 		incarnationID := uuid.MustParse("33333333-3333-3333-3333-333333333333")
 		encoder := NewEncoder()
