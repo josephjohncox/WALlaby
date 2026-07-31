@@ -15,6 +15,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -516,14 +517,7 @@ func (backend *restBackend) Evolve(ctx context.Context, state catalogTable, adds
 	}
 	committed, err := transaction.Commit(ctx)
 	if err != nil {
-		switch {
-		case errors.Is(err, icerest.ErrCommitFailed):
-			return catalogTable{}, ErrCatalogConflict
-		case errors.Is(err, icerest.ErrCommitStateUnknown), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
-			return catalogTable{}, fmt.Errorf("%w: %w", ErrCatalogIndeterminate, err)
-		default:
-			return catalogTable{}, fmt.Errorf("%w: %w", ErrCatalogIndeterminate, err)
-		}
+		return catalogTable{}, classifyRESTCatalogCommitError(err)
 	}
 	return catalogTableFromIceberg(committed), nil
 }
@@ -547,22 +541,81 @@ func (backend *restBackend) Append(ctx context.Context, state catalogTable, sche
 	}
 	committed, err := transaction.Commit(ctx)
 	if err != nil {
-		switch {
-		case errors.Is(err, icerest.ErrCommitFailed):
-			return catalogSnapshot{}, ErrCatalogConflict
-		case errors.Is(err, icerest.ErrCommitStateUnknown), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
-			return catalogSnapshot{}, fmt.Errorf("%w: %w", ErrCatalogIndeterminate, err)
-		default:
-			// A transport failure after the request left the process cannot prove
-			// absence; reconciliation must inspect snapshot summaries.
-			return catalogSnapshot{}, fmt.Errorf("%w: %w", ErrCatalogIndeterminate, err)
-		}
+		return catalogSnapshot{}, classifyRESTCatalogCommitError(err)
 	}
 	current := committed.CurrentSnapshot()
 	if current == nil {
 		return catalogSnapshot{}, errors.New("iceberg commit returned no current snapshot")
 	}
 	return catalogSnapshotFromIceberg(*current), nil
+}
+
+func classifyRESTCatalogCommitError(err error) error {
+	if errors.Is(err, icecatalog.ErrNoSuchTable) ||
+		errors.Is(err, icecatalog.ErrNoSuchNamespace) ||
+		errors.Is(err, icerest.ErrBadRequest) ||
+		errors.Is(err, icerest.ErrUnauthorized) ||
+		errors.Is(err, icerest.ErrForbidden) ||
+		isPermanentRESTTransportError(err) {
+		return err
+	}
+	if errors.Is(err, icerest.ErrCommitFailed) {
+		return ErrCatalogConflict
+	}
+	if errors.Is(err, icerest.ErrCommitStateUnknown) ||
+		errors.Is(err, icerest.ErrAuthorizationExpired) ||
+		errors.Is(err, icerest.ErrServiceUnavailable) ||
+		errors.Is(err, icerest.ErrServerError) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled) ||
+		isTransientRESTTransportError(err) {
+		return fmt.Errorf("%w: %w", ErrCatalogIndeterminate, err)
+	}
+	if errors.Is(err, icerest.ErrRESTError) {
+		return err
+	}
+	// An unclassified transport failure after the request left the process cannot
+	// prove absence; reconciliation must inspect snapshot identity.
+	return fmt.Errorf("%w: %w", ErrCatalogIndeterminate, err)
+}
+
+func isPermanentRESTTransportError(err error) bool {
+	var unknownAuthority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var invalidCertificate x509.CertificateInvalidError
+	var certificateVerification *tls.CertificateVerificationError
+	var recordHeader tls.RecordHeaderError
+	var alert tls.AlertError
+	var echRejection *tls.ECHRejectionError
+	if errors.As(err, &unknownAuthority) ||
+		errors.As(err, &hostname) ||
+		errors.As(err, &invalidCertificate) ||
+		errors.As(err, &certificateVerification) ||
+		errors.As(err, &recordHeader) ||
+		errors.As(err, &alert) ||
+		errors.As(err, &echRejection) {
+		return true
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) && !dnsErr.IsTimeout && !dnsErr.IsTemporary {
+		return true
+	}
+	var urlErr *url.Error
+	return errors.As(err, &urlErr) && !isTransientRESTTransportError(err)
+}
+
+func isTransientRESTTransportError(err error) bool {
+	var dnsErr *net.DNSError
+	return errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ETIMEDOUT) ||
+		(errors.As(err, &dnsErr) && (dnsErr.IsTimeout || dnsErr.IsTemporary))
 }
 
 func catalogTableFromIceberg(loaded *table.Table) catalogTable {
