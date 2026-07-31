@@ -227,6 +227,8 @@ test-clickhouse-managed-profile:
     required+='TestClickHouseManagedProfileVersionMatrix'
     required+=',TestClickHouseManagedProfileAdmission'
     required+=',TestClickHouseManagedProfileCommitBeforeReceipt'
+    required+=',TestClickHouseManagedProfileSecondaryEndpointWriteFailover'
+    required+=',TestClickHouseManagedProfileSurvivorOnlyPrimaryStorageLossRecovery'
     required+=',TestClickHouseManagedProfileDedupWindowEviction'
     required+=',TestClickHouseManagedProfileOrderingAndConcurrency'
     required+=',TestClickHouseManagedProfileKeyChangesAndTombstones'
@@ -238,7 +240,7 @@ test-clickhouse-managed-profile:
     required+=',TestClickHouseManagedProfileKeeperFailureRecovery'
     required+=',TestClickHouseManagedProfileBackpressure'
     filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
-    IT_KIND_CLUSTER="${harness_cluster}" IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' just test-integration
+    WALLABY_TEST_CLICKHOUSE_DESTRUCTIVE_STORAGE_LOSS=1 IT_KIND_CLUSTER="${harness_cluster}" IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' just test-integration
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 \
       ./internal/telemetry -run '^TestClickHouseManagedProfileTelemetry$'
 
