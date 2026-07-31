@@ -35,9 +35,16 @@ func TestPostgresManagedDeliveryRetryAndRetention(t *testing.T) {
 	}
 	defer pool.Close()
 	var blockRetention atomic.Bool
+	var failAfterTargetApply atomic.Bool
 	retentionEntered := make(chan struct{}, 1)
 	retentionRelease := make(chan struct{})
 	coordinator, err := delivery.NewCoordinator(ctx, pool, delivery.WithCoordinatorHooks(delivery.CoordinatorHooks{
+		AfterTargetApply: func(context.Context, authority.RunFence, connector.DeliveryIntent) error {
+			if failAfterTargetApply.CompareAndSwap(true, false) {
+				return errors.New("injected control-store outage after target commit")
+			}
+			return nil
+		},
 		AfterRetentionRootLock: func(hookCtx context.Context, _ authority.RunFence, _ string) error {
 			if !blockRetention.Load() {
 				return nil
@@ -160,6 +167,34 @@ WHERE receipt.flow_incarnation_id=$1 AND receipt.destination_revision_id=$2 AND 
 	}
 	if adoptedReceiptID != firstIntent.LogicalBatchID || adoptedAttemptID != firstIntent.LogicalBatchID {
 		t.Fatalf("adopted checkpoint-1 receipt/attempt=%q/%q, want %q", adoptedReceiptID, adoptedAttemptID, firstIntent.LogicalBatchID)
+	}
+
+	postCommit := retentionTransaction(table, 3058, "0/580", 20)
+	postCommitIntent := transactionIntentForFence(t, fence, revisionID, postCommit)
+	failAfterTargetApply.Store(true)
+	if _, err := coordinator.DeliverTransaction(ctx, fence, postCommitIntent, postCommit, target); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("post-target control failure=%v, want recoverable indeterminate classification", err)
+	}
+	currentFlow, err := engine.Get(ctx, flowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentFlow.State != flow.StateRunning {
+		t.Fatalf("flow state after post-target control failure=%s, want running", currentFlow.State)
+	}
+	postCommitGrant, err := coordinator.DeliverTransaction(ctx, fence, postCommitIntent, postCommit, target)
+	if err != nil {
+		t.Fatalf("reconcile post-target control failure: %v", err)
+	}
+	if err := coordinator.CommitSourceFeedback(ctx, fence, postCommitGrant, &flushEvidenceTestSource{}); err != nil {
+		t.Fatal(err)
+	}
+	var postCommitRows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.wallaby_delivery_retention WHERE id=20 AND value='value-20'`).Scan(&postCommitRows); err != nil {
+		t.Fatal(err)
+	}
+	if postCommitRows != 1 {
+		t.Fatalf("post-target recovered rows=%d, want exactly one", postCommitRows)
 	}
 
 	second := retentionTransaction(table, 3002, "0/600", 2)

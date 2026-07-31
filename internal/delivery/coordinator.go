@@ -48,6 +48,7 @@ type Coordinator struct {
 // CoordinatorHooks exposes deterministic crash boundaries to integration
 // tests without changing production ordering or relying on timing.
 type CoordinatorHooks struct {
+	AfterTargetApply       func(context.Context, authority.RunFence, connector.DeliveryIntent) error
 	AfterSourceFlush       func(context.Context, authority.RunFence, AckGrant, string) error
 	AfterRetentionRootLock func(context.Context, authority.RunFence, string) error
 }
@@ -209,12 +210,13 @@ func (c *Coordinator) Deliver(ctx context.Context, fence authority.RunFence, int
 		switch disposition {
 		case connector.DeliveryApplied:
 			if err := c.recordEvidence(ctx, fence, intent, state.attemptID, evidence); err != nil {
-				return AckGrant{}, err
+				return AckGrant{}, recoverablePostCommitError("record reconciled delivery evidence", err)
 			}
 			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "applied", ""); err != nil {
-				return AckGrant{}, err
+				return AckGrant{}, recoverablePostCommitError("mark reconciled delivery applied", err)
 			}
-			return c.finalize(ctx, fence, intent, state.attemptID)
+			grant, err := c.finalize(ctx, fence, intent, state.attemptID)
+			return grant, recoverablePostCommitError("finalize reconciled delivery", err)
 		case connector.DeliveryNotApplied:
 			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "not_applied", "target marker absent"); err != nil {
 				return AckGrant{}, err
@@ -244,13 +246,26 @@ func (c *Coordinator) Deliver(ctx context.Context, fence authority.RunFence, int
 		}
 		return AckGrant{}, err
 	}
+	if c.hooks.AfterTargetApply != nil {
+		if err := c.hooks.AfterTargetApply(ctx, fence, intent); err != nil {
+			return AckGrant{}, recoverablePostCommitError("after target apply", err)
+		}
+	}
 	if err := c.recordEvidence(ctx, fence, intent, attemptID, evidence); err != nil {
-		return AckGrant{}, err
+		return AckGrant{}, recoverablePostCommitError("record delivery evidence", err)
 	}
 	if err := c.markAttemptTerminal(ctx, fence, attemptID, "applied", ""); err != nil {
-		return AckGrant{}, err
+		return AckGrant{}, recoverablePostCommitError("mark delivery applied", err)
 	}
-	return c.finalize(ctx, fence, intent, attemptID)
+	grant, err := c.finalize(ctx, fence, intent, attemptID)
+	return grant, recoverablePostCommitError("finalize delivery", err)
+}
+
+func recoverablePostCommitError(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %s: %w", connector.ErrDeliveryIndeterminate, stage, err)
 }
 
 // DeliverTransaction applies one complete committed source transaction. The
@@ -279,12 +294,13 @@ func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.Ru
 		switch disposition {
 		case connector.DeliveryApplied:
 			if err := c.recordEvidence(ctx, fence, intent, state.attemptID, evidence); err != nil {
-				return AckGrant{}, err
+				return AckGrant{}, recoverablePostCommitError("record reconciled transaction evidence", err)
 			}
 			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "applied", ""); err != nil {
-				return AckGrant{}, err
+				return AckGrant{}, recoverablePostCommitError("mark reconciled transaction applied", err)
 			}
-			return c.finalize(ctx, fence, intent, state.attemptID)
+			grant, err := c.finalize(ctx, fence, intent, state.attemptID)
+			return grant, recoverablePostCommitError("finalize reconciled transaction", err)
 		case connector.DeliveryNotApplied:
 			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "not_applied", "target marker absent"); err != nil {
 				return AckGrant{}, err
@@ -328,13 +344,19 @@ func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.Ru
 		}
 		return AckGrant{}, err
 	}
+	if c.hooks.AfterTargetApply != nil {
+		if err := c.hooks.AfterTargetApply(ctx, fence, intent); err != nil {
+			return AckGrant{}, recoverablePostCommitError("after target transaction apply", err)
+		}
+	}
 	if err := c.recordEvidence(ctx, fence, intent, attemptID, evidence); err != nil {
-		return AckGrant{}, err
+		return AckGrant{}, recoverablePostCommitError("record transaction evidence", err)
 	}
 	if err := c.markAttemptTerminal(ctx, fence, attemptID, "applied", ""); err != nil {
-		return AckGrant{}, err
+		return AckGrant{}, recoverablePostCommitError("mark transaction applied", err)
 	}
-	return c.finalize(ctx, fence, intent, attemptID)
+	grant, err := c.finalize(ctx, fence, intent, attemptID)
+	return grant, recoverablePostCommitError("finalize transaction", err)
 }
 
 // ValidateAckGrant proves that PostgreSQL contains both the ACK intent and the
