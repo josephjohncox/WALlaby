@@ -550,7 +550,9 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 				return fmt.Errorf("schema hook: %w", err)
 			}
 			if hasPrev {
-				plan := internalschema.Diff(prevSchema, schemaDef)
+				// A Relation message describes the published shape, not the relation, so
+				// an absent column must never become a destination DROP COLUMN.
+				plan := internalschema.DiffPublishedShape(prevSchema, schemaDef)
 				if plan.HasChanges() {
 					var hookErr error
 					if lsnHook, ok := p.schemaHook.(SchemaChangeLSNHook); ok {
