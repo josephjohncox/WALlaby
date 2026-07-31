@@ -197,6 +197,10 @@ Admission checks transaction-wide fragment, row, and encoded-byte bounds before 
 
 Keeper loss makes replicated tables read-only. WALlaby does not acknowledge during that interval. After Keeper returns and both managed replicas report writable, reconciliation resumes from the completion receipt.
 
+If the primary client endpoint has a transport failure while both ClickHouse replicas remain healthy, WALlaby retries the immutable fragment or receipt through `managed_replica_dsn` with the same deduplication token; `insert_quorum=2` still requires both server-side replicas. Reconciliation reads both admitted endpoints so a matching receipt or immutable conflict on either replica dominates an absent peer.
+
+After primary process and storage loss, startup may admit the intact second replica in **recovery-only** mode when its TLS identity, table/view definitions, Keeper path, registered two-replica identity, and local health still satisfy the profile. Recovery-only mode can adopt an already replicated completion receipt but rejects every new transaction with a recoverable indeterminate result. Restore a healthy two-replica topology and reopen the destination before writes resume. WALlaby does not lower quorum or acknowledge a one-replica write.
+
 The integration gates cover:
 
 - the exact PostgreSQL 16 / ClickHouse 25.12.1.649 / Keeper 25.12.1.649 version pair;
@@ -206,6 +210,8 @@ The integration gates cover:
 - fragment ordering and concurrent transactions;
 - schema barriers and PostgreSQL value envelopes;
 - forced ClickHouse and Keeper process replacement;
+- primary client-endpoint write/reconciliation failover while quorum two remains healthy;
+- survivor-only receipt recovery after destructive primary storage loss, with new writes fenced until the primary is rebuilt;
 - active-part and planned-part backpressure;
 - verified native TLS;
 - bounded 1k, 10k, and 100k transaction query counts;
