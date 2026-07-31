@@ -163,9 +163,10 @@ func (c *Coordinator) Deliver(ctx context.Context, fence authority.RunFence, int
 		switch disposition {
 		case connector.DeliveryApplied:
 			if err := c.recordEvidence(ctx, fence, intent, state.attemptID, evidence); err != nil {
-				return AckGrant{}, err
+				return AckGrant{}, recoverablePostCommitError("record reconciled delivery evidence", err)
 			}
-			return c.finalize(ctx, fence, intent, state.attemptID, batch.Checkpoint)
+			grant, err := c.finalize(ctx, fence, intent, state.attemptID, batch.Checkpoint)
+			return grant, recoverablePostCommitError("finalize reconciled delivery", err)
 		case connector.DeliveryIndeterminate:
 			return AckGrant{}, fmt.Errorf("%w: unfinished delivery %s", connector.ErrDeliveryIndeterminate, intent.PositionID)
 		case connector.DeliveryNotApplied:
@@ -188,9 +189,17 @@ func (c *Coordinator) Deliver(ctx context.Context, fence authority.RunFence, int
 		return AckGrant{}, err
 	}
 	if err := c.recordEvidence(ctx, fence, intent, attemptID, evidence); err != nil {
-		return AckGrant{}, err
+		return AckGrant{}, recoverablePostCommitError("record delivery evidence", err)
 	}
-	return c.finalize(ctx, fence, intent, attemptID, batch.Checkpoint)
+	grant, err := c.finalize(ctx, fence, intent, attemptID, batch.Checkpoint)
+	return grant, recoverablePostCommitError("finalize delivery", err)
+}
+
+func recoverablePostCommitError(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %s: %w", connector.ErrDeliveryIndeterminate, stage, err)
 }
 
 // ValidateAckGrant proves that PostgreSQL contains both the ACK intent and the
