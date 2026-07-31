@@ -3,6 +3,8 @@ package grpc
 import (
 	"context"
 	"errors"
+	"maps"
+	"strings"
 	"testing"
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
@@ -131,14 +133,60 @@ func TestReconfigurePublicationConsultsGuardBeforeUpdateOrNetwork(t *testing.T) 
 	}
 }
 
+func TestManagedProfileOnlyUpdateAndReconfigureFailClosed(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name             string
+		existingManaged  bool
+		requestedManaged bool
+	}{
+		{name: "existing profile", existingManaged: true, requestedManaged: true},
+		{name: "requested profile", requestedManaged: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			engine := workflow.NewMemoryEngine()
+			existing := flow.Flow{ID: "profile-update-" + strings.ReplaceAll(tt.name, " ", "-"), Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{}}}
+			if tt.existingManaged {
+				existing.Source.Options["managed_profile"] = "postgres_to_postgres_v1"
+			}
+			if _, err := engine.Create(ctx, existing); err != nil {
+				t.Fatal(err)
+			}
+			requested := existing
+			requested.Source.Options = maps.Clone(existing.Source.Options)
+			if tt.requestedManaged {
+				requested.Source.Options["managed_profile"] = "postgres_to_postgres_v1"
+			}
+			service := NewFlowService(engine, nil)
+			if _, err := service.UpdateFlow(ctx, &wallabypb.UpdateFlowRequest{Flow: flowToProto(requested)}); status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("UpdateFlow status=%s, want FailedPrecondition", status.Code(err))
+			}
+			if _, err := service.ReconfigureFlow(ctx, &wallabypb.ReconfigureFlowRequest{Flow: flowToProto(requested)}); status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("ReconfigureFlow status=%s, want FailedPrecondition", status.Code(err))
+			}
+		})
+	}
+}
+
 func TestManagedAdministrativeResourceMutationsFailClosed(t *testing.T) {
+	testManagedAdministrativeResourceMutationsFailClosed(t, map[string]string{"managed": "true"})
+}
+
+func TestManagedProfileOnlyAdministrativeResourceMutationsFailClosed(t *testing.T) {
+	testManagedAdministrativeResourceMutationsFailClosed(t, map[string]string{"managed_profile": "postgres_to_postgres_v1"})
+}
+
+func testManagedAdministrativeResourceMutationsFailClosed(t *testing.T, managedOptions map[string]string) {
 	ctx := context.Background()
 	engine := workflow.NewMemoryEngine()
+	options := maps.Clone(managedOptions)
+	options["dsn"] = "postgres://unused"
+	options["slot"] = "owned_slot"
+	options["publication"] = "owned_publication"
 	managed := flow.Flow{
-		ID: "managed-admin",
-		Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
-			"managed": "true", "dsn": "postgres://unused", "slot": "owned_slot", "publication": "owned_publication",
-		}},
+		ID:     "managed-admin-" + strings.ReplaceAll(t.Name(), "/", "-"),
+		Source: connector.Spec{Type: connector.EndpointPostgres, Options: options},
 	}
 	if _, err := engine.Create(ctx, managed); err != nil {
 		t.Fatal(err)
