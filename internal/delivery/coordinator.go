@@ -128,9 +128,10 @@ func (c *Coordinator) Recover(ctx context.Context, fence authority.RunFence, int
 	switch disposition {
 	case connector.DeliveryApplied:
 		if err := c.recordEvidence(ctx, fence, intent, state.attemptID, evidence); err != nil {
-			return AckGrant{}, err
+			return AckGrant{}, recoverablePostCommitError("record recovered delivery evidence", err)
 		}
-		return c.finalize(ctx, fence, intent, state.attemptID, checkpoint)
+		grant, err := c.finalize(ctx, fence, intent, state.attemptID, checkpoint)
+		return grant, recoverablePostCommitError("finalize recovered delivery", err)
 	case connector.DeliveryNotApplied:
 		return AckGrant{}, nil
 	default:
