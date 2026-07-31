@@ -107,6 +107,27 @@ func TestClickHouseManagedProfileCommitBeforeReceipt(t *testing.T) {
 	}
 }
 
+func TestClickHouseManagedProfileSecondaryEndpointWriteFailover(t *testing.T) {
+	fixture := newClickHouseManagedFixture(t, 180)
+	fixture.tlsProxy.SetBlocked(true)
+	t.Cleanup(func() { fixture.tlsProxy.SetBlocked(false) })
+
+	transaction := clickHouseManagedTransaction("secondary_write", 1, []connector.Record{
+		clickHouseManagedRecord("secondary_write", connector.OpInsert, 1, map[string]any{"id": int64(1), "value": "secondary"}),
+	})
+	intent := clickHouseManagedIntent(t, transaction)
+	if _, err := fixture.destination.ApplyTransaction(context.Background(), intent, transaction); err != nil {
+		t.Fatalf("secondary-endpoint quorum write failover: %v", err)
+	}
+	disposition, evidence, err := fixture.destination.Reconcile(context.Background(), intent)
+	if err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
+		t.Fatalf("secondary-endpoint reconciliation=(%v,%+v,%v)", disposition, evidence, err)
+	}
+	if got := fixture.logicalRowCount(t, intent.LogicalBatchID); got != 1 {
+		t.Fatalf("secondary-endpoint logical rows=%d, want 1", got)
+	}
+}
+
 func TestClickHouseManagedProfileDedupWindowEviction(t *testing.T) {
 	fixture := newClickHouseManagedFixture(t, 180)
 	transaction := clickHouseManagedTransaction("widgets", 1, []connector.Record{
@@ -437,6 +458,66 @@ func TestClickHouseManagedProfileProcessKillRecovery(t *testing.T) {
 	}
 }
 
+func TestClickHouseManagedProfileSurvivorOnlyPrimaryStorageLossRecovery(t *testing.T) {
+	if os.Getenv("WALLABY_TEST_CLICKHOUSE_DESTRUCTIVE_STORAGE_LOSS") != "1" {
+		t.Skip("destructive primary-storage-loss evidence requires its disposable ClickHouse profile cluster")
+	}
+	fixture := newClickHouseManagedFixture(t, 180)
+	restoreNeeded := false
+	t.Cleanup(func() {
+		if !restoreNeeded {
+			return
+		}
+		if err := fixture.restorePrimaryAfterStorageLoss(context.Background()); err != nil {
+			t.Errorf("restore ClickHouse primary after failed storage-loss test: %v", err)
+		}
+	})
+	transaction := clickHouseManagedTransaction("primary_storage_loss", 1, []connector.Record{
+		clickHouseManagedRecord("primary_storage_loss", connector.OpInsert, 1, map[string]any{"id": int64(1), "value": "survives"}),
+	})
+	intent := clickHouseManagedIntent(t, transaction)
+	if _, err := fixture.destination.ApplyTransaction(context.Background(), intent, transaction); err != nil {
+		t.Fatalf("commit before primary storage loss: %v", err)
+	}
+
+	restoreNeeded = true
+	recoveredDSN, recoveredTLSDSN := destroyClickHousePrimaryStorage(t)
+	fixture.reconnect(t, recoveredDSN)
+	recoveredTLSURL, err := url.Parse(recoveredTLSDSN)
+	if err != nil || recoveredTLSURL.Host == "" {
+		t.Fatalf("parse recovered ClickHouse TLS DSN: %v", err)
+	}
+	fixture.tlsProxy.SetTarget(recoveredTLSURL.Host)
+
+	restarted := &clickhousedest.Destination{}
+	if err := restarted.Open(context.Background(), fixture.spec); err != nil {
+		t.Fatalf("open recovery-only destination after primary storage loss: %v", err)
+	}
+	t.Cleanup(func() { _ = restarted.Close(context.Background()) })
+	disposition, evidence, err := restarted.Reconcile(context.Background(), intent)
+	if err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
+		t.Fatalf("survivor-only reconciliation=(%v,%+v,%v)", disposition, evidence, err)
+	}
+	if _, err := restarted.ApplyTransaction(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("recovery-only write error=%v, want ErrDeliveryIndeterminate", err)
+	}
+	var survivorRows int
+	if err := fixture.replicaDB.QueryRowContext(context.Background(),
+		"SELECT count() FROM "+quoteClickHouseTestIdentifier(fixture.database)+"."+quoteClickHouseTestIdentifier(fixture.finalView)+" WHERE logical_batch_id=?",
+		intent.LogicalBatchID,
+	).Scan(&survivorRows); err != nil {
+		t.Fatalf("query surviving replica: %v", err)
+	}
+	if survivorRows != 1 {
+		t.Fatalf("surviving replica logical rows=%d, want 1", survivorRows)
+	}
+	if err := fixture.restorePrimaryAfterStorageLoss(context.Background()); err != nil {
+		t.Fatalf("restore ClickHouse primary after storage-loss evidence: %v", err)
+	}
+	waitForClickHouseManagedReplicas(t, fixture, 90*time.Second)
+	restoreNeeded = false
+}
+
 func TestClickHouseManagedProfileKeeperFailureRecovery(t *testing.T) {
 	fixture := newClickHouseManagedFixture(t, 180)
 	before := clickHouseManagedTransaction("keeper_kill", 1, []connector.Record{
@@ -489,6 +570,8 @@ type keeperProbeProxy struct {
 	listener net.Listener
 	mu       sync.RWMutex
 	target   string
+	blocked  bool
+	active   map[net.Conn]struct{}
 }
 
 func startKeeperProbeProxy(t *testing.T, target string) *keeperProbeProxy {
@@ -497,7 +580,7 @@ func startKeeperProbeProxy(t *testing.T, target string) *keeperProbeProxy {
 	if err != nil {
 		t.Fatalf("start Keeper probe proxy: %v", err)
 	}
-	proxy := &keeperProbeProxy{listener: listener, target: target}
+	proxy := &keeperProbeProxy{listener: listener, target: target, active: make(map[net.Conn]struct{})}
 	t.Cleanup(func() { _ = listener.Close() })
 	go proxy.serve()
 	return proxy
@@ -510,6 +593,17 @@ func (p *keeperProbeProxy) Address() string {
 func (p *keeperProbeProxy) SetTarget(target string) {
 	p.mu.Lock()
 	p.target = target
+	p.mu.Unlock()
+}
+
+func (p *keeperProbeProxy) SetBlocked(blocked bool) {
+	p.mu.Lock()
+	p.blocked = blocked
+	if blocked {
+		for conn := range p.active {
+			_ = conn.Close()
+		}
+	}
 	p.mu.Unlock()
 }
 
@@ -527,12 +621,30 @@ func (p *keeperProbeProxy) forward(client net.Conn) {
 	defer client.Close()
 	p.mu.RLock()
 	target := p.target
+	blocked := p.blocked
 	p.mu.RUnlock()
+	if blocked {
+		return
+	}
 	upstream, err := net.DialTimeout("tcp", target, 2*time.Second)
 	if err != nil {
 		return
 	}
 	defer upstream.Close()
+	p.mu.Lock()
+	if p.blocked {
+		p.mu.Unlock()
+		return
+	}
+	p.active[client] = struct{}{}
+	p.active[upstream] = struct{}{}
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		delete(p.active, client)
+		delete(p.active, upstream)
+		p.mu.Unlock()
+	}()
 	var transfers sync.WaitGroup
 	transfers.Add(2)
 	go func() {
@@ -558,6 +670,9 @@ type clickHouseManagedFixture struct {
 	changelogTable  string
 	receiptsTable   string
 	finalView       string
+	changelogDDL    string
+	receiptsDDL     string
+	viewDDL         string
 }
 
 func newClickHouseManagedFixture(t *testing.T, maxActiveParts uint64) *clickHouseManagedFixture {
@@ -636,6 +751,8 @@ wallaby_version UInt64, external_id String
 ORDER BY (destination_revision_id,logical_batch_id)
 SETTINGS replicated_deduplication_window=1000,replicated_deduplication_window_seconds=3600,
 parts_to_delay_insert=100,parts_to_throw_insert=200,max_parts_in_total=1000`, database, fixture.receiptsTable, database, fixture.receiptsTable)
+	fixture.changelogDDL = changelogDDL
+	fixture.receiptsDDL = receiptsDDL
 	for _, statement := range []string{changelogDDL, receiptsDDL} {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
 			t.Fatalf("create managed ClickHouse primary fixture: %v\n%s", err, statement)
@@ -646,6 +763,7 @@ parts_to_delay_insert=100,parts_to_throw_insert=200,max_parts_in_total=1000`, da
 		}
 	}
 	viewDDL := fmt.Sprintf("CREATE VIEW %s.%s AS SELECT * FROM %s.%s FINAL", database, fixture.finalView, database, fixture.changelogTable)
+	fixture.viewDDL = viewDDL
 	if _, err := db.ExecContext(ctx, viewDDL); err != nil {
 		t.Fatalf("create managed ClickHouse FINAL view: %v\n%s", err, viewDDL)
 	}
@@ -654,11 +772,11 @@ parts_to_delay_insert=100,parts_to_throw_insert=200,max_parts_in_total=1000`, da
 	}
 	waitForClickHouseManagedReplicas(t, fixture, 60*time.Second)
 	t.Cleanup(func() {
-		_, _ = replicaDB.ExecContext(context.Background(), "DROP VIEW IF EXISTS {database:Identifier}.{view:Identifier}", chclient.Named("database", database), chclient.Named("view", fixture.finalView))
-		_, _ = db.ExecContext(context.Background(), "DROP VIEW IF EXISTS {database:Identifier}.{view:Identifier}", chclient.Named("database", database), chclient.Named("view", fixture.finalView))
+		_, _ = fixture.replicaDB.ExecContext(context.Background(), "DROP VIEW IF EXISTS {database:Identifier}.{view:Identifier}", chclient.Named("database", database), chclient.Named("view", fixture.finalView))
+		_, _ = fixture.db.ExecContext(context.Background(), "DROP VIEW IF EXISTS {database:Identifier}.{view:Identifier}", chclient.Named("database", database), chclient.Named("view", fixture.finalView))
 		for _, table := range []string{fixture.receiptsTable, fixture.changelogTable} {
-			_, _ = replicaDB.ExecContext(context.Background(), "DROP TABLE IF EXISTS {database:Identifier}.{table:Identifier} SYNC", chclient.Named("database", database), chclient.Named("table", table))
-			_, _ = db.ExecContext(context.Background(), "DROP TABLE IF EXISTS {database:Identifier}.{table:Identifier} SYNC", chclient.Named("database", database), chclient.Named("table", table))
+			_, _ = fixture.replicaDB.ExecContext(context.Background(), "DROP TABLE IF EXISTS {database:Identifier}.{table:Identifier} SYNC", chclient.Named("database", database), chclient.Named("table", table))
+			_, _ = fixture.db.ExecContext(context.Background(), "DROP TABLE IF EXISTS {database:Identifier}.{table:Identifier} SYNC", chclient.Named("database", database), chclient.Named("table", table))
 		}
 	})
 	fixture.spec = connector.Spec{Name: "clickhouse-managed", Type: connector.EndpointClickHouse, Options: map[string]string{
@@ -711,6 +829,39 @@ func (f *clickHouseManagedFixture) reconnect(t *testing.T, dsn string) {
 	t.Cleanup(func() { _ = db.Close() })
 }
 
+func (f *clickHouseManagedFixture) restorePrimaryAfterStorageLoss(ctx context.Context) error {
+	deadline := time.Now().Add(45 * time.Second)
+	for {
+		var active uint64
+		err := f.replicaDB.QueryRowContext(ctx,
+			"SELECT active_replicas FROM system.replicas WHERE database=? AND table=?",
+			f.database, f.receiptsTable,
+		).Scan(&active)
+		if err == nil && active == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return fmt.Errorf("wait for lost primary replica session to expire: active=%d: %w", active, err)
+			}
+			return fmt.Errorf("wait for lost primary replica session to expire: active=%d, want 1", active)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	for _, table := range []string{f.receiptsTable, f.changelogTable} {
+		if _, err := f.replicaDB.ExecContext(ctx,
+			"SYSTEM DROP REPLICA 'wallaby-it-1' FROM TABLE "+quoteClickHouseTestIdentifier(f.database)+"."+quoteClickHouseTestIdentifier(table)); err != nil {
+			return fmt.Errorf("drop lost primary replica for %s: %w", table, err)
+		}
+	}
+	for _, statement := range []string{f.changelogDDL, f.receiptsDDL, f.viewDDL} {
+		if _, err := f.db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("restore primary fixture: %w", err)
+		}
+	}
+	return nil
+}
+
 func (f *clickHouseManagedFixture) logicalRowCount(t *testing.T, logicalBatchID string) int {
 	t.Helper()
 	var count int
@@ -721,6 +872,10 @@ func (f *clickHouseManagedFixture) logicalRowCount(t *testing.T, logicalBatchID 
 		t.Fatal(err)
 	}
 	return count
+}
+
+func quoteClickHouseTestIdentifier(value string) string {
+	return "`" + strings.ReplaceAll(value, "`", "``") + "`"
 }
 
 func clickHouseManagedTransaction(table string, schemaVersion int64, records []connector.Record) connector.SourceTransaction {
@@ -775,6 +930,40 @@ type clickHousePodStatus struct {
 			} `json:"containerStatuses"`
 		} `json:"status"`
 	} `json:"items"`
+}
+
+func destroyClickHousePrimaryStorage(t *testing.T) (string, string) {
+	t.Helper()
+	kubeconfig := os.Getenv("WALLABY_TEST_K8S_KUBECONFIG")
+	if kubeconfig == "" {
+		t.Skip("WALLABY_TEST_K8S_KUBECONFIG not set")
+	}
+	namespace := os.Getenv("WALLABY_TEST_K8S_NAMESPACE")
+	if namespace == "" {
+		namespace = "default"
+	}
+	pod, ready, found, err := clickHouseHarnessContainerStatus(kubeconfig, namespace, "app=wallaby-it-clickhouse", "clickhouse", "")
+	if err != nil || !found || !ready {
+		t.Fatalf("read ClickHouse primary before storage loss: pod=%q ready=%t found=%t err=%v", pod, ready, found, err)
+	}
+	wipe := exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace, "exec", pod, "-c", "clickhouse", "--", "bash", "-ec", "kill -STOP 1; rm -rf /var/lib/clickhouse/*; sync")
+	if output, err := wipe.CombinedOutput(); err != nil {
+		t.Fatalf("destroy ClickHouse primary storage: %v: %s", err, output)
+	}
+	remove := exec.Command("kubectl", "--kubeconfig", kubeconfig, "-n", namespace, "delete", "pod", pod, "--grace-period=0", "--force", "--wait=false")
+	if output, err := remove.CombinedOutput(); err != nil {
+		t.Fatalf("replace ClickHouse primary after storage loss: %v: %s", err, output)
+	}
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		currentPod, currentReady, currentFound, currentErr := clickHouseHarnessContainerStatus(kubeconfig, namespace, "app=wallaby-it-clickhouse", "clickhouse", pod)
+		if currentErr == nil && currentFound && currentPod != pod && currentReady {
+			return restartClickHouseHarnessPortForward(t, kubeconfig, namespace), restartClickHouseTLSHarnessPortForward(t)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatal("ClickHouse primary did not restart with empty storage")
+	return "", ""
 }
 
 func killClickHouseHarnessContainer(t *testing.T, container string) string {
