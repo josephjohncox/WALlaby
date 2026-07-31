@@ -36,12 +36,13 @@ func TestPostgresManagedDeliveryRetryAndRetention(t *testing.T) {
 	defer pool.Close()
 	var blockRetention atomic.Bool
 	var failAfterTargetApply atomic.Bool
+	var cancelAfterTargetApply context.CancelFunc
 	retentionEntered := make(chan struct{}, 1)
 	retentionRelease := make(chan struct{})
 	coordinator, err := delivery.NewCoordinator(ctx, pool, delivery.WithCoordinatorHooks(delivery.CoordinatorHooks{
 		AfterTargetApply: func(context.Context, authority.RunFence, connector.DeliveryIntent) error {
-			if failAfterTargetApply.CompareAndSwap(true, false) {
-				return errors.New("injected control-store outage after target commit")
+			if failAfterTargetApply.CompareAndSwap(true, false) && cancelAfterTargetApply != nil {
+				cancelAfterTargetApply()
 			}
 			return nil
 		},
@@ -171,9 +172,23 @@ WHERE receipt.flow_incarnation_id=$1 AND receipt.destination_revision_id=$2 AND 
 
 	postCommit := retentionTransaction(table, 3058, "0/580", 20)
 	postCommitIntent := transactionIntentForFence(t, fence, revisionID, postCommit)
+	postCommitCtx, cancelPostCommit := context.WithCancel(ctx)
+	cancelAfterTargetApply = cancelPostCommit
 	failAfterTargetApply.Store(true)
-	if _, err := coordinator.DeliverTransaction(ctx, fence, postCommitIntent, postCommit, target); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+	if _, err := coordinator.DeliverTransaction(postCommitCtx, fence, postCommitIntent, postCommit, target); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		cancelPostCommit()
 		t.Fatalf("post-target control failure=%v, want recoverable indeterminate classification", err)
+	}
+	cancelPostCommit()
+	cancelAfterTargetApply = nil
+	if failAfterTargetApply.Load() {
+		t.Fatal("post-target cancellation hook was not reached")
+	}
+	if _, err := pool.Exec(ctx, `SELECT 1`); err != nil {
+		t.Fatalf("control store did not recover after canceled post-target transaction: %v", err)
+	}
+	if _, err := coordinator.DeliverTransaction(postCommitCtx, fence, postCommitIntent, postCommit, target); err == nil {
+		t.Fatal("canceled delivery context unexpectedly remained usable")
 	}
 	currentFlow, err := engine.Get(ctx, flowID)
 	if err != nil {
