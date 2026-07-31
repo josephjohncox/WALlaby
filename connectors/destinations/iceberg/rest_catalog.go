@@ -1,9 +1,11 @@
 package iceberg
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,7 +24,9 @@ import (
 	icerest "github.com/apache/iceberg-go/catalog/rest"
 	icebergio "github.com/apache/iceberg-go/io"
 	"github.com/apache/iceberg-go/table"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/josephjohncox/wallaby/internal/artifactlog"
 
 	// The blank import registers the S3-compatible FileIO schemes (s3, s3a,
@@ -59,14 +63,48 @@ func newRESTBackend(ctx context.Context, cfg Config) (*restBackend, error) {
 
 func newRESTCatalog(ctx context.Context, cfg Config) (*icerest.Catalog, error) {
 	endpoint, err := url.Parse(cfg.URI)
-	if err != nil || endpoint.Host == "" {
+	if err != nil {
 		return nil, fmt.Errorf("parse Iceberg REST URI %q: %w", cfg.URI, err)
 	}
-	if endpoint.Scheme != "https" && (!cfg.AllowHTTP || endpoint.Scheme != "http") {
-		return nil, errors.New("iceberg REST URI must use HTTPS; allow_http is only for local emulation")
+	if endpoint.Host == "" || endpoint.User != nil {
+		return nil, fmt.Errorf("iceberg REST URI %q must include a host without user info", cfg.URI)
+	}
+	authenticated := catalogAuthenticationConfigured(cfg) || cfg.Profile == CatalogProfileS3Tables
+	if endpoint.Scheme != "https" {
+		if endpoint.Scheme != "http" || !cfg.AllowHTTP || !isLoopbackCatalogHost(endpoint.Hostname()) {
+			return nil, errors.New("iceberg REST URI must use HTTPS; allow_http is only for loopback emulation")
+		}
+		if authenticated {
+			return nil, errors.New("authenticated Iceberg REST requires HTTPS")
+		}
+	}
+	var authURI *url.URL
+	if strings.TrimSpace(cfg.OAuthURI) != "" {
+		authURI, err = url.Parse(cfg.OAuthURI)
+		if err != nil {
+			return nil, fmt.Errorf("parse Iceberg OAuth URI: %w", err)
+		}
+		if authURI.Scheme != "https" || authURI.Host == "" || authURI.User != nil {
+			return nil, errors.New("iceberg OAuth URI must use HTTPS and include a host without user info")
+		}
+		if endpointOrigin(authURI) != endpointOrigin(endpoint) {
+			return nil, errors.New("iceberg OAuth URI must use the same origin as the deployment-bound catalog")
+		}
 	}
 	if cfg.SigV4 && (cfg.OAuthToken != "" || cfg.OAuthCredential != "") {
 		return nil, errors.New("iceberg REST SigV4 and OAuth authentication are mutually exclusive")
+	}
+	if rawS3Endpoint := strings.TrimSpace(cfg.S3Endpoint); rawS3Endpoint != "" {
+		s3Endpoint, parseErr := url.Parse(rawS3Endpoint)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse deployment-bound Iceberg S3 endpoint %q: %w", rawS3Endpoint, parseErr)
+		}
+		if s3Endpoint.Host == "" || s3Endpoint.User != nil {
+			return nil, fmt.Errorf("deployment-bound Iceberg S3 endpoint %q must include a host without user info", rawS3Endpoint)
+		}
+		if s3Endpoint.Scheme != "https" && (s3Endpoint.Scheme != "http" || !cfg.AllowHTTP || !isLoopbackCatalogHost(s3Endpoint.Hostname())) {
+			return nil, errors.New("iceberg S3 endpoint must use HTTPS; allow_http is only for loopback emulation")
+		}
 	}
 	tlsConfig, err := catalogTLSConfig(cfg)
 	if err != nil {
@@ -79,7 +117,12 @@ func newRESTCatalog(ctx context.Context, cfg Config) (*icerest.Catalog, error) {
 		ResponseHeaderTimeout: cfg.RequestTimeout, ExpectContinueTimeout: time.Second,
 		IdleConnTimeout: 90 * time.Second, MaxIdleConns: 32, MaxIdleConnsPerHost: 8,
 	}
-	wrapped := &requestTimeoutTransport{base: transport, timeout: cfg.RequestTimeout}
+	policyTransport := &catalogPropertyPolicyTransport{base: transport, cfg: cfg}
+	boundTransport, err := newEndpointBoundTransport(policyTransport, cfg.URI)
+	if err != nil {
+		return nil, err
+	}
+	wrapped := &requestTimeoutTransport{base: boundTransport, timeout: cfg.RequestTimeout}
 	restOptions := []icerest.Option{
 		icerest.WithWarehouseLocation(cfg.Warehouse),
 		icerest.WithCustomTransport(wrapped),
@@ -103,11 +146,7 @@ func newRESTCatalog(ctx context.Context, cfg Config) (*icerest.Catalog, error) {
 	if cfg.OAuthScope != "" {
 		restOptions = append(restOptions, icerest.WithScope(cfg.OAuthScope))
 	}
-	if cfg.OAuthURI != "" {
-		authURI, parseErr := url.Parse(cfg.OAuthURI)
-		if parseErr != nil {
-			return nil, fmt.Errorf("parse Iceberg OAuth URI: %w", parseErr)
-		}
+	if authURI != nil {
 		restOptions = append(restOptions, icerest.WithAuthURI(authURI))
 	}
 	if cfg.SigV4 {
@@ -122,6 +161,16 @@ func newRESTCatalog(ctx context.Context, cfg Config) (*icerest.Catalog, error) {
 		awsCfg, loadErr := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
 		if loadErr != nil {
 			return nil, fmt.Errorf("load Iceberg REST AWS credentials: %w", loadErr)
+		}
+		if expectedRole := strings.TrimSpace(cfg.ExpectedAWSRoleARN); expectedRole != "" {
+			identity, identityErr := sts.NewFromConfig(awsCfg).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+			if identityErr != nil {
+				return nil, fmt.Errorf("resolve Iceberg REST AWS caller identity: %w", identityErr)
+			}
+			actualARN := aws.ToString(identity.Arn)
+			if !awsRoleIdentityMatches(expectedRole, actualARN) {
+				return nil, fmt.Errorf("iceberg REST AWS caller identity %q does not match deployment-bound role %q", actualARN, expectedRole)
+			}
 		}
 		restOptions = append(restOptions, icerest.WithAwsConfig(awsCfg), icerest.WithSigV4RegionSvc(region, service))
 	}
@@ -196,6 +245,191 @@ func (body *cancelReadCloser) Close() error {
 	err := body.ReadCloser.Close()
 	body.cancel()
 	return err
+}
+
+const maxCatalogPolicyResponseBytes = 32 << 20
+
+func awsRoleIdentityMatches(expected, actual string) bool {
+	expected = strings.TrimSpace(expected)
+	actual = strings.TrimSpace(actual)
+	if expected == actual {
+		return expected != ""
+	}
+	expectedParts := strings.SplitN(expected, ":", 6)
+	actualParts := strings.SplitN(actual, ":", 6)
+	if len(expectedParts) != 6 || len(actualParts) != 6 || expectedParts[2] != "iam" || actualParts[2] != "sts" || expectedParts[4] != actualParts[4] {
+		return false
+	}
+	if !strings.HasPrefix(expectedParts[5], "role/") || !strings.HasPrefix(actualParts[5], "assumed-role/") {
+		return false
+	}
+	expectedRole := strings.TrimPrefix(expectedParts[5], "role/")
+	if slash := strings.LastIndex(expectedRole, "/"); slash >= 0 {
+		expectedRole = expectedRole[slash+1:]
+	}
+	assumed := strings.Split(strings.TrimPrefix(actualParts[5], "assumed-role/"), "/")
+	return len(assumed) >= 2 && expectedRole != "" && assumed[0] == expectedRole
+}
+
+func endpointOrigin(endpoint *url.URL) string {
+	return strings.ToLower(endpoint.Scheme) + "://" + strings.ToLower(endpoint.Host)
+}
+
+func isLoopbackCatalogHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	address := net.ParseIP(host)
+	return address != nil && address.IsLoopback()
+}
+
+func isAWSObjectEndpoint(raw string) bool {
+	endpoint, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil {
+		return false
+	}
+	host := strings.ToLower(endpoint.Hostname())
+	if host == "s3.amazonaws.com" {
+		return true
+	}
+	const suffix = ".amazonaws.com"
+	if !strings.HasSuffix(host, suffix) {
+		return false
+	}
+	service := strings.TrimSuffix(host, suffix)
+	return strings.HasPrefix(service, "s3.") || strings.HasPrefix(service, "s3-") || strings.HasPrefix(service, "s3tables.")
+}
+
+func validateCatalogResponseProperties(cfg Config, properties map[string]string) error {
+	for key, expected := range map[string]string{
+		"uri": cfg.URI, "warehouse": cfg.Warehouse, "prefix": cfg.Prefix,
+	} {
+		if value := strings.TrimSpace(properties[key]); value != "" && strings.TrimSuffix(value, "/") != strings.TrimSuffix(strings.TrimSpace(expected), "/") {
+			return fmt.Errorf("iceberg catalog %s %q differs from deployment-bound value", key, value)
+		}
+	}
+	if value := strings.TrimSpace(properties["s3.endpoint"]); value != "" {
+		expected := strings.TrimSpace(cfg.S3Endpoint)
+		if expected != "" {
+			if strings.TrimSuffix(value, "/") != strings.TrimSuffix(expected, "/") {
+				return fmt.Errorf("iceberg catalog s3.endpoint %q differs from deployment-bound value", value)
+			}
+		} else if !isAWSObjectEndpoint(value) {
+			return fmt.Errorf("iceberg catalog s3.endpoint %q is not a deployment-bound or AWS object endpoint", value)
+		}
+	}
+	if value := strings.TrimSpace(properties["s3.region"]); value != "" {
+		expected := strings.TrimSpace(cfg.S3Region)
+		if expected == "" {
+			expected = strings.TrimSpace(cfg.Region)
+		}
+		if expected == "" || value != expected {
+			return fmt.Errorf("iceberg catalog s3.region %q differs from deployment-bound value", value)
+		}
+	}
+	return nil
+}
+
+func validateCatalogResponseBody(cfg Config, body []byte) error {
+	if !json.Valid(body) {
+		return nil // The Iceberg REST decoder reports malformed JSON.
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return fmt.Errorf("decode Iceberg REST endpoint-policy envelope: %w", err)
+	}
+	for _, name := range []string{"defaults", "overrides", "config"} {
+		raw, ok := envelope[name]
+		if !ok || string(raw) == "null" {
+			continue
+		}
+		var properties map[string]string
+		if err := json.Unmarshal(raw, &properties); err != nil {
+			return fmt.Errorf("decode Iceberg REST %s endpoint properties: %w", name, err)
+		}
+		if err := validateCatalogResponseProperties(cfg, properties); err != nil {
+			return err
+		}
+	}
+	if raw, ok := envelope["metadata"]; ok && string(raw) != "null" {
+		var metadata struct {
+			Properties map[string]string `json:"properties"`
+		}
+		if err := json.Unmarshal(raw, &metadata); err != nil {
+			return fmt.Errorf("decode Iceberg table metadata endpoint properties: %w", err)
+		}
+		if err := validateCatalogResponseProperties(cfg, metadata.Properties); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type catalogPropertyPolicyTransport struct {
+	base http.RoundTripper
+	cfg  Config
+}
+
+func (t *catalogPropertyPolicyTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := t.base.RoundTrip(request)
+	if err != nil || response == nil || response.Body == nil || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return response, err
+	}
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, maxCatalogPolicyResponseBytes+1))
+	_ = response.Body.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("read Iceberg REST response for endpoint policy: %w", readErr)
+	}
+	if len(body) > maxCatalogPolicyResponseBytes {
+		return nil, fmt.Errorf("iceberg REST response exceeds endpoint-policy limit of %d bytes", maxCatalogPolicyResponseBytes)
+	}
+	if err := validateCatalogResponseBody(t.cfg, body); err != nil {
+		return nil, err
+	}
+	response.Body = io.NopCloser(bytes.NewReader(body))
+	response.ContentLength = int64(len(body))
+	return response, nil
+}
+
+type endpointBoundTransport struct {
+	base    http.RoundTripper
+	allowed map[string]struct{}
+}
+
+func newEndpointBoundTransport(base http.RoundTripper, rawEndpoints ...string) (*endpointBoundTransport, error) {
+	if base == nil {
+		return nil, errors.New("iceberg endpoint-bound transport requires a base transport")
+	}
+	allowed := make(map[string]struct{}, len(rawEndpoints))
+	for _, raw := range rawEndpoints {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		endpoint, err := url.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse deployment-bound Iceberg endpoint %q: %w", raw, err)
+		}
+		if endpoint.Scheme == "" || endpoint.Host == "" || endpoint.User != nil {
+			return nil, fmt.Errorf("deployment-bound Iceberg endpoint %q must include a scheme and host without user info", raw)
+		}
+		allowed[strings.ToLower(endpoint.Scheme)+"://"+strings.ToLower(endpoint.Host)] = struct{}{}
+	}
+	if len(allowed) == 0 {
+		return nil, errors.New("iceberg endpoint-bound transport requires at least one endpoint")
+	}
+	return &endpointBoundTransport{base: base, allowed: allowed}, nil
+}
+
+func (t *endpointBoundTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if request == nil || request.URL == nil || request.URL.User != nil {
+		return nil, errors.New("iceberg request has an invalid deployment-bound endpoint")
+	}
+	identity := strings.ToLower(request.URL.Scheme) + "://" + strings.ToLower(request.URL.Host)
+	if _, ok := t.allowed[identity]; !ok {
+		return nil, fmt.Errorf("iceberg request endpoint %q is outside deployment-bound Iceberg endpoints", identity)
+	}
+	return t.base.RoundTrip(request)
 }
 
 type requestTimeoutTransport struct {

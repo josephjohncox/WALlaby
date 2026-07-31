@@ -303,7 +303,7 @@
 | ENDPOINT_TYPE_BUFSTREAM | 12 |  |
 | ENDPOINT_TYPE_CLICKHOUSE | 13 |  |
 | ENDPOINT_TYPE_DUCKLAKE | 14 |  |
-| ENDPOINT_TYPE_ICEBERG | 15 | Iceberg is an asynchronous consumer of the canonical artifact log. It is never a direct current-state/upsert destination. |
+| ENDPOINT_TYPE_ICEBERG | 15 | Iceberg is an asynchronous consumer of the canonical artifact log, including AWS S3 Tables exposed read-only through external catalogs such as Snowflake. It is never a direct current-state/upsert destination. |
 
 
 

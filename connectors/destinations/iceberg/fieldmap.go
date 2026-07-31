@@ -1,6 +1,9 @@
 package iceberg
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strconv"
@@ -199,24 +202,28 @@ func buildFieldMapping(current, desired *iceberggo.Schema) (map[string]int, erro
 	return mapping, nil
 }
 
-// mappingFingerprint is a deterministic, order-independent digest of a
-// canonical-to-catalog field-ID mapping. It is recorded in immutable commit
-// metadata so a retry proves it rewrote data files against the same
-// catalog-assigned identity even if the catalog re-derives IDs differently.
+// mappingFingerprint is a deterministic, order-independent audit digest of a
+// canonical-to-catalog field-ID mapping. Snapshot reconciliation remains bound
+// to publication/schema identities; this bounded value supports diagnosis and
+// does not independently authorize adoption.
 func mappingFingerprint(mapping map[string]int) string {
 	names := make([]string, 0, len(mapping))
 	for name := range mapping {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	var builder strings.Builder
+	digest := sha256.New()
+	var encoded [8]byte
 	for _, name := range names {
-		builder.WriteString(name)
-		builder.WriteByte('=')
-		builder.WriteString(strconv.Itoa(mapping[name]))
-		builder.WriteByte(0)
+		binary.BigEndian.PutUint64(encoded[:], uint64(len(name)))
+		_, _ = digest.Write(encoded[:])
+		_, _ = digest.Write([]byte(name))
+		fieldID := strconv.Itoa(mapping[name])
+		binary.BigEndian.PutUint64(encoded[:], uint64(len(fieldID)))
+		_, _ = digest.Write(encoded[:])
+		_, _ = digest.Write([]byte(fieldID))
 	}
-	return builder.String()
+	return hex.EncodeToString(digest.Sum(nil))
 }
 
 // rewriteRecordFieldIDs returns record batches whose Arrow schema carries the

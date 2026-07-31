@@ -1,0 +1,42 @@
+{
+  "id": "postgres-to-s3tables",
+  "name": "PostgreSQL CDC to Iceberg on S3 Tables",
+  "source": {
+    "name": "postgres-source",
+    "type": "postgres",
+    "options": {
+      "dsn": "postgres://wallaby@postgres.example:5432/app?sslmode=verify-full",
+      "slot": "wallaby_s3tables",
+      "publication": "wallaby_s3tables",
+      "managed": "true",
+      "bootstrap": "never",
+      "create_slot": "false",
+      "ensure_state": "false",
+      "ensure_publication": "false",
+      "sync_publication": "false",
+      "streaming_transactions": "true",
+      "source_system_identifier": "REPLACE_WITH_PG_SYSTEM_IDENTIFIER",
+      "source_lineage_id": "REPLACE_WITH_STABLE_SOURCE_LINEAGE",
+      "publication_revision": "REPLACE_WITH_PUBLICATION_FINGERPRINT"
+    }
+  },
+  "destinations": [
+    {
+      "name": "s3tables-lake",
+      "type": "iceberg",
+      "options": {
+        "catalog_profile": "s3tables",
+        "destination_revision_id": "s3tables-lake-v1",
+        "namespace": "wallaby",
+        "table_prefix": "cdc_",
+        "control_table": "__wallaby_control"
+      }
+    }
+  ],
+  "config": {
+    "ack_policy": "materialized",
+    "materialization": {
+      "projection_id": "canonical_cdc_parquet_v1"
+    }
+  }
+}
