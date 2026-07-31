@@ -7,6 +7,19 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+func TestSchemaColumnsExcludeGeneratedColumns(t *testing.T) {
+	t.Parallel()
+
+	columns := schemaColumns(connector.Schema{Columns: []connector.Column{
+		{Name: "id", Type: "bigint"},
+		{Name: "rendered", Type: "text", Generated: true, Expression: "id::text"},
+		{Name: "value", Type: "text"},
+	}})
+	if !reflect.DeepEqual(columns, []string{"id", "value"}) {
+		t.Fatalf("schemaColumns()=%v, want writable columns only", columns)
+	}
+}
+
 func TestPostgresTargetPreservesSameKeyOperationOrder(t *testing.T) {
 	schema := connector.Schema{
 		Namespace: "public",
