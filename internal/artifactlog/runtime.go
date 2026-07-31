@@ -61,9 +61,6 @@ func NewRuntime(ctx context.Context, pool *pgxpool.Pool, objects ObjectStore, co
 	if config.OrphanGrace <= 0 || config.Retention <= 0 || config.GCInterval <= 0 {
 		return nil, errors.New("positive artifact orphan, retention, and GC intervals are required")
 	}
-	if len(config.Consumers) > 0 && strings.TrimSpace(config.DestinationFingerprint) == "" {
-		return nil, errors.New("artifact catalog consumers require a non-secret effective destination fingerprint")
-	}
 	consumerIDs := make([]string, 0, len(config.Consumers))
 	seen := make(map[string]struct{}, len(config.Consumers))
 	consumers := make([]runtimeConsumer, 0, len(config.Consumers))
@@ -81,6 +78,9 @@ func NewRuntime(ctx context.Context, pool *pgxpool.Pool, objects ObjectStore, co
 		}
 		consumerIDs = append(consumerIDs, candidate.RevisionID)
 		consumers = append(consumers, runtimeConsumer{revisionID: candidate.RevisionID, consumer: consumer})
+	}
+	if len(config.Consumers) > 0 && strings.TrimSpace(config.DestinationFingerprint) == "" {
+		return nil, errors.New("artifact catalog consumers require a non-secret effective destination fingerprint")
 	}
 	config.Stream.Consumers = consumerIDs
 	publisher, err := NewPublisher(ctx, pool, objects, config.Stream)
