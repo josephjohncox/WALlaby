@@ -361,34 +361,41 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 	published = true
 	if s.BootstrapHooks.AfterPublication != nil {
 		if err := s.BootstrapHooks.AfterPublication(ctx, session.Snapshot); err != nil {
-			return connector.ManagedBootstrapResult{}, false, err
+			return connector.ManagedBootstrapResult{}, false, recoverableBootstrapPublicationError("after destination publication", err)
 		}
 	}
 	if err := coordinator.RecordPublication(ctx, fence, session.Snapshot, destinationRevisionID, evidence.ContentHash, uuid.New()); err != nil {
-		return connector.ManagedBootstrapResult{}, false, err
+		return connector.ManagedBootstrapResult{}, false, recoverableBootstrapPublicationError("record destination publication", err)
 	}
 	if s.BootstrapHooks.AfterPublicationReceipt != nil {
 		if err := s.BootstrapHooks.AfterPublicationReceipt(ctx, session.Snapshot); err != nil {
-			return connector.ManagedBootstrapResult{}, false, err
+			return connector.ManagedBootstrapResult{}, false, recoverableBootstrapPublicationError("after publication receipt", err)
 		}
 	}
 	checkpoint, err := coordinator.Handoff(ctx, fence, session.Snapshot)
 	if err != nil {
-		return connector.ManagedBootstrapResult{}, false, err
+		return connector.ManagedBootstrapResult{}, false, recoverableBootstrapPublicationError("handoff published bootstrap", err)
 	}
 	if err := barrier.Commit(ctx); err != nil {
-		return connector.ManagedBootstrapResult{}, false, fmt.Errorf("release bootstrap schema barrier: %w", err)
+		return connector.ManagedBootstrapResult{}, false, recoverableBootstrapPublicationError("release bootstrap schema barrier", err)
 	}
 	if err := session.Close(ctx); err != nil {
-		return connector.ManagedBootstrapResult{}, false, err
+		return connector.ManagedBootstrapResult{}, false, recoverableBootstrapPublicationError("close published bootstrap session", err)
 	}
 	if s.BootstrapHooks.AfterHandoff != nil {
 		if err := s.BootstrapHooks.AfterHandoff(ctx, session.Snapshot); err != nil {
-			return connector.ManagedBootstrapResult{}, false, err
+			return connector.ManagedBootstrapResult{}, false, recoverableBootstrapPublicationError("after bootstrap handoff", err)
 		}
 	}
 	result = managedBootstrapResult(session.Snapshot, checkpoint)
 	return result, false, nil
+}
+
+func recoverableBootstrapPublicationError(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %s: %w", connector.ErrDeliveryIndeterminate, stage, err)
 }
 
 func (s *Source) runManagedSnapshotTask(ctx context.Context, coordinator *bootstrap.Bootstrapper, session *bootstrap.Session, fence authority.RunFence, task bootstrap.SnapshotTask, destinationRevisionID string, batchSize int, claimLease time.Duration, driver connector.ManagedBootstrapDestination) error {
