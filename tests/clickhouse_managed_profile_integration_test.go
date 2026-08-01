@@ -513,8 +513,17 @@ func TestClickHouseManagedProfileSurvivorOnlyPrimaryStorageLossRecovery(t *testi
 	if _, err := restarted.ApplyTransaction(context.Background(), newIntent, newTransaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("recovery-only write error=%v, want ErrDeliveryIndeterminate", err)
 	}
-	if got := fixture.logicalRowCount(t, newIntent.LogicalBatchID); got != 0 {
-		t.Fatalf("fenced recovery-only write left %d rows", got)
+	// Count on the survivor: the wiped primary no longer has the FINAL view, so
+	// only the intact replica can answer for what the fence did or did not write.
+	var fencedRows int
+	if err := fixture.replicaDB.QueryRowContext(context.Background(),
+		"SELECT count() FROM "+quoteClickHouseTestIdentifier(fixture.database)+"."+quoteClickHouseTestIdentifier(fixture.finalView)+" WHERE logical_batch_id=?",
+		newIntent.LogicalBatchID,
+	).Scan(&fencedRows); err != nil {
+		t.Fatalf("query surviving replica for the fenced batch: %v", err)
+	}
+	if fencedRows != 0 {
+		t.Fatalf("fenced recovery-only write left %d rows on the survivor", fencedRows)
 	}
 	var survivorRows int
 	if err := fixture.replicaDB.QueryRowContext(context.Background(),
