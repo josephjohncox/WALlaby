@@ -48,18 +48,27 @@ nav:
       - Architecture: architecture.md
       - Flow lifecycle: concepts/lifecycle.md
       - Delivery and checkpoints: concepts/delivery.md
+      - Authority and fencing: concepts/authority-and-fencing.md
+      - Managed delivery semantics: concepts/delivery-semantics.md
+      - PostgreSQL bootstrap: concepts/postgres-bootstrap.md
+      - Canonical artifact log: concepts/artifact-log.md
   - How-to guides:
       - Manage flows: guides/flows.md
       - Consume streams: streams.md
       - Choose a runtime: deployment/index.md
   - Operations:
       - Configuration: operations/configuration.md
+      - Recovery: operations/recovery.md
+      - S3 retention and object lock: operations/s3-retention-and-object-lock.md
       - Observability: observability.md
       - Runbooks: runbooks.md
   - Connectors:
       - Overview: connectors/index.md
       - Support matrix: reference/generated/connector-support.md
       - PostgreSQL: connectors/postgres.md
+      - PostgreSQL managed profile: connectors/postgres-managed-profile.md
+      - Iceberg: connectors/iceberg.md
+      - ClickHouse: connectors/clickhouse.md
       - Extended connector notes: connectors.md
   - Reference:
       - Overview: reference/index.md
@@ -75,5 +84,6 @@ nav:
           - wire: reference/generated/go/wire.md
   - Development:
       - Contributor guide: development/index.md
+      - Durable core implementation report: implementation/durable-core.md
       - Formal verification: specs.md
       - Benchmarks: benchmarks.md

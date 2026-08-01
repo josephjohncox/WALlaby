@@ -45,13 +45,14 @@ func ValidateBatch(batch Batch) error {
 		if strings.TrimSpace(record.Table) == "" {
 			return fmt.Errorf("%w: record %d table is required", ErrInvalidBatch, index)
 		}
-		if record.Table != batch.Schema.Name {
+		if !recordTableMatchesSchema(record.Table, batch.Schema) {
 			return fmt.Errorf(
-				"%w: record %d table %q does not match batch schema table %q",
+				"%w: record %d table %q does not match batch schema table %q (namespace %q)",
 				ErrInvalidBatch,
 				index,
 				record.Table,
 				batch.Schema.Name,
+				batch.Schema.Namespace,
 			)
 		}
 		if record.SchemaVersion != 0 && record.SchemaVersion != batch.Schema.Version {
@@ -66,6 +67,18 @@ func ValidateBatch(batch Batch) error {
 	}
 
 	return nil
+}
+
+func recordTableMatchesSchema(table string, schema Schema) bool {
+	table = strings.TrimSpace(table)
+	if table == schema.Name {
+		return true
+	}
+	separator := strings.LastIndex(table, ".")
+	if separator <= 0 || separator == len(table)-1 {
+		return false
+	}
+	return table[separator+1:] == schema.Name && table[:separator] == schema.Namespace
 }
 
 func isBatchControlRecord(record Record) bool {

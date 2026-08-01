@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/josephjohncox/wallaby/internal/controlstore"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -24,12 +26,16 @@ const (
 	stateFailReason         = "fail"
 )
 
+const minimumLifecycleLockConnections int32 = 4
+
 // PostgresEngine stores flow metadata and internal lifecycle fencing in Postgres.
-// Lifecycle advisory locks use a separate pool so callbacks can always run
-// normal lifecycle SQL even when the normal pool is configured with one slot.
+// Advisory locks use a separate pool because each lock must remain pinned to one
+// session while its callback uses the control pool.
 type PostgresEngine struct {
-	pool     *pgxpool.Pool
-	lockPool *pgxpool.Pool
+	pool         *pgxpool.Pool
+	lockPool     *pgxpool.Pool
+	ownsPool     bool
+	ownsLockPool bool
 }
 
 func NewPostgresEngine(ctx context.Context, dsn string) (*PostgresEngine, error) {
@@ -40,6 +46,7 @@ func NewPostgresEngine(ctx context.Context, dsn string) (*PostgresEngine, error)
 	if err != nil {
 		return nil, fmt.Errorf("parse postgres DSN: %w", err)
 	}
+	controlstore.ConfigurePool(cfg)
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
@@ -48,34 +55,50 @@ func NewPostgresEngine(ctx context.Context, dsn string) (*PostgresEngine, error)
 		pool.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
-	if err := runMigrations(ctx, pool); err != nil {
+	engine, err := NewPostgresEngineWithPool(ctx, pool)
+	if err != nil {
 		pool.Close()
 		return nil, err
 	}
-	lockCfg := cfg.Copy()
-	if lockCfg.MaxConns < 4 {
-		lockCfg.MaxConns = 4
+	engine.ownsPool = true
+	return engine, nil
+}
+
+// NewPostgresEngineWithPool borrows the shared control PostgreSQL pool and
+// owns a separate pool for session-scoped lifecycle advisory locks.
+func NewPostgresEngineWithPool(ctx context.Context, pool *pgxpool.Pool) (*PostgresEngine, error) {
+	if pool == nil {
+		return nil, errors.New("postgres control pool is required")
+	}
+	if err := runMigrations(ctx, pool); err != nil {
+		return nil, err
+	}
+	lockCfg := pool.Config().Copy()
+	if lockCfg.MaxConns < minimumLifecycleLockConnections {
+		lockCfg.MaxConns = minimumLifecycleLockConnections
 	}
 	lockCfg.MinConns = 0
+	lockCfg.MinIdleConns = 0
 	lockPool, err := pgxpool.NewWithConfig(ctx, lockCfg)
 	if err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("connect lifecycle lock postgres pool: %w", err)
+		return nil, fmt.Errorf("create lifecycle lock pool: %w", err)
 	}
 	if err := lockPool.Ping(ctx); err != nil {
 		lockPool.Close()
-		pool.Close()
-		return nil, fmt.Errorf("ping lifecycle lock postgres pool: %w", err)
+		return nil, fmt.Errorf("ping lifecycle lock pool: %w", err)
 	}
-	return &PostgresEngine{pool: pool, lockPool: lockPool}, nil
+	return &PostgresEngine{pool: pool, lockPool: lockPool, ownsLockPool: true}, nil
 }
+
 func (p *PostgresEngine) Close() {
-	if p.lockPool != nil {
+	if p.ownsLockPool && p.lockPool != nil {
 		p.lockPool.Close()
 	}
-	if p.pool != nil {
+	if p.ownsPool && p.pool != nil {
 		p.pool.Close()
 	}
+	p.pool = nil
+	p.lockPool = nil
 }
 
 func (p *PostgresEngine) WithFlowLock(ctx context.Context, flowID string, try bool, fn func() error) (acquired bool, retErr error) {
@@ -166,9 +189,48 @@ func (p *PostgresEngine) Update(ctx context.Context, f flow.Flow) (flow.Flow, er
 	if err != nil {
 		return flow.Flow{}, err
 	}
-	return scanFlow(p.pool.QueryRow(ctx, `UPDATE flows SET name=$2, source=$3, destinations=$4, wire_format=$5,
-		parallelism=$6, config=$7, updated_at=now() WHERE id=$1
-		RETURNING id,name,source,destinations,state,wire_format,parallelism,config`, f.ID, f.Name, sourceJSON, destJSON, emptyToNull(string(f.WireFormat)), f.Parallelism, configJSON))
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return flow.Flow{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var incarnationID uuid.UUID
+	var state string
+	var identityChanged bool
+	if err := tx.QueryRow(ctx, `
+SELECT incarnation_id,state,
+       source IS DISTINCT FROM $2::jsonb OR destinations IS DISTINCT FROM $3::jsonb
+FROM flows WHERE id=$1 FOR UPDATE`, f.ID, sourceJSON, destJSON).Scan(&incarnationID, &state, &identityChanged); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return flow.Flow{}, ErrNotFound
+		}
+		return flow.Flow{}, err
+	}
+	if identityChanged {
+		if state == string(flow.StateRunning) || state == string(flow.StateStopping) {
+			return flow.Flow{}, fmt.Errorf("%w: source or destination identity cannot change while flow is %s", ErrInvalidState, state)
+		}
+		newIncarnationID := uuid.New()
+		if _, err := tx.Exec(ctx, `INSERT INTO flow_incarnations(incarnation_id,flow_id) VALUES($1,$2)`, newIncarnationID, f.ID); err != nil {
+			return flow.Flow{}, fmt.Errorf("create updated flow incarnation: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE flow_incarnations SET retired_at=COALESCE(retired_at,clock_timestamp()) WHERE incarnation_id=$1`, incarnationID); err != nil {
+			return flow.Flow{}, fmt.Errorf("retire prior flow incarnation: %w", err)
+		}
+		incarnationID = newIncarnationID
+	}
+	updated, err := scanFlow(tx.QueryRow(ctx, `UPDATE flows SET name=$2, source=$3, destinations=$4, wire_format=$5,
+		parallelism=$6, config=$7, incarnation_id=$8,
+		lifecycle_generation=CASE WHEN incarnation_id IS DISTINCT FROM $8 THEN 0 ELSE lifecycle_generation END,
+		updated_at=now() WHERE id=$1
+		RETURNING id,name,source,destinations,state,wire_format,parallelism,config`, f.ID, f.Name, sourceJSON, destJSON, emptyToNull(string(f.WireFormat)), f.Parallelism, configJSON, incarnationID))
+	if err != nil {
+		return flow.Flow{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return flow.Flow{}, err
+	}
+	return updated, nil
 }
 
 func marshalFlowFields(f flow.Flow) ([]byte, []byte, []byte, error) {
@@ -497,7 +559,8 @@ func (p *PostgresEngine) RegisterExecutionGeneration(ctx context.Context, flowID
 		defer func() { _ = tx.Rollback(ctx) }()
 		var state, target string
 		var currentGen int64
-		if e = tx.QueryRow(ctx, "SELECT state,lifecycle_target,lifecycle_generation FROM flows WHERE id=$1 FOR UPDATE", flowID).Scan(&state, &target, &currentGen); errors.Is(e, pgx.ErrNoRows) {
+		var incarnationID uuid.UUID
+		if e = tx.QueryRow(ctx, "SELECT state,lifecycle_target,lifecycle_generation,incarnation_id FROM flows WHERE id=$1 FOR UPDATE", flowID).Scan(&state, &target, &currentGen, &incarnationID); errors.Is(e, pgx.ErrNoRows) {
 			return ErrNotFound
 		} else if e != nil {
 			return e
@@ -505,10 +568,10 @@ func (p *PostgresEngine) RegisterExecutionGeneration(ctx context.Context, flowID
 		if flow.State(state) != flow.StateRunning || LifecycleTarget(target) != TargetRunning || currentGen != generation {
 			return fmt.Errorf("%w: execution generation %d is fenced by generation %d target %s", ErrInvalidState, generation, currentGen, target)
 		}
-		tag, execErr := tx.Exec(ctx, `INSERT INTO flow_executions(flow_id,execution_id,backend,status,started_at,finished_at,generation,heartbeat_at,lease_expires_at,finish_reason)
-			VALUES($1,$2,$3,'running',now(),NULL,$4,now(),now()+$5::interval,NULL)
-			ON CONFLICT(flow_id,execution_id) DO UPDATE SET status='running',started_at=now(),finished_at=NULL,heartbeat_at=now(),lease_expires_at=EXCLUDED.lease_expires_at,finish_reason=NULL
-			WHERE flow_executions.backend IS NOT DISTINCT FROM EXCLUDED.backend AND flow_executions.generation=EXCLUDED.generation`, flowID, executionID, emptyToNull(backend), generation, lease.String())
+		tag, execErr := tx.Exec(ctx, `INSERT INTO flow_executions(flow_id,execution_id,backend,status,started_at,finished_at,generation,heartbeat_at,lease_expires_at,finish_reason,incarnation_id)
+			VALUES($1,$2,$3,'running',now(),NULL,$4,now(),now()+$5::interval,NULL,$6)
+			ON CONFLICT(incarnation_id,execution_id) DO UPDATE SET status='running',started_at=now(),finished_at=NULL,heartbeat_at=now(),lease_expires_at=EXCLUDED.lease_expires_at,finish_reason=NULL
+			WHERE flow_executions.backend IS NOT DISTINCT FROM EXCLUDED.backend AND flow_executions.generation=EXCLUDED.generation`, flowID, executionID, emptyToNull(backend), generation, lease.String(), incarnationID)
 		if execErr != nil {
 			return fmt.Errorf("register flow execution: %w", execErr)
 		}
@@ -542,7 +605,29 @@ func (p *PostgresEngine) FinishExecutionReason(ctx context.Context, flowID, exec
 }
 func (p *PostgresEngine) ActiveExecutionsThrough(ctx context.Context, flowID string, generation int64) (int, error) {
 	var n int
-	err := p.pool.QueryRow(ctx, "SELECT count(*) FROM flow_executions WHERE flow_id=$1 AND status='running' AND generation <= $2", flowID, generation).Scan(&n)
+	err := p.pool.QueryRow(ctx, `
+SELECT count(*)
+FROM (
+  SELECT execution.execution_id
+  FROM flow_executions AS execution
+  JOIN flows AS flow ON flow.incarnation_id=execution.incarnation_id
+  WHERE flow.id=$1 AND execution.status='running' AND execution.generation <= $2
+  UNION ALL
+  SELECT acquisition.execution_id
+  FROM flows AS flow
+  JOIN producer_leases AS producer ON producer.incarnation_id=flow.incarnation_id
+  JOIN execution_acquisitions AS acquisition ON acquisition.acquisition_id=producer.acquisition_id
+  WHERE flow.id=$1
+    AND producer.generation <= $2
+    AND producer.lease_expires_at > clock_timestamp()
+    AND acquisition.finished_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM flow_executions AS execution
+      WHERE execution.incarnation_id=flow.incarnation_id
+        AND execution.execution_id=acquisition.execution_id
+        AND execution.status='running'
+    )
+) AS active`, flowID, generation).Scan(&n)
 	return n, err
 }
 func (p *PostgresEngine) ReconcileTerminatedExecutions(ctx context.Context, flowID string, generation int64, backend string, executionIDs []string, reason string) error {
@@ -577,7 +662,9 @@ func getFlowAndControlForUpdate(ctx context.Context, tx pgx.Tx, id string) (flow
 	return f, c, nil
 }
 func recordStateEvent(ctx context.Context, tx pgx.Tx, id, from, to, reason string) error {
-	_, err := tx.Exec(ctx, "INSERT INTO flow_state_events(flow_id,from_state,to_state,reason) VALUES($1,$2,$3,$4)", id, emptyToNull(from), to, emptyToNull(reason))
+	_, err := tx.Exec(ctx, `
+INSERT INTO flow_state_events(flow_id,incarnation_id,from_state,to_state,reason)
+SELECT id,incarnation_id,$2,$3,$4 FROM flows WHERE id=$1`, id, emptyToNull(from), to, emptyToNull(reason))
 	if err != nil {
 		return fmt.Errorf("record flow state: %w", err)
 	}

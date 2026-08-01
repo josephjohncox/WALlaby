@@ -73,6 +73,13 @@ type Destination struct {
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.spec = spec
+	opened := false
+	defer func() {
+		if !opened && d.pool != nil {
+			d.pool.Close()
+			d.pool = nil
+		}
+	}()
 	dsn := spec.Options[optDSN]
 	if dsn == "" {
 		return errors.New("postgres dsn is required")
@@ -89,6 +96,12 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	if err := iamProvider.ApplyToPoolConfig(ctx, poolCfg); err != nil {
 		return err
 	}
+	maxConns := parseInt(spec.Options["pool_max_conns"], 4)
+	if maxConns < 1 || maxConns > 64 {
+		return fmt.Errorf("postgres pool_max_conns must be between 1 and 64, got %d", maxConns)
+	}
+	poolCfg.MaxConns = int32(maxConns) // #nosec G115 -- range checked above.
+	poolCfg.MinConns = 0
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
@@ -142,7 +155,13 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 			return err
 		}
 	}
+	if d.writeMode == writeModeTarget && d.batchMode == batchModeTarget {
+		if err := d.ensureManagedReceiptTable(ctx); err != nil {
+			return err
+		}
+	}
 
+	opened = true
 	return nil
 }
 
@@ -154,20 +173,38 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		return nil
 	}
 
-	mode := d.writeMode
-	if mode == "" {
-		mode = writeModeTarget
+	tx, err := d.beginWriteTransaction(ctx)
+	if err != nil {
+		return err
 	}
+	if err := d.applyTransaction(ctx, tx, batch); err != nil {
+		_ = tx.Rollback(ctx)
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
 
+func (d *Destination) beginWriteTransaction(ctx context.Context) (pgx.Tx, error) {
 	tx, err := d.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
+		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
 	if d.syncCommit != "" {
 		if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL synchronous_commit = %s", d.syncCommit)); err != nil {
 			_ = tx.Rollback(ctx)
-			return fmt.Errorf("set synchronous_commit: %w", err)
+			return nil, fmt.Errorf("set synchronous_commit: %w", err)
 		}
+	}
+	return tx, nil
+}
+
+func (d *Destination) applyTransaction(ctx context.Context, tx pgx.Tx, batch connector.Batch) error {
+	mode := d.writeMode
+	if mode == "" {
+		mode = writeModeTarget
 	}
 	targetRecords := map[string][]connector.Record{}
 	for _, record := range batch.Records {
@@ -182,36 +219,26 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	}
 	for target, records := range targetRecords {
 		if err := d.applyBatch(ctx, tx, target, batch.Schema, records, mode); err != nil {
-			_ = tx.Rollback(ctx)
 			return err
 		}
 	}
 	if d.metaEnabled {
-		for _, record := range batch.Records {
-			if record.Operation == connector.OpDDL {
-				continue
-			}
-			if err := d.upsertMetadata(ctx, tx, batch.Schema, record, batch.Checkpoint); err != nil {
-				_ = tx.Rollback(ctx)
-				return err
-			}
+		if err := d.upsertMetadataBatch(ctx, tx, batch.Schema, batch.Records, batch.Checkpoint); err != nil {
+			return err
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
 	}
 	return nil
 }
 
 func (d *Destination) Close(ctx context.Context) error {
-	if d.pool != nil {
-		if err := d.finalizeStaging(ctx); err != nil {
-			d.pool.Close()
-			return err
-		}
-		d.pool.Close()
+	if d.pool == nil {
+		return nil
 	}
-	return nil
+	defer func() {
+		d.pool.Close()
+		d.pool = nil
+	}()
+	return d.finalizeStaging(ctx)
 }
 
 // ResolveStaging applies staged backfill data into target tables.
@@ -328,45 +355,71 @@ func (d *Destination) applyAppendBatch(ctx context.Context, tx pgx.Tx, target st
 }
 
 func (d *Destination) applyTargetBatch(ctx context.Context, tx pgx.Tx, target string, schema connector.Schema, records []connector.Record) error {
-	inserts := make([]connector.Record, 0, len(records))
-	updates := make([]connector.Record, 0, len(records))
-	deletes := make([]connector.Record, 0, len(records))
-	for _, record := range records {
-		switch record.Operation {
-		case connector.OpInsert, connector.OpLoad:
-			inserts = append(inserts, record)
-		case connector.OpUpdate:
-			updates = append(updates, record)
-		case connector.OpDelete:
-			deletes = append(deletes, record)
-		}
+	groups, err := planTargetOperations(schema, records)
+	if err != nil {
+		return err
 	}
-
-	updatesSameKey := make([]connector.Record, 0, len(updates))
-	updatesKeyChange := make([]connector.Record, 0, len(updates))
-	for _, record := range updates {
-		changed, err := keyChanged(schema, record)
+	for _, group := range groups {
+		switch group.kind {
+		case targetOperationUpsert:
+			err = d.upsertRows(ctx, tx, target, schema, group.records)
+		case targetOperationKeyChange:
+			err = d.updateRows(ctx, tx, target, schema, group.records)
+		case targetOperationDelete:
+			err = d.deleteRows(ctx, tx, target, schema, group.records)
+		}
 		if err != nil {
 			return err
 		}
-		if changed {
-			updatesKeyChange = append(updatesKeyChange, record)
-			continue
-		}
-		updatesSameKey = append(updatesSameKey, record)
-	}
-
-	inserts = append(inserts, updatesSameKey...)
-	if err := d.upsertRows(ctx, tx, target, schema, inserts); err != nil {
-		return err
-	}
-	if err := d.updateRows(ctx, tx, target, schema, updatesKeyChange); err != nil {
-		return err
-	}
-	if err := d.deleteRows(ctx, tx, target, schema, deletes); err != nil {
-		return err
 	}
 	return nil
+}
+
+type targetOperationKind uint8
+
+const (
+	targetOperationUpsert targetOperationKind = iota + 1
+	targetOperationKeyChange
+	targetOperationDelete
+)
+
+type targetOperationGroup struct {
+	kind    targetOperationKind
+	records []connector.Record
+}
+
+func planTargetOperations(schema connector.Schema, records []connector.Record) ([]targetOperationGroup, error) {
+	groups := make([]targetOperationGroup, 0, len(records))
+	for _, record := range records {
+		var kind targetOperationKind
+		switch record.Operation {
+		case connector.OpInsert, connector.OpLoad:
+			kind = targetOperationUpsert
+		case connector.OpUpdate:
+			changed, err := keyChanged(schema, record)
+			if err != nil {
+				return nil, err
+			}
+			if changed {
+				kind = targetOperationKeyChange
+			} else {
+				kind = targetOperationUpsert
+			}
+		case connector.OpDelete:
+			kind = targetOperationDelete
+		default:
+			continue
+		}
+
+		// Key-changing updates must execute one statement at a time. Combining
+		// 1→2 and 2→3 in one UPDATE ... FROM statement evaluates both matches
+		// against one PostgreSQL statement snapshot and leaves the row at 2.
+		if len(groups) == 0 || groups[len(groups)-1].kind != kind || kind == targetOperationKeyChange {
+			groups = append(groups, targetOperationGroup{kind: kind})
+		}
+		groups[len(groups)-1].records = append(groups[len(groups)-1].records, record)
+	}
+	return groups, nil
 }
 
 type rowGroup struct {
@@ -867,44 +920,76 @@ func (d *Destination) ensureMetaTable(ctx context.Context) error {
 	return nil
 }
 
-func (d *Destination) upsertMetadata(ctx context.Context, tx pgx.Tx, schema connector.Schema, record connector.Record, checkpoint connector.Checkpoint) error {
-	key, err := decodeKey(record.Key)
-	if err != nil {
-		return err
+func (d *Destination) upsertMetadataBatch(ctx context.Context, tx pgx.Tx, schema connector.Schema, records []connector.Record, checkpoint connector.Checkpoint) error {
+	type metadataRow struct {
+		record connector.Record
+		key    map[string]any
 	}
-
-	pkCols := make([]string, 0, len(key))
-	pkVals := make([]any, 0, len(key))
-	for col, val := range key {
-		metaCol := d.metaPKPrefix + col
-		if err := d.ensureMetaColumn(ctx, metaCol); err != nil {
+	rows := make([]metadataRow, 0, len(records))
+	keyColumns := map[string]struct{}{}
+	for _, record := range records {
+		if record.Operation == connector.OpDDL {
+			continue
+		}
+		key, err := decodeKey(record.Key)
+		if err != nil {
 			return err
 		}
-		pkCols = append(pkCols, metaCol)
-		pkVals = append(pkVals, val)
+		for column := range key {
+			keyColumns[column] = struct{}{}
+		}
+		rows = append(rows, metadataRow{record: record, key: key})
 	}
-
-	target := quoteIdent(d.metaSchema, '"') + "." + quoteIdent(d.metaTable, '"')
-	syncedAt := record.Timestamp
-	if syncedAt.IsZero() {
-		syncedAt = time.Now().UTC()
+	if len(rows) == 0 {
+		return nil
 	}
-	keyJSON := string(record.Key)
-	if keyJSON == "" {
-		raw, _ := json.Marshal(key)
-		keyJSON = string(raw)
+	keys := make([]string, 0, len(keyColumns))
+	for column := range keyColumns {
+		keys = append(keys, column)
 	}
-
-	columns := make([]string, 0, 8+len(pkCols))
+	sort.Strings(keys)
+	pkColumns := make([]string, len(keys))
+	for index, column := range keys {
+		pkColumns[index] = d.metaPKPrefix + column
+		if err := d.ensureMetaColumn(ctx, pkColumns[index]); err != nil {
+			return err
+		}
+	}
+	columns := make([]string, 0, 8+len(pkColumns))
 	columns = append(columns, "flow_id", "source_schema", "source_table", "synced_at", "is_deleted", "lsn", "operation", "key_json")
-	values := make([]any, 0, 8+len(pkVals))
-	values = append(values, d.flowID, schema.Namespace, record.Table, syncedAt, record.Operation == connector.OpDelete, checkpoint.LSN, string(record.Operation), keyJSON)
-	columns = append(columns, pkCols...)
-	values = append(values, pkVals...)
-
-	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(columns), placeholders(1, len(columns)))
-	if _, err := tx.Exec(ctx, stmt, values...); err != nil {
-		return fmt.Errorf("insert meta row: %w", err)
+	columns = append(columns, pkColumns...)
+	const maxMetadataRowsPerInsert = 500
+	target := quoteIdent(d.metaSchema, '"') + "." + quoteIdent(d.metaTable, '"')
+	fallbackTimestamp := time.Now().UTC()
+	for start := 0; start < len(rows); start += maxMetadataRowsPerInsert {
+		end := min(start+maxMetadataRowsPerInsert, len(rows))
+		values := make([]any, 0, (end-start)*len(columns))
+		var statement strings.Builder
+		_, _ = fmt.Fprintf(&statement, "INSERT INTO %s (%s) VALUES ", target, quoteColumns(columns))
+		for rowIndex, row := range rows[start:end] {
+			if rowIndex > 0 {
+				statement.WriteByte(',')
+			}
+			statement.WriteByte('(')
+			statement.WriteString(placeholders(len(values)+1, len(columns)))
+			statement.WriteByte(')')
+			syncedAt := row.record.Timestamp
+			if syncedAt.IsZero() {
+				syncedAt = fallbackTimestamp
+			}
+			keyJSON := string(row.record.Key)
+			if keyJSON == "" {
+				raw, _ := json.Marshal(row.key)
+				keyJSON = string(raw)
+			}
+			values = append(values, d.flowID, schema.Namespace, row.record.Table, syncedAt, row.record.Operation == connector.OpDelete, checkpoint.LSN, string(row.record.Operation), keyJSON)
+			for _, key := range keys {
+				values = append(values, row.key[key])
+			}
+		}
+		if _, err := tx.Exec(ctx, statement.String(), values...); err != nil {
+			return fmt.Errorf("insert %d metadata rows: %w", end-start, err)
+		}
 	}
 	return nil
 }
@@ -1474,6 +1559,17 @@ func parseBool(value string, fallback bool) bool {
 		return fallback
 	}
 	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func parseInt(value string, fallback int) int {
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return fallback
 	}

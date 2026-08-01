@@ -61,6 +61,8 @@ const (
 var ErrObjectConflict = errors.New("s3 object identity conflict")
 
 // ObjectConflictError describes a fail-closed stable-key collision.
+const maxConditionalPutBytes int64 = 5 << 30
+
 type ObjectConflictError struct {
 	Bucket       string
 	Key          string
@@ -307,6 +309,9 @@ func (d *Destination) writeBatch(ctx context.Context, batch connector.Batch, rec
 	body, contentType, contentEncoding, err := d.prepareBody(payload)
 	if err != nil {
 		return err
+	}
+	if int64(len(body)) > maxConditionalPutBytes {
+		return fmt.Errorf("S3 object size %d exceeds the 5 GiB conditional single-PUT limit; replay-safe multipart upload is not implemented", len(body))
 	}
 	batchHash, err := connector.BatchContentHash(batch)
 	if err != nil {

@@ -125,6 +125,9 @@ jobs:
         env:
           BUF_BREAKING_REF: ${{ github.event.pull_request.base.sha }}
 
+      - name: Durable-core PR contracts
+        run: just test-durable-pr
+
       - name: Unit tests with completeness accounting
         run: |
           go test ./tools/testcomplete

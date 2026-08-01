@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync/atomic"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/registry"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
@@ -22,6 +23,11 @@ const (
 	executionLease     = 15 * time.Second
 	executionHeartbeat = 250 * time.Millisecond
 )
+
+type managedDeliveryRuntime interface {
+	stream.ManagedDeliveryCoordinator
+	RegisterDestinationRevision(context.Context, authority.RunFence, string, string, string) error
+}
 
 // FlowRunner executes one already-running flow. It never changes desired
 // lifecycle state merely because a finite run completed successfully.
@@ -40,6 +46,8 @@ type FlowRunner struct {
 	ExecutionBackend   string
 	ExecutionID        string
 	ExpectedGeneration int64
+	Authority          authority.Store
+	Deliveries         managedDeliveryRuntime
 }
 
 func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Source, destinations []stream.DestinationConfig) (runErr error) {
@@ -57,7 +65,11 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 	if err != nil {
 		return err
 	}
+	managed := connector.IsManagedSourceSpec(f.Source)
 	generation := r.ExpectedGeneration
+	if managed && generation <= 0 {
+		return errors.New("managed flow execution requires an explicit positive lifecycle generation")
+	}
 	if generation == 0 {
 		generation = control.Generation
 	}
@@ -70,30 +82,65 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 	if backend == "" {
 		backend = "worker"
 	}
-	// Validate data-plane dependencies before registering an execution or
-	// opening any connector.
+	var runFence *authority.RunFence
+	if managed {
+		if r.Authority == nil || r.Deliveries == nil {
+			return errors.New("managed flow runner requires PostgreSQL authority and delivery coordinator")
+		}
+		acquired, err := r.Authority.AcquireProducer(ctx, f.ID, executionID, backend, generation, executionLease)
+		if err != nil {
+			return err
+		}
+		runFence = &acquired
+	}
+
+	// Validate data-plane dependencies before opening any connector. Managed
+	// construction receives the exact acquired fence.
 	streamRunner, err := NewStreamRunner(f, source, destinations, StreamRunnerConfig{
-		Checkpoints:        r.Checkpoints,
-		Tracer:             r.Tracer,
-		Meters:             r.Meters,
-		DefaultWireFormat:  r.WireFormat,
-		StrictFormat:       r.StrictWire,
-		MaxEmptyReads:      r.MaxEmpty,
-		DefaultParallelism: r.Parallelism,
-		ResolveStaging:     r.ResolveStaging,
-		DDLExecutions:      r.DDLExecutions,
-		TraceSink:          r.TraceSink,
+		Checkpoints:         r.Checkpoints,
+		Tracer:              r.Tracer,
+		Meters:              r.Meters,
+		DefaultWireFormat:   r.WireFormat,
+		StrictFormat:        r.StrictWire,
+		MaxEmptyReads:       r.MaxEmpty,
+		DefaultParallelism:  r.Parallelism,
+		ResolveStaging:      r.ResolveStaging,
+		DDLExecutions:       r.DDLExecutions,
+		TraceSink:           r.TraceSink,
+		RunFence:            runFence,
+		DeliveryCoordinator: r.Deliveries,
 	})
 	if err != nil {
+		if runFence != nil {
+			_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
+		}
 		return err
 	}
-	if err := r.Engine.RegisterExecutionGeneration(ctx, f.ID, executionID, backend, generation, executionLease); err != nil {
-		return err
+	if managed {
+		destinationSpec := streamRunner.Destinations[0].Spec
+		revisionID := strings.TrimSpace(destinationSpec.Options["destination_revision_id"])
+		fingerprint, fingerprintErr := connector.DeliveryConfigFingerprint(destinationSpec)
+		if fingerprintErr == nil {
+			fingerprintErr = r.Deliveries.RegisterDestinationRevision(ctx, *runFence, revisionID, destinationSpec.Name, fingerprint)
+		}
+		if fingerprintErr != nil {
+			_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
+			return fingerprintErr
+		}
+	}
+	if !managed {
+		if err := r.Engine.RegisterExecutionGeneration(ctx, f.ID, executionID, backend, generation, executionLease); err != nil {
+			return err
+		}
 	}
 	defer func() {
 		reason := "completed"
 		if runErr != nil {
 			reason = "error"
+		}
+		if runFence != nil {
+			_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, reason)
+			return
 		}
 		_ = r.Engine.FinishExecutionReason(context.WithoutCancel(ctx), f.ID, executionID, reason)
 	}()
@@ -107,7 +154,7 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 
 	runCtx, cancelRun := context.WithCancel(flowSpanCtx)
 	watchCtx, stopWatcher := context.WithCancel(flowSpanCtx)
-	var lifecycleStopped atomic.Bool
+	watchErr := make(chan error, 1)
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
@@ -118,8 +165,17 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 			case <-watchCtx.Done():
 				return
 			case <-ticker.C:
-				if renewErr := r.Engine.RenewExecution(watchCtx, f.ID, executionID, generation, executionLease); renewErr != nil {
-					lifecycleStopped.Store(true)
+				var renewErr error
+				if runFence != nil {
+					renewErr = r.Authority.RenewProducer(watchCtx, *runFence, executionLease)
+				} else {
+					renewErr = r.Engine.RenewExecution(watchCtx, f.ID, executionID, generation, executionLease)
+				}
+				if renewErr != nil {
+					select {
+					case watchErr <- renewErr:
+					default:
+					}
 					cancelRun()
 					return
 				}
@@ -139,8 +195,15 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		if errors.Is(err, registry.ErrApprovalRequired) {
 			// Finish first so a concurrent Pause/Stop holding the lifecycle lock
 			// cannot deadlock while it waits for this execution to quiesce.
-			if finishErr := r.Engine.FinishExecutionReason(context.WithoutCancel(ctx), f.ID, executionID, "ddl_gated"); finishErr != nil {
-				return finishErr
+			if runFence != nil {
+				if finishErr := r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "ddl_gated"); finishErr != nil {
+					return finishErr
+				}
+			}
+			if runFence == nil {
+				if finishErr := r.Engine.FinishExecutionReason(context.WithoutCancel(ctx), f.ID, executionID, "ddl_gated"); finishErr != nil {
+					return finishErr
+				}
 			}
 			intentCtx, cancelIntent := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancelIntent()
@@ -153,12 +216,22 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 			}
 			return nil
 		}
-		if lifecycleStopped.Load() && errors.Is(err, context.Canceled) {
-			return nil
+		if errors.Is(err, context.Canceled) {
+			select {
+			case renewErr := <-watchErr:
+				return fmt.Errorf("renew execution authority: %w", renewErr)
+			default:
+			}
 		}
 		span.RecordError(err)
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			_, _ = r.Engine.Fail(context.WithoutCancel(ctx), f.ID)
+			if runFence != nil {
+				if !errors.Is(err, connector.ErrDeliveryIndeterminate) && !errors.Is(err, authority.ErrFenceRejected) && !errors.Is(err, authority.ErrLeaseExpired) {
+					_ = r.Authority.FailFlow(context.WithoutCancel(ctx), *runFence, err.Error())
+				}
+			} else {
+				_, _ = r.Engine.Fail(context.WithoutCancel(ctx), f.ID)
+			}
 		}
 		return err
 	}

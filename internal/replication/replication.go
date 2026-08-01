@@ -18,12 +18,18 @@ type Stream interface {
 
 // Change represents a decoded logical replication event.
 type Change struct {
-	LSN       LSN
-	Schema    string
-	Table     string
-	Operation string
-	Payload   []byte
-	DDL       string
-	Record    *connector.Record
-	SchemaDef *connector.Schema
+	LSN                  LSN
+	Schema               string
+	Table                string
+	Operation            string
+	Payload              []byte
+	DDL                  string
+	Record               *connector.Record
+	SchemaDef            *connector.Schema
+	TransactionID        uint32
+	TransactionBeginLSN  LSN
+	TransactionCommitLSN LSN
+	TransactionEndLSN    LSN
+	TransactionOrdinal   uint64
+	TransactionFinal     bool
 }

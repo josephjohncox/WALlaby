@@ -8,8 +8,8 @@
 
 | Connector | Mode | Status | Restart | Replay | Schema evolution | Integration |
 | --- | --- | --- | --- | --- | --- | --- |
-| `postgres` | cdc | maintained | yes | yes | yes | yes |
-| `postgres` | backfill | maintained | yes | yes | yes | yes |
+| `postgres` | cdc | experimental | no | no | yes | no |
+| `postgres` | backfill | experimental | no | no | yes | no |
 
 ## Destinations
 

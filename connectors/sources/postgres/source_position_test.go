@@ -156,12 +156,20 @@ func TestReadPreservesPerRecordSourcePositions(t *testing.T) {
 
 	changes := make(chan replication.Change, 2)
 	changes <- replication.Change{
-		LSN:    pglogrepl.LSN(0x10),
-		Record: &connector.Record{Operation: connector.OpDDL, DDL: "ALTER TABLE widgets ADD COLUMN first text"},
+		LSN: pglogrepl.LSN(0x30),
+		Record: &connector.Record{
+			Operation:      connector.OpDDL,
+			DDL:            "ALTER TABLE widgets ADD COLUMN first text",
+			SourcePosition: "0/10",
+		},
 	}
 	changes <- replication.Change{
-		LSN:    pglogrepl.LSN(0x20),
-		Record: &connector.Record{Operation: connector.OpDDL, DDL: "ALTER TABLE widgets ADD COLUMN second text"},
+		LSN: pglogrepl.LSN(0x30),
+		Record: &connector.Record{
+			Operation:      connector.OpDDL,
+			DDL:            "ALTER TABLE widgets ADD COLUMN second text",
+			SourcePosition: "0/20",
+		},
 	}
 
 	source := &Source{
@@ -182,12 +190,78 @@ func TestReadPreservesPerRecordSourcePositions(t *testing.T) {
 			batch.Records[1].SourcePosition,
 		)
 	}
-	if batch.Checkpoint.LSN != "0/20" {
-		t.Fatalf("batch checkpoint=%q, want 0/20", batch.Checkpoint.LSN)
+	if batch.Checkpoint.LSN != "0/30" {
+		t.Fatalf("batch checkpoint=%q, want transaction end 0/30", batch.Checkpoint.LSN)
 	}
 	if err := connector.ValidateBatch(batch); err != nil {
 		t.Fatalf("tableless logical DDL batch failed validation: %v", err)
 	}
+}
+
+func TestReadDoesNotCheckpointBeforeTransactionFinalFragment(t *testing.T) {
+	t.Parallel()
+
+	changes := make(chan replication.Change, 2)
+	changes <- transactionChange(42, 0x10, 0x38, "widgets", false)
+	changes <- transactionChange(42, 0x20, 0x38, "gadgets", true)
+
+	source := &Source{changes: changes, batchSize: 100, batchTimeout: time.Second}
+	first, err := source.Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Checkpoint.LSN != "" {
+		t.Fatalf("intermediate checkpoint=%q, want empty before transaction final fragment", first.Checkpoint.LSN)
+	}
+
+	second, err := source.Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Checkpoint.LSN != "0/38" {
+		t.Fatalf("final checkpoint=%q, want transaction end 0/38", second.Checkpoint.LSN)
+	}
+}
+
+func TestReadTransactionPreservesOrderedTableFragments(t *testing.T) {
+	t.Parallel()
+
+	changes := make(chan replication.Change, 3)
+	changes <- transactionChange(77, 0x10, 0x58, "widgets", false)
+	changes <- transactionChange(77, 0x20, 0x58, "gadgets", false)
+	changes <- transactionChange(77, 0x30, 0x58, "widgets", true)
+
+	source := &Source{changes: changes, batchSize: 1, batchTimeout: time.Millisecond}
+	transaction, err := source.ReadTransaction(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transaction.TransactionID != 77 || transaction.Checkpoint.LSN != "0/58" {
+		t.Fatalf("transaction=(xid:%d checkpoint:%q), want 77/0/58", transaction.TransactionID, transaction.Checkpoint.LSN)
+	}
+	if len(transaction.Fragments) != 3 {
+		t.Fatalf("fragments=%d, want 3 ordered table fragments", len(transaction.Fragments))
+	}
+	wantTables := []string{"widgets", "gadgets", "widgets"}
+	for index, fragment := range transaction.Fragments {
+		if fragment.Ordinal != uint64(index) || fragment.Batch.Schema.Name != wantTables[index] {
+			t.Fatalf("fragment %d = ordinal:%d table:%q, want %d/%q", index, fragment.Ordinal, fragment.Batch.Schema.Name, index, wantTables[index])
+		}
+		if fragment.Batch.Checkpoint.LSN != "" {
+			t.Fatalf("fragment %d checkpoint=%q, transaction checkpoint must be carried only by SourceTransaction", index, fragment.Batch.Checkpoint.LSN)
+		}
+	}
+}
+
+func transactionChange(xid uint32, ordinal uint64, end pglogrepl.LSN, table string, final bool) replication.Change {
+	change := sourceChange(end, table, 1, connector.OpInsert)
+	change.TransactionID = xid
+	change.TransactionBeginLSN = pglogrepl.LSN(0x8)
+	change.TransactionCommitLSN = end - 8
+	change.TransactionEndLSN = end
+	change.TransactionOrdinal = ordinal
+	change.TransactionFinal = final
+	return change
 }
 
 func sourceChange(lsn pglogrepl.LSN, table string, version int64, operation connector.Operation) replication.Change {

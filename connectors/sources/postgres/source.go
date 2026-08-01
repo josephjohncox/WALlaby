@@ -50,6 +50,12 @@ const (
 	optDDLMessagePrefix    = "ddl_message_prefix"
 	optToastFetch          = "toast_fetch"
 	optToastCacheSize      = "toast_cache_size"
+	optManaged             = "managed"
+	optMaxTxnRecords       = "max_transaction_records"
+	optMaxTxnBytes         = "max_transaction_bytes"
+	optSourceSystemID      = "source_system_identifier"
+	optSourceLineageID     = "source_lineage_id"
+	optPublicationRevision = "publication_revision"
 	optAWSRDSIAM           = "aws_rds_iam"
 	optAWSRegion           = "aws_region"
 	optAWSProfile          = "aws_profile"
@@ -79,6 +85,7 @@ type Source struct {
 	toastPool     *pgxpool.Pool
 	toastCache    *toastCache
 	lagPool       *pgxpool.Pool
+	sourceLineage string
 	pendingChange *replication.Change
 	Meters        *telemetry.Meters
 }
@@ -128,6 +135,12 @@ func changeEndsBatch(current changeBatchIdentity, change replication.Change) boo
 
 func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	s.spec = spec
+	opened := false
+	defer func() {
+		if !opened {
+			_ = s.closeResources(context.WithoutCancel(ctx), false)
+		}
+	}()
 
 	dsn, ok := spec.Options[optDSN]
 	if !ok || dsn == "" {
@@ -241,8 +254,18 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		return err
 	}
 
+	managed := parseBool(spec.Options[optManaged], false)
+	s.sourceLineage = strings.TrimSpace(spec.Options[optSourceLineageID])
+	maxTransactionRecords := parseInt(spec.Options[optMaxTxnRecords], 1_000_000)
+	maxTransactionBytes := parseInt(spec.Options[optMaxTxnBytes], 256<<20)
+	if maxTransactionRecords <= 0 || maxTransactionBytes <= 0 {
+		return errors.New("max_transaction_records and max_transaction_bytes must be positive")
+	}
 	opts := []replication.PostgresStreamOption{
 		replication.WithStatusInterval(statusInterval),
+		replication.WithRequireAuthorizedStart(managed),
+		replication.WithExpectedSystemID(spec.Options[optSourceSystemID]),
+		replication.WithTransactionLimits(maxTransactionRecords, int64(maxTransactionBytes)),
 	}
 	if iamProvider != nil {
 		opts = append(opts, replication.WithConnConfigFunc(iamProvider.ApplyToConnConfig))
@@ -287,6 +310,16 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		return fmt.Errorf("create lag pool: %w", err)
 	}
 	s.lagPool = lagPool
+	if managed {
+		expectedRevision := strings.TrimSpace(spec.Options[optPublicationRevision])
+		actualRevision, err := PublicationFingerprint(ctx, lagPool, s.publication)
+		if err != nil {
+			return err
+		}
+		if actualRevision != expectedRevision {
+			return fmt.Errorf("managed publication revision %s does not match configured %s", actualRevision, expectedRevision)
+		}
+	}
 
 	if s.Meters != nil {
 		opts = append(opts, replication.WithProtocolErrorReporter(s.recordProtocolError))
@@ -295,18 +328,6 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	s.stream = replication.NewPostgresStream(dsn, opts...)
 	changes, err := s.stream.Start(ctx, s.slot, s.publication)
 	if err != nil {
-		if s.lagPool != nil {
-			s.lagPool.Close()
-			s.lagPool = nil
-		}
-		if s.stateStore != nil {
-			s.stateStore.Close()
-			s.stateStore = nil
-		}
-		if s.typeResolver != nil {
-			s.typeResolver.Close()
-			s.typeResolver = nil
-		}
 		return err
 	}
 	s.changes = changes
@@ -321,13 +342,11 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 			Options:     sanitizeOptions(spec.Options),
 		})
 		if err != nil {
-			_ = s.stream.Stop(ctx)
-			s.stateStore.Close()
-			s.stateStore = nil
 			return err
 		}
 	}
 
+	opened = true
 	return nil
 }
 
@@ -349,6 +368,8 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 	var checkpoint connector.Checkpoint
 	var identity changeBatchIdentity
 	identitySet := false
+	var transactionID uint32
+	transactionSet := false
 
 	timer := time.NewTimer(s.batchTimeout)
 	defer timer.Stop()
@@ -418,10 +439,19 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 			return connector.Batch{}, io.EOF
 		}
 
+		if transactionSet && change.TransactionID != 0 && change.TransactionID != transactionID {
+			deferred := change
+			s.pendingChange = &deferred
+			return finishBatch(), nil
+		}
 		if identitySet && changeEndsBatch(identity, change) {
 			deferred := change
 			s.pendingChange = &deferred
 			return finishBatch(), nil
+		}
+		if !transactionSet && change.TransactionID != 0 {
+			transactionID = change.TransactionID
+			transactionSet = true
 		}
 		if processSpan == nil {
 			waitSpan.End()
@@ -432,7 +462,9 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 				identity, identitySet = identityForChange(change)
 			}
 			record := *change.Record
-			record.SourcePosition = change.LSN.String()
+			if record.SourcePosition == "" {
+				record.SourcePosition = change.LSN.String()
+			}
 			if err := s.handleToast(ctx, change, &record); err != nil {
 				processSpan.End()
 				return connector.Batch{}, err
@@ -442,15 +474,133 @@ func (s *Source) Read(ctx context.Context) (connector.Batch, error) {
 		if change.SchemaDef != nil {
 			schema = *change.SchemaDef
 		}
-		checkpoint = connector.Checkpoint{
-			LSN:       change.LSN.String(),
-			Timestamp: time.Now().UTC(),
+		// A committed PostgreSQL transaction may be split into table-scoped
+		// compatibility batches. Only its final fragment carries the
+		// transaction-end checkpoint, so an intermediate fragment can never
+		// authorize source feedback beyond work not yet delivered.
+		if change.TransactionID == 0 || change.TransactionFinal {
+			checkpoint = connector.Checkpoint{
+				LSN:       change.LSN.String(),
+				Timestamp: time.Now().UTC(),
+			}
 		}
 
 		if len(records) >= s.batchSize {
 			return finishBatch(), nil
 		}
 	}
+}
+
+// ReadTransaction returns one complete committed PostgreSQL transaction. It
+// preserves source order and groups only adjacent records with the same
+// table/schema identity into compatibility batches.
+func (s *Source) ReadTransaction(ctx context.Context) (connector.SourceTransaction, error) {
+	if s.changes == nil {
+		return connector.SourceTransaction{}, errors.New("source not started")
+	}
+
+	var transaction connector.SourceTransaction
+	transaction.SourceLineageID = s.sourceLineage
+	var currentIdentity changeBatchIdentity
+	identitySet := false
+	var fragment *connector.TransactionFragment
+
+	for {
+		change, err := s.nextTransactionChange(ctx)
+		if err != nil {
+			return connector.SourceTransaction{}, err
+		}
+		if transaction.TransactionID == 0 {
+			transaction.TransactionID = change.TransactionID
+			transaction.BeginLSN = change.TransactionBeginLSN.String()
+			transaction.CommitLSN = change.TransactionCommitLSN.String()
+			transaction.EndLSN = change.TransactionEndLSN.String()
+		}
+		if change.TransactionID != 0 && transaction.TransactionID != change.TransactionID {
+			return connector.SourceTransaction{}, fmt.Errorf(
+				"source transaction changed from xid %d to %d before final fragment",
+				transaction.TransactionID,
+				change.TransactionID,
+			)
+		}
+
+		if change.Record != nil {
+			identity, ok := identityForChange(change)
+			if !ok {
+				return connector.SourceTransaction{}, errors.New("postgres change record has no batch identity")
+			}
+			if !identitySet || currentIdentity != identity {
+				transaction.Fragments = append(transaction.Fragments, connector.TransactionFragment{
+					Ordinal: uint64(len(transaction.Fragments)),
+					Batch: connector.Batch{
+						WireFormat: s.wireFormat,
+					},
+				})
+				fragment = &transaction.Fragments[len(transaction.Fragments)-1]
+				currentIdentity = identity
+				identitySet = true
+			}
+			record := *change.Record
+			if record.SourcePosition == "" {
+				record.SourcePosition = change.LSN.String()
+			}
+			if err := s.handleToast(ctx, change, &record); err != nil {
+				return connector.SourceTransaction{}, err
+			}
+			fragment.Batch.Records = append(fragment.Batch.Records, record)
+			if change.SchemaDef != nil {
+				fragment.Batch.Schema = *change.SchemaDef
+			}
+		}
+
+		if change.TransactionFinal || change.TransactionID == 0 {
+			endLSN := change.TransactionEndLSN
+			if endLSN == 0 {
+				endLSN = change.LSN
+			}
+			transaction.EndLSN = endLSN.String()
+			transaction.Checkpoint = connector.Checkpoint{
+				LSN:       endLSN.String(),
+				Timestamp: time.Now().UTC(),
+			}
+			return transaction, nil
+		}
+	}
+}
+
+func (s *Source) nextTransactionChange(ctx context.Context) (replication.Change, error) {
+	if s.pendingChange != nil {
+		change := *s.pendingChange
+		s.pendingChange = nil
+		return change, nil
+	}
+	select {
+	case <-ctx.Done():
+		return replication.Change{}, ctx.Err()
+	case change, ok := <-s.changes:
+		if ok {
+			return change, nil
+		}
+		if s.stream != nil {
+			if err := s.stream.Err(); err != nil {
+				return replication.Change{}, err
+			}
+		}
+		return replication.Change{}, io.EOF
+	}
+}
+
+// InitialCheckpoint returns the exact validated start used by the replication
+// stream. It is available only after Open succeeds.
+func (s *Source) InitialCheckpoint() (connector.Checkpoint, bool) {
+	if s.stream == nil {
+		return connector.Checkpoint{}, false
+	}
+	lsn := s.stream.InitialLSN()
+	if lsn == 0 {
+		return connector.Checkpoint{}, false
+	}
+	return connector.Checkpoint{LSN: lsn.String()}, true
 }
 
 func (s *Source) Ack(ctx context.Context, checkpoint connector.Checkpoint) error {
@@ -464,23 +614,29 @@ func (s *Source) Ack(ctx context.Context, checkpoint connector.Checkpoint) error
 	if err != nil {
 		return fmt.Errorf("parse checkpoint lsn: %w", err)
 	}
-	s.stream.Ack(lsn)
 	if s.stateStore != nil {
 		if err := s.stateStore.RecordAck(ctx, s.stateID, checkpoint.LSN); err != nil {
 			return err
 		}
 	}
+	s.stream.Ack(lsn)
 	return nil
 }
 
 func (s *Source) Close(ctx context.Context) error {
-	if s.stream == nil {
-		return nil
+	return s.closeResources(ctx, true)
+}
+
+func (s *Source) closeResources(ctx context.Context, updateState bool) error {
+	var stopErr error
+	if s.stream != nil {
+		stopErr = s.stream.Stop(ctx)
+		s.stream = nil
 	}
-	err := s.stream.Stop(ctx)
-	s.stream = nil
 	if s.stateStore != nil {
-		_ = s.stateStore.UpdateState(ctx, s.stateID, "stopped")
+		if updateState {
+			_ = s.stateStore.UpdateState(ctx, s.stateID, "stopped")
+		}
 		s.stateStore.Close()
 		s.stateStore = nil
 	}
@@ -496,7 +652,9 @@ func (s *Source) Close(ctx context.Context) error {
 		s.lagPool.Close()
 		s.lagPool = nil
 	}
-	return err
+	s.changes = nil
+	s.pendingChange = nil
+	return stopErr
 }
 
 // DropSlot drops the replication slot for this source.
@@ -538,12 +696,9 @@ func (s *Source) DropSlot(ctx context.Context) error {
 
 func (s *Source) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		Support: connector.SupportMaintained,
+		Support: connector.SupportExperimental,
 		Evidence: connector.ContractEvidence{
-			Restart:         true,
-			Replay:          true,
 			SchemaEvolution: true,
-			Integration:     true,
 		},
 		SupportsDDL:           true,
 		SupportsSchemaChanges: true,

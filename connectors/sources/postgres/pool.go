@@ -22,6 +22,12 @@ func newPool(ctx context.Context, dsn string, options map[string]string) (*pgxpo
 	if err := iamProvider.ApplyToPoolConfig(ctx, cfg); err != nil {
 		return nil, err
 	}
+	maxConns := parseInt(options["pool_max_conns"], 4)
+	if maxConns < 1 || maxConns > 64 {
+		return nil, fmt.Errorf("postgres pool_max_conns must be between 1 and 64, got %d", maxConns)
+	}
+	cfg.MaxConns = int32(maxConns) // #nosec G115 -- range checked above.
+	cfg.MinConns = 0
 
 	afterConnect := cfg.AfterConnect
 	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {

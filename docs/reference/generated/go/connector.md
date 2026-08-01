@@ -18,10 +18,13 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [func CanonicalizeCheckpointPosition\(raw string\) \(string, error\)](<#CanonicalizeCheckpointPosition>)
 - [func CheckpointPositionID\(checkpoint Checkpoint\) \(string, error\)](<#CheckpointPositionID>)
 - [func CompareCheckpointLSN\(left, right string\) \(int, error\)](<#CompareCheckpointLSN>)
+- [func DeliveryConfigFingerprint\(spec Spec\) \(string, error\)](<#DeliveryConfigFingerprint>)
+- [func IsManagedSourceSpec\(spec Spec\) bool](<#IsManagedSourceSpec>)
 - [func NormalizeKeyForSchema\(schema Schema, key map\[string\]any\) \(map\[string\]any, error\)](<#NormalizeKeyForSchema>)
 - [func NormalizePostgresRecord\(schema Schema, values map\[string\]any\) error](<#NormalizePostgresRecord>)
 - [func NormalizeSourceMode\(raw string\) \(string, error\)](<#NormalizeSourceMode>)
 - [func ValidateBatch\(batch Batch\) error](<#ValidateBatch>)
+- [type AckGrant](<#AckGrant>)
 - [type Batch](<#Batch>)
 - [type Capabilities](<#Capabilities>)
   - [func ResolveDestinationCapabilities\(destination Destination, spec Spec\) Capabilities](<#ResolveDestinationCapabilities>)
@@ -30,6 +33,8 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [type Checkpoint](<#Checkpoint>)
 - [type CheckpointOutboxStore](<#CheckpointOutboxStore>)
 - [type CheckpointStore](<#CheckpointStore>)
+- [type ClaimFence](<#ClaimFence>)
+- [type ClaimKind](<#ClaimKind>)
 - [type Column](<#Column>)
 - [type ConfiguredDestinationCapabilities](<#ConfiguredDestinationCapabilities>)
 - [type ContractEvidence](<#ContractEvidence>)
@@ -43,20 +48,30 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [type DDLReconcileResult](<#DDLReconcileResult>)
   - [func \(r DDLReconcileResult\) Valid\(\) bool](<#DDLReconcileResult.Valid>)
 - [type DDLReconciler](<#DDLReconciler>)
+- [type DeliveryDisposition](<#DeliveryDisposition>)
+- [type DeliveryEvidence](<#DeliveryEvidence>)
+- [type DeliveryIntent](<#DeliveryIntent>)
+  - [func \(i DeliveryIntent\) Validate\(\) error](<#DeliveryIntent.Validate>)
 - [type DeliverySemantics](<#DeliverySemantics>)
 - [type Destination](<#Destination>)
 - [type EndpointType](<#EndpointType>)
 - [type FlowCheckpoint](<#FlowCheckpoint>)
+- [type InitialCheckpointSource](<#InitialCheckpointSource>)
+- [type ManagedDestination](<#ManagedDestination>)
 - [type Operation](<#Operation>)
 - [type OutboxEntry](<#OutboxEntry>)
 - [type OutboxStore](<#OutboxStore>)
 - [type Record](<#Record>)
 - [type ReplicationLagProvider](<#ReplicationLagProvider>)
+- [type RunFence](<#RunFence>)
 - [type Schema](<#Schema>)
 - [type SlotDropper](<#SlotDropper>)
 - [type Source](<#Source>)
+- [type SourceTransaction](<#SourceTransaction>)
 - [type Spec](<#Spec>)
 - [type SupportLevel](<#SupportLevel>)
+- [type TransactionFragment](<#TransactionFragment>)
+- [type TransactionalSource](<#TransactionalSource>)
 - [type WireFormat](<#WireFormat>)
 
 
@@ -79,6 +94,19 @@ const (
 var (
     ErrDDLReconciliationRequired      = errors.New("destination DDL reconciliation is required after an ambiguous attempt")
     ErrDDLReconciliationIndeterminate = errors.New("destination DDL reconciliation was indeterminate")
+)
+```
+
+<a name="ErrDeliveryConflict"></a>
+
+```go
+var (
+    // ErrDeliveryConflict means a stable delivery identity was reused with
+    // different logical content.
+    ErrDeliveryConflict = errors.New("delivery identity conflict")
+    // ErrDeliveryIndeterminate means the external outcome cannot be proven and
+    // must not be converted into a replay or receipt without reconciliation.
+    ErrDeliveryIndeterminate = errors.New("delivery outcome indeterminate")
 )
 ```
 
@@ -141,6 +169,24 @@ func CompareCheckpointLSN(left, right string) (int, error)
 
 CompareCheckpointLSN compares canonical PostgreSQL LSNs or decimal batch ordinals. Positions of different kinds are intentionally incomparable.
 
+<a name="DeliveryConfigFingerprint"></a>
+## func [DeliveryConfigFingerprint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L25>)
+
+```go
+func DeliveryConfigFingerprint(spec Spec) (string, error)
+```
+
+DeliveryConfigFingerprint returns a deterministic identity for the behavior of one destination revision. The revision ID itself is excluded so callers can compare two independently named revisions with identical configuration.
+
+<a name="IsManagedSourceSpec"></a>
+## func [IsManagedSourceSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_mode.go#L17>)
+
+```go
+func IsManagedSourceSpec(spec Spec) bool
+```
+
+IsManagedSourceSpec reports whether a source requests either the legacy managed protocol or a named managed profile. Control\-plane and runtime gates must use this single predicate so profile\-only flows cannot bypass fencing.
+
 <a name="NormalizeKeyForSchema"></a>
 ## func [NormalizeKeyForSchema](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/normalize.go#L251>)
 
@@ -160,7 +206,7 @@ func NormalizePostgresRecord(schema Schema, values map[string]any) error
 NormalizePostgresRecord coerces row values into stable, structure\-preserving types based on the Postgres column types in the provided schema.
 
 <a name="NormalizeSourceMode"></a>
-## func [NormalizeSourceMode](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_mode.go#L17>)
+## func [NormalizeSourceMode](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_mode.go#L35>)
 
 ```go
 func NormalizeSourceMode(raw string) (string, error)
@@ -178,6 +224,18 @@ func ValidateBatch(batch Batch) error
 ```
 
 ValidateBatch enforces the source\-to\-runner batch contract. Data batches describe exactly one table and one logical schema. DDL/control records may be grouped together, but never with data records. Tableless control batches are valid because PostgreSQL logical messages carry ordered DDL text and a source position without relation metadata. A zero record schema version is treated as inherited from Batch.Schema for adapters that omit the redundant field.
+
+<a name="AckGrant"></a>
+## type [AckGrant](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L34-L37>)
+
+AckGrant is a PostgreSQL\-authorized source feedback position.
+
+```go
+type AckGrant struct {
+    Checkpoint Checkpoint
+    PositionID string
+}
+```
 
 <a name="Batch"></a>
 ## type [Batch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L121-L126>)
@@ -275,6 +333,40 @@ type CheckpointStore interface {
     Put(ctx context.Context, flowID string, checkpoint Checkpoint) error
     List(ctx context.Context) ([]FlowCheckpoint, error)
 }
+```
+
+<a name="ClaimFence"></a>
+## type [ClaimFence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L26-L31>)
+
+ClaimFence adds exact work ownership to a producer fence.
+
+```go
+type ClaimFence struct {
+    RunFence
+    Kind       ClaimKind
+    WorkID     string
+    ClaimEpoch int64
+}
+```
+
+<a name="ClaimKind"></a>
+## type [ClaimKind](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L16>)
+
+ClaimKind scopes a resource claim without extending public lifecycle state.
+
+```go
+type ClaimKind string
+```
+
+<a name="ClaimSnapshot"></a>
+
+```go
+const (
+    ClaimSnapshot ClaimKind = "snapshot"
+    ClaimDelivery ClaimKind = "delivery"
+    ClaimConsumer ClaimKind = "consumer"
+    ClaimGC       ClaimKind = "gc"
+)
 ```
 
 <a name="Column"></a>
@@ -439,6 +531,65 @@ type DDLReconciler interface {
 }
 ```
 
+<a name="DeliveryDisposition"></a>
+## type [DeliveryDisposition](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L90>)
+
+DeliveryDisposition is the result of destination reconciliation.
+
+```go
+type DeliveryDisposition uint8
+```
+
+<a name="DeliveryIndeterminate"></a>
+
+```go
+const (
+    DeliveryIndeterminate DeliveryDisposition = iota
+    DeliveryNotApplied
+    DeliveryApplied
+)
+```
+
+<a name="DeliveryEvidence"></a>
+## type [DeliveryEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L84-L87>)
+
+DeliveryEvidence is untrusted external proof returned by a destination.
+
+```go
+type DeliveryEvidence struct {
+    ExternalID  string
+    ContentHash string
+}
+```
+
+<a name="DeliveryIntent"></a>
+## type [DeliveryIntent](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L48-L58>)
+
+DeliveryIntent is the immutable identity supplied to a reconcilable external destination attempt. PostgreSQL remains authoritative for adopting evidence as a durable receipt; destination evidence alone never advances a checkpoint.
+
+```go
+type DeliveryIntent struct {
+    FlowID                string
+    FlowIncarnationID     string
+    SourceLineageID       string
+    Generation            int64
+    AcquisitionID         string
+    LeaseEpoch            int64
+    DestinationRevisionID string
+    PositionID            string
+    ContentHash           string
+}
+```
+
+<a name="DeliveryIntent.Validate"></a>
+### func \(DeliveryIntent\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L61>)
+
+```go
+func (i DeliveryIntent) Validate() error
+```
+
+Validate rejects incomplete delivery identities before external I/O.
+
 <a name="DeliverySemantics"></a>
 ## type [DeliverySemantics](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L32-L39>)
 
@@ -510,6 +661,31 @@ FlowCheckpoint ties a checkpoint to a flow ID.
 type FlowCheckpoint struct {
     FlowID     string
     Checkpoint Checkpoint
+}
+```
+
+<a name="InitialCheckpointSource"></a>
+## type [InitialCheckpointSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L37-L40>)
+
+InitialCheckpointSource exposes the validated stream start after Open. A managed coordinator persists this cut and an ACK intent before the first source transaction, so a crash immediately after slot creation is recoverable.
+
+```go
+type InitialCheckpointSource interface {
+    Source
+    InitialCheckpoint() (Checkpoint, bool)
+}
+```
+
+<a name="ManagedDestination"></a>
+## type [ManagedDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L101-L105>)
+
+ManagedDestination applies an immutable delivery intent and reconciles an ambiguous prior attempt. Implementations must fail closed when evidence is insufficient.
+
+```go
+type ManagedDestination interface {
+    Destination
+    Apply(context.Context, DeliveryIntent, Batch) (DeliveryEvidence, error)
+    Reconcile(context.Context, DeliveryIntent) (DeliveryDisposition, DeliveryEvidence, error)
 }
 ```
 
@@ -596,6 +772,22 @@ type ReplicationLagProvider interface {
 }
 ```
 
+<a name="RunFence"></a>
+## type [RunFence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L6-L13>)
+
+RunFence is an immutable capability identifying one live flow producer.
+
+```go
+type RunFence struct {
+    FlowIncarnationID uuid.UUID
+    FlowID            string
+    Generation        int64
+    AcquisitionID     uuid.UUID
+    ExecutionID       string
+    LeaseEpoch        int64
+}
+```
+
 <a name="Schema"></a>
 ## type [Schema](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L71-L78>)
 
@@ -638,6 +830,23 @@ type Source interface {
 }
 ```
 
+<a name="SourceTransaction"></a>
+## type [SourceTransaction](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L9-L17>)
+
+SourceTransaction is a committed source transaction. Fragments preserve source order while allowing existing table\-scoped Batch contracts to remain unchanged. Checkpoint is the transaction\-end position and is the only position eligible for durable source feedback.
+
+```go
+type SourceTransaction struct {
+    SourceLineageID string
+    TransactionID   uint32
+    BeginLSN        string
+    CommitLSN       string
+    EndLSN          string
+    Fragments       []TransactionFragment
+    Checkpoint      Checkpoint
+}
+```
+
 <a name="Spec"></a>
 ## type [Spec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L51-L55>)
 
@@ -669,6 +878,30 @@ const (
     SupportDeprecated   SupportLevel = "deprecated"
     SupportPlaceholder  SupportLevel = "placeholder"
 )
+```
+
+<a name="TransactionFragment"></a>
+## type [TransactionFragment](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L21-L24>)
+
+TransactionFragment is a deterministic, ordered table/schema fragment of a committed source transaction.
+
+```go
+type TransactionFragment struct {
+    Ordinal uint64
+    Batch   Batch
+}
+```
+
+<a name="TransactionalSource"></a>
+## type [TransactionalSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L29-L32>)
+
+TransactionalSource is an optional source contract for managed execution. Legacy Source.Read remains available for compatibility, but managed PostgreSQL execution consumes complete transactions through this interface.
+
+```go
+type TransactionalSource interface {
+    Source
+    ReadTransaction(context.Context) (SourceTransaction, error)
+}
 ```
 
 <a name="WireFormat"></a>

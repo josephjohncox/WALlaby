@@ -287,7 +287,7 @@ func assertArrowRow(t *rapid.T, rec arrow.RecordBatch, fieldIndex map[string]int
 		t.Fatalf("arrow before json mismatch")
 	}
 	if tsVal := get("__ts"); tsVal != nil {
-		if !equalInt64(tsVal, record.Timestamp.UnixMilli()) {
+		if !equalInt64(tsVal, record.Timestamp.UnixMicro()) {
 			t.Fatalf("arrow timestamp mismatch")
 		}
 	}

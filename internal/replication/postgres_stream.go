@@ -22,34 +22,49 @@ import (
 
 // PostgresStream implements logical replication using pgoutput.
 type PostgresStream struct {
-	dsn            string
-	outputPlugin   string
-	statusInterval time.Duration
-	startLSN       pglogrepl.LSN
-	pluginArgs     []string
-	createSlot     bool
-	typeMap        *pgtype.Map
-	schemaHook     SchemaHook
-	typeResolver   TypeResolver
-	typeMu         sync.Mutex
-	typeNames      map[uint32]string
-	connConfigFunc func(context.Context, *pgconn.Config) error
-	protocolError  func(context.Context, string)
+	dsn                    string
+	outputPlugin           string
+	statusInterval         time.Duration
+	startLSN               pglogrepl.LSN
+	pluginArgs             []string
+	createSlot             bool
+	requireAuthorizedStart bool
+	expectedSystemID       string
+	maxTransactionRecords  int
+	maxTransactionBytes    int64
+	typeMap                *pgtype.Map
+	schemaHook             SchemaHook
+	typeResolver           TypeResolver
+	typeMu                 sync.Mutex
+	typeNames              map[uint32]string
+	connConfigFunc         func(context.Context, *pgconn.Config) error
+	protocolError          func(context.Context, string)
 
-	mu        sync.Mutex
-	conn      *pgconn.PgConn
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	changes   chan Change
-	lastErr   error
-	ackLSN    pglogrepl.LSN
-	recvLSN   pglogrepl.LSN
-	relations map[uint32]*pglogrepl.RelationMessage
-	schemas   map[uint32]connector.Schema
-	versions  map[uint32]int64
+	mu          sync.Mutex
+	conn        *pgconn.PgConn
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	changes     chan Change
+	lastErr     error
+	ackLSN      pglogrepl.LSN
+	recvLSN     pglogrepl.LSN
+	initialLSN  pglogrepl.LSN
+	relations   map[uint32]*pglogrepl.RelationMessage
+	schemas     map[uint32]connector.Schema
+	versions    map[uint32]int64
+	transaction *pendingTransaction
 
 	emitPlanDDL      bool
 	ddlMessagePrefix string
+}
+
+type pendingTransaction struct {
+	xid      uint32
+	beginLSN pglogrepl.LSN
+	finalLSN pglogrepl.LSN
+	changes  []Change
+	records  int
+	bytes    int64
 }
 
 // PostgresStreamOption configures the stream.
@@ -82,6 +97,34 @@ func WithPluginArgs(args []string) PostgresStreamOption {
 func WithCreateSlot(enabled bool) PostgresStreamOption {
 	return func(s *PostgresStream) {
 		s.createSlot = enabled
+	}
+}
+
+// WithRequireAuthorizedStart rejects an existing logical slot unless the
+// caller supplied a PostgreSQL-authoritative durable checkpoint.
+func WithRequireAuthorizedStart(enabled bool) PostgresStreamOption {
+	return func(s *PostgresStream) {
+		s.requireAuthorizedStart = enabled
+	}
+}
+
+// WithExpectedSystemID binds a managed stream to PostgreSQL's immutable system
+// identifier rather than relying on a reusable database name.
+func WithExpectedSystemID(systemID string) PostgresStreamOption {
+	return func(s *PostgresStream) {
+		s.expectedSystemID = strings.TrimSpace(systemID)
+	}
+}
+
+// WithTransactionLimits bounds decoded changes retained until COMMIT.
+func WithTransactionLimits(maxRecords int, maxBytes int64) PostgresStreamOption {
+	return func(s *PostgresStream) {
+		if maxRecords > 0 {
+			s.maxTransactionRecords = maxRecords
+		}
+		if maxBytes > 0 {
+			s.maxTransactionBytes = maxBytes
+		}
 	}
 }
 
@@ -152,19 +195,27 @@ type TypeInfoResolver interface {
 	ResolveTypeInfo(ctx context.Context, oid uint32) (TypeInfo, bool, error)
 }
 
+// RelationColumnIdentityResolver returns PostgreSQL's stable pg_attribute
+// number for a relation column.
+type RelationColumnIdentityResolver interface {
+	ResolveColumnIdentity(context.Context, uint32, string) (int16, bool, error)
+}
+
 // NewPostgresStream returns a Postgres logical replication stream.
 func NewPostgresStream(dsn string, opts ...PostgresStreamOption) *PostgresStream {
 	stream := &PostgresStream{
-		dsn:              dsn,
-		outputPlugin:     "pgoutput",
-		statusInterval:   10 * time.Second,
-		createSlot:       true,
-		relations:        make(map[uint32]*pglogrepl.RelationMessage),
-		schemas:          make(map[uint32]connector.Schema),
-		versions:         make(map[uint32]int64),
-		typeNames:        make(map[uint32]string),
-		emitPlanDDL:      true,
-		ddlMessagePrefix: "wallaby_ddl",
+		dsn:                   dsn,
+		outputPlugin:          "pgoutput",
+		statusInterval:        10 * time.Second,
+		createSlot:            true,
+		maxTransactionRecords: 1_000_000,
+		maxTransactionBytes:   256 << 20,
+		relations:             make(map[uint32]*pglogrepl.RelationMessage),
+		schemas:               make(map[uint32]connector.Schema),
+		versions:              make(map[uint32]int64),
+		typeNames:             make(map[uint32]string),
+		emitPlanDDL:           true,
+		ddlMessagePrefix:      "wallaby_ddl",
 	}
 
 	for _, opt := range opts {
@@ -212,17 +263,72 @@ func (p *PostgresStream) Start(ctx context.Context, slot, publication string) (<
 		_ = conn.Close(ctx)
 		return nil, fmt.Errorf("identify system: %w", err)
 	}
-
-	startLSN := p.startLSN
-	if startLSN == 0 {
-		startLSN = sysident.XLogPos
+	if p.expectedSystemID != "" && sysident.SystemID != p.expectedSystemID {
+		_ = conn.Close(ctx)
+		return nil, fmt.Errorf("PostgreSQL system identifier %s does not match managed source lineage %s", sysident.SystemID, p.expectedSystemID)
+	}
+	if p.requireAuthorizedStart && p.expectedSystemID == "" {
+		_ = conn.Close(ctx)
+		return nil, errors.New("managed replication requires source_system_identifier")
 	}
 
-	if p.createSlot {
-		_, err = pglogrepl.CreateReplicationSlot(ctx, conn, slot, p.outputPlugin, pglogrepl.CreateReplicationSlotOptions{})
-		if err != nil && !isSlotExistsErr(err) {
+	slotState, err := loadReplicationSlotState(ctx, conn, slot)
+	if errors.Is(err, errReplicationSlotNotFound) {
+		slotState = nil
+	} else if err != nil {
+		_ = conn.Close(ctx)
+		return nil, err
+	}
+
+	startLSN := p.startLSN
+	if slotState == nil {
+		if !p.createSlot {
 			_ = conn.Close(ctx)
-			return nil, fmt.Errorf("create replication slot: %w", err)
+			return nil, fmt.Errorf("replication slot %q does not exist", slot)
+		}
+		created, createErr := pglogrepl.CreateReplicationSlot(ctx, conn, slot, p.outputPlugin, pglogrepl.CreateReplicationSlotOptions{})
+		if createErr != nil {
+			if !isSlotExistsErr(createErr) {
+				_ = conn.Close(ctx)
+				return nil, fmt.Errorf("create replication slot: %w", createErr)
+			}
+			// A concurrent creator won. Inspect and validate the exact slot rather
+			// than treating duplicate_object as proof of compatibility.
+			slotState, err = loadReplicationSlotState(ctx, conn, slot)
+			if errors.Is(err, errReplicationSlotNotFound) {
+				_ = conn.Close(ctx)
+				return nil, fmt.Errorf("replication slot %q disappeared after concurrent creation", slot)
+			}
+			if err != nil {
+				_ = conn.Close(ctx)
+				return nil, err
+			}
+			if slotState == nil {
+				_ = conn.Close(ctx)
+				return nil, fmt.Errorf("replication slot %q disappeared after concurrent creation", slot)
+			}
+		} else {
+			consistentPoint, parseErr := pglogrepl.ParseLSN(created.ConsistentPoint)
+			if parseErr != nil {
+				_ = conn.Close(ctx)
+				return nil, fmt.Errorf("parse new slot consistent point %q: %w", created.ConsistentPoint, parseErr)
+			}
+			startLSN, err = resolveNewSlotStart(p.requireAuthorizedStart, startLSN, consistentPoint)
+			if err != nil {
+				_ = conn.Close(ctx)
+				return nil, err
+			}
+		}
+	}
+	if slotState != nil {
+		if err := validateExistingSlotAuthorization(p.requireAuthorizedStart, startLSN); err != nil {
+			_ = conn.Close(ctx)
+			return nil, fmt.Errorf("validate replication slot %q: %w", slot, err)
+		}
+		startLSN, err = resolveSlotStart(*slotState, p.outputPlugin, sysident.DBName, startLSN, sysident.XLogPos)
+		if err != nil {
+			_ = conn.Close(ctx)
+			return nil, fmt.Errorf("validate replication slot %q: %w", slot, err)
 		}
 	}
 
@@ -246,10 +352,11 @@ func (p *PostgresStream) Start(ctx context.Context, slot, publication string) (<
 	p.conn = conn
 	p.cancel = cancel
 	p.changes = changes
+	p.initialLSN = startLSN
 	p.mu.Unlock()
 
 	p.wg.Add(1)
-	go p.consume(streamCtx, startLSN)
+	go p.consume(streamCtx)
 
 	return changes, nil
 }
@@ -288,6 +395,14 @@ func (p *PostgresStream) Ack(lsn pglogrepl.LSN) {
 	p.mu.Unlock()
 }
 
+// InitialLSN returns the validated start point used for this stream. For a
+// newly-created slot this is PostgreSQL's returned consistent point.
+func (p *PostgresStream) InitialLSN() pglogrepl.LSN {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.initialLSN
+}
+
 // LastReceivedLSN returns the most recent LSN observed from WAL data.
 func (p *PostgresStream) LastReceivedLSN() pglogrepl.LSN {
 	p.mu.Lock()
@@ -295,7 +410,7 @@ func (p *PostgresStream) LastReceivedLSN() pglogrepl.LSN {
 	return p.recvLSN
 }
 
-func (p *PostgresStream) consume(ctx context.Context, startLSN pglogrepl.LSN) {
+func (p *PostgresStream) consume(ctx context.Context) {
 	defer p.wg.Done()
 	defer func() {
 		p.mu.Lock()
@@ -313,7 +428,6 @@ func (p *PostgresStream) consume(ctx context.Context, startLSN pglogrepl.LSN) {
 		return
 	}
 
-	clientXLogPos := startLSN
 	nextStandbyMessageDeadline := time.Now().Add(p.statusInterval)
 
 	for {
@@ -322,11 +436,11 @@ func (p *PostgresStream) consume(ctx context.Context, startLSN pglogrepl.LSN) {
 		}
 
 		if time.Now().After(nextStandbyMessageDeadline) {
-			clientXLogPos = p.ackPosition()
+			ackLSN := p.ackPosition()
 			err := pglogrepl.SendStandbyStatusUpdate(ctx, conn, pglogrepl.StandbyStatusUpdate{
-				WALWritePosition: clientXLogPos,
-				WALFlushPosition: clientXLogPos,
-				WALApplyPosition: clientXLogPos,
+				WALWritePosition: ackLSN,
+				WALFlushPosition: ackLSN,
+				WALApplyPosition: ackLSN,
 			})
 			if err != nil {
 				p.setErr(fmt.Errorf("send standby status: %w", err))
@@ -370,9 +484,6 @@ func (p *PostgresStream) consume(ctx context.Context, startLSN pglogrepl.LSN) {
 				p.setErr(fmt.Errorf("parse keepalive: %w", err))
 				return
 			}
-			if pkm.ServerWALEnd > clientXLogPos {
-				clientXLogPos = pkm.ServerWALEnd
-			}
 			if pkm.ReplyRequested {
 				nextStandbyMessageDeadline = time.Time{}
 			}
@@ -390,7 +501,10 @@ func (p *PostgresStream) consume(ctx context.Context, startLSN pglogrepl.LSN) {
 				return
 			}
 
-			p.setReceivedLSN(xld.WALStart + pglogrepl.LSN(len(xld.WALData)))
+			// WALStart is a protocol location. WALData length is not an LSN delta;
+			// transaction-end progress is carried by CommitMessage and acknowledged
+			// only after the durable source checkpoint is committed.
+			p.setReceivedLSN(logicalReceivedPosition(xld))
 		default:
 			p.recordProtocolError(ctx, "unsupported_message_type")
 			p.setErr(fmt.Errorf("unsupported replication message type: %d", msg.Data[0]))
@@ -407,6 +521,19 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 	}
 
 	switch msg := logicalMsg.(type) {
+	case *pglogrepl.BeginMessage:
+		if p.transaction != nil {
+			p.recordProtocolError(ctx, "nested_begin")
+			return errors.New("received BEGIN while another source transaction is active")
+		}
+		p.transaction = &pendingTransaction{
+			xid:      msg.Xid,
+			beginLSN: xld.WALStart,
+			finalLSN: msg.FinalLSN,
+		}
+		return nil
+	case *pglogrepl.CommitMessage:
+		return p.commitTransaction(ctx, msg)
 	case *pglogrepl.RelationMessage:
 		p.relations[msg.RelationID] = msg
 		prevSchema, hasPrev := p.schemas[msg.RelationID]
@@ -417,7 +544,9 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 				return fmt.Errorf("schema hook: %w", err)
 			}
 			if hasPrev {
-				plan := internalschema.Diff(prevSchema, schemaDef)
+				// A Relation message describes the published shape, not the relation, so
+				// an absent column must never become a destination DROP COLUMN.
+				plan := internalschema.DiffPublishedShape(prevSchema, schemaDef)
 				if plan.HasChanges() {
 					if err := p.schemaHook.OnSchemaChange(ctx, plan); err != nil {
 						return fmt.Errorf("schema change hook: %w", err)
@@ -492,6 +621,78 @@ func (p *PostgresStream) recordProtocolError(ctx context.Context, errorType stri
 	p.protocolError(ctx, errorType)
 }
 
+func (p *PostgresStream) commitTransaction(ctx context.Context, msg *pglogrepl.CommitMessage) error {
+	transaction := p.transaction
+	if transaction == nil {
+		p.recordProtocolError(ctx, "commit_without_begin")
+		return errors.New("received COMMIT without an active source transaction")
+	}
+	p.transaction = nil
+
+	if len(transaction.changes) == 0 {
+		return p.sendChange(ctx, Change{
+			LSN:                  msg.TransactionEndLSN,
+			TransactionID:        transaction.xid,
+			TransactionBeginLSN:  transaction.beginLSN,
+			TransactionCommitLSN: msg.CommitLSN,
+			TransactionEndLSN:    msg.TransactionEndLSN,
+			TransactionFinal:     true,
+		})
+	}
+
+	var transactionOrdinal uint64
+	for index := range transaction.changes {
+		change := transaction.changes[index]
+		change.LSN = msg.TransactionEndLSN
+		change.TransactionID = transaction.xid
+		change.TransactionBeginLSN = transaction.beginLSN
+		change.TransactionCommitLSN = msg.CommitLSN
+		change.TransactionEndLSN = msg.TransactionEndLSN
+		change.TransactionOrdinal = transactionOrdinal
+		transactionOrdinal++
+		change.TransactionFinal = index == len(transaction.changes)-1
+		if change.Record != nil {
+			// XLogData.ServerTime is an observation timestamp and changes on
+			// replay. The PostgreSQL commit timestamp is part of the logical
+			// transaction and therefore keeps delivery hashes restart-stable.
+			change.Record.Timestamp = msg.CommitTime
+		}
+		if err := p.sendChange(ctx, change); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *PostgresStream) enqueueChange(ctx context.Context, change Change) error {
+	if p.transaction == nil {
+		return p.sendChange(ctx, change)
+	}
+	encoded, err := json.Marshal(change)
+	if err != nil {
+		return fmt.Errorf("measure transaction change: %w", err)
+	}
+	nextRecords := p.transaction.records
+	if change.Record != nil {
+		nextRecords++
+	}
+	nextBytes := p.transaction.bytes + int64(len(encoded))
+	if nextRecords > p.maxTransactionRecords || nextBytes > p.maxTransactionBytes {
+		return fmt.Errorf(
+			"postgres transaction xid=%d exceeds managed buffer limit: records=%d/%d bytes=%d/%d",
+			p.transaction.xid,
+			nextRecords,
+			p.maxTransactionRecords,
+			nextBytes,
+			p.maxTransactionBytes,
+		)
+	}
+	p.transaction.records = nextRecords
+	p.transaction.bytes = nextBytes
+	p.transaction.changes = append(p.transaction.changes, change)
+	return nil
+}
+
 func (p *PostgresStream) emitChange(ctx context.Context, xld pglogrepl.XLogData, schema connector.Schema, record *connector.Record) error {
 	payload := make([]byte, len(xld.WALData))
 	copy(payload, xld.WALData)
@@ -510,7 +711,7 @@ func (p *PostgresStream) emitChange(ctx context.Context, xld pglogrepl.XLogData,
 		SchemaDef: &schema,
 	}
 
-	return p.sendChange(ctx, change)
+	return p.enqueueChange(ctx, change)
 }
 
 func (p *PostgresStream) emitSchemaChange(ctx context.Context, xld pglogrepl.XLogData, schema connector.Schema, plan internalschema.Plan) error {
@@ -524,11 +725,12 @@ func (p *PostgresStream) emitSchemaChange(ctx context.Context, xld pglogrepl.XLo
 	}
 
 	record := &connector.Record{
-		Table:         schema.Name,
-		Operation:     connector.OpDDL,
-		SchemaVersion: schema.Version,
-		DDLPlan:       planBytes,
-		Timestamp:     xld.ServerTime,
+		Table:          schema.Name,
+		Operation:      connector.OpDDL,
+		SchemaVersion:  schema.Version,
+		DDLPlan:        planBytes,
+		Timestamp:      xld.ServerTime,
+		SourcePosition: xld.WALStart.String(),
 	}
 	change := Change{
 		LSN:       xld.WALStart,
@@ -541,7 +743,7 @@ func (p *PostgresStream) emitSchemaChange(ctx context.Context, xld pglogrepl.XLo
 		SchemaDef: &schema,
 	}
 
-	return p.sendChange(ctx, change)
+	return p.enqueueChange(ctx, change)
 }
 
 func (p *PostgresStream) emitLogicalMessage(ctx context.Context, xld pglogrepl.XLogData, ddl string) error {
@@ -549,10 +751,11 @@ func (p *PostgresStream) emitLogicalMessage(ctx context.Context, xld pglogrepl.X
 	copy(payload, xld.WALData)
 
 	record := &connector.Record{
-		Operation: connector.OpDDL,
-		DDL:       ddl,
-		Timestamp: xld.ServerTime,
-		Payload:   payload,
+		Operation:      connector.OpDDL,
+		DDL:            ddl,
+		Timestamp:      xld.ServerTime,
+		Payload:        payload,
+		SourcePosition: xld.WALStart.String(),
 	}
 
 	change := Change{
@@ -563,7 +766,7 @@ func (p *PostgresStream) emitLogicalMessage(ctx context.Context, xld pglogrepl.X
 		Record:    record,
 	}
 
-	return p.sendChange(ctx, change)
+	return p.enqueueChange(ctx, change)
 }
 
 func (p *PostgresStream) sendChange(ctx context.Context, change Change) error {
@@ -606,19 +809,31 @@ func (p *PostgresStream) schemaForRelation(ctx context.Context, rel *pglogrepl.R
 		infoResolver = resolver
 	}
 
+	var columnIdentityResolver RelationColumnIdentityResolver
+	if resolver, ok := p.typeResolver.(RelationColumnIdentityResolver); ok {
+		columnIdentityResolver = resolver
+	}
+
 	columns := make([]connector.Column, 0, len(rel.Columns))
-	for _, col := range rel.Columns {
+	for index, col := range rel.Columns {
 		colType := p.resolveTypeName(ctx, col.DataType)
 		column := connector.Column{
 			Name:     col.Name,
 			Type:     colType,
 			Nullable: true,
+			TypeMetadata: map[string]string{
+				"source_relation_id": fmt.Sprintf("%d", rel.RelationID),
+				"source_column_id":   fmt.Sprintf("%d", index+1),
+			},
+		}
+		if columnIdentityResolver != nil {
+			if identity, ok, err := columnIdentityResolver.ResolveColumnIdentity(ctx, rel.RelationID, col.Name); err == nil && ok {
+				column.TypeMetadata["source_column_id"] = fmt.Sprintf("%d", identity)
+			}
 		}
 		if infoResolver != nil {
 			if info, ok, err := infoResolver.ResolveTypeInfo(ctx, col.DataType); err == nil && ok {
-				column.TypeMetadata = map[string]string{
-					"oid": fmt.Sprintf("%d", info.OID),
-				}
+				column.TypeMetadata["oid"] = fmt.Sprintf("%d", info.OID)
 				if info.Schema != "" {
 					column.TypeMetadata["type_schema"] = info.Schema
 				}
@@ -873,6 +1088,12 @@ func encodeKey(values map[string]any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+func logicalReceivedPosition(xld pglogrepl.XLogData) pglogrepl.LSN {
+	// A pgoutput payload length is not a WAL byte range. CommitMessage carries
+	// the transaction-end position separately.
+	return xld.WALStart
+}
+
 func (p *PostgresStream) setReceivedLSN(lsn pglogrepl.LSN) {
 	p.mu.Lock()
 	if lsn > p.recvLSN {
@@ -901,10 +1122,7 @@ func quotedIdentifiersForSchema(namespace, table string, columns []connector.Col
 func (p *PostgresStream) ackPosition() pglogrepl.LSN {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.ackLSN > 0 {
-		return p.ackLSN
-	}
-	return p.recvLSN
+	return p.ackLSN
 }
 
 func (p *PostgresStream) resolveTypeName(ctx context.Context, oid uint32) string {

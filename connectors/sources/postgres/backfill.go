@@ -215,12 +215,9 @@ func (b *BackfillSource) Close(_ context.Context) error {
 
 func (b *BackfillSource) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		Support: connector.SupportMaintained,
+		Support: connector.SupportExperimental,
 		Evidence: connector.ContractEvidence{
-			Restart:         true,
-			Replay:          true,
 			SchemaEvolution: true,
-			Integration:     true,
 		},
 		SupportsDDL:           false,
 		SupportsSchemaChanges: false,

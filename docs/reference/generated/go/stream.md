@@ -22,6 +22,7 @@ Package stream delivers source batches to destinations, persists checkpoints, ap
 - [type JSONTraceSink](<#JSONTraceSink>)
   - [func NewJSONTraceSink\(w io.Writer\) \*JSONTraceSink](<#NewJSONTraceSink>)
   - [func \(s \*JSONTraceSink\) Emit\(\_ context.Context, event TraceEvent\)](<#JSONTraceSink.Emit>)
+- [type ManagedDeliveryCoordinator](<#ManagedDeliveryCoordinator>)
 - [type MemoryTraceSink](<#MemoryTraceSink>)
   - [func \(s \*MemoryTraceSink\) Emit\(\_ context.Context, event TraceEvent\)](<#MemoryTraceSink.Emit>)
   - [func \(s \*MemoryTraceSink\) Events\(\) \[\]TraceEvent](<#MemoryTraceSink.Events>)
@@ -103,7 +104,7 @@ type DDLExecutionStore interface {
 ```
 
 <a name="DestinationConfig"></a>
-## type [DestinationConfig](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L33-L36>)
+## type [DestinationConfig](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L35-L38>)
 
 DestinationConfig binds a destination to its spec.
 
@@ -179,6 +180,20 @@ func (s *JSONTraceSink) Emit(_ context.Context, event TraceEvent)
 
 Emit writes a single trace event.
 
+<a name="ManagedDeliveryCoordinator"></a>
+## type [ManagedDeliveryCoordinator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L11-L16>)
+
+ManagedDeliveryCoordinator is the public seam used by Runner without exposing internal repository implementations in the stable package API.
+
+```go
+type ManagedDeliveryCoordinator interface {
+    AuthorizeAck(context.Context, connector.RunFence, connector.Checkpoint) (connector.AckGrant, error)
+    Deliver(context.Context, connector.RunFence, connector.DeliveryIntent, connector.Batch, connector.ManagedDestination) (connector.AckGrant, error)
+    ValidateAckGrant(context.Context, connector.RunFence, connector.AckGrant) error
+    RecordAckReceipt(context.Context, connector.RunFence, connector.AckGrant, string) error
+}
+```
+
 <a name="MemoryTraceSink"></a>
 ## type [MemoryTraceSink](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L57-L60>)
 
@@ -209,7 +224,7 @@ func (s *MemoryTraceSink) Events() []TraceEvent
 Events returns a snapshot of captured events.
 
 <a name="Runner"></a>
-## type [Runner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L49-L71>)
+## type [Runner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L51-L75>)
 
 Runner streams data from a source to destinations.
 
@@ -236,11 +251,13 @@ type Runner struct {
     GiveUpPolicy        GiveUpPolicy
     DDLExecutions       DDLExecutionStore
     TraceSink           TraceSink
+    RunFence            *connector.RunFence
+    DeliveryCoordinator ManagedDeliveryCoordinator
 }
 ```
 
 <a name="Runner.Run"></a>
-### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L75>)
+### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L79>)
 
 ```go
 func (r *Runner) Run(ctx context.Context) (retErr error)
@@ -249,7 +266,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error)
 Run executes the streaming loop until context cancellation or error. It requires a stable flow ID and durable checkpoint storage before acknowledging the source.
 
 <a name="StagingResolver"></a>
-## type [StagingResolver](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L39-L41>)
+## type [StagingResolver](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L41-L43>)
 
 StagingResolver is implemented by destinations that can resolve staging tables.
 
@@ -260,7 +277,7 @@ type StagingResolver interface {
 ```
 
 <a name="StagingResolverFor"></a>
-## type [StagingResolverFor](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L44-L46>)
+## type [StagingResolverFor](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L46-L48>)
 
 StagingResolverFor lets destinations resolve staging tables for known schemas.
 

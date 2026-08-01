@@ -72,12 +72,20 @@ type fakeSource struct {
 	acks     []connector.Checkpoint
 	log      *eventLog
 	ackErr   error
+	openErrs []error
+	opens    int
 	openSpec connector.Spec
 }
 
 func (s *fakeSource) Open(_ context.Context, spec connector.Spec) error {
+	s.opens++
 	s.openSpec = spec
-	return nil
+	if len(s.openErrs) == 0 {
+		return nil
+	}
+	err := s.openErrs[0]
+	s.openErrs = s.openErrs[1:]
+	return err
 }
 
 func (s *fakeSource) Read(context.Context) (connector.Batch, error) {

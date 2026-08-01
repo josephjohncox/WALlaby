@@ -108,6 +108,19 @@ func (r *pgTypeResolver) ResolveTypeInfo(ctx context.Context, oid uint32) (repli
 	return info, true, nil
 }
 
+func (r *pgTypeResolver) ResolveColumnIdentity(ctx context.Context, relationID uint32, column string) (int16, bool, error) {
+	if relationID == 0 || strings.TrimSpace(column) == "" {
+		return 0, false, nil
+	}
+	var identity int16
+	if err := r.pool.QueryRow(ctx, `
+SELECT attnum FROM pg_attribute
+WHERE attrelid=$1 AND attname=$2 AND attnum > 0 AND NOT attisdropped`, relationID, column).Scan(&identity); err != nil {
+		return 0, false, fmt.Errorf("resolve relation %d column %q identity: %w", relationID, column, err)
+	}
+	return identity, true, nil
+}
+
 func (r *pgTypeResolver) Close() {
 	if r.pool != nil {
 		r.pool.Close()
