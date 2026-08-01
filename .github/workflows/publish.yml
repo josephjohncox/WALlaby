@@ -113,7 +113,7 @@ jobs:
 
       - name: Set up QEMU
         # docker/setup-qemu-action v3.6.0
-        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8
 
       - name: Set up Docker Buildx
         # docker/setup-buildx-action v3.11.1
