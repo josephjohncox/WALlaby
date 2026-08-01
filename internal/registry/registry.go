@@ -69,16 +69,38 @@ func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
+	// Advisory locks are held across a whole registry operation, so give them their
+	// own small pool. Sharing the main pool lets one held lock starve ordinary
+	// registry queries.
+	lockPoolConfig, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("parse postgres registry lock DSN: %w", err)
+	}
+	controlstore.ConfigurePool(lockPoolConfig)
+	lockPoolConfig.MinConns = 0
+	if lockPoolConfig.MaxConns > 4 {
+		lockPoolConfig.MaxConns = 4
+	}
+	lockPool, err := pgxpool.NewWithConfig(ctx, lockPoolConfig)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("connect postgres registry lock pool: %w", err)
+	}
 	store, err := NewPostgresStoreWithPool(ctx, pool)
 	if err != nil {
+		lockPool.Close()
 		pool.Close()
 		return nil, err
 	}
+	store.lockPool = lockPool
 	store.ownsPool = true
 	return store, nil
 }
 
-// NewPostgresStoreWithPool borrows the worker's shared control pool.
+// NewPostgresStoreWithPool borrows the worker's shared control pool. The borrowed
+// pool also serves advisory locks, because the caller owns pool sizing; use
+// NewPostgresStore when the registry should isolate its lock connections.
 func NewPostgresStoreWithPool(ctx context.Context, pool *pgxpool.Pool) (*PostgresStore, error) {
 	if pool == nil {
 		return nil, errors.New("postgres control pool is required")
@@ -90,6 +112,11 @@ func NewPostgresStoreWithPool(ctx context.Context, pool *pgxpool.Pool) (*Postgre
 }
 
 func (p *PostgresStore) Close() {
+	// A borrowed control pool doubles as the lock pool, so only close a lock pool
+	// this store created for itself.
+	if p.lockPool != nil && p.lockPool != p.pool {
+		p.lockPool.Close()
+	}
 	if p.ownsPool && p.pool != nil {
 		p.pool.Close()
 	}
