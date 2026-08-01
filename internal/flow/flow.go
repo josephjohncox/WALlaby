@@ -14,8 +14,41 @@ const (
 	StateRunning  State = "running"
 	StatePaused   State = "paused"
 	StateStopping State = "stopping"
+	StateStopped  State = "stopped"
 	StateFailed   State = "failed"
 )
+
+// CanTransition reports whether a lifecycle transition is valid. Repeating the
+// current state is idempotent; stopped is terminal.
+func CanTransition(from, to State) bool {
+	if from == to {
+		return true
+	}
+	switch from {
+	case StateCreated:
+		return to == StateRunning
+	case StateRunning:
+		return to == StatePaused || to == StateStopping || to == StateFailed
+	case StatePaused:
+		return to == StateRunning || to == StateStopping || to == StateFailed
+	case StateStopping:
+		return to == StateStopped || to == StateFailed
+	case StateStopped, StateFailed:
+		return false
+	default:
+		return false
+	}
+}
+
+// ValidState reports whether state is part of the public lifecycle.
+func ValidState(state State) bool {
+	switch state {
+	case StateCreated, StateRunning, StatePaused, StateStopping, StateStopped, StateFailed:
+		return true
+	default:
+		return false
+	}
+}
 
 // Flow defines a CDC pipeline between a source and one or more destinations.
 type Flow struct {

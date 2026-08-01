@@ -18,24 +18,24 @@ See `examples/flows/postgres_to_pgstream.json`.
 
 ### 2) Pull messages
 ```bash
-./bin/wallaby-admin stream pull -stream orders -group search -max 10 -visibility 30
+./bin/wallaby-admin stream pull --stream orders --group search --max 10 --visibility 30
 ```
 
 For scripting, use JSON output:
 
 ```bash
-./bin/wallaby-admin stream pull --json -stream orders -group search -max 10 -visibility 30
+./bin/wallaby-admin stream pull --json --stream orders --group search --max 10 --visibility 30
 ```
 
 For human-readable JSON:
 
 ```bash
-./bin/wallaby-admin stream pull --pretty -stream orders -group search -max 10 -visibility 30
+./bin/wallaby-admin stream pull --pretty --stream orders --group search --max 10 --visibility 30
 ```
 
 ### 3) Ack messages
 ```bash
-./bin/wallaby-admin stream ack -stream orders -group search -ids 1,2,3
+./bin/wallaby-admin stream ack --stream orders --group search --ids 1,2,3
 ```
 
 ## Visibility Timeout Semantics
@@ -46,11 +46,11 @@ For human-readable JSON:
 You can reset deliveries for a consumer group in two ways:
 
 ```bash
-./bin/wallaby-admin stream replay -stream orders -group search -from-lsn 0/16B6C50
+./bin/wallaby-admin stream replay --stream orders --group search --from-lsn 0/16B6C50
 ```
 
 ```bash
-./bin/wallaby-admin stream replay -stream orders -group search -since 2025-01-01T00:00:00Z
+./bin/wallaby-admin stream replay --stream orders --group search --since 2025-01-01T00:00:00Z
 ```
 
 This moves matching deliveries back to `available` so they can be reprocessed.
@@ -67,7 +67,7 @@ This moves matching deliveries back to `available` so they can be reprocessed.
 3. Use `replay` to reprocess from a specific LSN/time window.
 
 ### Rebuild downstream state
-1. Run a backfill in the source (worker `-mode backfill`).
+1. Run a backfill in the source (worker `--mode backfill`).
 2. Replay stream deliveries from the earliest LSN or timestamp.
 
 ## Example Consumer
@@ -76,7 +76,7 @@ See `examples/stream_consumer.sh` (bash + jq) or `examples/stream_consumer.go` (
 Run the Go example:
 
 ```bash
-go run examples/stream_consumer.go -endpoint localhost:8080 -stream orders -group search
+go run examples/stream_consumer.go --endpoint localhost:8080 --stream orders --group search
 ```
 
 ## Operational Notes

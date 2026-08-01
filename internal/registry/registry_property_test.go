@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -12,8 +13,11 @@ import (
 )
 
 type memoryStore struct {
-	events []DDLEvent
-	nextID int64
+	events    []DDLEvent
+	nextID    int64
+	attempts  map[int64]map[string]struct{}
+	receipts  map[int64]map[string]struct{}
+	manifests map[int64][]string
 }
 
 func (m *memoryStore) RegisterSchema(context.Context, connector.Schema) error { return nil }
@@ -37,6 +41,9 @@ func (m *memoryStore) RecordDDL(_ context.Context, flowID string, ddl string, pl
 }
 
 func (m *memoryStore) SetDDLStatus(_ context.Context, id int64, status string) error {
+	if status == StatusApplied {
+		return ErrExecutionReceiptRequired
+	}
 	for i := range m.events {
 		if m.events[i].ID != id {
 			continue
@@ -48,6 +55,79 @@ func (m *memoryStore) SetDDLStatus(_ context.Context, id int64, status string) e
 			m.events[i].AppliedAt = time.Time{}
 		}
 		break
+	}
+	return nil
+}
+
+func (m *memoryStore) PrepareDDLExecution(_ context.Context, flowID, lsn, destination string, expectedDestinations []string) (connector.DDLExecutionState, error) {
+	event, err := m.GetDDLByLSN(context.Background(), flowID, lsn)
+	if err != nil {
+		return connector.DDLExecutionUnknown, err
+	}
+	if event.Status != StatusApproved && event.Status != StatusApplied {
+		return connector.DDLExecutionUnknown, &connector.DDLGateError{FlowID: flowID, LSN: lsn, Status: event.Status, EventID: event.ID}
+	}
+	expected := normalizedDestinations(expectedDestinations)
+	if manifest := m.manifests[event.ID]; manifest != nil && !equalDestinations(manifest, expected) {
+		return connector.DDLExecutionUnknown, ErrExecutionManifestChanged
+	}
+	if m.manifests == nil {
+		m.manifests = make(map[int64][]string)
+	}
+	m.manifests[event.ID] = expected
+	if _, ok := m.receipts[event.ID][destination]; ok {
+		return connector.DDLExecutionComplete, nil
+	}
+	if _, ok := m.attempts[event.ID][destination]; ok {
+		return connector.DDLExecutionRetry, nil
+	}
+	if m.attempts == nil {
+		m.attempts = make(map[int64]map[string]struct{})
+	}
+	if m.attempts[event.ID] == nil {
+		m.attempts[event.ID] = make(map[string]struct{})
+	}
+	m.attempts[event.ID][destination] = struct{}{}
+	return connector.DDLExecutionNew, nil
+}
+
+func (m *memoryStore) RecordDDLExecution(
+	_ context.Context,
+	flowID, lsn, _ string, destination string,
+	expectedDestinations []string,
+) error {
+	event, err := m.GetDDLByLSN(context.Background(), flowID, lsn)
+	if err != nil {
+		return err
+	}
+	if event.Status != StatusApproved && event.Status != StatusApplied {
+		return &connector.DDLGateError{FlowID: flowID, LSN: lsn, Status: event.Status, EventID: event.ID}
+	}
+	expected := normalizedDestinations(expectedDestinations)
+	if manifest := m.manifests[event.ID]; manifest != nil && !equalDestinations(manifest, expected) {
+		return errors.New("DDL execution destination manifest changed during replay")
+	}
+	if m.manifests == nil {
+		m.manifests = make(map[int64][]string)
+	}
+	m.manifests[event.ID] = expected
+	if _, ok := m.attempts[event.ID][destination]; !ok {
+		return ErrDDLExecutionNotPrepared
+	}
+	if m.receipts == nil {
+		m.receipts = make(map[int64]map[string]struct{})
+	}
+	if m.receipts[event.ID] == nil {
+		m.receipts[event.ID] = make(map[string]struct{})
+	}
+	m.receipts[event.ID][destination] = struct{}{}
+	if len(m.receipts[event.ID]) == len(expected) {
+		for index := range m.events {
+			if m.events[index].ID == event.ID {
+				m.events[index].Status = StatusApplied
+				m.events[index].AppliedAt = time.Now()
+			}
+		}
 	}
 	return nil
 }
@@ -116,7 +196,10 @@ func TestRegistryAppliedImpliesApprovedRapid(t *testing.T) {
 			if !rapid.Bool().Draw(t, "apply") {
 				continue
 			}
-			err := MarkDDLAppliedByLSN(context.Background(), store, "", lsn)
+			_, err := PrepareDDLExecution(context.Background(), store, "", lsn, "destination", []string{"destination"})
+			if err == nil {
+				err = RecordDDLExecution(context.Background(), store, "", lsn, "ddl", "destination", []string{"destination"})
+			}
 			switch status {
 			case StatusApproved:
 				if err != nil {
@@ -127,8 +210,8 @@ func TestRegistryAppliedImpliesApprovedRapid(t *testing.T) {
 					t.Fatalf("expected apply to require approval")
 				}
 			case StatusRejected:
-				if err != nil {
-					t.Fatalf("expected rejected ddl to remain rejected")
+				if err == nil {
+					t.Fatalf("expected rejected ddl execution to fail")
 				}
 			}
 		}

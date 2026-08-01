@@ -1,19 +1,19 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: "{{ include "wallaby.fullname" . }}-test"
+  name: '{{ include "wallaby.fullname" . }}-test'
   labels:
-    app.kubernetes.io/name: {{ include "wallaby.name" . }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: '{{ include "wallaby.name" . }}'
+    app.kubernetes.io/instance: "{{ .Release.Name }}"
   annotations:
     "helm.sh/hook": test
 spec:
   restartPolicy: Never
   containers:
     - name: grpc-check
-      image: busybox:1.37.0
-      command: ["/bin/sh", "-c"]
+      image: '{{ include "wallaby.grpcHealthProbeImage" . }}'
+      command: ["/ko-app/grpc-health-probe"]
       args:
-        - |-
-          echo "Checking port {{ .Values.service.port }}";
-          nc -z -w 5 {{ include "wallaby.fullname" . }} {{ .Values.service.port }}
+        - -addr={{ include "wallaby.fullname" . }}:{{ .Values.service.port }}
+        - -service=wallaby.readiness
+        - -rpc-timeout=5s

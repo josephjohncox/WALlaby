@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/orchestrator"
 	"github.com/josephjohncox/wallaby/internal/runner"
@@ -131,19 +132,25 @@ func TestDBOSIntegrationBackfill(t *testing.T) {
 	}
 
 	queueName := "wallaby"
+	checkpointStore := newDBOSCheckpointStore(t, ctx, dsn)
+	defer checkpointStore.Close()
 	orch, err := orchestrator.NewDBOSOrchestrator(ctx, orchestrator.Config{
 		AppName:       "wallaby-test",
 		DatabaseURL:   dsn,
 		Queue:         queueName,
 		MaxEmptyReads: 1,
 		DefaultWire:   connector.WireFormatJSON,
-	}, engine, nil, runner.Factory{})
+	}, engine, checkpointStore, runner.Factory{})
 	if err != nil {
 		t.Fatalf("create dbos orchestrator: %v", err)
 	}
 	defer orch.Shutdown(5 * time.Second)
 
-	if err := orch.EnqueueFlow(ctx, flowID); err != nil {
+	control, err := engine.Control(ctx, flowID)
+	if err != nil {
+		t.Fatalf("read flow control: %v", err)
+	}
+	if err := orch.EnqueueRunOnce(ctx, flowID, control.Generation); err != nil {
 		t.Fatalf("enqueue flow: %v", err)
 	}
 
@@ -262,19 +269,25 @@ func TestDBOSIntegrationStreaming(t *testing.T) {
 		t.Fatalf("start flow: %v", err)
 	}
 
+	checkpointStore := newDBOSCheckpointStore(t, ctx, dsn)
+	defer checkpointStore.Close()
 	orch, err := orchestrator.NewDBOSOrchestrator(ctx, orchestrator.Config{
 		AppName:       "wallaby-test",
 		DatabaseURL:   dsn,
 		Queue:         "wallaby",
 		MaxEmptyReads: 5,
 		DefaultWire:   connector.WireFormatJSON,
-	}, engine, nil, runner.Factory{})
+	}, engine, checkpointStore, runner.Factory{})
 	if err != nil {
 		t.Fatalf("create dbos orchestrator: %v", err)
 	}
 	defer orch.Shutdown(5 * time.Second)
 
-	if err := orch.EnqueueFlow(ctx, flowID); err != nil {
+	control, err := engine.Control(ctx, flowID)
+	if err != nil {
+		t.Fatalf("read flow control: %v", err)
+	}
+	if err := orch.EnqueueRunOnce(ctx, flowID, control.Generation); err != nil {
 		t.Fatalf("enqueue flow: %v", err)
 	}
 
@@ -363,6 +376,8 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 		t.Fatalf("start flow: %v", err)
 	}
 
+	checkpointStore := newDBOSCheckpointStore(t, ctx, dsn)
+	defer checkpointStore.Close()
 	orch, err := orchestrator.NewDBOSOrchestrator(ctx, orchestrator.Config{
 		AppName:       "wallaby-test",
 		DatabaseURL:   dsn,
@@ -371,13 +386,17 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 		MaxRetries:    1,
 		MaxRetriesSet: true,
 		DefaultWire:   connector.WireFormatJSON,
-	}, engine, nil, runner.Factory{})
+	}, engine, checkpointStore, runner.Factory{})
 	if err != nil {
 		t.Fatalf("create dbos orchestrator: %v", err)
 	}
 	defer orch.Shutdown(5 * time.Second)
 
-	if err := orch.EnqueueFlow(ctx, flowID); err != nil {
+	control, err := engine.Control(ctx, flowID)
+	if err != nil {
+		t.Fatalf("read flow control: %v", err)
+	}
+	if err := orch.EnqueueRunOnce(ctx, flowID, control.Generation); err != nil {
 		t.Fatalf("enqueue flow: %v", err)
 	}
 
@@ -510,6 +529,8 @@ func TestDBOSIntegrationAdminRecovery(t *testing.T) {
 		t.Fatalf("start flow: %v", err)
 	}
 
+	checkpointStore := newDBOSCheckpointStore(t, ctx, dsn)
+	defer checkpointStore.Close()
 	orch, err := orchestrator.NewDBOSOrchestrator(ctx, orchestrator.Config{
 		AppName:       "wallaby-test",
 		DatabaseURL:   dsn,
@@ -517,7 +538,7 @@ func TestDBOSIntegrationAdminRecovery(t *testing.T) {
 		DefaultWire:   connector.WireFormatJSON,
 		AdminServer:   true,
 		AdminPort:     adminPort,
-	}, engine, nil, runner.Factory{})
+	}, engine, checkpointStore, runner.Factory{})
 	if err != nil {
 		t.Fatalf("create dbos orchestrator: %v", err)
 	}
@@ -677,6 +698,15 @@ func containsString(items []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func newDBOSCheckpointStore(t *testing.T, ctx context.Context, dsn string) *checkpoint.PostgresStore {
+	t.Helper()
+	store, err := checkpoint.NewPostgresStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("create checkpoint store: %v", err)
+	}
+	return store
 }
 
 func logDBOSDiagnostics(t *testing.T, ctx context.Context, pool *pgxpool.Pool, flowID, streamName string) {

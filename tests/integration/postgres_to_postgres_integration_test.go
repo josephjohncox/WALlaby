@@ -16,6 +16,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
+	"github.com/josephjohncox/wallaby/internal/checkpoint"
+	"github.com/josephjohncox/wallaby/internal/registry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/spec"
 	"github.com/josephjohncox/wallaby/pkg/stream"
@@ -157,12 +159,29 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 		},
 	}
 
+	checkpointStore, err := checkpoint.NewPostgresStore(ctx, srcDSN)
+	if err != nil {
+		t.Fatalf("create checkpoint store: %v", err)
+	}
+	defer checkpointStore.Close()
+	registryStore, err := registry.NewPostgresStore(ctx, srcDSN)
+	if err != nil {
+		t.Fatalf("create registry store: %v", err)
+	}
+	defer registryStore.Close()
+
 	traceSink := &stream.MemoryTraceSink{}
 	runner := &stream.Runner{
-		Source:       &pgsource.Source{},
-		SourceSpec:   sourceSpec,
-		Destinations: []stream.DestinationConfig{{Spec: destSpec, Dest: &pgdest.Destination{}}},
-		TraceSink:    traceSink,
+		Source: &pgsource.Source{SchemaHook: &registry.Hook{
+			Store: registryStore, FlowID: "e2e-flow", AutoApprove: true, AutoApply: true,
+		}},
+		SourceSpec:          sourceSpec,
+		Destinations:        []stream.DestinationConfig{{Spec: destSpec, Dest: &pgdest.Destination{}}},
+		Checkpoints:         checkpointStore,
+		FlowID:              "e2e-flow",
+		RequireDDLExecution: true,
+		DDLExecutions:       registryStore,
+		TraceSink:           traceSink,
 	}
 
 	errCh := make(chan error, 1)
@@ -190,6 +209,14 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 	}
 
 	waitFor(t, 30*time.Second, 200*time.Millisecond, func() (bool, error) {
+		select {
+		case runnerErr := <-errCh:
+			if runnerErr == nil {
+				return false, errors.New("runner exited before applying DDL")
+			}
+			return false, fmt.Errorf("runner exited before applying DDL: %w", runnerErr)
+		default:
+		}
 		var exists bool
 		err := dstPool.QueryRow(ctx,
 			`SELECT EXISTS (
@@ -202,6 +229,18 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 			return false, err
 		}
 		return exists, nil
+	})
+	waitFor(t, 10*time.Second, 100*time.Millisecond, func() (bool, error) {
+		var count int
+		err := srcPool.QueryRow(ctx,
+			`SELECT COUNT(*)
+			 FROM ddl_execution_receipts receipt
+			 JOIN ddl_events event ON event.id = receipt.event_id
+			 WHERE event.flow_id = $1 AND event.status = 'applied'
+			   AND receipt.destination = $2`,
+			"e2e-flow", "e2e-dest",
+		).Scan(&count)
+		return count == 1, err
 	})
 
 	now := time.Now().UTC()

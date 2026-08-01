@@ -17,6 +17,7 @@ type TraceEvent struct {
 	Spec        spec.SpecName `json:"spec,omitempty"`
 	SpecAction  spec.Action   `json:"spec_action,omitempty"`
 	LSN         string        `json:"lsn,omitempty"`
+	Position    string        `json:"position,omitempty"`
 	FlowID      string        `json:"flow_id,omitempty"`
 	Destination string        `json:"destination,omitempty"`
 	DDL         string        `json:"ddl,omitempty"`

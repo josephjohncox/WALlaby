@@ -209,6 +209,14 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	return err
 }
 
+// CapabilitiesFor refines transaction and loss guarantees from destination options.
+func (d *Destination) CapabilitiesFor(spec connector.Spec) connector.Capabilities {
+	capabilities := d.Capabilities()
+	capabilities.Delivery.TransactionalBatch = strings.TrimSpace(spec.Options[optTxnID]) != ""
+	capabilities.Delivery.Lossy = strings.EqualFold(strings.TrimSpace(spec.Options[optOversize]), "drop")
+	return capabilities
+}
+
 func (d *Destination) ApplyDDL(_ context.Context, _ connector.Schema, _ connector.Record) error {
 	return nil
 }
@@ -227,6 +235,10 @@ func (d *Destination) Close(_ context.Context) error {
 
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
+		Support: connector.SupportExperimental,
+		Delivery: connector.DeliverySemantics{
+			Declared: true,
+		},
 		SupportsDDL:           true,
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,

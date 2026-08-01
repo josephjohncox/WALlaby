@@ -1,0 +1,41 @@
+{
+  "spec": "LifecycleGeneration",
+  "actions": [
+    "Start",
+    "PauseIntent",
+    "StopIntent",
+    "ExecutionFinished",
+    "PauseComplete",
+    "StopComplete",
+    "RestartExecution",
+    "Fail",
+    "RunOnce"
+  ],
+  "invariants": [
+    "TypeInvariant",
+    "LeaseMatchesExecution",
+    "QuiescentTerminalState",
+    "RegistrationUsesCurrentGeneration",
+    "PendingPauseIsNotPaused",
+    "PendingStopIsStopping"
+  ],
+  "unreachable_actions": [
+    "Start",
+    "PauseIntent",
+    "StopIntent",
+    "ExecutionFinished",
+    "PauseComplete",
+    "StopComplete",
+    "RestartExecution",
+    "Fail",
+    "RunOnce"
+  ],
+  "unreachable_invariants": [
+    "TypeInvariant",
+    "LeaseMatchesExecution",
+    "QuiescentTerminalState",
+    "RegistrationUsesCurrentGeneration",
+    "PendingPauseIsNotPaused",
+    "PendingStopIsStopping"
+  ]
+}

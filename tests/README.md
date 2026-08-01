@@ -17,20 +17,22 @@ are not already set:
 - Fakesnow (`WALLABY_TEST_FAKESNOW_*` when explicitly enabled)
 
 ```bash
-make test-e2e
+just test-e2e
 ```
 
 Run the full integration suite (all integration test packages):
 
 ```bash
-make test-integration-ci
+just test-integration-ci
 ```
+
 `test-integration` currently executes `./tests/...`, which includes both:
 
 - `tests` package integration tests (destination and protocol coverage)
 - `tests/integration` package integration tests (CLI, DBOS, and k8s flow dispatch integration)
 
 The harness is kind-driven (no docker-compose bootstrap) and can still reuse an existing kubeconfig:
+
 - `IT_KIND=1` (default): create (or reuse) a kind cluster for Kubernetes dispatcher tests.
 - `IT_KIND=0`: skip kind bootstrap.
 - `IT_KIND_CLUSTER`: kind cluster name.
@@ -40,8 +42,8 @@ The harness is kind-driven (no docker-compose bootstrap) and can still reuse an 
 Examples:
 
 ```bash
-IT_KIND=1 IT_KIND_CLUSTER=my-kind-cluster make test-k8s-kind
-WALLABY_TEST_K8S_KUBECONFIG=/path/to/kubeconfig make test-integration
+IT_KIND=1 IT_KIND_CLUSTER=my-kind-cluster just test-k8s-kind
+WALLABY_TEST_K8S_KUBECONFIG=/path/to/kubeconfig just test-integration
 ```
 
 The harness still sanitizes credential helpers (AWS/Kubeconfig) to avoid calling external tooling during tests.
@@ -50,11 +52,12 @@ You can override the per-package test timeout with `GO_TEST_TIMEOUT` (default: 8
 Run the Kubernetes dispatcher integration test using kind (no kubeconfig required):
 
 ```bash
-make test-k8s-kind
+just test-k8s-kind
 ```
 
 Optional env vars for kind:
-- `WALLABY_TEST_K8S_KIND` (`1`/`0`; default `1` in Makefile)
+
+- `WALLABY_TEST_K8S_KIND` (`1`/`0`; default `1` in the root `justfile`)
 - `IT_KEEP` (`1` to keep kind cluster after test run)
 - `KIND_CLUSTER` (cluster name)
 - `KIND_NODE_IMAGE` (override node image)
@@ -64,6 +67,7 @@ Optional env vars for kind:
 CLI integration tests run `go run ./cmd/wallaby-admin` against a local gRPC server and cover DDL listing, stream pull/ack, flow create/update/reconfigure/run-once/list/get/wait/delete/validate, and publication sync. They use `TEST_PG_DSN` for backing Postgres storage.
 
 Set these environment variables to enable destination tests:
+
 - `TEST_PG_DSN` (Postgres logical replication E2E; auto-filled from kind-backed Postgres when unset)
 - `WALLABY_TEST_DBOS_DSN` (DBOS integration; falls back to `TEST_PG_DSN`)
   - DBOS backfill + streaming integration tests always run when a DBOS DSN is available.

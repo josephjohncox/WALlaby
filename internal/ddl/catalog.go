@@ -11,10 +11,16 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+// CatalogRegistry is the narrow durable-storage contract used by CatalogScanner.
+type CatalogRegistry interface {
+	RegisterSchema(ctx context.Context, schema connector.Schema) error
+	RecordCatalogChange(ctx context.Context, schema connector.Schema, plan schema.Plan, status string) (int64, error)
+}
+
 // CatalogScanner polls pg_catalog to discover schema changes.
 type CatalogScanner struct {
 	Pool        *pgxpool.Pool
-	Registry    registry.Store
+	Registry    CatalogRegistry
 	Schemas     []string
 	AutoApprove bool
 	last        map[string]connector.Schema
@@ -32,6 +38,10 @@ func (c *CatalogScanner) RunOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return c.persist(ctx, current)
+}
+
+func (c *CatalogScanner) persist(ctx context.Context, current map[string]connector.Schema) error {
 	if c.last == nil {
 		c.last = map[string]connector.Schema{}
 	}
@@ -39,21 +49,26 @@ func (c *CatalogScanner) RunOnce(ctx context.Context) error {
 	for key, newSchema := range current {
 		oldSchema, ok := c.last[key]
 		if !ok {
-			_ = c.Registry.RegisterSchema(ctx, newSchema)
+			if err := c.Registry.RegisterSchema(ctx, newSchema); err != nil {
+				return fmt.Errorf("register initial catalog schema %s: %w", key, err)
+			}
 			c.last[key] = newSchema
 			continue
 		}
 
 		plan := schema.Diff(oldSchema, newSchema)
-		if plan.HasChanges() {
-			status := registry.StatusPending
-			if c.AutoApprove {
-				status = registry.StatusApproved
-			}
-			_, _ = c.Registry.RecordDDL(ctx, "", "", plan, "", status)
-			_ = c.Registry.RegisterSchema(ctx, newSchema)
-			c.last[key] = newSchema
+		if !plan.HasChanges() {
+			continue
 		}
+		newSchema.Version = oldSchema.Version + 1
+		status := registry.StatusPending
+		if c.AutoApprove {
+			status = registry.StatusApproved
+		}
+		if _, err := c.Registry.RecordCatalogChange(ctx, newSchema, plan, status); err != nil {
+			return fmt.Errorf("persist catalog change %s: %w", key, err)
+		}
+		c.last[key] = newSchema
 	}
 
 	return nil

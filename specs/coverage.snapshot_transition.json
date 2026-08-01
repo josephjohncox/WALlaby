@@ -1,0 +1,37 @@
+{
+  "spec": "SnapshotTransition",
+  "actions": [
+    "ReadSnapshot",
+    "PersistPartition",
+    "Crash",
+    "Restart",
+    "CompleteSnapshot",
+    "StartStreaming",
+    "ReadStream",
+    "Idle"
+  ],
+  "invariants": [
+    "TypeInvariant",
+    "RowsStayInAssignedPartition",
+    "DurableRowsWereScanned",
+    "TransitionRequiresCompleteSnapshot",
+    "StreamingStartsAtSnapshotBoundary"
+  ],
+  "unreachable_actions": [
+    "ReadSnapshot",
+    "PersistPartition",
+    "Crash",
+    "Restart",
+    "CompleteSnapshot",
+    "StartStreaming",
+    "ReadStream",
+    "Idle"
+  ],
+  "unreachable_invariants": [
+    "TypeInvariant",
+    "RowsStayInAssignedPartition",
+    "DurableRowsWereScanned",
+    "TransitionRequiresCompleteSnapshot",
+    "StreamingStartsAtSnapshotBoundary"
+  ]
+}

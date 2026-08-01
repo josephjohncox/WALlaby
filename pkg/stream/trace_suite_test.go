@@ -117,6 +117,23 @@ func runPlan(plan batchPlan) ([]TraceEvent, error) {
 	source := &fakeSource{batches: batches, log: log}
 	dest := &recordingDest{log: log}
 	ddlApplied := make([]string, 0)
+	ddlReceipts := &testDDLReceiptStore{onRecord: func(flowID, lsn, ddl, _ string, _ []string) error {
+		if lsn == "" || ddl == "" {
+			return fmt.Errorf("invalid ddl applied event")
+		}
+		if traceSink != nil {
+			traceSink.Emit(context.Background(), TraceEvent{
+				Kind:       "ddl_approved",
+				Spec:       spec.SpecCDCFlow,
+				SpecAction: spec.ActionApproveDDL,
+				LSN:        lsn,
+				FlowID:     flowID,
+				DDL:        ddl,
+			})
+		}
+		ddlApplied = append(ddlApplied, lsn)
+		return nil
+	}}
 
 	runner := Runner{
 		Source:     source,
@@ -125,26 +142,11 @@ func runPlan(plan batchPlan) ([]TraceEvent, error) {
 			Spec: connector.Spec{Name: "dest"},
 			Dest: dest,
 		}},
-		Checkpoints: checkpoints,
-		FlowID:      "flow-trace",
-		TraceSink:   traceSink,
-		DDLApplied: func(_ context.Context, flowID string, lsn string, ddl string) error {
-			if lsn == "" || ddl == "" {
-				return fmt.Errorf("invalid ddl applied event")
-			}
-			if traceSink != nil {
-				traceSink.Emit(context.Background(), TraceEvent{
-					Kind:       "ddl_approved",
-					Spec:       spec.SpecCDCFlow,
-					SpecAction: spec.ActionApproveDDL,
-					LSN:        lsn,
-					FlowID:     flowID,
-					DDL:        ddl,
-				})
-			}
-			ddlApplied = append(ddlApplied, lsn)
-			return nil
-		},
+		Checkpoints:         checkpoints,
+		FlowID:              "flow-trace",
+		TraceSink:           traceSink,
+		RequireDDLExecution: true,
+		DDLExecutions:       ddlReceipts,
 	}
 
 	if err := runner.Run(ctx); err != nil {

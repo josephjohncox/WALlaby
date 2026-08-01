@@ -18,15 +18,16 @@ import (
 // FlowService implements the gRPC FlowService API.
 type FlowService struct {
 	wallabypb.UnimplementedFlowServiceServer
-	engine     workflow.Engine
-	dispatcher FlowDispatcher
+	engine     workflow.ControlEngine
+	dispatcher RunOnceDispatcher
 }
 
-type FlowDispatcher interface {
-	EnqueueFlow(ctx context.Context, flowID string) error
+// RunOnceDispatcher schedules one attempt against a captured lifecycle fence.
+type RunOnceDispatcher interface {
+	EnqueueRunOnce(ctx context.Context, flowID string, generation int64) error
 }
 
-func NewFlowService(engine workflow.Engine, dispatcher FlowDispatcher) *FlowService {
+func NewFlowService(engine workflow.ControlEngine, dispatcher RunOnceDispatcher) *FlowService {
 	return &FlowService{engine: engine, dispatcher: dispatcher}
 }
 
@@ -42,9 +43,10 @@ func (s *FlowService) CreateFlow(ctx context.Context, req *wallabypb.CreateFlowR
 	if model.ID == "" {
 		model.ID = uuid.NewString()
 	}
-	if model.State == "" {
-		model.State = flow.StateCreated
+	if model.State != "" && model.State != flow.StateCreated {
+		return nil, status.Error(codes.InvalidArgument, "flows must be created in created state")
 	}
+	model.State = flow.StateCreated
 
 	created, err := s.engine.Create(ctx, model)
 	if err != nil {
@@ -52,9 +54,6 @@ func (s *FlowService) CreateFlow(ctx context.Context, req *wallabypb.CreateFlowR
 	}
 
 	if req.StartImmediately {
-		if err := s.requireDispatcher(); err != nil {
-			return nil, err
-		}
 		created, err = s.engine.Start(ctx, created.ID)
 		if err != nil {
 			return nil, mapWorkflowError(err)
@@ -140,7 +139,7 @@ func (s *FlowService) ReconfigureFlow(ctx context.Context, req *wallabypb.Reconf
 
 	wasRunning := existing.State == flow.StateRunning
 	if pauseFirst && wasRunning {
-		if _, err := s.engine.Stop(ctx, model.ID); err != nil {
+		if _, err := s.engine.Pause(ctx, model.ID); err != nil {
 			return nil, mapWorkflowError(err)
 		}
 	}
@@ -172,9 +171,6 @@ func (s *FlowService) StartFlow(ctx context.Context, req *wallabypb.StartFlowReq
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
 	}
-	if err := s.requireDispatcher(); err != nil {
-		return nil, err
-	}
 	started, err := s.engine.Start(ctx, req.FlowId)
 	if err != nil {
 		return nil, mapWorkflowError(err)
@@ -189,13 +185,28 @@ func (s *FlowService) RunFlowOnce(ctx context.Context, req *wallabypb.RunFlowOnc
 	if err := s.requireDispatcher(); err != nil {
 		return nil, err
 	}
-	if _, err := s.engine.Get(ctx, req.FlowId); err != nil {
+	control, err := s.engine.Control(ctx, req.FlowId)
+	if err != nil {
 		return nil, mapWorkflowError(err)
 	}
-	if err := s.dispatcher.EnqueueFlow(ctx, req.FlowId); err != nil {
+	if control.State != flow.StateRunning || control.Target != workflow.TargetRunning {
+		return nil, status.Error(codes.FailedPrecondition, "flow is not running")
+	}
+	if err := s.dispatcher.EnqueueRunOnce(ctx, req.FlowId, control.Generation); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &wallabypb.RunFlowOnceResponse{Dispatched: true}, nil
+}
+
+func (s *FlowService) PauseFlow(ctx context.Context, req *wallabypb.PauseFlowRequest) (*wallabypb.Flow, error) {
+	if req == nil || req.FlowId == "" {
+		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
+	}
+	paused, err := s.engine.Pause(ctx, req.FlowId)
+	if err != nil {
+		return nil, mapWorkflowError(err)
+	}
+	return flowToProto(paused), nil
 }
 
 func (s *FlowService) StopFlow(ctx context.Context, req *wallabypb.StopFlowRequest) (*wallabypb.Flow, error) {
@@ -212,9 +223,6 @@ func (s *FlowService) StopFlow(ctx context.Context, req *wallabypb.StopFlowReque
 func (s *FlowService) ResumeFlow(ctx context.Context, req *wallabypb.ResumeFlowRequest) (*wallabypb.Flow, error) {
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
-	}
-	if err := s.requireDispatcher(); err != nil {
-		return nil, err
 	}
 	resumed, err := s.engine.Resume(ctx, req.FlowId)
 	if err != nil {

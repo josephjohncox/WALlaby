@@ -14,6 +14,21 @@ serviceAccount:
   create: true
   name: ""
 
+# Workers do not need Kubernetes API credentials by default. The dispatcher
+# service account above alone receives Job-management RBAC.
+workerServiceAccount:
+  create: true
+  name: ""
+  automountServiceAccountToken: false
+
+# Production-safe defaults: the control plane requires a durable workflow
+# store. Set workflowStore=memory only with environment=dev/test.
+environment: production
+workflowStore: postgres
+
+kubernetesDispatch:
+  enabled: false
+
 podAnnotations: {}
 
 podLabels: {}
@@ -23,6 +38,29 @@ service:
   port: 8080
 
 serviceAnnotations: {}
+
+probes:
+  startup:
+    enabled: true
+    periodSeconds: 2
+    timeoutSeconds: 1
+    failureThreshold: 30
+  readiness:
+    enabled: true
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+  liveness:
+    enabled: true
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+tests:
+  grpcHealthProbeImage:
+    repository: ghcr.io/grpc-ecosystem/grpc-health-probe
+    digest: >-
+      sha256:a732f1b3a737926c2902393809b344c9f293b62f7069dbd0614caebd298b2e8d
 
 # env:
 #   - name: WALLABY_POSTGRES_DSN
@@ -105,4 +143,4 @@ workers:
   #     schedule: "0 * * * *"
   #     command: ["/usr/local/bin/wallaby-worker"]
   #     args: ["--flow-id=hourly-sync"]
-items: []
+  items: []

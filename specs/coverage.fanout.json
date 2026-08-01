@@ -9,7 +9,11 @@
     "ReadBatch",
     "Deliver",
     "AckDest",
+    "PersistCheckpoint",
+    "CheckpointFail",
     "AckSource",
+    "Crash",
+    "Restart",
     "Idle"
   ],
   "invariants": [
@@ -27,7 +31,11 @@
     "ReadBatch",
     "Deliver",
     "AckDest",
+    "PersistCheckpoint",
+    "CheckpointFail",
     "AckSource",
+    "Crash",
+    "Restart",
     "Idle"
   ],
   "unreachable_invariants": [

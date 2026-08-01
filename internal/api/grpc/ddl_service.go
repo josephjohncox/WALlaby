@@ -89,18 +89,14 @@ func (s *DDLService) RejectDDL(ctx context.Context, req *wallabypb.RejectDDLRequ
 	return &wallabypb.RejectDDLResponse{Event: ddlEventToProto(event)}, nil
 }
 
-func (s *DDLService) MarkDDLApplied(ctx context.Context, req *wallabypb.MarkDDLAppliedRequest) (*wallabypb.MarkDDLAppliedResponse, error) {
+func (s *DDLService) MarkDDLApplied(_ context.Context, req *wallabypb.MarkDDLAppliedRequest) (*wallabypb.MarkDDLAppliedResponse, error) {
 	if req == nil || req.Id == 0 {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
-	if err := s.store.SetDDLStatus(ctx, req.Id, registry.StatusApplied); err != nil {
-		return nil, mapRegistryError(err)
-	}
-	event, err := s.store.GetDDL(ctx, req.Id)
-	if err != nil {
-		return nil, mapRegistryError(err)
-	}
-	return &wallabypb.MarkDDLAppliedResponse{Event: ddlEventToProto(event)}, nil
+	return nil, status.Error(
+		codes.FailedPrecondition,
+		"applied status requires durable destination execution receipts",
+	)
 }
 
 func ddlEventToProto(event registry.DDLEvent) *wallabypb.DDLEvent {
@@ -133,6 +129,13 @@ func mapRegistryError(err error) error {
 		return nil
 	case errors.Is(err, registry.ErrNotFound):
 		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, registry.ErrExecutionReceiptRequired),
+		errors.Is(err, registry.ErrAppliedStatusImmutable),
+		errors.Is(err, registry.ErrAppliedReceiptMissing),
+		errors.Is(err, registry.ErrExecutionManifestChanged),
+		errors.Is(err, registry.ErrDDLExecutionStarted),
+		errors.Is(err, registry.ErrDDLExecutionNotPrepared):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}

@@ -9,6 +9,12 @@ image:
 
 replicaCount: 2
 
+environment: production
+workflowStore: postgres
+
+kubernetesDispatch:
+  enabled: false
+
 service:
   type: ClusterIP
   port: 8080
@@ -21,9 +27,11 @@ config:
   data:
     WALLABY_GRPC_LISTEN: ":8080"
     WALLABY_WIRE_FORMAT: "arrow"
+    WALLABY_WORKFLOW_STORE: "postgres"
 
 # Secret-backed env vars (reference in envFrom)
-# Create a Secret named <release>-wallaby-secrets with keys like WALLABY_POSTGRES_DSN
+# Create a Secret named <release>-wallaby-secrets with keys such as
+# WALLABY_POSTGRES_DSN.
 # Example:
 # kubectl create secret generic my-wallaby-secrets \
 #   --from-literal=WALLABY_POSTGRES_DSN='postgres://...'

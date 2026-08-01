@@ -38,6 +38,7 @@ import (
 )
 
 const (
+	// #nosec G101 -- local benchmark fixture credentials, never a production secret.
 	defaultPGDSN        = "postgres://postgres:postgres@localhost:5432/wallaby?sslmode=disable"
 	defaultCKDSN        = "clickhouse://bench:bench@localhost:9000/bench"
 	defaultKafkaBrokers = "localhost:9092"

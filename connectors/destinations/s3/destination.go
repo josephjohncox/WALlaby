@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"math"
 	"path"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,9 +22,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/google/uuid"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 	"github.com/josephjohncox/wallaby/pkg/wire"
@@ -42,9 +45,52 @@ const (
 	optUseDualstack = "use_dualstack"
 )
 
+const (
+	directObjectVersion     = "wallaby_direct_s3_v2"
+	metadataBatchHash       = "wallaby-batch-hash"
+	metadataPosition        = "wallaby-position"
+	metadataCodecVersion    = "wallaby-codec-version"
+	metadataObjectSHA256    = "wallaby-object-sha256"
+	metadataRegistrySubject = "wallaby-registry-subject"
+	metadataRegistryID      = "wallaby-registry-id"
+	metadataRegistryVersion = "wallaby-registry-version"
+)
+
+// ErrObjectConflict identifies an existing object whose stable logical identity
+// names different content. The original object is never overwritten.
+var ErrObjectConflict = errors.New("s3 object identity conflict")
+
+// ObjectConflictError describes a fail-closed stable-key collision.
+type ObjectConflictError struct {
+	Bucket       string
+	Key          string
+	ExpectedHash string
+	ActualHash   string
+	Reason       string
+}
+
+func (e *ObjectConflictError) Error() string {
+	return fmt.Sprintf(
+		"%v for s3://%s/%s: %s (expected hash %q, actual hash %q)",
+		ErrObjectConflict,
+		e.Bucket,
+		e.Key,
+		e.Reason,
+		e.ExpectedHash,
+		e.ActualHash,
+	)
+}
+
+func (e *ObjectConflictError) Unwrap() error { return ErrObjectConflict }
+
 type partitionSpec struct {
 	name   string
 	bucket string
+}
+
+type objectClient interface {
+	PutObject(context.Context, *s3.PutObjectInput, ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+	HeadObject(context.Context, *s3.HeadObjectInput, ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 }
 
 // Destination writes batches to S3.
@@ -63,7 +109,7 @@ type Destination struct {
 	useFIPS           bool
 	useDualstack      bool
 	codec             wire.Codec
-	uploader          *manager.Uploader
+	client            objectClient
 	registry          schemaregistry.Registry
 	registrySubject   string
 	protoTypesSubject string
@@ -139,13 +185,13 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 			o.EndpointOptions.UseDualStackEndpoint = aws.DualStackEndpointStateEnabled
 		}
 	})
-	d.uploader = manager.NewUploader(client)
+	d.client = client
 
 	return nil
 }
 
 func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
-	if d.uploader == nil {
+	if d.client == nil {
 		return errors.New("s3 destination not initialized")
 	}
 	if len(batch.Records) == 0 {
@@ -176,7 +222,16 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		}
 	}
 
-	for partPath, records := range grouped {
+	partitionPaths := make([]string, 0, len(grouped))
+	for partPath := range grouped {
+		partitionPaths = append(partitionPaths, partPath)
+	}
+	sort.Strings(partitionPaths)
+	if err := d.reservePartitionedBatch(ctx, batch); err != nil {
+		return err
+	}
+	for _, partPath := range partitionPaths {
+		records := grouped[partPath]
 		subBatch := connector.Batch{
 			Records:    records,
 			Schema:     batch.Schema,
@@ -187,6 +242,52 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		if err := d.writeBatch(ctx, subBatch, record, meta, partPath); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (d *Destination) reservePartitionedBatch(ctx context.Context, batch connector.Batch) error {
+	batchHash, err := connector.BatchContentHash(batch)
+	if err != nil {
+		return fmt.Errorf("hash partitioned s3 batch: %w", err)
+	}
+	position, err := connector.CheckpointPositionID(batch.Checkpoint)
+	if err != nil {
+		return fmt.Errorf("identify partitioned s3 batch position: %w", err)
+	}
+	key, err := d.batchIdentityKey(batch)
+	if err != nil {
+		return err
+	}
+	body := []byte(batchHash + "\n")
+	digest := sha256.Sum256(body)
+	objectSHA256 := hex.EncodeToString(digest[:])
+	checksumSHA256 := base64.StdEncoding.EncodeToString(digest[:])
+	codecVersion := d.codecVersion()
+	contentType := "text/plain"
+	if _, err := d.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:         &d.bucket,
+		Key:            &key,
+		Body:           bytes.NewReader(body),
+		ChecksumSHA256: &checksumSHA256,
+		ContentLength:  aws.Int64(int64(len(body))),
+		ContentType:    &contentType,
+		IfNoneMatch:    aws.String("*"),
+		Metadata: map[string]string{
+			metadataBatchHash:    batchHash,
+			metadataPosition:     position,
+			metadataCodecVersion: codecVersion,
+			metadataObjectSHA256: objectSHA256,
+		},
+	}); err != nil {
+		reconcileErr := d.reconcileObject(ctx, key, position, batchHash, codecVersion)
+		if reconcileErr == nil {
+			return nil
+		}
+		if errors.Is(reconcileErr, ErrObjectConflict) {
+			return reconcileErr
+		}
+		return fmt.Errorf("reserve partitioned s3 batch: %w (reconcile identity object: %w)", err, reconcileErr)
 	}
 	return nil
 }
@@ -207,37 +308,119 @@ func (d *Destination) writeBatch(ctx context.Context, batch connector.Batch, rec
 	if err != nil {
 		return err
 	}
+	batchHash, err := connector.BatchContentHash(batch)
+	if err != nil {
+		return fmt.Errorf("hash s3 batch: %w", err)
+	}
+	position, err := connector.CheckpointPositionID(batch.Checkpoint)
+	if err != nil {
+		return fmt.Errorf("identify s3 batch position: %w", err)
+	}
 
 	partPath := ""
 	if len(partitions) > 0 {
 		partPath = partitions[0]
 	}
-	key := d.objectKey(batch.Schema, record, partPath)
-	input := &s3.PutObjectInput{
-		Bucket:      &d.bucket,
-		Key:         &key,
-		Body:        body,
-		ContentType: &contentType,
+	key, err := d.objectKey(batch, record, partPath)
+	if err != nil {
+		return err
+	}
+	objectDigest := sha256.Sum256(body)
+	objectSHA256 := hex.EncodeToString(objectDigest[:])
+	checksumSHA256 := base64.StdEncoding.EncodeToString(objectDigest[:])
+	codecVersion := d.codecVersion()
+	metadata := map[string]string{
+		metadataBatchHash:    batchHash,
+		metadataPosition:     position,
+		metadataCodecVersion: codecVersion,
+		metadataObjectSHA256: objectSHA256,
 	}
 	if meta != nil {
-		input.Metadata = map[string]string{
-			"wallaby-registry-subject": meta.Subject,
-			"wallaby-registry-id":      meta.ID,
-		}
+		metadata[metadataRegistrySubject] = meta.Subject
+		metadata[metadataRegistryID] = meta.ID
 		if meta.Version > 0 {
-			input.Metadata["wallaby-registry-version"] = fmt.Sprintf("%d", meta.Version)
+			metadata[metadataRegistryVersion] = fmt.Sprintf("%d", meta.Version)
 		}
+	}
+
+	input := &s3.PutObjectInput{
+		Bucket:         &d.bucket,
+		Key:            &key,
+		Body:           bytes.NewReader(body),
+		ChecksumSHA256: &checksumSHA256,
+		ContentLength:  aws.Int64(int64(len(body))),
+		ContentType:    &contentType,
+		IfNoneMatch:    aws.String("*"),
+		Metadata:       metadata,
 	}
 	if contentEncoding != "" {
 		input.ContentEncoding = &contentEncoding
 	}
 
-	_, err = d.uploader.Upload(ctx, input)
-	if err != nil {
-		return fmt.Errorf("upload to s3: %w", err)
+	if _, err := d.client.PutObject(ctx, input); err != nil {
+		reconcileErr := d.reconcileObject(ctx, key, position, batchHash, codecVersion)
+		if reconcileErr == nil {
+			return nil
+		}
+		if errors.Is(reconcileErr, ErrObjectConflict) {
+			return reconcileErr
+		}
+		return fmt.Errorf("upload to s3: %w (reconcile stable object: %w)", err, reconcileErr)
 	}
 
 	return nil
+}
+
+func (d *Destination) reconcileObject(ctx context.Context, key, position, batchHash, codecVersion string) error {
+	head, err := d.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket:       &d.bucket,
+		Key:          &key,
+		ChecksumMode: types.ChecksumModeEnabled,
+	})
+	if err != nil {
+		return fmt.Errorf("head s3://%s/%s: %w", d.bucket, key, err)
+	}
+	actualHash := objectMetadata(head.Metadata, metadataBatchHash)
+	if actualHash != batchHash {
+		return d.objectConflict(key, batchHash, actualHash, "logical batch hash differs")
+	}
+	if actualPosition := objectMetadata(head.Metadata, metadataPosition); actualPosition != position {
+		return d.objectConflict(key, batchHash, actualHash, "checkpoint position differs")
+	}
+	if actualCodec := objectMetadata(head.Metadata, metadataCodecVersion); actualCodec != codecVersion {
+		return d.objectConflict(key, batchHash, actualHash, "codec version differs")
+	}
+	storedSHA256 := objectMetadata(head.Metadata, metadataObjectSHA256)
+	if storedSHA256 == "" {
+		return d.objectConflict(key, batchHash, actualHash, "stored object checksum is missing")
+	}
+	if head.ChecksumSHA256 == nil || *head.ChecksumSHA256 == "" {
+		return d.objectConflict(key, batchHash, actualHash, "S3 did not return the stored object checksum")
+	}
+	checksum, decodeErr := base64.StdEncoding.DecodeString(*head.ChecksumSHA256)
+	if decodeErr != nil || hex.EncodeToString(checksum) != storedSHA256 {
+		return d.objectConflict(key, batchHash, actualHash, "stored object checksum metadata differs from S3 checksum")
+	}
+	return nil
+}
+
+func (d *Destination) objectConflict(key, expectedHash, actualHash, reason string) error {
+	return &ObjectConflictError{
+		Bucket:       d.bucket,
+		Key:          key,
+		ExpectedHash: expectedHash,
+		ActualHash:   actualHash,
+		Reason:       reason,
+	}
+}
+
+func objectMetadata(metadata map[string]string, name string) string {
+	for key, value := range metadata {
+		if strings.EqualFold(key, name) {
+			return value
+		}
+	}
+	return ""
 }
 
 func (d *Destination) ApplyDDL(_ context.Context, _ connector.Schema, _ connector.Record) error {
@@ -351,6 +534,10 @@ func (d *Destination) protoReferenceSubject(subject, ref string) string {
 
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
+		Support: connector.SupportExperimental,
+		Delivery: connector.DeliverySemantics{
+			Declared: true,
+		},
 		SupportsDDL:           true,
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     false,
@@ -366,34 +553,68 @@ func (d *Destination) Capabilities() connector.Capabilities {
 	}
 }
 
-func (d *Destination) objectKey(schema connector.Schema, record connector.Record, partitionPath string) string {
-	stamp := time.Now().UTC().Format("20060102T150405Z")
+func (d *Destination) batchIdentityKey(batch connector.Batch) (string, error) {
+	position, err := connector.CheckpointPositionID(batch.Checkpoint)
+	if err != nil {
+		return "", fmt.Errorf("identify s3 batch identity position: %w", err)
+	}
+	parts := d.objectKeyPrefix(batch, batch.Schema.Name)
+	parts = append(parts, "_wallaby_batches", "position="+stablePathValue(position)+".identity")
+	return path.Join(parts...), nil
+}
+
+func (d *Destination) objectKey(batch connector.Batch, record connector.Record, partitionPath string) (string, error) {
+	position, err := connector.CheckpointPositionID(batch.Checkpoint)
+	if err != nil {
+		return "", fmt.Errorf("identify s3 object position: %w", err)
+	}
 	table := record.Table
 	if table == "" {
-		table = schema.Name
+		table = batch.Schema.Name
 	}
-	suffix := d.fileSuffix()
 	ext := extensionForFormat(d.codec.Name())
 	if d.compression == "gzip" {
 		ext += ".gz"
 	}
-	name := fmt.Sprintf("%s_%s_%d_%s.%s", table, stamp, schema.Version, suffix, ext)
+	name := fmt.Sprintf("position=%s.%s", stablePathValue(position), ext)
 
-	parts := make([]string, 0, 6)
-	if d.prefix != "" {
-		parts = append(parts, d.prefix)
-	}
-	if schema.Namespace != "" {
-		parts = append(parts, schema.Namespace)
-	}
-	if table != "" {
-		parts = append(parts, table)
-	}
+	parts := d.objectKeyPrefix(batch, table)
 	if partitionPath != "" {
 		parts = append(parts, partitionPath)
 	}
 	parts = append(parts, name)
-	return path.Join(parts...)
+	return path.Join(parts...), nil
+}
+
+func (d *Destination) objectKeyPrefix(batch connector.Batch, table string) []string {
+	parts := make([]string, 0, 12)
+	if d.prefix != "" {
+		parts = append(parts, d.prefix)
+	}
+	if batch.Schema.Namespace != "" {
+		parts = append(parts, stablePathValue(batch.Schema.Namespace))
+	}
+	if table != "" {
+		parts = append(parts, stablePathValue(table))
+	}
+	return append(parts,
+		"schema_version="+strconv.FormatInt(batch.Schema.Version, 10),
+		"flow="+stablePathValue(d.spec.Options["flow_id"]),
+		"destination="+stablePathValue(d.spec.Name),
+		"codec="+stablePathValue(d.codecVersion()),
+	)
+}
+
+func (d *Destination) codecVersion() string {
+	compression := d.compression
+	if compression == "" {
+		compression = "none"
+	}
+	partitionParts := make([]string, 0, len(d.partitions))
+	for _, partition := range d.partitions {
+		partitionParts = append(partitionParts, partition.name+":"+partition.bucket)
+	}
+	return fmt.Sprintf("%s:%s:%s:%s", directObjectVersion, d.codec.Name(), compression, strings.Join(partitionParts, ","))
 }
 
 func extensionForFormat(format connector.WireFormat) string {
@@ -413,7 +634,7 @@ func extensionForFormat(format connector.WireFormat) string {
 	}
 }
 
-func (d *Destination) prepareBody(payload []byte) (io.Reader, string, string, error) {
+func (d *Destination) prepareBody(payload []byte) ([]byte, string, string, error) {
 	contentType := d.codec.ContentType()
 	if d.compression == "gzip" {
 		var buf bytes.Buffer
@@ -425,14 +646,10 @@ func (d *Destination) prepareBody(payload []byte) (io.Reader, string, string, er
 		if err := gz.Close(); err != nil {
 			return nil, "", "", fmt.Errorf("gzip close: %w", err)
 		}
-		return bytes.NewReader(buf.Bytes()), contentType, "gzip", nil
+		return buf.Bytes(), contentType, "gzip", nil
 	}
 
-	return bytes.NewReader(payload), contentType, "", nil
-}
-
-func (d *Destination) fileSuffix() string {
-	return uuid.NewString()
+	return payload, contentType, "", nil
 }
 
 func parsePartitionBy(raw string) []partitionSpec {
@@ -485,7 +702,7 @@ func (d *Destination) partitionPath(record connector.Record) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("partition %s: %w", spec.name, err)
 		}
-		parts = append(parts, fmt.Sprintf("%s=%s", spec.name, sanitizePartitionValue(formatted)))
+		parts = append(parts, fmt.Sprintf("%s=%s", stablePathValue(spec.name), stablePathValue(formatted)))
 	}
 	return path.Join(parts...), nil
 }
@@ -501,25 +718,51 @@ func isIngestTimePartition(name string) bool {
 
 func formatPartitionValue(value any, bucket string) (string, error) {
 	if value == nil {
-		return "null", nil
+		return typedPartitionValue("null", nil), nil
 	}
 	if bucket != "" {
 		t, ok := parsePartitionTime(value)
 		if !ok {
 			return "", fmt.Errorf("expected time value for bucket %s", bucket)
 		}
-		return formatTimeBucket(t, bucket), nil
+		return typedPartitionValue("time/"+bucket, []byte(formatTimeBucket(t, bucket))), nil
 	}
+
+	typeOf := reflect.TypeOf(value)
+	typeID := typeOf.PkgPath() + ":" + typeOf.String()
 	switch v := value.(type) {
 	case time.Time:
-		return v.UTC().Format(time.RFC3339Nano), nil
+		return typedPartitionValue(typeID, []byte(v.UTC().Format(time.RFC3339Nano))), nil
 	case json.RawMessage:
-		return string(v), nil
+		return typedPartitionValue(typeID, []byte(v)), nil
 	case []byte:
-		return string(v), nil
-	default:
-		return fmt.Sprint(v), nil
+		return typedPartitionValue(typeID, v), nil
+	case string:
+		return typedPartitionValue(typeID, []byte(v)), nil
+	case bool:
+		return typedPartitionValue(typeID, []byte(strconv.FormatBool(v))), nil
+	case float32:
+		return typedPartitionValue(typeID, []byte(strconv.FormatUint(uint64(math.Float32bits(v)), 16))), nil
+	case float64:
+		return typedPartitionValue(typeID, []byte(strconv.FormatUint(math.Float64bits(v), 16))), nil
 	}
+
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return typedPartitionValue(typeID, []byte(strconv.FormatInt(reflected.Int(), 10))), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return typedPartitionValue(typeID, []byte(strconv.FormatUint(reflected.Uint(), 10))), nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("encode partition value %s: %w", typeID, err)
+	}
+	return typedPartitionValue(typeID, encoded), nil
+}
+
+func typedPartitionValue(typeID string, value []byte) string {
+	return strconv.Itoa(len(typeID)) + ":" + typeID + ":" + base64.RawURLEncoding.EncodeToString(value)
 }
 
 func parsePartitionTime(value any) (time.Time, bool) {
@@ -575,14 +818,8 @@ func formatTimeBucket(value time.Time, bucket string) string {
 	}
 }
 
-func sanitizePartitionValue(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "null"
-	}
-	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "-")
-	value = replacer.Replace(value)
-	return value
+func stablePathValue(value string) string {
+	return "v1-" + base64.RawURLEncoding.EncodeToString([]byte(value))
 }
 
 func parseBool(raw string) bool {

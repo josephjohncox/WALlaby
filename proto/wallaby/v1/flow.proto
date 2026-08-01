@@ -6,13 +6,18 @@ import "wallaby/v1/types.proto";
 
 option go_package = "github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabypb";
 
+// FlowService stores flow definitions and controls lifecycle and PostgreSQL source resources.
 service FlowService {
   rpc CreateFlow(CreateFlowRequest) returns (Flow);
   rpc UpdateFlow(UpdateFlowRequest) returns (Flow);
   rpc ReconfigureFlow(ReconfigureFlowRequest) returns (Flow);
   rpc StartFlow(StartFlowRequest) returns (Flow);
   rpc RunFlowOnce(RunFlowOnceRequest) returns (RunFlowOnceResponse);
+  // PauseFlow quiesces a running flow and keeps it resumable.
+  rpc PauseFlow(PauseFlowRequest) returns (Flow);
+  // StopFlow cancels active execution and moves the flow to terminal stopped state.
   rpc StopFlow(StopFlowRequest) returns (Flow);
+  // ResumeFlow returns a paused flow to running state.
   rpc ResumeFlow(ResumeFlowRequest) returns (Flow);
   rpc GetFlow(GetFlowRequest) returns (Flow);
   rpc ListFlows(ListFlowsRequest) returns (ListFlowsResponse);
@@ -54,6 +59,10 @@ message RunFlowOnceRequest {
 
 message RunFlowOnceResponse {
   bool dispatched = 1;
+}
+
+message PauseFlowRequest {
+  string flow_id = 1;
 }
 
 message StopFlowRequest {

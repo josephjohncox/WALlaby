@@ -9,25 +9,25 @@ This repository includes a reproducible, local benchmark harness for:
 ## Quick Start
 
 ```bash
-make bench PROFILE=small TARGETS=all
+PROFILE=small TARGETS=all just bench
 ```
 
 To run the full benchmark suite (small/medium/large) and generate a summary:
 
 ```bash
-make benchmark
+just benchmark
 ```
 
 To capture CPU/heap profiles and Go execution traces (with per-target runs), use:
 
 ```bash
-make benchmark-profile
+just benchmark-profile
 ```
 
 You can override the suite with env vars:
 
 ```bash
-PROFILES=small,medium SCENARIOS=base,ddl TARGETS=postgres make benchmark
+PROFILES=small,medium SCENARIOS=base,ddl TARGETS=postgres just benchmark
 ```
 
 Profiling outputs:
@@ -66,7 +66,7 @@ Profiles control scale and concurrency:
 Example:
 
 ```bash
-make bench PROFILE=medium TARGETS=postgres,clickhouse
+PROFILE=medium TARGETS=postgres,clickhouse just bench
 ```
 
 ## Targets
@@ -74,9 +74,9 @@ make bench PROFILE=medium TARGETS=postgres,clickhouse
 Run all targets or a subset:
 
 ```bash
-make bench TARGETS=all
-make bench TARGETS=postgres
-make bench TARGETS=kafka,clickhouse
+TARGETS=all just bench
+TARGETS=postgres just bench
+TARGETS=kafka,clickhouse just bench
 ```
 
 Note: the Kafka target uses a smaller batch size (clamped to 25) plus LZ4 compression to avoid hitting default broker message-size limits.
@@ -86,7 +86,7 @@ Note: the Kafka target uses a smaller batch size (clamped to 25) plus LZ4 compre
 DDL churn is available as a separate scenario (adds/drops a column and changes a type during the run):
 
 ```bash
-make bench-ddl PROFILE=small TARGETS=postgres
+PROFILE=small TARGETS=postgres just bench-ddl
 ```
 
 ### Mutation/Target Write Matrix
@@ -96,8 +96,8 @@ with the destination-specific write mode toggles:
 
 ```bash
 # ClickHouse: compare append vs mutation-based target writes
-BENCH_CLICKHOUSE_WRITE_MODE=append make bench-ddl PROFILE=small TARGETS=clickhouse
-BENCH_CLICKHOUSE_WRITE_MODE=target make bench-ddl PROFILE=small TARGETS=clickhouse
+BENCH_CLICKHOUSE_WRITE_MODE=append PROFILE=small TARGETS=clickhouse just bench-ddl
+BENCH_CLICKHOUSE_WRITE_MODE=target PROFILE=small TARGETS=clickhouse just bench-ddl
 ```
 
 ## Environment Overrides
@@ -114,7 +114,7 @@ You can override connection settings via env vars:
 Example:
 
 ```bash
-BENCH_PG_DSN=postgres://user:pass@localhost:5432/db?sslmode=disable make bench
+BENCH_PG_DSN=postgres://user:pass@localhost:5432/db?sslmode=disable just bench
 ```
 
 ## Results
@@ -131,7 +131,7 @@ For statistical comparisons between two sets of runs (baseline vs candidate),
 use `benchstat` from `golang.org/x/perf`:
 
 ```bash
-make benchstat BASELINE=bench/results/baseline CANDIDATE=bench/results/candidate
+BASELINE=bench/results/baseline CANDIDATE=bench/results/candidate just benchstat
 ```
 
 Each directory can contain one or more `bench_*.json` files (from multiple runs).
@@ -159,7 +159,7 @@ We recommend:
 4. Compare with `benchstat`:
 
 ```bash
-make benchstat BASELINE=bench/results/external/debezium CANDIDATE=bench/results/run_<timestamp>
+BASELINE=bench/results/external/debezium CANDIDATE=bench/results/run_<timestamp> just benchstat
 ```
 
 Keep notes about versions, config, and hardware so we can reproduce results later.

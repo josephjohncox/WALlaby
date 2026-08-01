@@ -56,6 +56,9 @@ type Spec struct {
 
 // Capabilities describe what a connector can handle.
 type Capabilities struct {
+	Support               SupportLevel
+	Evidence              ContractEvidence
+	Delivery              DeliverySemantics
 	SupportsDDL           bool
 	SupportsSchemaChanges bool
 	SupportsStreaming     bool
@@ -100,17 +103,18 @@ type FlowCheckpoint struct {
 
 // Record represents a single change or DDL event.
 type Record struct {
-	Table         string
-	Operation     Operation
-	SchemaVersion int64
-	Key           []byte
-	Payload       []byte
-	Before        map[string]any
-	After         map[string]any
-	Unchanged     []string
-	DDL           string
-	DDLPlan       []byte // Structured plan-driven DDL when raw SQL is unavailable
-	Timestamp     time.Time
+	Table          string
+	Operation      Operation
+	SchemaVersion  int64
+	Key            []byte
+	Payload        []byte
+	Before         map[string]any
+	After          map[string]any
+	Unchanged      []string
+	DDL            string
+	DDLPlan        []byte // Structured plan-driven DDL when raw SQL is unavailable
+	SourcePosition string // Durable source position for this record when a batch spans positions
+	Timestamp      time.Time
 }
 
 // Batch is the unit passed between sources and destinations.
@@ -150,9 +154,41 @@ type Destination interface {
 	Capabilities() Capabilities
 }
 
-// CheckpointStore persists checkpoints for recovery.
+// CheckpointStore persists checkpoints for recovery. Get returns
+// ErrCheckpointNotFound when a flow has no durable position yet.
 type CheckpointStore interface {
 	Get(ctx context.Context, flowID string) (Checkpoint, error)
 	Put(ctx context.Context, flowID string, checkpoint Checkpoint) error
 	List(ctx context.Context) ([]FlowCheckpoint, error)
+}
+
+// OutboxEntry is one durable secondary-destination delivery. PositionID is
+// derived with CheckpointPositionID. BatchHash is populated by stores when
+// listing entries and identifies the exact, type-preserving batch contents.
+// Every destination used with primary acknowledgement must implement
+// idempotent writes because a crash after Write and before durable persistence
+// or deletion can replay a batch.
+type OutboxEntry struct {
+	FlowID      string
+	Destination string
+	PositionID  string
+	BatchHash   string
+	Batch       Batch
+	CreatedAt   time.Time
+}
+
+// OutboxStore atomically advances a flow checkpoint and records secondary
+// deliveries. Implementations must make insertion idempotent for an identical
+// (flow, destination, position) and reject conflicting batch content.
+type OutboxStore interface {
+	PersistCheckpointAndOutbox(ctx context.Context, flowID string, checkpoint Checkpoint, entries []OutboxEntry) error
+	ListOutbox(ctx context.Context, flowID string) ([]OutboxEntry, error)
+	DeleteOutbox(ctx context.Context, flowID, destination, positionID string) error
+}
+
+// CheckpointOutboxStore is the atomic durability seam required by primary
+// acknowledgement. A single adapter must own both checkpoint and outbox state.
+type CheckpointOutboxStore interface {
+	CheckpointStore
+	OutboxStore
 }

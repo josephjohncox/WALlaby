@@ -301,6 +301,8 @@ func flowStateToProto(state flow.State) wallabypb.FlowState {
 		return wallabypb.FlowState_FLOW_STATE_PAUSED
 	case flow.StateStopping:
 		return wallabypb.FlowState_FLOW_STATE_STOPPING
+	case flow.StateStopped:
+		return wallabypb.FlowState_FLOW_STATE_STOPPED
 	case flow.StateFailed:
 		return wallabypb.FlowState_FLOW_STATE_FAILED
 	default:
@@ -318,6 +320,8 @@ func flowStateFromProto(state wallabypb.FlowState) flow.State {
 		return flow.StatePaused
 	case wallabypb.FlowState_FLOW_STATE_STOPPING:
 		return flow.StateStopping
+	case wallabypb.FlowState_FLOW_STATE_STOPPED:
+		return flow.StateStopped
 	case wallabypb.FlowState_FLOW_STATE_FAILED:
 		return flow.StateFailed
 	default:

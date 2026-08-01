@@ -18,6 +18,7 @@ type Config struct {
 	Environment string
 	API         APIConfig
 	Postgres    PostgresConfig
+	Workflow    WorkflowConfig
 	Telemetry   TelemetryConfig
 	Trace       TraceConfig
 	Profiling   ProfilingConfig
@@ -37,11 +38,23 @@ type PostgresConfig struct {
 	DSN string
 }
 
+// WorkflowConfig selects the lifecycle metadata store. Memory is explicitly
+// development/test-only and is never an implicit production fallback.
+type WorkflowConfig struct {
+	Store string `validate:"oneof=postgres memory"`
+}
+
 type TelemetryConfig struct {
 	ServiceName     string
 	OTLPEndpoint    string
 	OTLPInsecure    bool
-	OTLPProtocol    string        `validate:"omitempty,oneof=grpc http http/protobuf"` // "grpc" or "http/protobuf"
+	OTLPProtocol    string `validate:"omitempty,oneof=grpc http http/protobuf"`
+	MetricsEndpoint string
+	MetricsInsecure bool
+	MetricsProtocol string `validate:"omitempty,oneof=grpc http http/protobuf"`
+	TracesEndpoint  string
+	TracesInsecure  bool
+	TracesProtocol  string        `validate:"omitempty,oneof=grpc http http/protobuf"`
 	MetricsExporter string        `validate:"omitempty,oneof=otlp none"`
 	TracesExporter  string        `validate:"omitempty,oneof=otlp none"`
 	MetricsInterval time.Duration `validate:"gt=0"`
@@ -67,30 +80,31 @@ type DBOSConfig struct {
 }
 
 type KubernetesConfig struct {
-	Enabled            bool
-	KubeconfigPath     string
-	KubeContext        string
-	APIServer          string
-	BearerToken        string
-	CAFile             string
-	CAData             string
-	ClientCertFile     string
-	ClientKeyFile      string
-	InsecureSkipTLS    bool
-	Namespace          string
-	JobImage           string
-	JobImagePullPolicy string
-	JobServiceAccount  string
-	JobNamePrefix      string
-	JobTTLSeconds      int `validate:"gte=0"`
-	JobBackoffLimit    int `validate:"gte=0"`
-	MaxEmptyReads      int `validate:"gte=0"`
-	JobLabels          map[string]string
-	JobAnnotations     map[string]string
-	JobCommand         []string
-	JobArgs            []string
-	JobEnv             map[string]string
-	JobEnvFrom         []string
+	Enabled                         bool
+	KubeconfigPath                  string
+	KubeContext                     string
+	APIServer                       string
+	BearerToken                     string
+	CAFile                          string
+	CAData                          string
+	ClientCertFile                  string
+	ClientKeyFile                   string
+	InsecureSkipTLS                 bool
+	Namespace                       string
+	JobImage                        string
+	JobImagePullPolicy              string
+	JobServiceAccount               string
+	JobAutomountServiceAccountToken bool
+	JobNamePrefix                   string
+	JobTTLSeconds                   int `validate:"gte=0"`
+	JobBackoffLimit                 int `validate:"gte=0"`
+	MaxEmptyReads                   int `validate:"gte=0"`
+	JobLabels                       map[string]string
+	JobAnnotations                  map[string]string
+	JobCommand                      []string
+	JobArgs                         []string
+	JobEnv                          map[string]string
+	JobEnvFrom                      []string
 }
 
 type WireConfig struct {
@@ -138,11 +152,18 @@ func Load(configPath string) (*Config, error) {
 		Postgres: PostgresConfig{
 			DSN: "",
 		},
+		Workflow: WorkflowConfig{
+			Store: "postgres",
+		},
 		Telemetry: TelemetryConfig{
 			ServiceName:     "wallaby",
 			OTLPEndpoint:    "",
 			OTLPInsecure:    true,
 			OTLPProtocol:    "grpc",
+			MetricsInsecure: true,
+			MetricsProtocol: "grpc",
+			TracesInsecure:  true,
+			TracesProtocol:  "grpc",
 			MetricsExporter: "none",
 			TracesExporter:  "none",
 			MetricsInterval: 30 * time.Second,
@@ -162,30 +183,31 @@ func Load(configPath string) (*Config, error) {
 			MaxEmptyReads: 1,
 		},
 		Kubernetes: KubernetesConfig{
-			Enabled:            false,
-			KubeconfigPath:     "",
-			KubeContext:        "",
-			APIServer:          "",
-			BearerToken:        "",
-			CAFile:             "",
-			CAData:             "",
-			ClientCertFile:     "",
-			ClientKeyFile:      "",
-			InsecureSkipTLS:    false,
-			Namespace:          "",
-			JobImage:           "",
-			JobImagePullPolicy: "IfNotPresent",
-			JobServiceAccount:  "",
-			JobNamePrefix:      "wallaby-worker",
-			JobTTLSeconds:      0,
-			JobBackoffLimit:    1,
-			MaxEmptyReads:      0,
-			JobLabels:          nil,
-			JobAnnotations:     nil,
-			JobCommand:         nil,
-			JobArgs:            nil,
-			JobEnv:             nil,
-			JobEnvFrom:         nil,
+			Enabled:                         false,
+			KubeconfigPath:                  "",
+			KubeContext:                     "",
+			APIServer:                       "",
+			BearerToken:                     "",
+			CAFile:                          "",
+			CAData:                          "",
+			ClientCertFile:                  "",
+			ClientKeyFile:                   "",
+			InsecureSkipTLS:                 false,
+			Namespace:                       "",
+			JobImage:                        "",
+			JobImagePullPolicy:              "IfNotPresent",
+			JobServiceAccount:               "",
+			JobAutomountServiceAccountToken: false,
+			JobNamePrefix:                   "wallaby-worker",
+			JobTTLSeconds:                   0,
+			JobBackoffLimit:                 1,
+			MaxEmptyReads:                   0,
+			JobLabels:                       nil,
+			JobAnnotations:                  nil,
+			JobCommand:                      nil,
+			JobArgs:                         nil,
+			JobEnv:                          nil,
+			JobEnvFrom:                      nil,
 		},
 		Wire: WireConfig{
 			DefaultFormat: "",
@@ -215,6 +237,7 @@ func Load(configPath string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Postgres.DSN = stringValue(fileCfg, []string{"postgres.dsn"}, []string{"WALLABY_POSTGRES_DSN", "WALLABY_WORKER_POSTGRES_DSN"}, cfg.Postgres.DSN)
+	cfg.Workflow.Store = stringValue(fileCfg, []string{"workflow.store", "workflow_store"}, []string{"WALLABY_WORKFLOW_STORE", "WALLABY_WORKER_WORKFLOW_STORE"}, cfg.Workflow.Store)
 
 	cfg.Telemetry.ServiceName = stringValue(fileCfg, []string{"telemetry.service_name", "telemetry.service-name"}, []string{"OTEL_SERVICE_NAME", "WALLABY_OTEL_SERVICE"}, cfg.Telemetry.ServiceName)
 	cfg.Telemetry.OTLPEndpoint = stringValue(fileCfg, []string{"telemetry.otlp_endpoint", "telemetry.otlp-endpoint", "telemetry.endpoint", "telemetry.otel_endpoint"}, []string{"OTEL_EXPORTER_OTLP_ENDPOINT", "WALLABY_OTEL_ENDPOINT", "WALLABY_WORKER_OTEL_ENDPOINT"}, cfg.Telemetry.OTLPEndpoint)
@@ -223,6 +246,18 @@ func Load(configPath string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Telemetry.OTLPProtocol = stringValue(fileCfg, []string{"telemetry.otlp_protocol", "telemetry.otlp-protocol"}, []string{"OTEL_EXPORTER_OTLP_PROTOCOL", "WALLABY_OTEL_EXPORTER_OTLP_PROTOCOL", "WALLABY_WORKER_OTEL_EXPORTER_OTLP_PROTOCOL"}, cfg.Telemetry.OTLPProtocol)
+	cfg.Telemetry.MetricsEndpoint = stringValue(fileCfg, []string{"telemetry.metrics_endpoint", "telemetry.metrics-endpoint"}, []string{"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "WALLABY_OTEL_METRICS_ENDPOINT", "WALLABY_WORKER_OTEL_METRICS_ENDPOINT"}, cfg.Telemetry.OTLPEndpoint)
+	cfg.Telemetry.MetricsInsecure, err = boolValue(fileCfg, []string{"telemetry.metrics_insecure", "telemetry.metrics-insecure"}, []string{"WALLABY_OTEL_METRICS_INSECURE", "WALLABY_WORKER_OTEL_METRICS_INSECURE"}, cfg.Telemetry.OTLPInsecure)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Telemetry.MetricsProtocol = stringValue(fileCfg, []string{"telemetry.metrics_protocol", "telemetry.metrics-protocol"}, []string{"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "WALLABY_OTEL_METRICS_PROTOCOL", "WALLABY_WORKER_OTEL_METRICS_PROTOCOL"}, cfg.Telemetry.OTLPProtocol)
+	cfg.Telemetry.TracesEndpoint = stringValue(fileCfg, []string{"telemetry.traces_endpoint", "telemetry.traces-endpoint"}, []string{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "WALLABY_OTEL_TRACES_ENDPOINT", "WALLABY_WORKER_OTEL_TRACES_ENDPOINT"}, cfg.Telemetry.OTLPEndpoint)
+	cfg.Telemetry.TracesInsecure, err = boolValue(fileCfg, []string{"telemetry.traces_insecure", "telemetry.traces-insecure"}, []string{"WALLABY_OTEL_TRACES_INSECURE", "WALLABY_WORKER_OTEL_TRACES_INSECURE"}, cfg.Telemetry.OTLPInsecure)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Telemetry.TracesProtocol = stringValue(fileCfg, []string{"telemetry.traces_protocol", "telemetry.traces-protocol"}, []string{"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "WALLABY_OTEL_TRACES_PROTOCOL", "WALLABY_WORKER_OTEL_TRACES_PROTOCOL"}, cfg.Telemetry.OTLPProtocol)
 	cfg.Telemetry.MetricsExporter = stringValue(fileCfg, []string{"telemetry.metrics_exporter", "telemetry.metrics-exporter"}, []string{"OTEL_METRICS_EXPORTER", "WALLABY_OTEL_METRICS_EXPORTER", "WALLABY_WORKER_OTEL_METRICS_EXPORTER"}, cfg.Telemetry.MetricsExporter)
 	cfg.Telemetry.TracesExporter = stringValue(fileCfg, []string{"telemetry.traces_exporter", "telemetry.traces-exporter"}, []string{"OTEL_TRACES_EXPORTER", "WALLABY_OTEL_TRACES_EXPORTER", "WALLABY_WORKER_OTEL_TRACES_EXPORTER"}, cfg.Telemetry.TracesExporter)
 	cfg.Telemetry.MetricsInterval, err = durationValue(fileCfg, []string{"telemetry.metrics_interval", "telemetry.metrics-interval"}, []string{"WALLABY_OTEL_METRICS_INTERVAL", "WALLABY_WORKER_OTEL_METRICS_INTERVAL"}, cfg.Telemetry.MetricsInterval)
@@ -284,6 +319,10 @@ func Load(configPath string) (*Config, error) {
 	cfg.Kubernetes.JobImage = stringValue(fileCfg, []string{"kubernetes.job_image", "kubernetes.job-image", "k8s.job_image", "k8s.job-image"}, []string{"WALLABY_K8S_JOB_IMAGE", "WALLABY_WORKER_K8S_JOB_IMAGE"}, cfg.Kubernetes.JobImage)
 	cfg.Kubernetes.JobImagePullPolicy = stringValue(fileCfg, []string{"kubernetes.job_image_pull_policy", "kubernetes.job-image-pull-policy", "k8s.job_image_pull_policy", "k8s.job-image-pull-policy"}, []string{"WALLABY_K8S_JOB_IMAGE_PULL_POLICY", "WALLABY_WORKER_K8S_JOB_IMAGE_PULL_POLICY"}, cfg.Kubernetes.JobImagePullPolicy)
 	cfg.Kubernetes.JobServiceAccount = stringValue(fileCfg, []string{"kubernetes.job_service_account", "kubernetes.job-service-account", "k8s.job_service_account", "k8s.job-service-account"}, []string{"WALLABY_K8S_JOB_SERVICE_ACCOUNT", "WALLABY_WORKER_K8S_JOB_SERVICE_ACCOUNT"}, cfg.Kubernetes.JobServiceAccount)
+	cfg.Kubernetes.JobAutomountServiceAccountToken, err = boolValue(fileCfg, []string{"kubernetes.job_automount_service_account_token", "kubernetes.job-automount-service-account-token"}, []string{"WALLABY_K8S_JOB_AUTOMOUNT_SERVICE_ACCOUNT_TOKEN", "WALLABY_WORKER_K8S_JOB_AUTOMOUNT_SERVICE_ACCOUNT_TOKEN"}, cfg.Kubernetes.JobAutomountServiceAccountToken)
+	if err != nil {
+		return nil, err
+	}
 	cfg.Kubernetes.JobNamePrefix = stringValue(fileCfg, []string{"kubernetes.job_name_prefix", "kubernetes.job-name-prefix", "k8s.job_name_prefix", "k8s.job-name-prefix"}, []string{"WALLABY_K8S_JOB_NAME_PREFIX", "WALLABY_WORKER_K8S_JOB_NAME_PREFIX"}, cfg.Kubernetes.JobNamePrefix)
 	cfg.Kubernetes.JobTTLSeconds, err = intValue(fileCfg, []string{"kubernetes.job_ttl_seconds", "kubernetes.job-ttl-seconds", "k8s.job_ttl_seconds", "k8s.job-ttl-seconds"}, []string{"WALLABY_K8S_JOB_TTL_SECONDS", "WALLABY_WORKER_K8S_JOB_TTL_SECONDS"}, cfg.Kubernetes.JobTTLSeconds)
 	if err != nil {
@@ -370,9 +409,25 @@ func validateConfig(cfg *Config) error {
 
 	protocol := strings.ToLower(strings.TrimSpace(cfg.Telemetry.OTLPProtocol))
 	cfg.Telemetry.OTLPProtocol = protocol
+	if cfg.Telemetry.MetricsEndpoint == "" {
+		cfg.Telemetry.MetricsEndpoint = cfg.Telemetry.OTLPEndpoint
+	}
+	if cfg.Telemetry.TracesEndpoint == "" {
+		cfg.Telemetry.TracesEndpoint = cfg.Telemetry.OTLPEndpoint
+	}
+	if cfg.Telemetry.MetricsProtocol == "" {
+		cfg.Telemetry.MetricsProtocol = protocol
+	}
+	if cfg.Telemetry.TracesProtocol == "" {
+		cfg.Telemetry.TracesProtocol = protocol
+	}
+	cfg.Telemetry.MetricsProtocol = strings.ToLower(strings.TrimSpace(cfg.Telemetry.MetricsProtocol))
+	cfg.Telemetry.TracesProtocol = strings.ToLower(strings.TrimSpace(cfg.Telemetry.TracesProtocol))
 	cfg.Telemetry.MetricsExporter = strings.ToLower(strings.TrimSpace(cfg.Telemetry.MetricsExporter))
 	cfg.Telemetry.TracesExporter = strings.ToLower(strings.TrimSpace(cfg.Telemetry.TracesExporter))
 	cfg.Wire.DefaultFormat = strings.ToLower(strings.TrimSpace(cfg.Wire.DefaultFormat))
+	cfg.Workflow.Store = strings.ToLower(strings.TrimSpace(cfg.Workflow.Store))
+	cfg.Environment = strings.ToLower(strings.TrimSpace(cfg.Environment))
 	k8sImagePullPolicy := strings.TrimSpace(cfg.Kubernetes.JobImagePullPolicy)
 	cfg.Kubernetes.JobImagePullPolicy = k8sImagePullPolicy
 
@@ -385,8 +440,11 @@ func validateConfig(cfg *Config) error {
 	metricsEnabled := cfg.Telemetry.MetricsExporter != "none" && cfg.Telemetry.MetricsExporter != ""
 	tracesEnabled := cfg.Telemetry.TracesExporter != "none" && cfg.Telemetry.TracesExporter != ""
 
-	if cfg.Telemetry.OTLPEndpoint == "" && (metricsEnabled || tracesEnabled) {
-		errs = append(errs, "telemetry endpoint is required when telemetry exporters are enabled")
+	if cfg.Telemetry.MetricsEndpoint == "" && metricsEnabled {
+		errs = append(errs, "telemetry metrics endpoint is required when the metrics exporter is enabled")
+	}
+	if cfg.Telemetry.TracesEndpoint == "" && tracesEnabled {
+		errs = append(errs, "telemetry traces endpoint is required when the traces exporter is enabled")
 	}
 	jobImagePullPolicy, err := normalizeKubernetesImagePullPolicy(cfg.Kubernetes.JobImagePullPolicy)
 	if err != nil {
@@ -397,6 +455,19 @@ func validateConfig(cfg *Config) error {
 
 	if cfg.DDL.CatalogEnabled && cfg.DDL.CatalogInterval <= 0 {
 		errs = append(errs, "ddl.catalog_interval must be greater than 0 when ddl catalog scanning is enabled")
+	}
+	if cfg.Workflow.Store == "postgres" && strings.TrimSpace(cfg.Postgres.DSN) == "" {
+		errs = append(errs, "postgres dsn is required when workflow.store=postgres")
+	}
+	if cfg.Workflow.Store == "memory" {
+		switch cfg.Environment {
+		case "dev", "development", "test":
+		default:
+			errs = append(errs, "workflow.store=memory is allowed only in dev, development, or test")
+		}
+		if cfg.DBOS.Enabled || cfg.Kubernetes.Enabled {
+			errs = append(errs, "workflow.store=memory cannot be used with DBOS or Kubernetes dispatch")
+		}
 	}
 
 	if len(errs) == 0 {
@@ -433,6 +504,10 @@ func normalizedConfigField(namespace string) string {
 	switch namespace {
 	case "Config.Telemetry.OTLPProtocol":
 		return "telemetry.otlp_protocol"
+	case "Config.Telemetry.MetricsProtocol":
+		return "telemetry.metrics_protocol"
+	case "Config.Telemetry.TracesProtocol":
+		return "telemetry.traces_protocol"
 	case "Config.Telemetry.MetricsExporter":
 		return "telemetry.metrics_exporter"
 	case "Config.Telemetry.TracesExporter":

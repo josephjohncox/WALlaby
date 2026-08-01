@@ -1,0 +1,492 @@
+[
+  {
+    "name": "BenchmarkBatchContentHash",
+    "iterations": 427,
+    "ns_per_op": 2771284.0,
+    "bytes_per_op": 5088760,
+    "allocs_per_op": 58949
+  },
+  {
+    "name": "BenchmarkBatchContentHash",
+    "iterations": 423,
+    "ns_per_op": 2784565.0,
+    "bytes_per_op": 5088769,
+    "allocs_per_op": 58949
+  },
+  {
+    "name": "BenchmarkBatchContentHash",
+    "iterations": 428,
+    "ns_per_op": 2786029.0,
+    "bytes_per_op": 5088758,
+    "allocs_per_op": 58949
+  },
+  {
+    "name": "BenchmarkBatchContentHash",
+    "iterations": 427,
+    "ns_per_op": 2826497.0,
+    "bytes_per_op": 5088758,
+    "allocs_per_op": 58949
+  },
+  {
+    "name": "BenchmarkBatchContentHash",
+    "iterations": 433,
+    "ns_per_op": 2788810.0,
+    "bytes_per_op": 5088757,
+    "allocs_per_op": 58949
+  },
+  {
+    "name": "BenchmarkBatchContentHash",
+    "iterations": 430,
+    "ns_per_op": 2796049.0,
+    "bytes_per_op": 5088759,
+    "allocs_per_op": 58949
+  },
+  {
+    "name": "BenchmarkBatchContentHash",
+    "iterations": 433,
+    "ns_per_op": 2784982.0,
+    "bytes_per_op": 5088762,
+    "allocs_per_op": 58949
+  },
+  {
+    "name": "BenchmarkBatchContentHash",
+    "iterations": 391,
+    "ns_per_op": 2919956.0,
+    "bytes_per_op": 5088753,
+    "allocs_per_op": 58949
+  },
+  {
+    "name": "BenchmarkBatchContentHash",
+    "iterations": 421,
+    "ns_per_op": 2952481.0,
+    "bytes_per_op": 5088754,
+    "allocs_per_op": 58949
+  },
+  {
+    "name": "BenchmarkBatchContentHash",
+    "iterations": 357,
+    "ns_per_op": 3332015.0,
+    "bytes_per_op": 5088757,
+    "allocs_per_op": 58949
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongFour",
+    "iterations": 22,
+    "ns_per_op": 51690367.0,
+    "bytes_per_op": 3633,
+    "allocs_per_op": 36
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongFour",
+    "iterations": 22,
+    "ns_per_op": 51825036.0,
+    "bytes_per_op": 3569,
+    "allocs_per_op": 36
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongFour",
+    "iterations": 22,
+    "ns_per_op": 51722866.0,
+    "bytes_per_op": 3349,
+    "allocs_per_op": 36
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongFour",
+    "iterations": 22,
+    "ns_per_op": 51731805.0,
+    "bytes_per_op": 3454,
+    "allocs_per_op": 36
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongFour",
+    "iterations": 22,
+    "ns_per_op": 51875288.0,
+    "bytes_per_op": 3345,
+    "allocs_per_op": 36
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongFour",
+    "iterations": 22,
+    "ns_per_op": 51846858.0,
+    "bytes_per_op": 3307,
+    "allocs_per_op": 35
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongFour",
+    "iterations": 22,
+    "ns_per_op": 51610487.0,
+    "bytes_per_op": 3351,
+    "allocs_per_op": 36
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongFour",
+    "iterations": 22,
+    "ns_per_op": 51807991.0,
+    "bytes_per_op": 3258,
+    "allocs_per_op": 35
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongFour",
+    "iterations": 22,
+    "ns_per_op": 51776085.0,
+    "bytes_per_op": 3258,
+    "allocs_per_op": 35
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongFour",
+    "iterations": 22,
+    "ns_per_op": 51502794.0,
+    "bytes_per_op": 3258,
+    "allocs_per_op": 35
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongEight",
+    "iterations": 22,
+    "ns_per_op": 51806905.0,
+    "bytes_per_op": 6515,
+    "allocs_per_op": 53
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongEight",
+    "iterations": 22,
+    "ns_per_op": 51773140.0,
+    "bytes_per_op": 6257,
+    "allocs_per_op": 52
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongEight",
+    "iterations": 22,
+    "ns_per_op": 51883116.0,
+    "bytes_per_op": 5925,
+    "allocs_per_op": 51
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongEight",
+    "iterations": 22,
+    "ns_per_op": 51775203.0,
+    "bytes_per_op": 6440,
+    "allocs_per_op": 52
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongEight",
+    "iterations": 22,
+    "ns_per_op": 51886188.0,
+    "bytes_per_op": 6681,
+    "allocs_per_op": 53
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongEight",
+    "iterations": 22,
+    "ns_per_op": 51814248.0,
+    "bytes_per_op": 5951,
+    "allocs_per_op": 51
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongEight",
+    "iterations": 22,
+    "ns_per_op": 51859138.0,
+    "bytes_per_op": 5964,
+    "allocs_per_op": 52
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongEight",
+    "iterations": 22,
+    "ns_per_op": 51908360.0,
+    "bytes_per_op": 5969,
+    "allocs_per_op": 52
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongEight",
+    "iterations": 22,
+    "ns_per_op": 51781795.0,
+    "bytes_per_op": 5946,
+    "allocs_per_op": 51
+  },
+  {
+    "name": "BenchmarkWriteWithRetryOneFailureAmongEight",
+    "iterations": 22,
+    "ns_per_op": 51930981.0,
+    "bytes_per_op": 6357,
+    "allocs_per_op": 52
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/new",
+    "iterations": 135298,
+    "ns_per_op": 8769.0,
+    "bytes_per_op": 11956,
+    "allocs_per_op": 133
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/new",
+    "iterations": 138392,
+    "ns_per_op": 8310.0,
+    "bytes_per_op": 11956,
+    "allocs_per_op": 133
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/new",
+    "iterations": 147688,
+    "ns_per_op": 8395.0,
+    "bytes_per_op": 11955,
+    "allocs_per_op": 133
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/new",
+    "iterations": 145526,
+    "ns_per_op": 8223.0,
+    "bytes_per_op": 11956,
+    "allocs_per_op": 133
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/new",
+    "iterations": 145500,
+    "ns_per_op": 8285.0,
+    "bytes_per_op": 11956,
+    "allocs_per_op": 133
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/new",
+    "iterations": 146774,
+    "ns_per_op": 8247.0,
+    "bytes_per_op": 11956,
+    "allocs_per_op": 133
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/new",
+    "iterations": 147196,
+    "ns_per_op": 8311.0,
+    "bytes_per_op": 11954,
+    "allocs_per_op": 133
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/new",
+    "iterations": 148657,
+    "ns_per_op": 8288.0,
+    "bytes_per_op": 11955,
+    "allocs_per_op": 133
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/new",
+    "iterations": 147568,
+    "ns_per_op": 8303.0,
+    "bytes_per_op": 11955,
+    "allocs_per_op": 133
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/new",
+    "iterations": 139384,
+    "ns_per_op": 8290.0,
+    "bytes_per_op": 11956,
+    "allocs_per_op": 133
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/replay",
+    "iterations": 130372,
+    "ns_per_op": 9340.0,
+    "bytes_per_op": 14545,
+    "allocs_per_op": 145
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/replay",
+    "iterations": 131674,
+    "ns_per_op": 9415.0,
+    "bytes_per_op": 14543,
+    "allocs_per_op": 145
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/replay",
+    "iterations": 124608,
+    "ns_per_op": 9539.0,
+    "bytes_per_op": 14545,
+    "allocs_per_op": 145
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/replay",
+    "iterations": 128228,
+    "ns_per_op": 9298.0,
+    "bytes_per_op": 14545,
+    "allocs_per_op": 145
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/replay",
+    "iterations": 130671,
+    "ns_per_op": 9743.0,
+    "bytes_per_op": 14544,
+    "allocs_per_op": 145
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/replay",
+    "iterations": 122982,
+    "ns_per_op": 9767.0,
+    "bytes_per_op": 14543,
+    "allocs_per_op": 145
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/replay",
+    "iterations": 121999,
+    "ns_per_op": 9876.0,
+    "bytes_per_op": 14544,
+    "allocs_per_op": 145
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/replay",
+    "iterations": 123496,
+    "ns_per_op": 9790.0,
+    "bytes_per_op": 14544,
+    "allocs_per_op": 145
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/replay",
+    "iterations": 120914,
+    "ns_per_op": 9840.0,
+    "bytes_per_op": 14543,
+    "allocs_per_op": 145
+  },
+  {
+    "name": "BenchmarkDestinationWrite/json/replay",
+    "iterations": 123624,
+    "ns_per_op": 9756.0,
+    "bytes_per_op": 14543,
+    "allocs_per_op": 145
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/new",
+    "iterations": 10874,
+    "ns_per_op": 112680.0,
+    "bytes_per_op": 277875,
+    "allocs_per_op": 1878
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/new",
+    "iterations": 10000,
+    "ns_per_op": 106266.0,
+    "bytes_per_op": 277853,
+    "allocs_per_op": 1878
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/new",
+    "iterations": 10000,
+    "ns_per_op": 103483.0,
+    "bytes_per_op": 277808,
+    "allocs_per_op": 1878
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/new",
+    "iterations": 10000,
+    "ns_per_op": 106257.0,
+    "bytes_per_op": 278010,
+    "allocs_per_op": 1878
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/new",
+    "iterations": 10000,
+    "ns_per_op": 104163.0,
+    "bytes_per_op": 277894,
+    "allocs_per_op": 1878
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/new",
+    "iterations": 10000,
+    "ns_per_op": 103616.0,
+    "bytes_per_op": 277913,
+    "allocs_per_op": 1878
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/new",
+    "iterations": 10000,
+    "ns_per_op": 118987.0,
+    "bytes_per_op": 277910,
+    "allocs_per_op": 1878
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/new",
+    "iterations": 10000,
+    "ns_per_op": 103781.0,
+    "bytes_per_op": 277876,
+    "allocs_per_op": 1878
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/new",
+    "iterations": 10000,
+    "ns_per_op": 151419.0,
+    "bytes_per_op": 276635,
+    "allocs_per_op": 1878
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/new",
+    "iterations": 8263,
+    "ns_per_op": 153986.0,
+    "bytes_per_op": 276398,
+    "allocs_per_op": 1877
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/replay",
+    "iterations": 7236,
+    "ns_per_op": 161782.0,
+    "bytes_per_op": 284709,
+    "allocs_per_op": 1895
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/replay",
+    "iterations": 9433,
+    "ns_per_op": 116770.0,
+    "bytes_per_op": 286304,
+    "allocs_per_op": 1895
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/replay",
+    "iterations": 10000,
+    "ns_per_op": 107565.0,
+    "bytes_per_op": 286117,
+    "allocs_per_op": 1895
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/replay",
+    "iterations": 10000,
+    "ns_per_op": 108030.0,
+    "bytes_per_op": 286102,
+    "allocs_per_op": 1895
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/replay",
+    "iterations": 10000,
+    "ns_per_op": 111181.0,
+    "bytes_per_op": 286058,
+    "allocs_per_op": 1895
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/replay",
+    "iterations": 10000,
+    "ns_per_op": 110896.0,
+    "bytes_per_op": 286038,
+    "allocs_per_op": 1895
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/replay",
+    "iterations": 10000,
+    "ns_per_op": 110304.0,
+    "bytes_per_op": 285861,
+    "allocs_per_op": 1895
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/replay",
+    "iterations": 10000,
+    "ns_per_op": 110539.0,
+    "bytes_per_op": 286061,
+    "allocs_per_op": 1895
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/replay",
+    "iterations": 10000,
+    "ns_per_op": 119430.0,
+    "bytes_per_op": 285520,
+    "allocs_per_op": 1895
+  },
+  {
+    "name": "BenchmarkDestinationWrite/parquet/replay",
+    "iterations": 9178,
+    "ns_per_op": 110210.0,
+    "bytes_per_op": 285838,
+    "allocs_per_op": 1895
+  }
+]

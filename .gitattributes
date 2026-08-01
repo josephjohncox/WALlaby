@@ -1,0 +1,3 @@
+# Exclude machine-generated artifacts from GitHub Linguist language statistics.
+gen/go/** linguist-generated=true
+docs/reference/generated/** linguist-generated=true

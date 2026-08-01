@@ -2,24 +2,24 @@
 EXTENDS TLC
 
 (***************************************************************************
- Flow lifecycle state machine. Models CLI-driven transitions and ensures
- only valid state changes occur. RunOnce must not alter the flow state.
+ Canonical flow lifecycle. Pause is resumable. Stop is two phase: Stopping is
+ durable while executions are cancelled; Stopped is terminal. Slot retention
+ policy is deliberately not encoded in lifecycle state.
 ***************************************************************************)
 
-FlowStates == {"Created", "Running", "Paused", "Stopped", "FailedHoldingSlot", "FailedDroppedSlot"}
+FlowStates == {"Created", "Running", "Paused", "Stopping", "Stopped", "Failed"}
 
 VARIABLES state
 
 vars == <<state>>
 
-Init ==
-  /\ state = "Created"
+Init == state = "Created"
 
 Start ==
-  /\ state \in {"Created", "Paused"}
+  /\ state = "Created"
   /\ state' = "Running"
 
-Stop ==
+Pause ==
   /\ state = "Running"
   /\ state' = "Paused"
 
@@ -27,9 +27,17 @@ Resume ==
   /\ state = "Paused"
   /\ state' = "Running"
 
-Fail ==
+StopBegin ==
   /\ state \in {"Running", "Paused"}
-  /\ state' \in {"FailedHoldingSlot", "FailedDroppedSlot"}
+  /\ state' = "Stopping"
+
+StopComplete ==
+  /\ state = "Stopping"
+  /\ state' = "Stopped"
+
+Fail ==
+  /\ state \in {"Running", "Paused", "Stopping"}
+  /\ state' = "Failed"
 
 RunOnce ==
   /\ state \in FlowStates
@@ -37,13 +45,16 @@ RunOnce ==
 
 Next ==
   \/ Start
-  \/ Stop
+  \/ Pause
   \/ Resume
+  \/ StopBegin
+  \/ StopComplete
   \/ Fail
   \/ RunOnce
 
 Spec == Init /\ [][Next]_vars
 
 TypeInvariant == state \in FlowStates
+StoppedIsTerminal == [](state = "Stopped" => [](state = "Stopped"))
 
 ====

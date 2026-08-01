@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS wallaby_schema_registry (
   schema_type TEXT NOT NULL,
   schema TEXT NOT NULL,
   schema_hash TEXT NOT NULL,
-  references JSONB NOT NULL DEFAULT '[]',
+  schema_references JSONB NOT NULL DEFAULT '[]',
   references_hash TEXT NOT NULL,
   version INTEGER NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()

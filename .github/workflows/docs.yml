@@ -1,0 +1,145 @@
+name: Documentation
+
+on:
+  pull_request:
+    paths:
+      - "**/*.md"
+      - "docs/**"
+      - "examples/**"
+      - "pkg/**"
+      - "proto/**"
+      - "README.md"
+      - "mkdocs.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "buf.gen.docs.yaml"
+      - "lychee.toml"
+      - "justfile"
+      - ".github/actions/setup-just/**"
+      - "scripts/docs-*"
+      - ".github/workflows/docs.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - "docs/**"
+      - "examples/**"
+      - "pkg/**"
+      - "proto/**"
+      - "README.md"
+      - "mkdocs.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "buf.gen.docs.yaml"
+      - "lychee.toml"
+      - "justfile"
+      - ".github/actions/setup-just/**"
+      - "scripts/docs-*"
+      - ".github/workflows/docs.yml"
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    env:
+      GOBIN: ${{ github.workspace }}/.cache/bin
+    steps:
+      - name: Checkout
+        # actions/checkout v5.0.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup just
+        uses: ./.github/actions/setup-just
+
+      - name: Setup Go
+        # actions/setup-go v6.5.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Buf
+        # bufbuild/buf-setup-action v1.50.0
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99
+        with:
+          version: "1.63.0"
+          github_token: ${{ github.token }}
+
+      - name: Setup uv
+        # astral-sh/setup-uv v8.3.2
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
+        with:
+          version: "0.11.29"
+          enable-cache: true
+
+      - name: Verify generated documentation
+        run: just docs-verify
+
+      - name: Refresh, build, and check documentation
+        run: just docs-check
+
+      - name: Check links in all repository Markdown
+        # lycheeverse/lychee-action v2.9.0
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8
+        with:
+          args: --config lychee.toml --offline --no-progress '**/*.md'
+          fail: true
+
+      - name: Configure Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # actions/configure-pages v6.0.0
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d
+
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # actions/upload-pages-artifact v5.0.0
+        uses: >-
+          actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy Pages
+        id: deployment
+        # actions/deploy-pages v5.0.0
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128
+
+  external-links:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        # actions/checkout v5.0.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Check external links
+        # lycheeverse/lychee-action v2.9.0
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8
+        with:
+          args: --config lychee.toml --no-progress '**/*.md'
+          fail: true

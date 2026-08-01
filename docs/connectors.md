@@ -1,9 +1,13 @@
-# Connector Configuration Notes
+# Extended connector notes
 
-This page highlights connector-specific configuration and caveats that matter in production. Refer to `examples/flows/` for full JSON specs.
+This page records options for selected non-core destination adapters. It is not a complete connector catalog. Start with the [connector overview](connectors/index.md) and the [PostgreSQL connector reference](connectors/postgres.md).
+
+Full JSON flow definitions live under `examples/flows/`.
 
 ## Kafka
+
 WALlaby writes wire-formatted payloads and includes metadata headers:
+
 - `wallaby-format` (arrow|avro|proto|json)
 - `wallaby-schema`
 - `wallaby-namespace`
@@ -11,6 +15,7 @@ WALlaby writes wire-formatted payloads and includes metadata headers:
 - `wallaby-registry-subject`, `wallaby-registry-id`, `wallaby-registry-version` (when schema registry enabled)
 
 Kafka options:
+
 - `brokers` (required)
 - `topic` (required)
 - `format` (default `arrow`)
@@ -35,17 +40,21 @@ Kafka options:
   `schema_registry_glue_registry`, `schema_registry_glue_schema` (Glue registry)
 
 Flow defaults:
+
 - `config.schema_registry_subject`, `config.schema_registry_proto_types_subject`, and
   `config.schema_registry_subject_mode` can be set on the flow config. Endpoint options override flow defaults.
 
 Payload format notes:
+
 - `arrow`/`avro`/`proto` use the shared schema from the flow; schema evolution is driven by DDL events.
 - JSON is supported for compatibility but loses some typing fidelity; prefer Arrow/Avro/Proto for strict round-trip.
 
 ## Snowflake
+
 Snowflake is a direct table sink (UPSERT/DELETE in streaming mode). You can manage warehouse costs per destination.
 
 Options:
+
 - `dsn` (required)
 - `schema`, `table`
 - `write_mode` (`target` or `append`)
@@ -58,13 +67,16 @@ Options:
 - `session_keep_alive` (`true|false`, default `false`)
 
 Cost tips:
+
 - Set `warehouse_size=xsmall` and `warehouse_auto_suspend=60` to reduce idle burn.
 - Keep `session_keep_alive=false` so sessions don’t pin warehouses.
 
 ## Snowpipe
+
 Snowpipe is a file-based sink. WALlaby writes files and can optionally issue COPY statements.
 
 Options:
+
 - `dsn` (required)
 - `stage` (required) — e.g., `@my_external_stage`
 - `format` (`parquet` recommended)
@@ -80,14 +92,17 @@ Options:
 - `warehouse_size`, `warehouse_auto_suspend`, `warehouse_auto_resume`, `session_keep_alive` (same semantics as Snowflake)
 
 Auto-ingest mode:
+
 - Set `auto_ingest=true` to upload only.
 - You must configure an external stage + notification integration in Snowflake.
 - WALlaby will not issue COPY in this mode.
 
 ## DuckLake
+
 DuckLake uses DuckDB with the DuckLake extension. WALlaby attaches a DuckLake catalog and writes tables through DuckDB.
 
 Options:
+
 - `dsn` (required) — DuckDB connection string
 - `catalog` (required) — DuckLake catalog path
 - `catalog_name` (default `ducklake`)
@@ -97,20 +112,25 @@ Options:
 - `batch_mode` (`target` or `staging`) with `batch_resolution` (`none`, `append`, `replace`)
 
 Caveats:
+
 - DuckLake metadata is file-based. Avoid concurrent writers to the same catalog unless you coordinate externally.
 - For production, pin DuckDB/DuckLake versions and ensure the extension is available in your runtime.
 
 ## HTTP / Webhook
+
 HTTP delivery supports retries + exponential backoff and idempotency headers.
+
 - `payload_mode=record_json` sends one-record JSON envelopes.
 - `payload_mode=wal` sends raw pgoutput bytes.
-- Idempotency key is derived from `(table, key, lsn)`.
+- The idempotency key includes table, operation, per-record source position, key, and encoded payload.
 - `transaction_header` (default `X-Wallaby-Transaction-Id`) carries the LSN or a hash fallback.
-- `dedupe_window` (duration) skips duplicate idempotency keys within a window.
+- `dedupe_window` is process-local and remembers only confirmed sends; failures and cancellations remain retryable.
 - When using `payload_mode=wire` with Avro/Proto and `schema_registry` enabled, WALlaby emits
   `X-Wallaby-Registry-*` headers.
 
 ## S3
+
 S3 supports Parquet/Arrow/Avro/JSON with optional partitioning. Use `region` values that match your AWS partition (GovCloud/China supported).
+Exact in-memory batch retries converge through deterministic keys, conditional creation, and SHA-256 reconciliation; conflicting content at one identity fails closed. Direct S3 remains experimental and at least once because crash-time rebatching can change the terminal checkpoint identity.
 If `schema_registry` is enabled with Avro/Proto, WALlaby writes registry metadata into object metadata keys
 (`wallaby-registry-*`).

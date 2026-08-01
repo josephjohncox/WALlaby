@@ -10,20 +10,34 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/pgstream"
 	gogrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
+)
+
+const (
+	HealthServiceStartup   = "wallaby.startup"
+	HealthServiceReadiness = "wallaby.readiness"
+	HealthServiceLiveness  = "wallaby.liveness"
 )
 
 // Server wraps the gRPC server lifecycle.
 type Server struct {
 	server *gogrpc.Server
+	health *health.Server
 }
 
-func New(engine workflow.Engine, dispatcher FlowDispatcher, checkpoints connector.CheckpointStore, registryStore registry.Store, streamStore *pgstream.Store, enableReflection bool, meters *telemetry.Meters) *Server {
+func New(engine workflow.ControlEngine, dispatcher RunOnceDispatcher, checkpoints connector.CheckpointStore, registryStore registry.Store, streamStore *pgstream.Store, enableReflection bool, meters *telemetry.Meters) *Server {
 	var opts []gogrpc.ServerOption
 	if meters != nil {
 		opts = append(opts, gogrpc.UnaryInterceptor(MetricsInterceptor(meters)))
 	}
 	server := gogrpc.NewServer(opts...)
+	healthServer := health.NewServer()
+	healthpb.RegisterHealthServer(server, healthServer)
+	for _, service := range []string{"", HealthServiceStartup, HealthServiceReadiness, HealthServiceLiveness} {
+		healthServer.SetServingStatus(service, healthpb.HealthCheckResponse_SERVING)
+	}
 	wallabypb.RegisterFlowServiceServer(server, NewFlowService(engine, dispatcher))
 	if checkpoints != nil {
 		wallabypb.RegisterCheckpointServiceServer(server, NewCheckpointService(checkpoints, meters))
@@ -38,7 +52,7 @@ func New(engine workflow.Engine, dispatcher FlowDispatcher, checkpoints connecto
 		reflection.Register(server)
 	}
 
-	return &Server{server: server}
+	return &Server{server: server, health: healthServer}
 }
 
 func (s *Server) Serve(listener net.Listener) error {
@@ -46,5 +60,8 @@ func (s *Server) Serve(listener net.Listener) error {
 }
 
 func (s *Server) Stop() {
+	for _, service := range []string{"", HealthServiceStartup, HealthServiceReadiness, HealthServiceLiveness} {
+		s.health.SetServingStatus(service, healthpb.HealthCheckResponse_NOT_SERVING)
+	}
 	s.server.GracefulStop()
 }

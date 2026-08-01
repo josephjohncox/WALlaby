@@ -5,8 +5,18 @@ import (
 	"strconv"
 )
 
-// ErrDDLApprovalRequired signals that a DDL event is awaiting approval.
-var ErrDDLApprovalRequired = errors.New("ddl approval required")
+var (
+	// ErrDDLApprovalRequired signals that a DDL event is awaiting approval.
+	ErrDDLApprovalRequired = errors.New("ddl approval required")
+	// ErrCheckpointNotFound reports that a flow has no durable checkpoint yet.
+	ErrCheckpointNotFound = errors.New("checkpoint not found")
+	// ErrCheckpointRegression reports an attempted durable checkpoint rollback.
+	ErrCheckpointRegression = errors.New("checkpoint regression")
+	// ErrCheckpointPosition reports an invalid or incomparable checkpoint position.
+	ErrCheckpointPosition = errors.New("invalid checkpoint position")
+	// ErrOutboxConflict reports reuse of an outbox identity for different data.
+	ErrOutboxConflict = errors.New("outbox entry conflicts with durable batch")
+)
 
 // DDLGateError captures details for a blocked DDL approval gate.
 type DDLGateError struct {

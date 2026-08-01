@@ -27,15 +27,20 @@ import (
 
 type noopDispatcher struct{}
 
-func (noopDispatcher) EnqueueFlow(context.Context, string) error { return nil }
+func (noopDispatcher) EnqueueRunOnce(context.Context, string, int64) error { return nil }
 
-type recordingDispatcher struct {
-	ch chan string
+type dispatchedRun struct {
+	flowID     string
+	generation int64
 }
 
-func (d *recordingDispatcher) EnqueueFlow(_ context.Context, flowID string) error {
+type recordingDispatcher struct {
+	ch chan dispatchedRun
+}
+
+func (d *recordingDispatcher) EnqueueRunOnce(_ context.Context, flowID string, generation int64) error {
 	select {
-	case d.ch <- flowID:
+	case d.ch <- dispatchedRun{flowID: flowID, generation: generation}:
 	default:
 	}
 	return nil
@@ -58,11 +63,11 @@ func TestCLIIntegrationDDLList(t *testing.T) {
 
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	dbName := "wallaby_cli_" + suffix
-	if _, err := adminPool.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", dbName)); err != nil {
+	if _, err := adminPool.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", pgx.Identifier{dbName}.Sanitize())); err != nil {
 		t.Fatalf("create cli database: %v", err)
 	}
 	defer func() {
-		_, _ = adminPool.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", dbName))
+		_, _ = adminPool.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", pgx.Identifier{dbName}.Sanitize()))
 	}()
 
 	dbDSN, err := dsnWithDatabase(baseDSN, dbName)
@@ -162,11 +167,11 @@ func TestCLIIntegrationDDLShow(t *testing.T) {
 	defer adminPool.Close()
 
 	dbName := "wallaby_cli_show_" + fmt.Sprintf("%d", time.Now().UnixNano())
-	if _, err := adminPool.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", dbName)); err != nil {
+	if _, err := adminPool.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", pgx.Identifier{dbName}.Sanitize())); err != nil {
 		t.Fatalf("create cli database: %v", err)
 	}
 	defer func() {
-		_, _ = adminPool.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", dbName))
+		_, _ = adminPool.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", pgx.Identifier{dbName}.Sanitize()))
 	}()
 
 	dbDSN, err := dsnWithDatabase(baseDSN, dbName)
@@ -236,7 +241,7 @@ func TestCLIIntegrationDDLShow(t *testing.T) {
 	}
 }
 
-func TestCLIIntegrationDDLApproveRejectApply(t *testing.T) {
+func TestCLIIntegrationDDLApprovalRejectsManualApply(t *testing.T) {
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
 	if baseDSN == "" {
 		t.Skip("TEST_PG_DSN not set")
@@ -252,11 +257,11 @@ func TestCLIIntegrationDDLApproveRejectApply(t *testing.T) {
 	defer adminPool.Close()
 
 	dbName := "wallaby_cli_ddl_" + fmt.Sprintf("%d", time.Now().UnixNano())
-	if _, err := adminPool.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", dbName)); err != nil {
+	if _, err := adminPool.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", pgx.Identifier{dbName}.Sanitize())); err != nil {
 		t.Fatalf("create cli database: %v", err)
 	}
 	defer func() {
-		_, _ = adminPool.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", dbName))
+		_, _ = adminPool.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", pgx.Identifier{dbName}.Sanitize()))
 	}()
 
 	dbDSN, err := dsnWithDatabase(baseDSN, dbName)
@@ -300,15 +305,15 @@ func TestCLIIntegrationDDLApproveRejectApply(t *testing.T) {
 		t.Fatalf("expected approved status, got %s", approved.Status)
 	}
 
-	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "apply", "--id", fmt.Sprintf("%d", eventID)); err != nil {
-		t.Fatalf("wallaby-admin ddl apply: %v", err)
+	if _, err := runWallabyAdmin(ctx, listener.Addr().String(), "ddl", "apply", "--id", fmt.Sprintf("%d", eventID)); err == nil {
+		t.Fatal("wallaby-admin ddl apply succeeded without execution receipts")
 	}
-	applied, err := store.GetDDL(ctx, eventID)
+	stillApproved, err := store.GetDDL(ctx, eventID)
 	if err != nil {
 		t.Fatalf("get ddl: %v", err)
 	}
-	if applied.Status != registry.StatusApplied {
-		t.Fatalf("expected applied status, got %s", applied.Status)
+	if stillApproved.Status != registry.StatusApproved {
+		t.Fatalf("expected approved status without receipts, got %s", stillApproved.Status)
 	}
 
 	rejectID, err := store.RecordDDL(ctx, "flow-cli", `ALTER TABLE "public"."widgets" ADD COLUMN "rejected" text`, plan, "0/1", registry.StatusPending)
@@ -343,11 +348,11 @@ func TestCLIIntegrationDDLHistory(t *testing.T) {
 	defer adminPool.Close()
 
 	dbName := "wallaby_cli_history_" + fmt.Sprintf("%d", time.Now().UnixNano())
-	if _, err := adminPool.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", dbName)); err != nil {
+	if _, err := adminPool.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", pgx.Identifier{dbName}.Sanitize())); err != nil {
 		t.Fatalf("create cli database: %v", err)
 	}
 	defer func() {
-		_, _ = adminPool.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", dbName))
+		_, _ = adminPool.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", pgx.Identifier{dbName}.Sanitize()))
 	}()
 
 	dbDSN, err := dsnWithDatabase(baseDSN, dbName)
@@ -678,7 +683,7 @@ func TestCLIIntegrationFlowCreateRunOnce(t *testing.T) {
 	}
 	defer engine.Close()
 
-	dispatcher := &recordingDispatcher{ch: make(chan string, 1)}
+	dispatcher := &recordingDispatcher{ch: make(chan dispatchedRun, 1)}
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -730,6 +735,9 @@ func TestCLIIntegrationFlowCreateRunOnce(t *testing.T) {
 		t.Fatalf("expected flow id, got: %s", output)
 	}
 
+	if output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "start", "--flow-id", createResp.ID, "--json"); err != nil {
+		t.Fatalf("wallaby-admin flow start: %v\n%s", err, output)
+	}
 	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "run-once", "--flow-id", createResp.ID, "--json")
 	if err != nil {
 		t.Fatalf("wallaby-admin flow run-once: %v\n%s", err, output)
@@ -748,8 +756,8 @@ func TestCLIIntegrationFlowCreateRunOnce(t *testing.T) {
 
 	select {
 	case got := <-dispatcher.ch:
-		if got != createResp.ID {
-			t.Fatalf("expected dispatched flow %s, got %s", createResp.ID, got)
+		if got.flowID != createResp.ID || got.generation != 1 {
+			t.Fatalf("expected dispatched flow %s generation 1, got %+v", createResp.ID, got)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatalf("dispatcher did not receive flow id")
@@ -1718,7 +1726,8 @@ func TestCLIIntegrationFlowStartStopResume(t *testing.T) {
 	}
 	defer listener.Close()
 
-	server := apigrpc.New(engine, noopDispatcher{}, nil, nil, nil, false, nil)
+	lifecycleEngine := workflow.NewOrchestratedEngine(engine, workflow.PassiveDispatcher{}, nil)
+	server := apigrpc.New(lifecycleEngine, noopDispatcher{}, nil, nil, nil, false, nil)
 	go func() {
 		_ = server.Serve(listener)
 	}()
@@ -1786,20 +1795,13 @@ func TestCLIIntegrationFlowStartStopResume(t *testing.T) {
 	if err := json.Unmarshal(output, &stopResp); err != nil {
 		t.Fatalf("decode flow stop output: %v\n%s", err, output)
 	}
-	if stopResp.State != "FLOW_STATE_PAUSED" {
-		t.Fatalf("expected paused, got %s", stopResp.State)
+	if stopResp.State != "FLOW_STATE_STOPPED" {
+		t.Fatalf("expected stopped, got %s", stopResp.State)
 	}
 
 	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "resume", "--flow-id", createResp.ID, "--json")
-	if err != nil {
-		t.Fatalf("wallaby-admin flow resume: %v\n%s", err, output)
-	}
-	var resumeResp stateResp
-	if err := json.Unmarshal(output, &resumeResp); err != nil {
-		t.Fatalf("decode flow resume output: %v\n%s", err, output)
-	}
-	if resumeResp.State != "FLOW_STATE_RUNNING" {
-		t.Fatalf("expected running, got %s", resumeResp.State)
+	if err == nil {
+		t.Fatalf("expected terminal stopped flow resume to fail, output: %s", output)
 	}
 }
 
@@ -2272,7 +2274,7 @@ func moduleRoot() (string, error) {
 func createTempDatabase(t *testing.T, ctx context.Context, admin *pgxpool.Pool, prefix string) (string, string) {
 	t.Helper()
 	name := fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
-	if _, err := admin.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", name)); err != nil {
+	if _, err := admin.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", pgx.Identifier{name}.Sanitize())); err != nil {
 		t.Fatalf("create database %s: %v", name, err)
 	}
 	dsn, err := dsnWithDatabase(os.Getenv("TEST_PG_DSN"), name)
@@ -2297,7 +2299,7 @@ func testPostgresAppDSN(t *testing.T) string {
 
 func dropDatabase(t *testing.T, admin *pgxpool.Pool, name string) {
 	t.Helper()
-	_, _ = admin.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", name))
+	_, _ = admin.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", pgx.Identifier{name}.Sanitize()))
 }
 
 func waitForTCP(t *testing.T, addr string, timeout time.Duration) {

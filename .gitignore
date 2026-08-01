@@ -7,13 +7,16 @@ bin/
 *.out
 *.test
 
-# Generated files
-/gen/
-
 # Local tooling
 /.idea/
 /.vscode/
+/.codebase-index/
+/.pi-subagents/
+/.venv/
+/site/
 .cache/
+__pycache__/
+*.pyc
 .DS_Store
 *.swp
 *.tmp

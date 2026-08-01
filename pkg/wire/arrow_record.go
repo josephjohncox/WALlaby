@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -83,10 +84,13 @@ func arrowSchemaFor(schema connector.Schema) (*arrow.Schema, map[string]int, err
 		var meta arrow.Metadata
 		if len(col.TypeMetadata) > 0 {
 			keys := make([]string, 0, len(col.TypeMetadata))
-			values := make([]string, 0, len(col.TypeMetadata))
-			for key, val := range col.TypeMetadata {
+			for key := range col.TypeMetadata {
 				keys = append(keys, key)
-				values = append(values, val)
+			}
+			sort.Strings(keys)
+			values := make([]string, 0, len(keys))
+			for _, key := range keys {
+				values = append(values, col.TypeMetadata[key])
 			}
 			meta = arrow.NewMetadata(keys, values)
 		}

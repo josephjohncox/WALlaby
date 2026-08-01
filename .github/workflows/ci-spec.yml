@@ -19,49 +19,65 @@ jobs:
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.cache/golangci-lint
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        # actions/checkout v5.0.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup just
+        uses: ./.github/actions/setup-just
 
       - name: Setup Go
         id: setup-go
-        uses: actions/setup-go@v6
+        # actions/setup-go v6.5.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
           go-version-file: go.mod
           cache: false
 
       - name: Setup Buf
-        uses: bufbuild/buf-setup-action@v1
+        # bufbuild/buf-setup-action v1.50.0
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99
         with:
           version: "1.63.0"
+          github_token: ${{ github.token }}
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        # actions/setup-java v5.1.0
+        uses: actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Restore Go + tools cache
         id: cache-go-tools
-        uses: actions/cache/restore@v4
+        # actions/cache v4.3.0
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             .cache/bin
             .cache/gomod
             .cache/golangci-lint
-          key: ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-tools-${{ hashFiles('go.sum') }}
+          key: >-
+            ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-tools-
+            ${{ hashFiles('go.sum') }}
 
       - name: Restore Go build cache
         id: cache-go-build
-        uses: actions/cache/restore@v4
+        # actions/cache v4.3.0
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: .cache/gocache
-          key: ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-build-${{ hashFiles('go.sum') }}
+          key: >-
+            ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-build-
+            ${{ hashFiles('go.sum') }}
 
       - name: Save Go + tools cache
         if: always() && steps.cache-go-tools.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        # actions/cache v4.3.0
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             .cache/bin
@@ -70,27 +86,27 @@ jobs:
           key: ${{ steps.cache-go-tools.outputs.cache-primary-key }}
 
       - name: Spec manifest
-        run: make spec-verify
+        run: just spec-verify
 
       - name: Generate protobufs
-        run: make proto
+        run: just proto
 
       - name: Spec analyzer
-        run: make spec-lint
+        run: just spec-lint
 
       - name: Spec sync
-        run: make spec-sync
+        run: just spec-sync
 
       - name: TLA+ model check
         run: |
-          make tla-tools
-          make tla
+          just tla-tools
+          just tla
 
       - name: TLA+ coverage
         run: |
           set -euo pipefail
-          make tla-coverage
-          if ! make tla-coverage-check; then
+          just tla-coverage
+          if ! just tla-coverage-check; then
             echo "==== TLA coverage outputs ===="
             for f in specs/coverage/*.txt; do
               echo "---- ${f} ----"
@@ -101,11 +117,12 @@ jobs:
 
       - name: Trace suite coverage
         run: |
-          TRACE_CASES=200 TRACE_COVERAGE_REPORT=1 make trace-suite
+          TRACE_CASES=200 TRACE_COVERAGE_REPORT=1 just trace-suite
 
       - name: Save Go build cache
         if: always() && steps.cache-go-build.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        # actions/cache v4.3.0
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: .cache/gocache
           key: ${{ steps.cache-go-build.outputs.cache-primary-key }}

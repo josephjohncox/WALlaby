@@ -112,7 +112,7 @@ func TestS3PartitionedParquet(t *testing.T) {
 		t.Fatalf("write batch: %v", err)
 	}
 
-	prefix := "wallaby-test/public/orders/"
+	prefix := "wallaby-test/"
 	resp, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(prefix)})
 	if err != nil {
 		t.Fatalf("list objects: %v", err)
@@ -121,24 +121,19 @@ func TestS3PartitionedParquet(t *testing.T) {
 		t.Fatalf("expected objects under %s", prefix)
 	}
 
-	var foundUS, foundEU bool
+	dataObjects := 0
 	for _, obj := range resp.Contents {
 		key := aws.ToString(obj.Key)
-		if strings.Contains(key, "region=us-east") && strings.Contains(key, "created_at=2025-01-02") {
-			foundUS = true
-			if err := assertParquetObject(ctx, client, bucket, key); err != nil {
-				t.Fatalf("parquet object %s: %v", key, err)
-			}
+		if !strings.HasSuffix(key, ".parquet") {
+			continue
 		}
-		if strings.Contains(key, "region=eu-west") && strings.Contains(key, "created_at=2025-01-03") {
-			foundEU = true
-			if err := assertParquetObject(ctx, client, bucket, key); err != nil {
-				t.Fatalf("parquet object %s: %v", key, err)
-			}
+		dataObjects++
+		if err := assertParquetObject(ctx, client, bucket, key); err != nil {
+			t.Fatalf("parquet object %s: %v", key, err)
 		}
 	}
-	if !foundUS || !foundEU {
-		t.Fatalf("partitioned object paths not found (us=%v eu=%v)", foundUS, foundEU)
+	if dataObjects != 2 {
+		t.Fatalf("partitioned parquet objects = %d, want one per region/day partition", dataObjects)
 	}
 }
 

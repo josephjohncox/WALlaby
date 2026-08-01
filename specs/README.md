@@ -10,9 +10,11 @@ and richer DDL workflows).
 File: `specs/CDCFlow.tla`
 
 What it models:
-- Flow state transitions (`Created → Running → Paused/Stopped/FailedHoldingSlot/FailedDroppedSlot`).
-- Read → deliver → ack ordering for LSNs.
-- Checkpoint monotonicity (no regression).
+
+- Flow state transitions (`Created → Running ↔ Paused → Stopping → Stopped`, with active states able to enter `Failed`).
+- Read → deliver → durable checkpoint → source acknowledgement ordering.
+- Checkpoint and acknowledgement monotonicity, including failure before source acknowledgement.
+- Process crash/restart and idempotent restore acknowledgement from the durable position.
 - DDL gating (pending → approved → applied).
 - Source/destination retry attempts (bounded).
 - Failure modes (hold slot vs drop slot) and configurable give-up behavior.
@@ -22,35 +24,36 @@ What it models:
 Run TLC (from the TLA+ tools) for all specs:
 
 ```
-make tla
+just tla
 ```
 
 To run only this module:
 
 ```
-TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlow.cfg make tla-single
+TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlow.cfg just tla-single
 ```
 
-The default config lives at `specs/CDCFlow.cfg`. Adjust constants like `MaxLSN`,
-`MaxRetries`, `GateDDL`, and `DDLSet` there for deeper exploration.
+The default config lives at `specs/CDCFlow.cfg` and intentionally uses a small
+state space suitable for CI. Override constants in a separate config for deeper
+exploration rather than making the default model check unbounded.
 
 For a liveness/fairness check, use:
 
 ```
-TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowLiveness.cfg make tla-single
+TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowLiveness.cfg just tla-single
 ```
 
 For a DDL witness run (ensures approval/applied are reachable under fairness):
 
 ```
-TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowWitness.cfg make tla-single
+TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowWitness.cfg just tla-single
 ```
 
 To produce coverage reports:
 
 ```
-make tla-coverage
-make tla-coverage-check
+just tla-coverage
+just tla-coverage-check
 ```
 
 `tla-coverage-check` respects `TLA_COVERAGE_MIN` and writes a JSON report to
@@ -65,13 +68,31 @@ the sandbox or with a build that supports `-noJMX`.
 File: `specs/FlowStateMachine.tla`
 
 What it models:
+
 - CLI-driven flow lifecycle transitions.
 - `run-once` does not change state.
 
 Run TLC:
 
 ```
-TLA_MODULE=specs/FlowStateMachine.tla TLA_CONFIG=specs/FlowStateMachine.cfg make tla-single
+TLA_MODULE=specs/FlowStateMachine.tla TLA_CONFIG=specs/FlowStateMachine.cfg just tla-single
+```
+
+## Lifecycle Generation Spec (TLA+)
+
+File: `specs/LifecycleGeneration.tla`
+
+What it models:
+
+- Generation-scoped execution registration and leases.
+- Pause intent while the public state remains `Running` until execution quiesces.
+- Two-phase stop through `Stopping`.
+- Terminal-state quiescence, generation matching, and stopped-state finality.
+
+Run TLC:
+
+```
+TLA_MODULE=specs/LifecycleGeneration.tla TLA_CONFIG=specs/LifecycleGeneration.cfg just tla-single
 ```
 
 ## Fan-out Spec (TLA+)
@@ -79,6 +100,7 @@ TLA_MODULE=specs/FlowStateMachine.tla TLA_CONFIG=specs/FlowStateMachine.cfg make
 File: `specs/CDCFlowFanout.tla`
 
 What it models:
+
 - Per-destination delivery and ack.
 - Source ack only after all destinations ack.
 - Configurable ack policy (all vs primary destination).
@@ -86,14 +108,52 @@ What it models:
 Run TLC:
 
 ```
-TLA_MODULE=specs/CDCFlowFanout.tla TLA_CONFIG=specs/CDCFlowFanout.cfg make tla-single
+TLA_MODULE=specs/CDCFlowFanout.tla TLA_CONFIG=specs/CDCFlowFanout.cfg just tla-single
+```
+
+## Snapshot Transition Spec (TLA+)
+
+File: `specs/SnapshotTransition.tla`
+
+What it models:
+
+- Partition assignment and durable per-partition coverage.
+- Crash loss of volatile rows followed by replay from durable state.
+- A snapshot-to-stream transition only after every source row is durable.
+- Streaming start at the exported snapshot boundary.
+
+Run TLC:
+
+```
+TLA_MODULE=specs/SnapshotTransition.tla TLA_CONFIG=specs/SnapshotTransition.cfg just tla-single
+```
+
+## DDL Execution Receipt Spec (TLA+)
+
+File: `specs/DDLExecution.tla`
+
+What it models:
+
+- Session-scoped execution locks around attempt, downstream DDL, batch write, and receipt persistence.
+- Durable attempt preparation before any downstream DDL side effect.
+- Crashes before and after the downstream commit.
+- Destination reconciliation after restart.
+- Receipt persistence only after a confirmed external commit.
+- Fail-closed indeterminate reconciliation and at-most-once external application.
+
+Run TLC:
+
+```
+TLA_MODULE=specs/DDLExecution.tla TLA_CONFIG=specs/DDLExecution.cfg just tla-single
 ```
 
 ## Trace Validation
 
 We emit optional JSONL traces from the Go runner and validate them offline against
 the same invariants (NoAckWithoutDeliver, AckMonotonic, CheckpointMonotonic, etc.).
-See the `wallaby-trace-validate` tool and mirror any new invariants in property tests.
+Validation is per flow and compares PostgreSQL LSNs by their hexadecimal value;
+decimal positions are treated as abstract batch ordinals. See the
+`wallaby-trace-validate` tool and mirror new invariants in property tests.
 
 ## Coverage Manifest
 
@@ -104,21 +164,24 @@ unreachable items for the trace suite:
 - `specs/coverage.json` (CDCFlow)
 - `specs/coverage.flow_state.json` (FlowStateMachine)
 - `specs/coverage.fanout.json` (CDCFlowFanout)
+- `specs/coverage.ddl_execution.json` (DDLExecution)
+- `specs/coverage.lifecycle_generation.json` (LifecycleGeneration)
+- `specs/coverage.snapshot_transition.json` (SnapshotTransition)
 
 Regenerate them with:
 
 ```
-make spec-manifest
+just spec-manifest
 ```
 
 To ensure the manifests stay in sync with the TLA+ `Next` blocks and config
 invariants, run:
 
 ```
-make spec-sync
+just spec-sync
 ```
 
-Static analysis (`make spec-lint`) enforces that `SpecAction` values in code are
+Static analysis (`just spec-lint`) enforces that `SpecAction` values in code are
 constants from the manifest.
 
 To emit traces from a worker run, set `WALLABY_TRACE_PATH` (supports `{flow_id}`
@@ -126,16 +189,12 @@ placeholder) and run `wallaby-worker`. For the main server, `{flow_id}` is
 replaced with `server`. Then validate (defaults to `specs/coverage.json`):
 
 ```
-wallaby-trace-validate -input /path/to/trace.jsonl
+wallaby-trace-validate --input /path/to/trace.jsonl
 ```
 
-## Next (Deeper Model)
+## Model Boundaries
 
-Planned extensions:
-- Multi-destination fan-out with per-destination ack.
-- Backfill + streaming mode transitions.
-- DDL approval gates and checkpoint coupling.
-- Failure recovery and retry semantics.
-
-When we add those, they will live in a separate module to keep the lightweight
-spec fast to model-check.
+The current modules cover fan-out, generation-fenced lifecycle leases, DDL gating,
+DDL receipt recovery, partitioned snapshot durability, snapshot-to-stream handoff,
+retry bounds, checkpoint failure, and crash/restart recovery. Destination-specific
+schema semantics remain executable Go contracts rather than TLA+ constants.

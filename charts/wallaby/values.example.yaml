@@ -4,6 +4,12 @@ image:
   repository: ghcr.io/josephjohncox/wallaby
   tag: "0.1.0"
 
+environment: production
+workflowStore: postgres
+
+kubernetesDispatch:
+  enabled: false
+
 service:
   type: ClusterIP
   port: 8080
@@ -17,6 +23,8 @@ env:
     value: "postgres://user:pass@postgres:5432/wallaby?sslmode=disable"
   - name: WALLABY_GRPC_LISTEN
     value: ":8080"
+  - name: WALLABY_WORKFLOW_STORE
+    value: "postgres"
   - name: WALLABY_WIRE_FORMAT
     value: "arrow"
 

@@ -1,0 +1,61 @@
+name: CI Generation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  generated-artifacts:
+    runs-on: ubuntu-latest
+    env:
+      GOBIN: ${{ github.workspace }}/.cache/bin
+      GOMODCACHE: ${{ github.workspace }}/.cache/gomod
+      GOCACHE: ${{ github.workspace }}/.cache/gocache
+    steps:
+      - name: Checkout
+        # actions/checkout v5.0.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup just
+        uses: ./.github/actions/setup-just
+
+      - name: Setup Go
+        # actions/setup-go v6.5.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Buf
+        # bufbuild/buf-setup-action v1.50.0
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99
+        with:
+          version: "1.63.0"
+          github_token: ${{ github.token }}
+
+      - name: Setup uv
+        # astral-sh/setup-uv v8.3.2
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
+        with:
+          version: "0.11.29"
+          enable-cache: true
+
+      - name: Verify generated protobuf and Go artifacts
+        run: just generate-check
+
+      - name: Verify generated documentation
+        run: just docs-verify
+
+      - name: Test release tag validation
+        run: ./scripts/validate-release-tag-selftest.sh
+
+      - name: Test root module with generated protobufs
+        run: go test ./...
