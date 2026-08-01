@@ -498,8 +498,23 @@ func TestClickHouseManagedProfileSurvivorOnlyPrimaryStorageLossRecovery(t *testi
 	if err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
 		t.Fatalf("survivor-only reconciliation=(%v,%+v,%v)", disposition, evidence, err)
 	}
-	if _, err := restarted.ApplyTransaction(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+	// Replaying the already-applied batch must still adopt its durable receipt:
+	// that read-only adoption is the entire purpose of recovery-only admission and
+	// performs no write.
+	if evidence, err := restarted.ApplyTransaction(context.Background(), intent, transaction); err != nil || evidence.ContentHash != intent.ContentHash {
+		t.Fatalf("recovery-only replay of an applied batch=(%+v,%v), want adopted evidence", evidence, err)
+	}
+	// A genuinely new transaction is the write that must stay fenced, because one
+	// survivor cannot satisfy the two-replica quorum contract.
+	newTransaction := clickHouseManagedTransaction("primary_storage_loss_new", 2, []connector.Record{
+		clickHouseManagedRecord("primary_storage_loss_new", connector.OpInsert, 2, map[string]any{"id": int64(2), "value": "fenced"}),
+	})
+	newIntent := clickHouseManagedIntent(t, newTransaction)
+	if _, err := restarted.ApplyTransaction(context.Background(), newIntent, newTransaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("recovery-only write error=%v, want ErrDeliveryIndeterminate", err)
+	}
+	if got := fixture.logicalRowCount(t, newIntent.LogicalBatchID); got != 0 {
+		t.Fatalf("fenced recovery-only write left %d rows", got)
 	}
 	var survivorRows int
 	if err := fixture.replicaDB.QueryRowContext(context.Background(),
