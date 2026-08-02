@@ -1357,6 +1357,44 @@ func TestCLIIntegrationFlowReconfigure(t *testing.T) {
 	}
 }
 
+func TestLegacyResourceGuardRejectsPartialManagedBootstrapSchema(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
+	if baseDSN == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	adminPool, err := pgxpool.New(ctx, baseDSN)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer adminPool.Close()
+
+	dbName, dbDSN := createTempDatabase(t, ctx, adminPool, "wallaby_legacy_guard")
+	defer dropDatabase(t, adminPool, dbName)
+	engine, err := workflow.NewPostgresEngine(ctx, dbDSN)
+	if err != nil {
+		t.Fatalf("create workflow engine: %v", err)
+	}
+	defer engine.Close()
+
+	if err := engine.CheckLegacySourceResourceMutation(ctx, "", dbName, "slot", "legacy_slot"); err != nil {
+		t.Fatalf("workflow-only legacy database guard: %v", err)
+	}
+	controlPool, err := pgxpool.New(ctx, dbDSN)
+	if err != nil {
+		t.Fatalf("connect control database: %v", err)
+	}
+	defer controlPool.Close()
+	if _, err := controlPool.Exec(ctx, `CREATE TABLE source_bootstraps (bootstrap_id UUID PRIMARY KEY)`); err != nil {
+		t.Fatalf("create partial managed schema marker: %v", err)
+	}
+	if err := engine.CheckLegacySourceResourceMutation(ctx, "", dbName, "slot", "legacy_slot"); err == nil || !strings.Contains(err.Error(), "source_resources is missing") {
+		t.Fatalf("partial managed schema guard error=%v, want missing source_resources diagnostic", err)
+	}
+}
+
 func TestCLIIntegrationFlowCleanup(t *testing.T) {
 	baseDSN := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
 	if baseDSN == "" {

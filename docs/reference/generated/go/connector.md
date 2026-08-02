@@ -26,6 +26,8 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [func ValidateBatch\(batch Batch\) error](<#ValidateBatch>)
 - [type AckGrant](<#AckGrant>)
 - [type Batch](<#Batch>)
+- [type BootstrapIntent](<#BootstrapIntent>)
+  - [func \(i BootstrapIntent\) Validate\(\) error](<#BootstrapIntent.Validate>)
 - [type Capabilities](<#Capabilities>)
   - [func ResolveDestinationCapabilities\(destination Destination, spec Spec\) Capabilities](<#ResolveDestinationCapabilities>)
   - [func \(c Capabilities\) ExecutesDDL\(\) bool](<#Capabilities.ExecutesDDL>)
@@ -34,7 +36,10 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [type CheckpointOutboxStore](<#CheckpointOutboxStore>)
 - [type CheckpointStore](<#CheckpointStore>)
 - [type ClaimFence](<#ClaimFence>)
+  - [func \(f ClaimFence\) Validate\(\) error](<#ClaimFence.Validate>)
 - [type ClaimKind](<#ClaimKind>)
+- [type CleanupFence](<#CleanupFence>)
+  - [func \(f CleanupFence\) Validate\(\) error](<#CleanupFence.Validate>)
 - [type Column](<#Column>)
 - [type ConfiguredDestinationCapabilities](<#ConfiguredDestinationCapabilities>)
 - [type ContractEvidence](<#ContractEvidence>)
@@ -57,13 +62,20 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [type EndpointType](<#EndpointType>)
 - [type FlowCheckpoint](<#FlowCheckpoint>)
 - [type InitialCheckpointSource](<#InitialCheckpointSource>)
+- [type ManagedBootstrapDestination](<#ManagedBootstrapDestination>)
+- [type ManagedBootstrapPublicationReconciler](<#ManagedBootstrapPublicationReconciler>)
+- [type ManagedBootstrapResult](<#ManagedBootstrapResult>)
+- [type ManagedBootstrapSource](<#ManagedBootstrapSource>)
 - [type ManagedDestination](<#ManagedDestination>)
+- [type ManagedSourceResourceCleaner](<#ManagedSourceResourceCleaner>)
 - [type Operation](<#Operation>)
 - [type OutboxEntry](<#OutboxEntry>)
 - [type OutboxStore](<#OutboxStore>)
 - [type Record](<#Record>)
 - [type ReplicationLagProvider](<#ReplicationLagProvider>)
 - [type RunFence](<#RunFence>)
+  - [func \(f RunFence\) Validate\(\) error](<#RunFence.Validate>)
+- [type RunFenceBinder](<#RunFenceBinder>)
 - [type Schema](<#Schema>)
 - [type SlotDropper](<#SlotDropper>)
 - [type Source](<#Source>)
@@ -226,7 +238,7 @@ func ValidateBatch(batch Batch) error
 ValidateBatch enforces the source\-to\-runner batch contract. Data batches describe exactly one table and one logical schema. DDL/control records may be grouped together, but never with data records. Tableless control batches are valid because PostgreSQL logical messages carry ordered DDL text and a source position without relation metadata. A zero record schema version is treated as inherited from Batch.Schema for adapters that omit the redundant field.
 
 <a name="AckGrant"></a>
-## type [AckGrant](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L34-L37>)
+## type [AckGrant](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L102-L105>)
 
 AckGrant is a PostgreSQL\-authorized source feedback position.
 
@@ -250,6 +262,35 @@ type Batch struct {
     WireFormat WireFormat
 }
 ```
+
+<a name="BootstrapIntent"></a>
+## type [BootstrapIntent](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L13-L24>)
+
+BootstrapIntent identifies one immutable managed snapshot generation. It is independent of the public lifecycle state, which remains running while the private bootstrap phases advance.
+
+```go
+type BootstrapIntent struct {
+    FlowID                string
+    FlowIncarnationID     string
+    SourceLineageID       string
+    BootstrapID           string
+    BootstrapGeneration   int64
+    Generation            int64
+    AcquisitionID         string
+    LeaseEpoch            int64
+    DestinationRevisionID string
+    ManifestHash          string
+}
+```
+
+<a name="BootstrapIntent.Validate"></a>
+### func \(BootstrapIntent\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L28>)
+
+```go
+func (i BootstrapIntent) Validate() error
+```
+
+Validate rejects incomplete bootstrap identities before any destination table or source resource can be changed.
 
 <a name="Capabilities"></a>
 ## type [Capabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L58-L68>)
@@ -336,7 +377,7 @@ type CheckpointStore interface {
 ```
 
 <a name="ClaimFence"></a>
-## type [ClaimFence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L26-L31>)
+## type [ClaimFence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L76-L81>)
 
 ClaimFence adds exact work ownership to a producer fence.
 
@@ -349,8 +390,17 @@ type ClaimFence struct {
 }
 ```
 
+<a name="ClaimFence.Validate"></a>
+### func \(ClaimFence\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L85>)
+
+```go
+func (f ClaimFence) Validate() error
+```
+
+Validate rejects a claim that is not tied to a complete producer fence and one positive claim epoch.
+
 <a name="ClaimKind"></a>
-## type [ClaimKind](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L16>)
+## type [ClaimKind](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L66>)
 
 ClaimKind scopes a resource claim without extending public lifecycle state.
 
@@ -368,6 +418,26 @@ const (
     ClaimGC       ClaimKind = "gc"
 )
 ```
+
+<a name="CleanupFence"></a>
+## type [CleanupFence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L50-L52>)
+
+CleanupFence is an immutable terminal source\-resource capability. It is distinct from RunFence so ordinary managed data\-plane methods cannot accept cleanup authority accidentally.
+
+```go
+type CleanupFence struct {
+    RunFence
+}
+```
+
+<a name="CleanupFence.Validate"></a>
+### func \(CleanupFence\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L55>)
+
+```go
+func (f CleanupFence) Validate() error
+```
+
+Validate rejects incomplete terminal cleanup authority.
 
 <a name="Column"></a>
 ## type [Column](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L81-L89>)
@@ -676,6 +746,57 @@ type InitialCheckpointSource interface {
 }
 ```
 
+<a name="ManagedBootstrapDestination"></a>
+## type [ManagedBootstrapDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L75-L82>)
+
+ManagedBootstrapDestination stages one immutable snapshot generation and atomically publishes every table in its frozen manifest. External evidence is untrusted until the source bootstrap coordinator records it under the current RunFence in PostgreSQL.
+
+```go
+type ManagedBootstrapDestination interface {
+    ManagedDestination
+    PrepareBootstrap(context.Context, BootstrapIntent, []Schema) error
+    ApplyBootstrap(context.Context, BootstrapIntent, DeliveryIntent, Batch) (DeliveryEvidence, error)
+    ReconcileBootstrap(context.Context, BootstrapIntent, DeliveryIntent) (DeliveryDisposition, DeliveryEvidence, error)
+    PublishBootstrap(context.Context, BootstrapIntent, []Schema) (DeliveryEvidence, error)
+    AbandonBootstrap(context.Context, BootstrapIntent, []Schema) error
+}
+```
+
+<a name="ManagedBootstrapPublicationReconciler"></a>
+## type [ManagedBootstrapPublicationReconciler](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L88-L90>)
+
+ManagedBootstrapPublicationReconciler is an optional recovery extension. It preserves the original destination contract while allowing implementations with an atomic publication marker to prove a publish\-before\-control\-receipt crash without replaying publication.
+
+```go
+type ManagedBootstrapPublicationReconciler interface {
+    ReconcileBootstrapPublication(context.Context, BootstrapIntent) (DeliveryDisposition, DeliveryEvidence, error)
+}
+```
+
+<a name="ManagedBootstrapResult"></a>
+## type [ManagedBootstrapResult](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L52-L56>)
+
+ManagedBootstrapResult is the durable source cut installed by a managed bootstrap. SourceOptions are runtime\-only overrides derived from PostgreSQL\-authoritative resource rows; they are never written back to the public flow definition.
+
+```go
+type ManagedBootstrapResult struct {
+    SourceOptions   map[string]string
+    Checkpoint      Checkpoint
+    CheckpointValid bool
+}
+```
+
+<a name="ManagedBootstrapSource"></a>
+## type [ManagedBootstrapSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L60-L62>)
+
+ManagedBootstrapSource owns the source\-specific exported\-snapshot protocol. The destination is already open when this method is called.
+
+```go
+type ManagedBootstrapSource interface {
+    PrepareManagedBootstrap(context.Context, RunFence, Spec, string, ManagedBootstrapDestination) (ManagedBootstrapResult, error)
+}
+```
+
 <a name="ManagedDestination"></a>
 ## type [ManagedDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L101-L105>)
 
@@ -686,6 +807,17 @@ type ManagedDestination interface {
     Destination
     Apply(context.Context, DeliveryIntent, Batch) (DeliveryEvidence, error)
     Reconcile(context.Context, DeliveryIntent) (DeliveryDisposition, DeliveryEvidence, error)
+}
+```
+
+<a name="ManagedSourceResourceCleaner"></a>
+## type [ManagedSourceResourceCleaner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L67-L69>)
+
+ManagedSourceResourceCleaner retires source resources owned by a managed flow after its stopping generation has quiesced. Implementations must never drop adopted resources and must prove external absence before returning.
+
+```go
+type ManagedSourceResourceCleaner interface {
+    CleanupManagedResources(context.Context, CleanupFence, Spec) error
 }
 ```
 
@@ -773,7 +905,7 @@ type ReplicationLagProvider interface {
 ```
 
 <a name="RunFence"></a>
-## type [RunFence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L6-L13>)
+## type [RunFence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L12-L19>)
 
 RunFence is an immutable capability identifying one live flow producer.
 
@@ -785,6 +917,26 @@ type RunFence struct {
     AcquisitionID     uuid.UUID
     ExecutionID       string
     LeaseEpoch        int64
+}
+```
+
+<a name="RunFence.Validate"></a>
+### func \(RunFence\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L23>)
+
+```go
+func (f RunFence) Validate() error
+```
+
+Validate rejects incomplete authority before it can reach SQL. In particular, a default\-zero fence is never a compatibility mode.
+
+<a name="RunFenceBinder"></a>
+## type [RunFenceBinder](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L61-L63>)
+
+RunFenceBinder receives producer authority before a managed connector opens. Binding is immutable for one connector instance.
+
+```go
+type RunFenceBinder interface {
+    BindRunFence(RunFence) error
 }
 ```
 

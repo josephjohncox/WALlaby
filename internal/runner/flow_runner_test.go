@@ -243,6 +243,7 @@ func (*blockingManagedDelivery) RecordAckReceipt(context.Context, connector.RunF
 
 type blockingManagedSource struct{}
 
+func (*blockingManagedSource) BindRunFence(connector.RunFence) error      { return nil }
 func (*blockingManagedSource) Open(context.Context, connector.Spec) error { return nil }
 func (*blockingManagedSource) Read(ctx context.Context) (connector.Batch, error) {
 	<-ctx.Done()
@@ -263,6 +264,7 @@ func (*blockingManagedSource) Capabilities() connector.Capabilities {
 
 type singleTransactionManagedSource struct{ read bool }
 
+func (*singleTransactionManagedSource) BindRunFence(connector.RunFence) error      { return nil }
 func (*singleTransactionManagedSource) Open(context.Context, connector.Spec) error { return nil }
 func (*singleTransactionManagedSource) Read(context.Context) (connector.Batch, error) {
 	return connector.Batch{}, io.EOF
@@ -315,9 +317,9 @@ type recordingExecutionEngine struct {
 	generation  int64
 }
 
-func (e *recordingExecutionEngine) RegisterExecutionGeneration(ctx context.Context, flowID, executionID, backend string, generation int64, lease time.Duration) error {
+func (e *recordingExecutionEngine) RegisterExecutionFence(ctx context.Context, flowID, executionID, backend string, generation int64, lease time.Duration) (workflow.ExecutionFence, error) {
 	e.backend, e.executionID, e.generation = backend, executionID, generation
-	return e.MemoryEngine.RegisterExecutionGeneration(ctx, flowID, executionID, backend, generation, lease)
+	return e.MemoryEngine.RegisterExecutionFence(ctx, flowID, executionID, backend, generation, lease)
 }
 
 type flowRunnerSource struct {

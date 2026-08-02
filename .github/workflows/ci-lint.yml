@@ -108,6 +108,9 @@ jobs:
       - name: Generate protobufs
         run: just proto
 
+      - name: Go format check
+        run: just fmt-check
+
       - name: Lint
         run: just lint
 
@@ -127,6 +130,12 @@ jobs:
 
       - name: Durable-core PR contracts
         run: just test-durable-pr
+
+      - name: Durable-core race detector
+        run: just test-durable-race
+
+      - name: Rapid property tests
+        run: just test-rapid
 
       - name: Unit tests with completeness accounting
         run: |

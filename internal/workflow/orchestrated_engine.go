@@ -13,20 +13,34 @@ import (
 
 // OrchestratedEngine serializes lifecycle intent, generation-aware dispatch,
 // cancellation proof, and quiescent completion.
-type OrchestratedEngine struct {
-	base       LifecycleStore
-	dispatcher Dispatcher
-	meters     *telemetry.Meters
+// SourceResourceCleaner performs terminal connector cleanup after execution
+// quiescence and before the stopped state is published.
+type SourceResourceCleaner interface {
+	CleanupSourceResources(context.Context, flow.Flow, int64) error
 }
 
-func NewOrchestratedEngine(base LifecycleStore, dispatcher Dispatcher, meters *telemetry.Meters) *OrchestratedEngine {
+type OrchestratedEngine struct {
+	base            LifecycleStore
+	dispatcher      Dispatcher
+	meters          *telemetry.Meters
+	resourceCleaner SourceResourceCleaner
+}
+
+func NewOrchestratedEngine(base LifecycleStore, dispatcher Dispatcher, meters *telemetry.Meters, cleaners ...SourceResourceCleaner) *OrchestratedEngine {
 	if base == nil {
 		panic("workflow lifecycle store is required")
 	}
 	if dispatcher == nil {
 		panic("workflow dispatcher is required; use PassiveDispatcher explicitly")
 	}
-	return &OrchestratedEngine{base: base, dispatcher: dispatcher, meters: meters}
+	if len(cleaners) > 1 {
+		panic("at most one source resource cleaner may be configured")
+	}
+	var cleaner SourceResourceCleaner
+	if len(cleaners) == 1 {
+		cleaner = cleaners[0]
+	}
+	return &OrchestratedEngine{base: base, dispatcher: dispatcher, meters: meters, resourceCleaner: cleaner}
 }
 
 func (o *OrchestratedEngine) Create(ctx context.Context, f flow.Flow) (flow.Flow, error) {
@@ -136,6 +150,11 @@ func (o *OrchestratedEngine) Stop(ctx context.Context, flowID string) (flow.Flow
 		}
 		if err := o.cancelAndQuiesce(ctx, flowID, control.Generation); err != nil {
 			return err
+		}
+		if o.resourceCleaner != nil {
+			if err := o.resourceCleaner.CleanupSourceResources(ctx, stopping, control.Generation); err != nil {
+				return err
+			}
 		}
 		stopped, err := o.base.CompleteStopGeneration(ctx, flowID, control.Generation)
 		if err != nil {
@@ -263,6 +282,15 @@ func (o *OrchestratedEngine) ReconcileOnce(ctx context.Context) error {
 				if err := o.cancelAndQuiesce(opCtx, latest.FlowID, latest.Generation); err != nil {
 					return err
 				}
+				if o.resourceCleaner != nil {
+					stopping, getErr := o.base.Get(opCtx, latest.FlowID)
+					if getErr != nil {
+						return getErr
+					}
+					if err := o.resourceCleaner.CleanupSourceResources(opCtx, stopping, latest.Generation); err != nil {
+						return err
+					}
+				}
 				_, err = o.base.CompleteStopGeneration(opCtx, latest.FlowID, latest.Generation)
 				return err
 			default:
@@ -305,11 +333,32 @@ func (o *OrchestratedEngine) WithFlowLock(ctx context.Context, flowID string, tr
 func (o *OrchestratedEngine) Control(ctx context.Context, flowID string) (LifecycleControl, error) {
 	return o.base.Control(ctx, flowID)
 }
+func (o *OrchestratedEngine) CheckLegacySourceResourceMutation(ctx context.Context, sourceSystemID, databaseName, resourceKind, physicalName string) error {
+	guard, ok := o.base.(interface {
+		CheckLegacySourceResourceMutation(context.Context, string, string, string, string) error
+	})
+	if !ok {
+		return nil
+	}
+	return guard.CheckLegacySourceResourceMutation(ctx, sourceSystemID, databaseName, resourceKind, physicalName)
+}
 func (o *OrchestratedEngine) RequestPause(ctx context.Context, flowID string) (flow.Flow, LifecycleControl, error) {
 	return o.base.RequestPause(ctx, flowID)
 }
 func (o *OrchestratedEngine) RegisterExecutionGeneration(ctx context.Context, flowID, executionID, backend string, generation int64, lease time.Duration) error {
 	return o.base.RegisterExecutionGeneration(ctx, flowID, executionID, backend, generation, lease)
+}
+func (o *OrchestratedEngine) RegisterExecutionFence(ctx context.Context, flowID, executionID, backend string, generation int64, lease time.Duration) (ExecutionFence, error) {
+	return o.base.RegisterExecutionFence(ctx, flowID, executionID, backend, generation, lease)
+}
+func (o *OrchestratedEngine) RenewExecutionFence(ctx context.Context, fence ExecutionFence, lease time.Duration) error {
+	return o.base.RenewExecutionFence(ctx, fence, lease)
+}
+func (o *OrchestratedEngine) FinishExecutionFence(ctx context.Context, fence ExecutionFence, reason string) error {
+	return o.base.FinishExecutionFence(ctx, fence, reason)
+}
+func (o *OrchestratedEngine) FailExecutionFence(ctx context.Context, fence ExecutionFence, reason string) error {
+	return o.base.FailExecutionFence(ctx, fence, reason)
 }
 func (o *OrchestratedEngine) RenewExecution(ctx context.Context, flowID, executionID string, generation int64, lease time.Duration) error {
 	return o.base.RenewExecution(ctx, flowID, executionID, generation, lease)

@@ -524,6 +524,56 @@ func (p *PostgresEngine) Control(ctx context.Context, id string) (LifecycleContr
 	c.State, c.Target = flow.State(state), LifecycleTarget(target)
 	return c, nil
 }
+
+// CheckLegacySourceResourceMutation rejects an old administrative RPC when an
+// active managed owned/adopted resource matches the source identity and exact
+// physical resource. It performs no source-network operation.
+func (p *PostgresEngine) CheckLegacySourceResourceMutation(ctx context.Context, sourceSystemID, databaseName, resourceKind, physicalName string) error {
+	var ownershipTable, managedBootstrapSchema bool
+	if err := p.pool.QueryRow(ctx, `
+SELECT to_regclass('source_resources') IS NOT NULL,
+       EXISTS (
+         SELECT 1
+         FROM unnest(ARRAY[
+           'source_bootstraps','source_bootstrap_tasks','snapshot_publication_receipts',
+           'source_resource_operations','snapshot_delivery_attempts',
+           'snapshot_delivery_evidence','snapshot_delivery_receipts'
+         ]) AS managed_table(name)
+         WHERE to_regclass(managed_table.name) IS NOT NULL
+       ) OR EXISTS (
+         SELECT 1 FROM wallaby_control_migrations WHERE domain='bootstrap'
+       )`).Scan(&ownershipTable, &managedBootstrapSchema); err != nil {
+		return fmt.Errorf("inspect managed source resource ownership schema: %w", err)
+	}
+	if !ownershipTable {
+		if managedBootstrapSchema {
+			return errors.New("managed source resource ownership schema is incomplete: source_resources is missing")
+		}
+		// A standalone legacy workflow database has no bootstrap-domain objects,
+		// so it cannot contain managed ownership rows. Production control stores
+		// apply the centralized migrations and always take the guarded path below.
+		return nil
+	}
+
+	var blocked bool
+	err := p.pool.QueryRow(ctx, `
+SELECT EXISTS (
+  SELECT 1 FROM source_resources
+  WHERE resource_kind=$1 AND physical_name=$2
+    AND ownership IN ('owned','adopted')
+    AND state IN ('prepared','ready','cleanup_pending')
+    AND ($3='' OR source_system_id=$3)
+    AND ($4='' OR database_name=$4)
+)`, resourceKind, physicalName, sourceSystemID, databaseName).Scan(&blocked)
+	if err != nil {
+		return fmt.Errorf("check managed source resource ownership: %w", err)
+	}
+	if blocked {
+		return fmt.Errorf("%w: active managed %s %q requires fenced source-resource ownership", ErrInvalidState, resourceKind, physicalName)
+	}
+	return nil
+}
+
 func (p *PostgresEngine) PendingControls(ctx context.Context) ([]LifecycleControl, error) {
 	rows, err := p.pool.Query(ctx, `SELECT id,state,lifecycle_target,lifecycle_generation,dispatch_pending FROM flows
 		WHERE dispatch_pending OR state='stopping' OR lifecycle_target <> state ORDER BY id`)
@@ -545,12 +595,22 @@ func (p *PostgresEngine) PendingControls(ctx context.Context) ([]LifecycleContro
 }
 
 func (p *PostgresEngine) RegisterExecutionGeneration(ctx context.Context, flowID, executionID, backend string, generation int64, lease time.Duration) error {
+	_, err := p.registerExecutionFence(ctx, flowID, executionID, backend, generation, lease)
+	return err
+}
+
+func (p *PostgresEngine) RegisterExecutionFence(ctx context.Context, flowID, executionID, backend string, generation int64, lease time.Duration) (ExecutionFence, error) {
+	return p.registerExecutionFence(ctx, flowID, executionID, backend, generation, lease)
+}
+
+func (p *PostgresEngine) registerExecutionFence(ctx context.Context, flowID, executionID, backend string, generation int64, lease time.Duration) (ExecutionFence, error) {
 	if executionID == "" {
-		return errors.New("execution id is required")
+		return ExecutionFence{}, errors.New("execution id is required")
 	}
 	if lease <= 0 {
 		lease = 15 * time.Second
 	}
+	var registered ExecutionFence
 	_, err := p.WithFlowLock(ctx, flowID, false, func() error {
 		tx, e := p.pool.Begin(ctx)
 		if e != nil {
@@ -578,16 +638,92 @@ func (p *PostgresEngine) RegisterExecutionGeneration(ctx context.Context, flowID
 		if tag.RowsAffected() != 1 {
 			return fmt.Errorf("%w: execution identity is already owned by another backend or generation", ErrInvalidState)
 		}
-		return tx.Commit(ctx)
+		if e := tx.Commit(ctx); e != nil {
+			return e
+		}
+		registered = ExecutionFence{FlowID: flowID, IncarnationID: incarnationID, Generation: generation, ExecutionID: executionID, Backend: backend}
+		return nil
 	})
-	return err
+	if err != nil {
+		return ExecutionFence{}, err
+	}
+	return registered, nil
 }
+
+func (p *PostgresEngine) RenewExecutionFence(ctx context.Context, fence ExecutionFence, lease time.Duration) error {
+	if lease <= 0 {
+		lease = 15 * time.Second
+	}
+	tag, err := p.pool.Exec(ctx, `UPDATE flow_executions AS execution
+SET heartbeat_at=now(),lease_expires_at=now()+$6::interval
+FROM flows AS flow
+WHERE flow.id=$1 AND flow.incarnation_id=$2 AND flow.lifecycle_generation=$3
+  AND flow.state='running' AND flow.lifecycle_target='running'
+  AND execution.incarnation_id=$2 AND execution.flow_id=$1 AND execution.generation=$3
+  AND execution.execution_id=$4 AND execution.backend IS NOT DISTINCT FROM $5 AND execution.status='running'`,
+		fence.FlowID, fence.IncarnationID, fence.Generation, fence.ExecutionID, emptyToNull(fence.Backend), lease.String())
+	if err != nil {
+		return fmt.Errorf("renew execution fence: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("%w: execution fence is stale", ErrInvalidState)
+	}
+	return nil
+}
+
+func (p *PostgresEngine) FinishExecutionFence(ctx context.Context, fence ExecutionFence, reason string) error {
+	tag, err := p.pool.Exec(ctx, `UPDATE flow_executions AS execution
+SET status='finished',finished_at=now(),finish_reason=$6
+FROM flows AS flow
+WHERE flow.id=$1 AND flow.incarnation_id=$2 AND flow.lifecycle_generation=$3
+  AND execution.incarnation_id=$2 AND execution.flow_id=$1 AND execution.generation=$3
+  AND execution.execution_id=$4 AND execution.backend IS NOT DISTINCT FROM $5 AND execution.status='running'`,
+		fence.FlowID, fence.IncarnationID, fence.Generation, fence.ExecutionID, emptyToNull(fence.Backend), emptyToNull(reason))
+	if err != nil {
+		return fmt.Errorf("finish execution fence: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("%w: execution fence is stale", ErrInvalidState)
+	}
+	return nil
+}
+
+func (p *PostgresEngine) FailExecutionFence(ctx context.Context, fence ExecutionFence, reason string) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", fence.FlowID); err != nil {
+		return err
+	}
+	var previous string
+	err = tx.QueryRow(ctx, `UPDATE flows AS flow
+SET state='failed',lifecycle_target='failed',dispatch_pending=FALSE,updated_at=now()
+FROM flow_executions AS execution
+WHERE flow.id=$1 AND flow.incarnation_id=$2 AND flow.lifecycle_generation=$3
+  AND flow.state='running' AND flow.lifecycle_target='running'
+  AND execution.incarnation_id=$2 AND execution.flow_id=$1 AND execution.generation=$3
+  AND execution.execution_id=$4 AND execution.backend IS NOT DISTINCT FROM $5 AND execution.status='running'
+RETURNING 'running'`, fence.FlowID, fence.IncarnationID, fence.Generation, fence.ExecutionID, emptyToNull(fence.Backend)).Scan(&previous)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: execution fence is stale", ErrInvalidState)
+	}
+	if err != nil {
+		return fmt.Errorf("fail execution fence: %w", err)
+	}
+	if err := recordStateEvent(ctx, tx, fence.FlowID, previous, string(flow.StateFailed), reason); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (p *PostgresEngine) RenewExecution(ctx context.Context, flowID, executionID string, generation int64, lease time.Duration) error {
 	if lease <= 0 {
 		lease = 15 * time.Second
 	}
 	tag, err := p.pool.Exec(ctx, `UPDATE flow_executions e SET heartbeat_at=now(),lease_expires_at=now()+$4::interval
-		FROM flows f WHERE e.flow_id=$1 AND e.execution_id=$2 AND e.generation=$3 AND e.status='running' AND f.id=e.flow_id AND f.state='running' AND f.lifecycle_target='running' AND f.lifecycle_generation=$3`, flowID, executionID, generation, lease.String())
+		FROM flows f WHERE e.flow_id=$1 AND e.execution_id=$2 AND e.generation=$3 AND e.status='running' AND f.id=e.flow_id AND f.incarnation_id=e.incarnation_id AND f.state='running' AND f.lifecycle_target='running' AND f.lifecycle_generation=$3`, flowID, executionID, generation, lease.String())
 	if err != nil {
 		return fmt.Errorf("renew flow execution: %w", err)
 	}
@@ -597,7 +733,12 @@ func (p *PostgresEngine) RenewExecution(ctx context.Context, flowID, executionID
 	return nil
 }
 func (p *PostgresEngine) FinishExecutionReason(ctx context.Context, flowID, executionID, reason string) error {
-	_, err := p.pool.Exec(ctx, "UPDATE flow_executions SET status='finished',finished_at=now(),finish_reason=$3 WHERE flow_id=$1 AND execution_id=$2 AND status='running'", flowID, executionID, emptyToNull(reason))
+	_, err := p.pool.Exec(ctx, `
+UPDATE flow_executions AS execution
+SET status='finished',finished_at=now(),finish_reason=$3
+FROM flows AS flow
+WHERE flow.id=$1 AND execution.incarnation_id=flow.incarnation_id
+  AND execution.flow_id=$1 AND execution.execution_id=$2 AND execution.status='running'`, flowID, executionID, emptyToNull(reason))
 	if err != nil {
 		return fmt.Errorf("finish flow execution: %w", err)
 	}

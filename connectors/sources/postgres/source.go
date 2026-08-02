@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/josephjohncox/wallaby/internal/authority"
+	"github.com/josephjohncox/wallaby/internal/bootstrap"
 	"github.com/josephjohncox/wallaby/internal/flowctx"
 	postgrescodec "github.com/josephjohncox/wallaby/internal/postgres"
 	"github.com/josephjohncox/wallaby/internal/replication"
@@ -67,27 +69,30 @@ const (
 
 // Source implements Postgres logical replication as a connector.Source.
 type Source struct {
-	spec          connector.Spec
-	dsn           string
-	stream        *replication.PostgresStream
-	changes       <-chan replication.Change
-	batchSize     int
-	batchTimeout  time.Duration
-	slot          string
-	publication   string
-	wireFormat    connector.WireFormat
-	emitEmpty     bool
-	SchemaHook    replication.SchemaHook
-	stateStore    *sourceStateStore
-	stateID       string
-	typeResolver  *pgTypeResolver
-	toastFetch    string
-	toastPool     *pgxpool.Pool
-	toastCache    *toastCache
-	lagPool       *pgxpool.Pool
-	sourceLineage string
-	pendingChange *replication.Change
-	Meters        *telemetry.Meters
+	spec             connector.Spec
+	dsn              string
+	stream           *replication.PostgresStream
+	changes          <-chan replication.Change
+	batchSize        int
+	batchTimeout     time.Duration
+	slot             string
+	publication      string
+	wireFormat       connector.WireFormat
+	emitEmpty        bool
+	SchemaHook       replication.SchemaHook
+	stateStore       *sourceStateStore
+	stateID          string
+	typeResolver     *pgTypeResolver
+	toastFetch       string
+	toastPool        *pgxpool.Pool
+	toastCache       *toastCache
+	lagPool          *pgxpool.Pool
+	sourceLineage    string
+	pendingChange    *replication.Change
+	Meters           *telemetry.Meters
+	ManagedControl   *pgxpool.Pool
+	ManagedAuthority authority.Store
+	BootstrapHooks   bootstrap.Hooks
 }
 
 type changeBatchIdentity struct {
@@ -160,6 +165,15 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	s.publication = spec.Options[optPublication]
 	if s.publication == "" {
 		return errors.New("publication is required")
+	}
+	managed := connector.IsManagedSourceSpec(spec)
+	if managed {
+		for _, option := range []string{optCreateSlot, optEnsureState, optEnsurePublication, optSyncPublication} {
+			raw, present := spec.Options[option]
+			if !present || parseBool(raw, true) {
+				return fmt.Errorf("managed PostgreSQL Source.Open requires explicit %s=false; source-resource mutation is allowed only inside fenced bootstrap", option)
+			}
+		}
 	}
 
 	s.batchSize = parseInt(spec.Options[optBatchSize], 100)
@@ -254,7 +268,6 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		return err
 	}
 
-	managed := parseBool(spec.Options[optManaged], false)
 	s.sourceLineage = strings.TrimSpace(spec.Options[optSourceLineageID])
 	maxTransactionRecords := parseInt(spec.Options[optMaxTxnRecords], 1_000_000)
 	maxTransactionBytes := parseInt(spec.Options[optMaxTxnBytes], 256<<20)

@@ -31,6 +31,32 @@ func TestManagedRestoreValidatesAckIntentBeforeFeedbackOrDestinationOpen(t *test
 	}
 }
 
+func TestManagedBootstrapPublishesBeforeCDCSourceOpen(t *testing.T) {
+	t.Parallel()
+	events := []string{}
+	source := &managedTestSource{
+		events: &events,
+		bootstrapResult: connector.ManagedBootstrapResult{
+			SourceOptions: map[string]string{"slot": "owned-slot", "publication": "owned-publication", "start_lsn": "0/18", "create_slot": "false"},
+			Checkpoint:    connector.Checkpoint{LSN: "0/18"}, CheckpointValid: true,
+		},
+	}
+	coordinator := &managedTestCoordinator{events: &events}
+	runner := managedTestRunner(source, &managedTestDestination{events: &events}, coordinator, managedTestCheckpointStore{err: connector.ErrCheckpointNotFound})
+	runner.SourceSpec.Options["bootstrap"] = "required"
+
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wantPrefix := []string{"destination.open", "source.bootstrap", "source.open", "coordinator.validate", "source.ack", "coordinator.receipt"}
+	if len(events) < len(wantPrefix) || !reflect.DeepEqual(events[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("managed bootstrap startup events=%v, want prefix %v", events, wantPrefix)
+	}
+	if source.openSpec.Options["slot"] != "owned-slot" || source.openSpec.Options["start_lsn"] != "0/18" {
+		t.Fatalf("source Open options=%v, want authoritative bootstrap options", source.openSpec.Options)
+	}
+}
+
 func TestManagedNewSlotPersistsInitialCutBeforeDestinationOpen(t *testing.T) {
 	t.Parallel()
 	events := []string{}
@@ -55,7 +81,7 @@ func managedTestRunner(source connector.Source, destination connector.Destinatio
 	return Runner{
 		Source: source,
 		SourceSpec: connector.Spec{Options: map[string]string{
-			"managed": "true", "source_lineage_id": "lineage-1",
+			"managed": "true", "bootstrap": "never", "source_lineage_id": "lineage-1",
 		}},
 		Destinations:        []DestinationConfig{{Dest: destination, Spec: connector.Spec{Options: map[string]string{"destination_revision_id": "destination-1"}}}},
 		Checkpoints:         checkpoints,
@@ -67,14 +93,21 @@ func managedTestRunner(source connector.Source, destination connector.Destinatio
 }
 
 type managedTestSource struct {
-	events  *[]string
-	initial connector.Checkpoint
-	acks    int
+	events          *[]string
+	initial         connector.Checkpoint
+	bootstrapResult connector.ManagedBootstrapResult
+	openSpec        connector.Spec
+	acks            int
 }
 
-func (s *managedTestSource) Open(context.Context, connector.Spec) error {
+func (s *managedTestSource) Open(_ context.Context, spec connector.Spec) error {
+	s.openSpec = spec
 	*s.events = append(*s.events, "source.open")
 	return nil
+}
+func (s *managedTestSource) PrepareManagedBootstrap(context.Context, connector.RunFence, connector.Spec, string, connector.ManagedBootstrapDestination) (connector.ManagedBootstrapResult, error) {
+	*s.events = append(*s.events, "source.bootstrap")
+	return s.bootstrapResult, nil
 }
 func (s *managedTestSource) Read(context.Context) (connector.Batch, error) {
 	return connector.Batch{}, io.EOF
@@ -121,6 +154,24 @@ func (*managedTestDestination) Apply(context.Context, connector.DeliveryIntent, 
 }
 func (*managedTestDestination) Reconcile(context.Context, connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
 	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
+}
+func (*managedTestDestination) PrepareBootstrap(context.Context, connector.BootstrapIntent, []connector.Schema) error {
+	return nil
+}
+func (*managedTestDestination) ApplyBootstrap(context.Context, connector.BootstrapIntent, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
+	return connector.DeliveryEvidence{}, nil
+}
+func (*managedTestDestination) ReconcileBootstrap(context.Context, connector.BootstrapIntent, connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
+	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
+}
+func (*managedTestDestination) PublishBootstrap(context.Context, connector.BootstrapIntent, []connector.Schema) (connector.DeliveryEvidence, error) {
+	return connector.DeliveryEvidence{}, nil
+}
+func (*managedTestDestination) ReconcileBootstrapPublication(context.Context, connector.BootstrapIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
+	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
+}
+func (*managedTestDestination) AbandonBootstrap(context.Context, connector.BootstrapIntent, []connector.Schema) error {
+	return nil
 }
 
 type managedTestCoordinator struct {

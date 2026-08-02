@@ -1,19 +1,23 @@
 # PostgreSQL slot-anchored bootstrap
 
-`internal/bootstrap` contains experimental bootstrap primitives. `wallaby-worker` does not call them; managed admission rejects `bootstrap=auto|required` and admits only `bootstrap=never`.
+`internal/bootstrap` and the PostgreSQL source implement the experimental managed bootstrap used by `wallaby-worker` and in-process DBOS execution. Managed admission accepts `bootstrap=auto|required`; `bootstrap=never` remains available for explicitly pre-provisioned datasets.
 
 The bootstrapper creates a bootstrap-generation-qualified logical slot with `EXPORT_SNAPSHOT`. PostgreSQL stores the returned system identity, slot, publication, manifest hash, consistent point, and snapshot name under the producer fence while the exporter connection stays open.
 
-Snapshot workers call `ImportSnapshot` before any catalog or row query. Each worker uses a read-only, repeatable-read transaction and imports the same snapshot. `RecordTaskReceipt` commits a task's durable cursor, immutable receipt hash, and completed state together.
+Before slot creation, the coordinator freezes a bounded table selection and holds PostgreSQL relation locks that block DDL but permit DML. It creates or exactly adopts the publication under a fenced source-resource operation, then creates the slot so the publication is visible at the logical-decoding consistent point. It imports the exported snapshot to verify the same relation/schema manifest.
+
+Snapshot workers call `ImportSnapshot` before catalog or row reads. Each worker uses a read-only, repeatable-read transaction and imports the same snapshot. A task claim, destination attempt/evidence, exclusive cursor, immutable receipt, and task completion all carry the current `RunFence`; only the receipt/cursor transaction advances progress. PostgreSQL destination batches go to generation-qualified durable staging tables. Publishing all frozen tables is one target transaction, so CDC never observes a partially published multi-table snapshot.
 
 Exporter lifetime is strict:
 
-- A live exporter allows a replacement worker to import the same snapshot.
-- Exporter loss invalidates the unpublished generation.
+- Concurrent task retries inside the same live worker may re-import its still-live exporter snapshot and resume from a receipt-backed exclusive cursor.
+- A replacement process cannot resume the old exported snapshot: exporter loss invalidates the unpublished generation, and every task restarts from zero under a new bootstrap generation and physical slot.
 - Cleanup first records `abandoning`, then drops the exact slot, then records `abandoned`.
 - A failed drop remains retryable.
 - A restart allocates a new bootstrap generation and physical slot name, even within the same lifecycle generation.
 
-Publication requires at least one completed task receipt and no incomplete tasks. Handoff locks and reloads the persisted snapshot cut; caller-supplied slot, source, manifest, or LSN differences fail as conflicts. PostgreSQL commits the exact persisted checkpoint, ACK intent, and private `streaming` phase together.
+The experimental profile rejects source pools smaller than two sessions, partitioned/partition relations, and destination targets connected by foreign keys. Snapshot concurrency is capped to the source pool sessions left after reserving the schema-barrier session.
+
+Publication requires all frozen tasks and destination receipts. Handoff locks and reloads the persisted snapshot cut; caller-supplied slot, source, publication revision, manifest, or LSN differences fail as conflicts. PostgreSQL commits the exact persisted checkpoint, ACK intent, and private `streaming` phase together. The exporter then closes and CDC opens the same owned slot at that exact point. Delivery remains at-least-once with reconciliation; this is not an exactly-once claim.
 
 The legacy `mode=backfill` source remains experimental and is not this protocol.

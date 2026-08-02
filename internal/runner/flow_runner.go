@@ -83,6 +83,7 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		backend = "worker"
 	}
 	var runFence *authority.RunFence
+	var executionFence *workflow.ExecutionFence
 	if managed {
 		if r.Authority == nil || r.Deliveries == nil {
 			return errors.New("managed flow runner requires PostgreSQL authority and delivery coordinator")
@@ -92,6 +93,31 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 			return err
 		}
 		runFence = &acquired
+	}
+
+	ddlExecutions := r.DDLExecutions
+	if managed {
+		binder, ok := source.(connector.RunFenceBinder)
+		if !ok {
+			_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
+			return errors.New("managed source does not accept the acquired RunFence")
+		}
+		if err := binder.BindRunFence(*runFence); err != nil {
+			_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
+			return fmt.Errorf("bind managed source run fence: %w", err)
+		}
+		if r.DDLExecutions != nil {
+			registryStore, ok := r.DDLExecutions.(*registry.PostgresStore)
+			if !ok {
+				_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
+				return errors.New("managed DDL execution store cannot bind the acquired RunFence")
+			}
+			ddlExecutions, err = registryStore.ForRunFence(*runFence)
+			if err != nil {
+				_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
+				return fmt.Errorf("bind managed DDL run fence: %w", err)
+			}
+		}
 	}
 
 	// Validate data-plane dependencies before opening any connector. Managed
@@ -105,7 +131,7 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		MaxEmptyReads:       r.MaxEmpty,
 		DefaultParallelism:  r.Parallelism,
 		ResolveStaging:      r.ResolveStaging,
-		DDLExecutions:       r.DDLExecutions,
+		DDLExecutions:       ddlExecutions,
 		TraceSink:           r.TraceSink,
 		RunFence:            runFence,
 		DeliveryCoordinator: r.Deliveries,
@@ -129,9 +155,11 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		}
 	}
 	if !managed {
-		if err := r.Engine.RegisterExecutionGeneration(ctx, f.ID, executionID, backend, generation, executionLease); err != nil {
+		registered, err := r.Engine.RegisterExecutionFence(ctx, f.ID, executionID, backend, generation, executionLease)
+		if err != nil {
 			return err
 		}
+		executionFence = &registered
 	}
 	defer func() {
 		reason := "completed"
@@ -142,7 +170,9 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 			_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, reason)
 			return
 		}
-		_ = r.Engine.FinishExecutionReason(context.WithoutCancel(ctx), f.ID, executionID, reason)
+		if executionFence != nil {
+			_ = r.Engine.FinishExecutionFence(context.WithoutCancel(ctx), *executionFence, reason)
+		}
 	}()
 
 	tracer := r.Tracer
@@ -168,8 +198,8 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 				var renewErr error
 				if runFence != nil {
 					renewErr = r.Authority.RenewProducer(watchCtx, *runFence, executionLease)
-				} else {
-					renewErr = r.Engine.RenewExecution(watchCtx, f.ID, executionID, generation, executionLease)
+				} else if executionFence != nil {
+					renewErr = r.Engine.RenewExecutionFence(watchCtx, *executionFence, executionLease)
 				}
 				if renewErr != nil {
 					select {
@@ -200,8 +230,8 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 					return finishErr
 				}
 			}
-			if runFence == nil {
-				if finishErr := r.Engine.FinishExecutionReason(context.WithoutCancel(ctx), f.ID, executionID, "ddl_gated"); finishErr != nil {
+			if executionFence != nil {
+				if finishErr := r.Engine.FinishExecutionFence(context.WithoutCancel(ctx), *executionFence, "ddl_gated"); finishErr != nil {
 					return finishErr
 				}
 			}
@@ -229,8 +259,8 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 				if !errors.Is(err, connector.ErrDeliveryIndeterminate) && !errors.Is(err, authority.ErrFenceRejected) && !errors.Is(err, authority.ErrLeaseExpired) {
 					_ = r.Authority.FailFlow(context.WithoutCancel(ctx), *runFence, err.Error())
 				}
-			} else {
-				_, _ = r.Engine.Fail(context.WithoutCancel(ctx), f.ID)
+			} else if executionFence != nil {
+				_ = r.Engine.FailExecutionFence(context.WithoutCancel(ctx), *executionFence, err.Error())
 			}
 		}
 		return err

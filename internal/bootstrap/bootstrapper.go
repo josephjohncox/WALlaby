@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pglogrepl"
@@ -25,9 +26,17 @@ var snapshotNamePattern = regexp.MustCompile(`^[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9]+$
 
 // Hooks exposes deterministic crash boundaries to process/integration tests.
 type Hooks struct {
-	AfterSlotCreated func(context.Context, ExportedSnapshot) error
-	AfterPersisted   func(context.Context, ExportedSnapshot) error
-	BeforeHandoff    func(context.Context, ExportedSnapshot) error
+	AfterSlotCreated        func(context.Context, ExportedSnapshot) error
+	AfterPersisted          func(context.Context, ExportedSnapshot) error
+	AfterPublicationCreated func(context.Context, string) error
+	AfterSnapshotBatchApply func(context.Context, ExportedSnapshot, SnapshotTask, int64) error
+	AfterPublication        func(context.Context, ExportedSnapshot) error
+	AfterPublicationReceipt func(context.Context, ExportedSnapshot) error
+	BeforeHandoff           func(context.Context, ExportedSnapshot) error
+	AfterHandoff            func(context.Context, ExportedSnapshot) error
+	// DropSlot injects deterministic source drop failures in crash-window
+	// tests. Production leaves it nil and uses pg_drop_replication_slot.
+	DropSlot func(context.Context, string) error
 }
 
 // ExportedSnapshot is the durable slot cut plus the diagnostic snapshot name.
@@ -41,6 +50,8 @@ type ExportedSnapshot struct {
 	SnapshotName        string
 	SourceSystem        string
 	DatabaseName        string
+	SourceLineageID     string
+	PublicationRevision string
 	ManifestHash        string
 }
 
@@ -49,9 +60,10 @@ type ExportedSnapshot struct {
 type Session struct {
 	Snapshot ExportedSnapshot
 
-	mu       sync.Mutex
-	exporter *pgconn.PgConn
-	closed   bool
+	mu        sync.Mutex
+	exporter  *pgconn.PgConn
+	createdAt time.Time
+	closed    bool
 }
 
 func (s *Session) Alive() bool {
@@ -68,9 +80,17 @@ func (s *Session) Close(ctx context.Context) error {
 	}
 	s.closed = true
 	conn := s.exporter
+	createdAt := s.createdAt
 	s.exporter = nil
 	s.mu.Unlock()
 	if conn != nil {
+		outcome := "closed"
+		if conn.IsClosed() {
+			outcome = "lost"
+		}
+		if !createdAt.IsZero() {
+			telemetry.RecordBootstrapExporterAge(ctx, time.Since(createdAt), outcome)
+		}
 		return conn.Close(ctx)
 	}
 	return nil
@@ -108,10 +128,6 @@ func (b *Bootstrapper) Start(ctx context.Context, fence authority.RunFence, publ
 	if strings.TrimSpace(publication) == "" || strings.TrimSpace(manifestHash) == "" {
 		return nil, errors.New("publication and frozen manifest hash are required")
 	}
-	bootstrapGeneration, err := b.allocateGeneration(ctx, fence)
-	if err != nil {
-		return nil, err
-	}
 	cfg, err := pgconn.ParseConfig(b.dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parse source DSN: %w", err)
@@ -122,13 +138,17 @@ func (b *Bootstrapper) Start(ctx context.Context, fence authority.RunFence, publ
 		return nil, fmt.Errorf("connect snapshot exporter: %w", err)
 	}
 	cleanup := true
+	resourcePersisted := false
 	var slotName string
+	var slotResource preparedResource
 	defer func() {
-		if cleanup {
-			_ = exporter.Close(context.WithoutCancel(ctx))
-			if slotName != "" {
-				_, _ = b.source.Exec(context.WithoutCancel(ctx), "SELECT pg_catalog.pg_drop_replication_slot($1)", slotName)
-			}
+		if !cleanup {
+			return
+		}
+		cleanupCtx := context.WithoutCancel(ctx)
+		_ = exporter.Close(cleanupCtx)
+		if !resourcePersisted {
+			_ = b.cleanupUnpersistedSlot(cleanupCtx, fence, slotResource, slotName)
 		}
 	}()
 
@@ -136,7 +156,19 @@ func (b *Bootstrapper) Start(ctx context.Context, fence authority.RunFence, publ
 	if err != nil {
 		return nil, fmt.Errorf("identify snapshot source: %w", err)
 	}
+	if err := b.reconcilePreparedSlotCreates(ctx, fence, system.SystemID, system.DBName); err != nil {
+		return nil, err
+	}
+	bootstrapGeneration, err := b.allocateGeneration(ctx, fence)
+	if err != nil {
+		return nil, err
+	}
+	bootstrapID := uuid.New()
 	slotName = GenerationSlotName(fence.FlowID, fence.FlowIncarnationID, bootstrapGeneration)
+	slotResource, slotRevision, err := b.prepareOwnedSlot(ctx, fence, bootstrapID, system.SystemID, system.DBName, slotName)
+	if err != nil {
+		return nil, err
+	}
 	created, err := pglogrepl.CreateReplicationSlot(ctx, exporter, slotName, "pgoutput", pglogrepl.CreateReplicationSlotOptions{SnapshotAction: "EXPORT_SNAPSHOT"})
 	if err != nil {
 		return nil, fmt.Errorf("create exported-snapshot slot %s: %w", slotName, err)
@@ -146,7 +178,7 @@ func (b *Bootstrapper) Start(ctx context.Context, fence authority.RunFence, publ
 		return nil, fmt.Errorf("parse slot consistent point %q: %w", created.ConsistentPoint, err)
 	}
 	snapshot := ExportedSnapshot{
-		BootstrapID:         uuid.New(),
+		BootstrapID:         bootstrapID,
 		BootstrapGeneration: bootstrapGeneration,
 		SlotName:            slotName,
 		Publication:         publication,
@@ -165,9 +197,10 @@ func (b *Bootstrapper) Start(ctx context.Context, fence authority.RunFence, publ
 			return nil, err
 		}
 	}
-	if err := b.persistSnapshot(ctx, fence, snapshot); err != nil {
+	if err := b.persistSnapshot(ctx, fence, snapshot, slotResource, slotRevision); err != nil {
 		return nil, err
 	}
+	resourcePersisted = true
 	if b.hooks.AfterPersisted != nil {
 		if err := b.hooks.AfterPersisted(ctx, snapshot); err != nil {
 			return nil, err
@@ -175,7 +208,7 @@ func (b *Bootstrapper) Start(ctx context.Context, fence authority.RunFence, publ
 	}
 	cleanup = false
 	telemetry.RecordBootstrapEvent(ctx, "snapshot_exported")
-	return &Session{Snapshot: snapshot, exporter: exporter}, nil
+	return &Session{Snapshot: snapshot, exporter: exporter, createdAt: time.Now()}, nil
 }
 
 func (b *Bootstrapper) allocateGeneration(ctx context.Context, fence authority.RunFence) (int64, error) {
@@ -197,7 +230,7 @@ func (b *Bootstrapper) allocateGeneration(ctx context.Context, fence authority.R
 	return generation, nil
 }
 
-func (b *Bootstrapper) persistSnapshot(ctx context.Context, fence authority.RunFence, snapshot ExportedSnapshot) error {
+func (b *Bootstrapper) persistSnapshot(ctx context.Context, fence authority.RunFence, snapshot ExportedSnapshot, slotResource preparedResource, slotRevision string) error {
 	tx, err := b.control.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin bootstrap persistence: %w", err)
@@ -209,9 +242,10 @@ func (b *Bootstrapper) persistSnapshot(ctx context.Context, fence authority.RunF
 	if _, err := tx.Exec(ctx, `
 INSERT INTO source_bootstraps (
   bootstrap_id,flow_incarnation_id,flow_id,generation,bootstrap_generation,acquisition_id,lease_epoch,
+  owner_generation,owner_acquisition_id,owner_lease_epoch,
   source_system_id,database_name,slot_name,publication_name,plugin,
-  consistent_lsn,snapshot_name,manifest_hash,phase
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'snapshotting')`,
+  consistent_lsn,snapshot_name,manifest_hash,selection_hash,exporter_execution_id,phase
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$4,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$16,'snapshotting')`,
 		snapshot.BootstrapID,
 		fence.FlowIncarnationID,
 		fence.FlowID,
@@ -227,8 +261,27 @@ INSERT INTO source_bootstraps (
 		snapshot.ConsistentLSN.String(),
 		snapshot.SnapshotName,
 		snapshot.ManifestHash,
+		fence.ExecutionID,
 	); err != nil {
 		return fmt.Errorf("persist source bootstrap: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+INSERT INTO source_resources (
+  flow_incarnation_id,resource_kind,resource_id,flow_id,generation,acquisition_id,lease_epoch,
+  created_generation,created_acquisition_id,created_lease_epoch,
+  source_system_id,database_name,physical_name,ownership,revision,state,bootstrap_id
+) VALUES($1,'slot',$2,$3,$4,$5,$6,$4,$5,$6,$7,$8,$9,'owned',$10,'ready',$11)`, fence.FlowIncarnationID, slotResource.resourceID, fence.FlowID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, snapshot.SourceSystem, snapshot.DatabaseName, snapshot.SlotName, slotRevision, snapshot.BootstrapID); err != nil {
+		return fmt.Errorf("persist owned slot resource: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `
+UPDATE source_resource_operations
+SET status='applied',external_evidence=jsonb_build_object('consistent_lsn',$2::text),completed_at=clock_timestamp()
+WHERE operation_id=$1 AND flow_incarnation_id=$3 AND status='prepared'`, slotResource.operationID, snapshot.ConsistentLSN.String(), fence.FlowIncarnationID)
+	if err != nil {
+		return fmt.Errorf("complete slot resource operation: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("%w: slot operation changed before persistence", authority.ErrFenceRejected)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit source bootstrap: %w", err)
@@ -243,16 +296,16 @@ func (b *Bootstrapper) ImportSnapshot(ctx context.Context, fence authority.RunFe
 		return nil, errors.New("exported snapshot connection is not alive; bootstrap generation must be abandoned")
 	}
 	if err := b.validateSession(ctx, fence, session.Snapshot); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("validate snapshot exporter session: %w", err)
 	}
 	tx, err := b.source.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, fmt.Errorf("begin snapshot importer: %w", err)
 	}
-	command, err := importSnapshotCommand(session.Snapshot.SnapshotName)
-	if err != nil {
+	command, valid := importSnapshotCommand(session.Snapshot.SnapshotName)
+	if !valid {
 		_ = tx.Rollback(ctx)
-		return nil, err
+		return nil, fmt.Errorf("invalid exported snapshot name %q", session.Snapshot.SnapshotName)
 	}
 	// SnapshotName is server-generated and allowlisted by
 	// importSnapshotCommand before it reaches this grammar position.
@@ -263,11 +316,11 @@ func (b *Bootstrapper) ImportSnapshot(ctx context.Context, fence authority.RunFe
 	return tx, nil
 }
 
-func importSnapshotCommand(snapshotName string) (string, error) {
+func importSnapshotCommand(snapshotName string) (string, bool) {
 	if !snapshotNamePattern.MatchString(snapshotName) {
-		return "", fmt.Errorf("invalid exported snapshot name %q", snapshotName)
+		return "", false
 	}
-	return fmt.Sprintf("SET TRANSACTION SNAPSHOT '%s'", snapshotName), nil
+	return fmt.Sprintf("SET TRANSACTION SNAPSHOT '%s'", snapshotName), true
 }
 
 func (b *Bootstrapper) validateSession(ctx context.Context, fence authority.RunFence, snapshot ExportedSnapshot) error {
@@ -282,7 +335,7 @@ func (b *Bootstrapper) validateSession(ctx context.Context, fence authority.RunF
 	var count int
 	if err := tx.QueryRow(ctx, `
 SELECT count(*) FROM source_bootstraps
-WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND generation=$3
+WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND owner_generation=$3
   AND slot_name=$4 AND consistent_lsn=$5 AND snapshot_name=$6
   AND phase='snapshotting'`, snapshot.BootstrapID, fence.FlowIncarnationID, fence.Generation, snapshot.SlotName, snapshot.ConsistentLSN.String(), snapshot.SnapshotName).Scan(&count); err != nil {
 		return err
@@ -298,9 +351,10 @@ func loadSnapshotForUpdate(ctx context.Context, tx pgx.Tx, fence authority.RunFe
 	var phase, consistentLSN string
 	err := tx.QueryRow(ctx, `
 SELECT bootstrap_id,bootstrap_generation,slot_name,publication_name,plugin,
-       consistent_lsn,snapshot_name,source_system_id,database_name,manifest_hash,phase
+       consistent_lsn,snapshot_name,source_system_id,database_name,
+       COALESCE(source_lineage_id,''),COALESCE(publication_revision,''),manifest_hash,phase
 FROM source_bootstraps
-WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND generation=$3
+WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND owner_generation=$3
 FOR UPDATE`, bootstrapID, fence.FlowIncarnationID, fence.Generation).Scan(
 		&snapshot.BootstrapID,
 		&snapshot.BootstrapGeneration,
@@ -311,6 +365,8 @@ FOR UPDATE`, bootstrapID, fence.FlowIncarnationID, fence.Generation).Scan(
 		&snapshot.SnapshotName,
 		&snapshot.SourceSystem,
 		&snapshot.DatabaseName,
+		&snapshot.SourceLineageID,
+		&snapshot.PublicationRevision,
 		&snapshot.ManifestHash,
 		&phase,
 	)
@@ -335,6 +391,8 @@ func compareSnapshot(persisted, supplied ExportedSnapshot) error {
 		persisted.SnapshotName != supplied.SnapshotName ||
 		persisted.SourceSystem != supplied.SourceSystem ||
 		persisted.DatabaseName != supplied.DatabaseName ||
+		persisted.SourceLineageID != supplied.SourceLineageID ||
+		persisted.PublicationRevision != supplied.PublicationRevision ||
 		persisted.ManifestHash != supplied.ManifestHash {
 		return fmt.Errorf("%w: supplied bootstrap does not match PostgreSQL authority", connector.ErrDeliveryConflict)
 	}
@@ -370,8 +428,9 @@ func (b *Bootstrapper) RecordTaskReceipt(ctx context.Context, fence authority.Ru
 	}
 	tag, err := tx.Exec(ctx, `
 INSERT INTO source_bootstrap_tasks (
-  bootstrap_id,relation_id,task_id,durable_cursor,receipt_hash,status
-) VALUES ($1,$2,$3,NULLIF($4,'')::jsonb,$5,'complete')
+  bootstrap_id,relation_id,task_id,durable_cursor,receipt_hash,status,
+  flow_incarnation_id,generation,acquisition_id,lease_epoch,authority_origin
+) VALUES ($1,$2,$3,NULLIF($4,'')::jsonb,$5,'complete',$6,$7,$8,$9,'fenced')
 ON CONFLICT (bootstrap_id,relation_id,task_id) DO UPDATE SET
   durable_cursor=EXCLUDED.durable_cursor,
   receipt_hash=EXCLUDED.receipt_hash,
@@ -379,7 +438,7 @@ ON CONFLICT (bootstrap_id,relation_id,task_id) DO UPDATE SET
   updated_at=clock_timestamp()
 WHERE source_bootstrap_tasks.status <> 'complete'
    OR (source_bootstrap_tasks.receipt_hash=EXCLUDED.receipt_hash
-       AND source_bootstrap_tasks.durable_cursor IS NOT DISTINCT FROM EXCLUDED.durable_cursor)`, snapshot.BootstrapID, relationID, taskID, string(cursor), receiptHash)
+       AND source_bootstrap_tasks.durable_cursor IS NOT DISTINCT FROM EXCLUDED.durable_cursor)`, snapshot.BootstrapID, relationID, taskID, string(cursor), receiptHash, fence.FlowIncarnationID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch)
 	if err != nil {
 		return fmt.Errorf("record bootstrap task receipt: %w", err)
 	}
@@ -391,7 +450,9 @@ WHERE source_bootstrap_tasks.status <> 'complete'
 
 // RecordPublication records durable destination snapshot publication. Handoff
 // is forbidden until this receipt exists.
-func (b *Bootstrapper) RecordPublication(ctx context.Context, fence authority.RunFence, snapshot ExportedSnapshot, destinationRevisionID, contentHash string, attemptID uuid.UUID) error {
+func (b *Bootstrapper) RecordPublication(ctx context.Context, fence authority.RunFence, snapshot ExportedSnapshot, destinationRevisionID, contentHash string, attemptID uuid.UUID) (retErr error) {
+	ctx, endSpan := telemetry.StartBootstrapSpan(ctx, "publication", fence.FlowID, snapshot.BootstrapID.String(), "", snapshot.BootstrapGeneration)
+	defer func() { endSpan(retErr) }()
 	if strings.TrimSpace(destinationRevisionID) == "" || strings.TrimSpace(contentHash) == "" || attemptID == uuid.Nil {
 		return errors.New("destination revision, content hash, and attempt ID are required")
 	}
@@ -423,13 +484,17 @@ FROM source_bootstrap_tasks WHERE bootstrap_id=$1`, snapshot.BootstrapID).Scan(&
 		return fmt.Errorf("snapshot publication requires completed durable task receipts: tasks=%d incomplete=%d", taskCount, incomplete)
 	}
 	tag, err := tx.Exec(ctx, `
-INSERT INTO snapshot_publication_receipts (bootstrap_id,content_hash,destination_revision_id,attempt_id)
-VALUES ($1,$2,$3,$4)
+INSERT INTO snapshot_publication_receipts (
+  bootstrap_id,content_hash,destination_revision_id,attempt_id,
+  flow_incarnation_id,generation,acquisition_id,lease_epoch,authority_origin
+)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'fenced')
 ON CONFLICT (bootstrap_id) DO UPDATE SET
   content_hash=EXCLUDED.content_hash
 WHERE snapshot_publication_receipts.content_hash=EXCLUDED.content_hash
   AND snapshot_publication_receipts.destination_revision_id=EXCLUDED.destination_revision_id
-  AND snapshot_publication_receipts.attempt_id=EXCLUDED.attempt_id`, snapshot.BootstrapID, contentHash, destinationRevisionID, attemptID)
+  AND snapshot_publication_receipts.attempt_id=EXCLUDED.attempt_id
+  AND snapshot_publication_receipts.flow_incarnation_id=EXCLUDED.flow_incarnation_id`, snapshot.BootstrapID, contentHash, destinationRevisionID, attemptID, fence.FlowIncarnationID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch)
 	if err != nil {
 		return fmt.Errorf("record snapshot publication receipt: %w", err)
 	}
@@ -439,7 +504,7 @@ WHERE snapshot_publication_receipts.content_hash=EXCLUDED.content_hash
 	tag, err = tx.Exec(ctx, `
 UPDATE source_bootstraps
 SET phase='published',updated_at=clock_timestamp()
-WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND generation=$3 AND phase IN ('snapshotting','published')`, snapshot.BootstrapID, fence.FlowIncarnationID, fence.Generation)
+WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND owner_generation=$3 AND phase IN ('snapshotting','published')`, snapshot.BootstrapID, fence.FlowIncarnationID, fence.Generation)
 	if err != nil {
 		return fmt.Errorf("mark snapshot published: %w", err)
 	}
@@ -451,7 +516,9 @@ WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND generation=$3 AND phase IN 
 
 // Handoff atomically roots snapshot publication, records the exact slot
 // consistent point as the managed checkpoint, and authorizes source feedback.
-func (b *Bootstrapper) Handoff(ctx context.Context, fence authority.RunFence, snapshot ExportedSnapshot) (connector.Checkpoint, error) {
+func (b *Bootstrapper) Handoff(ctx context.Context, fence authority.RunFence, snapshot ExportedSnapshot) (checkpoint connector.Checkpoint, retErr error) {
+	ctx, endSpan := telemetry.StartBootstrapSpan(ctx, "handoff", fence.FlowID, snapshot.BootstrapID.String(), "", snapshot.BootstrapGeneration)
+	defer func() { endSpan(retErr) }()
 	if b.hooks.BeforeHandoff != nil {
 		if err := b.hooks.BeforeHandoff(ctx, snapshot); err != nil {
 			return connector.Checkpoint{}, err
@@ -476,7 +543,9 @@ func (b *Bootstrapper) Handoff(ctx context.Context, fence authority.RunFence, sn
 		return connector.Checkpoint{}, err
 	}
 	var receiptCount, taskCount, incomplete int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM snapshot_publication_receipts WHERE bootstrap_id=$1`, persisted.BootstrapID).Scan(&receiptCount); err != nil {
+	if err := tx.QueryRow(ctx, `
+SELECT count(*) FROM snapshot_publication_receipts
+WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND authority_origin='fenced'`, persisted.BootstrapID, fence.FlowIncarnationID).Scan(&receiptCount); err != nil {
 		return connector.Checkpoint{}, err
 	}
 	if err := tx.QueryRow(ctx, `
@@ -487,7 +556,7 @@ FROM source_bootstrap_tasks WHERE bootstrap_id=$1`, persisted.BootstrapID).Scan(
 	if receiptCount != 1 || taskCount == 0 || incomplete != 0 {
 		return connector.Checkpoint{}, errors.New("complete snapshot task receipts and one publication receipt are required before CDC handoff")
 	}
-	checkpoint := connector.Checkpoint{LSN: persisted.ConsistentLSN.String()}
+	checkpoint = connector.Checkpoint{LSN: persisted.ConsistentLSN.String()}
 	positionID, err := connector.CheckpointPositionID(checkpoint)
 	if err != nil {
 		return connector.Checkpoint{}, err
@@ -530,7 +599,7 @@ WHERE source_ack_intents.checkpoint_lsn=EXCLUDED.checkpoint_lsn`, fence.FlowInca
 	tag, err = tx.Exec(ctx, `
 UPDATE source_bootstraps
 SET phase='streaming',updated_at=clock_timestamp()
-WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND generation=$3 AND phase='published'`, snapshot.BootstrapID, fence.FlowIncarnationID, fence.Generation)
+WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND owner_generation=$3 AND phase='published'`, snapshot.BootstrapID, fence.FlowIncarnationID, fence.Generation)
 	if err != nil {
 		return connector.Checkpoint{}, fmt.Errorf("complete bootstrap handoff: %w", err)
 	}
@@ -568,10 +637,41 @@ func (b *Bootstrapper) Abandon(ctx context.Context, fence authority.RunFence, sn
 	if phase != "exporting" && phase != "snapshotting" && phase != "abandoning" {
 		return errors.New("bootstrap is not an unpublished generation owned by this fence")
 	}
+	var slotResourceID uuid.UUID
+	var slotRevision, slotOwnership, slotState string
+	if err := tx.QueryRow(ctx, `
+SELECT resource_id,revision,ownership,state
+FROM source_resources
+WHERE flow_incarnation_id=$1 AND resource_kind='slot' AND bootstrap_id=$2
+  AND physical_name=$3
+FOR UPDATE`, fence.FlowIncarnationID, snapshot.BootstrapID, persisted.SlotName).Scan(&slotResourceID, &slotRevision, &slotOwnership, &slotState); err != nil {
+		return fmt.Errorf("load owned bootstrap slot resource: %w", err)
+	}
+	if slotOwnership != "owned" || (slotState != "ready" && slotState != "cleanup_pending") {
+		return fmt.Errorf("bootstrap cleanup refuses slot ownership=%s state=%s", slotOwnership, slotState)
+	}
+	dropOperationID := uuid.New()
+	if _, err := tx.Exec(ctx, `
+INSERT INTO source_resource_operations (
+  operation_id,flow_incarnation_id,resource_kind,resource_id,operation,desired_revision,
+  generation,acquisition_id,lease_epoch,status,bootstrap_id,source_system_id,database_name,physical_name
+) VALUES($1,$2,'slot',$3,'drop',$4,$5,$6,$7,'prepared',$8,$9,$10,$11)
+ON CONFLICT (flow_incarnation_id,resource_kind,resource_id,operation,desired_revision,acquisition_id,lease_epoch) DO NOTHING`, dropOperationID, fence.FlowIncarnationID, slotResourceID, slotRevision, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, snapshot.BootstrapID, snapshot.SourceSystem, snapshot.DatabaseName, persisted.SlotName); err != nil {
+		return fmt.Errorf("prepare slot cleanup: %w", err)
+	}
+	if err := tx.QueryRow(ctx, `
+SELECT operation_id FROM source_resource_operations
+WHERE flow_incarnation_id=$1 AND resource_kind='slot' AND resource_id=$2
+  AND operation='drop' AND desired_revision=$3 AND acquisition_id=$4 AND lease_epoch=$5`, fence.FlowIncarnationID, slotResourceID, slotRevision, fence.AcquisitionID, fence.LeaseEpoch).Scan(&dropOperationID); err != nil {
+		return fmt.Errorf("load slot cleanup operation: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE source_resources SET state='cleanup_pending',generation=$3,acquisition_id=$4,lease_epoch=$5,updated_at=clock_timestamp() WHERE flow_incarnation_id=$1 AND resource_id=$2`, fence.FlowIncarnationID, slotResourceID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch); err != nil {
+		return fmt.Errorf("mark slot cleanup pending: %w", err)
+	}
 	tag, err := tx.Exec(ctx, `
 UPDATE source_bootstraps
 SET phase='abandoning',abandoned_reason=$4,updated_at=clock_timestamp()
-WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND generation=$3
+WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND owner_generation=$3
   AND slot_name=$5 AND phase IN ('exporting','snapshotting','abandoning')`, snapshot.BootstrapID, fence.FlowIncarnationID, fence.Generation, reason, persisted.SlotName)
 	if err != nil {
 		return fmt.Errorf("journal bootstrap abandonment: %w", err)
@@ -599,7 +699,7 @@ WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND generation=$3
 	tag, err = finalize.Exec(ctx, `
 UPDATE source_bootstraps
 SET phase='abandoned',updated_at=clock_timestamp()
-WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND generation=$3
+WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND owner_generation=$3
   AND slot_name=$4 AND phase='abandoning'`, persisted.BootstrapID, fence.FlowIncarnationID, fence.Generation, persisted.SlotName)
 	if err != nil {
 		return fmt.Errorf("finalize bootstrap abandonment: %w", err)
@@ -607,9 +707,30 @@ WHERE bootstrap_id=$1 AND flow_incarnation_id=$2 AND generation=$3
 	if tag.RowsAffected() != 1 {
 		return fmt.Errorf("finalize bootstrap abandonment: affected=%d", tag.RowsAffected())
 	}
+	tag, err = finalize.Exec(ctx, `
+UPDATE source_resources SET state='retired',updated_at=clock_timestamp()
+WHERE flow_incarnation_id=$1 AND resource_id=$2 AND resource_kind='slot'
+  AND ownership='owned' AND physical_name=$3 AND state='cleanup_pending'`, fence.FlowIncarnationID, slotResourceID, persisted.SlotName)
+	if err != nil {
+		return fmt.Errorf("retire owned slot resource: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("retire owned slot resource: affected=%d", tag.RowsAffected())
+	}
+	tag, err = finalize.Exec(ctx, `
+UPDATE source_resource_operations
+SET status='applied',external_evidence=jsonb_build_object('slot_absent',true),completed_at=clock_timestamp()
+WHERE operation_id=$1 AND flow_incarnation_id=$2 AND status IN ('prepared','indeterminate')`, dropOperationID, fence.FlowIncarnationID)
+	if err != nil {
+		return fmt.Errorf("complete slot cleanup operation: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("complete slot cleanup operation: affected=%d", tag.RowsAffected())
+	}
 	if err := finalize.Commit(ctx); err != nil {
 		return err
 	}
 	telemetry.RecordBootstrapEvent(ctx, "generation_abandoned")
+	telemetry.RecordBootstrapEvent(ctx, "cleanup")
 	return nil
 }

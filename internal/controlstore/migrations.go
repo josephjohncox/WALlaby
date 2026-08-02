@@ -81,6 +81,18 @@ func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool, domain string, mig
 		case err != nil:
 			return fmt.Errorf("read %s migration %s history: %w", domain, version, err)
 		}
+		// A v2 binary may need to finish an already-shipped v1 migration before
+		// its monotonic v2 cutover file can replace the triggers. Scope that
+		// compatibility only to this serialized migration transaction; ordinary
+		// pools always advertise AuthorityProtocol. Once a v2 file is reached,
+		// any later v1-only SQL fails closed against the v2 triggers.
+		migrationProtocol := "v1"
+		if strings.Contains(string(contents), "wallaby_require_authority_protocol_v2") {
+			migrationProtocol = AuthorityProtocol
+		}
+		if _, err := tx.Exec(ctx, "SELECT set_config('wallaby.authority_protocol',$1,true)", migrationProtocol); err != nil {
+			return fmt.Errorf("select %s migration protocol for %s: %w", domain, version, err)
+		}
 		if _, err := tx.Exec(ctx, string(contents)); err != nil {
 			return fmt.Errorf("apply %s migration %s: %w", domain, version, err)
 		}

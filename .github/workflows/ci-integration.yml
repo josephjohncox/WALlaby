@@ -130,6 +130,22 @@ jobs:
           printf '%s\n' "${output}" | grep -q -- \
             '--- PASS: TestPostgresCatalogChangeSerializesVersions'
 
+          migration_results=$(mktemp)
+          trap 'rm -f "${migration_results}"' EXIT
+          migration_filter='^('
+          migration_filter+='TestRegistryOnlyLedgerIsRepairedByCentralizedMigration'
+          migration_filter+='|TestManagedAuthoritySchemaVerificationFailsClosed'
+          migration_filter+=')$'
+          required_migrations=
+          required_migrations+='TestRegistryOnlyLedgerIsRepairedByCentralizedMigration'
+          required_migrations+=',TestManagedAuthoritySchemaVerificationFailsClosed'
+          go test -count=1 -run "${migration_filter}" \
+            -json ./internal/controlplane >"${migration_results}"
+          cat "${migration_results}"
+          go run ./scripts/verify-go-test-json.go \
+            -results "${migration_results}" \
+            -required "${required_migrations}"
+
       - name: Start integration PostgreSQL
         run: |
           docker run --detach \
@@ -171,9 +187,9 @@ jobs:
           WALLABY_TEST_K8S_NAMESPACE: default
         run: just test-integration-ci
 
-      - name: Required durable profile evidence
+      - name: Required checkpoint-1 worker and DBOS evidence (no skips)
         if: github.event_name != 'schedule'
-        run: just test-durable-integration
+        run: just test-checkpoint1-integration
 
       - name: Nightly durability and repeated recovery evidence
         if: github.event_name == 'schedule'

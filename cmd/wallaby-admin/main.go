@@ -1376,6 +1376,9 @@ func slotDrop(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if err := rejectFlowBoundResourceMutationOverrides(*flowID, *dsn, *slot, awsFlags.options()); err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -1395,10 +1398,7 @@ func slotDrop(cmd *cobra.Command, _ []string) error {
 		defer func() { _ = closeConn() }()
 		resp, err := flowSvc.DropReplicationSlot(ctx, &wallabypb.DropReplicationSlotRequest{
 			FlowId:   cfg.flow.Id,
-			Dsn:      cfg.dsn,
-			Slot:     cfg.slot,
 			IfExists: *ifExists,
-			Options:  cfg.options,
 		})
 		if err != nil {
 			return fmt.Errorf("drop replication slot: %w", err)
@@ -3118,17 +3118,17 @@ func publicationAdd(cmd *cobra.Command, _ []string) error {
 	}
 
 	if cfg.flow != nil {
+		if err := rejectFlowBoundResourceMutationOverrides(*flowID, *dsn, *publication, awsFlags.options()); err != nil {
+			return err
+		}
 		flowSvc, closeConn, err := flowClient(*endpoint, *insecureConn)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = closeConn() }()
 		if _, err := flowSvc.AddPublicationTables(ctx, &wallabypb.AddPublicationTablesRequest{
-			FlowId:      cfg.flow.Id,
-			Dsn:         cfg.dsn,
-			Publication: cfg.publication,
-			Tables:      tableList,
-			Options:     cfg.options,
+			FlowId: cfg.flow.Id,
+			Tables: tableList,
 		}); err != nil {
 			return fmt.Errorf("add publication tables: %w", err)
 		}
@@ -3188,17 +3188,17 @@ func publicationRemove(cmd *cobra.Command, _ []string) error {
 	}
 
 	if cfg.flow != nil {
+		if err := rejectFlowBoundResourceMutationOverrides(*flowID, *dsn, *publication, awsFlags.options()); err != nil {
+			return err
+		}
 		flowSvc, closeConn, err := flowClient(*endpoint, *insecureConn)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = closeConn() }()
 		if _, err := flowSvc.DropPublicationTables(ctx, &wallabypb.DropPublicationTablesRequest{
-			FlowId:      cfg.flow.Id,
-			Dsn:         cfg.dsn,
-			Publication: cfg.publication,
-			Tables:      tableList,
-			Options:     cfg.options,
+			FlowId: cfg.flow.Id,
+			Tables: tableList,
 		}); err != nil {
 			return fmt.Errorf("drop publication tables: %w", err)
 		}
@@ -3284,6 +3284,9 @@ func publicationSync(cmd *cobra.Command, _ []string) error {
 	if *flowID == "" {
 		return errors.New("--flow-id is required")
 	}
+	if err := rejectFlowBoundResourceMutationOverrides(*flowID, *dsn, *publication, awsFlags.options()); err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -3323,12 +3326,9 @@ func publicationSync(cmd *cobra.Command, _ []string) error {
 	}
 
 	resp, err := flowSvc.SyncPublicationTables(ctx, &wallabypb.SyncPublicationTablesRequest{
-		FlowId:      cfg.flow.Id,
-		Dsn:         cfg.dsn,
-		Publication: cfg.publication,
-		Tables:      desired,
-		Mode:        modeValue,
-		Options:     cfg.options,
+		FlowId: cfg.flow.Id,
+		Tables: desired,
+		Mode:   modeValue,
 	})
 	if err != nil {
 		return fmt.Errorf("sync publication: %w", err)
@@ -3387,6 +3387,11 @@ func publicationScrape(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	if *apply {
+		if err := rejectFlowBoundResourceMutationOverrides(*flowID, *dsn, *publication, awsFlags.options()); err != nil {
+			return err
+		}
+	}
 	if *schemas == "" {
 		return errors.New("--schemas is required")
 	}
@@ -3411,12 +3416,9 @@ func publicationScrape(cmd *cobra.Command, _ []string) error {
 		}
 		defer func() { _ = closeConn() }()
 		resp, err := flowSvc.ScrapePublicationTables(ctx, &wallabypb.ScrapePublicationTablesRequest{
-			FlowId:      cfg.flow.Id,
-			Dsn:         cfg.dsn,
-			Publication: cfg.publication,
-			Schemas:     schemaList,
-			Apply:       *apply,
-			Options:     cfg.options,
+			FlowId:  cfg.flow.Id,
+			Schemas: schemaList,
+			Apply:   *apply,
 		})
 		if err != nil {
 			return fmt.Errorf("scrape publication tables: %w", err)
@@ -4584,6 +4586,16 @@ type flowValidateOutput struct {
 	Name             string         `json:"name"`
 	Source           endpointConfig `json:"source"`
 	DestinationCount int            `json:"destination_count"`
+}
+
+func rejectFlowBoundResourceMutationOverrides(flowID, dsn, physicalName string, options map[string]string) error {
+	if strings.TrimSpace(flowID) == "" {
+		return nil
+	}
+	if strings.TrimSpace(dsn) != "" || strings.TrimSpace(physicalName) != "" || len(options) != 0 {
+		return errors.New("flow-bound source-resource mutation rejects DSN, connection-option, and physical-name overrides")
+	}
+	return nil
 }
 
 func resolvePublicationConfig(ctx context.Context, endpoint string, insecureConn bool, flowID, dsn, publication string, options map[string]string) (publicationConfig, error) {

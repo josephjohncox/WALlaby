@@ -218,6 +218,79 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		}
 	}
 
+	openedDestinations := make([]connector.Destination, 0, len(r.Destinations))
+	defer func() {
+		for index := len(openedDestinations) - 1; index >= 0; index-- {
+			_ = openedDestinations[index].Close(ctx)
+		}
+	}()
+	openDestinations := func() error {
+		if len(openedDestinations) != 0 {
+			return nil
+		}
+		for _, destination := range r.Destinations {
+			if destination.Dest == nil {
+				return errors.New("destination is required")
+			}
+			if err := destination.Dest.Open(ctx, destination.Spec); err != nil {
+				return fmt.Errorf("open destination %s: %w", destination.Spec.Name, err)
+			}
+			openedDestinations = append(openedDestinations, destination.Dest)
+		}
+		return nil
+	}
+
+	bootstrapMode := "never"
+	if r.managed() {
+		bootstrapMode = strings.ToLower(strings.TrimSpace(r.SourceSpec.Options["bootstrap"]))
+		if bootstrapMode == "" {
+			bootstrapMode = "auto"
+		}
+	}
+	if r.managed() && bootstrapMode != "never" {
+		if err := openDestinations(); err != nil {
+			return err
+		}
+		bootstrapSource, ok := r.Source.(connector.ManagedBootstrapSource)
+		if !ok {
+			return errors.New("managed bootstrap source contract is missing")
+		}
+		bootstrapDestination, ok := r.Destinations[0].Dest.(connector.ManagedBootstrapDestination)
+		if !ok {
+			return errors.New("managed bootstrap destination contract is missing")
+		}
+		destinationRevisionID := strings.TrimSpace(r.Destinations[0].Spec.Options["destination_revision_id"])
+		bootstrapResult, err := bootstrapSource.PrepareManagedBootstrap(ctx, *r.RunFence, r.SourceSpec, destinationRevisionID, bootstrapDestination)
+		if err != nil {
+			return fmt.Errorf("prepare managed bootstrap: %w", err)
+		}
+		if r.SourceSpec.Options == nil {
+			r.SourceSpec.Options = map[string]string{}
+		}
+		for key, value := range bootstrapResult.SourceOptions {
+			r.SourceSpec.Options[key] = value
+		}
+		if bootstrapResult.CheckpointValid {
+			if restoredCheckpoint != nil && !checkpointPositionsEqual(restoredCheckpoint.LSN, bootstrapResult.Checkpoint.LSN) {
+				return fmt.Errorf("%w: restored checkpoint %s differs from bootstrap handoff %s", connector.ErrDeliveryConflict, restoredCheckpoint.LSN, bootstrapResult.Checkpoint.LSN)
+			}
+			checkpoint := bootstrapResult.Checkpoint
+			restoredCheckpoint = &checkpoint
+			ackRestoredCheckpoint = true
+		}
+	}
+
+	if r.managed() {
+		if r.SourceSpec.Options == nil {
+			r.SourceSpec.Options = map[string]string{}
+		}
+		// All source-resource mutation occurred, if needed, inside the fenced
+		// bootstrap contract. The ordinary replication open is always inert.
+		for _, option := range []string{"create_slot", "ensure_state", "ensure_publication", "sync_publication"} {
+			r.SourceSpec.Options[option] = "false"
+		}
+	}
+
 	if err := r.openSource(ctx); err != nil {
 		return fmt.Errorf("open source: %w", err)
 	}
@@ -251,20 +324,8 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		}
 	}
 
-	openedDestinations := make([]connector.Destination, 0, len(r.Destinations))
-	defer func() {
-		for index := len(openedDestinations) - 1; index >= 0; index-- {
-			_ = openedDestinations[index].Close(ctx)
-		}
-	}()
-	for _, destination := range r.Destinations {
-		if destination.Dest == nil {
-			return errors.New("destination is required")
-		}
-		if err := destination.Dest.Open(ctx, destination.Spec); err != nil {
-			return fmt.Errorf("open destination %s: %w", destination.Spec.Name, err)
-		}
-		openedDestinations = append(openedDestinations, destination.Dest)
+	if err := openDestinations(); err != nil {
+		return err
 	}
 
 	if r.managed() {

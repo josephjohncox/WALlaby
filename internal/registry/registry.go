@@ -10,9 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/controlstore"
 	"github.com/josephjohncox/wallaby/internal/flowctx"
 	"github.com/josephjohncox/wallaby/internal/schema"
@@ -129,17 +131,52 @@ func (p *PostgresStore) RegisterSchema(ctx context.Context, schema connector.Sch
 	if err != nil {
 		return fmt.Errorf("marshal schema: %w", err)
 	}
-
-	_, err = p.pool.Exec(ctx,
-		`INSERT INTO schema_versions (namespace, name, version, schema_json)
-		 VALUES ($1, $2, $3, $4)
-		 ON CONFLICT (namespace, name, version) DO NOTHING`,
-		schema.Namespace, schema.Name, schema.Version, payload,
-	)
-	if err != nil {
-		return fmt.Errorf("insert schema: %w", err)
+	fence, fenced := runFenceFromContext(ctx)
+	if !fenced {
+		_, err = p.pool.Exec(ctx,
+			`INSERT INTO schema_versions (namespace, name, version, schema_json)
+			 VALUES ($1, $2, $3, $4)
+			 ON CONFLICT (namespace, name, version) DO NOTHING`,
+			schema.Namespace, schema.Name, schema.Version, payload,
+		)
+		if err != nil {
+			return fmt.Errorf("insert schema: %w", err)
+		}
+		return nil
 	}
-	return nil
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `
+INSERT INTO schema_versions (
+  namespace,name,version,schema_json,flow_incarnation_id,generation,acquisition_id,lease_epoch,authority_origin
+) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'fenced')
+ON CONFLICT(namespace,name,version) DO NOTHING`, schema.Namespace, schema.Name, schema.Version, payload, fence.FlowIncarnationID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch)
+	if err != nil {
+		return fmt.Errorf("insert fenced schema: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var identical bool
+		if err := tx.QueryRow(ctx, `
+SELECT schema_json=$4::jsonb
+   AND authority_origin='fenced'
+   AND flow_incarnation_id=$5
+   AND generation>0 AND acquisition_id IS NOT NULL AND lease_epoch>0
+FROM schema_versions
+WHERE namespace=$1 AND name=$2 AND version=$3
+FOR UPDATE`, schema.Namespace, schema.Name, schema.Version, payload, fence.FlowIncarnationID).Scan(&identical); err != nil {
+			return fmt.Errorf("inspect fenced schema registration conflict: %w", err)
+		}
+		if !identical {
+			return fmt.Errorf("%w: schema %s.%s version %d collides with different content or flow-incarnation provenance", connector.ErrDeliveryConflict, schema.Namespace, schema.Name, schema.Version)
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (p *PostgresStore) RecordDDL(ctx context.Context, flowID string, ddl string, plan schema.Plan, lsn string, status string) (int64, error) {
@@ -154,14 +191,65 @@ func (p *PostgresStore) RecordDDL(ctx context.Context, flowID string, ddl string
 		return 0, fmt.Errorf("marshal plan: %w", err)
 	}
 
+	fence, fenced := runFenceFromContext(ctx)
+	if fenced && strings.TrimSpace(lsn) == "" {
+		return 0, errors.New("fenced DDL/schema change requires a nonempty WAL LSN")
+	}
+	if !fenced {
+		var id int64
+		if err := p.pool.QueryRow(ctx,
+			`INSERT INTO ddl_events (flow_id, ddl, plan_json, lsn, status)
+			 VALUES ($1, $2, $3, $4, $5)
+			 RETURNING id`,
+			flowIDOrNull(flowID), ddlOrNull(ddl), planJSON, lsn, status,
+		).Scan(&id); err != nil {
+			return 0, fmt.Errorf("insert ddl event: %w", err)
+		}
+		return id, nil
+	}
+	if flowID != fence.FlowID {
+		return 0, fmt.Errorf("%w: DDL flow %q differs from run fence %q", authority.ErrFenceRejected, flowID, fence.FlowID)
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
+		return 0, err
+	}
+	if lsn != "" {
+		var existingID int64
+		var existingDDL *string
+		var existingPlan []byte
+		err := tx.QueryRow(ctx, `
+SELECT id,ddl,plan_json FROM ddl_events
+WHERE flow_incarnation_id=$1 AND lsn=$2
+FOR UPDATE`, fence.FlowIncarnationID, lsn).Scan(&existingID, &existingDDL, &existingPlan)
+		switch {
+		case err == nil:
+			storedDDL := ""
+			if existingDDL != nil {
+				storedDDL = *existingDDL
+			}
+			if ddlOrFallback(ddl, "") != ddlOrFallback(storedDDL, "") || string(existingPlan) != string(planJSON) {
+				return 0, fmt.Errorf("%w: source DDL identity reused with different content", connector.ErrDeliveryConflict)
+			}
+			return existingID, tx.Commit(ctx)
+		case !errors.Is(err, pgx.ErrNoRows):
+			return 0, err
+		}
+	}
 	var id int64
-	if err := p.pool.QueryRow(ctx,
-		`INSERT INTO ddl_events (flow_id, ddl, plan_json, lsn, status)
-		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id`,
-		flowIDOrNull(flowID), ddlOrNull(ddl), planJSON, lsn, status,
-	).Scan(&id); err != nil {
-		return 0, fmt.Errorf("insert ddl event: %w", err)
+	if err := tx.QueryRow(ctx, `
+INSERT INTO ddl_events (
+  flow_id,ddl,plan_json,lsn,status,flow_incarnation_id,generation,acquisition_id,lease_epoch,authority_origin
+) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'fenced')
+RETURNING id`, flowID, ddlOrNull(ddl), planJSON, lsn, status, fence.FlowIncarnationID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch).Scan(&id); err != nil {
+		return 0, fmt.Errorf("insert fenced DDL event: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
 	}
 	return id, nil
 }
@@ -375,6 +463,17 @@ func (p *PostgresStore) GetDDLByLSN(ctx context.Context, flowID string, lsn stri
 	return scanDDLEvent(row)
 }
 
+func (p *PostgresStore) getDDLByRunFenceLSN(ctx context.Context, fence authority.RunFence, lsn string) (DDLEvent, error) {
+	if strings.TrimSpace(lsn) == "" {
+		return DDLEvent{}, ErrNotFound
+	}
+	return scanDDLEvent(p.pool.QueryRow(ctx, `
+SELECT id,flow_id,ddl,plan_json,lsn,status,created_at,applied_at
+FROM ddl_events
+WHERE flow_incarnation_id=$1 AND flow_id=$2 AND lsn=$3 AND authority_origin='fenced'
+ORDER BY id DESC LIMIT 1`, fence.FlowIncarnationID, fence.FlowID, lsn))
+}
+
 // WithDDLExecutionLock holds a session-scoped advisory lock across the
 // non-transactional destination boundary. A process crash releases the lock,
 // while the already-committed attempt tells the next owner to reconcile.
@@ -455,13 +554,26 @@ func (p *PostgresStore) PrepareDDLExecution(
 		return connector.DDLExecutionUnknown, fmt.Errorf("begin DDL execution preparation: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	fence, fenced := runFenceFromContext(ctx)
+	if fenced {
+		if flowID != fence.FlowID {
+			return connector.DDLExecutionUnknown, fmt.Errorf("%w: DDL flow differs from run fence", authority.ErrFenceRejected)
+		}
+		if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
+			return connector.DDLExecutionUnknown, err
+		}
+	}
 
 	query := `SELECT id, flow_id, ddl, plan_json, lsn, status, created_at, applied_at
 		FROM ddl_events WHERE lsn = $1`
 	args := []any{lsn}
 	if flowID != "" {
-		query += " AND flow_id = $2"
+		query += fmt.Sprintf(" AND flow_id = $%d", len(args)+1)
 		args = append(args, flowID)
+	}
+	if fenced {
+		query += fmt.Sprintf(" AND flow_incarnation_id = $%d", len(args)+1)
+		args = append(args, fence.FlowIncarnationID)
 	}
 	query += " ORDER BY id DESC LIMIT 1 FOR UPDATE"
 	event, err := scanDDLEvent(tx.QueryRow(ctx, query, args...))
@@ -493,13 +605,16 @@ func (p *PostgresStore) PrepareDDLExecution(
 	}
 
 	var receiptExists bool
-	if err := tx.QueryRow(ctx,
-		`SELECT EXISTS (
-		   SELECT 1 FROM ddl_execution_receipts
-		   WHERE event_id = $1 AND destination = $2
-		 )`,
-		event.ID, destination,
-	).Scan(&receiptExists); err != nil {
+	receiptQuery := `SELECT EXISTS (SELECT 1 FROM ddl_execution_receipts WHERE event_id=$1 AND destination=$2)`
+	receiptArgs := []any{event.ID, destination}
+	if fenced {
+		receiptQuery = `SELECT EXISTS (
+  SELECT 1 FROM ddl_execution_receipts
+  WHERE event_id=$1 AND destination=$2 AND flow_incarnation_id=$3 AND authority_origin='fenced'
+)`
+		receiptArgs = append(receiptArgs, fence.FlowIncarnationID)
+	}
+	if err := tx.QueryRow(ctx, receiptQuery, receiptArgs...).Scan(&receiptExists); err != nil {
 		return connector.DDLExecutionUnknown, fmt.Errorf("check DDL execution receipt: %w", err)
 	}
 	if event.Status == StatusApplied && !receiptExists {
@@ -508,16 +623,31 @@ func (p *PostgresStore) PrepareDDLExecution(
 
 	state := connector.DDLExecutionComplete
 	if !receiptExists {
-		result, err := tx.Exec(ctx,
-			`INSERT INTO ddl_execution_attempts (event_id, destination, flow_id, lsn)
-			 VALUES ($1, $2, $3, $4)
-			 ON CONFLICT (event_id, destination) DO NOTHING`,
-			event.ID, destination, flowIDOrNull(flowID), lsn,
-		)
+		var priorAttempts bool
+		priorQuery := `SELECT EXISTS (SELECT 1 FROM ddl_execution_attempts WHERE event_id=$1 AND destination=$2)`
+		if fenced {
+			priorQuery = `SELECT EXISTS (SELECT 1 FROM ddl_execution_run_attempts WHERE event_id=$1 AND destination=$2 AND flow_incarnation_id=$3)`
+			if err := tx.QueryRow(ctx, priorQuery, event.ID, destination, fence.FlowIncarnationID).Scan(&priorAttempts); err != nil {
+				return connector.DDLExecutionUnknown, fmt.Errorf("check prior fenced DDL attempts: %w", err)
+			}
+		} else if err := tx.QueryRow(ctx, priorQuery, event.ID, destination).Scan(&priorAttempts); err != nil {
+			return connector.DDLExecutionUnknown, fmt.Errorf("check prior DDL attempts: %w", err)
+		}
+		attemptSQL := `INSERT INTO ddl_execution_attempts (event_id,destination,flow_id,lsn)
+VALUES($1,$2,$3,$4) ON CONFLICT(event_id,destination) DO NOTHING`
+		attemptArgs := []any{event.ID, destination, flowIDOrNull(flowID), lsn}
+		if fenced {
+			attemptSQL = `INSERT INTO ddl_execution_run_attempts (
+  attempt_id,event_id,destination,flow_incarnation_id,flow_id,lsn,generation,acquisition_id,lease_epoch
+) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+ON CONFLICT(event_id,destination,acquisition_id,lease_epoch) DO NOTHING`
+			attemptArgs = []any{uuid.New(), event.ID, destination, fence.FlowIncarnationID, flowID, lsn, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch}
+		}
+		result, err := tx.Exec(ctx, attemptSQL, attemptArgs...)
 		if err != nil {
 			return connector.DDLExecutionUnknown, fmt.Errorf("persist DDL execution attempt: %w", err)
 		}
-		if result.RowsAffected() == 1 {
+		if result.RowsAffected() == 1 && !priorAttempts {
 			state = connector.DDLExecutionNew
 		} else {
 			state = connector.DDLExecutionRetry
@@ -550,13 +680,26 @@ func (p *PostgresStore) RecordDDLExecution(
 		return fmt.Errorf("begin DDL execution receipt: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	fence, fenced := runFenceFromContext(ctx)
+	if fenced {
+		if flowID != fence.FlowID {
+			return fmt.Errorf("%w: DDL flow differs from run fence", authority.ErrFenceRejected)
+		}
+		if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
+			return err
+		}
+	}
 
 	query := `SELECT id, flow_id, ddl, plan_json, lsn, status, created_at, applied_at
 		FROM ddl_events WHERE lsn = $1`
 	args := []any{lsn}
 	if flowID != "" {
-		query += " AND flow_id = $2"
+		query += fmt.Sprintf(" AND flow_id = $%d", len(args)+1)
 		args = append(args, flowID)
+	}
+	if fenced {
+		query += fmt.Sprintf(" AND flow_incarnation_id = $%d", len(args)+1)
+		args = append(args, fence.FlowIncarnationID)
 	}
 	query += " ORDER BY id DESC LIMIT 1 FOR UPDATE"
 	event, err := scanDDLEvent(tx.QueryRow(ctx, query, args...))
@@ -587,13 +730,17 @@ func (p *PostgresStore) RecordDDLExecution(
 		return ErrExecutionManifestChanged
 	}
 	var attemptExists bool
-	if err := tx.QueryRow(ctx,
-		`SELECT EXISTS (
-		   SELECT 1 FROM ddl_execution_attempts
-		   WHERE event_id = $1 AND destination = $2
-		 )`,
-		event.ID, destination,
-	).Scan(&attemptExists); err != nil {
+	attemptQuery := `SELECT EXISTS (SELECT 1 FROM ddl_execution_attempts WHERE event_id=$1 AND destination=$2)`
+	attemptArgs := []any{event.ID, destination}
+	if fenced {
+		attemptQuery = `SELECT EXISTS (
+  SELECT 1 FROM ddl_execution_run_attempts
+  WHERE event_id=$1 AND destination=$2 AND flow_incarnation_id=$3
+    AND generation=$4 AND acquisition_id=$5 AND lease_epoch=$6
+)`
+		attemptArgs = append(attemptArgs, fence.FlowIncarnationID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch)
+	}
+	if err := tx.QueryRow(ctx, attemptQuery, attemptArgs...).Scan(&attemptExists); err != nil {
 		return fmt.Errorf("check prepared DDL execution attempt: %w", err)
 	}
 	if !attemptExists {
@@ -608,15 +755,22 @@ func (p *PostgresStore) RecordDDLExecution(
 		"%d\x00%s\x00%s\x00%s\x00%s", event.ID, flowID, lsn, destination, ddlText,
 	))))
 	var storedReceiptHash string
-	if err := tx.QueryRow(ctx,
-		`INSERT INTO ddl_execution_receipts (
-		   event_id, destination, flow_id, lsn, receipt_hash
-		 ) VALUES ($1, $2, $3, $4, $5)
-		 ON CONFLICT (event_id, destination) DO UPDATE
-		 SET receipt_hash = ddl_execution_receipts.receipt_hash
-		 RETURNING receipt_hash`,
-		event.ID, destination, flowIDOrNull(flowID), lsn, receiptHash,
-	).Scan(&storedReceiptHash); err != nil {
+	receiptSQL := `INSERT INTO ddl_execution_receipts(event_id,destination,flow_id,lsn,receipt_hash)
+VALUES($1,$2,$3,$4,$5)
+ON CONFLICT(event_id,destination) DO UPDATE SET receipt_hash=ddl_execution_receipts.receipt_hash
+RETURNING receipt_hash`
+	receiptArgs := []any{event.ID, destination, flowIDOrNull(flowID), lsn, receiptHash}
+	if fenced {
+		receiptSQL = `INSERT INTO ddl_execution_receipts (
+  event_id,destination,flow_id,lsn,receipt_hash,flow_incarnation_id,generation,acquisition_id,lease_epoch,authority_origin
+) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'fenced')
+ON CONFLICT(event_id,destination) DO UPDATE SET receipt_hash=ddl_execution_receipts.receipt_hash
+WHERE ddl_execution_receipts.flow_incarnation_id=EXCLUDED.flow_incarnation_id
+  AND ddl_execution_receipts.authority_origin='fenced'
+RETURNING receipt_hash`
+		receiptArgs = append(receiptArgs, fence.FlowIncarnationID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch)
+	}
+	if err := tx.QueryRow(ctx, receiptSQL, receiptArgs...).Scan(&storedReceiptHash); err != nil {
 		return fmt.Errorf("persist DDL execution receipt: %w", err)
 	}
 	if storedReceiptHash != receiptHash {
@@ -624,19 +778,28 @@ func (p *PostgresStore) RecordDDLExecution(
 	}
 
 	var receiptCount int
-	if err := tx.QueryRow(ctx,
-		`SELECT COUNT(*) FROM ddl_execution_receipts
-		 WHERE event_id = $1 AND destination = ANY($2::text[])`,
-		event.ID, expected,
-	).Scan(&receiptCount); err != nil {
+	countQuery := `SELECT COUNT(*) FROM ddl_execution_receipts WHERE event_id=$1 AND destination=ANY($2::text[])`
+	countArgs := []any{event.ID, expected}
+	if fenced {
+		countQuery += " AND flow_incarnation_id=$3 AND authority_origin='fenced'"
+		countArgs = append(countArgs, fence.FlowIncarnationID)
+	}
+	if err := tx.QueryRow(ctx, countQuery, countArgs...).Scan(&receiptCount); err != nil {
 		return fmt.Errorf("count DDL execution receipts: %w", err)
 	}
 	if receiptCount == len(expected) {
-		if _, err := tx.Exec(ctx,
-			"UPDATE ddl_events SET status = $2, applied_at = now() WHERE id = $1",
-			event.ID, StatusApplied,
-		); err != nil {
+		applySQL := "UPDATE ddl_events SET status=$2,applied_at=now() WHERE id=$1"
+		applyArgs := []any{event.ID, StatusApplied}
+		if fenced {
+			applySQL += " AND flow_incarnation_id=$3 AND authority_origin='fenced'"
+			applyArgs = append(applyArgs, fence.FlowIncarnationID)
+		}
+		result, err := tx.Exec(ctx, applySQL, applyArgs...)
+		if err != nil {
 			return fmt.Errorf("mark DDL applied from execution receipts: %w", err)
+		}
+		if result.RowsAffected() != 1 {
+			return fmt.Errorf("%w: DDL event completion did not update exactly one incarnation-scoped event", authority.ErrFenceRejected)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -698,19 +861,29 @@ type Hook struct {
 	AutoApprove  bool
 	GateApproval bool
 	AutoApply    bool
+	RunFence     *connector.RunFence
 }
 
 func (h *Hook) OnSchema(ctx context.Context, schema connector.Schema) error {
 	if h.Store == nil {
 		return nil
 	}
-	return h.Store.RegisterSchema(ctx, schema)
+	return h.Store.RegisterSchema(h.fencedContext(ctx), schema)
 }
 
 func (h *Hook) OnSchemaChange(ctx context.Context, plan schema.Plan) error {
+	return h.onSchemaChange(ctx, plan, "")
+}
+
+func (h *Hook) OnSchemaChangeAtLSN(ctx context.Context, plan schema.Plan, lsn pglogrepl.LSN) error {
+	return h.onSchemaChange(ctx, plan, lsn.String())
+}
+
+func (h *Hook) onSchemaChange(ctx context.Context, plan schema.Plan, lsn string) error {
 	if h.Store == nil {
 		return nil
 	}
+	ctx = h.fencedContext(ctx)
 	flowID := h.flowID(ctx)
 	status := StatusPending
 	if h.AutoApprove {
@@ -719,7 +892,7 @@ func (h *Hook) OnSchemaChange(ctx context.Context, plan schema.Plan) error {
 	if h.AutoApply {
 		status = StatusApproved
 	}
-	id, err := h.Store.RecordDDL(ctx, flowID, "", plan, "", status)
+	id, err := h.Store.RecordDDL(ctx, flowID, "", plan, lsn, status)
 	if err != nil {
 		return err
 	}
@@ -730,6 +903,7 @@ func (h *Hook) OnSchemaChange(ctx context.Context, plan schema.Plan) error {
 		}
 		return &connector.DDLGateError{
 			FlowID:   flowID,
+			LSN:      lsn,
 			Status:   status,
 			EventID:  id,
 			PlanJSON: planJSON,
@@ -742,10 +916,21 @@ func (h *Hook) OnDDL(ctx context.Context, ddl string, lsn pglogrepl.LSN) error {
 	if h.Store == nil {
 		return nil
 	}
+	ctx = h.fencedContext(ctx)
 	flowID := h.flowID(ctx)
 	lsnStr := lsn.String()
 	if lsnStr != "" {
-		existing, err := h.Store.GetDDLByLSN(ctx, flowID, lsnStr)
+		var existing DDLEvent
+		var err error
+		if h.RunFence != nil {
+			postgresStore, ok := h.Store.(*PostgresStore)
+			if !ok {
+				return errors.New("fenced registry hook requires the PostgreSQL store")
+			}
+			existing, err = postgresStore.getDDLByRunFenceLSN(ctx, *h.RunFence, lsnStr)
+		} else {
+			existing, err = h.Store.GetDDLByLSN(ctx, flowID, lsnStr)
+		}
 		if err == nil {
 			switch existing.Status {
 			case StatusApproved, StatusApplied:

@@ -71,14 +71,46 @@ func (p *PostgresStore) Get(ctx context.Context, flowID string) (connector.Check
 	return scanCheckpoint(row)
 }
 
-// CheckExternalOverrideAllowed rejects gRPC/admin checkpoint writes while a
-// producer lease, execution, or pending dispatch can still mutate progress.
+// CheckExternalOverrideAllowed is retained for read/check compatibility. New
+// administrative writers must call PutExternal so authority cannot be acquired
+// between this check and the checkpoint write.
 func (p *PostgresStore) CheckExternalOverrideAllowed(ctx context.Context, flowID string) error {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin checkpoint override guard: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := checkExternalOverrideAllowed(ctx, tx, flowID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// PutExternal atomically takes the flow authority lock, rejects every live
+// dispatch/execution/producer owner, validates monotonicity, and writes.
+func (p *PostgresStore) PutExternal(ctx context.Context, flowID string, cp connector.Checkpoint) error {
+	canonical, err := canonicalizeCheckpoint(cp)
+	if err != nil {
+		return err
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin external checkpoint transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if err := checkExternalOverrideAllowed(ctx, tx, flowID); err != nil {
+		return err
+	}
+	if err := putPostgresCheckpoint(ctx, tx, flowID, canonical); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit external checkpoint transaction: %w", err)
+	}
+	return nil
+}
+
+func checkExternalOverrideAllowed(ctx context.Context, tx pgx.Tx, flowID string) error {
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", flowID); err != nil {
 		return fmt.Errorf("lock checkpoint override guard: %w", err)
 	}
@@ -111,7 +143,7 @@ SELECT EXISTS (
 	if active {
 		return ErrManagedProducerActive
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 func (p *PostgresStore) Put(ctx context.Context, flowID string, checkpoint connector.Checkpoint) error {
@@ -194,7 +226,7 @@ func (p *PostgresStore) PersistCheckpointAndOutbox(ctx context.Context, flowID s
 }
 
 func putPostgresCheckpoint(ctx context.Context, tx pgx.Tx, flowID string, checkpoint connector.Checkpoint) error {
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", flowID); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", flowID); err != nil {
 		return fmt.Errorf("lock checkpoint flow: %w", err)
 	}
 	if checkpoint.Timestamp.IsZero() {

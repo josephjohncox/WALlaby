@@ -241,14 +241,15 @@ func (c *Coordinator) RecordAckReceipt(ctx context.Context, fence authority.RunF
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO source_ack_receipts (
-  flow_incarnation_id,position_id,checkpoint_lsn,observed_flush_lsn,acquisition_id,lease_epoch
-) VALUES ($1,$2,$3,NULLIF($4,''),$5,$6)
+  flow_incarnation_id,position_id,checkpoint_lsn,observed_flush_lsn,acquisition_id,lease_epoch,generation
+) VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7)
 ON CONFLICT (flow_incarnation_id,position_id) DO UPDATE SET
   observed_flush_lsn=COALESCE(EXCLUDED.observed_flush_lsn,source_ack_receipts.observed_flush_lsn),
   acquisition_id=EXCLUDED.acquisition_id,
   lease_epoch=EXCLUDED.lease_epoch,
+  generation=EXCLUDED.generation,
   recorded_at=clock_timestamp()
-WHERE source_ack_receipts.checkpoint_lsn=EXCLUDED.checkpoint_lsn`, fence.FlowIncarnationID, grant.PositionID, grant.Checkpoint.LSN, observedFlushLSN, fence.AcquisitionID, fence.LeaseEpoch); err != nil {
+WHERE source_ack_receipts.checkpoint_lsn=EXCLUDED.checkpoint_lsn`, fence.FlowIncarnationID, grant.PositionID, grant.Checkpoint.LSN, observedFlushLSN, fence.AcquisitionID, fence.LeaseEpoch, fence.Generation); err != nil {
 		return fmt.Errorf("record source ack receipt: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

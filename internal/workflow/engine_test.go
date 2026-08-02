@@ -9,6 +9,53 @@ import (
 	"github.com/josephjohncox/wallaby/internal/flow"
 )
 
+func TestMemoryExecutionFenceRejectsStaleGenerationAndRecreatedFlow(t *testing.T) {
+	ctx := context.Background()
+	engine := NewMemoryEngine()
+	created, err := engine.Create(ctx, flow.Flow{ID: "execution-fence"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Start(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	control, _ := engine.Control(ctx, created.ID)
+	fence, err := engine.RegisterExecutionFence(ctx, created.ID, "worker", "compat", control.Generation, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleGeneration := fence
+	staleGeneration.Generation++
+	if err := engine.RenewExecutionFence(ctx, staleGeneration, time.Minute); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("stale generation renew error=%v, want ErrInvalidState", err)
+	}
+	if err := engine.FinishExecutionFence(ctx, fence, "done"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Stop(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.CompleteStopGeneration(ctx, created.ID, control.Generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Delete(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Create(ctx, flow.Flow{ID: created.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Start(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	newControl, _ := engine.Control(ctx, created.ID)
+	if _, err := engine.RegisterExecutionFence(ctx, created.ID, "worker", "compat", newControl.Generation, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.FinishExecutionFence(ctx, fence, "stale"); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("recreated flow accepted old fence: %v", err)
+	}
+}
+
 func TestMemoryEngineLifecycleAndExecutions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

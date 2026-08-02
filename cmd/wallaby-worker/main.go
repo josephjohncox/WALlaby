@@ -17,6 +17,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/internal/config"
+	"github.com/josephjohncox/wallaby/internal/controlplane"
 	"github.com/josephjohncox/wallaby/internal/controlstore"
 	"github.com/josephjohncox/wallaby/internal/delivery"
 	"github.com/josephjohncox/wallaby/internal/flow"
@@ -38,7 +39,10 @@ func main() {
 
 func run() error {
 	command := newWallabyWorkerCommand()
-	return command.Execute()
+	if err := command.Execute(); err != nil {
+		return fmt.Errorf("execute wallaby worker command: %w", err)
+	}
+	return nil
 }
 
 func newWallabyWorkerCommand() *cobra.Command {
@@ -65,20 +69,26 @@ func newWallabyWorkerCommand() *cobra.Command {
 	command.Flags().Int("partition-count", 0, "partition count per table for backfill hashing")
 	command.Flags().Bool("resolve-staging", false, "resolve destination staging tables after batch/backfill runs")
 	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
-		return initWallabyWorkerConfig(cmd)
+		if err := initWallabyWorkerConfig(cmd); err != nil {
+			return fmt.Errorf("initialize wallaby worker config: %w", err)
+		}
+		return nil
 	}
 	command.InitDefaultCompletionCmd()
 	return command
 }
 
 func initWallabyWorkerConfig(cmd *cobra.Command) error {
-	return cli.InitViperFromCommand(cmd, cli.ViperConfig{
+	if err := cli.InitViperFromCommand(cmd, cli.ViperConfig{
 		EnvPrefix:        "WALLABY_WORKER",
 		ConfigEnvVar:     "WALLABY_WORKER_CONFIG",
 		ConfigName:       "wallaby-worker",
 		ConfigType:       "yaml",
 		ConfigSearchPath: nil,
-	})
+	}); err != nil {
+		return fmt.Errorf("initialize worker viper config: %w", err)
+	}
+	return nil
 }
 
 func runWallabyWorker(cmd *cobra.Command) error {
@@ -158,6 +168,9 @@ func runWallabyWorker(cmd *cobra.Command) error {
 	}
 	defer control.Close()
 	controlPool := control.Pool()
+	if err := controlplane.ApplyMigrations(ctx, controlPool); err != nil {
+		return fmt.Errorf("migrate shared control store: %w", err)
+	}
 
 	engine, err := workflow.NewPostgresEngineWithPool(ctx, controlPool)
 	if err != nil {
@@ -249,12 +262,9 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		AutoApply:   cfg.DDL.AutoApply,
 	}
 	factory := runner.Factory{
+		ManagedControl:   controlPool,
+		ManagedAuthority: authorityStore,
 		SchemaHookForFlow: func(f flow.Flow) replication.SchemaHook {
-			if strings.EqualFold(strings.TrimSpace(f.Source.Options["managed"]), "true") {
-				// Managed admission currently rejects DDL capture because registry
-				// mutations do not yet carry the acquired RunFence.
-				return nil
-			}
 			policy := f.Config.DDL.Resolve(defaults)
 			return &registry.Hook{
 				Store:        registryStore,

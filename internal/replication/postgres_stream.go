@@ -177,6 +177,12 @@ type SchemaHook interface {
 	OnDDL(ctx context.Context, ddl string, lsn pglogrepl.LSN) error
 }
 
+// SchemaChangeLSNHook is a wire-compatible extension used by fenced registry
+// hooks that require the exact WAL identity of a catalog transition.
+type SchemaChangeLSNHook interface {
+	OnSchemaChangeAtLSN(ctx context.Context, plan internalschema.Plan, lsn pglogrepl.LSN) error
+}
+
 // TypeResolver resolves Postgres type OIDs to names.
 type TypeResolver interface {
 	ResolveType(ctx context.Context, oid uint32) (string, bool, error)
@@ -548,8 +554,14 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 				// an absent column must never become a destination DROP COLUMN.
 				plan := internalschema.DiffPublishedShape(prevSchema, schemaDef)
 				if plan.HasChanges() {
-					if err := p.schemaHook.OnSchemaChange(ctx, plan); err != nil {
-						return fmt.Errorf("schema change hook: %w", err)
+					var hookErr error
+					if lsnHook, ok := p.schemaHook.(SchemaChangeLSNHook); ok {
+						hookErr = lsnHook.OnSchemaChangeAtLSN(ctx, plan, xld.WALStart)
+					} else {
+						hookErr = p.schemaHook.OnSchemaChange(ctx, plan)
+					}
+					if hookErr != nil {
+						return fmt.Errorf("schema change hook: %w", hookErr)
 					}
 					if p.emitPlanDDL {
 						if err := p.emitSchemaChange(ctx, xld, schemaDef, plan); err != nil {

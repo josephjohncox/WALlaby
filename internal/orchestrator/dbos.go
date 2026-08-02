@@ -16,6 +16,8 @@ import (
 
 	"github.com/dbos-inc/dbos-transact-golang/dbos"
 	"github.com/google/uuid"
+	"github.com/josephjohncox/wallaby/internal/authority"
+	"github.com/josephjohncox/wallaby/internal/delivery"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/runner"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
@@ -44,6 +46,8 @@ type Config struct {
 	DDLExecutions stream.DDLExecutionStore
 	TraceSink     stream.TraceSink
 	TracePath     string
+	Authority     authority.Store
+	Deliveries    *delivery.Coordinator
 }
 
 // FlowRunInput is the generation-fenced workflow input for one flow.
@@ -70,6 +74,8 @@ type DBOSOrchestrator struct {
 	ddlExecutions stream.DDLExecutionStore
 	traceSink     stream.TraceSink
 	tracePath     string
+	authority     authority.Store
+	deliveries    *delivery.Coordinator
 }
 
 // FlowWorkflowName returns the fully qualified workflow name used by DBOS recovery.
@@ -123,6 +129,8 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Lifecy
 		ddlExecutions: cfg.DDLExecutions,
 		traceSink:     cfg.TraceSink,
 		tracePath:     cfg.TracePath,
+		authority:     cfg.Authority,
+		deliveries:    cfg.Deliveries,
 	}
 
 	orchestrator.registerWorkflows(cfg.Schedule)
@@ -316,6 +324,7 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunIn
 		DDLExecutions: o.ddlExecutions,
 		TraceSink:     traceSink, ExecutionBackend: "dbos",
 		ExecutionID: executionID, ExpectedGeneration: input.Generation,
+		Authority: o.authority, Deliveries: o.deliveries,
 	}
 	if err := flowRunner.Run(ctx, f, source, destinations); err != nil {
 		return "", fmt.Errorf("run flow %s generation %d: %w", f.ID, input.Generation, err)

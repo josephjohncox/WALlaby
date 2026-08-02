@@ -16,14 +16,23 @@ import (
 )
 
 func TestManagedAdmissionAcceptsInitialPostgresProfile(t *testing.T) {
-	fence := managedAdmissionFence()
-	_, err := NewStreamRunner(managedAdmissionFlow(), &pgsource.Source{}, managedAdmissionDestinations(), StreamRunnerConfig{
-		Checkpoints:         managedCheckpointStore{},
-		RunFence:            &fence,
-		DeliveryCoordinator: &delivery.Coordinator{},
-	})
-	if err != nil {
-		t.Fatal(err)
+	for _, bootstrapMode := range []string{"never", "auto", "required"} {
+		t.Run(bootstrapMode, func(t *testing.T) {
+			f := managedAdmissionFlow()
+			f.Source.Options["bootstrap"] = bootstrapMode
+			if bootstrapMode != "never" {
+				f.Source.Options["ensure_publication"] = "true"
+			}
+			fence := managedAdmissionFence()
+			_, err := NewStreamRunner(f, &pgsource.Source{}, managedAdmissionDestinations(), StreamRunnerConfig{
+				Checkpoints:         managedCheckpointStore{},
+				RunFence:            &fence,
+				DeliveryCoordinator: &delivery.Coordinator{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -36,6 +45,16 @@ func TestManagedAdmissionRejectsUnsafeOptions(t *testing.T) {
 		{name: "arbitrary start lsn", mutate: func(f *flow.Flow, _ *[]stream.DestinationConfig, _ *StreamRunnerConfig) {
 			f.Source.Options["start_lsn"] = "0/10"
 		}, want: "arbitrary start_lsn"},
+		{name: "bootstrap pool capacity before side effects", mutate: func(f *flow.Flow, _ *[]stream.DestinationConfig, _ *StreamRunnerConfig) {
+			f.Source.Options["bootstrap"] = "required"
+			f.Source.Options["pool_max_conns"] = "1"
+		}, want: "pool_max_conns>=2 before connector side effects"},
+		{name: "bootstrap never create slot", mutate: func(f *flow.Flow, _ *[]stream.DestinationConfig, _ *StreamRunnerConfig) {
+			f.Source.Options["create_slot"] = "true"
+		}, want: "create_slot=false"},
+		{name: "bootstrap never missing sync publication", mutate: func(f *flow.Flow, _ *[]stream.DestinationConfig, _ *StreamRunnerConfig) {
+			delete(f.Source.Options, "sync_publication")
+		}, want: "sync_publication=false"},
 		{name: "legacy backfill", mutate: func(f *flow.Flow, _ *[]stream.DestinationConfig, _ *StreamRunnerConfig) {
 			f.Source.Options["mode"] = "backfill"
 		}, want: "legacy mode=backfill"},
@@ -82,7 +101,7 @@ func managedAdmissionFlow() flow.Flow {
 	return flow.Flow{
 		ID: "managed-flow",
 		Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
-			"managed": "true", "bootstrap": "never", "ensure_publication": "false", "ensure_state": "false",
+			"managed": "true", "bootstrap": "never", "create_slot": "false", "ensure_publication": "false", "ensure_state": "false", "sync_publication": "false",
 			"source_system_identifier": "system-1", "source_lineage_id": "lineage-1", "publication_revision": "revision-1",
 		}},
 		Config: flow.Config{AckPolicy: stream.AckPolicyAll},
