@@ -247,6 +247,16 @@ func TestPostgresStreamUsesTransactionEndLSN(t *testing.T) {
 	}
 }
 
+func TestLogicalMessagesOptionLeavesPluginValueConstructionToStart(t *testing.T) {
+	stream := NewPostgresStream("", WithLogicalMessages(true))
+	if !stream.logicalMessages {
+		t.Fatal("logical messages option was not retained")
+	}
+	if len(stream.pluginArgs) != 0 {
+		t.Fatalf("logical messages option installed raw plugin arguments: %v", stream.pluginArgs)
+	}
+}
+
 func TestPostgresStreamV2PreservesStreamedTransactionFragmentsAndBarrier(t *testing.T) {
 	stream := NewPostgresStream("", WithStreamingTransactions(true))
 	stream.changes = make(chan Change, 3)
