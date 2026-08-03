@@ -814,7 +814,7 @@ type FlowCheckpoint struct {
 ```
 
 <a name="FlushEvidenceSource"></a>
-## type [FlushEvidenceSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L264-L267>)
+## type [FlushEvidenceSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L266-L269>)
 
 FlushEvidenceSource sends source feedback and proves the resulting logical slot flush position. The managed coordinator validates authority before and after this external source operation; feedback itself is monotonic.
 
@@ -826,7 +826,7 @@ type FlushEvidenceSource interface {
 ```
 
 <a name="InitialCheckpointSource"></a>
-## type [InitialCheckpointSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L250-L253>)
+## type [InitialCheckpointSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L252-L255>)
 
 InitialCheckpointSource exposes the validated stream start after Open. A managed coordinator persists this cut and an ACK intent before the first source transaction, so a crash immediately after slot creation is recoverable.
 
@@ -1185,7 +1185,7 @@ type Schema struct {
 ```
 
 <a name="DecodeManagedSchemaBaselines"></a>
-### func [DecodeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L206>)
+### func [DecodeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L208>)
 
 ```go
 func DecodeManagedSchemaBaselines(raw string) ([]Schema, error)
@@ -1220,7 +1220,7 @@ type Source interface {
 ```
 
 <a name="SourceFlushEvidence"></a>
-## type [SourceFlushEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L257-L259>)
+## type [SourceFlushEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L259-L261>)
 
 SourceFlushEvidence is the source PostgreSQL position observed after a standby\-status update, not merely an in\-process scheduling acknowledgement.
 
@@ -1290,7 +1290,7 @@ const (
 ```
 
 <a name="TransactionFragment"></a>
-## type [TransactionFragment](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L234-L237>)
+## type [TransactionFragment](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L236-L239>)
 
 TransactionFragment is a deterministic, ordered table/schema fragment of a committed source transaction.
 
@@ -1302,7 +1302,7 @@ type TransactionFragment struct {
 ```
 
 <a name="TransactionalSource"></a>
-## type [TransactionalSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L242-L245>)
+## type [TransactionalSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L244-L247>)
 
 TransactionalSource is an optional source contract for managed execution. Legacy Source.Read remains available for compatibility, but managed PostgreSQL execution consumes complete transactions through this interface.
 
