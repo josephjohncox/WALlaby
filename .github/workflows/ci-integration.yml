@@ -191,6 +191,10 @@ jobs:
         if: github.event_name != 'schedule'
         run: just test-checkpoint1-integration
 
+      - name: Required managed ClickHouse profile evidence (no skips)
+        if: github.event_name != 'schedule'
+        run: just test-clickhouse-managed-profile
+
       - name: Nightly durability and repeated recovery evidence
         if: github.event_name == 'schedule'
         run: just test-durable-nightly

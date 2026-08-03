@@ -202,6 +202,42 @@ test-checkpoint2-postgres-profile:
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./scripts/verify-go-test-json.go \
       -results "${results}" -required "${required}"
 
+# Checkpoint-3 exact PostgreSQL 16 + ClickHouse/Keeper 25.12.1.649 append profile. The harness
+# provisions both processes and verified native TLS. Required-test validation
+# rejects skipped or missing evidence.
+test-clickhouse-managed-profile:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    harness_cluster="${IT_KIND_CLUSTER:-wallaby-test}-clickhouse-profile-$$"
+    cleanup() {
+        status=$?
+        if [[ "${IT_KEEP:-0}" != "1" ]] && command -v kind >/dev/null 2>&1; then
+            kind delete cluster --name "${harness_cluster}" || true
+        fi
+        return "$status"
+    }
+    trap cleanup EXIT
+    required=
+    required+='TestClickHouseManagedProfileVersionMatrix'
+    required+=',TestClickHouseManagedProfileAdmission'
+    required+=',TestClickHouseManagedProfileCommitBeforeReceipt'
+    required+=',TestClickHouseManagedProfileSecondaryEndpointWriteFailover'
+    required+=',TestClickHouseManagedProfileSurvivorOnlyPrimaryStorageLossRecovery'
+    required+=',TestClickHouseManagedProfileDedupWindowEviction'
+    required+=',TestClickHouseManagedProfileOrderingAndConcurrency'
+    required+=',TestClickHouseManagedProfileKeyChangesAndTombstones'
+    required+=',TestClickHouseManagedProfileSchemaEvolutionAndTypes'
+    required+=',TestPostgresToClickHouseManagedProfileRecoveryContract'
+    required+=',TestClickHouseManagedProfileBoundedLoad'
+    required+=',TestClickHouseManagedProfileTLS'
+    required+=',TestClickHouseManagedProfileProcessKillRecovery'
+    required+=',TestClickHouseManagedProfileKeeperFailureRecovery'
+    required+=',TestClickHouseManagedProfileBackpressure'
+    filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
+    WALLABY_TEST_CLICKHOUSE_DESTRUCTIVE_STORAGE_LOSS=1 IT_KIND_CLUSTER="${harness_cluster}" IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' just test-integration
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 \
+      ./internal/telemetry -run '^TestClickHouseManagedProfileTelemetry$'
+
 # Nightly increases property checks and repeats worker bootstrap/fencing plus
 # DBOS bootstrap evidence. IT_REQUIRED_TESTS makes every named test no-skip.
 test-durable-nightly:

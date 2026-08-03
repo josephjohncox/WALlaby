@@ -108,13 +108,28 @@ type ManagedDestination interface {
 	Reconcile(context.Context, DeliveryIntent) (DeliveryDisposition, DeliveryEvidence, error)
 }
 
-// ManagedTransactionDestination is the full-transaction extension used by the
-// named PostgreSQL delivery profile. Validation runs immediately before a new
-// control-plane attempt is prepared, but never blocks adoption of an already
-// committed target marker. ApplyTransaction must commit every ordered fragment
-// and the destination marker in one target transaction.
+// ManagedTransactionDestination is the full-transaction extension used by
+// named managed profiles. Validation runs immediately before a new control-plane
+// attempt is prepared, but never blocks adoption of an already committed target
+// marker. Transactional targets commit all fragments with the marker; append-only
+// targets insert ordered, replay-convergent fragments and write the marker last.
 type ManagedTransactionDestination interface {
 	ManagedDestination
 	ValidateTransaction(context.Context, SourceTransaction) error
 	ApplyTransaction(context.Context, DeliveryIntent, SourceTransaction) (DeliveryEvidence, error)
+}
+
+// PreparedManagedTransaction is a bounded, validated destination operation.
+// The implementation hides destination-specific planning behind one Apply
+// method so the coordinator does not ask an adapter to materialize a full
+// transaction twice around the durable attempt boundary.
+type PreparedManagedTransaction interface {
+	Apply(context.Context) (DeliveryEvidence, error)
+}
+
+// ManagedTransactionPreparer is an optional deep interface implemented by
+// managed destinations that can validate and retain one bounded transaction
+// plan before PostgreSQL persists the external attempt.
+type ManagedTransactionPreparer interface {
+	PrepareTransaction(context.Context, DeliveryIntent, SourceTransaction) (PreparedManagedTransaction, error)
 }

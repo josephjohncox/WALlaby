@@ -3,11 +3,17 @@ package integrationharness
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -25,6 +31,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
@@ -74,14 +81,22 @@ const (
 	defaultPostgresServicePort   = "5432"
 	defaultPostgresLocalBindHost = "127.0.0.1"
 
-	defaultClickHouseName        = "wallaby-it-clickhouse"
-	defaultClickHouseImage       = "clickhouse/clickhouse-server:25.12.1.649"
-	defaultClickHouseUser        = "wallaby"
-	defaultClickHousePassword    = "wallaby"
-	defaultClickHouseDatabase    = "default"
-	defaultClickHouseServicePort = "9000"
-	defaultClickHouseHTTPPort    = "8123"
-	defaultClickHouseLocalPort   = "9000"
+	defaultClickHouseName                = "wallaby-it-clickhouse"
+	defaultClickHouseReplicaName         = "wallaby-it-clickhouse-replica-2"
+	defaultClickHouseKeeperName          = "wallaby-it-clickhouse-keeper"
+	defaultClickHouseImage               = "clickhouse/clickhouse-server:25.12.1.649"
+	defaultClickHouseUser                = "wallaby"
+	defaultClickHousePassword            = "wallaby"
+	defaultClickHouseDatabase            = "default"
+	defaultClickHouseServicePort         = "9000"
+	defaultClickHouseInterserverPort     = "9009"
+	defaultClickHouseSecurePort          = "9440"
+	defaultClickHouseHTTPPort            = "8123"
+	defaultClickHouseLocalPort           = "9000"
+	defaultClickHouseReplicaLocalPort    = "9001"
+	defaultClickHouseKeeperLocalPort     = "9181"
+	defaultClickHouseTLSLocalPort        = "9440"
+	defaultClickHouseReplicaTLSLocalPort = "9441"
 
 	defaultMinioName        = "wallaby-it-minio"
 	defaultMinioImage       = "minio/minio:RELEASE.2025-09-07T16-13-09Z"
@@ -133,9 +148,11 @@ type integrationHarnessConfig struct {
 }
 
 type managedService struct {
-	created         bool
-	portForwardStop context.CancelFunc
-	localPort       string
+	created               bool
+	portForwardStop       context.CancelFunc
+	extraPortForwardStops []context.CancelFunc
+	cleanupFiles          []string
+	localPort             string
 }
 
 type integrationHarnessSharedState struct {
@@ -643,7 +660,11 @@ func (h *integrationHarness) startClickHouse(namespace string) error {
 	if strings.TrimSpace(os.Getenv("WALLABY_TEST_CLICKHOUSE_DSN")) != "" {
 		return nil
 	}
-	manifest, err := clickhouseKindManifest(namespace)
+	certificatePEM, privatePEM, err := generateClickHouseTestCertificate()
+	if err != nil {
+		return err
+	}
+	manifest, err := clickhouseKindManifest(namespace, certificatePEM, privatePEM)
 	if err != nil {
 		return err
 	}
@@ -659,7 +680,54 @@ func (h *integrationHarness) startClickHouse(namespace string) error {
 		return err
 	}
 	activeClickHouseLocalPort = localPort
+	if err := h.waitForDeploymentRollout(namespace, defaultClickHouseReplicaName); err != nil {
+		return err
+	}
+	if err := h.waitForDeploymentRollout(namespace, defaultClickHouseKeeperName); err != nil {
+		return err
+	}
+	if err := h.waitForServiceReady(namespace, defaultClickHouseReplicaName); err != nil {
+		return err
+	}
+	if err := h.waitForServiceReady(namespace, defaultClickHouseKeeperName); err != nil {
+		return err
+	}
+	keeperPort, keeperStop, err := h.startLocalPortForward(namespace, defaultClickHouseKeeperName, defaultClickHouseKeeperLocalPort, defaultClickHouseKeeperLocalPort)
+	if err != nil {
+		return err
+	}
+	replicaPort, replicaStop, err := h.startLocalPortForward(namespace, defaultClickHouseReplicaName, defaultClickHouseReplicaLocalPort, defaultClickHouseServicePort)
+	if err != nil {
+		return err
+	}
+	securePort, secureStop, err := h.startLocalPortForward(namespace, defaultClickHouseName, defaultClickHouseTLSLocalPort, defaultClickHouseSecurePort)
+	if err != nil {
+		return err
+	}
+	replicaSecurePort, replicaSecureStop, err := h.startLocalPortForward(namespace, defaultClickHouseReplicaName, defaultClickHouseReplicaTLSLocalPort, defaultClickHouseSecurePort)
+	if err != nil {
+		return err
+	}
+	service := h.getService(defaultClickHouseName)
+	service.extraPortForwardStops = append(service.extraPortForwardStops, keeperStop, replicaStop, secureStop, replicaSecureStop)
+	caFile, err := os.CreateTemp("", "wallaby-clickhouse-ca-*.pem")
+	if err != nil {
+		return fmt.Errorf("create ClickHouse TLS CA fixture: %w", err)
+	}
+	if _, err := caFile.Write(certificatePEM); err != nil {
+		_ = caFile.Close()
+		return fmt.Errorf("write ClickHouse TLS CA fixture: %w", err)
+	}
+	if err := caFile.Close(); err != nil {
+		return fmt.Errorf("close ClickHouse TLS CA fixture: %w", err)
+	}
+	service.cleanupFiles = append(service.cleanupFiles, caFile.Name())
 	setenv("WALLABY_TEST_CLICKHOUSE_DSN", defaultClickHouseDSN())
+	setenv("WALLABY_TEST_CLICKHOUSE_REPLICA_DSN", fmt.Sprintf("clickhouse://%s:%s@%s:%s/%s", defaultClickHouseUser, defaultClickHousePassword, defaultPostgresLocalBindHost, replicaPort, defaultClickHouseDatabase))
+	setenv("WALLABY_TEST_CLICKHOUSE_REPLICA_TLS_DSN", fmt.Sprintf("clickhouse://%s:%s@%s:%s/%s?secure=true", defaultClickHouseUser, defaultClickHousePassword, defaultPostgresLocalBindHost, replicaSecurePort, defaultClickHouseDatabase))
+	setenv("WALLABY_TEST_CLICKHOUSE_KEEPER_ADDRESS", net.JoinHostPort(defaultPostgresLocalBindHost, keeperPort))
+	setenv("WALLABY_TEST_CLICKHOUSE_TLS_DSN", fmt.Sprintf("clickhouse://%s:%s@%s:%s/%s?secure=true", defaultClickHouseUser, defaultClickHousePassword, defaultPostgresLocalBindHost, securePort, defaultClickHouseDatabase))
+	setenv("WALLABY_TEST_CLICKHOUSE_TLS_CA", caFile.Name())
 	setenv("WALLABY_TEST_CLICKHOUSE_DB", getenvString("WALLABY_TEST_CLICKHOUSE_DB", defaultClickHouseDatabase))
 	setenv("TEST_CLICKHOUSE_HTTP_PORT", getenvString("TEST_CLICKHOUSE_HTTP_PORT", defaultClickHouseHTTPPort))
 	return nil
@@ -813,6 +881,8 @@ func (h *integrationHarness) deleteManagedInfrastructure() {
 	namespace := defaultK8sNamespace()
 	h.cleanupPostgres()
 	_ = h.deleteServiceAndDeployment(namespace, defaultClickHouseName)
+	_ = h.deleteServiceAndDeployment(namespace, defaultClickHouseReplicaName)
+	_ = h.deleteServiceAndDeployment(namespace, defaultClickHouseKeeperName)
 	_ = h.deleteServiceAndDeployment(namespace, defaultMinioName)
 	_ = h.deleteServiceAndDeployment(namespace, defaultKafkaName)
 	_ = h.deleteServiceAndDeployment(namespace, defaultLocalStackName)
@@ -973,8 +1043,22 @@ func (h *integrationHarness) stopManagedService(name string) {
 			waitForPortRelease(defaultPostgresLocalBindHost, svc.localPort, 5*time.Second)
 		}
 	}
+	for _, stop := range svc.extraPortForwardStops {
+		if stop != nil {
+			stop()
+		}
+	}
+	svc.extraPortForwardStops = nil
+	for _, path := range svc.cleanupFiles {
+		_ = os.Remove(path)
+	}
+	svc.cleanupFiles = nil
 	if svc.created {
 		_ = h.deleteServiceAndDeployment(namespace, name)
+		if name == defaultClickHouseName {
+			_ = h.deleteServiceAndDeployment(namespace, defaultClickHouseReplicaName)
+			_ = h.deleteServiceAndDeployment(namespace, defaultClickHouseKeeperName)
+		}
 		svc.created = false
 	}
 	delete(h.services, name)
@@ -988,6 +1072,11 @@ func integrationManagedEnvKeys() []string {
 		"TEST_PG_DSN",
 		"WALLABY_TEST_DBOS_DSN",
 		"WALLABY_TEST_CLICKHOUSE_DSN",
+		"WALLABY_TEST_CLICKHOUSE_REPLICA_DSN",
+		"WALLABY_TEST_CLICKHOUSE_REPLICA_TLS_DSN",
+		"WALLABY_TEST_CLICKHOUSE_KEEPER_ADDRESS",
+		"WALLABY_TEST_CLICKHOUSE_TLS_DSN",
+		"WALLABY_TEST_CLICKHOUSE_TLS_CA",
 		"WALLABY_TEST_CLICKHOUSE_DB",
 		"TEST_CLICKHOUSE_HTTP_PORT",
 		"WALLABY_TEST_FAKESNOW_HOST",
@@ -1050,6 +1139,9 @@ func (h *integrationHarness) startManagedService(namespace, name, localPort, ser
 	svc := h.getService(name)
 	svc.created = !exists
 	svc.localPort = ""
+	if err := h.waitForDeploymentRollout(namespace, name); err != nil {
+		return "", fmt.Errorf("start %s: %w", label, err)
+	}
 
 	maxReadinessAttempts := 2
 	for attempt := 0; attempt < maxReadinessAttempts; attempt++ {
@@ -1170,6 +1262,25 @@ func (h *integrationHarness) applyManifest(namespace, manifest string) error {
 		}
 	}
 	return nil
+}
+
+func (h *integrationHarness) waitForDeploymentRollout(namespace, name string) error {
+	deadline := time.Now().Add(serviceReadyTimeout())
+	for time.Now().Before(deadline) {
+		deployment, err := h.k8sClient.AppsV1().Deployments(namespace).Get(context.Background(), name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		wanted := int32(1)
+		if deployment.Spec.Replicas != nil {
+			wanted = *deployment.Spec.Replicas
+		}
+		if deployment.Status.ObservedGeneration >= deployment.Generation && deployment.Status.UpdatedReplicas == wanted && deployment.Status.AvailableReplicas == wanted {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("deployment %s did not complete rollout", name)
 }
 
 func (h *integrationHarness) waitForServiceReady(namespace, name string) error {
@@ -1349,10 +1460,18 @@ func (h *integrationHarness) pickPodForService(namespace, name string) (string, 
 			LabelSelector: label,
 		})
 		if err == nil {
-			for _, pod := range podList.Items {
-				if isPodReady(&pod) {
-					return pod.Name, nil
+			var newestReady *corev1.Pod
+			for index := range podList.Items {
+				pod := &podList.Items[index]
+				if !isPodReady(pod) {
+					continue
 				}
+				if newestReady == nil || pod.CreationTimestamp.After(newestReady.CreationTimestamp.Time) {
+					newestReady = pod
+				}
+			}
+			if newestReady != nil {
+				return newestReady.Name, nil
 			}
 		}
 		if time.Now().After(deadline) {
@@ -1837,9 +1956,86 @@ func postgresKindManifest(namespace string) (string, error) {
 	return asManifestYAML(&service, &deployment)
 }
 
-func clickhouseKindManifest(namespace string) (string, error) {
+func generateClickHouseTestCertificate() ([]byte, []byte, error) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate ClickHouse TLS key: %w", err)
+	}
+	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serial, err := rand.Int(rand.Reader, serialLimit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate ClickHouse TLS serial: %w", err)
+	}
+	now := time.Now().UTC()
+	template := x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "wallaby-clickhouse-integration"},
+		NotBefore:    now.Add(-time.Minute), NotAfter: now.Add(24 * time.Hour),
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IsCA:        true, BasicConstraintsValid: true,
+		DNSNames: []string{"localhost"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	certificateDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create ClickHouse TLS certificate: %w", err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal ClickHouse TLS private key: %w", err)
+	}
+	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER})
+	privatePEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})
+	return certificatePEM, privatePEM, nil
+}
+
+func clickhouseKindManifest(namespace string, certificatePEM, privatePEM []byte) (string, error) {
 	probeTimeoutSeconds := int32(5)
 	replicas := int32(1)
+	hostPathType := corev1.HostPathDirectoryOrCreate
+	keeperCommand := `cat >/tmp/wallaby-keeper.xml <<'EOF'
+<clickhouse>
+  <logger><level>warning</level><console>true</console></logger>
+  <listen_host>0.0.0.0</listen_host>
+  <keeper_server>
+    <tcp_port>9181</tcp_port>
+    <server_id>1</server_id>
+    <four_letter_word_white_list>srvr,ruok,mntr</four_letter_word_white_list>
+    <log_storage_path>/var/lib/clickhouse-keeper/coordination/log</log_storage_path>
+    <snapshot_storage_path>/var/lib/clickhouse-keeper/coordination/snapshots</snapshot_storage_path>
+    <coordination_settings><operation_timeout_ms>10000</operation_timeout_ms><session_timeout_ms>30000</session_timeout_ms></coordination_settings>
+    <raft_configuration><server><id>1</id><hostname>127.0.0.1</hostname><port>9234</port></server></raft_configuration>
+  </keeper_server>
+</clickhouse>
+EOF
+exec clickhouse keeper --config-file /tmp/wallaby-keeper.xml`
+	serverCommand := `install -m 755 -d /etc/clickhouse-server/tls
+printf '%s' "$WALLABY_CLICKHOUSE_TLS_CERT" >/etc/clickhouse-server/tls/server.crt
+printf '%s' "$WALLABY_CLICKHOUSE_TLS_KEY" >/etc/clickhouse-server/tls/server.key
+chown -R clickhouse:clickhouse /etc/clickhouse-server/tls
+chmod 600 /etc/clickhouse-server/tls/server.key
+cat >/etc/clickhouse-server/config.d/wallaby-keeper.xml <<'EOF'
+<clickhouse>
+  <zookeeper><node><host>` + defaultClickHouseKeeperName + `</host><port>9181</port></node></zookeeper>
+  <macros><shard>01</shard><replica>wallaby-it-1</replica></macros>
+  <interserver_http_host>` + defaultClickHouseName + `</interserver_http_host>
+  <interserver_http_port>9009</interserver_http_port>
+  <tcp_port_secure>9440</tcp_port_secure>
+  <max_server_memory_usage>1342177280</max_server_memory_usage>
+  <mark_cache_size>67108864</mark_cache_size>
+  <uncompressed_cache_size>33554432</uncompressed_cache_size>
+  <openSSL><server>
+    <certificateFile>/etc/clickhouse-server/tls/server.crt</certificateFile>
+    <privateKeyFile>/etc/clickhouse-server/tls/server.key</privateKeyFile>
+    <verificationMode>none</verificationMode>
+    <loadDefaultCAFile>false</loadDefaultCAFile>
+    <cacheSessions>true</cacheSessions>
+    <disableProtocols>sslv2,sslv3</disableProtocols>
+    <preferServerCiphers>true</preferServerCiphers>
+  </server></openSSL>
+</clickhouse>
+EOF
+exec /entrypoint.sh`
 	service := corev1.Service{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "v1",
@@ -1862,7 +2058,27 @@ func clickhouseKindManifest(namespace string) (string, error) {
 					Port:       mustInt32(defaultClickHouseHTTPPort),
 					TargetPort: intstr.FromInt(mustInt(defaultClickHouseHTTPPort)),
 				},
+				{
+					Name:       "native-secure",
+					Protocol:   corev1.ProtocolTCP,
+					Port:       mustInt32(defaultClickHouseSecurePort),
+					TargetPort: intstr.FromInt(mustInt(defaultClickHouseSecurePort)),
+				},
+				{
+					Name:       "interserver",
+					Protocol:   corev1.ProtocolTCP,
+					Port:       mustInt32(defaultClickHouseInterserverPort),
+					TargetPort: intstr.FromInt(mustInt(defaultClickHouseInterserverPort)),
+				},
 			},
+		},
+	}
+	keeperService := corev1.Service{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
+		ObjectMeta: manifestMetadata(defaultClickHouseKeeperName, namespace),
+		Spec: corev1.ServiceSpec{
+			Type: corev1.ServiceTypeClusterIP, Selector: manifestSelector(defaultClickHouseKeeperName),
+			Ports: []corev1.ServicePort{{Name: "keeper", Protocol: corev1.ProtocolTCP, Port: 9181, TargetPort: intstr.FromInt(9181)}},
 		},
 	}
 
@@ -1882,47 +2098,78 @@ func clickhouseKindManifest(namespace string) (string, error) {
 					Labels: manifestSelector(defaultClickHouseName),
 				},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:            "clickhouse",
-							Image:           defaultClickHouseImage,
-							ImagePullPolicy: corev1.PullIfNotPresent,
-							Env: []corev1.EnvVar{
-								{Name: "CLICKHOUSE_DB", Value: defaultClickHouseDatabase},
-								{Name: "CLICKHOUSE_USER", Value: defaultClickHouseUser},
-								{Name: "CLICKHOUSE_PASSWORD", Value: defaultClickHousePassword},
-								{Name: "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", Value: "1"},
-							},
-							Ports: []corev1.ContainerPort{
-								{
-									Name:          "native",
-									ContainerPort: mustInt32(defaultClickHouseServicePort),
-									Protocol:      corev1.ProtocolTCP,
-								},
-								{
-									Name:          "http",
-									ContainerPort: mustInt32(defaultClickHouseHTTPPort),
-									Protocol:      corev1.ProtocolTCP,
-								},
-							},
-							ReadinessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									TCPSocket: &corev1.TCPSocketAction{
-										Port: intstr.FromString("native"),
-									},
-								},
-								InitialDelaySeconds: 2,
-								PeriodSeconds:       2,
-								TimeoutSeconds:      probeTimeoutSeconds,
-								FailureThreshold:    30,
-							},
+					Containers: []corev1.Container{{
+						Name: "clickhouse", Image: defaultClickHouseImage, ImagePullPolicy: corev1.PullIfNotPresent,
+						Command: []string{"/bin/bash", "-ec", serverCommand},
+						Env: []corev1.EnvVar{
+							{Name: "CLICKHOUSE_DB", Value: defaultClickHouseDatabase},
+							{Name: "CLICKHOUSE_USER", Value: defaultClickHouseUser},
+							{Name: "CLICKHOUSE_PASSWORD", Value: defaultClickHousePassword},
+							{Name: "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", Value: "1"},
+							{Name: "WALLABY_CLICKHOUSE_TLS_CERT", Value: string(certificatePEM)},
+							{Name: "WALLABY_CLICKHOUSE_TLS_KEY", Value: string(privatePEM)},
 						},
-					},
+						Ports: []corev1.ContainerPort{
+							{Name: "native", ContainerPort: mustInt32(defaultClickHouseServicePort), Protocol: corev1.ProtocolTCP},
+							{Name: "http", ContainerPort: mustInt32(defaultClickHouseHTTPPort), Protocol: corev1.ProtocolTCP},
+							{Name: "native-secure", ContainerPort: mustInt32(defaultClickHouseSecurePort), Protocol: corev1.ProtocolTCP},
+							{Name: "interserver", ContainerPort: mustInt32(defaultClickHouseInterserverPort), Protocol: corev1.ProtocolTCP},
+						},
+						VolumeMounts: []corev1.VolumeMount{{Name: "clickhouse-data", MountPath: "/var/lib/clickhouse"}},
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi")},
+							Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("1536Mi")},
+						},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler:        corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromString("native")}},
+							InitialDelaySeconds: 2, PeriodSeconds: 2, TimeoutSeconds: probeTimeoutSeconds, FailureThreshold: 30,
+						},
+					}},
+					Volumes: []corev1.Volume{{Name: "clickhouse-data", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/var/lib/wallaby-it/" + namespace + "/clickhouse", Type: &hostPathType}}}},
 				},
 			},
 		},
 	}
-	return asManifestYAML(&service, &deployment)
+	replicaService := service.DeepCopy()
+	replicaService.ObjectMeta = manifestMetadata(defaultClickHouseReplicaName, namespace)
+	replicaService.Spec.Selector = manifestSelector(defaultClickHouseReplicaName)
+	replicaDeployment := deployment.DeepCopy()
+	replicaDeployment.ObjectMeta = manifestMetadata(defaultClickHouseReplicaName, namespace)
+	replicaDeployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: manifestSelector(defaultClickHouseReplicaName)}
+	replicaDeployment.Spec.Template.Labels = manifestSelector(defaultClickHouseReplicaName)
+	replicaCommand := strings.Replace(serverCommand, "<replica>wallaby-it-1</replica>", "<replica>wallaby-it-2</replica>", 1)
+	replicaCommand = strings.Replace(replicaCommand, "<interserver_http_host>"+defaultClickHouseName+"</interserver_http_host>", "<interserver_http_host>"+defaultClickHouseReplicaName+"</interserver_http_host>", 1)
+	replicaDeployment.Spec.Template.Spec.Containers[0].Command = []string{"/bin/bash", "-ec", replicaCommand}
+	replicaDeployment.Spec.Template.Spec.Volumes[0].HostPath.Path = "/var/lib/wallaby-it/" + namespace + "/clickhouse-replica-2"
+
+	keeperDeployment := appsv1.Deployment{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
+		ObjectMeta: manifestMetadata(defaultClickHouseKeeperName, namespace),
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas, Selector: &metav1.LabelSelector{MatchLabels: manifestSelector(defaultClickHouseKeeperName)},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: manifestSelector(defaultClickHouseKeeperName)},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name: "keeper", Image: defaultClickHouseImage, ImagePullPolicy: corev1.PullIfNotPresent,
+						Command:      []string{"/bin/bash", "-ec", keeperCommand},
+						Ports:        []corev1.ContainerPort{{Name: "keeper", ContainerPort: 9181, Protocol: corev1.ProtocolTCP}},
+						VolumeMounts: []corev1.VolumeMount{{Name: "keeper-data", MountPath: "/var/lib/clickhouse-keeper"}},
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("64Mi")},
+							Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m"), corev1.ResourceMemory: resource.MustParse("256Mi")},
+						},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler:        corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromString("keeper")}},
+							InitialDelaySeconds: 1, PeriodSeconds: 2, TimeoutSeconds: probeTimeoutSeconds, FailureThreshold: 30,
+						},
+					}},
+					Volumes: []corev1.Volume{{Name: "keeper-data", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/var/lib/wallaby-it/" + namespace + "/keeper", Type: &hostPathType}}}},
+				},
+			},
+		},
+	}
+	return asManifestYAML(&keeperService, &keeperDeployment, &service, &deployment, replicaService, replicaDeployment)
 }
 
 func minioKindManifest(namespace string) (string, error) {

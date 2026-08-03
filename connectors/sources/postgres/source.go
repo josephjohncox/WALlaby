@@ -55,6 +55,7 @@ const (
 	optManaged             = "managed"
 	optMaxTxnRecords       = "max_transaction_records"
 	optMaxTxnBytes         = "max_transaction_bytes"
+	optMaxTxnFragments     = "max_transaction_fragments"
 	optStreamingTxns       = "streaming_transactions"
 	optSourceSystemID      = "source_system_identifier"
 	optSourceLineageID     = "source_lineage_id"
@@ -72,31 +73,32 @@ const (
 
 // Source implements Postgres logical replication as a connector.Source.
 type Source struct {
-	spec                 connector.Spec
-	dsn                  string
-	stream               *replication.PostgresStream
-	changes              <-chan replication.Change
-	batchSize            int
-	batchTimeout         time.Duration
-	slot                 string
-	publication          string
-	wireFormat           connector.WireFormat
-	emitEmpty            bool
-	SchemaHook           replication.SchemaHook
-	stateStore           *sourceStateStore
-	stateID              string
-	typeResolver         *pgTypeResolver
-	toastFetch           string
-	toastPool            *pgxpool.Pool
-	toastCache           *toastCache
-	lagPool              *pgxpool.Pool
-	sourceLineage        string
-	managedPostgresMajor int
-	pendingChange        *replication.Change
-	Meters               *telemetry.Meters
-	ManagedControl       *pgxpool.Pool
-	ManagedAuthority     authority.Store
-	BootstrapHooks       bootstrap.Hooks
+	spec                    connector.Spec
+	dsn                     string
+	stream                  *replication.PostgresStream
+	changes                 <-chan replication.Change
+	batchSize               int
+	batchTimeout            time.Duration
+	maxTransactionFragments int
+	slot                    string
+	publication             string
+	wireFormat              connector.WireFormat
+	emitEmpty               bool
+	SchemaHook              replication.SchemaHook
+	stateStore              *sourceStateStore
+	stateID                 string
+	typeResolver            *pgTypeResolver
+	toastFetch              string
+	toastPool               *pgxpool.Pool
+	toastCache              *toastCache
+	lagPool                 *pgxpool.Pool
+	sourceLineage           string
+	managedPostgresMajor    int
+	pendingChange           *replication.Change
+	Meters                  *telemetry.Meters
+	ManagedControl          *pgxpool.Pool
+	ManagedAuthority        authority.Store
+	BootstrapHooks          bootstrap.Hooks
 }
 
 type changeBatchIdentity struct {
@@ -276,8 +278,9 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	s.sourceLineage = strings.TrimSpace(spec.Options[optSourceLineageID])
 	maxTransactionRecords := parseInt(spec.Options[optMaxTxnRecords], 1_000_000)
 	maxTransactionBytes := parseInt(spec.Options[optMaxTxnBytes], 256<<20)
-	if maxTransactionRecords <= 0 || maxTransactionBytes <= 0 {
-		return errors.New("max_transaction_records and max_transaction_bytes must be positive")
+	s.maxTransactionFragments = parseInt(spec.Options[optMaxTxnFragments], 1024)
+	if maxTransactionRecords <= 0 || maxTransactionBytes <= 0 || s.maxTransactionFragments <= 0 {
+		return errors.New("max_transaction_records, max_transaction_bytes, and max_transaction_fragments must be positive")
 	}
 	opts := []replication.PostgresStreamOption{
 		replication.WithStatusInterval(statusInterval),
@@ -555,6 +558,12 @@ func (s *Source) ReadTransaction(ctx context.Context) (connector.SourceTransacti
 				return connector.SourceTransaction{}, errors.New("postgres change record has no batch identity")
 			}
 			if !identitySet || currentIdentity != identity {
+				if s.maxTransactionFragments > 0 && len(transaction.Fragments) >= s.maxTransactionFragments {
+					return connector.SourceTransaction{}, fmt.Errorf(
+						"source transaction fragments exceed configured maximum %d before commit",
+						s.maxTransactionFragments,
+					)
+				}
 				transaction.Fragments = append(transaction.Fragments, connector.TransactionFragment{
 					Ordinal: uint64(len(transaction.Fragments)),
 					Batch: connector.Batch{
@@ -815,7 +824,13 @@ func validateManagedPostgresServerVersion(ctx context.Context, pool *pgxpool.Poo
 	if profileName == "" {
 		return 0, nil
 	}
-	if profileName != connector.ManagedProfilePostgresToPostgresV1 {
+	var profile connector.ManagedProfileContract
+	switch profileName {
+	case connector.ManagedProfilePostgresToPostgresV1:
+		profile = connector.PostgresToPostgresV1Profile()
+	case connector.ManagedProfilePostgresToClickHouseAppendV1:
+		profile = connector.PostgresToClickHouseAppendV1Profile()
+	default:
 		return 0, fmt.Errorf("unsupported PostgreSQL managed profile %q", profileName)
 	}
 	var raw string
@@ -827,7 +842,7 @@ func validateManagedPostgresServerVersion(ctx context.Context, pool *pgxpool.Poo
 		return 0, fmt.Errorf("parse PostgreSQL server_version_num %q: %w", raw, err)
 	}
 	major := versionNumber / 10000
-	if !connector.PostgresToPostgresV1Profile().SupportsPostgresVersion(major) {
+	if !profile.SupportsPostgresVersion(major) {
 		return 0, fmt.Errorf("managed profile %s does not admit PostgreSQL %d", profileName, major)
 	}
 	return major, nil

@@ -11,7 +11,8 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/ClickHouse/clickhouse-go/v2"
+	chclient "github.com/ClickHouse/clickhouse-go/v2"
+	chdriver "github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/josephjohncox/wallaby/internal/ddl"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -60,31 +61,46 @@ const (
 
 // Destination writes change events into ClickHouse tables.
 type Destination struct {
-	spec             connector.Spec
-	db               *sql.DB
-	writeMode        string
-	batchMode        string
-	batchResolve     string
-	stagingSchema    string
-	stagingTableName string
-	stagingSuffix    string
-	metaEnabled      bool
-	metaSchema       string
-	metaTable        string
-	metaPKPrefix     string
-	flowID           string
-	metaColumns      map[string]struct{}
-	metaEngine       string
-	metaOrderBy      string
-	stagingTables    map[string]tableInfo
-	stagingResolved  bool
+	spec                connector.Spec
+	db                  *sql.DB
+	managedConn         chdriver.Conn
+	managedReplicaConn  chdriver.Conn
+	managedOptions      *chclient.Options
+	managedProfile      string
+	managedConfig       managedConfig
+	managedVersion      string
+	managedRecoveryOnly bool
+	managedHooks        ManagedHooks
+	writeMode           string
+	batchMode           string
+	batchResolve        string
+	stagingSchema       string
+	stagingTableName    string
+	stagingSuffix       string
+	metaEnabled         bool
+	metaSchema          string
+	metaTable           string
+	metaPKPrefix        string
+	flowID              string
+	metaColumns         map[string]struct{}
+	metaEngine          string
+	metaOrderBy         string
+	stagingTables       map[string]tableInfo
+	stagingResolved     bool
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.spec = spec
+	d.managedProfile = strings.TrimSpace(spec.Options["managed_profile"])
 	dsn := spec.Options[optDSN]
 	if dsn == "" {
 		return errors.New("clickhouse dsn is required")
+	}
+	if d.managedProfile != "" {
+		if d.managedProfile != connector.ManagedProfilePostgresToClickHouseAppendV1 {
+			return fmt.Errorf("unsupported ClickHouse managed profile %q", d.managedProfile)
+		}
+		return d.openManaged(ctx, dsn, spec)
 	}
 
 	db, err := sql.Open("clickhouse", dsn)
@@ -154,6 +170,9 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 }
 
 func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
+	if d.managedProfile != "" {
+		return errors.New("managed ClickHouse append profile requires full-transaction delivery; legacy Write is disabled")
+	}
 	if d.db == nil {
 		return errors.New("clickhouse destination not initialized")
 	}
@@ -184,6 +203,19 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 }
 
 func (d *Destination) Close(ctx context.Context) error {
+	if d.managedConn != nil || d.managedReplicaConn != nil {
+		var closeErr error
+		if d.managedReplicaConn != nil {
+			closeErr = d.managedReplicaConn.Close()
+			d.managedReplicaConn = nil
+		}
+		if d.managedConn != nil {
+			closeErr = errors.Join(closeErr, d.managedConn.Close())
+			d.managedConn = nil
+		}
+		d.managedRecoveryOnly = false
+		return closeErr
+	}
 	if d.db != nil {
 		if err := d.finalizeStaging(ctx); err != nil {
 			_ = d.db.Close()
@@ -240,6 +272,9 @@ func (d *Destination) Capabilities() connector.Capabilities {
 }
 
 func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, record connector.Record) error {
+	if d.managedProfile != "" {
+		return errors.New("managed ClickHouse append profile records structured schema barriers and never executes target DDL")
+	}
 	if d.db == nil {
 		return errors.New("clickhouse destination not initialized")
 	}
@@ -364,7 +399,7 @@ func (d *Destination) trackStaging(schema connector.Schema, record connector.Rec
 func (d *Destination) targetTable(schema connector.Schema, record connector.Record) string {
 	targetSchema, table := d.targetParts(schema, record.Table)
 	if strings.Contains(table, ".") {
-		return quoteQualified(table, '`')
+		return quoteQualified(table)
 	}
 	if targetSchema == "" {
 		return quoteIdent(table, '`')
@@ -381,7 +416,7 @@ func (d *Destination) stagingTable(schema connector.Schema, record connector.Rec
 		stagingTable = table + d.stagingSuffix
 	}
 	if strings.Contains(stagingTable, ".") {
-		return quoteQualified(stagingTable, '`')
+		return quoteQualified(stagingTable)
 	}
 	if stagingSchema == "" {
 		stagingSchema = targetSchema
@@ -401,7 +436,7 @@ func (d *Destination) insertRow(ctx context.Context, target string, schema conne
 		return nil
 	}
 	// #nosec G201 -- identifiers are quoted and derived from schema/config.
-	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols, '`'), placeholders(len(cols)))
+	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols), placeholders(len(cols)))
 	if _, err := d.db.ExecContext(ctx, stmt, vals...); err != nil {
 		return fmt.Errorf("insert row: %w", err)
 	}
@@ -446,7 +481,7 @@ func (d *Destination) resolveStagingTable(ctx context.Context, info tableInfo) e
 	if len(cols) == 0 {
 		return nil
 	}
-	colList := quoteColumns(cols, '`')
+	colList := quoteColumns(cols)
 	if d.batchResolve == batchResolveReplace {
 		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("TRUNCATE TABLE %s", target)); err != nil {
 			return fmt.Errorf("truncate target: %w", err)
@@ -678,7 +713,7 @@ func (d *Destination) upsertMetadata(ctx context.Context, schema connector.Schem
 	values = append(values, pkVals...)
 
 	// #nosec G201 -- identifiers are quoted and derived from schema/config.
-	insertStmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(columns, '`'), placeholders(len(columns)))
+	insertStmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(columns), placeholders(len(columns)))
 	if _, err := d.db.ExecContext(ctx, insertStmt, values...); err != nil {
 		return fmt.Errorf("insert meta row: %w", err)
 	}
@@ -802,10 +837,10 @@ func whereFromKey(key map[string]any, quote rune, prefix string) (string, []any)
 	return strings.Join(parts, " AND "), args
 }
 
-func quoteColumns(cols []string, quote rune) string {
+func quoteColumns(cols []string) string {
 	quoted := make([]string, 0, len(cols))
 	for _, col := range cols {
-		quoted = append(quoted, quoteIdent(col, quote))
+		quoted = append(quoted, quoteIdent(col, '`'))
 	}
 	return strings.Join(quoted, ", ")
 }
@@ -825,14 +860,14 @@ func quoteIdent(value string, quote rune) string {
 	return string(quote) + escaped + string(quote)
 }
 
-func quoteQualified(name string, quote rune) string {
+func quoteQualified(name string) string {
 	parts := strings.Split(name, ".")
 	if len(parts) == 1 {
-		return quoteIdent(parts[0], quote)
+		return quoteIdent(parts[0], '`')
 	}
 	quoted := make([]string, 0, len(parts))
 	for _, part := range parts {
-		quoted = append(quoted, quoteIdent(part, quote))
+		quoted = append(quoted, quoteIdent(part, '`'))
 	}
 	return strings.Join(quoted, ".")
 }

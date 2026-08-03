@@ -438,9 +438,9 @@ Options:
 
 ## ClickHouse Destination
 
-Apply changes using ClickHouse mutations.
+Use the exact `postgresql-to-clickhouse-append-v1` profile for maintained, append-only delivery. It writes an immutable CDC changelog and a completion-receipt table for the admitted PostgreSQL 16 and two-replica ClickHouse/Keeper 25.12.1.649 deployment. See the [ClickHouse destination guide](connectors/clickhouse.md) for required DDL, options, TLS, limits, and failure semantics.
 
-Options:
+Generic ClickHouse target, append, mutation, and staging modes remain experimental. Their legacy options are:
 
 - `dsn` (required)
 - `database` or `schema`, `table` (optional; defaults to source namespace/table)

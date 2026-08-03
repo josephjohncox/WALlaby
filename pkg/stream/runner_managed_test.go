@@ -22,6 +22,19 @@ func TestManagedPostgresProfileRejectsUnprovenMixedMajorPair(t *testing.T) {
 	}
 }
 
+func TestManagedClickHouseProfileRejectsUnprovenVersionPair(t *testing.T) {
+	t.Parallel()
+	if err := validateManagedClickHouseVersionPair(16, "25.12.1.649"); err != nil {
+		t.Fatalf("proven PostgreSQL/ClickHouse pair rejected: %v", err)
+	}
+	if err := validateManagedClickHouseVersionPair(15, "25.12.1.649"); err == nil {
+		t.Fatal("unproven PostgreSQL major was admitted")
+	}
+	if err := validateManagedClickHouseVersionPair(16, "25.12.10.7"); err == nil {
+		t.Fatal("unproven ClickHouse patch was admitted")
+	}
+}
+
 func TestManagedRestoreValidatesAckIntentBeforeFeedbackOrDestinationOpen(t *testing.T) {
 	t.Parallel()
 	events := []string{}
