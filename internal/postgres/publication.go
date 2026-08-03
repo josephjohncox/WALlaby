@@ -92,21 +92,32 @@ FROM pg_catalog.pg_publication WHERE pubname=$1`, name).Scan(
 	); err != nil {
 		return PublicationDefinition{}, fmt.Errorf("read publication definition: %w", err)
 	}
-	rows, err := querier.Query(ctx, `
-SELECT namespace.nspname,relation.relname,
-       CASE WHEN membership.prattrs IS NULL THEN '' ELSE COALESCE((
+	var serverVersion int
+	if err := querier.QueryRow(ctx, `SELECT current_setting('server_version_num')::integer`).Scan(&serverVersion); err != nil {
+		return PublicationDefinition{}, fmt.Errorf("read publication server version: %w", err)
+	}
+	membershipColumns := "''::text,''::text"
+	if serverVersion >= 150000 {
+		// Column lists and row filters were added to pg_publication_rel in
+		// PostgreSQL 15. Keep the PostgreSQL 14 query parseable by selecting
+		// version-specific expressions instead of referencing absent columns.
+		membershipColumns = `CASE WHEN membership.prattrs IS NULL THEN '' ELSE COALESCE((
          SELECT string_agg(attribute.attname,',' ORDER BY selected.ordinality)
          FROM unnest(membership.prattrs::smallint[]) WITH ORDINALITY AS selected(attnum,ordinality)
          JOIN pg_catalog.pg_attribute AS attribute
            ON attribute.attrelid=membership.prrelid AND attribute.attnum=selected.attnum
        ),'') END,
-       COALESCE(pg_catalog.pg_get_expr(membership.prqual,membership.prrelid),'')
+       COALESCE(pg_catalog.pg_get_expr(membership.prqual,membership.prrelid),'')`
+	}
+	query := fmt.Sprintf(`
+SELECT namespace.nspname,relation.relname,%s
 FROM pg_catalog.pg_publication AS publication
 JOIN pg_catalog.pg_publication_rel AS membership ON membership.prpubid=publication.oid
 JOIN pg_catalog.pg_class AS relation ON relation.oid=membership.prrelid
 JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid=relation.relnamespace
 WHERE publication.pubname=$1
-ORDER BY namespace.nspname,relation.relname`, name)
+ORDER BY namespace.nspname,relation.relname`, membershipColumns)
+	rows, err := querier.Query(ctx, query, name)
 	if err != nil {
 		return PublicationDefinition{}, fmt.Errorf("read publication membership: %w", err)
 	}

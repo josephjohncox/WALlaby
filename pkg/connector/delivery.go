@@ -17,6 +17,9 @@ var (
 	// ErrDeliveryIndeterminate means the external outcome cannot be proven and
 	// must not be converted into a replay or receipt without reconciliation.
 	ErrDeliveryIndeterminate = errors.New("delivery outcome indeterminate")
+	// ErrDeliveryRetryExhausted means bounded delivery or reconciliation work
+	// cannot make further automatic progress and requires operator recovery.
+	ErrDeliveryRetryExhausted = errors.New("delivery retry budget exhausted")
 )
 
 // DeliveryConfigFingerprint returns a deterministic identity for the behavior
@@ -53,6 +56,7 @@ type DeliveryIntent struct {
 	AcquisitionID         string
 	LeaseEpoch            int64
 	DestinationRevisionID string
+	LogicalBatchID        string
 	PositionID            string
 	ContentHash           string
 }
@@ -102,4 +106,15 @@ type ManagedDestination interface {
 	Destination
 	Apply(context.Context, DeliveryIntent, Batch) (DeliveryEvidence, error)
 	Reconcile(context.Context, DeliveryIntent) (DeliveryDisposition, DeliveryEvidence, error)
+}
+
+// ManagedTransactionDestination is the full-transaction extension used by the
+// named PostgreSQL delivery profile. Validation runs immediately before a new
+// control-plane attempt is prepared, but never blocks adoption of an already
+// committed target marker. ApplyTransaction must commit every ordered fragment
+// and the destination marker in one target transaction.
+type ManagedTransactionDestination interface {
+	ManagedDestination
+	ValidateTransaction(context.Context, SourceTransaction) error
+	ApplyTransaction(context.Context, DeliveryIntent, SourceTransaction) (DeliveryEvidence, error)
 }

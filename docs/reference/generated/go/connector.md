@@ -20,9 +20,13 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [func CompareCheckpointLSN\(left, right string\) \(int, error\)](<#CompareCheckpointLSN>)
 - [func DeliveryConfigFingerprint\(spec Spec\) \(string, error\)](<#DeliveryConfigFingerprint>)
 - [func IsManagedSourceSpec\(spec Spec\) bool](<#IsManagedSourceSpec>)
+- [func MergeManagedSchemaBaselines\(metadata map\[string\]string, transaction SourceTransaction\) \(map\[string\]string, error\)](<#MergeManagedSchemaBaselines>)
 - [func NormalizeKeyForSchema\(schema Schema, key map\[string\]any\) \(map\[string\]any, error\)](<#NormalizeKeyForSchema>)
 - [func NormalizePostgresRecord\(schema Schema, values map\[string\]any\) error](<#NormalizePostgresRecord>)
 - [func NormalizeSourceMode\(raw string\) \(string, error\)](<#NormalizeSourceMode>)
+- [func SourceTransactionContentHash\(transaction SourceTransaction\) \(string, error\)](<#SourceTransactionContentHash>)
+- [func SourceTransactionIdentity\(transaction SourceTransaction\) \(string, string, error\)](<#SourceTransactionIdentity>)
+- [func SourceTransactionLogicalBatchID\(transaction SourceTransaction\) \(string, error\)](<#SourceTransactionLogicalBatchID>)
 - [func ValidateBatch\(batch Batch\) error](<#ValidateBatch>)
 - [type AckGrant](<#AckGrant>)
 - [type Batch](<#Batch>)
@@ -61,13 +65,21 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [type Destination](<#Destination>)
 - [type EndpointType](<#EndpointType>)
 - [type FlowCheckpoint](<#FlowCheckpoint>)
+- [type FlushEvidenceSource](<#FlushEvidenceSource>)
 - [type InitialCheckpointSource](<#InitialCheckpointSource>)
 - [type ManagedBootstrapDestination](<#ManagedBootstrapDestination>)
 - [type ManagedBootstrapPublicationReconciler](<#ManagedBootstrapPublicationReconciler>)
 - [type ManagedBootstrapResult](<#ManagedBootstrapResult>)
 - [type ManagedBootstrapSource](<#ManagedBootstrapSource>)
 - [type ManagedDestination](<#ManagedDestination>)
+- [type ManagedPostgresVersionProvider](<#ManagedPostgresVersionProvider>)
+- [type ManagedProfileContract](<#ManagedProfileContract>)
+  - [func PostgresToPostgresV1Profile\(\) ManagedProfileContract](<#PostgresToPostgresV1Profile>)
+  - [func \(c ManagedProfileContract\) SupportsPostgresVersion\(major int\) bool](<#ManagedProfileContract.SupportsPostgresVersion>)
+  - [func \(c ManagedProfileContract\) ValidatePromotion\(\) error](<#ManagedProfileContract.ValidatePromotion>)
+- [type ManagedProfileGate](<#ManagedProfileGate>)
 - [type ManagedSourceResourceCleaner](<#ManagedSourceResourceCleaner>)
+- [type ManagedTransactionDestination](<#ManagedTransactionDestination>)
 - [type Operation](<#Operation>)
 - [type OutboxEntry](<#OutboxEntry>)
 - [type OutboxStore](<#OutboxStore>)
@@ -77,9 +89,12 @@ Package connector defines the stable source, destination, checkpoint, schema, an
   - [func \(f RunFence\) Validate\(\) error](<#RunFence.Validate>)
 - [type RunFenceBinder](<#RunFenceBinder>)
 - [type Schema](<#Schema>)
+  - [func DecodeManagedSchemaBaselines\(raw string\) \(\[\]Schema, error\)](<#DecodeManagedSchemaBaselines>)
 - [type SlotDropper](<#SlotDropper>)
 - [type Source](<#Source>)
+- [type SourceFlushEvidence](<#SourceFlushEvidence>)
 - [type SourceTransaction](<#SourceTransaction>)
+  - [func \(t SourceTransaction\) Validate\(\) error](<#SourceTransaction.Validate>)
 - [type Spec](<#Spec>)
 - [type SupportLevel](<#SupportLevel>)
 - [type TransactionFragment](<#TransactionFragment>)
@@ -96,6 +111,22 @@ const (
     SourceModeCDC      = "cdc"
     SourceModeBackfill = "backfill"
 )
+```
+
+<a name="ManagedProfilePostgresToPostgresV1"></a>
+
+```go
+const (
+    // ManagedProfilePostgresToPostgresV1 is the only promoted managed runtime
+    // profile. The generic postgres connector modes remain experimental.
+    ManagedProfilePostgresToPostgresV1 = "postgresql-to-postgresql-v1"
+)
+```
+
+<a name="ManagedSchemaBaselinesMetadataKey"></a>ManagedSchemaBaselinesMetadataKey stores the last delivered source schema set on the authoritative checkpoint. The baseline lets a restarted pgoutput decoder diff the first Relation message against the schema that actually reached the destination, rather than an empty process\-local cache.
+
+```go
+const ManagedSchemaBaselinesMetadataKey = "managed_postgres_schema_baselines_v1"
 ```
 
 ## Variables
@@ -119,6 +150,9 @@ var (
     // ErrDeliveryIndeterminate means the external outcome cannot be proven and
     // must not be converted into a replay or receipt without reconciliation.
     ErrDeliveryIndeterminate = errors.New("delivery outcome indeterminate")
+    // ErrDeliveryRetryExhausted means bounded delivery or reconciliation work
+    // cannot make further automatic progress and requires operator recovery.
+    ErrDeliveryRetryExhausted = errors.New("delivery retry budget exhausted")
 )
 ```
 
@@ -182,7 +216,7 @@ func CompareCheckpointLSN(left, right string) (int, error)
 CompareCheckpointLSN compares canonical PostgreSQL LSNs or decimal batch ordinals. Positions of different kinds are intentionally incomparable.
 
 <a name="DeliveryConfigFingerprint"></a>
-## func [DeliveryConfigFingerprint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L25>)
+## func [DeliveryConfigFingerprint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L28>)
 
 ```go
 func DeliveryConfigFingerprint(spec Spec) (string, error)
@@ -198,6 +232,15 @@ func IsManagedSourceSpec(spec Spec) bool
 ```
 
 IsManagedSourceSpec reports whether a source requests either the legacy managed protocol or a named managed profile. Control\-plane and runtime gates must use this single predicate so profile\-only flows cannot bypass fencing.
+
+<a name="MergeManagedSchemaBaselines"></a>
+## func [MergeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L170>)
+
+```go
+func MergeManagedSchemaBaselines(metadata map[string]string, transaction SourceTransaction) (map[string]string, error)
+```
+
+MergeManagedSchemaBaselines returns a copied checkpoint metadata map with every schema observed in transaction merged into a stable, sorted encoding.
 
 <a name="NormalizeKeyForSchema"></a>
 ## func [NormalizeKeyForSchema](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/normalize.go#L251>)
@@ -227,6 +270,33 @@ func NormalizeSourceMode(raw string) (string, error)
 NormalizeSourceMode normalizes and validates source modes for worker flow sources.
 
 It is case\-insensitive, trims whitespace, and defaults empty values to cdc.
+
+<a name="SourceTransactionContentHash"></a>
+## func [SourceTransactionContentHash](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L86>)
+
+```go
+func SourceTransactionContentHash(transaction SourceTransaction) (string, error)
+```
+
+SourceTransactionContentHash returns the stable logical identity of a full committed transaction. Observation timestamps, process\-local schema counters, and checkpoint recovery metadata do not participate, while WAL positions and transaction and fragment order always do.
+
+<a name="SourceTransactionIdentity"></a>
+## func [SourceTransactionIdentity](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L142>)
+
+```go
+func SourceTransactionIdentity(transaction SourceTransaction) (string, string, error)
+```
+
+SourceTransactionIdentity computes the content hash and logical batch ID in one pass. Callers at each trust seam can validate independently without hashing the same transaction twice at that seam. Process\-local schema counters, observation timestamps, and checkpoint recovery metadata do not participate in the identity of an otherwise identical WAL replay.
+
+<a name="SourceTransactionLogicalBatchID"></a>
+## func [SourceTransactionLogicalBatchID](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L157>)
+
+```go
+func SourceTransactionLogicalBatchID(transaction SourceTransaction) (string, error)
+```
+
+SourceTransactionLogicalBatchID identifies one source commit independently from any worker generation or destination revision.
 
 <a name="ValidateBatch"></a>
 ## func [ValidateBatch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/batch_validation.go#L19>)
@@ -602,7 +672,7 @@ type DDLReconciler interface {
 ```
 
 <a name="DeliveryDisposition"></a>
-## type [DeliveryDisposition](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L90>)
+## type [DeliveryDisposition](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L94>)
 
 DeliveryDisposition is the result of destination reconciliation.
 
@@ -621,7 +691,7 @@ const (
 ```
 
 <a name="DeliveryEvidence"></a>
-## type [DeliveryEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L84-L87>)
+## type [DeliveryEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L88-L91>)
 
 DeliveryEvidence is untrusted external proof returned by a destination.
 
@@ -633,7 +703,7 @@ type DeliveryEvidence struct {
 ```
 
 <a name="DeliveryIntent"></a>
-## type [DeliveryIntent](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L48-L58>)
+## type [DeliveryIntent](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L51-L62>)
 
 DeliveryIntent is the immutable identity supplied to a reconcilable external destination attempt. PostgreSQL remains authoritative for adopting evidence as a durable receipt; destination evidence alone never advances a checkpoint.
 
@@ -646,13 +716,14 @@ type DeliveryIntent struct {
     AcquisitionID         string
     LeaseEpoch            int64
     DestinationRevisionID string
+    LogicalBatchID        string
     PositionID            string
     ContentHash           string
 }
 ```
 
 <a name="DeliveryIntent.Validate"></a>
-### func \(DeliveryIntent\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L61>)
+### func \(DeliveryIntent\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L65>)
 
 ```go
 func (i DeliveryIntent) Validate() error
@@ -734,8 +805,20 @@ type FlowCheckpoint struct {
 }
 ```
 
+<a name="FlushEvidenceSource"></a>
+## type [FlushEvidenceSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L266-L269>)
+
+FlushEvidenceSource sends source feedback and proves the resulting logical slot flush position. The managed coordinator validates authority before and after this external source operation; feedback itself is monotonic.
+
+```go
+type FlushEvidenceSource interface {
+    Source
+    AckWithEvidence(context.Context, Checkpoint) (SourceFlushEvidence, error)
+}
+```
+
 <a name="InitialCheckpointSource"></a>
-## type [InitialCheckpointSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L37-L40>)
+## type [InitialCheckpointSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L252-L255>)
 
 InitialCheckpointSource exposes the validated stream start after Open. A managed coordinator persists this cut and an ACK intent before the first source transaction, so a crash immediately after slot creation is recoverable.
 
@@ -798,7 +881,7 @@ type ManagedBootstrapSource interface {
 ```
 
 <a name="ManagedDestination"></a>
-## type [ManagedDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L101-L105>)
+## type [ManagedDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L105-L109>)
 
 ManagedDestination applies an immutable delivery intent and reconciles an ambiguous prior attempt. Implementations must fail closed when evidence is insufficient.
 
@@ -810,6 +893,77 @@ type ManagedDestination interface {
 }
 ```
 
+<a name="ManagedPostgresVersionProvider"></a>
+## type [ManagedPostgresVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L140-L142>)
+
+SupportsPostgresVersion reports whether the named profile admits a live PostgreSQL server\_version\_num major. ManagedPostgresVersionProvider exposes the admitted live server major after connector Open. The runner compares both endpoints before managed delivery.
+
+```go
+type ManagedPostgresVersionProvider interface {
+    ManagedPostgresMajor() int
+}
+```
+
+<a name="ManagedProfileContract"></a>
+## type [ManagedProfileContract](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L24-L35>)
+
+ManagedProfileContract is the executable support and admission declaration rendered into the generated connector support matrix.
+
+```go
+type ManagedProfileContract struct {
+    Name              string
+    Support           SupportLevel
+    Source            EndpointType
+    Destination       EndpointType
+    PostgresVersions  []int
+    SameMajorOnly     bool
+    AckPolicies       []string
+    SingleSink        bool
+    DeliveryGuarantee string
+    Gates             []ManagedProfileGate
+}
+```
+
+<a name="PostgresToPostgresV1Profile"></a>
+### func [PostgresToPostgresV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L38>)
+
+```go
+func PostgresToPostgresV1Profile() ManagedProfileContract
+```
+
+PostgresToPostgresV1Profile returns a defensive copy of the promoted profile.
+
+<a name="ManagedProfileContract.SupportsPostgresVersion"></a>
+### func \(ManagedProfileContract\) [SupportsPostgresVersion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L144>)
+
+```go
+func (c ManagedProfileContract) SupportsPostgresVersion(major int) bool
+```
+
+
+
+<a name="ManagedProfileContract.ValidatePromotion"></a>
+### func \(ManagedProfileContract\) [ValidatePromotion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L72>)
+
+```go
+func (c ManagedProfileContract) ValidatePromotion() error
+```
+
+ValidatePromotion rejects maintained status unless every required admission and real\-service evidence gate is named and enabled.
+
+<a name="ManagedProfileGate"></a>
+## type [ManagedProfileGate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L16-L20>)
+
+ManagedProfileGate binds one support claim to a required real\-service test.
+
+```go
+type ManagedProfileGate struct {
+    Capability string
+    Test       string
+    Live       bool
+}
+```
+
 <a name="ManagedSourceResourceCleaner"></a>
 ## type [ManagedSourceResourceCleaner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L67-L69>)
 
@@ -818,6 +972,19 @@ ManagedSourceResourceCleaner retires source resources owned by a managed flow af
 ```go
 type ManagedSourceResourceCleaner interface {
     CleanupManagedResources(context.Context, CleanupFence, Spec) error
+}
+```
+
+<a name="ManagedTransactionDestination"></a>
+## type [ManagedTransactionDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L116-L120>)
+
+ManagedTransactionDestination is the full\-transaction extension used by the named PostgreSQL delivery profile. Validation runs immediately before a new control\-plane attempt is prepared, but never blocks adoption of an already committed target marker. ApplyTransaction must commit every ordered fragment and the destination marker in one target transaction.
+
+```go
+type ManagedTransactionDestination interface {
+    ManagedDestination
+    ValidateTransaction(context.Context, SourceTransaction) error
+    ApplyTransaction(context.Context, DeliveryIntent, SourceTransaction) (DeliveryEvidence, error)
 }
 ```
 
@@ -956,6 +1123,15 @@ type Schema struct {
 }
 ```
 
+<a name="DecodeManagedSchemaBaselines"></a>
+### func [DecodeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L208>)
+
+```go
+func DecodeManagedSchemaBaselines(raw string) ([]Schema, error)
+```
+
+DecodeManagedSchemaBaselines validates a checkpoint baseline encoding.
+
 <a name="SlotDropper"></a>
 ## type [SlotDropper](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L143-L145>)
 
@@ -982,8 +1158,19 @@ type Source interface {
 }
 ```
 
+<a name="SourceFlushEvidence"></a>
+## type [SourceFlushEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L259-L261>)
+
+SourceFlushEvidence is the source PostgreSQL position observed after a standby\-status update, not merely an in\-process scheduling acknowledgement.
+
+```go
+type SourceFlushEvidence struct {
+    ObservedFlushLSN string
+}
+```
+
 <a name="SourceTransaction"></a>
-## type [SourceTransaction](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L9-L17>)
+## type [SourceTransaction](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L20-L28>)
 
 SourceTransaction is a committed source transaction. Fragments preserve source order while allowing existing table\-scoped Batch contracts to remain unchanged. Checkpoint is the transaction\-end position and is the only position eligible for durable source feedback.
 
@@ -998,6 +1185,15 @@ type SourceTransaction struct {
     Checkpoint      Checkpoint
 }
 ```
+
+<a name="SourceTransaction.Validate"></a>
+### func \(SourceTransaction\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L33>)
+
+```go
+func (t SourceTransaction) Validate() error
+```
+
+Validate rejects incomplete or reordered committed transactions before they can become durable delivery identities. Fragment ordinals are contiguous so table, schema, DDL, and control barriers cannot be collapsed or reordered.
 
 <a name="Spec"></a>
 ## type [Spec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L51-L55>)
@@ -1033,7 +1229,7 @@ const (
 ```
 
 <a name="TransactionFragment"></a>
-## type [TransactionFragment](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L21-L24>)
+## type [TransactionFragment](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L236-L239>)
 
 TransactionFragment is a deterministic, ordered table/schema fragment of a committed source transaction.
 
@@ -1045,7 +1241,7 @@ type TransactionFragment struct {
 ```
 
 <a name="TransactionalSource"></a>
-## type [TransactionalSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L29-L32>)
+## type [TransactionalSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L244-L247>)
 
 TransactionalSource is an optional source contract for managed execution. Legacy Source.Read remains available for compatibility, but managed PostgreSQL execution consumes complete transactions through this interface.
 

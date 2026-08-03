@@ -2,9 +2,9 @@
 
 ## Status
 
-This branch implements an experimental PostgreSQL-to-PostgreSQL managed CDC slice plus bootstrap and artifact-log primitives. It does not establish maintained support or exactly-once delivery.
+This branch implements the maintained `postgresql-to-postgresql-v1` managed profile plus experimental generic connector and artifact-log primitives. The named profile is at-least-once with reconciliation; it does not claim exactly-once delivery.
 
-The implementation fails closed outside that profile. In particular, it does not admit multi-fragment source transactions, raw automatic DDL, generic staging, ClickHouse mutations, or an Iceberg REST catalog.
+The maintained profile fails closed outside its exact admission contract. Generic PostgreSQL modes, raw automatic DDL, generic staging, ClickHouse mutations, and the incomplete Iceberg path remain experimental.
 
 ## Implemented slices
 
@@ -16,7 +16,9 @@ Public lifecycle states remain unchanged: `created`, `running`, `paused`, `stopp
 
 ### PostgreSQL source transaction boundary
 
-`internal/replication` buffers pgoutput changes from `BEGIN` through `COMMIT`. Every emitted fragment carries the transaction-end LSN, XID, ordinal, and final-fragment marker. Received WAL is never used as a durable ACK position.
+`internal/replication` handles pgoutput protocol v1 transactions and protocol v2 streamed transaction segments. It buffers every segment through commit and emits complete, ordered multi-table and multi-schema fragments with the transaction-end LSN, XID, ordinal, and final-fragment marker. Emitted records are released from the decoder buffer as ownership transfers to the source transaction assembler, and transaction byte limits include relation, type, and DDL metadata. DDL/control records remain ordered barriers. Received WAL is never used as a durable ACK position.
+
+Authoritative checkpoints carry delivered relation-schema baselines. Bootstrap seeds them from its frozen manifest, and each finalized transaction advances them with the checkpoint. A replacement process can therefore detect schema changes from its first pgoutput `Relation` message after downtime.
 
 The managed source rejects an existing slot without a PostgreSQL-authoritative checkpoint. It also rejects a checkpoint behind `confirmed_flush_lsn`, before retained `restart_lsn`, or beyond the server WAL end.
 
@@ -26,14 +28,16 @@ The managed source rejects an existing slot without a PostgreSQL-authoritative c
 
 1. immutable destination revision registration with a configuration fingerprint;
 2. durable manifest and append-only attempt preparation before external I/O;
-3. target DML, metadata, and a deterministic delivery marker in one target transaction;
+3. source-order application of every table/schema fragment, destination-mapped structured DDL plan, metadata row, and deterministic logical-batch marker in one target transaction, with contiguous records batched instead of creating one temporary table per record;
 4. external-commit reconciliation from that marker;
-5. evidence adoption under the current fence; and
+5. evidence adoption and terminal retry state under the current fence; and
 6. one PostgreSQL transaction for the receipt, authoritative checkpoint, and source ACK intent.
 
 The managed target requires explicit `synchronous_commit=on` or `remote_apply`. Omission, `off`, `local`, and `remote_write` are rejected.
 
-An ACK receipt means the source adapter accepted an authorized position for feedback. `observed_flush_lsn` remains null unless an adapter can provide externally observed evidence. A restart reissues the authoritative checkpoint and repairs this receipt.
+The named profile validates the ACK grant before source feedback and revalidates the fence before committing the observed `confirmed_flush_lsn` as the ACK receipt. No control transaction or takeover lock spans source I/O. A crash after slot flush but before the receipt is repaired by reissuing the same authoritative checkpoint. A stale acquisition is rejected before feedback or at receipt recording.
+
+Attempts use persisted numbering, bounded exponential backoff, and a 16-attempt ceiling. Terminal manifests, attempts, evidence, receipts, and old ACK rows are pruned only after observed flush evidence; the current checkpoint remains a PostgreSQL retention root. Long-running workers repeat fixed-budget sweeps and renew the producer lease between saturated batches. The target keeps the current reconciliation marker per flow incarnation and destination revision rather than accumulating markers indefinitely.
 
 ### Slot-anchored bootstrap
 
@@ -62,8 +66,8 @@ The package also provides claimed append-only catalog consumption and conservati
   - bootstrap sessions, fenced multi-table tasks and delivery receipts, source-resource ownership/operations, and publication receipts.
 - `internal/registry/migrations/006_run_fencing.sql`
   - complete-or-legacy DDL/catalog provenance, takeover-safe attempts, and schema-publication operations.
-- `internal/delivery/migrations/002_authority_protocol.sql`
-  - positive delivery/ACK provenance and stale-client protocol gates.
+- `internal/delivery/migrations/002_authority_protocol.sql`, `004_logical_batches_retry_retention.sql`, and `006_rolling_logical_batch_compatibility.sql`
+  - positive delivery/ACK provenance, stale-client protocol gates, logical batch identity, bounded retry state, retention roots, indexed logical attempts, and nullable additive identity columns so authority-v2 checkpoint-1 workers remain writable during a rolling upgrade.
 - `internal/artifactlog/migrations/001_artifacts.sql`
   - streams, quotas, objects, upload attempts, GC claims, publications, and publication objects.
 - `internal/artifactlog/migrations/002_consumers.sql` and `003_authority_protocol_v2.sql`
@@ -73,16 +77,18 @@ The package also provides claimed append-only catalog consumption and conservati
 
 The worker constructs workflow, checkpoint, authority, delivery, and registry repositories over one bounded control pool. `internal/runner` acquires a producer fence before opening connectors and renews it with the execution heartbeat. Managed executions no longer use the compatibility `flow_executions` finish API; lifecycle quiescence reads current producer leases directly.
 
-Managed admission currently requires:
+The maintained profile admission requires:
 
-- PostgreSQL transactional source with `managed=true` and `bootstrap=auto|required|never`; `never` additionally requires publication creation to be disabled;
+- `managed_profile=postgresql-to-postgresql-v1` on both endpoints;
+- matching PostgreSQL majors from 14 through 17 at both ends; mixed-major pairs remain unpromoted;
+- a transactional source with observed flush evidence, `bootstrap=required`, and `streaming_transactions=true`;
 - explicit source system, lineage, and publication revision identities;
-- one PostgreSQL destination revision;
-- `ack_policy=all`;
-- target write and batch modes;
-- explicit durable `synchronous_commit`;
-- no arbitrary `start_lsn`, legacy backfill, file/disabled snapshot authority, drop-slot failure mode, generic staging, DDL-capture resource creation, or raw automatic DDL; and
-- one table/schema fragment per source transaction.
+- exactly one PostgreSQL destination revision and `ack_policy=all`;
+- compatible target columns and a valid, non-partial, non-deferrable target primary/unique constraint over source identity columns;
+- target write and batch modes plus explicit durable `synchronous_commit`; and
+- no arbitrary `start_lsn`, legacy backfill, file/disabled snapshot authority, drop-slot failure mode, generic staging, raw DDL capture, or raw automatic DDL.
+
+Generic managed modes remain experimental even when they pass their narrower startup checks.
 
 ## Executable evidence
 
@@ -93,6 +99,7 @@ The acceptance workflow requires the following gates; a gate is not evidence of 
 - `just test-rapid` and `just test-durable-race`;
 - `just test-durable-pr`;
 - `just test-durable-integration` — requires every named live PostgreSQL/MinIO worker, bootstrap, and fencing test to run without skips;
+- `just test-checkpoint2-postgres-profile` — CI runs the exact managed admission and evidence suite twice against each same-major PostgreSQL 14, 15, 16, and 17 profile;
 - `just test-durable-dbos-integration` — requires the named in-process DBOS bootstrap test to run without a skip;
 - `just check-tla` and `just spec-verify`;
 - `just generate-check`; and
@@ -104,13 +111,12 @@ The process recovery test starts the built worker with `bootstrap=required`, pro
 
 The following requested outcomes remain open and are not represented as maintained support:
 
-- managed multi-fragment CDC transactions delivered in one target transaction;
-- external schema-registry publication intents/receipts and structured automatic DDL application (source DDL/catalog rows and DDL attempts/receipts are fenced, but automatic application remains unadmitted);
+- external schema-registry publication intents/receipts beyond the admitted PostgreSQL relation-diff DDL plans;
 - a fenced administrative resource-revision workflow; legacy managed slot/publication mutation RPCs currently fail closed;
 - reconciliation and cleanup for reserved artifact objects that lack exact-version evidence, plus published-artifact retention GC;
 - an Iceberg REST catalog implementation and live catalog recovery tests;
 - the append-only ClickHouse managed changelog connector;
 - a 100-cycle process-kill chaos profile and long-running soak gate; and
-- promotion contracts that require every maintained profile in real-service CI.
+- maintained profiles for any connector combination other than `postgresql-to-postgresql-v1`.
 
-Until those items have executable evidence, the relevant connectors and modes remain experimental.
+Those deferred connectors and modes remain experimental.

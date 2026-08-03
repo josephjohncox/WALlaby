@@ -92,6 +92,9 @@ func (s *Source) PrepareManagedBootstrap(ctx context.Context, fence connector.Ru
 		return connector.ManagedBootstrapResult{}, err
 	}
 	defer sourcePool.Close()
+	if _, err := validateManagedPostgresServerVersion(ctx, sourcePool, spec.Options[optManagedProfile]); err != nil {
+		return connector.ManagedBootstrapResult{}, err
+	}
 	coordinator, err := bootstrap.NewBootstrapper(ctx, s.ManagedControl, dsn, sourcePool, s.BootstrapHooks)
 	if err != nil {
 		return connector.ManagedBootstrapResult{}, err
@@ -603,12 +606,15 @@ ORDER BY a.attnum`, relation.OID)
 			rows.Close()
 			return connector.Schema{}, nil, err
 		}
-		column := connector.Column{Name: name, Type: formatTypeName(typeSchema, dataType), Nullable: nullable, Generated: generated != ""}
+		column := connector.Column{
+			Name: name, Type: formatTypeName(typeSchema, dataType), Nullable: nullable, Generated: generated != "",
+			TypeMetadata: map[string]string{"nullability_known": "true", "generated_known": "true"},
+		}
 		if expression != nil {
 			column.Expression = *expression
 		}
 		if extension != nil && *extension != "" {
-			column.TypeMetadata = map[string]string{"extension": strings.ToLower(*extension)}
+			column.TypeMetadata["extension"] = strings.ToLower(*extension)
 		}
 		columns = append(columns, column)
 	}
@@ -640,6 +646,20 @@ ORDER BY key.ord`, relation.OID)
 	}
 	if len(keys) == 0 {
 		return connector.Schema{}, nil, fmt.Errorf("managed bootstrap requires a primary key on %s.%s", relation.Namespace, relation.Table)
+	}
+	primary := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		primary[key] = struct{}{}
+	}
+	for index := range columns {
+		if _, ok := primary[columns[index].Name]; !ok {
+			continue
+		}
+		if columns[index].TypeMetadata == nil {
+			columns[index].TypeMetadata = map[string]string{}
+		}
+		columns[index].TypeMetadata["primary_key"] = "true"
+		columns[index].TypeMetadata["replica_identity"] = "true"
 	}
 	return connector.Schema{Name: relation.Table, Namespace: relation.Namespace, Version: 1, Columns: columns}, keys, nil
 }

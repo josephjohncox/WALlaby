@@ -113,8 +113,17 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		if _, ok := r.Source.(connector.TransactionalSource); !ok {
 			return errors.New("managed PostgreSQL execution requires a transactional source")
 		}
-		if _, ok := r.Destinations[0].Dest.(connector.ManagedDestination); !ok {
-			return errors.New("managed execution requires a reconcilable destination driver")
+		if _, ok := r.Source.(connector.FlushEvidenceSource); !ok {
+			return errors.New("managed PostgreSQL execution requires observed source flush evidence")
+		}
+		if _, ok := r.Destinations[0].Dest.(connector.ManagedTransactionDestination); !ok {
+			return errors.New("managed execution requires a full-transaction reconcilable destination driver")
+		}
+		if _, ok := r.DeliveryCoordinator.(ManagedTransactionDeliveryCoordinator); !ok {
+			return errors.New("managed execution requires a full-transaction delivery coordinator extension")
+		}
+		if _, ok := r.DeliveryCoordinator.(ManagedSourceFeedbackCoordinator); !ok {
+			return errors.New("managed execution requires an observed source-feedback coordinator extension")
 		}
 		if _, ok := r.Checkpoints.(checkpoint.FencedStore); !ok {
 			return errors.New("managed execution requires a generation-fenced PostgreSQL checkpoint store")
@@ -289,6 +298,11 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		for _, option := range []string{"create_slot", "ensure_state", "ensure_publication", "sync_publication"} {
 			r.SourceSpec.Options[option] = "false"
 		}
+		if restoredCheckpoint != nil && restoredCheckpoint.Metadata != nil {
+			if baselines := restoredCheckpoint.Metadata[connector.ManagedSchemaBaselinesMetadataKey]; baselines != "" {
+				r.SourceSpec.Options[connector.ManagedSchemaBaselinesMetadataKey] = baselines
+			}
+		}
 	}
 
 	if err := r.openSource(ctx); err != nil {
@@ -329,7 +343,17 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	}
 
 	if r.managed() {
-		return r.runManaged(ctx)
+		if strings.TrimSpace(r.SourceSpec.Options["managed_profile"]) == connector.ManagedProfilePostgresToPostgresV1 {
+			sourceVersion, sourceOK := r.Source.(connector.ManagedPostgresVersionProvider)
+			destinationVersion, destinationOK := r.Destinations[0].Dest.(connector.ManagedPostgresVersionProvider)
+			if !sourceOK || !destinationOK {
+				return errors.New("named managed PostgreSQL profile requires live endpoint version evidence")
+			}
+			if err := validateManagedPostgresMajorPair(sourceVersion.ManagedPostgresMajor(), destinationVersion.ManagedPostgresMajor()); err != nil {
+				return err
+			}
+		}
+		return r.runManaged(ctx, restoredCheckpoint)
 	}
 
 	var secondaryQueues []*secondaryQueue
@@ -592,6 +616,23 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	}
 }
 
+// ManagedProfileEnabled reports whether this runner will use the fenced,
+// full-transaction managed execution path. A named profile implies managed
+// execution even when the legacy managed=true option is omitted.
+func validateManagedPostgresMajorPair(sourceMajor, destinationMajor int) error {
+	if sourceMajor <= 0 || destinationMajor <= 0 {
+		return errors.New("named managed PostgreSQL profile requires positive live server majors")
+	}
+	if connector.PostgresToPostgresV1Profile().SameMajorOnly && sourceMajor != destinationMajor {
+		return fmt.Errorf("managed PostgreSQL profile requires matching source and destination majors; got %d and %d", sourceMajor, destinationMajor)
+	}
+	return nil
+}
+
+func (r *Runner) ManagedProfileEnabled() bool {
+	return r.managed()
+}
+
 func (r *Runner) managed() bool {
 	return connector.IsManagedSourceSpec(r.SourceSpec)
 }
@@ -614,11 +655,18 @@ func (r *Runner) openSource(ctx context.Context) error {
 	}
 }
 
-func (r *Runner) runManaged(ctx context.Context) error {
+func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint) error {
 	source := r.Source.(connector.TransactionalSource)
 	destination := r.Destinations[0]
-	driver := destination.Dest.(connector.ManagedDestination)
+	driver := destination.Dest.(connector.ManagedTransactionDestination)
+	coordinator := r.DeliveryCoordinator.(ManagedTransactionDeliveryCoordinator)
 	fence := *r.RunFence
+	managedMetadata := map[string]string{}
+	if restored != nil {
+		for key, value := range restored.Metadata {
+			managedMetadata[key] = value
+		}
+	}
 
 	for {
 		transaction, err := source.ReadTransaction(ctx)
@@ -626,34 +674,53 @@ func (r *Runner) runManaged(ctx context.Context) error {
 			if errors.Is(err, io.EOF) {
 				return nil
 			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("read managed source transaction: %w", err)
+		}
+		if err := transaction.Validate(); err != nil {
+			return fmt.Errorf("validate managed source transaction: %w", err)
+		}
+		transaction.Checkpoint.Metadata, err = connector.MergeManagedSchemaBaselines(managedMetadata, transaction)
+		if err != nil {
+			return fmt.Errorf("merge managed schema baselines: %w", err)
 		}
 		expectedLineage := strings.TrimSpace(r.SourceSpec.Options["source_lineage_id"])
 		if transaction.SourceLineageID == "" || transaction.SourceLineageID != expectedLineage {
 			return fmt.Errorf("managed source transaction lineage %q does not match configured %q", transaction.SourceLineageID, expectedLineage)
 		}
-		if len(transaction.Fragments) == 0 {
-			grant, err := r.DeliveryCoordinator.AuthorizeAck(ctx, fence, transaction.Checkpoint)
-			if err != nil {
-				return fmt.Errorf("authorize empty managed source transaction ack: %w", err)
-			}
-			if err := r.ackManagedGrant(ctx, grant); err != nil {
-				return fmt.Errorf("ack empty managed source transaction: %w", err)
-			}
-			continue
-		}
-		if len(transaction.Fragments) != 1 {
-			return fmt.Errorf("managed PostgreSQL destination currently admits one table/schema fragment per source transaction; got %d", len(transaction.Fragments))
-		}
-		batch := transaction.Fragments[0].Batch
-		batch.Checkpoint = transaction.Checkpoint
-		contentHash, err := connector.BatchContentHash(batch)
-		if err != nil {
-			return fmt.Errorf("hash managed delivery: %w", err)
-		}
 		positionID, err := connector.CheckpointPositionID(transaction.Checkpoint)
 		if err != nil {
 			return fmt.Errorf("identify managed delivery: %w", err)
+		}
+		readAction := spec.ActionReadBatch
+		if sourceTransactionContainsDDL(transaction) {
+			readAction = spec.ActionReadDDL
+		}
+		r.emitCheckpointTrace(ctx, "read", transaction.Checkpoint, positionID, readAction, nil)
+		if len(transaction.Fragments) == 0 {
+			grant, err := r.DeliveryCoordinator.AuthorizeAck(ctx, fence, transaction.Checkpoint)
+			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return fmt.Errorf("authorize empty managed source transaction ack: %w", err)
+			}
+			r.emitCheckpointTrace(ctx, "deliver", grant.Checkpoint, grant.PositionID, spec.ActionDeliver, nil)
+			r.emitCheckpointTrace(ctx, "checkpoint", grant.Checkpoint, grant.PositionID, spec.ActionPersistCheckpoint, nil)
+			if err := r.ackManagedGrant(ctx, grant); err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return fmt.Errorf("ack empty managed source transaction: %w", err)
+			}
+			managedMetadata = grant.Checkpoint.Metadata
+			continue
+		}
+		contentHash, logicalBatchID, err := connector.SourceTransactionIdentity(transaction)
+		if err != nil {
+			return fmt.Errorf("identify managed source transaction: %w", err)
 		}
 		destinationRevisionID := strings.TrimSpace(destination.Spec.Options["destination_revision_id"])
 		if destinationRevisionID == "" {
@@ -667,31 +734,48 @@ func (r *Runner) runManaged(ctx context.Context) error {
 			AcquisitionID:         fence.AcquisitionID.String(),
 			LeaseEpoch:            fence.LeaseEpoch,
 			DestinationRevisionID: destinationRevisionID,
+			LogicalBatchID:        logicalBatchID,
 			PositionID:            positionID,
 			ContentHash:           contentHash,
 		}
-		grant, err := r.DeliveryCoordinator.Deliver(ctx, fence, intent, batch, driver)
+		grant, err := coordinator.DeliverTransaction(ctx, fence, intent, transaction, driver)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("deliver managed source transaction: %w", err)
 		}
+		r.emitCheckpointTrace(ctx, "deliver", grant.Checkpoint, grant.PositionID, spec.ActionDeliver, nil)
+		r.emitCheckpointTrace(ctx, "checkpoint", grant.Checkpoint, grant.PositionID, spec.ActionPersistCheckpoint, nil)
 		if err := r.ackManagedGrant(ctx, grant); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("ack managed source transaction: %w", err)
 		}
+		managedMetadata = grant.Checkpoint.Metadata
 	}
 }
 
 func (r *Runner) ackManagedGrant(ctx context.Context, grant connector.AckGrant) error {
 	fence := *r.RunFence
-	if err := r.DeliveryCoordinator.ValidateAckGrant(ctx, fence, grant); err != nil {
-		return fmt.Errorf("validate managed source ack grant: %w", err)
+	source := r.Source.(connector.FlushEvidenceSource)
+	coordinator := r.DeliveryCoordinator.(ManagedSourceFeedbackCoordinator)
+	if err := coordinator.CommitSourceFeedback(ctx, fence, grant, source); err != nil {
+		return fmt.Errorf("commit managed source feedback: %w", err)
 	}
-	if err := r.Source.Ack(ctx, grant.Checkpoint); err != nil {
-		return err
-	}
-	if err := r.DeliveryCoordinator.RecordAckReceipt(ctx, fence, grant, ""); err != nil {
-		return fmt.Errorf("record managed source ack receipt: %w", err)
-	}
+	r.emitCheckpointTrace(ctx, "source_flush", grant.Checkpoint, grant.PositionID, spec.ActionAck, nil)
+	r.emitCheckpointTrace(ctx, "ack", grant.Checkpoint, grant.PositionID, spec.ActionAck, nil)
 	return nil
+}
+
+func sourceTransactionContainsDDL(transaction connector.SourceTransaction) bool {
+	for _, fragment := range transaction.Fragments {
+		if len(ddlRecordsInBatch(fragment.Batch)) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func checkpointPositionsEqual(left, right string) bool {
@@ -1461,6 +1545,7 @@ func (r *Runner) emitTracePosition(ctx context.Context, kind, lsn, position, des
 		LSN:         lsn,
 		Position:    position,
 		FlowID:      r.FlowID,
+		Managed:     r.managed(),
 		Destination: destination,
 	}
 	if err != nil {

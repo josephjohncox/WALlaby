@@ -39,8 +39,8 @@ func TestPostgresToPostgresManagedRecoveryContract(t *testing.T) {
 DROP PUBLICATION IF EXISTS wallaby_managed_e2e_publication;
 DROP TABLE IF EXISTS public.wallaby_managed_source;
 DROP TABLE IF EXISTS public.wallaby_managed_target;
-CREATE TABLE public.wallaby_managed_source (id bigint PRIMARY KEY, value text);
-CREATE TABLE public.wallaby_managed_target (id bigint PRIMARY KEY, value text);
+CREATE TABLE public.wallaby_managed_source (id bigint PRIMARY KEY, value text, payload text, counter bigint NOT NULL DEFAULT 0);
+CREATE TABLE public.wallaby_managed_target (id bigint PRIMARY KEY, value text, payload text, counter bigint NOT NULL DEFAULT 0);
 CREATE PUBLICATION wallaby_managed_e2e_publication FOR TABLE public.wallaby_managed_source`); err != nil {
 		t.Fatal(err)
 	}
@@ -150,20 +150,25 @@ DROP TABLE IF EXISTS public.wallaby_managed_target`)
 		err := pool.QueryRow(ctx, `SELECT active FROM pg_replication_slots WHERE slot_name=$1`, slotName).Scan(&active)
 		return active, err
 	})
-	if _, err := pool.Exec(ctx, `INSERT INTO public.wallaby_managed_source VALUES (1,'managed')`); err != nil {
+	oldPayload := externalToastPayload("old")
+	if _, err := pool.Exec(ctx, `INSERT INTO public.wallaby_managed_source(id,value,payload) VALUES (1,'managed',$1)`, oldPayload); err != nil {
 		t.Fatal(err)
 	}
 	waitForCondition(t, ctx, runErr, "managed target row", func() (bool, error) {
-		var value string
-		err := pool.QueryRow(ctx, `SELECT value FROM public.wallaby_managed_target WHERE id=1`).Scan(&value)
-		return value == "managed", err
+		var value, payload string
+		err := pool.QueryRow(ctx, `SELECT value,payload FROM public.wallaby_managed_target WHERE id=1`).Scan(&value, &payload)
+		return value == "managed" && payload == oldPayload, err
 	})
 
 	var checkpointLSN string
 	waitForCondition(t, ctx, runErr, "managed checkpoint and source ACK receipt", func() (bool, error) {
 		var receipts int
 		err := pool.QueryRow(ctx, `
-SELECT checkpoint.lsn,(SELECT count(*) FROM source_ack_receipts AS receipt WHERE receipt.flow_incarnation_id=checkpoint.flow_incarnation_id)
+SELECT checkpoint.lsn,(
+  SELECT count(*) FROM source_ack_receipts AS receipt
+  WHERE receipt.flow_incarnation_id=checkpoint.flow_incarnation_id
+    AND receipt.checkpoint_lsn=checkpoint.lsn
+)
 FROM authoritative_checkpoints AS checkpoint
 WHERE checkpoint.flow_incarnation_id=$1`, incarnationID).Scan(&checkpointLSN, &receipts)
 		return receipts == 1 && checkpointLSN != "", err
@@ -186,6 +191,61 @@ WHERE checkpoint.flow_incarnation_id=$1`, incarnationID).Scan(&checkpointLSN, &r
 			return false, errors.New("slot confirmed_flush_lsn exceeded committed checkpoint")
 		}
 		return confirmedPosition == checkpointPosition, nil
+	})
+
+	newPayload := externalToastPayload("new")
+	sourceTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sourceTx.Exec(ctx, `UPDATE public.wallaby_managed_source SET payload=$1 WHERE id=1`, newPayload); err != nil {
+		_ = sourceTx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if _, err := sourceTx.Exec(ctx, `UPDATE public.wallaby_managed_source SET counter=counter+1 WHERE id=1`); err != nil {
+		_ = sourceTx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := sourceTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, ctx, runErr, "same-transaction TOAST and counter updates", func() (bool, error) {
+		var payload string
+		var counter int64
+		err := pool.QueryRow(ctx, `SELECT payload,counter FROM public.wallaby_managed_target WHERE id=1`).Scan(&payload, &counter)
+		return payload == newPayload && counter == 1, err
+	})
+	var updatedCheckpointLSN string
+	waitForCondition(t, ctx, runErr, "same-transaction updates checkpoint and ACK", func() (bool, error) {
+		var receipts int
+		err := pool.QueryRow(ctx, `
+SELECT checkpoint.lsn,(
+  SELECT count(*) FROM source_ack_receipts AS receipt
+  WHERE receipt.flow_incarnation_id=checkpoint.flow_incarnation_id
+    AND receipt.checkpoint_lsn=checkpoint.lsn
+)
+FROM authoritative_checkpoints AS checkpoint
+WHERE checkpoint.flow_incarnation_id=$1`, incarnationID).Scan(&updatedCheckpointLSN, &receipts)
+		return receipts == 1 && updatedCheckpointLSN != "" && updatedCheckpointLSN != checkpointLSN, err
+	})
+	updatedCheckpointPosition, err := pglogrepl.ParseLSN(updatedCheckpointLSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, ctx, runErr, "same-transaction updates observed by source flush", func() (bool, error) {
+		var confirmed string
+		err := pool.QueryRow(ctx, `SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name=$1`, slotName).Scan(&confirmed)
+		if err != nil || confirmed == "" {
+			return false, err
+		}
+		confirmedPosition, err := pglogrepl.ParseLSN(confirmed)
+		if err != nil {
+			return false, err
+		}
+		if confirmedPosition > updatedCheckpointPosition {
+			return false, errors.New("slot confirmed_flush_lsn exceeded same-transaction checkpoint")
+		}
+		return confirmedPosition == updatedCheckpointPosition, nil
 	})
 
 	stopRun()
@@ -229,6 +289,16 @@ WHERE checkpoint.flow_incarnation_id=$1`, incarnationID).Scan(&checkpointLSN, &r
 	case <-ctx.Done():
 		t.Fatalf("restarted managed runner did not stop: %v", ctx.Err())
 	}
+}
+
+func externalToastPayload(prefix string) string {
+	var payload strings.Builder
+	for range 512 {
+		payload.WriteString(prefix)
+		payload.WriteByte('-')
+		payload.WriteString(uuid.NewString())
+	}
+	return payload.String()
 }
 
 func waitForCondition(t *testing.T, ctx context.Context, runErr <-chan error, description string, check func() (bool, error)) {

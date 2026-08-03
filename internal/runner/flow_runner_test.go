@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -156,6 +157,57 @@ func TestManagedHeartbeatFailureReturnsErrorWithoutFailingFlow(t *testing.T) {
 	}
 }
 
+func TestManagedDeliveryPruneIsBatchBoundedAndRenewsLease(t *testing.T) {
+	t.Parallel()
+	deliveries := &saturatedPruneDelivery{blockingManagedDelivery: &blockingManagedDelivery{}}
+	renewals := 0
+	err := pruneManagedDeliveryState(context.Background(), deliveries, authority.RunFence{}, time.Hour, func(context.Context) error {
+		renewals++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := deliveries.pruneCalls.Load(); got != 8 {
+		t.Fatalf("prune batches=%d, want bounded maximum 8", got)
+	}
+	if renewals != 8 {
+		t.Fatalf("lease renewals between saturated prune batches=%d, want 8", renewals)
+	}
+}
+
+func TestManagedDeliveryRetentionRunsDuringLongLivedFlow(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	engine := workflow.NewMemoryEngine()
+	f := managedAdmissionFlow()
+	f.ID = "managed-periodic-retention"
+	f.Source.Options["delivery_prune_interval"] = "10ms"
+	if _, err := engine.Create(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Start(ctx, f.ID); err != nil {
+		t.Fatal(err)
+	}
+	control, _ := engine.Control(ctx, f.ID)
+	deliveries := &blockingManagedDelivery{}
+	runner := FlowRunner{
+		Engine: engine, Checkpoints: managedCheckpointStore{}, Authority: &failingRenewAuthority{}, Deliveries: deliveries,
+		ExpectedGeneration: control.Generation, ExecutionID: "managed-retention", ExecutionBackend: "test",
+	}
+	err := runner.Run(ctx, f, &blockingManagedSource{}, []stream.DestinationConfig{{
+		Spec: managedAdmissionDestinations()[0].Spec,
+		Dest: blockingManagedDestination{},
+	}})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run() error=%v, want bounded test deadline", err)
+	}
+	if got := deliveries.pruneCalls.Load(); got < 2 {
+		t.Fatalf("delivery retention prune calls=%d, want startup plus periodic sweep", got)
+	}
+}
+
 func TestManagedIndeterminateDeliveryStaysRecoverable(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -219,10 +271,26 @@ func (*failingRenewAuthority) RenewClaim(context.Context, authority.ClaimFence, 
 }
 func (*failingRenewAuthority) ReleaseClaim(context.Context, authority.ClaimFence) error { return nil }
 
-type blockingManagedDelivery struct{ deliverErr error }
+type blockingManagedDelivery struct {
+	deliverErr error
+	pruneCalls atomic.Int32
+}
+
+type saturatedPruneDelivery struct {
+	*blockingManagedDelivery
+}
+
+func (d *saturatedPruneDelivery) PruneTerminalDeliveryState(context.Context, authority.RunFence, time.Duration, int) (int64, error) {
+	d.pruneCalls.Add(1)
+	return 1000, nil
+}
 
 func (*blockingManagedDelivery) RegisterDestinationRevision(context.Context, authority.RunFence, string, string, string) error {
 	return nil
+}
+func (d *blockingManagedDelivery) PruneTerminalDeliveryState(context.Context, authority.RunFence, time.Duration, int) (int64, error) {
+	d.pruneCalls.Add(1)
+	return 0, nil
 }
 func (*blockingManagedDelivery) AuthorizeAck(_ context.Context, _ connector.RunFence, checkpoint connector.Checkpoint) (connector.AckGrant, error) {
 	position, err := connector.CheckpointPositionID(checkpoint)
@@ -234,11 +302,21 @@ func (d *blockingManagedDelivery) Deliver(context.Context, connector.RunFence, c
 	}
 	return connector.AckGrant{}, errors.New("unexpected delivery")
 }
+func (d *blockingManagedDelivery) DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedTransactionDestination) (connector.AckGrant, error) {
+	if d.deliverErr != nil {
+		return connector.AckGrant{}, d.deliverErr
+	}
+	return connector.AckGrant{}, errors.New("unexpected transaction delivery")
+}
 func (*blockingManagedDelivery) ValidateAckGrant(context.Context, connector.RunFence, connector.AckGrant) error {
 	return nil
 }
 func (*blockingManagedDelivery) RecordAckReceipt(context.Context, connector.RunFence, connector.AckGrant, string) error {
 	return nil
+}
+func (*blockingManagedDelivery) CommitSourceFeedback(ctx context.Context, _ connector.RunFence, grant connector.AckGrant, source connector.FlushEvidenceSource) error {
+	_, err := source.AckWithEvidence(ctx, grant.Checkpoint)
+	return err
 }
 
 type blockingManagedSource struct{}
@@ -257,7 +335,10 @@ func (*blockingManagedSource) InitialCheckpoint() (connector.Checkpoint, bool) {
 	return connector.Checkpoint{LSN: "0/10"}, true
 }
 func (*blockingManagedSource) Ack(context.Context, connector.Checkpoint) error { return nil }
-func (*blockingManagedSource) Close(context.Context) error                     { return nil }
+func (*blockingManagedSource) AckWithEvidence(_ context.Context, checkpoint connector.Checkpoint) (connector.SourceFlushEvidence, error) {
+	return connector.SourceFlushEvidence{ObservedFlushLSN: checkpoint.LSN}, nil
+}
+func (*blockingManagedSource) Close(context.Context) error { return nil }
 func (*blockingManagedSource) Capabilities() connector.Capabilities {
 	return connector.Capabilities{Support: connector.SupportExperimental, SupportsStreaming: true}
 }
@@ -286,7 +367,10 @@ func (*singleTransactionManagedSource) InitialCheckpoint() (connector.Checkpoint
 	return connector.Checkpoint{LSN: "0/10"}, true
 }
 func (*singleTransactionManagedSource) Ack(context.Context, connector.Checkpoint) error { return nil }
-func (*singleTransactionManagedSource) Close(context.Context) error                     { return nil }
+func (*singleTransactionManagedSource) AckWithEvidence(_ context.Context, checkpoint connector.Checkpoint) (connector.SourceFlushEvidence, error) {
+	return connector.SourceFlushEvidence{ObservedFlushLSN: checkpoint.LSN}, nil
+}
+func (*singleTransactionManagedSource) Close(context.Context) error { return nil }
 func (*singleTransactionManagedSource) Capabilities() connector.Capabilities {
 	return connector.Capabilities{Support: connector.SupportExperimental, SupportsStreaming: true}
 }
@@ -304,6 +388,12 @@ func (blockingManagedDestination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{Support: connector.SupportExperimental, Delivery: connector.DeliverySemantics{Declared: true, TransactionalBatch: true, IdempotentReplay: true, ReplaySafe: true}}
 }
 func (blockingManagedDestination) Apply(context.Context, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
+	return connector.DeliveryEvidence{}, nil
+}
+func (blockingManagedDestination) ValidateTransaction(context.Context, connector.SourceTransaction) error {
+	return nil
+}
+func (blockingManagedDestination) ApplyTransaction(context.Context, connector.DeliveryIntent, connector.SourceTransaction) (connector.DeliveryEvidence, error) {
 	return connector.DeliveryEvidence{}, nil
 }
 func (blockingManagedDestination) Reconcile(context.Context, connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {

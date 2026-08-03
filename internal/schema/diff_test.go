@@ -110,6 +110,23 @@ func TestDiffDetectsDropGeneratedChange(t *testing.T) {
 	}
 }
 
+func TestDiffIgnoresUnknownPgoutputNullabilityAndGeneratedFlags(t *testing.T) {
+	oldSchema := connector.Schema{
+		Namespace: "public", Name: "widgets",
+		Columns: []connector.Column{{Name: "id", Type: "int8", Nullable: false, Generated: true, Expression: "id + 1"}},
+	}
+	newSchema := connector.Schema{
+		Namespace: "public", Name: "widgets",
+		Columns: []connector.Column{{
+			Name: "id", Type: "int8", Nullable: true,
+			TypeMetadata: map[string]string{"nullability_known": "false", "generated_known": "false"},
+		}},
+	}
+	if plan := Diff(oldSchema, newSchema); plan.HasChanges() {
+		t.Fatalf("unknown pgoutput catalog flags produced destructive DDL: %+v", plan.Changes)
+	}
+}
+
 func TestDiffPreservesColumnOrderForAddAlterAndGeneratedChanges(t *testing.T) {
 	oldSchema := connector.Schema{
 		Namespace: "public",

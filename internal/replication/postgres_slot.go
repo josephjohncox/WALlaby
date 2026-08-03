@@ -34,8 +34,12 @@ func loadReplicationSlotState(ctx context.Context, conn *pgconn.PgConn, slot str
 	if !replicationSlotNamePattern.MatchString(slot) {
 		return nil, fmt.Errorf("invalid replication slot name %q", slot)
 	}
-	// Replication connections reject the extended query protocol. Slot names
-	// are PostgreSQL-allowlisted before interpolation into this simple query.
+	// Replication connections reject the extended query protocol, so use the
+	// connection-aware PostgreSQL string sanitizer before issuing a simple query.
+	escapedSlot, err := conn.EscapeString(slot)
+	if err != nil {
+		return nil, fmt.Errorf("escape replication slot name %q: %w", slot, err)
+	}
 	query := fmt.Sprintf(`
 SELECT slot_type,
        COALESCE(plugin, ''),
@@ -45,7 +49,7 @@ SELECT slot_type,
        COALESCE(confirmed_flush_lsn::text, ''),
        COALESCE(wal_status, '')
 FROM pg_catalog.pg_replication_slots
-WHERE slot_name = '%s'`, slot)
+WHERE slot_name = '%s'`, escapedSlot)
 	results, err := conn.Exec(ctx, query).ReadAll()
 	if err != nil {
 		return nil, fmt.Errorf("inspect replication slot %q: %w", slot, err)
@@ -94,7 +98,11 @@ func parseOptionalLSN(raw []byte) (pglogrepl.LSN, error) {
 	if value == "" {
 		return 0, nil
 	}
-	return pglogrepl.ParseLSN(value)
+	lsn, err := pglogrepl.ParseLSN(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse LSN %q: %w", value, err)
+	}
+	return lsn, nil
 }
 
 func validateExistingSlotAuthorization(required bool, authorized pglogrepl.LSN) error {

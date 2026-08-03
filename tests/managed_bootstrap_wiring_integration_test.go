@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgxpool"
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	"github.com/josephjohncox/wallaby/internal/bootstrap"
@@ -32,6 +34,55 @@ func (d *abandonmentRecordingPostgresDestination) AbandonBootstrap(ctx context.C
 }
 
 func TestManagedBootstrapWorkerWiringConcurrentBoundary(t *testing.T) {
+	t.Run("generated_column_snapshot_to_cdc", runManagedBootstrapWorkerWiringConcurrentBoundary)
+}
+
+func TestPostgresManagedProfileSourceSchemaEvolutionAfterRestart(t *testing.T) {
+	runManagedBootstrapWorkerWiringConcurrentBoundary(t)
+}
+
+// describeBootstrapWiringShape renders the live source and destination column
+// shapes for a convergence failure. A missing destination column cannot be
+// diagnosed from the assertion alone, and these tests only run against live
+// PostgreSQL in CI, so the failure itself has to carry the evidence.
+func describeBootstrapWiringShape(ctx context.Context, pool *pgxpool.Pool) string {
+	var report strings.Builder
+	for _, target := range []struct{ schema, table string }{
+		{schema: "public", table: "wallaby_bootstrap_wiring_a"},
+		{schema: "wallaby_bootstrap_target", table: "wallaby_bootstrap_wiring_a"},
+	} {
+		report.WriteString(fmt.Sprintf("shape %s.%s: ", target.schema, target.table))
+		rows, err := pool.Query(ctx, `
+SELECT column_name, data_type, is_generated, COALESCE(generation_expression,'')
+FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 ORDER BY ordinal_position`,
+			target.schema, target.table)
+		if err != nil {
+			report.WriteString(fmt.Sprintf("query error: %v\n", err))
+			continue
+		}
+		columns := 0
+		for rows.Next() {
+			var name, dataType, generated, expression string
+			if scanErr := rows.Scan(&name, &dataType, &generated, &expression); scanErr != nil {
+				report.WriteString(fmt.Sprintf("scan error: %v ", scanErr))
+				break
+			}
+			columns++
+			report.WriteString(fmt.Sprintf("[%s %s generated=%s %q] ", name, dataType, generated, expression))
+		}
+		rows.Close()
+		if rowsErr := rows.Err(); rowsErr != nil {
+			report.WriteString(fmt.Sprintf("iterate error: %v ", rowsErr))
+		}
+		if columns == 0 {
+			report.WriteString("(no columns; table absent)")
+		}
+		report.WriteString("\n")
+	}
+	return report.String()
+}
+
+func runManagedBootstrapWorkerWiringConcurrentBoundary(t *testing.T) {
 	ctx, dsn, engine, pool, authorityStore := setupBootstrapControl(t)
 	defer engine.Close()
 	defer pool.Close()
@@ -42,9 +93,13 @@ func TestManagedBootstrapWorkerWiringConcurrentBoundary(t *testing.T) {
 DROP SCHEMA IF EXISTS wallaby_bootstrap_target CASCADE;
 DROP TABLE IF EXISTS public.wallaby_bootstrap_wiring_a;
 DROP TABLE IF EXISTS public.wallaby_bootstrap_wiring_b;
-CREATE TABLE public.wallaby_bootstrap_wiring_a(id bigint PRIMARY KEY,value text NOT NULL);
+CREATE TABLE public.wallaby_bootstrap_wiring_a(
+  id bigint PRIMARY KEY,
+  value text NOT NULL,
+  rendered text GENERATED ALWAYS AS (value || '-generated') STORED
+);
 CREATE TABLE public.wallaby_bootstrap_wiring_b(id bigint PRIMARY KEY,value text NOT NULL);
-INSERT INTO public.wallaby_bootstrap_wiring_a VALUES(1,'snapshot');
+INSERT INTO public.wallaby_bootstrap_wiring_a(id,value) VALUES(1,'snapshot');
 INSERT INTO public.wallaby_bootstrap_wiring_b VALUES(10,'second-table');
 CREATE SCHEMA wallaby_bootstrap_target;
 CREATE TABLE wallaby_bootstrap_target.wallaby_bootstrap_wiring_a(LIKE public.wallaby_bootstrap_wiring_a INCLUDING ALL);
@@ -67,6 +122,7 @@ DROP TABLE IF EXISTS public.wallaby_bootstrap_wiring_b`)
 		ID: flowID,
 		Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
 			"dsn": dsn, "managed": "true", "bootstrap": "required",
+			"managed_profile": connector.ManagedProfilePostgresToPostgresV1, "streaming_transactions": "true",
 			"ensure_publication": "true", "ensure_state": "true",
 			"tables":           "public.wallaby_bootstrap_wiring_a,public.wallaby_bootstrap_wiring_b",
 			"snapshot_workers": "2", "batch_size": "1", "batch_timeout": "20ms", "status_interval": "20ms",
@@ -74,6 +130,7 @@ DROP TABLE IF EXISTS public.wallaby_bootstrap_wiring_b`)
 		}},
 		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
 			"dsn": dsn, "schema": "wallaby_bootstrap_target", "write_mode": "target", "batch_mode": "target",
+			"managed_profile":         connector.ManagedProfilePostgresToPostgresV1,
 			"destination_revision_id": destinationRevisionID, "synchronous_commit": "on", "meta_table_enabled": "false",
 		}}},
 		Config: flow.Config{AckPolicy: stream.AckPolicyAll},
@@ -142,7 +199,7 @@ DROP TABLE IF EXISTS public.wallaby_bootstrap_wiring_b`)
 	}
 	if _, err := pool.Exec(ctx, `
 UPDATE public.wallaby_bootstrap_wiring_a SET value='stream' WHERE id=1;
-INSERT INTO public.wallaby_bootstrap_wiring_a VALUES(2,'after-cut')`); err != nil {
+INSERT INTO public.wallaby_bootstrap_wiring_a(id,value) VALUES(2,'after-cut')`); err != nil {
 		t.Fatal(err)
 	}
 	close(continueBootstrap)
@@ -178,18 +235,18 @@ INSERT INTO public.wallaby_bootstrap_wiring_a VALUES(2,'after-cut')`); err != ni
 		default:
 		}
 		var count int
-		var values string
+		var values, rendered string
 		err := pool.QueryRow(ctx, `
-SELECT count(*),COALESCE(string_agg(value,',' ORDER BY id),'')
-FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a`).Scan(&count, &values)
-		if err == nil && count == 2 && values == "stream,after-cut" {
+SELECT count(*),COALESCE(string_agg(value,',' ORDER BY id),''),COALESCE(string_agg(rendered,',' ORDER BY id),'')
+FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a`).Scan(&count, &values, &rendered)
+		if err == nil && count == 2 && values == "stream,after-cut" && rendered == "stream-generated,after-cut-generated" {
 			var second string
 			if err := pool.QueryRow(ctx, `SELECT value FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_b WHERE id=10`).Scan(&second); err == nil && second == "second-table" {
 				break
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("managed bootstrap/CDC boundary did not converge: count=%d values=%q err=%v", count, values, err)
+			t.Fatalf("managed bootstrap/CDC boundary did not converge: count=%d values=%q rendered=%q err=%v\n%s", count, values, rendered, err, describeBootstrapWiringShape(ctx, pool))
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -206,23 +263,37 @@ FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a`).Scan(&count, &values)
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkpointDeadline := time.Now().Add(10 * time.Second)
-	for {
-		err := pool.QueryRow(ctx, `SELECT lsn FROM authoritative_checkpoints WHERE flow_incarnation_id=(SELECT incarnation_id FROM flows WHERE id=$1)`, flowID).Scan(&advancedCheckpoint)
-		if err == nil {
-			advanced, parseErr := pglogrepl.ParseLSN(advancedCheckpoint)
-			if parseErr != nil {
-				t.Fatal(parseErr)
+	waitForCheckpointReceipt := func(minimum pglogrepl.LSN, deadline time.Time, label string) string {
+		t.Helper()
+		for {
+			var checkpointLSN string
+			var flushRecorded bool
+			err := pool.QueryRow(ctx, `
+SELECT checkpoint.lsn,
+       EXISTS(
+         SELECT 1 FROM source_ack_receipts AS receipt
+         WHERE receipt.flow_incarnation_id=checkpoint.flow_incarnation_id
+           AND receipt.checkpoint_lsn=checkpoint.lsn
+           AND receipt.observed_flush_lsn IS NOT NULL
+       )
+FROM authoritative_checkpoints AS checkpoint
+WHERE checkpoint.flow_incarnation_id=(SELECT incarnation_id FROM flows WHERE id=$1)`, flowID).Scan(&checkpointLSN, &flushRecorded)
+			if err == nil {
+				checkpointPosition, parseErr := pglogrepl.ParseLSN(checkpointLSN)
+				if parseErr != nil {
+					t.Fatal(parseErr)
+				}
+				if checkpointPosition > minimum && flushRecorded {
+					return checkpointLSN
+				}
 			}
-			if advanced > cut {
-				break
+			if time.Now().After(deadline) {
+				t.Fatalf("%s checkpoint %s did not advance beyond %s with a source flush receipt: %v", label, checkpointLSN, minimum, err)
 			}
+			time.Sleep(25 * time.Millisecond)
 		}
-		if time.Now().After(checkpointDeadline) {
-			t.Fatalf("authoritative checkpoint %s did not advance beyond bootstrap cut %s before pause: %v", advancedCheckpoint, cut, err)
-		}
-		time.Sleep(25 * time.Millisecond)
 	}
+	advancedCheckpoint = waitForCheckpointReceipt(cut, time.Now().Add(10*time.Second), "pre-pause")
 
 	_, pauseControl, err := engine.RequestPause(ctx, flowID)
 	if err != nil {
@@ -285,7 +356,7 @@ FROM source_bootstraps WHERE flow_incarnation_id=(SELECT incarnation_id FROM flo
 	if advanced <= cut {
 		t.Fatalf("authoritative checkpoint %s did not advance beyond bootstrap cut %s before pause", advanced, cut)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO public.wallaby_bootstrap_wiring_a VALUES(3,'resumed')`); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO public.wallaby_bootstrap_wiring_a(id,value) VALUES(3,'resumed')`); err != nil {
 		t.Fatal(err)
 	}
 	_, resumeControl, err := engine.PlanStart(ctx, flowID, true)
@@ -307,9 +378,9 @@ FROM source_bootstraps WHERE flow_incarnation_id=(SELECT incarnation_id FROM flo
 	}()
 	resumeDeadline := time.Now().Add(20 * time.Second)
 	for {
-		var resumedValue string
-		err := pool.QueryRow(ctx, `SELECT value FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a WHERE id=3`).Scan(&resumedValue)
-		if err == nil && resumedValue == "resumed" {
+		var resumedValue, resumedRendered string
+		err := pool.QueryRow(ctx, `SELECT value,rendered FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a WHERE id=3`).Scan(&resumedValue, &resumedRendered)
+		if err == nil && resumedValue == "resumed" && resumedRendered == "resumed-generated" {
 			break
 		}
 		select {
@@ -318,7 +389,7 @@ FROM source_bootstraps WHERE flow_incarnation_id=(SELECT incarnation_id FROM flo
 		default:
 		}
 		if time.Now().After(resumeDeadline) {
-			t.Fatalf("generation+1 did not continue CDC: value=%q err=%v", resumedValue, err)
+			t.Fatalf("generation+1 did not continue CDC: value=%q rendered=%q err=%v", resumedValue, resumedRendered, err)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -329,6 +400,7 @@ FROM source_bootstraps WHERE flow_incarnation_id=(SELECT incarnation_id FROM flo
 	if exporterAttempts.Load() != 2 {
 		t.Fatalf("resume regressed into bootstrap: exporter attempts=%d", exporterAttempts.Load())
 	}
+	preEvolutionCheckpoint := waitForCheckpointReceipt(advanced, time.Now().Add(10*time.Second), "pre-schema-restart")
 	cancelResumed()
 	select {
 	case err := <-resumedErrCh:
@@ -337,6 +409,100 @@ FROM source_bootstraps WHERE flow_incarnation_id=(SELECT incarnation_id FROM flo
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("resumed managed runner did not stop")
+	}
+
+	// Change the source schema while no decoder is running. The replacement's
+	// first Relation message contains only the new shape, so successful target
+	// evolution proves that the authoritative checkpoint schema baseline—not a
+	// process-local cache—drives the diff after restart.
+	if _, err := pool.Exec(ctx, `
+ALTER TABLE public.wallaby_bootstrap_wiring_a ADD COLUMN note text;
+UPDATE public.wallaby_bootstrap_wiring_a SET value='evolved-after-restart',note='durable-baseline' WHERE id=3`); err != nil {
+		t.Fatal(err)
+	}
+	evolutionSource := &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}
+	evolutionCtx, cancelEvolution := context.WithCancel(ctx)
+	evolutionErrCh := make(chan error, 1)
+	go func() {
+		evolutionErrCh <- (&runner.FlowRunner{
+			Engine: engine, Checkpoints: checkpoints, ExpectedGeneration: resumeControl.Generation,
+			ExecutionBackend: "integration", ExecutionID: "managed-schema-evolution-restart",
+			Authority: authorityStore, Deliveries: coordinator,
+		}).Run(evolutionCtx, flowDef, evolutionSource, []stream.DestinationConfig{{Spec: flowDef.Destinations[0], Dest: &pgdest.Destination{}}})
+	}()
+	evolutionDeadline := time.Now().Add(20 * time.Second)
+	for {
+		var value, note, rendered string
+		err := pool.QueryRow(ctx, `SELECT value,note,rendered FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a WHERE id=3`).Scan(&value, &note, &rendered)
+		if err == nil && value == "evolved-after-restart" && note == "durable-baseline" && rendered == "evolved-after-restart-generated" {
+			break
+		}
+		select {
+		case runErr := <-evolutionErrCh:
+			t.Fatalf("restart schema-evolution runner exited before convergence: %v", runErr)
+		default:
+		}
+		if time.Now().After(evolutionDeadline) {
+			t.Fatalf("restart schema evolution did not converge: value=%q note=%q rendered=%q err=%v", value, note, rendered, err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	initial, ok := evolutionSource.InitialCheckpoint()
+	if !ok {
+		t.Fatal("schema-evolution restart did not restore an authoritative checkpoint")
+	}
+	preEvolutionPosition, err := pglogrepl.ParseLSN(preEvolutionCheckpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialPosition, err := pglogrepl.ParseLSN(initial.LSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initialPosition < preEvolutionPosition {
+		t.Fatalf("schema-evolution restart checkpoint=%s, want at least %s", initial.LSN, preEvolutionCheckpoint)
+	}
+	for {
+		var checkpointLSN, baselineJSON string
+		var flushRecorded bool
+		err := pool.QueryRow(ctx, `
+SELECT checkpoint.lsn,
+       COALESCE(checkpoint.metadata->>$2,''),
+       EXISTS(
+         SELECT 1 FROM source_ack_receipts AS receipt
+         WHERE receipt.flow_incarnation_id=checkpoint.flow_incarnation_id
+           AND receipt.checkpoint_lsn=checkpoint.lsn
+           AND receipt.observed_flush_lsn IS NOT NULL
+       )
+FROM authoritative_checkpoints AS checkpoint
+WHERE checkpoint.flow_incarnation_id=(SELECT incarnation_id FROM flows WHERE id=$1)`, flowID, connector.ManagedSchemaBaselinesMetadataKey).Scan(&checkpointLSN, &baselineJSON, &flushRecorded)
+		if err == nil {
+			checkpointPosition, parseErr := pglogrepl.ParseLSN(checkpointLSN)
+			if parseErr != nil {
+				t.Fatal(parseErr)
+			}
+			if checkpointPosition > preEvolutionPosition && flushRecorded && strings.Contains(baselineJSON, "note") {
+				break
+			}
+		}
+		select {
+		case runErr := <-evolutionErrCh:
+			t.Fatalf("schema-evolution runner exited before checkpoint and source receipt: %v", runErr)
+		default:
+		}
+		if time.Now().After(evolutionDeadline) {
+			t.Fatalf("schema-evolution checkpoint/flush did not converge after target commit: %v", err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	cancelEvolution()
+	select {
+	case err := <-evolutionErrCh:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("schema-evolution managed runner exit: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("schema-evolution managed runner did not stop")
 	}
 
 	if err := pool.QueryRow(ctx, `SELECT ownership FROM source_resources WHERE physical_name=$1 AND resource_kind='slot'`, slot).Scan(&slotOwnership); err != nil {

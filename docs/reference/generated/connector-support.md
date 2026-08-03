@@ -30,4 +30,25 @@
 | `proto` | placeholder | no | no | no | no | no | no | no |
 | `parquet` | placeholder | no | no | no | no | no | no | no |
 
-These are guaranteed defaults. Options can reduce guarantees; startup validation resolves configured capabilities before execution.
+## Managed profiles
+
+| Profile | Status | Source | Destination | PostgreSQL | Pairing | Ack | Sinks | Delivery |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `postgresql-to-postgresql-v1` | maintained | `postgres` | `postgres` | 14, 15, 16, 17 | same major | all | one | at-least-once |
+
+| Admission/evidence gate | Real service | Required test |
+| --- | --- | --- |
+| postgres versions | yes | `TestPostgresManagedProfileVersionContract` |
+| streamed transactions | yes | `TestPostgresManagedStreamedSubtransactionAbort` |
+| target admission | yes | `TestPostgresManagedProfileTargetAdmission` |
+| schema evolution | yes | `TestPostgresManagedProfileSourceSchemaEvolutionAfterRestart` |
+| DDL reconciliation | yes | `TestPostgresManagedProfileDDLCommitReconciliation` |
+| snapshot to CDC | yes | `TestManagedBootstrapWorkerWiringConcurrentBoundary` |
+| process kill | yes | `TestWallabyWorkerProcessKillRecovery` |
+| pool exhaustion | yes | `TestPostgresManagedProfilePoolExhaustion` |
+| restart | yes | `TestPostgresManagedOverlappingTakeoverAdoptsConcurrentCommit` |
+| retry and retention | yes | `TestPostgresManagedDeliveryRetryAndRetention` |
+| metrics | no | `TestPostgresManagedProfileMetrics` |
+| upgrade migrations | yes | `TestPostgresManagedProfileUpgradeMigrations` |
+
+These are guaranteed defaults. Options can reduce guarantees; startup validation resolves configured capabilities before execution. Generic PostgreSQL modes remain experimental; maintained status applies only to the exact named managed profile above.

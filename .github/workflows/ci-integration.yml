@@ -217,3 +217,77 @@ jobs:
         with:
           path: .cache/gocache
           key: ${{ steps.cache-go-build.outputs.cache-primary-key }}
+
+  postgres-managed-profile:
+    name: postgres-managed-profile-${{ matrix.postgres }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: [14, 15, 16, 17]
+    env:
+      GOBIN: ${{ github.workspace }}/.cache/bin
+      GOMODCACHE: ${{ github.workspace }}/.cache/gomod
+      GOCACHE: ${{ github.workspace }}/.cache/gocache
+    steps:
+      - name: Checkout
+        # actions/checkout v5.0.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup just
+        uses: ./.github/actions/setup-just
+
+      - name: Setup Go
+        # actions/setup-go v6.5.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Start PostgreSQL ${{ matrix.postgres }} with logical replication
+        run: |
+          container="wallaby-profile-pg-${{ matrix.postgres }}"
+          docker run --detach --name "${container}" \
+            --env POSTGRES_USER=postgres \
+            --env POSTGRES_PASSWORD=postgres \
+            --env POSTGRES_DB=postgres \
+            --publish 127.0.0.1::5432 \
+            "postgres:${{ matrix.postgres }}-alpine" \
+            -c wal_level=logical
+          port=$(docker port "${container}" 5432/tcp | awk -F: '{print $NF}')
+          test -n "${port}"
+          for attempt in $(seq 1 60); do
+            if docker exec "${container}" \
+              pg_isready -U postgres -d postgres >/dev/null 2>&1
+            then
+              break
+            fi
+            if [ "${attempt}" -eq 60 ]; then
+              docker logs "${container}" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          test_pg_dsn=$(
+            printf '%s:%s@127.0.0.1:%s/%s?sslmode=disable' \
+              'postgres://postgres' 'postgres' "${port}" 'postgres'
+          )
+          printf 'TEST_PG_DSN=%s\n' "${test_pg_dsn}" >> "${GITHUB_ENV}"
+
+      - name: Repeated exact managed PostgreSQL profile admission and evidence
+        run: |
+          for iteration in 1 2; do
+            echo "managed PostgreSQL profile iteration ${iteration}/2"
+            just test-checkpoint2-postgres-profile
+          done
+
+      - name: Stop managed profile PostgreSQL
+        if: always()
+        run: |
+          docker rm --force \
+            "wallaby-profile-pg-${{ matrix.postgres }}" || true

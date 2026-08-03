@@ -22,6 +22,60 @@ func TestBootstrapMetricLabelsAreBounded(t *testing.T) {
 	}
 }
 
+func TestPostgresManagedProfileMetrics(t *testing.T) {
+	oldMeterProvider := otel.GetMeterProvider()
+	oldMetrics := durableMetrics
+	defer func() {
+		otel.SetMeterProvider(oldMeterProvider)
+		durableMetrics = oldMetrics
+	}()
+
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	otel.SetMeterProvider(meterProvider)
+	durableMetrics = &durableMetricSet{}
+	ctx := context.Background()
+	for _, outcome := range []string{"attempt_prepared", "receipt_committed", "receipt_reused", "indeterminate", "apply_failed", "flow-specific-unbounded-value"} {
+		RecordDeliveryOutcome(ctx, outcome)
+	}
+	RecordFenceRejection(ctx, "unbounded-flow-identity")
+	RecordLeaseTakeover(ctx, "another-unbounded-flow-identity")
+
+	var metrics metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &metrics); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, scope := range metrics.ScopeMetrics {
+		for _, measurement := range scope.Metrics {
+			sum, ok := measurement.Data.(metricdata.Sum[int64])
+			if !ok {
+				continue
+			}
+			for _, point := range sum.DataPoints {
+				if measurement.Name == "wallaby.delivery.outcomes" {
+					if value, ok := point.Attributes.Value(attribute.Key("outcome")); ok {
+						got[value.AsString()] = true
+					}
+				}
+				if measurement.Name == "wallaby.fence.rejections" || measurement.Name == "wallaby.lease.takeovers" {
+					if value, ok := point.Attributes.Value(attribute.Key("flow.id")); ok {
+						t.Fatalf("unbounded flow.id=%q leaked into %s", value.AsString(), measurement.Name)
+					}
+				}
+			}
+		}
+	}
+	for _, outcome := range []string{"attempt_prepared", "receipt_committed", "receipt_reused", "indeterminate", "apply_failed", "other"} {
+		if !got[outcome] {
+			t.Fatalf("missing bounded managed delivery metric %q: %v", outcome, got)
+		}
+	}
+	if got["flow-specific-unbounded-value"] {
+		t.Fatalf("unbounded delivery outcome leaked into metric labels: %v", got)
+	}
+}
+
 func TestBootstrapTelemetrySDKRecordsRequiredBoundedSignals(t *testing.T) {
 	oldTracerProvider := otel.GetTracerProvider()
 	oldMeterProvider := otel.GetMeterProvider()
@@ -38,7 +92,7 @@ func TestBootstrapTelemetrySDKRecordsRequiredBoundedSignals(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	otel.SetMeterProvider(meterProvider)
-	durableMetrics = durableMetricSet{}
+	durableMetrics = &durableMetricSet{}
 
 	ctx := context.Background()
 	for _, operation := range []string{"generation", "task", "recovery", "publication", "handoff", "cleanup"} {

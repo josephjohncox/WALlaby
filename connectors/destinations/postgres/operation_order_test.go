@@ -7,6 +7,19 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+func TestSchemaColumnsExcludeGeneratedColumns(t *testing.T) {
+	t.Parallel()
+
+	columns := schemaColumns(connector.Schema{Columns: []connector.Column{
+		{Name: "id", Type: "bigint"},
+		{Name: "rendered", Type: "text", Generated: true, Expression: "id::text"},
+		{Name: "value", Type: "text"},
+	}})
+	if !reflect.DeepEqual(columns, []string{"id", "value"}) {
+		t.Fatalf("schemaColumns()=%v, want writable columns only", columns)
+	}
+}
+
 func TestPostgresTargetPreservesSameKeyOperationOrder(t *testing.T) {
 	schema := connector.Schema{
 		Namespace: "public",
@@ -39,6 +52,38 @@ func TestPostgresTargetPreservesSameKeyOperationOrder(t *testing.T) {
 	}
 	if len(groups) != 3 || groups[0].kind != targetOperationDelete || groups[1].kind != targetOperationUpsert || groups[2].kind != targetOperationDelete {
 		t.Fatalf("operation groups=%+v, want delete/upsert/delete", groups)
+	}
+}
+
+func TestPartitionUpsertRecordsPreservesRepeatedKeyPartialImages(t *testing.T) {
+	schema := connector.Schema{
+		Namespace: "public",
+		Name:      "widgets",
+		Columns: []connector.Column{
+			{Name: "id", Type: "bigint"},
+			{Name: "payload", Type: "text"},
+			{Name: "counter", Type: "bigint"},
+		},
+	}
+	records := []connector.Record{
+		{Table: "widgets", Operation: connector.OpUpdate, Key: []byte(`{"id":1}`), After: map[string]any{"id": int64(1), "payload": "new-payload"}},
+		{Table: "widgets", Operation: connector.OpUpdate, Key: []byte(`{"id":2}`), After: map[string]any{"id": int64(2), "counter": int64(1)}},
+		{Table: "widgets", Operation: connector.OpUpdate, Key: []byte(`{"id":1}`), After: map[string]any{"id": int64(1), "counter": int64(1)}, Unchanged: []string{"payload"}},
+	}
+
+	batches, err := partitionUpsertRecords(records, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) != 2 || len(batches[0]) != 2 || len(batches[1]) != 1 {
+		t.Fatalf("partition sizes=%v, want [2 1]", []int{len(batches[0]), len(batches[1])})
+	}
+	var flattened []connector.Record
+	for _, batch := range batches {
+		flattened = append(flattened, batch...)
+	}
+	if !reflect.DeepEqual(flattened, records) {
+		t.Fatalf("partition changed ordered records:\n got: %#v\nwant: %#v", flattened, records)
 	}
 }
 

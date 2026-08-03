@@ -12,6 +12,16 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+func TestManagedPostgresProfileRejectsUnprovenMixedMajorPair(t *testing.T) {
+	t.Parallel()
+	if err := validateManagedPostgresMajorPair(14, 17); err == nil {
+		t.Fatal("mixed PostgreSQL major pair was admitted without executable matrix evidence")
+	}
+	if err := validateManagedPostgresMajorPair(16, 16); err != nil {
+		t.Fatalf("same-major PostgreSQL pair rejected: %v", err)
+	}
+}
+
 func TestManagedRestoreValidatesAckIntentBeforeFeedbackOrDestinationOpen(t *testing.T) {
 	t.Parallel()
 	events := []string{}
@@ -28,6 +38,47 @@ func TestManagedRestoreValidatesAckIntentBeforeFeedbackOrDestinationOpen(t *test
 	}
 	if containsEvent(events, "destination.open") {
 		t.Fatalf("destination opened before restored feedback validation: %v", events)
+	}
+}
+
+func TestManagedRestoreSeedsSourceWithDeliveredSchemaBaselines(t *testing.T) {
+	t.Parallel()
+	events := []string{}
+	source := &managedTestSource{events: &events, initial: connector.Checkpoint{LSN: "0/10"}}
+	coordinator := &managedTestCoordinator{events: &events}
+	const baseline = `[{"Name":"widgets","Namespace":"public","Version":4,"Columns":[{"Name":"id","Type":"bigint"}]}]`
+	runner := managedTestRunner(source, &managedTestDestination{events: &events}, coordinator, managedTestCheckpointStore{checkpoint: connector.Checkpoint{
+		LSN: "0/10", Metadata: map[string]string{connector.ManagedSchemaBaselinesMetadataKey: baseline},
+	}})
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := source.openSpec.Options[connector.ManagedSchemaBaselinesMetadataKey]; got != baseline {
+		t.Fatalf("source schema baseline option=%q, want %q", got, baseline)
+	}
+}
+
+func TestManagedCancellationDominatesSourceFeedbackTransportError(t *testing.T) {
+	t.Parallel()
+	events := []string{}
+	ctx, cancel := context.WithCancel(context.Background())
+	source := &managedTestSource{events: &events, transactions: []connector.SourceTransaction{{
+		SourceLineageID: "lineage-1", TransactionID: 7,
+		BeginLSN: "0/10", CommitLSN: "0/20", EndLSN: "0/20",
+		Checkpoint: connector.Checkpoint{LSN: "0/20"},
+	}}}
+	feedbackCalls := 0
+	coordinator := &managedTestCoordinator{events: &events, commitFeedback: func() error {
+		feedbackCalls++
+		if feedbackCalls == 1 {
+			return nil
+		}
+		cancel()
+		return errors.New("replication stream stopped before source feedback was sent")
+	}}
+	runner := managedTestRunner(source, &managedTestDestination{events: &events}, coordinator, managedTestCheckpointStore{checkpoint: connector.Checkpoint{LSN: "0/10"}})
+	if err := runner.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error=%v, want context cancellation rather than shutdown transport error", err)
 	}
 }
 
@@ -98,6 +149,8 @@ type managedTestSource struct {
 	bootstrapResult connector.ManagedBootstrapResult
 	openSpec        connector.Spec
 	acks            int
+	transactions    []connector.SourceTransaction
+	transactionRead int
 }
 
 func (s *managedTestSource) Open(_ context.Context, spec connector.Spec) error {
@@ -113,7 +166,12 @@ func (s *managedTestSource) Read(context.Context) (connector.Batch, error) {
 	return connector.Batch{}, io.EOF
 }
 func (s *managedTestSource) ReadTransaction(context.Context) (connector.SourceTransaction, error) {
-	return connector.SourceTransaction{}, io.EOF
+	if s.transactionRead >= len(s.transactions) {
+		return connector.SourceTransaction{}, io.EOF
+	}
+	transaction := s.transactions[s.transactionRead]
+	s.transactionRead++
+	return transaction, nil
 }
 func (s *managedTestSource) InitialCheckpoint() (connector.Checkpoint, bool) {
 	return s.initial, s.initial.LSN != ""
@@ -122,6 +180,12 @@ func (s *managedTestSource) Ack(_ context.Context, _ connector.Checkpoint) error
 	s.acks++
 	*s.events = append(*s.events, "source.ack")
 	return nil
+}
+func (s *managedTestSource) AckWithEvidence(ctx context.Context, checkpoint connector.Checkpoint) (connector.SourceFlushEvidence, error) {
+	if err := s.Ack(ctx, checkpoint); err != nil {
+		return connector.SourceFlushEvidence{}, err
+	}
+	return connector.SourceFlushEvidence{ObservedFlushLSN: checkpoint.LSN}, nil
 }
 func (s *managedTestSource) Close(context.Context) error {
 	*s.events = append(*s.events, "source.close")
@@ -152,6 +216,12 @@ func (d *managedTestDestination) Close(context.Context) error {
 func (*managedTestDestination) Apply(context.Context, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
 	return connector.DeliveryEvidence{}, nil
 }
+func (*managedTestDestination) ValidateTransaction(context.Context, connector.SourceTransaction) error {
+	return nil
+}
+func (*managedTestDestination) ApplyTransaction(context.Context, connector.DeliveryIntent, connector.SourceTransaction) (connector.DeliveryEvidence, error) {
+	return connector.DeliveryEvidence{}, nil
+}
 func (*managedTestDestination) Reconcile(context.Context, connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
 	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
 }
@@ -175,8 +245,9 @@ func (*managedTestDestination) AbandonBootstrap(context.Context, connector.Boots
 }
 
 type managedTestCoordinator struct {
-	events      *[]string
-	validateErr error
+	events         *[]string
+	validateErr    error
+	commitFeedback func() error
 }
 
 func (c *managedTestCoordinator) AuthorizeAck(_ context.Context, _ connector.RunFence, checkpoint connector.Checkpoint) (connector.AckGrant, error) {
@@ -187,11 +258,28 @@ func (c *managedTestCoordinator) AuthorizeAck(_ context.Context, _ connector.Run
 func (*managedTestCoordinator) Deliver(context.Context, connector.RunFence, connector.DeliveryIntent, connector.Batch, connector.ManagedDestination) (connector.AckGrant, error) {
 	return connector.AckGrant{}, errors.New("unexpected delivery")
 }
+func (*managedTestCoordinator) DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedTransactionDestination) (connector.AckGrant, error) {
+	return connector.AckGrant{}, errors.New("unexpected transaction delivery")
+}
 func (c *managedTestCoordinator) ValidateAckGrant(context.Context, connector.RunFence, connector.AckGrant) error {
 	*c.events = append(*c.events, "coordinator.validate")
 	return c.validateErr
 }
 func (c *managedTestCoordinator) RecordAckReceipt(context.Context, connector.RunFence, connector.AckGrant, string) error {
+	*c.events = append(*c.events, "coordinator.receipt")
+	return nil
+}
+func (c *managedTestCoordinator) CommitSourceFeedback(ctx context.Context, _ connector.RunFence, grant connector.AckGrant, source connector.FlushEvidenceSource) error {
+	*c.events = append(*c.events, "coordinator.validate")
+	if c.validateErr != nil {
+		return c.validateErr
+	}
+	if c.commitFeedback != nil {
+		return c.commitFeedback()
+	}
+	if _, err := source.AckWithEvidence(ctx, grant.Checkpoint); err != nil {
+		return err
+	}
 	*c.events = append(*c.events, "coordinator.receipt")
 	return nil
 }

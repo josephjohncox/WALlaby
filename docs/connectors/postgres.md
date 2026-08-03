@@ -50,6 +50,8 @@ Updates and deletes need a stable row identity. Prefer a primary key. If a table
 | `batch_size` | no | `100` | Maximum records per batch. |
 | `batch_timeout` | no | `1s` | Maximum wait before returning a partial batch. |
 | `status_interval` | no | `10s` | PostgreSQL standby-status update interval. |
+| `streaming_transactions` | no | `true` for managed execution | Use pgoutput protocol v2 streamed transactions. |
+| `managed_profile` | no | — | Exact promoted profile name; use `postgresql-to-postgresql-v1` only with its full contract. |
 | `resolve_types` | no | `true` | Resolve PostgreSQL type metadata. |
 | `emit_empty` | no | `false` | Emit empty polling batches. Lifecycle workers normally leave this disabled. |
 
@@ -87,8 +89,11 @@ The `postgres` destination applies inserts, updates, and deletes to ordinary tab
 | `write_mode` | no | `target` | `target` applies mutations; `append` appends records. |
 | `synchronous_commit` | no | server setting | Transaction durability setting for destination writes. |
 | `meta_table_enabled` | no | `true` | Maintain WALlaby's destination metadata table. |
+| `managed_profile` | no | — | Must match the source profile for maintained managed execution. |
 
 The destination does not make a non-idempotent database magically idempotent. Use primary keys or another stable conflict strategy, especially with primary acknowledgement where a crash can replay the primary write.
+
+For maintained PostgreSQL-to-PostgreSQL execution, use the exact [managed profile](postgres-managed-profile.md). Generic source/destination options remain experimental and do not inherit that profile's support status.
 
 ### Minimal destination
 

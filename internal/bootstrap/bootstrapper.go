@@ -556,12 +556,54 @@ FROM source_bootstrap_tasks WHERE bootstrap_id=$1`, persisted.BootstrapID).Scan(
 	if receiptCount != 1 || taskCount == 0 || incomplete != 0 {
 		return connector.Checkpoint{}, errors.New("complete snapshot task receipts and one publication receipt are required before CDC handoff")
 	}
-	checkpoint = connector.Checkpoint{LSN: persisted.ConsistentLSN.String()}
+	rows, err := tx.Query(ctx, `
+SELECT schema_json FROM source_bootstrap_tasks
+WHERE bootstrap_id=$1
+ORDER BY relation_id,task_id`, persisted.BootstrapID)
+	if err != nil {
+		return connector.Checkpoint{}, fmt.Errorf("load bootstrap handoff schemas: %w", err)
+	}
+	baselineTransaction := connector.SourceTransaction{}
+	for rows.Next() {
+		var encoded []byte
+		if err := rows.Scan(&encoded); err != nil {
+			rows.Close()
+			return connector.Checkpoint{}, fmt.Errorf("scan bootstrap handoff schema: %w", err)
+		}
+		if len(encoded) == 0 || string(encoded) == "{}" || string(encoded) == "null" {
+			// RecordTaskReceipt is a compatibility helper for callers that do not
+			// freeze a managed schema manifest. The named profile always stores
+			// schema_json through FreezeManifest.
+			continue
+		}
+		var schema connector.Schema
+		if err := json.Unmarshal(encoded, &schema); err != nil {
+			rows.Close()
+			return connector.Checkpoint{}, fmt.Errorf("decode bootstrap handoff schema: %w", err)
+		}
+		baselineTransaction.Fragments = append(baselineTransaction.Fragments, connector.TransactionFragment{Batch: connector.Batch{Schema: schema}})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return connector.Checkpoint{}, fmt.Errorf("iterate bootstrap handoff schemas: %w", err)
+	}
+	rows.Close()
+	metadata := map[string]string{"bootstrap_id": persisted.BootstrapID.String()}
+	if len(baselineTransaction.Fragments) > 0 {
+		metadata, err = connector.MergeManagedSchemaBaselines(metadata, baselineTransaction)
+		if err != nil {
+			return connector.Checkpoint{}, err
+		}
+	}
+	checkpoint = connector.Checkpoint{LSN: persisted.ConsistentLSN.String(), Metadata: metadata}
 	positionID, err := connector.CheckpointPositionID(checkpoint)
 	if err != nil {
 		return connector.Checkpoint{}, err
 	}
-	metadataJSON := []byte(fmt.Sprintf(`{"bootstrap_id":%q}`, persisted.BootstrapID.String()))
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return connector.Checkpoint{}, fmt.Errorf("encode bootstrap checkpoint metadata: %w", err)
+	}
 	var currentLSN string
 	err = tx.QueryRow(ctx, `SELECT lsn FROM authoritative_checkpoints WHERE flow_incarnation_id=$1 FOR UPDATE`, fence.FlowIncarnationID).Scan(&currentLSN)
 	switch {

@@ -156,6 +156,52 @@ test-checkpoint1-integration:
     IT_KIND_CLUSTER="${harness_base}-direct" just test-durable-integration
     IT_KIND_CLUSTER="${harness_base}-dbos" just test-durable-dbos-integration
 
+# Checkpoint-2 named PostgreSQL profile gate. CI runs this recipe against every
+# admitted PostgreSQL major. JSON verification makes missing or skipped evidence
+# fail instead of letting a stale -run expression pass vacuously.
+test-checkpoint2-postgres-profile:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test -n "${TEST_PG_DSN:-}" || { echo 'TEST_PG_DSN is required' >&2; exit 2; }
+    mkdir -p "$(dirname '{{ integration_worker_binary }}')"
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} build -o "{{ integration_worker_binary }}" ./cmd/wallaby-worker
+    results=$(mktemp)
+    trap 'rm -f "${results}"' EXIT
+    required=
+    required+='TestManagedProfileCannotBypassManagedAdmission'
+    required+=',TestPostgresManagedProfileVersionContract'
+    required+=',TestPostgresManagedStreamedSubtransactionAbort'
+    required+=',TestPostgresManagedProfileTargetAdmission'
+    required+=',TestPostgresManagedProfileDestinationSchemaEvolution'
+    required+=',TestPostgresManagedProfileDDLTargetMapping'
+    required+=',TestPostgresManagedProfileDDLCommitReconciliation'
+    required+=',TestPostgresManagedProfileUpgradeMigrations'
+    required+=',TestPostgresManagedFullTransactionPreservesFragmentsAndMarker'
+    required+=',TestPostgresManagedTransactionCommitBeforeReceiptReconciles'
+    required+=',TestPostgresManagedOverlappingTakeoverAdoptsConcurrentCommit'
+    required+=',TestPostgresManagedDeliveryRetryAndRetention'
+    required+=',TestManagedDeliveryRetentionRunsDuringLongLivedFlow'
+    required+=',TestPostgresAuthorizedSourceFlushRejectsStaleWorker'
+    required+=',TestPostgresToPostgresManagedRecoveryContract'
+    required+=',TestManagedBootstrapWorkerWiringConcurrentBoundary'
+    required+=',TestPostgresManagedProfileSourceSchemaEvolutionAfterRestart'
+    required+=',TestWallabyWorkerProcessKillRecovery'
+    required+=',TestPostgresManagedProfilePoolExhaustion'
+    required+=',TestPostgresManagedTargetReceiptRollingCompatibility'
+    required+=',TestPostgresManagedProfileMetrics'
+    filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
+    set +e
+    WALLABY_WORKER_BINARY="{{ integration_worker_binary }}" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" \
+      {{ go }} test -p 1 -count=1 -json \
+      ./tests ./internal/runner ./internal/replication ./connectors/destinations/postgres ./internal/telemetry \
+      -run "${filter}" >"${results}"
+    test_rc=$?
+    set -e
+    cat "${results}"
+    test "${test_rc}" -eq 0
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./scripts/verify-go-test-json.go \
+      -results "${results}" -required "${required}"
+
 # Nightly increases property checks and repeats worker bootstrap/fencing plus
 # DBOS bootstrap evidence. IT_REQUIRED_TESTS makes every named test no-skip.
 test-durable-nightly:
@@ -275,7 +321,7 @@ benchstat:
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-bench-summary -dir "{{ candidate }}" -format benchstat -latest=false -output "{{ candidate }}/benchstat.txt"
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run golang.org/x/perf/cmd/benchstat@latest "{{ baseline }}/benchstat.txt" "{{ candidate }}/benchstat.txt"
 
-tla: tla-flow tla-state tla-fanout tla-ddl-execution tla-lifecycle-generation tla-snapshot-transition tla-managed-durability tla-liveness tla-witness
+tla: tla-flow tla-state tla-fanout tla-ddl-execution tla-lifecycle-generation tla-snapshot-transition tla-managed-durability tla-managed-postgres-delivery tla-liveness tla-witness
 
 tla-single:
     PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} {{ tlc_args }} -config "{{ tla_config }}" "{{ tla_module }}"
@@ -301,6 +347,9 @@ tla-snapshot-transition:
 tla-managed-durability:
     TLA_MODULE=specs/ManagedDurability.tla TLA_CONFIG=specs/ManagedDurability.cfg just tla-single
 
+tla-managed-postgres-delivery:
+    TLA_MODULE=specs/ManagedPostgresDelivery.tla TLA_CONFIG=specs/ManagedPostgresDelivery.cfg just tla-single
+
 tla-liveness:
     TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowLiveness.cfg just tla-single
 
@@ -315,6 +364,7 @@ tla-coverage:
     PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} -coverage 1 -config specs/DDLExecution.cfg specs/DDLExecution.tla > "{{ tlc_coverage_dir }}/DDLExecution.txt" 2>&1
     PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} -coverage 1 -config specs/LifecycleGeneration.cfg specs/LifecycleGeneration.tla > "{{ tlc_coverage_dir }}/LifecycleGeneration.txt" 2>&1
     PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} -coverage 1 -config specs/SnapshotTransition.cfg specs/SnapshotTransition.tla > "{{ tlc_coverage_dir }}/SnapshotTransition.txt" 2>&1
+    PATH="{{ gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ tlc_java_opts }}" {{ tlc }} -coverage 1 -config specs/ManagedPostgresDelivery.cfg specs/ManagedPostgresDelivery.tla > "{{ tlc_coverage_dir }}/ManagedPostgresDelivery.txt" 2>&1
 
 tla-coverage-check:
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-tla-coverage --dir "{{ tlc_coverage_dir }}" --min "{{ tla_coverage_min }}" --ignore "{{ tla_coverage_ignore }}" --json "{{ tlc_coverage_dir }}/report.json"

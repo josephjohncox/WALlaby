@@ -85,6 +85,7 @@ const (
 	InvFlowTransitionsValid          Invariant = "FlowTransitionsValid"
 	InvAckedImpliesDelivered         Invariant = "AckedImpliesDelivered"
 	InvSourceAckRequires             Invariant = "SourceAckRequiresPolicy"
+	InvSourceFlushRequiresCheckpoint Invariant = "SourceFlushRequiresCheckpoint"
 	InvExternalCommitRequiresAttempt Invariant = "ExternalCommitRequiresAttempt"
 	InvReceiptRequiresExternalCommit Invariant = "ReceiptRequiresExternalCommit"
 	InvExternalCommitExactlyOnce     Invariant = "ExternalCommitExactlyOnce"

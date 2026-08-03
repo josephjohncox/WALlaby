@@ -23,10 +23,13 @@ Package stream delivers source batches to destinations, persists checkpoints, ap
   - [func NewJSONTraceSink\(w io.Writer\) \*JSONTraceSink](<#NewJSONTraceSink>)
   - [func \(s \*JSONTraceSink\) Emit\(\_ context.Context, event TraceEvent\)](<#JSONTraceSink.Emit>)
 - [type ManagedDeliveryCoordinator](<#ManagedDeliveryCoordinator>)
+- [type ManagedSourceFeedbackCoordinator](<#ManagedSourceFeedbackCoordinator>)
+- [type ManagedTransactionDeliveryCoordinator](<#ManagedTransactionDeliveryCoordinator>)
 - [type MemoryTraceSink](<#MemoryTraceSink>)
   - [func \(s \*MemoryTraceSink\) Emit\(\_ context.Context, event TraceEvent\)](<#MemoryTraceSink.Emit>)
   - [func \(s \*MemoryTraceSink\) Events\(\) \[\]TraceEvent](<#MemoryTraceSink.Events>)
 - [type Runner](<#Runner>)
+  - [func \(r \*Runner\) ManagedProfileEnabled\(\) bool](<#Runner.ManagedProfileEnabled>)
   - [func \(r \*Runner\) Run\(ctx context.Context\) \(retErr error\)](<#Runner.Run>)
 - [type StagingResolver](<#StagingResolver>)
 - [type StagingResolverFor](<#StagingResolverFor>)
@@ -50,7 +53,7 @@ func ValidateDestinationContracts(destinations []DestinationConfig, ackPolicy Ac
 ValidateDestinationContracts checks whether configured destinations can honor the flow's acknowledgement and DDL policies before any connector is opened.
 
 <a name="ValidateTrace"></a>
-## func [ValidateTrace](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace_validate.go#L332>)
+## func [ValidateTrace](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace_validate.go#L365>)
 
 ```go
 func ValidateTrace(events []TraceEvent, opts TraceValidationOptions) error
@@ -152,7 +155,7 @@ const (
 ```
 
 <a name="JSONTraceSink"></a>
-## type [JSONTraceSink](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L35-L38>)
+## type [JSONTraceSink](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L36-L39>)
 
 JSONTraceSink writes JSONL trace events.
 
@@ -163,7 +166,7 @@ type JSONTraceSink struct {
 ```
 
 <a name="NewJSONTraceSink"></a>
-### func [NewJSONTraceSink](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L41>)
+### func [NewJSONTraceSink](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L42>)
 
 ```go
 func NewJSONTraceSink(w io.Writer) *JSONTraceSink
@@ -172,7 +175,7 @@ func NewJSONTraceSink(w io.Writer) *JSONTraceSink
 NewJSONTraceSink returns a JSONL trace sink.
 
 <a name="JSONTraceSink.Emit"></a>
-### func \(\*JSONTraceSink\) [Emit](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L47>)
+### func \(\*JSONTraceSink\) [Emit](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L48>)
 
 ```go
 func (s *JSONTraceSink) Emit(_ context.Context, event TraceEvent)
@@ -194,8 +197,30 @@ type ManagedDeliveryCoordinator interface {
 }
 ```
 
+<a name="ManagedSourceFeedbackCoordinator"></a>
+## type [ManagedSourceFeedbackCoordinator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L27-L29>)
+
+ManagedSourceFeedbackCoordinator is the optional observed\-flush extension required by the named PostgreSQL profile.
+
+```go
+type ManagedSourceFeedbackCoordinator interface {
+    CommitSourceFeedback(context.Context, connector.RunFence, connector.AckGrant, connector.FlushEvidenceSource) error
+}
+```
+
+<a name="ManagedTransactionDeliveryCoordinator"></a>
+## type [ManagedTransactionDeliveryCoordinator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L21-L23>)
+
+ManagedTransactionDeliveryCoordinator is the optional full\-transaction extension required by the named PostgreSQL profile. Keeping it separate preserves compatibility for existing ManagedDeliveryCoordinator adapters.
+
+```go
+type ManagedTransactionDeliveryCoordinator interface {
+    DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedTransactionDestination) (connector.AckGrant, error)
+}
+```
+
 <a name="MemoryTraceSink"></a>
-## type [MemoryTraceSink](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L57-L60>)
+## type [MemoryTraceSink](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L58-L61>)
 
 MemoryTraceSink stores trace events in memory \(useful for tests\).
 
@@ -206,7 +231,7 @@ type MemoryTraceSink struct {
 ```
 
 <a name="MemoryTraceSink.Emit"></a>
-### func \(\*MemoryTraceSink\) [Emit](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L63>)
+### func \(\*MemoryTraceSink\) [Emit](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L64>)
 
 ```go
 func (s *MemoryTraceSink) Emit(_ context.Context, event TraceEvent)
@@ -215,7 +240,7 @@ func (s *MemoryTraceSink) Emit(_ context.Context, event TraceEvent)
 Emit stores a trace event.
 
 <a name="MemoryTraceSink.Events"></a>
-### func \(\*MemoryTraceSink\) [Events](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L73>)
+### func \(\*MemoryTraceSink\) [Events](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L74>)
 
 ```go
 func (s *MemoryTraceSink) Events() []TraceEvent
@@ -255,6 +280,15 @@ type Runner struct {
     DeliveryCoordinator ManagedDeliveryCoordinator
 }
 ```
+
+<a name="Runner.ManagedProfileEnabled"></a>
+### func \(\*Runner\) [ManagedProfileEnabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L632>)
+
+```go
+func (r *Runner) ManagedProfileEnabled() bool
+```
+
+
 
 <a name="Runner.Run"></a>
 ### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L79>)
@@ -300,7 +334,7 @@ type TraceCoverage struct {
 ```
 
 <a name="EvaluateTrace"></a>
-### func [EvaluateTrace](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace_validate.go#L81>)
+### func [EvaluateTrace](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace_validate.go#L85>)
 
 ```go
 func EvaluateTrace(events []TraceEvent, opts TraceValidationOptions, manifest *spec.Manifest) (TraceCoverage, error)
@@ -309,7 +343,7 @@ func EvaluateTrace(events []TraceEvent, opts TraceValidationOptions, manifest *s
 EvaluateTrace checks trace invariants and reports coverage. Ordering state is isolated per flow. PostgreSQL LSNs use their native hexadecimal ordering; decimal positions are treated as abstract batch ordinals and cannot be mixed with PostgreSQL LSNs in one flow.
 
 <a name="TraceEvent"></a>
-## type [TraceEvent](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L14-L27>)
+## type [TraceEvent](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L14-L28>)
 
 TraceEvent captures a runner event for offline validation.
 
@@ -322,6 +356,7 @@ type TraceEvent struct {
     LSN         string        `json:"lsn,omitempty"`
     Position    string        `json:"position,omitempty"`
     FlowID      string        `json:"flow_id,omitempty"`
+    Managed     bool          `json:"managed,omitempty"`
     Destination string        `json:"destination,omitempty"`
     DDL         string        `json:"ddl,omitempty"`
     EventID     int64         `json:"event_id,omitempty"`
@@ -331,7 +366,7 @@ type TraceEvent struct {
 ```
 
 <a name="TraceSink"></a>
-## type [TraceSink](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L30-L32>)
+## type [TraceSink](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace.go#L31-L33>)
 
 TraceSink receives trace events.
 

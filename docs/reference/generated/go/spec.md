@@ -330,7 +330,7 @@ var SnapshotTransitionTraceUnreachableInvariants = append([]Invariant(nil), Snap
 ```
 
 <a name="LoadManifests"></a>
-## func [LoadManifests](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L408>)
+## func [LoadManifests](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L409>)
 
 ```go
 func LoadManifests(path string) (map[SpecName]Manifest, error)
@@ -339,7 +339,7 @@ func LoadManifests(path string) (map[SpecName]Manifest, error)
 LoadManifests loads one or more manifests from a file or directory.
 
 <a name="ManifestPath"></a>
-## func [ManifestPath](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L447>)
+## func [ManifestPath](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L448>)
 
 ```go
 func ManifestPath(dir string, spec SpecName) string
@@ -433,6 +433,7 @@ const (
     InvFlowTransitionsValid          Invariant = "FlowTransitionsValid"
     InvAckedImpliesDelivered         Invariant = "AckedImpliesDelivered"
     InvSourceAckRequires             Invariant = "SourceAckRequiresPolicy"
+    InvSourceFlushRequiresCheckpoint Invariant = "SourceFlushRequiresCheckpoint"
     InvExternalCommitRequiresAttempt Invariant = "ExternalCommitRequiresAttempt"
     InvReceiptRequiresExternalCommit Invariant = "ReceiptRequiresExternalCommit"
     InvExternalCommitExactlyOnce     Invariant = "ExternalCommitExactlyOnce"
@@ -450,7 +451,7 @@ const (
 ```
 
 <a name="Manifest"></a>
-## type [Manifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L299-L307>)
+## type [Manifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L300-L308>)
 
 Manifest defines the spec coverage contract shared by TLC and Go tests.
 
@@ -467,7 +468,7 @@ type Manifest struct {
 ```
 
 <a name="AllManifests"></a>
-### func [AllManifests](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L316>)
+### func [AllManifests](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L317>)
 
 ```go
 func AllManifests() []Manifest
@@ -476,7 +477,7 @@ func AllManifests() []Manifest
 AllManifests returns manifests for all known specs.
 
 <a name="LoadManifest"></a>
-### func [LoadManifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L384>)
+### func [LoadManifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L385>)
 
 ```go
 func LoadManifest(path string) (Manifest, error)
@@ -485,7 +486,7 @@ func LoadManifest(path string) (Manifest, error)
 LoadManifest loads a coverage manifest from disk.
 
 <a name="ManifestForSpec"></a>
-### func [ManifestForSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L336>)
+### func [ManifestForSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L337>)
 
 ```go
 func ManifestForSpec(spec SpecName) (Manifest, bool)
@@ -494,7 +495,7 @@ func ManifestForSpec(spec SpecName) (Manifest, bool)
 ManifestForSpec builds a manifest for the named spec.
 
 <a name="TraceSuiteManifest"></a>
-### func [TraceSuiteManifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L310>)
+### func [TraceSuiteManifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L311>)
 
 ```go
 func TraceSuiteManifest() Manifest
@@ -503,7 +504,7 @@ func TraceSuiteManifest() Manifest
 TraceSuiteManifest returns the CDC flow manifest used by trace suite tests.
 
 <a name="Manifest.ActionMin"></a>
-### func \(Manifest\) [ActionMin](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L498>)
+### func \(Manifest\) [ActionMin](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L499>)
 
 ```go
 func (m Manifest) ActionMin(action Action) int
@@ -512,7 +513,7 @@ func (m Manifest) ActionMin(action Action) int
 
 
 <a name="Manifest.ActionSet"></a>
-### func \(Manifest\) [ActionSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L474>)
+### func \(Manifest\) [ActionSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L475>)
 
 ```go
 func (m Manifest) ActionSet() map[Action]struct{}
@@ -521,7 +522,7 @@ func (m Manifest) ActionSet() map[Action]struct{}
 
 
 <a name="Manifest.InvariantMin"></a>
-### func \(Manifest\) [InvariantMin](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L507>)
+### func \(Manifest\) [InvariantMin](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L508>)
 
 ```go
 func (m Manifest) InvariantMin(inv Invariant) int
@@ -530,7 +531,7 @@ func (m Manifest) InvariantMin(inv Invariant) int
 
 
 <a name="Manifest.InvariantSet"></a>
-### func \(Manifest\) [InvariantSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L482>)
+### func \(Manifest\) [InvariantSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L483>)
 
 ```go
 func (m Manifest) InvariantSet() map[Invariant]struct{}
@@ -539,7 +540,7 @@ func (m Manifest) InvariantSet() map[Invariant]struct{}
 
 
 <a name="Manifest.UnreachableActionSet"></a>
-### func \(Manifest\) [UnreachableActionSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L490>)
+### func \(Manifest\) [UnreachableActionSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L491>)
 
 ```go
 func (m Manifest) UnreachableActionSet() map[Action]struct{}
@@ -548,7 +549,7 @@ func (m Manifest) UnreachableActionSet() map[Action]struct{}
 
 
 <a name="Manifest.UnreachableInvariantSet"></a>
-### func \(Manifest\) [UnreachableInvariantSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L494>)
+### func \(Manifest\) [UnreachableInvariantSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L495>)
 
 ```go
 func (m Manifest) UnreachableInvariantSet() map[Invariant]struct{}
@@ -580,7 +581,7 @@ const (
 ```
 
 <a name="ParseSpecName"></a>
-### func [ParseSpecName](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L455>)
+### func [ParseSpecName](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L456>)
 
 ```go
 func ParseSpecName(value string) (SpecName, bool)
@@ -589,7 +590,7 @@ func ParseSpecName(value string) (SpecName, bool)
 
 
 <a name="SortedSpecs"></a>
-### func [SortedSpecs](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L550>)
+### func [SortedSpecs](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L551>)
 
 ```go
 func SortedSpecs() []SpecName
