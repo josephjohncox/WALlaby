@@ -29,6 +29,7 @@ type PostgresStream struct {
 	pluginArgs             []string
 	protocolVersion        int
 	streamingTransactions  bool
+	logicalMessages        bool
 	createSlot             bool
 	requireAuthorizedStart bool
 	expectedSystemID       string
@@ -240,6 +241,15 @@ func WithStartLSN(lsn pglogrepl.LSN) PostgresStreamOption {
 func WithPluginArgs(args []string) PostgresStreamOption {
 	return func(s *PostgresStream) {
 		s.pluginArgs = args
+	}
+}
+
+// WithLogicalMessages requests pgoutput logical-message delivery. The stream
+// constructs and escapes the corresponding plugin option on its live
+// PostgreSQL connection.
+func WithLogicalMessages(enabled bool) PostgresStreamOption {
+	return func(s *PostgresStream) {
+		s.logicalMessages = enabled
 	}
 }
 
@@ -514,13 +524,21 @@ func (p *PostgresStream) Start(ctx context.Context, slot, publication string) (<
 
 	pluginArgs := p.pluginArgs
 	if len(pluginArgs) == 0 {
+		escapedPublication, escapeErr := conn.EscapeString(publication)
+		if escapeErr != nil {
+			_ = conn.Close(ctx)
+			return nil, fmt.Errorf("escape replication publication name: %w", escapeErr)
+		}
 		protocolVersion := 1
 		if p.streamingTransactions {
 			protocolVersion = 2
 		}
 		pluginArgs = []string{
 			fmt.Sprintf("proto_version '%d'", protocolVersion),
-			fmt.Sprintf("publication_names '%s'", publication),
+			"publication_names '" + escapedPublication + "'",
+		}
+		if p.logicalMessages {
+			pluginArgs = append(pluginArgs, "messages 'true'")
 		}
 		if p.streamingTransactions {
 			pluginArgs = append(pluginArgs, "streaming 'on'")
@@ -1767,11 +1785,11 @@ func encodeKey(values map[string]any) ([]byte, error) {
 		}
 		name, err := json.Marshal(key)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("marshal key %q: %w", key, err)
 		}
 		value, err := json.Marshal(values[key])
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("marshal value for key %q: %w", key, err)
 		}
 		buf.Write(name)
 		buf.WriteByte(':')
