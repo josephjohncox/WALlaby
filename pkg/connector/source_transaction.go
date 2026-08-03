@@ -85,7 +85,7 @@ func (t SourceTransaction) Validate() error {
 // transaction and fragment order always do.
 func SourceTransactionContentHash(transaction SourceTransaction) (string, error) {
 	if err := transaction.Validate(); err != nil {
-		return "", err
+		return "", fmt.Errorf("validate source transaction: %w", err)
 	}
 	hash := sha256.New()
 	write := func(value string) {
@@ -99,7 +99,7 @@ func SourceTransactionContentHash(transaction SourceTransaction) (string, error)
 	for _, lsn := range []string{transaction.BeginLSN, transaction.CommitLSN, transaction.EndLSN} {
 		canonical, err := CanonicalizeCheckpointPosition(lsn)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("canonicalize source transaction LSN %q: %w", lsn, err)
 		}
 		write(canonical)
 	}
@@ -172,7 +172,9 @@ func MergeManagedSchemaBaselines(metadata map[string]string, transaction SourceT
 	if err != nil {
 		return nil, err
 	}
-	byTable := make(map[string]Schema, len(baselines)+len(transaction.Fragments))
+	// Avoid adding attacker-influenced slice lengths for a capacity hint: the
+	// addition can overflow even though map growth itself is safe.
+	byTable := make(map[string]Schema)
 	for _, schema := range baselines {
 		byTable[managedSchemaBaselineKey(schema.Namespace, schema.Name)] = schema
 	}
@@ -194,7 +196,7 @@ func MergeManagedSchemaBaselines(metadata map[string]string, transaction SourceT
 	if err != nil {
 		return nil, fmt.Errorf("marshal managed schema baselines: %w", err)
 	}
-	result := make(map[string]string, len(metadata)+1)
+	result := make(map[string]string, len(metadata))
 	for key, value := range metadata {
 		result[key] = value
 	}
