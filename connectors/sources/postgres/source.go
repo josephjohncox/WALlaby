@@ -314,7 +314,10 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		opts = append(opts, replication.WithDDLMessagePrefix(ddlPrefix))
 	}
 	if captureDDL {
-		opts = append(opts, replication.WithEmitPlanDDL(false))
+		opts = append(opts,
+			replication.WithEmitPlanDDL(false),
+			replication.WithLogicalMessages(true),
+		)
 	}
 	if startLSN := spec.Options[optStartLSN]; startLSN != "" {
 		lsn, err := pglogrepl.ParseLSN(startLSN)
@@ -326,22 +329,6 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	if createSlot := parseBool(spec.Options[optCreateSlot], true); !createSlot {
 		opts = append(opts, replication.WithCreateSlot(false))
 	}
-	if captureDDL {
-		protocolVersion := 1
-		if streamingTransactions {
-			protocolVersion = 2
-		}
-		pluginArgs := []string{
-			fmt.Sprintf("proto_version '%d'", protocolVersion),
-			fmt.Sprintf("publication_names '%s'", s.publication),
-			"messages 'true'",
-		}
-		if streamingTransactions {
-			pluginArgs = append(pluginArgs, "streaming 'on'")
-		}
-		opts = append(opts, replication.WithPluginArgs(pluginArgs))
-	}
-
 	lagPool, err := newPool(ctx, dsn, spec.Options)
 	if err != nil {
 		return fmt.Errorf("create lag pool: %w", err)
