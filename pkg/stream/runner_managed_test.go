@@ -96,6 +96,35 @@ func TestManagedRestoreSeedsSourceWithDeliveredSchemaBaselines(t *testing.T) {
 	}
 }
 
+type filteringManagedProjector struct{}
+
+func (filteringManagedProjector) Fingerprint() string { return "filter-v1" }
+func (filteringManagedProjector) ProjectBatch(batch connector.Batch) (connector.Batch, ProjectionDecision, error) {
+	return connector.Batch{Checkpoint: batch.Checkpoint}, ProjectionFiltered, nil
+}
+func (filteringManagedProjector) ProjectTransaction(transaction connector.SourceTransaction) (connector.SourceTransaction, ProjectionDecision, error) {
+	transaction.Fragments = nil
+	return transaction, ProjectionFiltered, nil
+}
+
+func TestManagedFilteredProjectionAuthorizesAckWithoutDeliveryAttempt(t *testing.T) {
+	events := []string{}
+	source := &managedTestSource{events: &events, transactions: []connector.SourceTransaction{{
+		SourceLineageID: "lineage-1", TransactionID: 9, BeginLSN: "0/10", CommitLSN: "0/20", EndLSN: "0/20", Checkpoint: connector.Checkpoint{LSN: "0/20"},
+		Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: connector.Batch{Schema: connector.Schema{Name: "secret", Namespace: "private", Columns: []connector.Column{{Name: "id", Type: "int8"}}}, Records: []connector.Record{{Table: "secret", Operation: connector.OpInsert, After: map[string]any{"id": int64(1)}}}}}},
+	}}}
+	coordinator := &managedTestCoordinator{events: &events}
+	runner := managedTestRunner(source, &managedTestDestination{events: &events}, coordinator, managedTestCheckpointStore{checkpoint: connector.Checkpoint{LSN: "0/10"}})
+	runner.Destinations[0].Projector = filteringManagedProjector{}
+	runner.Destinations[0].MappingFingerprint = "filter-v1"
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !containsEvent(events, "coordinator.authorize") || source.acks != 2 {
+		t.Fatalf("events=%v acks=%d, want restore and filtered ACK without delivery", events, source.acks)
+	}
+}
+
 func TestManagedCancellationDominatesSourceFeedbackTransportError(t *testing.T) {
 	t.Parallel()
 	events := []string{}
@@ -297,6 +326,25 @@ func (l *managedTestArtifactLog) Append(_ context.Context, _ connector.RunFence,
 	return connector.AckGrant{Checkpoint: transaction.Checkpoint, PositionID: positionID}, err
 }
 
+type managedBootstrapTestProjector struct{}
+
+func (managedBootstrapTestProjector) Fingerprint() string { return "managed-bootstrap-test-v1" }
+func (managedBootstrapTestProjector) IncludeBootstrapRelation(string, string) (bool, error) {
+	return true, nil
+}
+func (managedBootstrapTestProjector) ProjectBatch(batch connector.Batch) (connector.Batch, ProjectionDecision, error) {
+	return batch, ProjectionIncluded, nil
+}
+func (managedBootstrapTestProjector) ProjectTransaction(transaction connector.SourceTransaction) (connector.SourceTransaction, ProjectionDecision, error) {
+	return transaction, ProjectionIncluded, nil
+}
+func (managedBootstrapTestProjector) ProjectBootstrapSchema(schema connector.Schema) (connector.Schema, connector.TableWritePolicy, bool, error) {
+	return schema, connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend}, true, nil
+}
+func (managedBootstrapTestProjector) ProjectBootstrapBatch(batch connector.Batch) (connector.Batch, bool, error) {
+	return batch, true, nil
+}
+
 func managedTestRunner(source connector.Source, destination connector.Destination, coordinator ManagedDeliveryCoordinator, checkpoints connector.CheckpointStore) Runner {
 	fence := connector.RunFence{
 		FlowID: "managed-test", FlowIncarnationID: uuid.New(), Generation: 1,
@@ -307,7 +355,7 @@ func managedTestRunner(source connector.Source, destination connector.Destinatio
 		SourceSpec: connector.Spec{Options: map[string]string{
 			"managed": "true", "bootstrap": "never", "source_lineage_id": "lineage-1",
 		}},
-		Destinations:        []DestinationConfig{{Dest: destination, Spec: connector.Spec{Options: map[string]string{"destination_revision_id": "destination-1"}}}},
+		Destinations:        []DestinationConfig{{Dest: destination, Spec: connector.Spec{Options: map[string]string{"destination_revision_id": "destination-1"}}, Projector: managedBootstrapTestProjector{}, MappingFingerprint: "managed-bootstrap-test-v1"}},
 		Checkpoints:         checkpoints,
 		FlowID:              fence.FlowID,
 		AckPolicy:           AckPolicyAll,
@@ -331,7 +379,7 @@ func (s *managedTestSource) Open(_ context.Context, spec connector.Spec) error {
 	*s.events = append(*s.events, "source.open")
 	return nil
 }
-func (s *managedTestSource) PrepareManagedBootstrap(context.Context, connector.RunFence, connector.Spec, string, connector.ManagedBootstrapDestination) (connector.ManagedBootstrapResult, error) {
+func (s *managedTestSource) PrepareManagedBootstrap(context.Context, connector.RunFence, connector.Spec, string, connector.ManagedBootstrapProjector, connector.ManagedBootstrapDestination) (connector.ManagedBootstrapResult, error) {
 	*s.events = append(*s.events, "source.bootstrap")
 	return s.bootstrapResult, nil
 }
@@ -398,7 +446,7 @@ func (*managedTestDestination) ApplyTransaction(context.Context, connector.Deliv
 func (*managedTestDestination) Reconcile(context.Context, connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
 	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
 }
-func (*managedTestDestination) PrepareBootstrap(context.Context, connector.BootstrapIntent, []connector.Schema) error {
+func (*managedTestDestination) PrepareBootstrap(context.Context, connector.BootstrapIntent, []connector.BootstrapTable) error {
 	return nil
 }
 func (*managedTestDestination) ApplyBootstrap(context.Context, connector.BootstrapIntent, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
@@ -407,13 +455,13 @@ func (*managedTestDestination) ApplyBootstrap(context.Context, connector.Bootstr
 func (*managedTestDestination) ReconcileBootstrap(context.Context, connector.BootstrapIntent, connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
 	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
 }
-func (*managedTestDestination) PublishBootstrap(context.Context, connector.BootstrapIntent, []connector.Schema) (connector.DeliveryEvidence, error) {
+func (*managedTestDestination) PublishBootstrap(context.Context, connector.BootstrapIntent, []connector.BootstrapTable) (connector.DeliveryEvidence, error) {
 	return connector.DeliveryEvidence{}, nil
 }
 func (*managedTestDestination) ReconcileBootstrapPublication(context.Context, connector.BootstrapIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
 	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
 }
-func (*managedTestDestination) AbandonBootstrap(context.Context, connector.BootstrapIntent, []connector.Schema) error {
+func (*managedTestDestination) AbandonBootstrap(context.Context, connector.BootstrapIntent, []connector.BootstrapTable) error {
 	return nil
 }
 

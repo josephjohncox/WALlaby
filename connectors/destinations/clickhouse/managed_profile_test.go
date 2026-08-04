@@ -523,7 +523,7 @@ func TestManagedConfigRejectsUnsafeProtocolOptionsBeforeNetwork(t *testing.T) {
 	base := connector.Spec{Options: map[string]string{
 		"managed_database": "wallaby", "managed_changelog_table": "cdc_log", "managed_receipts_table": "delivery_receipts",
 		"managed_final_view": "cdc_log_final", "managed_deployment": "self-managed-keeper", "managed_keeper_path_prefix": "/clickhouse/tables/01", "managed_keeper_address": "127.0.0.1:9181", "managed_replica_dsn": "clickhouse://replica-2:9440/default?secure=true", "managed_replica_names": "replica-1,replica-2", "insert_quorum": "2",
-		"write_mode": "managed_append", "batch_mode": "target", "batch_resolution": "none", "meta_table_enabled": "false",
+		"batch_mode": "target", "batch_resolution": "none", "meta_table_enabled": "false",
 		"async_insert": "false", "wait_for_async_insert": "true",
 	}}
 	cfg, err := managedConfigFromSpec(base)

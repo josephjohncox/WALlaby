@@ -60,6 +60,7 @@ type Capabilities struct {
 	Support               SupportLevel
 	Evidence              ContractEvidence
 	Delivery              DeliverySemantics
+	TableWrites           TableWriteSemantics
 	SupportsDDL           bool
 	SupportsSchemaChanges bool
 	SupportsStreaming     bool
@@ -165,18 +166,22 @@ type CheckpointStore interface {
 }
 
 // OutboxEntry is one durable secondary-destination delivery. PositionID is
-// derived with CheckpointPositionID. BatchHash is populated by stores when
+// derived with CheckpointPositionID; PostgreSQL positionless transaction
+// fragments use a deterministic /fragment/ ordinal suffix under their final
+// commit checkpoint identity. BatchHash is populated by stores when
 // listing entries and identifies the exact, type-preserving batch contents.
 // Every destination used with primary acknowledgement must implement
 // idempotent writes because a crash after Write and before durable persistence
 // or deletion can replay a batch.
 type OutboxEntry struct {
-	FlowID      string
-	Destination string
-	PositionID  string
-	BatchHash   string
-	Batch       Batch
-	CreatedAt   time.Time
+	FlowID                string
+	Destination           string
+	PositionID            string
+	BatchHash             string
+	ProjectionFingerprint string
+	ReplayOrder           int64
+	Batch                 Batch
+	CreatedAt             time.Time
 }
 
 // OutboxStore atomically advances a flow checkpoint and records secondary

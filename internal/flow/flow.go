@@ -109,6 +109,19 @@ func ValidateDefinition(definition Flow) error {
 				return fmt.Errorf("validate persisted Iceberg destination: %w", err)
 			}
 		}
+		for _, option := range []string{"append_mode", "meta_enabled", "meta_synced_at", "meta_deleted", "meta_watermark", "meta_op", "watermark_source", "soft_delete"} {
+			if strings.TrimSpace(destination.Options[option]) != "" {
+				return fmt.Errorf("destination %s option %q is superseded by table mappings", destination.Name, option)
+			}
+		}
+		for _, option := range []string{"schema", "table", "database"} {
+			if strings.TrimSpace(destination.Options[option]) != "" {
+				return fmt.Errorf("destination %s logical option %q is superseded by table mappings", destination.Name, option)
+			}
+		}
+		if strings.TrimSpace(destination.Options["write_mode"]) != "" {
+			return fmt.Errorf("destination %s logical option %q is superseded by table mappings", destination.Name, "write_mode")
+		}
 	}
 	materialization := definition.Config.Materialization
 	if ackPolicy != stream.AckPolicyMaterialized {

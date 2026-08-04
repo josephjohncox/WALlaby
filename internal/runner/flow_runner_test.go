@@ -187,12 +187,20 @@ func TestFlowRunnerPinsEffectiveArtifactDestinationFingerprint(t *testing.T) {
 	if !errors.Is(err, renewFailure) {
 		t.Fatalf("Run() error=%v, want controlled heartbeat failure", err)
 	}
-	if deliveries.registeredFingerprint != "effective-deployment-fingerprint" {
-		t.Fatalf("registered fingerprint=%q, want effective deployment fingerprint", deliveries.registeredFingerprint)
+	projectionFingerprint, err := f.Config.TableMappings.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := connector.BindProjectionFingerprint("effective-deployment-fingerprint", projectionFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deliveries.registeredFingerprint != want {
+		t.Fatalf("registered fingerprint=%q, want deployment and projection fingerprint %q", deliveries.registeredFingerprint, want)
 	}
 }
 
-func TestFlowRunnerFallsBackToSpecFingerprintWithoutCatalogConsumer(t *testing.T) {
+func TestFlowRunnerUsesProjectionBoundSpecFingerprintWithoutCatalogConsumer(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	engine := workflow.NewMemoryEngine()
@@ -212,8 +220,12 @@ func TestFlowRunnerFallsBackToSpecFingerprintWithoutCatalogConsumer(t *testing.T
 	deliveries := &blockingManagedDelivery{}
 	// A materialized barrier-only publication whose destination is not a canonical
 	// artifact consumer has no catalog identity, so the spec fingerprint must stand.
-	destination := stream.DestinationConfig{Spec: managedAdmissionDestinations()[0].Spec, Dest: blockingManagedDestination{}}
-	want, err := connector.DeliveryConfigFingerprint(destination.Spec)
+	destination := stream.DestinationConfig{Spec: f.Destinations[0], Dest: artifactMarkerDestination{}}
+	projectionFingerprint, err := f.Config.TableMappings.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := connector.DeliveryConfigFingerprint(destination.Spec, projectionFingerprint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +487,7 @@ func (s *singleTransactionManagedSource) ReadTransaction(context.Context) (conne
 	return connector.SourceTransaction{
 		SourceLineageID: "lineage-1", TransactionID: 1, BeginLSN: "0/10", CommitLSN: "0/18", EndLSN: "0/20", Checkpoint: connector.Checkpoint{LSN: "0/20"},
 		Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: connector.Batch{
-			Schema:  connector.Schema{Name: "events", Namespace: "public", Version: 1},
+			Schema:  connector.Schema{Name: "events", Namespace: "public", Version: 1, Columns: []connector.Column{{Name: "id", Type: "int8"}}},
 			Records: []connector.Record{{Table: "events", Operation: connector.OpInsert, SchemaVersion: 1, After: map[string]any{"id": int64(1)}}},
 		}}},
 	}, nil
@@ -502,7 +514,7 @@ func (blockingManagedDestination) ApplyDDL(context.Context, connector.Schema, co
 func (blockingManagedDestination) TypeMappings() map[string]string { return nil }
 func (blockingManagedDestination) Close(context.Context) error     { return nil }
 func (blockingManagedDestination) Capabilities() connector.Capabilities {
-	return connector.Capabilities{Support: connector.SupportExperimental, Delivery: connector.DeliverySemantics{Declared: true, TransactionalBatch: true, IdempotentReplay: true, ReplaySafe: true}}
+	return connector.Capabilities{Support: connector.SupportExperimental, TableWrites: connector.TableWriteSemantics{Declared: true, Append: true}, Delivery: connector.DeliverySemantics{Declared: true, TransactionalBatch: true, IdempotentReplay: true, ReplaySafe: true}}
 }
 func (blockingManagedDestination) Apply(context.Context, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
 	return connector.DeliveryEvidence{}, nil
@@ -560,6 +572,7 @@ func (flowRunnerDestination) TypeMappings() map[string]string { return nil }
 func (flowRunnerDestination) Close(context.Context) error     { return nil }
 func (flowRunnerDestination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
+		TableWrites: connector.TableWriteSemantics{Declared: true, Append: true},
 		Delivery: connector.DeliverySemantics{
 			Declared:           true,
 			TransactionalBatch: true,

@@ -21,6 +21,7 @@ type DDLExecutionStore interface {
 		flowID, position, destination string,
 		expectedDestinations []string,
 	) (connector.DDLExecutionState, error)
+	RecordVacuousDDLExecution(ctx context.Context, flowID, position, ddl string) error
 	RecordDDLExecution(
 		ctx context.Context,
 		flowID, position, ddl, destination string,

@@ -508,7 +508,7 @@ func runManagedAdmissionFlow(ctx context.Context, dsn string, engine *workflow.P
 		ID:     flowID,
 		Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: sourceOptions},
 		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
-			"dsn": dsn, "schema": targetSchema, "write_mode": "target", "batch_mode": "target", "destination_revision_id": "revision-" + flowID,
+			"dsn": dsn, "schema": targetSchema, "batch_mode": "target", "destination_revision_id": "revision-" + flowID,
 			"synchronous_commit": "on", "meta_table_enabled": "false",
 		}}},
 		Config: flow.Config{AckPolicy: stream.AckPolicyAll},

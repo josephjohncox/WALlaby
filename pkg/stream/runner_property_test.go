@@ -144,6 +144,7 @@ func (d *recordingDest) Close(context.Context) error { return nil }
 
 func (d *recordingDest) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
+		TableWrites: connector.TableWriteSemantics{Declared: true, Append: true, Upsert: true, ExplicitKey: true, WatermarkGuard: true},
 		Delivery: connector.DeliverySemantics{
 			Declared:           true,
 			TransactionalBatch: true,

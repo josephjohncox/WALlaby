@@ -98,8 +98,8 @@ LIMIT 1`, fence.FlowIncarnationID, item.entry.PositionID).Scan(&positionHash)
 		tag, err := tx.Exec(ctx, `
 INSERT INTO authoritative_checkpoint_outbox (
   flow_incarnation_id, flow_id, generation, acquisition_id, lease_epoch,
-  destination_id, position_id, batch_hash, codec, batch_json, created_at
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+  destination_id, position_id, batch_hash, projection_fingerprint, codec, batch_json, created_at
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 ON CONFLICT (flow_incarnation_id,destination_id,position_id) DO NOTHING`,
 			fence.FlowIncarnationID,
 			fence.FlowID,
@@ -109,6 +109,7 @@ ON CONFLICT (flow_incarnation_id,destination_id,position_id) DO NOTHING`,
 			item.entry.Destination,
 			item.entry.PositionID,
 			item.batchHash,
+			item.entry.ProjectionFingerprint,
 			outboxCodecGobV1,
 			item.batchData,
 			item.entry.CreatedAt,
@@ -117,14 +118,14 @@ ON CONFLICT (flow_incarnation_id,destination_id,position_id) DO NOTHING`,
 			return fmt.Errorf("insert fenced outbox entry for %s: %w", item.entry.Destination, err)
 		}
 		if tag.RowsAffected() == 0 {
-			var existingHash string
+			var existingHash, existingProjection string
 			if err := tx.QueryRow(ctx, `
-SELECT batch_hash
+SELECT batch_hash,projection_fingerprint
 FROM authoritative_checkpoint_outbox
-WHERE flow_incarnation_id=$1 AND destination_id=$2 AND position_id=$3`, fence.FlowIncarnationID, item.entry.Destination, item.entry.PositionID).Scan(&existingHash); err != nil {
+WHERE flow_incarnation_id=$1 AND destination_id=$2 AND position_id=$3`, fence.FlowIncarnationID, item.entry.Destination, item.entry.PositionID).Scan(&existingHash, &existingProjection); err != nil {
 				return fmt.Errorf("read existing fenced outbox entry for %s: %w", item.entry.Destination, err)
 			}
-			if existingHash != item.batchHash {
+			if existingHash != item.batchHash || existingProjection != item.entry.ProjectionFingerprint {
 				return fmt.Errorf("%w: incarnation=%s destination=%s position=%s", connector.ErrOutboxConflict, fence.FlowIncarnationID, item.entry.Destination, item.entry.PositionID)
 			}
 		}
@@ -145,20 +146,21 @@ func (p *PostgresStore) ListOutboxFenced(ctx context.Context, fence authority.Ru
 		return nil, err
 	}
 	rows, err := tx.Query(ctx, `
-SELECT destination_id,position_id,batch_hash,codec,batch_json,created_at
+SELECT destination_id,position_id,batch_hash,projection_fingerprint,replay_order,codec,batch_json,created_at
 FROM authoritative_checkpoint_outbox
 WHERE flow_incarnation_id=$1 AND delivered_at IS NULL
-ORDER BY created_at,destination_id`, fence.FlowIncarnationID)
+ORDER BY replay_order`, fence.FlowIncarnationID)
 	if err != nil {
 		return nil, fmt.Errorf("list fenced checkpoint outbox: %w", err)
 	}
 	defer rows.Close()
 	entries := make([]connector.OutboxEntry, 0)
 	for rows.Next() {
-		var destination, position, batchHash, codec string
+		var destination, position, batchHash, projectionFingerprint, codec string
+		var replayOrder int64
 		var batchData []byte
 		var createdAt time.Time
-		if err := rows.Scan(&destination, &position, &batchHash, &codec, &batchData, &createdAt); err != nil {
+		if err := rows.Scan(&destination, &position, &batchHash, &projectionFingerprint, &replayOrder, &codec, &batchData, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan fenced checkpoint outbox: %w", err)
 		}
 		batch, err := decodeOutboxBatch(codec, batchData)
@@ -167,7 +169,7 @@ ORDER BY created_at,destination_id`, fence.FlowIncarnationID)
 		}
 		entries = append(entries, connector.OutboxEntry{
 			FlowID: fence.FlowID, Destination: destination, PositionID: position,
-			BatchHash: batchHash, Batch: batch, CreatedAt: createdAt,
+			BatchHash: batchHash, ProjectionFingerprint: projectionFingerprint, ReplayOrder: replayOrder, Batch: batch, CreatedAt: createdAt,
 		})
 	}
 	if err := rows.Err(); err != nil {

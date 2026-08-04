@@ -8,8 +8,46 @@ import (
 	"testing"
 	"time"
 
+	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/internal/tablemap"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/stream"
 )
+
+func TestManagedSnowflakePlannerReceivesMappedRenameAndSubsetTransaction(t *testing.T) {
+	mappings := flow.NewTableMappings([]connector.Spec{{Name: "snow", Type: connector.EndpointSnowflake}})
+	mapping := &mappings.Destinations[0]
+	mapping.FutureTables = flow.FutureTableMapping{Action: flow.MappingActionExclude}
+	mapping.Tables = []flow.TableMapping{{SourceSchema: "public", SourceTable: "widgets", Action: flow.MappingActionInclude, TargetSchema: "PUBLIC", TargetTable: "WIDGETS", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionExclude}, Columns: []flow.ColumnMapping{{SourceColumn: "tenant_id", Action: flow.MappingActionInclude, TargetColumn: "TENANT_ID"}, {SourceColumn: "id", Action: flow.MappingActionInclude, TargetColumn: "EVENT_ID"}, {SourceColumn: "value", Action: flow.MappingActionInclude, TargetColumn: "DISPLAY"}, {SourceColumn: "secret", Action: flow.MappingActionExclude}}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"tenant_id", "id"}}}}
+	projector, err := tablemap.New(mappings, "snow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "tenant_id", Type: "text", TypeMetadata: map[string]string{"primary_key": "true", "primary_key_ordinal": "1", "replica_identity": "true", "nullability_known": "true", "generated_known": "true"}}, {Name: "id", Type: "int8", TypeMetadata: map[string]string{"primary_key": "true", "primary_key_ordinal": "2", "replica_identity": "true", "nullability_known": "true", "generated_known": "true"}}, {Name: "value", Type: "text", TypeMetadata: map[string]string{"nullability_known": "true", "generated_known": "true"}}, {Name: "secret", Type: "text", TypeMetadata: map[string]string{"nullability_known": "true", "generated_known": "true"}}}}
+	transaction := connector.SourceTransaction{SourceLineageID: "lineage", TransactionID: 1, BeginLSN: "0/10", CommitLSN: "0/18", EndLSN: "0/20", Checkpoint: connector.Checkpoint{LSN: "0/20"}, Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: connector.Batch{Schema: source, Records: []connector.Record{{Table: "widgets", Operation: connector.OpUpdate, Key: []byte(`{"tenant_id":"tenant-1","id":1}`), Before: map[string]any{"tenant_id": "tenant-1", "id": int64(1), "value": "before", "secret": "hidden"}, After: map[string]any{"tenant_id": "tenant-1", "id": int64(1), "value": "shown", "secret": "hidden"}, SourcePosition: "0/18"}}}}}}
+	projected, decision, err := projector.ProjectTransaction(transaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision != stream.ProjectionIncluded {
+		t.Fatal("transaction was filtered")
+	}
+	cfg, _ := managedCatalogFixture(t)
+	cfg.schemaContract = projected.Fragments[0].Batch.Schema
+	cfg.sourceSchema, cfg.sourceTable = cfg.schemaContract.Namespace, cfg.schemaContract.Name
+	cfg.schemaContractHash, err = ManagedSchemaContractHash(cfg.schemaContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := managedTestIntent(t, projected)
+	plan, err := planManagedSnowflakeTransaction(cfg, intent, projected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.operations) != 1 || !strings.Contains(plan.operations[0].query, `"TENANT_ID" = ? AND "EVENT_ID" = ?`) || !strings.Contains(plan.operations[0].query, `"DISPLAY"`) || strings.Contains(plan.operations[0].query, "secret") {
+		t.Fatalf("mapped planner operation=%+v", plan.operations)
+	}
+}
 
 func TestManagedSnowflakeTypeMappingFailsClosedForUnboundedNumeric(t *testing.T) {
 	t.Parallel()

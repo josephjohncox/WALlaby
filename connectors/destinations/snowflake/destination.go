@@ -37,7 +37,6 @@ const (
 	optWarehouseSuspend  = "warehouse_auto_suspend"
 	optWarehouseResume   = "warehouse_auto_resume"
 	optSessionKeepAlive  = "session_keep_alive"
-	optWriteMode         = "write_mode"
 	optBatchMode         = "batch_mode"
 	optBatchResolution   = "batch_resolution"
 	optStagingSchema     = "staging_schema"
@@ -73,7 +72,6 @@ type Destination struct {
 	managedScopeMu         sync.Mutex
 	managedFlowIncarnation string
 	disableTx              bool
-	writeMode              string
 	batchMode              string
 	batchResolve           string
 	stagingSchema          string
@@ -121,10 +119,6 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.db = db
 	d.disableTx = parseBool(spec.Options[optDisableTx], false)
 
-	d.writeMode = strings.ToLower(spec.Options[optWriteMode])
-	if d.writeMode == "" {
-		d.writeMode = writeModeTarget
-	}
 	d.batchMode = strings.ToLower(spec.Options[optBatchMode])
 	if d.batchMode == "" {
 		d.batchMode = batchModeTarget
@@ -289,9 +283,9 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		return nil
 	}
 
-	mode := d.writeMode
-	if mode == "" {
-		mode = writeModeTarget
+	mode := writeModeAppend
+	if batch.WritePolicy.Mode != connector.ResolvedWriteAppend {
+		return fmt.Errorf("snowflake destination supports append table writes only")
 	}
 	meta, err := d.ensureSchema(ctx, batch.Schema)
 	if err != nil {
@@ -401,7 +395,8 @@ func (d *Destination) ResolveStagingFor(ctx context.Context, schemas []connector
 
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		Support: connector.SupportExperimental,
+		Support:     connector.SupportExperimental,
+		TableWrites: connector.TableWriteSemantics{Declared: true, Append: true},
 		Delivery: connector.DeliverySemantics{
 			Declared:    true,
 			ExecutesDDL: true,
@@ -429,6 +424,7 @@ func (d *Destination) CapabilitiesFor(spec connector.Spec) connector.Capabilitie
 	if strings.TrimSpace(spec.Options["managed_profile"]) != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
 		return capabilities
 	}
+	capabilities.TableWrites = connector.TableWriteSemantics{Declared: true, Upsert: true, ExplicitKey: true}
 	capabilities.Delivery.TransactionalBatch = true
 	capabilities.Delivery.IdempotentReplay = true
 	capabilities.Delivery.ReplaySafe = true
@@ -600,9 +596,6 @@ func (d *Destination) trackStaging(schema connector.Schema, record connector.Rec
 
 func (d *Destination) targetTable(schema connector.Schema, record connector.Record) string {
 	targetSchema, table := d.targetParts(schema, record.Table)
-	if strings.Contains(table, ".") {
-		return quoteQualified(table, '"')
-	}
 	if targetSchema == "" {
 		return quoteIdent(table, '"')
 	}
@@ -697,18 +690,7 @@ func (d *Destination) resolveStagingTable(ctx context.Context, info tableInfo) e
 }
 
 func (d *Destination) targetParts(schema connector.Schema, table string) (string, string) {
-	targetSchema := strings.TrimSpace(d.spec.Options[optSchema])
-	targetTable := strings.TrimSpace(d.spec.Options[optTable])
-	if targetTable == "" {
-		targetTable = table
-	}
-	if strings.Contains(targetTable, ".") {
-		parts := strings.SplitN(targetTable, ".", 2)
-		if len(parts) == 2 {
-			targetSchema = parts[0]
-			targetTable = parts[1]
-		}
-	}
+	targetSchema, targetTable := schema.Namespace, table
 	if targetSchema == "" {
 		targetSchema = schema.Namespace
 	}

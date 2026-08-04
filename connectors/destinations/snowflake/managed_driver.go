@@ -46,14 +46,14 @@ func (d *Destination) Apply(context.Context, connector.DeliveryIntent, connector
 	return connector.DeliveryEvidence{}, errors.New("managed Snowflake SQL profile requires ApplyTransaction")
 }
 
-// ValidateManagedSourceSchema compares the live pg_catalog relation with the
-// immutable contract before the runner reads WAL.
+// ValidateManagedSourceSchema compares the projected live pg_catalog relation
+// with the immutable projected contract before the runner reads WAL.
 func (d *Destination) ValidateManagedSourceSchema(schema connector.Schema) error {
 	if d.db == nil || d.managedProfile != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
 		return errors.New("managed Snowflake destination not initialized")
 	}
 	if err := validateManagedRuntimeSchema(d.managedConfig.schemaContract, schema); err != nil {
-		return fmt.Errorf("validate live PostgreSQL schema for managed Snowflake: %w", err)
+		return fmt.Errorf("validate projected live PostgreSQL schema for managed Snowflake: %w", err)
 	}
 	expectedIdentity, err := managedIdentityColumns(d.managedConfig.schemaContract)
 	if err != nil {
@@ -61,7 +61,7 @@ func (d *Destination) ValidateManagedSourceSchema(schema connector.Schema) error
 	}
 	actualIdentity, err := managedIdentityColumns(schema)
 	if err != nil {
-		return fmt.Errorf("validate live PostgreSQL primary key for managed Snowflake: %w", err)
+		return fmt.Errorf("validate projected live PostgreSQL primary key for managed Snowflake: %w", err)
 	}
 	if !slices.Equal(expectedIdentity, actualIdentity) {
 		return fmt.Errorf("%w: live PostgreSQL primary-key order %v differs from configured order %v", errManagedSnowflakeSchemaNotReconciled, actualIdentity, expectedIdentity)

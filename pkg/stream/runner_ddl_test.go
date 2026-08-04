@@ -12,6 +12,97 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+type ddlFilterProjector struct{ include bool }
+
+func (p ddlFilterProjector) Fingerprint() string { return "ddl-filter" }
+func (p ddlFilterProjector) ProjectBatch(batch connector.Batch) (connector.Batch, ProjectionDecision, error) {
+	if !p.include {
+		return connector.Batch{Checkpoint: batch.Checkpoint}, ProjectionFiltered, nil
+	}
+	return batch, ProjectionIncluded, nil
+}
+func (p ddlFilterProjector) ProjectTransaction(transaction connector.SourceTransaction) (connector.SourceTransaction, ProjectionDecision, error) {
+	return transaction, ProjectionIncluded, nil
+}
+
+func TestDDLReceiptDestinationsUseProjectedDDL(t *testing.T) {
+	batch := connector.Batch{Schema: connector.Schema{Name: "widgets", Namespace: "public"}, Checkpoint: connector.Checkpoint{LSN: "0/10"}, Records: []connector.Record{{Table: "widgets", Operation: connector.OpDDL, SourcePosition: "0/10", DDL: "ALTER TABLE widgets ADD COLUMN note text"}}}
+	runner := Runner{Destinations: []DestinationConfig{
+		{Spec: connector.Spec{Name: "included"}, Dest: &recordingDest{log: &eventLog{}}, Projector: ddlFilterProjector{include: true}},
+		{Spec: connector.Spec{Name: "filtered"}, Dest: &recordingDest{log: &eventLog{}}, Projector: ddlFilterProjector{}},
+	}}
+	got, err := runner.ddlExecutionDestinations(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got["0/10"]) != 1 || got["0/10"][0] != "included" {
+		t.Fatalf("destinations=%v, want only projected DDL destination", got)
+	}
+}
+
+type ddlPositionProjector struct{ position string }
+
+func (p ddlPositionProjector) Fingerprint() string { return "ddl-position-" + p.position }
+func (p ddlPositionProjector) ProjectBatch(batch connector.Batch) (connector.Batch, ProjectionDecision, error) {
+	out := batch
+	out.Records = nil
+	for _, record := range batch.Records {
+		if record.SourcePosition == p.position {
+			out.Records = append(out.Records, record)
+		}
+	}
+	if len(out.Records) == 0 {
+		return out, ProjectionFiltered, nil
+	}
+	return out, ProjectionIncluded, nil
+}
+func (p ddlPositionProjector) ProjectTransaction(transaction connector.SourceTransaction) (connector.SourceTransaction, ProjectionDecision, error) {
+	return transaction, ProjectionIncluded, nil
+}
+
+func TestDDLReceiptManifestsArePerSourcePosition(t *testing.T) {
+	batch := connector.Batch{Schema: connector.Schema{Name: "widgets", Namespace: "public"}, Checkpoint: connector.Checkpoint{LSN: "0/20"}, Records: []connector.Record{
+		{Table: "widgets", Operation: connector.OpDDL, SourcePosition: "0/10", DDL: "A"},
+		{Table: "widgets", Operation: connector.OpDDL, SourcePosition: "0/20", DDL: "B"},
+	}}
+	assertExpected := func(_ string, position, destination string, expected []string) error {
+		if len(expected) != 1 || expected[0] != destination {
+			return errors.New("cross-position destination leaked into DDL manifest at " + position)
+		}
+		return nil
+	}
+	receipts := &testDDLReceiptStore{beforePrepare: assertExpected, onRecord: func(flowID, position, _ string, destination string, expected []string) error {
+		return assertExpected(flowID, position, destination, expected)
+	}}
+	runner := Runner{FlowID: "crossed-ddl", RequireDDLExecution: true, DDLExecutions: receipts, Destinations: []DestinationConfig{
+		{Spec: connector.Spec{Name: "A"}, Dest: &ddlPolicyDestination{}, Projector: ddlPositionProjector{position: "0/10"}},
+		{Spec: connector.Spec{Name: "B"}, Dest: &ddlPolicyDestination{}, Projector: ddlPositionProjector{position: "0/20"}},
+	}}
+	for _, destination := range runner.Destinations {
+		if err := runner.writeDestination(context.Background(), destination, batch); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestRunnerDurablyCompletesDDLFilteredFromAllDestinations(t *testing.T) {
+	receipts := &testDDLReceiptStore{}
+	batch := connector.Batch{Schema: connector.Schema{Name: "widgets", Namespace: "public"}, Checkpoint: connector.Checkpoint{LSN: "0/18"}, Records: []connector.Record{{Table: "widgets", Operation: connector.OpDDL, SourcePosition: "0/18", DDL: "ALTER TABLE widgets ADD COLUMN hidden text"}}}
+	runner := Runner{FlowID: "filtered-all", RequireDDLExecution: true, DDLExecutions: receipts, Destinations: []DestinationConfig{
+		{Spec: connector.Spec{Name: "A"}, Dest: &recordingDest{log: &eventLog{}}, Projector: ddlFilterProjector{}},
+		{Spec: connector.Spec{Name: "B"}, Dest: &recordingDest{log: &eventLog{}}, Projector: ddlFilterProjector{}},
+	}}
+	if err := runner.writeWithRetry(context.Background(), batch, runner.Destinations); err != nil {
+		t.Fatal(err)
+	}
+	if receipts.vacuous["filtered-all\x000/18"] == "" {
+		t.Fatal("filtered-all DDL was not durably completed")
+	}
+	if len(receipts.attempts) != 0 || len(receipts.receipts) != 0 {
+		t.Fatalf("vacuous completion created destination attempts/receipts")
+	}
+}
+
 func TestRunnerDDLReceiptPreventsReapplicationAfterReplay(t *testing.T) {
 	t.Parallel()
 

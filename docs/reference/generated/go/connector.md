@@ -15,10 +15,11 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [Constants](<#constants>)
 - [Variables](<#variables>)
 - [func BatchContentHash\(batch Batch\) \(string, error\)](<#BatchContentHash>)
+- [func BindProjectionFingerprint\(destinationFingerprint, projectionFingerprint string\) \(string, error\)](<#BindProjectionFingerprint>)
 - [func CanonicalizeCheckpointPosition\(raw string\) \(string, error\)](<#CanonicalizeCheckpointPosition>)
 - [func CheckpointPositionID\(checkpoint Checkpoint\) \(string, error\)](<#CheckpointPositionID>)
 - [func CompareCheckpointLSN\(left, right string\) \(int, error\)](<#CompareCheckpointLSN>)
-- [func DeliveryConfigFingerprint\(spec Spec\) \(string, error\)](<#DeliveryConfigFingerprint>)
+- [func DeliveryConfigFingerprint\(spec Spec, projectionFingerprint string\) \(string, error\)](<#DeliveryConfigFingerprint>)
 - [func IsManagedSourceSpec\(spec Spec\) bool](<#IsManagedSourceSpec>)
 - [func MergeManagedSchemaBaselines\(metadata map\[string\]string, transaction SourceTransaction\) \(map\[string\]string, error\)](<#MergeManagedSchemaBaselines>)
 - [func NormalizeKeyForSchema\(schema Schema, key map\[string\]any\) \(map\[string\]any, error\)](<#NormalizeKeyForSchema>)
@@ -33,10 +34,12 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [type Batch](<#Batch>)
 - [type BootstrapIntent](<#BootstrapIntent>)
   - [func \(i BootstrapIntent\) Validate\(\) error](<#BootstrapIntent.Validate>)
+- [type BootstrapTable](<#BootstrapTable>)
 - [type CanonicalArtifactDestination](<#CanonicalArtifactDestination>)
 - [type Capabilities](<#Capabilities>)
   - [func ResolveDestinationCapabilities\(destination Destination, spec Spec\) Capabilities](<#ResolveDestinationCapabilities>)
   - [func \(c Capabilities\) ExecutesDDL\(\) bool](<#Capabilities.ExecutesDDL>)
+  - [func \(c Capabilities\) SupportsTablePolicy\(policy TableWritePolicy\) error](<#Capabilities.SupportsTablePolicy>)
   - [func \(c Capabilities\) ValidateSupport\(\) error](<#Capabilities.ValidateSupport>)
 - [type Checkpoint](<#Checkpoint>)
 - [type CheckpointOutboxStore](<#CheckpointOutboxStore>)
@@ -70,6 +73,7 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [type FlushEvidenceSource](<#FlushEvidenceSource>)
 - [type InitialCheckpointSource](<#InitialCheckpointSource>)
 - [type ManagedBootstrapDestination](<#ManagedBootstrapDestination>)
+- [type ManagedBootstrapProjector](<#ManagedBootstrapProjector>)
 - [type ManagedBootstrapPublicationReconciler](<#ManagedBootstrapPublicationReconciler>)
 - [type ManagedBootstrapResult](<#ManagedBootstrapResult>)
 - [type ManagedBootstrapSource](<#ManagedBootstrapSource>)
@@ -112,6 +116,7 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [type SupportLevel](<#SupportLevel>)
 - [type TableWritePolicy](<#TableWritePolicy>)
   - [func \(p TableWritePolicy\) IsZero\(\) bool](<#TableWritePolicy.IsZero>)
+- [type TableWriteSemantics](<#TableWriteSemantics>)
 - [type TransactionFragment](<#TransactionFragment>)
 - [type TransactionalSource](<#TransactionalSource>)
 - [type WireFormat](<#WireFormat>)
@@ -220,6 +225,15 @@ func BatchContentHash(batch Batch) (string, error)
 
 BatchContentHash returns a deterministic, type\-sensitive SHA\-256 identity for a logical connector batch. Map iteration order and checkpoint observation timestamps do not affect the result. A projected batch also excludes replay\- variable source observations while retaining its resolved write policy.
 
+<a name="BindProjectionFingerprint"></a>
+## func [BindProjectionFingerprint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L55>)
+
+```go
+func BindProjectionFingerprint(destinationFingerprint, projectionFingerprint string) (string, error)
+```
+
+BindProjectionFingerprint binds a deployment\-effective destination identity to the immutable logical projection revision.
+
 <a name="CanonicalizeCheckpointPosition"></a>
 ## func [CanonicalizeCheckpointPosition](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/checkpoint.go#L25>)
 
@@ -248,13 +262,13 @@ func CompareCheckpointLSN(left, right string) (int, error)
 CompareCheckpointLSN compares canonical PostgreSQL LSNs or decimal batch ordinals. Positions of different kinds are intentionally incomparable.
 
 <a name="DeliveryConfigFingerprint"></a>
-## func [DeliveryConfigFingerprint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L28>)
+## func [DeliveryConfigFingerprint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L29>)
 
 ```go
-func DeliveryConfigFingerprint(spec Spec) (string, error)
+func DeliveryConfigFingerprint(spec Spec, projectionFingerprint string) (string, error)
 ```
 
-DeliveryConfigFingerprint returns a deterministic identity for the behavior of one destination revision. The revision ID itself is excluded so callers can compare two independently named revisions with identical configuration.
+DeliveryConfigFingerprint returns a deterministic identity for one destination revision bound to its immutable logical projection. The revision ID itself is excluded so independently named equivalent revisions compare equal. Projection\-free recovery identities are not supported.
 
 <a name="IsManagedSourceSpec"></a>
 ## func [IsManagedSourceSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_mode.go#L17>)
@@ -361,7 +375,7 @@ type AckGrant struct {
 ```
 
 <a name="Batch"></a>
-## type [Batch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L122-L128>)
+## type [Batch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L123-L129>)
 
 Batch is the unit passed between sources and destinations.
 
@@ -404,8 +418,21 @@ func (i BootstrapIntent) Validate() error
 
 Validate rejects incomplete bootstrap identities before any destination table or source resource can be changed.
 
+<a name="BootstrapTable"></a>
+## type [BootstrapTable](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L70-L74>)
+
+BootstrapTable is one projected destination table in the immutable snapshot manifest, including its per\-table write contract.
+
+```go
+type BootstrapTable struct {
+    Schema         Schema
+    WritePolicy    TableWritePolicy
+    SourcePosition string
+}
+```
+
 <a name="CanonicalArtifactDestination"></a>
-## type [CanonicalArtifactDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L105-L108>)
+## type [CanonicalArtifactDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L127-L130>)
 
 CanonicalArtifactDestination marks a destination specification that is consumed asynchronously from the PostgreSQL\-authoritative artifact log. Its ordinary Destination methods are never a data\-delivery path.
 
@@ -417,7 +444,7 @@ type CanonicalArtifactDestination interface {
 ```
 
 <a name="Capabilities"></a>
-## type [Capabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L59-L69>)
+## type [Capabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L59-L70>)
 
 Capabilities describe what a connector can handle.
 
@@ -426,6 +453,7 @@ type Capabilities struct {
     Support               SupportLevel
     Evidence              ContractEvidence
     Delivery              DeliverySemantics
+    TableWrites           TableWriteSemantics
     SupportsDDL           bool
     SupportsSchemaChanges bool
     SupportsStreaming     bool
@@ -436,7 +464,7 @@ type Capabilities struct {
 ```
 
 <a name="ResolveDestinationCapabilities"></a>
-### func [ResolveDestinationCapabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L49>)
+### func [ResolveDestinationCapabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L83>)
 
 ```go
 func ResolveDestinationCapabilities(destination Destination, spec Spec) Capabilities
@@ -445,7 +473,7 @@ func ResolveDestinationCapabilities(destination Destination, spec Spec) Capabili
 ResolveDestinationCapabilities returns the guarantees for one configured destination, falling back to its static declaration.
 
 <a name="Capabilities.ExecutesDDL"></a>
-### func \(Capabilities\) [ExecutesDDL](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L74>)
+### func \(Capabilities\) [ExecutesDDL](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L108>)
 
 ```go
 func (c Capabilities) ExecutesDDL() bool
@@ -453,8 +481,17 @@ func (c Capabilities) ExecutesDDL() bool
 
 ExecutesDDL reports whether ApplyDDL performs a downstream schema mutation. Undeclared legacy adapters retain the historical SupportsDDL behavior.
 
+<a name="Capabilities.SupportsTablePolicy"></a>
+### func \(Capabilities\) [SupportsTablePolicy](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L52>)
+
+```go
+func (c Capabilities) SupportsTablePolicy(policy TableWritePolicy) error
+```
+
+SupportsTablePolicy reports whether the destination can execute policy.
+
 <a name="Capabilities.ValidateSupport"></a>
-### func \(Capabilities\) [ValidateSupport](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L58>)
+### func \(Capabilities\) [ValidateSupport](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L92>)
 
 ```go
 func (c Capabilities) ValidateSupport() error
@@ -463,7 +500,7 @@ func (c Capabilities) ValidateSupport() error
 ValidateSupport rejects unsupported levels and maintained classifications that lack one or more required executable contract suites.
 
 <a name="Checkpoint"></a>
-## type [Checkpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L93-L97>)
+## type [Checkpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L94-L98>)
 
 Checkpoint identifies a durable offset for a flow.
 
@@ -476,7 +513,7 @@ type Checkpoint struct {
 ```
 
 <a name="CheckpointOutboxStore"></a>
-## type [CheckpointOutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L193-L196>)
+## type [CheckpointOutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L198-L201>)
 
 CheckpointOutboxStore is the atomic durability seam required by primary acknowledgement. A single adapter must own both checkpoint and outbox state.
 
@@ -488,7 +525,7 @@ type CheckpointOutboxStore interface {
 ```
 
 <a name="CheckpointStore"></a>
-## type [CheckpointStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L161-L165>)
+## type [CheckpointStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L162-L166>)
 
 CheckpointStore persists checkpoints for recovery. Get returns ErrCheckpointNotFound when a flow has no durable position yet.
 
@@ -564,7 +601,7 @@ func (f CleanupFence) Validate() error
 Validate rejects incomplete terminal cleanup authority.
 
 <a name="Column"></a>
-## type [Column](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L82-L90>)
+## type [Column](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L83-L91>)
 
 Column defines a schema field.
 
@@ -581,7 +618,7 @@ type Column struct {
 ```
 
 <a name="ConfiguredDestinationCapabilities"></a>
-## type [ConfiguredDestinationCapabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L43-L45>)
+## type [ConfiguredDestinationCapabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L77-L79>)
 
 ConfiguredDestinationCapabilities allows an adapter to refine guarantees that depend on options such as append mode or a lossy oversize policy.
 
@@ -726,7 +763,7 @@ type DDLReconciler interface {
 ```
 
 <a name="DeliveryDisposition"></a>
-## type [DeliveryDisposition](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L94>)
+## type [DeliveryDisposition](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L116>)
 
 DeliveryDisposition is the result of destination reconciliation.
 
@@ -745,7 +782,7 @@ const (
 ```
 
 <a name="DeliveryEvidence"></a>
-## type [DeliveryEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L88-L91>)
+## type [DeliveryEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L110-L113>)
 
 DeliveryEvidence is untrusted external proof returned by a destination.
 
@@ -757,7 +794,7 @@ type DeliveryEvidence struct {
 ```
 
 <a name="DeliveryIntent"></a>
-## type [DeliveryIntent](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L51-L62>)
+## type [DeliveryIntent](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L73-L84>)
 
 DeliveryIntent is the immutable identity supplied to a reconcilable external destination attempt. PostgreSQL remains authoritative for adopting evidence as a durable receipt; destination evidence alone never advances a checkpoint.
 
@@ -777,7 +814,7 @@ type DeliveryIntent struct {
 ```
 
 <a name="DeliveryIntent.Validate"></a>
-### func \(DeliveryIntent\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L65>)
+### func \(DeliveryIntent\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L87>)
 
 ```go
 func (i DeliveryIntent) Validate() error
@@ -802,7 +839,7 @@ type DeliverySemantics struct {
 ```
 
 <a name="Destination"></a>
-## type [Destination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L150-L157>)
+## type [Destination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L151-L158>)
 
 Destination writes to a downstream system.
 
@@ -849,7 +886,7 @@ const (
 ```
 
 <a name="FlowCheckpoint"></a>
-## type [FlowCheckpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L100-L103>)
+## type [FlowCheckpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L101-L104>)
 
 FlowCheckpoint ties a checkpoint to a flow ID.
 
@@ -885,23 +922,37 @@ type InitialCheckpointSource interface {
 ```
 
 <a name="ManagedBootstrapDestination"></a>
-## type [ManagedBootstrapDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L75-L82>)
+## type [ManagedBootstrapDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L93-L100>)
 
 ManagedBootstrapDestination stages one immutable snapshot generation and atomically publishes every table in its frozen manifest. External evidence is untrusted until the source bootstrap coordinator records it under the current RunFence in PostgreSQL.
 
 ```go
 type ManagedBootstrapDestination interface {
     ManagedDestination
-    PrepareBootstrap(context.Context, BootstrapIntent, []Schema) error
+    PrepareBootstrap(context.Context, BootstrapIntent, []BootstrapTable) error
     ApplyBootstrap(context.Context, BootstrapIntent, DeliveryIntent, Batch) (DeliveryEvidence, error)
     ReconcileBootstrap(context.Context, BootstrapIntent, DeliveryIntent) (DeliveryDisposition, DeliveryEvidence, error)
-    PublishBootstrap(context.Context, BootstrapIntent, []Schema) (DeliveryEvidence, error)
-    AbandonBootstrap(context.Context, BootstrapIntent, []Schema) error
+    PublishBootstrap(context.Context, BootstrapIntent, []BootstrapTable) (DeliveryEvidence, error)
+    AbandonBootstrap(context.Context, BootstrapIntent, []BootstrapTable) error
+}
+```
+
+<a name="ManagedBootstrapProjector"></a>
+## type [ManagedBootstrapProjector](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L61-L66>)
+
+ManagedBootstrapProjector is the typed logical\-projection contract used by snapshot planning and delivery. Source query schemas remain source\-shaped; destination schemas and batches are projected explicitly through this seam.
+
+```go
+type ManagedBootstrapProjector interface {
+    Fingerprint() string
+    IncludeBootstrapRelation(namespace, table string) (bool, error)
+    ProjectBootstrapSchema(Schema) (Schema, TableWritePolicy, bool, error)
+    ProjectBootstrapBatch(Batch) (Batch, bool, error)
 }
 ```
 
 <a name="ManagedBootstrapPublicationReconciler"></a>
-## type [ManagedBootstrapPublicationReconciler](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L88-L90>)
+## type [ManagedBootstrapPublicationReconciler](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L106-L108>)
 
 ManagedBootstrapPublicationReconciler is an optional recovery extension. It preserves the original destination contract while allowing implementations with an atomic publication marker to prove a publish\-before\-control\-receipt crash without replaying publication.
 
@@ -925,13 +976,13 @@ type ManagedBootstrapResult struct {
 ```
 
 <a name="ManagedBootstrapSource"></a>
-## type [ManagedBootstrapSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L60-L62>)
+## type [ManagedBootstrapSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L78-L80>)
 
 ManagedBootstrapSource owns the source\-specific exported\-snapshot protocol. The destination is already open when this method is called.
 
 ```go
 type ManagedBootstrapSource interface {
-    PrepareManagedBootstrap(context.Context, RunFence, Spec, string, ManagedBootstrapDestination) (ManagedBootstrapResult, error)
+    PrepareManagedBootstrap(context.Context, RunFence, Spec, string, ManagedBootstrapProjector, ManagedBootstrapDestination) (ManagedBootstrapResult, error)
 }
 ```
 
@@ -947,7 +998,7 @@ type ManagedClickHouseVersionProvider interface {
 ```
 
 <a name="ManagedDestination"></a>
-## type [ManagedDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L113-L117>)
+## type [ManagedDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L135-L139>)
 
 ManagedDestination applies an immutable delivery intent and reconciles an ambiguous prior attempt. Implementations must fail closed when evidence is insufficient.
 
@@ -1097,7 +1148,7 @@ type ManagedSnowflakeVersionProvider interface {
 ```
 
 <a name="ManagedSourceResourceCleaner"></a>
-## type [ManagedSourceResourceCleaner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L67-L69>)
+## type [ManagedSourceResourceCleaner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L85-L87>)
 
 ManagedSourceResourceCleaner retires source resources owned by a managed flow after its stopping generation has quiesced. Implementations must never drop adopted resources and must prove external absence before returning.
 
@@ -1119,7 +1170,7 @@ type ManagedSourceSchemaValidator interface {
 ```
 
 <a name="ManagedTransactionDestination"></a>
-## type [ManagedTransactionDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L124-L128>)
+## type [ManagedTransactionDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L146-L150>)
 
 ManagedTransactionDestination is the full\-transaction extension used by named managed profiles. Validation runs immediately before a new control\-plane attempt is prepared, but never blocks adoption of an already committed target marker. Transactional targets commit all fragments with the marker; append\-only targets insert ordered, replay\-convergent fragments and write the marker last.
 
@@ -1132,7 +1183,7 @@ type ManagedTransactionDestination interface {
 ```
 
 <a name="ManagedTransactionPreparer"></a>
-## type [ManagedTransactionPreparer](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L141-L143>)
+## type [ManagedTransactionPreparer](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L163-L165>)
 
 ManagedTransactionPreparer is an optional deep interface implemented by managed destinations that can validate and retain one bounded transaction plan before PostgreSQL persists the external attempt.
 
@@ -1164,23 +1215,25 @@ const (
 ```
 
 <a name="OutboxEntry"></a>
-## type [OutboxEntry](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L173-L180>)
+## type [OutboxEntry](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L176-L185>)
 
-OutboxEntry is one durable secondary\-destination delivery. PositionID is derived with CheckpointPositionID. BatchHash is populated by stores when listing entries and identifies the exact, type\-preserving batch contents. Every destination used with primary acknowledgement must implement idempotent writes because a crash after Write and before durable persistence or deletion can replay a batch.
+OutboxEntry is one durable secondary\-destination delivery. PositionID is derived with CheckpointPositionID; PostgreSQL positionless transaction fragments use a deterministic /fragment/ ordinal suffix under their final commit checkpoint identity. BatchHash is populated by stores when listing entries and identifies the exact, type\-preserving batch contents. Every destination used with primary acknowledgement must implement idempotent writes because a crash after Write and before durable persistence or deletion can replay a batch.
 
 ```go
 type OutboxEntry struct {
-    FlowID      string
-    Destination string
-    PositionID  string
-    BatchHash   string
-    Batch       Batch
-    CreatedAt   time.Time
+    FlowID                string
+    Destination           string
+    PositionID            string
+    BatchHash             string
+    ProjectionFingerprint string
+    ReplayOrder           int64
+    Batch                 Batch
+    CreatedAt             time.Time
 }
 ```
 
 <a name="OutboxStore"></a>
-## type [OutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L185-L189>)
+## type [OutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L190-L194>)
 
 OutboxStore atomically advances a flow checkpoint and records secondary deliveries. Implementations must make insertion idempotent for an identical \(flow, destination, position\) and reject conflicting batch content.
 
@@ -1193,7 +1246,7 @@ type OutboxStore interface {
 ```
 
 <a name="PreparedManagedTransaction"></a>
-## type [PreparedManagedTransaction](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L134-L136>)
+## type [PreparedManagedTransaction](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L156-L158>)
 
 PreparedManagedTransaction is a bounded, validated destination operation. The implementation hides destination\-specific planning behind one Apply method so the coordinator does not ask an adapter to materialize a full transaction twice around the durable attempt boundary.
 
@@ -1204,7 +1257,7 @@ type PreparedManagedTransaction interface {
 ```
 
 <a name="Record"></a>
-## type [Record](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L106-L119>)
+## type [Record](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L107-L120>)
 
 Record represents a single change or DDL event.
 
@@ -1226,7 +1279,7 @@ type Record struct {
 ```
 
 <a name="ReplicationLagProvider"></a>
-## type [ReplicationLagProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L140-L142>)
+## type [ReplicationLagProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L141-L143>)
 
 ReplicationLagProvider exposes replication lag metrics for sources that can report it.
 
@@ -1291,7 +1344,7 @@ type RunFenceBinder interface {
 ```
 
 <a name="Schema"></a>
-## type [Schema](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L72-L79>)
+## type [Schema](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L73-L80>)
 
 Schema describes a table\-level schema snapshot.
 
@@ -1316,7 +1369,7 @@ func DecodeManagedSchemaBaselines(raw string) ([]Schema, error)
 DecodeManagedSchemaBaselines validates a checkpoint baseline encoding.
 
 <a name="SlotDropper"></a>
-## type [SlotDropper](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L145-L147>)
+## type [SlotDropper](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L146-L148>)
 
 SlotDropper is implemented by sources that can drop replication slots.
 
@@ -1327,7 +1380,7 @@ type SlotDropper interface {
 ```
 
 <a name="Source"></a>
-## type [Source](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L131-L137>)
+## type [Source](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L132-L138>)
 
 Source reads from an upstream system.
 
@@ -1433,6 +1486,21 @@ func (p TableWritePolicy) IsZero() bool
 ```
 
 IsZero reports whether a batch has no resolved projection policy.
+
+<a name="TableWriteSemantics"></a>
+## type [TableWriteSemantics](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L43-L49>)
+
+TableWriteSemantics declares which projected logical table policies a destination can execute. Undeclared semantics fail admission for mapped flows.
+
+```go
+type TableWriteSemantics struct {
+    Declared       bool
+    Append         bool
+    Upsert         bool
+    ExplicitKey    bool
+    WatermarkGuard bool
+}
+```
 
 <a name="TransactionFragment"></a>
 ## type [TransactionFragment](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L239-L242>)

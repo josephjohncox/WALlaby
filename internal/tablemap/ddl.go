@@ -29,6 +29,9 @@ func projectDDLRecord(sourceSchema, targetSchema connector.Schema, resolved reso
 	}
 	projected := internalschema.Plan{Changes: make([]internalschema.Change, 0, len(plan.Changes))}
 	for _, change := range plan.Changes {
+		if resolved.write.Mode == flow.TableWriteModeAppend && change.Type == internalschema.ChangeAlterPrimaryKey {
+			continue
+		}
 		if change.Namespace != "" && change.Namespace != sourceSchema.Namespace {
 			return connector.Record{}, false, fmt.Errorf("DDL change namespace %q differs from batch source namespace %q", change.Namespace, sourceSchema.Namespace)
 		}
@@ -61,7 +64,10 @@ func projectDDLRecord(sourceSchema, targetSchema connector.Schema, resolved reso
 			}
 			mapped.ToColumn = target
 		}
-		if len(change.PrimaryKeys) > 0 {
+		if len(change.PrimaryKeys) > 0 && resolved.write.Mode == flow.TableWriteModeAppend {
+			mapped.PrimaryKeys = nil
+		}
+		if len(change.PrimaryKeys) > 0 && resolved.write.Mode != flow.TableWriteModeAppend {
 			mapped.PrimaryKeys = make([]string, 0, len(change.PrimaryKeys))
 			for _, key := range change.PrimaryKeys {
 				target, included := resolveDDLColumn(resolved, key)

@@ -89,7 +89,7 @@ const (
 ```
 
 <a name="DDLExecutionStore"></a>
-## type [DDLExecutionStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/ddl_execution.go#L11-L29>)
+## type [DDLExecutionStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/ddl_execution.go#L11-L30>)
 
 DDLExecutionStore establishes immutable destination manifests before DDL side effects and persists per\-destination execution receipts afterward.
 
@@ -107,6 +107,7 @@ type DDLExecutionStore interface {
         flowID, position, destination string,
         expectedDestinations []string,
     ) (connector.DDLExecutionState, error)
+    RecordVacuousDDLExecution(ctx context.Context, flowID, position, ddl string) error
     RecordDDLExecution(
         ctx context.Context,
         flowID, position, ddl, destination string,
@@ -116,14 +117,16 @@ type DDLExecutionStore interface {
 ```
 
 <a name="DestinationConfig"></a>
-## type [DestinationConfig](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L35-L38>)
+## type [DestinationConfig](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L35-L40>)
 
 DestinationConfig binds a destination to its spec.
 
 ```go
 type DestinationConfig struct {
-    Spec connector.Spec
-    Dest connector.Destination
+    Spec               connector.Spec
+    Dest               connector.Destination
+    Projector          Projector
+    MappingFingerprint string
 }
 ```
 
@@ -314,7 +317,7 @@ type Projector interface {
 ```
 
 <a name="Runner"></a>
-## type [Runner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L51-L76>)
+## type [Runner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L53-L78>)
 
 Runner streams data from a source to destinations.
 
@@ -348,7 +351,7 @@ type Runner struct {
 ```
 
 <a name="Runner.ManagedProfileEnabled"></a>
-### func \(\*Runner\) [ManagedProfileEnabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L771>)
+### func \(\*Runner\) [ManagedProfileEnabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L799>)
 
 ```go
 func (r *Runner) ManagedProfileEnabled() bool
@@ -357,7 +360,7 @@ func (r *Runner) ManagedProfileEnabled() bool
 
 
 <a name="Runner.Run"></a>
-### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L80>)
+### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L82>)
 
 ```go
 func (r *Runner) Run(ctx context.Context) (retErr error)
@@ -366,7 +369,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error)
 Run executes the streaming loop until context cancellation or error. It requires a stable flow ID and durable checkpoint storage before acknowledging the source.
 
 <a name="StagingResolver"></a>
-## type [StagingResolver](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L41-L43>)
+## type [StagingResolver](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L43-L45>)
 
 StagingResolver is implemented by destinations that can resolve staging tables.
 
@@ -377,7 +380,7 @@ type StagingResolver interface {
 ```
 
 <a name="StagingResolverFor"></a>
-## type [StagingResolverFor](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L46-L48>)
+## type [StagingResolverFor](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L48-L50>)
 
 StagingResolverFor lets destinations resolve staging tables for known schemas.
 

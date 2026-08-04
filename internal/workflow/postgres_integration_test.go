@@ -78,8 +78,8 @@ func TestPostgresUpdateRejectsLegacyMissingMappingRow(t *testing.T) {
 	defer store.Close()
 	flowID := fmt.Sprintf("legacy-mapping-update-%d", time.Now().UnixNano())
 	defer func() { _, _ = store.pool.Exec(context.Background(), "DELETE FROM flows WHERE id=$1", flowID) }()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO flows(id,source,destinations,state,parallelism,config,lifecycle_target)
-VALUES($1,'{}'::jsonb,'[{"Name":"test-destination","Type":"postgres"}]'::jsonb,'created',1,'{"TableMappings":{"Version":1}}'::jsonb,'created')`, flowID); err != nil {
+	if _, err := store.pool.Exec(ctx, `INSERT INTO flows(id,name,source,destinations,state,parallelism,config,lifecycle_target)
+VALUES($1,$1,'{}'::jsonb,'[{"Name":"test-destination","Type":"postgres"}]'::jsonb,'created',1,'{"TableMappings":{"Version":1}}'::jsonb,'created')`, flowID); err != nil {
 		t.Fatal(err)
 	}
 	_, err = store.Update(ctx, mappedTestFlow(flow.Flow{ID: flowID}))
@@ -267,7 +267,7 @@ func TestPostgresFlowLocksUseDedicatedPoolWithSingleNormalConnection(t *testing.
 	}
 }
 
-func TestMigration005RejectsLegacyRunningRowsAndMigratesStableRows(t *testing.T) {
+func TestMigration005RejectsLegacyRunningRowsAndCurrentRuntimeRejectsStableLegacyRows(t *testing.T) {
 	dsn := os.Getenv("TEST_PG_DSN")
 	if dsn == "" {
 		t.Skip("TEST_PG_DSN not set")
@@ -328,17 +328,10 @@ func TestMigration005RejectsLegacyRunningRowsAndMigratesStableRows(t *testing.T)
 	}
 	store := &PostgresEngine{pool: stablePool, lockPool: lockPool}
 	defer lockPool.Close()
-	_, createdControl, err := store.PlanStart(ctx, "created", false)
-	if err != nil || createdControl.Generation != 1 {
-		t.Fatalf("migrated created PlanStart control=%+v err=%v", createdControl, err)
-	}
-	_, pausedControl, err := store.PlanStart(ctx, "paused", true)
-	if err != nil || pausedControl.Generation != 1 {
-		t.Fatalf("migrated paused Resume control=%+v err=%v", pausedControl, err)
-	}
-	failedControl, err := store.Control(ctx, "failed")
-	if err != nil || failedControl.Generation != 0 || failedControl.Target != TargetFailed {
-		t.Fatalf("migrated failed control=%+v err=%v", failedControl, err)
+	for _, legacyFlowID := range []string{"created", "paused", "failed"} {
+		if _, err := store.Get(ctx, legacyFlowID); err == nil || !strings.Contains(err.Error(), "incompatible or missing table mappings") {
+			t.Fatalf("current runtime legacy flow %s error=%v", legacyFlowID, err)
+		}
 	}
 }
 

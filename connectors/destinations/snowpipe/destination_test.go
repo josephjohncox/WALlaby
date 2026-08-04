@@ -29,6 +29,17 @@ func TestCopyOptionsClause(t *testing.T) {
 	expectContains(t, got, "PURGE = TRUE")
 }
 
+func TestMappedSchemaAndTableDotsRemainLiteral(t *testing.T) {
+	destination := &Destination{spec: connector.Spec{Options: map[string]string{"schema": "legacy", "table": "legacy"}}}
+	batch := connector.Batch{Schema: connector.Schema{Namespace: "sch.ma"}, Records: []connector.Record{{Table: "ta.ble"}}}
+	if got := destination.targetTable(batch.Schema, batch.Records[0]); got != `"sch.ma"."ta.ble"` {
+		t.Fatalf("target=%s", got)
+	}
+	if got := destination.resolveStage(batch); got != `@%"sch.ma"."ta.ble"` {
+		t.Fatalf("stage=%s", got)
+	}
+}
+
 func TestWriteIssuesPutAndCopy(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -47,7 +58,6 @@ func TestWriteIssuesPutAndCopy(t *testing.T) {
 		copyMatch:   "case_insensitive",
 		copyPurge:   &purge,
 		fileFormat:  "MY_FORMAT",
-		writeMode:   writeModeAppend,
 	}
 
 	mock.ExpectExec(regexp.QuoteMeta("PUT file://")).WillReturnResult(sqlmock.NewResult(1, 1))
@@ -62,7 +72,8 @@ func TestWriteIssuesPutAndCopy(t *testing.T) {
 				{Name: "id", Type: "int8"},
 			},
 		},
-		Checkpoint: connector.Checkpoint{LSN: "1"},
+		Checkpoint:  connector.Checkpoint{LSN: "1"},
+		WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend},
 		Records: []connector.Record{
 			{Table: "public.orders", Operation: connector.OpInsert, After: map[string]any{"id": 1}},
 		},
@@ -88,14 +99,14 @@ func TestWriteSkipsCopyWhenDisabled(t *testing.T) {
 		codec:       &wire.JSONCodec{},
 		stage:       "@stage",
 		copyOnWrite: false,
-		writeMode:   writeModeAppend,
 	}
 
 	mock.ExpectExec(regexp.QuoteMeta("PUT file://")).WillReturnResult(sqlmock.NewResult(1, 1))
 
 	batch := connector.Batch{
-		Schema:     connector.Schema{Name: "orders", Namespace: "public"},
-		Checkpoint: connector.Checkpoint{LSN: "1"},
+		Schema:      connector.Schema{Name: "orders", Namespace: "public"},
+		Checkpoint:  connector.Checkpoint{LSN: "1"},
+		WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend},
 		Records: []connector.Record{
 			{Table: "public.orders", Operation: connector.OpInsert, After: map[string]any{"id": 1}},
 		},

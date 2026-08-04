@@ -199,22 +199,22 @@ func (p *PostgresStore) PersistCheckpointAndOutbox(ctx context.Context, flowID s
 			return fmt.Errorf("read outbox batch identity: %w", err)
 		}
 		tag, err := tx.Exec(ctx,
-			`INSERT INTO checkpoint_outbox (flow_id, destination_id, position_id, batch_hash, codec, batch_json, created_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7)
+			`INSERT INTO checkpoint_outbox (flow_id, destination_id, position_id, batch_hash, projection_fingerprint, codec, batch_json, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 			 ON CONFLICT (flow_id, destination_id, position_id) DO NOTHING`,
-			flowID, item.entry.Destination, item.entry.PositionID, item.batchHash, outboxCodecGobV1, item.batchData, item.entry.CreatedAt)
+			flowID, item.entry.Destination, item.entry.PositionID, item.batchHash, item.entry.ProjectionFingerprint, outboxCodecGobV1, item.batchData, item.entry.CreatedAt)
 		if err != nil {
 			return fmt.Errorf("insert outbox entry for %s: %w", item.entry.Destination, err)
 		}
 		if tag.RowsAffected() == 0 {
-			var existingHash string
+			var existingHash, existingProjection string
 			if err := tx.QueryRow(ctx,
-				`SELECT batch_hash FROM checkpoint_outbox
+				`SELECT batch_hash, projection_fingerprint FROM checkpoint_outbox
 				 WHERE flow_id=$1 AND destination_id=$2 AND position_id=$3`,
-				flowID, item.entry.Destination, item.entry.PositionID).Scan(&existingHash); err != nil {
+				flowID, item.entry.Destination, item.entry.PositionID).Scan(&existingHash, &existingProjection); err != nil {
 				return fmt.Errorf("read existing outbox entry for %s: %w", item.entry.Destination, err)
 			}
-			if existingHash != item.batchHash {
+			if existingHash != item.batchHash || existingProjection != item.entry.ProjectionFingerprint {
 				return fmt.Errorf("%w: flow=%s destination=%s position=%s", connector.ErrOutboxConflict, flowID, item.entry.Destination, item.entry.PositionID)
 			}
 		}
@@ -261,18 +261,19 @@ func putPostgresCheckpoint(ctx context.Context, tx pgx.Tx, flowID string, checkp
 
 func (p *PostgresStore) ListOutbox(ctx context.Context, flowID string) ([]connector.OutboxEntry, error) {
 	rows, err := p.pool.Query(ctx,
-		`SELECT destination_id, position_id, batch_hash, codec, batch_json, created_at FROM checkpoint_outbox
-		 WHERE flow_id=$1 ORDER BY created_at, destination_id`, flowID)
+		`SELECT destination_id, position_id, batch_hash, projection_fingerprint, replay_order, codec, batch_json, created_at FROM checkpoint_outbox
+		 WHERE flow_id=$1 ORDER BY replay_order`, flowID)
 	if err != nil {
 		return nil, fmt.Errorf("list checkpoint outbox: %w", err)
 	}
 	defer rows.Close()
 	entries := make([]connector.OutboxEntry, 0)
 	for rows.Next() {
-		var destination, position, batchHash, codec string
+		var destination, position, batchHash, projectionFingerprint, codec string
+		var replayOrder int64
 		var batchJSON []byte
 		var createdAt time.Time
-		if err := rows.Scan(&destination, &position, &batchHash, &codec, &batchJSON, &createdAt); err != nil {
+		if err := rows.Scan(&destination, &position, &batchHash, &projectionFingerprint, &replayOrder, &codec, &batchJSON, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan checkpoint outbox: %w", err)
 		}
 		batch, err := decodeOutboxBatch(codec, batchJSON)
@@ -280,7 +281,7 @@ func (p *PostgresStore) ListOutbox(ctx context.Context, flowID string) ([]connec
 			return nil, err
 		}
 		entries = append(entries, connector.OutboxEntry{
-			FlowID: flowID, Destination: destination, PositionID: position, BatchHash: batchHash, Batch: batch, CreatedAt: createdAt,
+			FlowID: flowID, Destination: destination, PositionID: position, BatchHash: batchHash, ProjectionFingerprint: projectionFingerprint, ReplayOrder: replayOrder, Batch: batch, CreatedAt: createdAt,
 		})
 	}
 	if err := rows.Err(); err != nil {

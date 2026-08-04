@@ -28,9 +28,9 @@ type abandonmentRecordingPostgresDestination struct {
 	abandonCalls atomic.Int32
 }
 
-func (d *abandonmentRecordingPostgresDestination) AbandonBootstrap(ctx context.Context, intent connector.BootstrapIntent, schemas []connector.Schema) error {
+func (d *abandonmentRecordingPostgresDestination) AbandonBootstrap(ctx context.Context, intent connector.BootstrapIntent, tables []connector.BootstrapTable) error {
 	d.abandonCalls.Add(1)
-	return d.Destination.AbandonBootstrap(ctx, intent, schemas)
+	return d.Destination.AbandonBootstrap(ctx, intent, tables)
 }
 
 func TestManagedBootstrapWorkerWiringConcurrentBoundary(t *testing.T) {
@@ -129,7 +129,7 @@ DROP TABLE IF EXISTS public.wallaby_bootstrap_wiring_b`)
 			"source_system_identifier": systemID, "source_lineage_id": "wiring-lineage-v1", "publication_revision": "bootstrap-pending",
 		}},
 		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
-			"dsn": dsn, "schema": "wallaby_bootstrap_target", "write_mode": "target", "batch_mode": "target",
+			"dsn": dsn, "schema": "wallaby_bootstrap_target", "batch_mode": "target",
 			"managed_profile":         connector.ManagedProfilePostgresToPostgresV1,
 			"destination_revision_id": destinationRevisionID, "synchronous_commit": "on", "meta_table_enabled": "false",
 		}}},

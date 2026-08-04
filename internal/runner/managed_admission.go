@@ -166,9 +166,6 @@ func validateManagedPostgresDestinationAdmission(sourceSpec connector.Spec, dest
 	if destination.Spec.Type != connector.EndpointPostgres {
 		return fmt.Errorf("managed destination type %q is not admitted by the PostgreSQL profile", destination.Spec.Type)
 	}
-	if mode := strings.ToLower(strings.TrimSpace(destination.Spec.Options["write_mode"])); mode != "" && mode != "target" {
-		return fmt.Errorf("managed PostgreSQL destination rejects write_mode=%q", mode)
-	}
 	if mode := strings.ToLower(strings.TrimSpace(destination.Spec.Options["batch_mode"])); mode != "" && mode != "target" {
 		return fmt.Errorf("managed PostgreSQL destination rejects batch_mode=%q", mode)
 	}
@@ -235,9 +232,6 @@ func validateManagedClickHouseAdmission(sourceSpec connector.Spec, destination s
 	}
 	if strings.Join(dsnOptions.Addr, ",") == strings.Join(replicaDSNOptions.Addr, ",") {
 		return fmt.Errorf("%s requires distinct primary and replica endpoints", profileName)
-	}
-	if mode := strings.ToLower(strings.TrimSpace(options["write_mode"])); mode != "managed_append" {
-		return fmt.Errorf("%s requires write_mode=managed_append; got %q", profileName, mode)
 	}
 	if mode := strings.ToLower(strings.TrimSpace(options["batch_mode"])); mode != "target" {
 		return fmt.Errorf("%s requires batch_mode=target; got %q", profileName, mode)
@@ -351,7 +345,7 @@ func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.Spec,
 		return fmt.Errorf("%s: %w", profileName, err)
 	}
 	for key, want := range map[string]string{
-		"write_mode": "target", "batch_mode": "target", "batch_resolution": "none",
+		"batch_mode": "target", "batch_resolution": "none",
 	} {
 		if got := strings.ToLower(strings.TrimSpace(options[key])); got != want {
 			return fmt.Errorf("%s requires %s=%s; got %q", profileName, key, want, got)
@@ -455,8 +449,8 @@ func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.Spec,
 	if err := json.Unmarshal([]byte(options["managed_schema_contract"]), &schemaContract); err != nil {
 		return fmt.Errorf("%s managed_schema_contract is invalid JSON: %w", profileName, err)
 	}
-	if schemaContract.Name != options["managed_source_table"] || schemaContract.Namespace != options["managed_source_schema"] || len(schemaContract.Columns) == 0 {
-		return fmt.Errorf("%s managed_schema_contract must exactly identify the configured non-empty source schema", profileName)
+	if schemaContract.Name != options["managed_table"] || schemaContract.Namespace != options["managed_schema"] || len(schemaContract.Columns) == 0 {
+		return fmt.Errorf("%s managed_schema_contract must exactly identify the projected non-empty target schema", profileName)
 	}
 	if !isLowerHexDigest(options["managed_schema_contract_hash"]) {
 		return fmt.Errorf("%s managed_schema_contract_hash must be 64 lowercase hexadecimal characters", profileName)

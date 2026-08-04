@@ -193,9 +193,12 @@ func managedConfigFromSpec(dsn string, spec connector.Spec) (managedConfig, erro
 	if err := json.Unmarshal([]byte(options["managed_schema_contract"]), &cfg.schemaContract); err != nil {
 		return managedConfig{}, fmt.Errorf("decode managed Snowflake schema contract: %w", err)
 	}
-	if cfg.schemaContract.Namespace != cfg.sourceSchema || cfg.schemaContract.Name != cfg.sourceTable {
-		return managedConfig{}, errors.New("managed Snowflake schema contract does not identify the configured source relation")
+	if cfg.schemaContract.Namespace != cfg.schema || cfg.schemaContract.Name != cfg.table {
+		return managedConfig{}, errors.New("managed Snowflake projected schema contract does not identify the provisioned target relation")
 	}
+	// The cloned runtime contract is destination-shaped. Publication admission
+	// retains the persisted source options, while planning binds to this target identity.
+	cfg.sourceSchema, cfg.sourceTable = cfg.schemaContract.Namespace, cfg.schemaContract.Name
 	contractHash, err := ManagedSchemaContractHash(cfg.schemaContract)
 	if err != nil {
 		return managedConfig{}, err
@@ -242,8 +245,8 @@ func managedConfigFromSpec(dsn string, spec connector.Spec) (managedConfig, erro
 		return managedConfig{}, err
 	}
 	cfg.validateEveryConnection = true
-	if strings.ToLower(strings.TrimSpace(options["write_mode"])) != "target" || strings.ToLower(strings.TrimSpace(options["batch_mode"])) != "target" || strings.ToLower(strings.TrimSpace(options["batch_resolution"])) != "none" {
-		return managedConfig{}, errors.New("managed Snowflake profile requires target write/batch mode and batch_resolution=none")
+	if strings.ToLower(strings.TrimSpace(options["batch_mode"])) != "target" || strings.ToLower(strings.TrimSpace(options["batch_resolution"])) != "none" {
+		return managedConfig{}, errors.New("managed Snowflake profile requires target batch mode and batch_resolution=none")
 	}
 	metaEnabled, err := parseManagedSnowflakeBoolOption(options, "meta_table_enabled", true)
 	if err != nil {
@@ -276,7 +279,7 @@ func managedConfigFromSpec(dsn string, spec connector.Spec) (managedConfig, erro
 func ValidateManagedProfileOptions(options map[string]string) error {
 	allowed := map[string]struct{}{
 		"dsn": {}, "flow_id": {}, "managed_profile": {}, "destination_revision_id": {},
-		"write_mode": {}, "batch_mode": {}, "batch_resolution": {}, "meta_table_enabled": {},
+		"batch_mode": {}, "batch_resolution": {}, "meta_table_enabled": {},
 		"disable_transactions": {}, "session_keep_alive": {}, "type_mappings": {}, "type_mappings_file": {},
 		"managed_account": {}, "managed_database": {}, "managed_schema": {}, "managed_table": {},
 		"managed_receipts_table": {}, "managed_owner_role": {}, "managed_execution_role": {}, "managed_warehouse": {},

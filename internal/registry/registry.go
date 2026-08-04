@@ -44,6 +44,7 @@ type Store interface {
 type DDLExecutionStore interface {
 	Store
 	PrepareDDLExecution(ctx context.Context, flowID, lsn, destination string, expectedDestinations []string) (connector.DDLExecutionState, error)
+	RecordVacuousDDLExecution(ctx context.Context, flowID, lsn, ddl string) error
 	RecordDDLExecution(ctx context.Context, flowID, lsn, ddl, destination string, expectedDestinations []string) error
 }
 
@@ -659,6 +660,66 @@ ON CONFLICT(event_id,destination,acquisition_id,lease_epoch) DO NOTHING`
 	return state, nil
 }
 
+// RecordVacuousDDLExecution durably completes an approved DDL position whose
+// immutable projected execution manifest is empty. No synthetic destination or
+// receipt is created.
+func (p *PostgresStore) RecordVacuousDDLExecution(ctx context.Context, flowID, lsn, ddl string) error {
+	if strings.TrimSpace(lsn) == "" {
+		return errors.New("vacuous DDL execution position is required")
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin vacuous DDL completion: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	fence, fenced := runFenceFromContext(ctx)
+	if fenced {
+		if flowID != fence.FlowID {
+			return fmt.Errorf("%w: DDL flow differs from run fence", authority.ErrFenceRejected)
+		}
+		if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
+			return err
+		}
+	}
+	query := `SELECT id, flow_id, ddl, plan_json, lsn, status, created_at, applied_at FROM ddl_events WHERE lsn=$1`
+	args := []any{lsn}
+	if flowID != "" {
+		query += fmt.Sprintf(" AND flow_id=$%d", len(args)+1)
+		args = append(args, flowID)
+	}
+	if fenced {
+		query += fmt.Sprintf(" AND flow_incarnation_id=$%d", len(args)+1)
+		args = append(args, fence.FlowIncarnationID)
+	}
+	query += " ORDER BY id DESC LIMIT 1 FOR UPDATE"
+	event, err := scanDDLEvent(tx.QueryRow(ctx, query, args...))
+	if err != nil {
+		return err
+	}
+	if event.Status != StatusApproved && event.Status != StatusApplied {
+		return &connector.DDLGateError{FlowID: flowID, LSN: lsn, DDL: event.DDL, Status: event.Status, EventID: event.ID}
+	}
+	if strings.TrimSpace(ddl) != "" && strings.TrimSpace(event.DDL) != "" && ddl != event.DDL {
+		return fmt.Errorf("%w: vacuous DDL content differs from registered event", connector.ErrDeliveryConflict)
+	}
+	empty := []string{}
+	manifestHash := fmt.Sprintf("%x", sha256.Sum256(nil))
+	var storedDestinations []string
+	var storedHash string
+	if err := tx.QueryRow(ctx, `INSERT INTO ddl_execution_manifests(event_id,destinations,manifest_hash)
+VALUES($1,$2,$3) ON CONFLICT(event_id) DO UPDATE SET manifest_hash=ddl_execution_manifests.manifest_hash
+RETURNING destinations,manifest_hash`, event.ID, empty, manifestHash).Scan(&storedDestinations, &storedHash); err != nil {
+		return fmt.Errorf("prepare vacuous DDL manifest: %w", err)
+	}
+	if storedHash != manifestHash || len(storedDestinations) != 0 {
+		return ErrExecutionManifestChanged
+	}
+	if _, err := tx.Exec(ctx, `UPDATE ddl_events SET status=$2,applied_at=COALESCE(applied_at,clock_timestamp()) WHERE id=$1`, event.ID, StatusApplied); err != nil {
+		return fmt.Errorf("mark vacuous DDL applied: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
 // RecordDDLExecution stores one destination receipt and marks the DDL event
 // applied only when every destination in the immutable execution manifest has
 // a receipt. Receipt insertion and the applied transition share one transaction.
@@ -1034,6 +1095,15 @@ func PrepareDDLExecution(
 		return connector.DDLExecutionUnknown, fmt.Errorf("prepare DDL execution: %w", err)
 	}
 	return state, nil
+}
+
+// RecordVacuousDDLExecution persists an empty immutable destination manifest
+// and advances the approved registry event without fabricating a receipt.
+func RecordVacuousDDLExecution(ctx context.Context, store Store, flowID, lsn, ddl string) error {
+	receipts, ok := store.(DDLExecutionStore)
+	if !ok { return ErrExecutionReceiptRequired }
+	if err := receipts.RecordVacuousDDLExecution(ctx, flowID, lsn, ddl); err != nil { return fmt.Errorf("record vacuous DDL execution: %w", err) }
+	return nil
 }
 
 // RecordDDLExecution persists one destination receipt and advances the registry

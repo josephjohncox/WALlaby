@@ -14,6 +14,50 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+func TestPostgresVacuousDDLCompletionUsesEmptyDurableManifest(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+	ctx := context.Background()
+	store, err := NewPostgresStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	flowID := fmt.Sprintf("vacuous-%d", time.Now().UnixNano())
+	position := "0/ABC"
+	id, err := store.RecordDDL(ctx, flowID, "ALTER TABLE hidden ADD COLUMN x int", schema.Plan{}, position, StatusApproved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = store.pool.Exec(ctx, "DELETE FROM ddl_execution_manifests WHERE event_id=$1", id)
+		_, _ = store.pool.Exec(ctx, "DELETE FROM ddl_events WHERE id=$1", id)
+	}()
+	if err := store.RecordVacuousDDLExecution(ctx, flowID, position, "ALTER TABLE hidden ADD COLUMN x int"); err != nil {
+		t.Fatal(err)
+	}
+	event, err := store.GetDDL(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Status != StatusApplied || event.AppliedAt.IsZero() {
+		t.Fatalf("event=%+v", event)
+	}
+	var destinations []string
+	var receipts int
+	if err := store.pool.QueryRow(ctx, "SELECT destinations FROM ddl_execution_manifests WHERE event_id=$1", id).Scan(&destinations); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, "SELECT count(*) FROM ddl_execution_receipts WHERE event_id=$1", id).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if len(destinations) != 0 || receipts != 0 {
+		t.Fatalf("destinations/receipts=%v/%d", destinations, receipts)
+	}
+}
+
 func TestPostgresDDLExecutionAdvisoryLockSerializesOwners(t *testing.T) {
 	dsn := os.Getenv("TEST_PG_DSN")
 	if dsn == "" {

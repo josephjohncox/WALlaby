@@ -2,6 +2,16 @@ package connector
 
 import "testing"
 
+func TestAppendWatermarkDoesNotRequireSuppressionCapability(t *testing.T) {
+	capabilities := Capabilities{TableWrites: TableWriteSemantics{Declared: true, Append: true}}
+	if err := capabilities.SupportsTablePolicy(TableWritePolicy{Mode: ResolvedWriteAppend, WatermarkColumn: "observed_at"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := capabilities.SupportsTablePolicy(TableWritePolicy{Mode: ResolvedWriteUpsert, KeyColumns: []string{"id"}, WatermarkColumn: "observed_at"}); err == nil {
+		t.Fatal("unsupported watermark upsert was admitted")
+	}
+}
+
 func TestCapabilitiesValidateSupport(t *testing.T) {
 	t.Parallel()
 

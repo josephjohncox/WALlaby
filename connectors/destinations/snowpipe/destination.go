@@ -33,8 +33,6 @@ const (
 	optDSN              = "dsn"
 	optStage            = "stage"
 	optStagePath        = "stage_path"
-	optSchema           = "schema"
-	optTable            = "table"
 	optFormat           = "format"
 	optFileFormat       = "file_format"
 	optWarehouse        = "warehouse"
@@ -49,14 +47,12 @@ const (
 	optCopyMatch        = "copy_match_by_column_name"
 	optAutoIngest       = "auto_ingest"
 	optCompatMode       = "compat_mode"
-	optWriteMode        = "write_mode"
 	optMetaTable        = "meta_table"
 	optMetaSchema       = "meta_schema"
 	optMetaEnabled      = "meta_table_enabled"
 	optMetaPKPrefix     = "meta_pk_prefix"
 	optFlowID           = "flow_id"
 
-	writeModeAppend    = "append"
 	compatModeFakesnow = "fakesnow"
 	defaultMetaSchema  = "WALLABY_META"
 	defaultMetaTable   = "__METADATA"
@@ -77,7 +73,6 @@ type Destination struct {
 	copyPurge        *bool
 	copyMatch        string
 	fileFormat       string
-	writeMode        string
 	compatMode       string
 	compatNoTx       bool
 	metaEnabled      bool
@@ -146,13 +141,6 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		d.copyOnWrite = false
 	}
 	d.fileFormat = strings.TrimSpace(spec.Options[optFileFormat])
-	d.writeMode = strings.ToLower(strings.TrimSpace(spec.Options[optWriteMode]))
-	if d.writeMode == "" {
-		d.writeMode = writeModeAppend
-	}
-	if d.writeMode != writeModeAppend {
-		return fmt.Errorf("snowpipe only supports append write_mode")
-	}
 
 	compatMode := strings.ToLower(strings.TrimSpace(spec.Options[optCompatMode]))
 	switch compatMode {
@@ -304,6 +292,9 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	}
 	if len(batch.Records) == 0 {
 		return nil
+	}
+	if batch.WritePolicy.Mode != connector.ResolvedWriteAppend {
+		return errors.New("snowpipe destination supports append table writes only")
 	}
 	meta, err := d.ensureSchema(ctx, batch.Schema)
 	if err != nil {
@@ -465,7 +456,8 @@ func (d *Destination) Close(_ context.Context) error {
 
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		Support: connector.SupportExperimental,
+		Support:     connector.SupportExperimental,
+		TableWrites: connector.TableWriteSemantics{Declared: true, Append: true},
 		Delivery: connector.DeliverySemantics{
 			Declared:    true,
 			ExecutesDDL: true,
@@ -525,38 +517,23 @@ func (d *Destination) resolveStage(batch connector.Batch) string {
 		return ensureStagePrefix(d.stage)
 	}
 
-	table := strings.TrimSpace(d.spec.Options[optTable])
-	schema := strings.TrimSpace(d.spec.Options[optSchema])
-	if table == "" && len(batch.Records) > 0 {
+	table := ""
+	if len(batch.Records) > 0 {
 		table = batch.Records[0].Table
 	}
+	schema := batch.Schema.Namespace
 	if table == "" {
 		return ""
 	}
-	if schema == "" {
-		schema = batch.Schema.Namespace
+	if schema != "" {
+		return ensureStagePrefix("@%" + quoteIdent(schema, '"') + "." + quoteIdent(table, '"'))
 	}
-	if schema != "" && !strings.Contains(table, ".") {
-		return ensureStagePrefix("@%" + schema + "." + table)
-	}
-	if strings.Contains(table, ".") {
-		return ensureStagePrefix("@%" + table)
-	}
-	return ensureStagePrefix("@%" + table)
+	return ensureStagePrefix("@%" + quoteIdent(table, '"'))
 }
 
 func (d *Destination) targetTable(schema connector.Schema, record connector.Record) string {
-	table := strings.TrimSpace(d.spec.Options[optTable])
-	targetSchema := strings.TrimSpace(d.spec.Options[optSchema])
-	if table == "" {
-		table = record.Table
-	}
-	if strings.Contains(table, ".") {
-		return quoteQualified(table, '"')
-	}
-	if targetSchema == "" {
-		targetSchema = schema.Namespace
-	}
+	table := record.Table
+	targetSchema := schema.Namespace
 	if targetSchema == "" {
 		return quoteIdent(table, '"')
 	}

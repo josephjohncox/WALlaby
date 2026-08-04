@@ -91,6 +91,19 @@ func (m *memoryStore) PrepareDDLExecution(_ context.Context, flowID, lsn, destin
 	return connector.DDLExecutionNew, nil
 }
 
+func (m *memoryStore) RecordVacuousDDLExecution(_ context.Context, flowID, lsn, _ string) error {
+	for i := range m.events {
+		if m.events[i].FlowID == flowID && m.events[i].LSN == lsn {
+			if m.events[i].Status != StatusApproved && m.events[i].Status != StatusApplied {
+				return &connector.DDLGateError{Status: m.events[i].Status}
+			}
+			m.events[i].Status = StatusApplied
+			return nil
+		}
+	}
+	return errors.New("ddl event not found")
+}
+
 func (m *memoryStore) RecordDDLExecution(
 	_ context.Context,
 	flowID, lsn, _ string, destination string,

@@ -77,18 +77,19 @@ func TestPostgresManagedProfileTargetAdmission(t *testing.T) {
 	destination := openNamedProfileDestination(t, ctx, dsn, 2)
 	defer destination.Close(ctx)
 	schema := managedProfileSchema(table, false)
+	tables := []connector.BootstrapTable{{Schema: schema, WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}}}}
 	intent := connector.BootstrapIntent{
 		FlowID: "target-admission", FlowIncarnationID: uuid.NewString(), SourceLineageID: "target-admission-lineage",
 		BootstrapID: uuid.NewString(), BootstrapGeneration: 1, Generation: 1,
 		AcquisitionID: uuid.NewString(), LeaseEpoch: 1, DestinationRevisionID: "target-admission-revision", ManifestHash: "target-admission-manifest",
 	}
-	if err := destination.PrepareBootstrap(ctx, intent, []connector.Schema{schema}); err == nil || !strings.Contains(err.Error(), "unique constraint") {
+	if err := destination.PrepareBootstrap(ctx, intent, tables); err == nil || !strings.Contains(err.Error(), "unique constraint") {
 		t.Fatalf("bootstrap target without unique identity error=%v, want unique-constraint rejection", err)
 	}
 	if _, err := pool.Exec(ctx, `ALTER TABLE public.wallaby_profile_target_admission ADD CONSTRAINT wallaby_profile_target_admission_deferred UNIQUE (id) DEFERRABLE INITIALLY IMMEDIATE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := destination.PrepareBootstrap(ctx, intent, []connector.Schema{schema}); err == nil || !strings.Contains(err.Error(), "unique constraint") {
+	if err := destination.PrepareBootstrap(ctx, intent, tables); err == nil || !strings.Contains(err.Error(), "unique constraint") {
 		t.Fatalf("bootstrap target with deferrable unique identity error=%v, want ON CONFLICT-ineligible rejection", err)
 	}
 	if _, err := pool.Exec(ctx, `
@@ -96,10 +97,10 @@ ALTER TABLE public.wallaby_profile_target_admission DROP CONSTRAINT wallaby_prof
 ALTER TABLE public.wallaby_profile_target_admission ADD CONSTRAINT wallaby_profile_target_admission_pk PRIMARY KEY (id)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := destination.PrepareBootstrap(ctx, intent, []connector.Schema{schema}); err != nil {
+	if err := destination.PrepareBootstrap(ctx, intent, tables); err != nil {
 		t.Fatalf("admit compatible target: %v", err)
 	}
-	if err := destination.AbandonBootstrap(ctx, intent, []connector.Schema{schema}); err != nil {
+	if err := destination.AbandonBootstrap(ctx, intent, tables); err != nil {
 		t.Fatalf("abandon admission stage: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `ALTER TABLE public.wallaby_profile_target_admission ALTER COLUMN value TYPE bigint USING 0`); err != nil {
@@ -278,7 +279,7 @@ func TestPostgresManagedProfileDDLTargetMapping(t *testing.T) {
 	destination := &pgdest.Destination{}
 	if err := destination.Open(ctx, connector.Spec{Name: "mapped-profile", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1,
-		"write_mode": "target", "batch_mode": "target", "synchronous_commit": "on",
+		"batch_mode": "target", "synchronous_commit": "on",
 		"meta_table_enabled": "false", "schema": "public", "table": targetTable,
 	}}); err != nil {
 		t.Fatal(err)
@@ -543,7 +544,7 @@ func openNamedProfileDestination(t *testing.T, ctx context.Context, dsn string, 
 	destination := &pgdest.Destination{}
 	if err := destination.Open(ctx, connector.Spec{Name: "named-profile", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1,
-		"write_mode": "target", "batch_mode": "target", "synchronous_commit": "on",
+		"batch_mode": "target", "synchronous_commit": "on",
 		"meta_table_enabled": "false", "pool_max_conns": strconv.Itoa(poolSize),
 	}}); err != nil {
 		t.Fatal(err)

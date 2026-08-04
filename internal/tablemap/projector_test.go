@@ -16,10 +16,10 @@ func TestProjectBatchRenamesFiltersKeysAndCarriesWritePolicy(t *testing.T) {
 	projector := testProjector(t, upsertMappings())
 	batch := connector.Batch{
 		Schema: connector.Schema{Namespace: "public", Name: "widgets", Version: 2, Columns: []connector.Column{
-			{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"source_column_id": "1"}},
+			{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"source_column_id": "1", "replica_identity": "true"}},
 			{Name: "value", Type: "text"},
 			{Name: "secret", Type: "text"},
-			{Name: "updated_at", Type: "timestamptz"},
+			{Name: "updated_at", Type: "timestamptz", TypeMetadata: map[string]string{"replica_identity": "true"}},
 		}},
 		Records: []connector.Record{{
 			Table: "widgets", Operation: connector.OpUpdate, Key: []byte(`{"id":1}`), Payload: []byte("opaque"),
@@ -78,6 +78,28 @@ func TestProjectBatchRenamesFiltersKeysAndCarriesWritePolicy(t *testing.T) {
 	secondHash, err := connector.BatchContentHash(again)
 	if err != nil || firstHash != secondHash {
 		t.Fatalf("projected hashes %q/%q err=%v", firstHash, secondHash, err)
+	}
+}
+
+func TestAppendProjectionStripsSourceIdentityAndPreservesRepeatedKeys(t *testing.T) {
+	mappings := flow.NewTableMappings([]connector.Spec{{Name: "sink", Type: connector.EndpointKafka}})
+	projector := testProjector(t, mappings)
+	batch := connector.Batch{Schema: connector.Schema{Namespace: "public", Name: "events", Columns: []connector.Column{{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"primary_key": "true", "primary_key_ordinal": "1", "replica_identity": "true"}}}}, Checkpoint: connector.Checkpoint{LSN: "0/20"}, Records: []connector.Record{
+		{Table: "events", Operation: connector.OpInsert, Key: []byte(`{"id":1}`), After: map[string]any{"id": 1}, SourcePosition: "0/18"},
+		{Table: "events", Operation: connector.OpUpdate, Key: []byte(`{"id":1}`), After: map[string]any{"id": 1}, SourcePosition: "0/20"},
+	}}
+	got, _, err := projector.ProjectBatch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Records) != 2 {
+		t.Fatalf("repeated-key append records=%d", len(got.Records))
+	}
+	metadata := got.Schema.Columns[0].TypeMetadata
+	for _, key := range []string{"primary_key", "primary_key_ordinal", "replica_identity"} {
+		if metadata[key] != "" {
+			t.Fatalf("append schema retained %s metadata: %v", key, metadata)
+		}
 	}
 }
 
@@ -157,7 +179,7 @@ func TestProjectTransactionRenumbersFilteredFragmentsContiguously(t *testing.T) 
 		SourceLineageID: "lineage", TransactionID: 7, BeginLSN: "0/10", CommitLSN: "0/30", EndLSN: "0/38", Checkpoint: connector.Checkpoint{LSN: "0/38"},
 		Fragments: []connector.TransactionFragment{
 			{Ordinal: 0, Batch: connector.Batch{Schema: connector.Schema{Namespace: "public", Name: "ignored", Columns: []connector.Column{{Name: "id", Type: "bigint"}}}, Records: []connector.Record{{Table: "ignored", Operation: connector.OpInsert, After: map[string]any{"id": 1}}}}},
-			{Ordinal: 1, Batch: connector.Batch{Schema: connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "id", Type: "bigint"}, {Name: "updated_at", Type: "text"}}}, Records: []connector.Record{{Table: "widgets", Operation: connector.OpInsert, After: map[string]any{"id": 1, "updated_at": "new"}}}}},
+			{Ordinal: 1, Batch: connector.Batch{Schema: connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"replica_identity": "true"}}, {Name: "updated_at", Type: "text", TypeMetadata: map[string]string{"replica_identity": "true"}}}}, Records: []connector.Record{{Table: "widgets", Operation: connector.OpInsert, After: map[string]any{"id": 1, "updated_at": "new"}}}}},
 		},
 	}
 	got, decision, err := projector.ProjectTransaction(transaction)
@@ -179,7 +201,7 @@ func TestUpsertKeyChangeEmitsDeleteThenInsert(t *testing.T) {
 	t.Parallel()
 	projector := testProjector(t, upsertMappings())
 	batch := connector.Batch{
-		Schema:     connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "id", Type: "bigint"}, {Name: "updated_at", Type: "text"}}},
+		Schema:     connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"replica_identity": "true"}}, {Name: "updated_at", Type: "text", TypeMetadata: map[string]string{"replica_identity": "true"}}}},
 		Records:    []connector.Record{{Table: "widgets", Operation: connector.OpUpdate, Key: []byte(`{"id":1}`), Before: map[string]any{"id": float64(1), "updated_at": "old"}, After: map[string]any{"id": float64(2), "updated_at": "new"}}},
 		Checkpoint: connector.Checkpoint{LSN: "0/20"},
 	}
@@ -202,7 +224,7 @@ func TestConfiguredKeyUpdateRejectsMissingOldMatchKey(t *testing.T) {
 	t.Parallel()
 	projector := testProjector(t, upsertMappings())
 	batch := connector.Batch{
-		Schema:     connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "id", Type: "bigint"}, {Name: "updated_at", Type: "text"}}},
+		Schema:     connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"replica_identity": "true"}}, {Name: "updated_at", Type: "text", TypeMetadata: map[string]string{"replica_identity": "true"}}}},
 		Records:    []connector.Record{{Table: "widgets", Operation: connector.OpUpdate, Before: map[string]any{"updated_at": "old"}, After: map[string]any{"id": 2, "updated_at": "new"}}},
 		Checkpoint: connector.Checkpoint{LSN: "0/20"},
 	}
@@ -218,9 +240,9 @@ func TestConfiguredKeyColumnsAreAuthoritativeAndOrdered(t *testing.T) {
 	mappings.Destinations[0].Tables[0].Columns = append(mappings.Destinations[0].Tables[0].Columns,
 		flow.ColumnMapping{SourceColumn: "second", Action: flow.MappingActionInclude, TargetColumn: "second_key"})
 	schema := connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{
-		{Name: "id", Type: "bigint"},
-		{Name: "second", Type: "bigint"},
-		{Name: "updated_at", Type: "text"},
+		{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"replica_identity": "true"}},
+		{Name: "second", Type: "bigint", TypeMetadata: map[string]string{"replica_identity": "true"}},
+		{Name: "updated_at", Type: "text", TypeMetadata: map[string]string{"replica_identity": "true"}},
 	}}
 	batch := connector.Batch{Schema: schema, Records: []connector.Record{{Table: "widgets", Operation: connector.OpInsert, After: map[string]any{"id": 1, "second": 2, "updated_at": "now"}}}, Checkpoint: connector.Checkpoint{LSN: "0/20"}}
 	got, _, err := testProjector(t, mappings).ProjectBatch(batch)
@@ -241,11 +263,46 @@ func TestConfiguredKeyColumnsAreAuthoritativeAndOrdered(t *testing.T) {
 	}
 }
 
+func TestExplicitNaturalKeyAndFullReplicaIdentityDoNotInferTargetUniqueness(t *testing.T) {
+	mappings := upsertMappings()
+	mappings.Destinations[0].Tables[0].Write.KeyColumns = []string{"email"}
+	mappings.Destinations[0].Tables[0].Columns = append(mappings.Destinations[0].Tables[0].Columns, flow.ColumnMapping{SourceColumn: "email", Action: flow.MappingActionInclude, TargetColumn: "natural_email"})
+	schema := connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{
+		{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"primary_key": "true", "replica_identity": "true"}},
+		{Name: "email", Type: "text", TypeMetadata: map[string]string{"replica_identity": "true"}},
+		{Name: "updated_at", Type: "text", TypeMetadata: map[string]string{"replica_identity": "true"}},
+	}}
+	batch := connector.Batch{Schema: schema, Records: []connector.Record{{Table: "widgets", Operation: connector.OpInsert, After: map[string]any{"id": 1, "email": "a@example.com", "updated_at": "now"}}}, Checkpoint: connector.Checkpoint{LSN: "0/20"}}
+	got, _, err := testProjector(t, mappings).ProjectBatch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.WritePolicy.KeyColumns, []string{"natural_email"}) {
+		t.Fatalf("full identity changed authoritative natural key policy: %v", got.WritePolicy.KeyColumns)
+	}
+}
+
+func TestProjectionRejectsUpsertKeyOutsideReplicaIdentity(t *testing.T) {
+	projector := testProjector(t, upsertMappings())
+	batch := connector.Batch{Schema: connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "id", Type: "bigint"}, {Name: "updated_at", Type: "text", TypeMetadata: map[string]string{"replica_identity": "true"}}}}, Checkpoint: connector.Checkpoint{LSN: "0/20"}, Records: []connector.Record{{Table: "widgets", Operation: connector.OpDelete, Before: map[string]any{"id": 1, "updated_at": "now"}}}}
+	if _, _, err := projector.ProjectBatch(batch); err == nil || !strings.Contains(err.Error(), "upsert key column") {
+		t.Fatalf("upsert key old-image error=%v", err)
+	}
+}
+
+func TestProjectionRejectsWatermarkOutsideReplicaIdentity(t *testing.T) {
+	projector := testProjector(t, upsertMappings())
+	batch := connector.Batch{Schema: connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"replica_identity": "true"}}, {Name: "updated_at", Type: "text"}}}, Checkpoint: connector.Checkpoint{LSN: "0/20"}, Records: []connector.Record{{Table: "widgets", Operation: connector.OpDelete, Before: map[string]any{"id": 1, "updated_at": "now"}}}}
+	if _, _, err := projector.ProjectBatch(batch); err == nil || !strings.Contains(err.Error(), "replica identity") {
+		t.Fatalf("replica identity error=%v", err)
+	}
+}
+
 func TestProjectionRejectsMissingWatermarkSchemaColumn(t *testing.T) {
 	t.Parallel()
 	projector := testProjector(t, upsertMappings())
 	batch := connector.Batch{
-		Schema:     connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "id", Type: "bigint"}}},
+		Schema:     connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"replica_identity": "true"}}}},
 		Records:    []connector.Record{{Table: "widgets", Operation: connector.OpInsert, After: map[string]any{"id": 1}}},
 		Checkpoint: connector.Checkpoint{LSN: "0/20"},
 	}
@@ -261,7 +318,7 @@ func TestProjectorOwnsImmutableMappingCopy(t *testing.T) {
 	mappings.Destinations[0].Tables[0].TargetTable = "mutated"
 	mappings.Destinations[0].Tables[0].Columns[0].TargetColumn = "mutated_id"
 	batch := connector.Batch{
-		Schema:     connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "id", Type: "bigint"}, {Name: "updated_at", Type: "text"}}},
+		Schema:     connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"replica_identity": "true"}}, {Name: "updated_at", Type: "text", TypeMetadata: map[string]string{"replica_identity": "true"}}}},
 		Records:    []connector.Record{{Table: "widgets", Operation: connector.OpInsert, After: map[string]any{"id": 1, "updated_at": "now"}}},
 		Checkpoint: connector.Checkpoint{LSN: "0/20"},
 	}
@@ -278,7 +335,7 @@ func TestProjectionRejectsGeneratedExpressionRewrite(t *testing.T) {
 	t.Parallel()
 	projector := testProjector(t, upsertMappings())
 	batch := connector.Batch{Schema: connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{
-		{Name: "id", Type: "bigint"}, {Name: "computed", Type: "text", Generated: true, Expression: "id::text"}, {Name: "updated_at", Type: "text"},
+		{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"replica_identity": "true"}}, {Name: "computed", Type: "text", Generated: true, Expression: "id::text"}, {Name: "updated_at", Type: "text", TypeMetadata: map[string]string{"replica_identity": "true"}},
 	}}, Records: []connector.Record{{Table: "widgets", Operation: connector.OpInsert, After: map[string]any{"id": 1, "updated_at": "now"}}}, Checkpoint: connector.Checkpoint{LSN: "0/20"}}
 	if _, _, err := projector.ProjectBatch(batch); err == nil || !strings.Contains(err.Error(), "generated column") {
 		t.Fatalf("generated expression error=%v", err)

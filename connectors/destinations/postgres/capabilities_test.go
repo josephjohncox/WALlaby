@@ -6,30 +6,15 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-func TestCapabilitiesForWriteMode(t *testing.T) {
-	t.Parallel()
-
-	destination := &Destination{}
-	tests := []struct {
-		name       string
-		options    map[string]string
-		replaySafe bool
-	}{
-		{name: "default target mode", replaySafe: true},
-		{name: "explicit target mode", options: map[string]string{optWriteMode: writeModeTarget}, replaySafe: true},
-		{name: "append mode", options: map[string]string{optWriteMode: writeModeAppend}},
+func TestCapabilitiesDeclarePerTableWritePolicies(t *testing.T) {
+	capabilities := (&Destination{}).Capabilities()
+	if !capabilities.TableWrites.Declared || !capabilities.TableWrites.Append || !capabilities.TableWrites.Upsert || !capabilities.TableWrites.ExplicitKey || !capabilities.TableWrites.WatermarkGuard {
+		t.Fatalf("postgres table write contract incomplete: %+v", capabilities.TableWrites)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			capabilities := destination.CapabilitiesFor(connector.Spec{Options: tt.options})
-			if capabilities.Delivery.ReplaySafe != tt.replaySafe ||
-				capabilities.Delivery.IdempotentReplay != tt.replaySafe {
-				t.Fatalf("delivery = %+v, replay safe = %v", capabilities.Delivery, tt.replaySafe)
-			}
-			if !capabilities.Delivery.TransactionalBatch || !capabilities.Delivery.ExecutesDDL {
-				t.Fatalf("postgres delivery contract incomplete: %+v", capabilities.Delivery)
-			}
-		})
+	if capabilities.Delivery.ReplaySafe || capabilities.Delivery.IdempotentReplay {
+		t.Fatalf("mixed per-table append policy must not be globally advertised as replay safe: %+v", capabilities.Delivery)
+	}
+	if err := capabilities.SupportsTablePolicy(connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}, WatermarkColumn: "updated_at"}); err != nil {
+		t.Fatal(err)
 	}
 }

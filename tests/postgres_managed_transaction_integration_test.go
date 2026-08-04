@@ -45,7 +45,7 @@ CREATE TABLE audit.wallaby_managed_events (id bigint PRIMARY KEY,widget_id bigin
 	destination := &pgdest.Destination{}
 	if err := destination.Open(ctx, connector.Spec{Name: "managed-full-transaction", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1,
-		"write_mode": "target", "batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
+		"batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestPostgresManagedTransactionCommitBeforeReceiptReconciles(t *testing.T) {
 	target := &pgdest.Destination{}
 	if err := target.Open(ctx, connector.Spec{Name: "transaction-reconcile", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1,
-		"write_mode": "target", "batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
+		"batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.wallaby_transaction_overlap_block()`)
 	target := &pgdest.Destination{}
 	if err := target.Open(ctx, connector.Spec{Name: "transaction-overlap", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1,
-		"write_mode": "target", "batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
+		"batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
 	}}); err != nil {
 		t.Fatal(err)
 	}

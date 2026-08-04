@@ -98,7 +98,7 @@ func TestDuckLakeDestination(t *testing.T) {
 		Timestamp: time.Now().UTC(),
 	}
 
-	batch := connector.Batch{Records: []connector.Record{record}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "1"}}
+	batch := connector.Batch{Records: []connector.Record{record}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "1"}, WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend}}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("write batch: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestDuckLakeDestination(t *testing.T) {
 		},
 		Timestamp: time.Now().UTC(),
 	}
-	batch = connector.Batch{Records: []connector.Record{withExtra}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "2"}}
+	batch = connector.Batch{Records: []connector.Record{withExtra}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "2"}, WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend}}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("write with extra: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestDuckLakeDestination(t *testing.T) {
 		},
 		Timestamp: time.Now().UTC(),
 	}
-	batch = connector.Batch{Records: []connector.Record{renameInsert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "2b"}}
+	batch = connector.Batch{Records: []connector.Record{renameInsert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "2b"}, WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend}}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("write after rename/type ddl: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestDuckLakeDestination(t *testing.T) {
 		},
 		Timestamp: time.Now().UTC(),
 	}
-	batch = connector.Batch{Records: []connector.Record{update}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "3"}}
+	batch = connector.Batch{Records: []connector.Record{update}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "3"}, WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}}}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("update write: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestDuckLakeDestination(t *testing.T) {
 		},
 		Timestamp: time.Now().UTC(),
 	}
-	batch = connector.Batch{Records: []connector.Record{dropInsert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "3b"}}
+	batch = connector.Batch{Records: []connector.Record{dropInsert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "3b"}, WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend}}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("write after drop ddl: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestDuckLakeDestination(t *testing.T) {
 		Key:       recordKey(t, map[string]any{"id": 1}),
 		Timestamp: time.Now().UTC(),
 	}
-	batch = connector.Batch{Records: []connector.Record{del}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "4"}}
+	batch = connector.Batch{Records: []connector.Record{del}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "4"}, WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}}}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("delete write: %v", err)
 	}
@@ -344,9 +344,10 @@ func TestDuckLakeDestination(t *testing.T) {
 		Timestamp: time.Now().UTC(),
 	}
 	if err := renameDest.Write(ctx, connector.Batch{
-		Records:    []connector.Record{renamedInsert},
-		Schema:     renamedSchema,
-		Checkpoint: connector.Checkpoint{LSN: "5"},
+		Records:     []connector.Record{renamedInsert},
+		Schema:      renamedSchema,
+		Checkpoint:  connector.Checkpoint{LSN: "5"},
+		WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend},
 	}); err != nil {
 		t.Fatalf("write after rename table ddl: %v", err)
 	}
@@ -454,9 +455,10 @@ func TestDuckLakeDestinationGeneratedColumns(t *testing.T) {
 		},
 	}
 	if err := dest.Write(ctx, connector.Batch{
-		Records:    []connector.Record{insert},
-		Schema:     schema,
-		Checkpoint: connector.Checkpoint{LSN: "1"},
+		Records:     []connector.Record{insert},
+		Schema:      schema,
+		Checkpoint:  connector.Checkpoint{LSN: "1"},
+		WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend},
 	}); err != nil {
 		t.Fatalf("write base row: %v", err)
 	}
@@ -496,9 +498,10 @@ func TestDuckLakeDestinationGeneratedColumns(t *testing.T) {
 		},
 	}
 	if err := dest.Write(ctx, connector.Batch{
-		Records:    []connector.Record{insertGenerated},
-		Schema:     schema,
-		Checkpoint: connector.Checkpoint{LSN: "2"},
+		Records:     []connector.Record{insertGenerated},
+		Schema:      schema,
+		Checkpoint:  connector.Checkpoint{LSN: "2"},
+		WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend},
 	}); err != nil {
 		t.Fatalf("write after generated ddl: %v", err)
 	}
@@ -633,8 +636,9 @@ func TestDuckLakeDestinationDefaults(t *testing.T) {
 				"id": 1,
 			},
 		}},
-		Schema:     schema,
-		Checkpoint: connector.Checkpoint{LSN: "1"},
+		Schema:      schema,
+		Checkpoint:  connector.Checkpoint{LSN: "1"},
+		WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend},
 	}); err != nil {
 		t.Fatalf("write with default: %v", err)
 	}
@@ -657,8 +661,9 @@ func TestDuckLakeDestinationDefaults(t *testing.T) {
 				"id": 2,
 			},
 		}},
-		Schema:     schema,
-		Checkpoint: connector.Checkpoint{LSN: "2"},
+		Schema:      schema,
+		Checkpoint:  connector.Checkpoint{LSN: "2"},
+		WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend},
 	}); err != nil {
 		t.Fatalf("write with nullable status: %v", err)
 	}

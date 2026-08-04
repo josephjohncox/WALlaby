@@ -106,7 +106,7 @@ DROP TABLE IF EXISTS public.wallaby_managed_target`)
 	}()
 	created.Destinations = []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "schema": "public", "table": "wallaby_managed_target",
-		"write_mode": "target", "batch_mode": "target", "meta_table_enabled": "false",
+		"batch_mode": "target", "meta_table_enabled": "false",
 		"synchronous_commit": "on", "destination_revision_id": destinationRevisionID,
 	}}}
 	started, control, err := engine.PlanStart(ctx, flowID, false)

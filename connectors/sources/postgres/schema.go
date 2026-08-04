@@ -76,6 +76,65 @@ func LoadTableSchema(ctx context.Context, dsn, schema, table string, options map
 	if err := rows.Err(); err != nil {
 		return connector.Schema{}, fmt.Errorf("iterate schema: %w", err)
 	}
+	keys, err := loadPrimaryKeys(ctx, pool, schema, table)
+	if err != nil {
+		return connector.Schema{}, err
+	}
+	var replicaIdentity string
+	if err := pool.QueryRow(ctx, `SELECT c.relreplident::text FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname=$2`, schema, table).Scan(&replicaIdentity); err != nil {
+		return connector.Schema{}, fmt.Errorf("load replica identity: %w", err)
+	}
+	keyOrdinals := make(map[string]int, len(keys))
+	for index, key := range keys {
+		keyOrdinals[key] = index + 1
+	}
+	replicaColumns := make(map[string]struct{})
+	switch replicaIdentity {
+	case "d":
+		for _, key := range keys {
+			replicaColumns[key] = struct{}{}
+		}
+	case "i":
+		identityRows, err := pool.Query(ctx, `SELECT a.attname FROM pg_catalog.pg_index i
+JOIN pg_catalog.pg_class c ON c.oid=i.indrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+JOIN LATERAL unnest(i.indkey) WITH ORDINALITY k(attnum,ord) ON k.ord<=i.indnkeyatts
+JOIN pg_catalog.pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum
+WHERE n.nspname=$1 AND c.relname=$2 AND i.indisreplident ORDER BY k.ord`, schema, table)
+		if err != nil {
+			return connector.Schema{}, fmt.Errorf("load replica identity columns: %w", err)
+		}
+		for identityRows.Next() {
+			var name string
+			if err := identityRows.Scan(&name); err != nil {
+				identityRows.Close()
+				return connector.Schema{}, err
+			}
+			replicaColumns[name] = struct{}{}
+		}
+		if err := identityRows.Err(); err != nil {
+			identityRows.Close()
+			return connector.Schema{}, err
+		}
+		identityRows.Close()
+	case "f":
+		for _, column := range columns {
+			replicaColumns[column.Name] = struct{}{}
+		}
+	}
+	for index := range columns {
+		if columns[index].TypeMetadata == nil {
+			columns[index].TypeMetadata = map[string]string{}
+		}
+		columns[index].TypeMetadata["nullability_known"] = "true"
+		columns[index].TypeMetadata["generated_known"] = "true"
+		if ordinal := keyOrdinals[columns[index].Name]; ordinal > 0 {
+			columns[index].TypeMetadata["primary_key"] = "true"
+			columns[index].TypeMetadata["primary_key_ordinal"] = fmt.Sprint(ordinal)
+		}
+		if _, ok := replicaColumns[columns[index].Name]; ok {
+			columns[index].TypeMetadata["replica_identity"] = "true"
+		}
+	}
 
 	return connector.Schema{
 		Name:      table,

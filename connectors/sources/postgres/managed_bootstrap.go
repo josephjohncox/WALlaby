@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -60,15 +61,15 @@ func (s *Source) CleanupManagedResources(ctx context.Context, fence connector.Cl
 // PrepareManagedBootstrap runs or recovers the slot-anchored snapshot before
 // the ordinary logical replication source is opened. The destination has
 // already been opened by the stream runner.
-func (s *Source) PrepareManagedBootstrap(ctx context.Context, fence connector.RunFence, spec connector.Spec, destinationRevisionID string, driver connector.ManagedBootstrapDestination) (connector.ManagedBootstrapResult, error) {
+func (s *Source) PrepareManagedBootstrap(ctx context.Context, fence connector.RunFence, spec connector.Spec, destinationRevisionID string, projector connector.ManagedBootstrapProjector, driver connector.ManagedBootstrapDestination) (connector.ManagedBootstrapResult, error) {
 	if err := fence.Validate(); err != nil {
 		return connector.ManagedBootstrapResult{}, err
 	}
 	if s.ManagedControl == nil || s.ManagedAuthority == nil {
 		return connector.ManagedBootstrapResult{}, errors.New("managed PostgreSQL source requires shared control PostgreSQL and authority")
 	}
-	if driver == nil || strings.TrimSpace(destinationRevisionID) == "" {
-		return connector.ManagedBootstrapResult{}, errors.New("managed bootstrap destination revision and driver are required")
+	if driver == nil || projector == nil || strings.TrimSpace(projector.Fingerprint()) == "" || strings.TrimSpace(destinationRevisionID) == "" {
+		return connector.ManagedBootstrapResult{}, errors.New("managed bootstrap destination revision, projector, and driver are required")
 	}
 	mode := strings.ToLower(strings.TrimSpace(spec.Options["bootstrap"]))
 	if mode == "" {
@@ -124,7 +125,9 @@ func (s *Source) PrepareManagedBootstrap(ctx context.Context, fence connector.Ru
 			// A replacement cannot import a snapshot whose exporter process is
 			// gone. It may, however, reconcile an atomic destination publication
 			// marker committed before the old owner recorded its control receipt.
-			schemas, schemaErr := coordinator.LoadSchemas(ctx, fence, latest)
+			sourceSchemas, schemaErr := coordinator.LoadSchemas(ctx, fence, latest)
+			tables, projectionErr := projectBootstrapTables(sourceSchemas, latest.ConsistentLSN.String(), projector)
+			schemaErr = errors.Join(schemaErr, projectionErr)
 			if latest.SourceLineageID != "" {
 				if schemaErr != nil {
 					return connector.ManagedBootstrapResult{}, recoverableBootstrapPublicationError("load schemas for publication recovery", schemaErr)
@@ -149,7 +152,7 @@ func (s *Source) PrepareManagedBootstrap(ctx context.Context, fence connector.Ru
 					}
 					return managedBootstrapResult(latest, checkpoint), nil
 				case connector.DeliveryNotApplied:
-					if err := driver.AbandonBootstrap(ctx, intent, schemas); err != nil {
+					if err := driver.AbandonBootstrap(ctx, intent, tables); err != nil {
 						return connector.ManagedBootstrapResult{}, err
 					}
 				case connector.DeliveryIndeterminate:
@@ -188,7 +191,7 @@ func (s *Source) PrepareManagedBootstrap(ctx context.Context, fence connector.Ru
 	}
 	var lastErr error
 	for attempt := 1; attempt <= restartLimit; attempt++ {
-		result, retry, err := s.runManagedBootstrapGeneration(ctx, coordinator, sourcePool, fence, spec, destinationRevisionID, driver)
+		result, retry, err := s.runManagedBootstrapGeneration(ctx, coordinator, sourcePool, fence, spec, destinationRevisionID, projector, driver)
 		if err == nil {
 			return result, nil
 		}
@@ -201,7 +204,7 @@ func (s *Source) PrepareManagedBootstrap(ctx context.Context, fence connector.Ru
 	return connector.ManagedBootstrapResult{}, fmt.Errorf("managed bootstrap exhausted %d full-generation restarts: %w", restartLimit, lastErr)
 }
 
-func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator *bootstrap.Bootstrapper, sourcePool *pgxpool.Pool, fence authority.RunFence, spec connector.Spec, destinationRevisionID string, driver connector.ManagedBootstrapDestination) (result connector.ManagedBootstrapResult, retry bool, retErr error) {
+func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator *bootstrap.Bootstrapper, sourcePool *pgxpool.Pool, fence authority.RunFence, spec connector.Spec, destinationRevisionID string, projector connector.ManagedBootstrapProjector, driver connector.ManagedBootstrapDestination) (result connector.ManagedBootstrapResult, retry bool, retErr error) {
 	publication := strings.TrimSpace(spec.Options[optPublication])
 	if publication == "" {
 		publication = managedPublicationName(fence)
@@ -218,7 +221,11 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 		return connector.ManagedBootstrapResult{}, false, err
 	}
 	defer func() { _ = barrier.Rollback(context.WithoutCancel(ctx)) }()
-	tasks, relations, err := discoverManagedSnapshotTasks(ctx, barrier, spec, maxTables)
+	tasks, relations, err := discoverManagedSnapshotTasks(ctx, barrier, spec, projector, maxTables)
+	if err != nil {
+		return connector.ManagedBootstrapResult{}, false, err
+	}
+	tasks, relations, projectedTables, err := filterManagedSnapshotTasks(tasks, relations, projector)
 	if err != nil {
 		return connector.ManagedBootstrapResult{}, false, err
 	}
@@ -229,7 +236,7 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 			return connector.ManagedBootstrapResult{}, false, fmt.Errorf("lock bootstrap relation %d: %w", relation.OID, err)
 		}
 	}
-	manifestDigest := managedManifestHash(tasks)
+	manifestDigest := managedManifestHash(tasks, projector.Fingerprint())
 	if manifestDigest.err != nil {
 		return connector.ManagedBootstrapResult{}, false, manifestDigest.err
 	}
@@ -245,7 +252,7 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 	if err != nil {
 		return connector.ManagedBootstrapResult{}, false, err
 	}
-	selectionHash := managedSelectionHash(spec)
+	selectionHash := managedSelectionHash(spec, projector.Fingerprint())
 	session, err := coordinator.Start(ctx, fence, resource.Name, selectionHash)
 	if err != nil {
 		latest, phase, loadErr := coordinator.LoadLatest(context.WithoutCancel(ctx), fence)
@@ -258,16 +265,16 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 	ctx, endSpan := telemetry.StartBootstrapSpan(ctx, "generation", fence.FlowID, session.Snapshot.BootstrapID.String(), "", session.Snapshot.BootstrapGeneration)
 	defer func() { endSpan(retErr) }()
 	telemetry.RecordBootstrapEvent(ctx, "generation_started")
-	var schemas []connector.Schema
+	var bootstrapTables []connector.BootstrapTable
 	publicationAttempted := false
 	defer func() {
 		_ = session.Close(context.WithoutCancel(ctx))
 		if retErr == nil {
 			return
 		}
-		if len(schemas) > 0 && !publicationAttempted {
+		if len(bootstrapTables) > 0 && !publicationAttempted {
 			intent := managedBootstrapIntent(fence, session.Snapshot, destinationRevisionID)
-			_ = driver.AbandonBootstrap(context.WithoutCancel(ctx), intent, schemas)
+			_ = driver.AbandonBootstrap(context.WithoutCancel(ctx), intent, bootstrapTables)
 		}
 		if !publicationAttempted {
 			if abandonErr := coordinator.Abandon(context.WithoutCancel(ctx), fence, session.Snapshot, retErr.Error()); abandonErr != nil {
@@ -282,18 +289,23 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 	if err != nil {
 		return connector.ManagedBootstrapResult{}, true, err
 	}
-	verifiedTasks, verifiedRelations, err := discoverManagedSnapshotTasks(ctx, verification, spec, maxTables)
+	verifiedTasks, verifiedRelations, err := discoverManagedSnapshotTasks(ctx, verification, spec, projector, maxTables)
 	if err != nil {
 		_ = verification.Rollback(context.WithoutCancel(ctx))
 		return connector.ManagedBootstrapResult{}, !session.Alive(), err
 	}
-	verifiedDigest := managedManifestHash(verifiedTasks)
+	verifiedTasks, verifiedRelations, verifiedProjectedTables, err := filterManagedSnapshotTasks(verifiedTasks, verifiedRelations, projector)
+	if err != nil {
+		_ = verification.Rollback(context.WithoutCancel(ctx))
+		return connector.ManagedBootstrapResult{}, false, err
+	}
+	verifiedDigest := managedManifestHash(verifiedTasks, projector.Fingerprint())
 	if verifiedDigest.err != nil {
 		_ = verification.Rollback(context.WithoutCancel(ctx))
 		return connector.ManagedBootstrapResult{}, false, verifiedDigest.err
 	}
 	verifiedHash := verifiedDigest.value
-	if verifiedHash != manifestHash || !samePublicationRelations(relations, verifiedRelations) {
+	if verifiedHash != manifestHash || !samePublicationRelations(relations, verifiedRelations) || !reflect.DeepEqual(projectedTables, verifiedProjectedTables) {
 		_ = verification.Rollback(context.WithoutCancel(ctx))
 		return connector.ManagedBootstrapResult{}, false, errors.New("schema/control barrier changed across the slot consistent point")
 	}
@@ -308,12 +320,12 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 	if err != nil {
 		return connector.ManagedBootstrapResult{}, false, err
 	}
-	schemas = make([]connector.Schema, 0, len(tasks))
-	for _, task := range tasks {
-		schemas = append(schemas, task.Schema)
+	bootstrapTables = projectedTables
+	for index := range bootstrapTables {
+		bootstrapTables[index].SourcePosition = session.Snapshot.ConsistentLSN.String()
 	}
 	bootstrapIntent := managedBootstrapIntent(fence, session.Snapshot, destinationRevisionID)
-	if err := driver.PrepareBootstrap(ctx, bootstrapIntent, schemas); err != nil {
+	if err := driver.PrepareBootstrap(ctx, bootstrapIntent, bootstrapTables); err != nil {
 		return connector.ManagedBootstrapResult{}, false, err
 	}
 	workers := parseInt(spec.Options["snapshot_workers"], defaultManagedSnapshotWorkers)
@@ -337,7 +349,7 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 	for _, task := range tasks {
 		task := task
 		group.Go(func() error {
-			return s.runManagedSnapshotTask(groupCtx, coordinator, session, fence, task, destinationRevisionID, batchSize, claimLease, driver)
+			return s.runManagedSnapshotTask(groupCtx, coordinator, session, fence, task, destinationRevisionID, batchSize, claimLease, projector, driver)
 		})
 	}
 	if err := group.Wait(); err != nil {
@@ -346,11 +358,11 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 	// Once publication is attempted, neither source nor destination staging may
 	// be abandoned without reconciliation proving the marker absent.
 	publicationAttempted = true
-	evidence, err := driver.PublishBootstrap(ctx, bootstrapIntent, schemas)
+	evidence, err := driver.PublishBootstrap(ctx, bootstrapIntent, bootstrapTables)
 	if err != nil && errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		// PublishBootstrap is itself reconciliatory: a retry reads the marker
 		// committed with the atomic target replacement.
-		evidence, err = driver.PublishBootstrap(ctx, bootstrapIntent, schemas)
+		evidence, err = driver.PublishBootstrap(ctx, bootstrapIntent, bootstrapTables)
 	}
 	if err != nil {
 		return connector.ManagedBootstrapResult{}, false, recoverableBootstrapPublicationError("publish destination bootstrap", err)
@@ -424,18 +436,18 @@ func recoverableBootstrapPublicationError(stage string, err error) error {
 	return fmt.Errorf("%w: %s: %w", connector.ErrDeliveryIndeterminate, stage, err)
 }
 
-func (s *Source) runManagedSnapshotTask(ctx context.Context, coordinator *bootstrap.Bootstrapper, session *bootstrap.Session, fence authority.RunFence, task bootstrap.SnapshotTask, destinationRevisionID string, batchSize int, claimLease time.Duration, driver connector.ManagedBootstrapDestination) error {
+func (s *Source) runManagedSnapshotTask(ctx context.Context, coordinator *bootstrap.Bootstrapper, session *bootstrap.Session, fence authority.RunFence, task bootstrap.SnapshotTask, destinationRevisionID string, batchSize int, claimLease time.Duration, projector connector.ManagedBootstrapProjector, driver connector.ManagedBootstrapDestination) error {
 	claim, err := s.ManagedAuthority.AcquireClaim(ctx, fence, authority.ClaimSnapshot, task.WorkID(session.Snapshot.BootstrapID), claimLease)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = s.ManagedAuthority.ReleaseClaim(context.WithoutCancel(ctx), claim) }()
 	return runWithRenewedSnapshotClaim(ctx, s.ManagedAuthority, claim, claimLease, func(claimCtx context.Context) error {
-		return s.runClaimedManagedSnapshotTask(claimCtx, coordinator, session, fence, claim, task, destinationRevisionID, batchSize, driver)
+		return s.runClaimedManagedSnapshotTask(claimCtx, coordinator, session, fence, claim, task, destinationRevisionID, batchSize, projector, driver)
 	})
 }
 
-func (s *Source) runClaimedManagedSnapshotTask(ctx context.Context, coordinator *bootstrap.Bootstrapper, session *bootstrap.Session, fence authority.RunFence, claim authority.ClaimFence, task bootstrap.SnapshotTask, destinationRevisionID string, batchSize int, driver connector.ManagedBootstrapDestination) (retErr error) {
+func (s *Source) runClaimedManagedSnapshotTask(ctx context.Context, coordinator *bootstrap.Bootstrapper, session *bootstrap.Session, fence authority.RunFence, claim authority.ClaimFence, task bootstrap.SnapshotTask, destinationRevisionID string, batchSize int, projector connector.ManagedBootstrapProjector, driver connector.ManagedBootstrapDestination) (retErr error) {
 	ctx, endSpan := telemetry.StartBootstrapSpan(ctx, "task", fence.FlowID, session.Snapshot.BootstrapID.String(), task.TaskID, session.Snapshot.BootstrapGeneration)
 	defer func() { endSpan(retErr) }()
 	for taskAttempt := 0; taskAttempt < defaultManagedSnapshotRetries; taskAttempt++ {
@@ -461,7 +473,16 @@ func (s *Source) runClaimedManagedSnapshotTask(ctx context.Context, coordinator 
 				LSN:      session.Snapshot.ConsistentLSN.String(),
 				Metadata: map[string]string{"bootstrap_id": session.Snapshot.BootstrapID.String(), "task_id": task.TaskID, "batch_ordinal": fmt.Sprint(ordinal)},
 			}
-			batch := connector.Batch{Records: records, Schema: task.Schema, Checkpoint: checkpoint, WireFormat: connector.WireFormatArrow}
+			sourceBatch := connector.Batch{Records: records, Schema: task.Schema, Checkpoint: checkpoint, WireFormat: connector.WireFormatArrow}
+			batch, included, err := projector.ProjectBootstrapBatch(sourceBatch)
+			if err != nil {
+				_ = tx.Rollback(context.WithoutCancel(ctx))
+				return fmt.Errorf("project bootstrap task %s: %w", task.WorkID(session.Snapshot.BootstrapID), err)
+			}
+			if !included {
+				_ = tx.Rollback(context.WithoutCancel(ctx))
+				return errors.New("frozen included bootstrap task was filtered during batch projection")
+			}
 			if err := coordinator.DeliverTaskBatch(ctx, claim, session.Snapshot, task, ordinal, nextCursor, done, destinationRevisionID, batch, driver); err != nil {
 				_ = tx.Rollback(context.WithoutCancel(ctx))
 				if errors.Is(err, authority.ErrFenceRejected) || errors.Is(err, connector.ErrDeliveryConflict) || errors.Is(err, connector.ErrDeliveryIndeterminate) {
@@ -601,7 +622,7 @@ ORDER BY n.nspname,c.relname`, publication)
 	return tables, schemas, nil
 }
 
-func discoverManagedSnapshotTasks(ctx context.Context, tx pgx.Tx, spec connector.Spec, maxTables int) ([]bootstrap.SnapshotTask, []bootstrap.PublicationRelation, error) {
+func discoverManagedSnapshotTasks(ctx context.Context, tx pgx.Tx, spec connector.Spec, projector connector.ManagedBootstrapProjector, maxTables int) ([]bootstrap.SnapshotTask, []bootstrap.PublicationRelation, error) {
 	requested := parseCSV(spec.Options[optPublicationTables])
 	if len(requested) == 0 {
 		requested = parseCSV(spec.Options["tables"])
@@ -640,13 +661,14 @@ ORDER BY c.oid`, schemas)
 		if err := rows.Scan(&relation.OID, &relation.Namespace, &relation.Table, &relation.RelationKind, &relation.IsPartition); err != nil {
 			return nil, nil, err
 		}
-		if relation.RelationKind == "p" || relation.IsPartition {
-			return nil, nil, fmt.Errorf("managed bootstrap does not support partitioned or partition relations: %s.%s", relation.Namespace, relation.Table)
+		included, err := admitManagedSnapshotRelation(projector, relation, len(relations), maxTables)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !included {
+			continue
 		}
 		relations = append(relations, relation)
-		if len(relations) > maxTables {
-			return nil, nil, fmt.Errorf("managed bootstrap selected more than snapshot_max_tables=%d", maxTables)
-		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
@@ -663,6 +685,70 @@ ORDER BY c.oid`, schemas)
 		tasks = append(tasks, bootstrap.SnapshotTask{RelationID: relation.OID, TaskID: "full-table", Namespace: relation.Namespace, Table: relation.Table, Schema: schema, KeyColumns: keys})
 	}
 	return tasks, relations, nil
+}
+
+func admitManagedSnapshotRelation(projector connector.ManagedBootstrapProjector, relation bootstrap.PublicationRelation, selected, maxTables int) (bool, error) {
+	included, err := projector.IncludeBootstrapRelation(relation.Namespace, relation.Table)
+	if err != nil {
+		return false, fmt.Errorf("select bootstrap relation %s.%s: %w", relation.Namespace, relation.Table, err)
+	}
+	if !included {
+		return false, nil
+	}
+	if relation.RelationKind == "p" || relation.IsPartition {
+		return false, fmt.Errorf("managed bootstrap does not support partitioned or partition relations: %s.%s", relation.Namespace, relation.Table)
+	}
+	if selected+1 > maxTables {
+		return false, fmt.Errorf("managed bootstrap selected more than snapshot_max_tables=%d", maxTables)
+	}
+	return true, nil
+}
+
+func filterManagedSnapshotTasks(tasks []bootstrap.SnapshotTask, relations []bootstrap.PublicationRelation, projector connector.ManagedBootstrapProjector) ([]bootstrap.SnapshotTask, []bootstrap.PublicationRelation, []connector.BootstrapTable, error) {
+	byOID := make(map[uint32]bootstrap.PublicationRelation, len(relations))
+	for _, relation := range relations {
+		byOID[relation.OID] = relation
+	}
+	filteredTasks := make([]bootstrap.SnapshotTask, 0, len(tasks))
+	filteredRelations := make([]bootstrap.PublicationRelation, 0, len(tasks))
+	tables := make([]connector.BootstrapTable, 0, len(tasks))
+	for _, task := range tasks {
+		mapped, policy, included, err := projector.ProjectBootstrapSchema(task.Schema)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("project bootstrap schema %s.%s: %w", task.Namespace, task.Table, err)
+		}
+		if !included {
+			continue
+		}
+		relation, ok := byOID[task.RelationID]
+		if !ok {
+			return nil, nil, nil, fmt.Errorf("bootstrap task relation %d is absent from publication selection", task.RelationID)
+		}
+		filteredTasks = append(filteredTasks, task)
+		filteredRelations = append(filteredRelations, relation)
+		tables = append(tables, connector.BootstrapTable{Schema: mapped, WritePolicy: policy})
+	}
+	if len(filteredTasks) == 0 {
+		return nil, nil, nil, errors.New("table mapping excludes every managed bootstrap relation")
+	}
+	return filteredTasks, filteredRelations, tables, nil
+}
+
+func projectBootstrapTables(sourceSchemas []connector.Schema, sourcePosition string, projector connector.ManagedBootstrapProjector) ([]connector.BootstrapTable, error) {
+	tables := make([]connector.BootstrapTable, 0, len(sourceSchemas))
+	for _, source := range sourceSchemas {
+		mapped, policy, included, err := projector.ProjectBootstrapSchema(source)
+		if err != nil {
+			return nil, err
+		}
+		if included {
+			tables = append(tables, connector.BootstrapTable{Schema: mapped, WritePolicy: policy, SourcePosition: sourcePosition})
+		}
+	}
+	if len(tables) == 0 {
+		return nil, errors.New("table mapping excludes every recovered bootstrap relation")
+	}
+	return tables, nil
 }
 
 func loadManagedSnapshotSchema(ctx context.Context, tx pgx.Tx, relation bootstrap.PublicationRelation) (connector.Schema, []string, error) {
@@ -734,9 +820,45 @@ ORDER BY key.ord`, relation.OID)
 	if len(keys) == 0 {
 		return connector.Schema{}, nil, fmt.Errorf("managed bootstrap requires a primary key on %s.%s", relation.Namespace, relation.Table)
 	}
+	var replicaIdentity string
+	if err := tx.QueryRow(ctx, `SELECT relreplident::text FROM pg_catalog.pg_class WHERE oid=$1`, relation.OID).Scan(&replicaIdentity); err != nil {
+		return connector.Schema{}, nil, err
+	}
 	primary := make(map[string]int, len(keys))
 	for ordinal, key := range keys {
 		primary[key] = ordinal + 1
+	}
+	replicaColumns := make(map[string]struct{})
+	switch replicaIdentity {
+	case "d":
+		for _, key := range keys {
+			replicaColumns[key] = struct{}{}
+		}
+	case "i":
+		rows, err := tx.Query(ctx, `SELECT a.attname FROM pg_catalog.pg_index i
+JOIN LATERAL unnest(i.indkey) WITH ORDINALITY k(attnum,ord) ON k.ord<=i.indnkeyatts
+JOIN pg_catalog.pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum
+WHERE i.indrelid=$1 AND i.indisreplident ORDER BY k.ord`, relation.OID)
+		if err != nil {
+			return connector.Schema{}, nil, err
+		}
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				rows.Close()
+				return connector.Schema{}, nil, err
+			}
+			replicaColumns[name] = struct{}{}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return connector.Schema{}, nil, err
+		}
+		rows.Close()
+	case "f":
+		for _, column := range columns {
+			replicaColumns[column.Name] = struct{}{}
+		}
 	}
 	for index := range columns {
 		ordinal, ok := primary[columns[index].Name]
@@ -748,7 +870,11 @@ ORDER BY key.ord`, relation.OID)
 		}
 		columns[index].TypeMetadata["primary_key"] = "true"
 		columns[index].TypeMetadata["primary_key_ordinal"] = strconv.Itoa(ordinal)
-		columns[index].TypeMetadata["replica_identity"] = "true"
+	}
+	for index := range columns {
+		if _, ok := replicaColumns[columns[index].Name]; ok {
+			columns[index].TypeMetadata["replica_identity"] = "true"
+		}
 	}
 	return connector.Schema{Name: relation.Table, Namespace: relation.Namespace, Version: 1, Columns: columns}, keys, nil
 }
@@ -834,7 +960,7 @@ type managedManifestDigest struct {
 	err   error
 }
 
-func managedManifestHash(tasks []bootstrap.SnapshotTask) managedManifestDigest {
+func managedManifestHash(tasks []bootstrap.SnapshotTask, projectionFingerprint string) managedManifestDigest {
 	type manifestTask struct {
 		OID        uint32
 		Namespace  string
@@ -847,7 +973,10 @@ func managedManifestHash(tasks []bootstrap.SnapshotTask) managedManifestDigest {
 		manifest = append(manifest, manifestTask{OID: task.RelationID, Namespace: task.Namespace, Table: task.Table, Schema: task.Schema, KeyColumns: task.KeyColumns})
 	}
 	sort.Slice(manifest, func(i, j int) bool { return manifest[i].OID < manifest[j].OID })
-	encoded, err := json.Marshal(manifest)
+	encoded, err := json.Marshal(struct {
+		ProjectionFingerprint string         `json:"projection_fingerprint"`
+		Tasks                 []manifestTask `json:"tasks"`
+	}{projectionFingerprint, manifest})
 	if err != nil {
 		return managedManifestDigest{err: fmt.Errorf("marshal managed bootstrap manifest: %w", err)}
 	}
@@ -891,9 +1020,10 @@ func loadManagedAuthoritativeCheckpoint(ctx context.Context, control *pgxpool.Po
 	return checkpoint, nil
 }
 
-func managedSelectionHash(spec connector.Spec) string {
+func managedSelectionHash(spec connector.Spec, projectionFingerprint string) string {
 	keys := []string{optSourceSystemID, optSourceLineageID, optPublication, optPublicationTables, optPublicationSchemas, "tables", "schemas"}
 	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "projection_fingerprint=%s\n", projectionFingerprint)
 	for _, key := range keys {
 		_, _ = fmt.Fprintf(hash, "%s=%s\n", key, strings.TrimSpace(spec.Options[key]))
 	}

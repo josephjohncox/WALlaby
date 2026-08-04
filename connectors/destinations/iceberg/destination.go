@@ -31,8 +31,9 @@ func (*Destination) CanonicalArtifactConsumer()      {}
 
 func (*Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		Support:  connector.SupportExperimental,
-		Evidence: connector.ContractEvidence{},
+		Support:     connector.SupportExperimental,
+		Evidence:    connector.ContractEvidence{},
+		TableWrites: connector.TableWriteSemantics{Declared: true, Append: true},
 		Delivery: connector.DeliverySemantics{
 			Declared: true, IdempotentReplay: true, ReplaySafe: true,
 		},

@@ -63,7 +63,7 @@ func runManagedBootstrapBoundaryRecovery(t *testing.T, boundary string) {
 			"source_system_identifier": systemID, "source_lineage_id": "boundary-lineage-v1", "publication_revision": "bootstrap-pending",
 		}},
 		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
-			"dsn": dsn, "schema": targetSchema, "write_mode": "target", "batch_mode": "target",
+			"dsn": dsn, "schema": targetSchema, "batch_mode": "target",
 			"destination_revision_id": destinationRevisionID, "synchronous_commit": "on", "meta_table_enabled": "false",
 		}}},
 		Config: flow.Config{AckPolicy: stream.AckPolicyAll},

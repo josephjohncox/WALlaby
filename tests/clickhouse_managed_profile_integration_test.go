@@ -805,7 +805,7 @@ parts_to_delay_insert=100,parts_to_throw_insert=200,max_parts_in_total=1000`, da
 	})
 	fixture.spec = connector.Spec{Name: "clickhouse-managed", Type: connector.EndpointClickHouse, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToClickHouseAppendV1,
-		"destination_revision_id": "clickhouse-managed-v1", "write_mode": "managed_append", "batch_mode": "target", "batch_resolution": "none",
+		"destination_revision_id": "clickhouse-managed-v1", "batch_mode": "target", "batch_resolution": "none",
 		"meta_table_enabled": "false", "managed_database": database, "managed_changelog_table": fixture.changelogTable,
 		"managed_receipts_table": fixture.receiptsTable, "managed_final_view": fixture.finalView,
 		"managed_deployment": "self-managed-keeper", "managed_keeper_path_prefix": "/clickhouse/tables/01",

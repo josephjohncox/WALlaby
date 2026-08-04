@@ -38,6 +38,40 @@ type DeliverySemantics struct {
 	Lossy              bool
 }
 
+// TableWriteSemantics declares which projected logical table policies a
+// destination can execute. Undeclared semantics fail admission for mapped flows.
+type TableWriteSemantics struct {
+	Declared       bool
+	Append         bool
+	Upsert         bool
+	ExplicitKey    bool
+	WatermarkGuard bool
+}
+
+// SupportsTablePolicy reports whether the destination can execute policy.
+func (c Capabilities) SupportsTablePolicy(policy TableWritePolicy) error {
+	w := c.TableWrites
+	if !w.Declared {
+		return fmt.Errorf("destination does not declare table write semantics")
+	}
+	switch policy.Mode {
+	case ResolvedWriteAppend:
+		if !w.Append {
+			return fmt.Errorf("destination does not support append table writes")
+		}
+	case ResolvedWriteUpsert:
+		if !w.Upsert || !w.ExplicitKey {
+			return fmt.Errorf("destination does not support explicit-key upsert table writes")
+		}
+	default:
+		return fmt.Errorf("unsupported table write mode %q", policy.Mode)
+	}
+	if policy.Mode == ResolvedWriteUpsert && policy.WatermarkColumn != "" && !w.WatermarkGuard {
+		return fmt.Errorf("destination does not support watermark-guarded table writes")
+	}
+	return nil
+}
+
 // ConfiguredDestinationCapabilities allows an adapter to refine guarantees that
 // depend on options such as append mode or a lossy oversize policy.
 type ConfiguredDestinationCapabilities interface {

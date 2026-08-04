@@ -4,16 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgtype"
 	internalddl "github.com/josephjohncox/wallaby/internal/ddl"
-	internalschema "github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
@@ -24,11 +22,19 @@ func (d *Destination) Apply(ctx context.Context, intent connector.DeliveryIntent
 	if err := intent.Validate(); err != nil {
 		return connector.DeliveryEvidence{}, err
 	}
+	if strings.TrimSpace(intent.LogicalBatchID) == "" {
+		return connector.DeliveryEvidence{}, errors.New("managed PostgreSQL delivery requires logical_batch_id")
+	}
 	if d.pool == nil {
 		return connector.DeliveryEvidence{}, errors.New("postgres destination not initialized")
 	}
 	if err := d.validateManagedProfile(ctx, batch); err != nil {
 		return connector.DeliveryEvidence{}, err
+	}
+	if !batchHasStructuredDDL(batch) {
+		if err := d.validateManagedTargetSchema(ctx, d.pool, batch.Schema, batch.WritePolicy); err != nil {
+			return connector.DeliveryEvidence{}, err
+		}
 	}
 	contentHash, err := connector.BatchContentHash(batch)
 	if err != nil {
@@ -114,7 +120,7 @@ func (d *Destination) ValidateTransaction(ctx context.Context, transaction conne
 		if _, changedInTransaction := dirty[key]; changedInTransaction {
 			continue
 		}
-		if err := d.validateManagedTargetSchema(ctx, d.pool, batch.Schema); err != nil {
+		if err := d.validateManagedTargetSchema(ctx, d.pool, batch.Schema, batch.WritePolicy); err != nil {
 			return err
 		}
 	}
@@ -180,10 +186,17 @@ func (d *Destination) applyManagedFragment(ctx context.Context, tx pgx.Tx, batch
 		if len(pending) == 0 {
 			return nil
 		}
-		if err := d.validateManagedTargetSchema(ctx, tx, batch.Schema); err != nil {
+		if err := d.validateManagedTargetSchema(ctx, tx, batch.Schema, batch.WritePolicy); err != nil {
 			return err
 		}
-		if err := d.applyBatch(ctx, tx, pendingTarget, batch.Schema, pending, writeModeTarget); err != nil {
+		mode := writeModeTarget
+		if batch.WritePolicy.Mode == connector.ResolvedWriteAppend {
+			mode = writeModeAppend
+		}
+		if batch.WritePolicy.Mode != connector.ResolvedWriteAppend && batch.WritePolicy.Mode != connector.ResolvedWriteUpsert {
+			return fmt.Errorf("managed PostgreSQL fragment requires mapped append/upsert policy, got %q", batch.WritePolicy.Mode)
+		}
+		if err := d.applyBatch(ctx, tx, pendingTarget, batch.Schema, pending, mode, batch.WritePolicy); err != nil {
 			return err
 		}
 		if d.metaEnabled {
@@ -204,11 +217,7 @@ func (d *Destination) applyManagedFragment(ctx context.Context, tx pgx.Tx, batch
 			if strings.TrimSpace(record.DDL) != "" || len(record.DDLPlan) == 0 {
 				return errors.New("managed PostgreSQL profile requires structured DDL plans")
 			}
-			mappedSchema, mappedRecord, err := d.mapManagedDDLTarget(batch.Schema, record)
-			if err != nil {
-				return err
-			}
-			statements, err := internalddl.TranslateRecordDDL(mappedSchema, mappedRecord, internalddl.DialectConfigFor(internalddl.DialectPostgres), d.TypeMappings(), d.spec.Options)
+			statements, err := internalddl.TranslateRecordDDL(batch.Schema, record, internalddl.DialectConfigFor(internalddl.DialectPostgres), d.TypeMappings(), d.spec.Options)
 			if err != nil {
 				return fmt.Errorf("translate managed DDL plan: %w", err)
 			}
@@ -237,36 +246,6 @@ func (d *Destination) applyManagedFragment(ctx context.Context, tx pgx.Tx, batch
 	return flush()
 }
 
-func (d *Destination) mapManagedDDLTarget(schema connector.Schema, record connector.Record) (connector.Schema, connector.Record, error) {
-	table := strings.TrimSpace(record.Table)
-	if table == "" {
-		table = schema.Name
-	}
-	targetSchema, targetTable := d.targetParts(schema, table)
-	if targetSchema == "" {
-		targetSchema = "public"
-	}
-	mappedSchema := schema
-	mappedSchema.Namespace = targetSchema
-	mappedSchema.Name = targetTable
-	mappedRecord := record
-	mappedRecord.Table = targetTable
-	var plan internalschema.Plan
-	if err := json.Unmarshal(record.DDLPlan, &plan); err != nil {
-		return connector.Schema{}, connector.Record{}, fmt.Errorf("unmarshal managed DDL plan: %w", err)
-	}
-	for index := range plan.Changes {
-		plan.Changes[index].Namespace = targetSchema
-		plan.Changes[index].Table = targetTable
-	}
-	encoded, err := json.Marshal(plan)
-	if err != nil {
-		return connector.Schema{}, connector.Record{}, fmt.Errorf("marshal mapped managed DDL plan: %w", err)
-	}
-	mappedRecord.DDLPlan = encoded
-	return mappedSchema, mappedRecord, nil
-}
-
 func batchHasStructuredDDL(batch connector.Batch) bool {
 	for _, record := range batch.Records {
 		if record.Operation == connector.OpDDL && strings.TrimSpace(record.DDL) == "" && len(record.DDLPlan) > 0 {
@@ -288,7 +267,10 @@ type managedTargetColumn struct {
 	hasDefault bool
 }
 
-func (d *Destination) validateManagedTargetSchema(ctx context.Context, query managedSchemaQuerier, schema connector.Schema) error {
+func (d *Destination) validateManagedTargetSchema(ctx context.Context, query managedSchemaQuerier, schema connector.Schema, policy connector.TableWritePolicy) error {
+	if err := validateProjectedOldImagePolicy(schema, policy); err != nil {
+		return err
+	}
 	targetSchema, targetTable := d.targetParts(schema, schema.Name)
 	if targetSchema == "" {
 		targetSchema = "public"
@@ -328,7 +310,6 @@ ORDER BY attribute.attnum`, targetSchema, targetTable)
 	}
 
 	sourceColumns := make(map[string]struct{}, len(schema.Columns))
-	keyColumns := make([]string, 0)
 	for _, source := range schema.Columns {
 		sourceColumns[source.Name] = struct{}{}
 		target, ok := targetColumns[source.Name]
@@ -344,9 +325,6 @@ ORDER BY attribute.attnum`, targetSchema, targetTable)
 		if source.TypeMetadata["generated_known"] == "true" && source.Generated != target.generated {
 			return fmt.Errorf("managed target %s.%s column %q generated status differs from source", targetSchema, targetTable, source.Name)
 		}
-		if source.TypeMetadata["primary_key"] == "true" || source.TypeMetadata["replica_identity"] == "true" {
-			keyColumns = append(keyColumns, source.Name)
-		}
 	}
 	for name, target := range targetColumns {
 		if _, ok := sourceColumns[name]; ok {
@@ -356,17 +334,44 @@ ORDER BY attribute.attnum`, targetSchema, targetTable)
 			return fmt.Errorf("managed target %s.%s has required unmapped column %q", targetSchema, targetTable, name)
 		}
 	}
-	if len(keyColumns) == 0 {
-		return fmt.Errorf("managed source schema %s.%s has no primary/replica identity columns", schema.Namespace, schema.Name)
+	if policy.Mode == connector.ResolvedWriteAppend {
+		var anyUnique bool
+		if err := query.QueryRow(ctx, `SELECT EXISTS (
+ SELECT 1 FROM pg_catalog.pg_index i
+ JOIN pg_catalog.pg_class c ON c.oid=i.indrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname=$1 AND c.relname=$2 AND i.indisunique)`, targetSchema, targetTable).Scan(&anyUnique); err != nil {
+			return fmt.Errorf("inspect managed append target uniqueness: %w", err)
+		}
+		if anyUnique {
+			return fmt.Errorf("managed append target %s.%s cannot contain any unique or primary-key index", targetSchema, targetTable)
+		}
+		return nil
+	}
+	if policy.Mode != connector.ResolvedWriteUpsert {
+		return fmt.Errorf("managed target %s.%s requires mapped append/upsert policy, got %q", targetSchema, targetTable, policy.Mode)
+	}
+	if len(policy.KeyColumns) == 0 {
+		return fmt.Errorf("managed upsert target %s.%s requires projected policy key columns", targetSchema, targetTable)
+	}
+	seenKeys := make(map[string]struct{}, len(policy.KeyColumns))
+	for _, key := range policy.KeyColumns {
+		if _, duplicate := seenKeys[key]; duplicate {
+			return fmt.Errorf("managed upsert target policy repeats key column %q", key)
+		}
+		seenKeys[key] = struct{}{}
+		if _, exists := sourceColumns[key]; !exists {
+			return fmt.Errorf("managed upsert target policy key column %q is absent from projected schema", key)
+		}
 	}
 	var unique bool
 	if err := query.QueryRow(ctx, `
 SELECT EXISTS (
   SELECT 1
-  FROM pg_catalog.pg_index AS index_row
-  JOIN pg_catalog.pg_class AS relation ON relation.oid=index_row.indrelid
+  FROM pg_catalog.pg_constraint AS constraint_row
+  JOIN pg_catalog.pg_index AS index_row ON index_row.indexrelid=constraint_row.conindid
+  JOIN pg_catalog.pg_class AS relation ON relation.oid=constraint_row.conrelid
   JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid=relation.relnamespace
-  WHERE namespace.nspname=$1 AND relation.relname=$2
+  WHERE namespace.nspname=$1 AND relation.relname=$2 AND constraint_row.contype IN ('p','u')
     AND index_row.indisunique AND index_row.indisvalid AND index_row.indimmediate AND index_row.indpred IS NULL
     AND ARRAY(
       SELECT attribute.attname::text
@@ -376,11 +381,43 @@ SELECT EXISTS (
       WHERE key.ordinality<=index_row.indnkeyatts
       ORDER BY key.ordinality
     )=$3::text[]
-)`, targetSchema, targetTable, keyColumns).Scan(&unique); err != nil {
+)`, targetSchema, targetTable, policy.KeyColumns).Scan(&unique); err != nil {
 		return fmt.Errorf("inspect managed target uniqueness: %w", err)
 	}
 	if !unique {
-		return fmt.Errorf("managed target %s.%s requires a valid non-partial unique constraint on source identity columns %v", targetSchema, targetTable, keyColumns)
+		return fmt.Errorf("managed target %s.%s requires a valid immediate unique/primary-key constraint on projected policy key columns in order %v", targetSchema, targetTable, policy.KeyColumns)
+	}
+	return nil
+}
+
+func validateProjectedOldImagePolicy(schema connector.Schema, policy connector.TableWritePolicy) error {
+	if policy.Mode != connector.ResolvedWriteUpsert {
+		return nil
+	}
+	byName := make(map[string]connector.Column, len(schema.Columns))
+	for _, column := range schema.Columns {
+		byName[column.Name] = column
+	}
+	for _, key := range policy.KeyColumns {
+		column, ok := byName[key]
+		if !ok {
+			return fmt.Errorf("projected upsert key column %q is absent from schema", key)
+		}
+		if column.TypeMetadata["replica_identity"] != "true" {
+			return fmt.Errorf("projected upsert key column %q lacks PostgreSQL replica-identity/full old-image availability", key)
+		}
+	}
+	if policy.WatermarkColumn != "" {
+		column, ok := byName[policy.WatermarkColumn]
+		if !ok {
+			return fmt.Errorf("projected watermark column %q is absent from schema", policy.WatermarkColumn)
+		}
+		if column.Nullable {
+			return fmt.Errorf("projected watermark column %q must be non-nullable", policy.WatermarkColumn)
+		}
+		if column.TypeMetadata["replica_identity"] != "true" {
+			return fmt.Errorf("projected watermark column %q lacks PostgreSQL replica-identity/full old-image availability", policy.WatermarkColumn)
+		}
 	}
 	return nil
 }
@@ -390,6 +427,9 @@ SELECT EXISTS (
 func (d *Destination) Reconcile(ctx context.Context, intent connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
 	if err := intent.Validate(); err != nil {
 		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
+	}
+	if strings.TrimSpace(intent.LogicalBatchID) == "" {
+		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, errors.New("managed PostgreSQL delivery requires logical_batch_id")
 	}
 	if d.pool == nil {
 		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, errors.New("postgres destination not initialized")
@@ -424,9 +464,6 @@ func (d *Destination) Reconcile(ctx context.Context, intent connector.DeliveryIn
 }
 
 func (d *Destination) validateManagedProfile(ctx context.Context, batch connector.Batch) error {
-	if d.writeMode != "" && d.writeMode != writeModeTarget {
-		return errors.New("managed postgres delivery requires target write mode")
-	}
 	if d.batchMode != "" && d.batchMode != batchModeTarget {
 		return errors.New("managed postgres delivery does not admit staging mode")
 	}
@@ -459,10 +496,23 @@ func batchContainsRawDDL(batch connector.Batch) bool {
 }
 
 func (d *Destination) ensureManagedReceiptTable(ctx context.Context) error {
-	if _, err := d.pool.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS wallaby_meta"); err != nil {
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin managed receipt contract transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(pg_catalog.hashtextextended('wallaby_meta.__delivery_receipts',0))`); err != nil {
+		return fmt.Errorf("lock managed receipt contract: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS wallaby_meta"); err != nil {
 		return fmt.Errorf("create managed receipt schema: %w", err)
 	}
-	const query = `CREATE TABLE IF NOT EXISTS wallaby_meta.__delivery_receipts (
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT to_regclass('wallaby_meta.__delivery_receipts') IS NOT NULL`).Scan(&exists); err != nil {
+		return fmt.Errorf("inspect managed receipt table existence: %w", err)
+	}
+	if !exists {
+		if _, err := tx.Exec(ctx, `CREATE TABLE wallaby_meta.__delivery_receipts (
   marker_id TEXT NOT NULL,
   flow_id TEXT NOT NULL,
   flow_incarnation_id TEXT NOT NULL,
@@ -471,32 +521,108 @@ func (d *Destination) ensureManagedReceiptTable(ctx context.Context) error {
   lease_epoch BIGINT NOT NULL,
   destination_revision_id TEXT NOT NULL,
   source_lineage_id TEXT NOT NULL,
-  logical_batch_id TEXT,
+  logical_batch_id TEXT NOT NULL,
   position_id TEXT NOT NULL,
   content_hash TEXT NOT NULL,
   committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-  PRIMARY KEY (flow_incarnation_id, destination_revision_id, position_id),
-  UNIQUE (marker_id)
-)`
-	if _, err := d.pool.Exec(ctx, query); err != nil {
-		return fmt.Errorf("create managed receipt table: %w", err)
+  CONSTRAINT wallaby_delivery_receipts_pkey PRIMARY KEY (flow_incarnation_id,destination_revision_id,position_id),
+  CONSTRAINT wallaby_delivery_receipts_marker_unique UNIQUE (marker_id),
+  CONSTRAINT wallaby_delivery_receipts_logical_batch_unique UNIQUE (flow_incarnation_id,destination_revision_id,logical_batch_id)
+)`); err != nil {
+			return fmt.Errorf("create managed receipt table: %w", err)
+		}
 	}
-	if _, err := d.pool.Exec(ctx, `ALTER TABLE wallaby_meta.__delivery_receipts ADD COLUMN IF NOT EXISTS source_lineage_id TEXT NOT NULL DEFAULT 'legacy-unqualified'`); err != nil {
-		return fmt.Errorf("upgrade managed receipt lineage: %w", err)
+	if err := verifyExactCatalogColumns(ctx, tx, "wallaby_meta", "__delivery_receipts", []string{
+		"marker_id|text|true|||", "flow_id|text|true|||", "flow_incarnation_id|text|true|||", "generation|bigint|true|||",
+		"acquisition_id|text|true|||", "lease_epoch|bigint|true|||", "destination_revision_id|text|true|||", "source_lineage_id|text|true|||",
+		"logical_batch_id|text|true|||", "position_id|text|true|||", "content_hash|text|true|||", "committed_at|timestamp with time zone|true|||clock_timestamp()",
+	}); err != nil {
+		return fmt.Errorf("managed receipt table contract: %w", err)
 	}
-	if _, err := d.pool.Exec(ctx, `
-ALTER TABLE wallaby_meta.__delivery_receipts ADD COLUMN IF NOT EXISTS logical_batch_id TEXT;
-ALTER TABLE wallaby_meta.__delivery_receipts ALTER COLUMN logical_batch_id DROP NOT NULL;
-DROP INDEX IF EXISTS wallaby_meta.wallaby_delivery_receipts_logical_batch_idx;
-CREATE UNIQUE INDEX wallaby_delivery_receipts_logical_batch_idx
-  ON wallaby_meta.__delivery_receipts (flow_incarnation_id,destination_revision_id,logical_batch_id)
-  WHERE logical_batch_id IS NOT NULL`); err != nil {
-		return fmt.Errorf("upgrade managed receipt logical batch identity: %w", err)
+	if err := verifyExactConstraintsAndIndexes(ctx, tx, "wallaby_meta", "__delivery_receipts", []string{
+		"wallaby_delivery_receipts_logical_batch_unique|u|false|false|true|UNIQUE (flow_incarnation_id, destination_revision_id, logical_batch_id)",
+		"wallaby_delivery_receipts_marker_unique|u|false|false|true|UNIQUE (marker_id)",
+		"wallaby_delivery_receipts_pkey|p|false|false|true|PRIMARY KEY (flow_incarnation_id, destination_revision_id, position_id)",
+	}, []exactIndexContract{
+		{name: "wallaby_delivery_receipts_logical_batch_unique", unique: true, columns: []string{"flow_incarnation_id", "destination_revision_id", "logical_batch_id"}},
+		{name: "wallaby_delivery_receipts_marker_unique", unique: true, columns: []string{"marker_id"}},
+		{name: "wallaby_delivery_receipts_pkey", primary: true, unique: true, columns: []string{"flow_incarnation_id", "destination_revision_id", "position_id"}},
+	}); err != nil {
+		return fmt.Errorf("managed receipt table indexes/constraints: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit managed receipt contract: %w", err)
+	}
+	return nil
+}
+
+func verifyExactCatalogColumns(ctx context.Context, query managedSchemaQuerier, namespace, table string, expected []string) error {
+	var exact bool
+	if err := query.QueryRow(ctx, `SELECT COALESCE(r.relkind='r' AND r.relpersistence='p' AND
+ array_agg(a.attname||'|'||pg_catalog.format_type(a.atttypid,a.atttypmod)||'|'||a.attnotnull::text||'|'||a.attgenerated::text||'|'||a.attidentity::text||'|'||COALESCE(pg_catalog.pg_get_expr(d.adbin,d.adrelid),'') ORDER BY a.attnum)=$3::text[],false)
+FROM pg_catalog.pg_class r JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace
+JOIN pg_catalog.pg_attribute a ON a.attrelid=r.oid AND a.attnum>0 AND NOT a.attisdropped
+LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+WHERE n.nspname=$1 AND r.relname=$2 GROUP BY r.relkind,r.relpersistence`, namespace, table, expected).Scan(&exact); err != nil {
+		return fmt.Errorf("inspect exact columns for %s.%s: %w", namespace, table, err)
+	}
+	if !exact {
+		return fmt.Errorf("exact columns/NOT NULL contract mismatch for %s.%s", namespace, table)
+	}
+	return nil
+}
+
+type exactIndexContract struct {
+	name            string
+	primary, unique bool
+	columns         []string
+}
+
+func verifyExactConstraintsAndIndexes(ctx context.Context, query managedSchemaQuerier, namespace, table string, constraints []string, indexes []exactIndexContract) error {
+	expectedConstraints := append([]string(nil), constraints...)
+	sort.Strings(expectedConstraints)
+	var constraintsExact bool
+	if err := query.QueryRow(ctx, `SELECT COALESCE(array_agg(c.conname||'|'||c.contype::text||'|'||c.condeferrable::text||'|'||c.condeferred::text||'|'||c.convalidated::text||'|'||pg_catalog.pg_get_constraintdef(c.oid,true) ORDER BY c.conname),'{}'::text[])=$3::text[]
+FROM pg_catalog.pg_constraint c JOIN pg_catalog.pg_class r ON r.oid=c.conrelid JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace WHERE n.nspname=$1 AND r.relname=$2`, namespace, table, expectedConstraints).Scan(&constraintsExact); err != nil {
+		return fmt.Errorf("inspect exact constraints for %s.%s: %w", namespace, table, err)
+	}
+	if !constraintsExact {
+		return fmt.Errorf("exact constraint contract mismatch for %s.%s", namespace, table)
+	}
+	var indexCount int
+	if err := query.QueryRow(ctx, `SELECT count(*) FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class r ON r.oid=i.indrelid JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace WHERE n.nspname=$1 AND r.relname=$2`, namespace, table).Scan(&indexCount); err != nil {
+		return err
+	}
+	if indexCount != len(indexes) {
+		return fmt.Errorf("exact index count mismatch for %s.%s: got %d want %d", namespace, table, indexCount, len(indexes))
+	}
+	for _, expected := range indexes {
+		var exact bool
+		if err := query.QueryRow(ctx, `SELECT am.amname='btree' AND i.indisunique=$4 AND i.indisprimary=$5 AND i.indisvalid AND i.indisready AND i.indislive AND i.indimmediate
+ AND NOT i.indisclustered AND NOT i.indisreplident AND NOT i.indisexclusion AND NOT i.indcheckxmin AND NOT i.indnullsnotdistinct
+ AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts=cardinality($6::text[]) AND i.indnatts=i.indnkeyatts
+ AND keys.names=$6::text[] AND NOT EXISTS (
+  SELECT 1 FROM generate_subscripts(i.indkey::smallint[],1) s(ord)
+  JOIN pg_catalog.pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=(i.indkey::smallint[])[s.ord]
+  JOIN pg_catalog.pg_opclass opc ON opc.oid=(i.indclass::oid[])[s.ord]
+  WHERE NOT opc.opcdefault OR opc.opcmethod<>index_relation.relam OR (i.indcollation::oid[])[s.ord]<>a.attcollation OR (i.indoption::smallint[])[s.ord]<>0)
+FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class r ON r.oid=i.indrelid JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace
+JOIN pg_catalog.pg_class index_relation ON index_relation.oid=i.indexrelid JOIN pg_catalog.pg_am am ON am.oid=index_relation.relam
+CROSS JOIN LATERAL (SELECT array_agg(a.attname::text ORDER BY k.ord) names FROM unnest(i.indkey::smallint[]) WITH ORDINALITY k(attnum,ord) JOIN pg_catalog.pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum WHERE k.ord<=i.indnkeyatts) keys
+WHERE n.nspname=$1 AND r.relname=$2 AND index_relation.relname=$3`, namespace, table, expected.name, expected.unique, expected.primary, expected.columns).Scan(&exact); err != nil {
+			return fmt.Errorf("inspect exact index %s: %w", expected.name, err)
+		}
+		if !exact {
+			return fmt.Errorf("exact index contract mismatch for %s.%s index %s", namespace, table, expected.name)
+		}
 	}
 	return nil
 }
 
 func (d *Destination) loadManagedReceipt(ctx context.Context, tx pgx.Tx, intent connector.DeliveryIntent) (string, error) {
+	if strings.TrimSpace(intent.LogicalBatchID) == "" {
+		return "", errors.New("managed PostgreSQL delivery requires logical_batch_id")
+	}
 	row := tx.QueryRow(ctx, `
 SELECT content_hash,logical_batch_id
 FROM wallaby_meta.__delivery_receipts
@@ -505,31 +631,20 @@ WHERE flow_incarnation_id = $1
   AND source_lineage_id = $3
   AND position_id = $4
 FOR UPDATE`, intent.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.PositionID)
-	var contentHash string
-	var logicalBatchID pgtype.Text
+	var contentHash, logicalBatchID string
 	if err := row.Scan(&contentHash, &logicalBatchID); err != nil {
 		return "", err
 	}
-	expected := deliveryLogicalBatchID(intent)
-	if !logicalBatchID.Valid || logicalBatchID.String == "legacy:"+intent.PositionID {
-		if contentHash != intent.ContentHash {
-			return "", fmt.Errorf("%w: legacy target receipt content differs", connector.ErrDeliveryConflict)
-		}
-		if _, err := tx.Exec(ctx, `
-UPDATE wallaby_meta.__delivery_receipts
-SET logical_batch_id=$5
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND source_lineage_id=$3 AND position_id=$4`, intent.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.PositionID, expected); err != nil {
-			return "", fmt.Errorf("upgrade legacy target logical batch: %w", err)
-		}
-		return contentHash, nil
-	}
-	if logicalBatchID.String != expected {
-		return "", fmt.Errorf("%w: target logical batch %s differs from %s", connector.ErrDeliveryConflict, logicalBatchID.String, expected)
+	if logicalBatchID != intent.LogicalBatchID {
+		return "", fmt.Errorf("%w: target logical batch %s differs from %s", connector.ErrDeliveryConflict, logicalBatchID, intent.LogicalBatchID)
 	}
 	return contentHash, nil
 }
 
 func (d *Destination) insertManagedReceipt(ctx context.Context, tx pgx.Tx, intent connector.DeliveryIntent, markerID string) error {
+	if strings.TrimSpace(intent.LogicalBatchID) == "" {
+		return errors.New("managed PostgreSQL delivery requires logical_batch_id")
+	}
 	_, err := tx.Exec(ctx, `
 INSERT INTO wallaby_meta.__delivery_receipts (
   marker_id, flow_id, flow_incarnation_id, generation, acquisition_id,
@@ -543,7 +658,7 @@ INSERT INTO wallaby_meta.__delivery_receipts (
 		intent.LeaseEpoch,
 		intent.DestinationRevisionID,
 		intent.SourceLineageID,
-		deliveryLogicalBatchID(intent),
+		intent.LogicalBatchID,
 		intent.PositionID,
 		intent.ContentHash,
 	)
@@ -567,18 +682,11 @@ func postgresDeliveryMarkerID(intent connector.DeliveryIntent) string {
 		intent.FlowIncarnationID,
 		intent.SourceLineageID,
 		intent.DestinationRevisionID,
-		deliveryLogicalBatchID(intent),
+		intent.LogicalBatchID,
 		intent.PositionID,
 		intent.ContentHash,
 	}, "\x00")))
 	return "wallaby-pg-" + hex.EncodeToString(hash[:])
-}
-
-func deliveryLogicalBatchID(intent connector.DeliveryIntent) string {
-	if value := strings.TrimSpace(intent.LogicalBatchID); value != "" {
-		return value
-	}
-	return "legacy:" + intent.PositionID
 }
 
 var _ connector.ManagedDestination = (*Destination)(nil)

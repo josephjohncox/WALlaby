@@ -15,7 +15,7 @@
 
 | Connector | Status | Runtime | Transactional batch | Idempotent replay | Replay safe | Executes DDL | Reconciles DDL | Lossy |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `postgres` | experimental | yes | yes | yes | yes | yes | yes | no |
+| `postgres` | experimental | yes | yes | no | no | yes | yes | no |
 | `pgstream` | experimental | yes | no | no | no | no | no | no |
 | `kafka` | experimental | yes | no | no | no | no | no | no |
 | `bufstream` | experimental | yes | no | no | no | no | no | no |

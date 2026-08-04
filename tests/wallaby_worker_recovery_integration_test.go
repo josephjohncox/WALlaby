@@ -85,7 +85,7 @@ DROP TABLE IF EXISTS public.wallaby_worker_kill_target`)
 		}},
 		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
 			"dsn": dsn, "schema": "public", "table": targetTable,
-			"write_mode": "target", "batch_mode": "target", "meta_table_enabled": "false",
+			"batch_mode": "target", "meta_table_enabled": "false",
 			"managed_profile":    connector.ManagedProfilePostgresToPostgresV1,
 			"synchronous_commit": "on", "destination_revision_id": destinationRevisionID,
 		}}},

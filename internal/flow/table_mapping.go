@@ -420,20 +420,15 @@ func validateWritePolicy(write TableWritePolicy, destination connector.Spec, fut
 		if err := validateIdentifier(write.WatermarkColumn, "watermark column"); err != nil {
 			return err
 		}
+		if write.Mode == TableWriteModeUpsert && destination.Type != connector.EndpointPostgres {
+			return fmt.Errorf("destination type %s does not support watermark-guarded upsert", destination.Type)
+		}
 	}
 	return nil
 }
 
 func destinationSupportsUpsert(destination connector.Spec) bool {
-	switch destination.Type {
-	case connector.EndpointPostgres, connector.EndpointDuckDB, connector.EndpointDuckLake:
-		return true
-	case connector.EndpointSnowflake:
-		profile := strings.TrimSpace(destination.Options["managed_profile"])
-		return profile == "" || profile == connector.ManagedProfilePostgresToSnowflakeSQLV1
-	default:
-		return false
-	}
+	return destination.Type == connector.EndpointPostgres
 }
 
 func tableIncludesColumn(table TableMapping, name string) bool {

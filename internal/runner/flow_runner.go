@@ -163,7 +163,7 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 	if managed {
 		destinationSpec := streamRunner.Destinations[0].Spec
 		revisionID := strings.TrimSpace(destinationSpec.Options["destination_revision_id"])
-		fingerprint, fingerprintErr := connector.DeliveryConfigFingerprint(destinationSpec)
+		fingerprint, fingerprintErr := connector.DeliveryConfigFingerprint(destinationSpec, streamRunner.Destinations[0].MappingFingerprint)
 		// A materialized runtime that owns a deployment-merged catalog identity the
 		// flow spec cannot express (today: Iceberg) reports it here and it wins. A
 		// runtime with no such consumer reports the empty string, and the
@@ -171,7 +171,7 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		// closed if a catalog consumer exists without an effective identity.
 		if identity, ok := artifactLog.(stream.ManagedArtifactIdentity); ok {
 			if effective := strings.TrimSpace(identity.EffectiveDestinationFingerprint()); effective != "" {
-				fingerprint = effective
+				fingerprint, fingerprintErr = connector.BindProjectionFingerprint(effective, streamRunner.Destinations[0].MappingFingerprint)
 			}
 		}
 		if fingerprintErr == nil {

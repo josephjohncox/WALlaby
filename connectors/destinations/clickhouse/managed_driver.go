@@ -391,9 +391,6 @@ func managedConfigFromSpec(spec connector.Spec) (managedConfig, error) {
 	}
 	// #nosec G115 -- parseManagedUintOption bounds bytes at maxTransactionBytes.
 	cfg.maxBatchBytes = int64(bytes)
-	if mode := strings.ToLower(strings.TrimSpace(options["write_mode"])); mode != "managed_append" {
-		return managedConfig{}, fmt.Errorf("managed ClickHouse profile requires write_mode=managed_append; got %q", mode)
-	}
 	if mode := strings.ToLower(strings.TrimSpace(options["batch_mode"])); mode != "target" {
 		return managedConfig{}, fmt.Errorf("managed ClickHouse profile requires batch_mode=target; got %q", mode)
 	}

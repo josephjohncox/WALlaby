@@ -27,6 +27,9 @@ func TestManagedSnowflakeCapabilitiesAreScopedToTheNamedProfile(t *testing.T) {
 	if !managed.Delivery.TransactionalBatch || !managed.Delivery.IdempotentReplay || !managed.Delivery.ReplaySafe || managed.Delivery.ExecutesDDL {
 		t.Fatalf("named Snowflake profile capabilities=%+v", managed.Delivery)
 	}
+	if !managed.TableWrites.Upsert || !managed.TableWrites.ExplicitKey || managed.TableWrites.Append || managed.TableWrites.WatermarkGuard {
+		t.Fatalf("named Snowflake profile table writes=%+v", managed.TableWrites)
+	}
 	if managed.Support != connector.SupportExperimental {
 		t.Fatalf("unproven managed Snowflake support=%s", managed.Support)
 	}
@@ -133,6 +136,7 @@ func TestManagedSnowflakeCleanStartRejectsUnreceiptedTargetRows(t *testing.T) {
 func TestManagedSnowflakeConfigRequiresExactSecureRevisionAndSchemaContract(t *testing.T) {
 	t.Parallel()
 	schema := managedTestSchema()
+	schema.Namespace, schema.Name = "PUBLIC", "WIDGETS"
 	encoded, err := json.Marshal(schema)
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +147,6 @@ func TestManagedSnowflakeConfigRequiresExactSecureRevisionAndSchemaContract(t *t
 		"flow_id":                                   "flow-1",
 		"managed_profile":                           connector.ManagedProfilePostgresToSnowflakeSQLV1,
 		"destination_revision_id":                   "snowflake-v1",
-		"write_mode":                                "target",
 		"batch_mode":                                "target",
 		"batch_resolution":                          "none",
 		"meta_table_enabled":                        "false",
@@ -205,7 +208,7 @@ func TestManagedSnowflakeConfigRequiresExactSecureRevisionAndSchemaContract(t *t
 		{name: "unknown managed option", key: "managed_typo", value: "true", want: "does not allow option managed_typo"},
 		{name: "inline type mapping override", key: "type_mappings", value: `{"text":"VARIANT"}`, want: "type mapping overrides"},
 		{name: "mutable type mapping file", key: "type_mappings_file", value: "mappings.json", want: "type mapping overrides"},
-		{name: "unknown nullability", key: "managed_schema_contract", value: `{"Name":"widgets","Namespace":"public","Columns":[{"Name":"id","Type":"int8","TypeMetadata":{"primary_key":"true"}}]}`, want: "schema contract hash"},
+		{name: "unknown nullability", key: "managed_schema_contract", value: `{"Name":"WIDGETS","Namespace":"PUBLIC","Columns":[{"Name":"id","Type":"int8","TypeMetadata":{"primary_key":"true"}}]}`, want: "schema contract hash"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

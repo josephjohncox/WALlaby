@@ -420,7 +420,9 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 	if len(liveSchemas) != 1 {
 		t.Fatalf("live managed publication schemas=%d", len(liveSchemas))
 	}
-	if err := fixture.destination.ValidateManagedSourceSchema(liveSchemas[0]); err != nil {
+	projectedLive := liveSchemas[0]
+	projectedLive.Namespace, projectedLive.Name = fixture.schema.Namespace, fixture.schema.Name
+	if err := fixture.destination.ValidateManagedSourceSchema(projectedLive); err != nil {
 		t.Fatal(err)
 	}
 	initial, ok := oldSource.InitialCheckpoint()
@@ -437,7 +439,7 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 	if rootedLSN != initial.LSN || sourceResources != 1 {
 		t.Fatalf("fenced source cut checkpoint/resources=%s/%d, want %s/1", rootedLSN, sourceResources, initial.LSN)
 	}
-	fingerprint, err := connector.DeliveryConfigFingerprint(fixture.spec)
+	fingerprint, err := connector.DeliveryConfigFingerprint(fixture.spec, "integration-mapping-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,8 +659,8 @@ func newSnowflakeManagedFixtureForFlowSource(t *testing.T, flowID, sourceSchema,
 	receipts := "WALLABY_SF_RECEIPTS_" + suffix
 	revision := "snowflake-managed-" + strings.ToLower(suffix)
 	schema := snowflakeManagedSchema()
-	schema.Namespace = sourceSchema
-	schema.Name = sourceTable
+	schema.Namespace = strings.ToUpper(schemaName)
+	schema.Name = target
 	schemaJSON, err := json.Marshal(schema)
 	if err != nil {
 		t.Fatal(err)
@@ -764,7 +766,7 @@ func newSnowflakeManagedFixtureForFlowSource(t *testing.T, flowID, sourceSchema,
 	}
 	spec := connector.Spec{Name: "snowflake-managed", Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": dsn, "flow_id": flowID, "managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1,
-		"destination_revision_id": revision, "write_mode": "target", "batch_mode": "target", "batch_resolution": "none",
+		"destination_revision_id": revision, "batch_mode": "target", "batch_resolution": "none",
 		"meta_table_enabled": "false", "disable_transactions": "false", "session_keep_alive": "false",
 		"managed_account": strings.ToUpper(account), "managed_database": strings.ToUpper(database), "managed_schema": strings.ToUpper(schemaName),
 		"managed_table": target, "managed_receipts_table": receipts, "managed_owner_role": strings.ToUpper(ownerRole),

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/josephjohncox/wallaby/internal/flow"
+	internalschema "github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 )
@@ -19,6 +20,7 @@ type Projector struct {
 }
 
 var _ stream.Projector = (*Projector)(nil)
+var _ connector.ManagedBootstrapProjector = (*Projector)(nil)
 
 type resolvedColumn struct {
 	source string
@@ -56,6 +58,43 @@ func New(policy flow.TableMappings, destination string) (*Projector, error) {
 
 func (p *Projector) Fingerprint() string { return p.fingerprint }
 
+func (p *Projector) IncludeBootstrapRelation(namespace, table string) (bool, error) {
+	resolved, err := p.resolve(connector.Schema{Namespace: namespace, Name: table}, true)
+	if err != nil {
+		return false, err
+	}
+	return resolved.included, nil
+}
+
+func (p *Projector) ProjectBootstrapSchema(schema connector.Schema) (connector.Schema, connector.TableWritePolicy, bool, error) {
+	resolved, err := p.resolve(schema, false)
+	if err != nil {
+		return connector.Schema{}, connector.TableWritePolicy{}, false, err
+	}
+	if !resolved.included {
+		return connector.Schema{}, connector.TableWritePolicy{}, false, nil
+	}
+	mapped, err := projectSchema(schema, resolved)
+	if err != nil {
+		return connector.Schema{}, connector.TableWritePolicy{}, false, err
+	}
+	keys := make([]string, 0, len(resolved.write.KeyColumns))
+	for _, key := range resolved.write.KeyColumns {
+		keys = append(keys, resolved.bySource[key])
+	}
+	watermark := ""
+	if resolved.write.WatermarkColumn != "" {
+		watermark = resolved.bySource[resolved.write.WatermarkColumn]
+	}
+	policy := connector.TableWritePolicy{Mode: connector.ResolvedWriteMode(resolved.write.Mode), KeyColumns: keys, WatermarkColumn: watermark, ProjectionFingerprint: p.fingerprint}
+	return mapped, policy, true, nil
+}
+
+func (p *Projector) ProjectBootstrapBatch(batch connector.Batch) (connector.Batch, bool, error) {
+	mapped, decision, err := p.ProjectBatch(batch)
+	return mapped, decision == stream.ProjectionIncluded, err
+}
+
 func (p *Projector) ProjectBatch(batch connector.Batch) (connector.Batch, stream.ProjectionDecision, error) {
 	if len(batch.Records) > 0 {
 		if err := connector.ValidateBatch(batch); err != nil {
@@ -67,7 +106,10 @@ func (p *Projector) ProjectBatch(batch connector.Batch) (connector.Batch, stream
 }
 
 func (p *Projector) projectBatch(batch connector.Batch, fallbackPosition string) (connector.Batch, stream.ProjectionDecision, error) {
-	resolved, err := p.resolve(batch.Schema)
+	if strings.TrimSpace(batch.Schema.Name) == "" {
+		return p.projectTablelessDDLBatch(batch)
+	}
+	resolved, err := p.resolve(batch.Schema, false)
 	if err != nil {
 		return connector.Batch{}, stream.ProjectionFiltered, err
 	}
@@ -108,6 +150,68 @@ func (p *Projector) projectBatch(batch connector.Batch, fallbackPosition string)
 	}, stream.ProjectionIncluded, nil
 }
 
+func (p *Projector) projectTablelessDDLBatch(batch connector.Batch) (connector.Batch, stream.ProjectionDecision, error) {
+	out := connector.Batch{Checkpoint: batch.Checkpoint, WireFormat: batch.WireFormat, WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend, ProjectionFingerprint: p.fingerprint}}
+	var mappedRecords []connector.Record
+	for index, record := range batch.Records {
+		source, err := tablelessDDLSourceSchema(record)
+		if err != nil {
+			return connector.Batch{}, stream.ProjectionFiltered, fmt.Errorf("resolve tableless DDL record %d: %w", index, err)
+		}
+		resolved, err := p.resolve(source, true)
+		if err != nil {
+			return connector.Batch{}, stream.ProjectionFiltered, err
+		}
+		if !resolved.included {
+			continue
+		}
+		target := connector.Schema{Name: resolved.targetTable, Namespace: resolved.targetSchema}
+		mapped, included, err := projectDDLRecord(source, target, resolved, record)
+		if err != nil {
+			return connector.Batch{}, stream.ProjectionFiltered, err
+		}
+		if included {
+			// The structured plan owns the target relation. Keeping Record.Table
+			// empty preserves the valid tableless-control batch contract when one
+			// batch contains multiple projected relations.
+			mapped.Table = ""
+			mappedRecords = append(mappedRecords, mapped)
+		}
+	}
+	if len(mappedRecords) == 0 {
+		return out, stream.ProjectionFiltered, nil
+	}
+	out.Records = mappedRecords
+	return out, stream.ProjectionIncluded, nil
+}
+
+func tablelessDDLSourceSchema(record connector.Record) (connector.Schema, error) {
+	if len(record.DDLPlan) == 0 {
+		return connector.Schema{}, errors.New("tableless raw SQL DDL is ambiguous")
+	}
+	var plan internalschema.Plan
+	if err := json.Unmarshal(record.DDLPlan, &plan); err != nil {
+		return connector.Schema{}, fmt.Errorf("decode structured DDL plan: %w", err)
+	}
+	if len(plan.Changes) == 0 {
+		return connector.Schema{}, errors.New("structured DDL plan has no changes")
+	}
+	var namespace, table string
+	for _, change := range plan.Changes {
+		if strings.TrimSpace(change.Namespace) == "" || strings.TrimSpace(change.Table) == "" {
+			return connector.Schema{}, errors.New("tableless structured DDL change requires source namespace and table")
+		}
+		if namespace == "" {
+			namespace, table = change.Namespace, change.Table
+			continue
+		}
+		if namespace != change.Namespace || table != change.Table {
+			return connector.Schema{}, errors.New("one structured DDL plan cannot span multiple source relations")
+		}
+	}
+	return connector.Schema{Name: table, Namespace: namespace}, nil
+}
+
 func (p *Projector) ProjectTransaction(transaction connector.SourceTransaction) (connector.SourceTransaction, stream.ProjectionDecision, error) {
 	if err := transaction.Validate(); err != nil {
 		return connector.SourceTransaction{}, stream.ProjectionFiltered, fmt.Errorf("validate transaction before projection: %w", err)
@@ -131,7 +235,7 @@ func (p *Projector) ProjectTransaction(transaction connector.SourceTransaction) 
 	return out, stream.ProjectionIncluded, nil
 }
 
-func (p *Projector) resolve(schema connector.Schema) (resolvedTable, error) {
+func (p *Projector) resolve(schema connector.Schema, allowEmptyColumns bool) (resolvedTable, error) {
 	var exact *flow.TableMapping
 	for index := range p.mapping.Tables {
 		candidate := &p.mapping.Tables[index]
@@ -200,19 +304,40 @@ func (p *Projector) resolve(schema connector.Schema) (resolvedTable, error) {
 			shapeChanged = true
 		}
 	}
-	if len(resolved.columns) == 0 {
+	if len(resolved.columns) == 0 && !allowEmptyColumns {
 		return resolvedTable{}, fmt.Errorf("included table %s.%s has no included columns", schema.Namespace, schema.Name)
 	}
-	if resolved.write.Mode == flow.TableWriteModeUpsert {
+	if resolved.write.Mode == flow.TableWriteModeUpsert && !allowEmptyColumns {
 		for _, keyColumn := range resolved.write.KeyColumns {
 			if _, included := resolved.bySource[keyColumn]; !included {
 				return resolvedTable{}, fmt.Errorf("configured key column %q is absent from the schema or projection", keyColumn)
 			}
+			oldImageAvailable := false
+			for _, column := range schema.Columns {
+				if column.Name == keyColumn {
+					oldImageAvailable = column.TypeMetadata["replica_identity"] == "true"
+					break
+				}
+			}
+			if !oldImageAvailable {
+				return resolvedTable{}, fmt.Errorf("configured upsert key column %q must be part of PostgreSQL replica identity or a full old-row image", keyColumn)
+			}
 		}
 	}
-	if resolved.write.WatermarkColumn != "" {
+	if resolved.write.WatermarkColumn != "" && !allowEmptyColumns {
 		if _, included := resolved.bySource[resolved.write.WatermarkColumn]; !included {
 			return resolvedTable{}, fmt.Errorf("configured watermark column %q is absent from the schema or projection", resolved.write.WatermarkColumn)
+		}
+		for _, column := range schema.Columns {
+			if resolved.write.Mode != flow.TableWriteModeUpsert || column.Name != resolved.write.WatermarkColumn {
+				continue
+			}
+			if column.Nullable {
+				return resolvedTable{}, fmt.Errorf("configured watermark column %q must be non-nullable", resolved.write.WatermarkColumn)
+			}
+			if column.TypeMetadata["replica_identity"] != "true" {
+				return resolvedTable{}, fmt.Errorf("configured watermark column %q must be part of PostgreSQL replica identity or a full old-row image", resolved.write.WatermarkColumn)
+			}
 		}
 	}
 	if shapeChanged {
@@ -249,9 +374,16 @@ func projectSchema(schema connector.Schema, resolved resolvedTable) (connector.S
 		if column.TypeMetadata != nil {
 			metadata := make(map[string]string, len(column.TypeMetadata))
 			for key, value := range column.TypeMetadata {
+				if resolved.write.Mode == flow.TableWriteModeAppend && (key == "primary_key" || key == "primary_key_ordinal" || key == "replica_identity") {
+					continue
+				}
 				metadata[key] = value
 			}
-			column.TypeMetadata = metadata
+			if len(metadata) == 0 {
+				column.TypeMetadata = nil
+			} else {
+				column.TypeMetadata = metadata
+			}
 		}
 		out.Columns = append(out.Columns, column)
 		if schema.QuotedIdentifiers[mapping.source] {
@@ -334,6 +466,21 @@ func (p *Projector) projectDataRecord(schema connector.Schema, resolved resolved
 			return connector.Record{}, fmt.Errorf("encode projected record key: %w", err)
 		}
 		if resolved.write.WatermarkColumn != "" {
+			position := strings.TrimSpace(record.SourcePosition)
+			if position == "" {
+				position = strings.TrimSpace(fallbackPosition)
+			}
+			if position == "" {
+				return connector.Record{}, errors.New("watermark projection requires a stable PostgreSQL source position")
+			}
+			position, err = connector.CanonicalizeCheckpointPosition(position)
+			if err != nil {
+				return connector.Record{}, fmt.Errorf("canonicalize watermark source position: %w", err)
+			}
+			if !strings.Contains(position, "/") {
+				return connector.Record{}, errors.New("watermark projection requires a canonical PostgreSQL LSN")
+			}
+			out.SourcePosition = position
 			image := record.After
 			if record.Operation == connector.OpDelete || useOldKey {
 				image = record.Before

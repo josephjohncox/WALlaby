@@ -43,12 +43,12 @@ func TestNewStreamRunnerPrecedence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := NewStreamRunner(flow.Flow{
+			got, err := NewStreamRunner(mappedRunnerTestFlow(flow.Flow{
 				ID:          "flow-1",
 				Source:      connector.Spec{Type: connector.EndpointPostgres},
 				WireFormat:  tt.flowWire,
 				Parallelism: tt.flowParallel,
-			}, nil, nil, StreamRunnerConfig{
+			}), nil, nil, StreamRunnerConfig{
 				Checkpoints:        testCheckpointOutboxStore{},
 				DefaultWireFormat:  tt.defaultWire,
 				DefaultParallelism: tt.defaultParallel,
@@ -86,6 +86,8 @@ func TestNewStreamRunnerClonesConfigurationAndAppliesPolicies(t *testing.T) {
 		Spec: connector.Spec{Name: "primary", Options: map[string]string{"dest": "original"}},
 		Dest: flowRunnerDestination{},
 	}}
+	f.Destinations = []connector.Spec{destinations[0].Spec}
+	f = mappedRunnerTestFlow(f)
 
 	got, err := NewStreamRunner(f, nil, destinations, StreamRunnerConfig{
 		Checkpoints:    testCheckpointOutboxStore{},
@@ -129,16 +131,37 @@ func TestNewStreamRunnerRejectsAutoApplyWithoutReceiptStore(t *testing.T) {
 	t.Parallel()
 
 	autoApply := true
-	_, err := NewStreamRunner(flow.Flow{
-		ID:     "flow-ddl",
+	_, err := NewStreamRunner(mappedRunnerTestFlow(flow.Flow{
+		ID: "flow-ddl", Destinations: []connector.Spec{{Name: "destination"}},
 		Config: flow.Config{DDL: flow.DDLPolicy{AutoApply: &autoApply}},
-	}, nil, []stream.DestinationConfig{{
+	}), nil, []stream.DestinationConfig{{
 		Spec: connector.Spec{Name: "destination"},
 		Dest: flowRunnerDestination{},
 	}}, StreamRunnerConfig{Checkpoints: testCheckpointOutboxStore{}})
 	if err == nil || !strings.Contains(err.Error(), "execution receipt storage") {
 		t.Fatalf("NewStreamRunner() error=%v, want receipt storage requirement", err)
 	}
+}
+
+func TestNewStreamRunnerRejectsUnsupportedTablePolicyBeforeOpen(t *testing.T) {
+	definition := flow.Flow{ID: "flow-policy", Source: connector.Spec{Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}}
+	definition.Config.TableMappings = flow.NewTableMappings(definition.Destinations)
+	mapping := &definition.Config.TableMappings.Destinations[0]
+	mapping.Tables = []flow.TableMapping{{
+		SourceSchema: "public", SourceTable: "widgets", Action: flow.MappingActionInclude,
+		TargetSchema: "public", TargetTable: "widgets", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"},
+		Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}},
+	}}
+	_, err := NewStreamRunner(definition, nil, []stream.DestinationConfig{{Spec: definition.Destinations[0], Dest: appendOnlyRunnerDestination{}}}, StreamRunnerConfig{Checkpoints: testCheckpointOutboxStore{}})
+	if err == nil || !strings.Contains(err.Error(), "upsert") {
+		t.Fatalf("error=%v, want pre-open upsert rejection", err)
+	}
+}
+
+type appendOnlyRunnerDestination struct{ flowRunnerDestination }
+
+func (appendOnlyRunnerDestination) Capabilities() connector.Capabilities {
+	return connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true}, TableWrites: connector.TableWriteSemantics{Declared: true, Append: true}}
 }
 
 func TestNewStreamRunnerRejectsMissingCheckpointStore(t *testing.T) {

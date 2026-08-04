@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	icebergdest "github.com/josephjohncox/wallaby/connectors/destinations/iceberg"
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
+	snowflakedest "github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/delivery"
@@ -25,22 +28,34 @@ func TestManagedAdmissionRequiresExactMaterializedContract(t *testing.T) {
 	f := managedAdmissionFlow()
 	f.Config.AckPolicy = stream.AckPolicyMaterialized
 	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v1"}
+	destinations := materializedAdmissionDestinations()
+	f.Destinations = []connector.Spec{destinations[0].Spec}
+	f.Config.TableMappings = flow.NewTableMappings(f.Destinations)
 	fence := managedAdmissionFence()
 	cfg := StreamRunnerConfig{
 		Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{},
 	}
-	if _, err := NewStreamRunner(f, &pgsource.Source{}, managedAdmissionDestinations(), cfg); err == nil || !strings.Contains(err.Error(), "artifact log") {
+	if _, err := NewStreamRunner(f, &pgsource.Source{}, destinations, cfg); err == nil || !strings.Contains(err.Error(), "artifact log") {
 		t.Fatalf("missing artifact log error=%v", err)
 	}
 	cfg.ArtifactLog = materializedAdmissionLog{}
-	if _, err := NewStreamRunner(f, &pgsource.Source{}, managedAdmissionDestinations(), cfg); err != nil {
+	if _, err := NewStreamRunner(f, &pgsource.Source{}, destinations, cfg); err != nil {
 		t.Fatal(err)
 	}
 
 	f.Config.Materialization.ProjectionID = "parquet"
-	if _, err := NewStreamRunner(f, &pgsource.Source{}, managedAdmissionDestinations(), cfg); err == nil || !strings.Contains(err.Error(), "canonical_cdc_parquet_v1") {
+	if _, err := NewStreamRunner(f, &pgsource.Source{}, destinations, cfg); err == nil || !strings.Contains(err.Error(), "canonical_cdc_parquet_v1") {
 		t.Fatalf("wrong projection error=%v", err)
 	}
+}
+
+func materializedAdmissionDestinations() []stream.DestinationConfig {
+	return []stream.DestinationConfig{{
+		Spec: connector.Spec{Name: "iceberg", Type: connector.EndpointIceberg, Options: map[string]string{
+			"destination_revision_id": "iceberg-append-v1", "catalog_profile": "s3tables", "control_table": "wallaby.control",
+		}},
+		Dest: &icebergdest.Destination{},
+	}}
 }
 
 type materializedAdmissionLog struct{}
@@ -64,12 +79,9 @@ func TestManagedAdmissionAcceptsAppendOnlyIcebergArtifactConsumer(t *testing.T) 
 	f.Config.AckPolicy = stream.AckPolicyMaterialized
 	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v1"}
 	fence := managedAdmissionFence()
-	destinations := []stream.DestinationConfig{{
-		Spec: connector.Spec{Name: "iceberg", Type: connector.EndpointIceberg, Options: map[string]string{
-			"destination_revision_id": "iceberg-append-v1", "uri": "https://catalog.example.test", "warehouse": "warehouse",
-		}},
-		Dest: &icebergdest.Destination{},
-	}}
+	destinations := materializedAdmissionDestinations()
+	f.Destinations = []connector.Spec{destinations[0].Spec}
+	f.Config.TableMappings = flow.NewTableMappings(f.Destinations)
 	if _, err := NewStreamRunner(f, &pgsource.Source{}, destinations, StreamRunnerConfig{
 		Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}, ArtifactLog: materializedAdmissionLog{},
 	}); err != nil {
@@ -80,7 +92,7 @@ func TestManagedAdmissionAcceptsAppendOnlyIcebergArtifactConsumer(t *testing.T) 
 	f.Source.Options["pool_max_conns"] = "2"
 	if _, err := NewStreamRunner(f, &pgsource.Source{}, destinations, StreamRunnerConfig{
 		Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}, ArtifactLog: materializedAdmissionLog{},
-	}); err == nil || !strings.Contains(err.Error(), "atomically publishable destination snapshot") {
+	}); err == nil || !strings.Contains(err.Error(), "bootstrap=never") {
 		t.Fatalf("Iceberg bootstrap admission error=%v", err)
 	}
 }
@@ -174,7 +186,6 @@ func TestManagedAdmissionAcceptsClickHouseAppendProfileOnlyWithExactContract(t *
 		value string
 		want  string
 	}{
-		{name: "mutation mode", key: "write_mode", value: "target", want: "write_mode=managed_append"},
 		{name: "staging", key: "batch_mode", value: "staging", want: "batch_mode=target"},
 		{name: "metadata mutations", key: "meta_table_enabled", value: "true", want: "meta_table_enabled=false"},
 		{name: "async insert", key: "async_insert", value: "true", want: "async_insert=false"},
@@ -224,21 +235,24 @@ func TestManagedAdmissionAcceptsClickHouseAppendProfileOnlyWithExactContract(t *
 }
 
 func TestManagedAdmissionAcceptsSnowflakeSQLProfileOnlyWithExactContract(t *testing.T) {
-	f := managedAdmissionFlow()
-	delete(f.Source.Options, "managed")
-	f.Source.Options["managed_profile"] = connector.ManagedProfilePostgresToSnowflakeSQLV1
-	f.Source.Options["create_slot"] = "true"
-	f.Source.Options["slot"] = "managed"
-	f.Source.Options["streaming_transactions"] = "true"
-	f.Source.Options["toast_fetch"] = "off"
-	f.Source.Options["max_transaction_records"] = "1000"
-	f.Source.Options["max_transaction_bytes"] = "8388608"
-	f.Source.Options["max_transaction_fragments"] = "64"
+	f := managedSnowflakeFlowForTest()
 	destinations := managedSnowflakeAdmissionDestinations(t)
+	persistedContract := destinations[0].Spec.Options["managed_schema_contract"]
 	fence := managedAdmissionFence()
 	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}}
-	if _, err := NewStreamRunner(f, &pgsource.Source{}, destinations, cfg); err != nil {
+	runner, err := NewStreamRunner(f, &pgsource.Source{}, destinations, cfg)
+	if err != nil {
 		t.Fatal(err)
+	}
+	var projected connector.Schema
+	if err := json.Unmarshal([]byte(runner.Destinations[0].Spec.Options["managed_schema_contract"]), &projected); err != nil {
+		t.Fatal(err)
+	}
+	if projected.Namespace != "PUBLIC" || projected.Name != "WIDGETS" || runner.Destinations[0].Spec.Options["managed_schema_contract_hash"] == destinations[0].Spec.Options["managed_schema_contract_hash"] {
+		t.Fatalf("projected cloned Snowflake contract=%+v", projected)
+	}
+	if destinations[0].Spec.Options["managed_schema_contract"] != persistedContract {
+		t.Fatal("persisted destination spec was mutated")
 	}
 
 	tests := []struct {
@@ -249,7 +263,6 @@ func TestManagedAdmissionAcceptsSnowflakeSQLProfileOnlyWithExactContract(t *test
 	}{
 		{name: "wrong flow binding", key: "flow_id", value: "other-flow", want: "does not match flow"},
 		{name: "generic profile", key: "managed_profile", value: "", want: "does not match source profile"},
-		{name: "append mode", key: "write_mode", value: "append", want: "write_mode=target"},
 		{name: "staging", key: "batch_mode", value: "staging", want: "batch_mode=target"},
 		{name: "staging resolution", key: "batch_resolution", value: "replace", want: "batch_resolution=none"},
 		{name: "generic metadata", key: "meta_table_enabled", value: "true", want: "meta_table_enabled=false"},
@@ -263,7 +276,7 @@ func TestManagedAdmissionAcceptsSnowflakeSQLProfileOnlyWithExactContract(t *test
 		{name: "persistent DSN sessions", key: "dsn", value: managedAdmissionSnowflakeDSN(t, func(cfg *gosnowflake.Config) { value := "true"; cfg.Params["CLIENT_SESSION_KEEP_ALIVE"] = &value }), want: "CLIENT_SESSION_KEEP_ALIVE=true"},
 		{name: "account mismatch", key: "managed_account", value: "OTHER", want: "DSN account"},
 		{name: "database mismatch", key: "managed_database", value: "OTHER", want: "DSN database"},
-		{name: "schema mismatch", key: "managed_schema", value: "OTHER", want: "DSN schema"},
+		{name: "schema mismatch", key: "managed_schema", value: "OTHER", want: "mapped target"},
 		{name: "role mismatch", key: "managed_execution_role", value: "OTHER", want: "DSN role"},
 		{name: "execution role owns objects", key: "managed_owner_role", value: "ROLE", want: "must not own"},
 		{name: "warehouse mismatch", key: "managed_warehouse", value: "OTHER", want: "DSN warehouse"},
@@ -401,7 +414,7 @@ func managedAdmissionFlow() flow.Flow {
 func managedAdmissionDestinations() []stream.DestinationConfig {
 	return []stream.DestinationConfig{{
 		Spec: connector.Spec{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
-			"write_mode": "target", "batch_mode": "target", "destination_revision_id": "postgres-target-v1", "synchronous_commit": "on",
+			"batch_mode": "target", "destination_revision_id": "postgres-target-v1", "synchronous_commit": "on",
 		}},
 		Dest: &pgdest.Destination{},
 	}}
@@ -431,15 +444,126 @@ func managedAdmissionSnowflakeDSN(t *testing.T, mutate func(*gosnowflake.Config)
 	return dsn
 }
 
+func TestManagedSnowflakeCompositePrimaryKeyMustBeCompleteOrderedAndPreserved(t *testing.T) {
+	contract := connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{
+		{Name: "tenant_id", Type: "text", TypeMetadata: map[string]string{"primary_key": "true", "primary_key_ordinal": "1", "replica_identity": "true", "nullability_known": "true", "generated_known": "true"}},
+		{Name: "event_id", Type: "int8", TypeMetadata: map[string]string{"primary_key": "true", "primary_key_ordinal": "2", "replica_identity": "true", "nullability_known": "true", "generated_known": "true"}},
+		{Name: "payload", Type: "text", TypeMetadata: map[string]string{"nullability_known": "true", "generated_known": "true"}},
+	}}
+	newFlow := func(keys []string, excludeSecond bool) flow.Flow {
+		f := managedSnowflakeFlowForTest()
+		table := &f.Config.TableMappings.Destinations[0].Tables[0]
+		table.FutureColumns = flow.FutureColumnMapping{Action: flow.MappingActionExclude}
+		table.Columns = []flow.ColumnMapping{{SourceColumn: "tenant_id", Action: flow.MappingActionInclude, TargetColumn: "TENANT_ID"}, {SourceColumn: "event_id", Action: flow.MappingActionInclude, TargetColumn: "EVENT_ID"}, {SourceColumn: "payload", Action: flow.MappingActionInclude, TargetColumn: "PAYLOAD"}}
+		if excludeSecond {
+			table.Columns[1].Action = flow.MappingActionExclude
+			table.Columns[1].TargetColumn = ""
+		}
+		table.Write.KeyColumns = append([]string(nil), keys...)
+		return f
+	}
+	fence := managedAdmissionFence()
+	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}}
+	runner, err := NewStreamRunner(newFlow([]string{"tenant_id", "event_id"}, false), &pgsource.Source{}, managedSnowflakeAdmissionDestinationsForContract(t, contract), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var projected connector.Schema
+	if err := json.Unmarshal([]byte(runner.Destinations[0].Spec.Options["managed_schema_contract"]), &projected); err != nil {
+		t.Fatal(err)
+	}
+	primary, err := orderedManagedSnowflakePrimaryKey(projected, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(primary, []string{"TENANT_ID", "EVENT_ID"}) {
+		t.Fatalf("projected composite primary key=%v", primary)
+	}
+	projectedBatch, decision, err := runner.Destinations[0].Projector.ProjectBatch(connector.Batch{Schema: contract, Records: []connector.Record{{Table: "widgets", Operation: connector.OpInsert, After: map[string]any{"tenant_id": "tenant-1", "event_id": int64(1), "payload": "value"}, SourcePosition: "0/10"}}})
+	if err != nil || decision != stream.ProjectionIncluded {
+		t.Fatalf("project composite schema decision/error=%v/%v", decision, err)
+	}
+	if !slices.Equal(projectedBatch.WritePolicy.KeyColumns, primary) {
+		t.Fatalf("planner identity keys=%v primary=%v", projectedBatch.WritePolicy.KeyColumns, primary)
+	}
+	for _, test := range []struct {
+		name          string
+		keys          []string
+		excludeSecond bool
+		want          string
+	}{
+		{name: "missing", keys: nil, want: "at least one key_columns"},
+		{name: "partial", keys: []string{"tenant_id"}, want: "complete ordered source primary key"},
+		{name: "reordered", keys: []string{"event_id", "tenant_id"}, want: "complete ordered source primary key"},
+		{name: "extra", keys: []string{"tenant_id", "event_id", "payload"}, want: "complete ordered source primary key"},
+		{name: "excluded_component", keys: []string{"tenant_id", "event_id"}, excludeSecond: true, want: "excluded"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := NewStreamRunner(newFlow(test.keys, test.excludeSecond), &pgsource.Source{}, managedSnowflakeAdmissionDestinationsForContract(t, contract), cfg)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestManagedSnowflakeMappingRejectsAppendWatermarkAndFutureDefaults(t *testing.T) {
+	fence := managedAdmissionFence()
+	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}}
+	for name, mutate := range map[string]func(*flow.Flow){
+		"future_include": func(f *flow.Flow) {
+			f.Config.TableMappings.Destinations[0].FutureTables = flow.FutureTableMapping{Action: flow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}}
+		},
+		"append": func(f *flow.Flow) {
+			f.Config.TableMappings.Destinations[0].Tables[0].Write = flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}
+		},
+		"watermark": func(f *flow.Flow) { f.Config.TableMappings.Destinations[0].Tables[0].Write.WatermarkColumn = "id" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := managedSnowflakeFlowForTest()
+			mutate(&f)
+			if _, err := NewStreamRunner(f, &pgsource.Source{}, managedSnowflakeAdmissionDestinations(t), cfg); err == nil {
+				t.Fatal("unsupported managed Snowflake mapping admitted")
+			}
+		})
+	}
+}
+
+func managedSnowflakeFlowForTest() flow.Flow {
+	f := managedAdmissionFlow()
+	delete(f.Source.Options, "managed")
+	f.Source.Options["managed_profile"] = connector.ManagedProfilePostgresToSnowflakeSQLV1
+	f.Source.Options["create_slot"], f.Source.Options["slot"], f.Source.Options["streaming_transactions"], f.Source.Options["toast_fetch"] = "true", "managed", "true", "off"
+	f.Source.Options["max_transaction_records"], f.Source.Options["max_transaction_bytes"], f.Source.Options["max_transaction_fragments"] = "1000", "8388608", "64"
+	mapping, _ := f.Config.TableMappings.ForDestination("target")
+	mapping.FutureTables = flow.FutureTableMapping{Action: flow.MappingActionExclude}
+	mapping.Tables = []flow.TableMapping{{SourceSchema: "public", SourceTable: "widgets", Action: flow.MappingActionInclude, TargetSchema: "PUBLIC", TargetTable: "WIDGETS", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}
+	f.Config.TableMappings.Destinations[0] = mapping
+	return f
+}
+
 func managedSnowflakeAdmissionDestinations(t *testing.T) []stream.DestinationConfig {
 	t.Helper()
+	contract := connector.Schema{Name: "widgets", Namespace: "public", Columns: []connector.Column{{Name: "id", Type: "int8", TypeMetadata: map[string]string{"primary_key": "true", "primary_key_ordinal": "1", "replica_identity": "true", "nullability_known": "true", "generated_known": "true"}}}}
+	return managedSnowflakeAdmissionDestinationsForContract(t, contract)
+}
+
+func managedSnowflakeAdmissionDestinationsForContract(t *testing.T, contract connector.Schema) []stream.DestinationConfig {
+	t.Helper()
+	encoded, err := json.Marshal(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := snowflakedest.ManagedSchemaContractHash(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return []stream.DestinationConfig{{
-		Spec: connector.Spec{Name: "snowflake-sql", Type: connector.EndpointSnowflake, Options: map[string]string{
+		Spec: connector.Spec{Name: "target", Type: connector.EndpointSnowflake, Options: map[string]string{
 			"dsn":                                       managedAdmissionSnowflakeDSN(t, nil),
 			"flow_id":                                   "managed-flow",
 			"managed_profile":                           connector.ManagedProfilePostgresToSnowflakeSQLV1,
 			"destination_revision_id":                   "snowflake-sql-v1",
-			"write_mode":                                "target",
 			"batch_mode":                                "target",
 			"batch_resolution":                          "none",
 			"meta_table_enabled":                        "false",
@@ -458,8 +582,8 @@ func managedSnowflakeAdmissionDestinations(t *testing.T) []stream.DestinationCon
 			"managed_receipts_created_on":               "2026-01-01T00:00:01.000000000+00:00",
 			"managed_source_schema":                     "public",
 			"managed_source_table":                      "widgets",
-			"managed_schema_contract":                   `{"Name":"widgets","Namespace":"public","Columns":[{"Name":"id","Type":"int8","TypeMetadata":{"primary_key":"true","nullability_known":"true","generated_known":"true"}}]}`,
-			"managed_schema_contract_hash":              "a326c88d836191507dc3f748b747da1cfc304b9f279f450b30cc9728fd1ddce4",
+			"managed_schema_contract":                   string(encoded),
+			"managed_schema_contract_hash":              hash,
 			"managed_max_transaction_rows":              "1000",
 			"managed_max_transaction_bytes":             "8388608",
 			"managed_max_transaction_fragments":         "64",
@@ -481,11 +605,10 @@ func cloneStringMap(input map[string]string) map[string]string {
 
 func managedClickHouseAdmissionDestinations() []stream.DestinationConfig {
 	return []stream.DestinationConfig{{
-		Spec: connector.Spec{Name: "clickhouse-append", Type: connector.EndpointClickHouse, Options: map[string]string{
+		Spec: connector.Spec{Name: "target", Type: connector.EndpointClickHouse, Options: map[string]string{
 			"dsn":                               "clickhouse://localhost:9440/wallaby?secure=true",
 			"managed_profile":                   connector.ManagedProfilePostgresToClickHouseAppendV1,
 			"destination_revision_id":           "clickhouse-append-v1",
-			"write_mode":                        "managed_append",
 			"batch_mode":                        "target",
 			"batch_resolution":                  "none",
 			"meta_table_enabled":                "false",
