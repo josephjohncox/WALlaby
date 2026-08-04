@@ -96,6 +96,15 @@ func TestMemoryEngineCopiesAndFencesTableMappings(t *testing.T) {
 	if engine.incarnations[definition.ID] == originalIncarnation {
 		t.Fatal("mapping change did not rotate memory flow incarnation")
 	}
+	mappingIncarnation := engine.incarnations[definition.ID]
+	again, _ = engine.Get(ctx, definition.ID)
+	again.WireFormat = "json"
+	if _, err := engine.Update(ctx, again); err != nil {
+		t.Fatal(err)
+	}
+	if engine.incarnations[definition.ID] == mappingIncarnation {
+		t.Fatal("wire-format change did not rotate memory flow incarnation")
+	}
 	if _, err := engine.Start(ctx, definition.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -103,6 +112,11 @@ func TestMemoryEngineCopiesAndFencesTableMappings(t *testing.T) {
 	running.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "again_{table}"
 	if _, err := engine.Update(ctx, running); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("running mapping update error=%v, want ErrInvalidState", err)
+	}
+	running, _ = engine.Get(ctx, definition.ID)
+	running.WireFormat = "proto"
+	if _, err := engine.Update(ctx, running); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("running wire-format update error=%v, want ErrInvalidState", err)
 	}
 }
 

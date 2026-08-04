@@ -62,13 +62,9 @@ func runManagedBootstrapBoundaryRecovery(t *testing.T, boundary string) {
 			"tables": "public." + sourceTable, "snapshot_workers": "1", "batch_size": "100", "batch_timeout": "20ms", "status_interval": "20ms",
 			"source_system_identifier": systemID, "source_lineage_id": "boundary-lineage-v1", "publication_revision": "bootstrap-pending",
 		}},
-		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
-			"dsn": dsn, "schema": targetSchema, "batch_mode": "target",
-			"destination_revision_id": destinationRevisionID, "synchronous_commit": "on", "meta_table_enabled": "false",
-		}}},
-		Config: flow.Config{AckPolicy: stream.AckPolicyAll},
+		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "batch_mode": "target", "destination_revision_id": destinationRevisionID, "synchronous_commit": "on", "meta_table_enabled": "false"}}},
+		Config:       flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "target", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: sourceTable, Action: flow.MappingActionInclude, TargetSchema: targetSchema, TargetTable: sourceTable, FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}}}}},
 	}
-	flowDef = currentTestFlow(flowDef)
 	if _, err := engine.Create(ctx, flowDef); err != nil {
 		t.Fatal(err)
 	}

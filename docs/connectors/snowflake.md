@@ -192,9 +192,8 @@ The DSN must use key-pair JWT. Keep the private key in a mounted secret rather t
     "dsn": "wallaby@ACCOUNT/DB/WALLABY?warehouse=WALLABY_WH&role=WALLABY_EXECUTION&authenticator=SNOWFLAKE_JWT&privateKeyFile=/run/secrets/snowflake-key.p8&ocspFailOpen=false&READ_LATEST_WRITES=true&TIMEZONE=UTC",
     "flow_id": "widgets-to-snowflake",
     "managed_profile": "postgresql-to-snowflake-sql-v1",
-    "destination_revision_id": "snowflake-widgets-v1",
-    "write_mode": "target",
-    "batch_mode": "target",
+    "destination_revision_id":"snowflake-widgets-v1",
+    "batch_mode":"target",
     "batch_resolution": "none",
     "meta_table_enabled": "false",
     "disable_transactions": "false",
@@ -226,7 +225,9 @@ The DSN must use key-pair JWT. Keep the private key in a mounted secret rather t
 
 Compute the schema hash with `snowflake.ManagedSchemaContractHash`. Every source column must set `nullability_known=true` and `generated_known=true`. Primary-key columns must also set `primary_key=true`; composite keys require one-based `primary_key_ordinal` values.
 
-`flow_id` must equal the WALlaby flow ID. Its SHA-256 digest is part of both ownership comments, and existing receipts must belong to the same flow incarnation. A destination revision must change when the flow binding, profile version, account, database, schema, target, receipt table, owner role, execution role, warehouse, service version, object creation identity, schema contract, session timeout, or transaction bound changes.
+For this exact profile, `flow mappings generate` requires catalog scope to resolve to one relation with a complete ordered source primary key. It emits one exact upsert mapping with that full key and excludes future tables. Append overrides, watermarks, multiple or keyless relations, and partial, reordered, or extra match-column overrides fail before output. Generic Snowflake generation remains append-only.
+
+`flow_id` must equal the WALlaby flow ID. Its SHA-256 digest is part of both ownership comments, and existing receipts must belong to the same flow incarnation. A destination revision must change when the flow binding, profile version, account, database, schema, target, receipt table, owner role, execution role, warehouse, service version, object creation identity, schema contract, session timeout, or transaction bound changes. Managed `UpdateFlow` and `ReconfigureFlow` are both rejected, including name and parallelism changes. Stop the old flow, create/validate/start a replacement with a new flow ID and revision, cut over, and delete the old flow only when safe. Every Terraform update fails; Terraform does not perform this lifecycle.
 
 ## Session contract
 

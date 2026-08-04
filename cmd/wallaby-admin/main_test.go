@@ -86,6 +86,27 @@ func TestFlowPlanComparesCompleteDefinitionWithoutRuntimeState(t *testing.T) {
 	after.Destinations = []flowEndpointInfoDetail{{Name: "other", Type: "postgres", TypeRaw: int32(wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES)}, before.Destinations[0]}
 	assertSinglePlanPath(t, compareFlowDefinitions(before, after), "destinations")
 }
+func TestResolveFlowPlanIDOverrideAndConflict(t *testing.T) {
+	cases := []struct {
+		file, override, want string
+		wantErr              bool
+	}{{"", "persisted", "persisted", false}, {"file", "", "file", false}, {"same", "same", "same", false}, {"file", "other", "", true}}
+	for _, tc := range cases {
+		got, err := resolveFlowPlanID(tc.file, tc.override)
+		if (err != nil) != tc.wantErr || got != tc.want {
+			t.Fatalf("resolveFlowPlanID(%q,%q)=(%q,%v)", tc.file, tc.override, got, err)
+		}
+	}
+	root := newAdminCommand()
+	command, _, err := root.Find([]string{"flow", "plan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.Flags().Lookup("flow-id") == nil {
+		t.Fatal("flow plan omits --flow-id")
+	}
+}
+
 func assertSinglePlanPath(t *testing.T, changes []flowPlanChange, path string) {
 	t.Helper()
 	if len(changes) != 1 || changes[0].Path != path {

@@ -30,7 +30,7 @@ func TestGenerateOrdersTablesColumnsAndPreservesCompositePK(t *testing.T) {
 	}
 }
 
-func TestGenerateExplicitMatchReplacesPKAndWatermarkRequiresKey(t *testing.T) {
+func TestGenerateExplicitMatchReplacesPKAndAppendWatermarkIsMetadata(t *testing.T) {
 	table := CatalogTable{Schema: "public", Table: "events", PrimaryKeyColumns: []string{"id"}, Columns: []CatalogColumn{{Attnum: 1, Name: "id"}, {Attnum: 2, Name: "natural"}, {Attnum: 3, Name: "updated_at"}}}
 	got, err := Generate(Request{Destination: "d", Tables: []CatalogTable{table}, MatchColumns: map[TableRef][]string{{Schema: "public", Table: "events"}: {"natural"}}, Watermarks: map[TableRef]string{{Schema: "public", Table: "events"}: "updated_at"}})
 	if err != nil {
@@ -41,8 +41,13 @@ func TestGenerateExplicitMatchReplacesPKAndWatermarkRequiresKey(t *testing.T) {
 		t.Fatalf("policy=%+v", policy)
 	}
 	table.PrimaryKeyColumns = nil
-	if _, err := Generate(Request{Destination: "d", Tables: []CatalogTable{table}, Watermarks: map[TableRef]string{{Schema: "public", Table: "events"}: "updated_at"}}); err == nil {
-		t.Fatal("expected keyless watermark rejection")
+	got, err = Generate(Request{Destination: "d", Tables: []CatalogTable{table}, Watermarks: map[TableRef]string{{Schema: "public", Table: "events"}: "updated_at"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy = got.Destinations[0].Tables[0].Write
+	if policy.Mode != flow.TableWriteModeAppend || len(policy.KeyColumns) != 0 || policy.WatermarkColumn != "updated_at" {
+		t.Fatalf("append watermark policy=%+v", policy)
 	}
 }
 

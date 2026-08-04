@@ -107,14 +107,16 @@ config:
             future_columns:
               action: include
               target_column: "{column}"
+            columns: []
             write:
               mode: append
+              key_columns: []
   ack_policy: materialized
   materialization:
     projection_id: canonical_cdc_parquet_v2
 ```
 
-Materialized admission requires exactly one Iceberg destination revision. Changing the consumer revision, effective deployment catalog identity, or target mapping for a live incarnation fails closed; create a new flow incarnation for a catalog consumer change. CLI and Terraform mapping import/generation surfaces are intentionally deferred to their later implementation tasks.
+Materialized admission requires exactly one Iceberg destination revision. Changing the consumer revision, effective deployment catalog identity, or target mapping for a live incarnation fails closed. Managed `UpdateFlow` and `ReconfigureFlow` are both rejected, including name and parallelism changes. Stop the old flow, create/validate/start a replacement with a new flow ID and destination revision, cut over, and delete the old flow only when safe. Use `wallaby-admin flow mappings generate` for catalog-derived authoring, then review and validate the complete flow. Every Terraform update fails; Terraform cannot perform this lifecycle.
 
 Each Iceberg table uses the already-mapped namespace, table, and selected columns encoded in the v2 canonical publication. Iceberg never reapplies logical target prefixes or qualification. Mappings must remain injective and append-only.
 

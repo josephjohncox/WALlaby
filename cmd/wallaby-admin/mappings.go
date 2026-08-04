@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,7 @@ func addFlowMappingsCommand(flowCommand *cobra.Command) {
 	fs.String("publication", "", "source publication selector")
 	fs.StringArray("watermark", nil, "freshness override schema.table=column (repeatable)")
 	fs.StringArray("match-column", nil, "match override schema.table=column[,column...] (repeatable)")
+	fs.StringArray("write-mode", nil, "write policy override schema.table=append|upsert (repeatable)")
 	addAWSIAMFlags(generate)
 	mappings.AddCommand(generate)
 	flowCommand.AddCommand(mappings)
@@ -89,6 +91,11 @@ func flowMappingsGenerate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	writeModeValues, _ := cmd.Flags().GetStringArray("write-mode")
+	writeModes, err := parseWriteModeOverrides(writeModeValues)
+	if err != nil {
+		return err
+	}
 	iam, err := awsIAMOptions(cmd)
 	if err != nil {
 		return err
@@ -108,12 +115,15 @@ func flowMappingsGenerate(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return err
 		}
+		if err := applyGeneratedWritePolicies(&generated.Destinations[0], destinationSpec, catalog, watermarks, matches, writeModes, true); err != nil {
+			return err
+		}
 		if err := generated.Validate([]connector.Spec{destinationSpec}); err != nil {
 			return fmt.Errorf("validate generated mappings: %w", err)
 		}
 		output = generated
 	case "flow":
-		complete, err := completeFlowMappings(cfg, catalog, watermarks, matches)
+		complete, err := completeFlowMappings(cfg, catalog, watermarks, matches, writeModes)
 		if err != nil {
 			return err
 		}
@@ -166,7 +176,7 @@ func validateFlowDestinations(destinations []endpointConfig, selected string) (m
 	}
 	return out, nil
 }
-func completeFlowMappings(cfg flowConfig, tables []mappinggen.CatalogTable, watermarks map[mappinggen.TableRef]string, matches map[mappinggen.TableRef][]string) (*flow.TableMappings, error) {
+func completeFlowMappings(cfg flowConfig, tables []mappinggen.CatalogTable, watermarks map[mappinggen.TableRef]string, matches map[mappinggen.TableRef][]string, writeModes map[mappinggen.TableRef]flow.TableWriteMode) (*flow.TableMappings, error) {
 	specs, err := validateFlowDestinations(cfg.Destinations, "")
 	if err != nil {
 		return nil, err
@@ -190,16 +200,22 @@ func completeFlowMappings(cfg flowConfig, tables []mappinggen.CatalogTable, wate
 	for _, destination := range cfg.Destinations {
 		spec := specs[destination.Name]
 		if existing, ok := existingByName[destination.Name]; ok {
-			single := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{existing}}
+			single := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{existing}}.Clone()
+			if err := applyGeneratedWritePolicies(&single.Destinations[0], spec, tables, watermarks, matches, writeModes, false); err != nil {
+				return nil, fmt.Errorf("apply write-mode overrides for destination %s: %w", destination.Name, err)
+			}
 			if err := single.Validate([]connector.Spec{spec}); err != nil {
 				return nil, fmt.Errorf("validate existing mappings for destination %s: %w", destination.Name, err)
 			}
-			out.Destinations = append(out.Destinations, existing)
+			out.Destinations = append(out.Destinations, single.Destinations[0])
 			continue
 		}
 		generated, err := mappinggen.Generate(mappinggen.Request{Destination: destination.Name, Tables: tables, Watermarks: watermarks, MatchColumns: matches})
 		if err != nil {
 			return nil, err
+		}
+		if err := applyGeneratedWritePolicies(&generated.Destinations[0], spec, tables, watermarks, matches, writeModes, true); err != nil {
+			return nil, fmt.Errorf("generate policies for destination %s: %w", destination.Name, err)
 		}
 		if err := generated.Validate([]connector.Spec{spec}); err != nil {
 			return nil, fmt.Errorf("validate generated mappings for destination %s: %w", destination.Name, err)
@@ -255,6 +271,153 @@ func parseSingleColumnOverrides(values []string, kind string) (map[mappinggen.Ta
 	}
 	return out, nil
 }
+func parseWriteModeOverrides(values []string) (map[mappinggen.TableRef]flow.TableWriteMode, error) {
+	out := map[mappinggen.TableRef]flow.TableWriteMode{}
+	for _, value := range values {
+		left, right, ok := strings.Cut(value, "=")
+		if !ok {
+			return nil, fmt.Errorf("write-mode override %q must be schema.table=append|upsert", value)
+		}
+		table, err := pgsource.ParseCatalogTableName(left)
+		if err != nil {
+			return nil, err
+		}
+		mode := flow.TableWriteMode(strings.ToLower(strings.TrimSpace(right)))
+		if mode != flow.TableWriteModeAppend && mode != flow.TableWriteModeUpsert {
+			return nil, fmt.Errorf("write-mode override for %s.%s must be append or upsert", table.Schema, table.Table)
+		}
+		ref := mappinggen.TableRef{Schema: table.Schema, Table: table.Table}
+		if _, duplicate := out[ref]; duplicate {
+			return nil, fmt.Errorf("duplicate write-mode override for %s.%s", ref.Schema, ref.Table)
+		}
+		out[ref] = mode
+	}
+	return out, nil
+}
+
+func applyGeneratedWritePolicies(mapping *flow.DestinationTableMappings, spec connector.Spec, catalog []mappinggen.CatalogTable, watermarks map[mappinggen.TableRef]string, matches map[mappinggen.TableRef][]string, overrides map[mappinggen.TableRef]flow.TableWriteMode, applyCapabilityDefault bool) error {
+	if connector.IsPostgresToSnowflakeSQLV1Spec(spec) {
+		return applyManagedSnowflakeSQLGeneratedPolicy(mapping, catalog, watermarks, matches, overrides, applyCapabilityDefault)
+	}
+	catalogByRef := make(map[mappinggen.TableRef]mappinggen.CatalogTable, len(catalog))
+	for _, table := range catalog {
+		catalogByRef[mappinggen.TableRef{Schema: table.Schema, Table: table.Table}] = table
+	}
+	for ref := range overrides {
+		if _, ok := catalogByRef[ref]; !ok {
+			return fmt.Errorf("write-mode override references unselected table %s.%s", ref.Schema, ref.Table)
+		}
+	}
+	applied := make(map[mappinggen.TableRef]struct{}, len(overrides))
+	for index := range mapping.Tables {
+		table := &mapping.Tables[index]
+		ref := mappinggen.TableRef{Schema: table.SourceSchema, Table: table.SourceTable}
+		override, hasOverride := overrides[ref]
+		if table.Action == flow.MappingActionExclude {
+			if hasOverride {
+				return fmt.Errorf("write-mode override references excluded table %s.%s", ref.Schema, ref.Table)
+			}
+			continue
+		}
+		mode := table.Write.Mode
+		if hasOverride {
+			mode = override
+			applied[ref] = struct{}{}
+		} else if applyCapabilityDefault && mode == flow.TableWriteModeUpsert && !flow.SupportsExplicitKeyUpsert(spec) {
+			mode = flow.TableWriteModeAppend
+		} else {
+			continue
+		}
+		switch mode {
+		case flow.TableWriteModeAppend:
+			table.Write.Mode = mode
+			table.Write.KeyColumns = nil
+		case flow.TableWriteModeUpsert:
+			if !flow.SupportsExplicitKeyUpsert(spec) {
+				return fmt.Errorf("destination type %s profile %q does not support explicit-key upsert for %s.%s", spec.Type, strings.TrimSpace(spec.Options["managed_profile"]), ref.Schema, ref.Table)
+			}
+			keys := append([]string(nil), matches[ref]...)
+			if len(keys) == 0 {
+				keys = append(keys, catalogByRef[ref].PrimaryKeyColumns...)
+			}
+			if len(keys) == 0 {
+				return fmt.Errorf("upsert write-mode override for %s.%s requires match columns or a source primary key", ref.Schema, ref.Table)
+			}
+			table.Write.Mode = mode
+			table.Write.KeyColumns = keys
+		default:
+			return fmt.Errorf("generated write mode for %s.%s must be append or upsert", ref.Schema, ref.Table)
+		}
+	}
+	for ref := range overrides {
+		if _, ok := applied[ref]; !ok {
+			return fmt.Errorf("write-mode override for %s.%s requires an exact included table mapping", ref.Schema, ref.Table)
+		}
+	}
+	return nil
+}
+
+func applyManagedSnowflakeSQLGeneratedPolicy(mapping *flow.DestinationTableMappings, catalog []mappinggen.CatalogTable, watermarks map[mappinggen.TableRef]string, matches map[mappinggen.TableRef][]string, overrides map[mappinggen.TableRef]flow.TableWriteMode, generated bool) error {
+	if len(catalog) != 1 {
+		return fmt.Errorf("managed Snowflake SQL mapping generation requires exactly one selected relation; got %d", len(catalog))
+	}
+	table := catalog[0]
+	ref := mappinggen.TableRef{Schema: table.Schema, Table: table.Table}
+	primaryKey := append([]string(nil), table.PrimaryKeyColumns...)
+	if len(primaryKey) == 0 {
+		return fmt.Errorf("managed Snowflake SQL relation %s.%s requires a complete source primary key", ref.Schema, ref.Table)
+	}
+	for watermarkRef := range watermarks {
+		if watermarkRef != ref {
+			return fmt.Errorf("watermark override references unselected table %s.%s", watermarkRef.Schema, watermarkRef.Table)
+		}
+		return fmt.Errorf("managed Snowflake SQL profile rejects watermark for %s.%s", ref.Schema, ref.Table)
+	}
+	for matchRef, columns := range matches {
+		if matchRef != ref {
+			return fmt.Errorf("match-column override references unselected table %s.%s", matchRef.Schema, matchRef.Table)
+		}
+		if !slices.Equal(columns, primaryKey) {
+			return fmt.Errorf("managed Snowflake SQL match-column override for %s.%s must equal the complete ordered source primary key %v", ref.Schema, ref.Table, primaryKey)
+		}
+	}
+	for overrideRef, mode := range overrides {
+		if overrideRef != ref {
+			return fmt.Errorf("write-mode override references unselected table %s.%s", overrideRef.Schema, overrideRef.Table)
+		}
+		if mode != flow.TableWriteModeUpsert {
+			return fmt.Errorf("managed Snowflake SQL profile rejects append write-mode override for %s.%s", ref.Schema, ref.Table)
+		}
+	}
+	if generated {
+		if len(mapping.Tables) != 1 {
+			return fmt.Errorf("managed Snowflake SQL generation produced %d exact table mappings; want 1", len(mapping.Tables))
+		}
+		if mapping.Tables[0].Write.WatermarkColumn != "" {
+			return fmt.Errorf("managed Snowflake SQL profile rejects watermark for %s.%s", ref.Schema, ref.Table)
+		}
+		mapping.FutureTables = flow.FutureTableMapping{Action: flow.MappingActionExclude}
+		mapping.Tables[0].Write = flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: primaryKey}
+	}
+	if mapping.FutureTables.Action != flow.MappingActionExclude {
+		return errors.New("managed Snowflake SQL mappings require future_tables.action=exclude")
+	}
+	if len(mapping.Tables) != 1 {
+		return fmt.Errorf("managed Snowflake SQL mappings require exactly one exact table; got %d", len(mapping.Tables))
+	}
+	mapped := mapping.Tables[0]
+	if mapped.Action != flow.MappingActionInclude || mapped.SourceSchema != ref.Schema || mapped.SourceTable != ref.Table {
+		return fmt.Errorf("managed Snowflake SQL exact mapping must include selected relation %s.%s", ref.Schema, ref.Table)
+	}
+	if mapped.Write.WatermarkColumn != "" {
+		return fmt.Errorf("managed Snowflake SQL profile rejects watermark for %s.%s", ref.Schema, ref.Table)
+	}
+	if mapped.Write.Mode != flow.TableWriteModeUpsert || !slices.Equal(mapped.Write.KeyColumns, primaryKey) {
+		return fmt.Errorf("managed Snowflake SQL mapping for %s.%s must upsert by complete ordered source primary key %v", ref.Schema, ref.Table, primaryKey)
+	}
+	return nil
+}
+
 func parseMatchOverrides(values []string) (map[mappinggen.TableRef][]string, error) {
 	out := map[mappinggen.TableRef][]string{}
 	for _, value := range values {

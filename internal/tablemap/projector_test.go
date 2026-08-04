@@ -124,6 +124,20 @@ func TestAppendProjectionUsesStableSourcePositionAndDeleteImage(t *testing.T) {
 		t.Fatalf("append image=%v", after)
 	}
 	batch.Checkpoint.LSN = ""
+	batch.Checkpoint.Metadata = map[string]string{"mode": "backfill", "table": "public.logs", "cursor": "42"}
+	snapshot, _, err := projector.ProjectBatch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotPosition, ok := snapshot.Records[0].After[connector.AppendSourcePositionColumn].(string)
+	if !ok || snapshotPosition == "" || strings.Contains(snapshotPosition, "/") {
+		t.Fatalf("snapshot position=%v", snapshot.Records[0].After[connector.AppendSourcePositionColumn])
+	}
+	again, _, err := projector.ProjectBatch(batch)
+	if err != nil || again.Records[0].After[connector.AppendSourcePositionColumn] != snapshotPosition {
+		t.Fatalf("unstable snapshot position=%v error=%v", again.Records[0].After[connector.AppendSourcePositionColumn], err)
+	}
+	batch.Checkpoint.Metadata = nil
 	if _, _, err := projector.ProjectBatch(batch); err == nil || !strings.Contains(err.Error(), "stable source position") {
 		t.Fatalf("missing position error=%v", err)
 	}

@@ -27,5 +27,9 @@
         "acks": "all"
       }
     }
-  ]
+  ],
+  "config": {
+    "ack_policy": "all",
+    "table_mappings": {"version": 1, "destinations": [{"destination": "bufstream-out", "future_tables": {"action": "include", "target_schema": "{schema}", "target_table": "{table}", "future_columns": {"action": "include", "target_column": "{column}"}, "write": {"mode": "append", "key_columns": []}}, "tables": []}]}
+  }
 }

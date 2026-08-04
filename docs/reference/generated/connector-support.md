@@ -13,31 +13,31 @@
 
 ## Destinations
 
-| Connector | Status | Runtime | Transactional batch | Idempotent replay | Replay safe | Executes DDL | Reconciles DDL | Lossy |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `postgres` | experimental | yes | yes | no | no | yes | yes | no |
-| `pgstream` | experimental | yes | no | no | no | no | no | no |
-| `kafka` | experimental | yes | no | no | no | no | no | no |
-| `bufstream` | experimental | yes | no | no | no | no | no | no |
-| `s3` | experimental | yes | no | no | no | no | no | no |
-| `http` | experimental | yes | no | no | no | no | no | no |
-| `grpc` | experimental | yes | no | no | no | no | no | no |
-| `snowflake` | experimental | yes | no | no | no | yes | no | no |
-| `snowpipe` | experimental | yes | no | no | no | yes | no | no |
-| `clickhouse` | experimental | yes | no | no | no | yes | no | no |
-| `duckdb` | experimental | yes | yes | no | no | yes | no | no |
-| `ducklake` | experimental | yes | yes | no | no | yes | no | no |
-| `iceberg` | experimental | yes | no | yes | yes | no | no | no |
-| `proto` | placeholder | no | no | no | no | no | no | no |
-| `parquet` | placeholder | no | no | no | no | no | no | no |
+| Connector | Status | Runtime | Append mapping | Explicit-key upsert | Watermark guard | Transactional batch | Idempotent replay | Replay safe | Executes DDL | Reconciles DDL | Lossy |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `postgres` | experimental | yes | yes | yes | yes | yes | no | no | yes | yes | no |
+| `pgstream` | experimental | yes | yes | no | no | no | no | no | no | no | no |
+| `kafka` | experimental | yes | yes | no | no | no | no | no | no | no | no |
+| `bufstream` | experimental | yes | yes | no | no | no | no | no | no | no | no |
+| `s3` | experimental | yes | yes | no | no | no | no | no | no | no | no |
+| `http` | experimental | yes | yes | no | no | no | no | no | no | no | no |
+| `grpc` | experimental | yes | yes | no | no | no | no | no | no | no | no |
+| `snowflake` | experimental | yes | yes | no | no | no | no | no | yes | no | no |
+| `snowpipe` | experimental | yes | yes | no | no | no | no | no | yes | no | no |
+| `clickhouse` | experimental | yes | yes | no | no | no | no | no | yes | no | no |
+| `duckdb` | experimental | yes | yes | no | no | yes | no | no | yes | no | no |
+| `ducklake` | experimental | yes | yes | no | no | yes | no | no | yes | no | no |
+| `iceberg` | experimental | yes | yes | no | no | no | yes | yes | no | no | no |
+| `proto` | placeholder | no | no | no | no | no | no | no | no | no | no |
+| `parquet` | placeholder | no | no | no | no | no | no | no | no | no | no |
 
 ## Managed profiles
 
-| Profile | Status | Source | Destination | PostgreSQL | ClickHouse | Snowflake version | Deployment | Pairing | Ack | Sinks | Delivery |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `postgresql-to-postgresql-v1` | maintained | `postgres` | `postgres` | 14, 15, 16, 17 | — | — | — | same major | all | one | at-least-once |
-| `postgresql-to-clickhouse-append-v1` | maintained | `postgres` | `clickhouse` | 16 | 25.12.1.649 | — | self-managed-keeper | mixed majors | all | one | at-least-once |
-| `postgresql-to-snowflake-sql-v1` | experimental | `postgres` | `snowflake` | 16 | — | configured-exact-version-unreviewed (reviewed versions: none) | commercial-aws-snowflake-hybrid-table [reviewed cells: none] | configured runtime pin; unreviewed | all | one | at-least-once |
+| Profile | Status | Source | Destination | PostgreSQL | ClickHouse | Snowflake version | Deployment | Pairing | Ack | Sinks | Delivery | Table mappings |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `postgresql-to-postgresql-v1` | maintained | `postgres` | `postgres` | 14, 15, 16, 17 | — | — | — | same major | all | one | at-least-once | append; explicit-key upsert; watermark guard |
+| `postgresql-to-clickhouse-append-v1` | maintained | `postgres` | `clickhouse` | 16 | 25.12.1.649 | — | self-managed-keeper | mixed majors | all | one | at-least-once | append only |
+| `postgresql-to-snowflake-sql-v1` | experimental | `postgres` | `snowflake` | 16 | — | configured-exact-version-unreviewed (reviewed versions: none) | commercial-aws-snowflake-hybrid-table [reviewed cells: none] | configured runtime pin; unreviewed | all | one | at-least-once | one exact relation; explicit-key upsert; complete source PK; future tables excluded; no watermark |
 
 ### `postgresql-to-postgresql-v1` evidence gates
 

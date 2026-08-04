@@ -8,6 +8,18 @@ import (
 	"time"
 )
 
+func TestShippedWorkerConfigurationExampleLoads(t *testing.T) {
+	t.Setenv("WALLABY_ENV", "test")
+	t.Setenv("WALLABY_WORKFLOW_STORE", "memory")
+	cfg, err := Load("../../examples/config/postgres_to_iceberg_s3tables.worker.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Iceberg.Profile != "s3tables" || cfg.Artifacts.Bucket != "wallaby-canonical-artifacts" {
+		t.Fatalf("loaded example config=%+v", cfg)
+	}
+}
+
 func TestLoadIcebergCatalogConfig(t *testing.T) {
 	t.Setenv("WALLABY_ENV", "test")
 	t.Setenv("WALLABY_WORKFLOW_STORE", "memory")

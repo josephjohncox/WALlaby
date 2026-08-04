@@ -19,7 +19,8 @@ grpcurl -plaintext \
       "ack_policy": "ACK_POLICY_PRIMARY",
       "primary_destination": "kafka-out",
       "failure_mode": "FAILURE_MODE_HOLD_SLOT",
-      "give_up_policy": "GIVE_UP_POLICY_ON_RETRY_EXHAUSTION"
+      "give_up_policy":"GIVE_UP_POLICY_ON_RETRY_EXHAUSTION",
+      "table_mappings":{"version":1,"destinations":[{"destination":"kafka-out","future_tables":{"action":"MAPPING_ACTION_INCLUDE","target_schema":"{schema}","target_table":"{table}","future_columns":{"action":"MAPPING_ACTION_INCLUDE","target_column":"{column}"},"write":{"mode":"TABLE_WRITE_MODE_APPEND","key_columns":[]}},"tables":[]}]}
     },
     "source": {
       "name": "pg-source",

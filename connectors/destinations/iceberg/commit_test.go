@@ -35,6 +35,32 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+func TestCanonicalSchemaChecksumSurvivesPostgresJSONBNormalization(t *testing.T) {
+	t.Parallel()
+	document := canonicalSchemaDocument{ProjectionID: artifactlog.ProjectionIDV2, MappingFingerprint: strings.Repeat("a", 64), SourceLineageID: "lineage", Namespace: "wallaby", Table: "events", Fields: []artifactlog.CanonicalField{}}
+	canonical, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(canonical)
+	schemaID := hex.EncodeToString(digest[:])
+	var normalizedValue any
+	if err := json.Unmarshal(canonical, &normalizedValue); err != nil {
+		t.Fatal(err)
+	}
+	normalized, err := json.Marshal(normalizedValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(canonical, normalized) {
+		t.Fatal("fixture did not normalize JSON object key order")
+	}
+	_, err = projectObject(context.Background(), artifactlog.CommitRequest{ProjectionID: document.ProjectionID, MappingFingerprint: document.MappingFingerprint}, artifactlog.RootedArtifact{ArtifactID: "artifact", Namespace: document.Namespace, Table: document.Table, SchemaID: schemaID, SchemaJSON: normalized, Evidence: artifactlog.ObjectEvidence{Key: "missing", VersionID: "v1"}}, &memoryCanonicalObjects{data: map[string][]byte{}})
+	if !errors.Is(err, artifactlog.ErrObjectNotFound) {
+		t.Fatalf("normalized schema error=%v", err)
+	}
+}
+
 func TestRESTCommitClassificationPreservesPermanentTransportFailures(t *testing.T) {
 	t.Parallel()
 

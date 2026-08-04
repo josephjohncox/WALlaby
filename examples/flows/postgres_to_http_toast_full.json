@@ -31,5 +31,9 @@
         "backoff_factor": "2"
       }
     }
-  ]
+  ],
+  "config": {
+    "ack_policy": "all",
+    "table_mappings": {"version": 1, "destinations": [{"destination": "webhook", "future_tables": {"action": "include", "target_schema": "{schema}", "target_table": "{table}", "future_columns": {"action": "include", "target_column": "{column}"}, "write": {"mode": "append", "key_columns": []}}, "tables": []}]}
+  }
 }

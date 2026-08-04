@@ -397,7 +397,7 @@ func validateWritePolicy(write TableWritePolicy, destination connector.Spec, fut
 		if future {
 			return errors.New("future tables must use append because their key contract is unknown")
 		}
-		if !destinationSupportsUpsert(destination) {
+		if !SupportsExplicitKeyUpsert(destination) {
 			return fmt.Errorf("destination type %s profile %q does not support upsert table mappings", destination.Type, strings.TrimSpace(destination.Options["managed_profile"]))
 		}
 		if len(write.KeyColumns) == 0 {
@@ -427,7 +427,9 @@ func validateWritePolicy(write TableWritePolicy, destination connector.Spec, fut
 	return nil
 }
 
-func destinationSupportsUpsert(destination connector.Spec) bool {
+// SupportsExplicitKeyUpsert reports the exact configured destination/profile
+// admission used by mapping validation and authoring tools.
+func SupportsExplicitKeyUpsert(destination connector.Spec) bool {
 	return destination.Type == connector.EndpointPostgres || connector.IsPostgresToSnowflakeSQLV1Spec(destination)
 }
 

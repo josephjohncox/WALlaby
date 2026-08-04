@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -13,7 +15,121 @@ import (
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/spf13/afero"
 	"google.golang.org/protobuf/proto"
+	"gopkg.in/yaml.v3"
 )
+
+func TestShippedFlowExamplesStrictLoadValidateAndUseCurrentMappings(t *testing.T) {
+	t.Parallel()
+	root := "../../examples"
+	expected := []string{"flows/postgres_to_bufstream.json", "flows/postgres_to_clickhouse.json", "flows/postgres_to_duckdb.json", "flows/postgres_to_ducklake.json", "flows/postgres_to_grpc.json", "flows/postgres_to_http.json", "flows/postgres_to_http_toast_full.json", "flows/postgres_to_iceberg_s3tables.json", "flows/postgres_to_kafka.json", "flows/postgres_to_kafka_http_primary.json", "flows/postgres_to_pgstream.json", "flows/postgres_to_s3_parquet.json", "flows/postgres_to_snowflake.json", "flows/postgres_to_snowpipe.json", "quickstart/postgres-to-postgres.json"}
+	removed := map[string]struct{}{"schema": {}, "table": {}, "database": {}, "write_mode": {}, "append_mode": {}, "soft_delete": {}, "meta_enabled": {}, "meta_synced_at": {}, "meta_deleted": {}, "meta_watermark": {}, "meta_op": {}, "watermark_source": {}, "namespace": {}, "table_prefix": {}, "fixed_table": {}, "target_namespace": {}, "target_table": {}}
+	var found []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		extension := strings.ToLower(filepath.Ext(path))
+		if extension != ".json" && extension != ".yaml" && extension != ".yml" {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var shape map[string]any
+		if extension == ".json" {
+			err = json.Unmarshal(raw, &shape)
+		} else {
+			err = yaml.Unmarshal(raw, &shape)
+		}
+		if err != nil {
+			return fmt.Errorf("decode example shape %s: %w", path, err)
+		}
+		if _, ok := shape["source"]; !ok {
+			return nil
+		}
+		if _, ok := shape["destinations"]; !ok {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		found = append(found, filepath.ToSlash(relative))
+		cfg, err := loadFlowConfigFile(path)
+		if err != nil {
+			t.Errorf("strict-load %s: %v", path, err)
+			return nil
+		}
+		if cfg.Config.TableMappings == nil {
+			t.Errorf("%s omits config.table_mappings", path)
+			return nil
+		}
+		if cfg.Config.TableMappingsFile != "" {
+			t.Errorf("%s retains table_mappings_file", path)
+		}
+		for _, destination := range cfg.Destinations {
+			for option := range destination.Options {
+				if _, obsolete := removed[option]; obsolete {
+					t.Errorf("%s destination %s uses removed option %q", path, destination.Name, option)
+				}
+			}
+		}
+		pb, err := flowConfigToProto(cfg)
+		if err != nil {
+			t.Errorf("flow-validate %s: %v", path, err)
+			return nil
+		}
+		if pb.Config == nil || pb.Config.TableMappings == nil {
+			t.Errorf("%s protobuf omits expanded mappings", path)
+		}
+		if pb.Config.GetAckPolicy() == wallabypb.AckPolicy_ACK_POLICY_MATERIALIZED && pb.Config.GetMaterialization().GetProjectionId() != "canonical_cdc_parquet_v2" {
+			t.Errorf("%s materialized projection=%q", path, pb.Config.GetMaterialization().GetProjectionId())
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(found)
+	if !reflect.DeepEqual(found, expected) {
+		t.Fatalf("recursive flow example manifest mismatch\nfound: %v\nwant:  %v", found, expected)
+	}
+	if len(found) < 15 {
+		t.Fatalf("found only %d flow-shaped examples", len(found))
+	}
+	grpcExample, err := os.ReadFile("../../examples/grpc/create_flow.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(grpcExample, []byte("\"table_mappings\"")) {
+		t.Fatal("gRPC create-flow example omits mappings")
+	}
+	start, end := bytes.IndexByte(grpcExample, '{'), bytes.LastIndexByte(grpcExample, '}')
+	if start < 0 || end <= start {
+		t.Fatal("gRPC create-flow example omits JSON payload")
+	}
+	var request struct {
+		Flow struct {
+			Destinations []struct {
+				Options map[string]string `json:"options"`
+			} `json:"destinations"`
+		} `json:"flow"`
+	}
+	if err := json.Unmarshal(grpcExample[start:end+1], &request); err != nil {
+		t.Fatalf("decode gRPC example payload: %v", err)
+	}
+	for _, destination := range request.Flow.Destinations {
+		for option := range destination.Options {
+			if _, obsolete := removed[option]; obsolete {
+				t.Errorf("gRPC create-flow destination uses removed option %q", option)
+			}
+		}
+	}
+}
 
 func boolp(v bool) *bool { return &v }
 func completeTestMappings() flow.TableMappings {

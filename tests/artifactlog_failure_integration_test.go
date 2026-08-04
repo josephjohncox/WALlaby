@@ -794,7 +794,7 @@ func (d *artifactIntegrationDeps) newFence(t *testing.T, suffix string) authorit
 	t.Helper()
 	flowID := fmt.Sprintf("artifact-%s-%d", suffix, time.Now().UnixNano())
 	t.Cleanup(func() { cleanupAuthorityTest(context.Background(), d.pool, flowID) })
-	if _, err := d.engine.Create(d.ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
+	if _, err := d.engine.Create(d.ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := d.engine.PlanStart(d.ctx, flowID, false)

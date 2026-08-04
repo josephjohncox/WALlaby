@@ -62,6 +62,32 @@ func TestPostgresTableMappingChangeRotatesIncarnation(t *testing.T) {
 	if first == second {
 		t.Fatal("table mapping change did not rotate postgres flow incarnation")
 	}
+	created, err = store.Get(ctx, flowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.WireFormat = "json"
+	if _, err := store.Update(ctx, created); err != nil {
+		t.Fatal(err)
+	}
+	var third string
+	if err := store.pool.QueryRow(ctx, "SELECT incarnation_id::text FROM flows WHERE id=$1", flowID).Scan(&third); err != nil {
+		t.Fatal(err)
+	}
+	if third == second {
+		t.Fatal("wire-format change did not rotate postgres flow incarnation")
+	}
+	if _, err := store.Start(ctx, flowID); err != nil {
+		t.Fatal(err)
+	}
+	created, err = store.Get(ctx, flowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.WireFormat = "proto"
+	if _, err := store.Update(ctx, created); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("running wire-format update error=%v, want ErrInvalidState", err)
+	}
 }
 
 func TestPostgresUpdateRejectsLegacyMissingMappingRow(t *testing.T) {

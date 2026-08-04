@@ -30,13 +30,12 @@ Every endpoint has a stable name, a type, and string-valued options:
   "name": "orders-postgres",
   "type": "postgres",
   "options": {
-    "dsn": "postgres://user:password@destination:5432/app?sslmode=require",
-    "schema": "public"
+    "dsn":"postgres://user:password@destination:5432/app?sslmode=require"
   }
 }
 ```
 
-Stable destination names are required for primary acknowledgement because pending outbox rows address destinations by name.
+Stable destination names are required for primary acknowledgement because pending outbox rows address destinations by name. Logical table and column targets and write behavior belong only to the mandatory mapping for this destination name.
 
 ## Extended adapter notes
 

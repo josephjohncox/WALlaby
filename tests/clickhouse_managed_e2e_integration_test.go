@@ -83,11 +83,8 @@ DROP TABLE IF EXISTS public.wallaby_clickhouse_managed_e2e_source`)
 
 	flowID := "clickhouse-managed-e2e-" + suffix
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
-	created, err := engine.Create(ctx, flow.Flow{
-		ID: flowID, Source: connector.Spec{Type: connector.EndpointPostgres},
-		Destinations: []connector.Spec{{Type: connector.EndpointClickHouse}},
-		Config:       flow.Config{AckPolicy: stream.AckPolicyAll},
-	})
+	placeholderDestination := connector.Spec{Name: "clickhouse-managed-e2e", Type: connector.EndpointClickHouse}
+	created, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{placeholderDestination}, Config: flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.NewTableMappings([]connector.Spec{placeholderDestination})}})
 	if err != nil {
 		t.Fatal(err)
 	}

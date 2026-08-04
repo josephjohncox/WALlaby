@@ -48,6 +48,12 @@ automatic raw SQL DDL, unsupported PostgreSQL versions, multiple sinks, and
 `ack_policy=primary`. Those modes remain experimental even when the underlying
 connectors are usable.
 
+Managed `UpdateFlow` and `ReconfigureFlow` are both rejected, including name and
+parallelism changes. For any change, stop the old flow, create and validate a
+replacement with a new flow ID, publication revision, and destination revision,
+start and verify it, cut over, then delete and clean up the old flow only when safe.
+Every Terraform update fails; Terraform does not perform this lifecycle.
+
 ## Transaction and recovery protocol
 
 The source uses pgoutput protocol v2 and buffers both normal and streamed

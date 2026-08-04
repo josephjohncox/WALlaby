@@ -540,7 +540,8 @@ func addFlowDryRunFlags(cmd *cobra.Command) {
 
 func addFlowPlanFlags(cmd *cobra.Command) {
 	addAdminConnectionFlags(cmd, "")
-	cmd.Flags().String("file", "", "flow config JSON file")
+	cmd.Flags().String("file", "", "flow config JSON or YAML file")
+	cmd.Flags().String("flow-id", "", "persisted flow ID for an ID-less authoring file")
 	addJSONOutputFlags(cmd, false)
 }
 
@@ -4081,10 +4082,13 @@ func flowPlan(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	flowIDOverride, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
 	if *path == "" {
 		return errors.New("--file is required")
 	}
-
 	cfg, err := loadFlowConfigFile(*path)
 	if err != nil {
 		return err
@@ -4093,9 +4097,16 @@ func flowPlan(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("flow config: %w", err)
 	}
+	lookupFlowID, err := resolveFlowPlanID(pbFlow.Id, *flowIDOverride)
+	if err != nil {
+		return err
+	}
 	desiredDefinition := flowDetailForComparisonFromProto(pbFlow)
-	plan := flowPlanOutput{FlowID: pbFlow.Id, FlowName: pbFlow.Name, Desired: redactFlowDetail(desiredDefinition), Compared: false, ChangeCount: 0}
+	plan := flowPlanOutput{FlowID: lookupFlowID, FlowName: pbFlow.Name, Desired: redactFlowDetail(desiredDefinition), Compared: false, ChangeCount: 0}
 	if *endpoint != "" {
+		if lookupFlowID == "" {
+			return errors.New("flow plan with --endpoint requires file id or --flow-id")
+		}
 		client, closeConn, err := flowClient(*endpoint, *insecureConn)
 		if err != nil {
 			return err
@@ -4105,7 +4116,7 @@ func flowPlan(cmd *cobra.Command, _ []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := client.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: pbFlow.Id})
+		resp, err := client.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: lookupFlowID})
 		if err == nil && resp != nil {
 			currentDefinition := flowDetailForComparisonFromProto(resp)
 			currentOutput := redactFlowDetail(currentDefinition)
@@ -4149,6 +4160,18 @@ func flowPlan(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+func resolveFlowPlanID(fileID, override string) (string, error) {
+	fileID = strings.TrimSpace(fileID)
+	override = strings.TrimSpace(override)
+	if fileID != "" && override != "" && fileID != override {
+		return "", fmt.Errorf("--flow-id %q conflicts with flow file id %q", override, fileID)
+	}
+	if override != "" {
+		return override, nil
+	}
+	return fileID, nil
+}
+
 func flowPlanDiff(field, before, after string) []flowPlanChange {
 	if before == after {
 		return nil
@@ -4175,7 +4198,12 @@ func compareFlowDefinitions(before, after flowDetail) []flowPlanChange {
 }
 
 func compareFlowConfig(before, after flowConfigInfo) []flowPlanChange {
-	changes := compareJSONValue("config.table_mappings", before.TableMappings, after.TableMappings)
+	var changes []flowPlanChange
+	if before.TableMappings == nil || after.TableMappings == nil {
+		changes = compareJSONValue("config.table_mappings", before.TableMappings, after.TableMappings)
+	} else if !before.TableMappings.Equal(*after.TableMappings) {
+		changes = compareJSONValue("config.table_mappings", before.TableMappings, after.TableMappings)
+	}
 	before.TableMappings = nil
 	after.TableMappings = nil
 	return append(changes, compareJSONValue("config", before, after)...)

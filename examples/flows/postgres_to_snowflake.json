@@ -20,11 +20,12 @@
       "name": "snowflake-out",
       "type": "snowflake",
       "options": {
-        "dsn": "user:pass@account/db/schema?role=SYSADMIN",
-        "schema": "PUBLIC",
-        "write_mode": "target",
-        "meta_table_enabled": "true"
+        "dsn": "user:pass@account/db/schema?role=SYSADMIN"
       }
     }
-  ]
+  ],
+  "config": {
+    "ack_policy": "all",
+    "table_mappings": {"version": 1, "destinations": [{"destination": "snowflake-out", "future_tables": {"action": "include", "target_schema": "{schema}", "target_table": "{table}", "future_columns": {"action": "include", "target_column": "{column}"}, "write": {"mode": "append", "key_columns": []}}, "tables": []}]}
+  }
 }

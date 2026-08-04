@@ -134,7 +134,7 @@ CREATE VIEW wallaby.wallaby_cdc_log_final AS
 SELECT * FROM wallaby.wallaby_cdc_log FINAL;
 ```
 
-Create the same tables on the second server with replica name `clickhouse-2`; keep the Keeper paths identical. Do not change these definitions in place. Provision new named objects and change `destination_revision_id` when the destination contract changes.
+Create the same tables on the second server with replica name `clickhouse-2`; keep the Keeper paths identical. Do not change these definitions in place. Provision new named objects and change `destination_revision_id` when the destination contract changes. Managed `UpdateFlow` and `ReconfigureFlow` are both rejected, including name and parallelism changes. Stop the old flow, create/validate/start a replacement with a new flow ID and revision, cut over, and delete the old flow only when safe. Every Terraform update fails; Terraform does not perform this lifecycle.
 
 ## Destination configuration
 
@@ -145,9 +145,8 @@ Create the same tables on the second server with replica name `clickhouse-2`; ke
   "options": {
     "dsn": "clickhouse://wallaby:secret@clickhouse:9440/wallaby?secure=true",
     "managed_profile": "postgresql-to-clickhouse-append-v1",
-    "destination_revision_id": "clickhouse-production-v1",
-    "write_mode": "managed_append",
-    "batch_mode": "target",
+    "destination_revision_id":"clickhouse-production-v1",
+    "batch_mode":"target",
     "batch_resolution": "none",
     "meta_table_enabled": "false",
     "managed_deployment": "self-managed-keeper",

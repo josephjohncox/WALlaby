@@ -241,11 +241,11 @@ func (m *MemoryEngine) Update(_ context.Context, f flow.Flow) (flow.Flow, error)
 	if f.Parallelism <= 0 {
 		f.Parallelism = 1
 	}
-	mappingChanged := !current.Config.TableMappings.Equal(f.Config.TableMappings)
-	if mappingChanged && (current.State == flow.StateRunning || current.State == flow.StateStopping) {
-		return flow.Flow{}, fmt.Errorf("%w: table mappings cannot change while flow is %s", ErrInvalidState, current.State)
+	identityChanged := !current.Config.TableMappings.Equal(f.Config.TableMappings) || current.WireFormat != f.WireFormat
+	if identityChanged && (current.State == flow.StateRunning || current.State == flow.StateStopping) {
+		return flow.Flow{}, fmt.Errorf("%w: table mappings or wire format cannot change while flow is %s", ErrInvalidState, current.State)
 	}
-	if mappingChanged {
+	if identityChanged {
 		m.incarnations[f.ID] = uuid.New()
 		control := m.controls[f.ID]
 		control.Generation = 0

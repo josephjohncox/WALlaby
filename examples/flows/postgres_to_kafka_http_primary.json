@@ -5,7 +5,8 @@
     "ack_policy": "primary",
     "primary_destination": "kafka-out",
     "failure_mode": "hold_slot",
-    "give_up_policy": "on_retry_exhaustion"
+    "give_up_policy":"on_retry_exhaustion",
+    "table_mappings":{"version":1,"destinations":[{"destination":"kafka-out","future_tables":{"action":"include","target_schema":"{schema}","target_table":"{table}","future_columns":{"action":"include","target_column":"{column}"},"write":{"mode":"append","key_columns":[]}},"tables":[]},{"destination":"http-out","future_tables":{"action":"include","target_schema":"{schema}","target_table":"{table}","future_columns":{"action":"include","target_column":"{column}"},"write":{"mode":"append","key_columns":[]}},"tables":[]}]}
   },
   "source": {
     "name": "pg-source",

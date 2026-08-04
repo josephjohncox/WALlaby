@@ -45,8 +45,9 @@
               "action": "include",
               "target_schema": "wallaby",
               "target_table": "cdc_events",
-              "future_columns": {"action": "include", "target_column": "{column}"},
-              "write": {"mode": "append"}
+              "future_columns":{"action":"include","target_column":"{column}"},
+              "columns":[],
+              "write":{"mode":"append","key_columns":[]}
             }
           ]
         }

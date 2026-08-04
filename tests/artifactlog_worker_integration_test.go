@@ -2,6 +2,8 @@ package tests
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -10,10 +12,53 @@ import (
 	"github.com/google/uuid"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	"github.com/josephjohncox/wallaby/internal/artifactlog"
+	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 )
+
+func TestMaterializedWorkerFixtureUsesCurrentAdmission(t *testing.T) {
+	definition := materializedWorkerDefinition("flow", "postgres://example", "publication", "slot", "system", "revision", "destination-v1")
+	if err := flow.ValidateDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if definition.Source.Options["bootstrap"] != "never" || len(definition.Destinations) != 1 || definition.Destinations[0].Type != connector.EndpointIceberg || definition.Config.Materialization.ProjectionID != "canonical_cdc_parquet_v2" {
+		t.Fatalf("definition=%+v", definition)
+	}
+	mapping := definition.Config.TableMappings.Destinations[0]
+	if mapping.FutureTables.Action != flow.MappingActionExclude || len(mapping.Tables) != 1 || mapping.Tables[0].Write.Mode != flow.TableWriteModeAppend {
+		t.Fatalf("mapping=%+v", mapping)
+	}
+}
+
+func materializedWorkerDefinition(flowID, dsn, publication, slotName, sourceSystemID, publicationRevision, destinationRevisionID string) flow.Flow {
+	return flow.Flow{
+		ID: flowID,
+		Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
+			"dsn": dsn, "publication": publication, "tables": "public.wallaby_worker_materialized_source", "slot": slotName,
+			"ensure_publication": "false", "sync_publication": "false", "create_slot": "false", "managed": "true", "bootstrap": "never",
+			"streaming_transactions": "true", "status_interval": "10ms", "batch_timeout": "10ms", "ensure_state": "false",
+			"source_system_identifier": sourceSystemID, "source_lineage_id": sourceSystemID + ":" + publication + ":v1", "publication_revision": publicationRevision,
+		}},
+		Destinations: []connector.Spec{{Name: "lake", Type: connector.EndpointIceberg, Options: map[string]string{
+			"catalog_profile": "rest", "control_table": "__wallaby_control", "destination_revision_id": destinationRevisionID,
+		}}},
+		Config: flow.Config{
+			AckPolicy:       stream.AckPolicyMaterialized,
+			Materialization: flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v2"},
+			TableMappings: flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{
+				Destination: "lake", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude},
+				Tables: []flow.TableMapping{{
+					SourceSchema: "public", SourceTable: "wallaby_worker_materialized_source", Action: flow.MappingActionInclude,
+					TargetSchema: "wallaby", TargetTable: "worker_materialized",
+					FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"},
+					Columns:       []flow.ColumnMapping{}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend, KeyColumns: []string{}},
+				}},
+			}}},
+		},
+	}
+}
 
 func TestWallabyWorkerMaterializedPublicationRecovery(t *testing.T) {
 	deps := newArtifactIntegrationDeps(t)
@@ -28,6 +73,21 @@ func TestWallabyWorkerMaterializedPublicationRecovery(t *testing.T) {
 	t.Setenv("WALLABY_ARTIFACT_ACCESS_KEY", os.Getenv("WALLABY_TEST_S3_ACCESS_KEY"))
 	t.Setenv("WALLABY_ARTIFACT_SECRET_KEY", os.Getenv("WALLABY_TEST_S3_SECRET_KEY"))
 	t.Setenv("WALLABY_ARTIFACT_FORCE_PATH_STYLE", "true")
+	catalog := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.URL.Path == "/v1/config" {
+			_, _ = writer.Write([]byte(`{"defaults":{},"overrides":{}}`))
+			return
+		}
+		writer.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = writer.Write([]byte(`{"error":{"message":"catalog fixture intentionally unavailable","type":"ServiceUnavailable","code":503}}`))
+	}))
+	defer catalog.Close()
+	t.Setenv("WALLABY_ICEBERG_PROFILE", "rest")
+	t.Setenv("WALLABY_ICEBERG_URI", catalog.URL)
+	t.Setenv("WALLABY_ICEBERG_WAREHOUSE", "warehouse")
+	t.Setenv("WALLABY_ICEBERG_ALLOW_HTTP", "true")
+	t.Setenv("WALLABY_ICEBERG_REQUEST_TIMEOUT", "250ms")
 
 	ctx, cancel := context.WithTimeout(deps.ctx, 60*time.Second)
 	defer cancel()
@@ -61,27 +121,20 @@ DROP TABLE IF EXISTS public.wallaby_worker_materialized_target`)
 		t.Fatal(err)
 	}
 	destinationRevisionID := "wallaby-materialized-" + uuid.NewString()
-	definition := flow.Flow{
-		ID: flowID,
-		Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
-			"dsn": dsn, "publication": publication, "tables": "public.wallaby_worker_materialized_source",
-			"ensure_publication": "false", "managed": "true", "bootstrap": "required",
-			"streaming_transactions": "true", "status_interval": "10ms", "batch_timeout": "10ms",
-			"ensure_state": "false", "source_system_identifier": sourceSystemID,
-			"source_lineage_id":    sourceSystemID + ":" + publication + ":v1",
-			"publication_revision": publicationRevision,
-		}},
-		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
-			"dsn": dsn, "schema": "public", "table": "wallaby_worker_materialized_target",
-			"batch_mode": "target", "meta_table_enabled": "false",
-			"synchronous_commit": "on", "destination_revision_id": destinationRevisionID,
-		}}},
-		Config: flow.Config{
-			AckPolicy:       stream.AckPolicyMaterialized,
-			Materialization: flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v2"},
-		},
+	slotName := "wallaby_mat_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	var initialLSN string
+	if err := deps.pool.QueryRow(ctx, `SELECT lsn::text FROM pg_catalog.pg_create_logical_replication_slot($1,'pgoutput')`, slotName).Scan(&initialLSN); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := deps.engine.Create(ctx, currentTestFlow(definition)); err != nil {
+	defer func() {
+		_, _ = deps.pool.Exec(context.Background(), "SELECT pg_catalog.pg_drop_replication_slot($1) WHERE EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name=$1 AND NOT active)", slotName)
+	}()
+	definition := materializedWorkerDefinition(flowID, dsn, publication, slotName, sourceSystemID, publicationRevision, destinationRevisionID)
+	if _, err := deps.engine.Create(ctx, definition); err != nil {
+		t.Fatal(err)
+	}
+	checkpointStore, err := checkpoint.NewPostgresStoreWithPool(ctx, deps.pool)
+	if err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := deps.engine.PlanStart(ctx, flowID, false)
@@ -89,18 +142,29 @@ DROP TABLE IF EXISTS public.wallaby_worker_materialized_target`)
 		t.Fatal(err)
 	}
 
-	first := startWorkerProcess(t, workerBinary, dsn, flowID, control.Generation, "materialized-first")
+	probeFence, err := deps.authority.AcquireProducer(ctx, flowID, "materialized-checkpoint-probe", "integration", control.Generation, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkpointStore.PutFenced(ctx, probeFence, connector.Checkpoint{LSN: initialLSN}); err != nil {
+		t.Fatal(err)
+	}
+	fencedCheckpoint, err := checkpointStore.GetFenced(ctx, probeFence)
+	if err != nil || fencedCheckpoint.LSN != initialLSN {
+		t.Fatalf("fenced checkpoint=%+v error=%v", fencedCheckpoint, err)
+	}
+	if err := deps.authority.FinishProducer(ctx, probeFence, "checkpoint_verified"); err != nil {
+		t.Fatal(err)
+	}
+	startMaterialized := func(executionID string) *workerProcess {
+		return startWorkerProcess(t, workerBinary, dsn, flowID, control.Generation, executionID)
+	}
+	first := startMaterialized("materialized-first")
 	defer first.stopAbruptly()
-	var slotName string
-	waitForWorkerProcessCondition(t, ctx, first, "materialized bootstrap handoff", func() (bool, error) {
-		var phase string
-		if err := deps.pool.QueryRow(ctx, `
-SELECT phase,slot_name FROM source_bootstraps
-WHERE flow_incarnation_id=(SELECT incarnation_id FROM flows WHERE id=$1)
-ORDER BY bootstrap_generation DESC LIMIT 1`, flowID).Scan(&phase, &slotName); err != nil {
-			return false, nil
-		}
-		return phase == "streaming", nil
+	waitForWorkerProcessCondition(t, ctx, first, "materialized slot activation", func() (bool, error) {
+		var active bool
+		err := deps.pool.QueryRow(ctx, `SELECT active FROM pg_replication_slots WHERE slot_name=$1`, slotName).Scan(&active)
+		return active, err
 	})
 	waitForWorkerProcessCondition(t, ctx, first, "materialized startup-cut publication and source ACK", func() (bool, error) {
 		var count int
@@ -143,8 +207,8 @@ SELECT count(*) FROM artifact_deliveries
 WHERE flow_incarnation_id=(SELECT incarnation_id FROM flows WHERE id=$1)`, flowID).Scan(&queuedDeliveries); err != nil {
 		t.Fatal(err)
 	}
-	if queuedDeliveries != 0 {
-		t.Fatalf("production materialized worker queued %d destination deliveries without a consumer runtime", queuedDeliveries)
+	if queuedDeliveries < 1 {
+		t.Fatalf("production materialized worker did not queue the fake Iceberg consumer: %d", queuedDeliveries)
 	}
 	first.stopAbruptly()
 	var expectedReserved, expectedRooted int64
@@ -177,7 +241,7 @@ WHERE incarnation_id=(SELECT incarnation_id FROM flows WHERE id=$1)`, flowID); e
 		t.Fatal(err)
 	}
 
-	second := startWorkerProcess(t, workerBinary, dsn, flowID, control.Generation, "materialized-second")
+	second := startMaterialized("materialized-second")
 	defer second.stopAbruptly()
 	waitForWorkerProcessCondition(t, ctx, second, "PostgreSQL quota recovery before replacement source use", func() (bool, error) {
 		var reserved, rooted int64
@@ -250,7 +314,7 @@ UPDATE producer_leases SET lease_expires_at=clock_timestamp()-interval '1 second
 WHERE incarnation_id=(SELECT incarnation_id FROM flows WHERE id=$1)`, flowID); err != nil {
 		t.Fatal(err)
 	}
-	third := startWorkerProcess(t, workerBinary, dsn, flowID, control.Generation, "materialized-corrupt-root")
+	third := startMaterialized("materialized-corrupt-root")
 	select {
 	case third.err = <-third.done:
 		third.exited = true

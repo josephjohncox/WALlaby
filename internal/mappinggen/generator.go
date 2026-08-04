@@ -81,9 +81,6 @@ func Generate(request Request) (flow.TableMappings, error) {
 			if _, exists := names[watermark]; !exists {
 				return flow.TableMappings{}, fmt.Errorf("watermark column %s for %s.%s is not a selected real column", watermark, table.Schema, table.Table)
 			}
-			if policy.Mode != flow.TableWriteModeUpsert || len(policy.KeyColumns) == 0 {
-				return flow.TableMappings{}, fmt.Errorf("watermark for %s.%s requires upsert with explicit or primary-key match columns", table.Schema, table.Table)
-			}
 			policy.WatermarkColumn = watermark
 		}
 		mapping.Tables = append(mapping.Tables, flow.TableMapping{SourceSchema: table.Schema, SourceTable: table.Table, Action: flow.MappingActionInclude, TargetSchema: table.Schema, TargetTable: table.Table, FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Columns: columnMappings, Write: policy})

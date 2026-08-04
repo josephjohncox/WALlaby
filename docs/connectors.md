@@ -53,15 +53,12 @@ Payload format notes:
 
 Read the [Snowflake destination reference](connectors/snowflake.md) before selecting a mode. The constrained `postgresql-to-snowflake-sql-v1` profile uses pre-provisioned hybrid tables and receipt-first target transactions, but it has no reviewed Snowflake service version or deployment cell and remains experimental. The generic direct-table mode below is also experimental and does not inherit the named profile's reconciliation contract.
 
-Snowflake is a direct table sink (UPSERT/DELETE in streaming mode). You can manage warehouse costs per destination.
+Generic Snowflake is an append-only mapping destination. The named managed SQL profile is the only Snowflake configuration that advertises explicit-key current-state upsert, and its mapping keys must equal the complete ordered source primary key.
 
-Options:
+Transport and warehouse options:
 
 - `dsn` (required)
-- `schema`, `table`
-- `write_mode` (`target` or `append`)
-- `batch_mode` (`target` or `staging`) with `batch_resolution` (`none`, `append`, `replace`)
-- `disable_transactions` (useful for emulators)
+- `disable_transactions` (emulator-only)
 - `warehouse` (optional, used for cost management)
 - `warehouse_size` (e.g., `xsmall`, `small`, `medium`)
 - `warehouse_auto_suspend` (seconds; default 60 when `warehouse` set)
@@ -82,7 +79,6 @@ Options:
 - `dsn` (required)
 - `stage` (required) — e.g., `@my_external_stage`
 - `format` (`parquet` recommended)
-- `compat_mode` (`fakesnow` to enable PUT/COPY fallback inserts for emulator tests)
 - `auto_ingest` (`true` to **skip COPY** and rely on external notifications)
 - `copy_on_write` (`true` to run COPY immediately; set `false` with `auto_ingest=true`)
 - `copy_pattern` (Snowflake COPY PATTERN)
@@ -110,8 +106,8 @@ Options:
 - `catalog_name` (default `ducklake`)
 - `data_path` (optional) — override catalog data path
 - `install_extensions` (default `true`) — disable if extensions are preinstalled/locked down
-- `write_mode` (`target` default, or `append`)
-- `batch_mode` (`target` or `staging`) with `batch_resolution` (`none`, `append`, `replace`)
+
+DuckLake is append-only at the mapping boundary. Logical target names and event semantics come from `config.table_mappings`.
 
 Caveats:
 

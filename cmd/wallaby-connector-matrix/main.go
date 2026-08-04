@@ -34,18 +34,17 @@ func run() error {
 	fmt.Println()
 	fmt.Println("## Destinations")
 	fmt.Println()
-	fmt.Println("| Connector | Status | Runtime | Transactional batch | Idempotent replay | Replay safe | Executes DDL | Reconciles DDL | Lossy |")
-	fmt.Println("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+	fmt.Println("| Connector | Status | Runtime | Append mapping | Explicit-key upsert | Watermark guard | Transactional batch | Idempotent replay | Replay safe | Executes DDL | Reconciles DDL | Lossy |")
+	fmt.Println("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 	contracts, err := runner.DestinationContracts()
 	if err != nil {
 		return err
 	}
 	for _, contract := range contracts {
 		capabilities := contract.Capabilities
-		fmt.Printf("| `%s` | %s | %s | %s | %s | %s | %s | %s | %s |\n",
-			contract.Type,
-			capabilities.Support,
-			yesNo(contract.Runtime),
+		fmt.Printf("| `%s` | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+			contract.Type, capabilities.Support, yesNo(contract.Runtime),
+			yesNo(capabilities.TableWrites.Append), yesNo(capabilities.TableWrites.Upsert && capabilities.TableWrites.ExplicitKey), yesNo(capabilities.TableWrites.WatermarkGuard),
 			yesNo(capabilities.Delivery.TransactionalBatch),
 			yesNo(capabilities.Delivery.IdempotentReplay),
 			yesNo(capabilities.Delivery.ReplaySafe),
@@ -62,8 +61,8 @@ func run() error {
 		connector.PostgresToClickHouseAppendV1Profile(),
 		connector.PostgresToSnowflakeSQLV1Profile(),
 	}
-	fmt.Println("| Profile | Status | Source | Destination | PostgreSQL | ClickHouse | Snowflake version | Deployment | Pairing | Ack | Sinks | Delivery |")
-	fmt.Println("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+	fmt.Println("| Profile | Status | Source | Destination | PostgreSQL | ClickHouse | Snowflake version | Deployment | Pairing | Ack | Sinks | Delivery | Table mappings |")
+	fmt.Println("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 	for _, profile := range profiles {
 		if err := profile.ValidatePromotion(); err != nil {
 			return err
@@ -98,10 +97,7 @@ func run() error {
 		} else if profile.Destination == connector.EndpointSnowflake {
 			pairing = "configured runtime pin; unreviewed"
 		}
-		fmt.Printf("| `%s` | %s | `%s` | `%s` | %s | %s | %s | %s | %s | %s | one | %s |\n",
-			profile.Name, profile.Support, profile.Source, profile.Destination,
-			strings.Join(versions, ", "), clickHouseVersions, snowflakeVersion, deployment, pairing,
-			strings.Join(profile.AckPolicies, ", "), profile.DeliveryGuarantee)
+		fmt.Printf("| `%s` | %s | `%s` | `%s` | %s | %s | %s | %s | %s | %s | one | %s | %s |\n", profile.Name, profile.Support, profile.Source, profile.Destination, strings.Join(versions, ", "), clickHouseVersions, snowflakeVersion, deployment, pairing, strings.Join(profile.AckPolicies, ", "), profile.DeliveryGuarantee, managedProfileMappings(profile.Name))
 	}
 	for _, profile := range profiles {
 		fmt.Println()
@@ -116,6 +112,19 @@ func run() error {
 	fmt.Println()
 	fmt.Println("These are declared defaults. Options can reduce guarantees; startup validation resolves configured capabilities before execution. Generic PostgreSQL, ClickHouse, Snowflake, and Snowpipe modes remain experimental. Maintained status applies only to rows explicitly marked maintained; the named Snowflake SQL profile has no reviewed service version or deployment cell and remains experimental until every unskipped real-service recovery gate passes on one reviewed SHA.")
 	return nil
+}
+
+func managedProfileMappings(name string) string {
+	switch name {
+	case connector.ManagedProfilePostgresToPostgresV1:
+		return "append; explicit-key upsert; watermark guard"
+	case connector.ManagedProfilePostgresToClickHouseAppendV1:
+		return "append only"
+	case connector.ManagedProfilePostgresToSnowflakeSQLV1:
+		return "one exact relation; explicit-key upsert; complete source PK; future tables excluded; no watermark"
+	default:
+		return "—"
+	}
 }
 
 func printSource(name, mode string, capabilities connector.Capabilities) {

@@ -84,14 +84,11 @@ The `postgres` destination applies inserts, updates, and deletes to ordinary tab
 | Option | Required | Default | Meaning |
 | --- | --- | --- | --- |
 | `dsn` | yes | — | Target PostgreSQL connection string. Treat it as a secret. |
-| `schema` | no | source schema | Override the destination schema. |
-| `table` | no | source table | Route all records to one table. Leave empty to preserve source table names. |
-| `write_mode` | no | `target` | `target` applies mutations; `append` appends records. |
 | `synchronous_commit` | no | server setting | Transaction durability setting for destination writes. |
 | `meta_table_enabled` | no | `true` | Maintain WALlaby's destination metadata table. |
 | `managed_profile` | no | — | Must match the source profile for maintained managed execution. |
 
-The destination does not make a non-idempotent database magically idempotent. Use primary keys or another stable conflict strategy, especially with primary acknowledgement where a crash can replay the primary write.
+The destination-scoped mapping owns target schema/table names and selects append or explicit-key upsert. Upsert keys are complete ordered match identity; PostgreSQL primary keys are generator defaults, not an additional runtime key source. The destination does not make a non-idempotent database magically idempotent, especially with primary acknowledgement where a crash can replay the primary write.
 
 For maintained PostgreSQL-to-PostgreSQL execution, use the exact [managed profile](postgres-managed-profile.md). Generic source/destination options remain experimental and do not inherit that profile's support status.
 
@@ -102,10 +99,8 @@ For maintained PostgreSQL-to-PostgreSQL execution, use the exact [managed profil
   "name": "orders-postgres",
   "type": "postgres",
   "options": {
-    "dsn": "postgres://user:password@destination:5432/app?sslmode=require",
-    "schema": "public",
-    "write_mode": "target",
-    "synchronous_commit": "on"
+    "dsn":"postgres://user:password@destination:5432/app?sslmode=require",
+    "synchronous_commit":"on"
   }
 }
 ```

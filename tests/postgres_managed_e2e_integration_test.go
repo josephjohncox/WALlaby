@@ -72,7 +72,7 @@ DROP TABLE IF EXISTS public.wallaby_managed_target`)
 
 	flowID := "postgres-managed-e2e-" + uuid.NewString()
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
-	created, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{AckPolicy: stream.AckPolicyAll}}))
+	created, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}})
 	if err != nil {
 		t.Fatal(err)
 	}

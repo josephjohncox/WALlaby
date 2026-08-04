@@ -83,13 +83,8 @@ DROP TABLE IF EXISTS public.wallaby_worker_kill_target`)
 			"source_lineage_id":        sourceSystemID + ":" + publication + ":v1",
 			"publication_revision":     publicationRevision,
 		}},
-		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
-			"dsn": dsn, "schema": "public", "table": targetTable,
-			"batch_mode": "target", "meta_table_enabled": "false",
-			"managed_profile":    connector.ManagedProfilePostgresToPostgresV1,
-			"synchronous_commit": "on", "destination_revision_id": destinationRevisionID,
-		}}},
-		Config: flow.Config{AckPolicy: stream.AckPolicyAll},
+		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "batch_mode": "target", "meta_table_enabled": "false", "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "synchronous_commit": "on", "destination_revision_id": destinationRevisionID}}},
+		Config:       flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "target", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: "wallaby_worker_kill_source", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: targetTable, FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}}}}},
 	}
 	engine, err := workflow.NewPostgresEngine(ctx, dsn)
 	if err != nil {
@@ -98,7 +93,7 @@ DROP TABLE IF EXISTS public.wallaby_worker_kill_target`)
 	defer engine.Close()
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
 	defer cleanupBootstrapSlotsForFlow(t, pool, flowID)
-	if _, err := engine.Create(ctx, currentTestFlow(definition)); err != nil {
+	if _, err := engine.Create(ctx, definition); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)

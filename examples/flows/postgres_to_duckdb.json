@@ -20,11 +20,12 @@
       "name": "duckdb-out",
       "type": "duckdb",
       "options": {
-        "dsn": "./data/warehouse.duckdb",
-        "schema": "main",
-        "write_mode": "target",
-        "meta_table_enabled": "true"
+        "dsn": "./data/warehouse.duckdb"
       }
     }
-  ]
+  ],
+  "config": {
+    "ack_policy": "all",
+    "table_mappings": {"version": 1, "destinations": [{"destination": "duckdb-out", "future_tables": {"action": "include", "target_schema": "{schema}", "target_table": "{table}", "future_columns": {"action": "include", "target_column": "{column}"}, "write": {"mode": "append", "key_columns": []}}, "tables": []}]}
+  }
 }

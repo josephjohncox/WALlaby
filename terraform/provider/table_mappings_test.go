@@ -459,10 +459,10 @@ func TestPresentButMeaninglessNestedObjectsFailClosed(t *testing.T) {
 
 type flowRPCFake struct {
 	wallabypb.FlowServiceClient
-	flow                           *wallabypb.Flow
-	getErr, deleteErr              error
-	created, updated, reconfigured *wallabypb.Flow
-	reconfigureRequest             *wallabypb.ReconfigureFlowRequest
+	flow                                         *wallabypb.Flow
+	getErr, deleteErr, updateErr, reconfigureErr error
+	created, updated, reconfigured               *wallabypb.Flow
+	reconfigureRequest                           *wallabypb.ReconfigureFlowRequest
 }
 
 func (c *flowRPCFake) CreateFlow(_ context.Context, request *wallabypb.CreateFlowRequest, _ ...grpc.CallOption) (*wallabypb.Flow, error) {
@@ -479,10 +479,16 @@ func (c *flowRPCFake) GetFlow(context.Context, *wallabypb.GetFlowRequest, ...grp
 }
 func (c *flowRPCFake) UpdateFlow(_ context.Context, request *wallabypb.UpdateFlowRequest, _ ...grpc.CallOption) (*wallabypb.Flow, error) {
 	c.updated = proto.Clone(request.Flow).(*wallabypb.Flow)
+	if c.updateErr != nil {
+		return nil, c.updateErr
+	}
 	return proto.Clone(request.Flow).(*wallabypb.Flow), nil
 }
 func (c *flowRPCFake) ReconfigureFlow(_ context.Context, request *wallabypb.ReconfigureFlowRequest, _ ...grpc.CallOption) (*wallabypb.Flow, error) {
 	c.reconfigureRequest = proto.Clone(request).(*wallabypb.ReconfigureFlowRequest)
+	if c.reconfigureErr != nil {
+		return nil, c.reconfigureErr
+	}
 	c.reconfigured = proto.Clone(request.Flow).(*wallabypb.Flow)
 	c.reconfigured.State = wallabypb.FlowState_FLOW_STATE_RUNNING
 	return proto.Clone(c.reconfigured).(*wallabypb.Flow), nil
@@ -587,6 +593,16 @@ func TestMappingAndConfigChangesUseControlledReconfigureWhileOrdinaryUpdatesRema
 	if wireResponse.Diagnostics.HasError() || wireClient.reconfigured == nil || wireClient.updated != nil || wireClient.reconfigureRequest.GetPauseFirst() != true || wireClient.reconfigureRequest.GetResumeAfter() != true {
 		t.Fatalf("wire-format change diagnostics=%v client=%+v", wireResponse.Diagnostics, wireClient)
 	}
+	managedClient := &flowRPCFake{reconfigureErr: status.Error(codes.FailedPrecondition, "managed flow reconfiguration requires a fenced source-resource revision")}
+	managedResponse := resource.UpdateResponse{State: stateForModel(t, prior)}
+	(&flowResource{client: &Client{Flow: managedClient}}).Update(ctx, resource.UpdateRequest{State: stateForModel(t, prior), Plan: planForModel(t, wireChange)}, &managedResponse)
+	if !managedResponse.Diagnostics.HasError() || managedClient.reconfigureRequest == nil {
+		t.Fatalf("managed reconfigure diagnostics=%v client=%+v", managedResponse.Diagnostics, managedClient)
+	}
+	var retained flowResourceModel
+	if diagnostics := managedResponse.State.Get(ctx, &retained); diagnostics.HasError() || retained.ID.ValueString() != prior.ID.ValueString() {
+		t.Fatalf("managed failure did not retain state diagnostics=%v state=%+v", diagnostics, retained)
+	}
 
 	identityChange := prior
 	identityChange.Source.Options = types.MapValueMust(types.StringType, map[string]attr.Value{"dsn": types.StringValue("postgres://changed")})
@@ -606,6 +622,16 @@ func TestMappingAndConfigChangesUseControlledReconfigureWhileOrdinaryUpdatesRema
 	nameInstance.Update(ctx, resource.UpdateRequest{State: stateForModel(t, prior), Plan: planForModel(t, nameChange)}, &nameResponse)
 	if nameResponse.Diagnostics.HasError() || nameClient.updated == nil || nameClient.reconfigured != nil || nameClient.updated.Name != "renamed" {
 		t.Fatalf("name change diagnostics=%v client=%+v", nameResponse.Diagnostics, nameClient)
+	}
+	managedUpdateClient := &flowRPCFake{updateErr: status.Error(codes.FailedPrecondition, "managed flow updates require a fenced source-resource revision")}
+	managedUpdateResponse := resource.UpdateResponse{State: stateForModel(t, prior)}
+	(&flowResource{client: &Client{Flow: managedUpdateClient}}).Update(ctx, resource.UpdateRequest{State: stateForModel(t, prior), Plan: planForModel(t, nameChange)}, &managedUpdateResponse)
+	if !managedUpdateResponse.Diagnostics.HasError() || managedUpdateClient.updated == nil {
+		t.Fatalf("managed ordinary update diagnostics=%v client=%+v", managedUpdateResponse.Diagnostics, managedUpdateClient)
+	}
+	var retainedManagedUpdate flowResourceModel
+	if diagnostics := managedUpdateResponse.State.Get(ctx, &retainedManagedUpdate); diagnostics.HasError() || retainedManagedUpdate.ID.ValueString() != prior.ID.ValueString() || retainedManagedUpdate.Name.ValueString() != prior.Name.ValueString() {
+		t.Fatalf("managed UpdateFlow failure did not retain state diagnostics=%v state=%+v", diagnostics, retainedManagedUpdate)
 	}
 }
 

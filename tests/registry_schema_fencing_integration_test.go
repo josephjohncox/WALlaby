@@ -52,7 +52,7 @@ func TestFencedSchemaRegistrationRejectsForeignProvenance(t *testing.T) {
 
 	acquire := func(id, execution string) authority.RunFence {
 		t.Helper()
-		if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: id})); err != nil {
+		if _, err := engine.Create(ctx, flow.Flow{ID: id, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 			t.Fatal(err)
 		}
 		_, control, err := engine.PlanStart(ctx, id, false)

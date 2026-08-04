@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"reflect"
 	"strings"
 
@@ -102,6 +103,18 @@ func (p *Projector) ProjectBatch(batch connector.Batch) (connector.Batch, stream
 		}
 	}
 	position := strings.TrimSpace(batch.Checkpoint.LSN)
+	if position == "" && len(batch.Checkpoint.Metadata) > 0 {
+		id, err := connector.CheckpointPositionID(batch.Checkpoint)
+		if err != nil {
+			return connector.Batch{}, stream.ProjectionFiltered, fmt.Errorf("derive append checkpoint position: %w", err)
+		}
+		hexValue := strings.TrimPrefix(id, "checkpoint:")
+		value, ok := new(big.Int).SetString(hexValue, 16)
+		if !ok {
+			return connector.Batch{}, stream.ProjectionFiltered, fmt.Errorf("derive append checkpoint position: invalid identity %q", id)
+		}
+		position = value.String()
+	}
 	return p.projectBatch(batch, position)
 }
 

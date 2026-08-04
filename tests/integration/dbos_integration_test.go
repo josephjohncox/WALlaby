@@ -117,12 +117,9 @@ func TestDBOSIntegrationBackfill(t *testing.T) {
 	}()
 
 	created, err := engine.Create(ctx, flow.Flow{
-		ID:           flowID,
-		Name:         "dbos-test",
-		Source:       sourceSpec,
-		Destinations: []connector.Spec{destSpec},
-		State:        flow.StateCreated,
-		Parallelism:  1,
+		ID:   flowID,
+		Name: "dbos-test", Source: sourceSpec, Destinations: []connector.Spec{destSpec}, State: flow.StateCreated, Parallelism: 1,
+		Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{destSpec})},
 	})
 	if err != nil {
 		t.Fatalf("create flow: %v", err)
@@ -255,12 +252,9 @@ func TestDBOSIntegrationStreaming(t *testing.T) {
 	}()
 
 	created, err := engine.Create(ctx, flow.Flow{
-		ID:           flowID,
-		Name:         "dbos-test-stream",
-		Source:       sourceSpec,
-		Destinations: []connector.Spec{destSpec},
-		State:        flow.StateCreated,
-		Parallelism:  1,
+		ID:   flowID,
+		Name: "dbos-test-stream", Source: sourceSpec, Destinations: []connector.Spec{destSpec}, State: flow.StateCreated, Parallelism: 1,
+		Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{destSpec})},
 	})
 	if err != nil {
 		t.Fatalf("create flow: %v", err)
@@ -362,12 +356,9 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 	}
 
 	created, err := engine.Create(ctx, flow.Flow{
-		ID:           flowID,
-		Name:         "dbos-retry",
-		Source:       badSource,
-		Destinations: []connector.Spec{destSpec},
-		State:        flow.StateCreated,
-		Parallelism:  1,
+		ID:   flowID,
+		Name: "dbos-retry", Source: badSource, Destinations: []connector.Spec{destSpec}, State: flow.StateCreated, Parallelism: 1,
+		Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{destSpec})},
 	})
 	if err != nil {
 		t.Fatalf("create flow: %v", err)
@@ -515,12 +506,9 @@ func TestDBOSIntegrationAdminRecovery(t *testing.T) {
 	}()
 
 	created, err := engine.Create(ctx, flow.Flow{
-		ID:           flowID,
-		Name:         "dbos-recovery",
-		Source:       sourceSpec,
-		Destinations: []connector.Spec{destSpec},
-		State:        flow.StateCreated,
-		Parallelism:  1,
+		ID:   flowID,
+		Name: "dbos-recovery", Source: sourceSpec, Destinations: []connector.Spec{destSpec}, State: flow.StateCreated, Parallelism: 1,
+		Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{destSpec})},
 	})
 	if err != nil {
 		t.Fatalf("create flow: %v", err)

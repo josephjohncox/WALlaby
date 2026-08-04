@@ -1,6 +1,6 @@
 # Examples
 
-These examples are intended to stay current with the API surface and connector options. If you change gRPC messages, connector option keys, or flow lifecycle behavior, update the files in this folder in the same PR.
+These examples are intended to stay current with the API surface and connector options. Every flow has complete destination-scoped table mappings and an explicit write policy. `TestShippedFlowExamplesStrictLoadValidateAndUseCurrentMappings` strictly loads and validates every JSON/YAML flow example and rejects removed logical endpoint options. If you change gRPC messages, connector option keys, mappings, or lifecycle behavior, update the files in this folder in the same PR.
 
 ## Quick Start (API Server)
 Set the minimum environment variables and launch the gRPC API server:
@@ -45,14 +45,15 @@ export WALLABY_DDL_AUTO_APPROVE="false"
 export WALLABY_DDL_AUTO_APPLY="false"
 ```
 
-Use the DDLService to list and approve/reject DDL events (see `examples/grpc/ddl_approve.sh`).
-Or use the CLI admin tool:
+Use the DDLService to list and approve/reject DDL events (see `examples/grpc/ddl_approve.sh`), or inspect and approve them with the supported CLI commands:
 
 ```bash
 ./bin/wallaby-admin ddl list --status pending
+./bin/wallaby-admin ddl show --id 1
 ./bin/wallaby-admin ddl approve --id 1
-./bin/wallaby-admin ddl apply --id 1
 ```
+
+Approval records the control-plane decision. The running flow's data plane applies approved DDL when automatic DDL execution is enabled; there is no separate administrative apply subcommand.
 
 ## Terraform Provider
 See `examples/terraform/flow.tf` for a minimal provider + flow resource definition.

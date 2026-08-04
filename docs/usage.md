@@ -61,6 +61,7 @@ Flow fields you can set:
 
 - `wire_format` — default wire format for the flow
 - `parallelism` — max concurrent destination writes per batch (default `1`)
+- `config.table_mappings` — mandatory expanded destination-scoped selection, naming, and write contract; see [Manage flows and table mappings](guides/flows.md)
 - `config.ack_policy` — `all` (default), `primary`, or experimental `materialized`
 - `config.primary_destination` — destination name used when `ack_policy=primary`
 - `config.materialization.projection_id` — must be `canonical_cdc_parquet_v2` for current mapped Iceberg materialization (`canonical_cdc_parquet_v1` remains frozen for historical artifacts)
@@ -78,9 +79,7 @@ Why fan‑out instead of multiple replication slots?
 - `ack_policy=primary` atomically stores the checkpoint and durable per-secondary outbox entries before advancing the slot. It requires a SQLite or PostgreSQL checkpoint store, stable destination names, and idempotent writes at every destination.
 - `ack_policy=materialized` is limited to managed PostgreSQL CDC with exactly one Iceberg destination revision. It acknowledges each CDC transaction only after immutable canonical objects and the fenced PostgreSQL publication/checkpoint commit. A data-free startup cut receives an object-free canonical publication before feedback. The production worker registers the Iceberg consumer behind that authority and commits it asynchronously; catalog or Snowflake visibility does not extend the source-ACK boundary. This policy is not `all` and makes no exactly-once claim. See [Canonical artifact log](concepts/artifact-log.md) and [S3 Tables to Snowflake](guides/s3-tables-snowflake.md).
 
-To reconfigure destinations or wire format, call `UpdateFlow` with a full `Flow` payload; state is preserved.
-From the CLI, use `wallaby-admin flow update --file <path> [--pause] [--resume]` to pause, update, and resume in one step,
-or `wallaby-admin flow reconfigure --file <path> [--sync-publication]` to let the server orchestrate the pause/update/resume cycle.
+Use `wallaby-admin flow mappings generate` with an explicit table, schema, or publication scope to build deterministic mappings from the PostgreSQL catalog. The CLI preserves ordered source-PK defaults only for destinations/profiles that admit explicit-key upsert; append-only destinations generate append. Repeatable `--write-mode schema.table=append|upsert` overrides can select append or request a capability- and key-checked upsert. The exact managed Snowflake SQL profile requires one selected primary-key relation, emits the complete ordered-PK upsert with future tables excluded, and rejects append, watermark, or altered match-key overrides. Review and validate the expanded flow before create. Unmanaged identity changes use `flow reconfigure`; unmanaged name or parallelism changes may use `flow update`. Managed flows reject both RPCs for every change. Stop the old managed flow, create/validate/start a distinct flow with new flow and revision identities, cut over, and delete the old flow only when safe. Terraform cannot execute this managed cutover and every managed update fails apply while retaining state.
 Additional CLI operations:
 
 - `wallaby-admin flow list [--state created|running|paused|stopping|stopped|failed]` to inspect all flows.
@@ -387,93 +386,29 @@ Ack messages when processed:
 ./bin/wallaby-admin stream ack --stream orders --group search --ids 1,2,3
 ```
 
-## Snowflake Destination
+## Snowflake destination
 
-Write directly into Snowflake tables with row-level change application.
+Generic Snowflake is an experimental append-only mapping destination. Configure its connection with `dsn`; put logical relation names, column names, selection, and append policy in the destination-scoped mapping. The exact `postgresql-to-snowflake-sql-v1` managed profile instead admits one current-state explicit-key upsert mapping whose ordered keys equal the complete source primary key. See the [Snowflake guide](connectors/snowflake.md).
 
-Options:
+## Snowpipe destination
 
-- `dsn` (required)
-- `schema`, `table` (optional; defaults to source schema/table)
-- `write_mode` (`target` default, or `append`)
-- `batch_mode` (`target` default, or `staging` for backfill loads)
-- `batch_resolution` (`none` default, or `append` / `replace`)
-- `staging_schema`, `staging_table`, `staging_suffix` (default suffix `_staging`)
-- `meta_table_enabled` (default `true`) — create/update `meta_schema.meta_table`
-- `meta_schema` (default `WALLABY_META`)
-- `meta_table` (default `__METADATA`)
-- `meta_pk_prefix` (default `pk_`)
+Snowpipe is append-only. Configure `dsn`, `stage`, `stage_path`, file `format`, optional named `file_format`, COPY controls, and notification behavior on the endpoint. Mapping rules own logical targets and append metadata.
 
-Snowflake options are passed through the DSN. For GovCloud or private endpoints, use the appropriate account/host in the DSN; WALlaby does not rewrite hosts.
+## DuckDB and DuckLake destinations
 
-## Snowpipe Destination
+Both are append-only mapping destinations. DuckDB uses `dsn`. DuckLake additionally uses `catalog`, `catalog_name`, and `data_path`. They do not advertise upsert until dedicated mutation and recovery evidence exists.
 
-Bulk-load batches to a Snowflake stage and optionally trigger `COPY INTO`.
+## ClickHouse destination
 
-Options:
+Use the exact `postgresql-to-clickhouse-append-v1` profile for maintained append-only changelog delivery on its admitted PostgreSQL and ClickHouse/Keeper deployment. Generic ClickHouse remains experimental and append-only at the mapping boundary. See the [ClickHouse guide](connectors/clickhouse.md).
 
-- `dsn` (required)
-- `stage` (required unless using table stage via `@%schema.table`)
-- `stage_path` (optional prefix inside the stage)
-- `schema`, `table` (required if `copy_on_write=true`)
-- `format` (`parquet` default; `parquet` | `avro` | `json`)
-- `file_format` (optional Snowflake file format object name)
-- `copy_on_write` (default `true`)
-- `auto_ingest` (default `false`) — set `true` to only upload (skip COPY)
-- `meta_table_enabled` (default `true`)
+## Bufstream destination
 
-Snowpipe only supports `write_mode=append`; use metadata columns to preserve operation semantics.
+Bufstream is Kafka-compatible; use the same transport options as Kafka. Its table mapping is append-only.
 
-## DuckDB Destination
+## Append metadata
 
-Write directly into DuckDB (local file or in-memory).
-
-Options:
-
-- `dsn` (required; e.g. `./data/warehouse.duckdb`)
-- `schema`, `table` (optional; defaults to source schema/table)
-- `write_mode` (`target` default, or `append`)
-- `batch_mode` (`target` default, or `staging` for backfill loads)
-- `batch_resolution` (`none` default, or `append` / `replace`)
-- `staging_schema`, `staging_table`, `staging_suffix` (default suffix `_staging`)
-- `meta_table_enabled` (default `true`)
-
-## ClickHouse Destination
-
-Use the exact `postgresql-to-clickhouse-append-v1` profile for maintained, append-only delivery. It writes an immutable CDC changelog and a completion-receipt table for the admitted PostgreSQL 16 and two-replica ClickHouse/Keeper 25.12.1.649 deployment. See the [ClickHouse destination guide](connectors/clickhouse.md) for required DDL, options, TLS, limits, and failure semantics.
-
-Generic ClickHouse target, append, mutation, and staging modes remain experimental. Their legacy options are:
-
-- `dsn` (required)
-- `database` or `schema`, `table` (optional; defaults to source namespace/table)
-- `write_mode` (`target` default, or `append`)
-- `batch_mode` (`target` default, or `staging` for backfill loads)
-- `batch_resolution` (`none` default, or `append` / `replace`)
-- `staging_schema`, `staging_table`, `staging_suffix` (default suffix `_staging`)
-- `meta_table_enabled` (default `true`)
-- `meta_engine` (default `MergeTree`)
-- `meta_order_by` (default `flow_id, source_schema, source_table, key_json`)
-
-## Bufstream Destination
-
-Bufstream is Kafka-compatible; use the same options as the Kafka destination (`brokers`, `topic`, `format`, `compression`, `acks`).
-
-## Destination Metadata + Append/Soft Delete
-
-Destinations can opt into metadata columns (synced time, soft-delete flags, watermarks) and append-only behavior:
-
-Options (on destination `options`):
-
-- `meta_enabled` (default `false`) — enable metadata columns
-- `meta_synced_at` (default `__ds_synced_at`)
-- `meta_deleted` (default `__ds_is_deleted`)
-- `meta_watermark` (default `__ds_watermark`, set `-` to disable)
-- `meta_op` (default `__ds_op`)
-- `watermark_source` (`timestamp` default, or `lsn`)
-- `soft_delete` (default `false`) — converts deletes to updates with `meta_deleted=true`
-- `append_mode` (default `false`) — converts updates/deletes to inserts and stores original op in `meta_op`
-
-Metadata columns are added to the destination schema; choose names that do not collide with source columns.
+Append mappings preserve every event and add `__wallaby_operation`, `__wallaby_deleted`, and `__wallaby_source_position`. A configured append watermark is projected metadata only. It never suppresses events or supplies row identity.
 
 ## Destination Type Mappings
 
@@ -530,7 +465,7 @@ Use the admin CLI to list and approve DDL events:
 ./bin/wallaby-admin ddl approve --id 1
 ```
 
-Only the data-plane runner can mark an event applied. It records a durable receipt for every DDL-executing destination and changes the event to `applied` after the complete immutable destination manifest has receipts. The administrative `ddl apply` command fails with `FailedPrecondition` when no execution receipts exist.
+Only the data-plane runner can apply an approved event and mark it applied. It records a durable receipt for every DDL-executing destination and changes the event to `applied` after the complete immutable destination manifest has receipts. Operators use `ddl list`, `ddl show`, and `ddl approve`; after approval the running data-plane workflow performs the apply. There is no separate administrative apply subcommand.
 
 When a DDL gate blocks a flow, WALlaby emits an OpenTelemetry event (`ddl.gated`)
 and a trace event (`ddl_gate`). It also increments the `wallaby.ddl.gated_total` metric.

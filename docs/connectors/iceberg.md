@@ -75,14 +75,16 @@ config:
             future_columns:
               action: include
               target_column: "{column}"
+            columns: []
             write:
               mode: append
+              key_columns: []
   ack_policy: materialized
   materialization:
     projection_id: canonical_cdc_parquet_v2
 ```
 
-The Iceberg endpoint options select only catalog profile, control table, and immutable destination revision identity. Logical table and column targets exist only in durable destination-scoped table mappings; persisted `namespace`, `table_prefix`, fixed-table, and equivalent overrides are rejected. Deployment configuration owns URI, warehouse, REST prefix, region, S3 Tables bucket ARN, S3 FileIO endpoint/region, and behavior controls. Persisting any deployment-owned, unknown, or secret option is rejected before storage. Supply OAuth tokens, OAuth credentials, client certificates, CA data, and AWS credentials only through deployment configuration or environment variables.
+The Iceberg endpoint options select only catalog profile, control table, and immutable destination revision identity. Logical table and column targets exist only in durable destination-scoped table mappings; endpoint-level logical target overrides are rejected. Deployment configuration owns URI, warehouse, REST prefix, region, S3 Tables bucket ARN, S3 FileIO endpoint/region, and behavior controls. Persisting any deployment-owned, unknown, or secret option is rejected before storage. Supply OAuth tokens, OAuth credentials, client certificates, CA data, and AWS credentials only through deployment configuration or environment variables.
 
 ## REST client
 

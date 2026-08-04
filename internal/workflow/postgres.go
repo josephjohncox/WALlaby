@@ -204,11 +204,11 @@ func (p *PostgresEngine) Update(ctx context.Context, f flow.Flow) (flow.Flow, er
 	var state string
 	var persistedDestinationsJSON []byte
 	var persistedMappingsJSON []byte
-	var endpointIdentityChanged bool
+	var incarnationIdentityChanged bool
 	if err := tx.QueryRow(ctx, `
 SELECT incarnation_id,state,destinations,config->'table_mappings',
-       source IS DISTINCT FROM $2::jsonb OR destinations IS DISTINCT FROM $3::jsonb
-FROM flows WHERE id=$1 FOR UPDATE`, f.ID, sourceJSON, destJSON).Scan(&incarnationID, &state, &persistedDestinationsJSON, &persistedMappingsJSON, &endpointIdentityChanged); err != nil {
+       source IS DISTINCT FROM $2::jsonb OR destinations IS DISTINCT FROM $3::jsonb OR wire_format IS DISTINCT FROM $4
+FROM flows WHERE id=$1 FOR UPDATE`, f.ID, sourceJSON, destJSON, emptyToNull(string(f.WireFormat))).Scan(&incarnationID, &state, &persistedDestinationsJSON, &persistedMappingsJSON, &incarnationIdentityChanged); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return flow.Flow{}, ErrNotFound
 		}
@@ -225,10 +225,10 @@ FROM flows WHERE id=$1 FOR UPDATE`, f.ID, sourceJSON, destJSON).Scan(&incarnatio
 	if err := json.Unmarshal(persistedMappingsJSON, &persistedMappings); err != nil || persistedMappings.Validate(persistedDestinations) != nil {
 		return flow.Flow{}, errors.New("persisted flow has incompatible or missing table mappings")
 	}
-	identityChanged := endpointIdentityChanged || !persistedMappings.Equal(f.Config.TableMappings)
+	identityChanged := incarnationIdentityChanged || !persistedMappings.Equal(f.Config.TableMappings)
 	if identityChanged {
 		if state == string(flow.StateRunning) || state == string(flow.StateStopping) {
-			return flow.Flow{}, fmt.Errorf("%w: source, destination, or table mapping identity cannot change while flow is %s", ErrInvalidState, state)
+			return flow.Flow{}, fmt.Errorf("%w: source, destination, wire format, or table mapping identity cannot change while flow is %s", ErrInvalidState, state)
 		}
 		newIncarnationID := uuid.New()
 		if _, err := tx.Exec(ctx, `INSERT INTO flow_incarnations(incarnation_id,flow_id) VALUES($1,$2)`, newIncarnationID, f.ID); err != nil {

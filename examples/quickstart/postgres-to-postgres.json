@@ -23,11 +23,13 @@
       "name": "orders-postgres",
       "type": "postgres",
       "options": {
-        "dsn": "postgres://wallaby:wallaby@localhost:55432/destination?sslmode=disable",
-        "schema": "public",
-        "write_mode": "target",
-        "synchronous_commit": "on"
+        "dsn":"postgres://wallaby:wallaby@localhost:55432/destination?sslmode=disable",
+        "synchronous_commit":"on"
       }
     }
-  ]
+  ],
+  "config": {
+    "ack_policy":"all",
+    "table_mappings":{"version":1,"destinations":[{"destination":"orders-postgres","future_tables":{"action":"exclude"},"tables":[{"source_schema":"public","source_table":"orders","action":"include","target_schema":"public","target_table":"orders","future_columns":{"action":"include","target_column":"{column}"},"columns":[],"write":{"mode":"upsert","key_columns":["id"]}}]}]}
+  }
 }

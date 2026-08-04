@@ -20,11 +20,12 @@
       "name": "clickhouse-out",
       "type": "clickhouse",
       "options": {
-        "dsn": "clickhouse://localhost:9000/default",
-        "database": "default",
-        "write_mode": "target",
-        "meta_table_enabled": "true"
+        "dsn": "clickhouse://localhost:9000/default"
       }
     }
-  ]
+  ],
+  "config": {
+    "ack_policy": "all",
+    "table_mappings": {"version": 1, "destinations": [{"destination": "clickhouse-out", "future_tables": {"action": "include", "target_schema": "{schema}", "target_table": "{table}", "future_columns": {"action": "include", "target_column": "{column}"}, "write": {"mode": "append", "key_columns": []}}, "tables": []}]}
+  }
 }
