@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
@@ -482,12 +481,7 @@ WHERE intent.flow_incarnation_id=$1 AND intent.position_id=$2`, fence.FlowIncarn
 
 func (c *Coordinator) reconcileUnfinished(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, state deliveryState, driver connector.ManagedDestination) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
 	if state.reconciliationAttempts >= maxReconciliationAttempts {
-		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, fmt.Errorf(
-			"%w: logical batch %s exhausted %d reconciliation attempts",
-			connector.ErrDeliveryRetryExhausted,
-			deliveryLogicalBatchID(intent),
-			maxReconciliationAttempts,
-		)
+		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, fmt.Errorf("%w: logical batch %s exhausted %d reconciliation attempts", connector.ErrDeliveryRetryExhausted, intent.LogicalBatchID, maxReconciliationAttempts)
 	}
 	if err := waitForDeliveryRetry(ctx, state.nextAttemptAt); err != nil {
 		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
@@ -505,22 +499,9 @@ func (c *Coordinator) reconcileUnfinished(ctx context.Context, fence authority.R
 		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, recordErr
 	}
 	if attempts >= maxReconciliationAttempts {
-		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, fmt.Errorf(
-			"%w: logical batch %s exhausted %d reconciliation attempts: %s",
-			connector.ErrDeliveryRetryExhausted,
-			deliveryLogicalBatchID(intent),
-			attempts,
-			detail,
-		)
+		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, fmt.Errorf("%w: logical batch %s exhausted %d reconciliation attempts: %s", connector.ErrDeliveryRetryExhausted, intent.LogicalBatchID, attempts, detail)
 	}
-	return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, fmt.Errorf(
-		"%w: reconcile logical batch %s attempt %d/%d: %s",
-		connector.ErrDeliveryIndeterminate,
-		deliveryLogicalBatchID(intent),
-		attempts,
-		maxReconciliationAttempts,
-		detail,
-	)
+	return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, fmt.Errorf("%w: reconcile logical batch %s attempt %d/%d: %s", connector.ErrDeliveryIndeterminate, intent.LogicalBatchID, attempts, maxReconciliationAttempts, detail)
 }
 
 func (c *Coordinator) recordReconciliationFailure(ctx context.Context, fence authority.RunFence, attemptID uuid.UUID, detail string) (int, error) {
@@ -639,51 +620,36 @@ func (c *Coordinator) inspect(ctx context.Context, fence authority.RunFence, int
 		return deliveryState{}, err
 	}
 	state := deliveryState{}
-	var receiptHash string
-	var receiptLogicalBatchID pgtype.Text
+	var receiptHash, receiptLineage, receiptPosition string
 	err = tx.QueryRow(ctx, `
-SELECT attempt_id,external_id,content_hash,logical_batch_id
+SELECT attempt_id,external_id,content_hash,source_lineage_id,position_id
 FROM delivery_receipts
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND source_lineage_id=$3 AND position_id=$4
-FOR UPDATE`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.PositionID).Scan(&state.attemptID, &state.externalID, &receiptHash, &receiptLogicalBatchID)
+WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND logical_batch_id=$3
+FOR UPDATE`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.LogicalBatchID).Scan(&state.attemptID, &state.externalID, &receiptHash, &receiptLineage, &receiptPosition)
 	switch {
 	case err == nil:
-		expectedLogicalBatchID := deliveryLogicalBatchID(intent)
-		legacyLogicalBatch := !receiptLogicalBatchID.Valid || receiptLogicalBatchID.String == "legacy:"+intent.PositionID
-		if receiptHash != intent.ContentHash || (!legacyLogicalBatch && receiptLogicalBatchID.String != expectedLogicalBatchID) {
+		if receiptHash != intent.ContentHash || receiptLineage != intent.SourceLineageID || receiptPosition != intent.PositionID {
 			return deliveryState{}, fmt.Errorf("%w: immutable delivery receipt differs", connector.ErrDeliveryConflict)
-		}
-		if legacyLogicalBatch {
-			if _, err := tx.Exec(ctx, `
-WITH adopted AS (
-  UPDATE delivery_receipts SET logical_batch_id=$2 WHERE attempt_id=$1 RETURNING attempt_id
-)
-UPDATE delivery_attempts SET logical_batch_id=$2
-WHERE attempt_id IN (SELECT attempt_id FROM adopted)`, state.attemptID, expectedLogicalBatchID); err != nil {
-				return deliveryState{}, fmt.Errorf("upgrade legacy delivery receipt identity: %w", err)
-			}
 		}
 		state.receipt = true
 	case errors.Is(err, pgx.ErrNoRows):
+		var attemptHash, attemptLineage, attemptPosition string
 		err = tx.QueryRow(ctx, `
 SELECT attempt.attempt_id,attempt.attempt_state,attempt.attempt_number,
-       attempt.reconciliation_attempts,attempt.next_attempt_at
+       attempt.reconciliation_attempts,attempt.next_attempt_at,
+       attempt.content_hash,attempt.source_lineage_id,attempt.position_id
 FROM delivery_attempts AS attempt
 LEFT JOIN delivery_receipts AS receipt ON receipt.attempt_id=attempt.attempt_id
 WHERE attempt.flow_incarnation_id=$1
   AND attempt.destination_revision_id=$2
-  AND attempt.source_lineage_id=$3
-  AND attempt.position_id=$4
+  AND attempt.logical_batch_id=$3
   AND receipt.attempt_id IS NULL
-ORDER BY attempt.prepared_at DESC,attempt.attempt_id DESC
-LIMIT 1`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.PositionID).Scan(
-			&state.attemptID,
-			&state.attemptState,
-			&state.attemptNumber,
-			&state.reconciliationAttempts,
-			&state.nextAttemptAt,
-		)
+ORDER BY attempt.attempt_number DESC,attempt.attempt_id DESC
+LIMIT 1`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.LogicalBatchID).Scan(&state.attemptID, &state.attemptState, &state.attemptNumber, &state.reconciliationAttempts, &state.nextAttemptAt, &attemptHash, &attemptLineage, &attemptPosition)
 		if err == nil {
+			if attemptHash != intent.ContentHash || attemptLineage != intent.SourceLineageID || attemptPosition != intent.PositionID {
+				return deliveryState{}, fmt.Errorf("%w: immutable delivery attempt differs", connector.ErrDeliveryConflict)
+			}
 			state.hasAttempt = true
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return deliveryState{}, fmt.Errorf("load unfinished delivery attempt: %w", err)
@@ -715,34 +681,28 @@ SELECT 1 FROM destination_revisions WHERE destination_revision_id=$1`, intent.De
 INSERT INTO delivery_manifests (
   flow_incarnation_id,destination_revision_id,source_lineage_id,logical_batch_id,position_id,source_transaction_id,content_hash,checkpoint_lsn
 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-ON CONFLICT (flow_incarnation_id,destination_revision_id,position_id) DO NOTHING`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, deliveryLogicalBatchID(intent), intent.PositionID, sourceTransactionID, intent.ContentHash, position)
+ON CONFLICT DO NOTHING`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.LogicalBatchID, intent.PositionID, sourceTransactionID, intent.ContentHash, position)
 	if err != nil {
 		return fmt.Errorf("insert delivery manifest: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		var existingHash, existingLSN, existingLineage string
-		var existingLogicalBatchID pgtype.Text
-		if err := tx.QueryRow(ctx, `
-SELECT content_hash,checkpoint_lsn,source_lineage_id,logical_batch_id FROM delivery_manifests
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3
-FOR UPDATE`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.PositionID).Scan(&existingHash, &existingLSN, &existingLineage, &existingLogicalBatchID); err != nil {
+		var existingHash, existingLSN, existingLineage, existingPosition string
+		err := tx.QueryRow(ctx, `
+SELECT content_hash,checkpoint_lsn,source_lineage_id,position_id FROM delivery_manifests
+WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND logical_batch_id=$3
+FOR UPDATE`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.LogicalBatchID).Scan(&existingHash, &existingLSN, &existingLineage, &existingPosition)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: delivery position is already bound to another logical batch", connector.ErrDeliveryConflict)
+		}
+		if err != nil {
 			return fmt.Errorf("load delivery manifest: %w", err)
 		}
-		expectedLogicalBatchID := deliveryLogicalBatchID(intent)
-		legacyLogicalBatch := !existingLogicalBatchID.Valid || existingLogicalBatchID.String == "legacy:"+intent.PositionID
 		hashDiffers := existingHash != intent.ContentHash
 		checkpointDiffers := existingLSN != position
 		lineageDiffers := existingLineage != intent.SourceLineageID
-		logicalBatchDiffers := !legacyLogicalBatch && existingLogicalBatchID.String != expectedLogicalBatchID
-		if hashDiffers || checkpointDiffers || lineageDiffers || logicalBatchDiffers {
-			return fmt.Errorf("%w: immutable delivery manifest differs (content_hash=%t checkpoint=%t lineage=%t logical_batch=%t)", connector.ErrDeliveryConflict, hashDiffers, checkpointDiffers, lineageDiffers, logicalBatchDiffers)
-		}
-		if legacyLogicalBatch {
-			if _, err := tx.Exec(ctx, `
-UPDATE delivery_manifests SET logical_batch_id=$4
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.PositionID, expectedLogicalBatchID); err != nil {
-				return fmt.Errorf("upgrade legacy delivery manifest identity: %w", err)
-			}
+		positionDiffers := existingPosition != intent.PositionID
+		if hashDiffers || checkpointDiffers || lineageDiffers || positionDiffers {
+			return fmt.Errorf("%w: immutable delivery manifest differs (content_hash=%t checkpoint=%t lineage=%t position=%t)", connector.ErrDeliveryConflict, hashDiffers, checkpointDiffers, lineageDiffers, positionDiffers)
 		}
 	}
 	return nil
@@ -760,30 +720,22 @@ func (c *Coordinator) prepareAttempt(ctx context.Context, fence authority.RunFen
 	if err := ensureManifest(ctx, tx, fence, intent, checkpoint); err != nil {
 		return uuid.Nil, err
 	}
-	if _, err := tx.Exec(ctx, `
-UPDATE delivery_attempts
-SET logical_batch_id=$3
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$4
-  AND source_lineage_id=$5 AND content_hash=$6
-  AND (logical_batch_id IS NULL OR logical_batch_id='legacy:' || position_id)`, fence.FlowIncarnationID, intent.DestinationRevisionID, deliveryLogicalBatchID(intent), intent.PositionID, intent.SourceLineageID, intent.ContentHash); err != nil {
-		return uuid.Nil, fmt.Errorf("upgrade legacy delivery attempt identity: %w", err)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(pg_catalog.hashtextextended($1,0))`, strings.Join([]string{fence.FlowIncarnationID.String(), intent.DestinationRevisionID, intent.LogicalBatchID}, "\x1f")); err != nil {
+		return uuid.Nil, fmt.Errorf("lock logical batch delivery attempts: %w", err)
 	}
 	var priorAttempts int
-	if err := tx.QueryRow(ctx, `
-SELECT COALESCE(max(attempt_number),0)
-FROM delivery_attempts
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND logical_batch_id=$3`, fence.FlowIncarnationID, intent.DestinationRevisionID, deliveryLogicalBatchID(intent)).Scan(&priorAttempts); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(max(attempt_number),0) FROM delivery_attempts WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND logical_batch_id=$3`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.LogicalBatchID).Scan(&priorAttempts); err != nil {
 		return uuid.Nil, fmt.Errorf("count logical batch delivery attempts: %w", err)
 	}
 	if priorAttempts >= maxDeliveryAttempts {
-		return uuid.Nil, fmt.Errorf("managed delivery exhausted %d attempts for logical batch %s", maxDeliveryAttempts, deliveryLogicalBatchID(intent))
+		return uuid.Nil, fmt.Errorf("managed delivery exhausted %d attempts for logical batch %s", maxDeliveryAttempts, intent.LogicalBatchID)
 	}
 	attemptID := uuid.New()
 	if _, err := tx.Exec(ctx, `
 INSERT INTO delivery_attempts (
   attempt_id,flow_incarnation_id,flow_id,generation,acquisition_id,lease_epoch,
   destination_revision_id,source_lineage_id,logical_batch_id,position_id,content_hash,attempt_number
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, attemptID, fence.FlowIncarnationID, fence.FlowID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, intent.DestinationRevisionID, intent.SourceLineageID, deliveryLogicalBatchID(intent), intent.PositionID, intent.ContentHash, priorAttempts+1); err != nil {
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, attemptID, fence.FlowIncarnationID, fence.FlowID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, intent.DestinationRevisionID, intent.SourceLineageID, intent.LogicalBatchID, intent.PositionID, intent.ContentHash, priorAttempts+1); err != nil {
 		return uuid.Nil, fmt.Errorf("prepare delivery attempt: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -842,7 +794,7 @@ func (c *Coordinator) recordEvidence(ctx context.Context, fence authority.RunFen
 	var attemptHash string
 	if err := tx.QueryRow(ctx, `
 SELECT content_hash FROM delivery_attempts
-WHERE attempt_id=$1 AND flow_incarnation_id=$2 AND destination_revision_id=$3 AND position_id=$4`, attemptID, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.PositionID).Scan(&attemptHash); err != nil {
+WHERE attempt_id=$1 AND flow_incarnation_id=$2 AND destination_revision_id=$3 AND logical_batch_id=$4`, attemptID, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.LogicalBatchID).Scan(&attemptHash); err != nil {
 		return fmt.Errorf("load delivery attempt for evidence: %w", err)
 	}
 	if attemptHash != intent.ContentHash {
@@ -889,7 +841,7 @@ WHERE evidence.attempt_id=$1
   AND attempt.flow_incarnation_id=$2
   AND attempt.destination_revision_id=$3
   AND attempt.source_lineage_id=$4
-  AND attempt.position_id=$5`, attemptID, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.PositionID).Scan(&externalID, &contentHash); err != nil {
+  AND attempt.logical_batch_id=$5`, attemptID, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.LogicalBatchID).Scan(&externalID, &contentHash); err != nil {
 		return AckGrant{}, fmt.Errorf("load delivery evidence for receipt: %w", err)
 	}
 	if contentHash != intent.ContentHash {
@@ -900,12 +852,12 @@ INSERT INTO delivery_receipts (
   flow_incarnation_id,destination_revision_id,source_lineage_id,logical_batch_id,position_id,content_hash,attempt_id,external_id,
   adopted_by_acquisition_id,adopted_by_lease_epoch
 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-ON CONFLICT (flow_incarnation_id,destination_revision_id,position_id) DO UPDATE SET
-  source_lineage_id=EXCLUDED.source_lineage_id
+ON CONFLICT (flow_incarnation_id,destination_revision_id,logical_batch_id) DO UPDATE SET
+  logical_batch_id=EXCLUDED.logical_batch_id
 WHERE delivery_receipts.source_lineage_id=EXCLUDED.source_lineage_id
-  AND delivery_receipts.logical_batch_id=EXCLUDED.logical_batch_id
+  AND delivery_receipts.position_id=EXCLUDED.position_id
   AND delivery_receipts.content_hash=EXCLUDED.content_hash
-  AND delivery_receipts.external_id=EXCLUDED.external_id`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, deliveryLogicalBatchID(intent), intent.PositionID, contentHash, attemptID, externalID, fence.AcquisitionID, fence.LeaseEpoch)
+  AND delivery_receipts.external_id=EXCLUDED.external_id`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.LogicalBatchID, intent.PositionID, contentHash, attemptID, externalID, fence.AcquisitionID, fence.LeaseEpoch)
 	if err != nil {
 		return AckGrant{}, fmt.Errorf("adopt delivery receipt: %w", err)
 	}
@@ -1083,13 +1035,6 @@ WHERE ack.flow_incarnation_id=$1
 		return 0, fmt.Errorf("commit delivery retention: %w", err)
 	}
 	return deleted, nil
-}
-
-func deliveryLogicalBatchID(intent connector.DeliveryIntent) string {
-	if value := strings.TrimSpace(intent.LogicalBatchID); value != "" {
-		return value
-	}
-	return "legacy:" + intent.PositionID
 }
 
 func finalizeCheckpointAndAck(ctx context.Context, tx pgx.Tx, fence authority.RunFence, positionID string, checkpoint connector.Checkpoint) (connector.Checkpoint, error) {

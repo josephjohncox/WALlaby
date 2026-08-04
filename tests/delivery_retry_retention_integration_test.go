@@ -92,7 +92,7 @@ func TestPostgresManagedDeliveryRetryAndRetention(t *testing.T) {
 	}()
 	target := &pgdest.Destination{}
 	if err := target.Open(ctx, connector.Spec{Name: "retry-retention", Type: connector.EndpointPostgres, Options: map[string]string{
-		"dsn": dsn, "write_mode": "target", "batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
+		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -107,13 +107,6 @@ func TestPostgresManagedDeliveryRetryAndRetention(t *testing.T) {
 
 	first := retentionTransaction(table, 3001, "0/500", 1)
 	firstIntent := transactionIntentForFence(t, fence, revisionID, first)
-	if _, err := pool.Exec(ctx, `
-INSERT INTO delivery_manifests (
-  flow_incarnation_id,destination_revision_id,source_lineage_id,position_id,
-  source_transaction_id,content_hash,checkpoint_lsn
-) VALUES ($1,$2,$3,$4,$5,$6,$7)`, fence.FlowIncarnationID, revisionID, firstIntent.SourceLineageID, firstIntent.PositionID, firstIntent.SourceLineageID+":"+first.EndLSN, firstIntent.ContentHash, first.EndLSN); err != nil {
-		t.Fatalf("checkpoint-1 control writer rejected after additive upgrade: %v", err)
-	}
 	failing := &failFirstTransactionDriver{ManagedTransactionDestination: target, fail: true}
 	if _, err := coordinator.DeliverTransaction(ctx, fence, firstIntent, first, failing); err == nil || errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("first deterministic failure=%v", err)
@@ -133,30 +126,6 @@ WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`,
 	}
 	if adoptedLogicalBatchID != firstIntent.LogicalBatchID {
 		t.Fatalf("adopted checkpoint-1 control logical batch=%q, want %q", adoptedLogicalBatchID, firstIntent.LogicalBatchID)
-	}
-	if _, err := pool.Exec(ctx, `
-UPDATE delivery_receipts SET logical_batch_id=NULL
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`, fence.FlowIncarnationID, revisionID, firstIntent.PositionID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `
-UPDATE delivery_attempts SET logical_batch_id=NULL
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`, fence.FlowIncarnationID, revisionID, firstIntent.PositionID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := coordinator.DeliverTransaction(ctx, fence, firstIntent, first, target); err != nil {
-		t.Fatalf("adopt checkpoint-1 control receipt after upgrade: %v", err)
-	}
-	var adoptedReceiptID, adoptedAttemptID string
-	if err := pool.QueryRow(ctx, `
-SELECT receipt.logical_batch_id,attempt.logical_batch_id
-FROM delivery_receipts AS receipt
-JOIN delivery_attempts AS attempt ON attempt.attempt_id=receipt.attempt_id
-WHERE receipt.flow_incarnation_id=$1 AND receipt.destination_revision_id=$2 AND receipt.position_id=$3`, fence.FlowIncarnationID, revisionID, firstIntent.PositionID).Scan(&adoptedReceiptID, &adoptedAttemptID); err != nil {
-		t.Fatal(err)
-	}
-	if adoptedReceiptID != firstIntent.LogicalBatchID || adoptedAttemptID != firstIntent.LogicalBatchID {
-		t.Fatalf("adopted checkpoint-1 receipt/attempt=%q/%q, want %q", adoptedReceiptID, adoptedAttemptID, firstIntent.LogicalBatchID)
 	}
 
 	postCommit := retentionTransaction(table, 3058, "0/580", 20)
@@ -396,41 +365,6 @@ SELECT
 	}
 	if concurrentManifest != 1 || concurrentReceipt != 1 || concurrentCheckpoint != concurrent.EndLSN {
 		t.Fatalf("concurrent finalization retention safety manifest/receipt/checkpoint=%d/%d/%s, want 1/1/%s", concurrentManifest, concurrentReceipt, concurrentCheckpoint, concurrent.EndLSN)
-	}
-
-	if _, err := pool.Exec(ctx, `UPDATE delivery_manifests SET logical_batch_id=NULL,created_at=clock_timestamp()-interval '2 hours' WHERE flow_incarnation_id=$1 AND position_id=$2`, fence.FlowIncarnationID, concurrentIntent.PositionID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE delivery_attempts SET logical_batch_id=NULL WHERE flow_incarnation_id=$1 AND position_id=$2`, fence.FlowIncarnationID, concurrentIntent.PositionID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE delivery_receipts SET logical_batch_id=NULL WHERE flow_incarnation_id=$1 AND position_id=$2`, fence.FlowIncarnationID, concurrentIntent.PositionID); err != nil {
-		t.Fatal(err)
-	}
-	newRoot, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/1100"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := coordinator.CommitSourceFeedback(ctx, fence, newRoot, &flushEvidenceTestSource{}); err != nil {
-		t.Fatal(err)
-	}
-	legacyPruned, err := coordinator.PruneTerminalDeliveryState(ctx, fence, time.Hour, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if legacyPruned < 1 {
-		t.Fatalf("unadopted checkpoint-1 terminal rows pruned=%d, want at least manifest", legacyPruned)
-	}
-	var legacyManifests, legacyAttempts, legacyReceipts int
-	if err := pool.QueryRow(ctx, `
-SELECT
-  (SELECT count(*) FROM delivery_manifests WHERE flow_incarnation_id=$1 AND position_id=$2),
-  (SELECT count(*) FROM delivery_attempts WHERE flow_incarnation_id=$1 AND position_id=$2),
-  (SELECT count(*) FROM delivery_receipts WHERE flow_incarnation_id=$1 AND position_id=$2)`, fence.FlowIncarnationID, concurrentIntent.PositionID).Scan(&legacyManifests, &legacyAttempts, &legacyReceipts); err != nil {
-		t.Fatal(err)
-	}
-	if legacyManifests != 0 || legacyAttempts != 0 || legacyReceipts != 0 {
-		t.Fatalf("unadopted checkpoint-1 terminal rows retained manifest/attempt/receipt=%d/%d/%d", legacyManifests, legacyAttempts, legacyReceipts)
 	}
 }
 

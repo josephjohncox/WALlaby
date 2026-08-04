@@ -486,23 +486,21 @@ func (d *Destination) ManagedClickHouseVersion() string {
 }
 
 // Apply is intentionally unavailable for the full-transaction append profile.
-func (d *Destination) Apply(context.Context, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
+func (d *Destination) Apply(_ context.Context, intent connector.DeliveryIntent, _ connector.Batch) (connector.DeliveryEvidence, error) {
+	if err := intent.Validate(); err != nil {
+		return connector.DeliveryEvidence{}, err
+	}
 	return connector.DeliveryEvidence{}, errors.New("managed ClickHouse append profile requires ApplyTransaction")
 }
 
 // ValidateTransaction proves the immutable envelope and dynamic target capacity
 // before the PostgreSQL coordinator persists a new external attempt.
 func (d *Destination) ValidateTransaction(ctx context.Context, transaction connector.SourceTransaction) error {
-	intent := connector.DeliveryIntent{
-		FlowID: "validation", FlowIncarnationID: "validation", SourceLineageID: transaction.SourceLineageID,
-		Generation: 1, AcquisitionID: "validation", LeaseEpoch: 1, DestinationRevisionID: "validation",
-		PositionID: transaction.Checkpoint.LSN,
-	}
 	contentHash, logicalBatchID, err := connector.SourceTransactionIdentity(transaction)
 	if err != nil {
 		return err
 	}
-	intent.ContentHash, intent.LogicalBatchID = contentHash, logicalBatchID
+	intent := connector.DeliveryIntent{FlowID: "validation", FlowIncarnationID: "validation", SourceLineageID: transaction.SourceLineageID, Generation: 1, AcquisitionID: "validation", LeaseEpoch: 1, DestinationRevisionID: "validation", LogicalBatchID: logicalBatchID, PositionID: transaction.Checkpoint.LSN, ContentHash: contentHash}
 	_, err = d.PrepareTransaction(ctx, intent, transaction)
 	return err
 }

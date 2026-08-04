@@ -181,7 +181,7 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 	}()
 	target := &pgdest.Destination{}
 	if err := target.Open(ctx, connector.Spec{Name: "managed-postgres", Options: map[string]string{
-		"dsn": dsn, "schema": "public", "write_mode": "target", "meta_table_enabled": "false",
+		"dsn": dsn, "schema": "public", "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "synchronous_commit": "on", "meta_table_enabled": "false",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -215,6 +215,15 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 	}
 	if attempts != 1 || receipts != 0 || ackIntents != 0 || checkpoints != 0 {
 		t.Fatalf("after ambiguous commit attempts=%d receipts=%d ackIntents=%d checkpoints=%d, want 1/0/0/0", attempts, receipts, ackIntents, checkpoints)
+	}
+	conflictingBatch := batch
+	conflictingBatch.Records = []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "conflicting"}}}
+	conflictingIntent := deliveryIntentForFence(t, oldFence, conflictingBatch)
+	if _, err := coordinator.Deliver(ctx, oldFence, conflictingIntent, conflictingBatch, target); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("retry identity conflict error=%v, want ErrDeliveryConflict", err)
+	}
+	if _, err := coordinator.Recover(ctx, oldFence, conflictingIntent, conflictingBatch.Checkpoint, target); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("recovery identity conflict error=%v, want ErrDeliveryConflict", err)
 	}
 
 	if _, err := pool.Exec(ctx, `UPDATE producer_leases SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE incarnation_id=$1`, oldFence.FlowIncarnationID); err != nil {
@@ -287,13 +296,17 @@ func deliveryIntentForFence(t *testing.T, fence authority.RunFence, batch connec
 	if err != nil {
 		t.Fatal(err)
 	}
+	logicalBatchID, err := connector.DeliveryLogicalBatchID("source-lineage-1", positionID, contentHash)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return connector.DeliveryIntent{
 		FlowID:                fence.FlowID,
 		FlowIncarnationID:     fence.FlowIncarnationID.String(),
 		Generation:            fence.Generation,
 		AcquisitionID:         fence.AcquisitionID.String(),
 		LeaseEpoch:            fence.LeaseEpoch,
-		DestinationRevisionID: "postgres-managed-v1", SourceLineageID: "source-lineage-1", LogicalBatchID: "logical-batch:" + contentHash,
+		DestinationRevisionID: "postgres-managed-v1", SourceLineageID: "source-lineage-1", LogicalBatchID: logicalBatchID,
 		PositionID:  positionID,
 		ContentHash: contentHash,
 	}

@@ -527,7 +527,13 @@ func (d *Destination) ensureManagedReceiptTable(ctx context.Context) error {
   committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   CONSTRAINT wallaby_delivery_receipts_pkey PRIMARY KEY (flow_incarnation_id,destination_revision_id,position_id),
   CONSTRAINT wallaby_delivery_receipts_marker_unique UNIQUE (marker_id),
-  CONSTRAINT wallaby_delivery_receipts_logical_batch_unique UNIQUE (flow_incarnation_id,destination_revision_id,logical_batch_id)
+  CONSTRAINT wallaby_delivery_receipts_logical_batch_unique UNIQUE (flow_incarnation_id,destination_revision_id,logical_batch_id),
+  CONSTRAINT wallaby_delivery_receipts_logical_batch_current CHECK (
+    logical_batch_id='logical-batch:'||pg_catalog.encode(
+      pg_catalog.sha256(pg_catalog.convert_to(source_lineage_id,'UTF8')||pg_catalog.decode('00','hex')||pg_catalog.convert_to(position_id,'UTF8')||pg_catalog.decode('00','hex')||pg_catalog.convert_to(content_hash,'UTF8')),
+      'hex'
+    )
+  )
 )`); err != nil {
 			return fmt.Errorf("create managed receipt table: %w", err)
 		}
@@ -540,6 +546,7 @@ func (d *Destination) ensureManagedReceiptTable(ctx context.Context) error {
 		return fmt.Errorf("managed receipt table contract: %w", err)
 	}
 	if err := verifyExactConstraintsAndIndexes(ctx, tx, "wallaby_meta", "__delivery_receipts", []string{
+		managedReceiptCanonicalConstraint,
 		"wallaby_delivery_receipts_logical_batch_unique|u|false|false|true|UNIQUE (flow_incarnation_id, destination_revision_id, logical_batch_id)",
 		"wallaby_delivery_receipts_marker_unique|u|false|false|true|UNIQUE (marker_id)",
 		"wallaby_delivery_receipts_pkey|p|false|false|true|PRIMARY KEY (flow_incarnation_id, destination_revision_id, position_id)",
@@ -572,6 +579,8 @@ WHERE n.nspname=$1 AND r.relname=$2 GROUP BY r.relkind,r.relpersistence`, namesp
 	return nil
 }
 
+const managedReceiptCanonicalConstraint = "wallaby_delivery_receipts_logical_batch_current|c|false|false|true|CHECK (logical_batch_id = ('logical-batch:'::text || encode(sha256((((convert_to(source_lineage_id, 'UTF8'::name) || decode('00'::text, 'hex'::text)) || convert_to(position_id, 'UTF8'::name)) || decode('00'::text, 'hex'::text)) || convert_to(content_hash, 'UTF8'::name)), 'hex'::text)))"
+
 type exactIndexContract struct {
 	name            string
 	primary, unique bool
@@ -599,7 +608,8 @@ FROM pg_catalog.pg_constraint c JOIN pg_catalog.pg_class r ON r.oid=c.conrelid J
 	for _, expected := range indexes {
 		var exact bool
 		if err := query.QueryRow(ctx, `SELECT am.amname='btree' AND i.indisunique=$4 AND i.indisprimary=$5 AND i.indisvalid AND i.indisready AND i.indislive AND i.indimmediate
- AND NOT i.indisclustered AND NOT i.indisreplident AND NOT i.indisexclusion AND NOT i.indcheckxmin AND NOT i.indnullsnotdistinct
+ AND NOT i.indisclustered AND NOT i.indisreplident AND NOT i.indisexclusion AND NOT i.indcheckxmin
+ AND NOT COALESCE((to_jsonb(i)->>'indnullsnotdistinct')::boolean,false)
  AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts=cardinality($6::text[]) AND i.indnatts=i.indnkeyatts
  AND keys.names=$6::text[] AND NOT EXISTS (
   SELECT 1 FROM generate_subscripts(i.indkey::smallint[],1) s(ord)
@@ -623,27 +633,43 @@ func (d *Destination) loadManagedReceipt(ctx context.Context, tx pgx.Tx, intent 
 	if strings.TrimSpace(intent.LogicalBatchID) == "" {
 		return "", errors.New("managed PostgreSQL delivery requires logical_batch_id")
 	}
-	row := tx.QueryRow(ctx, `
-SELECT content_hash,logical_batch_id
+	rows, err := tx.Query(ctx, `
+SELECT marker_id,flow_id,source_lineage_id,logical_batch_id,position_id,content_hash
 FROM wallaby_meta.__delivery_receipts
-WHERE flow_incarnation_id = $1
-  AND destination_revision_id = $2
-  AND source_lineage_id = $3
-  AND position_id = $4
-FOR UPDATE`, intent.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.PositionID)
-	var contentHash, logicalBatchID string
-	if err := row.Scan(&contentHash, &logicalBatchID); err != nil {
+WHERE flow_incarnation_id=$1
+  AND destination_revision_id=$2
+  AND (logical_batch_id=$3 OR position_id=$4)
+FOR UPDATE`, intent.FlowIncarnationID, intent.DestinationRevisionID, intent.LogicalBatchID, intent.PositionID)
+	if err != nil {
 		return "", err
 	}
-	if logicalBatchID != intent.LogicalBatchID {
-		return "", fmt.Errorf("%w: target logical batch %s differs from %s", connector.ErrDeliveryConflict, logicalBatchID, intent.LogicalBatchID)
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var markerID, flowID, sourceLineageID, logicalBatchID, positionID, contentHash string
+		if err := rows.Scan(&markerID, &flowID, &sourceLineageID, &logicalBatchID, &positionID, &contentHash); err != nil {
+			return "", err
+		}
+		if found || markerID != postgresDeliveryMarkerID(intent) || flowID != intent.FlowID || sourceLineageID != intent.SourceLineageID || logicalBatchID != intent.LogicalBatchID || positionID != intent.PositionID || contentHash != intent.ContentHash {
+			return "", fmt.Errorf("%w: target receipt immutable identity differs", connector.ErrDeliveryConflict)
+		}
+		found = true
 	}
-	return contentHash, nil
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if !found {
+		return "", pgx.ErrNoRows
+	}
+	return intent.ContentHash, nil
 }
 
 func (d *Destination) insertManagedReceipt(ctx context.Context, tx pgx.Tx, intent connector.DeliveryIntent, markerID string) error {
 	if strings.TrimSpace(intent.LogicalBatchID) == "" {
 		return errors.New("managed PostgreSQL delivery requires logical_batch_id")
+	}
+	if _, err := tx.Exec(ctx, `SAVEPOINT wallaby_managed_receipt_insert`); err != nil {
+		return fmt.Errorf("create postgres delivery receipt savepoint: %w", err)
 	}
 	_, err := tx.Exec(ctx, `
 INSERT INTO wallaby_meta.__delivery_receipts (
@@ -662,19 +688,30 @@ INSERT INTO wallaby_meta.__delivery_receipts (
 		intent.PositionID,
 		intent.ContentHash,
 	)
-	if err != nil {
-		var postgresErr *pgconn.PgError
-		if errors.As(err, &postgresErr) && postgresErr.Code == "23505" {
-			return fmt.Errorf("%w: concurrent postgres delivery receipt requires reconciliation: %w", connector.ErrDeliveryIndeterminate, err)
+	if err == nil {
+		if _, err := tx.Exec(ctx, `RELEASE SAVEPOINT wallaby_managed_receipt_insert`); err != nil {
+			return fmt.Errorf("release postgres delivery receipt savepoint: %w", err)
 		}
+		return nil
+	}
+	var postgresErr *pgconn.PgError
+	if !errors.As(err, &postgresErr) || postgresErr.Code != "23505" {
 		return fmt.Errorf("insert postgres delivery receipt: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
-DELETE FROM wallaby_meta.__delivery_receipts
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND marker_id<>$3`, intent.FlowIncarnationID, intent.DestinationRevisionID, markerID); err != nil {
-		return fmt.Errorf("prune superseded postgres delivery receipts: %w", err)
+	if _, rollbackErr := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT wallaby_managed_receipt_insert`); rollbackErr != nil {
+		return fmt.Errorf("%w: recover concurrent postgres receipt insert: %v (insert: %v)", connector.ErrDeliveryIndeterminate, rollbackErr, err)
 	}
-	return nil
+	_, reconcileErr := d.loadManagedReceipt(ctx, tx, intent)
+	switch {
+	case reconcileErr == nil:
+		return fmt.Errorf("%w: an exact concurrent postgres receipt committed; rollback target DML and reconcile", connector.ErrDeliveryIndeterminate)
+	case errors.Is(reconcileErr, connector.ErrDeliveryConflict):
+		return reconcileErr
+	case errors.Is(reconcileErr, pgx.ErrNoRows):
+		return fmt.Errorf("%w: postgres receipt uniqueness conflict is not yet reconcilable", connector.ErrDeliveryIndeterminate)
+	default:
+		return fmt.Errorf("%w: reconcile concurrent postgres receipt insert: %v", connector.ErrDeliveryIndeterminate, reconcileErr)
+	}
 }
 
 func postgresDeliveryMarkerID(intent connector.DeliveryIntent) string {

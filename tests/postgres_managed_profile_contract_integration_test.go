@@ -391,7 +391,7 @@ func TestPostgresManagedProfileDDLCommitReconciliation(t *testing.T) {
 	}
 }
 
-func TestPostgresManagedProfileUpgradeMigrations(t *testing.T) {
+func TestPostgresLegacyDeliveryIdentityMigrationFailsClosed(t *testing.T) {
 	dsn := managedProfileTestDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -471,78 +471,9 @@ INSERT INTO delivery_receipts (
 		t.Fatal(err)
 	}
 
-	if err := controlplane.ApplyMigrations(ctx, pool); err != nil {
-		t.Fatal(err)
-	}
-	var columns, indexes, triggers, preserved int
-	if err := pool.QueryRow(ctx, `
-SELECT count(*) FROM information_schema.columns
-WHERE table_schema='public' AND (
-  (table_name IN ('delivery_manifests','delivery_attempts','delivery_receipts') AND column_name='logical_batch_id')
-  OR (table_name='delivery_attempts' AND column_name IN ('reconciliation_attempts','last_reconciled_at'))
-)`).Scan(&columns); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexname IN ('delivery_manifests_logical_batch_idx','delivery_receipts_logical_batch_idx','delivery_attempts_retry_idx','delivery_attempts_logical_batch_idx')`).Scan(&indexes); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_trigger WHERE tgname='delivery_retention_roots_require_authority_v2' AND NOT tgisinternal`).Scan(&triggers); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `
-SELECT count(*)
-FROM delivery_manifests AS manifest
-JOIN delivery_attempts AS attempt USING (flow_incarnation_id,destination_revision_id,position_id)
-JOIN delivery_receipts AS receipt USING (flow_incarnation_id,destination_revision_id,position_id)
-WHERE manifest.flow_incarnation_id=$1
-  AND manifest.logical_batch_id='legacy:upgrade-position'
-  AND attempt.logical_batch_id='legacy:upgrade-position'
-  AND receipt.logical_batch_id='legacy:upgrade-position'
-  AND attempt.reconciliation_attempts=0`, incarnationID).Scan(&preserved); err != nil {
-		t.Fatal(err)
-	}
-	if columns != 5 || indexes != 4 || triggers != 1 || preserved != 1 {
-		t.Fatalf("delivery upgrade evidence columns/indexes/triggers/preserved=%d/%d/%d/%d, want 5/4/1/1", columns, indexes, triggers, preserved)
-	}
-	var migratedDomains int
-	if err := pool.QueryRow(ctx, `
-SELECT count(DISTINCT domain) FROM wallaby_control_migrations
-WHERE domain IN ('workflow','checkpoint','registry','controlplane','delivery','bootstrap','artifactlog')`).Scan(&migratedDomains); err != nil {
-		t.Fatal(err)
-	}
-	if migratedDomains != 7 {
-		t.Fatalf("profile control-plane migration domains=%d, want 7", migratedDomains)
-	}
-	rollingIncarnation := uuid.New()
-	rollingTx, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rollingTx.Exec(ctx, `SELECT set_config('wallaby.authority_protocol','v2',true)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rollingTx.Exec(ctx, `
-INSERT INTO delivery_manifests (
-  flow_incarnation_id,destination_revision_id,source_lineage_id,position_id,
-  source_transaction_id,content_hash,checkpoint_lsn
-) VALUES ($1,'rolling-revision','rolling-lineage','rolling-position','rolling-transaction','rolling-hash','0/A00')`, rollingIncarnation); err != nil {
-		t.Fatalf("checkpoint-1 authority-v2 writer rejected during rolling upgrade: %v", err)
-	}
-	if err := rollingTx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	var nullable string
-	var rollingRows int
-	if err := pool.QueryRow(ctx, `
-SELECT is_nullable FROM information_schema.columns
-WHERE table_schema='public' AND table_name='delivery_manifests' AND column_name='logical_batch_id'`).Scan(&nullable); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM delivery_manifests WHERE flow_incarnation_id=$1 AND logical_batch_id IS NULL`, rollingIncarnation).Scan(&rollingRows); err != nil {
-		t.Fatal(err)
-	}
-	if nullable != "YES" || rollingRows != 1 {
-		t.Fatalf("rolling logical-batch compatibility nullable/rows=%s/%d, want YES/1", nullable, rollingRows)
+	err = controlplane.ApplyMigrations(ctx, pool)
+	if err == nil || !strings.Contains(err.Error(),"refuses noncanonical logical batch identities") {
+		t.Fatalf("migration error=%v", err)
 	}
 }
 

@@ -42,7 +42,10 @@ func (d *Destination) managedHooksSnapshot() ManagedHooks {
 
 // Apply is intentionally unavailable because the Snowflake SQL profile can
 // authorize only a complete source transaction and its atomic target receipt.
-func (d *Destination) Apply(context.Context, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
+func (d *Destination) Apply(_ context.Context, intent connector.DeliveryIntent, _ connector.Batch) (connector.DeliveryEvidence, error) {
+	if err := intent.Validate(); err != nil {
+		return connector.DeliveryEvidence{}, err
+	}
 	return connector.DeliveryEvidence{}, errors.New("managed Snowflake SQL profile requires ApplyTransaction")
 }
 
@@ -118,7 +121,7 @@ func (d *Destination) PrepareTransaction(ctx context.Context, intent connector.D
 	if err != nil {
 		return nil, err
 	}
-	if err := d.validateManagedSnowflakeReceiptScope(ctx, conn, intent); err != nil {
+	if err := d.validateManagedSnowflakeReceiptScope(ctx, conn, intent.FlowIncarnationID); err != nil {
 		return nil, err
 	}
 	plan.catalogFingerprint = catalogFingerprint
@@ -196,7 +199,7 @@ func (p *preparedManagedSnowflakeTransaction) Apply(ctx context.Context) (_ conn
 	}
 
 	if p.plan.catalogFingerprint != "" {
-		if err := p.destination.validateManagedSnowflakeReceiptScope(ctx, tx, p.intent); err != nil {
+		if err := p.destination.validateManagedSnowflakeReceiptScope(ctx, tx, p.intent.FlowIncarnationID); err != nil {
 			return connector.DeliveryEvidence{}, err
 		}
 	}
@@ -343,7 +346,7 @@ func (d *Destination) Reconcile(ctx context.Context, intent connector.DeliveryIn
 		}
 	}
 	if d.managedConfig.validateEveryConnection {
-		if err := d.validateManagedSnowflakeReceiptScope(reconcileCtx, conn, intent); err != nil {
+		if err := d.validateManagedSnowflakeReceiptScope(reconcileCtx, conn, intent.FlowIncarnationID); err != nil {
 			endReconcile(err)
 			return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
 		}
@@ -379,11 +382,11 @@ func (d *Destination) ValidateManagedFlowScope(ctx context.Context, flowID, flow
 		return err
 	}
 	defer func() { _ = conn.Close() }()
-	return d.validateManagedSnowflakeReceiptScope(ctx, conn, connector.DeliveryIntent{FlowIncarnationID: flowIncarnationID})
+	return d.validateManagedSnowflakeReceiptScope(ctx, conn, flowIncarnationID)
 }
 
-func (d *Destination) validateManagedSnowflakeReceiptScope(ctx context.Context, queryer managedSnowflakeCatalogQueryer, intent connector.DeliveryIntent) error {
-	flowIncarnationID := strings.TrimSpace(intent.FlowIncarnationID)
+func (d *Destination) validateManagedSnowflakeReceiptScope(ctx context.Context, queryer managedSnowflakeCatalogQueryer, flowIncarnationID string) error {
+	flowIncarnationID = strings.TrimSpace(flowIncarnationID)
 	if flowIncarnationID == "" {
 		return errors.New("managed Snowflake flow incarnation is required")
 	}

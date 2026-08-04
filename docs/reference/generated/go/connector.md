@@ -452,7 +452,7 @@ type BootstrapTable struct {
 ```
 
 <a name="CanonicalArtifactDestination"></a>
-## type [CanonicalArtifactDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L127-L130>)
+## type [CanonicalArtifactDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L135-L138>)
 
 CanonicalArtifactDestination marks a destination specification that is consumed asynchronously from the PostgreSQL\-authoritative artifact log. Its ordinary Destination methods are never a data\-delivery path.
 
@@ -783,7 +783,7 @@ type DDLReconciler interface {
 ```
 
 <a name="DeliveryDisposition"></a>
-## type [DeliveryDisposition](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L116>)
+## type [DeliveryDisposition](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L124>)
 
 DeliveryDisposition is the result of destination reconciliation.
 
@@ -802,7 +802,7 @@ const (
 ```
 
 <a name="DeliveryEvidence"></a>
-## type [DeliveryEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L110-L113>)
+## type [DeliveryEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L118-L121>)
 
 DeliveryEvidence is untrusted external proof returned by a destination.
 
@@ -1018,7 +1018,7 @@ type ManagedClickHouseVersionProvider interface {
 ```
 
 <a name="ManagedDestination"></a>
-## type [ManagedDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L135-L139>)
+## type [ManagedDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L143-L147>)
 
 ManagedDestination applies an immutable delivery intent and reconciles an ambiguous prior attempt. Implementations must fail closed when evidence is insufficient.
 
@@ -1190,7 +1190,7 @@ type ManagedSourceSchemaValidator interface {
 ```
 
 <a name="ManagedTransactionDestination"></a>
-## type [ManagedTransactionDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L146-L150>)
+## type [ManagedTransactionDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L154-L158>)
 
 ManagedTransactionDestination is the full\-transaction extension used by named managed profiles. Validation runs immediately before a new control\-plane attempt is prepared, but never blocks adoption of an already committed target marker. Transactional targets commit all fragments with the marker; append\-only targets insert ordered, replay\-convergent fragments and write the marker last.
 
@@ -1203,7 +1203,7 @@ type ManagedTransactionDestination interface {
 ```
 
 <a name="ManagedTransactionPreparer"></a>
-## type [ManagedTransactionPreparer](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L163-L165>)
+## type [ManagedTransactionPreparer](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L171-L173>)
 
 ManagedTransactionPreparer is an optional deep interface implemented by managed destinations that can validate and retain one bounded transaction plan before PostgreSQL persists the external attempt.
 
@@ -1266,7 +1266,7 @@ type OutboxStore interface {
 ```
 
 <a name="PreparedManagedTransaction"></a>
-## type [PreparedManagedTransaction](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L156-L158>)
+## type [PreparedManagedTransaction](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L164-L166>)
 
 PreparedManagedTransaction is a bounded, validated destination operation. The implementation hides destination\-specific planning behind one Apply method so the coordinator does not ask an adapter to materialize a full transaction twice around the durable attempt boundary.
 

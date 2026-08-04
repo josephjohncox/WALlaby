@@ -90,12 +90,20 @@ func (i DeliveryIntent) Validate() error {
 		"source_lineage_id":       i.SourceLineageID,
 		"acquisition_id":          i.AcquisitionID,
 		"destination_revision_id": i.DestinationRevisionID,
+		"logical_batch_id":        i.LogicalBatchID,
 		"position_id":             i.PositionID,
 		"content_hash":            i.ContentHash,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("delivery intent %s is required", name)
 		}
+	}
+	expectedLogicalBatchID, err := DeliveryLogicalBatchID(i.SourceLineageID, i.PositionID, i.ContentHash)
+	if err != nil {
+		return fmt.Errorf("validate delivery intent logical_batch_id: %w", err)
+	}
+	if i.LogicalBatchID != strings.TrimSpace(i.LogicalBatchID) || strings.HasPrefix(i.LogicalBatchID, "legacy:") || i.LogicalBatchID != expectedLogicalBatchID {
+		return fmt.Errorf("%w: delivery intent logical_batch_id must equal the canonical source-lineage/position/content identity", ErrDeliveryConflict)
 	}
 	if i.Generation <= 0 {
 		return errors.New("delivery intent generation must be positive")

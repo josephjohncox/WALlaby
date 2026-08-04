@@ -572,14 +572,19 @@ func managedIntent(t *testing.T, batch connector.Batch, suffix string) connector
 	if err != nil {
 		t.Fatal(err)
 	}
+	positionID := "position-" + suffix
+	logicalBatchID, err := connector.DeliveryLogicalBatchID("source-lineage-1", positionID, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return connector.DeliveryIntent{
 		FlowID:                "managed-flow",
 		FlowIncarnationID:     "incarnation-" + suffix,
 		Generation:            1,
 		AcquisitionID:         "acquisition-1",
 		LeaseEpoch:            1,
-		DestinationRevisionID: "postgres-target-1", SourceLineageID: "source-lineage-1", LogicalBatchID: "logical-batch-" + suffix,
-		PositionID:  "position-" + suffix,
+		DestinationRevisionID: "postgres-target-1", SourceLineageID: "source-lineage-1", LogicalBatchID: logicalBatchID,
+		PositionID:  positionID,
 		ContentHash: hash,
 	}
 }

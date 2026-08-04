@@ -89,10 +89,11 @@ CREATE TABLE wallaby_meta.__delivery_receipts (
 		t.Fatal("managed open recreated a missing receipt constraint")
 	}
 	for name, mutation := range map[string]string{
-		"removed_default": `ALTER TABLE wallaby_meta.__delivery_receipts ALTER COLUMN committed_at DROP DEFAULT`,
-		"extra_check":     `ALTER TABLE wallaby_meta.__delivery_receipts ADD CONSTRAINT adversarial_check CHECK (generation>0)`,
-		"identity_column": `ALTER TABLE wallaby_meta.__delivery_receipts ADD COLUMN adversarial_identity bigint GENERATED ALWAYS AS IDENTITY`,
-		"wrong_index":     `CREATE INDEX adversarial_hash_index ON wallaby_meta.__delivery_receipts USING hash(content_hash)`,
+		"removed_default":     `ALTER TABLE wallaby_meta.__delivery_receipts ALTER COLUMN committed_at DROP DEFAULT`,
+		"extra_check":         `ALTER TABLE wallaby_meta.__delivery_receipts ADD CONSTRAINT adversarial_check CHECK (generation>0)`,
+		"identity_column":     `ALTER TABLE wallaby_meta.__delivery_receipts ADD COLUMN adversarial_identity bigint GENERATED ALWAYS AS IDENTITY`,
+		"wrong_index":         `CREATE INDEX adversarial_hash_index ON wallaby_meta.__delivery_receipts USING hash(content_hash)`,
+		"weak_identity_check": `ALTER TABLE wallaby_meta.__delivery_receipts DROP CONSTRAINT wallaby_delivery_receipts_logical_batch_current;ALTER TABLE wallaby_meta.__delivery_receipts ADD CONSTRAINT wallaby_delivery_receipts_logical_batch_current CHECK (logical_batch_id<>'')`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := admin.Exec(ctx, `DROP TABLE IF EXISTS wallaby_meta.__delivery_receipts`); err != nil {
