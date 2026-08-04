@@ -71,7 +71,7 @@ func TestPostgresManagedDeliveryRetryAndRetention(t *testing.T) {
 	}
 	flowID := fmt.Sprintf("delivery-retention-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -484,7 +484,7 @@ func retentionTransaction(table string, xid uint32, endLSN string, id int64) con
 		BeginLSN: "0/400", CommitLSN: endLSN, EndLSN: endLSN, Checkpoint: connector.Checkpoint{LSN: endLSN},
 		Fragments: []connector.TransactionFragment{{
 			Ordinal: 0,
-			Batch: connector.Batch{
+			Batch: connector.Batch{WritePolicy: testUpsertPolicy("id"),
 				Schema: managedTransactionSchema("public", table, connector.Column{Name: "value", Type: "text"}),
 				Records: []connector.Record{{
 					Table: table, Operation: connector.OpInsert, SchemaVersion: 1,

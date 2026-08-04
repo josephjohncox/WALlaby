@@ -99,6 +99,9 @@ CREATE TABLE audit.wallaby_managed_events (id bigint PRIMARY KEY,widget_id bigin
 			},
 		},
 	}
+	for index := range transaction.Fragments {
+		transaction.Fragments[index].Batch.WritePolicy = connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}}
+	}
 	contentHash, err := connector.SourceTransactionContentHash(transaction)
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +181,7 @@ func TestPostgresManagedTransactionCommitBeforeReceiptReconciles(t *testing.T) {
 	}
 	flowID := fmt.Sprintf("transaction-reconcile-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -215,7 +218,7 @@ func TestPostgresManagedTransactionCommitBeforeReceiptReconciles(t *testing.T) {
 		BeginLSN: "0/700", CommitLSN: "0/780", EndLSN: "0/788", Checkpoint: connector.Checkpoint{LSN: "0/788"},
 		Fragments: []connector.TransactionFragment{{
 			Ordinal: 0,
-			Batch: connector.Batch{
+			Batch: connector.Batch{WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}},
 				Schema: managedTransactionSchema("public", table, connector.Column{Name: "value", Type: "text"}),
 				Records: []connector.Record{{
 					Table: table, Operation: connector.OpInsert, SchemaVersion: 1,
@@ -284,7 +287,7 @@ func TestPostgresManagedOverlappingTakeoverAdoptsConcurrentCommit(t *testing.T) 
 	}
 	flowID := fmt.Sprintf("transaction-overlap-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -330,7 +333,7 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.wallaby_transaction_overlap_block()`)
 	transaction := connector.SourceTransaction{
 		SourceLineageID: "transaction-overlap-lineage", TransactionID: 903,
 		BeginLSN: "0/800", CommitLSN: "0/880", EndLSN: "0/888", Checkpoint: connector.Checkpoint{LSN: "0/888"},
-		Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: connector.Batch{
+		Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: connector.Batch{WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}},
 			Schema: managedTransactionSchema("public", "wallaby_transaction_overlap", connector.Column{Name: "value", Type: "text"}),
 			Records: []connector.Record{{
 				Table: "wallaby_transaction_overlap", Operation: connector.OpInsert, SchemaVersion: 1,

@@ -98,7 +98,7 @@ DROP TABLE IF EXISTS public.wallaby_worker_kill_target`)
 	defer engine.Close()
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
 	defer cleanupBootstrapSlotsForFlow(t, pool, flowID)
-	if _, err := engine.Create(ctx, definition); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(definition)); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,7 +73,7 @@ func TestAuthorityV2CatalogAndRepresentativeMutations(t *testing.T) {
 		t.Fatal(err)
 	}
 	flowID := "authority-v2-workflow-" + suffix
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
@@ -89,7 +91,7 @@ func TestAuthorityV2CatalogAndRepresentativeMutations(t *testing.T) {
 		{name: "checkpoint", sql: `INSERT INTO checkpoints(flow_id,lsn,metadata) VALUES($1,'0/1','{}')`, args: []any{"authority-v2-checkpoint-" + suffix}},
 		{name: "registry", sql: `INSERT INTO schema_versions(namespace,name,version,schema_json) VALUES($1,'table',1,'{}')`, args: []any{"authority_v2_registry_" + suffix}},
 		{name: "delivery", sql: `INSERT INTO destination_revisions(destination_revision_id,destination_name,config_fingerprint) VALUES($1,'target','hash')`, args: []any{"authority-v2-delivery-" + suffix}},
-		{name: "artifact", sql: `INSERT INTO canonical_schemas(schema_id,projection_id,schema_json) VALUES($1,'projection','{}')`, args: []any{"authority-v2-artifact-" + suffix}},
+		{name: "artifact", sql: `INSERT INTO canonical_schemas(schema_id,projection_id,mapping_fingerprint,schema_json) VALUES($1,'canonical_cdc_parquet_v2',$2,'{}')`, args: []any{"authority-v2-artifact-" + suffix, strings.Repeat("a", 64)}},
 		{name: "bootstrap", sql: `INSERT INTO source_bootstraps(bootstrap_id,flow_incarnation_id,flow_id,generation,bootstrap_generation,acquisition_id,lease_epoch,source_system_id,database_name,slot_name,publication_name,plugin,consistent_lsn,snapshot_name,manifest_hash,selection_hash,phase,owner_generation,owner_acquisition_id,owner_lease_epoch) VALUES($1,$2,'flow',1,1,$3,1,'system','database',$4,'publication','pgoutput','0/1','snapshot','hash','selection','abandoned',1,$3,1)`, args: []any{uuid.New(), uuid.New(), uuid.New(), "authority_v2_slot_" + suffix}},
 	}
 	for _, tt := range tests {
@@ -139,7 +141,7 @@ func TestExternalCheckpointPutSerializesProducerAcquisition(t *testing.T) {
 	authorityStore, _ := authority.NewPostgresStore(pool)
 	flowID := fmt.Sprintf("external-checkpoint-atomic-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -237,7 +239,7 @@ func TestPostgresGenerationFenceRejectsStaleCommit(t *testing.T) {
 
 	flowID := fmt.Sprintf("authority-stale-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -302,7 +304,7 @@ func TestPostgresRunFenceValidationSerializesTakeover(t *testing.T) {
 	store, _ := authority.NewPostgresStore(pool)
 	flowID := fmt.Sprintf("authority-linearizable-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -382,7 +384,7 @@ func TestPostgresCheckpointGenerationFenceRejectsStaleCommit(t *testing.T) {
 
 	flowID := fmt.Sprintf("checkpoint-fence-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -449,7 +451,7 @@ func TestPostgresFlowIDReuseDoesNotRestoreOldState(t *testing.T) {
 
 	flowID := fmt.Sprintf("authority-reuse-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -495,7 +497,7 @@ func TestPostgresFlowIDReuseDoesNotRestoreOldState(t *testing.T) {
 	if err := engine.Delete(ctx, flowID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, newControl, err := engine.PlanStart(ctx, flowID, false)
@@ -536,7 +538,7 @@ func TestAuthorityProtocolGateRejectsStaleBinarySession(t *testing.T) {
 	}
 	defer engine.Close()
 	flowID := fmt.Sprintf("authority-protocol-%d", time.Now().UnixNano())
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	currentPool, err := newAuthorityTestPool(ctx, dsn)
@@ -570,6 +572,76 @@ func newAuthorityTestPool(ctx context.Context, dsn string) (*pgxpool.Pool, error
 	}
 	controlstore.ConfigurePool(cfg)
 	return pgxpool.NewWithConfig(ctx, cfg)
+}
+
+// currentTestFlow binds live fixtures to the mandatory current mapping contract
+// without changing the behavior under test. Connector-specific fixtures may
+// replace the generated append policies with explicit upsert policies.
+func currentTestFlow(definition flow.Flow) flow.Flow {
+	if definition.Source.Type == "" {
+		definition.Source = connector.Spec{Name: "source", Type: connector.EndpointPostgres}
+	}
+	if definition.Source.Name == "" {
+		definition.Source.Name = "source"
+	}
+	if len(definition.Destinations) == 0 {
+		definition.Destinations = []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}
+	}
+	for index := range definition.Destinations {
+		if definition.Destinations[index].Name == "" {
+			definition.Destinations[index].Name = fmt.Sprintf("target-%d", index+1)
+		}
+		if definition.Destinations[index].Options != nil {
+			options := maps.Clone(definition.Destinations[index].Options)
+			definition.Destinations[index].Options = options
+		}
+	}
+	if definition.Config.TableMappings.Version != 0 {
+		return definition
+	}
+	definition.Config.TableMappings = flow.NewTableMappings(definition.Destinations)
+	tables := strings.TrimSpace(definition.Source.Options["tables"])
+	if tables == "" {
+		return definition
+	}
+	sourceName := strings.TrimSpace(strings.Split(tables, ",")[0])
+	sourceSchema, sourceTable := "public", sourceName
+	if parts := strings.SplitN(sourceName, ".", 2); len(parts) == 2 {
+		sourceSchema, sourceTable = parts[0], parts[1]
+	}
+	for index := range definition.Destinations {
+		destination := &definition.Destinations[index]
+		targetSchema, targetTable := sourceSchema, sourceTable
+		if value := strings.TrimSpace(destination.Options["schema"]); value != "" {
+			targetSchema = value
+		}
+		if value := strings.TrimSpace(destination.Options["table"]); value != "" {
+			targetTable = value
+		}
+		delete(destination.Options, "schema")
+		delete(destination.Options, "table")
+		delete(destination.Options, "write_mode")
+		mapping := &definition.Config.TableMappings.Destinations[index]
+		mapping.FutureTables = flow.FutureTableMapping{Action: flow.MappingActionExclude}
+		policy := flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}
+		if destination.Type == connector.EndpointPostgres && definition.Source.Options["managed"] == "true" {
+			policy = flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}
+		}
+		mapping.Tables = []flow.TableMapping{{SourceSchema: sourceSchema, SourceTable: sourceTable, Action: flow.MappingActionInclude, TargetSchema: targetSchema, TargetTable: targetTable, FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: policy}}
+	}
+	return definition
+}
+
+func bindTestUpsertPolicy(transaction *connector.SourceTransaction, keys ...string) {
+	for index := range transaction.Fragments {
+		transaction.Fragments[index].Batch.WritePolicy = connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: append([]string(nil), keys...)}
+	}
+}
+func testUpsertPolicy(keys ...string) connector.TableWritePolicy {
+	return connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: append([]string(nil), keys...)}
+}
+func testAppendPolicy() connector.TableWritePolicy {
+	return connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend}
 }
 
 func cleanupAuthorityTest(ctx context.Context, pool *pgxpool.Pool, flowID string) {

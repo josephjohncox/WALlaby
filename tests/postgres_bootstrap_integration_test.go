@@ -535,7 +535,7 @@ func setupBootstrapControl(t *testing.T) (context.Context, string, *workflow.Pos
 
 func createRunningFence(t *testing.T, ctx context.Context, engine *workflow.PostgresEngine, store *authority.PostgresStore, flowID string) authority.RunFence {
 	t.Helper()
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)

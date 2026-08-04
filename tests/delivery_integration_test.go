@@ -44,7 +44,7 @@ func TestPostgresDestinationRevisionIsImmutable(t *testing.T) {
 	}
 	flowID := fmt.Sprintf("destination-revision-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -97,7 +97,7 @@ func TestPostgresAckOnlyCheckpointHasIntentAndReceipt(t *testing.T) {
 	}
 	flowID := fmt.Sprintf("ack-only-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -160,7 +160,7 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 
 	flowID := fmt.Sprintf("delivery-recovery-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -187,11 +187,7 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 	}
 	defer target.Close(ctx)
 
-	batch := connector.Batch{
-		Schema:     connector.Schema{Namespace: "public", Name: tableName, Version: 1, Columns: []connector.Column{{Name: "id", Type: "bigint"}, {Name: "value", Type: "text"}}},
-		Records:    []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "committed"}}},
-		Checkpoint: connector.Checkpoint{LSN: "0/B0"},
-	}
+	batch := connector.Batch{Schema: testManagedUpsertSchema(tableName), Records: []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "committed"}}}, Checkpoint: connector.Checkpoint{LSN: "0/B0"}, WritePolicy: testUpsertPolicy("id")}
 	oldIntent := deliveryIntentForFence(t, oldFence, batch)
 	defer func() {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM destination_revisions WHERE destination_revision_id=$1", oldIntent.DestinationRevisionID)
@@ -297,9 +293,8 @@ func deliveryIntentForFence(t *testing.T, fence authority.RunFence, batch connec
 		Generation:            fence.Generation,
 		AcquisitionID:         fence.AcquisitionID.String(),
 		LeaseEpoch:            fence.LeaseEpoch,
-		DestinationRevisionID: "postgres-managed-v1",
-		SourceLineageID:       "source-lineage-1",
-		PositionID:            positionID,
-		ContentHash:           contentHash,
+		DestinationRevisionID: "postgres-managed-v1", SourceLineageID: "source-lineage-1", LogicalBatchID: "logical-batch:" + contentHash,
+		PositionID:  positionID,
+		ContentHash: contentHash,
 	}
 }

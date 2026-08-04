@@ -68,6 +68,7 @@ func runManagedBootstrapBoundaryRecovery(t *testing.T, boundary string) {
 		}}},
 		Config: flow.Config{AckPolicy: stream.AckPolicyAll},
 	}
+	flowDef = currentTestFlow(flowDef)
 	if _, err := engine.Create(ctx, flowDef); err != nil {
 		t.Fatal(err)
 	}
@@ -254,6 +255,9 @@ WHERE receipt.bootstrap_id=$1::uuid
   AND receipt.position_id LIKE 'bootstrap/'||$1||'/%'
   AND receipt.content_hash=attempt.content_hash
   AND receipt.content_hash=evidence.content_hash
+  AND receipt.logical_batch_id=attempt.logical_batch_id
+  AND receipt.logical_batch_id=evidence.logical_batch_id
+  AND receipt.logical_batch_id LIKE 'logical-batch:%'
   AND receipt.durable_cursor #>> '{keys,0,name}'='id'
   AND receipt.durable_cursor #>> '{keys,0,value}'='1'`, bootstrapID).Scan(&snapshotAudit); err != nil {
 		t.Fatal(err)

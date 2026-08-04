@@ -17,7 +17,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
 	"github.com/josephjohncox/wallaby/internal/controlplane"
+	"github.com/josephjohncox/wallaby/internal/flow"
 	internalschema "github.com/josephjohncox/wallaby/internal/schema"
+	"github.com/josephjohncox/wallaby/internal/tablemap"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
@@ -83,13 +85,13 @@ func TestPostgresManagedProfileTargetAdmission(t *testing.T) {
 		BootstrapID: uuid.NewString(), BootstrapGeneration: 1, Generation: 1,
 		AcquisitionID: uuid.NewString(), LeaseEpoch: 1, DestinationRevisionID: "target-admission-revision", ManifestHash: "target-admission-manifest",
 	}
-	if err := destination.PrepareBootstrap(ctx, intent, tables); err == nil || !strings.Contains(err.Error(), "unique constraint") {
+	if err := destination.PrepareBootstrap(ctx, intent, tables); err == nil || !strings.Contains(err.Error(), "unique/primary-key constraint") {
 		t.Fatalf("bootstrap target without unique identity error=%v, want unique-constraint rejection", err)
 	}
 	if _, err := pool.Exec(ctx, `ALTER TABLE public.wallaby_profile_target_admission ADD CONSTRAINT wallaby_profile_target_admission_deferred UNIQUE (id) DEFERRABLE INITIALLY IMMEDIATE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := destination.PrepareBootstrap(ctx, intent, tables); err == nil || !strings.Contains(err.Error(), "unique constraint") {
+	if err := destination.PrepareBootstrap(ctx, intent, tables); err == nil || !strings.Contains(err.Error(), "unique/primary-key constraint") {
 		t.Fatalf("bootstrap target with deferrable unique identity error=%v, want ON CONFLICT-ineligible rejection", err)
 	}
 	if _, err := pool.Exec(ctx, `
@@ -117,6 +119,7 @@ ALTER TABLE public.wallaby_profile_target_admission ADD CONSTRAINT wallaby_profi
 			}}},
 		}},
 	}
+	bindTestUpsertPolicy(&transaction, "id")
 	if err := destination.ValidateTransaction(ctx, transaction); err == nil || !strings.Contains(err.Error(), "incompatible") {
 		t.Fatalf("target type mismatch error=%v, want incompatibility rejection", err)
 	}
@@ -168,6 +171,7 @@ func TestPostgresManagedProfileDestinationSchemaEvolution(t *testing.T) {
 			},
 		},
 	}
+	bindTestUpsertPolicy(&transaction, "id")
 	intent := managedProfileTransactionIntent(t, transaction, "schema-evolution")
 	if _, err := destination.ApplyTransaction(ctx, intent, transaction); err != nil {
 		t.Fatal(err)
@@ -209,6 +213,7 @@ func TestPostgresManagedProfileDestinationSchemaEvolution(t *testing.T) {
 			},
 		},
 	}
+	bindTestUpsertPolicy(&alterTransaction, "id")
 	if _, err := destination.ApplyTransaction(ctx, managedProfileTransactionIntent(t, alterTransaction, "schema-alter"), alterTransaction); err != nil {
 		t.Fatal(err)
 	}
@@ -241,6 +246,7 @@ func TestPostgresManagedProfileDestinationSchemaEvolution(t *testing.T) {
 			},
 		},
 	}
+	bindTestUpsertPolicy(&dropTransaction, "id")
 	if _, err := destination.ApplyTransaction(ctx, managedProfileTransactionIntent(t, dropTransaction, "schema-drop"), dropTransaction); err != nil {
 		t.Fatal(err)
 	}
@@ -305,6 +311,15 @@ func TestPostgresManagedProfileDDLTargetMapping(t *testing.T) {
 			}}}},
 		},
 	}
+	mappings := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "mapped-profile", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: sourceTable, Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: targetTable, FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}}}}
+	projector, err := tablemap.New(mappings, "mapped-profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction, _, err = projector.ProjectTransaction(transaction)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := destination.ApplyTransaction(ctx, managedProfileTransactionIntent(t, transaction, "ddl-target-mapping"), transaction); err != nil {
 		t.Fatal(err)
 	}
@@ -360,6 +375,7 @@ func TestPostgresManagedProfileDDLCommitReconciliation(t *testing.T) {
 			}}},
 		}},
 	}
+	bindTestUpsertPolicy(&transaction, "id")
 	intent := managedProfileTransactionIntent(t, transaction, "ddl-reconcile")
 	driver := &commitBeforeReceiptTransactionDriver{ManagedTransactionDestination: destination}
 	evidence, err := driver.ApplyTransaction(ctx, intent, transaction)

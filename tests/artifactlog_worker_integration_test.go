@@ -81,7 +81,7 @@ DROP TABLE IF EXISTS public.wallaby_worker_materialized_target`)
 			Materialization: flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v2"},
 		},
 	}
-	if _, err := deps.engine.Create(ctx, definition); err != nil {
+	if _, err := deps.engine.Create(ctx, currentTestFlow(definition)); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := deps.engine.PlanStart(ctx, flowID, false)

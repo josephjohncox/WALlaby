@@ -513,6 +513,7 @@ func runManagedAdmissionFlow(ctx context.Context, dsn string, engine *workflow.P
 		}}},
 		Config: flow.Config{AckPolicy: stream.AckPolicyAll},
 	}
+	definition = currentTestFlow(definition)
 	if _, err := engine.Create(ctx, definition); err != nil {
 		return err
 	}
@@ -596,7 +597,7 @@ func livePublicationRelations(t *testing.T, ctx context.Context, pool *pgxpool.P
 
 func createManagedResourceFence(t *testing.T, ctx context.Context, engine *workflow.PostgresEngine, store *authority.PostgresStore, flowID, dsn string) authority.RunFence {
 	t.Helper()
-	definition := flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "managed": "true"}}}
+	definition := currentTestFlow(flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "managed": "true"}}})
 	if _, err := engine.Create(ctx, definition); err != nil {
 		t.Fatal(err)
 	}

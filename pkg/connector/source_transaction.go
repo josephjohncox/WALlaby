@@ -142,6 +142,16 @@ func SourceTransactionContentHash(transaction SourceTransaction) (string, error)
 // hashing the same transaction twice at that seam. Process-local schema
 // counters, observation timestamps, and checkpoint recovery metadata do not
 // participate in the identity of an otherwise identical WAL replay.
+func DeliveryLogicalBatchID(sourceLineageID, positionID, contentHash string) (string, error) {
+	for name, value := range map[string]string{"source_lineage_id": sourceLineageID, "position_id": positionID, "content_hash": contentHash} {
+		if strings.TrimSpace(value) == "" {
+			return "", fmt.Errorf("logical batch %s is required", name)
+		}
+	}
+	digest := sha256.Sum256([]byte(sourceLineageID + "\x00" + positionID + "\x00" + contentHash))
+	return "logical-batch:" + hex.EncodeToString(digest[:]), nil
+}
+
 func SourceTransactionIdentity(transaction SourceTransaction) (string, string, error) {
 	contentHash, err := SourceTransactionContentHash(transaction)
 	if err != nil {
@@ -151,8 +161,11 @@ func SourceTransactionIdentity(transaction SourceTransaction) (string, string, e
 	if err != nil {
 		return "", "", err
 	}
-	digest := sha256.Sum256([]byte(transaction.SourceLineageID + "\x00" + position + "\x00" + contentHash))
-	return contentHash, "logical-batch:" + hex.EncodeToString(digest[:]), nil
+	logicalBatchID, err := DeliveryLogicalBatchID(transaction.SourceLineageID, position, contentHash)
+	if err != nil {
+		return "", "", err
+	}
+	return contentHash, logicalBatchID, nil
 }
 
 // SourceTransactionLogicalBatchID identifies one source commit independently

@@ -1,9 +1,32 @@
 package connector
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestDeliveryLogicalBatchIDIsReplayStableAndPositionBound(t *testing.T) {
+	t.Parallel()
+	first, err := DeliveryLogicalBatchID("lineage", "bootstrap/id/task/1", strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := DeliveryLogicalBatchID("lineage", "bootstrap/id/task/1", strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != replay || !strings.HasPrefix(first, "logical-batch:") {
+		t.Fatalf("logical IDs=%q/%q", first, replay)
+	}
+	other, err := DeliveryLogicalBatchID("lineage", "bootstrap/id/task/2", strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other == first {
+		t.Fatal("position did not bind logical batch ID")
+	}
+}
 
 func TestSourceTransactionContentHashPreservesFragmentOrder(t *testing.T) {
 	t.Parallel()

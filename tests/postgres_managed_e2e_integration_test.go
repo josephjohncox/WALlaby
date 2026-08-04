@@ -72,7 +72,7 @@ DROP TABLE IF EXISTS public.wallaby_managed_target`)
 
 	flowID := "postgres-managed-e2e-" + uuid.NewString()
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
-	created, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Type: connector.EndpointPostgres}}, Config: flow.Config{AckPolicy: stream.AckPolicyAll}})
+	created, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{AckPolicy: stream.AckPolicyAll}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ DROP TABLE IF EXISTS public.wallaby_managed_target`)
 		_, _ = pool.Exec(context.Background(), "DELETE FROM destination_revisions WHERE destination_revision_id=$1", destinationRevisionID)
 	}()
 	created.Destinations = []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
-		"dsn": dsn, "schema": "public", "table": "wallaby_managed_target",
+		"dsn":        dsn,
 		"batch_mode": "target", "meta_table_enabled": "false",
 		"synchronous_commit": "on", "destination_revision_id": destinationRevisionID,
 	}}}
@@ -116,6 +116,7 @@ DROP TABLE IF EXISTS public.wallaby_managed_target`)
 	started.Source = created.Source
 	started.Destinations = created.Destinations
 	started.Config.AckPolicy = stream.AckPolicyAll
+	started.Config.TableMappings = flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "target", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: "wallaby_managed_source", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: "wallaby_managed_target", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}}}}
 
 	var provisionedSlot, provisionedLSN string
 	if err := pool.QueryRow(ctx, `SELECT slot_name,lsn::text FROM pg_catalog.pg_create_logical_replication_slot($1,'pgoutput')`, slotName).Scan(&provisionedSlot, &provisionedLSN); err != nil {

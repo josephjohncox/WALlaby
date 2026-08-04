@@ -43,7 +43,7 @@ func TestRegistryAndDDLReceiptsRejectStaleTakeover(t *testing.T) {
 	}
 	flowID := fmt.Sprintf("registry-fence-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, currentTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)

@@ -142,11 +142,15 @@ func (b *Bootstrapper) DeliverTaskBatch(ctx context.Context, claim authority.Cla
 		return err
 	}
 	positionID := fmt.Sprintf("bootstrap/%s/%d/%s/%d", snapshot.BootstrapID, task.RelationID, task.TaskID, ordinal)
+	logicalBatchID, err := connector.DeliveryLogicalBatchID(snapshot.SourceLineageID, positionID, contentHash)
+	if err != nil {
+		return err
+	}
 	intent := connector.DeliveryIntent{
 		FlowID: claim.FlowID, FlowIncarnationID: claim.FlowIncarnationID.String(),
 		SourceLineageID: snapshot.SourceLineageID,
 		Generation:      claim.Generation, AcquisitionID: claim.AcquisitionID.String(), LeaseEpoch: claim.LeaseEpoch,
-		DestinationRevisionID: destinationRevisionID, PositionID: positionID, ContentHash: contentHash,
+		DestinationRevisionID: destinationRevisionID, LogicalBatchID: logicalBatchID, PositionID: positionID, ContentHash: contentHash,
 	}
 	bootstrapIntent := connector.BootstrapIntent{
 		FlowID: claim.FlowID, FlowIncarnationID: claim.FlowIncarnationID.String(),
@@ -155,7 +159,7 @@ func (b *Bootstrapper) DeliverTaskBatch(ctx context.Context, claim authority.Cla
 		AcquisitionID: claim.AcquisitionID.String(), LeaseEpoch: claim.LeaseEpoch,
 		DestinationRevisionID: destinationRevisionID, ManifestHash: snapshot.ManifestHash,
 	}
-	attemptID, alreadyComplete, err := b.prepareTaskAttempt(ctx, claim, snapshot, task, ordinal, destinationRevisionID, positionID, contentHash)
+	attemptID, alreadyComplete, err := b.prepareTaskAttempt(ctx, claim, snapshot, task, ordinal, destinationRevisionID, positionID, logicalBatchID, contentHash)
 	if err != nil || alreadyComplete {
 		return err
 	}
@@ -183,10 +187,10 @@ func (b *Bootstrapper) DeliverTaskBatch(ctx context.Context, claim authority.Cla
 			return err
 		}
 	}
-	return b.finalizeTaskAttempt(ctx, claim, snapshot, task, ordinal, cursor, complete, attemptID, positionID, contentHash, evidence)
+	return b.finalizeTaskAttempt(ctx, claim, snapshot, task, ordinal, cursor, complete, attemptID, positionID, logicalBatchID, contentHash, evidence)
 }
 
-func (b *Bootstrapper) prepareTaskAttempt(ctx context.Context, claim authority.ClaimFence, snapshot ExportedSnapshot, task SnapshotTask, ordinal int64, destinationRevisionID, positionID, contentHash string) (uuid.UUID, bool, error) {
+func (b *Bootstrapper) prepareTaskAttempt(ctx context.Context, claim authority.ClaimFence, snapshot ExportedSnapshot, task SnapshotTask, ordinal int64, destinationRevisionID, positionID, logicalBatchID, contentHash string) (uuid.UUID, bool, error) {
 	tx, err := b.control.Begin(ctx)
 	if err != nil {
 		return uuid.Nil, false, err
@@ -212,14 +216,14 @@ FOR UPDATE`, snapshot.BootstrapID, task.RelationID, task.TaskID, claim.FlowIncar
 		return uuid.Nil, false, err
 	}
 	if ordinal <= currentOrdinal {
-		var existingHash string
+		var existingHash, existingLogicalBatchID string
 		err := tx.QueryRow(ctx, `
-SELECT content_hash FROM snapshot_delivery_receipts
-WHERE bootstrap_id=$1 AND relation_id=$2 AND task_id=$3 AND batch_ordinal=$4`, snapshot.BootstrapID, task.RelationID, task.TaskID, ordinal).Scan(&existingHash)
+SELECT content_hash,logical_batch_id FROM snapshot_delivery_receipts
+WHERE bootstrap_id=$1 AND relation_id=$2 AND task_id=$3 AND batch_ordinal=$4`, snapshot.BootstrapID, task.RelationID, task.TaskID, ordinal).Scan(&existingHash, &existingLogicalBatchID)
 		if err != nil {
 			return uuid.Nil, false, err
 		}
-		if existingHash != contentHash {
+		if existingHash != contentHash || existingLogicalBatchID != logicalBatchID {
 			return uuid.Nil, false, fmt.Errorf("%w: replayed snapshot batch changed content", connector.ErrDeliveryConflict)
 		}
 		return uuid.Nil, true, tx.Commit(ctx)
@@ -231,9 +235,9 @@ WHERE bootstrap_id=$1 AND relation_id=$2 AND task_id=$3 AND batch_ordinal=$4`, s
 	tag, err := tx.Exec(ctx, `
 INSERT INTO snapshot_delivery_attempts (
   attempt_id,bootstrap_id,relation_id,task_id,batch_ordinal,flow_incarnation_id,
-  generation,acquisition_id,lease_epoch,claim_epoch,destination_revision_id,position_id,content_hash
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-ON CONFLICT (bootstrap_id,relation_id,task_id,batch_ordinal) DO NOTHING`, attemptID, snapshot.BootstrapID, task.RelationID, task.TaskID, ordinal, claim.FlowIncarnationID, claim.Generation, claim.AcquisitionID, claim.LeaseEpoch, claim.ClaimEpoch, destinationRevisionID, positionID, contentHash)
+  generation,acquisition_id,lease_epoch,claim_epoch,destination_revision_id,position_id,logical_batch_id,content_hash
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+ON CONFLICT (bootstrap_id,relation_id,task_id,batch_ordinal) DO NOTHING`, attemptID, snapshot.BootstrapID, task.RelationID, task.TaskID, ordinal, claim.FlowIncarnationID, claim.Generation, claim.AcquisitionID, claim.LeaseEpoch, claim.ClaimEpoch, destinationRevisionID, positionID, logicalBatchID, contentHash)
 	if err != nil {
 		return uuid.Nil, false, err
 	}
@@ -241,7 +245,7 @@ ON CONFLICT (bootstrap_id,relation_id,task_id,batch_ordinal) DO NOTHING`, attemp
 		if err := tx.QueryRow(ctx, `
 SELECT attempt_id FROM snapshot_delivery_attempts
 WHERE bootstrap_id=$1 AND relation_id=$2 AND task_id=$3 AND batch_ordinal=$4
-  AND destination_revision_id=$5 AND position_id=$6 AND content_hash=$7`, snapshot.BootstrapID, task.RelationID, task.TaskID, ordinal, destinationRevisionID, positionID, contentHash).Scan(&attemptID); err != nil {
+  AND destination_revision_id=$5 AND position_id=$6 AND logical_batch_id=$7 AND content_hash=$8`, snapshot.BootstrapID, task.RelationID, task.TaskID, ordinal, destinationRevisionID, positionID, logicalBatchID, contentHash).Scan(&attemptID); err != nil {
 			return uuid.Nil, false, fmt.Errorf("%w: bootstrap attempt identity conflict", connector.ErrDeliveryConflict)
 		}
 	}
@@ -251,7 +255,7 @@ WHERE bootstrap_id=$1 AND relation_id=$2 AND task_id=$3 AND batch_ordinal=$4
 	return attemptID, false, nil
 }
 
-func (b *Bootstrapper) finalizeTaskAttempt(ctx context.Context, claim authority.ClaimFence, snapshot ExportedSnapshot, task SnapshotTask, ordinal int64, cursor json.RawMessage, complete bool, attemptID uuid.UUID, positionID, contentHash string, evidence connector.DeliveryEvidence) error {
+func (b *Bootstrapper) finalizeTaskAttempt(ctx context.Context, claim authority.ClaimFence, snapshot ExportedSnapshot, task SnapshotTask, ordinal int64, cursor json.RawMessage, complete bool, attemptID uuid.UUID, positionID, logicalBatchID, contentHash string, evidence connector.DeliveryEvidence) error {
 	tx, err := b.control.Begin(ctx)
 	if err != nil {
 		return err
@@ -261,23 +265,25 @@ func (b *Bootstrapper) finalizeTaskAttempt(ctx context.Context, claim authority.
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
-INSERT INTO snapshot_delivery_evidence(attempt_id,external_id,content_hash)
-VALUES($1,$2,$3)
+INSERT INTO snapshot_delivery_evidence(attempt_id,external_id,logical_batch_id,content_hash)
+VALUES($1,$2,$3,$4)
 ON CONFLICT(attempt_id) DO UPDATE SET external_id=EXCLUDED.external_id
 WHERE snapshot_delivery_evidence.external_id=EXCLUDED.external_id
-  AND snapshot_delivery_evidence.content_hash=EXCLUDED.content_hash`, attemptID, evidence.ExternalID, contentHash); err != nil {
+  AND snapshot_delivery_evidence.logical_batch_id=EXCLUDED.logical_batch_id
+  AND snapshot_delivery_evidence.content_hash=EXCLUDED.content_hash`, attemptID, evidence.ExternalID, logicalBatchID, contentHash); err != nil {
 		return err
 	}
 	tag, err := tx.Exec(ctx, `
 INSERT INTO snapshot_delivery_receipts (
-  bootstrap_id,relation_id,task_id,batch_ordinal,attempt_id,position_id,content_hash,external_id,durable_cursor,completed_task
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+  bootstrap_id,relation_id,task_id,batch_ordinal,attempt_id,position_id,logical_batch_id,content_hash,external_id,durable_cursor,completed_task
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 ON CONFLICT (bootstrap_id,relation_id,task_id,batch_ordinal) DO UPDATE SET
   external_id=EXCLUDED.external_id
 WHERE snapshot_delivery_receipts.attempt_id=EXCLUDED.attempt_id
   AND snapshot_delivery_receipts.position_id=EXCLUDED.position_id
+  AND snapshot_delivery_receipts.logical_batch_id=EXCLUDED.logical_batch_id
   AND snapshot_delivery_receipts.content_hash=EXCLUDED.content_hash
-  AND snapshot_delivery_receipts.external_id=EXCLUDED.external_id`, snapshot.BootstrapID, task.RelationID, task.TaskID, ordinal, attemptID, positionID, contentHash, evidence.ExternalID, cursor, complete)
+  AND snapshot_delivery_receipts.external_id=EXCLUDED.external_id`, snapshot.BootstrapID, task.RelationID, task.TaskID, ordinal, attemptID, positionID, logicalBatchID, contentHash, evidence.ExternalID, cursor, complete)
 	if err != nil {
 		return err
 	}
