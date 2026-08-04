@@ -109,6 +109,10 @@ Changing the flow binding, target or receipt table, account, schema, role, wareh
 
 See [Snowflake destination](../connectors/snowflake.md) for the exact options, table DDL, and opt-in real-service gate.
 
+## Managed Snowflake staged COPY
+
+`postgresql-to-snowflake-staged-append-v1` adds `managed_stage`, `managed_file_format`, and their creation identities (`managed_stage_created_on`, `managed_file_format_created_on`) to the managed Snowflake options, uses `write_mode=staged_append`, and writes into a standard append changelog table plus a hybrid receipt table. Optional `managed_auto_ingest=true` requires `managed_pipe` and `managed_pipe_created_on`. Load verification is bounded by `managed_load_verify_attempts` and `managed_load_verify_interval_ms`; bounded stage cleanup is bounded by `managed_cleanup_max_objects` and `managed_cleanup_retention_seconds`. The DSN must set `READ_LATEST_WRITES=true` and `TIMEZONE=UTC`, carry no inline secret, and use key-pair JWT over verified HTTPS with OCSP fail-closed. Changing any object, identity, bound, or schema contract requires a new destination revision. PostgreSQL remains authoritative for generations, attempts, checkpoints, delivery receipts, and source acknowledgements; the profile never claims exactly-once.
+
 ## Command-specific files
 
 - `wallaby-admin` reads `wallaby-admin.yaml` or `$HOME/.config/wallaby/wallaby-admin.yaml` and honors `WALLABY_ADMIN_CONFIG`.

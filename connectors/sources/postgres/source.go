@@ -175,7 +175,7 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 
 	s.slot = spec.Options[optSlot]
 	managedProfile := strings.TrimSpace(spec.Options[optManagedProfile])
-	if managedProfile == connector.ManagedProfilePostgresToSnowflakeSQLV1 && s.slot == "managed" {
+	if connector.IsManagedSnowflakeProfile(managedProfile) && s.slot == "managed" {
 		if s.managedFence == nil {
 			return errors.New("managed Snowflake slot derivation requires a bound RunFence")
 		}
@@ -190,7 +190,7 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		return errors.New("publication is required")
 	}
 	managed := connector.IsManagedSourceSpec(spec)
-	managedSnowflakeCut := managed && managedProfile == connector.ManagedProfilePostgresToSnowflakeSQLV1 && parseBool(spec.Options[optCreateSlot], false)
+	managedSnowflakeCut := managed && connector.IsManagedSnowflakeProfile(managedProfile) && parseBool(spec.Options[optCreateSlot], false)
 	if managed {
 		for _, option := range []string{optEnsureState, optEnsurePublication, optSyncPublication} {
 			raw, present := spec.Options[option]
@@ -368,7 +368,7 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		if actualRevision != expectedRevision {
 			return fmt.Errorf("managed publication revision %s does not match configured %s", actualRevision, expectedRevision)
 		}
-		if strings.TrimSpace(spec.Options[optManagedProfile]) == connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+		if connector.IsManagedSnowflakeProfile(strings.TrimSpace(spec.Options[optManagedProfile])) {
 			s.managedPublicationTables, s.managedPublicationSchemas, err = loadManagedSnowflakePublicationContract(ctx, lagPool, s.publication)
 			if err != nil {
 				return fmt.Errorf("validate managed Snowflake source publication: %w", err)
@@ -971,6 +971,8 @@ func validateManagedPostgresServerVersion(ctx context.Context, pool *pgxpool.Poo
 		profile = connector.PostgresToClickHouseAppendV1Profile()
 	case connector.ManagedProfilePostgresToSnowflakeSQLV1:
 		profile = connector.PostgresToSnowflakeSQLV1Profile()
+	case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
+		profile = connector.PostgresToSnowflakeStagedAppendV1Profile()
 	default:
 		return 0, fmt.Errorf("unsupported PostgreSQL managed profile %q", profileName)
 	}

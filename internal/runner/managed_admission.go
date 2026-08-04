@@ -21,7 +21,8 @@ import (
 func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec connector.Spec, destinations []stream.DestinationConfig, cfg StreamRunnerConfig) error {
 	profileName := strings.TrimSpace(sourceSpec.Options["managed_profile"])
 	switch profileName {
-	case "", connector.ManagedProfilePostgresToPostgresV1, connector.ManagedProfilePostgresToClickHouseAppendV1, connector.ManagedProfilePostgresToSnowflakeSQLV1:
+	case "", connector.ManagedProfilePostgresToPostgresV1, connector.ManagedProfilePostgresToClickHouseAppendV1,
+		connector.ManagedProfilePostgresToSnowflakeSQLV1, connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
 	default:
 		return fmt.Errorf("unsupported managed_profile %q", profileName)
 	}
@@ -63,7 +64,7 @@ func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec c
 			}
 		}
 		createSlot, createSlotPresent := sourceSpec.Options["create_slot"]
-		if profileName == connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+		if connector.IsManagedSnowflakeProfile(profileName) {
 			if !createSlotPresent || !parseEnabledOption(createSlot, false) {
 				return fmt.Errorf("%s requires create_slot=true for its fenced clean source cut", profileName)
 			}
@@ -152,6 +153,8 @@ func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec c
 		return validateManagedClickHouseAdmission(sourceSpec, destination, bootstrapMode)
 	case connector.ManagedProfilePostgresToSnowflakeSQLV1:
 		return validateManagedSnowflakeAdmission(f.ID, sourceSpec, destination, bootstrapMode)
+	case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
+		return validateManagedSnowflakeStagedAppendAdmission(f.ID, sourceSpec, destination, bootstrapMode)
 	case "", connector.ManagedProfilePostgresToPostgresV1:
 		return validateManagedPostgresDestinationAdmission(sourceSpec, destination, bootstrapMode, profileName)
 	default:
@@ -516,6 +519,205 @@ func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.Spec,
 		}
 	}
 	if err := snowflakedest.ValidateManagedProfileSpec(destination.Spec); err != nil {
+		return fmt.Errorf("%s destination contract: %w", profileName, err)
+	}
+	return nil
+}
+
+func validateManagedSnowflakeStagedAppendAdmission(flowID string, sourceSpec connector.Spec, destination stream.DestinationConfig, bootstrapMode string) error {
+	const profileName = connector.ManagedProfilePostgresToSnowflakeStagedAppendV1
+	if strings.TrimSpace(destination.Spec.Options["flow_id"]) != flowID {
+		return fmt.Errorf("%s destination flow_id %q does not match flow %q", profileName, destination.Spec.Options["flow_id"], flowID)
+	}
+	if destination.Spec.Type != connector.EndpointSnowflake {
+		return fmt.Errorf("%s requires a Snowflake destination", profileName)
+	}
+	if destinationProfile := strings.TrimSpace(destination.Spec.Options["managed_profile"]); destinationProfile != profileName {
+		return fmt.Errorf("destination managed_profile %q does not match source profile %q", destinationProfile, profileName)
+	}
+	profile := connector.PostgresToSnowflakeStagedAppendV1Profile()
+	if err := profile.ValidatePromotion(); err != nil {
+		return fmt.Errorf("managed profile contract: %w", err)
+	}
+	if bootstrapMode != "never" {
+		return fmt.Errorf("%s currently requires bootstrap=never; target state must be provisioned before admission", profileName)
+	}
+	if strings.TrimSpace(sourceSpec.Options["slot"]) != "managed" {
+		return fmt.Errorf("%s requires slot=managed so the RunFence derives a flow-incarnation-specific slot", profileName)
+	}
+	if !parseEnabledOption(sourceSpec.Options["streaming_transactions"], false) {
+		return fmt.Errorf("%s requires streaming_transactions=true", profileName)
+	}
+	if toastFetch := strings.ToLower(strings.TrimSpace(sourceSpec.Options["toast_fetch"])); toastFetch != "off" {
+		return fmt.Errorf("%s requires toast_fetch=off; replay must not read future source state", profileName)
+	}
+
+	options := destination.Spec.Options
+	if err := snowflakedest.ValidateManagedStagedProfileOptions(options); err != nil {
+		return fmt.Errorf("%s: %w", profileName, err)
+	}
+	for key, want := range map[string]string{
+		"write_mode": "staged_append", "batch_mode": "target", "batch_resolution": "none",
+	} {
+		if got := strings.ToLower(strings.TrimSpace(options[key])); got != want {
+			return fmt.Errorf("%s requires %s=%s; got %q", profileName, key, want, got)
+		}
+	}
+	if parseEnabledOption(options["meta_table_enabled"], true) {
+		return fmt.Errorf("%s requires meta_table_enabled=false; the owned receipt table is the only target metadata object", profileName)
+	}
+	if parseEnabledOption(options["disable_transactions"], false) {
+		return fmt.Errorf("%s requires disable_transactions=false", profileName)
+	}
+	if parseEnabledOption(options["session_keep_alive"], false) {
+		return fmt.Errorf("%s requires session_keep_alive=false", profileName)
+	}
+	if strings.TrimSpace(options["type_mappings"]) != "" || strings.TrimSpace(options["type_mappings_file"]) != "" {
+		return fmt.Errorf("%s rejects type mapping overrides until each mapping has real-service evidence", profileName)
+	}
+	for _, key := range []string{
+		"schema", "table", "staging_schema", "staging_table", "staging_suffix", "warehouse", "warehouse_size",
+		"warehouse_auto_suspend", "warehouse_auto_resume", "meta_schema", "meta_table", "meta_pk_prefix",
+	} {
+		if strings.TrimSpace(options[key]) != "" {
+			return fmt.Errorf("%s rejects generic option %s", profileName, key)
+		}
+	}
+
+	dsnConfig, err := gosnowflake.ParseDSN(strings.TrimSpace(options["dsn"]))
+	if err != nil {
+		return fmt.Errorf("%s requires a valid Snowflake DSN: %w", profileName, err)
+	}
+	if !strings.EqualFold(dsnConfig.Protocol, "https") || dsnConfig.DisableOCSPChecks || dsnConfig.OCSPFailOpen != gosnowflake.OCSPFailOpenFalse {
+		return fmt.Errorf("%s requires verified HTTPS with OCSP fail-closed", profileName)
+	}
+	if dsnConfig.Authenticator != gosnowflake.AuthTypeJwt || dsnConfig.PrivateKey == nil {
+		return fmt.Errorf("%s requires key-pair JWT authentication", profileName)
+	}
+	readLatestWrites := false
+	clientSessionKeepAlive := false
+	timezone := ""
+	for key, value := range dsnConfig.Params {
+		if value == nil {
+			continue
+		}
+		enabled, _ := strconv.ParseBool(strings.TrimSpace(*value))
+		switch {
+		case strings.EqualFold(strings.TrimSpace(key), "READ_LATEST_WRITES"):
+			readLatestWrites = enabled
+		case strings.EqualFold(strings.TrimSpace(key), "CLIENT_SESSION_KEEP_ALIVE"):
+			clientSessionKeepAlive = enabled
+		case strings.EqualFold(strings.TrimSpace(key), "TIMEZONE"):
+			timezone = strings.TrimSpace(*value)
+		}
+	}
+	if !readLatestWrites {
+		return fmt.Errorf("%s requires DSN session parameter READ_LATEST_WRITES=true for cross-session receipt reconciliation", profileName)
+	}
+	if !strings.EqualFold(timezone, "UTC") {
+		return fmt.Errorf("%s requires DSN session parameter TIMEZONE=UTC", profileName)
+	}
+	if clientSessionKeepAlive {
+		return fmt.Errorf("%s rejects DSN session parameter CLIENT_SESSION_KEEP_ALIVE=true", profileName)
+	}
+
+	for _, identity := range []struct{ option, dsn, label string }{
+		{option: "managed_account", dsn: dsnConfig.Account, label: "account"},
+		{option: "managed_database", dsn: dsnConfig.Database, label: "database"},
+		{option: "managed_schema", dsn: dsnConfig.Schema, label: "schema"},
+		{option: "managed_execution_role", dsn: dsnConfig.Role, label: "role"},
+		{option: "managed_warehouse", dsn: dsnConfig.Warehouse, label: "warehouse"},
+	} {
+		configured := strings.TrimSpace(options[identity.option])
+		if configured == "" {
+			return fmt.Errorf("%s requires %s", profileName, identity.option)
+		}
+		if !strings.EqualFold(configured, identity.dsn) {
+			return fmt.Errorf("%s %s %q does not match DSN %s %q", profileName, identity.option, configured, identity.label, identity.dsn)
+		}
+	}
+	if err := validateManagedSnowflakeRevisionID(options["destination_revision_id"]); err != nil {
+		return fmt.Errorf("%s: %w", profileName, err)
+	}
+	stagedIdentifiers := []string{"managed_database", "managed_schema", "managed_stage", "managed_table", "managed_receipts_table", "managed_file_format", "managed_owner_role", "managed_execution_role", "managed_warehouse"}
+	if parseEnabledOption(options["managed_auto_ingest"], false) {
+		stagedIdentifiers = append(stagedIdentifiers, "managed_pipe")
+	}
+	for _, key := range stagedIdentifiers {
+		if err := validateManagedSnowflakeIdentifier(key, options[key]); err != nil {
+			return fmt.Errorf("%s: %w", profileName, err)
+		}
+	}
+	if options["managed_owner_role"] == options["managed_execution_role"] {
+		return fmt.Errorf("%s execution role must not own target objects", profileName)
+	}
+	requiredCreated := []string{"managed_source_schema", "managed_source_table", "managed_schema_contract", "managed_snowflake_version", "managed_stage_created_on", "managed_target_created_on", "managed_receipts_created_on", "managed_file_format_created_on"}
+	if parseEnabledOption(options["managed_auto_ingest"], false) {
+		requiredCreated = append(requiredCreated, "managed_pipe_created_on")
+	}
+	for _, key := range requiredCreated {
+		if strings.TrimSpace(options[key]) == "" {
+			return fmt.Errorf("%s requires %s", profileName, key)
+		}
+	}
+	var schemaContract connector.Schema
+	if err := json.Unmarshal([]byte(options["managed_schema_contract"]), &schemaContract); err != nil {
+		return fmt.Errorf("%s managed_schema_contract is invalid JSON: %w", profileName, err)
+	}
+	if schemaContract.Name != options["managed_source_table"] || schemaContract.Namespace != options["managed_source_schema"] || len(schemaContract.Columns) == 0 {
+		return fmt.Errorf("%s managed_schema_contract must exactly identify the configured non-empty source schema", profileName)
+	}
+	if !isLowerHexDigest(options["managed_schema_contract_hash"]) {
+		return fmt.Errorf("%s managed_schema_contract_hash must be 64 lowercase hexadecimal characters", profileName)
+	}
+	contractHash, err := snowflakedest.ManagedSchemaContractHash(schemaContract)
+	if err != nil {
+		return fmt.Errorf("%s managed_schema_contract: %w", profileName, err)
+	}
+	if contractHash != options["managed_schema_contract_hash"] {
+		return fmt.Errorf("%s managed_schema_contract_hash does not identify managed_schema_contract", profileName)
+	}
+	primaryColumns := 0
+	for _, column := range schemaContract.Columns {
+		if column.TypeMetadata["nullability_known"] != "true" || column.TypeMetadata["generated_known"] != "true" {
+			return fmt.Errorf("%s schema column %q requires known nullability and generation status", profileName, column.Name)
+		}
+		if column.Generated {
+			return fmt.Errorf("%s rejects generated source column %q", profileName, column.Name)
+		}
+		if column.TypeMetadata["primary_key"] == "true" {
+			if column.Nullable {
+				return fmt.Errorf("%s source primary-key column %q must be NOT NULL", profileName, column.Name)
+			}
+			primaryColumns++
+		}
+	}
+	if primaryColumns == 0 {
+		return fmt.Errorf("%s requires a source primary key", profileName)
+	}
+	for _, key := range []string{"managed_max_transaction_rows", "managed_max_transaction_bytes", "managed_max_transaction_fragments", "managed_max_open_conns"} {
+		if _, err := requiredManagedLimit(options, key); err != nil {
+			return fmt.Errorf("%s: %w", profileName, err)
+		}
+	}
+	for sourceKey, destinationKey := range map[string]string{
+		"max_transaction_records":   "managed_max_transaction_rows",
+		"max_transaction_bytes":     "managed_max_transaction_bytes",
+		"max_transaction_fragments": "managed_max_transaction_fragments",
+	} {
+		sourceLimit, err := requiredManagedLimit(sourceSpec.Options, sourceKey)
+		if err != nil {
+			return fmt.Errorf("%s: %w", profileName, err)
+		}
+		destinationLimit, err := requiredManagedLimit(options, destinationKey)
+		if err != nil {
+			return fmt.Errorf("%s: %w", profileName, err)
+		}
+		if sourceLimit > destinationLimit {
+			return fmt.Errorf("%s source %s=%d exceeds destination %s=%d", profileName, sourceKey, sourceLimit, destinationKey, destinationLimit)
+		}
+	}
+	if err := snowflakedest.ValidateManagedStagedProfileSpec(destination.Spec); err != nil {
 		return fmt.Errorf("%s destination contract: %w", profileName, err)
 	}
 	return nil
