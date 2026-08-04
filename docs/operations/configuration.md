@@ -1,6 +1,6 @@
 # Configuration
 
-WALlaby commands read YAML plus environment variables. A value from the selected configuration file takes precedence over its environment variable. Defaults apply last.
+WALlaby server and worker commands read strict YAML or JSON plus environment variables. A value from the selected configuration file takes precedence over its environment variable. The file is decoded before environment values are parsed, so a malformed lower-precedence environment value is ignored only when that exact file field is present. Defaults apply last.
 
 ## Server configuration
 
@@ -19,6 +19,31 @@ api:
 ```
 
 Do not commit credentials. Supply the DSN through an environment variable or a secret-mounted configuration file.
+
+## Current configuration-file schema
+
+Configuration files use only the lowercase underscore names below. YAML and JSON are decoded strictly: unknown, duplicate, misspelled, hyphenated, or wrong-typed keys fail with their complete path; multiple YAML documents and trailing JSON documents also fail. Durations are strings such as `30s`, integer fields are YAML/JSON integers, and booleans are YAML/JSON booleans. `profiling.enabled` is the profiling switch and `profiling.listen` is the profiling address.
+
+| Section | Current keys |
+| --- | --- |
+| root | `environment` |
+| `api` | `grpc_listen`, `grpc_reflection` |
+| `postgres` | `dsn` |
+| `workflow` | `store` |
+| `telemetry` | `service_name`, `otlp_endpoint`, `otlp_insecure`, `otlp_protocol`, `metrics_endpoint`, `metrics_insecure`, `metrics_protocol`, `traces_endpoint`, `traces_insecure`, `traces_protocol`, `metrics_exporter`, `traces_exporter`, `metrics_interval` |
+| `trace` | `path` |
+| `profiling` | `enabled`, `listen` |
+| `dbos` | `enabled`, `app_name`, `schedule`, `queue`, `max_empty_reads`, `max_retries` |
+| `kubernetes` | `enabled`, `kubeconfig_path`, `context`, `api_server`, `bearer_token`, `ca_file`, `ca_data`, `client_cert_file`, `client_key_file`, `insecure_skip_tls`, `namespace`, `job_image`, `job_image_pull_policy`, `job_service_account`, `job_automount_service_account_token`, `job_name_prefix`, `job_ttl_seconds`, `job_backoff_limit`, `job_max_empty_reads`, `job_labels`, `job_annotations`, `job_command`, `job_args`, `job_env`, `job_env_from` |
+| `wire` | `format`, `enforce` |
+| `ddl` | `catalog_enabled`, `catalog_interval`, `catalog_schemas`, `auto_approve`, `gate`, `auto_apply` |
+| `checkpoints` | `backend`, `dsn`, `path` |
+| `artifacts` | `bucket`, `region`, `endpoint`, `access_key`, `secret_key`, `session_token`, `force_path_style`, `hard_retained_bytes`, `backlog_batch_high`, `backlog_bytes_high`, `backlog_age_high`, `backpressure_poll_interval`, `orphan_grace`, `retention`, `gc_interval` |
+| `iceberg` | `profile`, `uri`, `warehouse`, `prefix`, `control_table`, `region`, `signing_name`, `expected_aws_role_arn`, `sigv4`, `allow_http`, `oauth_token`, `oauth_credential`, `oauth_scope`, `oauth_uri`, `ca_file`, `ca_data`, `client_cert_file`, `client_key_file`, `server_name`, `s3_endpoint`, `s3_region`, `max_commit_retries`, `request_timeout`, `reconciliation_horizon`, `s3tables_table_bucket_arn`, `s3tables_configure_maintenance`, `s3tables_min_snapshots_to_keep`, `s3tables_max_snapshot_age_hours` |
+
+The server environment uses the documented `WALLABY_*` forms (`WALLABY_ENV`, `WALLABY_GRPC_*`, `WALLABY_POSTGRES_DSN`, `WALLABY_WORKFLOW_STORE`, `WALLABY_OTEL_*`, `WALLABY_TRACE_PATH`, `WALLABY_PPROF_*`, `WALLABY_DBOS_*`, `WALLABY_K8S_*`, `WALLABY_WIRE_*`, `WALLABY_DDL_*`, `WALLABY_CHECKPOINT_*`, `WALLABY_ARTIFACT_*`, and `WALLABY_ICEBERG_*`). Worker deployments use the corresponding documented `WALLABY_WORKER_*` forms. Standard OpenTelemetry variables (`OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_*`, `OTEL_METRICS_EXPORTER`, and `OTEL_TRACES_EXPORTER`) remain current. A selected file overrides environment values; environment values override ordinary defaults. Undocumented environment variables do not configure WALlaby.
+
+Worker command flags also retain their normalized `WALLABY_WORKER_*` bindings, including `WALLABY_WORKER_FLOW_ID`, `WALLABY_WORKER_GENERATION`, `WALLABY_WORKER_EXECUTION_BACKEND`, and `WALLABY_WORKER_MAX_EMPTY_READS`. An explicit command-line flag overrides its environment binding. Strict runtime-file mode disables Viper file decoding and legacy key aliases; it does not disable current flag environment bindings.
 
 ## Workflow stores
 

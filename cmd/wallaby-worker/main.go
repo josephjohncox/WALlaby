@@ -84,7 +84,7 @@ func initWallabyWorkerConfig(cmd *cobra.Command) error {
 		ConfigEnvVar:     "WALLABY_WORKER_CONFIG",
 		ConfigName:       "wallaby-worker",
 		ConfigType:       "yaml",
-		ConfigSearchPath: nil,
+		ConfigSearchPath: nil, StrictRuntimeConfig: true,
 	}); err != nil {
 		return fmt.Errorf("initialize worker viper config: %w", err)
 	}
@@ -94,10 +94,7 @@ func initWallabyWorkerConfig(cmd *cobra.Command) error {
 func runWallabyWorker(cmd *cobra.Command) error {
 	configPath := cli.ResolveStringFlag(cmd, "config")
 	flowID := cli.ResolveStringFlag(cmd, "flow-id")
-	generation, err := cmd.Flags().GetInt64("generation")
-	if err != nil {
-		return err
-	}
+	generation := cli.ResolveInt64Flag(cmd, "generation")
 	executionBackend := cli.ResolveStringFlag(cmd, "execution-backend")
 	executionID := cli.ResolveStringFlag(cmd, "execution-id")
 	if executionBackend == "" {

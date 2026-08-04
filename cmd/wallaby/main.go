@@ -48,7 +48,7 @@ func initWallabyConfig(cmd *cobra.Command) error {
 		ConfigEnvVar:     "WALLABY_CONFIG",
 		ConfigName:       "wallaby",
 		ConfigType:       "yaml",
-		ConfigSearchPath: nil,
+		ConfigSearchPath: nil, StrictRuntimeConfig: true,
 	})
 }
 
