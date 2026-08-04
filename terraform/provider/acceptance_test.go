@@ -53,7 +53,7 @@ resource "wallaby_flow" "acc" {
   wire_format       = "arrow"
   start_immediately = true
 
-  source {
+  source = {
     name = "pg-source"
     type = "postgres"
     options = {
@@ -80,6 +80,27 @@ resource "wallaby_flow" "acc" {
       }
     }
   ]
+
+  config = {
+    ack_policy = "all"
+    table_mappings = {
+      version = 1
+      destinations = [{
+        destination = "kafka-out"
+        future_tables = {
+          action = "include"
+          target_schema = "{schema}"
+          target_table = "{table}"
+          future_columns = {
+            action = "include"
+            target_column = "{column}"
+          }
+          write = { mode = "append", key_columns = [] }
+        }
+        tables = []
+      }]
+    }
+  }
 }
 `, endpoint, insecure, dsn, brokers, topic)
 

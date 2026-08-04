@@ -157,6 +157,36 @@ func TestTableMappingsRejectInvalidContracts(t *testing.T) {
 	}
 }
 
+func TestAppendWatermarkIsMetadataAndSnowflakeUpsertIsProfileScoped(t *testing.T) {
+	t.Parallel()
+	appendMapping := richTestMappings()
+	appendMapping.Destinations[0].Tables[0].Write = TableWritePolicy{Mode: TableWriteModeAppend, WatermarkColumn: "updated_at"}
+	if err := appendMapping.Validate([]connector.Spec{{Name: "warehouse", Type: connector.EndpointS3}}); err != nil {
+		t.Fatalf("append watermark metadata rejected: %v", err)
+	}
+	upsert := richTestMappings()
+	upsert.Destinations[0].FutureTables = FutureTableMapping{Action: MappingActionExclude}
+	upsert.Destinations[0].Tables[0].Write.WatermarkColumn = ""
+	generic := connector.Spec{Name: "warehouse", Type: connector.EndpointSnowflake}
+	if err := upsert.Validate([]connector.Spec{generic}); err == nil || !strings.Contains(err.Error(), "does not support upsert") {
+		t.Fatalf("generic Snowflake upsert error=%v", err)
+	}
+	managed := generic
+	managed.Options = map[string]string{"managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1}
+	if err := upsert.Validate([]connector.Spec{managed}); err != nil {
+		t.Fatalf("managed Snowflake explicit-key upsert rejected: %v", err)
+	}
+	wrongProfile := generic
+	wrongProfile.Options = map[string]string{"managed_profile": "postgresql-to-snowflake-sql-v2"}
+	if err := upsert.Validate([]connector.Spec{wrongProfile}); err == nil {
+		t.Fatal("unknown Snowflake profile admitted upsert")
+	}
+	upsert.Destinations[0].Tables[0].Write.WatermarkColumn = "updated_at"
+	if err := upsert.Validate([]connector.Spec{managed}); err == nil || !strings.Contains(err.Error(), "watermark-guarded") {
+		t.Fatalf("managed Snowflake watermark upsert error=%v", err)
+	}
+}
+
 func TestValidateDefinitionRejectsMissingMappingsAndProjectedWAL(t *testing.T) {
 	t.Parallel()
 	destination := connector.Spec{Name: "warehouse", Type: connector.EndpointPostgres}

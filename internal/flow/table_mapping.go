@@ -428,7 +428,7 @@ func validateWritePolicy(write TableWritePolicy, destination connector.Spec, fut
 }
 
 func destinationSupportsUpsert(destination connector.Spec) bool {
-	return destination.Type == connector.EndpointPostgres
+	return destination.Type == connector.EndpointPostgres || connector.IsPostgresToSnowflakeSQLV1Spec(destination)
 }
 
 func tableIncludesColumn(table TableMapping, name string) bool {

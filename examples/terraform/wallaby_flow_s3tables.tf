@@ -1,11 +1,61 @@
-# Mapped Iceberg flows require durable destination-scoped table_mappings and
-# canonical_cdc_parquet_v2. The Terraform provider does not expose rich table
-# mappings until its dedicated follow-up task, so this directory intentionally
-# does not publish an invalid wallaby_flow resource with legacy namespace,
-# table_prefix, or canonical_cdc_parquet_v1 options.
-#
-# Use examples/flows/postgres_to_iceberg_s3tables.json through the API after
-# replacing its source identity placeholders. Provision the versioned canonical
-# S3 bucket, S3 Tables/Glue integration, IAM/Lake Formation grants, and
-# Snowflake read-only catalog link separately as documented in
-# docs/guides/s3-tables-snowflake.md.
+resource "wallaby_flow" "postgres_to_iceberg_s3tables" {
+  name              = "postgres_to_iceberg_s3tables"
+  wire_format       = "parquet"
+  start_immediately = false
+
+  source = {
+    name = "pg-source-s3tables"
+    type = "postgres"
+    options = {
+      dsn         = "postgres://user:pass@localhost:5432/app?sslmode=disable"
+      slot        = "wallaby_s3tables_slot"
+      publication = "wallaby_s3tables_pub"
+      managed     = "true"
+      bootstrap   = "never"
+      format      = "parquet"
+    }
+  }
+
+  destinations = [
+    {
+      name = "iceberg-s3tables"
+      type = "iceberg"
+      options = {
+        catalog_profile         = "s3tables"
+        control_table           = "__wallaby_control"
+        destination_revision_id = "iceberg-s3tables-v1"
+      }
+    }
+  ]
+
+  config = {
+    ack_policy = "materialized"
+
+    materialization = {
+      projection_id = "canonical_cdc_parquet_v2"
+    }
+
+    table_mappings = {
+      version = 1
+      destinations = [
+        {
+          destination = "iceberg-s3tables"
+          future_tables = {
+            action        = "include"
+            target_schema = "{schema}"
+            target_table  = "{table}"
+            future_columns = {
+              action        = "include"
+              target_column = "{column}"
+            }
+            write = {
+              mode        = "append"
+              key_columns = []
+            }
+          }
+          tables = []
+        }
+      ]
+    }
+  }
+}

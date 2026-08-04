@@ -22,6 +22,12 @@ const (
 	ManagedProfilePostgresToSnowflakeSQLV1 = "postgresql-to-snowflake-sql-v1"
 )
 
+// IsPostgresToSnowflakeSQLV1Spec reports whether spec selects the exact named
+// Snowflake SQL profile whose configured capabilities advertise explicit-key upsert.
+func IsPostgresToSnowflakeSQLV1Spec(spec Spec) bool {
+	return spec.Type == EndpointSnowflake && strings.TrimSpace(spec.Options["managed_profile"]) == ManagedProfilePostgresToSnowflakeSQLV1
+}
+
 // ManagedProfileGate binds one support claim to a required real-service test.
 type ManagedProfileGate struct {
 	Capability string

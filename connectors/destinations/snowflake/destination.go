@@ -421,7 +421,7 @@ func (d *Destination) Capabilities() connector.Capabilities {
 // without replay-safe capability claims.
 func (d *Destination) CapabilitiesFor(spec connector.Spec) connector.Capabilities {
 	capabilities := d.Capabilities()
-	if strings.TrimSpace(spec.Options["managed_profile"]) != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+	if !connector.IsPostgresToSnowflakeSQLV1Spec(spec) {
 		return capabilities
 	}
 	capabilities.TableWrites = connector.TableWriteSemantics{Declared: true, Upsert: true, ExplicitKey: true}

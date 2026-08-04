@@ -22,6 +22,7 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [func DeliveryConfigFingerprint\(spec Spec, projectionFingerprint string\) \(string, error\)](<#DeliveryConfigFingerprint>)
 - [func DeliveryLogicalBatchID\(sourceLineageID, positionID, contentHash string\) \(string, error\)](<#DeliveryLogicalBatchID>)
 - [func IsManagedSourceSpec\(spec Spec\) bool](<#IsManagedSourceSpec>)
+- [func IsPostgresToSnowflakeSQLV1Spec\(spec Spec\) bool](<#IsPostgresToSnowflakeSQLV1Spec>)
 - [func MergeManagedSchemaBaselines\(metadata map\[string\]string, transaction SourceTransaction\) \(map\[string\]string, error\)](<#MergeManagedSchemaBaselines>)
 - [func NormalizeKeyForSchema\(schema Schema, key map\[string\]any\) \(map\[string\]any, error\)](<#NormalizeKeyForSchema>)
 - [func NormalizePostgresRecord\(schema Schema, values map\[string\]any\) error](<#NormalizePostgresRecord>)
@@ -288,6 +289,15 @@ func IsManagedSourceSpec(spec Spec) bool
 ```
 
 IsManagedSourceSpec reports whether a source requests either the legacy managed protocol or a named managed profile. Control\-plane and runtime gates must use this single predicate so profile\-only flows cannot bypass fencing.
+
+<a name="IsPostgresToSnowflakeSQLV1Spec"></a>
+## func [IsPostgresToSnowflakeSQLV1Spec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L27>)
+
+```go
+func IsPostgresToSnowflakeSQLV1Spec(spec Spec) bool
+```
+
+IsPostgresToSnowflakeSQLV1Spec reports whether spec selects the exact named Snowflake SQL profile whose configured capabilities advertise explicit\-key upsert.
 
 <a name="MergeManagedSchemaBaselines"></a>
 ## func [MergeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L186>)
@@ -997,7 +1007,7 @@ type ManagedBootstrapSource interface {
 ```
 
 <a name="ManagedClickHouseVersionProvider"></a>
-## type [ManagedClickHouseVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L347-L349>)
+## type [ManagedClickHouseVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L353-L355>)
 
 ManagedClickHouseVersionProvider exposes the admitted live server version after connector Open.
 
@@ -1021,7 +1031,7 @@ type ManagedDestination interface {
 ```
 
 <a name="ManagedFlowScopeValidator"></a>
-## type [ManagedFlowScopeValidator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L341-L343>)
+## type [ManagedFlowScopeValidator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L347-L349>)
 
 ManagedFlowScopeValidator proves that an already\-open destination contains no receipts owned by another incarnation before the runner reads WAL.
 
@@ -1032,7 +1042,7 @@ type ManagedFlowScopeValidator interface {
 ```
 
 <a name="ManagedPostgresPublicationProvider"></a>
-## type [ManagedPostgresPublicationProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L328-L331>)
+## type [ManagedPostgresPublicationProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L334-L337>)
 
 ManagedPostgresPublicationProvider exposes the exact live publication relation set observed during named\-profile source admission.
 
@@ -1044,7 +1054,7 @@ type ManagedPostgresPublicationProvider interface {
 ```
 
 <a name="ManagedPostgresVersionProvider"></a>
-## type [ManagedPostgresVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L322-L324>)
+## type [ManagedPostgresVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L328-L330>)
 
 SupportsPostgresVersion reports whether the named profile admits a live PostgreSQL server\_version\_num major. ManagedPostgresVersionProvider exposes the admitted live server major after connector Open. The runner compares both endpoints before managed delivery.
 
@@ -1055,7 +1065,7 @@ type ManagedPostgresVersionProvider interface {
 ```
 
 <a name="ManagedProfileContract"></a>
-## type [ManagedProfileContract](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L34-L50>)
+## type [ManagedProfileContract](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L40-L56>)
 
 ManagedProfileContract is the executable support and admission declaration rendered into the generated connector support matrix.
 
@@ -1080,7 +1090,7 @@ type ManagedProfileContract struct {
 ```
 
 <a name="PostgresToClickHouseAppendV1Profile"></a>
-### func [PostgresToClickHouseAppendV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L88>)
+### func [PostgresToClickHouseAppendV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L94>)
 
 ```go
 func PostgresToClickHouseAppendV1Profile() ManagedProfileContract
@@ -1089,7 +1099,7 @@ func PostgresToClickHouseAppendV1Profile() ManagedProfileContract
 PostgresToClickHouseAppendV1Profile returns the exact promoted append\-only ClickHouse profile. Version support is deliberately limited to the exact PostgreSQL and ClickHouse patch pairing exercised by the real\-service gate.
 
 <a name="PostgresToPostgresV1Profile"></a>
-### func [PostgresToPostgresV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L53>)
+### func [PostgresToPostgresV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L59>)
 
 ```go
 func PostgresToPostgresV1Profile() ManagedProfileContract
@@ -1098,7 +1108,7 @@ func PostgresToPostgresV1Profile() ManagedProfileContract
 PostgresToPostgresV1Profile returns a defensive copy of the promoted profile.
 
 <a name="PostgresToSnowflakeSQLV1Profile"></a>
-### func [PostgresToSnowflakeSQLV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L128>)
+### func [PostgresToSnowflakeSQLV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L134>)
 
 ```go
 func PostgresToSnowflakeSQLV1Profile() ManagedProfileContract
@@ -1107,7 +1117,7 @@ func PostgresToSnowflakeSQLV1Profile() ManagedProfileContract
 PostgresToSnowflakeSQLV1Profile returns the constrained but unpromoted transactional Snowflake SQL profile. Admission compares a configured service version with CURRENT\_VERSION\(\), but no service version or deployment cell is reviewed yet. Promotion requires complete same\-SHA real\-service evidence.
 
 <a name="ManagedProfileContract.SupportsClickHouseVersion"></a>
-### func \(ManagedProfileContract\) [SupportsClickHouseVersion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L308>)
+### func \(ManagedProfileContract\) [SupportsClickHouseVersion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L314>)
 
 ```go
 func (c ManagedProfileContract) SupportsClickHouseVersion(version string) bool
@@ -1116,7 +1126,7 @@ func (c ManagedProfileContract) SupportsClickHouseVersion(version string) bool
 SupportsClickHouseVersion reports whether the server version is one exact ClickHouse patch build admitted by this profile.
 
 <a name="ManagedProfileContract.SupportsPostgresVersion"></a>
-### func \(ManagedProfileContract\) [SupportsPostgresVersion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L357>)
+### func \(ManagedProfileContract\) [SupportsPostgresVersion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L363>)
 
 ```go
 func (c ManagedProfileContract) SupportsPostgresVersion(major int) bool
@@ -1125,7 +1135,7 @@ func (c ManagedProfileContract) SupportsPostgresVersion(major int) bool
 
 
 <a name="ManagedProfileContract.ValidatePromotion"></a>
-### func \(ManagedProfileContract\) [ValidatePromotion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L172>)
+### func \(ManagedProfileContract\) [ValidatePromotion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L178>)
 
 ```go
 func (c ManagedProfileContract) ValidatePromotion() error
@@ -1134,7 +1144,7 @@ func (c ManagedProfileContract) ValidatePromotion() error
 ValidatePromotion rejects maintained status unless every required admission and real\-service evidence gate is named and enabled.
 
 <a name="ManagedProfileGate"></a>
-## type [ManagedProfileGate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L26-L30>)
+## type [ManagedProfileGate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L32-L36>)
 
 ManagedProfileGate binds one support claim to a required real\-service test.
 
@@ -1147,7 +1157,7 @@ type ManagedProfileGate struct {
 ```
 
 <a name="ManagedSnowflakeVersionProvider"></a>
-## type [ManagedSnowflakeVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L353-L355>)
+## type [ManagedSnowflakeVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L359-L361>)
 
 ManagedSnowflakeVersionProvider exposes the exact CURRENT\_VERSION\(\) value admitted by the constrained Snowflake SQL destination during Open.
 
@@ -1169,7 +1179,7 @@ type ManagedSourceResourceCleaner interface {
 ```
 
 <a name="ManagedSourceSchemaValidator"></a>
-## type [ManagedSourceSchemaValidator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L335-L337>)
+## type [ManagedSourceSchemaValidator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L341-L343>)
 
 ManagedSourceSchemaValidator lets a named destination compare a live source catalog schema with its immutable destination contract before reading WAL.
 
