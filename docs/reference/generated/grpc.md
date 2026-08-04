@@ -437,7 +437,7 @@
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| projection_id | [string](#string) |  | The first admitted projection is exactly canonical_cdc_parquet_v1. |
+| projection_id | [string](#string) |  | Mapped materialized flows require exactly canonical_cdc_parquet_v2. canonical_cdc_parquet_v1 is frozen for historical encoder verification only. |
 
 
 

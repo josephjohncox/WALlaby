@@ -564,7 +564,8 @@ func (x *FlowConfig) GetTableMappings() *TableMappings {
 
 type MaterializationPolicy struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The first admitted projection is exactly canonical_cdc_parquet_v1.
+	// Mapped materialized flows require exactly canonical_cdc_parquet_v2.
+	// canonical_cdc_parquet_v1 is frozen for historical encoder verification only.
 	ProjectionId  string `protobuf:"bytes,1,opt,name=projection_id,json=projectionId,proto3" json:"projection_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

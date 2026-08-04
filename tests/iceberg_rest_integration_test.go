@@ -30,11 +30,10 @@ func TestIcebergRESTLiveAppendProjection(t *testing.T) {
 	if uri == "" || warehouse == "" || namespace == "" {
 		t.Skip("WALLABY_TEST_ICEBERG_REST_URI, WALLABY_TEST_ICEBERG_WAREHOUSE, and WALLABY_TEST_ICEBERG_NAMESPACE are required")
 	}
-	request, objects := icebergLiveRequest(t)
 	tablePrefix := "wallaby_live_" + strings.ReplaceAll(uuid.NewString(), "-", "") + "_"
+	request, objects := icebergLiveRequest(t, namespace, tablePrefix+"artifact_events")
 	cfg := icebergdest.Config{
 		Profile: icebergdest.CatalogProfileREST, URI: uri, Warehouse: warehouse,
-		TargetNamespace: namespace, TablePrefix: tablePrefix,
 		ControlTable: "__wallaby_control", DestinationRevisionID: request.ConsumerRevisionID,
 		MaxCommitRetries: 4, RequestTimeout: 30 * time.Second, ReconciliationHorizon: time.Hour,
 		AllowHTTP: strings.HasPrefix(uri, "http://"), OAuthToken: os.Getenv("WALLABY_TEST_ICEBERG_OAUTH_TOKEN"),
@@ -71,12 +70,8 @@ func TestIcebergRESTLiveAppendProjection(t *testing.T) {
 // the canonical `public.artifact_events` relation. When the configured target
 // namespace differs from the source namespace, the connector qualifies the
 // table name with the source namespace to avoid cross-namespace collisions.
-func expectedDataTable(cfg icebergdest.Config, tablePrefix string) string {
-	name := tablePrefix + "artifact_events"
-	if cfg.TargetNamespace != "" && cfg.TargetNamespace != "public" {
-		name = "public__" + name
-	}
-	return name
+func expectedDataTable(_ icebergdest.Config, tablePrefix string) string {
+	return tablePrefix + "artifact_events"
 }
 
 func assertIcebergReadbackByFieldID(t *testing.T, cfg icebergdest.Config, namespace, tableName string) {
@@ -153,7 +148,6 @@ func TestIcebergRESTLiveSchemaEvolutionRename(t *testing.T) {
 	tablePrefix := "wallaby_evo_" + strings.ReplaceAll(uuid.NewString(), "-", "") + "_"
 	cfg := icebergdest.Config{
 		Profile: icebergdest.CatalogProfileREST, URI: uri, Warehouse: warehouse,
-		TargetNamespace: namespace, TablePrefix: tablePrefix,
 		ControlTable: "__wallaby_control", DestinationRevisionID: "iceberg-live-evo-v1",
 		MaxCommitRetries: 4, RequestTimeout: 30 * time.Second, ReconciliationHorizon: time.Hour,
 		AllowHTTP: strings.HasPrefix(uri, "http://"), OAuthToken: os.Getenv("WALLABY_TEST_ICEBERG_OAUTH_TOKEN"),
@@ -166,7 +160,7 @@ func TestIcebergRESTLiveSchemaEvolutionRename(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial := icebergLivePlanRequest(t, objects, incarnationID, "iceberg-live-evo-v1", 1, "0/D0", artifactSourceTransaction())
+	initial := icebergLivePlanRequest(t, objects, incarnationID, "iceberg-live-evo-v1", 1, "0/D0", artifactSourceTransaction(), namespace, tablePrefix+"artifact_events")
 	if _, err := committer.Commit(context.Background(), initial); err != nil {
 		t.Fatalf("initial commit: %v", err)
 	}
@@ -174,7 +168,7 @@ func TestIcebergRESTLiveSchemaEvolutionRename(t *testing.T) {
 	// its PostgreSQL source identity (relation 84, column 2) so the committer must
 	// treat it as a rename rather than a drop+add.
 	renameTx := artifactRenamedTransaction()
-	rename := icebergLivePlanRequest(t, objects, incarnationID, "iceberg-live-evo-v1", 2, "0/F0", renameTx)
+	rename := icebergLivePlanRequest(t, objects, incarnationID, "iceberg-live-evo-v1", 2, "0/F0", renameTx, namespace, tablePrefix+"artifact_events")
 	// The second publication is attempted after the first commit's snapshot, so
 	// its attempt time must post-date that snapshot for the reconcile-absence
 	// check to conclude the rename snapshot is not yet present. iceberg-go stamps
@@ -310,13 +304,13 @@ func TestS3TablesSnowflakeCatalogLinkedReadback(t *testing.T) {
 		t.Fatal("S3 Tables Snowflake gate requires region, warehouse, table bucket ARN, expected writer role ARN, namespace, Snowflake DSN, and linked database")
 	}
 
-	request, objects := icebergLiveRequest(t)
 	prefix := "wallaby_sf_" + strings.ReplaceAll(uuid.NewString(), "-", "") + "_"
+	request, objects := icebergLiveRequest(t, namespace, prefix+"artifact_events")
 	cfg := icebergdest.Config{
 		Profile: icebergdest.CatalogProfileS3Tables,
 		URI:     "https://glue." + region + ".amazonaws.com/iceberg", Warehouse: warehouse,
-		Region: region, SigV4: true, SigningName: "glue", ExpectedAWSRoleARN: expectedRoleARN, TargetNamespace: namespace,
-		TablePrefix: prefix, ControlTable: "__wallaby_control", DestinationRevisionID: request.ConsumerRevisionID,
+		Region: region, SigV4: true, SigningName: "glue", ExpectedAWSRoleARN: expectedRoleARN,
+		ControlTable: "__wallaby_control", DestinationRevisionID: request.ConsumerRevisionID,
 		MaxCommitRetries: 4, RequestTimeout: 30 * time.Second, ReconciliationHorizon: 24 * time.Hour,
 		S3TablesTableBucketARN: bucketARN, S3TablesConfigureMaintenance: true,
 		S3TablesMinSnapshotsToKeep: 100, S3TablesMaxSnapshotAgeHours: 24,
@@ -349,7 +343,7 @@ func TestS3TablesSnowflakeCatalogLinkedReadback(t *testing.T) {
 	if len(request.Objects) == 0 {
 		t.Fatal("S3 Tables Snowflake gate produced no canonical objects")
 	}
-	tableName := prefix + request.Objects[0].Table
+	tableName := request.Objects[0].Table
 	qualified := strings.Join([]string{quoteSnowflakeCatalogIdentifier(linkedDatabase), quoteSnowflakeCatalogIdentifier(namespace), quoteSnowflakeCatalogIdentifier(tableName)}, ".")
 	query := fmt.Sprintf(`SELECT COUNT(*),COUNT_IF("__wallaby_logical_batch_id"=?),COUNT_IF("__op"='insert') FROM %s`, qualified)
 	expectedRows := int64(0)
@@ -386,12 +380,12 @@ func TestS3TablesLiveAppendProjection(t *testing.T) {
 	if region == "" || warehouse == "" || bucketARN == "" || expectedRoleARN == "" || namespace == "" {
 		t.Fatal("S3 Tables live gate requires region, warehouse, table bucket ARN, expected writer role ARN, and namespace")
 	}
-	request, objects := icebergLiveRequest(t)
+	prefix := "wallaby_live_" + strings.ReplaceAll(uuid.NewString(), "-", "") + "_"
+	request, objects := icebergLiveRequest(t, namespace, prefix+"artifact_events")
 	cfg := icebergdest.Config{
 		Profile: icebergdest.CatalogProfileS3Tables,
 		URI:     "https://glue." + region + ".amazonaws.com/iceberg", Warehouse: warehouse,
-		Region: region, SigV4: true, SigningName: "glue", ExpectedAWSRoleARN: expectedRoleARN, TargetNamespace: namespace,
-		TablePrefix:  "wallaby_live_" + strings.ReplaceAll(uuid.NewString(), "-", "") + "_",
+		Region: region, SigV4: true, SigningName: "glue", ExpectedAWSRoleARN: expectedRoleARN,
 		ControlTable: "__wallaby_control", DestinationRevisionID: request.ConsumerRevisionID,
 		MaxCommitRetries: 4, RequestTimeout: 30 * time.Second, ReconciliationHorizon: 24 * time.Hour,
 		S3TablesTableBucketARN: bucketARN, S3TablesConfigureMaintenance: true,
@@ -426,10 +420,10 @@ func (objects *icebergLiveObjects) ReadVersion(_ context.Context, evidence artif
 	return append([]byte(nil), value...), nil
 }
 
-func icebergLiveRequest(t *testing.T) (artifactlog.CommitRequest, *icebergLiveObjects) {
+func icebergLiveRequest(t *testing.T, mappedNamespace, mappedTable string) (artifactlog.CommitRequest, *icebergLiveObjects) {
 	t.Helper()
 	objects := &icebergLiveObjects{objects: map[string][]byte{}}
-	request := icebergLivePlanRequest(t, objects, uuid.New(), "iceberg-live-v1", 1, "0/D0", artifactSourceTransaction())
+	request := icebergLivePlanRequest(t, objects, uuid.New(), "iceberg-live-v1", 1, "0/D0", artifactSourceTransaction(), mappedNamespace, mappedTable)
 	return request, objects
 }
 
@@ -437,9 +431,19 @@ func icebergLiveRequest(t *testing.T) (artifactlog.CommitRequest, *icebergLiveOb
 // records its rooted artifacts in objects so a single committer can replay
 // several publications (for example an append followed by a schema evolution)
 // against the same catalog table.
-func icebergLivePlanRequest(t *testing.T, objects *icebergLiveObjects, incarnationID uuid.UUID, revisionID string, publicationSeq int64, position string, transaction connector.SourceTransaction) artifactlog.CommitRequest {
+func icebergLivePlanRequest(t *testing.T, objects *icebergLiveObjects, incarnationID uuid.UUID, revisionID string, publicationSeq int64, position string, transaction connector.SourceTransaction, mappedNamespace, mappedTable string) artifactlog.CommitRequest {
 	t.Helper()
-	plan, err := artifactlog.NewEncoder().PlanTransaction(context.Background(), incarnationID, transaction)
+	const mappingFingerprint = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	for fragmentIndex := range transaction.Fragments {
+		batch := &transaction.Fragments[fragmentIndex].Batch
+		batch.Schema.Namespace = mappedNamespace
+		batch.Schema.Name = mappedTable
+		batch.WritePolicy = connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend, ProjectionFingerprint: mappingFingerprint}
+		for recordIndex := range batch.Records {
+			batch.Records[recordIndex].Table = mappedTable
+		}
+	}
+	plan, err := artifactlog.NewEncoder().PlanMappedTransaction(context.Background(), incarnationID, mappingFingerprint, transaction)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,14 +452,14 @@ func icebergLivePlanRequest(t *testing.T, objects *icebergLiveObjects, incarnati
 		FlowID: "iceberg-live-" + revisionID, FlowIncarnationID: incarnationID,
 		ConsumerRevisionID: revisionID, PublicationID: publicationID,
 		PublicationSequence: publicationSeq, PositionID: position, CheckpointLSN: position,
-		LogicalBatchID: plan.LogicalBatchID, ProjectionID: artifactlog.ProjectionID,
+		LogicalBatchID: plan.LogicalBatchID, ProjectionID: artifactlog.ProjectionIDV2, MappingFingerprint: mappingFingerprint,
 		AttemptedAt: time.Now().Add(-time.Second).UTC(), Barriers: plan.Barriers,
 	}
 	manifest := sha256.New()
 	for _, artifact := range plan.Artifacts {
 		evidence := artifactlog.ObjectEvidence{
 			Bucket: "canonical", Key: artifact.ObjectKey, VersionID: "version-" + artifact.ID,
-			ChecksumSHA256: artifact.EncodedByteHash, Length: int64(len(artifact.Encoded)),
+			ChecksumSHA256: artifact.EncodedByteHash, Length: int64(len(artifact.Encoded)), ProjectionID: artifactlog.ProjectionIDV2, MappingFingerprint: mappingFingerprint,
 		}
 		objects.objects[evidence.Key+"@"+evidence.VersionID] = append([]byte(nil), artifact.Encoded...)
 		request.Objects = append(request.Objects, artifactlog.RootedArtifact{

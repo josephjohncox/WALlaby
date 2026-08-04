@@ -10,6 +10,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/stream"
 )
 
 const recoverySweepLimit = 128
@@ -28,6 +29,7 @@ type CatalogConsumerConfig struct {
 // of quota, backlog, claim, and reachability state.
 type RuntimeConfig struct {
 	Stream                 StreamConfig
+	Projector              stream.Projector
 	OrphanGrace            time.Duration
 	Retention              time.Duration
 	GCInterval             time.Duration
@@ -63,6 +65,16 @@ func (r *Runtime) EffectiveDestinationFingerprint() string {
 func NewRuntime(ctx context.Context, pool *pgxpool.Pool, objects ObjectStore, config RuntimeConfig) (*Runtime, error) {
 	if config.OrphanGrace <= 0 || config.Retention <= 0 || config.GCInterval <= 0 {
 		return nil, errors.New("positive artifact orphan, retention, and GC intervals are required")
+	}
+	if config.Stream.ProjectionID == ProjectionIDV2 {
+		if config.Projector == nil {
+			return nil, errors.New("canonical v2 runtime requires the immutable destination projector")
+		}
+		if config.Stream.MappingFingerprint == "" || config.Projector.Fingerprint() != config.Stream.MappingFingerprint {
+			return nil, errors.New("canonical v2 runtime projector fingerprint mismatch")
+		}
+	} else if config.Projector != nil || config.Stream.MappingFingerprint != "" {
+		return nil, errors.New("canonical v1 runtime forbids logical projection")
 	}
 	consumerIDs := make([]string, 0, len(config.Consumers))
 	seen := make(map[string]struct{}, len(config.Consumers))
@@ -160,6 +172,13 @@ func resolveRuntimeReadAdmission(consumerErr, admissionErr error, hasConsumers b
 }
 
 func (r *Runtime) Append(ctx context.Context, fence connector.RunFence, transaction connector.SourceTransaction) (connector.AckGrant, error) {
+	if r.config.Stream.ProjectionID == ProjectionIDV2 {
+		projected, _, err := r.config.Projector.ProjectTransaction(transaction)
+		if err != nil {
+			return connector.AckGrant{}, err
+		}
+		transaction = projected
+	}
 	return r.publisher.Append(ctx, fence, transaction)
 }
 

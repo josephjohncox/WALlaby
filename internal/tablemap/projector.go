@@ -391,10 +391,20 @@ func projectSchema(schema connector.Schema, resolved resolvedTable) (connector.S
 		}
 	}
 	if resolved.write.Mode == flow.TableWriteModeAppend {
+		sourceRelation := schema.Namespace + "\x00" + schema.Name
+		for _, column := range schema.Columns {
+			if relation := strings.TrimSpace(column.TypeMetadata["source_relation_id"]); relation != "" {
+				sourceRelation = "relation:" + relation
+				break
+			}
+		}
+		metadata := func(identity string) map[string]string {
+			return map[string]string{"wallaby.synthetic_identity": identity, "wallaby.synthetic_source_relation": sourceRelation}
+		}
 		out.Columns = append(out.Columns,
-			connector.Column{Name: connector.AppendOperationColumn, Type: "text", Nullable: false},
-			connector.Column{Name: connector.AppendDeletedColumn, Type: "boolean", Nullable: false},
-			connector.Column{Name: connector.AppendSourcePositionColumn, Type: "text", Nullable: false},
+			connector.Column{Name: connector.AppendOperationColumn, Type: "text", Nullable: false, TypeMetadata: metadata("append.operation.v1")},
+			connector.Column{Name: connector.AppendDeletedColumn, Type: "boolean", Nullable: false, TypeMetadata: metadata("append.deleted.v1")},
+			connector.Column{Name: connector.AppendSourcePositionColumn, Type: "text", Nullable: false, TypeMetadata: metadata("append.source_position.v1")},
 		)
 	}
 	if len(out.QuotedIdentifiers) == 0 {

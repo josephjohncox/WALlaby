@@ -1,6 +1,6 @@
 # Canonical artifact log
 
-`internal/artifactlog` is the PostgreSQL-authoritative implementation behind the experimental `ack_policy=materialized` contract. The first and only admitted projection is `canonical_cdc_parquet_v1` for managed PostgreSQL CDC.
+`internal/artifactlog` is the PostgreSQL-authoritative implementation behind the experimental `ack_policy=materialized` contract. `canonical_cdc_parquet_v1` remains byte-for-byte frozen. Current mapped Iceberg flows explicitly use `canonical_cdc_parquet_v2`, bound to the destination mapping fingerprint, source lineage, and already-mapped relation identity. V2 publication IDs are deterministic over the durable projection domain, so a pre-publication crash reproduces the same ID.
 
 `materialized` means that immutable canonical objects and one generation-fenced PostgreSQL publication/checkpoint transaction are durable. It does **not** mean that downstream tables have committed the batch. A configured Iceberg endpoint registers a restartable asynchronous consumer and delivery queue; other materialized destinations retain canonical-publication-only behavior. Source acknowledgement never waits for an Iceberg commit. The complete contract remains experimental.
 
@@ -13,7 +13,7 @@ For each committed source transaction, the worker:
 3. validates the complete `SourceTransaction` and every contained batch;
 4. preserves ordered schema fragments and records DDL as PostgreSQL barriers rather than Parquet changelog rows;
 5. assigns the deterministic `LogicalBatchID`, schema fingerprint, record ordinals, partition, and shard IDs;
-6. encodes bounded `canonical_cdc_parquet_v1` objects before destination transforms or retries;
+6. projects the source transaction exactly once and encodes bounded `canonical_cdc_parquet_v2` objects before reservation, upload, or catalog delivery;
 7. commits exact upload intents and quota reservations in PostgreSQL;
 8. performs conditional single-part S3 PUTs and reconciles exact `VersionId`, SHA-256, projection metadata, and length;
 9. commits the publication root, barrier references, delivery rows, quota conversion, monotonic checkpoint, and source ACK intent in one fenced PostgreSQL transaction; and
@@ -53,7 +53,7 @@ A materialized flow must set:
 config:
   ack_policy: materialized
   materialization:
-    projection_id: canonical_cdc_parquet_v1
+    projection_id: canonical_cdc_parquet_v2
 ```
 
 The worker deployment supplies ordinary-S3 and operational settings under `artifacts.*` or the matching `WALLABY_ARTIFACT_*` / `WALLABY_WORKER_ARTIFACT_*` environment variables: bucket, region, endpoint, credentials, path style, retained-byte limit, backlog batch/byte/age limits, poll interval, orphan grace, retention, and GC interval. Credentials are deployment secrets and are never persisted in flow configuration or publication metadata.

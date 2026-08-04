@@ -81,7 +81,7 @@ const (
     AckPolicyAll     AckPolicy = "all"
     AckPolicyPrimary AckPolicy = "primary"
     // AckPolicyMaterialized acknowledges a source position only after the
-    // canonical_cdc_parquet_v1 objects and their generation-fenced PostgreSQL
+    // explicitly configured canonical objects and their generation-fenced PostgreSQL
     // publication/checkpoint commit. The configured destination is not written
     // on the CDC path, and this release registers no production catalog consumer.
     AckPolicyMaterialized AckPolicy = "materialized"

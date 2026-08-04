@@ -7,8 +7,7 @@ import (
 )
 
 var persistedIcebergOptions = map[string]struct{}{
-	"catalog_profile": {}, "namespace": {}, "table_prefix": {},
-	"control_table": {}, "destination_revision_id": {},
+	"catalog_profile": {}, "control_table": {}, "destination_revision_id": {},
 }
 
 // ValidatePersistedSpec rejects endpoint options that cannot safely become

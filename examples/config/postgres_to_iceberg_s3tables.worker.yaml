@@ -26,8 +26,6 @@ iceberg:
   expected_aws_role_arn: arn:aws:iam::123456789012:role/wallaby-iceberg-writer
   warehouse: "123456789012:s3tablescatalog/wallaby-lake"
   s3tables_table_bucket_arn: arn:aws:s3tables:us-east-1:123456789012:bucket/wallaby-lake
-  namespace: wallaby
-  table_prefix: cdc_
   control_table: __wallaby_control
   request_timeout: 30s
   max_commit_retries: 4

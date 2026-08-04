@@ -27,16 +27,34 @@
       "options": {
         "catalog_profile": "s3tables",
         "destination_revision_id": "s3tables-lake-v1",
-        "namespace": "wallaby",
-        "table_prefix": "cdc_",
         "control_table": "__wallaby_control"
       }
     }
   ],
   "config": {
+    "table_mappings": {
+      "version": 1,
+      "destinations": [
+        {
+          "destination": "s3tables-lake",
+          "future_tables": {"action": "exclude"},
+          "tables": [
+            {
+              "source_schema": "public",
+              "source_table": "events",
+              "action": "include",
+              "target_schema": "wallaby",
+              "target_table": "cdc_events",
+              "future_columns": {"action": "include", "target_column": "{column}"},
+              "write": {"mode": "append"}
+            }
+          ]
+        }
+      ]
+    },
     "ack_policy": "materialized",
     "materialization": {
-      "projection_id": "canonical_cdc_parquet_v1"
+      "projection_id": "canonical_cdc_parquet_v2"
     }
   }
 }

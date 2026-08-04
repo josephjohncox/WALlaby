@@ -164,7 +164,7 @@ func TestFlowRunnerPinsEffectiveArtifactDestinationFingerprint(t *testing.T) {
 	engine := workflow.NewMemoryEngine()
 	f := managedAdmissionFlow()
 	f.Config.AckPolicy = stream.AckPolicyMaterialized
-	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v1"}
+	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v2"}
 	f.Destinations = []connector.Spec{{Name: "lake", Type: connector.EndpointIceberg, Options: map[string]string{"destination_revision_id": "iceberg-v1"}}}
 	f.Config.TableMappings = flow.NewTableMappings(f.Destinations)
 	if _, err := engine.Create(ctx, f); err != nil {
@@ -179,7 +179,10 @@ func TestFlowRunnerPinsEffectiveArtifactDestinationFingerprint(t *testing.T) {
 	runner := FlowRunner{
 		Engine: engine, Checkpoints: managedCheckpointStore{}, Authority: &failingRenewAuthority{renewErr: renewFailure}, Deliveries: deliveries,
 		ExpectedGeneration: control.Generation, ExecutionID: "artifact-fingerprint", ExecutionBackend: "test",
-		Artifacts: func(context.Context, flow.Flow, []stream.DestinationConfig) (stream.ManagedArtifactLog, error) {
+		Artifacts: func(_ context.Context, _ flow.Flow, destinations []stream.DestinationConfig) (stream.ManagedArtifactLog, error) {
+			if len(destinations) != 1 || destinations[0].Projector == nil || destinations[0].MappingFingerprint == "" || destinations[0].Projector.Fingerprint() != destinations[0].MappingFingerprint {
+				return nil, errors.New("missing immutable materialized projector")
+			}
 			return &effectiveArtifactLog{fingerprint: "effective-deployment-fingerprint"}, nil
 		},
 	}
@@ -206,7 +209,7 @@ func TestFlowRunnerUsesProjectionBoundSpecFingerprintWithoutCatalogConsumer(t *t
 	engine := workflow.NewMemoryEngine()
 	f := managedAdmissionFlow()
 	f.Config.AckPolicy = stream.AckPolicyMaterialized
-	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v1"}
+	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v2"}
 	f.Destinations = []connector.Spec{{Name: "lake", Type: connector.EndpointIceberg, Options: map[string]string{"destination_revision_id": "iceberg-v1"}}}
 	f.Config.TableMappings = flow.NewTableMappings(f.Destinations)
 	if _, err := engine.Create(ctx, f); err != nil {

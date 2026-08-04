@@ -866,8 +866,8 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 		if err != nil {
 			return fmt.Errorf("merge managed schema baselines: %w", err)
 		}
-		// Materialized projection remains frozen at canonical_cdc_parquet_v1 until
-		// the explicit v2 artifact protocol is admitted. Ordinary managed delivery
+		// Materialized Iceberg projection is performed exactly once inside the
+		// projection-bound canonical v2 artifact runtime. Ordinary managed delivery
 		// projects before transaction identity, DDL, intent creation, and I/O.
 		if !materialized && destination.Projector != nil {
 			projected, _, projectErr := destination.Projector.ProjectTransaction(transaction)

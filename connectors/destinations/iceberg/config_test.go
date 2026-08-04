@@ -13,7 +13,7 @@ func TestConfigFingerprintPinsEffectiveCatalogWithoutCredentialValues(t *testing
 
 	base := Config{
 		Profile: CatalogProfileS3Tables, URI: "https://glue.us-east-1.amazonaws.com/iceberg", Warehouse: "123456789012:s3tablescatalog/example",
-		TargetNamespace: "wallaby", TablePrefix: "cdc_", ControlTable: "__wallaby_control", Region: "us-east-1", SigningName: "glue",
+		ControlTable: "__wallaby_control", Region: "us-east-1", SigningName: "glue",
 		ExpectedAWSRoleARN: "arn:aws:iam::123456789012:role/wallaby", SigV4: true,
 		S3TablesTableBucketARN: "arn:aws:s3tables:us-east-1:123456789012:bucket/example", MaxCommitRetries: 4,
 	}
@@ -64,9 +64,7 @@ func TestDestinationMarkerAcceptsDeploymentOwnedS3TablesConfiguration(t *testing
 	t.Parallel()
 
 	spec := connector.Spec{Type: connector.EndpointIceberg, Options: map[string]string{
-		"catalog_profile":         CatalogProfileS3Tables,
-		"destination_revision_id": "iceberg-s3tables-v1",
-		"namespace":               "wallaby",
+		"catalog_profile": CatalogProfileS3Tables, "destination_revision_id": "iceberg-s3tables-v1",
 	}}
 	if err := (&Destination{}).Open(context.Background(), spec); err != nil {
 		t.Fatalf("marker open rejected deployment-owned S3 Tables configuration: %v", err)
@@ -147,7 +145,6 @@ func TestParseSpecUsesDeploymentS3TablesIdentity(t *testing.T) {
 	}
 	cfg, err := ParseSpec(connector.Spec{Type: connector.EndpointIceberg, Options: map[string]string{
 		"destination_revision_id": "iceberg-s3tables-v1",
-		"namespace":               "wallaby",
 	}}, defaults)
 	if err != nil {
 		t.Fatal(err)

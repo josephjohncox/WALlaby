@@ -113,8 +113,8 @@ func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec c
 		if cfg.ArtifactLog == nil {
 			return errors.New("ack_policy=materialized requires a configured PostgreSQL-authoritative artifact log")
 		}
-		if f.Config.Materialization.ProjectionID != "canonical_cdc_parquet_v1" {
-			return fmt.Errorf("ack_policy=materialized requires materialization.projection_id=canonical_cdc_parquet_v1; got %q", f.Config.Materialization.ProjectionID)
+		if f.Config.Materialization.ProjectionID != "canonical_cdc_parquet_v2" {
+			return fmt.Errorf("ack_policy=materialized Iceberg requires materialization.projection_id=canonical_cdc_parquet_v2; got %q", f.Config.Materialization.ProjectionID)
 		}
 	default:
 		return errors.New("managed PostgreSQL profile currently requires ack_policy=all or the explicit materialized artifact contract")

@@ -66,8 +66,6 @@ iceberg:
   expected_aws_role_arn: arn:aws:iam::123456789012:role/wallaby-iceberg-writer
   warehouse: "123456789012:s3tablescatalog/wallaby-lake"
   s3tables_table_bucket_arn: arn:aws:s3tables:us-east-1:123456789012:bucket/wallaby-lake
-  namespace: wallaby
-  table_prefix: cdc_
   reconciliation_horizon: 24h
   s3tables_configure_maintenance: true
   s3tables_min_snapshots_to_keep: 100
@@ -91,19 +89,34 @@ destinations:
     options:
       catalog_profile: s3tables
       destination_revision_id: s3tables-lake-v1
-      namespace: wallaby
-      table_prefix: cdc_
       control_table: __wallaby_control
 
 config:
+  table_mappings:
+    version: 1
+    destinations:
+      - destination: s3tables-lake
+        future_tables:
+          action: exclude
+        tables:
+          - source_schema: public
+            source_table: events
+            action: include
+            target_schema: wallaby
+            target_table: cdc_events
+            future_columns:
+              action: include
+              target_column: "{column}"
+            write:
+              mode: append
   ack_policy: materialized
   materialization:
-    projection_id: canonical_cdc_parquet_v1
+    projection_id: canonical_cdc_parquet_v2
 ```
 
-Materialized admission requires exactly one Iceberg destination revision. Changing the consumer revision, effective deployment catalog identity, or target mapping for a live incarnation fails closed; create a new flow incarnation for a catalog consumer change. [`examples/terraform/wallaby_flow_s3tables.tf`](https://github.com/josephjohncox/WALlaby/blob/main/examples/terraform/wallaby_flow_s3tables.tf) configures only the WALlaby flow; it deliberately does not pretend to provision AWS IAM/Lake Formation, S3 Tables, or Snowflake resources.
+Materialized admission requires exactly one Iceberg destination revision. Changing the consumer revision, effective deployment catalog identity, or target mapping for a live incarnation fails closed; create a new flow incarnation for a catalog consumer change. CLI and Terraform mapping import/generation surfaces are intentionally deferred to their later implementation tasks.
 
-Each source table is exposed as `<table_prefix><source_table>`. When the configured namespace differs from the source namespace, WALlaby prefixes the source namespace to avoid collisions. Do not map incompatible source schemas to one fixed Iceberg table; admission rejects multiple schema projections targeting one table within a publication.
+Each Iceberg table uses the already-mapped namespace, table, and selected columns encoded in the v2 canonical publication. Iceberg never reapplies logical target prefixes or qualification. Mappings must remain injective and append-only.
 
 ## 4. Integrate S3 Tables with AWS Glue
 

@@ -78,7 +78,7 @@ DROP TABLE IF EXISTS public.wallaby_worker_materialized_target`)
 		}}},
 		Config: flow.Config{
 			AckPolicy:       stream.AckPolicyMaterialized,
-			Materialization: flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v1"},
+			Materialization: flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v2"},
 		},
 	}
 	if _, err := deps.engine.Create(ctx, definition); err != nil {

@@ -1,9 +1,45 @@
 package artifactlog
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/stream"
 )
+
+type artifactTestProjector struct{ fingerprint string }
+
+func (p artifactTestProjector) Fingerprint() string { return p.fingerprint }
+func (artifactTestProjector) ProjectBatch(batch connector.Batch) (connector.Batch, stream.ProjectionDecision, error) {
+	return batch, stream.ProjectionIncluded, nil
+}
+func (artifactTestProjector) ProjectTransaction(transaction connector.SourceTransaction) (connector.SourceTransaction, stream.ProjectionDecision, error) {
+	return transaction, stream.ProjectionIncluded, nil
+}
+
+func TestCanonicalV2RuntimeRejectsUnboundOrMismatchedProjection(t *testing.T) {
+	base := RuntimeConfig{Stream: StreamConfig{ProjectionID: ProjectionIDV2, MappingFingerprint: "expected"}, OrphanGrace: time.Second, Retention: time.Second, GCInterval: time.Second}
+	if _, err := NewRuntime(context.Background(), nil, nil, base); err == nil || !containsError(err, "requires the immutable destination projector") {
+		t.Fatalf("unbound v2 error=%v", err)
+	}
+	base.Projector = artifactTestProjector{fingerprint: "different"}
+	if _, err := NewRuntime(context.Background(), nil, nil, base); err == nil || !containsError(err, "fingerprint mismatch") {
+		t.Fatalf("mismatched projector error=%v", err)
+	}
+	base.Projector = artifactTestProjector{fingerprint: "expected"}
+	base.Stream.MappingFingerprint = "other"
+	if _, err := NewRuntime(context.Background(), nil, nil, base); err == nil || !containsError(err, "fingerprint mismatch") {
+		t.Fatalf("recovery fingerprint mismatch error=%v", err)
+	}
+}
+
+func containsError(err error, text string) bool {
+	return err != nil && strings.Contains(err.Error(), text)
+}
 
 func TestResolveRuntimeReadAdmissionDefersOnlyRetryableConsumersBelowWatermark(t *testing.T) {
 	t.Parallel()

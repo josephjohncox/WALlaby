@@ -52,15 +52,17 @@ func (p *projectionPlan) release() {
 }
 
 type canonicalSchemaDocument struct {
-	ProjectionID string                       `json:"projection_id"`
-	Namespace    string                       `json:"namespace"`
-	Table        string                       `json:"table"`
-	Fields       []artifactlog.CanonicalField `json:"fields"`
+	ProjectionID       string                       `json:"projection_id"`
+	MappingFingerprint string                       `json:"mapping_fingerprint"`
+	SourceLineageID    string                       `json:"source_lineage_id"`
+	Namespace          string                       `json:"namespace"`
+	Table              string                       `json:"table"`
+	Fields             []artifactlog.CanonicalField `json:"fields"`
 }
 
 func buildProjection(ctx context.Context, request artifactlog.CommitRequest, objects CanonicalObjectReader, cfg Config) (*projectionPlan, error) {
-	if request.ProjectionID != artifactlog.ProjectionID {
-		return nil, fmt.Errorf("unsupported canonical projection %q", request.ProjectionID)
+	if err := validateMaterializedProjectionIdentity(request.ProjectionID, request.MappingFingerprint); err != nil {
+		return nil, err
 	}
 	if objects == nil {
 		return nil, errors.New("canonical object reader is required")
@@ -164,8 +166,13 @@ func projectObject(ctx context.Context, request artifactlog.CommitRequest, objec
 	if err := json.Unmarshal(object.SchemaJSON, &document); err != nil {
 		return nil, fmt.Errorf("decode canonical schema %s: %w", object.SchemaID, err)
 	}
-	if document.ProjectionID != request.ProjectionID || document.Namespace != object.Namespace || document.Table != object.Table {
+	if document.ProjectionID != request.ProjectionID || document.MappingFingerprint != request.MappingFingerprint || strings.TrimSpace(document.SourceLineageID) == "" || document.Namespace != object.Namespace || document.Table != object.Table {
 		return nil, fmt.Errorf("%w: canonical schema identity differs for %s", connector.ErrDeliveryConflict, object.ArtifactID)
+	}
+	for _, field := range document.Fields {
+		if (field.SourceRelationID != 0 || field.SyntheticSourceRelation != "") && field.SourceLineageID != document.SourceLineageID {
+			return nil, fmt.Errorf("%w: canonical field %q lineage differs from schema lineage", connector.ErrDeliveryConflict, field.Name)
+		}
 	}
 	body, err := objects.ReadVersion(ctx, object.Evidence)
 	if err != nil {

@@ -24,6 +24,7 @@ const (
 	// ProjectionID is the frozen logical contract of the first canonical CDC
 	// artifact projection. Destination Parquet encodings are not this format.
 	ProjectionID                = "canonical_cdc_parquet_v1"
+	ProjectionIDV2              = "canonical_cdc_parquet_v2"
 	TargetEncodedObject         = 32 << 20
 	MaxEncodedObject            = 64 << 20
 	DefaultMaxRecords           = 1_000_000
@@ -42,14 +43,30 @@ const (
 // CanonicalField records stable logical field identity independently of
 // Parquet's physical column ordering.
 type CanonicalField struct {
-	ID         int32             `json:"id"`
-	Name       string            `json:"name"`
-	Type       string            `json:"type"`
-	Nullable   bool              `json:"nullable"`
-	Generated  bool              `json:"generated,omitempty"`
-	Expression string            `json:"expression,omitempty"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
-	Quoted     bool              `json:"quoted,omitempty"`
+	ID                      int32             `json:"id"`
+	Name                    string            `json:"name"`
+	Type                    string            `json:"type"`
+	Nullable                bool              `json:"nullable"`
+	Generated               bool              `json:"generated,omitempty"`
+	Expression              string            `json:"expression,omitempty"`
+	Metadata                map[string]string `json:"metadata,omitempty"`
+	Quoted                  bool              `json:"quoted,omitempty"`
+	SourceLineageID         string            `json:"source_lineage_id,omitempty"`
+	SourceRelationID        uint32            `json:"source_relation_id,omitempty"`
+	SourceColumnID          int32             `json:"source_column_id,omitempty"`
+	SyntheticIdentity       string            `json:"synthetic_identity,omitempty"`
+	SyntheticSourceRelation string            `json:"synthetic_source_relation,omitempty"`
+}
+
+type canonicalSchemaV2 struct {
+	ProjectionID       string           `json:"projection_id"`
+	MappingFingerprint string           `json:"mapping_fingerprint"`
+	SourceLineageID    string           `json:"source_lineage_id"`
+	Namespace          string           `json:"namespace"`
+	Table              string           `json:"table"`
+	QuotedNamespace    bool             `json:"quoted_namespace,omitempty"`
+	QuotedTable        bool             `json:"quoted_table,omitempty"`
+	Fields             []CanonicalField `json:"fields"`
 }
 
 type canonicalSchema struct {
@@ -272,6 +289,117 @@ func (e *Encoder) PlanTransaction(_ context.Context, incarnationID uuid.UUID, tr
 	return plan, nil
 }
 
+// PlanMappedTransaction encodes one transaction that has already been projected
+// exactly once by the sole materialized destination projector. The v1 planner
+// remains separate and frozen.
+func (e *Encoder) PlanMappedTransaction(_ context.Context, incarnationID uuid.UUID, mappingFingerprint string, transaction connector.SourceTransaction) (Plan, error) {
+	mappingFingerprint = strings.TrimSpace(mappingFingerprint)
+	if len(mappingFingerprint) != 64 || mappingFingerprint != strings.ToLower(mappingFingerprint) {
+		return Plan{}, errors.New("canonical v2 mapping fingerprint must be lowercase 64-hex")
+	}
+	if _, err := hex.DecodeString(mappingFingerprint); err != nil {
+		return Plan{}, errors.New("canonical v2 mapping fingerprint must be lowercase 64-hex")
+	}
+	transaction, err := canonicalSourceTransaction(transaction)
+	if err != nil {
+		return Plan{}, err
+	}
+	transaction, err = normalizeMappedArtifactTransaction(transaction)
+	if err != nil {
+		return Plan{}, err
+	}
+	if err := transaction.Validate(); err != nil {
+		return Plan{}, fmt.Errorf("validate canonical v2 source transaction: %w", err)
+	}
+	if len(transaction.Fragments) > e.maxFragments {
+		return Plan{}, fmt.Errorf("canonical artifact fragment count %d exceeds %d", len(transaction.Fragments), e.maxFragments)
+	}
+	contentHash, logicalBatchID, err := connector.SourceTransactionIdentity(transaction)
+	if err != nil {
+		return Plan{}, fmt.Errorf("identify canonical v2 source transaction: %w", err)
+	}
+	codec, err := wire.NewCodec(string(connector.WireFormatParquet))
+	if err != nil {
+		return Plan{}, err
+	}
+	plan := Plan{LogicalBatchID: logicalBatchID, ContentHash: contentHash}
+	shards := make(map[string]uint32)
+	var totalInput, totalEncoded int64
+	var totalRecords int
+	var recordOrdinal uint64
+	for fragmentIndex, fragment := range transaction.Fragments {
+		batch := fragment.Batch
+		totalRecords += len(batch.Records)
+		if totalRecords > e.maxRecords {
+			return Plan{}, fmt.Errorf("transaction has %d records, limit %d", totalRecords, e.maxRecords)
+		}
+		inputEstimate, err := estimateBatchInput(batch, e.maxNesting)
+		if err != nil {
+			return Plan{}, fmt.Errorf("measure fragment %d: %w", fragmentIndex, err)
+		}
+		totalInput += inputEstimate
+		if totalInput > e.maxInput {
+			return Plan{}, fmt.Errorf("transaction uncompressed input %d exceeds limit %d", totalInput, e.maxInput)
+		}
+		var run []ordinalRecord
+		flushRun := func() error {
+			if len(run) == 0 {
+				return nil
+			}
+			canonical, schemaJSON, schemaID, err := canonicalizeSchemaV2(transaction.SourceLineageID, mappingFingerprint, batch.Schema)
+			if err != nil {
+				return fmt.Errorf("canonicalize v2 fragment %d schema: %w", fragmentIndex, err)
+			}
+			encodedShards, err := e.encodeShards(codec, transaction, logicalBatchID, canonical, run)
+			if err != nil {
+				return fmt.Errorf("encode v2 fragment %d: %w", fragmentIndex, err)
+			}
+			partition := UnpartitionedValue
+			group := strings.Join([]string{transaction.SourceLineageID, mappingFingerprint, canonical.Namespace, canonical.Name, schemaID, partition}, "\x00")
+			for _, encodedShard := range encodedShards {
+				shard := shards[group]
+				shards[group] = shard + 1
+				totalEncoded += int64(len(encodedShard.encoded))
+				if totalEncoded > e.maxTransactionEncoded {
+					return fmt.Errorf("transaction encoded bytes %d exceed limit %d", totalEncoded, e.maxTransactionEncoded)
+				}
+				digest := sha256.Sum256(encodedShard.encoded)
+				encodedHash := hex.EncodeToString(digest[:])
+				artifactID := artifactIdentityV2(incarnationID, transaction.SourceLineageID, logicalBatchID, mappingFingerprint, canonical.Namespace, canonical.Name, schemaID, partition, shard)
+				plan.Artifacts = append(plan.Artifacts, Artifact{ID: artifactID, LogicalBatchID: logicalBatchID, SchemaID: schemaID, SchemaJSON: schemaJSON, Namespace: canonical.Namespace, Table: canonical.Name, Partition: partition, Shard: shard, SourcePosition: transaction.EndLSN, FragmentOrdinal: fragment.Ordinal, FirstRecordOrdinal: encodedShard.records[0].ordinal, RecordCount: uint64(len(encodedShard.records)), LogicalContentHash: encodedShard.logicalHash, EncodedByteHash: encodedHash, ChecksumSHA256: encodedHash, Encoded: encodedShard.encoded, ObjectKey: artifactObjectKeyV2(incarnationID, transaction.SourceLineageID, mappingFingerprint, canonical.Namespace, canonical.Name, schemaID, partition, shard, artifactID)})
+			}
+			run = nil
+			return nil
+		}
+		for _, record := range batch.Records {
+			if record.Operation == connector.OpDDL {
+				if err := flushRun(); err != nil {
+					return Plan{}, err
+				}
+				barrierBatch := batch
+				barrierBatch.Schema.Version = 0
+				barrierRecord := record
+				barrierRecord.SchemaVersion = 0
+				barrierBatch.Records = []connector.Record{barrierRecord}
+				barrierBatch.Checkpoint = transaction.Checkpoint
+				barrierHash, hashErr := connector.BatchContentHash(barrierBatch)
+				if hashErr != nil {
+					return Plan{}, fmt.Errorf("hash v2 DDL barrier at ordinal %d: %w", recordOrdinal, hashErr)
+				}
+				plan.Barriers = append(plan.Barriers, Barrier{FragmentOrdinal: fragment.Ordinal, RecordOrdinal: recordOrdinal, Kind: "ddl", Namespace: batch.Schema.Namespace, Table: record.Table, DDL: record.DDL, DDLPlan: append([]byte(nil), record.DDLPlan...), ContentHash: barrierHash})
+				recordOrdinal++
+				continue
+			}
+			run = append(run, ordinalRecord{record: record, ordinal: recordOrdinal})
+			recordOrdinal++
+		}
+		if err := flushRun(); err != nil {
+			return Plan{}, err
+		}
+	}
+	return plan, nil
+}
+
 type ordinalRecord struct {
 	record  connector.Record
 	ordinal uint64
@@ -435,9 +563,87 @@ func canonicalizeSchema(lineage string, schema connector.Schema) (connector.Sche
 	return result, encoded, hex.EncodeToString(digest[:]), nil
 }
 
+func canonicalizeSchemaV2(lineage, mappingFingerprint string, schema connector.Schema) (connector.Schema, []byte, string, error) {
+	if strings.TrimSpace(lineage) == "" {
+		return connector.Schema{}, nil, "", errors.New("canonical v2 source lineage is required")
+	}
+	system := make([]CanonicalField, len(canonicalSystemFields))
+	copy(system, canonicalSystemFields)
+	for index := range system {
+		system[index].SyntheticIdentity = "canonical.envelope.v2:" + system[index].Name
+	}
+	canonical := canonicalSchemaV2{ProjectionID: ProjectionIDV2, MappingFingerprint: mappingFingerprint, SourceLineageID: lineage, Namespace: schema.Namespace, Table: schema.Name, QuotedNamespace: schema.QuotedIdentifiers["namespace"], QuotedTable: schema.QuotedIdentifiers["table"], Fields: system}
+	result := schema
+	result.Version = 0
+	result.Columns = append([]connector.Column(nil), schema.Columns...)
+	seen := make(map[int32]string, len(schema.Columns)+len(system))
+	reservedNames := make(map[string]struct{}, len(system))
+	for _, field := range system {
+		seen[field.ID] = field.Name
+		reservedNames[strings.ToLower(field.Name)] = struct{}{}
+	}
+	for index, column := range result.Columns {
+		if _, reserved := reservedNames[strings.ToLower(column.Name)]; reserved {
+			return connector.Schema{}, nil, "", fmt.Errorf("column %q collides with canonical envelope", column.Name)
+		}
+		synthetic := strings.TrimSpace(column.TypeMetadata["wallaby.synthetic_identity"])
+		syntheticRelation := strings.TrimSpace(column.TypeMetadata["wallaby.synthetic_source_relation"])
+		var fieldID int32
+		var relationID uint64
+		var columnID int64
+		if synthetic != "" {
+			if synthetic != "append.operation.v1" && synthetic != "append.deleted.v1" {
+				return connector.Schema{}, nil, "", fmt.Errorf("column %q has unsupported synthetic identity %q", column.Name, synthetic)
+			}
+			if syntheticRelation == "" {
+				return connector.Schema{}, nil, "", fmt.Errorf("column %q lacks synthetic source relation", column.Name)
+			}
+			fieldID = stableSyntheticFieldID(lineage, syntheticRelation, synthetic)
+		} else {
+			var err error
+			relationID, err = strconv.ParseUint(column.TypeMetadata["source_relation_id"], 10, 32)
+			if err != nil || relationID == 0 {
+				return connector.Schema{}, nil, "", fmt.Errorf("column %q lacks source_relation_id", column.Name)
+			}
+			columnID, err = strconv.ParseInt(column.TypeMetadata["source_column_id"], 10, 16)
+			if err != nil || columnID <= 0 {
+				return connector.Schema{}, nil, "", fmt.Errorf("column %q lacks source_column_id", column.Name)
+			}
+			fieldID = stableFieldID(lineage, uint32(relationID), int16(columnID))
+		}
+		if prior, ok := seen[fieldID]; ok {
+			return connector.Schema{}, nil, "", fmt.Errorf("stable field ID collision between %q and %q", prior, column.Name)
+		}
+		seen[fieldID] = column.Name
+		metadata := make(map[string]string, len(column.TypeMetadata)+1)
+		for key, value := range column.TypeMetadata {
+			metadata[key] = value
+		}
+		metadata["wallaby.field_id"] = strconv.FormatInt(int64(fieldID), 10)
+		column.TypeMetadata = metadata
+		result.Columns[index] = column
+		canonical.Fields = append(canonical.Fields, CanonicalField{ID: fieldID, Name: column.Name, Type: column.Type, Nullable: column.Nullable, Generated: column.Generated, Expression: column.Expression, Metadata: metadata, Quoted: schema.QuotedIdentifiers[column.Name], SourceLineageID: lineage, SourceRelationID: uint32(relationID), SourceColumnID: int32(columnID), SyntheticIdentity: synthetic, SyntheticSourceRelation: syntheticRelation})
+	}
+	encoded, err := json.Marshal(canonical)
+	if err != nil {
+		return connector.Schema{}, nil, "", fmt.Errorf("marshal canonical v2 schema: %w", err)
+	}
+	digest := sha256.Sum256(encoded)
+	return result, encoded, hex.EncodeToString(digest[:]), nil
+}
+
 func stableFieldID(lineage string, relationID uint32, columnID int16) int32 {
 	digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d", lineage, relationID, columnID)))
 	// #nosec G115 -- shifting an unsigned 32-bit value right yields at most MaxInt32.
+	value := int32(binary.BigEndian.Uint32(digest[:4]) >> 1)
+	if value <= canonicalSystemFieldCount {
+		value += canonicalSystemFieldCount + 1
+	}
+	return value
+}
+
+func stableSyntheticFieldID(lineage, sourceRelation, identity string) int32 {
+	digest := sha256.Sum256([]byte("wallaby.synthetic-field.v1\x00" + lineage + "\x00" + sourceRelation + "\x00" + identity))
 	value := int32(binary.BigEndian.Uint32(digest[:4]) >> 1)
 	if value <= canonicalSystemFieldCount {
 		value += canonicalSystemFieldCount + 1
@@ -454,6 +660,16 @@ func artifactIdentity(incarnationID uuid.UUID, lineage, logicalBatchID, namespac
 	return hex.EncodeToString(digest[:])
 }
 
+func artifactIdentityV2(incarnationID uuid.UUID, lineage, logicalBatchID, mappingFingerprint, namespace, table, schemaID, partition string, shard uint32) string {
+	sourceIdentity := incarnationID.String() + "\x00" + lineage
+	digest := sha256.Sum256([]byte(strings.Join([]string{"wallaby.artifact.v2", ProjectionIDV2, mappingFingerprint, schemaID, sourceIdentity, namespace, table, "unpartitioned-v1", partition, strconv.FormatUint(uint64(shard), 10), logicalBatchID}, "\x00")))
+	return hex.EncodeToString(digest[:])
+}
+
+func artifactObjectKeyV2(incarnationID uuid.UUID, lineage, mappingFingerprint, namespace, table, schemaID, partition string, shard uint32, artifactID string) string {
+	return fmt.Sprintf("wallaby/artifacts-v2/%s/source=%s/mapping=%s/namespace=%s/table=%s/schema=%s/partition=%s/shard=%06d/%s.parquet", incarnationID, shortHash(lineage), mappingFingerprint, url.PathEscape(namespace), url.PathEscape(table), schemaID, url.PathEscape(partition), shard, artifactID)
+}
+
 func artifactObjectKey(incarnationID uuid.UUID, lineage, namespace, table, schemaID, partition string, shard uint32, artifactID string) string {
 	return fmt.Sprintf(
 		"wallaby/artifacts/%s/source=%s/namespace=%s/table=%s/schema=%s/partition=%s/shard=%06d/%s.parquet",
@@ -465,6 +681,42 @@ func artifactObjectKey(incarnationID uuid.UUID, lineage, namespace, table, schem
 func shortHash(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:8])
+}
+
+// normalizeMappedArtifactTransaction removes the append projector's source-position
+// materialization because the canonical envelope is the sole owner of that field.
+// Operation and deletion metadata remain ordinary mapped fields with explicit
+// synthetic identities.
+func normalizeMappedArtifactTransaction(transaction connector.SourceTransaction) (connector.SourceTransaction, error) {
+	for fragmentIndex := range transaction.Fragments {
+		batch := &transaction.Fragments[fragmentIndex].Batch
+		columns := make([]connector.Column, 0, len(batch.Schema.Columns))
+		for _, column := range batch.Schema.Columns {
+			if column.Name != connector.AppendSourcePositionColumn {
+				columns = append(columns, column)
+				continue
+			}
+			if column.TypeMetadata["wallaby.synthetic_identity"] != "append.source_position.v1" {
+				return connector.SourceTransaction{}, fmt.Errorf("mapped column %q collides with canonical source-position envelope", column.Name)
+			}
+		}
+		batch.Schema.Columns = columns
+		for recordIndex := range batch.Records {
+			record := &batch.Records[recordIndex]
+			for _, image := range []map[string]any{record.Before, record.After} {
+				value, exists := image[connector.AppendSourcePositionColumn]
+				if !exists {
+					continue
+				}
+				position, ok := value.(string)
+				if !ok || strings.TrimSpace(position) != record.SourcePosition {
+					return connector.SourceTransaction{}, fmt.Errorf("mapped source-position metadata differs at fragment %d record %d", fragmentIndex, recordIndex)
+				}
+				delete(image, connector.AppendSourcePositionColumn)
+			}
+		}
+	}
+	return transaction, nil
 }
 
 func canonicalSourceTransaction(transaction connector.SourceTransaction) (connector.SourceTransaction, error) {

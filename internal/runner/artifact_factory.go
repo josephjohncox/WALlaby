@@ -25,7 +25,7 @@ type ArtifactLogFactory func(context.Context, flow.Flow, []stream.DestinationCon
 // asynchronous catalog consumers; non-Iceberg materialized flows retain the
 // canonical-publication-only behavior.
 func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, icebergCfg config.IcebergConfig) ArtifactLogFactory {
-	return func(ctx context.Context, _ flow.Flow, destinations []stream.DestinationConfig) (stream.ManagedArtifactLog, error) {
+	return func(ctx context.Context, f flow.Flow, destinations []stream.DestinationConfig) (stream.ManagedArtifactLog, error) {
 		if pool == nil {
 			return nil, errors.New("artifact publication requires the shared PostgreSQL control pool")
 		}
@@ -42,6 +42,8 @@ func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, iceber
 		}
 		catalogConsumers := make([]artifactlog.CatalogConsumerConfig, 0, 1)
 		effectiveFingerprint := ""
+		var projector stream.Projector
+		mappingFingerprint := ""
 		for _, destination := range destinations {
 			if destination.Spec.Type != connector.EndpointIceberg {
 				continue
@@ -53,6 +55,14 @@ func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, iceber
 			if effectiveFingerprint != "" {
 				return nil, errors.New("artifact publication supports exactly one Iceberg destination revision")
 			}
+			if f.Config.Materialization.ProjectionID != artifactlog.ProjectionIDV2 {
+				return nil, errors.New("Iceberg materialization requires canonical_cdc_parquet_v2")
+			}
+			if destination.Projector == nil || destination.MappingFingerprint == "" || destination.Projector.Fingerprint() != destination.MappingFingerprint {
+				return nil, errors.New("Iceberg artifact factory requires the sole immutable destination projector and mapping fingerprint")
+			}
+			projector = destination.Projector
+			mappingFingerprint = destination.MappingFingerprint
 			effectiveFingerprint, err = icebergdest.ConfigFingerprint(parsed)
 			if err != nil {
 				return nil, fmt.Errorf("fingerprint effective Iceberg artifact consumer: %w", err)
@@ -75,16 +85,17 @@ func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, iceber
 		}
 		return artifactlog.NewRuntime(ctx, pool, objects, artifactlog.RuntimeConfig{
 			Stream: artifactlog.StreamConfig{
+				ProjectionID: f.Config.Materialization.ProjectionID, MappingFingerprint: mappingFingerprint,
 				HardRetainedBytes:        int64(cfg.HardRetainedBytes),
 				BacklogCountHigh:         int64(cfg.BacklogBatchHigh),
 				BacklogBytesHigh:         int64(cfg.BacklogBytesHigh),
 				BacklogAgeHigh:           cfg.BacklogAgeHigh,
 				BackpressurePollInterval: cfg.BackpressurePollInterval,
 			},
-			OrphanGrace:            cfg.OrphanGrace,
-			Retention:              cfg.Retention,
-			GCInterval:             cfg.GCInterval,
-			Consumers:              catalogConsumers,
+			OrphanGrace: cfg.OrphanGrace,
+			Retention:   cfg.Retention,
+			GCInterval:  cfg.GCInterval,
+			Consumers:   catalogConsumers, Projector: projector,
 			DestinationFingerprint: effectiveFingerprint,
 		})
 	}
@@ -93,7 +104,7 @@ func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, iceber
 func icebergDestinationConfig(cfg config.IcebergConfig) icebergdest.Config {
 	return icebergdest.Config{
 		Profile: cfg.Profile, URI: cfg.URI, Warehouse: cfg.Warehouse, Prefix: cfg.Prefix,
-		TargetNamespace: cfg.Namespace, TablePrefix: cfg.TablePrefix, ControlTable: cfg.ControlTable,
+		ControlTable:     cfg.ControlTable,
 		MaxCommitRetries: cfg.MaxCommitRetries, RequestTimeout: cfg.RequestTimeout,
 		ReconciliationHorizon: cfg.ReconciliationHorizon,
 		OAuthToken:            cfg.OAuthToken, OAuthCredential: cfg.OAuthCredential,

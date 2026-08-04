@@ -130,8 +130,8 @@ func ValidateDefinition(definition Flow) error {
 		}
 		return nil
 	}
-	if materialization.ProjectionID != "canonical_cdc_parquet_v1" {
-		return fmt.Errorf("ack_policy=materialized requires materialization.projection_id=canonical_cdc_parquet_v1; got %q", materialization.ProjectionID)
+	if materialization.ProjectionID != "canonical_cdc_parquet_v2" {
+		return fmt.Errorf("ack_policy=materialized Iceberg requires materialization.projection_id=canonical_cdc_parquet_v2; got %q", materialization.ProjectionID)
 	}
 	if strings.TrimSpace(definition.Config.PrimaryDestination) != "" {
 		return errors.New("primary_destination is not valid with ack_policy=materialized")
@@ -159,6 +159,36 @@ func ValidateDefinition(definition Flow) error {
 	}
 	if strings.TrimSpace(destination.Options["destination_revision_id"]) == "" {
 		return errors.New("ack_policy=materialized Iceberg destination requires destination_revision_id")
+	}
+	for _, option := range []string{"namespace", "table_prefix", "fixed_table", "target_namespace", "target_table"} {
+		if strings.TrimSpace(destination.Options[option]) != "" {
+			return fmt.Errorf("Iceberg logical option %q is superseded by table mappings", option)
+		}
+	}
+	mapping, ok := definition.Config.TableMappings.ForDestination(destination.Name)
+	if !ok {
+		return errors.New("materialized Iceberg destination mapping is required")
+	}
+	validateWrite := func(label string, write TableWritePolicy) error {
+		if write.Mode != TableWriteModeAppend {
+			return fmt.Errorf("materialized Iceberg %s must use append", label)
+		}
+		if write.WatermarkColumn != "" {
+			return fmt.Errorf("materialized Iceberg %s does not support watermark", label)
+		}
+		return nil
+	}
+	if mapping.FutureTables.Action == MappingActionInclude {
+		if err := validateWrite("future table mapping", mapping.FutureTables.Write); err != nil {
+			return err
+		}
+	}
+	for _, table := range mapping.Tables {
+		if table.Action == MappingActionInclude {
+			if err := validateWrite(table.SourceSchema+"."+table.SourceTable, table.Write); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

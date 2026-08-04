@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net"
 	"net/url"
@@ -201,7 +202,7 @@ func TestCommitterRewritesCanonicalProjectionWithCatalogOwnedFieldIDs(t *testing
 	}
 }
 
-func TestBuildProjectionRejectsMultipleSchemaGroupsForOneTarget(t *testing.T) {
+func TestBuildProjectionKeepsAlreadyMappedRelationsDistinct(t *testing.T) {
 	t.Parallel()
 
 	transaction := connector.SourceTransaction{
@@ -215,13 +216,13 @@ func TestBuildProjectionRejectsMultipleSchemaGroupsForOneTarget(t *testing.T) {
 	}
 	request, objects, _ := assembleCommitRequest(t, uuid.MustParse("44444444-4444-4444-4444-444444444444"), uuid.MustParse("66666666-6666-6666-6666-666666666666"), 2, transaction)
 	cfg := testIcebergConfig()
-	cfg.FixedTable = "shared"
 	plan, err := buildProjection(context.Background(), request, objects, cfg)
-	if plan != nil {
-		plan.release()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err == nil || !errors.Is(err, connector.ErrDeliveryConflict) || !strings.Contains(err.Error(), "multiple schema projections target") {
-		t.Fatalf("error=%v, want same-target projection conflict", err)
+	defer plan.release()
+	if len(plan.groups) != 2 {
+		t.Fatalf("mapped relation groups=%d, want 2", len(plan.groups))
 	}
 }
 
@@ -231,8 +232,22 @@ func TestBuildProjectionRejectsControlTableCollision(t *testing.T) {
 	for _, withBarriers := range []bool{false, true} {
 		request, objects, _ := testCommitRequest(t, withBarriers)
 		cfg := testIcebergConfig()
-		cfg.TargetNamespace = "public"
 		cfg.ControlTable = "events"
+		for index := range request.Objects {
+			request.Objects[index].Namespace = "wallaby"
+			request.Objects[index].Table = "events"
+			var document map[string]any
+			if err := json.Unmarshal(request.Objects[index].SchemaJSON, &document); err != nil {
+				t.Fatal(err)
+			}
+			document["namespace"] = "wallaby"
+			document["table"] = "events"
+			request.Objects[index].SchemaJSON, _ = json.Marshal(document)
+		}
+		for index := range request.Barriers {
+			request.Barriers[index].Namespace = "wallaby"
+			request.Barriers[index].Table = "events"
+		}
 		plan, err := buildProjection(context.Background(), request, objects, cfg)
 		if plan != nil {
 			plan.release()
@@ -243,6 +258,45 @@ func TestBuildProjectionRejectsControlTableCollision(t *testing.T) {
 		if _, err := expectedProjectionGroups(request, cfg); err == nil || !errors.Is(err, connector.ErrDeliveryConflict) {
 			t.Fatalf("withBarriers=%t expected projection groups error=%v, want control-table conflict", withBarriers, err)
 		}
+	}
+}
+
+func TestCommitAndReconcileRejectNonV2OrMalformedMappingBeforeCatalog(t *testing.T) {
+	t.Parallel()
+	for _, mutation := range []func(*artifactlog.CommitRequest){func(request *artifactlog.CommitRequest) { request.ProjectionID = artifactlog.ProjectionID }, func(request *artifactlog.CommitRequest) {
+		request.MappingFingerprint = "ABCDEF" + strings.Repeat("0", 58)
+	}, func(request *artifactlog.CommitRequest) { request.MappingFingerprint = strings.Repeat("z", 64) }} {
+		for _, operation := range []string{"commit", "reconcile"} {
+			request, objects, _ := testCommitRequest(t, false)
+			mutation(&request)
+			backend := newFakeCatalogBackend()
+			committer := testCommitter(t, objects, backend)
+			var err error
+			if operation == "commit" {
+				_, err = committer.Commit(context.Background(), request)
+			} else {
+				_, err = committer.Reconcile(context.Background(), request)
+			}
+			if err == nil || !errors.Is(err, connector.ErrDeliveryConflict) {
+				t.Fatalf("%s invalid projection identity error=%v", operation, err)
+			}
+			if backend.catalogCalls != 0 {
+				t.Fatalf("%s reached catalog %d times", operation, backend.catalogCalls)
+			}
+		}
+	}
+}
+
+func TestBuildProjectionRejectsMappingFingerprintMismatch(t *testing.T) {
+	t.Parallel()
+	request, objects, _ := testCommitRequest(t, false)
+	request.MappingFingerprint = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	plan, err := buildProjection(context.Background(), request, objects, testIcebergConfig())
+	if plan != nil {
+		plan.release()
+	}
+	if err == nil || !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("mapping fingerprint mismatch error=%v", err)
 	}
 }
 
@@ -349,88 +403,94 @@ func TestCommitterBoundsOptimisticConflictRewrites(t *testing.T) {
 	}
 }
 
-func TestEvolutionPlanAddsRenamesAndFailsClosed(t *testing.T) {
+func TestEvolutionPlanAddsRenamesAndRejectsDropsOrUnprovenFields(t *testing.T) {
 	t.Parallel()
-	// The catalog owns IDs. Identity lives in the field doc, not the ID.
-	current := iceberggo.NewSchema(3,
-		iceberggo.NestedField{ID: 7, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Required: false, Doc: identityDoc("src:42:1")},
-		iceberggo.NestedField{ID: 8, Name: "value", Type: iceberggo.StringType{}, Required: false, Doc: identityDoc("src:42:2")},
-	)
-
-	t.Run("additive column", func(t *testing.T) {
-		desired := iceberggo.NewSchema(0,
-			iceberggo.NestedField{ID: 1, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Doc: identityDoc("src:42:1")},
-			iceberggo.NestedField{ID: 2, Name: "value", Type: iceberggo.StringType{}, Doc: identityDoc("src:42:2")},
-			iceberggo.NestedField{ID: 3, Name: "note", Type: iceberggo.StringType{}, Doc: identityDoc("src:42:3")},
-		)
+	const lineage = "postgres-system/evolution"
+	identity := func(relation, column int) string { return fmt.Sprintf("src:%s:%d:%d", lineage, relation, column) }
+	current := iceberggo.NewSchema(3, iceberggo.NestedField{ID: 7, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Doc: identityDoc(identity(42, 1))}, iceberggo.NestedField{ID: 8, Name: "value", Type: iceberggo.PrimitiveTypes.String, Doc: identityDoc(identity(42, 2))})
+	t.Run("valid add", func(t *testing.T) {
+		desired := iceberggo.NewSchema(0, iceberggo.NestedField{ID: 1, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Doc: identityDoc(identity(42, 1))}, iceberggo.NestedField{ID: 2, Name: "value", Type: iceberggo.PrimitiveTypes.String, Doc: identityDoc(identity(42, 2))}, iceberggo.NestedField{ID: 3, Name: "note", Type: iceberggo.PrimitiveTypes.String, Doc: identityDoc(identity(42, 3))})
 		adds, renames, err := evolutionPlan(current, desired)
 		if err != nil || len(renames) != 0 || len(adds) != 1 || adds[0].Name != "note" || adds[0].Required {
 			t.Fatalf("adds=%+v renames=%+v err=%v", adds, renames, err)
 		}
 	})
-
-	t.Run("supported rename by identity", func(t *testing.T) {
-		desired := iceberggo.NewSchema(0,
-			iceberggo.NestedField{ID: 1, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Doc: identityDoc("src:42:1")},
-			iceberggo.NestedField{ID: 2, Name: "payload", Type: iceberggo.StringType{}, Doc: identityDoc("src:42:2")},
-		)
+	t.Run("valid rename", func(t *testing.T) {
+		desired := iceberggo.NewSchema(0, iceberggo.NestedField{ID: 1, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Doc: identityDoc(identity(42, 1))}, iceberggo.NestedField{ID: 2, Name: "payload", Type: iceberggo.PrimitiveTypes.String, Doc: identityDoc(identity(42, 2))})
 		adds, renames, err := evolutionPlan(current, desired)
 		if err != nil || len(adds) != 0 || len(renames) != 1 || renames[0].from != "value" || renames[0].to != "payload" {
 			t.Fatalf("adds=%+v renames=%+v err=%v", adds, renames, err)
 		}
 	})
-
-	t.Run("incompatible type change fails closed", func(t *testing.T) {
-		desired := iceberggo.NewSchema(0,
-			iceberggo.NestedField{ID: 1, Name: "id", Type: iceberggo.StringType{}, Doc: identityDoc("src:42:1")},
-		)
-		if _, _, err := evolutionPlan(current, desired); !errors.Is(err, connector.ErrDeliveryConflict) {
-			t.Fatalf("type change error=%v, want delivery conflict", err)
+	t.Run("mapped column drop", func(t *testing.T) {
+		desired := iceberggo.NewSchema(0, iceberggo.NestedField{ID: 1, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Doc: identityDoc(identity(42, 1))})
+		if _, _, err := evolutionPlan(current, desired); err == nil || !errors.Is(err, connector.ErrDeliveryConflict) || !strings.Contains(err.Error(), "absent from the complete canonical schema") {
+			t.Fatalf("drop error=%v", err)
 		}
 	})
-
-	t.Run("name collision with different identity fails closed", func(t *testing.T) {
-		desired := iceberggo.NewSchema(0,
-			iceberggo.NestedField{ID: 1, Name: "value", Type: iceberggo.StringType{}, Doc: identityDoc("src:99:9")},
-		)
-		if _, _, err := evolutionPlan(current, desired); !errors.Is(err, connector.ErrDeliveryConflict) {
-			t.Fatalf("name collision error=%v, want delivery conflict", err)
+	t.Run("manual extra column", func(t *testing.T) {
+		extra := iceberggo.NewSchema(3, append(current.Fields(), iceberggo.NestedField{ID: 9, Name: "manual", Type: iceberggo.PrimitiveTypes.String, Doc: identityDoc(identity(99, 1))})...)
+		if _, _, err := evolutionPlan(extra, current); err == nil || !errors.Is(err, connector.ErrDeliveryConflict) {
+			t.Fatalf("manual extra error=%v", err)
+		}
+	})
+	for _, test := range []struct{ name, doc string }{{"missing doc", ""}, {"malformed source doc", icebergIdentityDocPrefix + "src::bad"}, {"malformed synthetic doc", icebergIdentityDocPrefix + "synthetic::::"}} {
+		t.Run(test.name, func(t *testing.T) {
+			malformed := iceberggo.NewSchema(1, iceberggo.NestedField{ID: 1, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Doc: test.doc})
+			if _, _, err := evolutionPlan(malformed, current); err == nil || !errors.Is(err, connector.ErrDeliveryConflict) {
+				t.Fatalf("identity doc error=%v", err)
+			}
+		})
+	}
+	t.Run("type change", func(t *testing.T) {
+		desired := iceberggo.NewSchema(0, iceberggo.NestedField{ID: 1, Name: "id", Type: iceberggo.PrimitiveTypes.String, Doc: identityDoc(identity(42, 1))}, iceberggo.NestedField{ID: 2, Name: "value", Type: iceberggo.PrimitiveTypes.String, Doc: identityDoc(identity(42, 2))})
+		if _, _, err := evolutionPlan(current, desired); err == nil || !errors.Is(err, connector.ErrDeliveryConflict) {
+			t.Fatalf("type error=%v", err)
 		}
 	})
 }
 
+func TestIcebergFieldIdentityIncludesSourceLineage(t *testing.T) {
+	t.Parallel()
+	a := artifactlog.CanonicalField{Name: "id", SourceLineageID: "lineage-a", SourceRelationID: 42, SourceColumnID: 1}
+	b := a
+	b.SourceLineageID = "lineage-b"
+	identityA, identityB := stableFieldIdentity(a), stableFieldIdentity(b)
+	if identityA == identityB {
+		t.Fatalf("different lineages aliased as %q", identityA)
+	}
+	current := iceberggo.NewSchema(0, iceberggo.NestedField{ID: 1, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Required: false, Doc: identityDoc(identityA)})
+	desired := iceberggo.NewSchema(0, iceberggo.NestedField{ID: 99, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Required: false, Doc: identityDoc(identityB)})
+	if _, err := buildFieldMapping(current, desired); err == nil || !strings.Contains(err.Error(), "stable identity") {
+		t.Fatalf("cross-lineage evolution error=%v", err)
+	}
+}
+
 func TestBuildFieldMappingRejectsMissingAndColliding(t *testing.T) {
 	t.Parallel()
-	current := iceberggo.NewSchema(1,
-		iceberggo.NestedField{ID: 5, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Doc: identityDoc("src:42:1")},
-	)
-
+	const identity = "src:postgres-system/mapping:42:1"
+	current := iceberggo.NewSchema(1, iceberggo.NestedField{ID: 5, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Doc: identityDoc(identity)})
 	t.Run("maps to catalog ids", func(t *testing.T) {
-		mapping, err := buildFieldMapping(current, iceberggo.NewSchema(0,
-			iceberggo.NestedField{ID: 99, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Doc: identityDoc("src:42:1")},
-		))
+		mapping, err := buildFieldMapping(current, iceberggo.NewSchema(0, iceberggo.NestedField{ID: 99, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Doc: identityDoc(identity)}))
 		if err != nil || mapping["id"] != 5 {
-			t.Fatalf("mapping=%v err=%v, want id->5", mapping, err)
+			t.Fatalf("mapping=%v err=%v", mapping, err)
 		}
 	})
-
-	t.Run("missing field fails closed", func(t *testing.T) {
-		if _, err := buildFieldMapping(current, iceberggo.NewSchema(0,
-			iceberggo.NestedField{ID: 1, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Doc: identityDoc("src:42:1")},
-			iceberggo.NestedField{ID: 2, Name: "note", Type: iceberggo.StringType{}, Doc: identityDoc("src:42:2")},
-		)); err == nil || !strings.Contains(err.Error(), "missing from the catalog schema") {
-			t.Fatalf("missing-field error=%v", err)
+	t.Run("missing desired field", func(t *testing.T) {
+		if _, err := buildFieldMapping(current, iceberggo.NewSchema(0, iceberggo.NestedField{ID: 1, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Doc: identityDoc(identity)}, iceberggo.NestedField{ID: 2, Name: "note", Type: iceberggo.PrimitiveTypes.String, Doc: identityDoc("src:postgres-system/mapping:42:2")})); err == nil || !strings.Contains(err.Error(), "missing from the catalog schema") {
+			t.Fatalf("missing error=%v", err)
 		}
 	})
-
-	t.Run("required table field with nullable projection fails closed", func(t *testing.T) {
-		requiredTable := iceberggo.NewSchema(1,
-			iceberggo.NestedField{ID: 5, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Required: true, Doc: identityDoc("src:42:1")},
-		)
-		if _, err := buildFieldMapping(requiredTable, iceberggo.NewSchema(0,
-			iceberggo.NestedField{ID: 1, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Required: false, Doc: identityDoc("src:42:1")},
-		)); !errors.Is(err, connector.ErrDeliveryConflict) {
-			t.Fatalf("requiredness error=%v, want delivery conflict", err)
+	t.Run("extra current field", func(t *testing.T) {
+		extra := iceberggo.NewSchema(1, iceberggo.NestedField{ID: 5, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Doc: identityDoc(identity)}, iceberggo.NestedField{ID: 6, Name: "manual", Type: iceberggo.PrimitiveTypes.String, Doc: identityDoc("src:postgres-system/mapping:99:1")})
+		if _, err := buildFieldMapping(extra, current); err == nil || !errors.Is(err, connector.ErrDeliveryConflict) {
+			t.Fatalf("extra error=%v", err)
+		}
+	})
+	t.Run("requiredness", func(t *testing.T) {
+		required := iceberggo.NewSchema(1, iceberggo.NestedField{ID: 5, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Required: true, Doc: identityDoc(identity)})
+		if _, err := buildFieldMapping(required, iceberggo.NewSchema(0, iceberggo.NestedField{ID: 1, Name: "id", Type: iceberggo.PrimitiveTypes.Int64, Doc: identityDoc(identity)})); err == nil || !errors.Is(err, connector.ErrDeliveryConflict) {
+			t.Fatalf("requiredness error=%v", err)
 		}
 	})
 }
@@ -536,6 +596,25 @@ func TestCommitterAppliesSupportedRenameByStableIdentity(t *testing.T) {
 	// The renamed field keeps its original catalog ID; only its name changed.
 	if backend.lastParquetFieldIDs["payload"] != payload.ID {
 		t.Fatalf("renamed data file field id=%d, want catalog id %d", backend.lastParquetFieldIDs["payload"], payload.ID)
+	}
+}
+
+func TestCommitterRejectsMappedColumnDropWithoutCatalogAppend(t *testing.T) {
+	t.Parallel()
+	backend := newFakeCatalogBackend()
+	first := eventsTransaction(81, "0/60", []connector.Column{column("id", "int8", 1), column("value", "text", 2)}, map[string]any{"id": int64(1), "value": "one"})
+	requestV1, objectsV1, _ := assembleCommitRequest(t, uuid.MustParse("44444444-4444-4444-4444-444444444444"), uuid.MustParse("55555555-5555-5555-5555-555555555561"), 1, first)
+	if _, err := testCommitter(t, objectsV1, backend).Commit(context.Background(), requestV1); err != nil {
+		t.Fatal(err)
+	}
+	dropped := eventsTransaction(82, "0/80", []connector.Column{column("id", "int8", 1)}, map[string]any{"id": int64(2)})
+	requestV2, objectsV2, _ := assembleCommitRequest(t, uuid.MustParse("44444444-4444-4444-4444-444444444444"), uuid.MustParse("55555555-5555-5555-5555-555555555562"), 2, dropped)
+	before := backend.appendCalls
+	if _, err := testCommitter(t, objectsV2, backend).Commit(context.Background(), requestV2); err == nil || !errors.Is(err, connector.ErrDeliveryConflict) || !strings.Contains(err.Error(), "absent from the complete canonical schema") {
+		t.Fatalf("mapped drop error=%v", err)
+	}
+	if backend.appendCalls != before {
+		t.Fatalf("mapped drop reached catalog append: before=%d after=%d", before, backend.appendCalls)
 	}
 }
 
@@ -750,6 +829,7 @@ type fakeCatalogBackend struct {
 	lastAppendFieldIDs  map[string]int
 	lastParquetFieldIDs map[string]int
 	nextSnapshot        int64
+	catalogCalls        int
 }
 
 func newFakeCatalogBackend() *fakeCatalogBackend {
@@ -759,6 +839,7 @@ func newFakeCatalogBackend() *fakeCatalogBackend {
 func (backend *fakeCatalogBackend) Load(_ context.Context, identifier table.Identifier) (catalogTable, error) {
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
+	backend.catalogCalls++
 	state, ok := backend.tables[strings.Join(identifier, ".")]
 	if !ok {
 		return catalogTable{}, ErrTableNotFound
@@ -773,6 +854,7 @@ func (backend *fakeCatalogBackend) Load(_ context.Context, identifier table.Iden
 func (backend *fakeCatalogBackend) Create(_ context.Context, identifier table.Identifier, schema *iceberggo.Schema) (catalogTable, error) {
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
+	backend.catalogCalls++
 	key := strings.Join(identifier, ".")
 	if _, exists := backend.tables[key]; exists {
 		return catalogTable{}, ErrCatalogConflict
@@ -911,7 +993,7 @@ func testCommitter(t *testing.T, objects CanonicalObjectReader, backend catalogB
 func testIcebergConfig() Config {
 	return Config{
 		Profile: CatalogProfileREST, URI: "http://catalog.invalid", Warehouse: "file:///tmp/wallaby-iceberg-test",
-		TargetNamespace: "lake", ControlTable: "__wallaby_control", DestinationRevisionID: "iceberg-test-v1",
+		ControlTable: "__wallaby_control", DestinationRevisionID: "iceberg-test-v1",
 		MaxCommitRetries: 4, RequestTimeout: time.Second, ReconciliationHorizon: time.Hour, AllowHTTP: true,
 	}
 }
@@ -949,7 +1031,8 @@ func testCommitRequest(t *testing.T, barriers bool) (artifactlog.CommitRequest, 
 // consumer assembles at runtime.
 func assembleCommitRequest(t *testing.T, incarnationID, publicationID uuid.UUID, sequence int64, transaction connector.SourceTransaction) (artifactlog.CommitRequest, *memoryCanonicalObjects, []artifactlog.CanonicalField) {
 	t.Helper()
-	plan, err := artifactlog.NewEncoder().PlanTransaction(context.Background(), incarnationID, transaction)
+	const mappingFingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	plan, err := artifactlog.NewEncoder().PlanMappedTransaction(context.Background(), incarnationID, mappingFingerprint, transaction)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -958,7 +1041,7 @@ func assembleCommitRequest(t *testing.T, incarnationID, publicationID uuid.UUID,
 		FlowID: "flow-iceberg", FlowIncarnationID: incarnationID,
 		ConsumerRevisionID: "iceberg-test-v1", PublicationID: publicationID,
 		PublicationSequence: sequence, PositionID: transaction.EndLSN, CheckpointLSN: transaction.EndLSN,
-		LogicalBatchID: plan.LogicalBatchID, ProjectionID: artifactlog.ProjectionID,
+		LogicalBatchID: plan.LogicalBatchID, ProjectionID: artifactlog.ProjectionIDV2, MappingFingerprint: mappingFingerprint,
 		AttemptedAt: time.Now().UTC(), Barriers: plan.Barriers,
 	}
 	manifest := sha256.New()
@@ -966,7 +1049,7 @@ func assembleCommitRequest(t *testing.T, incarnationID, publicationID uuid.UUID,
 	for _, artifact := range plan.Artifacts {
 		evidence := artifactlog.ObjectEvidence{
 			Bucket: "canonical", Key: artifact.ObjectKey, VersionID: "version-" + artifact.ID,
-			ChecksumSHA256: artifact.EncodedByteHash, Length: int64(len(artifact.Encoded)),
+			ChecksumSHA256: artifact.EncodedByteHash, Length: int64(len(artifact.Encoded)), ProjectionID: artifactlog.ProjectionIDV2, MappingFingerprint: mappingFingerprint,
 		}
 		objects.data[evidence.Key+"@"+evidence.VersionID] = append([]byte(nil), artifact.Encoded...)
 		request.Objects = append(request.Objects, artifactlog.RootedArtifact{

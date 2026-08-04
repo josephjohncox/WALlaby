@@ -40,7 +40,7 @@ export WALLABY_CHECKPOINT_PATH="$HOME/.wallaby/checkpoints.db"
 
 ## Canonical artifact publication
 
-`ack_policy=materialized` requires an ordinary versioned S3 bucket and the PostgreSQL workflow/checkpoint store. The flow carries only `materialization.projection_id=canonical_cdc_parquet_v1`; credentials and operational limits stay in worker deployment configuration.
+`ack_policy=materialized` requires an ordinary versioned S3 bucket and the PostgreSQL workflow/checkpoint store. Current mapped Iceberg flows carry `materialization.projection_id=canonical_cdc_parquet_v2`; the durable destination mapping supplies logical target identity, while credentials and operational limits stay in worker deployment configuration. The v1 encoder remains frozen for historical artifacts.
 
 ```yaml
 artifacts:
@@ -72,8 +72,6 @@ iceberg:
   uri: https://catalog.example.com
   warehouse: warehouse
   prefix: ""
-  namespace: analytics
-  table_prefix: cdc_
   control_table: __wallaby_control
   request_timeout: 30s
   max_commit_retries: 4

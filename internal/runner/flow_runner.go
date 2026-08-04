@@ -11,6 +11,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/registry"
+	"github.com/josephjohncox/wallaby/internal/tablemap"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -124,6 +125,18 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 
 	var artifactLog stream.ManagedArtifactLog
 	if managed && f.Config.AckPolicy == stream.AckPolicyMaterialized {
+		if len(destinations) != 1 || destinations[0].Spec.Type != connector.EndpointIceberg {
+			_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
+			return errors.New("materialized projection requires exactly one Iceberg destination projector")
+		}
+		destinations = append([]stream.DestinationConfig(nil), destinations...)
+		projector, projectErr := tablemap.New(f.Config.TableMappings, destinations[0].Spec.Name)
+		if projectErr != nil {
+			_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
+			return fmt.Errorf("construct materialized Iceberg projector: %w", projectErr)
+		}
+		destinations[0].Projector = projector
+		destinations[0].MappingFingerprint = projector.Fingerprint()
 		if r.Artifacts == nil {
 			_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
 			return errors.New("ack_policy=materialized requires artifact publication deployment config")

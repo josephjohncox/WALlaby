@@ -706,14 +706,14 @@ type blockingPutStore struct {
 	once    sync.Once
 }
 
-func (s *blockingPutStore) PutImmutable(ctx context.Context, key string, body []byte, digest string) (artifactlog.ObjectEvidence, error) {
+func (s *blockingPutStore) PutImmutable(ctx context.Context, key string, body []byte, digest, projectionID, mappingFingerprint string) (artifactlog.ObjectEvidence, error) {
 	s.once.Do(func() { close(s.started) })
 	select {
 	case <-ctx.Done():
 		return artifactlog.ObjectEvidence{}, ctx.Err()
 	case <-s.release:
 	}
-	return s.ObjectStore.PutImmutable(ctx, key, body, digest)
+	return s.ObjectStore.PutImmutable(ctx, key, body, digest, projectionID, mappingFingerprint)
 }
 
 type artifactIntegrationDeps struct {

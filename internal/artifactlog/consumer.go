@@ -181,10 +181,12 @@ func (c *Consumer) loadNext(ctx context.Context, fence authority.RunFence, consu
 	}
 	result.request.FlowIncarnationID = fence.FlowIncarnationID
 	result.request.ConsumerRevisionID = consumerRevisionID
+	var publicationProjection, publicationMapping string
 	err = tx.QueryRow(ctx, `
 SELECT delivery.publication_id,stream.flow_id,publication.logical_batch_id,
        publication.sequence,publication.position_id,publication.checkpoint_lsn,
-       stream.projection_id
+       stream.projection_id,stream.mapping_fingerprint,
+       publication.projection_id,publication.mapping_fingerprint
 FROM artifact_deliveries AS delivery
 JOIN artifact_publications AS publication ON publication.publication_id=delivery.publication_id
 JOIN artifact_streams AS stream ON stream.flow_incarnation_id=delivery.flow_incarnation_id
@@ -195,13 +197,16 @@ LIMIT 1
 FOR UPDATE OF delivery`, fence.FlowIncarnationID, consumerRevisionID).Scan(
 		&result.request.PublicationID, &result.request.FlowID, &result.request.LogicalBatchID,
 		&result.request.PublicationSequence, &result.request.PositionID, &result.request.CheckpointLSN,
-		&result.request.ProjectionID,
+		&result.request.ProjectionID, &result.request.MappingFingerprint, &publicationProjection, &publicationMapping,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return claimedPublication{}, nil
 	}
 	if err != nil {
 		return result, err
+	}
+	if publicationProjection != result.request.ProjectionID || publicationMapping != result.request.MappingFingerprint {
+		return result, fmt.Errorf("%w: artifact publication projection identity differs from stream", connector.ErrDeliveryConflict)
 	}
 
 	claimKind := authority.ClaimKind("artifact_delivery")
@@ -247,7 +252,8 @@ SELECT object.bucket,object.object_key,object.version_id,object.checksum_sha256,
        object.artifact_id,object.encoded_byte_hash,object.logical_batch_id,
        object.namespace,object.table_name,object.schema_id,schema.schema_json,
        object.fragment_ordinal,object.first_record_ordinal,object.record_count,
-       schema.projection_id
+       object.projection_id,object.mapping_fingerprint,
+       schema.projection_id,schema.mapping_fingerprint
 FROM artifact_publication_objects AS item
 JOIN artifact_objects AS object ON object.artifact_id=item.artifact_id
 JOIN canonical_schemas AS schema ON schema.schema_id=object.schema_id
@@ -261,21 +267,23 @@ ORDER BY item.ordinal`, result.request.PublicationID)
 	for rows.Next() {
 		var object RootedArtifact
 		var fragmentOrdinal, firstRecordOrdinal, recordCount int64
-		var projectionID string
+		var objectProjectionID, objectMappingFingerprint, schemaProjectionID, schemaMappingFingerprint string
 		if err := rows.Scan(
 			&object.Evidence.Bucket, &object.Evidence.Key, &object.Evidence.VersionID,
 			&object.Evidence.ChecksumSHA256, &object.Evidence.Length, &object.Evidence.EncryptionMode,
 			&object.Evidence.ObjectLock, &object.ArtifactID, &object.EncodedByteHash,
 			&object.LogicalBatchID, &object.Namespace, &object.Table, &object.SchemaID,
-			&object.SchemaJSON, &fragmentOrdinal, &firstRecordOrdinal, &recordCount, &projectionID,
+			&object.SchemaJSON, &fragmentOrdinal, &firstRecordOrdinal, &recordCount, &objectProjectionID, &objectMappingFingerprint, &schemaProjectionID, &schemaMappingFingerprint,
 		); err != nil {
 			rows.Close()
 			return result, err
 		}
-		if projectionID != result.request.ProjectionID || object.LogicalBatchID != result.request.LogicalBatchID {
+		if objectProjectionID != result.request.ProjectionID || objectMappingFingerprint != result.request.MappingFingerprint || schemaProjectionID != result.request.ProjectionID || schemaMappingFingerprint != result.request.MappingFingerprint || objectProjectionID != schemaProjectionID || objectMappingFingerprint != schemaMappingFingerprint || object.LogicalBatchID != result.request.LogicalBatchID {
 			rows.Close()
 			return result, fmt.Errorf("%w: rooted artifact identity differs from publication", connector.ErrDeliveryConflict)
 		}
+		object.Evidence.ProjectionID = objectProjectionID
+		object.Evidence.MappingFingerprint = objectMappingFingerprint
 		if fragmentOrdinal < 0 || firstRecordOrdinal < 0 || recordCount <= 0 {
 			rows.Close()
 			return result, fmt.Errorf("rooted artifact %s has invalid ordinal metadata", object.ArtifactID)

@@ -27,7 +27,7 @@ func TestManagedAdmissionRequiresExactMaterializedContract(t *testing.T) {
 
 	f := managedAdmissionFlow()
 	f.Config.AckPolicy = stream.AckPolicyMaterialized
-	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v1"}
+	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v2"}
 	destinations := materializedAdmissionDestinations()
 	f.Destinations = []connector.Spec{destinations[0].Spec}
 	f.Config.TableMappings = flow.NewTableMappings(f.Destinations)
@@ -44,7 +44,7 @@ func TestManagedAdmissionRequiresExactMaterializedContract(t *testing.T) {
 	}
 
 	f.Config.Materialization.ProjectionID = "parquet"
-	if _, err := NewStreamRunner(f, &pgsource.Source{}, destinations, cfg); err == nil || !strings.Contains(err.Error(), "canonical_cdc_parquet_v1") {
+	if _, err := NewStreamRunner(f, &pgsource.Source{}, destinations, cfg); err == nil || !strings.Contains(err.Error(), "canonical_cdc_parquet_v2") {
 		t.Fatalf("wrong projection error=%v", err)
 	}
 }
@@ -77,7 +77,7 @@ func TestManagedAdmissionAcceptsAppendOnlyIcebergArtifactConsumer(t *testing.T) 
 	t.Parallel()
 	f := managedAdmissionFlow()
 	f.Config.AckPolicy = stream.AckPolicyMaterialized
-	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v1"}
+	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v2"}
 	fence := managedAdmissionFence()
 	destinations := materializedAdmissionDestinations()
 	f.Destinations = []connector.Spec{destinations[0].Spec}

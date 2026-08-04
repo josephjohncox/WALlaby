@@ -23,6 +23,7 @@ type CommitRequest struct {
 	CheckpointLSN       string
 	LogicalBatchID      string
 	ProjectionID        string
+	MappingFingerprint  string
 	ManifestSHA256      string
 	CommitID            string
 	AttemptedAt         time.Time

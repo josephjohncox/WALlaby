@@ -158,8 +158,6 @@ type IcebergConfig struct {
 	URI                          string
 	Warehouse                    string
 	Prefix                       string
-	Namespace                    string
-	TablePrefix                  string
 	ControlTable                 string
 	Region                       string
 	SigningName                  string
@@ -521,8 +519,6 @@ func Load(configPath string) (*Config, error) {
 	cfg.Iceberg.URI = stringValue(fileCfg, []string{"iceberg.uri"}, []string{"WALLABY_ICEBERG_URI", "WALLABY_WORKER_ICEBERG_URI"}, cfg.Iceberg.URI)
 	cfg.Iceberg.Warehouse = stringValue(fileCfg, []string{"iceberg.warehouse"}, []string{"WALLABY_ICEBERG_WAREHOUSE", "WALLABY_WORKER_ICEBERG_WAREHOUSE"}, cfg.Iceberg.Warehouse)
 	cfg.Iceberg.Prefix = stringValue(fileCfg, []string{"iceberg.prefix"}, []string{"WALLABY_ICEBERG_PREFIX", "WALLABY_WORKER_ICEBERG_PREFIX"}, cfg.Iceberg.Prefix)
-	cfg.Iceberg.Namespace = stringValue(fileCfg, []string{"iceberg.namespace"}, []string{"WALLABY_ICEBERG_NAMESPACE", "WALLABY_WORKER_ICEBERG_NAMESPACE"}, cfg.Iceberg.Namespace)
-	cfg.Iceberg.TablePrefix = stringValue(fileCfg, []string{"iceberg.table_prefix"}, []string{"WALLABY_ICEBERG_TABLE_PREFIX", "WALLABY_WORKER_ICEBERG_TABLE_PREFIX"}, cfg.Iceberg.TablePrefix)
 	cfg.Iceberg.ControlTable = stringValue(fileCfg, []string{"iceberg.control_table"}, []string{"WALLABY_ICEBERG_CONTROL_TABLE", "WALLABY_WORKER_ICEBERG_CONTROL_TABLE"}, cfg.Iceberg.ControlTable)
 	cfg.Iceberg.Region = stringValue(fileCfg, []string{"iceberg.region"}, []string{"WALLABY_ICEBERG_REGION", "WALLABY_WORKER_ICEBERG_REGION"}, cfg.Iceberg.Region)
 	cfg.Iceberg.SigningName = stringValue(fileCfg, []string{"iceberg.signing_name"}, []string{"WALLABY_ICEBERG_SIGNING_NAME", "WALLABY_WORKER_ICEBERG_SIGNING_NAME"}, cfg.Iceberg.SigningName)

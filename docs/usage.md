@@ -63,7 +63,7 @@ Flow fields you can set:
 - `parallelism` — max concurrent destination writes per batch (default `1`)
 - `config.ack_policy` — `all` (default), `primary`, or experimental `materialized`
 - `config.primary_destination` — destination name used when `ack_policy=primary`
-- `config.materialization.projection_id` — must be `canonical_cdc_parquet_v1` when `ack_policy=materialized`
+- `config.materialization.projection_id` — must be `canonical_cdc_parquet_v2` for current mapped Iceberg materialization (`canonical_cdc_parquet_v1` remains frozen for historical artifacts)
 - `config.failure_mode` — `hold_slot` (default) or `drop_slot`
 - `config.give_up_policy` — `on_retry_exhaustion` (default) or `never`
 - `config.schema_registry_subject` — default registry subject for destinations (overridden by endpoint options)
