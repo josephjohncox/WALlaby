@@ -49,6 +49,7 @@ type FlowRunner struct {
 	ExpectedGeneration int64
 	Authority          authority.Store
 	Deliveries         managedDeliveryRuntime
+	Artifacts          ArtifactLogFactory
 }
 
 func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Source, destinations []stream.DestinationConfig) (runErr error) {
@@ -121,6 +122,19 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		}
 	}
 
+	var artifactLog stream.ManagedArtifactLog
+	if managed && f.Config.AckPolicy == stream.AckPolicyMaterialized {
+		if r.Artifacts == nil {
+			_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
+			return errors.New("ack_policy=materialized requires artifact publication deployment config")
+		}
+		artifactLog, err = r.Artifacts(ctx, f, destinations)
+		if err != nil {
+			_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
+			return fmt.Errorf("build canonical artifact log: %w", err)
+		}
+	}
+
 	// Validate data-plane dependencies before opening any connector. Managed
 	// construction receives the exact acquired fence.
 	streamRunner, err := NewStreamRunner(f, source, destinations, StreamRunnerConfig{
@@ -136,6 +150,7 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		TraceSink:           r.TraceSink,
 		RunFence:            runFence,
 		DeliveryCoordinator: r.Deliveries,
+		ArtifactLog:         artifactLog,
 	})
 	if err != nil {
 		if runFence != nil {

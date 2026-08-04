@@ -11,6 +11,7 @@
     - [Endpoint.OptionsEntry](#wallaby-v1-Endpoint-OptionsEntry)
     - [Flow](#wallaby-v1-Flow)
     - [FlowConfig](#wallaby-v1-FlowConfig)
+    - [MaterializationPolicy](#wallaby-v1-MaterializationPolicy)
 
     - [AckPolicy](#wallaby-v1-AckPolicy)
     - [EndpointType](#wallaby-v1-EndpointType)
@@ -242,6 +243,22 @@
 | schema_registry_subject | [string](#string) |  |  |
 | schema_registry_proto_types_subject | [string](#string) |  |  |
 | schema_registry_subject_mode | [string](#string) |  |  |
+| materialization | [MaterializationPolicy](#wallaby-v1-MaterializationPolicy) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-MaterializationPolicy"></a>
+
+### MaterializationPolicy
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| projection_id | [string](#string) |  | The first admitted projection is exactly canonical_cdc_parquet_v1. |
 
 
 
@@ -260,6 +277,7 @@
 | ACK_POLICY_UNSPECIFIED | 0 |  |
 | ACK_POLICY_ALL | 1 |  |
 | ACK_POLICY_PRIMARY | 2 |  |
+| ACK_POLICY_MATERIALIZED | 3 | ACK_POLICY_MATERIALIZED acknowledges a CDC transaction only after its canonical immutable objects and fenced PostgreSQL publication/checkpoint commit. A data-free startup cut is rooted as an object-free canonical publication before feedback. The configured destination is not committed on the CDC path, and this release registers no production catalog consumer. |
 
 
 

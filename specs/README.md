@@ -156,9 +156,12 @@ What it models:
 - producer takeover and lease-epoch ownership;
 - durable attempts before external target commits;
 - atomic destination receipt, checkpoint, and source ACK-intent publication;
-- atomic artifact root, checkpoint, and source ACK-intent publication;
-- source ACK safety; and
-- orphan collection that cannot delete a PostgreSQL-rooted artifact.
+- atomic artifact root, delivery rows, checkpoint, and source ACK-intent publication;
+- source ACK safety;
+- orphan collection that cannot delete an active abstract PostgreSQL root; and
+- abstract root release only after source ACK, one modeled delivery-completion bit, and a newer checkpoint.
+
+This model does **not** represent elapsed time or retention eligibility, delivery-row cardinality, multi-object publications, partial object release, exact S3 versions, or the worker startup recovery path. `AuthorizeInitialCut` models only checkpoint/ACK authorization for an object-free cut. `ManagedDurability` is checked by `just check-tla`, but it is not part of the trace coverage manifests listed below.
 
 Run TLC:
 

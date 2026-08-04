@@ -46,6 +46,26 @@ The Helm chart enables native gRPC startup, readiness, and liveness probes by de
 
 Error types include: `source_read`, `source_ack`, `destination_write`, `checkpoint_persist`.
 
+### Managed durability and artifacts
+
+| Metric | Type | Labels |
+| -------- | ------ | -------- |
+| `wallaby.fence.rejections` | Counter | - |
+| `wallaby.lease.takeovers` | Counter | - |
+| `wallaby.delivery.outcomes` | Counter | bounded `outcome` |
+| `wallaby.bootstrap.events` | Counter | bounded `event` |
+| `wallaby.bootstrap.rows` | Counter | - |
+| `wallaby.bootstrap.batches` | Counter | - |
+| `wallaby.bootstrap.claim.renewals` | Counter | bounded `outcome` |
+| `wallaby.bootstrap.phase.duration` | Histogram | bounded `phase` |
+| `wallaby.bootstrap.exporter.age` | Histogram | bounded `outcome` |
+| `wallaby.artifact.transitions` | Counter | bounded `state` |
+| `wallaby.artifact.bytes` | Histogram | bounded `state` |
+| `wallaby.artifact.consumer.outcomes` | Counter | `outcome` |
+| `wallaby.artifact.gc.outcomes` | Counter | `outcome` |
+
+Artifact backlog count/bytes/age, reserved/rooted quota headroom, GC lag, S3 request latency/retries, and recovery-duration gauges are not implemented in this experimental checkpoint. PostgreSQL queries remain the authoritative operational source for those values; absence of these gauges is a support-promotion blocker.
+
 ### gRPC API
 
 | Metric | Type | Labels |

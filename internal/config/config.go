@@ -27,6 +27,7 @@ type Config struct {
 	Wire        WireConfig
 	DDL         DDLConfig
 	Checkpoints CheckpointConfig
+	Artifacts   ArtifactConfig
 }
 
 type APIConfig struct {
@@ -127,6 +128,27 @@ type CheckpointConfig struct {
 	Path    string
 }
 
+// ArtifactConfig is deployment-level immutable-object and admission config.
+// A flow selects materialization explicitly; credentials are never persisted in
+// the flow API or PostgreSQL publication metadata.
+type ArtifactConfig struct {
+	Bucket                   string
+	Region                   string
+	Endpoint                 string
+	AccessKey                string
+	SecretKey                string
+	SessionToken             string
+	ForcePathStyle           bool
+	HardRetainedBytes        int           `validate:"omitempty,gt=0"`
+	BacklogBatchHigh         int           `validate:"omitempty,gt=0"`
+	BacklogBytesHigh         int           `validate:"omitempty,gt=0"`
+	BacklogAgeHigh           time.Duration `validate:"omitempty,gt=0"`
+	BackpressurePollInterval time.Duration `validate:"omitempty,gt=0"`
+	OrphanGrace              time.Duration `validate:"omitempty,gt=0"`
+	Retention                time.Duration `validate:"omitempty,gt=0"`
+	GCInterval               time.Duration `validate:"omitempty,gt=0"`
+}
+
 // Load loads config from a config file when provided or active viper configfile, then falls back to environment and defaults.
 // Precedence is file > environment > default.
 func Load(configPath string) (*Config, error) {
@@ -225,6 +247,17 @@ func Load(configPath string) (*Config, error) {
 			Backend: "",
 			DSN:     "",
 			Path:    "",
+		},
+		Artifacts: ArtifactConfig{
+			Region:                   "us-east-1",
+			HardRetainedBytes:        64 << 30,
+			BacklogBatchHigh:         10_000,
+			BacklogBytesHigh:         32 << 30,
+			BacklogAgeHigh:           24 * time.Hour,
+			BackpressurePollInterval: time.Second,
+			OrphanGrace:              time.Hour,
+			Retention:                7 * 24 * time.Hour,
+			GCInterval:               time.Minute,
 		},
 	}
 
@@ -394,6 +427,49 @@ func Load(configPath string) (*Config, error) {
 	cfg.Checkpoints.Backend = stringValue(fileCfg, []string{"checkpoints.backend", "checkpoint.backend"}, []string{"WALLABY_CHECKPOINT_BACKEND", "WALLABY_WORKER_CHECKPOINT_BACKEND"}, cfg.Checkpoints.Backend)
 	cfg.Checkpoints.DSN = stringValue(fileCfg, []string{"checkpoints.dsn", "checkpoint.dsn"}, []string{"WALLABY_CHECKPOINT_DSN", "WALLABY_WORKER_CHECKPOINT_DSN"}, cfg.Checkpoints.DSN)
 	cfg.Checkpoints.Path = stringValue(fileCfg, []string{"checkpoints.path", "checkpoint.path"}, []string{"WALLABY_CHECKPOINT_PATH", "WALLABY_WORKER_CHECKPOINT_PATH"}, cfg.Checkpoints.Path)
+
+	cfg.Artifacts.Bucket = stringValue(fileCfg, []string{"artifacts.bucket", "artifact.bucket"}, []string{"WALLABY_ARTIFACT_BUCKET", "WALLABY_WORKER_ARTIFACT_BUCKET"}, cfg.Artifacts.Bucket)
+	cfg.Artifacts.Region = stringValue(fileCfg, []string{"artifacts.region", "artifact.region"}, []string{"WALLABY_ARTIFACT_REGION", "WALLABY_WORKER_ARTIFACT_REGION"}, cfg.Artifacts.Region)
+	cfg.Artifacts.Endpoint = stringValue(fileCfg, []string{"artifacts.endpoint", "artifact.endpoint"}, []string{"WALLABY_ARTIFACT_ENDPOINT", "WALLABY_WORKER_ARTIFACT_ENDPOINT"}, cfg.Artifacts.Endpoint)
+	cfg.Artifacts.AccessKey = stringValue(fileCfg, []string{"artifacts.access_key", "artifact.access_key"}, []string{"WALLABY_ARTIFACT_ACCESS_KEY", "WALLABY_WORKER_ARTIFACT_ACCESS_KEY"}, cfg.Artifacts.AccessKey)
+	cfg.Artifacts.SecretKey = stringValue(fileCfg, []string{"artifacts.secret_key", "artifact.secret_key"}, []string{"WALLABY_ARTIFACT_SECRET_KEY", "WALLABY_WORKER_ARTIFACT_SECRET_KEY"}, cfg.Artifacts.SecretKey)
+	cfg.Artifacts.SessionToken = stringValue(fileCfg, []string{"artifacts.session_token", "artifact.session_token"}, []string{"WALLABY_ARTIFACT_SESSION_TOKEN", "WALLABY_WORKER_ARTIFACT_SESSION_TOKEN"}, cfg.Artifacts.SessionToken)
+	cfg.Artifacts.ForcePathStyle, err = boolValue(fileCfg, []string{"artifacts.force_path_style", "artifact.force_path_style"}, []string{"WALLABY_ARTIFACT_FORCE_PATH_STYLE", "WALLABY_WORKER_ARTIFACT_FORCE_PATH_STYLE"}, cfg.Artifacts.ForcePathStyle)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Artifacts.HardRetainedBytes, err = intValue(fileCfg, []string{"artifacts.hard_retained_bytes", "artifact.hard_retained_bytes"}, []string{"WALLABY_ARTIFACT_HARD_RETAINED_BYTES", "WALLABY_WORKER_ARTIFACT_HARD_RETAINED_BYTES"}, cfg.Artifacts.HardRetainedBytes)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Artifacts.BacklogBatchHigh, err = intValue(fileCfg, []string{"artifacts.backlog_batch_high", "artifact.backlog_batch_high"}, []string{"WALLABY_ARTIFACT_BACKLOG_BATCH_HIGH", "WALLABY_WORKER_ARTIFACT_BACKLOG_BATCH_HIGH"}, cfg.Artifacts.BacklogBatchHigh)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Artifacts.BacklogBytesHigh, err = intValue(fileCfg, []string{"artifacts.backlog_bytes_high", "artifact.backlog_bytes_high"}, []string{"WALLABY_ARTIFACT_BACKLOG_BYTES_HIGH", "WALLABY_WORKER_ARTIFACT_BACKLOG_BYTES_HIGH"}, cfg.Artifacts.BacklogBytesHigh)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Artifacts.BacklogAgeHigh, err = durationValue(fileCfg, []string{"artifacts.backlog_age_high", "artifact.backlog_age_high"}, []string{"WALLABY_ARTIFACT_BACKLOG_AGE_HIGH", "WALLABY_WORKER_ARTIFACT_BACKLOG_AGE_HIGH"}, cfg.Artifacts.BacklogAgeHigh)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Artifacts.BackpressurePollInterval, err = durationValue(fileCfg, []string{"artifacts.backpressure_poll_interval", "artifact.backpressure_poll_interval"}, []string{"WALLABY_ARTIFACT_BACKPRESSURE_POLL_INTERVAL", "WALLABY_WORKER_ARTIFACT_BACKPRESSURE_POLL_INTERVAL"}, cfg.Artifacts.BackpressurePollInterval)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Artifacts.OrphanGrace, err = durationValue(fileCfg, []string{"artifacts.orphan_grace", "artifact.orphan_grace"}, []string{"WALLABY_ARTIFACT_ORPHAN_GRACE", "WALLABY_WORKER_ARTIFACT_ORPHAN_GRACE"}, cfg.Artifacts.OrphanGrace)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Artifacts.Retention, err = durationValue(fileCfg, []string{"artifacts.retention", "artifact.retention"}, []string{"WALLABY_ARTIFACT_RETENTION", "WALLABY_WORKER_ARTIFACT_RETENTION"}, cfg.Artifacts.Retention)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Artifacts.GCInterval, err = durationValue(fileCfg, []string{"artifacts.gc_interval", "artifact.gc_interval"}, []string{"WALLABY_ARTIFACT_GC_INTERVAL", "WALLABY_WORKER_ARTIFACT_GC_INTERVAL"}, cfg.Artifacts.GCInterval)
+	if err != nil {
+		return nil, err
+	}
 
 	if err := validateConfig(cfg); err != nil {
 		return nil, err

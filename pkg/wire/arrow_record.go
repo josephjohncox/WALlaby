@@ -48,7 +48,9 @@ func buildArrowRecord(batch connector.Batch) (arrow.RecordBatch, error) {
 				continue
 			}
 			val := record.After[col.Name]
-			if record.Operation == connector.OpDelete {
+			// Canonical artifact envelope columns remain populated for deletes;
+			// ordinary source columns preserve the existing null-after contract.
+			if record.Operation == connector.OpDelete && !strings.HasPrefix(col.Name, "__wallaby_") {
 				val = nil
 			}
 			if err := appendValue(builder.Field(idx), val); err != nil {

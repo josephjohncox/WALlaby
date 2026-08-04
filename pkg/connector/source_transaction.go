@@ -103,6 +103,10 @@ func SourceTransactionContentHash(transaction SourceTransaction) (string, error)
 		}
 		write(canonical)
 	}
+	canonicalEndLSN, err := CanonicalizeCheckpointPosition(transaction.EndLSN)
+	if err != nil {
+		return "", err
+	}
 	for index := range transaction.Fragments {
 		fragment := transaction.Fragments[index]
 		batch := fragment.Batch
@@ -118,12 +122,13 @@ func SourceTransactionContentHash(transaction SourceTransaction) (string, error)
 			// so it cannot participate in immutable delivery identity.
 			batch.Records[recordIndex].Timestamp = time.Time{}
 		}
-		batch.Checkpoint = transaction.Checkpoint
-		// Managed schema baselines and other checkpoint metadata are durable
-		// recovery state, not WAL content. Relation-version counters can differ
-		// across process restarts; the prepared manifest remains authoritative
-		// for the checkpoint payload adopted after an identical WAL replay.
-		batch.Checkpoint.Metadata = nil
+		// Runtime transport and checkpoint metadata are not part of the source
+		// transaction. They may change after publication or across a worker
+		// restart without changing the canonical rows or barriers. The prepared
+		// manifest remains authoritative for the checkpoint payload adopted after
+		// an identical WAL replay.
+		batch.Checkpoint = Checkpoint{LSN: canonicalEndLSN}
+		batch.WireFormat = ""
 		batchHash, err := BatchContentHash(batch)
 		if err != nil {
 			return "", fmt.Errorf("hash source transaction fragment %d: %w", index, err)

@@ -589,6 +589,7 @@ func cleanupAuthorityTest(ctx context.Context, pool *pgxpool.Pool, flowID string
 		_, _ = pool.Exec(ctx, "DELETE FROM artifact_delivery_receipts WHERE flow_incarnation_id=$1", incarnation)
 		_, _ = pool.Exec(ctx, "DELETE FROM artifact_delivery_attempts WHERE flow_incarnation_id=$1", incarnation)
 		_, _ = pool.Exec(ctx, "DELETE FROM artifact_deliveries WHERE flow_incarnation_id=$1", incarnation)
+		_, _ = pool.Exec(ctx, "DELETE FROM artifact_barriers WHERE publication_id IN (SELECT publication_id FROM artifact_publications WHERE flow_incarnation_id=$1)", incarnation)
 		_, _ = pool.Exec(ctx, "DELETE FROM artifact_publication_objects WHERE publication_id IN (SELECT publication_id FROM artifact_publications WHERE flow_incarnation_id=$1)", incarnation)
 		_, _ = pool.Exec(ctx, "DELETE FROM artifact_publications WHERE flow_incarnation_id=$1", incarnation)
 		_, _ = pool.Exec(ctx, "DELETE FROM artifact_gc_claims WHERE artifact_id IN (SELECT artifact_id FROM artifact_objects WHERE flow_incarnation_id=$1)", incarnation)

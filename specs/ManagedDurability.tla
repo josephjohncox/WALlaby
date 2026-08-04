@@ -5,10 +5,12 @@ EXTENDS Naturals, TLC
  Managed CDC authority across PostgreSQL and external side effects.
 
  External target commits and S3 uploads may survive a producer takeover.
- PostgreSQL-authoritative receipts, artifact roots, checkpoints, and source
- ACK intents are written only by the current lease epoch. Finalization writes
- each receipt/root, checkpoint, and ACK intent atomically. Garbage collection
- may remove only unrooted uploads.
+ PostgreSQL-authoritative receipts, artifact roots, checkpoints, source ACK
+ intents, delivery completion, and retention marks are written only by the
+ current lease epoch. Final publication writes each root, delivery row,
+ checkpoint, and ACK intent atomically. Mark/sweep may remove an orphan, or a
+ released root whose ACK is observed, whose deliveries are complete, and whose
+ position is older than the current checkpoint.
 ***************************************************************************)
 
 CONSTANTS Workers, MaxPosition, MaxEpoch
@@ -31,11 +33,13 @@ VARIABLES
   ackIntentEpoch,
   acked,
   uploaded,
-  rootEpoch
+  rootEpoch,
+  deliveryDone,
+  released
 
 vars == <<currentOwner, currentEpoch, workerEpoch, attempts,
           externallyApplied, receiptEpoch, checkpoint, ackIntentEpoch,
-          acked, uploaded, rootEpoch>>
+          acked, uploaded, rootEpoch, deliveryDone, released>>
 
 Init ==
   /\ currentOwner = "None"
@@ -49,6 +53,8 @@ Init ==
   /\ acked = {}
   /\ uploaded = {}
   /\ rootEpoch = [p \in Positions |-> 0]
+  /\ deliveryDone = {}
+  /\ released = {}
 
 Owns(w) ==
   /\ currentOwner = w
@@ -61,7 +67,8 @@ Acquire(w) ==
   /\ currentEpoch' = currentEpoch + 1
   /\ workerEpoch' = [workerEpoch EXCEPT ![w] = currentEpoch + 1]
   /\ UNCHANGED <<attempts, externallyApplied, receiptEpoch, checkpoint,
-                  ackIntentEpoch, acked, uploaded, rootEpoch>>
+                  ackIntentEpoch, acked, uploaded, rootEpoch,
+                  deliveryDone, released>>
 
 Prepare(w, p) ==
   /\ Owns(w)
@@ -69,7 +76,8 @@ Prepare(w, p) ==
   /\ attempts' = attempts \cup {p}
   /\ UNCHANGED <<currentOwner, currentEpoch, workerEpoch,
                   externallyApplied, receiptEpoch, checkpoint,
-                  ackIntentEpoch, acked, uploaded, rootEpoch>>
+                  ackIntentEpoch, acked, uploaded, rootEpoch,
+                  deliveryDone, released>>
 
 ApplyExternal(p) ==
   /\ p \in attempts
@@ -77,7 +85,7 @@ ApplyExternal(p) ==
   /\ externallyApplied' = externallyApplied \cup {p}
   /\ UNCHANGED <<currentOwner, currentEpoch, workerEpoch, attempts,
                   receiptEpoch, checkpoint, ackIntentEpoch, acked,
-                  uploaded, rootEpoch>>
+                  uploaded, rootEpoch, deliveryDone, released>>
 
 FinalizeDelivery(w, p) ==
   /\ Owns(w)
@@ -89,14 +97,15 @@ FinalizeDelivery(w, p) ==
   /\ checkpoint' = p
   /\ ackIntentEpoch' = [ackIntentEpoch EXCEPT ![p] = currentEpoch]
   /\ UNCHANGED <<currentOwner, currentEpoch, workerEpoch, attempts,
-                  externallyApplied, acked, uploaded, rootEpoch>>
+                  externallyApplied, acked, uploaded, rootEpoch,
+                  deliveryDone, released>>
 
 UploadArtifact(p) ==
   /\ p \notin uploaded
   /\ uploaded' = uploaded \cup {p}
   /\ UNCHANGED <<currentOwner, currentEpoch, workerEpoch, attempts,
                   externallyApplied, receiptEpoch, checkpoint,
-                  ackIntentEpoch, acked, rootEpoch>>
+                  ackIntentEpoch, acked, rootEpoch, deliveryDone, released>>
 
 PublishArtifact(w, p) ==
   /\ Owns(w)
@@ -108,7 +117,8 @@ PublishArtifact(w, p) ==
   /\ checkpoint' = p
   /\ ackIntentEpoch' = [ackIntentEpoch EXCEPT ![p] = currentEpoch]
   /\ UNCHANGED <<currentOwner, currentEpoch, workerEpoch, attempts,
-                  externallyApplied, receiptEpoch, acked, uploaded>>
+                  externallyApplied, receiptEpoch, acked, uploaded,
+                  deliveryDone, released>>
 
 AuthorizeInitialCut(w, p) ==
   /\ Owns(w)
@@ -117,7 +127,8 @@ AuthorizeInitialCut(w, p) ==
   /\ checkpoint' = p
   /\ ackIntentEpoch' = [ackIntentEpoch EXCEPT ![p] = currentEpoch]
   /\ UNCHANGED <<currentOwner, currentEpoch, workerEpoch, attempts,
-                  externallyApplied, receiptEpoch, acked, uploaded, rootEpoch>>
+                  externallyApplied, receiptEpoch, acked, uploaded,
+                  rootEpoch, deliveryDone, released>>
 
 AckSource(w, p) ==
   /\ Owns(w)
@@ -127,7 +138,28 @@ AckSource(w, p) ==
   /\ acked' = acked \cup {p}
   /\ UNCHANGED <<currentOwner, currentEpoch, workerEpoch, attempts,
                   externallyApplied, receiptEpoch, checkpoint,
-                  ackIntentEpoch, uploaded, rootEpoch>>
+                  ackIntentEpoch, uploaded, rootEpoch, deliveryDone, released>>
+
+CompleteArtifactDelivery(w, p) ==
+  /\ Owns(w)
+  /\ rootEpoch[p] > 0
+  /\ p \notin deliveryDone
+  /\ deliveryDone' = deliveryDone \cup {p}
+  /\ UNCHANGED <<currentOwner, currentEpoch, workerEpoch, attempts,
+                  externallyApplied, receiptEpoch, checkpoint,
+                  ackIntentEpoch, acked, uploaded, rootEpoch, released>>
+
+MarkRetainedRoot(w, p) ==
+  /\ Owns(w)
+  /\ rootEpoch[p] > 0
+  /\ p \in acked
+  /\ p \in deliveryDone
+  /\ p < checkpoint
+  /\ p \notin released
+  /\ released' = released \cup {p}
+  /\ UNCHANGED <<currentOwner, currentEpoch, workerEpoch, attempts,
+                  externallyApplied, receiptEpoch, checkpoint,
+                  ackIntentEpoch, acked, uploaded, rootEpoch, deliveryDone>>
 
 CollectOrphan(p) ==
   /\ p \in uploaded
@@ -135,7 +167,15 @@ CollectOrphan(p) ==
   /\ uploaded' = uploaded \ {p}
   /\ UNCHANGED <<currentOwner, currentEpoch, workerEpoch, attempts,
                   externallyApplied, receiptEpoch, checkpoint,
-                  ackIntentEpoch, acked, rootEpoch>>
+                  ackIntentEpoch, acked, rootEpoch, deliveryDone, released>>
+
+SweepRetained(p) ==
+  /\ p \in released
+  /\ p \in uploaded
+  /\ uploaded' = uploaded \ {p}
+  /\ UNCHANGED <<currentOwner, currentEpoch, workerEpoch, attempts,
+                  externallyApplied, receiptEpoch, checkpoint,
+                  ackIntentEpoch, acked, rootEpoch, deliveryDone, released>>
 
 Next ==
   \/ \E w \in Workers: Acquire(w)
@@ -146,7 +186,10 @@ Next ==
   \/ \E w \in Workers, p \in Positions: PublishArtifact(w, p)
   \/ \E w \in Workers, p \in Positions: AuthorizeInitialCut(w, p)
   \/ \E w \in Workers, p \in Positions: AckSource(w, p)
+  \/ \E w \in Workers, p \in Positions: CompleteArtifactDelivery(w, p)
+  \/ \E w \in Workers, p \in Positions: MarkRetainedRoot(w, p)
   \/ \E p \in Positions: CollectOrphan(p)
+  \/ \E p \in Positions: SweepRetained(p)
 
 Spec == Init /\ [][Next]_vars
 
@@ -162,6 +205,8 @@ TypeInvariant ==
   /\ acked \subseteq Positions
   /\ uploaded \subseteq Positions
   /\ rootEpoch \in [Positions -> 0..MaxEpoch]
+  /\ deliveryDone \subseteq Positions
+  /\ released \subseteq Positions
 
 ExternalCommitRequiresAttempt == externallyApplied \subseteq attempts
 ReceiptRequiresExternalCommit ==
@@ -180,8 +225,14 @@ AckSafety ==
   \A p \in acked:
     /\ ackIntentEpoch[p] > 0
     /\ checkpoint >= p
-PublishedArtifactsRemainPresent ==
-  \A p \in Positions: rootEpoch[p] > 0 => p \in uploaded
+ActivePublishedArtifactsRemainPresent ==
+  \A p \in Positions: rootEpoch[p] > 0 /\ p \notin released => p \in uploaded
+RetentionSafety ==
+  \A p \in released:
+    /\ rootEpoch[p] > 0
+    /\ p \in acked
+    /\ p \in deliveryDone
+    /\ p < checkpoint
 AuthoritativeWritesHaveFence ==
   \A p \in Positions:
     /\ receiptEpoch[p] <= currentEpoch

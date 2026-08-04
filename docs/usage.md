@@ -61,8 +61,9 @@ Flow fields you can set:
 
 - `wire_format` — default wire format for the flow
 - `parallelism` — max concurrent destination writes per batch (default `1`)
-- `config.ack_policy` — `all` (default) or `primary`
+- `config.ack_policy` — `all` (default), `primary`, or experimental `materialized`
 - `config.primary_destination` — destination name used when `ack_policy=primary`
+- `config.materialization.projection_id` — must be `canonical_cdc_parquet_v1` when `ack_policy=materialized`
 - `config.failure_mode` — `hold_slot` (default) or `drop_slot`
 - `config.give_up_policy` — `on_retry_exhaustion` (default) or `never`
 - `config.schema_registry_subject` — default registry subject for destinations (overridden by endpoint options)
@@ -75,6 +76,7 @@ Why fan‑out instead of multiple replication slots?
 - Fewer slots reduces WAL retention risk and slot‑quota pressure.
 - A single stream preserves ordering and shares DDL gating across destinations.
 - `ack_policy=primary` atomically stores the checkpoint and durable per-secondary outbox entries before advancing the slot. It requires a SQLite or PostgreSQL checkpoint store, stable destination names, and idempotent writes at every destination.
+- `ack_policy=materialized` is limited to managed PostgreSQL CDC. It acknowledges each CDC transaction only after immutable canonical objects and the fenced PostgreSQL publication/checkpoint commit. A data-free startup cut receives an object-free canonical publication before feedback. The production worker neither commits the configured destination on the CDC path nor registers a catalog consumer, so this policy is canonical publication only; it is not `all` and makes no exactly-once claim. See [Canonical artifact log](concepts/artifact-log.md).
 
 To reconfigure destinations or wire format, call `UpdateFlow` with a full `Flow` payload; state is preserved.
 From the CLI, use `wallaby-admin flow update --file <path> [--pause] [--resume]` to pause, update, and resume in one step,

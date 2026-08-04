@@ -15,6 +15,45 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/stream"
 )
 
+func TestManagedAdmissionRequiresExactMaterializedContract(t *testing.T) {
+	t.Parallel()
+
+	f := managedAdmissionFlow()
+	f.Config.AckPolicy = stream.AckPolicyMaterialized
+	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v1"}
+	fence := managedAdmissionFence()
+	cfg := StreamRunnerConfig{
+		Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{},
+	}
+	if _, err := NewStreamRunner(f, &pgsource.Source{}, managedAdmissionDestinations(), cfg); err == nil || !strings.Contains(err.Error(), "artifact log") {
+		t.Fatalf("missing artifact log error=%v", err)
+	}
+	cfg.ArtifactLog = materializedAdmissionLog{}
+	if _, err := NewStreamRunner(f, &pgsource.Source{}, managedAdmissionDestinations(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	f.Config.Materialization.ProjectionID = "parquet"
+	if _, err := NewStreamRunner(f, &pgsource.Source{}, managedAdmissionDestinations(), cfg); err == nil || !strings.Contains(err.Error(), "canonical_cdc_parquet_v1") {
+		t.Fatalf("wrong projection error=%v", err)
+	}
+}
+
+type materializedAdmissionLog struct{}
+
+func (materializedAdmissionLog) Recover(context.Context, connector.RunFence) error { return nil }
+func (materializedAdmissionLog) RestoreCheckpoint(_ context.Context, _ connector.RunFence, checkpoint connector.Checkpoint) (connector.AckGrant, error) {
+	positionID, err := connector.CheckpointPositionID(checkpoint)
+	return connector.AckGrant{Checkpoint: checkpoint, PositionID: positionID}, err
+}
+func (materializedAdmissionLog) WaitForReadAdmission(context.Context, connector.RunFence) error {
+	return nil
+}
+func (materializedAdmissionLog) Append(_ context.Context, _ connector.RunFence, transaction connector.SourceTransaction) (connector.AckGrant, error) {
+	positionID, err := connector.CheckpointPositionID(transaction.Checkpoint)
+	return connector.AckGrant{Checkpoint: transaction.Checkpoint, PositionID: positionID}, err
+}
+
 func TestManagedAdmissionAcceptsInitialPostgresProfile(t *testing.T) {
 	for _, bootstrapMode := range []string{"never", "auto", "required"} {
 		t.Run(bootstrapMode, func(t *testing.T) {

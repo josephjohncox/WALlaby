@@ -305,6 +305,7 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		ExpectedGeneration: generation,
 		Authority:          authorityStore,
 		Deliveries:         deliveryCoordinator,
+		Artifacts:          runner.NewArtifactLogFactory(controlPool, cfg.Artifacts),
 	}
 	if cfg.Trace.Path != "" {
 		tracePath := strings.ReplaceAll(cfg.Trace.Path, "{flow_id}", flowDef.ID)

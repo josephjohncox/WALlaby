@@ -22,6 +22,7 @@ Package stream delivers source batches to destinations, persists checkpoints, ap
 - [type JSONTraceSink](<#JSONTraceSink>)
   - [func NewJSONTraceSink\(w io.Writer\) \*JSONTraceSink](<#NewJSONTraceSink>)
   - [func \(s \*JSONTraceSink\) Emit\(\_ context.Context, event TraceEvent\)](<#JSONTraceSink.Emit>)
+- [type ManagedArtifactLog](<#ManagedArtifactLog>)
 - [type ManagedDeliveryCoordinator](<#ManagedDeliveryCoordinator>)
 - [type ManagedSourceFeedbackCoordinator](<#ManagedSourceFeedbackCoordinator>)
 - [type ManagedTransactionDeliveryCoordinator](<#ManagedTransactionDeliveryCoordinator>)
@@ -76,6 +77,11 @@ type AckPolicy string
 const (
     AckPolicyAll     AckPolicy = "all"
     AckPolicyPrimary AckPolicy = "primary"
+    // AckPolicyMaterialized acknowledges a source position only after the
+    // canonical_cdc_parquet_v1 objects and their generation-fenced PostgreSQL
+    // publication/checkpoint commit. The configured destination is not written
+    // on the CDC path, and this release registers no production catalog consumer.
+    AckPolicyMaterialized AckPolicy = "materialized"
 )
 ```
 
@@ -119,7 +125,7 @@ type DestinationConfig struct {
 ```
 
 <a name="FailureMode"></a>
-## type [FailureMode](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/config.go#L12>)
+## type [FailureMode](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/config.go#L17>)
 
 FailureMode describes how a flow treats its replication slot on failure.
 
@@ -137,7 +143,7 @@ const (
 ```
 
 <a name="GiveUpPolicy"></a>
-## type [GiveUpPolicy](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/config.go#L20>)
+## type [GiveUpPolicy](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/config.go#L25>)
 
 GiveUpPolicy controls whether to give up after retry exhaustion.
 
@@ -183,6 +189,20 @@ func (s *JSONTraceSink) Emit(_ context.Context, event TraceEvent)
 
 Emit writes a single trace event.
 
+<a name="ManagedArtifactLog"></a>
+## type [ManagedArtifactLog](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L30-L35>)
+
+ManagedArtifactLog is the deep publication seam used only by ack\_policy=materialized. Append returns after immutable objects and the PostgreSQL publication/checkpoint/ACK intent commit. The production worker registers no catalog consumer, so this seam authorizes canonical publication only; direct Publisher users may opt into the experimental queue separately.
+
+```go
+type ManagedArtifactLog interface {
+    Recover(context.Context, connector.RunFence) error
+    RestoreCheckpoint(context.Context, connector.RunFence, connector.Checkpoint) (connector.AckGrant, error)
+    WaitForReadAdmission(context.Context, connector.RunFence) error
+    Append(context.Context, connector.RunFence, connector.SourceTransaction) (connector.AckGrant, error)
+}
+```
+
 <a name="ManagedDeliveryCoordinator"></a>
 ## type [ManagedDeliveryCoordinator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L11-L16>)
 
@@ -198,7 +218,7 @@ type ManagedDeliveryCoordinator interface {
 ```
 
 <a name="ManagedSourceFeedbackCoordinator"></a>
-## type [ManagedSourceFeedbackCoordinator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L27-L29>)
+## type [ManagedSourceFeedbackCoordinator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L39-L41>)
 
 ManagedSourceFeedbackCoordinator is the optional observed\-flush extension required by the named PostgreSQL profile.
 
@@ -249,7 +269,7 @@ func (s *MemoryTraceSink) Events() []TraceEvent
 Events returns a snapshot of captured events.
 
 <a name="Runner"></a>
-## type [Runner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L51-L75>)
+## type [Runner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L51-L76>)
 
 Runner streams data from a source to destinations.
 
@@ -278,11 +298,12 @@ type Runner struct {
     TraceSink           TraceSink
     RunFence            *connector.RunFence
     DeliveryCoordinator ManagedDeliveryCoordinator
+    ArtifactLog         ManagedArtifactLog
 }
 ```
 
 <a name="Runner.ManagedProfileEnabled"></a>
-### func \(\*Runner\) [ManagedProfileEnabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L653>)
+### func \(\*Runner\) [ManagedProfileEnabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L710>)
 
 ```go
 func (r *Runner) ManagedProfileEnabled() bool
@@ -291,7 +312,7 @@ func (r *Runner) ManagedProfileEnabled() bool
 
 
 <a name="Runner.Run"></a>
-### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L79>)
+### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L80>)
 
 ```go
 func (r *Runner) Run(ctx context.Context) (retErr error)

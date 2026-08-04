@@ -5,7 +5,42 @@ import (
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/pkg/stream"
 )
+
+func TestMaterializedAckPolicyAndProjectionRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	model := flow.Config{
+		AckPolicy:       stream.AckPolicyMaterialized,
+		Materialization: flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v1"},
+	}
+	wire := flowConfigToProto(model)
+	if wire.GetAckPolicy() != wallabypb.AckPolicy_ACK_POLICY_MATERIALIZED {
+		t.Fatalf("ack policy=%s, want materialized", wire.GetAckPolicy())
+	}
+	if wire.GetMaterialization().GetProjectionId() != "canonical_cdc_parquet_v1" {
+		t.Fatalf("projection=%q", wire.GetMaterialization().GetProjectionId())
+	}
+	if roundTrip := flowConfigFromProto(wire); !roundTrip.Equal(model) {
+		t.Fatalf("flow config round trip=%+v, want %+v", roundTrip, model)
+	}
+	if got := int32(wallabypb.AckPolicy_ACK_POLICY_MATERIALIZED); got != 3 {
+		t.Fatalf("ACK_POLICY_MATERIALIZED=%d, want wire value 3", got)
+	}
+}
+
+func TestFlowFromProtoRejectsUnknownAcknowledgementPolicy(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowFromProto(&wallabypb.Flow{
+		Source: &wallabypb.Endpoint{Type: wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES},
+		Config: &wallabypb.FlowConfig{AckPolicy: wallabypb.AckPolicy(99)},
+	})
+	if err == nil {
+		t.Fatal("unknown acknowledgement policy was silently mapped to unspecified")
+	}
+}
 
 func TestFlowStateRoundTrip(t *testing.T) {
 	t.Parallel()

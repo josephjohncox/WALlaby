@@ -18,8 +18,19 @@ func ValidateDestinationContracts(
 	if ackPolicy == "" {
 		ackPolicy = AckPolicyAll
 	}
-	if ackPolicy != AckPolicyAll && ackPolicy != AckPolicyPrimary {
+	if ackPolicy != AckPolicyAll && ackPolicy != AckPolicyPrimary && ackPolicy != AckPolicyMaterialized {
 		return fmt.Errorf("unsupported acknowledgement policy %q", ackPolicy)
+	}
+	if ackPolicy == AckPolicyMaterialized {
+		if strings.TrimSpace(primaryDestination) != "" {
+			return fmt.Errorf("materialized acknowledgement does not use primary destination %q", primaryDestination)
+		}
+		if len(destinations) != 1 {
+			return fmt.Errorf("materialized acknowledgement currently requires exactly one destination revision; got %d", len(destinations))
+		}
+		if _, ok := destinations[0].Dest.(connector.ManagedTransactionDestination); !ok {
+			return fmt.Errorf("materialized destination %s must implement full-transaction durable reconciliation", destinationLabel(destinations[0].Spec))
+		}
 	}
 
 	primaryFound := false
@@ -54,6 +65,12 @@ func ValidateDestinationContracts(
 		}
 
 		if !capabilities.Delivery.IdempotentReplay || !capabilities.Delivery.ReplaySafe {
+			if ackPolicy == AckPolicyMaterialized {
+				// Source acknowledgement is owned by the canonical artifact log.
+				// PostgreSQL delivery attempts/receipts, not source replay, govern
+				// asynchronous consumer retries.
+				continue
+			}
 			if ackPolicy == AckPolicyAll {
 				// A single destination may duplicate after a downstream commit and
 				// pre-checkpoint crash; that is the explicit at-least-once mode. It

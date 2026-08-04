@@ -1,6 +1,10 @@
 package flow
 
 import (
+	"errors"
+	"fmt"
+	"strings"
+
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 	"github.com/josephjohncox/wallaby/pkg/stream"
@@ -72,6 +76,54 @@ type Config struct {
 	SchemaRegistrySubject           string
 	SchemaRegistryProtoTypesSubject string
 	SchemaRegistrySubjectMode       string
+	Materialization                 MaterializationPolicy
+}
+
+// MaterializationPolicy selects the frozen canonical projection used by
+// ack_policy=materialized. Object-store credentials and operational limits are
+// worker deployment configuration, not flow secrets.
+type MaterializationPolicy struct {
+	ProjectionID string
+}
+
+// ValidateDefinition rejects cross-field configurations before they can be
+// persisted by any API adapter. Runtime admission repeats capability checks
+// after concrete connector construction.
+func ValidateDefinition(definition Flow) error {
+	ackPolicy := definition.Config.AckPolicy
+	if ackPolicy == "" {
+		ackPolicy = stream.AckPolicyAll
+	}
+	switch ackPolicy {
+	case stream.AckPolicyAll, stream.AckPolicyPrimary, stream.AckPolicyMaterialized:
+	default:
+		return fmt.Errorf("unsupported acknowledgement policy %q", ackPolicy)
+	}
+	materialization := definition.Config.Materialization
+	if ackPolicy != stream.AckPolicyMaterialized {
+		if materialization != (MaterializationPolicy{}) {
+			return errors.New("materialization policy requires ack_policy=materialized")
+		}
+		return nil
+	}
+	if materialization.ProjectionID != "canonical_cdc_parquet_v1" {
+		return fmt.Errorf("ack_policy=materialized requires materialization.projection_id=canonical_cdc_parquet_v1; got %q", materialization.ProjectionID)
+	}
+	if strings.TrimSpace(definition.Config.PrimaryDestination) != "" {
+		return errors.New("primary_destination is not valid with ack_policy=materialized")
+	}
+	if definition.Source.Type != connector.EndpointPostgres {
+		return errors.New("ack_policy=materialized requires a PostgreSQL source")
+	}
+	if strings.TrimSpace(definition.Source.Options["managed_profile"]) != "" {
+		return errors.New("ack_policy=materialized is not admitted by named managed profiles")
+	}
+	switch strings.ToLower(strings.TrimSpace(definition.Source.Options["managed"])) {
+	case "1", "true", "yes", "on":
+		return nil
+	default:
+		return errors.New("ack_policy=materialized requires managed PostgreSQL transactional execution")
+	}
 }
 
 // Equal compares flow configs, including optional DDL policy fields.
@@ -95,6 +147,9 @@ func (c Config) Equal(other Config) bool {
 		return false
 	}
 	if c.SchemaRegistrySubjectMode != other.SchemaRegistrySubjectMode {
+		return false
+	}
+	if c.Materialization != other.Materialization {
 		return false
 	}
 	return ddlPolicyEqual(c.DDL, other.DDL)

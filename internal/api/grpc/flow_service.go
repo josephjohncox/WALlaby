@@ -49,6 +49,9 @@ func (s *FlowService) CreateFlow(ctx context.Context, req *wallabypb.CreateFlowR
 		return nil, status.Error(codes.InvalidArgument, "flows must be created in created state")
 	}
 	model.State = flow.StateCreated
+	if err := flow.ValidateDefinition(model); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	created, err := s.engine.Create(ctx, model)
 	if err != nil {
@@ -98,6 +101,9 @@ func (s *FlowService) UpdateFlow(ctx context.Context, req *wallabypb.UpdateFlowR
 	if req.Flow.Config == nil {
 		model.Config = existing.Config
 	}
+	if err := flow.ValidateDefinition(model); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	updated, err := s.engine.Update(ctx, model)
 	if err != nil {
@@ -139,6 +145,9 @@ func (s *FlowService) ReconfigureFlow(ctx context.Context, req *wallabypb.Reconf
 	}
 	if req.Flow.Config == nil {
 		model.Config = existing.Config
+	}
+	if err := flow.ValidateDefinition(model); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	pauseFirst := optionalBool(req.PauseFirst, true)

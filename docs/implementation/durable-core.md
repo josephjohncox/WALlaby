@@ -2,7 +2,7 @@
 
 ## Status
 
-This branch implements the maintained `postgresql-to-postgresql-v1` managed profile plus experimental generic connector and artifact-log primitives. The named profile is at-least-once with reconciliation; it does not claim exactly-once delivery.
+This branch implements the maintained `postgresql-to-postgresql-v1` managed profile plus experimental generic connector and `ack_policy=materialized` artifact publication. The named profile remains at-least-once with reconciliation and still requires `ack_policy=all`; it does not claim exactly-once delivery.
 
 The maintained profile fails closed outside its exact admission contract. Generic PostgreSQL modes, raw automatic DDL, generic staging, ClickHouse mutations, and the incomplete Iceberg path remain experimental.
 
@@ -47,9 +47,11 @@ The production worker and in-process DBOS path now run these primitives for `boo
 
 ### Canonical artifact log
 
-`internal/artifactlog` implements a bounded Arrow 18/Parquet v2 projection with microsecond timestamps, field IDs derived from source lineage plus PostgreSQL relation/column identity, separate logical and encoded hashes, quota reservation before upload, exact S3 `VersionId` and checksum verification, immutable publication roots, monotonic checkpoints, and ACK-intent coupling.
+`internal/artifactlog` implements deterministic `LogicalBatchID`, schema fingerprints, transaction-wide record ordinals, and source/table/schema/unpartitioned/shard `ArtifactID` values for the bounded `canonical_cdc_parquet_v1` Arrow 18/Parquet v2 projection. Objects target approximately 32 MiB and fail closed above 64 MiB. DDL is rooted as an ordered PostgreSQL barrier rather than encoded as a changelog row.
 
-The package also provides claimed append-only catalog consumption and conservative deletion of old uploaded/verified objects that were never rooted. It is not wired into a worker. Reserved objects with no exact version evidence and published-artifact retention remain fail-closed remainders. No Iceberg REST client exists.
+The experimental `ack_policy=materialized` worker path restores PostgreSQL quota/backlog state before source reads, encodes before destination transforms or retries, records durable upload intents, reconciles conditional S3 PUTs by exact `VersionId`/SHA-256/length/projection, and commits publication roots, quota conversion, checkpoint, and ACK intent in one revalidated generation-fenced transaction. Source feedback occurs only after commit. The production worker registers no catalog consumer and does not create destination delivery rows or open synchronous destination connectors for CDC; the public behavior is canonical publication only.
+
+Epoch-based mark/sweep handles uploaded/verified unpublished orphans and rooted retention. A reserved intent with a prepared PUT but no exact-version evidence remains quota-charged until replay because an old-fence request may still complete after takeover. Rooted objects require an observed source ACK receipt, any explicitly registered package-level deliveries to be complete, elapsed retention, and a newer checkpoint. Publication rechecks GC claims under its final fence. The package still provides only a catalog abstraction, not a production Iceberg REST or S3 Tables client.
 
 ## PostgreSQL migrations
 
@@ -70,8 +72,8 @@ The package also provides claimed append-only catalog consumption and conservati
   - positive delivery/ACK provenance, stale-client protocol gates, logical batch identity, bounded retry state, retention roots, indexed logical attempts, and nullable additive identity columns so authority-v2 checkpoint-1 workers remain writable during a rolling upgrade.
 - `internal/artifactlog/migrations/001_artifacts.sql`
   - streams, quotas, objects, upload attempts, GC claims, publications, and publication objects.
-- `internal/artifactlog/migrations/002_consumers.sql` and `003_authority_protocol_v2.sql`
-  - artifact delivery queues, attempts, and receipts; authority-v2 triggers cover canonical schemas, streams, objects, upload attempts, publications, publication objects, deliveries, quota accounts/reservations, GC claims, and delivery attempts/receipts.
+- `internal/artifactlog/migrations/002_consumers.sql`, `003_authority_protocol_v2.sql`, and `004_materialized_publication.sql`
+  - artifact delivery queues, attempts, and receipts; deterministic logical/shard identity, publication sequencing, ordered barriers, upload-attempt state, GC epochs/claim kinds, and rooted-retention marks; authority-v2 triggers cover every mutable artifact table.
 
 ## Runtime admission
 
@@ -113,7 +115,6 @@ The following requested outcomes remain open and are not represented as maintain
 
 - external schema-registry publication intents/receipts beyond the admitted PostgreSQL relation-diff DDL plans;
 - a fenced administrative resource-revision workflow; legacy managed slot/publication mutation RPCs currently fail closed;
-- reconciliation and cleanup for reserved artifact objects that lack exact-version evidence, plus published-artifact retention GC;
 - an Iceberg REST catalog implementation and live catalog recovery tests;
 - the append-only ClickHouse managed changelog connector;
 - a 100-cycle process-kill chaos profile and long-running soak gate; and

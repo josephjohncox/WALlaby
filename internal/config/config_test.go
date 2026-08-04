@@ -6,6 +6,31 @@ import (
 	"time"
 )
 
+func TestLoadArtifactPublicationConfig(t *testing.T) {
+	t.Setenv("WALLABY_ENV", "test")
+	t.Setenv("WALLABY_WORKFLOW_STORE", "memory")
+	t.Setenv("WALLABY_ARTIFACT_BUCKET", "canonical")
+	t.Setenv("WALLABY_ARTIFACT_ENDPOINT", "http://minio:9000")
+	t.Setenv("WALLABY_ARTIFACT_FORCE_PATH_STYLE", "true")
+	t.Setenv("WALLABY_ARTIFACT_HARD_RETAINED_BYTES", "1048576")
+	t.Setenv("WALLABY_ARTIFACT_BACKLOG_BATCH_HIGH", "12")
+	t.Setenv("WALLABY_ARTIFACT_BACKLOG_BYTES_HIGH", "524288")
+	t.Setenv("WALLABY_ARTIFACT_BACKLOG_AGE_HIGH", "2h")
+	t.Setenv("WALLABY_ARTIFACT_ORPHAN_GRACE", "15m")
+	t.Setenv("WALLABY_ARTIFACT_RETENTION", "48h")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Artifacts.Bucket != "canonical" || !cfg.Artifacts.ForcePathStyle ||
+		cfg.Artifacts.HardRetainedBytes != 1048576 || cfg.Artifacts.BacklogBatchHigh != 12 ||
+		cfg.Artifacts.BacklogBytesHigh != 524288 || cfg.Artifacts.BacklogAgeHigh != 2*time.Hour ||
+		cfg.Artifacts.OrphanGrace != 15*time.Minute || cfg.Artifacts.Retention != 48*time.Hour {
+		t.Fatalf("artifact config=%+v", cfg.Artifacts)
+	}
+}
+
 func TestLoadIndependentTelemetryEndpoints(t *testing.T) {
 	t.Setenv("WALLABY_ENV", "test")
 	t.Setenv("WALLABY_WORKFLOW_STORE", "memory")

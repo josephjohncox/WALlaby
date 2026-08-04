@@ -100,6 +100,38 @@ func TestValidateDestinationContracts(t *testing.T) {
 			requireDDL: true,
 		},
 		{
+			name: "materialized acknowledgement rejects unsupported fan-out",
+			dests: []DestinationConfig{
+				{
+					Spec: connector.Spec{Name: "first", Type: connector.EndpointHTTP},
+					Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true}}},
+				},
+				{
+					Spec: connector.Spec{Name: "second", Type: connector.EndpointHTTP},
+					Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true}}},
+				},
+			},
+			ack:       AckPolicyMaterialized,
+			wantError: "exactly one destination revision",
+		},
+		{
+			name: "materialized acknowledgement requires managed transaction destination identity",
+			dests: []DestinationConfig{{
+				Spec: connector.Spec{Name: "consumer", Type: connector.EndpointHTTP},
+				Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true}}},
+			}},
+			ack:       AckPolicyMaterialized,
+			wantError: "full-transaction durable reconciliation",
+		},
+		{
+			name: "materialized acknowledgement accepts one managed destination revision",
+			dests: []DestinationConfig{{
+				Spec: connector.Spec{Name: "consumer", Type: connector.EndpointPostgres},
+				Dest: managedContractDestination{contractDestination{capabilities: safePrimary}},
+			}},
+			ack: AckPolicyMaterialized,
+		},
+		{
 			name: "primary acknowledgement requires replay safety",
 			dests: []DestinationConfig{{
 				Spec: connector.Spec{Name: "primary"},
@@ -180,6 +212,23 @@ func (contractDestination) TypeMappings() map[string]string { return nil }
 func (contractDestination) Close(context.Context) error     { return nil }
 func (d contractDestination) Capabilities() connector.Capabilities {
 	return d.capabilities
+}
+
+type managedContractDestination struct {
+	contractDestination
+}
+
+func (managedContractDestination) Apply(context.Context, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
+	return connector.DeliveryEvidence{}, nil
+}
+func (managedContractDestination) Reconcile(context.Context, connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
+	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
+}
+func (managedContractDestination) ValidateTransaction(context.Context, connector.SourceTransaction) error {
+	return nil
+}
+func (managedContractDestination) ApplyTransaction(context.Context, connector.DeliveryIntent, connector.SourceTransaction) (connector.DeliveryEvidence, error) {
+	return connector.DeliveryEvidence{}, nil
 }
 
 type reconcilingContractDestination struct {
