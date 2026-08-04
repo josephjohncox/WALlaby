@@ -18,7 +18,7 @@ func TestMemoryLifecycleGenerationAndQuiescenceRapid(t *testing.T) {
 		ctx := context.Background()
 		store := NewMemoryEngine()
 		flowID := "rapid-lifecycle"
-		if _, err := store.Create(ctx, flow.Flow{ID: flowID, Name: "rapid"}); err != nil {
+		if _, err := store.Create(ctx, mappedTestFlow(flow.Flow{ID: flowID, Name: "rapid"})); err != nil {
 			t.Fatal(err)
 		}
 

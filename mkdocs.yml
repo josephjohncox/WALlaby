@@ -87,5 +87,6 @@ nav:
   - Development:
       - Contributor guide: development/index.md
       - Durable core implementation report: implementation/durable-core.md
+      - Table mappings: implementation/table-mappings.md
       - Formal verification: specs.md
       - Benchmarks: benchmarks.md

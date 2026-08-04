@@ -68,28 +68,32 @@ type Flow struct {
 
 // Config captures flow-level runtime behavior.
 type Config struct {
-	AckPolicy                       stream.AckPolicy
-	PrimaryDestination              string
-	FailureMode                     stream.FailureMode
-	GiveUpPolicy                    stream.GiveUpPolicy
-	DDL                             DDLPolicy
-	SchemaRegistrySubject           string
-	SchemaRegistryProtoTypesSubject string
-	SchemaRegistrySubjectMode       string
-	Materialization                 MaterializationPolicy
+	AckPolicy                       stream.AckPolicy      `json:"ack_policy,omitempty"`
+	PrimaryDestination              string                `json:"primary_destination,omitempty"`
+	FailureMode                     stream.FailureMode    `json:"failure_mode,omitempty"`
+	GiveUpPolicy                    stream.GiveUpPolicy   `json:"give_up_policy,omitempty"`
+	DDL                             DDLPolicy             `json:"ddl,omitempty"`
+	SchemaRegistrySubject           string                `json:"schema_registry_subject,omitempty"`
+	SchemaRegistryProtoTypesSubject string                `json:"schema_registry_proto_types_subject,omitempty"`
+	SchemaRegistrySubjectMode       string                `json:"schema_registry_subject_mode,omitempty"`
+	Materialization                 MaterializationPolicy `json:"materialization,omitempty"`
+	TableMappings                   TableMappings         `json:"table_mappings"`
 }
 
 // MaterializationPolicy selects the frozen canonical projection used by
 // ack_policy=materialized. Object-store credentials and operational limits are
 // worker deployment configuration, not flow secrets.
 type MaterializationPolicy struct {
-	ProjectionID string
+	ProjectionID string `json:"projection_id,omitempty"`
 }
 
 // ValidateDefinition rejects cross-field configurations before they can be
 // persisted by any API adapter. Runtime admission repeats capability checks
 // after concrete connector construction.
 func ValidateDefinition(definition Flow) error {
+	if err := definition.Config.TableMappings.Validate(definition.Destinations); err != nil {
+		return fmt.Errorf("validate table mappings: %w", err)
+	}
 	ackPolicy := definition.Config.AckPolicy
 	if ackPolicy == "" {
 		ackPolicy = stream.AckPolicyAll
@@ -172,7 +176,17 @@ func (c Config) Equal(other Config) bool {
 	if c.Materialization != other.Materialization {
 		return false
 	}
+	if !c.TableMappings.Equal(other.TableMappings) {
+		return false
+	}
 	return ddlPolicyEqual(c.DDL, other.DDL)
+}
+
+// IsZero reports whether no flow-level behavior was configured.
+func (c Config) IsZero() bool {
+	return c.AckPolicy == "" && c.PrimaryDestination == "" && c.FailureMode == "" && c.GiveUpPolicy == "" &&
+		c.DDL == (DDLPolicy{}) && c.SchemaRegistrySubject == "" && c.SchemaRegistryProtoTypesSubject == "" &&
+		c.SchemaRegistrySubjectMode == "" && c.Materialization == (MaterializationPolicy{}) && c.TableMappings.Version == 0 && len(c.TableMappings.Destinations) == 0
 }
 
 func ddlPolicyEqual(a, b DDLPolicy) bool {

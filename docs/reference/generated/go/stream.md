@@ -30,6 +30,8 @@ Package stream delivers source batches to destinations, persists checkpoints, ap
 - [type MemoryTraceSink](<#MemoryTraceSink>)
   - [func \(s \*MemoryTraceSink\) Emit\(\_ context.Context, event TraceEvent\)](<#MemoryTraceSink.Emit>)
   - [func \(s \*MemoryTraceSink\) Events\(\) \[\]TraceEvent](<#MemoryTraceSink.Events>)
+- [type ProjectionDecision](<#ProjectionDecision>)
+- [type Projector](<#Projector>)
 - [type Runner](<#Runner>)
   - [func \(r \*Runner\) ManagedProfileEnabled\(\) bool](<#Runner.ManagedProfileEnabled>)
   - [func \(r \*Runner\) Run\(ctx context.Context\) \(retErr error\)](<#Runner.Run>)
@@ -279,6 +281,37 @@ func (s *MemoryTraceSink) Events() []TraceEvent
 ```
 
 Events returns a snapshot of captured events.
+
+<a name="ProjectionDecision"></a>
+## type [ProjectionDecision](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/projection.go#L6>)
+
+ProjectionDecision reports whether a source unit contains destination work.
+
+```go
+type ProjectionDecision uint8
+```
+
+<a name="ProjectionIncluded"></a>
+
+```go
+const (
+    ProjectionIncluded ProjectionDecision = iota + 1
+    ProjectionFiltered
+)
+```
+
+<a name="Projector"></a>
+## type [Projector](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/projection.go#L14-L18>)
+
+Projector applies one immutable destination\-scoped logical projection.
+
+```go
+type Projector interface {
+    ProjectBatch(connector.Batch) (connector.Batch, ProjectionDecision, error)
+    ProjectTransaction(connector.SourceTransaction) (connector.SourceTransaction, ProjectionDecision, error)
+    Fingerprint() string
+}
+```
 
 <a name="Runner"></a>
 ## type [Runner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L51-L76>)

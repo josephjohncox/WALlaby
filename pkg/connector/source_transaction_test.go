@@ -109,7 +109,7 @@ func TestManagedSchemaBaselinesFollowDeliveredTransactions(t *testing.T) {
 	}
 }
 
-func TestSourceTransactionValidationRejectsCollapsedBarrierOrdinal(t *testing.T) {
+func TestSourceTransactionValidationRejectsOrdinalGapsAndReordering(t *testing.T) {
 	t.Parallel()
 
 	transaction := SourceTransaction{
@@ -125,7 +125,11 @@ func TestSourceTransactionValidationRejectsCollapsedBarrierOrdinal(t *testing.T)
 		},
 	}
 	if err := transaction.Validate(); err == nil {
-		t.Fatal("Validate() accepted a missing fragment ordinal")
+		t.Fatal("Validate() accepted raw fragment ordinals [0,2]")
+	}
+	transaction.Fragments[1].Ordinal = 0
+	if err := transaction.Validate(); err == nil {
+		t.Fatal("Validate() accepted duplicate/reordered fragment ordinal")
 	}
 }
 

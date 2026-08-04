@@ -139,6 +139,9 @@ func (p *PostgresEngine) WithFlowLock(ctx context.Context, flowID string, try bo
 }
 
 func (p *PostgresEngine) Create(ctx context.Context, f flow.Flow) (flow.Flow, error) {
+	if err := flow.ValidateDefinition(f); err != nil {
+		return flow.Flow{}, err
+	}
 	if f.ID == "" {
 		return flow.Flow{}, errors.New("flow id is required")
 	}
@@ -179,6 +182,9 @@ func (p *PostgresEngine) Create(ctx context.Context, f flow.Flow) (flow.Flow, er
 }
 
 func (p *PostgresEngine) Update(ctx context.Context, f flow.Flow) (flow.Flow, error) {
+	if err := flow.ValidateDefinition(f); err != nil {
+		return flow.Flow{}, err
+	}
 	if f.ID == "" {
 		return flow.Flow{}, errors.New("flow id is required")
 	}
@@ -196,19 +202,33 @@ func (p *PostgresEngine) Update(ctx context.Context, f flow.Flow) (flow.Flow, er
 	defer func() { _ = tx.Rollback(ctx) }()
 	var incarnationID uuid.UUID
 	var state string
-	var identityChanged bool
+	var persistedDestinationsJSON []byte
+	var persistedMappingsJSON []byte
+	var endpointIdentityChanged bool
 	if err := tx.QueryRow(ctx, `
-SELECT incarnation_id,state,
+SELECT incarnation_id,state,destinations,config->'table_mappings',
        source IS DISTINCT FROM $2::jsonb OR destinations IS DISTINCT FROM $3::jsonb
-FROM flows WHERE id=$1 FOR UPDATE`, f.ID, sourceJSON, destJSON).Scan(&incarnationID, &state, &identityChanged); err != nil {
+FROM flows WHERE id=$1 FOR UPDATE`, f.ID, sourceJSON, destJSON).Scan(&incarnationID, &state, &persistedDestinationsJSON, &persistedMappingsJSON, &endpointIdentityChanged); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return flow.Flow{}, ErrNotFound
 		}
 		return flow.Flow{}, err
 	}
+	var persistedDestinations []connector.Spec
+	var persistedMappings flow.TableMappings
+	if len(persistedMappingsJSON) == 0 || string(persistedMappingsJSON) == "null" {
+		return flow.Flow{}, errors.New("persisted flow has incompatible or missing table mappings")
+	}
+	if err := json.Unmarshal(persistedDestinationsJSON, &persistedDestinations); err != nil {
+		return flow.Flow{}, errors.New("persisted flow has incompatible destinations")
+	}
+	if err := json.Unmarshal(persistedMappingsJSON, &persistedMappings); err != nil || persistedMappings.Validate(persistedDestinations) != nil {
+		return flow.Flow{}, errors.New("persisted flow has incompatible or missing table mappings")
+	}
+	identityChanged := endpointIdentityChanged || !persistedMappings.Equal(f.Config.TableMappings)
 	if identityChanged {
 		if state == string(flow.StateRunning) || state == string(flow.StateStopping) {
-			return flow.Flow{}, fmt.Errorf("%w: source or destination identity cannot change while flow is %s", ErrInvalidState, state)
+			return flow.Flow{}, fmt.Errorf("%w: source, destination, or table mapping identity cannot change while flow is %s", ErrInvalidState, state)
 		}
 		newIncarnationID := uuid.New()
 		if _, err := tx.Exec(ctx, `INSERT INTO flow_incarnations(incarnation_id,flow_id) VALUES($1,$2)`, newIncarnationID, f.ID); err != nil {
@@ -246,7 +266,7 @@ func marshalFlowFields(f flow.Flow) ([]byte, []byte, []byte, error) {
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("marshal config: %w", err)
 	}
-	if f.Config == (flow.Config{}) {
+	if f.Config.IsZero() {
 		config = nil
 	}
 	return source, dest, config, nil
@@ -838,6 +858,12 @@ func decodeFlow(f *flow.Flow, source, dest, config []byte, state string, wire *s
 		if err := json.Unmarshal(config, &f.Config); err != nil {
 			return fmt.Errorf("unmarshal config: %w", err)
 		}
+	}
+	if f.Config.TableMappings.Version != flow.TableMappingsVersion {
+		return fmt.Errorf("persisted flow has incompatible or missing table mappings version; expected %d", flow.TableMappingsVersion)
+	}
+	if err := f.Config.TableMappings.Validate(f.Destinations); err != nil {
+		return fmt.Errorf("persisted flow has incompatible table mappings: %w", err)
 	}
 	f.State = flow.State(state)
 	if wire != nil {

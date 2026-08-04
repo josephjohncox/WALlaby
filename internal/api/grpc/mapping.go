@@ -60,6 +60,10 @@ func flowFromProto(pb *wallabypb.Flow) (flow.Flow, error) {
 		}
 		dests = append(dests, spec)
 	}
+	config, err := flowConfigFromProto(pb.Config)
+	if err != nil {
+		return flow.Flow{}, err
+	}
 
 	return flow.Flow{
 		ID:           pb.Id,
@@ -69,7 +73,7 @@ func flowFromProto(pb *wallabypb.Flow) (flow.Flow, error) {
 		State:        flowStateFromProto(pb.State),
 		WireFormat:   wireFormatFromProto(pb.WireFormat),
 		Parallelism:  int(pb.Parallelism),
-		Config:       flowConfigFromProto(pb.Config),
+		Config:       config,
 	}, nil
 }
 
@@ -85,7 +89,7 @@ func safeInt32(value int) int32 {
 }
 
 func flowConfigToProto(cfg flow.Config) *wallabypb.FlowConfig {
-	if cfg == (flow.Config{}) {
+	if cfg.IsZero() {
 		return nil
 	}
 	return &wallabypb.FlowConfig{
@@ -98,12 +102,17 @@ func flowConfigToProto(cfg flow.Config) *wallabypb.FlowConfig {
 		SchemaRegistryProtoTypesSubject: cfg.SchemaRegistryProtoTypesSubject,
 		SchemaRegistrySubjectMode:       cfg.SchemaRegistrySubjectMode,
 		Materialization:                 materializationPolicyToProto(cfg.Materialization),
+		TableMappings:                   tableMappingsToProto(cfg.TableMappings),
 	}
 }
 
-func flowConfigFromProto(cfg *wallabypb.FlowConfig) flow.Config {
+func flowConfigFromProto(cfg *wallabypb.FlowConfig) (flow.Config, error) {
 	if cfg == nil {
-		return flow.Config{}
+		return flow.Config{}, nil
+	}
+	mappings, err := tableMappingsFromProto(cfg.TableMappings)
+	if err != nil {
+		return flow.Config{}, err
 	}
 	return flow.Config{
 		AckPolicy:                       ackPolicyFromProto(cfg.AckPolicy),
@@ -115,9 +124,157 @@ func flowConfigFromProto(cfg *wallabypb.FlowConfig) flow.Config {
 		SchemaRegistryProtoTypesSubject: cfg.SchemaRegistryProtoTypesSubject,
 		SchemaRegistrySubjectMode:       cfg.SchemaRegistrySubjectMode,
 		Materialization:                 materializationPolicyFromProto(cfg.Materialization),
-	}
+		TableMappings:                   mappings,
+	}, nil
 }
 
+func tableMappingsToProto(mappings flow.TableMappings) *wallabypb.TableMappings {
+	if mappings.Version == 0 && len(mappings.Destinations) == 0 {
+		return nil
+	}
+	out := &wallabypb.TableMappings{Version: mappings.Version, Destinations: make([]*wallabypb.DestinationTableMappings, 0, len(mappings.Destinations))}
+	for _, destination := range mappings.Destinations {
+		mapped := &wallabypb.DestinationTableMappings{
+			Destination:  destination.Destination,
+			FutureTables: futureTableMappingToProto(destination.FutureTables),
+			Tables:       make([]*wallabypb.TableMapping, 0, len(destination.Tables)),
+		}
+		for _, table := range destination.Tables {
+			mappedTable := &wallabypb.TableMapping{
+				SourceSchema: table.SourceSchema, SourceTable: table.SourceTable, Action: mappingActionToProto(table.Action),
+				TargetSchema: table.TargetSchema, TargetTable: table.TargetTable,
+				FutureColumns: futureColumnMappingToProto(table.FutureColumns), Write: tableWritePolicyToProto(table.Write),
+				Columns: make([]*wallabypb.ColumnMapping, 0, len(table.Columns)),
+			}
+			for _, column := range table.Columns {
+				mappedTable.Columns = append(mappedTable.Columns, &wallabypb.ColumnMapping{SourceColumn: column.SourceColumn, Action: mappingActionToProto(column.Action), TargetColumn: column.TargetColumn})
+			}
+			mapped.Tables = append(mapped.Tables, mappedTable)
+		}
+		out.Destinations = append(out.Destinations, mapped)
+	}
+	return out
+}
+
+func tableMappingsFromProto(mappings *wallabypb.TableMappings) (flow.TableMappings, error) {
+	if mappings == nil {
+		return flow.TableMappings{}, nil
+	}
+	out := flow.TableMappings{Version: mappings.Version, Destinations: make([]flow.DestinationTableMappings, 0, len(mappings.Destinations))}
+	for destinationIndex, destination := range mappings.Destinations {
+		if destination == nil {
+			return flow.TableMappings{}, fmt.Errorf("table mappings destination entry %d is nil", destinationIndex)
+		}
+		mapped := flow.DestinationTableMappings{
+			Destination: destination.Destination, FutureTables: futureTableMappingFromProto(destination.FutureTables),
+			Tables: make([]flow.TableMapping, 0, len(destination.Tables)),
+		}
+		for tableIndex, table := range destination.Tables {
+			if table == nil {
+				return flow.TableMappings{}, fmt.Errorf("table mappings destination entry %d table entry %d is nil", destinationIndex, tableIndex)
+			}
+			mappedTable := flow.TableMapping{
+				SourceSchema: table.SourceSchema, SourceTable: table.SourceTable, Action: mappingActionFromProto(table.Action),
+				TargetSchema: table.TargetSchema, TargetTable: table.TargetTable,
+				FutureColumns: futureColumnMappingFromProto(table.FutureColumns), Write: tableWritePolicyFromProto(table.Write),
+				Columns: make([]flow.ColumnMapping, 0, len(table.Columns)),
+			}
+			for columnIndex, column := range table.Columns {
+				if column == nil {
+					return flow.TableMappings{}, fmt.Errorf("table mappings destination entry %d table entry %d column entry %d is nil", destinationIndex, tableIndex, columnIndex)
+				}
+				mappedTable.Columns = append(mappedTable.Columns, flow.ColumnMapping{SourceColumn: column.SourceColumn, Action: mappingActionFromProto(column.Action), TargetColumn: column.TargetColumn})
+			}
+			mapped.Tables = append(mapped.Tables, mappedTable)
+		}
+		out.Destinations = append(out.Destinations, mapped)
+	}
+	return out, nil
+}
+
+func futureTableMappingToProto(mapping flow.FutureTableMapping) *wallabypb.FutureTableMapping {
+	if mapping.Action == "" && mapping.TargetSchema == "" && mapping.TargetTable == "" && mapping.FutureColumns == (flow.FutureColumnMapping{}) &&
+		mapping.Write.Mode == "" && len(mapping.Write.KeyColumns) == 0 && mapping.Write.WatermarkColumn == "" {
+		return nil
+	}
+	return &wallabypb.FutureTableMapping{Action: mappingActionToProto(mapping.Action), TargetSchema: mapping.TargetSchema, TargetTable: mapping.TargetTable, FutureColumns: futureColumnMappingToProto(mapping.FutureColumns), Write: tableWritePolicyToProto(mapping.Write)}
+}
+
+func futureTableMappingFromProto(mapping *wallabypb.FutureTableMapping) flow.FutureTableMapping {
+	if mapping == nil {
+		return flow.FutureTableMapping{}
+	}
+	return flow.FutureTableMapping{Action: mappingActionFromProto(mapping.Action), TargetSchema: mapping.TargetSchema, TargetTable: mapping.TargetTable, FutureColumns: futureColumnMappingFromProto(mapping.FutureColumns), Write: tableWritePolicyFromProto(mapping.Write)}
+}
+
+func futureColumnMappingToProto(mapping flow.FutureColumnMapping) *wallabypb.FutureColumnMapping {
+	if mapping == (flow.FutureColumnMapping{}) {
+		return nil
+	}
+	return &wallabypb.FutureColumnMapping{Action: mappingActionToProto(mapping.Action), TargetColumn: mapping.TargetColumn}
+}
+
+func futureColumnMappingFromProto(mapping *wallabypb.FutureColumnMapping) flow.FutureColumnMapping {
+	if mapping == nil {
+		return flow.FutureColumnMapping{}
+	}
+	return flow.FutureColumnMapping{Action: mappingActionFromProto(mapping.Action), TargetColumn: mapping.TargetColumn}
+}
+
+func tableWritePolicyToProto(policy flow.TableWritePolicy) *wallabypb.TableWritePolicy {
+	if policy.Mode == "" && len(policy.KeyColumns) == 0 && policy.WatermarkColumn == "" {
+		return nil
+	}
+	return &wallabypb.TableWritePolicy{Mode: tableWriteModeToProto(policy.Mode), KeyColumns: append([]string(nil), policy.KeyColumns...), WatermarkColumn: policy.WatermarkColumn}
+}
+
+func tableWritePolicyFromProto(policy *wallabypb.TableWritePolicy) flow.TableWritePolicy {
+	if policy == nil {
+		return flow.TableWritePolicy{}
+	}
+	return flow.TableWritePolicy{Mode: tableWriteModeFromProto(policy.Mode), KeyColumns: append([]string(nil), policy.KeyColumns...), WatermarkColumn: policy.WatermarkColumn}
+}
+
+func mappingActionToProto(action flow.MappingAction) wallabypb.MappingAction {
+	switch action {
+	case flow.MappingActionInclude:
+		return wallabypb.MappingAction_MAPPING_ACTION_INCLUDE
+	case flow.MappingActionExclude:
+		return wallabypb.MappingAction_MAPPING_ACTION_EXCLUDE
+	default:
+		return wallabypb.MappingAction_MAPPING_ACTION_UNSPECIFIED
+	}
+}
+func mappingActionFromProto(action wallabypb.MappingAction) flow.MappingAction {
+	switch action {
+	case wallabypb.MappingAction_MAPPING_ACTION_INCLUDE:
+		return flow.MappingActionInclude
+	case wallabypb.MappingAction_MAPPING_ACTION_EXCLUDE:
+		return flow.MappingActionExclude
+	default:
+		return ""
+	}
+}
+func tableWriteModeToProto(mode flow.TableWriteMode) wallabypb.TableWriteMode {
+	switch mode {
+	case flow.TableWriteModeAppend:
+		return wallabypb.TableWriteMode_TABLE_WRITE_MODE_APPEND
+	case flow.TableWriteModeUpsert:
+		return wallabypb.TableWriteMode_TABLE_WRITE_MODE_UPSERT
+	default:
+		return wallabypb.TableWriteMode_TABLE_WRITE_MODE_UNSPECIFIED
+	}
+}
+func tableWriteModeFromProto(mode wallabypb.TableWriteMode) flow.TableWriteMode {
+	switch mode {
+	case wallabypb.TableWriteMode_TABLE_WRITE_MODE_APPEND:
+		return flow.TableWriteModeAppend
+	case wallabypb.TableWriteMode_TABLE_WRITE_MODE_UPSERT:
+		return flow.TableWriteModeUpsert
+	default:
+		return ""
+	}
+}
 func materializationPolicyToProto(policy flow.MaterializationPolicy) *wallabypb.MaterializationPolicy {
 	if policy == (flow.MaterializationPolicy{}) {
 		return nil

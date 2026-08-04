@@ -21,6 +21,7 @@ func TestValidateDefinitionMaterializationContract(t *testing.T) {
 			Materialization: MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v1"},
 		},
 	}
+	valid.Config.TableMappings = NewTableMappings(valid.Destinations)
 	if err := ValidateDefinition(valid); err != nil {
 		t.Fatalf("valid materialized definition: %v", err)
 	}
@@ -37,8 +38,8 @@ func TestValidateDefinitionMaterializationContract(t *testing.T) {
 		{name: "non postgres source", edit: func(f *Flow) { f.Source.Type = connector.EndpointKafka }, want: "PostgreSQL source"},
 		{name: "unmanaged source", edit: func(f *Flow) { f.Source.Options["managed"] = "false" }, want: "managed PostgreSQL"},
 		{name: "snapshot not admitted", edit: func(f *Flow) { f.Source.Options["bootstrap"] = "auto" }, want: "bootstrap=never"},
-		{name: "missing destination", edit: func(f *Flow) { f.Destinations = nil }, want: "exactly one Iceberg"},
-		{name: "multiple destinations", edit: func(f *Flow) { f.Destinations = append(f.Destinations, f.Destinations[0]) }, want: "exactly one Iceberg"},
+		{name: "missing destination", edit: func(f *Flow) { f.Destinations = nil }, want: "unknown destination"},
+		{name: "multiple destinations", edit: func(f *Flow) { f.Destinations = append(f.Destinations, f.Destinations[0]) }, want: "duplicate destination name"},
 		{name: "non Iceberg destination", edit: func(f *Flow) { f.Destinations[0].Type = connector.EndpointPostgres }, want: "Iceberg destination"},
 		{name: "missing revision", edit: func(f *Flow) { f.Destinations[0].Options = map[string]string{} }, want: "destination_revision_id"},
 		{name: "persisted secret", edit: func(f *Flow) { f.Destinations[0].Options["aws_session_token"] = "secret" }, want: "unsupported persisted Iceberg option"},

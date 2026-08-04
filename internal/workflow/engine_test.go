@@ -12,7 +12,7 @@ import (
 func TestMemoryExecutionFenceRejectsStaleGenerationAndRecreatedFlow(t *testing.T) {
 	ctx := context.Background()
 	engine := NewMemoryEngine()
-	created, err := engine.Create(ctx, flow.Flow{ID: "execution-fence"})
+	created, err := engine.Create(ctx, mappedTestFlow(flow.Flow{ID: "execution-fence"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestMemoryExecutionFenceRejectsStaleGenerationAndRecreatedFlow(t *testing.T
 	if err := engine.Delete(ctx, created.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := engine.Create(ctx, flow.Flow{ID: created.ID}); err != nil {
+	if _, err := engine.Create(ctx, mappedTestFlow(flow.Flow{ID: created.ID})); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := engine.Start(ctx, created.ID); err != nil {
@@ -56,11 +56,176 @@ func TestMemoryExecutionFenceRejectsStaleGenerationAndRecreatedFlow(t *testing.T
 	}
 }
 
+func TestMemoryEngineCopiesAndFencesTableMappings(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	engine := NewMemoryEngine()
+	definition := mappedTestFlow(flow.Flow{ID: "mapping-copy"})
+	created, err := engine.Create(ctx, definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalIncarnation := engine.incarnations[definition.ID]
+	definition.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "mutated-outside"
+	created.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "mutated-return"
+	stored, err := engine.Get(ctx, definition.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stored.Config.TableMappings.Destinations[0].FutureTables.TargetTable; got != "{table}" {
+		t.Fatalf("stored mapping aliased caller: %q", got)
+	}
+	stored.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "changed-get"
+	again, _ := engine.Get(ctx, definition.ID)
+	if got := again.Config.TableMappings.Destinations[0].FutureTables.TargetTable; got != "{table}" {
+		t.Fatalf("Get returned aliased mapping: %q", got)
+	}
+	again.Config.TableMappings.Destinations[0].Tables = []flow.TableMapping{}
+	again.Config.TableMappings.Destinations[0].FutureTables.Write.KeyColumns = []string{}
+	if _, err := engine.Update(ctx, again); err != nil {
+		t.Fatal(err)
+	}
+	if engine.incarnations[definition.ID] != originalIncarnation {
+		t.Fatal("nil/empty canonical mapping change rotated memory flow incarnation")
+	}
+	again, _ = engine.Get(ctx, definition.ID)
+	again.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "mapped_{table}"
+	if _, err := engine.Update(ctx, again); err != nil {
+		t.Fatal(err)
+	}
+	if engine.incarnations[definition.ID] == originalIncarnation {
+		t.Fatal("mapping change did not rotate memory flow incarnation")
+	}
+	if _, err := engine.Start(ctx, definition.ID); err != nil {
+		t.Fatal(err)
+	}
+	running, _ := engine.Get(ctx, definition.ID)
+	running.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "again_{table}"
+	if _, err := engine.Update(ctx, running); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("running mapping update error=%v, want ErrInvalidState", err)
+	}
+}
+
+func TestMemoryEngineLifecycleReturnsAreMutationIsolated(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	assertIsolated := func(t *testing.T, engine *MemoryEngine, returned flow.Flow) {
+		t.Helper()
+		returned.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "caller_mutation_{table}"
+		stored, err := engine.Get(ctx, returned.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := stored.Config.TableMappings.Destinations[0].FutureTables.TargetTable; got != "{table}" {
+			t.Fatalf("lifecycle result mutated stored mapping: %q", got)
+		}
+	}
+
+	engine := NewMemoryEngine()
+	created, err := engine.Create(ctx, mappedTestFlow(flow.Flow{ID: "lifecycle-copy-core"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, engine, created)
+	started, control, err := engine.PlanStart(ctx, created.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, engine, started)
+	idempotentStarted, _, err := engine.PlanStart(ctx, created.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, engine, idempotentStarted)
+	pausing, control, err := engine.RequestPause(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, engine, pausing)
+	idempotentPausing, _, err := engine.RequestPause(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, engine, idempotentPausing)
+	paused, err := engine.CompletePause(ctx, created.ID, control.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, engine, paused)
+	idempotentPaused, _, err := engine.RequestPause(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, engine, idempotentPaused)
+	resumed, control, err := engine.PlanStart(ctx, created.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, engine, resumed)
+	stopping, control, err := engine.RequestStop(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, engine, stopping)
+	idempotentStopping, _, err := engine.RequestStop(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, engine, idempotentStopping)
+	stopped, err := engine.CompleteStopGeneration(ctx, created.ID, control.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, engine, stopped)
+	idempotentStopped, err := engine.CompleteStopGeneration(ctx, created.ID, control.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, engine, idempotentStopped)
+
+	wrappers := NewMemoryEngine()
+	wrapperCreated, err := wrappers.Create(ctx, mappedTestFlow(flow.Flow{ID: "lifecycle-copy-wrappers"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapperStarted, err := wrappers.Start(ctx, wrapperCreated.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, wrappers, wrapperStarted)
+	wrapperPaused, err := wrappers.Pause(ctx, wrapperCreated.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, wrappers, wrapperPaused)
+	wrapperResumed, err := wrappers.Resume(ctx, wrapperCreated.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, wrappers, wrapperResumed)
+	wrapperStopped, err := wrappers.Stop(ctx, wrapperCreated.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, wrappers, wrapperStopped)
+
+	failedEngine := NewMemoryEngine()
+	failedCreated, err := failedEngine.Create(ctx, mappedTestFlow(flow.Flow{ID: "lifecycle-copy-fail"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed, err := failedEngine.Fail(ctx, failedCreated.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsolated(t, failedEngine, failed)
+}
+
 func TestMemoryEngineLifecycleAndExecutions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	engine := NewMemoryEngine()
-	created, err := engine.Create(ctx, flow.Flow{ID: "flow-1"})
+	created, err := engine.Create(ctx, mappedTestFlow(flow.Flow{ID: "flow-1"}))
 	if err != nil || created.State != flow.StateCreated {
 		t.Fatalf("Create() = (%v, %v)", created.State, err)
 	}
@@ -106,7 +271,7 @@ func TestAuthoritativeTerminationRequiresExactIDBackendAndExpiredLease(t *testin
 	t.Parallel()
 	ctx := context.Background()
 	engine := NewMemoryEngine()
-	if _, err := engine.Create(ctx, flow.Flow{ID: "backend-fence"}); err != nil {
+	if _, err := engine.Create(ctx, mappedTestFlow(flow.Flow{ID: "backend-fence"})); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := engine.Start(ctx, "backend-fence"); err != nil {
@@ -147,7 +312,7 @@ func TestOrchestratedStopWaitsForExecution(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	base := NewMemoryEngine()
-	_, _ = base.Create(ctx, flow.Flow{ID: "flow-1"})
+	_, _ = base.Create(ctx, mappedTestFlow(flow.Flow{ID: "flow-1"}))
 	_, _ = base.Start(ctx, "flow-1")
 	control, err := base.Control(ctx, "flow-1")
 	if err != nil {

@@ -97,6 +97,7 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [type PreparedManagedTransaction](<#PreparedManagedTransaction>)
 - [type Record](<#Record>)
 - [type ReplicationLagProvider](<#ReplicationLagProvider>)
+- [type ResolvedWriteMode](<#ResolvedWriteMode>)
 - [type RunFence](<#RunFence>)
   - [func \(f RunFence\) Validate\(\) error](<#RunFence.Validate>)
 - [type RunFenceBinder](<#RunFenceBinder>)
@@ -109,6 +110,8 @@ Package connector defines the stable source, destination, checkpoint, schema, an
   - [func \(t SourceTransaction\) Validate\(\) error](<#SourceTransaction.Validate>)
 - [type Spec](<#Spec>)
 - [type SupportLevel](<#SupportLevel>)
+- [type TableWritePolicy](<#TableWritePolicy>)
+  - [func \(p TableWritePolicy\) IsZero\(\) bool](<#TableWritePolicy.IsZero>)
 - [type TransactionFragment](<#TransactionFragment>)
 - [type TransactionalSource](<#TransactionalSource>)
 - [type WireFormat](<#WireFormat>)
@@ -139,6 +142,16 @@ const (
 const (
     SourceModeCDC      = "cdc"
     SourceModeBackfill = "backfill"
+)
+```
+
+<a name="AppendOperationColumn"></a>
+
+```go
+const (
+    AppendOperationColumn      = "__wallaby_operation"
+    AppendDeletedColumn        = "__wallaby_deleted"
+    AppendSourcePositionColumn = "__wallaby_source_position"
 )
 ```
 
@@ -199,13 +212,13 @@ var ErrInvalidBatch = errors.New("invalid connector batch")
 ```
 
 <a name="BatchContentHash"></a>
-## func [BatchContentHash](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/hash.go#L37>)
+## func [BatchContentHash](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/hash.go#L40>)
 
 ```go
 func BatchContentHash(batch Batch) (string, error)
 ```
 
-BatchContentHash returns a deterministic, type\-sensitive SHA\-256 identity for a logical connector batch. Map iteration order and checkpoint observation timestamps do not affect the result. The encoding is the compatibility format historically used by the durable checkpoint outbox.
+BatchContentHash returns a deterministic, type\-sensitive SHA\-256 identity for a logical connector batch. Map iteration order and checkpoint observation timestamps do not affect the result. A projected batch also excludes replay\- variable source observations while retaining its resolved write policy.
 
 <a name="CanonicalizeCheckpointPosition"></a>
 ## func [CanonicalizeCheckpointPosition](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/checkpoint.go#L25>)
@@ -253,7 +266,7 @@ func IsManagedSourceSpec(spec Spec) bool
 IsManagedSourceSpec reports whether a source requests either the legacy managed protocol or a named managed profile. Control\-plane and runtime gates must use this single predicate so profile\-only flows cannot bypass fencing.
 
 <a name="MergeManagedSchemaBaselines"></a>
-## func [MergeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L175>)
+## func [MergeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L173>)
 
 ```go
 func MergeManagedSchemaBaselines(metadata map[string]string, transaction SourceTransaction) (map[string]string, error)
@@ -291,7 +304,7 @@ NormalizeSourceMode normalizes and validates source modes for worker flow source
 It is case\-insensitive, trims whitespace, and defaults empty values to cdc.
 
 <a name="SourceTransactionContentHash"></a>
-## func [SourceTransactionContentHash](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L86>)
+## func [SourceTransactionContentHash](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L84>)
 
 ```go
 func SourceTransactionContentHash(transaction SourceTransaction) (string, error)
@@ -300,7 +313,7 @@ func SourceTransactionContentHash(transaction SourceTransaction) (string, error)
 SourceTransactionContentHash returns the stable logical identity of a full committed transaction. Observation timestamps, process\-local schema counters, and checkpoint recovery metadata do not participate, while WAL positions and transaction and fragment order always do.
 
 <a name="SourceTransactionIdentity"></a>
-## func [SourceTransactionIdentity](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L147>)
+## func [SourceTransactionIdentity](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L145>)
 
 ```go
 func SourceTransactionIdentity(transaction SourceTransaction) (string, string, error)
@@ -309,7 +322,7 @@ func SourceTransactionIdentity(transaction SourceTransaction) (string, string, e
 SourceTransactionIdentity computes the content hash and logical batch ID in one pass. Callers at each trust seam can validate independently without hashing the same transaction twice at that seam. Process\-local schema counters, observation timestamps, and checkpoint recovery metadata do not participate in the identity of an otherwise identical WAL replay.
 
 <a name="SourceTransactionLogicalBatchID"></a>
-## func [SourceTransactionLogicalBatchID](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L162>)
+## func [SourceTransactionLogicalBatchID](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L160>)
 
 ```go
 func SourceTransactionLogicalBatchID(transaction SourceTransaction) (string, error)
@@ -348,16 +361,17 @@ type AckGrant struct {
 ```
 
 <a name="Batch"></a>
-## type [Batch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L122-L127>)
+## type [Batch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L122-L128>)
 
 Batch is the unit passed between sources and destinations.
 
 ```go
 type Batch struct {
-    Records    []Record
-    Schema     Schema
-    Checkpoint Checkpoint
-    WireFormat WireFormat
+    Records     []Record
+    Schema      Schema
+    Checkpoint  Checkpoint
+    WireFormat  WireFormat
+    WritePolicy TableWritePolicy
 }
 ```
 
@@ -462,7 +476,7 @@ type Checkpoint struct {
 ```
 
 <a name="CheckpointOutboxStore"></a>
-## type [CheckpointOutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L192-L195>)
+## type [CheckpointOutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L193-L196>)
 
 CheckpointOutboxStore is the atomic durability seam required by primary acknowledgement. A single adapter must own both checkpoint and outbox state.
 
@@ -474,7 +488,7 @@ type CheckpointOutboxStore interface {
 ```
 
 <a name="CheckpointStore"></a>
-## type [CheckpointStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L160-L164>)
+## type [CheckpointStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L161-L165>)
 
 CheckpointStore persists checkpoints for recovery. Get returns ErrCheckpointNotFound when a flow has no durable position yet.
 
@@ -788,7 +802,7 @@ type DeliverySemantics struct {
 ```
 
 <a name="Destination"></a>
-## type [Destination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L149-L156>)
+## type [Destination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L150-L157>)
 
 Destination writes to a downstream system.
 
@@ -847,7 +861,7 @@ type FlowCheckpoint struct {
 ```
 
 <a name="FlushEvidenceSource"></a>
-## type [FlushEvidenceSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L271-L274>)
+## type [FlushEvidenceSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L269-L272>)
 
 FlushEvidenceSource sends source feedback and proves the resulting logical slot flush position. The managed coordinator validates authority before and after this external source operation; feedback itself is monotonic.
 
@@ -859,7 +873,7 @@ type FlushEvidenceSource interface {
 ```
 
 <a name="InitialCheckpointSource"></a>
-## type [InitialCheckpointSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L257-L260>)
+## type [InitialCheckpointSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L255-L258>)
 
 InitialCheckpointSource exposes the validated stream start after Open. A managed coordinator persists this cut and an ACK intent before the first source transaction, so a crash immediately after slot creation is recoverable.
 
@@ -1150,7 +1164,7 @@ const (
 ```
 
 <a name="OutboxEntry"></a>
-## type [OutboxEntry](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L172-L179>)
+## type [OutboxEntry](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L173-L180>)
 
 OutboxEntry is one durable secondary\-destination delivery. PositionID is derived with CheckpointPositionID. BatchHash is populated by stores when listing entries and identifies the exact, type\-preserving batch contents. Every destination used with primary acknowledgement must implement idempotent writes because a crash after Write and before durable persistence or deletion can replay a batch.
 
@@ -1166,7 +1180,7 @@ type OutboxEntry struct {
 ```
 
 <a name="OutboxStore"></a>
-## type [OutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L184-L188>)
+## type [OutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L185-L189>)
 
 OutboxStore atomically advances a flow checkpoint and records secondary deliveries. Implementations must make insertion idempotent for an identical \(flow, destination, position\) and reject conflicting batch content.
 
@@ -1212,7 +1226,7 @@ type Record struct {
 ```
 
 <a name="ReplicationLagProvider"></a>
-## type [ReplicationLagProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L139-L141>)
+## type [ReplicationLagProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L140-L142>)
 
 ReplicationLagProvider exposes replication lag metrics for sources that can report it.
 
@@ -1220,6 +1234,24 @@ ReplicationLagProvider exposes replication lag metrics for sources that can repo
 type ReplicationLagProvider interface {
     ReplicationLag(ctx context.Context) (slot string, lagBytes int64, err error)
 }
+```
+
+<a name="ResolvedWriteMode"></a>
+## type [ResolvedWriteMode](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/write_policy.go#L4>)
+
+ResolvedWriteMode is the destination write behavior for one projected table.
+
+```go
+type ResolvedWriteMode string
+```
+
+<a name="ResolvedWriteAppend"></a>
+
+```go
+const (
+    ResolvedWriteAppend ResolvedWriteMode = "append"
+    ResolvedWriteUpsert ResolvedWriteMode = "upsert"
+)
 ```
 
 <a name="RunFence"></a>
@@ -1275,7 +1307,7 @@ type Schema struct {
 ```
 
 <a name="DecodeManagedSchemaBaselines"></a>
-### func [DecodeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L213>)
+### func [DecodeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L211>)
 
 ```go
 func DecodeManagedSchemaBaselines(raw string) ([]Schema, error)
@@ -1284,7 +1316,7 @@ func DecodeManagedSchemaBaselines(raw string) ([]Schema, error)
 DecodeManagedSchemaBaselines validates a checkpoint baseline encoding.
 
 <a name="SlotDropper"></a>
-## type [SlotDropper](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L144-L146>)
+## type [SlotDropper](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L145-L147>)
 
 SlotDropper is implemented by sources that can drop replication slots.
 
@@ -1295,7 +1327,7 @@ type SlotDropper interface {
 ```
 
 <a name="Source"></a>
-## type [Source](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L130-L136>)
+## type [Source](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L131-L137>)
 
 Source reads from an upstream system.
 
@@ -1310,7 +1342,7 @@ type Source interface {
 ```
 
 <a name="SourceFlushEvidence"></a>
-## type [SourceFlushEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L264-L266>)
+## type [SourceFlushEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L262-L264>)
 
 SourceFlushEvidence is the source PostgreSQL position observed after a standby\-status update, not merely an in\-process scheduling acknowledgement.
 
@@ -1344,7 +1376,7 @@ type SourceTransaction struct {
 func (t SourceTransaction) Validate() error
 ```
 
-Validate rejects incomplete or reordered committed transactions before they can become durable delivery identities. Fragment ordinals are contiguous so table, schema, DDL, and control barriers cannot be collapsed or reordered.
+Validate rejects incomplete or reordered committed transactions before they can become durable delivery identities. Fragment ordinals are contiguous; projections must renumber surviving fragments rather than admitting gaps.
 
 <a name="Spec"></a>
 ## type [Spec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L52-L56>)
@@ -1379,8 +1411,31 @@ const (
 )
 ```
 
+<a name="TableWritePolicy"></a>
+## type [TableWritePolicy](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/write_policy.go#L18-L23>)
+
+TableWritePolicy is the fully resolved write contract carried with a projected batch.
+
+```go
+type TableWritePolicy struct {
+    Mode                  ResolvedWriteMode
+    KeyColumns            []string
+    WatermarkColumn       string
+    ProjectionFingerprint string
+}
+```
+
+<a name="TableWritePolicy.IsZero"></a>
+### func \(TableWritePolicy\) [IsZero](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/write_policy.go#L26>)
+
+```go
+func (p TableWritePolicy) IsZero() bool
+```
+
+IsZero reports whether a batch has no resolved projection policy.
+
 <a name="TransactionFragment"></a>
-## type [TransactionFragment](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L241-L244>)
+## type [TransactionFragment](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L239-L242>)
 
 TransactionFragment is a deterministic, ordered table/schema fragment of a committed source transaction.
 
@@ -1392,7 +1447,7 @@ type TransactionFragment struct {
 ```
 
 <a name="TransactionalSource"></a>
-## type [TransactionalSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L249-L252>)
+## type [TransactionalSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L247-L250>)
 
 TransactionalSource is an optional source contract for managed execution. Legacy Source.Read remains available for compatibility, but managed PostgreSQL execution consumes complete transactions through this interface.
 

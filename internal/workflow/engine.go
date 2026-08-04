@@ -200,6 +200,9 @@ func (m *MemoryEngine) WithFlowLock(ctx context.Context, flowID string, try bool
 }
 
 func (m *MemoryEngine) Create(_ context.Context, f flow.Flow) (flow.Flow, error) {
+	if err := flow.ValidateDefinition(f); err != nil {
+		return flow.Flow{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if f.ID == "" {
@@ -217,13 +220,17 @@ func (m *MemoryEngine) Create(_ context.Context, f flow.Flow) (flow.Flow, error)
 	if f.Parallelism <= 0 {
 		f.Parallelism = 1
 	}
-	m.flows[f.ID] = f
+	stored := flow.Clone(f)
+	m.flows[f.ID] = stored
 	m.incarnations[f.ID] = uuid.New()
 	m.controls[f.ID] = LifecycleControl{FlowID: f.ID, State: f.State, Target: TargetCreated}
-	return f, nil
+	return flow.Clone(stored), nil
 }
 
 func (m *MemoryEngine) Update(_ context.Context, f flow.Flow) (flow.Flow, error) {
+	if err := flow.ValidateDefinition(f); err != nil {
+		return flow.Flow{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	current, ok := m.flows[f.ID]
@@ -234,8 +241,19 @@ func (m *MemoryEngine) Update(_ context.Context, f flow.Flow) (flow.Flow, error)
 	if f.Parallelism <= 0 {
 		f.Parallelism = 1
 	}
-	m.flows[f.ID] = f
-	return f, nil
+	mappingChanged := !current.Config.TableMappings.Equal(f.Config.TableMappings)
+	if mappingChanged && (current.State == flow.StateRunning || current.State == flow.StateStopping) {
+		return flow.Flow{}, fmt.Errorf("%w: table mappings cannot change while flow is %s", ErrInvalidState, current.State)
+	}
+	if mappingChanged {
+		m.incarnations[f.ID] = uuid.New()
+		control := m.controls[f.ID]
+		control.Generation = 0
+		m.controls[f.ID] = control
+	}
+	stored := flow.Clone(f)
+	m.flows[f.ID] = stored
+	return flow.Clone(stored), nil
 }
 
 func (m *MemoryEngine) PlanStart(_ context.Context, flowID string, resume bool) (flow.Flow, LifecycleControl, error) {
@@ -247,7 +265,7 @@ func (m *MemoryEngine) PlanStart(_ context.Context, flowID string, resume bool) 
 	}
 	control := m.controls[flowID]
 	if current.State == flow.StateRunning && control.Target == TargetRunning {
-		return current, control, nil
+		return flow.Clone(current), control, nil
 	}
 	expected := flow.StateCreated
 	if resume {
@@ -263,7 +281,7 @@ func (m *MemoryEngine) PlanStart(_ context.Context, flowID string, resume bool) 
 	control.DispatchPending = true
 	m.flows[flowID] = current
 	m.controls[flowID] = control
-	return current, control, nil
+	return flow.Clone(current), control, nil
 }
 
 func (m *MemoryEngine) MarkDispatched(_ context.Context, flowID string, generation int64) error {
@@ -290,7 +308,7 @@ func (m *MemoryEngine) RequestPause(_ context.Context, flowID string) (flow.Flow
 	}
 	control := m.controls[flowID]
 	if current.State == flow.StatePaused && control.Target == TargetPaused {
-		return current, control, nil
+		return flow.Clone(current), control, nil
 	}
 	if current.State != flow.StateRunning || (control.Target != TargetRunning && control.Target != TargetPaused) {
 		return flow.Flow{}, control, fmt.Errorf("%w: cannot pause flow in state %s with target %s", ErrInvalidState, current.State, control.Target)
@@ -298,7 +316,7 @@ func (m *MemoryEngine) RequestPause(_ context.Context, flowID string) (flow.Flow
 	control.Target = TargetPaused
 	control.DispatchPending = false
 	m.controls[flowID] = control
-	return current, control, nil
+	return flow.Clone(current), control, nil
 }
 
 func (m *MemoryEngine) CompletePause(_ context.Context, flowID string, generation int64) (flow.Flow, error) {
@@ -322,7 +340,7 @@ func (m *MemoryEngine) CompletePause(_ context.Context, flowID string, generatio
 	control.State = current.State
 	m.flows[flowID] = current
 	m.controls[flowID] = control
-	return current, nil
+	return flow.Clone(current), nil
 }
 
 func (m *MemoryEngine) RequestStop(_ context.Context, flowID string) (flow.Flow, LifecycleControl, error) {
@@ -334,10 +352,10 @@ func (m *MemoryEngine) RequestStop(_ context.Context, flowID string) (flow.Flow,
 	}
 	control := m.controls[flowID]
 	if current.State == flow.StateStopped && control.Target == TargetStopped {
-		return current, control, nil
+		return flow.Clone(current), control, nil
 	}
 	if current.State == flow.StateStopping && control.Target == TargetStopped {
-		return current, control, nil
+		return flow.Clone(current), control, nil
 	}
 	if current.State != flow.StateRunning && current.State != flow.StatePaused {
 		return flow.Flow{}, control, fmt.Errorf("%w: cannot stop flow in state %s", ErrInvalidState, current.State)
@@ -348,7 +366,7 @@ func (m *MemoryEngine) RequestStop(_ context.Context, flowID string) (flow.Flow,
 	control.DispatchPending = false
 	m.flows[flowID] = current
 	m.controls[flowID] = control
-	return current, control, nil
+	return flow.Clone(current), control, nil
 }
 
 func (m *MemoryEngine) CompleteStopGeneration(_ context.Context, flowID string, generation int64) (flow.Flow, error) {
@@ -360,7 +378,7 @@ func (m *MemoryEngine) CompleteStopGeneration(_ context.Context, flowID string, 
 	}
 	control := m.controls[flowID]
 	if current.State == flow.StateStopped && control.Target == TargetStopped && control.Generation == generation {
-		return current, nil
+		return flow.Clone(current), nil
 	}
 	if control.Generation != generation || control.Target != TargetStopped || current.State != flow.StateStopping {
 		return flow.Flow{}, fmt.Errorf("%w: stop generation is fenced", ErrInvalidState)
@@ -372,7 +390,7 @@ func (m *MemoryEngine) CompleteStopGeneration(_ context.Context, flowID string, 
 	control.State = current.State
 	m.flows[flowID] = current
 	m.controls[flowID] = control
-	return current, nil
+	return flow.Clone(current), nil
 }
 
 func (m *MemoryEngine) Start(ctx context.Context, flowID string) (flow.Flow, error) {
@@ -408,7 +426,7 @@ func (m *MemoryEngine) Fail(_ context.Context, flowID string) (flow.Flow, error)
 	control := m.controls[flowID]
 	control.State, control.Target, control.DispatchPending = current.State, TargetFailed, false
 	m.flows[flowID], m.controls[flowID] = current, control
-	return current, nil
+	return flow.Clone(current), nil
 }
 
 func (m *MemoryEngine) Delete(_ context.Context, flowID string) error {
@@ -437,7 +455,7 @@ func (m *MemoryEngine) Get(_ context.Context, flowID string) (flow.Flow, error) 
 	if !ok {
 		return flow.Flow{}, ErrNotFound
 	}
-	return f, nil
+	return flow.Clone(f), nil
 }
 func (m *MemoryEngine) List(_ context.Context) ([]flow.Flow, error) {
 	m.mu.RLock()
@@ -449,7 +467,7 @@ func (m *MemoryEngine) List(_ context.Context) ([]flow.Flow, error) {
 	sort.Strings(ids)
 	out := make([]flow.Flow, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, m.flows[id])
+		out = append(out, flow.Clone(m.flows[id]))
 	}
 	return out, nil
 }

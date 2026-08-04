@@ -16,6 +16,78 @@ import (
 	"github.com/josephjohncox/wallaby/internal/flow"
 )
 
+func TestPostgresTableMappingChangeRotatesIncarnation(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	store, err := NewPostgresEngine(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	flowID := fmt.Sprintf("mapping-incarnation-%d", time.Now().UnixNano())
+	defer func() { _, _ = store.pool.Exec(context.Background(), "DELETE FROM flows WHERE id=$1", flowID) }()
+	created, err := store.Create(ctx, mappedTestFlow(flow.Flow{ID: flowID}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first string
+	if err := store.pool.QueryRow(ctx, "SELECT incarnation_id::text FROM flows WHERE id=$1", flowID).Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	created.Config.TableMappings.Destinations[0].Tables = []flow.TableMapping{}
+	created.Config.TableMappings.Destinations[0].FutureTables.Write.KeyColumns = []string{}
+	created, err = store.Update(ctx, created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var canonical string
+	if err := store.pool.QueryRow(ctx, "SELECT incarnation_id::text FROM flows WHERE id=$1", flowID).Scan(&canonical); err != nil {
+		t.Fatal(err)
+	}
+	if first != canonical {
+		t.Fatal("nil/empty canonical mapping change rotated postgres flow incarnation")
+	}
+	created.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "mapped_{table}"
+	if _, err := store.Update(ctx, created); err != nil {
+		t.Fatal(err)
+	}
+	var second string
+	if err := store.pool.QueryRow(ctx, "SELECT incarnation_id::text FROM flows WHERE id=$1", flowID).Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("table mapping change did not rotate postgres flow incarnation")
+	}
+}
+
+func TestPostgresUpdateRejectsLegacyMissingMappingRow(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	store, err := NewPostgresEngine(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	flowID := fmt.Sprintf("legacy-mapping-update-%d", time.Now().UnixNano())
+	defer func() { _, _ = store.pool.Exec(context.Background(), "DELETE FROM flows WHERE id=$1", flowID) }()
+	if _, err := store.pool.Exec(ctx, `INSERT INTO flows(id,source,destinations,state,parallelism,config,lifecycle_target)
+VALUES($1,'{}'::jsonb,'[{"Name":"test-destination","Type":"postgres"}]'::jsonb,'created',1,'{"TableMappings":{"Version":1}}'::jsonb,'created')`, flowID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Update(ctx, mappedTestFlow(flow.Flow{ID: flowID}))
+	if err == nil || !strings.Contains(err.Error(), "incompatible or missing table mappings") {
+		t.Fatalf("Update() legacy row error=%v", err)
+	}
+}
+
 func TestPostgresLifecycleGenerationAndQuiescentCompletion(t *testing.T) {
 	dsn := os.Getenv("TEST_PG_DSN")
 	if dsn == "" {
@@ -31,7 +103,7 @@ func TestPostgresLifecycleGenerationAndQuiescentCompletion(t *testing.T) {
 
 	flowID := fmt.Sprintf("lifecycle-fencing-%d", time.Now().UnixNano())
 	defer func() { _, _ = store.pool.Exec(context.Background(), "DELETE FROM flows WHERE id=$1", flowID) }()
-	if _, err := store.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := store.Create(ctx, mappedTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	started, control, err := store.PlanStart(ctx, flowID, false)
@@ -94,7 +166,7 @@ func TestPostgresExactTerminalReconciliationRequiresExpiredLease(t *testing.T) {
 	defer store.Close()
 	flowID := fmt.Sprintf("exact-terminal-%d", time.Now().UnixNano())
 	defer func() { _, _ = store.pool.Exec(context.Background(), "DELETE FROM flows WHERE id=$1", flowID) }()
-	if _, err := store.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := store.Create(ctx, mappedTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := store.PlanStart(ctx, flowID, false)
@@ -149,7 +221,7 @@ func TestPostgresFlowLocksUseDedicatedPoolWithSingleNormalConnection(t *testing.
 		_, _ = store.pool.Exec(context.Background(), "DELETE FROM flows WHERE id = ANY($1)", flowIDs)
 	}()
 	for _, flowID := range flowIDs {
-		if _, err := store.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+		if _, err := store.Create(ctx, mappedTestFlow(flow.Flow{ID: flowID})); err != nil {
 			t.Fatal(err)
 		}
 	}

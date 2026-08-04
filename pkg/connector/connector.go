@@ -120,10 +120,11 @@ type Record struct {
 
 // Batch is the unit passed between sources and destinations.
 type Batch struct {
-	Records    []Record
-	Schema     Schema
-	Checkpoint Checkpoint
-	WireFormat WireFormat
+	Records     []Record
+	Schema      Schema
+	Checkpoint  Checkpoint
+	WireFormat  WireFormat
+	WritePolicy TableWritePolicy
 }
 
 // Source reads from an upstream system.

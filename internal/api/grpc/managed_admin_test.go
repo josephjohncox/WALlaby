@@ -46,9 +46,9 @@ func TestDirectDSNResourceMutationsFailBeforeNetwork(t *testing.T) {
 func TestFlowBoundResourceMutationRejectsOverridesBeforeNetwork(t *testing.T) {
 	ctx := context.Background()
 	engine := workflow.NewMemoryEngine()
-	f := flow.Flow{ID: "legacy-admin", Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
+	f := mappedGRPCTestFlow(flow.Flow{ID: "legacy-admin", Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": "postgres://127.0.0.1:1/unreachable", "slot": "configured_slot", "publication": "configured_publication",
-	}}}
+	}}})
 	if _, err := engine.Create(ctx, f); err != nil {
 		t.Fatal(err)
 	}
@@ -83,9 +83,9 @@ func (e *rejectingResourceGuardEngine) CheckLegacySourceResourceMutation(_ conte
 func TestLegacyMutationConsultsManagedResourceOwnershipBeforeNetwork(t *testing.T) {
 	ctx := context.Background()
 	engine := &rejectingResourceGuardEngine{MemoryEngine: workflow.NewMemoryEngine()}
-	f := flow.Flow{ID: "guarded-admin", Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
+	f := mappedGRPCTestFlow(flow.Flow{ID: "guarded-admin", Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": "postgres://host/exact_database", "slot": "exact_slot", "source_system_identifier": "exact_system",
-	}}}
+	}}})
 	if _, err := engine.Create(ctx, f); err != nil {
 		t.Fatal(err)
 	}
@@ -108,6 +108,7 @@ func TestReconfigurePublicationConsultsGuardBeforeUpdateOrNetwork(t *testing.T) 
 		"source_system_identifier": "exact_system",
 		"sync_publication":         "true",
 	}}}
+	existing = mappedGRPCTestFlow(existing)
 	if _, err := engine.Create(ctx, existing); err != nil {
 		t.Fatal(err)
 	}
@@ -150,6 +151,7 @@ func TestManagedProfileOnlyUpdateAndReconfigureFailClosed(t *testing.T) {
 			if tt.existingManaged {
 				existing.Source.Options["managed_profile"] = "postgres_to_postgres_v1"
 			}
+			existing = mappedGRPCTestFlow(existing)
 			if _, err := engine.Create(ctx, existing); err != nil {
 				t.Fatal(err)
 			}
@@ -184,10 +186,10 @@ func testManagedAdministrativeResourceMutationsFailClosed(t *testing.T, managedO
 	options["dsn"] = "postgres://unused"
 	options["slot"] = "owned_slot"
 	options["publication"] = "owned_publication"
-	managed := flow.Flow{
+	managed := mappedGRPCTestFlow(flow.Flow{
 		ID:     "managed-admin-" + strings.ReplaceAll(t.Name(), "/", "-"),
 		Source: connector.Spec{Type: connector.EndpointPostgres, Options: options},
-	}
+	})
 	if _, err := engine.Create(ctx, managed); err != nil {
 		t.Fatal(err)
 	}

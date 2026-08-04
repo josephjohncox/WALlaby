@@ -3,6 +3,7 @@ package workflow
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/josephjohncox/wallaby/internal/flow"
@@ -46,6 +47,44 @@ func (s stubRow) Scan(dest ...any) error {
 	return nil
 }
 
+func TestMarshalFlowConfigUsesStableSnakeCaseKeys(t *testing.T) {
+	t.Parallel()
+	definition := mappedTestFlow(flow.Flow{ID: "snake-case"})
+	definition.Config.AckPolicy = stream.AckPolicyAll
+	_, _, configJSON, err := marshalFlowFields(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := string(configJSON)
+	if !strings.Contains(encoded, `"table_mappings"`) || !strings.Contains(encoded, `"ack_policy"`) || strings.Contains(encoded, `"TableMappings"`) {
+		t.Fatalf("persisted config JSON does not use stable snake_case keys: %s", encoded)
+	}
+}
+
+func TestDecodeFlowRejectsPersistedDefinitionWithoutTableMappings(t *testing.T) {
+	t.Parallel()
+	var decoded flow.Flow
+	source, _ := json.Marshal(connector.Spec{Type: connector.EndpointPostgres})
+	destinations, _ := json.Marshal([]connector.Spec{{Name: "destination", Type: connector.EndpointPostgres}})
+	config, _ := json.Marshal(flow.Config{})
+	if err := decodeFlow(&decoded, source, destinations, config, string(flow.StateCreated), nil, 1); err == nil || !strings.Contains(err.Error(), "incompatible or missing table mappings") {
+		t.Fatalf("decodeFlow() error=%v", err)
+	}
+}
+
+func TestDecodeFlowRejectsLegacyUppercaseTableMappingsKey(t *testing.T) {
+	t.Parallel()
+	definition := mappedTestFlow(flow.Flow{ID: "legacy-uppercase"})
+	source, _ := json.Marshal(definition.Source)
+	destinations, _ := json.Marshal(definition.Destinations)
+	mapping, _ := json.Marshal(definition.Config.TableMappings)
+	config := []byte(`{"TableMappings":` + string(mapping) + `}`)
+	var decoded flow.Flow
+	if err := decodeFlow(&decoded, source, destinations, config, string(flow.StateCreated), nil, 1); err == nil || !strings.Contains(err.Error(), "incompatible or missing table mappings") {
+		t.Fatalf("decodeFlow() legacy uppercase error=%v", err)
+	}
+}
+
 func TestScanFlowRapid(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		f := rapidFlow(t)
@@ -53,7 +92,7 @@ func TestScanFlowRapid(t *testing.T) {
 		sourceJSON, _ := json.Marshal(f.Source)
 		destJSON, _ := json.Marshal(f.Destinations)
 		configJSON, _ := json.Marshal(f.Config)
-		if f.Config == (flow.Config{}) {
+		if f.Config.IsZero() {
 			configJSON = nil
 		}
 
@@ -141,6 +180,7 @@ func rapidFlow(t *rapid.T) flow.Flow {
 			},
 		}
 	}
+	config.TableMappings = flow.NewTableMappings(dests)
 
 	wireFormat := connector.WireFormat(rapid.SampledFrom([]string{"", string(connector.WireFormatJSON), string(connector.WireFormatProto)}).Draw(t, "wire"))
 

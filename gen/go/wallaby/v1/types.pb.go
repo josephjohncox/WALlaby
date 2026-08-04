@@ -457,6 +457,7 @@ type FlowConfig struct {
 	SchemaRegistryProtoTypesSubject string                 `protobuf:"bytes,7,opt,name=schema_registry_proto_types_subject,json=schemaRegistryProtoTypesSubject,proto3" json:"schema_registry_proto_types_subject,omitempty"`
 	SchemaRegistrySubjectMode       string                 `protobuf:"bytes,8,opt,name=schema_registry_subject_mode,json=schemaRegistrySubjectMode,proto3" json:"schema_registry_subject_mode,omitempty"`
 	Materialization                 *MaterializationPolicy `protobuf:"bytes,9,opt,name=materialization,proto3" json:"materialization,omitempty"`
+	TableMappings                   *TableMappings         `protobuf:"bytes,10,opt,name=table_mappings,json=tableMappings,proto3" json:"table_mappings,omitempty"`
 	unknownFields                   protoimpl.UnknownFields
 	sizeCache                       protoimpl.SizeCache
 }
@@ -550,6 +551,13 @@ func (x *FlowConfig) GetSchemaRegistrySubjectMode() string {
 func (x *FlowConfig) GetMaterialization() *MaterializationPolicy {
 	if x != nil {
 		return x.Materialization
+	}
+	return nil
+}
+
+func (x *FlowConfig) GetTableMappings() *TableMappings {
+	if x != nil {
+		return x.TableMappings
 	}
 	return nil
 }
@@ -824,14 +832,14 @@ var File_wallaby_v1_types_proto protoreflect.FileDescriptor
 const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\n" +
 	"\x16wallaby/v1/types.proto\x12\n" +
-	"wallaby.v1\"\xc5\x01\n" +
+	"wallaby.v1\x1a\x1ewallaby/v1/table_mapping.proto\"\xc5\x01\n" +
 	"\bEndpoint\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12,\n" +
 	"\x04type\x18\x02 \x01(\x0e2\x18.wallaby.v1.EndpointTypeR\x04type\x12;\n" +
 	"\aoptions\x18\x03 \x03(\v2!.wallaby.v1.Endpoint.OptionsEntryR\aoptions\x1a:\n" +
 	"\fOptionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xac\x04\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xee\x04\n" +
 	"\n" +
 	"FlowConfig\x124\n" +
 	"\n" +
@@ -843,7 +851,9 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\x17schema_registry_subject\x18\x06 \x01(\tR\x15schemaRegistrySubject\x12L\n" +
 	"#schema_registry_proto_types_subject\x18\a \x01(\tR\x1fschemaRegistryProtoTypesSubject\x12?\n" +
 	"\x1cschema_registry_subject_mode\x18\b \x01(\tR\x19schemaRegistrySubjectMode\x12K\n" +
-	"\x0fmaterialization\x18\t \x01(\v2!.wallaby.v1.MaterializationPolicyR\x0fmaterialization\"<\n" +
+	"\x0fmaterialization\x18\t \x01(\v2!.wallaby.v1.MaterializationPolicyR\x0fmaterialization\x12@\n" +
+	"\x0etable_mappings\x18\n" +
+	" \x01(\v2\x19.wallaby.v1.TableMappingsR\rtableMappings\"<\n" +
 	"\x15MaterializationPolicy\x12#\n" +
 	"\rprojection_id\x18\x01 \x01(\tR\fprojectionId\"\x99\x01\n" +
 	"\tDDLPolicy\x12\x17\n" +
@@ -949,6 +959,7 @@ var file_wallaby_v1_types_proto_goTypes = []any{
 	(*Checkpoint)(nil),            // 11: wallaby.v1.Checkpoint
 	nil,                           // 12: wallaby.v1.Endpoint.OptionsEntry
 	nil,                           // 13: wallaby.v1.Checkpoint.MetadataEntry
+	(*TableMappings)(nil),         // 14: wallaby.v1.TableMappings
 }
 var file_wallaby_v1_types_proto_depIdxs = []int32{
 	1,  // 0: wallaby.v1.Endpoint.type:type_name -> wallaby.v1.EndpointType
@@ -958,17 +969,18 @@ var file_wallaby_v1_types_proto_depIdxs = []int32{
 	5,  // 4: wallaby.v1.FlowConfig.give_up_policy:type_name -> wallaby.v1.GiveUpPolicy
 	9,  // 5: wallaby.v1.FlowConfig.ddl:type_name -> wallaby.v1.DDLPolicy
 	8,  // 6: wallaby.v1.FlowConfig.materialization:type_name -> wallaby.v1.MaterializationPolicy
-	6,  // 7: wallaby.v1.Flow.source:type_name -> wallaby.v1.Endpoint
-	6,  // 8: wallaby.v1.Flow.destinations:type_name -> wallaby.v1.Endpoint
-	0,  // 9: wallaby.v1.Flow.state:type_name -> wallaby.v1.FlowState
-	2,  // 10: wallaby.v1.Flow.wire_format:type_name -> wallaby.v1.WireFormat
-	7,  // 11: wallaby.v1.Flow.config:type_name -> wallaby.v1.FlowConfig
-	13, // 12: wallaby.v1.Checkpoint.metadata:type_name -> wallaby.v1.Checkpoint.MetadataEntry
-	13, // [13:13] is the sub-list for method output_type
-	13, // [13:13] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	14, // 7: wallaby.v1.FlowConfig.table_mappings:type_name -> wallaby.v1.TableMappings
+	6,  // 8: wallaby.v1.Flow.source:type_name -> wallaby.v1.Endpoint
+	6,  // 9: wallaby.v1.Flow.destinations:type_name -> wallaby.v1.Endpoint
+	0,  // 10: wallaby.v1.Flow.state:type_name -> wallaby.v1.FlowState
+	2,  // 11: wallaby.v1.Flow.wire_format:type_name -> wallaby.v1.WireFormat
+	7,  // 12: wallaby.v1.Flow.config:type_name -> wallaby.v1.FlowConfig
+	13, // 13: wallaby.v1.Checkpoint.metadata:type_name -> wallaby.v1.Checkpoint.MetadataEntry
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_wallaby_v1_types_proto_init() }
@@ -976,6 +988,7 @@ func file_wallaby_v1_types_proto_init() {
 	if File_wallaby_v1_types_proto != nil {
 		return
 	}
+	file_wallaby_v1_table_mapping_proto_init()
 	file_wallaby_v1_types_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

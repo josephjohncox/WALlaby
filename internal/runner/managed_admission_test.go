@@ -385,14 +385,17 @@ func TestManagedAdmissionRejectsUnsafeOptions(t *testing.T) {
 }
 
 func managedAdmissionFlow() flow.Flow {
-	return flow.Flow{
+	definition := flow.Flow{
 		ID: "managed-flow",
 		Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
 			"managed": "true", "bootstrap": "never", "create_slot": "false", "ensure_publication": "false", "ensure_state": "false", "sync_publication": "false",
 			"source_system_identifier": "system-1", "source_lineage_id": "lineage-1", "publication_revision": "revision-1",
 		}},
-		Config: flow.Config{AckPolicy: stream.AckPolicyAll},
+		Destinations: []connector.Spec{managedAdmissionDestinations()[0].Spec},
+		Config:       flow.Config{AckPolicy: stream.AckPolicyAll},
 	}
+	definition.Config.TableMappings = flow.NewTableMappings(definition.Destinations)
+	return definition
 }
 
 func managedAdmissionDestinations() []stream.DestinationConfig {

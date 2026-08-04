@@ -2,10 +2,13 @@ package grpc
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/workflow"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -39,6 +42,23 @@ func TestFlowServiceRejectsUnsafeIcebergOptionsBeforePersistence(t *testing.T) {
 	}
 }
 
+func TestFlowServiceRejectsInvalidTableMappingsBeforePersistence(t *testing.T) {
+	t.Parallel()
+	service := NewFlowService(workflow.NewMemoryEngine(), nil)
+	destination := connector.Spec{Name: "warehouse", Type: connector.EndpointPostgres}
+	definition := flow.Flow{ID: "invalid-mappings", Source: connector.Spec{Type: connector.EndpointPostgres}, Destinations: []connector.Spec{destination}}
+	definition.Config.TableMappings = flow.NewTableMappings(definition.Destinations)
+	columns := flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}
+	definition.Config.TableMappings.Destinations[0].Tables = []flow.TableMapping{
+		{SourceSchema: "public", SourceTable: "left", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: "same", FutureColumns: columns, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
+		{SourceSchema: "public", SourceTable: "right", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: "same", FutureColumns: columns, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
+	}
+	_, err := service.CreateFlow(context.Background(), &wallabypb.CreateFlowRequest{Flow: flowToProto(definition)})
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "same target") {
+		t.Fatalf("CreateFlow() error=%v, want invalid target collision", err)
+	}
+}
+
 func TestFlowServiceValidatesMaterializationBeforePersistence(t *testing.T) {
 	t.Parallel()
 
@@ -48,15 +68,18 @@ func TestFlowServiceValidatesMaterializationBeforePersistence(t *testing.T) {
 		Id:     "materialization-validation",
 		Source: &wallabypb.Endpoint{Type: wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES},
 	}
+	addProtoTestMappings(base)
 	if _, err := service.CreateFlow(ctx, &wallabypb.CreateFlowRequest{Flow: base}); err != nil {
 		t.Fatal(err)
 	}
 	invalid := &wallabypb.Flow{
-		Id:     base.Id,
-		Source: base.Source,
+		Id:           base.Id,
+		Source:       base.Source,
+		Destinations: base.Destinations,
 		Config: &wallabypb.FlowConfig{
 			AckPolicy:       wallabypb.AckPolicy_ACK_POLICY_ALL,
 			Materialization: &wallabypb.MaterializationPolicy{ProjectionId: "canonical_cdc_parquet_v1"},
+			TableMappings:   base.Config.TableMappings,
 		},
 	}
 	if _, err := service.UpdateFlow(ctx, &wallabypb.UpdateFlowRequest{Flow: invalid}); status.Code(err) != codes.InvalidArgument {

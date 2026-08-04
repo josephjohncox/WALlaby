@@ -28,8 +28,9 @@ func TestFlowRunnerPreservesExecutionSourceOverrides(t *testing.T) {
 			Type:    connector.EndpointPostgres,
 			Options: map[string]string{"mode": connector.SourceModeCDC, "tables": "durable.table"},
 		},
-		Destinations: []connector.Spec{{Name: "dest"}},
+		Destinations: []connector.Spec{{Name: "dest", Type: connector.EndpointPostgres}},
 	}
+	durable = mappedRunnerTestFlow(durable)
 	if _, err := engine.Create(ctx, durable); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -80,7 +81,7 @@ func TestFlowRunnerRegistersProvidedExecutionIdentity(t *testing.T) {
 	ctx := context.Background()
 	memory := workflow.NewMemoryEngine()
 	engine := &recordingExecutionEngine{MemoryEngine: memory}
-	f := flow.Flow{ID: "provided-identity", Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{"mode": connector.SourceModeBackfill}}}
+	f := mappedRunnerTestFlow(flow.Flow{ID: "provided-identity", Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{"mode": connector.SourceModeBackfill}}})
 	if _, err := engine.Create(ctx, f); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +107,7 @@ func TestFlowRunnerRejectsFencedExpectedGeneration(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	engine := workflow.NewMemoryEngine()
-	f := flow.Flow{ID: "fenced", Source: connector.Spec{Type: connector.EndpointPostgres}}
+	f := mappedRunnerTestFlow(flow.Flow{ID: "fenced", Source: connector.Spec{Type: connector.EndpointPostgres}})
 	if _, err := engine.Create(ctx, f); err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +166,7 @@ func TestFlowRunnerPinsEffectiveArtifactDestinationFingerprint(t *testing.T) {
 	f.Config.AckPolicy = stream.AckPolicyMaterialized
 	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v1"}
 	f.Destinations = []connector.Spec{{Name: "lake", Type: connector.EndpointIceberg, Options: map[string]string{"destination_revision_id": "iceberg-v1"}}}
+	f.Config.TableMappings = flow.NewTableMappings(f.Destinations)
 	if _, err := engine.Create(ctx, f); err != nil {
 		t.Fatal(err)
 	}
@@ -197,6 +199,8 @@ func TestFlowRunnerFallsBackToSpecFingerprintWithoutCatalogConsumer(t *testing.T
 	f := managedAdmissionFlow()
 	f.Config.AckPolicy = stream.AckPolicyMaterialized
 	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v1"}
+	f.Destinations = []connector.Spec{{Name: "lake", Type: connector.EndpointIceberg, Options: map[string]string{"destination_revision_id": "iceberg-v1"}}}
+	f.Config.TableMappings = flow.NewTableMappings(f.Destinations)
 	if _, err := engine.Create(ctx, f); err != nil {
 		t.Fatal(err)
 	}

@@ -34,7 +34,7 @@ func runLifecycleStoreContract(t *testing.T, store LifecycleStore, flowID string
 	t.Helper()
 	ctx := context.Background()
 
-	created, err := store.Create(ctx, flow.Flow{ID: flowID, Name: "contract"})
+	created, err := store.Create(ctx, mappedTestFlow(flow.Flow{ID: flowID, Name: "contract"}))
 	if err != nil {
 		t.Fatal(err)
 	}

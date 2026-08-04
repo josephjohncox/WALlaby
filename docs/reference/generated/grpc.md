@@ -3,6 +3,18 @@
 
 ## Table of Contents
 
+- [wallaby/v1/table_mapping.proto](#wallaby_v1_table_mapping-proto)
+    - [ColumnMapping](#wallaby-v1-ColumnMapping)
+    - [DestinationTableMappings](#wallaby-v1-DestinationTableMappings)
+    - [FutureColumnMapping](#wallaby-v1-FutureColumnMapping)
+    - [FutureTableMapping](#wallaby-v1-FutureTableMapping)
+    - [TableMapping](#wallaby-v1-TableMapping)
+    - [TableMappings](#wallaby-v1-TableMappings)
+    - [TableWritePolicy](#wallaby-v1-TableWritePolicy)
+
+    - [MappingAction](#wallaby-v1-MappingAction)
+    - [TableWriteMode](#wallaby-v1-TableWriteMode)
+
 - [wallaby/v1/types.proto](#wallaby_v1_types-proto)
     - [Checkpoint](#wallaby-v1-Checkpoint)
     - [Checkpoint.MetadataEntry](#wallaby-v1-Checkpoint-MetadataEntry)
@@ -112,6 +124,172 @@
     - [StreamService](#wallaby-v1-StreamService)
 
 - [Scalar Value Types](#scalar-value-types)
+
+
+
+<a name="wallaby_v1_table_mapping-proto"></a>
+<p align="right"><a href="#top">Top</a></p>
+
+## wallaby/v1/table_mapping.proto
+
+
+
+<a name="wallaby-v1-ColumnMapping"></a>
+
+### ColumnMapping
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| source_column | [string](#string) |  |  |
+| action | [MappingAction](#wallaby-v1-MappingAction) |  |  |
+| target_column | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-DestinationTableMappings"></a>
+
+### DestinationTableMappings
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| destination | [string](#string) |  |  |
+| future_tables | [FutureTableMapping](#wallaby-v1-FutureTableMapping) |  |  |
+| tables | [TableMapping](#wallaby-v1-TableMapping) | repeated |  |
+
+
+
+
+
+
+<a name="wallaby-v1-FutureColumnMapping"></a>
+
+### FutureColumnMapping
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| action | [MappingAction](#wallaby-v1-MappingAction) |  |  |
+| target_column | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-FutureTableMapping"></a>
+
+### FutureTableMapping
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| action | [MappingAction](#wallaby-v1-MappingAction) |  |  |
+| target_schema | [string](#string) |  |  |
+| target_table | [string](#string) |  |  |
+| future_columns | [FutureColumnMapping](#wallaby-v1-FutureColumnMapping) |  |  |
+| write | [TableWritePolicy](#wallaby-v1-TableWritePolicy) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-TableMapping"></a>
+
+### TableMapping
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| source_schema | [string](#string) |  |  |
+| source_table | [string](#string) |  |  |
+| action | [MappingAction](#wallaby-v1-MappingAction) |  |  |
+| target_schema | [string](#string) |  |  |
+| target_table | [string](#string) |  |  |
+| future_columns | [FutureColumnMapping](#wallaby-v1-FutureColumnMapping) |  |  |
+| columns | [ColumnMapping](#wallaby-v1-ColumnMapping) | repeated |  |
+| write | [TableWritePolicy](#wallaby-v1-TableWritePolicy) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-TableMappings"></a>
+
+### TableMappings
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| version | [uint32](#uint32) |  |  |
+| destinations | [DestinationTableMappings](#wallaby-v1-DestinationTableMappings) | repeated |  |
+
+
+
+
+
+
+<a name="wallaby-v1-TableWritePolicy"></a>
+
+### TableWritePolicy
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| mode | [TableWriteMode](#wallaby-v1-TableWriteMode) |  |  |
+| key_columns | [string](#string) | repeated |  |
+| watermark_column | [string](#string) |  |  |
+
+
+
+
+
+
+
+
+<a name="wallaby-v1-MappingAction"></a>
+
+### MappingAction
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| MAPPING_ACTION_UNSPECIFIED | 0 |  |
+| MAPPING_ACTION_INCLUDE | 1 |  |
+| MAPPING_ACTION_EXCLUDE | 2 |  |
+
+
+
+<a name="wallaby-v1-TableWriteMode"></a>
+
+### TableWriteMode
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| TABLE_WRITE_MODE_UNSPECIFIED | 0 |  |
+| TABLE_WRITE_MODE_APPEND | 1 |  |
+| TABLE_WRITE_MODE_UPSERT | 2 |  |
+
+
+
+
+
+
+
 
 
 
@@ -244,6 +422,7 @@
 | schema_registry_proto_types_subject | [string](#string) |  |  |
 | schema_registry_subject_mode | [string](#string) |  |  |
 | materialization | [MaterializationPolicy](#wallaby-v1-MaterializationPolicy) |  |  |
+| table_mappings | [TableMappings](#wallaby-v1-TableMappings) |  |  |
 
 
 

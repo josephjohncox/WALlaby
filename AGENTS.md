@@ -40,6 +40,10 @@ Use the root `justfile` for consistent workflows:
 - Tests: `*_test.go` for unit; `*_integration_test.go` for integration-only.
 - Protobuf: snake_case file names; `service` and `rpc` names in UpperCamel.
 
+## Compatibility Policy
+
+Do not preserve backward compatibility. Remove obsolete paths instead of adding compatibility layers, fallbacks, or migrations.
+
 ## Testing Guidelines
 
 - Prefer table-driven unit tests in `internal/` and `pkg/`.
