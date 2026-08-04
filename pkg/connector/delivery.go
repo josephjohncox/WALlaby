@@ -99,6 +99,14 @@ const (
 	DeliveryApplied
 )
 
+// CanonicalArtifactDestination marks a destination specification that is
+// consumed asynchronously from the PostgreSQL-authoritative artifact log. Its
+// ordinary Destination methods are never a data-delivery path.
+type CanonicalArtifactDestination interface {
+	Destination
+	CanonicalArtifactConsumer()
+}
+
 // ManagedDestination applies an immutable delivery intent and reconciles an
 // ambiguous prior attempt. Implementations must fail closed when evidence is
 // insufficient.

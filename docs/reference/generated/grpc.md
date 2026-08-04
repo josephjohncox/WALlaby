@@ -277,7 +277,7 @@
 | ACK_POLICY_UNSPECIFIED | 0 |  |
 | ACK_POLICY_ALL | 1 |  |
 | ACK_POLICY_PRIMARY | 2 |  |
-| ACK_POLICY_MATERIALIZED | 3 | ACK_POLICY_MATERIALIZED acknowledges a CDC transaction only after its canonical immutable objects and fenced PostgreSQL publication/checkpoint commit. A data-free startup cut is rooted as an object-free canonical publication before feedback. The configured destination is not committed on the CDC path, and this release registers no production catalog consumer. |
+| ACK_POLICY_MATERIALIZED | 3 | ACK_POLICY_MATERIALIZED acknowledges a CDC transaction only after its canonical immutable objects and fenced PostgreSQL publication/checkpoint commit. A data-free startup cut is rooted as an object-free canonical publication before feedback. A configured Iceberg endpoint consumes the publication asynchronously and never delays source acknowledgement. |
 
 
 
@@ -303,6 +303,7 @@
 | ENDPOINT_TYPE_BUFSTREAM | 12 |  |
 | ENDPOINT_TYPE_CLICKHOUSE | 13 |  |
 | ENDPOINT_TYPE_DUCKLAKE | 14 |  |
+| ENDPOINT_TYPE_ICEBERG | 15 | Iceberg is an asynchronous consumer of the canonical artifact log, including AWS S3 Tables exposed read-only through external catalogs such as Snowflake. It is never a direct current-state/upsert destination. |
 
 
 

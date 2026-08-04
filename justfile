@@ -119,16 +119,16 @@ test-integration-ci: test-integration
 
 # Durable-core unit and contract gate. Real-service evidence runs separately.
 test-durable-pr:
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./internal/authority ./internal/controlplane ./internal/controlstore ./internal/delivery ./internal/bootstrap ./internal/artifactlog ./internal/workflow ./internal/checkpoint ./internal/registry ./internal/replication ./internal/runner ./pkg/connector ./pkg/stream ./connectors/sources/postgres ./connectors/destinations/postgres ./connectors/destinations/clickhouse
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./internal/authority ./internal/controlplane ./internal/controlstore ./internal/delivery ./internal/bootstrap ./internal/artifactlog ./internal/workflow ./internal/checkpoint ./internal/registry ./internal/replication ./internal/runner ./pkg/connector ./pkg/stream ./connectors/sources/postgres ./connectors/destinations/postgres ./connectors/destinations/clickhouse ./connectors/destinations/iceberg
 
 # Race detector coverage for the durable mutation and execution surfaces.
 test-durable-race:
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -race -count=1 ./internal/authority ./internal/controlplane ./internal/controlstore ./internal/delivery ./internal/bootstrap ./internal/artifactlog ./internal/workflow ./internal/checkpoint ./internal/registry ./internal/replication ./internal/runner ./pkg/connector ./pkg/stream ./connectors/sources/postgres ./connectors/destinations/postgres
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -race -count=1 ./internal/authority ./internal/controlplane ./internal/controlstore ./internal/delivery ./internal/bootstrap ./internal/artifactlog ./internal/workflow ./internal/checkpoint ./internal/registry ./internal/replication ./internal/runner ./pkg/connector ./pkg/stream ./connectors/sources/postgres ./connectors/destinations/postgres ./connectors/destinations/iceberg
 
 # Required live PostgreSQL/MinIO durability profiles. The harness provisions
 # services, so these named tests must run rather than skip.
 test-durable-integration:
-    WALLABY_WORKER_BINARY="{{ integration_worker_binary }}" IT_REQUIRED_TESTS='TestWallabyWorkerProcessKillRecovery,TestAuthorityProtocolGateRejectsStaleBinarySession,TestPostgresGenerationFenceRejectsStaleCommit,TestPostgresRunFenceValidationSerializesTakeover,TestPostgresCheckpointGenerationFenceRejectsStaleCommit,TestPostgresFlowIDReuseDoesNotRestoreOldState,TestPostgresDestinationRevisionIsImmutable,TestPostgresAckOnlyCheckpointHasIntentAndReceipt,TestPostgresCommitBeforeReceiptReconciles,TestPostgresManagedDriverMarkerReconciles,TestPostgresTargetReplayConvergesIncludingMetadata,TestPostgresTargetPreservesSameKeyOperationOrderIntegration,TestLogicalSlotExportedSnapshotContract,TestBootstrapConcurrentWritesBoundary,TestManagedTerminalStopHardCrashSlotBeforePersist,TestManagedTerminalStopHardCrashPublicationBeforePublish,TestBootstrapRecoveryFailpoints,TestManagedBootstrapWorkerWiringConcurrentBoundary,TestManagedBootstrapSnapshotBatchCommitBeforeReceiptRecovery,TestManagedBootstrapPublicationReceiptBeforeHandoffRecovery,TestManagedBootstrapHandoffBeforeCDCOpenRecovery,TestManagedBootstrapLiveAdmissionMatrix,TestCanonicalPublicationFingerprintLive,TestManagedTerminalStopOwnershipLive,TestRegistryAndDDLReceiptsRejectStaleTakeover,TestCanonicalArtifactS3AdmissionRequiresEnabledVersioning,TestCanonicalArtifactPublicationRecovery,TestCanonicalArtifactPublicationFailureBoundaries,TestCanonicalArtifactBarrierOnlyDelivery,TestCanonicalArtifactStalePublisherCannotCommit,TestCanonicalArtifactBackpressureAndRootedRetention,TestCanonicalArtifactOrphanMarkSweepCrashRecovery,TestCanonicalArtifactGCDoesNotClaimActiveUpload,TestCanonicalArtifactGCTakeoverDoesNotOrphanInFlightPut,TestCanonicalArtifactPublisherGCClaimRevalidation,TestWallabyWorkerMaterializedPublicationRecovery,TestPostgresToPostgresManagedRecoveryContract' IT_RUN_FILTER='^(TestWallabyWorkerProcessKillRecovery|TestAuthorityProtocolGateRejectsStaleBinarySession|TestPostgresGenerationFenceRejectsStaleCommit|TestPostgresRunFenceValidationSerializesTakeover|TestPostgresCheckpointGenerationFenceRejectsStaleCommit|TestPostgresFlowIDReuseDoesNotRestoreOldState|TestPostgresDestinationRevisionIsImmutable|TestPostgresAckOnlyCheckpointHasIntentAndReceipt|TestPostgresCommitBeforeReceiptReconciles|TestPostgresManagedDriverMarkerReconciles|TestPostgresTargetReplayConvergesIncludingMetadata|TestPostgresTargetPreservesSameKeyOperationOrderIntegration|TestLogicalSlotExportedSnapshotContract|TestBootstrapConcurrentWritesBoundary|TestManagedTerminalStopHardCrashSlotBeforePersist|TestManagedTerminalStopHardCrashPublicationBeforePublish|TestBootstrapRecoveryFailpoints|TestManagedBootstrapWorkerWiringConcurrentBoundary|TestManagedBootstrapSnapshotBatchCommitBeforeReceiptRecovery|TestManagedBootstrapPublicationReceiptBeforeHandoffRecovery|TestManagedBootstrapHandoffBeforeCDCOpenRecovery|TestManagedBootstrapLiveAdmissionMatrix|TestCanonicalPublicationFingerprintLive|TestManagedTerminalStopOwnershipLive|TestRegistryAndDDLReceiptsRejectStaleTakeover|TestCanonicalArtifactS3AdmissionRequiresEnabledVersioning|TestCanonicalArtifactPublicationRecovery|TestCanonicalArtifactPublicationFailureBoundaries|TestCanonicalArtifactBarrierOnlyDelivery|TestCanonicalArtifactStalePublisherCannotCommit|TestCanonicalArtifactBackpressureAndRootedRetention|TestCanonicalArtifactOrphanMarkSweepCrashRecovery|TestCanonicalArtifactGCDoesNotClaimActiveUpload|TestCanonicalArtifactGCTakeoverDoesNotOrphanInFlightPut|TestCanonicalArtifactPublisherGCClaimRevalidation|TestWallabyWorkerMaterializedPublicationRecovery|TestPostgresToPostgresManagedRecoveryContract)$' INTEGRATION_PACKAGE='./tests' just test-integration
+    WALLABY_WORKER_BINARY="{{ integration_worker_binary }}" IT_REQUIRED_TESTS='TestWallabyWorkerProcessKillRecovery,TestAuthorityProtocolGateRejectsStaleBinarySession,TestPostgresGenerationFenceRejectsStaleCommit,TestPostgresRunFenceValidationSerializesTakeover,TestPostgresCheckpointGenerationFenceRejectsStaleCommit,TestPostgresFlowIDReuseDoesNotRestoreOldState,TestPostgresDestinationRevisionIsImmutable,TestPostgresAckOnlyCheckpointHasIntentAndReceipt,TestPostgresCommitBeforeReceiptReconciles,TestPostgresManagedDriverMarkerReconciles,TestPostgresTargetReplayConvergesIncludingMetadata,TestPostgresTargetPreservesSameKeyOperationOrderIntegration,TestLogicalSlotExportedSnapshotContract,TestBootstrapConcurrentWritesBoundary,TestManagedTerminalStopHardCrashSlotBeforePersist,TestManagedTerminalStopHardCrashPublicationBeforePublish,TestBootstrapRecoveryFailpoints,TestManagedBootstrapWorkerWiringConcurrentBoundary,TestManagedBootstrapSnapshotBatchCommitBeforeReceiptRecovery,TestManagedBootstrapPublicationReceiptBeforeHandoffRecovery,TestManagedBootstrapHandoffBeforeCDCOpenRecovery,TestManagedBootstrapLiveAdmissionMatrix,TestCanonicalPublicationFingerprintLive,TestManagedTerminalStopOwnershipLive,TestRegistryAndDDLReceiptsRejectStaleTakeover,TestCanonicalArtifactS3AdmissionRequiresEnabledVersioning,TestCanonicalArtifactPublicationRecovery,TestCanonicalArtifactPublicationFailureBoundaries,TestCanonicalArtifactBarrierOnlyDelivery,TestCanonicalArtifactStalePublisherCannotCommit,TestCanonicalArtifactBackpressureAndRootedRetention,TestArtifactConsumerRetryDoesNotBlockReadsBelowBacklogWatermark,TestCanonicalArtifactOrphanMarkSweepCrashRecovery,TestCanonicalArtifactGCDoesNotClaimActiveUpload,TestCanonicalArtifactGCTakeoverDoesNotOrphanInFlightPut,TestCanonicalArtifactPublisherGCClaimRevalidation,TestWallabyWorkerMaterializedPublicationRecovery,TestPostgresToPostgresManagedRecoveryContract' IT_RUN_FILTER='^(TestWallabyWorkerProcessKillRecovery|TestAuthorityProtocolGateRejectsStaleBinarySession|TestPostgresGenerationFenceRejectsStaleCommit|TestPostgresRunFenceValidationSerializesTakeover|TestPostgresCheckpointGenerationFenceRejectsStaleCommit|TestPostgresFlowIDReuseDoesNotRestoreOldState|TestPostgresDestinationRevisionIsImmutable|TestPostgresAckOnlyCheckpointHasIntentAndReceipt|TestPostgresCommitBeforeReceiptReconciles|TestPostgresManagedDriverMarkerReconciles|TestPostgresTargetReplayConvergesIncludingMetadata|TestPostgresTargetPreservesSameKeyOperationOrderIntegration|TestLogicalSlotExportedSnapshotContract|TestBootstrapConcurrentWritesBoundary|TestManagedTerminalStopHardCrashSlotBeforePersist|TestManagedTerminalStopHardCrashPublicationBeforePublish|TestBootstrapRecoveryFailpoints|TestManagedBootstrapWorkerWiringConcurrentBoundary|TestManagedBootstrapSnapshotBatchCommitBeforeReceiptRecovery|TestManagedBootstrapPublicationReceiptBeforeHandoffRecovery|TestManagedBootstrapHandoffBeforeCDCOpenRecovery|TestManagedBootstrapLiveAdmissionMatrix|TestCanonicalPublicationFingerprintLive|TestManagedTerminalStopOwnershipLive|TestRegistryAndDDLReceiptsRejectStaleTakeover|TestCanonicalArtifactS3AdmissionRequiresEnabledVersioning|TestCanonicalArtifactPublicationRecovery|TestCanonicalArtifactPublicationFailureBoundaries|TestCanonicalArtifactBarrierOnlyDelivery|TestCanonicalArtifactStalePublisherCannotCommit|TestCanonicalArtifactBackpressureAndRootedRetention|TestArtifactConsumerRetryDoesNotBlockReadsBelowBacklogWatermark|TestCanonicalArtifactOrphanMarkSweepCrashRecovery|TestCanonicalArtifactGCDoesNotClaimActiveUpload|TestCanonicalArtifactGCTakeoverDoesNotOrphanInFlightPut|TestCanonicalArtifactPublisherGCClaimRevalidation|TestWallabyWorkerMaterializedPublicationRecovery|TestPostgresToPostgresManagedRecoveryContract)$' INTEGRATION_PACKAGE='./tests' just test-integration
 
 # Live DBOS evidence for the production managed-bootstrap wiring.
 test-durable-dbos-integration:
@@ -237,6 +237,61 @@ test-clickhouse-managed-profile:
     WALLABY_TEST_CLICKHOUSE_DESTRUCTIVE_STORAGE_LOSS=1 IT_KIND_CLUSTER="${harness_cluster}" IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' just test-integration
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 \
       ./internal/telemetry -run '^TestClickHouseManagedProfileTelemetry$'
+
+# Local/emulated Iceberg REST live gate. The ordinary package conformance tests
+# use httptest and always run in test-durable-pr; this recipe targets a real REST
+# fixture and warehouse already exported into the environment by an operator or
+# by the integration harness.
+test-iceberg-rest:
+    test -n "${WALLABY_TEST_ICEBERG_REST_URI:-}" || { echo 'WALLABY_TEST_ICEBERG_REST_URI is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_ICEBERG_WAREHOUSE:-}" || { echo 'WALLABY_TEST_ICEBERG_WAREHOUSE is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_ICEBERG_NAMESPACE:-}" || { echo 'WALLABY_TEST_ICEBERG_NAMESPACE is required' >&2; exit 2; }
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./tests -run '^TestIcebergRESTLiveAppendProjection$'
+
+# Checkpoint-5 mandatory gate. The integration harness provisions a real Apache
+# Iceberg REST catalog backed by MinIO and exports the connection env, so the
+# live append/projection/readback test must RUN rather than skip. JSON
+# verification fails the gate on a missing or skipped result.
+test-checkpoint5-iceberg-integration:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    harness_cluster="${IT_KIND_CLUSTER:-wallaby-test}-iceberg-rest-$$"
+    cleanup() {
+        status=$?
+        if [[ "${IT_KEEP:-0}" != "1" ]] && command -v kind >/dev/null 2>&1; then
+            kind delete cluster --name "${harness_cluster}" || true
+        fi
+        rm -f "${TMPDIR:-/tmp}/wallaby-it-integration-harness.state"
+        return "$status"
+    }
+    trap cleanup EXIT
+    required='TestIcebergRESTLiveAppendProjection,TestIcebergRESTLiveSchemaEvolutionRename'
+    filter="^(TestIcebergRESTLiveAppendProjection|TestIcebergRESTLiveSchemaEvolutionRename)$"
+    IT_KIND_CLUSTER="${harness_cluster}" IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' just test-integration
+
+# Opt-in AWS S3 Tables gate. This creates a uniquely named experimental table,
+# configures maintenance through the S3 Tables API, appends, and reconciles it.
+test-s3tables-live:
+    test "${WALLABY_TEST_S3TABLES:-}" = "1" || { echo 'WALLABY_TEST_S3TABLES=1 is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_REGION:-}" || { echo 'WALLABY_TEST_S3TABLES_REGION is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_WAREHOUSE:-}" || { echo 'WALLABY_TEST_S3TABLES_WAREHOUSE is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_TABLE_BUCKET_ARN:-}" || { echo 'WALLABY_TEST_S3TABLES_TABLE_BUCKET_ARN is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN:-}" || { echo 'WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_NAMESPACE:-}" || { echo 'WALLABY_TEST_S3TABLES_NAMESPACE is required' >&2; exit 2; }
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./tests -run '^TestS3TablesLiveAppendProjection$'
+
+# Cross-service promotion gate. The Snowflake catalog-linked database must
+# already be read-only and linked to the same S3 Tables bucket/namespace.
+test-s3tables-snowflake-live:
+    test "${WALLABY_TEST_S3TABLES_SNOWFLAKE:-}" = "1" || { echo 'WALLABY_TEST_S3TABLES_SNOWFLAKE=1 is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_REGION:-}" || { echo 'WALLABY_TEST_S3TABLES_REGION is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_WAREHOUSE:-}" || { echo 'WALLABY_TEST_S3TABLES_WAREHOUSE is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_TABLE_BUCKET_ARN:-}" || { echo 'WALLABY_TEST_S3TABLES_TABLE_BUCKET_ARN is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN:-}" || { echo 'WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_S3TABLES_NAMESPACE:-}" || { echo 'WALLABY_TEST_S3TABLES_NAMESPACE is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_SNOWFLAKE_DSN:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_DSN is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_SNOWFLAKE_LINKED_DATABASE:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_LINKED_DATABASE is required' >&2; exit 2; }
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./tests -run '^TestS3TablesSnowflakeCatalogLinkedReadback$'
 
 # Nightly increases property checks and repeats worker bootstrap/fencing plus
 # DBOS bootstrap evidence. IT_REQUIRED_TESTS makes every named test no-skip.

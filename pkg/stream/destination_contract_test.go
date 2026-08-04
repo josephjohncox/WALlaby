@@ -121,7 +121,17 @@ func TestValidateDestinationContracts(t *testing.T) {
 				Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true}}},
 			}},
 			ack:       AckPolicyMaterialized,
-			wantError: "full-transaction durable reconciliation",
+			wantError: "full-transaction reconciliation or canonical artifact consumption",
+		},
+		{
+			name: "materialized acknowledgement accepts canonical artifact consumer",
+			dests: []DestinationConfig{{
+				Spec: connector.Spec{Name: "consumer", Type: connector.EndpointIceberg},
+				Dest: artifactContractDestination{contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{
+					Declared: true, IdempotentReplay: true, ReplaySafe: true,
+				}}}},
+			}},
+			ack: AckPolicyMaterialized,
 		},
 		{
 			name: "materialized acknowledgement accepts one managed destination revision",
@@ -213,6 +223,12 @@ func (contractDestination) Close(context.Context) error     { return nil }
 func (d contractDestination) Capabilities() connector.Capabilities {
 	return d.capabilities
 }
+
+type artifactContractDestination struct {
+	contractDestination
+}
+
+func (artifactContractDestination) CanonicalArtifactConsumer() {}
 
 type managedContractDestination struct {
 	contractDestination

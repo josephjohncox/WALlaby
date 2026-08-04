@@ -30,6 +30,7 @@ func DestinationContracts() ([]DestinationContract, error) {
 		connector.EndpointClickHouse,
 		connector.EndpointDuckDB,
 		connector.EndpointDuckLake,
+		connector.EndpointIceberg,
 	}
 	contracts := make([]DestinationContract, 0, len(runtimeTypes)+2)
 	factory := Factory{}

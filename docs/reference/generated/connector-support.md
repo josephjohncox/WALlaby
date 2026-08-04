@@ -27,6 +27,7 @@
 | `clickhouse` | experimental | yes | no | no | no | yes | no | no |
 | `duckdb` | experimental | yes | yes | no | no | yes | no | no |
 | `ducklake` | experimental | yes | yes | no | no | yes | no | no |
+| `iceberg` | experimental | yes | no | yes | yes | no | no | no |
 | `proto` | placeholder | no | no | no | no | no | no | no |
 | `parquet` | placeholder | no | no | no | no | no | no | no |
 

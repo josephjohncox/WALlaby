@@ -2,8 +2,6 @@ package tests
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -214,24 +212,33 @@ func TestCanonicalArtifactPublicationRecovery(t *testing.T) {
 		t.Fatalf("publication roots delivery/ack/checkpoint=(%d,%d,%d), want 1/1/1", deliveryCount, ackCount, checkpointCount)
 	}
 
-	publicationHash := sha256.New()
-	_, _ = publicationHash.Write([]byte(artifact.ID))
-	_, _ = publicationHash.Write([]byte{0})
-	_, _ = publicationHash.Write([]byte(artifact.EncodedByteHash))
-	_, _ = publicationHash.Write([]byte{0})
-	catalog := &recordingAppendCatalog{commit: artifactlog.CatalogCommit{SnapshotID: "snapshot-1", ContentHash: hex.EncodeToString(publicationHash.Sum(nil))}}
-	consumer, err := artifactlog.NewConsumer(pool, catalog)
+	catalog := &recordingAppendCatalog{snapshotID: "snapshot-1"}
+	consumer, err := artifactlog.NewConsumer(pool, catalog, artifactlog.WithConsumerHooks(artifactlog.ConsumerHooks{
+		Reach: func(_ context.Context, boundary string) error {
+			if boundary == "after_catalog_commit" {
+				return errors.New("injected crash after Iceberg commit before PostgreSQL receipt")
+			}
+			return nil
+		},
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	consumed, err := consumer.ConsumeNext(ctx, fence, "iceberg-append-v1", "public.artifact_events")
+	if consumed, err := consumer.ConsumeNext(ctx, fence, "iceberg-append-v1"); err == nil || consumed {
+		t.Fatalf("commit-before-receipt injection consumed/error=%t/%v", consumed, err)
+	}
+	consumer, err = artifactlog.NewConsumer(pool, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumed, err := consumer.ConsumeNext(ctx, fence, "iceberg-append-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !consumed || catalog.appendCalls != 1 {
-		t.Fatalf("Iceberg append consumed=%t calls=%d, want true/1", consumed, catalog.appendCalls)
+		t.Fatalf("Iceberg reconciliation consumed=%t append calls=%d, want true/1", consumed, catalog.appendCalls)
 	}
-	consumed, err = consumer.ConsumeNext(ctx, fence, "iceberg-append-v1", "public.artifact_events")
+	consumed, err = consumer.ConsumeNext(ctx, fence, "iceberg-append-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,6 +251,19 @@ func TestCanonicalArtifactPublicationRecovery(t *testing.T) {
 	}
 	if consumerReceipts != 1 {
 		t.Fatalf("artifact consumer receipts=%d, want 1", consumerReceipts)
+	}
+	var consumerSequence int64
+	var consumerPosition, consumerCommitID string
+	if err := pool.QueryRow(ctx, `
+SELECT publication_sequence,position_id,commit_id
+FROM artifact_consumer_checkpoints
+WHERE flow_incarnation_id=$1 AND consumer_revision_id=$2`, fence.FlowIncarnationID, "iceberg-append-v1").Scan(
+		&consumerSequence, &consumerPosition, &consumerCommitID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if consumerSequence != publication.Sequence || consumerPosition != publication.AckGrant.PositionID || !strings.HasPrefix(consumerCommitID, "wallaby-iceberg-") {
+		t.Fatalf("consumer checkpoint=%d/%s/%s", consumerSequence, consumerPosition, consumerCommitID)
 	}
 
 	evidence := artifactlog.ObjectEvidence{
@@ -275,24 +295,36 @@ func TestCanonicalArtifactPublicationRecovery(t *testing.T) {
 }
 
 type recordingAppendCatalog struct {
-	commit       artifactlog.CatalogCommit
+	snapshotID   string
 	appendCalls  int
 	objectCount  int
 	barrierCount int
 }
 
-func (c *recordingAppendCatalog) Append(_ context.Context, _ string, _ uuid.UUID, objects []artifactlog.RootedArtifact, barriers []artifactlog.Barrier) (artifactlog.CatalogCommit, error) {
-	if len(objects) == 0 && len(barriers) == 0 {
-		return artifactlog.CatalogCommit{}, errors.New("append received no rooted objects or barriers")
+func (c *recordingAppendCatalog) Commit(_ context.Context, request artifactlog.CommitRequest) (artifactlog.CommitResult, error) {
+	if len(request.Objects) == 0 && len(request.Barriers) == 0 {
+		return artifactlog.CommitResult{}, errors.New("commit received no rooted objects or barriers")
 	}
 	c.appendCalls++
-	c.objectCount += len(objects)
-	c.barrierCount += len(barriers)
-	return c.commit, nil
+	c.objectCount += len(request.Objects)
+	c.barrierCount += len(request.Barriers)
+	return c.result(request), nil
 }
 
-func (c *recordingAppendCatalog) Reconcile(_ context.Context, _ string, _ uuid.UUID) (artifactlog.CatalogDisposition, artifactlog.CatalogCommit, error) {
-	return artifactlog.CatalogApplied, c.commit, nil
+func (c *recordingAppendCatalog) Reconcile(_ context.Context, request artifactlog.ReconcileRequest) (artifactlog.ReconcileResult, error) {
+	return artifactlog.ReconcileResult{Disposition: artifactlog.CommitApplied, Commit: c.result(request)}, nil
+}
+
+func (c *recordingAppendCatalog) result(request artifactlog.CommitRequest) artifactlog.CommitResult {
+	snapshotID := c.snapshotID
+	if snapshotID == "" {
+		snapshotID = "snapshot-" + request.PublicationID.String()
+	}
+	return artifactlog.CommitResult{
+		SnapshotID: snapshotID, SnapshotIDs: map[string]string{"test": snapshotID},
+		ManifestSHA256: request.ManifestSHA256, CommitID: request.CommitID,
+		LogicalBatchID: request.LogicalBatchID,
+	}
 }
 
 type failBeforePutStore struct {

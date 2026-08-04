@@ -1,0 +1,37 @@
+# Deployment-owned configuration for examples/flows/postgres_to_iceberg_s3tables.json.
+# Use workload identity, IRSA, or an assumed role. Do not put AWS credentials or
+# catalog endpoints in the persisted flow.
+postgres:
+  dsn: postgres://wallaby@control-postgres.example:5432/wallaby?sslmode=verify-full
+
+artifacts:
+  # Ordinary versioned S3 bucket containing immutable canonical recovery roots.
+  # This is deliberately not the S3 Tables table bucket.
+  bucket: wallaby-canonical-artifacts
+  region: us-east-1
+  hard_retained_bytes: 68719476736
+  backlog_batch_high: 10000
+  backlog_bytes_high: 34359738368
+  backlog_age_high: 24h
+  backpressure_poll_interval: 1s
+  orphan_grace: 1h
+  retention: 168h
+  gc_interval: 1m
+
+iceberg:
+  profile: s3tables
+  # ParseSpec derives https://glue.us-east-1.amazonaws.com/iceberg and rejects
+  # any different production endpoint.
+  region: us-east-1
+  expected_aws_role_arn: arn:aws:iam::123456789012:role/wallaby-iceberg-writer
+  warehouse: "123456789012:s3tablescatalog/wallaby-lake"
+  s3tables_table_bucket_arn: arn:aws:s3tables:us-east-1:123456789012:bucket/wallaby-lake
+  namespace: wallaby
+  table_prefix: cdc_
+  control_table: __wallaby_control
+  request_timeout: 30s
+  max_commit_retries: 4
+  reconciliation_horizon: 24h
+  s3tables_configure_maintenance: true
+  s3tables_min_snapshots_to_keep: 100
+  s3tables_max_snapshot_age_hours: 168

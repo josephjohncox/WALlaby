@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	icebergdest "github.com/josephjohncox/wallaby/connectors/destinations/iceberg"
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	"github.com/josephjohncox/wallaby/internal/authority"
@@ -52,6 +53,33 @@ func (materializedAdmissionLog) WaitForReadAdmission(context.Context, connector.
 func (materializedAdmissionLog) Append(_ context.Context, _ connector.RunFence, transaction connector.SourceTransaction) (connector.AckGrant, error) {
 	positionID, err := connector.CheckpointPositionID(transaction.Checkpoint)
 	return connector.AckGrant{Checkpoint: transaction.Checkpoint, PositionID: positionID}, err
+}
+
+func TestManagedAdmissionAcceptsAppendOnlyIcebergArtifactConsumer(t *testing.T) {
+	t.Parallel()
+	f := managedAdmissionFlow()
+	f.Config.AckPolicy = stream.AckPolicyMaterialized
+	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v1"}
+	fence := managedAdmissionFence()
+	destinations := []stream.DestinationConfig{{
+		Spec: connector.Spec{Name: "iceberg", Type: connector.EndpointIceberg, Options: map[string]string{
+			"destination_revision_id": "iceberg-append-v1", "uri": "https://catalog.example.test", "warehouse": "warehouse",
+		}},
+		Dest: &icebergdest.Destination{},
+	}}
+	if _, err := NewStreamRunner(f, &pgsource.Source{}, destinations, StreamRunnerConfig{
+		Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}, ArtifactLog: materializedAdmissionLog{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	f.Source.Options["bootstrap"] = "auto"
+	f.Source.Options["pool_max_conns"] = "2"
+	if _, err := NewStreamRunner(f, &pgsource.Source{}, destinations, StreamRunnerConfig{
+		Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}, ArtifactLog: materializedAdmissionLog{},
+	}); err == nil || !strings.Contains(err.Error(), "atomically publishable destination snapshot") {
+		t.Fatalf("Iceberg bootstrap admission error=%v", err)
+	}
 }
 
 func TestManagedAdmissionAcceptsInitialPostgresProfile(t *testing.T) {

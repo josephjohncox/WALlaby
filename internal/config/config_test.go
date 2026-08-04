@@ -1,10 +1,53 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestLoadIcebergCatalogConfig(t *testing.T) {
+	t.Setenv("WALLABY_ENV", "test")
+	t.Setenv("WALLABY_WORKFLOW_STORE", "memory")
+	t.Setenv("WALLABY_ICEBERG_PROFILE", "rest")
+	t.Setenv("WALLABY_ICEBERG_URI", "https://catalog.example.test")
+	t.Setenv("WALLABY_ICEBERG_WAREHOUSE", "warehouse")
+	t.Setenv("WALLABY_ICEBERG_OAUTH_TOKEN", "secret-token")
+	t.Setenv("WALLABY_ICEBERG_S3_ENDPOINT", "https://s3.example.test")
+	t.Setenv("WALLABY_ICEBERG_S3_REGION", "us-east-1")
+	t.Setenv("WALLABY_ICEBERG_EXPECTED_AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/wallaby")
+	t.Setenv("WALLABY_ICEBERG_REQUEST_TIMEOUT", "12s")
+	t.Setenv("WALLABY_ICEBERG_RECONCILIATION_HORIZON", "48h")
+	t.Setenv("WALLABY_ICEBERG_S3TABLES_TABLE_BUCKET_ARN", "arn:aws:s3tables:us-east-1:123456789012:bucket/wallaby")
+	t.Setenv("WALLABY_ICEBERG_S3TABLES_MIN_SNAPSHOTS_TO_KEEP", "250")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Iceberg.Profile != "rest" || cfg.Iceberg.URI != "https://catalog.example.test" || cfg.Iceberg.Warehouse != "warehouse" ||
+		cfg.Iceberg.OAuthToken != "secret-token" || cfg.Iceberg.S3Endpoint != "https://s3.example.test" || cfg.Iceberg.S3Region != "us-east-1" || cfg.Iceberg.ExpectedAWSRoleARN != "arn:aws:iam::123456789012:role/wallaby" || cfg.Iceberg.RequestTimeout != 12*time.Second ||
+		cfg.Iceberg.ReconciliationHorizon != 48*time.Hour || cfg.Iceberg.S3TablesMinSnapshotsToKeep != 250 {
+		t.Fatalf("iceberg config=%+v", cfg.Iceberg)
+	}
+}
+
+func TestLoadIcebergExpectedAWSRoleFromWorkerYAML(t *testing.T) {
+	t.Setenv("WALLABY_ICEBERG_EXPECTED_AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/environment-role")
+	path := filepath.Join(t.TempDir(), "wallaby-worker.yaml")
+	if err := os.WriteFile(path, []byte("environment: test\nworkflow:\n  store: memory\niceberg:\n  expected_aws_role_arn: arn:aws:iam::123456789012:role/file-role\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Iceberg.ExpectedAWSRoleARN != "arn:aws:iam::123456789012:role/file-role" {
+		t.Fatalf("expected AWS role ARN=%q", cfg.Iceberg.ExpectedAWSRoleARN)
+	}
+}
 
 func TestLoadArtifactPublicationConfig(t *testing.T) {
 	t.Setenv("WALLABY_ENV", "test")

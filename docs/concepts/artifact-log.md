@@ -2,7 +2,7 @@
 
 `internal/artifactlog` is the PostgreSQL-authoritative implementation behind the experimental `ack_policy=materialized` contract. The first and only admitted projection is `canonical_cdc_parquet_v1` for managed PostgreSQL CDC.
 
-`materialized` means that immutable canonical objects and one generation-fenced PostgreSQL publication/checkpoint transaction are durable. It does **not** mean that downstream tables have committed the batch. The materializing worker does not open the configured destination on the CDC path after bootstrap and registers no production catalog consumer, so it also creates no destination delivery queue entries. The package-level queue and catalog seam remain available to explicit experimental callers. The public contract is canonical publication only and remains experimental.
+`materialized` means that immutable canonical objects and one generation-fenced PostgreSQL publication/checkpoint transaction are durable. It does **not** mean that downstream tables have committed the batch. A configured Iceberg endpoint registers a restartable asynchronous consumer and delivery queue; other materialized destinations retain canonical-publication-only behavior. Source acknowledgement never waits for an Iceberg commit. The complete contract remains experimental.
 
 ## Ordering
 
@@ -43,7 +43,7 @@ Garbage collection is epoch-based mark/sweep:
 - finalization revalidates the claim and safety predicates before releasing quota and the source-ACK retention root; and
 - publication locks reject an object carrying any GC claim, so a paused publisher cannot root an object after the sweeper marks it.
 
-The delivery queue and `Catalog` seam remain package-level experiments and are not registered by the production worker. No production Iceberg REST or S3 Tables consumer is claimed by this checkpoint. S3 bytes are quota-bounded, but PostgreSQL artifact/publication/barrier/attempt history is not yet pruned; only GC claims and released-byte accounting are bounded today. Operators must monitor control-database growth, and this is another reason the profile is not maintained.
+The production worker registers the request-oriented `ChangelogCommitter` seam only for an Iceberg endpoint. It persists a deterministic commit ID before catalog I/O, rewrites canonical v1 objects, uses optimistic Iceberg commits, reconciles exact snapshot summaries after ambiguous responses, and advances a PostgreSQL consumer checkpoint with the immutable receipt. S3 Tables implements the same seam through the AWS Glue Iceberg REST endpoint and current S3 Tables maintenance APIs. S3 bytes are quota-bounded, but PostgreSQL artifact/publication/barrier/attempt history is not yet pruned; only GC claims and released-byte accounting are bounded today. Operators must monitor control-database growth, and this is one reason the profile is not maintained.
 
 ## Worker configuration
 

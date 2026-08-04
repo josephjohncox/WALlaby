@@ -2,8 +2,6 @@ package tests
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -126,18 +124,7 @@ func TestCanonicalArtifactBarrierOnlyDelivery(t *testing.T) {
 	if len(publication.Artifacts) != 0 {
 		t.Fatalf("barrier-only publication artifacts=%d, want 0", len(publication.Artifacts))
 	}
-	var barrierHash string
-	if err := deps.pool.QueryRow(deps.ctx, `SELECT content_hash FROM artifact_barriers WHERE publication_id=$1`, publication.ID).Scan(&barrierHash); err != nil {
-		t.Fatal(err)
-	}
-	hash := sha256.New()
-	_, _ = hash.Write([]byte("barrier"))
-	_, _ = hash.Write([]byte{0})
-	_, _ = hash.Write([]byte(barrierHash))
-	_, _ = hash.Write([]byte{0})
-	catalog := &recordingAppendCatalog{commit: artifactlog.CatalogCommit{
-		SnapshotID: "barrier-snapshot", ContentHash: hex.EncodeToString(hash.Sum(nil)),
-	}}
+	catalog := &recordingAppendCatalog{snapshotID: "barrier-snapshot"}
 	consumer, err := artifactlog.NewConsumer(deps.pool, catalog)
 	if err != nil {
 		t.Fatal(err)
@@ -835,42 +822,15 @@ func artifactTransactionAt(xid uint32, beginLSN, commitLSN, endLSN, value string
 
 func consumeArtifactPublication(ctx context.Context, pool *pgxpool.Pool, fence authority.RunFence, consumerRevisionID string) error {
 	var publicationID string
-	rows, err := pool.Query(ctx, `
-SELECT root.publication_id::text,object.artifact_id,object.encoded_byte_hash
-FROM artifact_deliveries AS delivery
-JOIN artifact_publication_objects AS root ON root.publication_id=delivery.publication_id
-JOIN artifact_objects AS object ON object.artifact_id=root.artifact_id
-WHERE delivery.flow_incarnation_id=$1 AND delivery.consumer_revision_id=$2 AND delivery.delivered_at IS NULL
-ORDER BY delivery.sequence,root.ordinal`, fence.FlowIncarnationID, consumerRevisionID)
-	if err != nil {
+	if err := pool.QueryRow(ctx, `
+SELECT publication_id::text
+FROM artifact_deliveries
+WHERE flow_incarnation_id=$1 AND consumer_revision_id=$2 AND delivered_at IS NULL
+ORDER BY sequence
+LIMIT 1`, fence.FlowIncarnationID, consumerRevisionID).Scan(&publicationID); err != nil {
 		return err
 	}
-	hash := sha256.New()
-	for rows.Next() {
-		var currentPublication, artifactID, encodedHash string
-		if err := rows.Scan(&currentPublication, &artifactID, &encodedHash); err != nil {
-			rows.Close()
-			return err
-		}
-		if publicationID == "" {
-			publicationID = currentPublication
-		}
-		_, _ = hash.Write([]byte(artifactID))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(encodedHash))
-		_, _ = hash.Write([]byte{0})
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-	if publicationID == "" {
-		return errors.New("no pending artifact publication")
-	}
-	catalog := &recordingAppendCatalog{commit: artifactlog.CatalogCommit{
-		SnapshotID: "snapshot-" + publicationID, ContentHash: hex.EncodeToString(hash.Sum(nil)),
-	}}
+	catalog := &recordingAppendCatalog{snapshotID: "snapshot-" + publicationID}
 	consumer, err := artifactlog.NewConsumer(pool, catalog)
 	if err != nil {
 		return err

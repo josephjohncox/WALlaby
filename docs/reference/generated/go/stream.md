@@ -22,6 +22,7 @@ Package stream delivers source batches to destinations, persists checkpoints, ap
 - [type JSONTraceSink](<#JSONTraceSink>)
   - [func NewJSONTraceSink\(w io.Writer\) \*JSONTraceSink](<#NewJSONTraceSink>)
   - [func \(s \*JSONTraceSink\) Emit\(\_ context.Context, event TraceEvent\)](<#JSONTraceSink.Emit>)
+- [type ManagedArtifactIdentity](<#ManagedArtifactIdentity>)
 - [type ManagedArtifactLog](<#ManagedArtifactLog>)
 - [type ManagedDeliveryCoordinator](<#ManagedDeliveryCoordinator>)
 - [type ManagedSourceFeedbackCoordinator](<#ManagedSourceFeedbackCoordinator>)
@@ -189,10 +190,21 @@ func (s *JSONTraceSink) Emit(_ context.Context, event TraceEvent)
 
 Emit writes a single trace event.
 
+<a name="ManagedArtifactIdentity"></a>
+## type [ManagedArtifactIdentity](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L40-L42>)
+
+ManagedArtifactIdentity exposes the non\-secret effective destination identity after deployment defaults are merged. FlowRunner pins it to the PostgreSQL destination revision before catalog recovery or consumption.
+
+```go
+type ManagedArtifactIdentity interface {
+    EffectiveDestinationFingerprint() string
+}
+```
+
 <a name="ManagedArtifactLog"></a>
 ## type [ManagedArtifactLog](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L30-L35>)
 
-ManagedArtifactLog is the deep publication seam used only by ack\_policy=materialized. Append returns after immutable objects and the PostgreSQL publication/checkpoint/ACK intent commit. The production worker registers no catalog consumer, so this seam authorizes canonical publication only; direct Publisher users may opt into the experimental queue separately.
+ManagedArtifactLog is the deep publication seam used only by ack\_policy=materialized. Append returns after immutable objects and the PostgreSQL publication/checkpoint/ACK intent commit. Catalog consumers, when configured, run asynchronously behind PostgreSQL publication authority and do not extend the source\-ACK boundary.
 
 ```go
 type ManagedArtifactLog interface {
@@ -218,7 +230,7 @@ type ManagedDeliveryCoordinator interface {
 ```
 
 <a name="ManagedSourceFeedbackCoordinator"></a>
-## type [ManagedSourceFeedbackCoordinator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L39-L41>)
+## type [ManagedSourceFeedbackCoordinator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L46-L48>)
 
 ManagedSourceFeedbackCoordinator is the optional observed\-flush extension required by the named PostgreSQL profile.
 
