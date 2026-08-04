@@ -33,10 +33,11 @@
 
 ## Managed profiles
 
-| Profile | Status | Source | Destination | PostgreSQL | ClickHouse | Deployment | Pairing | Ack | Sinks | Delivery |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `postgresql-to-postgresql-v1` | maintained | `postgres` | `postgres` | 14, 15, 16, 17 | — | — | same major | all | one | at-least-once |
-| `postgresql-to-clickhouse-append-v1` | maintained | `postgres` | `clickhouse` | 16 | 25.12.1.649 | self-managed-keeper | mixed majors | all | one | at-least-once |
+| Profile | Status | Source | Destination | PostgreSQL | ClickHouse | Snowflake version | Deployment | Pairing | Ack | Sinks | Delivery |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `postgresql-to-postgresql-v1` | maintained | `postgres` | `postgres` | 14, 15, 16, 17 | — | — | — | same major | all | one | at-least-once |
+| `postgresql-to-clickhouse-append-v1` | maintained | `postgres` | `clickhouse` | 16 | 25.12.1.649 | — | self-managed-keeper | mixed majors | all | one | at-least-once |
+| `postgresql-to-snowflake-sql-v1` | experimental | `postgres` | `snowflake` | 16 | — | configured-exact-version-unreviewed (reviewed versions: none) | commercial-aws-snowflake-hybrid-table [reviewed cells: none] | configured runtime pin; unreviewed | all | one | at-least-once |
 
 ### `postgresql-to-postgresql-v1` evidence gates
 
@@ -74,4 +75,28 @@
 | TLS | yes | `TestClickHouseManagedProfileTLS` |
 | telemetry | no | `TestClickHouseManagedProfileTelemetry` |
 
-These are guaranteed defaults. Options can reduce guarantees; startup validation resolves configured capabilities before execution. Generic PostgreSQL and ClickHouse modes remain experimental; maintained status applies only to the exact named managed profiles above.
+### `postgresql-to-snowflake-sql-v1` evidence gates
+
+| Admission/evidence gate | Real service | Required test |
+| --- | --- | --- |
+| runtime deployment | yes | `TestSnowflakeManagedProfileReviewedDeploymentCell` |
+| source catalog and clean cut | yes | `TestPostgresToSnowflakeManagedProfileRecoveryContract` |
+| target direct grants objects and constraints | yes | `TestSnowflakeManagedProfileLiveAdmission` |
+| role hierarchy and alternate writers | yes | `TestSnowflakeManagedProfileRoleIsolation` |
+| task visibility and automation isolation | yes | `TestSnowflakeManagedProfileTaskIsolation` |
+| rollback cardinality ordering and types | yes | `TestSnowflakeManagedProfileOrderedFragmentsAndTypes` |
+| confirmed commit reconciliation | yes | `TestSnowflakeManagedProfileAmbiguousCommit` |
+| commit transport loss and detached takeover | yes | `TestSnowflakeManagedProfileCommitTransportLossAndDetachedTakeover` |
+| DDL rejection and replacement | yes | `TestSnowflakeManagedProfileSchemaReconciliation` |
+| adapter process kill | yes | `TestSnowflakeManagedProfileProcessKillRecovery` |
+| full worker SIGKILL | yes | `TestSnowflakeManagedProfileWorkerSIGKILLRecovery` |
+| network fault matrix | yes | `TestSnowflakeManagedProfileNetworkFaultMatrix` |
+| cancellation and pool safety | yes | `TestSnowflakeManagedProfileCancellationAndPoolSafety` |
+| bounded load and backpressure | yes | `TestSnowflakeManagedProfileBoundedLoadAndBackpressure` |
+| PostgreSQL receipt checkpoint and feedback recovery | yes | `TestPostgresToSnowflakeManagedProfileRecoveryContract` |
+| TLS and JWT | yes | `TestSnowflakeManagedProfileLiveAdmission` |
+| secret redaction | yes | `TestSnowflakeManagedProfileSecretRedaction` |
+| cleanup | yes | `TestSnowflakeManagedProfileCleanup` |
+| telemetry | no | `TestSnowflakeManagedProfileTelemetry` |
+
+These are declared defaults. Options can reduce guarantees; startup validation resolves configured capabilities before execution. Generic PostgreSQL, ClickHouse, Snowflake, and Snowpipe modes remain experimental. Maintained status applies only to rows explicitly marked maintained; the named Snowflake SQL profile has no reviewed service version or deployment cell and remains experimental until every unskipped real-service recovery gate passes on one reviewed SHA.

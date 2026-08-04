@@ -67,6 +67,12 @@ it_expected_harness_participants := env_var_or_default("IT_EXPECTED_HARNESS_PART
 integration_package := env_var_or_default("INTEGRATION_PACKAGE", "./tests/...")
 integration_worker_binary := root + "/" + cache_dir + "/wallaby-worker-integration"
 
+# Fuzz inputs. The smoke recipe is deterministic (seed corpora only); the bounded
+# recipe drives each target for a fixed wall-clock budget.
+snowflake_fuzz_time := env_var_or_default("SNOWFLAKE_FUZZ_TIME", "30s")
+snowflake_fuzz_targets := env_var_or_default("SNOWFLAKE_FUZZ_TARGETS", "FuzzManagedSchemaContractHash FuzzNormalizeManagedSourceType FuzzManagedRecordKey FuzzBuildManagedSnowflakeOperationSQLSafety")
+snowflake_fuzz_rapid_checks := env_var_or_default("SNOWFLAKE_FUZZ_RAPID_CHECKS", "1000")
+
 # List available recipes.
 default:
     @just --list
@@ -279,6 +285,74 @@ test-s3tables-live:
     test -n "${WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN:-}" || { echo 'WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN is required' >&2; exit 2; }
     test -n "${WALLABY_TEST_S3TABLES_NAMESPACE:-}" || { echo 'WALLABY_TEST_S3TABLES_NAMESPACE is required' >&2; exit 2; }
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./tests -run '^TestS3TablesLiveAppendProjection$'
+
+# Constrained Snowflake SQL profile evidence. This intentionally fails until
+# every named live cell exists and passes on a reviewed real Snowflake account
+# with hybrid-table support. Fakesnow cannot satisfy this recipe.
+test-snowflake-managed-profile:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test "${WALLABY_TEST_SNOWFLAKE_MANAGED:-}" = "1" || { echo 'WALLABY_TEST_SNOWFLAKE_MANAGED=1 is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_SNOWFLAKE_DSN:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_DSN is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_SNOWFLAKE_PROVISION_DSN:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_PROVISION_DSN is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_SNOWFLAKE_VERSION:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_VERSION is required; the gate may not self-pin CURRENT_VERSION()' >&2; exit 2; }
+    test -n "${WALLABY_TEST_SNOWFLAKE_REGION:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_REGION is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_SNOWFLAKE_OWNER_ROLE:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_OWNER_ROLE is required' >&2; exit 2; }
+    test -n "${TEST_PG_DSN:-}" || { echo 'TEST_PG_DSN is required for generation-fenced recovery evidence' >&2; exit 2; }
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 \
+      ./connectors/destinations/snowflake ./internal/runner ./pkg/connector ./pkg/stream ./internal/telemetry
+    results=$(mktemp)
+    trap 'rm -f "${results}"' EXIT
+    required=
+    required+='TestSnowflakeManagedProfilePostgresSourceCatalog'
+    required+=',TestSnowflakeManagedProfileFencedCleanSourceCut'
+    required+=',TestSnowflakeManagedProfileLiveAdmission'
+    required+=',TestSnowflakeManagedProfileReviewedDeploymentCell'
+    required+=',TestSnowflakeManagedProfileRoleIsolation'
+    required+=',TestSnowflakeManagedProfileTaskIsolation'
+    required+=',TestSnowflakeManagedProfileAmbiguousCommit'
+    required+=',TestSnowflakeManagedProfileCommitTransportLossAndDetachedTakeover'
+    required+=',TestSnowflakeManagedProfileOrderedFragmentsAndTypes'
+    required+=',TestSnowflakeManagedProfileSchemaReconciliation'
+    required+=',TestSnowflakeManagedProfileProcessKillRecovery'
+    required+=',TestSnowflakeManagedProfileWorkerSIGKILLRecovery'
+    required+=',TestSnowflakeManagedProfileNetworkFaultMatrix'
+    required+=',TestSnowflakeManagedProfileCancellationAndPoolSafety'
+    required+=',TestSnowflakeManagedProfileBoundedLoadAndBackpressure'
+    required+=',TestSnowflakeManagedProfileSecretRedaction'
+    required+=',TestSnowflakeManagedProfileCleanup'
+    required+=',TestPostgresToSnowflakeManagedProfileRecoveryContract'
+    filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
+    set +e
+    WALLABY_TEST_SNOWFLAKE_MANAGED_DIRECT=1 GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" \
+      {{ go }} test -p 1 -count=1 -json ./tests ./connectors/sources/postgres -run "${filter}" >"${results}"
+    test_rc=$?
+    set -e
+    cat "${results}"
+    test "${test_rc}" -eq 0
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./scripts/verify-go-test-json.go \
+      -results "${results}" -required "${required}"
+
+# Deterministic fuzz smoke for the constrained Snowflake SQL planner. It runs
+# every managed fuzz target's seed corpus (no -fuzz, so no randomness and no
+# network) plus the bounded rapid SQL-injection-safety and hash-determinism
+# properties. Safe for pull-request CI and the non-credential suite.
+fuzz-smoke:
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 \
+      -run '^(Fuzz|TestManagedSnowflake.*Property)$' ./connectors/destinations/snowflake \
+      -args -rapid.checks={{ snowflake_fuzz_rapid_checks }}
+
+# Bounded coverage-guided fuzzing for the Snowflake SQL planner. Each target runs
+# for SNOWFLAKE_FUZZ_TIME; a crasher is written under testdata/fuzz and fails the
+# recipe. This is intentionally separate from the deterministic smoke.
+fuzz-managed-snowflake:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for target in {{ snowflake_fuzz_targets }}; do
+      echo "fuzzing ${target} for {{ snowflake_fuzz_time }}"
+      GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -run '^$' \
+        -fuzz="^${target}$" -fuzztime={{ snowflake_fuzz_time }} ./connectors/destinations/snowflake
+    done
 
 # Cross-service promotion gate. The Snowflake catalog-linked database must
 # already be read-only and linked to the same S3 Tables bucket/namespace.

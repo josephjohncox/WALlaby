@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/authority"
@@ -73,32 +75,38 @@ const (
 
 // Source implements Postgres logical replication as a connector.Source.
 type Source struct {
-	spec                    connector.Spec
-	dsn                     string
-	stream                  *replication.PostgresStream
-	changes                 <-chan replication.Change
-	batchSize               int
-	batchTimeout            time.Duration
-	maxTransactionFragments int
-	slot                    string
-	publication             string
-	wireFormat              connector.WireFormat
-	emitEmpty               bool
-	SchemaHook              replication.SchemaHook
-	stateStore              *sourceStateStore
-	stateID                 string
-	typeResolver            *pgTypeResolver
-	toastFetch              string
-	toastPool               *pgxpool.Pool
-	toastCache              *toastCache
-	lagPool                 *pgxpool.Pool
-	sourceLineage           string
-	managedPostgresMajor    int
-	pendingChange           *replication.Change
-	Meters                  *telemetry.Meters
-	ManagedControl          *pgxpool.Pool
-	ManagedAuthority        authority.Store
-	BootstrapHooks          bootstrap.Hooks
+	spec                      connector.Spec
+	dsn                       string
+	stream                    *replication.PostgresStream
+	changes                   <-chan replication.Change
+	batchSize                 int
+	batchTimeout              time.Duration
+	maxTransactionFragments   int
+	slot                      string
+	publication               string
+	wireFormat                connector.WireFormat
+	emitEmpty                 bool
+	SchemaHook                replication.SchemaHook
+	stateStore                *sourceStateStore
+	stateID                   string
+	typeResolver              *pgTypeResolver
+	toastFetch                string
+	toastPool                 *pgxpool.Pool
+	toastCache                *toastCache
+	lagPool                   *pgxpool.Pool
+	sourceLineage             string
+	managedPostgresMajor      int
+	managedPublicationTables  []string
+	managedPublicationSchemas []connector.Schema
+	managedFence              *connector.RunFence
+	managedSourceSystem       string
+	managedDatabase           string
+	managedSourceCutGuard     pgx.Tx
+	pendingChange             *replication.Change
+	Meters                    *telemetry.Meters
+	ManagedControl            *pgxpool.Pool
+	ManagedAuthority          authority.Store
+	BootstrapHooks            bootstrap.Hooks
 }
 
 type changeBatchIdentity struct {
@@ -146,6 +154,8 @@ func changeEndsBatch(current changeBatchIdentity, change replication.Change) boo
 
 func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	s.spec = spec
+	s.managedPublicationTables = nil
+	s.managedPublicationSchemas = nil
 	opened := false
 	defer func() {
 		if !opened {
@@ -164,6 +174,13 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	}
 
 	s.slot = spec.Options[optSlot]
+	managedProfile := strings.TrimSpace(spec.Options[optManagedProfile])
+	if managedProfile == connector.ManagedProfilePostgresToSnowflakeSQLV1 && s.slot == "managed" {
+		if s.managedFence == nil {
+			return errors.New("managed Snowflake slot derivation requires a bound RunFence")
+		}
+		s.slot = bootstrap.GenerationSlotName(s.managedFence.FlowID, s.managedFence.FlowIncarnationID, 1)
+	}
 	if s.slot == "" {
 		return errors.New("replication slot is required")
 	}
@@ -173,12 +190,16 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		return errors.New("publication is required")
 	}
 	managed := connector.IsManagedSourceSpec(spec)
+	managedSnowflakeCut := managed && managedProfile == connector.ManagedProfilePostgresToSnowflakeSQLV1 && parseBool(spec.Options[optCreateSlot], false)
 	if managed {
-		for _, option := range []string{optCreateSlot, optEnsureState, optEnsurePublication, optSyncPublication} {
+		for _, option := range []string{optEnsureState, optEnsurePublication, optSyncPublication} {
 			raw, present := spec.Options[option]
 			if !present || parseBool(raw, true) {
 				return fmt.Errorf("managed PostgreSQL Source.Open requires explicit %s=false; source-resource mutation is allowed only inside fenced bootstrap", option)
 			}
+		}
+		if raw, present := spec.Options[optCreateSlot]; !present || (parseBool(raw, true) && !managedSnowflakeCut) {
+			return fmt.Errorf("managed PostgreSQL Source.Open requires explicit create_slot=false except for the fenced Snowflake source-cut path")
 		}
 	}
 
@@ -347,6 +368,12 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 		if actualRevision != expectedRevision {
 			return fmt.Errorf("managed publication revision %s does not match configured %s", actualRevision, expectedRevision)
 		}
+		if strings.TrimSpace(spec.Options[optManagedProfile]) == connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+			s.managedPublicationTables, s.managedPublicationSchemas, err = loadManagedSnowflakePublicationContract(ctx, lagPool, s.publication)
+			if err != nil {
+				return fmt.Errorf("validate managed Snowflake source publication: %w", err)
+			}
+		}
 	}
 
 	if s.Meters != nil {
@@ -354,9 +381,85 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	}
 
 	s.stream = replication.NewPostgresStream(dsn, opts...)
+	var sourceCutTx pgx.Tx
+	if managedSnowflakeCut {
+		sourceCutTx, err = s.beginManagedSnowflakeSourceCut(ctx)
+		if err != nil {
+			return err
+		}
+	}
 	changes, err := s.stream.Start(ctx, s.slot, s.publication)
 	if err != nil {
+		if sourceCutTx != nil {
+			_ = sourceCutTx.Rollback(context.WithoutCancel(ctx))
+			_ = s.releaseManagedSnowflakeSourceCutGuard(context.WithoutCancel(ctx))
+			// Start can fail after creating the slot or after observing a
+			// concurrent pre-existing slot. Without positive creation evidence,
+			// never delete the physical resource on this error path.
+			return fmt.Errorf("start fenced managed Snowflake source cut (slot retained for ownership reconciliation if creation was indeterminate): %w", err)
+		}
 		return err
+	}
+	if sourceCutTx != nil {
+		initial := connector.Checkpoint{LSN: s.stream.InitialLSN().String()}
+		cutTables, cutSchemas, err := loadManagedSnowflakePublicationContract(ctx, s.lagPool, s.publication)
+		if err != nil || !reflect.DeepEqual(cutTables, s.managedPublicationTables) || !reflect.DeepEqual(cutSchemas, s.managedPublicationSchemas) {
+			_ = sourceCutTx.Rollback(context.WithoutCancel(ctx))
+			_ = s.releaseManagedSnowflakeSourceCutGuard(context.WithoutCancel(ctx))
+			_ = s.stream.Stop(context.WithoutCancel(ctx))
+			s.stream = nil
+			if err == nil {
+				err = errors.New("managed Snowflake source catalog changed across slot consistent-point creation")
+			}
+			return errors.Join(err, s.dropUncommittedManagedSnowflakeSourceCut(context.WithoutCancel(ctx)))
+		}
+		if err := s.releaseManagedSnowflakeSourceCutGuard(context.WithoutCancel(ctx)); err != nil {
+			_ = sourceCutTx.Rollback(context.WithoutCancel(ctx))
+			_ = s.stream.Stop(context.WithoutCancel(ctx))
+			s.stream = nil
+			return errors.Join(err, s.dropUncommittedManagedSnowflakeSourceCut(context.WithoutCancel(ctx)))
+		}
+		if s.BootstrapHooks.AfterSlotCreated != nil {
+			snapshot := bootstrap.ExportedSnapshot{
+				SlotName: s.slot, Publication: s.publication, Plugin: "pgoutput",
+				ConsistentLSN: s.stream.InitialLSN(), SourceSystem: s.managedSourceSystem, DatabaseName: s.managedDatabase,
+			}
+			if err := s.BootstrapHooks.AfterSlotCreated(ctx, snapshot); err != nil {
+				_ = sourceCutTx.Rollback(context.WithoutCancel(ctx))
+				_ = s.stream.Stop(context.WithoutCancel(ctx))
+				s.stream = nil
+				return errors.Join(err, s.dropUncommittedManagedSnowflakeSourceCut(context.WithoutCancel(ctx)))
+			}
+		}
+		cutTables, cutSchemas, err = loadManagedSnowflakePublicationContract(ctx, s.lagPool, s.publication)
+		if err != nil || !reflect.DeepEqual(cutTables, s.managedPublicationTables) || !reflect.DeepEqual(cutSchemas, s.managedPublicationSchemas) {
+			_ = sourceCutTx.Rollback(context.WithoutCancel(ctx))
+			_ = s.stream.Stop(context.WithoutCancel(ctx))
+			s.stream = nil
+			if err == nil {
+				err = errors.New("managed Snowflake source catalog changed across slot consistent-point creation")
+			}
+			return errors.Join(err, s.dropUncommittedManagedSnowflakeSourceCut(context.WithoutCancel(ctx)))
+		}
+		if err := persistManagedSnowflakeSourceCut(ctx, sourceCutTx, *s.managedFence, initial); err != nil {
+			_ = sourceCutTx.Rollback(context.WithoutCancel(ctx))
+			_ = s.stream.Stop(context.WithoutCancel(ctx))
+			s.stream = nil
+			return errors.Join(err, s.dropUncommittedManagedSnowflakeSourceCut(context.WithoutCancel(ctx)))
+		}
+		if err := s.persistManagedSnowflakeSourceCutResource(ctx, sourceCutTx, *s.managedFence, initial); err != nil {
+			_ = sourceCutTx.Rollback(context.WithoutCancel(ctx))
+			_ = s.stream.Stop(context.WithoutCancel(ctx))
+			s.stream = nil
+			return errors.Join(err, s.dropUncommittedManagedSnowflakeSourceCut(context.WithoutCancel(ctx)))
+		}
+		if err := sourceCutTx.Commit(ctx); err != nil {
+			// Commit can be ambiguous. Keep the slot and fail closed; replacement
+			// startup will accept it only if the authoritative checkpoint exists.
+			_ = s.stream.Stop(context.WithoutCancel(ctx))
+			s.stream = nil
+			return fmt.Errorf("commit fenced managed Snowflake source cut: %w", err)
+		}
 	}
 	s.changes = changes
 
@@ -709,8 +812,11 @@ func (s *Source) Close(ctx context.Context) error {
 
 func (s *Source) closeResources(ctx context.Context, updateState bool) error {
 	var stopErr error
+	if err := s.releaseManagedSnowflakeSourceCutGuard(ctx); err != nil {
+		stopErr = err
+	}
 	if s.stream != nil {
-		stopErr = s.stream.Stop(ctx)
+		stopErr = errors.Join(stopErr, s.stream.Stop(ctx))
 		s.stream = nil
 	}
 	if s.stateStore != nil {
@@ -819,6 +925,39 @@ func (s *Source) ManagedPostgresMajor() int {
 	return s.managedPostgresMajor
 }
 
+// ManagedPostgresPublicationTables returns a defensive copy of the live
+// relation set admitted for the constrained Snowflake profile.
+func (s *Source) ManagedPostgresPublicationTables() []string {
+	return append([]string(nil), s.managedPublicationTables...)
+}
+
+// ManagedPostgresPublicationSchemas returns defensive copies of the live
+// pg_catalog schemas admitted with the publication relation set.
+func (s *Source) ManagedPostgresPublicationSchemas() []connector.Schema {
+	schemas := make([]connector.Schema, len(s.managedPublicationSchemas))
+	for index, schema := range s.managedPublicationSchemas {
+		schemas[index] = cloneManagedSourceSchema(schema)
+	}
+	return schemas
+}
+
+func cloneManagedSourceSchema(schema connector.Schema) connector.Schema {
+	cloned := schema
+	cloned.QuotedIdentifiers = make(map[string]bool, len(schema.QuotedIdentifiers))
+	for key, value := range schema.QuotedIdentifiers {
+		cloned.QuotedIdentifiers[key] = value
+	}
+	cloned.Columns = make([]connector.Column, len(schema.Columns))
+	for index, column := range schema.Columns {
+		cloned.Columns[index] = column
+		cloned.Columns[index].TypeMetadata = make(map[string]string, len(column.TypeMetadata))
+		for key, value := range column.TypeMetadata {
+			cloned.Columns[index].TypeMetadata[key] = value
+		}
+	}
+	return cloned
+}
+
 func validateManagedPostgresServerVersion(ctx context.Context, pool *pgxpool.Pool, profileName string) (int, error) {
 	profileName = strings.TrimSpace(profileName)
 	if profileName == "" {
@@ -830,6 +969,8 @@ func validateManagedPostgresServerVersion(ctx context.Context, pool *pgxpool.Poo
 		profile = connector.PostgresToPostgresV1Profile()
 	case connector.ManagedProfilePostgresToClickHouseAppendV1:
 		profile = connector.PostgresToClickHouseAppendV1Profile()
+	case connector.ManagedProfilePostgresToSnowflakeSQLV1:
+		profile = connector.PostgresToSnowflakeSQLV1Profile()
 	default:
 		return 0, fmt.Errorf("unsupported PostgreSQL managed profile %q", profileName)
 	}

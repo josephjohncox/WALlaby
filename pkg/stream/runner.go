@@ -313,10 +313,17 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		if r.SourceSpec.Options == nil {
 			r.SourceSpec.Options = map[string]string{}
 		}
-		// All source-resource mutation occurred, if needed, inside the fenced
-		// bootstrap contract. The ordinary replication open is always inert.
-		for _, option := range []string{"create_slot", "ensure_state", "ensure_publication", "sync_publication"} {
+		// Snapshot bootstrap performs all resource mutation before source Open.
+		// The Snowflake SQL clean-start path is the sole exception: Source.Open
+		// creates and roots one deterministic slot while holding the RunFence.
+		allowSnowflakeSourceCut := bootstrapMode == "never" && restoredCheckpoint == nil &&
+			strings.TrimSpace(r.SourceSpec.Options["managed_profile"]) == connector.ManagedProfilePostgresToSnowflakeSQLV1 &&
+			strings.EqualFold(strings.TrimSpace(r.SourceSpec.Options["create_slot"]), "true")
+		for _, option := range []string{"ensure_state", "ensure_publication", "sync_publication"} {
 			r.SourceSpec.Options[option] = "false"
+		}
+		if !allowSnowflakeSourceCut {
+			r.SourceSpec.Options["create_slot"] = "false"
 		}
 		if restoredCheckpoint != nil && restoredCheckpoint.Metadata != nil {
 			if baselines := restoredCheckpoint.Metadata[connector.ManagedSchemaBaselinesMetadataKey]; baselines != "" {
@@ -417,6 +424,39 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				return errors.New("named managed ClickHouse profile requires live endpoint version evidence")
 			}
 			if err := validateManagedClickHouseVersionPair(sourceVersion.ManagedPostgresMajor(), destinationVersion.ManagedClickHouseVersion()); err != nil {
+				return err
+			}
+		case connector.ManagedProfilePostgresToSnowflakeSQLV1:
+			sourceVersion, sourceOK := r.Source.(connector.ManagedPostgresVersionProvider)
+			sourcePublication, publicationOK := r.Source.(connector.ManagedPostgresPublicationProvider)
+			destinationVersion, destinationOK := r.Destinations[0].Dest.(connector.ManagedSnowflakeVersionProvider)
+			destinationSchema, schemaOK := r.Destinations[0].Dest.(connector.ManagedSourceSchemaValidator)
+			destinationScope, scopeOK := r.Destinations[0].Dest.(connector.ManagedFlowScopeValidator)
+			if !sourceOK || !publicationOK || !destinationOK || !schemaOK || !scopeOK {
+				return errors.New("named managed Snowflake profile requires live endpoint version, publication, schema, and flow-scope evidence")
+			}
+			if err := validateManagedSnowflakeVersionPair(
+				sourceVersion.ManagedPostgresMajor(),
+				destinationVersion.ManagedSnowflakeVersion(),
+				r.Destinations[0].Spec.Options["managed_snowflake_version"],
+			); err != nil {
+				return err
+			}
+			if err := validateManagedSnowflakePublicationRelation(
+				sourcePublication.ManagedPostgresPublicationTables(),
+				r.Destinations[0].Spec.Options["managed_source_schema"],
+				r.Destinations[0].Spec.Options["managed_source_table"],
+			); err != nil {
+				return err
+			}
+			publicationSchemas := sourcePublication.ManagedPostgresPublicationSchemas()
+			if len(publicationSchemas) != 1 {
+				return fmt.Errorf("managed profile %s requires one live PostgreSQL publication schema, got %d", connector.ManagedProfilePostgresToSnowflakeSQLV1, len(publicationSchemas))
+			}
+			if err := destinationSchema.ValidateManagedSourceSchema(publicationSchemas[0]); err != nil {
+				return err
+			}
+			if err := destinationScope.ValidateManagedFlowScope(ctx, r.RunFence.FlowID, r.RunFence.FlowIncarnationID.String()); err != nil {
 				return err
 			}
 		}
@@ -703,6 +743,27 @@ func validateManagedClickHouseVersionPair(sourceMajor int, clickHouseVersion str
 	}
 	if !profile.SupportsClickHouseVersion(clickHouseVersion) {
 		return fmt.Errorf("managed profile %s does not admit ClickHouse %s", profile.Name, clickHouseVersion)
+	}
+	return nil
+}
+
+func validateManagedSnowflakePublicationRelation(publicationTables []string, sourceSchema, sourceTable string) error {
+	expectedRelation := strings.TrimSpace(sourceSchema) + "." + strings.TrimSpace(sourceTable)
+	if len(publicationTables) != 1 || publicationTables[0] != expectedRelation {
+		return fmt.Errorf("managed profile %s requires live PostgreSQL publication relation [%s], got %v", connector.ManagedProfilePostgresToSnowflakeSQLV1, expectedRelation, publicationTables)
+	}
+	return nil
+}
+
+func validateManagedSnowflakeVersionPair(sourceMajor int, snowflakeVersion, exactPin string) error {
+	profile := connector.PostgresToSnowflakeSQLV1Profile()
+	if !profile.SupportsPostgresVersion(sourceMajor) {
+		return fmt.Errorf("managed profile %s does not admit PostgreSQL %d", profile.Name, sourceMajor)
+	}
+	snowflakeVersion = strings.TrimSpace(snowflakeVersion)
+	exactPin = strings.TrimSpace(exactPin)
+	if snowflakeVersion == "" || exactPin == "" || snowflakeVersion != exactPin {
+		return fmt.Errorf("managed profile %s requires Snowflake CURRENT_VERSION()=%q to equal exact runtime pin %q", profile.Name, snowflakeVersion, exactPin)
 	}
 	return nil
 }

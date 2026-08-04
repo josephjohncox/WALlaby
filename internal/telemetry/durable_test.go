@@ -187,6 +187,68 @@ func TestClickHouseManagedProfileTelemetry(t *testing.T) {
 	}
 }
 
+func TestSnowflakeManagedProfileTelemetry(t *testing.T) {
+	oldTracerProvider := otel.GetTracerProvider()
+	oldMeterProvider := otel.GetMeterProvider()
+	oldMetrics := durableMetrics
+	defer func() {
+		otel.SetTracerProvider(oldTracerProvider)
+		otel.SetMeterProvider(oldMeterProvider)
+		durableMetrics = oldMetrics
+	}()
+
+	spanRecorder := tracetest.NewSpanRecorder()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder)))
+	reader := sdkmetric.NewManualReader()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	durableMetrics = &durableMetricSet{}
+
+	ctx, end := StartSnowflakeManagedSpan(context.Background(), "dml", "operation-high-cardinality", "logical-high-cardinality", 3, 2048)
+	RecordSnowflakeQueryID(ctx, "query-high-cardinality")
+	end(nil)
+	_, end = StartSnowflakeManagedSpan(ctx, "flow-specific-operation", "query-2", "logical-2", 1, 10)
+	end(context.Canceled)
+
+	spans := spanRecorder.Ended()
+	if len(spans) != 2 || spans[0].Name() != "snowflake.managed.dml" || spans[1].Name() != "snowflake.managed.other" {
+		t.Fatalf("spans=%v", spans)
+	}
+	traceAttributes := map[attribute.Key]string{}
+	for _, attr := range spans[0].Attributes() {
+		if attr.Value.Type() == attribute.STRING {
+			traceAttributes[attr.Key] = attr.Value.AsString()
+		}
+	}
+	if traceAttributes["snowflake.query.id"] != "query-high-cardinality" || traceAttributes["wallaby.logical_batch.id"] != "logical-high-cardinality" {
+		t.Fatalf("Snowflake trace correlation attributes=%v", traceAttributes)
+	}
+	var metrics metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &metrics); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, scope := range metrics.ScopeMetrics {
+		for _, measurement := range scope.Metrics {
+			seen[measurement.Name] = true
+			if sum, ok := measurement.Data.(metricdata.Sum[int64]); ok {
+				for _, point := range sum.DataPoints {
+					if _, leaked := point.Attributes.Value(attribute.Key("snowflake.query.id")); leaked {
+						t.Fatalf("query ID leaked into metric %s", measurement.Name)
+					}
+					if _, leaked := point.Attributes.Value(attribute.Key("wallaby.logical_batch.id")); leaked {
+						t.Fatalf("logical batch ID leaked into metric %s", measurement.Name)
+					}
+				}
+			}
+		}
+	}
+	for _, name := range []string{"wallaby.snowflake.managed.outcomes", "wallaby.snowflake.managed.rows", "wallaby.snowflake.managed.bytes", "wallaby.snowflake.managed.duration"} {
+		if !seen[name] {
+			t.Fatalf("missing metric %s: %v", name, seen)
+		}
+	}
+}
+
 func TestBootstrapTelemetrySDKRecordsRequiredBoundedSignals(t *testing.T) {
 	oldTracerProvider := otel.GetTracerProvider()
 	oldMeterProvider := otel.GetMeterProvider()

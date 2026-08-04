@@ -70,6 +70,7 @@ nav:
       - PostgreSQL managed profile: connectors/postgres-managed-profile.md
       - Iceberg: connectors/iceberg.md
       - ClickHouse: connectors/clickhouse.md
+      - Snowflake: connectors/snowflake.md
       - Extended connector notes: connectors.md
   - Reference:
       - Overview: reference/index.md

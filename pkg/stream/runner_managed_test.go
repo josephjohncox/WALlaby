@@ -35,6 +35,31 @@ func TestManagedClickHouseProfileRejectsUnprovenVersionPair(t *testing.T) {
 	}
 }
 
+func TestManagedSnowflakePublicationRequiresExactlyTheAdmittedRelation(t *testing.T) {
+	t.Parallel()
+	if err := validateManagedSnowflakePublicationRelation([]string{"public.widgets"}, "public", "widgets"); err != nil {
+		t.Fatal(err)
+	}
+	for _, tables := range [][]string{nil, {"public.widgets", "public.audit"}, {"other.widgets"}} {
+		if err := validateManagedSnowflakePublicationRelation(tables, "public", "widgets"); err == nil {
+			t.Fatalf("publication tables %v were admitted", tables)
+		}
+	}
+}
+
+func TestManagedSnowflakeProfileRequiresPostgres16AndExactRuntimePin(t *testing.T) {
+	t.Parallel()
+	if err := validateManagedSnowflakeVersionPair(16, "9.99.0", "9.99.0"); err != nil {
+		t.Fatalf("exact runtime pin rejected: %v", err)
+	}
+	if err := validateManagedSnowflakeVersionPair(15, "9.99.0", "9.99.0"); err == nil {
+		t.Fatal("unproven PostgreSQL major was admitted")
+	}
+	if err := validateManagedSnowflakeVersionPair(16, "9.99.1", "9.99.0"); err == nil {
+		t.Fatal("Snowflake service version outside the exact runtime pin was admitted")
+	}
+}
+
 func TestManagedRestoreValidatesAckIntentBeforeFeedbackOrDestinationOpen(t *testing.T) {
 	t.Parallel()
 	events := []string{}

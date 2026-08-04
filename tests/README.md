@@ -88,12 +88,28 @@ Set these environment variables to enable destination tests:
 - `WALLABY_TEST_DUCKDB_DSN`
 - `WALLABY_TEST_DUCKLAKE=1` (enabled by default; requires ducklake extension)
 - `WALLABY_TEST_SNOWFLAKE_DSN`, optional `WALLABY_TEST_SNOWFLAKE_SCHEMA`
+- `WALLABY_TEST_SNOWFLAKE_MANAGED=1` (opt in to the real-service managed Snowflake SQL recovery gate; fakesnow is rejected)
+- `WALLABY_TEST_SNOWFLAKE_PROVISION_DSN` (key-pair JWT DSN for the distinct object-owner role)
+- `WALLABY_TEST_SNOWFLAKE_VERSION`, `WALLABY_TEST_SNOWFLAKE_REGION`, `WALLABY_TEST_SNOWFLAKE_OWNER_ROLE` (reviewed live cell inputs; the gate never self-pins them)
 - `WALLABY_TEST_SNOWPIPE_DSN`, `WALLABY_TEST_SNOWPIPE_STAGE`
 
 Benchmarks (ClickHouse mutation vs append):
 
 ```bash
 go test ./tests -bench ClickHouse -run '^$'
+```
+
+Managed Snowflake SQL recovery evidence requires a commercial AWS Snowflake account with hybrid tables and a disposable PostgreSQL 16 database. Both Snowflake DSNs must use key-pair JWT, verified HTTPS, and OCSP fail-closed. The execution DSN must also set `READ_LATEST_WRITES=true` and `TIMEZONE=UTC`. The owner and execution roles must be distinct. The gate creates and drops `public.widgets` and `wallaby_sf_managed_gate` in PostgreSQL.
+
+```bash
+WALLABY_TEST_SNOWFLAKE_MANAGED=1 \
+WALLABY_TEST_SNOWFLAKE_DSN='...' \
+WALLABY_TEST_SNOWFLAKE_PROVISION_DSN='...' \
+WALLABY_TEST_SNOWFLAKE_VERSION='<reviewed version>' \
+WALLABY_TEST_SNOWFLAKE_REGION='<reviewed AWS region>' \
+WALLABY_TEST_SNOWFLAKE_OWNER_ROLE='WALLABY_OWNER' \
+TEST_PG_DSN='postgres://...' \
+just test-snowflake-managed-profile
 ```
 
 Snowflake benchmarks (requires env vars):
