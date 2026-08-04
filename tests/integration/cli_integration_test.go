@@ -19,10 +19,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	apigrpc "github.com/josephjohncox/wallaby/internal/api/grpc"
+	internalflow "github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/registry"
 	"github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/pgstream"
+	"github.com/josephjohncox/wallaby/pkg/stream"
+	"gopkg.in/yaml.v3"
 )
 
 type noopDispatcher struct{}
@@ -470,8 +473,14 @@ func TestCLIIntegrationFlowPlan(t *testing.T) {
 	var resp struct {
 		FlowName string `json:"flow_name"`
 		Desired  struct {
-			Name  string `json:"name"`
-			State string `json:"state"`
+			Name   string `json:"name"`
+			State  string `json:"state"`
+			Source struct {
+				Options map[string]string `json:"options"`
+			} `json:"source"`
+			Destinations []struct {
+				Options map[string]string `json:"options"`
+			} `json:"destinations"`
 		} `json:"desired"`
 		ChangeCount int  `json:"change_count"`
 		Compared    bool `json:"compared"`
@@ -484,6 +493,9 @@ func TestCLIIntegrationFlowPlan(t *testing.T) {
 	}
 	if resp.Desired.Name != "cli-flow-plan" {
 		t.Fatalf("expected desired.name cli-flow-plan, got %s", resp.Desired.Name)
+	}
+	if resp.Desired.Source.Options["dsn"] != "[REDACTED]" || len(resp.Desired.Destinations) != 1 || resp.Desired.Destinations[0].Options["dsn"] != "[REDACTED]" || resp.Desired.Destinations[0].Options["stream"] != "orders" || bytes.Contains(output, []byte(testPostgresAppDSN(t))) {
+		t.Fatalf("flow plan did not redact secrets while preserving topology: %s", output)
 	}
 	if resp.Compared {
 		t.Fatalf("did not expect compared=true without endpoint")
@@ -801,27 +813,8 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 	defer server.Stop()
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
-	configPath := writeFlowConfig(t, flowConfigPayload{
-		Name:       "cli-flow-list-get-delete-wait",
-		WireFormat: "json",
-		Source: endpointConfigPayload{
-			Name: "src",
-			Type: "postgres",
-			Options: map[string]string{
-				"dsn": testPostgresAppDSN(t),
-			},
-		},
-		Destinations: []endpointConfigPayload{
-			{
-				Name: "dest",
-				Type: "pgstream",
-				Options: map[string]string{
-					"dsn":    testPostgresAppDSN(t),
-					"stream": "orders",
-				},
-			},
-		},
-	})
+	gate, approve, apply := false, true, false
+	configPath := writeFlowConfig(t, flowConfigPayload{Name: "cli-flow-list-get-delete-wait", Config: internalflow.Config{AckPolicy: stream.AckPolicyPrimary, PrimaryDestination: "dest", FailureMode: stream.FailureModeHoldSlot, GiveUpPolicy: stream.GiveUpPolicyNever, DDL: internalflow.DDLPolicy{Gate: &gate, AutoApprove: &approve, AutoApply: &apply}, SchemaRegistrySubject: "subject", SchemaRegistryProtoTypesSubject: "types", SchemaRegistrySubjectMode: "record"}, WireFormat: "json", Parallelism: 1, Source: endpointConfigPayload{Name: "src", Type: "postgres", Options: map[string]string{"dsn": testPostgresAppDSN(t), "headers": "{\"Authorization\":\"Bearer source-header-secret\"}", "webhook_url": "https://hooks.slack.com/services/T/B/integration-slack-secret"}}, Destinations: []endpointConfigPayload{{Name: "dest", Type: "pgstream", Options: map[string]string{"dsn": testPostgresAppDSN(t), "stream": "orders", "grpc_authorization_header": "Bearer destination-header-secret", "api_endpoint": "https://api.github.com/hooks/integration-github-secret?signature=integration-signed-secret", "plain_url": "https://plain.example:8443"}}}})
 
 	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "--file", configPath, "--json")
 	if err != nil {
@@ -835,6 +828,41 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 	}
 	if createResp.ID == "" {
 		t.Fatalf("expected flow id, got: %s", output)
+	}
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var planConfig map[string]any
+	if err := json.Unmarshal(configBytes, &planConfig); err != nil {
+		t.Fatal(err)
+	}
+	planConfig["id"] = createResp.ID
+	configBytes, err = json.Marshal(planConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, configBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "plan", "--file", configPath, "--json")
+	if err != nil {
+		t.Fatalf("wallaby-admin flow plan against current flow: %v\n%s", err, output)
+	}
+	var unchangedPlan struct {
+		ChangeCount int `json:"change_count"`
+		Changes     []struct {
+			Path string `json:"path"`
+		} `json:"changes"`
+	}
+	if err := json.Unmarshal(output, &unchangedPlan); err != nil {
+		t.Fatalf("decode unchanged flow plan: %v\n%s", err, output)
+	}
+	if unchangedPlan.ChangeCount != 0 || len(unchangedPlan.Changes) != 0 {
+		t.Fatalf("runtime state produced false-positive plan changes: %s", output)
+	}
+	if bytes.Contains(output, []byte(testPostgresAppDSN(t))) || bytes.Contains(output, []byte("source-header-secret")) || bytes.Contains(output, []byte("destination-header-secret")) || bytes.Contains(output, []byte("integration-slack-secret")) || bytes.Contains(output, []byte("integration-github-secret")) || bytes.Contains(output, []byte("integration-signed-secret")) || !bytes.Contains(output, []byte("https://hooks.slack.com/[REDACTED]")) || !bytes.Contains(output, []byte("https://api.github.com/[REDACTED]")) || !bytes.Contains(output, []byte("https://plain.example:8443")) {
+		t.Fatalf("compared plan leaked endpoint secret: %s", output)
 	}
 
 	output, err = runWallabyAdmin(ctx, listener.Addr().String(), "flow", "list", "--json")
@@ -916,14 +944,31 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 		State    string `json:"state"`
 		StateRaw int32  `json:"state_raw"`
 		Source   struct {
-			Name string `json:"name"`
-			Type string `json:"type"`
+			Name    string            `json:"name"`
+			Type    string            `json:"type"`
+			Options map[string]string `json:"options"`
 		} `json:"source"`
 		Destinations []struct {
-			Name string `json:"name"`
-			Type string `json:"type"`
+			Name    string            `json:"name"`
+			Type    string            `json:"type"`
+			Options map[string]string `json:"options"`
 		} `json:"destinations"`
 		WireFormat string `json:"wire_format"`
+		Config     struct {
+			AckPolicy          string `json:"ack_policy"`
+			PrimaryDestination string `json:"primary_destination"`
+			FailureMode        string `json:"failure_mode"`
+			GiveUpPolicy       string `json:"give_up_policy"`
+			DDL                struct {
+				Gate        *bool `json:"gate"`
+				AutoApprove *bool `json:"auto_approve"`
+				AutoApply   *bool `json:"auto_apply"`
+			} `json:"ddl"`
+			SchemaRegistrySubject           string                     `json:"schema_registry_subject"`
+			SchemaRegistryProtoTypesSubject string                     `json:"schema_registry_proto_types_subject"`
+			SchemaRegistrySubjectMode       string                     `json:"schema_registry_subject_mode"`
+			TableMappings                   internalflow.TableMappings `json:"table_mappings"`
+		} `json:"config"`
 	}
 	if err := json.Unmarshal(output, &getResp); err != nil {
 		t.Fatalf("decode flow get output: %v\n%s", err, output)
@@ -942,6 +987,12 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 	}
 	if len(getResp.Destinations) != 1 || getResp.Destinations[0].Name == "" {
 		t.Fatalf("missing destination in flow get: %s", output)
+	}
+	if getResp.Source.Options["dsn"] != "[REDACTED]" || getResp.Source.Options["headers"] != "[REDACTED]" || getResp.Source.Options["webhook_url"] != "https://hooks.slack.com/[REDACTED]" || getResp.Destinations[0].Options["dsn"] != "[REDACTED]" || getResp.Destinations[0].Options["grpc_authorization_header"] != "[REDACTED]" || getResp.Destinations[0].Options["api_endpoint"] != "https://api.github.com/[REDACTED]" || getResp.Destinations[0].Options["plain_url"] != "https://plain.example:8443" || getResp.Destinations[0].Options["stream"] != "orders" || bytes.Contains(output, []byte(testPostgresAppDSN(t))) {
+		t.Fatalf("flow get did not redact secrets while preserving topology: %s", output)
+	}
+	if getResp.Config.TableMappings.Version != internalflow.TableMappingsVersion || len(getResp.Config.TableMappings.Destinations) != 1 || getResp.Config.AckPolicy != "primary" || getResp.Config.PrimaryDestination != "dest" || getResp.Config.FailureMode != "hold_slot" || getResp.Config.GiveUpPolicy != "never" || getResp.Config.DDL.Gate == nil || *getResp.Config.DDL.Gate || getResp.Config.DDL.AutoApprove == nil || !*getResp.Config.DDL.AutoApprove || getResp.Config.DDL.AutoApply == nil || *getResp.Config.DDL.AutoApply || getResp.Config.SchemaRegistrySubject != "subject" || getResp.Config.SchemaRegistryProtoTypesSubject != "types" || getResp.Config.SchemaRegistrySubjectMode != "record" {
+		t.Fatalf("incomplete config round trip: %s", output)
 	}
 	if getResp.WireFormat != "json" {
 		t.Fatalf("expected wire_format json, got %s", getResp.WireFormat)
@@ -1008,26 +1059,46 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wallaby-admin flow validate: %v\n%s", err, output)
 	}
-	var validateResp struct {
-		Valid            bool                  `json:"valid"`
-		Name             string                `json:"name"`
-		DestinationCount int                   `json:"destination_count"`
-		Source           endpointConfigPayload `json:"source"`
+	type validateEndpoint struct {
+		Name    string            `json:"name" yaml:"name"`
+		Options map[string]string `json:"options" yaml:"options"`
 	}
+	type validateResponse struct {
+		Valid            bool               `json:"valid" yaml:"valid"`
+		Name             string             `json:"name" yaml:"name"`
+		DestinationCount int                `json:"destination_count" yaml:"destination_count"`
+		Source           validateEndpoint   `json:"source" yaml:"source"`
+		Destinations     []validateEndpoint `json:"destinations" yaml:"destinations"`
+	}
+	assertValidate := func(format string, payload []byte, response validateResponse) {
+		t.Helper()
+		if !response.Valid || response.Name != "cli-flow-list-get-delete-wait" || response.Source.Name == "" || response.DestinationCount != 1 || len(response.Destinations) != 1 {
+			t.Fatalf("incomplete %s validation output: %s", format, payload)
+		}
+		if response.Source.Options["dsn"] != "[REDACTED]" || response.Source.Options["headers"] != "[REDACTED]" || response.Source.Options["webhook_url"] != "https://hooks.slack.com/[REDACTED]" || response.Destinations[0].Options["dsn"] != "[REDACTED]" || response.Destinations[0].Options["grpc_authorization_header"] != "[REDACTED]" || response.Destinations[0].Options["api_endpoint"] != "https://api.github.com/[REDACTED]" || response.Destinations[0].Options["plain_url"] != "https://plain.example:8443" || response.Destinations[0].Options["stream"] != "orders" || bytes.Contains(payload, []byte("source-header-secret")) || bytes.Contains(payload, []byte("destination-header-secret")) || bytes.Contains(payload, []byte("integration-slack-secret")) || bytes.Contains(payload, []byte("integration-github-secret")) || bytes.Contains(payload, []byte("integration-signed-secret")) || bytes.Contains(payload, []byte(testPostgresAppDSN(t))) {
+			t.Fatalf("%s validation leaked secrets or hid topology: %s", format, payload)
+		}
+	}
+	var validateResp validateResponse
 	if err := json.Unmarshal(output, &validateResp); err != nil {
-		t.Fatalf("decode flow validate output: %v\n%s", err, output)
+		t.Fatalf("decode flow validate JSON: %v\n%s", err, output)
 	}
-	if !validateResp.Valid {
-		t.Fatalf("expected flow config to be valid: %s", output)
+	assertValidate("JSON", output, validateResp)
+	output, err = runWallabyAdmin(ctx, "", "flow", "validate", "--file", configPath, "--yaml")
+	if err != nil {
+		t.Fatalf("wallaby-admin flow validate YAML: %v\n%s", err, output)
 	}
-	if validateResp.Name != "cli-flow-list-get-delete-wait" {
-		t.Fatalf("expected validated name cli-flow-list-get-delete-wait, got %s", validateResp.Name)
+	validateResp = validateResponse{}
+	if err := yaml.Unmarshal(output, &validateResp); err != nil {
+		t.Fatalf("decode flow validate YAML: %v\n%s", err, output)
 	}
-	if validateResp.Source.Name == "" {
-		t.Fatalf("expected validated source name, got %v", output)
+	assertValidate("YAML", output, validateResp)
+	output, err = runWallabyAdmin(ctx, "", "flow", "validate", "--file", configPath)
+	if err != nil {
+		t.Fatalf("wallaby-admin flow validate human: %v\n%s", err, output)
 	}
-	if validateResp.DestinationCount != 1 {
-		t.Fatalf("expected destination count 1, got %d", validateResp.DestinationCount)
+	if bytes.Contains(output, []byte("source-header-secret")) || bytes.Contains(output, []byte("destination-header-secret")) || bytes.Contains(output, []byte("integration-slack-secret")) || bytes.Contains(output, []byte("integration-github-secret")) || bytes.Contains(output, []byte("integration-signed-secret")) || bytes.Contains(output, []byte(testPostgresAppDSN(t))) || !bytes.Contains(output, []byte("Source: src")) || !bytes.Contains(output, []byte("Destination: dest")) {
+		t.Fatalf("human validation leaked secrets or omitted endpoints: %s", output)
 	}
 }
 
@@ -1072,12 +1143,14 @@ func TestCLIIntegrationFlowDryRunCheck(t *testing.T) {
 		ID     string `json:"id"`
 		Name   string `json:"name"`
 		Source struct {
-			Name string `json:"name"`
-			Type string `json:"type"`
+			Name    string            `json:"name"`
+			Type    string            `json:"type"`
+			Options map[string]string `json:"options"`
 		} `json:"source"`
 		Destinations []struct {
-			Name string `json:"name"`
-			Type string `json:"type"`
+			Name    string            `json:"name"`
+			Type    string            `json:"type"`
+			Options map[string]string `json:"options"`
 		} `json:"destinations"`
 	}
 	if err := json.Unmarshal(output, &dryRunResp); err != nil {
@@ -1091,6 +1164,9 @@ func TestCLIIntegrationFlowDryRunCheck(t *testing.T) {
 	}
 	if len(dryRunResp.Destinations) != 1 {
 		t.Fatalf("expected 1 destination in dry-run output, got %d", len(dryRunResp.Destinations))
+	}
+	if dryRunResp.Source.Options["dsn"] != "[REDACTED]" || dryRunResp.Destinations[0].Options["dsn"] != "[REDACTED]" || dryRunResp.Destinations[0].Options["stream"] != "orders" || bytes.Contains(output, []byte(testPostgresAppDSN(t))) {
+		t.Fatalf("dry-run detail did not redact secrets while preserving topology: %s", output)
 	}
 
 	output, err = runWallabyAdmin(ctx, "", "flow", "check", "--file", configPath, "--json")
@@ -1242,6 +1318,9 @@ func TestCLIIntegrationFlowUpdate(t *testing.T) {
 	if updated.Destinations[0].Options["stream"] != "orders_v2" {
 		t.Fatalf("expected updated stream option, got %v", updated.Destinations[0].Options)
 	}
+	if updated.Config.TableMappings.Version != internalflow.TableMappingsVersion || len(updated.Config.TableMappings.Destinations) != 1 {
+		t.Fatalf("updated mappings=%+v", updated.Config.TableMappings)
+	}
 }
 
 func TestCLIIntegrationFlowReconfigure(t *testing.T) {
@@ -1354,6 +1433,13 @@ func TestCLIIntegrationFlowReconfigure(t *testing.T) {
 	}
 	if resp.ID != createResp.ID {
 		t.Fatalf("expected flow id %s, got %s", createResp.ID, resp.ID)
+	}
+	updated, err := engine.Get(ctx, createResp.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Config.TableMappings.Version != internalflow.TableMappingsVersion || len(updated.Config.TableMappings.Destinations) != 1 {
+		t.Fatalf("reconfigured mappings=%+v", updated.Config.TableMappings)
 	}
 }
 
@@ -2382,6 +2468,7 @@ func containsTable(tables []string, value string) bool {
 
 type flowConfigPayload struct {
 	ID           string                  `json:"id,omitempty"`
+	Config       internalflow.Config     `json:"config"`
 	Name         string                  `json:"name"`
 	WireFormat   string                  `json:"wire_format"`
 	Parallelism  int32                   `json:"parallelism,omitempty"`
@@ -2397,6 +2484,12 @@ type endpointConfigPayload struct {
 
 func writeFlowConfig(t *testing.T, cfg flowConfigPayload) string {
 	t.Helper()
+	if cfg.Config.TableMappings.Version == 0 {
+		cfg.Config.TableMappings = internalflow.TableMappings{Version: internalflow.TableMappingsVersion}
+		for _, destination := range cfg.Destinations {
+			cfg.Config.TableMappings.Destinations = append(cfg.Config.TableMappings.Destinations, internalflow.DestinationTableMappings{Destination: destination.Name, FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}})
+		}
+	}
 	file, err := os.CreateTemp("", "wallaby-flow-*.json")
 	if err != nil {
 		t.Fatalf("create flow config: %v", err)

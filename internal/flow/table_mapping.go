@@ -31,50 +31,50 @@ const (
 
 // TableMappings is the complete, durable destination-scoped logical projection.
 type TableMappings struct {
-	Version      uint32                     `json:"version"`
-	Destinations []DestinationTableMappings `json:"destinations"`
+	Version      uint32                     `json:"version" yaml:"version"`
+	Destinations []DestinationTableMappings `json:"destinations" yaml:"destinations"`
 }
 
 type DestinationTableMappings struct {
-	Destination  string             `json:"destination"`
-	FutureTables FutureTableMapping `json:"future_tables"`
-	Tables       []TableMapping     `json:"tables"`
+	Destination  string             `json:"destination" yaml:"destination"`
+	FutureTables FutureTableMapping `json:"future_tables" yaml:"future_tables"`
+	Tables       []TableMapping     `json:"tables" yaml:"tables"`
 }
 
 type FutureTableMapping struct {
-	Action        MappingAction       `json:"action"`
-	TargetSchema  string              `json:"target_schema,omitempty"`
-	TargetTable   string              `json:"target_table,omitempty"`
-	FutureColumns FutureColumnMapping `json:"future_columns"`
-	Write         TableWritePolicy    `json:"write"`
+	Action        MappingAction       `json:"action" yaml:"action"`
+	TargetSchema  string              `json:"target_schema,omitempty" yaml:"target_schema,omitempty"`
+	TargetTable   string              `json:"target_table,omitempty" yaml:"target_table,omitempty"`
+	FutureColumns FutureColumnMapping `json:"future_columns" yaml:"future_columns"`
+	Write         TableWritePolicy    `json:"write" yaml:"write"`
 }
 
 type TableMapping struct {
-	SourceSchema  string              `json:"source_schema"`
-	SourceTable   string              `json:"source_table"`
-	Action        MappingAction       `json:"action"`
-	TargetSchema  string              `json:"target_schema,omitempty"`
-	TargetTable   string              `json:"target_table,omitempty"`
-	FutureColumns FutureColumnMapping `json:"future_columns"`
-	Columns       []ColumnMapping     `json:"columns"`
-	Write         TableWritePolicy    `json:"write"`
+	SourceSchema  string              `json:"source_schema" yaml:"source_schema"`
+	SourceTable   string              `json:"source_table" yaml:"source_table"`
+	Action        MappingAction       `json:"action" yaml:"action"`
+	TargetSchema  string              `json:"target_schema,omitempty" yaml:"target_schema,omitempty"`
+	TargetTable   string              `json:"target_table,omitempty" yaml:"target_table,omitempty"`
+	FutureColumns FutureColumnMapping `json:"future_columns" yaml:"future_columns"`
+	Columns       []ColumnMapping     `json:"columns" yaml:"columns"`
+	Write         TableWritePolicy    `json:"write" yaml:"write"`
 }
 
 type FutureColumnMapping struct {
-	Action       MappingAction `json:"action"`
-	TargetColumn string        `json:"target_column,omitempty"`
+	Action       MappingAction `json:"action" yaml:"action"`
+	TargetColumn string        `json:"target_column,omitempty" yaml:"target_column,omitempty"`
 }
 
 type ColumnMapping struct {
-	SourceColumn string        `json:"source_column"`
-	Action       MappingAction `json:"action"`
-	TargetColumn string        `json:"target_column,omitempty"`
+	SourceColumn string        `json:"source_column" yaml:"source_column"`
+	Action       MappingAction `json:"action" yaml:"action"`
+	TargetColumn string        `json:"target_column,omitempty" yaml:"target_column,omitempty"`
 }
 
 type TableWritePolicy struct {
-	Mode            TableWriteMode `json:"mode"`
-	KeyColumns      []string       `json:"key_columns"`
-	WatermarkColumn string         `json:"watermark_column,omitempty"`
+	Mode            TableWriteMode `json:"mode" yaml:"mode"`
+	KeyColumns      []string       `json:"key_columns" yaml:"key_columns"`
+	WatermarkColumn string         `json:"watermark_column,omitempty" yaml:"watermark_column,omitempty"`
 }
 
 // NewTableMappings returns the required include-by-name, append-safe policy for the supplied destinations.
