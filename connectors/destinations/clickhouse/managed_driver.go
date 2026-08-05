@@ -43,19 +43,6 @@ const (
 	managedMinDedupWindowSeconds = uint64(3600)
 )
 
-// ManagedHooks exposes deterministic post-commit boundaries to real-service
-// tests. Production callers leave every hook nil.
-type ManagedHooks struct {
-	AfterFragment func(fragmentOrdinal uint64) error
-	AfterReceipt  func() error
-}
-
-// SetManagedHooks installs deterministic failure injection for managed profile
-// tests. Hooks run only after ClickHouse has acknowledged the named insert.
-func (d *Destination) SetManagedHooks(hooks ManagedHooks) {
-	d.managedHooks = hooks
-}
-
 type managedConfig struct {
 	database            string
 	changelogTable      string
@@ -535,19 +522,9 @@ func (p *preparedManagedTransaction) Apply(ctx context.Context) (connector.Deliv
 		if err := p.destination.insertManagedFragment(ctx, fragment); err != nil {
 			return connector.DeliveryEvidence{}, err
 		}
-		if p.destination.managedHooks.AfterFragment != nil {
-			if err := p.destination.managedHooks.AfterFragment(fragment.Ordinal); err != nil {
-				return connector.DeliveryEvidence{}, fmt.Errorf("%w: injected after ClickHouse fragment %d commit: %w", connector.ErrDeliveryIndeterminate, fragment.Ordinal, err)
-			}
-		}
 	}
 	if err := p.destination.insertManagedReceipt(ctx, p.plan.Receipt); err != nil {
 		return connector.DeliveryEvidence{}, err
-	}
-	if p.destination.managedHooks.AfterReceipt != nil {
-		if err := p.destination.managedHooks.AfterReceipt(); err != nil {
-			return connector.DeliveryEvidence{}, fmt.Errorf("%w: injected after ClickHouse receipt commit: %w", connector.ErrDeliveryIndeterminate, err)
-		}
 	}
 	return connector.DeliveryEvidence{ExternalID: p.plan.Receipt.ExternalID, ContentHash: p.intent.ContentHash}, nil
 }

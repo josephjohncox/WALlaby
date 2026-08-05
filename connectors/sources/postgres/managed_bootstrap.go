@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -125,9 +124,7 @@ func (s *Source) PrepareManagedBootstrap(ctx context.Context, fence connector.Ru
 			// A replacement cannot import a snapshot whose exporter process is
 			// gone. It may, however, reconcile an atomic destination publication
 			// marker committed before the old owner recorded its control receipt.
-			sourceSchemas, schemaErr := coordinator.LoadSchemas(ctx, fence, latest)
-			tables, projectionErr := projectBootstrapTables(sourceSchemas, latest.ConsistentLSN.String(), projector)
-			schemaErr = errors.Join(schemaErr, projectionErr)
+			tables, schemaErr := coordinator.LoadDeliveryContracts(ctx, fence, latest)
 			if latest.SourceLineageID != "" {
 				if schemaErr != nil {
 					return connector.ManagedBootstrapResult{}, recoverableBootstrapPublicationError("load schemas for publication recovery", schemaErr)
@@ -236,7 +233,7 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 			return connector.ManagedBootstrapResult{}, false, fmt.Errorf("lock bootstrap relation %d: %w", relation.OID, err)
 		}
 	}
-	manifestDigest := managedManifestHash(tasks, projector.Fingerprint())
+	manifestDigest := managedManifestHash(tasks)
 	if manifestDigest.err != nil {
 		return connector.ManagedBootstrapResult{}, false, manifestDigest.err
 	}
@@ -299,7 +296,7 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 		_ = verification.Rollback(context.WithoutCancel(ctx))
 		return connector.ManagedBootstrapResult{}, false, err
 	}
-	verifiedDigest := managedManifestHash(verifiedTasks, projector.Fingerprint())
+	verifiedDigest := managedManifestHash(verifiedTasks)
 	if verifiedDigest.err != nil {
 		_ = verification.Rollback(context.WithoutCancel(ctx))
 		return connector.ManagedBootstrapResult{}, false, verifiedDigest.err
@@ -724,31 +721,23 @@ func filterManagedSnapshotTasks(tasks []bootstrap.SnapshotTask, relations []boot
 		if !ok {
 			return nil, nil, nil, fmt.Errorf("bootstrap task relation %d is absent from publication selection", task.RelationID)
 		}
+		task.Delivery = bootstrap.SnapshotDeliveryContract{
+			Version:               bootstrap.SnapshotDeliveryContractV1,
+			Schema:                mapped,
+			WritePolicy:           policy,
+			ProjectionFingerprint: projector.Fingerprint(),
+		}
+		if err := task.Delivery.Validate(); err != nil {
+			return nil, nil, nil, fmt.Errorf("freeze bootstrap destination contract %s.%s: %w", task.Namespace, task.Table, err)
+		}
 		filteredTasks = append(filteredTasks, task)
 		filteredRelations = append(filteredRelations, relation)
-		tables = append(tables, connector.BootstrapTable{Schema: mapped, WritePolicy: policy})
+		tables = append(tables, connector.BootstrapTable{Schema: task.Delivery.Schema, WritePolicy: task.Delivery.WritePolicy})
 	}
 	if len(filteredTasks) == 0 {
 		return nil, nil, nil, errors.New("table mapping excludes every managed bootstrap relation")
 	}
 	return filteredTasks, filteredRelations, tables, nil
-}
-
-func projectBootstrapTables(sourceSchemas []connector.Schema, sourcePosition string, projector connector.ManagedBootstrapProjector) ([]connector.BootstrapTable, error) {
-	tables := make([]connector.BootstrapTable, 0, len(sourceSchemas))
-	for _, source := range sourceSchemas {
-		mapped, policy, included, err := projector.ProjectBootstrapSchema(source)
-		if err != nil {
-			return nil, err
-		}
-		if included {
-			tables = append(tables, connector.BootstrapTable{Schema: mapped, WritePolicy: policy, SourcePosition: sourcePosition})
-		}
-	}
-	if len(tables) == 0 {
-		return nil, errors.New("table mapping excludes every recovered bootstrap relation")
-	}
-	return tables, nil
 }
 
 func loadManagedSnapshotSchema(ctx context.Context, tx pgx.Tx, relation bootstrap.PublicationRelation) (connector.Schema, []string, error) {
@@ -960,28 +949,9 @@ type managedManifestDigest struct {
 	err   error
 }
 
-func managedManifestHash(tasks []bootstrap.SnapshotTask, projectionFingerprint string) managedManifestDigest {
-	type manifestTask struct {
-		OID        uint32
-		Namespace  string
-		Table      string
-		Schema     connector.Schema
-		KeyColumns []string
-	}
-	manifest := make([]manifestTask, 0, len(tasks))
-	for _, task := range tasks {
-		manifest = append(manifest, manifestTask{OID: task.RelationID, Namespace: task.Namespace, Table: task.Table, Schema: task.Schema, KeyColumns: task.KeyColumns})
-	}
-	sort.Slice(manifest, func(i, j int) bool { return manifest[i].OID < manifest[j].OID })
-	encoded, err := json.Marshal(struct {
-		ProjectionFingerprint string         `json:"projection_fingerprint"`
-		Tasks                 []manifestTask `json:"tasks"`
-	}{projectionFingerprint, manifest})
-	if err != nil {
-		return managedManifestDigest{err: fmt.Errorf("marshal managed bootstrap manifest: %w", err)}
-	}
-	digest := sha256.Sum256(encoded)
-	return managedManifestDigest{value: hex.EncodeToString(digest[:])}
+func managedManifestHash(tasks []bootstrap.SnapshotTask) managedManifestDigest {
+	value, err := bootstrap.SnapshotManifestHash(tasks)
+	return managedManifestDigest{value: value, err: err}
 }
 
 func managedBootstrapIntent(fence authority.RunFence, snapshot bootstrap.ExportedSnapshot, destinationRevisionID string) connector.BootstrapIntent {

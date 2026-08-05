@@ -26,6 +26,11 @@ func safeMetaCapacity(base, extra int) int {
 }
 
 const (
+	CapabilityProfileBase    connector.CapabilityProfileID = "base"
+	CapabilityProfileManaged connector.CapabilityProfileID = connector.ManagedProfilePostgresToClickHouseAppendV1
+)
+
+const (
 	optDSN             = "dsn"
 	optDatabase        = "database"
 	optSchema          = "schema"
@@ -59,9 +64,14 @@ const (
 )
 
 // Destination writes change events into ClickHouse tables.
+type ddlExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 type Destination struct {
 	spec                connector.Spec
 	db                  *sql.DB
+	ddlExecutor         ddlExecutor
 	managedConn         chdriver.Conn
 	managedReplicaConn  chdriver.Conn
 	managedOptions      *chclient.Options
@@ -69,7 +79,6 @@ type Destination struct {
 	managedConfig       managedConfig
 	managedVersion      string
 	managedRecoveryOnly bool
-	managedHooks        ManagedHooks
 	batchMode           string
 	batchResolve        string
 	stagingSchema       string
@@ -246,12 +255,10 @@ func (d *Destination) ResolveStagingFor(ctx context.Context, schemas []connector
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
 		Support:     connector.SupportExperimental,
-		TableWrites: connector.TableWriteSemantics{Declared: true, Append: true},
+		TableWrites: connector.TableWriteSemantics{Append: true},
 		Delivery: connector.DeliverySemantics{
-			Declared:    true,
 			ExecutesDDL: true,
 		},
-		SupportsDDL:           true,
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      true,
@@ -266,11 +273,52 @@ func (d *Destination) Capabilities() connector.Capabilities {
 	}
 }
 
+// CapabilityProfileIDs returns the complete closed ClickHouse capability profile set.
+func (*Destination) CapabilityProfileIDs() []connector.CapabilityProfileID {
+	return []connector.CapabilityProfileID{CapabilityProfileBase, CapabilityProfileManaged}
+}
+
+// ClassifyCapabilityProfile validates the exact managed ClickHouse profile.
+func (*Destination) ClassifyCapabilityProfile(spec connector.Spec) (connector.CapabilityProfileID, error) {
+	profile := strings.TrimSpace(spec.Options["managed_profile"])
+	switch profile {
+	case "":
+		return CapabilityProfileBase, nil
+	case connector.ManagedProfilePostgresToClickHouseAppendV1:
+		return CapabilityProfileManaged, nil
+	default:
+		return "", fmt.Errorf("unsupported ClickHouse managed profile %q", profile)
+	}
+}
+
+// CapabilitiesFor removes generic DDL execution from the exact managed append
+// profile, whose ApplyDDL path records barriers and rejects target mutation.
+func (d *Destination) CapabilitiesFor(spec connector.Spec) (connector.Capabilities, error) {
+	profile, err := d.ClassifyCapabilityProfile(spec)
+	if err != nil {
+		return connector.Capabilities{}, err
+	}
+	capabilities := d.Capabilities()
+	switch profile {
+	case CapabilityProfileBase:
+		return capabilities, nil
+	case CapabilityProfileManaged:
+		capabilities.Delivery.ExecutesDDL = false
+		return capabilities, nil
+	default:
+		return connector.Capabilities{}, fmt.Errorf("unsupported ClickHouse capability profile %q", profile)
+	}
+}
+
 func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, record connector.Record) error {
 	if d.managedProfile != "" {
 		return errors.New("managed ClickHouse append profile records structured schema barriers and never executes target DDL")
 	}
-	if d.db == nil {
+	executor := d.ddlExecutor
+	if executor == nil {
+		executor = d.db
+	}
+	if executor == nil {
 		return errors.New("clickhouse destination not initialized")
 	}
 	statements, err := ddl.TranslateRecordDDL(schema, record, ddl.DialectConfigFor(ddl.DialectClickHouse), d.TypeMappings(), d.spec.Options)
@@ -281,7 +329,7 @@ func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, rec
 		if strings.TrimSpace(stmt) == "" {
 			continue
 		}
-		if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+		if _, err := executor.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("apply ddl: %w", err)
 		}
 	}

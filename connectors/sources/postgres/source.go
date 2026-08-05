@@ -886,7 +886,6 @@ func (s *Source) Capabilities() connector.Capabilities {
 		Evidence: connector.ContractEvidence{
 			SchemaEvolution: true,
 		},
-		SupportsDDL:           true,
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      false,

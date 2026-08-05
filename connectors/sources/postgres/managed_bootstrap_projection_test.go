@@ -7,6 +7,13 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+func identitySnapshotDelivery(schema connector.Schema) bootstrap.SnapshotDeliveryContract {
+	policy := connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend, ProjectionFingerprint: "identity-v1"}
+	return bootstrap.SnapshotDeliveryContract{
+		Version: bootstrap.SnapshotDeliveryContractV1, Schema: schema, WritePolicy: policy, ProjectionFingerprint: "identity-v1",
+	}
+}
+
 type bootstrapProjectionStub struct{ fingerprint string }
 
 func (p bootstrapProjectionStub) Fingerprint() string { return p.fingerprint }
@@ -66,19 +73,36 @@ func TestManagedBootstrapFiltersPublicationTasksAndPreservesSourceSchemas(t *tes
 	if filteredTasks[0].Schema.Name != "keep" || filteredTasks[0].Schema.Namespace != "public" {
 		t.Fatalf("source query schema was projected: %+v", filteredTasks[0].Schema)
 	}
+	if filteredTasks[0].Delivery.Schema.Name != "dst_keep" || filteredTasks[0].Delivery.ProjectionFingerprint != "mapping-v1" || filteredTasks[0].Delivery.WritePolicy.Mode != connector.ResolvedWriteAppend {
+		t.Fatalf("frozen destination task contract=%+v", filteredTasks[0].Delivery)
+	}
 	if tables[0].Schema.Name != "dst_keep" || tables[0].Schema.Namespace != "mapped" || tables[0].WritePolicy.Mode != connector.ResolvedWriteAppend {
 		t.Fatalf("destination bootstrap table=%+v", tables[0])
 	}
 }
 
-func TestManagedBootstrapManifestBindsProjectionFingerprint(t *testing.T) {
-	tasks := []bootstrap.SnapshotTask{{RelationID: 1, Namespace: "public", Table: "keep", Schema: connector.Schema{Namespace: "public", Name: "keep"}}}
-	first := managedManifestHash(tasks, "mapping-v1")
-	second := managedManifestHash(tasks, "mapping-v2")
-	if first.err != nil || second.err != nil {
-		t.Fatalf("manifest errors=%v/%v", first.err, second.err)
+func TestManagedBootstrapManifestBindsFullDestinationContract(t *testing.T) {
+	source := connector.Schema{Namespace: "public", Name: "keep", Columns: []connector.Column{{Name: "id", Type: "int8"}}}
+	firstTask := bootstrap.SnapshotTask{RelationID: 1, TaskID: "full", Namespace: "public", Table: "keep", Schema: source, KeyColumns: []string{"id"}, Delivery: identitySnapshotDelivery(source)}
+	first := managedManifestHash([]bootstrap.SnapshotTask{firstTask})
+	changedFingerprint := firstTask
+	changedFingerprint.Delivery.ProjectionFingerprint = "mapping-v2"
+	changedFingerprint.Delivery.WritePolicy.ProjectionFingerprint = "mapping-v2"
+	second := managedManifestHash([]bootstrap.SnapshotTask{changedFingerprint})
+	changedPolicy := firstTask
+	changedPolicy.Delivery.WritePolicy.Mode = connector.ResolvedWriteUpsert
+	changedPolicy.Delivery.WritePolicy.KeyColumns = []string{"id"}
+	third := managedManifestHash([]bootstrap.SnapshotTask{changedPolicy})
+	changedSchema := firstTask
+	changedSchema.Delivery.Schema.Name = "renamed"
+	fourth := managedManifestHash([]bootstrap.SnapshotTask{changedSchema})
+	for _, digest := range []managedManifestDigest{first, second, third, fourth} {
+		if digest.err != nil {
+			t.Fatal(digest.err)
+		}
 	}
-	if first.value == second.value {
-		t.Fatal("projection fingerprint did not change bootstrap manifest identity")
+	seen := map[string]struct{}{first.value: {}, second.value: {}, third.value: {}, fourth.value: {}}
+	if len(seen) != 4 {
+		t.Fatalf("destination contract changes did not rotate every manifest identity: %v", seen)
 	}
 }

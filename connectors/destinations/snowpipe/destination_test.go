@@ -2,11 +2,13 @@ package snowpipe
 
 import (
 	"context"
+	"encoding/json"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	internalschema "github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/wire"
 )
@@ -84,6 +86,26 @@ func TestWriteIssuesPutAndCopy(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestApplyDDLExecutesTranslatedStatement(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	plan, err := json.Marshal(internalschema.Plan{Changes: []internalschema.Change{{Type: internalschema.ChangeAddColumn, Namespace: "ANALYTICS", Table: "EVENTS", Column: "STATUS", ToType: "text", Nullable: false}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectExec(`ALTER TABLE "ANALYTICS"\."EVENTS" ADD COLUMN "STATUS" STRING NOT NULL`).WillReturnResult(sqlmock.NewResult(0, 1))
+	destination := &Destination{db: db, spec: connector.Spec{Type: connector.EndpointSnowpipe}}
+	if err := destination.ApplyDDL(context.Background(), connector.Schema{Namespace: "ANALYTICS", Name: "EVENTS"}, connector.Record{Operation: connector.OpDDL, DDLPlan: plan}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

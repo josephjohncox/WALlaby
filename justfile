@@ -400,8 +400,11 @@ generate-check: generate
 proto-lint:
     {{ buf }} lint
 
-proto-breaking:
+proto-breaking: proto-breaking-selftest
     ./scripts/proto-breaking.sh "{{ buf }}"
+
+proto-breaking-selftest:
+    ./scripts/proto-breaking-selftest.sh
 
 proto-tools:
     GOBIN="{{ gobin }}" {{ go }} install google.golang.org/protobuf/cmd/protoc-gen-go@{{ protoc_gen_go_version }}

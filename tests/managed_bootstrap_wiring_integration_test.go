@@ -49,7 +49,7 @@ func describeBootstrapWiringShape(ctx context.Context, pool *pgxpool.Pool) strin
 	var report strings.Builder
 	for _, target := range []struct{ schema, table string }{
 		{schema: "public", table: "wallaby_bootstrap_wiring_a"},
-		{schema: "wallaby_bootstrap_target", table: "wallaby_bootstrap_wiring_a"},
+		{schema: "wallaby_bootstrap_target", table: "wallaby_bootstrap_wiring_accounts"},
 	} {
 		report.WriteString(fmt.Sprintf("shape %s.%s: ", target.schema, target.table))
 		rows, err := pool.Query(ctx, `
@@ -102,7 +102,11 @@ CREATE TABLE public.wallaby_bootstrap_wiring_b(id bigint PRIMARY KEY,value text 
 INSERT INTO public.wallaby_bootstrap_wiring_a(id,value) VALUES(1,'snapshot');
 INSERT INTO public.wallaby_bootstrap_wiring_b VALUES(10,'second-table');
 CREATE SCHEMA wallaby_bootstrap_target;
-CREATE TABLE wallaby_bootstrap_target.wallaby_bootstrap_wiring_a(LIKE public.wallaby_bootstrap_wiring_a INCLUDING ALL);
+CREATE TABLE wallaby_bootstrap_target.wallaby_bootstrap_wiring_accounts(
+  account_id bigint PRIMARY KEY,
+  display_value text NOT NULL,
+  rendered text GENERATED ALWAYS AS (display_value || '-generated') STORED
+);
 CREATE TABLE wallaby_bootstrap_target.wallaby_bootstrap_wiring_b(LIKE public.wallaby_bootstrap_wiring_b INCLUDING ALL)`); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +134,7 @@ DROP TABLE IF EXISTS public.wallaby_bootstrap_wiring_b`)
 		}},
 		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "batch_mode": "target", "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "destination_revision_id": destinationRevisionID, "synchronous_commit": "on", "meta_table_enabled": "false"}}},
 		Config: flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "target", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{
-			{SourceSchema: "public", SourceTable: "wallaby_bootstrap_wiring_a", Action: flow.MappingActionInclude, TargetSchema: "wallaby_bootstrap_target", TargetTable: "wallaby_bootstrap_wiring_a", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Columns: []flow.ColumnMapping{{SourceColumn: "rendered", Action: flow.MappingActionExclude}}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}},
+			{SourceSchema: "public", SourceTable: "wallaby_bootstrap_wiring_a", Action: flow.MappingActionInclude, TargetSchema: "wallaby_bootstrap_target", TargetTable: "wallaby_bootstrap_wiring_accounts", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Columns: []flow.ColumnMapping{{SourceColumn: "id", Action: flow.MappingActionInclude, TargetColumn: "account_id"}, {SourceColumn: "value", Action: flow.MappingActionInclude, TargetColumn: "display_value"}, {SourceColumn: "rendered", Action: flow.MappingActionExclude}}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}},
 			{SourceSchema: "public", SourceTable: "wallaby_bootstrap_wiring_b", Action: flow.MappingActionInclude, TargetSchema: "wallaby_bootstrap_target", TargetTable: "wallaby_bootstrap_wiring_b", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}},
 		}}}}},
 	}
@@ -236,8 +240,8 @@ INSERT INTO public.wallaby_bootstrap_wiring_a(id,value) VALUES(2,'after-cut')`);
 		var count int
 		var values, rendered string
 		err := pool.QueryRow(ctx, `
-SELECT count(*),COALESCE(string_agg(value,',' ORDER BY id),''),COALESCE(string_agg(rendered,',' ORDER BY id),'')
-FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a`).Scan(&count, &values, &rendered)
+SELECT count(*),COALESCE(string_agg(display_value,',' ORDER BY account_id),''),COALESCE(string_agg(rendered,',' ORDER BY account_id),'')
+FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_accounts`).Scan(&count, &values, &rendered)
 		if err == nil && count == 2 && values == "stream,after-cut" && rendered == "stream-generated,after-cut-generated" {
 			var second string
 			if err := pool.QueryRow(ctx, `SELECT value FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_b WHERE id=10`).Scan(&second); err == nil && second == "second-table" {
@@ -378,7 +382,7 @@ FROM source_bootstraps WHERE flow_incarnation_id=(SELECT incarnation_id FROM flo
 	resumeDeadline := time.Now().Add(20 * time.Second)
 	for {
 		var resumedValue, resumedRendered string
-		err := pool.QueryRow(ctx, `SELECT value,rendered FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a WHERE id=3`).Scan(&resumedValue, &resumedRendered)
+		err := pool.QueryRow(ctx, `SELECT display_value,rendered FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_accounts WHERE account_id=3`).Scan(&resumedValue, &resumedRendered)
 		if err == nil && resumedValue == "resumed" && resumedRendered == "resumed-generated" {
 			break
 		}
@@ -432,7 +436,7 @@ UPDATE public.wallaby_bootstrap_wiring_a SET value='evolved-after-restart',note=
 	evolutionDeadline := time.Now().Add(20 * time.Second)
 	for {
 		var value, note, rendered string
-		err := pool.QueryRow(ctx, `SELECT value,note,rendered FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_a WHERE id=3`).Scan(&value, &note, &rendered)
+		err := pool.QueryRow(ctx, `SELECT display_value,note,rendered FROM wallaby_bootstrap_target.wallaby_bootstrap_wiring_accounts WHERE account_id=3`).Scan(&value, &note, &rendered)
 		if err == nil && value == "evolved-after-restart" && note == "durable-baseline" && rendered == "evolved-after-restart-generated" {
 			break
 		}

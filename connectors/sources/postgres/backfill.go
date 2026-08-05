@@ -219,7 +219,6 @@ func (b *BackfillSource) Capabilities() connector.Capabilities {
 		Evidence: connector.ContractEvidence{
 			SchemaEvolution: true,
 		},
-		SupportsDDL:           false,
 		SupportsSchemaChanges: false,
 		SupportsStreaming:     false,
 		SupportsBulkLoad:      true,

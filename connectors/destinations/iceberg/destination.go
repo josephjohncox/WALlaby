@@ -33,9 +33,9 @@ func (*Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
 		Support:     connector.SupportExperimental,
 		Evidence:    connector.ContractEvidence{},
-		TableWrites: connector.TableWriteSemantics{Declared: true, Append: true},
+		TableWrites: connector.TableWriteSemantics{Append: true},
 		Delivery: connector.DeliverySemantics{
-			Declared: true, IdempotentReplay: true, ReplaySafe: true,
+			IdempotentReplay: true, ReplaySafe: true,
 		},
 		SupportsStreaming:     true,
 		SupportsSchemaChanges: true,

@@ -457,12 +457,10 @@ func (d *Destination) Close(_ context.Context) error {
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
 		Support:     connector.SupportExperimental,
-		TableWrites: connector.TableWriteSemantics{Declared: true, Append: true},
+		TableWrites: connector.TableWriteSemantics{Append: true},
 		Delivery: connector.DeliverySemantics{
-			Declared:    true,
 			ExecutesDDL: true,
 		},
-		SupportsDDL:           true,
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     false,
 		SupportsBulkLoad:      true,

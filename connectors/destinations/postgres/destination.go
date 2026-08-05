@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/ddl"
 	postgrescodec "github.com/josephjohncox/wallaby/internal/postgres"
@@ -50,10 +51,15 @@ const (
 	defaultStagingSuffix = "_staging"
 )
 
+type ddlExecer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
 // Destination writes change events into Postgres tables.
 type Destination struct {
 	spec                 connector.Spec
 	pool                 *pgxpool.Pool
+	ddlExecutor          ddlExecer
 	batchMode            string
 	batchResolve         string
 	stagingSchema        string
@@ -274,13 +280,11 @@ func (d *Destination) ResolveStagingFor(ctx context.Context, schemas []connector
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
 		Support:     connector.SupportExperimental,
-		TableWrites: connector.TableWriteSemantics{Declared: true, Append: true, Upsert: true, ExplicitKey: true, WatermarkGuard: true},
+		TableWrites: connector.TableWriteSemantics{Append: true, Upsert: true, ExplicitKey: true, WatermarkGuard: true},
 		Delivery: connector.DeliverySemantics{
-			Declared:           true,
 			TransactionalBatch: true,
 			ExecutesDDL:        true,
 		},
-		SupportsDDL:           true,
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      true,
@@ -296,7 +300,11 @@ func (d *Destination) Capabilities() connector.Capabilities {
 }
 
 func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, record connector.Record) error {
-	if d.pool == nil {
+	executor := d.ddlExecutor
+	if executor == nil {
+		executor = d.pool
+	}
+	if executor == nil {
 		return errors.New("postgres destination not initialized")
 	}
 
@@ -319,7 +327,7 @@ func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, rec
 		if strings.TrimSpace(statement) == "" {
 			continue
 		}
-		if _, err := d.pool.Exec(ctx, statement); err != nil {
+		if _, err := executor.Exec(ctx, statement); err != nil {
 			return fmt.Errorf("apply ddl: %w", err)
 		}
 	}

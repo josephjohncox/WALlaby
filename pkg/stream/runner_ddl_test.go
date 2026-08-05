@@ -495,10 +495,7 @@ func (d *blockingDDLPolicyDestination) ReconcileDDL(context.Context, connector.S
 func (*blockingDDLPolicyDestination) TypeMappings() map[string]string { return nil }
 func (*blockingDDLPolicyDestination) Close(context.Context) error     { return nil }
 func (*blockingDDLPolicyDestination) Capabilities() connector.Capabilities {
-	return connector.Capabilities{
-		Delivery:    connector.DeliverySemantics{Declared: true, ExecutesDDL: true},
-		SupportsDDL: true,
-	}
+	return connector.Capabilities{Delivery: connector.DeliverySemantics{ExecutesDDL: true}}
 }
 
 type ddlPolicyDestination struct {
@@ -525,8 +522,5 @@ func (d *ddlPolicyDestination) ReconcileDDL(context.Context, connector.Schema, c
 func (*ddlPolicyDestination) TypeMappings() map[string]string { return nil }
 func (*ddlPolicyDestination) Close(context.Context) error     { return nil }
 func (*ddlPolicyDestination) Capabilities() connector.Capabilities {
-	return connector.Capabilities{
-		Delivery:    connector.DeliverySemantics{Declared: true, ExecutesDDL: true},
-		SupportsDDL: true,
-	}
+	return connector.Capabilities{Delivery: connector.DeliverySemantics{ExecutesDDL: true}}
 }

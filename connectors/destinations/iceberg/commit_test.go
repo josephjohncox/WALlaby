@@ -345,17 +345,16 @@ func TestCommitterReconcilesCommitBeforeReceipt(t *testing.T) {
 	t.Parallel()
 	request, objects, _ := testCommitRequest(t, false)
 	backend := newFakeCatalogBackend()
-	committer, err := NewCommitter(objects, backend, testIcebergConfig(), WithCommitterHooks(CommitterHooks{
-		Reach: func(_ context.Context, boundary string) error {
-			if strings.HasPrefix(boundary, "after_catalog_commit:") {
-				return errors.New("injected lost response after catalog commit")
-			}
-			return nil
-		},
-	}))
+	committer, err := NewCommitter(objects, backend, testIcebergConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
+	committer.hooks = committerHooks{Reach: func(_ context.Context, boundary string) error {
+		if strings.HasPrefix(boundary, "after_catalog_commit:") {
+			return errors.New("injected lost response after catalog commit")
+		}
+		return nil
+	}}
 	if _, err := committer.Commit(context.Background(), request); err == nil {
 		t.Fatal("commit unexpectedly survived injected post-commit failure")
 	}

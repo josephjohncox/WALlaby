@@ -7,6 +7,25 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+// ValidateDestinationTablePolicy checks a projected table policy before a
+// destination Write call can perform external I/O.
+func ValidateDestinationTablePolicy(destination DestinationConfig, policy connector.TableWritePolicy) error {
+	if destination.Dest == nil {
+		return fmt.Errorf("destination %s is not configured", destinationLabel(destination.Spec))
+	}
+	if policy.IsZero() {
+		return nil
+	}
+	capabilities, err := connector.ResolveDestinationCapabilities(destination.Dest, destination.Spec)
+	if err != nil {
+		return fmt.Errorf("destination %s capability profile: %w", destinationLabel(destination.Spec), err)
+	}
+	if err := capabilities.SupportsTablePolicy(policy); err != nil {
+		return fmt.Errorf("destination %s table write policy: %w", destinationLabel(destination.Spec), err)
+	}
+	return nil
+}
+
 // ValidateDestinationContracts checks whether configured destinations can honor
 // the flow's acknowledgement and DDL policies before any connector is opened.
 func ValidateDestinationContracts(
@@ -40,10 +59,10 @@ func ValidateDestinationContracts(
 		if destination.Dest == nil {
 			return fmt.Errorf("destination %s is not configured", destinationLabel(destination.Spec))
 		}
-		capabilities := connector.ResolveDestinationCapabilities(destination.Dest, destination.Spec)
+		capabilities, err := connector.ResolveDestinationCapabilities(destination.Dest, destination.Spec)
 		label := destinationLabel(destination.Spec)
-		if destination.Spec.Type != "" && !capabilities.Delivery.Declared {
-			return fmt.Errorf("destination %s does not declare delivery semantics", label)
+		if err != nil {
+			return fmt.Errorf("destination %s capability profile: %w", label, err)
 		}
 		if capabilities.Delivery.ReplaySafe && !capabilities.Delivery.IdempotentReplay {
 			return fmt.Errorf("destination %s declares replay safety without idempotent replay", label)

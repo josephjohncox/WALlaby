@@ -144,16 +144,14 @@ func (d *recordingDest) Close(context.Context) error { return nil }
 
 func (d *recordingDest) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		TableWrites: connector.TableWriteSemantics{Declared: true, Append: true, Upsert: true, ExplicitKey: true, WatermarkGuard: true},
+		TableWrites: connector.TableWriteSemantics{Append: true, Upsert: true, ExplicitKey: true, WatermarkGuard: true},
 		Delivery: connector.DeliverySemantics{
-			Declared:           true,
 			TransactionalBatch: true,
 			IdempotentReplay:   true,
 			ReplaySafe:         true,
 			ExecutesDDL:        true,
 		},
 		SupportsStreaming: true,
-		SupportsDDL:       true,
 	}
 }
 
@@ -438,12 +436,10 @@ func (d *flakyDest) Close(context.Context) error { return nil }
 func (d *flakyDest) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
 		Delivery: connector.DeliverySemantics{
-			Declared:         true,
 			IdempotentReplay: true,
 			ReplaySafe:       true,
 		},
 		SupportsStreaming: true,
-		SupportsDDL:       true,
 	}
 }
 

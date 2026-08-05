@@ -428,7 +428,7 @@ func (*managedTestDestination) ApplyDDL(context.Context, connector.Schema, conne
 }
 func (*managedTestDestination) TypeMappings() map[string]string { return nil }
 func (*managedTestDestination) Capabilities() connector.Capabilities {
-	return connector.Capabilities{Support: connector.SupportExperimental, Delivery: connector.DeliverySemantics{Declared: true, TransactionalBatch: true, IdempotentReplay: true, ReplaySafe: true}}
+	return connector.Capabilities{Support: connector.SupportExperimental, Delivery: connector.DeliverySemantics{TransactionalBatch: true, IdempotentReplay: true, ReplaySafe: true}}
 }
 func (d *managedTestDestination) Close(context.Context) error {
 	*d.events = append(*d.events, "destination.close")
@@ -475,9 +475,6 @@ func (c *managedTestCoordinator) AuthorizeAck(_ context.Context, _ connector.Run
 	*c.events = append(*c.events, "coordinator.authorize")
 	position, err := connector.CheckpointPositionID(checkpoint)
 	return connector.AckGrant{Checkpoint: checkpoint, PositionID: position}, err
-}
-func (*managedTestCoordinator) Deliver(context.Context, connector.RunFence, connector.DeliveryIntent, connector.Batch, connector.ManagedDestination) (connector.AckGrant, error) {
-	return connector.AckGrant{}, errors.New("unexpected delivery")
 }
 func (*managedTestCoordinator) DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedTransactionDestination) (connector.AckGrant, error) {
 	return connector.AckGrant{}, errors.New("unexpected transaction delivery")

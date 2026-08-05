@@ -161,7 +161,7 @@ func TestNewStreamRunnerRejectsUnsupportedTablePolicyBeforeOpen(t *testing.T) {
 type appendOnlyRunnerDestination struct{ flowRunnerDestination }
 
 func (appendOnlyRunnerDestination) Capabilities() connector.Capabilities {
-	return connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true}, TableWrites: connector.TableWriteSemantics{Declared: true, Append: true}}
+	return connector.Capabilities{Delivery: connector.DeliverySemantics{}, TableWrites: connector.TableWriteSemantics{Append: true}}
 }
 
 func TestNewStreamRunnerRejectsMissingCheckpointStore(t *testing.T) {

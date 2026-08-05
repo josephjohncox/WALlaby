@@ -388,12 +388,6 @@ func (*blockingManagedDelivery) AuthorizeAck(_ context.Context, _ connector.RunF
 	position, err := connector.CheckpointPositionID(checkpoint)
 	return connector.AckGrant{Checkpoint: checkpoint, PositionID: position}, err
 }
-func (d *blockingManagedDelivery) Deliver(context.Context, connector.RunFence, connector.DeliveryIntent, connector.Batch, connector.ManagedDestination) (connector.AckGrant, error) {
-	if d.deliverErr != nil {
-		return connector.AckGrant{}, d.deliverErr
-	}
-	return connector.AckGrant{}, errors.New("unexpected delivery")
-}
 func (d *blockingManagedDelivery) DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedTransactionDestination) (connector.AckGrant, error) {
 	if d.deliverErr != nil {
 		return connector.AckGrant{}, d.deliverErr
@@ -446,7 +440,7 @@ func (artifactMarkerDestination) CanonicalArtifactConsumer()      {}
 func (artifactMarkerDestination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
 		Support:           connector.SupportExperimental,
-		Delivery:          connector.DeliverySemantics{Declared: true, IdempotentReplay: true, ReplaySafe: true},
+		Delivery:          connector.DeliverySemantics{IdempotentReplay: true, ReplaySafe: true},
 		SupportsStreaming: true, SupportedWireFormats: []connector.WireFormat{connector.WireFormatParquet},
 	}
 }
@@ -517,7 +511,7 @@ func (blockingManagedDestination) ApplyDDL(context.Context, connector.Schema, co
 func (blockingManagedDestination) TypeMappings() map[string]string { return nil }
 func (blockingManagedDestination) Close(context.Context) error     { return nil }
 func (blockingManagedDestination) Capabilities() connector.Capabilities {
-	return connector.Capabilities{Support: connector.SupportExperimental, TableWrites: connector.TableWriteSemantics{Declared: true, Append: true}, Delivery: connector.DeliverySemantics{Declared: true, TransactionalBatch: true, IdempotentReplay: true, ReplaySafe: true}}
+	return connector.Capabilities{Support: connector.SupportExperimental, TableWrites: connector.TableWriteSemantics{Append: true}, Delivery: connector.DeliverySemantics{TransactionalBatch: true, IdempotentReplay: true, ReplaySafe: true}}
 }
 func (blockingManagedDestination) Apply(context.Context, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
 	return connector.DeliveryEvidence{}, nil
@@ -575,14 +569,12 @@ func (flowRunnerDestination) TypeMappings() map[string]string { return nil }
 func (flowRunnerDestination) Close(context.Context) error     { return nil }
 func (flowRunnerDestination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		TableWrites: connector.TableWriteSemantics{Declared: true, Append: true},
+		TableWrites: connector.TableWriteSemantics{Append: true},
 		Delivery: connector.DeliverySemantics{
-			Declared:           true,
 			TransactionalBatch: true,
 			IdempotentReplay:   true,
 			ReplaySafe:         true,
 			ExecutesDDL:        true,
 		},
-		SupportsDDL: true,
 	}
 }

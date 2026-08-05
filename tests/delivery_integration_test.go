@@ -187,17 +187,18 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 	}
 	defer target.Close(ctx)
 
-	batch := connector.Batch{Schema: testManagedUpsertSchema(tableName), Records: []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "committed"}}}, Checkpoint: connector.Checkpoint{LSN: "0/B0"}, WritePolicy: testUpsertPolicy("id")}
-	oldIntent := deliveryIntentForFence(t, oldFence, batch)
+	batch := connector.Batch{Schema: testManagedUpsertSchema(tableName), Records: []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "committed"}}}, WritePolicy: testUpsertPolicy("id")}
+	transaction := managedDeliveryTransaction(batch)
+	oldIntent := deliveryIntentForFence(t, oldFence, transaction)
 	defer func() {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM destination_revisions WHERE destination_revision_id=$1", oldIntent.DestinationRevisionID)
 	}()
 	if err := coordinator.RegisterDestinationRevision(ctx, oldFence, oldIntent.DestinationRevisionID, "managed-postgres", "delivery-test-v1"); err != nil {
 		t.Fatal(err)
 	}
-	failing := &commitThenFailDriver{ManagedDestination: target, fail: true}
-	if _, err := coordinator.Deliver(ctx, oldFence, oldIntent, batch, failing); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
-		t.Fatalf("first Deliver error=%v, want indeterminate external commit", err)
+	failing := &commitThenFailDriver{ManagedTransactionDestination: target, fail: true}
+	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, failing); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("first DeliverTransaction error=%v, want indeterminate external commit", err)
 	}
 
 	var attempts, receipts, ackIntents, checkpoints int
@@ -218,11 +219,12 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 	}
 	conflictingBatch := batch
 	conflictingBatch.Records = []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "conflicting"}}}
-	conflictingIntent := deliveryIntentForFence(t, oldFence, conflictingBatch)
-	if _, err := coordinator.Deliver(ctx, oldFence, conflictingIntent, conflictingBatch, target); !errors.Is(err, connector.ErrDeliveryConflict) {
+	conflictingTransaction := managedDeliveryTransaction(conflictingBatch)
+	conflictingIntent := deliveryIntentForFence(t, oldFence, conflictingTransaction)
+	if _, err := coordinator.DeliverTransaction(ctx, oldFence, conflictingIntent, conflictingTransaction, target); !errors.Is(err, connector.ErrDeliveryConflict) {
 		t.Fatalf("retry identity conflict error=%v, want ErrDeliveryConflict", err)
 	}
-	if _, err := coordinator.Recover(ctx, oldFence, conflictingIntent, conflictingBatch.Checkpoint, target); !errors.Is(err, connector.ErrDeliveryConflict) {
+	if _, err := coordinator.Recover(ctx, oldFence, conflictingIntent, conflictingTransaction.Checkpoint, target); !errors.Is(err, connector.ErrDeliveryConflict) {
 		t.Fatalf("recovery identity conflict error=%v, want ErrDeliveryConflict", err)
 	}
 
@@ -233,8 +235,8 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	newIntent := deliveryIntentForFence(t, newFence, batch)
-	grant, err := coordinator.Deliver(ctx, newFence, newIntent, batch, target)
+	newIntent := deliveryIntentForFence(t, newFence, transaction)
+	grant, err := coordinator.DeliverTransaction(ctx, newFence, newIntent, transaction, target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,12 +272,12 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 }
 
 type commitThenFailDriver struct {
-	connector.ManagedDestination
+	connector.ManagedTransactionDestination
 	fail bool
 }
 
-func (d *commitThenFailDriver) Apply(ctx context.Context, intent connector.DeliveryIntent, batch connector.Batch) (connector.DeliveryEvidence, error) {
-	evidence, err := d.ManagedDestination.Apply(ctx, intent, batch)
+func (d *commitThenFailDriver) ApplyTransaction(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (connector.DeliveryEvidence, error) {
+	evidence, err := d.ManagedTransactionDestination.ApplyTransaction(ctx, intent, transaction)
 	if err != nil {
 		return evidence, err
 	}
@@ -286,13 +288,25 @@ func (d *commitThenFailDriver) Apply(ctx context.Context, intent connector.Deliv
 	return evidence, nil
 }
 
-func deliveryIntentForFence(t *testing.T, fence authority.RunFence, batch connector.Batch) connector.DeliveryIntent {
+func managedDeliveryTransaction(batch connector.Batch) connector.SourceTransaction {
+	return connector.SourceTransaction{
+		SourceLineageID: "source-lineage-1",
+		TransactionID:   1,
+		BeginLSN:        "0/A0",
+		CommitLSN:       "0/A8",
+		EndLSN:          "0/B0",
+		Fragments:       []connector.TransactionFragment{{Ordinal: 0, Batch: batch}},
+		Checkpoint:      connector.Checkpoint{LSN: "0/B0"},
+	}
+}
+
+func deliveryIntentForFence(t *testing.T, fence authority.RunFence, transaction connector.SourceTransaction) connector.DeliveryIntent {
 	t.Helper()
-	contentHash, err := connector.BatchContentHash(batch)
+	contentHash, err := connector.SourceTransactionContentHash(transaction)
 	if err != nil {
 		t.Fatal(err)
 	}
-	positionID, err := connector.CheckpointPositionID(batch.Checkpoint)
+	positionID, err := connector.CheckpointPositionID(transaction.Checkpoint)
 	if err != nil {
 		t.Fatal(err)
 	}

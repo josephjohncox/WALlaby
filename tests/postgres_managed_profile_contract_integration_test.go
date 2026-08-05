@@ -472,7 +472,7 @@ INSERT INTO delivery_receipts (
 	}
 
 	err = controlplane.ApplyMigrations(ctx, pool)
-	if err == nil || !strings.Contains(err.Error(),"refuses noncanonical logical batch identities") {
+	if err == nil || !strings.Contains(err.Error(), "refuses noncanonical logical batch identities") {
 		t.Fatalf("migration error=%v", err)
 	}
 }

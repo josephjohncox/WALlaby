@@ -116,7 +116,7 @@ func TestManagedSnowflakeAmbiguousCommitReconcilesAndConflictsFailClosed(t *test
 		t.Fatal(err)
 	}
 	destination := &Destination{db: db, managedProfile: cfg.profile, managedConfig: cfg}
-	destination.SetManagedHooks(ManagedHooks{AfterCommit: func() error { return errors.New("response lost after COMMIT") }})
+	destination.managedHooks = managedHooks{AfterCommit: func() error { return errors.New("response lost after COMMIT") }}
 	prepared := &preparedManagedSnowflakeTransaction{destination: destination, intent: intent, plan: plan}
 
 	mock.ExpectBegin()
@@ -130,7 +130,7 @@ func TestManagedSnowflakeAmbiguousCommitReconcilesAndConflictsFailClosed(t *test
 		t.Fatalf("ambiguous commit error=%v", err)
 	}
 
-	destination.SetManagedHooks(ManagedHooks{})
+	destination.managedHooks = managedHooks{}
 	mock.ExpectQuery(regexp.QuoteMeta(managedReceiptLookupSQL(cfg))).
 		WillReturnRows(managedReceiptRows(plan.receipt))
 	disposition, evidence, err := destination.Reconcile(context.Background(), intent)
@@ -200,7 +200,7 @@ func TestManagedSnowflakeApplyRollsBackDMLAndReceiptBeforeCommitCancellation(t *
 	}
 	defer db.Close()
 	destination := &Destination{db: db, managedProfile: cfg.profile, managedConfig: cfg}
-	destination.SetManagedHooks(ManagedHooks{BeforeCommit: func() error { return context.Canceled }})
+	destination.managedHooks = managedHooks{BeforeCommit: func() error { return context.Canceled }}
 	prepared := &preparedManagedSnowflakeTransaction{destination: destination, intent: intent, plan: plan}
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(managedReceiptLookupSQL(cfg))).WillReturnRows(sqlmock.NewRows(managedReceiptLookupColumns()))

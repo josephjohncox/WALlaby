@@ -8,7 +8,6 @@ type SupportLevel string
 const (
 	SupportMaintained   SupportLevel = "maintained"
 	SupportExperimental SupportLevel = "experimental"
-	SupportDeprecated   SupportLevel = "deprecated"
 	SupportPlaceholder  SupportLevel = "placeholder"
 )
 
@@ -27,10 +26,7 @@ func (e ContractEvidence) Complete() bool {
 }
 
 // DeliverySemantics describes the guarantees a configured destination provides.
-// Declared distinguishes an explicit contract from the zero value used by legacy
-// third-party adapters.
 type DeliverySemantics struct {
-	Declared           bool
 	TransactionalBatch bool
 	IdempotentReplay   bool
 	ReplaySafe         bool
@@ -39,9 +35,8 @@ type DeliverySemantics struct {
 }
 
 // TableWriteSemantics declares which projected logical table policies a
-// destination can execute. Undeclared semantics fail admission for mapped flows.
+// destination can execute.
 type TableWriteSemantics struct {
-	Declared       bool
 	Append         bool
 	Upsert         bool
 	ExplicitKey    bool
@@ -51,9 +46,6 @@ type TableWriteSemantics struct {
 // SupportsTablePolicy reports whether the destination can execute policy.
 func (c Capabilities) SupportsTablePolicy(policy TableWritePolicy) error {
 	w := c.TableWrites
-	if !w.Declared {
-		return fmt.Errorf("destination does not declare table write semantics")
-	}
 	switch policy.Mode {
 	case ResolvedWriteAppend:
 		if !w.Append {
@@ -72,19 +64,40 @@ func (c Capabilities) SupportsTablePolicy(policy TableWritePolicy) error {
 	return nil
 }
 
-// ConfiguredDestinationCapabilities allows an adapter to refine guarantees that
-// depend on options such as append mode or a lossy oversize policy.
+// CapabilityProfileID identifies one closed configuration-sensitive capability cell.
+type CapabilityProfileID string
+
+// ConfiguredDestinationCapabilities classifies every capability-affecting
+// configuration into a closed, typed profile before returning its guarantees.
 type ConfiguredDestinationCapabilities interface {
-	CapabilitiesFor(spec Spec) Capabilities
+	CapabilityProfileIDs() []CapabilityProfileID
+	ClassifyCapabilityProfile(spec Spec) (CapabilityProfileID, error)
+	CapabilitiesFor(spec Spec) (Capabilities, error)
 }
 
-// ResolveDestinationCapabilities returns the guarantees for one configured
-// destination, falling back to its static declaration.
-func ResolveDestinationCapabilities(destination Destination, spec Spec) Capabilities {
-	if configured, ok := destination.(ConfiguredDestinationCapabilities); ok {
-		return configured.CapabilitiesFor(spec)
+// ResolveDestinationCapabilities returns the guarantees for one validated
+// configured destination, falling back to its static declaration. A classifier
+// result that is not in the connector's declared closed profile set fails.
+func ResolveDestinationCapabilities(destination Destination, spec Spec) (Capabilities, error) {
+	configured, ok := destination.(ConfiguredDestinationCapabilities)
+	if !ok {
+		return destination.Capabilities(), nil
 	}
-	return destination.Capabilities()
+	profileID, err := configured.ClassifyCapabilityProfile(spec)
+	if err != nil {
+		return Capabilities{}, err
+	}
+	declared := false
+	for _, candidate := range configured.CapabilityProfileIDs() {
+		if candidate == profileID {
+			declared = true
+			break
+		}
+	}
+	if !declared {
+		return Capabilities{}, fmt.Errorf("destination capability classifier returned undeclared profile %q", profileID)
+	}
+	return configured.CapabilitiesFor(spec)
 }
 
 // ValidateSupport rejects unsupported levels and maintained classifications
@@ -95,7 +108,7 @@ func (c Capabilities) ValidateSupport() error {
 		if !c.Evidence.Complete() {
 			return fmt.Errorf("maintained connector lacks restart, replay, schema-evolution, or integration evidence")
 		}
-	case SupportExperimental, SupportDeprecated, SupportPlaceholder:
+	case SupportExperimental, SupportPlaceholder:
 		return nil
 	default:
 		return fmt.Errorf("connector support level is not declared")
@@ -104,10 +117,6 @@ func (c Capabilities) ValidateSupport() error {
 }
 
 // ExecutesDDL reports whether ApplyDDL performs a downstream schema mutation.
-// Undeclared legacy adapters retain the historical SupportsDDL behavior.
 func (c Capabilities) ExecutesDDL() bool {
-	if c.Delivery.Declared {
-		return c.Delivery.ExecutesDDL
-	}
-	return c.SupportsDDL
+	return c.Delivery.ExecutesDDL
 }

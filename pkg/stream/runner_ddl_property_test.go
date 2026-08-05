@@ -115,7 +115,6 @@ func (*modelDDLReconcileDestination) TypeMappings() map[string]string { return n
 func (*modelDDLReconcileDestination) Close(context.Context) error     { return nil }
 func (*modelDDLReconcileDestination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		Delivery:    connector.DeliverySemantics{Declared: true, ExecutesDDL: true},
-		SupportsDDL: true,
+		Delivery: connector.DeliverySemantics{ExecutesDDL: true},
 	}
 }

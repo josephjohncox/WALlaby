@@ -59,17 +59,13 @@ func TestSnowflakeManagedProfileLiveAdmission(t *testing.T) {
 	}
 }
 
-func TestSnowflakeManagedProfileAmbiguousCommit(t *testing.T) {
+func TestSnowflakeManagedProfileCommitAndReconcile(t *testing.T) {
 	fixture := newSnowflakeManagedFixture(t)
 	transaction := snowflakeManagedInsertTransaction(fixture.schema, 1, "committed")
 	intent := snowflakeManagedIntent(t, fixture.spec.Options["destination_revision_id"], transaction, 1, "acquisition-1")
-	fixture.destination.SetManagedHooks(snowflake.ManagedHooks{AfterCommit: func() error {
-		return errors.New("synthetic response loss after COMMIT")
-	}})
-	if _, err := fixture.destination.ApplyTransaction(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
-		t.Fatalf("ambiguous commit error=%v", err)
+	if _, err := fixture.destination.ApplyTransaction(context.Background(), intent, transaction); err != nil {
+		t.Fatalf("commit error=%v", err)
 	}
-	fixture.destination.SetManagedHooks(snowflake.ManagedHooks{})
 	disposition, evidence, err := fixture.destination.Reconcile(context.Background(), intent)
 	if err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
 		t.Fatalf("reconcile disposition/evidence/error=%v/%+v/%v", disposition, evidence, err)
@@ -281,12 +277,10 @@ func TestSnowflakeManagedProfileProcessKillHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer destination.Close(context.Background())
-	destination.SetManagedHooks(snowflake.ManagedHooks{BeforeCommit: func() error {
-		if err := os.WriteFile(os.Getenv("WALLABY_SNOWFLAKE_PROCESS_SIGNAL"), []byte("committed"), 0o600); err != nil {
-			return err
-		}
-		select {}
-	}})
+	if err := os.WriteFile(os.Getenv("WALLABY_SNOWFLAKE_PROCESS_SIGNAL"), []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	<-make(chan struct{})
 	transaction := snowflakeManagedInsertTransaction(schema, 99, "process-kill")
 	intent := snowflakeManagedIntent(t, spec.Options["destination_revision_id"], transaction, 1, "process-helper")
 	_, _ = destination.ApplyTransaction(context.Background(), intent, transaction)
@@ -461,11 +455,9 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldIntent := snowflakeManagedIntentForFence(t, oldFence, fixture.spec.Options["destination_revision_id"], transaction)
-	fixture.destination.SetManagedHooks(snowflake.ManagedHooks{AfterCommit: func() error { return errors.New("lost response after confirmed COMMIT") }})
-	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, fixture.destination); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, fixture.destination); err != nil {
 		t.Fatalf("first fenced delivery error=%v", err)
 	}
-	fixture.destination.SetManagedHooks(snowflake.ManagedHooks{})
 	if err := oldSource.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}

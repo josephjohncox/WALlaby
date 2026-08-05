@@ -126,16 +126,8 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			if r.ArtifactLog == nil {
 				return errors.New("materialized acknowledgement requires the PostgreSQL-authoritative artifact log")
 			}
-		} else {
-			if _, ok := r.Destinations[0].Dest.(connector.ManagedTransactionDestination); !ok {
-				return errors.New("managed execution requires a full-transaction reconcilable destination driver")
-			}
-			if _, ok := r.DeliveryCoordinator.(ManagedTransactionDeliveryCoordinator); !ok {
-				return errors.New("managed execution requires a full-transaction delivery coordinator extension")
-			}
-		}
-		if _, ok := r.DeliveryCoordinator.(ManagedSourceFeedbackCoordinator); !ok {
-			return errors.New("managed execution requires an observed source-feedback coordinator extension")
+		} else if _, ok := r.Destinations[0].Dest.(connector.ManagedTransactionDestination); !ok {
+			return errors.New("managed execution requires a full-transaction reconcilable destination driver")
 		}
 		if _, ok := r.Checkpoints.(checkpoint.FencedStore); !ok {
 			return errors.New("managed execution requires a generation-fenced PostgreSQL checkpoint store")
@@ -828,11 +820,10 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 	materialized := r.effectiveAckPolicy() == AckPolicyMaterialized
 	var destination DestinationConfig
 	var driver connector.ManagedTransactionDestination
-	var coordinator ManagedTransactionDeliveryCoordinator
+	coordinator := r.DeliveryCoordinator
 	if !materialized {
 		destination = r.Destinations[0]
 		driver = destination.Dest.(connector.ManagedTransactionDestination)
-		coordinator = r.DeliveryCoordinator.(ManagedTransactionDeliveryCoordinator)
 	}
 	managedMetadata := map[string]string{}
 	if restored != nil {
@@ -973,8 +964,7 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 func (r *Runner) ackManagedGrant(ctx context.Context, grant connector.AckGrant) error {
 	fence := *r.RunFence
 	source := r.Source.(connector.FlushEvidenceSource)
-	coordinator := r.DeliveryCoordinator.(ManagedSourceFeedbackCoordinator)
-	if err := coordinator.CommitSourceFeedback(ctx, fence, grant, source); err != nil {
+	if err := r.DeliveryCoordinator.CommitSourceFeedback(ctx, fence, grant, source); err != nil {
 		return fmt.Errorf("commit managed source feedback: %w", err)
 	}
 	r.emitCheckpointTrace(ctx, "source_flush", grant.Checkpoint, grant.PositionID, spec.ActionAck, nil)
@@ -1605,16 +1595,17 @@ func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, s
 		}
 		batch = projected
 	}
-	if !batch.WritePolicy.IsZero() {
-		if err := connector.ResolveDestinationCapabilities(dest.Dest, dest.Spec).SupportsTablePolicy(batch.WritePolicy); err != nil {
-			return fmt.Errorf("destination %s table write policy: %w", dest.Spec.Name, err)
-		}
+	if err := ValidateDestinationTablePolicy(dest, batch.WritePolicy); err != nil {
+		return err
 	}
 	expectedDestinations := map[string][]string{}
-	if !r.RequireDDLExecution || !connector.ResolveDestinationCapabilities(dest.Dest, dest.Spec).ExecutesDDL() {
+	capabilities, err := connector.ResolveDestinationCapabilities(dest.Dest, dest.Spec)
+	if err != nil {
+		return fmt.Errorf("destination %s capability profile: %w", dest.Spec.Name, err)
+	}
+	if !r.RequireDDLExecution || !capabilities.ExecutesDDL() {
 		return r.writeDestinationLocked(ctx, dest, batch, expectedDestinations)
 	}
-	var err error
 	expectedDestinations, err = r.ddlExecutionDestinations(sourceBatch)
 	if err != nil {
 		return err
@@ -1652,7 +1643,11 @@ func (r *Runner) writeDestinationLocked(ctx context.Context, dest DestinationCon
 	}
 	var executedDDL []ddlExecution
 	if len(batch.Records) > 0 {
-		if r.RequireDDLExecution && connector.ResolveDestinationCapabilities(dest.Dest, dest.Spec).ExecutesDDL() {
+		capabilities, err := connector.ResolveDestinationCapabilities(dest.Dest, dest.Spec)
+		if err != nil {
+			return fmt.Errorf("destination %s capability profile: %w", dest.Spec.Name, err)
+		}
+		if r.RequireDDLExecution && capabilities.ExecutesDDL() {
 			if err := validateDDLRecordPositions(batch); err != nil {
 				return err
 			}
@@ -1816,7 +1811,10 @@ func (r *Runner) ddlExecutionDestinations(sourceBatch connector.Batch) (map[stri
 		if destination.Dest == nil || destination.Spec.Name == "" {
 			continue
 		}
-		capabilities := connector.ResolveDestinationCapabilities(destination.Dest, destination.Spec)
+		capabilities, err := connector.ResolveDestinationCapabilities(destination.Dest, destination.Spec)
+		if err != nil {
+			return nil, fmt.Errorf("destination %s capability profile: %w", destination.Spec.Name, err)
+		}
 		if !capabilities.ExecutesDDL() {
 			continue
 		}

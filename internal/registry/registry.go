@@ -1128,12 +1128,6 @@ func RecordDDLExecution(
 	return nil
 }
 
-// MarkDDLAppliedByLSN is retained as a fail-closed compatibility shim. Applied
-// transitions require destination execution receipts.
-func MarkDDLAppliedByLSN(context.Context, Store, string, string) error {
-	return ErrExecutionReceiptRequired
-}
-
 var (
 	ErrNotFound                 = errors.New("registry entry not found")
 	ErrExecutionReceiptRequired = errors.New("DDL applied status requires execution receipts")

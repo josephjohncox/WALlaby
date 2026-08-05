@@ -54,6 +54,29 @@ func run() error {
 		)
 	}
 	fmt.Println()
+	fmt.Println("## Configuration-controlled capability profiles")
+	fmt.Println()
+	fmt.Println("| Connector | Profile | Append | Explicit-key upsert | Watermark guard | Transactional batch | Idempotent replay | Replay safe | Executes DDL | Lossy |")
+	fmt.Println("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+	for _, registration := range runner.DestinationRegistrations() {
+		if registration.New == nil {
+			continue
+		}
+		destination := registration.New()
+		for _, profile := range registration.Profiles {
+			spec := connector.Spec{Name: string(registration.Type), Type: registration.Type, Options: profile.Options}
+			capabilities, err := registration.ResolveCapabilities(destination, spec)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("| `%s` | `%s` | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+				registration.Type, profile.ID,
+				yesNo(capabilities.TableWrites.Append), yesNo(capabilities.TableWrites.Upsert && capabilities.TableWrites.ExplicitKey), yesNo(capabilities.TableWrites.WatermarkGuard),
+				yesNo(capabilities.Delivery.TransactionalBatch), yesNo(capabilities.Delivery.IdempotentReplay), yesNo(capabilities.Delivery.ReplaySafe),
+				yesNo(capabilities.Delivery.ExecutesDDL), yesNo(capabilities.Delivery.Lossy))
+		}
+	}
+	fmt.Println()
 	fmt.Println("## Managed profiles")
 	fmt.Println()
 	profiles := []connector.ManagedProfileContract{

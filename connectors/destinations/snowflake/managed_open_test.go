@@ -14,16 +14,38 @@ import (
 	"github.com/snowflakedb/gosnowflake"
 )
 
+func TestManagedSnowflakeApplyDDLRejectsBeforeExecutor(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	destination := &Destination{db: db, managedProfile: connector.ManagedProfilePostgresToSnowflakeSQLV1}
+	err = destination.ApplyDDL(context.Background(), connector.Schema{Namespace: "mapped", Name: "events"}, connector.Record{Operation: connector.OpDDL, DDL: "ALTER TABLE mapped.events ADD COLUMN status text"})
+	if err == nil || !strings.Contains(err.Error(), "managed Snowflake SQL profile rejects DDL") {
+		t.Fatalf("ApplyDDL error=%v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("managed DDL invoked executor: %v", err)
+	}
+}
+
 func TestManagedSnowflakeCapabilitiesAreScopedToTheNamedProfile(t *testing.T) {
 	t.Parallel()
 	destination := &Destination{}
-	generic := destination.CapabilitiesFor(connector.Spec{Type: connector.EndpointSnowflake})
+	generic, err := destination.CapabilitiesFor(connector.Spec{Type: connector.EndpointSnowflake})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if generic.Delivery.TransactionalBatch || generic.Delivery.IdempotentReplay || generic.Delivery.ReplaySafe {
 		t.Fatalf("generic Snowflake mode inherited managed guarantees: %+v", generic.Delivery)
 	}
-	managed := destination.CapabilitiesFor(connector.Spec{Type: connector.EndpointSnowflake, Options: map[string]string{
+	managed, err := destination.CapabilitiesFor(connector.Spec{Type: connector.EndpointSnowflake, Options: map[string]string{
 		"managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1,
 	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !managed.Delivery.TransactionalBatch || !managed.Delivery.IdempotentReplay || !managed.Delivery.ReplaySafe || managed.Delivery.ExecutesDDL {
 		t.Fatalf("named Snowflake profile capabilities=%+v", managed.Delivery)
 	}

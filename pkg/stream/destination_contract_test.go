@@ -12,7 +12,6 @@ func TestValidateDestinationContracts(t *testing.T) {
 	t.Parallel()
 
 	safePrimary := connector.Capabilities{Delivery: connector.DeliverySemantics{
-		Declared:           true,
 		TransactionalBatch: true,
 		IdempotentReplay:   true,
 		ReplaySafe:         true,
@@ -30,10 +29,10 @@ func TestValidateDestinationContracts(t *testing.T) {
 		wantError  string
 	}{
 		{
-			name: "all acknowledgement accepts one declared at-least-once destination",
+			name: "all acknowledgement accepts one at-least-once destination",
 			dests: []DestinationConfig{{
 				Spec: connector.Spec{Name: "sink", Type: connector.EndpointHTTP},
-				Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true}}},
+				Dest: contractDestination{},
 			}},
 		},
 		{
@@ -45,7 +44,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 				},
 				{
 					Spec: connector.Spec{Name: "unsafe", Type: connector.EndpointHTTP},
-					Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true}}},
+					Dest: contractDestination{},
 				},
 			},
 			wantError: "all acknowledgement fan-out requires replay-safe idempotent",
@@ -58,18 +57,10 @@ func TestValidateDestinationContracts(t *testing.T) {
 			}},
 		},
 		{
-			name: "typed destination must declare semantics",
-			dests: []DestinationConfig{{
-				Spec: connector.Spec{Name: "sink", Type: connector.EndpointHTTP},
-				Dest: contractDestination{},
-			}},
-			wantError: "does not declare delivery semantics",
-		},
-		{
 			name: "lossy destination cannot be acknowledged",
 			dests: []DestinationConfig{{
 				Spec: connector.Spec{Name: "sink"},
-				Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true, Lossy: true}}},
+				Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Lossy: true}}},
 			}},
 			wantError: "may drop records",
 		},
@@ -77,7 +68,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 			name: "auto apply requires DDL execution",
 			dests: []DestinationConfig{{
 				Spec: connector.Spec{Name: "sink"},
-				Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true}}},
+				Dest: contractDestination{},
 			}},
 			requireDDL: true,
 			wantError:  "cannot execute DDL",
@@ -104,11 +95,11 @@ func TestValidateDestinationContracts(t *testing.T) {
 			dests: []DestinationConfig{
 				{
 					Spec: connector.Spec{Name: "first", Type: connector.EndpointHTTP},
-					Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true}}},
+					Dest: contractDestination{},
 				},
 				{
 					Spec: connector.Spec{Name: "second", Type: connector.EndpointHTTP},
-					Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true}}},
+					Dest: contractDestination{},
 				},
 			},
 			ack:       AckPolicyMaterialized,
@@ -118,7 +109,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 			name: "materialized acknowledgement requires managed transaction destination identity",
 			dests: []DestinationConfig{{
 				Spec: connector.Spec{Name: "consumer", Type: connector.EndpointHTTP},
-				Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true}}},
+				Dest: contractDestination{},
 			}},
 			ack:       AckPolicyMaterialized,
 			wantError: "full-transaction reconciliation or canonical artifact consumption",
@@ -128,7 +119,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 			dests: []DestinationConfig{{
 				Spec: connector.Spec{Name: "consumer", Type: connector.EndpointIceberg},
 				Dest: artifactContractDestination{contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{
-					Declared: true, IdempotentReplay: true, ReplaySafe: true,
+					IdempotentReplay: true, ReplaySafe: true,
 				}}}},
 			}},
 			ack: AckPolicyMaterialized,
@@ -145,7 +136,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 			name: "primary acknowledgement requires replay safety",
 			dests: []DestinationConfig{{
 				Spec: connector.Spec{Name: "primary"},
-				Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true, TransactionalBatch: true}}},
+				Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{TransactionalBatch: true}}},
 			}},
 			ack:       AckPolicyPrimary,
 			primary:   "primary",
@@ -165,7 +156,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 			name: "primary acknowledgement validates secondaries",
 			dests: []DestinationConfig{
 				{Spec: connector.Spec{Name: "primary"}, Dest: contractDestination{capabilities: safePrimary}},
-				{Spec: connector.Spec{Name: "secondary"}, Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Declared: true}}}},
+				{Spec: connector.Spec{Name: "secondary"}, Dest: contractDestination{}},
 			},
 			ack:       AckPolicyPrimary,
 			primary:   "primary",
@@ -207,6 +198,38 @@ func TestValidateDestinationContracts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWriteDestinationRejectsUnclaimedPolicyBeforeExternalIO(t *testing.T) {
+	destination := &writeCountingDestination{capabilities: connector.Capabilities{TableWrites: connector.TableWriteSemantics{Append: true}}}
+	runner := &Runner{}
+	config := DestinationConfig{Spec: connector.Spec{Name: "append-only"}, Dest: destination}
+	batch := connector.Batch{WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}}, Records: []connector.Record{{Operation: connector.OpInsert}}}
+	if err := runner.writeDestination(context.Background(), config, batch); err == nil || !strings.Contains(err.Error(), "does not support explicit-key upsert") {
+		t.Fatalf("writeDestination error=%v", err)
+	}
+	if destination.writes != 0 {
+		t.Fatalf("external Write calls=%d", destination.writes)
+	}
+}
+
+type writeCountingDestination struct {
+	capabilities connector.Capabilities
+	writes       int
+}
+
+func (*writeCountingDestination) Open(context.Context, connector.Spec) error { return nil }
+func (d *writeCountingDestination) Write(context.Context, connector.Batch) error {
+	d.writes++
+	return nil
+}
+func (*writeCountingDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
+	return nil
+}
+func (*writeCountingDestination) TypeMappings() map[string]string { return nil }
+func (*writeCountingDestination) Close(context.Context) error     { return nil }
+func (d *writeCountingDestination) Capabilities() connector.Capabilities {
+	return d.capabilities
 }
 
 type contractDestination struct {

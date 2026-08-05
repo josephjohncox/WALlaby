@@ -66,7 +66,7 @@ func (d *benchDestination) Close(context.Context) error { return nil }
 
 func (d *benchDestination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		SupportsDDL:           true,
+		Delivery:              connector.DeliverySemantics{ExecutesDDL: true},
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      true,

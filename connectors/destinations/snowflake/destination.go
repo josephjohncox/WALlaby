@@ -28,6 +28,11 @@ func safeMetaCapacity(base, extra int) int {
 }
 
 const (
+	CapabilityProfileBase    connector.CapabilityProfileID = "base"
+	CapabilityProfileManaged connector.CapabilityProfileID = connector.ManagedProfilePostgresToSnowflakeSQLV1
+)
+
+const (
 	optDSN               = "dsn"
 	optSchema            = "schema"
 	optTable             = "table"
@@ -68,7 +73,7 @@ type Destination struct {
 	managedProfile         string
 	managedConfig          managedConfig
 	managedHooksMu         sync.RWMutex
-	managedHooks           ManagedHooks
+	managedHooks           managedHooks
 	managedScopeMu         sync.Mutex
 	managedFlowIncarnation string
 	disableTx              bool
@@ -396,12 +401,10 @@ func (d *Destination) ResolveStagingFor(ctx context.Context, schemas []connector
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
 		Support:     connector.SupportExperimental,
-		TableWrites: connector.TableWriteSemantics{Declared: true, Append: true},
+		TableWrites: connector.TableWriteSemantics{Append: true},
 		Delivery: connector.DeliverySemantics{
-			Declared:    true,
 			ExecutesDDL: true,
 		},
-		SupportsDDL:           true,
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      true,
@@ -416,20 +419,46 @@ func (d *Destination) Capabilities() connector.Capabilities {
 	}
 }
 
+// CapabilityProfileIDs returns the complete closed Snowflake capability profile set.
+func (*Destination) CapabilityProfileIDs() []connector.CapabilityProfileID {
+	return []connector.CapabilityProfileID{CapabilityProfileBase, CapabilityProfileManaged}
+}
+
+// ClassifyCapabilityProfile validates the exact managed Snowflake profile.
+func (*Destination) ClassifyCapabilityProfile(spec connector.Spec) (connector.CapabilityProfileID, error) {
+	profile := strings.TrimSpace(spec.Options["managed_profile"])
+	switch profile {
+	case "":
+		return CapabilityProfileBase, nil
+	case connector.ManagedProfilePostgresToSnowflakeSQLV1:
+		return CapabilityProfileManaged, nil
+	default:
+		return "", fmt.Errorf("unsupported Snowflake managed profile %q", profile)
+	}
+}
+
 // CapabilitiesFor scopes durable transaction/reconciliation claims to the
 // exact named profile. Generic Snowflake and all Snowpipe modes stay experimental
 // without replay-safe capability claims.
-func (d *Destination) CapabilitiesFor(spec connector.Spec) connector.Capabilities {
-	capabilities := d.Capabilities()
-	if !connector.IsPostgresToSnowflakeSQLV1Spec(spec) {
-		return capabilities
+func (d *Destination) CapabilitiesFor(spec connector.Spec) (connector.Capabilities, error) {
+	profile, err := d.ClassifyCapabilityProfile(spec)
+	if err != nil {
+		return connector.Capabilities{}, err
 	}
-	capabilities.TableWrites = connector.TableWriteSemantics{Declared: true, Upsert: true, ExplicitKey: true}
-	capabilities.Delivery.TransactionalBatch = true
-	capabilities.Delivery.IdempotentReplay = true
-	capabilities.Delivery.ReplaySafe = true
-	capabilities.Delivery.ExecutesDDL = false
-	return capabilities
+	capabilities := d.Capabilities()
+	switch profile {
+	case CapabilityProfileBase:
+		return capabilities, nil
+	case CapabilityProfileManaged:
+		capabilities.TableWrites = connector.TableWriteSemantics{Upsert: true, ExplicitKey: true}
+		capabilities.Delivery.TransactionalBatch = true
+		capabilities.Delivery.IdempotentReplay = true
+		capabilities.Delivery.ReplaySafe = true
+		capabilities.Delivery.ExecutesDDL = false
+		return capabilities, nil
+	default:
+		return connector.Capabilities{}, fmt.Errorf("unsupported Snowflake capability profile %q", profile)
+	}
 }
 
 func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, record connector.Record) error {

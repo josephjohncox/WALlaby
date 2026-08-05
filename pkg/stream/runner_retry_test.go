@@ -310,7 +310,6 @@ func retryDestinations(count, failingIndex int) ([]DestinationConfig, []*retryDe
 
 func retrySafeCapabilities() connector.Capabilities {
 	return connector.Capabilities{Delivery: connector.DeliverySemantics{
-		Declared:         true,
 		IdempotentReplay: true,
 		ReplaySafe:       true,
 	}}

@@ -539,12 +539,9 @@ func (d *Destination) protoReferenceSubject(subject, ref string) string {
 
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		Support:     connector.SupportExperimental,
-		TableWrites: connector.TableWriteSemantics{Declared: true, Append: true},
-		Delivery: connector.DeliverySemantics{
-			Declared: true,
-		},
-		SupportsDDL:           true,
+		Support:               connector.SupportExperimental,
+		TableWrites:           connector.TableWriteSemantics{Append: true},
+		Delivery:              connector.DeliverySemantics{},
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     false,
 		SupportsBulkLoad:      true,

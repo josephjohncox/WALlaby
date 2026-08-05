@@ -4,19 +4,6 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/josephjohncox/wallaby/connectors/destinations/bufstream"
-	"github.com/josephjohncox/wallaby/connectors/destinations/clickhouse"
-	"github.com/josephjohncox/wallaby/connectors/destinations/duckdb"
-	"github.com/josephjohncox/wallaby/connectors/destinations/ducklake"
-	grpcdest "github.com/josephjohncox/wallaby/connectors/destinations/grpc"
-	httpdest "github.com/josephjohncox/wallaby/connectors/destinations/http"
-	icebergdest "github.com/josephjohncox/wallaby/connectors/destinations/iceberg"
-	"github.com/josephjohncox/wallaby/connectors/destinations/kafka"
-	"github.com/josephjohncox/wallaby/connectors/destinations/pgstream"
-	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
-	"github.com/josephjohncox/wallaby/connectors/destinations/s3"
-	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
-	"github.com/josephjohncox/wallaby/connectors/destinations/snowpipe"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/bootstrap"
@@ -96,34 +83,16 @@ func (f Factory) DestinationsForFlow(fdef flow.Flow) ([]stream.DestinationConfig
 }
 
 func (f Factory) destination(spec connector.Spec) (connector.Destination, error) {
-	switch spec.Type {
-	case connector.EndpointKafka:
-		return &kafka.Destination{}, nil
-	case connector.EndpointS3:
-		return &s3.Destination{}, nil
-	case connector.EndpointHTTP:
-		return &httpdest.Destination{}, nil
-	case connector.EndpointGRPC:
-		return &grpcdest.Destination{}, nil
-	case connector.EndpointPGStream:
-		return &pgstream.Destination{}, nil
-	case connector.EndpointSnowflake:
-		return &snowflake.Destination{}, nil
-	case connector.EndpointSnowpipe:
-		return &snowpipe.Destination{}, nil
-	case connector.EndpointDuckDB:
-		return &duckdb.Destination{}, nil
-	case connector.EndpointDuckLake:
-		return &ducklake.Destination{}, nil
-	case connector.EndpointClickHouse:
-		return &clickhouse.Destination{}, nil
-	case connector.EndpointIceberg:
-		return &icebergdest.Destination{}, nil
-	case connector.EndpointPostgres:
-		return &pgdest.Destination{}, nil
-	case connector.EndpointBufStream:
-		return &bufstream.Destination{}, nil
-	default:
+	registration, ok := destinationRegistration(spec.Type)
+	if !ok || registration.New == nil {
 		return nil, fmt.Errorf("unsupported destination type: %s", spec.Type)
 	}
+	destination := registration.New()
+	if destination == nil {
+		return nil, fmt.Errorf("destination constructor returned nil: %s", spec.Type)
+	}
+	if _, err := registration.ResolveCapabilities(destination, spec); err != nil {
+		return nil, fmt.Errorf("destination %s capability profile: %w", spec.Type, err)
+	}
+	return destination, nil
 }

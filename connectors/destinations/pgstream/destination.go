@@ -20,10 +20,15 @@ const (
 	optFormat = "format"
 )
 
+type messageStore interface {
+	Enqueue(context.Context, string, []pgstream.Message) error
+	Close()
+}
+
 // Destination writes change events into a Postgres-backed stream.
 type Destination struct {
 	spec              connector.Spec
-	store             *pgstream.Store
+	store             messageStore
 	stream            string
 	codec             wire.Codec
 	registry          schemaregistry.Registry
@@ -144,12 +149,9 @@ func (d *Destination) Close(_ context.Context) error {
 
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		Support:     connector.SupportExperimental,
-		TableWrites: connector.TableWriteSemantics{Declared: true, Append: true},
-		Delivery: connector.DeliverySemantics{
-			Declared: true,
-		},
-		SupportsDDL:           true,
+		Support:               connector.SupportExperimental,
+		TableWrites:           connector.TableWriteSemantics{Append: true},
+		Delivery:              connector.DeliverySemantics{},
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      true,

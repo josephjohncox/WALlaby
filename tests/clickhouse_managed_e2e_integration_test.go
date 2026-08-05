@@ -2,13 +2,11 @@ package tests
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -150,18 +148,7 @@ DROP TABLE IF EXISTS public.wallaby_clickhouse_managed_e2e_source`)
 		t.Fatal(err)
 	}
 
-	firstInsertCommitted := make(chan struct{})
-	releaseAfterKeeperFailure := make(chan struct{})
-	var hookOnce sync.Once
 	failingDestination := &clickhousedest.Destination{}
-	failingDestination.SetManagedHooks(clickhousedest.ManagedHooks{AfterFragment: func(ordinal uint64) error {
-		if ordinal == 0 {
-			hookOnce.Do(func() { close(firstInsertCommitted) })
-			<-releaseAfterKeeperFailure
-			return errors.New("deterministic response loss while Keeper is unavailable")
-		}
-		return nil
-	}})
 
 	runCtx, stopRun := context.WithCancel(ctx)
 	runErr := make(chan error, 1)
@@ -189,43 +176,16 @@ DROP TABLE IF EXISTS public.wallaby_clickhouse_managed_e2e_source`)
 	if err := pool.QueryRow(ctx, `SELECT acquisition_id,lease_epoch FROM producer_leases WHERE incarnation_id=$1`, incarnationID).Scan(&firstAcquisition, &firstLeaseEpoch); err != nil {
 		t.Fatal(err)
 	}
+	scaleClickHouseHarnessDeployment(t, "wallaby-it-clickhouse-keeper", 0)
+	t.Cleanup(func() { scaleClickHouseHarnessDeployment(t, "wallaby-it-clickhouse-keeper", 1) })
+	waitForClickHouseKeeperUnavailable(t, fixture, 45*time.Second)
 	if _, err := pool.Exec(ctx, `
 INSERT INTO public.wallaby_clickhouse_managed_e2e_source (id,value,payload,tags) VALUES
   (1,'first','{"nested":{"count":1}}'::jsonb,ARRAY['alpha','beta']),
   (2,'second','[1,2,3]'::jsonb,ARRAY['gamma'])`); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-firstInsertCommitted:
-	case <-ctx.Done():
-		t.Fatalf("first ClickHouse insert did not commit: %v", ctx.Err())
-	}
-	syncCtx, cancelSync := context.WithTimeout(ctx, 30*time.Second)
-	_, syncErr := fixture.replicaDB.ExecContext(syncCtx,
-		"SYSTEM SYNC REPLICA {database:Identifier}.{table:Identifier}",
-		chclient.Named("database", fixture.database), chclient.Named("table", fixture.changelogTable),
-	)
-	cancelSync()
-	if syncErr != nil {
-		t.Fatalf("synchronize first fragment to second ClickHouse replica: %v", syncErr)
-	}
-	waitForCondition(t, ctx, runErr, "first fragment replicated before Keeper outage", func() (bool, error) {
-		var one uint8
-		err := fixture.replicaDB.QueryRowContext(ctx,
-			"SELECT toUInt8(1) FROM {database:Identifier}.{table:Identifier} LIMIT 1",
-			chclient.Named("database", fixture.database), chclient.Named("table", fixture.changelogTable),
-		).Scan(&one)
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
-		return one == 1, err
-	})
-
-	scaleClickHouseHarnessDeployment(t, "wallaby-it-clickhouse-keeper", 0)
-	t.Cleanup(func() { scaleClickHouseHarnessDeployment(t, "wallaby-it-clickhouse-keeper", 1) })
-	waitForClickHouseKeeperUnavailable(t, fixture, 45*time.Second)
 	assertClickHouseAuthorityNotAdvanced(t, ctx, pool, incarnationID, fixture, initialLSN, 1)
-	close(releaseAfterKeeperFailure)
 	select {
 	case err := <-runErr:
 		if err == nil {

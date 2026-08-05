@@ -156,7 +156,7 @@ func (s *SQLiteStore) Get(ctx context.Context, flowID string) (connector.Checkpo
 	var updatedAt string
 	if err := row.Scan(&lsn, &metadataJSON, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return connector.Checkpoint{}, ErrNotFound
+			return connector.Checkpoint{}, connector.ErrCheckpointNotFound
 		}
 		return connector.Checkpoint{}, fmt.Errorf("get checkpoint: %w", err)
 	}

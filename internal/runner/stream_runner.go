@@ -288,9 +288,9 @@ func validateDestinationTableWrites(destination stream.DestinationConfig, mappin
 	if _, artifactOnly := destination.Dest.(connector.CanonicalArtifactDestination); artifactOnly {
 		return nil
 	}
-	capabilities := connector.ResolveDestinationCapabilities(destination.Dest, destination.Spec)
-	if !capabilities.TableWrites.Declared && !capabilities.Delivery.Declared {
-		return nil
+	capabilities, err := connector.ResolveDestinationCapabilities(destination.Dest, destination.Spec)
+	if err != nil {
+		return err
 	}
 	validate := func(write flow.TableWritePolicy) error {
 		return capabilities.SupportsTablePolicy(connector.TableWritePolicy{

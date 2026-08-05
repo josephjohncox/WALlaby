@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/controlplane"
+	"github.com/josephjohncox/wallaby/internal/controlstore"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
@@ -232,7 +233,7 @@ func newDeliveryMigrationDatabase(t *testing.T, ctx context.Context, dsn, suffix
 	}
 	name := "wallaby_delivery_" + suffix + "_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	identifier := pgx.Identifier{name}.Sanitize()
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+identifier); err != nil {
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+identifier+" TEMPLATE template0"); err != nil {
 		admin.Close()
 		t.Fatal(err)
 	}
@@ -242,6 +243,7 @@ func newDeliveryMigrationDatabase(t *testing.T, ctx context.Context, dsn, suffix
 		t.Fatal(err)
 	}
 	config.ConnConfig.Database = name
+	controlstore.ConfigurePool(config)
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		admin.Close()

@@ -46,12 +46,12 @@ type restBackend struct {
 
 // NewRESTCommitter constructs the production REST catalog and append-only
 // committer. HTTP is rejected unless explicitly enabled for local emulation.
-func NewRESTCommitter(ctx context.Context, objects CanonicalObjectReader, config Config, options ...CommitterOption) (*Committer, error) {
+func NewRESTCommitter(ctx context.Context, objects CanonicalObjectReader, config Config) (*Committer, error) {
 	backend, err := newRESTBackend(ctx, config)
 	if err != nil {
 		return nil, err
 	}
-	return NewCommitter(objects, backend, config, options...)
+	return NewCommitter(objects, backend, config)
 }
 
 func newRESTBackend(ctx context.Context, cfg Config) (*restBackend, error) {

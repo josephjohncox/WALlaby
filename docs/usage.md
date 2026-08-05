@@ -186,10 +186,11 @@ Kafka destination options (connector `options`):
 - `max_message_bytes` (default `900000`) — upper bound for Kafka record batches
 - `max_batch_bytes` (default = `max_message_bytes`) — size-aware split threshold for encoded batches
 - `max_record_bytes` (default = `max_message_bytes`) — hard cap for single-record payloads
-- `oversize_policy` (`error` default, or `drop`)
+- `allow_oversize_skip` (`false` default; `true` drops oversize payloads and declares lossy delivery)
 - `message_mode` (`batch` default, or `record`)
 - `key_mode` (`hash` default, or `raw` to use the record key directly)
-- `transactional_id` (enable Kafka transactions per batch)
+- `transactional_producer` (`false` default; `true` enables Kafka transactions per batch and requires `transactional_id`)
+- `transactional_id` (required when `transactional_producer=true`; rejected otherwise)
 - `transaction_timeout` (optional, e.g. `30s`)
 - `transaction_header` (defaults to `wallaby-transaction-id`)
 - `schema_registry` (`csr`, `apicurio`, `glue`, `postgres`, `local`, `none`)

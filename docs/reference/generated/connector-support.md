@@ -31,6 +31,23 @@
 | `proto` | placeholder | no | no | no | no | no | no | no | no | no | no |
 | `parquet` | placeholder | no | no | no | no | no | no | no | no | no | no |
 
+## Configuration-controlled capability profiles
+
+| Connector | Profile | Append | Explicit-key upsert | Watermark guard | Transactional batch | Idempotent replay | Replay safe | Executes DDL | Lossy |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `kafka` | `base` | yes | no | no | no | no | no | no | no |
+| `kafka` | `transactional-only` | yes | no | no | yes | no | no | no | no |
+| `kafka` | `lossy-only` | yes | no | no | no | no | no | no | yes |
+| `kafka` | `transactional+lossy` | yes | no | no | yes | no | no | no | yes |
+| `bufstream` | `base` | yes | no | no | no | no | no | no | no |
+| `bufstream` | `transactional-only` | yes | no | no | yes | no | no | no | no |
+| `bufstream` | `lossy-only` | yes | no | no | no | no | no | no | yes |
+| `bufstream` | `transactional+lossy` | yes | no | no | yes | no | no | no | yes |
+| `snowflake` | `base` | yes | no | no | no | no | no | yes | no |
+| `snowflake` | `postgresql-to-snowflake-sql-v1` | no | yes | no | yes | yes | yes | no | no |
+| `clickhouse` | `base` | yes | no | no | no | no | no | yes | no |
+| `clickhouse` | `postgresql-to-clickhouse-append-v1` | yes | no | no | no | no | no | no | no |
+
 ## Managed profiles
 
 | Profile | Status | Source | Destination | PostgreSQL | ClickHouse | Snowflake version | Deployment | Pairing | Ack | Sinks | Delivery | Table mappings |

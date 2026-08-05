@@ -114,16 +114,8 @@ type catalogBackend interface {
 	Append(context.Context, catalogTable, *iceberggo.Schema, []arrow.RecordBatch, map[string]string) (catalogSnapshot, error)
 }
 
-// CommitterHooks exposes deterministic catalog failure boundaries.
-type CommitterHooks struct {
+type committerHooks struct {
 	Reach func(context.Context, string) error
-}
-
-// CommitterOption configures optional committer behavior.
-type CommitterOption func(*Committer)
-
-func WithCommitterHooks(hooks CommitterHooks) CommitterOption {
-	return func(committer *Committer) { committer.hooks = hooks }
 }
 
 // Committer is the append-only changelog deep module. It verifies exact
@@ -133,21 +125,17 @@ type Committer struct {
 	objects CanonicalObjectReader
 	catalog catalogBackend
 	config  Config
-	hooks   CommitterHooks
+	hooks   committerHooks
 }
 
-func NewCommitter(objects CanonicalObjectReader, catalog catalogBackend, config Config, options ...CommitterOption) (*Committer, error) {
+func NewCommitter(objects CanonicalObjectReader, catalog catalogBackend, config Config) (*Committer, error) {
 	if objects == nil || catalog == nil {
 		return nil, errors.New("iceberg committer requires canonical objects and a catalog backend")
 	}
 	if config.MaxCommitRetries < 1 || config.RequestTimeout <= 0 || config.ReconciliationHorizon <= 0 {
 		return nil, errors.New("iceberg committer retry, timeout, and reconciliation settings must be positive")
 	}
-	committer := &Committer{objects: objects, catalog: catalog, config: config}
-	for _, option := range options {
-		option(committer)
-	}
-	return committer, nil
+	return &Committer{objects: objects, catalog: catalog, config: config}, nil
 }
 
 func (c *Committer) reach(ctx context.Context, boundary string) error {

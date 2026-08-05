@@ -3,7 +3,7 @@ package connector
 import "testing"
 
 func TestAppendWatermarkDoesNotRequireSuppressionCapability(t *testing.T) {
-	capabilities := Capabilities{TableWrites: TableWriteSemantics{Declared: true, Append: true}}
+	capabilities := Capabilities{TableWrites: TableWriteSemantics{Append: true}}
 	if err := capabilities.SupportsTablePolicy(TableWritePolicy{Mode: ResolvedWriteAppend, WatermarkColumn: "observed_at"}); err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +22,6 @@ func TestCapabilitiesValidateSupport(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "experimental", caps: Capabilities{Support: SupportExperimental}},
-		{name: "deprecated", caps: Capabilities{Support: SupportDeprecated}},
 		{name: "placeholder", caps: Capabilities{Support: SupportPlaceholder}},
 		{name: "maintained complete", caps: Capabilities{Support: SupportMaintained, Evidence: complete}},
 		{name: "maintained incomplete", caps: Capabilities{Support: SupportMaintained}, wantErr: true},

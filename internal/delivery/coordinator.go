@@ -183,82 +183,6 @@ func (c *Coordinator) Recover(ctx context.Context, fence authority.RunFence, int
 	}
 }
 
-// Deliver durably prepares an attempt before external I/O, reconciles any
-// unfinished attempt first, and adopts evidence under the current fence.
-func (c *Coordinator) Deliver(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, batch connector.Batch, driver connector.ManagedDestination) (AckGrant, error) {
-	if driver == nil {
-		return AckGrant{}, errors.New("managed delivery driver is required")
-	}
-	if err := validateDeliveryInput(fence, intent, batch); err != nil {
-		return AckGrant{}, err
-	}
-	state, err := c.inspect(ctx, fence, intent, batch.Checkpoint)
-	if err != nil {
-		return AckGrant{}, err
-	}
-	if state.receipt {
-		telemetry.RecordDeliveryOutcome(ctx, "receipt_reused")
-		return AckGrant{Checkpoint: batch.Checkpoint, PositionID: intent.PositionID}, nil
-	}
-	if state.hasAttempt {
-		disposition, evidence, err := c.reconcileUnfinished(ctx, fence, intent, state, driver)
-		if err != nil {
-			return AckGrant{}, err
-		}
-		switch disposition {
-		case connector.DeliveryApplied:
-			if err := c.recordEvidence(ctx, fence, intent, state.attemptID, evidence); err != nil {
-				return AckGrant{}, recoverablePostCommitError("record reconciled delivery evidence", err)
-			}
-			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "applied", ""); err != nil {
-				return AckGrant{}, recoverablePostCommitError("mark reconciled delivery applied", err)
-			}
-			grant, err := c.finalize(ctx, fence, intent, state.attemptID, batch.Checkpoint)
-			return grant, recoverablePostCommitError("finalize reconciled delivery", err)
-		case connector.DeliveryNotApplied:
-			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "not_applied", "target marker absent"); err != nil {
-				return AckGrant{}, err
-			}
-			retryState, err := c.inspect(ctx, fence, intent, batch.Checkpoint)
-			if err != nil {
-				return AckGrant{}, err
-			}
-			if err := waitForDeliveryRetry(ctx, retryState.nextAttemptAt); err != nil {
-				return AckGrant{}, err
-			}
-		}
-	}
-
-	attemptID, err := c.prepareAttempt(ctx, fence, intent, batch.Checkpoint)
-	if err != nil {
-		return AckGrant{}, err
-	}
-	telemetry.RecordDeliveryOutcome(ctx, "attempt_prepared")
-	evidence, err := driver.Apply(ctx, intent, batch)
-	if err != nil {
-		if errors.Is(err, connector.ErrDeliveryIndeterminate) {
-			telemetry.RecordDeliveryOutcome(ctx, "indeterminate")
-		} else {
-			telemetry.RecordDeliveryOutcome(ctx, "apply_failed")
-			_ = c.markAttemptTerminal(context.WithoutCancel(ctx), fence, attemptID, "failed", err.Error())
-		}
-		return AckGrant{}, err
-	}
-	if c.hooks.AfterTargetApply != nil {
-		if err := c.hooks.AfterTargetApply(ctx, fence, intent); err != nil {
-			return AckGrant{}, recoverablePostCommitError("after target apply", err)
-		}
-	}
-	if err := c.recordEvidence(ctx, fence, intent, attemptID, evidence); err != nil {
-		return AckGrant{}, recoverablePostCommitError("record delivery evidence", err)
-	}
-	if err := c.markAttemptTerminal(ctx, fence, attemptID, "applied", ""); err != nil {
-		return AckGrant{}, recoverablePostCommitError("mark delivery applied", err)
-	}
-	grant, err := c.finalize(ctx, fence, intent, attemptID, batch.Checkpoint)
-	return grant, recoverablePostCommitError("finalize delivery", err)
-}
-
 func recoverablePostCommitError(stage string, err error) error {
 	if err == nil {
 		return nil
@@ -573,30 +497,6 @@ func validateTransactionDeliveryInput(fence authority.RunFence, intent connector
 	}
 	if positionID != intent.PositionID {
 		return fmt.Errorf("%w: intent position %s does not match transaction position %s", connector.ErrDeliveryConflict, intent.PositionID, positionID)
-	}
-	return nil
-}
-
-func validateDeliveryInput(fence authority.RunFence, intent connector.DeliveryIntent, batch connector.Batch) error {
-	if err := intent.Validate(); err != nil {
-		return err
-	}
-	if intent.FlowID != fence.FlowID || intent.FlowIncarnationID != fence.FlowIncarnationID.String() || intent.Generation != fence.Generation || intent.AcquisitionID != fence.AcquisitionID.String() || intent.LeaseEpoch != fence.LeaseEpoch {
-		return fmt.Errorf("%w: delivery intent does not match run fence", authority.ErrFenceRejected)
-	}
-	hash, err := connector.BatchContentHash(batch)
-	if err != nil {
-		return err
-	}
-	if hash != intent.ContentHash {
-		return fmt.Errorf("%w: delivery content hash mismatch", connector.ErrDeliveryConflict)
-	}
-	positionID, err := connector.CheckpointPositionID(batch.Checkpoint)
-	if err != nil {
-		return err
-	}
-	if positionID != intent.PositionID {
-		return fmt.Errorf("%w: intent position %s does not match checkpoint position %s", connector.ErrDeliveryConflict, intent.PositionID, positionID)
 	}
 	return nil
 }

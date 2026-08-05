@@ -3,14 +3,42 @@ package http
 import (
 	"context"
 	"errors"
+	"io"
 	nethttp "net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
+
+func TestAppendWriteSendsMappedBatch(t *testing.T) {
+	var body []byte
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, request *nethttp.Request) {
+		var err error
+		body, err = io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read request: %v", err)
+		}
+		w.WriteHeader(nethttp.StatusNoContent)
+	}))
+	defer server.Close()
+	destination := openTestDestination(t, server.URL, time.Hour)
+	batch := testBatch()
+	batch.Schema = connector.Schema{Namespace: "mapped", Name: "events", Columns: []connector.Column{{Name: "event_id", Type: "int8"}}}
+	batch.WritePolicy = connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend}
+	batch.Records[0].Table = "events"
+	batch.Records[0].After = map[string]any{"event_id": int64(7)}
+	if err := destination.Write(context.Background(), batch); err != nil {
+		t.Fatal(err)
+	}
+	encoded := string(body)
+	if !strings.Contains(encoded, `"table":"events"`) || !strings.Contains(encoded, `"event_id":7`) {
+		t.Fatalf("request body=%s", encoded)
+	}
+}
 
 func TestFailedDeliveryIsNotRemembered(t *testing.T) {
 	t.Parallel()

@@ -55,8 +55,6 @@
     - [ListDDLResponse](#wallaby-v1-ListDDLResponse)
     - [ListPendingDDLRequest](#wallaby-v1-ListPendingDDLRequest)
     - [ListPendingDDLResponse](#wallaby-v1-ListPendingDDLResponse)
-    - [MarkDDLAppliedRequest](#wallaby-v1-MarkDDLAppliedRequest)
-    - [MarkDDLAppliedResponse](#wallaby-v1-MarkDDLAppliedResponse)
     - [RejectDDLRequest](#wallaby-v1-RejectDDLRequest)
     - [RejectDDLResponse](#wallaby-v1-RejectDDLResponse)
 
@@ -865,36 +863,6 @@ CheckpointService reads and writes durable flow positions.
 
 
 
-<a name="wallaby-v1-MarkDDLAppliedRequest"></a>
-
-### MarkDDLAppliedRequest
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| id | [int64](#int64) |  |  |
-
-
-
-
-
-
-<a name="wallaby-v1-MarkDDLAppliedResponse"></a>
-
-### MarkDDLAppliedResponse
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| event | [DDLEvent](#wallaby-v1-DDLEvent) |  |  |
-
-
-
-
-
-
 <a name="wallaby-v1-RejectDDLRequest"></a>
 
 ### RejectDDLRequest
@@ -943,7 +911,6 @@ advanced only by durable data-plane execution receipts.
 | ListDDL | [ListDDLRequest](#wallaby-v1-ListDDLRequest) | [ListDDLResponse](#wallaby-v1-ListDDLResponse) |  |
 | ApproveDDL | [ApproveDDLRequest](#wallaby-v1-ApproveDDLRequest) | [ApproveDDLResponse](#wallaby-v1-ApproveDDLResponse) |  |
 | RejectDDL | [RejectDDLRequest](#wallaby-v1-RejectDDLRequest) | [RejectDDLResponse](#wallaby-v1-RejectDDLResponse) |  |
-| MarkDDLApplied | [MarkDDLAppliedRequest](#wallaby-v1-MarkDDLAppliedRequest) | [MarkDDLAppliedResponse](#wallaby-v1-MarkDDLAppliedResponse) | Deprecated: administrative applied transitions are rejected. |
 
 
 

@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/bootstrap"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
@@ -130,7 +133,44 @@ func TestBootstrapConcurrentWritesBoundary(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT 'public.wallaby_bootstrap_source'::regclass::oid`).Scan(&relationID); err != nil {
 		t.Fatal(err)
 	}
-	if err := bootstrapper.RecordTaskReceipt(ctx, fence, session.Snapshot, relationID, "full-table", []byte(`{"last_id":1}`), "snapshot-rowset-v1"); err != nil {
+	task := bootstrap.SnapshotTask{
+		RelationID: relationID,
+		TaskID:     "full-table",
+		Namespace:  "public",
+		Table:      "wallaby_bootstrap_source",
+		Schema: connector.Schema{
+			Name:      "wallaby_bootstrap_source",
+			Namespace: "public",
+			Version:   1,
+			Columns: []connector.Column{
+				{Name: "id", Type: "int8", TypeMetadata: map[string]string{"primary_key": "true", "primary_key_ordinal": "1"}},
+				{Name: "value", Type: "text"},
+			},
+		},
+		KeyColumns: []string{"id"},
+	}
+	identityPolicy := connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend, ProjectionFingerprint: "identity-v1"}
+	task.Delivery = bootstrap.SnapshotDeliveryContract{
+		Version: bootstrap.SnapshotDeliveryContractV1, Schema: task.Schema, WritePolicy: identityPolicy, ProjectionFingerprint: "identity-v1",
+	}
+	manifestHash, err := bootstrap.SnapshotManifestHash([]bootstrap.SnapshotTask{task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Snapshot, err = bootstrapper.FreezeManifest(ctx, fence, session.Snapshot, "bootstrap-source-lineage", manifestHash, "publication-v1", []bootstrap.SnapshotTask{task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := authorityStore.AcquireClaim(ctx, fence, authority.ClaimSnapshot, task.WorkID(session.Snapshot.BootstrapID), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := connector.Batch{
+		Schema:      task.Schema,
+		Records:     []connector.Record{{Table: task.Table, Operation: connector.OpLoad, After: map[string]any{"id": int64(1), "value": "before"}}},
+		WritePolicy: identityPolicy,
+	}
+	if err := bootstrapper.DeliverTaskBatch(ctx, claim, session.Snapshot, task, 1, []byte(`{"last_id":1}`), true, "postgres-target-v1", batch, bootstrapReceiptDestination{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -150,6 +190,171 @@ func TestBootstrapConcurrentWritesBoundary(t *testing.T) {
 	}
 	if phase != "streaming" {
 		t.Fatalf("bootstrap phase=%q, want streaming", phase)
+	}
+}
+
+func TestBootstrapMigrationRejectsTasksWithoutDestinationContract(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, cleanup := newDeliveryMigrationDatabase(t, ctx, dsn, "bootstrap_contract")
+	defer cleanup()
+	if err := workflow.ApplyMigrations(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if err := bootstrap.ApplyMigrations(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+DELETE FROM wallaby_control_migrations WHERE domain='bootstrap' AND version='007_snapshot_destination_contract.sql';
+ALTER TABLE source_bootstrap_tasks
+  DROP COLUMN destination_schema_json CASCADE,
+  DROP COLUMN write_policy_json CASCADE,
+  DROP COLUMN projection_fingerprint CASCADE,
+  DROP COLUMN projection_version CASCADE;
+INSERT INTO source_bootstrap_tasks(bootstrap_id,relation_id,task_id,status,authority_origin)
+VALUES('11111111-1111-1111-1111-111111111111'::uuid,1,'legacy-task','pending','legacy_unfenced')`); err != nil {
+		t.Fatal(err)
+	}
+	for restart := 1; restart <= 2; restart++ {
+		err := bootstrap.ApplyMigrations(ctx, pool)
+		if err == nil || !strings.Contains(err.Error(), "legacy snapshot tasks lack an immutable destination delivery contract") {
+			t.Fatalf("restart %d migration error=%v", restart, err)
+		}
+	}
+}
+
+func TestManagedBootstrapNonidentityAppendDeliverySurvivesCoordinatorRestart(t *testing.T) {
+	ctx, dsn, engine, pool, authorityStore := setupBootstrapControl(t)
+	defer engine.Close()
+	defer pool.Close()
+	flowID := fmt.Sprintf("bootstrap-append-restart-%d", time.Now().UnixNano())
+	defer cleanupAuthorityTest(context.Background(), pool, flowID)
+	fence := createRunningFence(t, ctx, engine, authorityStore, flowID)
+	prepareBootstrapRelation(t, ctx, pool)
+	defer cleanupBootstrapRelation(context.Background(), pool)
+	if _, err := pool.Exec(ctx, `
+DROP SCHEMA IF EXISTS wallaby_append_target CASCADE;
+CREATE SCHEMA wallaby_append_target;
+CREATE TABLE wallaby_append_target.accounts_log(account_id bigint,display_value text)`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = pool.Exec(context.Background(), `DROP SCHEMA IF EXISTS wallaby_append_target CASCADE`) }()
+
+	bootstrapper, err := bootstrap.NewBootstrapper(ctx, pool, dsn, pool, bootstrap.Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := bootstrapper.Start(ctx, fence, "wallaby_bootstrap_publication", "selection-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = session.Close(context.Background())
+		_, _ = pool.Exec(context.Background(), "SELECT pg_catalog.pg_drop_replication_slot($1) WHERE EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name=$1)", session.Snapshot.SlotName)
+	}()
+	var relationID uint32
+	if err := pool.QueryRow(ctx, `SELECT 'public.wallaby_bootstrap_source'::regclass::oid`).Scan(&relationID); err != nil {
+		t.Fatal(err)
+	}
+	sourceSchema := connector.Schema{Name: "wallaby_bootstrap_source", Namespace: "public", Version: 1, Columns: []connector.Column{
+		{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"primary_key": "true", "primary_key_ordinal": "1"}},
+		{Name: "value", Type: "text"},
+		{Name: "secret", Type: "text"},
+	}}
+	destinationSchema := connector.Schema{Name: "accounts_log", Namespace: "wallaby_append_target", Version: 1, Columns: []connector.Column{{Name: "account_id", Type: "bigint"}, {Name: "display_value", Type: "text"}}}
+	policy := connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend, ProjectionFingerprint: "append-rename-filter-v1"}
+	task := bootstrap.SnapshotTask{
+		RelationID: relationID, TaskID: "full-table", Namespace: "public", Table: "wallaby_bootstrap_source",
+		Schema: sourceSchema, KeyColumns: []string{"id"},
+		Delivery: bootstrap.SnapshotDeliveryContract{Version: bootstrap.SnapshotDeliveryContractV1, Schema: destinationSchema, WritePolicy: policy, ProjectionFingerprint: "append-rename-filter-v1"},
+	}
+	manifestHash, err := bootstrap.SnapshotManifestHash([]bootstrap.SnapshotTask{task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Snapshot, err = bootstrapper.FreezeManifest(ctx, fence, session.Snapshot, "append-source-lineage", manifestHash, "publication-v1", []bootstrap.SnapshotTask{task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := &pgdest.Destination{}
+	if err := destination.Open(ctx, connector.Spec{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "synchronous_commit": "on", "meta_table_enabled": "false", "flow_id": flowID}}); err != nil {
+		t.Fatal(err)
+	}
+	defer destination.Close(context.Background())
+	intent := connector.BootstrapIntent{
+		FlowID: fence.FlowID, FlowIncarnationID: fence.FlowIncarnationID.String(), SourceLineageID: session.Snapshot.SourceLineageID,
+		BootstrapID: session.Snapshot.BootstrapID.String(), BootstrapGeneration: session.Snapshot.BootstrapGeneration,
+		Generation: fence.Generation, AcquisitionID: fence.AcquisitionID.String(), LeaseEpoch: fence.LeaseEpoch,
+		DestinationRevisionID: "postgres-append-v1", ManifestHash: manifestHash,
+	}
+	tables := []connector.BootstrapTable{{Schema: destinationSchema, WritePolicy: policy, SourcePosition: session.Snapshot.ConsistentLSN.String()}}
+	if err := destination.PrepareBootstrap(ctx, intent, tables); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := authorityStore.AcquireClaim(ctx, fence, authority.ClaimSnapshot, task.WorkID(session.Snapshot.BootstrapID), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := connector.Batch{
+		Schema: destinationSchema, WritePolicy: policy, WireFormat: connector.WireFormatArrow,
+		Checkpoint: connector.Checkpoint{LSN: session.Snapshot.ConsistentLSN.String(), Metadata: map[string]string{"bootstrap_id": session.Snapshot.BootstrapID.String()}},
+		Records:    []connector.Record{{Table: "accounts_log", Operation: connector.OpLoad, SchemaVersion: 1, After: map[string]any{"account_id": int64(1), "display_value": "before"}}},
+	}
+	if err := bootstrapper.DeliverTaskBatch(ctx, claim, session.Snapshot, task, 1, []byte(`{"id":1}`), true, "postgres-append-v1", batch, destination); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := bootstrap.NewBootstrapper(ctx, pool, dsn, pool, bootstrap.Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := restarted.LoadDeliveryContracts(ctx, fence, session.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 || !reflect.DeepEqual(loaded[0], tables[0]) {
+		t.Fatalf("restarted destination contracts=%+v want=%+v", loaded, tables)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE source_bootstrap_tasks
+SET projection_fingerprint='tampered-v1',
+    write_policy_json=jsonb_set(write_policy_json,'{ProjectionFingerprint}','"tampered-v1"'::jsonb)
+WHERE bootstrap_id=$1`, session.Snapshot.BootstrapID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.LoadDeliveryContracts(ctx, fence, session.Snapshot); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("tampered recovery error=%v want delivery conflict", err)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE source_bootstrap_tasks
+SET projection_fingerprint=$2,
+    write_policy_json=jsonb_set(write_policy_json,'{ProjectionFingerprint}',to_jsonb($2::text))
+WHERE bootstrap_id=$1`, session.Snapshot.BootstrapID, policy.ProjectionFingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.DeliverTaskBatch(ctx, claim, session.Snapshot, task, 1, []byte(`{"id":1}`), true, "postgres-append-v1", batch, destination); err != nil {
+		t.Fatalf("receipt-backed retry: %v", err)
+	}
+	evidence, err := destination.PublishBootstrap(ctx, intent, tables)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.RecordPublication(ctx, fence, session.Snapshot, "postgres-append-v1", evidence.ContentHash, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Handoff(ctx, fence, session.Snapshot); err != nil {
+		t.Fatal(err)
+	}
+	var accountID int64
+	var value string
+	if err := pool.QueryRow(ctx, `SELECT account_id,display_value FROM wallaby_append_target.accounts_log`).Scan(&accountID, &value); err != nil {
+		t.Fatal(err)
+	}
+	if accountID != 1 || value != "before" {
+		t.Fatalf("append target row=(%d,%q)", accountID, value)
 	}
 }
 
@@ -548,6 +753,41 @@ func createRunningFence(t *testing.T, ctx context.Context, engine *workflow.Post
 		t.Fatal(err)
 	}
 	return fence
+}
+
+type bootstrapReceiptDestination struct{}
+
+func (bootstrapReceiptDestination) Open(context.Context, connector.Spec) error   { return nil }
+func (bootstrapReceiptDestination) Write(context.Context, connector.Batch) error { return nil }
+func (bootstrapReceiptDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
+	return nil
+}
+func (bootstrapReceiptDestination) TypeMappings() map[string]string { return nil }
+func (bootstrapReceiptDestination) Close(context.Context) error     { return nil }
+func (bootstrapReceiptDestination) Capabilities() connector.Capabilities {
+	return connector.Capabilities{Support: connector.SupportExperimental, TableWrites: connector.TableWriteSemantics{Append: true}}
+}
+func (bootstrapReceiptDestination) Apply(_ context.Context, intent connector.DeliveryIntent, batch connector.Batch) (connector.DeliveryEvidence, error) {
+	hash, err := connector.BatchContentHash(batch)
+	return connector.DeliveryEvidence{ExternalID: intent.LogicalBatchID, ContentHash: hash}, err
+}
+func (bootstrapReceiptDestination) Reconcile(context.Context, connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
+	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
+}
+func (bootstrapReceiptDestination) PrepareBootstrap(context.Context, connector.BootstrapIntent, []connector.BootstrapTable) error {
+	return nil
+}
+func (destination bootstrapReceiptDestination) ApplyBootstrap(ctx context.Context, _ connector.BootstrapIntent, intent connector.DeliveryIntent, batch connector.Batch) (connector.DeliveryEvidence, error) {
+	return destination.Apply(ctx, intent, batch)
+}
+func (bootstrapReceiptDestination) ReconcileBootstrap(context.Context, connector.BootstrapIntent, connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
+	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
+}
+func (bootstrapReceiptDestination) PublishBootstrap(_ context.Context, intent connector.BootstrapIntent, _ []connector.BootstrapTable) (connector.DeliveryEvidence, error) {
+	return connector.DeliveryEvidence{ExternalID: intent.BootstrapID, ContentHash: intent.ManifestHash}, nil
+}
+func (bootstrapReceiptDestination) AbandonBootstrap(context.Context, connector.BootstrapIntent, []connector.BootstrapTable) error {
+	return nil
 }
 
 func prepareBootstrapRelation(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {

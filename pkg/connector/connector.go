@@ -61,7 +61,6 @@ type Capabilities struct {
 	Evidence              ContractEvidence
 	Delivery              DeliverySemantics
 	TableWrites           TableWriteSemantics
-	SupportsDDL           bool
 	SupportsSchemaChanges bool
 	SupportsStreaming     bool
 	SupportsBulkLoad      bool

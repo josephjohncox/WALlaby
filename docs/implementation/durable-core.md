@@ -64,8 +64,8 @@ Epoch-based mark/sweep handles uploaded/verified unpublished orphans and rooted 
   - incarnation-scoped authoritative checkpoints and retained outbox completion.
 - `internal/delivery/migrations/001_attempts_receipts.sql`
   - destination revisions, delivery manifests, attempts, evidence, receipts, ACK intents, and ACK receipts.
-- `internal/bootstrap/migrations/001_bootstraps.sql` and `002_managed_bootstrap.sql`
-  - bootstrap sessions, fenced multi-table tasks and delivery receipts, source-resource ownership/operations, and publication receipts.
+- `internal/bootstrap/migrations/001_bootstraps.sql` through `007_snapshot_destination_contract.sql`
+  - bootstrap sessions, fenced multi-table tasks and delivery receipts, source-resource ownership/operations, and publication receipts. Every frozen task persists separate immutable source-query and mapped-destination contracts: source namespace/table/schema/PK drive snapshot queries and cursors, while destination schema, resolved write policy, projection fingerprint, and contract version exclusively govern delivery. The manifest hash binds both contracts; recovery recomputes it and legacy tasks without the destination contract fail migration explicitly.
 - `internal/registry/migrations/006_run_fencing.sql`
   - complete-or-legacy DDL/catalog provenance, takeover-safe attempts, and schema-publication operations.
 - `internal/delivery/migrations/002_authority_protocol.sql`, `004_logical_batches_retry_retention.sql`, and `006_rolling_logical_batch_compatibility.sql`

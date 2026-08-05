@@ -31,7 +31,7 @@ type s3TablesBackend struct {
 // NewS3TablesCommitter uses the AWS Glue Iceberg REST endpoint for catalog
 // commits and the current S3 Tables control APIs for maintenance admission.
 // Managed-table files never become Wallaby artifact roots.
-func NewS3TablesCommitter(ctx context.Context, objects CanonicalObjectReader, config Config, options ...CommitterOption) (*Committer, error) {
+func NewS3TablesCommitter(ctx context.Context, objects CanonicalObjectReader, config Config) (*Committer, error) {
 	if config.Profile != CatalogProfileS3Tables {
 		return nil, errors.New("S3 Tables committer requires catalog_profile=s3tables")
 	}
@@ -46,7 +46,7 @@ func NewS3TablesCommitter(ctx context.Context, objects CanonicalObjectReader, co
 	backend := &s3TablesBackend{
 		rest: rest, maintenance: s3tables.NewFromConfig(awsCfg), config: config,
 	}
-	return NewCommitter(objects, backend, config, options...)
+	return NewCommitter(objects, backend, config)
 }
 
 func (backend *s3TablesBackend) Load(ctx context.Context, identifier table.Identifier) (catalogTable, error) {

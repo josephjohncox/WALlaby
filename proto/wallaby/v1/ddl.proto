@@ -49,14 +49,6 @@ message RejectDDLResponse {
   DDLEvent event = 1;
 }
 
-message MarkDDLAppliedRequest {
-  int64 id = 1;
-}
-
-message MarkDDLAppliedResponse {
-  DDLEvent event = 1;
-}
-
 // DDLService lists schema changes and manages approval state. Applied state is
 // advanced only by durable data-plane execution receipts.
 service DDLService {
@@ -64,8 +56,4 @@ service DDLService {
   rpc ListDDL(ListDDLRequest) returns (ListDDLResponse);
   rpc ApproveDDL(ApproveDDLRequest) returns (ApproveDDLResponse);
   rpc RejectDDL(RejectDDLRequest) returns (RejectDDLResponse);
-  // Deprecated: administrative applied transitions are rejected.
-  rpc MarkDDLApplied(MarkDDLAppliedRequest) returns (MarkDDLAppliedResponse) {
-    option deprecated = true;
-  }
 }

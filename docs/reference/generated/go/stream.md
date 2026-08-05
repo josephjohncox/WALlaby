@@ -13,6 +13,7 @@ Package stream delivers source batches to destinations, persists checkpoints, ap
 ## Index
 
 - [func ValidateDestinationContracts\(destinations \[\]DestinationConfig, ackPolicy AckPolicy, primaryDestination string, requireDDLExecution bool\) error](<#ValidateDestinationContracts>)
+- [func ValidateDestinationTablePolicy\(destination DestinationConfig, policy connector.TableWritePolicy\) error](<#ValidateDestinationTablePolicy>)
 - [func ValidateTrace\(events \[\]TraceEvent, opts TraceValidationOptions\) error](<#ValidateTrace>)
 - [type AckPolicy](<#AckPolicy>)
 - [type DDLExecutionStore](<#DDLExecutionStore>)
@@ -25,8 +26,6 @@ Package stream delivers source batches to destinations, persists checkpoints, ap
 - [type ManagedArtifactIdentity](<#ManagedArtifactIdentity>)
 - [type ManagedArtifactLog](<#ManagedArtifactLog>)
 - [type ManagedDeliveryCoordinator](<#ManagedDeliveryCoordinator>)
-- [type ManagedSourceFeedbackCoordinator](<#ManagedSourceFeedbackCoordinator>)
-- [type ManagedTransactionDeliveryCoordinator](<#ManagedTransactionDeliveryCoordinator>)
 - [type MemoryTraceSink](<#MemoryTraceSink>)
   - [func \(s \*MemoryTraceSink\) Emit\(\_ context.Context, event TraceEvent\)](<#MemoryTraceSink.Emit>)
   - [func \(s \*MemoryTraceSink\) Events\(\) \[\]TraceEvent](<#MemoryTraceSink.Events>)
@@ -48,13 +47,22 @@ Package stream delivers source batches to destinations, persists checkpoints, ap
 
 
 <a name="ValidateDestinationContracts"></a>
-## func [ValidateDestinationContracts](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/destination_contract.go#L12-L17>)
+## func [ValidateDestinationContracts](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/destination_contract.go#L31-L36>)
 
 ```go
 func ValidateDestinationContracts(destinations []DestinationConfig, ackPolicy AckPolicy, primaryDestination string, requireDDLExecution bool) error
 ```
 
 ValidateDestinationContracts checks whether configured destinations can honor the flow's acknowledgement and DDL policies before any connector is opened.
+
+<a name="ValidateDestinationTablePolicy"></a>
+## func [ValidateDestinationTablePolicy](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/destination_contract.go#L12>)
+
+```go
+func ValidateDestinationTablePolicy(destination DestinationConfig, policy connector.TableWritePolicy) error
+```
+
+ValidateDestinationTablePolicy checks a projected table policy before a destination Write call can perform external I/O.
 
 <a name="ValidateTrace"></a>
 ## func [ValidateTrace](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/trace_validate.go#L365>)
@@ -196,7 +204,7 @@ func (s *JSONTraceSink) Emit(_ context.Context, event TraceEvent)
 Emit writes a single trace event.
 
 <a name="ManagedArtifactIdentity"></a>
-## type [ManagedArtifactIdentity](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L40-L42>)
+## type [ManagedArtifactIdentity](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L34-L36>)
 
 ManagedArtifactIdentity exposes the non\-secret effective destination identity after deployment defaults are merged. FlowRunner pins it to the PostgreSQL destination revision before catalog recovery or consumption.
 
@@ -207,7 +215,7 @@ type ManagedArtifactIdentity interface {
 ```
 
 <a name="ManagedArtifactLog"></a>
-## type [ManagedArtifactLog](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L30-L35>)
+## type [ManagedArtifactLog](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L24-L29>)
 
 ManagedArtifactLog is the deep publication seam used only by ack\_policy=materialized. Append returns after immutable objects and the PostgreSQL publication/checkpoint/ACK intent commit. Catalog consumers, when configured, run asynchronously behind PostgreSQL publication authority and do not extend the source\-ACK boundary.
 
@@ -221,38 +229,17 @@ type ManagedArtifactLog interface {
 ```
 
 <a name="ManagedDeliveryCoordinator"></a>
-## type [ManagedDeliveryCoordinator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L11-L16>)
+## type [ManagedDeliveryCoordinator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L11-L17>)
 
-ManagedDeliveryCoordinator is the public seam used by Runner without exposing internal repository implementations in the stable package API.
+ManagedDeliveryCoordinator is the complete fenced full\-transaction seam used by Runner without exposing internal repository implementations.
 
 ```go
 type ManagedDeliveryCoordinator interface {
     AuthorizeAck(context.Context, connector.RunFence, connector.Checkpoint) (connector.AckGrant, error)
-    Deliver(context.Context, connector.RunFence, connector.DeliveryIntent, connector.Batch, connector.ManagedDestination) (connector.AckGrant, error)
+    DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedTransactionDestination) (connector.AckGrant, error)
     ValidateAckGrant(context.Context, connector.RunFence, connector.AckGrant) error
     RecordAckReceipt(context.Context, connector.RunFence, connector.AckGrant, string) error
-}
-```
-
-<a name="ManagedSourceFeedbackCoordinator"></a>
-## type [ManagedSourceFeedbackCoordinator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L46-L48>)
-
-ManagedSourceFeedbackCoordinator is the optional observed\-flush extension required by the named PostgreSQL profile.
-
-```go
-type ManagedSourceFeedbackCoordinator interface {
     CommitSourceFeedback(context.Context, connector.RunFence, connector.AckGrant, connector.FlushEvidenceSource) error
-}
-```
-
-<a name="ManagedTransactionDeliveryCoordinator"></a>
-## type [ManagedTransactionDeliveryCoordinator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/managed.go#L21-L23>)
-
-ManagedTransactionDeliveryCoordinator is the optional full\-transaction extension required by the named PostgreSQL profile. Keeping it separate preserves compatibility for existing ManagedDeliveryCoordinator adapters.
-
-```go
-type ManagedTransactionDeliveryCoordinator interface {
-    DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedTransactionDestination) (connector.AckGrant, error)
 }
 ```
 
@@ -351,7 +338,7 @@ type Runner struct {
 ```
 
 <a name="Runner.ManagedProfileEnabled"></a>
-### func \(\*Runner\) [ManagedProfileEnabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L799>)
+### func \(\*Runner\) [ManagedProfileEnabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L791>)
 
 ```go
 func (r *Runner) ManagedProfileEnabled() bool

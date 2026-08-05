@@ -22,10 +22,11 @@ Kafka options:
 - `compression` (`none`, `gzip`, `snappy`, `lz4`, `zstd`)
 - `acks` (`all`, `leader`, `none`)
 - `max_message_bytes`, `max_batch_bytes`, `max_record_bytes`
-- `oversize_policy` (`error` or `drop`)
+- `allow_oversize_skip` (`false` default; `true` drops oversize payloads and declares lossy delivery)
 - `message_mode` (`batch` or `record`)
 - `key_mode` (`hash` or `raw`)
-- `transactional_id` (enables transactions per batch)
+- `transactional_producer` (`false` default; `true` enables transactions and requires `transactional_id`)
+- `transactional_id` (required only when `transactional_producer=true`)
 - `transaction_timeout`
 - `transaction_header` (default `wallaby-transaction-id`)
 - `schema_registry` (`csr`, `apicurio`, `glue`, `postgres`, `local`, `none`)

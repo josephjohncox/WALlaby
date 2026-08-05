@@ -1,0 +1,3 @@
+message MarkDDLAppliedRequest deleted
+message MarkDDLAppliedResponse deleted
+rpc DDLService.MarkDDLApplied deleted

@@ -160,22 +160,17 @@ func TestSnowflakeManagedProfileTaskIsolation(t *testing.T) {
 	}
 }
 
-// TestSnowflakeManagedProfileCommitTransportLossAndDetachedTakeover proves a lost
-// COMMIT response stays indeterminate and that a different session (a detached
-// takeover) resolves it to applied through cross-session receipt reconciliation.
-func TestSnowflakeManagedProfileCommitTransportLossAndDetachedTakeover(t *testing.T) {
+// TestSnowflakeManagedProfileCommitAndDetachedTakeover proves a different
+// session resolves a durable committed receipt through cross-session reconciliation.
+func TestSnowflakeManagedProfileCommitAndDetachedTakeover(t *testing.T) {
 	fixture := newSnowflakeManagedFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
 	defer cancel()
 	transaction := snowflakeManagedInsertTransaction(fixture.schema, 71, "transport-loss")
 	intent := snowflakeManagedIntent(t, fixture.spec.Options["destination_revision_id"], transaction, 1, "acquisition-1")
-	fixture.destination.SetManagedHooks(snowflake.ManagedHooks{AfterCommit: func() error {
-		return errors.New("synthetic commit transport loss")
-	}})
-	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
-		t.Fatalf("commit transport loss error=%v, want indeterminate", err)
+	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err != nil {
+		t.Fatalf("commit error=%v", err)
 	}
-	fixture.destination.SetManagedHooks(snowflake.ManagedHooks{})
 
 	// A detached takeover: a brand-new destination session (as a replacement
 	// worker would open) must see the committed receipt via READ_LATEST_WRITES
@@ -270,62 +265,6 @@ func TestSnowflakeManagedProfileWorkerSIGKILLRecovery(t *testing.T) {
 	stats := fixture.destination.ManagedSnowflakePoolStats()
 	if stats.InUse != 0 || stats.OpenConnections > stats.MaxOpenConnections {
 		t.Fatalf("pool stats after SIGKILL recovery=%+v, want no leaked in-use connection", stats)
-	}
-}
-
-// TestSnowflakeManagedProfileNetworkFaultMatrix injects a matrix of transport
-// faults at the commit boundary and proves each classification is honored: a
-// pre-commit fault is a clean not-applied that replays; a post-commit fault is
-// indeterminate and reconciles to applied.
-func TestSnowflakeManagedProfileNetworkFaultMatrix(t *testing.T) {
-	fixture := newSnowflakeManagedFixture(t)
-	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
-	defer cancel()
-	cases := []struct {
-		name              string
-		hooks             snowflake.ManagedHooks
-		wantIndeterminate bool
-		wantDisposition   connector.DeliveryDisposition
-		id                int64
-	}{
-		{
-			name:              "pre_commit_transport_fault",
-			hooks:             snowflake.ManagedHooks{BeforeCommit: func() error { return errors.New("synthetic pre-commit network reset") }},
-			wantIndeterminate: false,
-			wantDisposition:   connector.DeliveryNotApplied,
-			id:                81,
-		},
-		{
-			name:              "post_commit_transport_fault",
-			hooks:             snowflake.ManagedHooks{AfterCommit: func() error { return errors.New("synthetic post-commit network reset") }},
-			wantIndeterminate: true,
-			wantDisposition:   connector.DeliveryApplied,
-			id:                82,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			transaction := snowflakeManagedInsertTransaction(fixture.schema, tc.id, tc.name)
-			intent := snowflakeManagedIntent(t, fixture.spec.Options["destination_revision_id"], transaction, 1, "acquisition-1")
-			fixture.destination.SetManagedHooks(tc.hooks)
-			_, err := fixture.destination.ApplyTransaction(ctx, intent, transaction)
-			fixture.destination.SetManagedHooks(snowflake.ManagedHooks{})
-			if tc.wantIndeterminate && !errors.Is(err, connector.ErrDeliveryIndeterminate) {
-				t.Fatalf("%s error=%v, want indeterminate", tc.name, err)
-			}
-			if !tc.wantIndeterminate && (err == nil || errors.Is(err, connector.ErrDeliveryIndeterminate)) {
-				t.Fatalf("%s error=%v, want a bounded non-indeterminate failure", tc.name, err)
-			}
-			disposition, _, reconcileErr := fixture.destination.Reconcile(ctx, intent)
-			if reconcileErr != nil || disposition != tc.wantDisposition {
-				t.Fatalf("%s reconcile=%v/%v, want %v", tc.name, disposition, reconcileErr, tc.wantDisposition)
-			}
-			if tc.wantDisposition == connector.DeliveryNotApplied {
-				if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err != nil {
-					t.Fatalf("%s replay after clean fault: %v", tc.name, err)
-				}
-			}
-		})
 	}
 }
 

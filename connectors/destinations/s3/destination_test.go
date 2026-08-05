@@ -23,9 +23,6 @@ func TestCapabilitiesDoNotOverstateRestartReplaySafety(t *testing.T) {
 	t.Parallel()
 
 	capabilities := (&Destination{}).Capabilities()
-	if !capabilities.Delivery.Declared {
-		t.Fatalf("S3 delivery semantics are undeclared: %+v", capabilities.Delivery)
-	}
 	if capabilities.Delivery.IdempotentReplay || capabilities.Delivery.ReplaySafe || capabilities.Delivery.TransactionalBatch {
 		t.Fatalf("S3 overstates batch-boundary or transactional replay safety: %+v", capabilities.Delivery)
 	}

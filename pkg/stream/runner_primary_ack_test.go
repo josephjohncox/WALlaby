@@ -41,7 +41,6 @@ func (d *failingDest) Close(context.Context) error     { return nil }
 func (d *failingDest) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
 		Delivery: connector.DeliverySemantics{
-			Declared:         true,
 			IdempotentReplay: true,
 			ReplaySafe:       true,
 		},

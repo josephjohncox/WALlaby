@@ -21,26 +21,41 @@ import (
 )
 
 const (
-	optBrokers     = "brokers"
-	optTopic       = "topic"
-	optFormat      = "format"
-	optCompression = "compression"
-	optAcks        = "acks"
-	optMaxMessage  = "max_message_bytes"
-	optMaxBatch    = "max_batch_bytes"
-	optMaxRecord   = "max_record_bytes"
-	optOversize    = "oversize_policy"
-	optMessageMode = "message_mode"
-	optKeyMode     = "key_mode"
-	optTxnID       = "transactional_id"
-	optTxnTimeout  = "transaction_timeout"
-	optTxnHeader   = "transaction_header"
+	CapabilityProfileBase               connector.CapabilityProfileID = "base"
+	CapabilityProfileTransactionalOnly  connector.CapabilityProfileID = "transactional-only"
+	CapabilityProfileLossyOnly          connector.CapabilityProfileID = "lossy-only"
+	CapabilityProfileTransactionalLossy connector.CapabilityProfileID = "transactional+lossy"
 )
+
+const (
+	optBrokers               = "brokers"
+	optTopic                 = "topic"
+	optFormat                = "format"
+	optCompression           = "compression"
+	optAcks                  = "acks"
+	optMaxMessage            = "max_message_bytes"
+	optMaxBatch              = "max_batch_bytes"
+	optMaxRecord             = "max_record_bytes"
+	optTransactionalProducer = "transactional_producer"
+	optAllowOversizeSkip     = "allow_oversize_skip"
+	optMessageMode           = "message_mode"
+	optKeyMode               = "key_mode"
+	optTxnID                 = "transactional_id"
+	optTxnTimeout            = "transaction_timeout"
+	optTxnHeader             = "transaction_header"
+)
+
+type producer interface {
+	BeginTransaction() error
+	EndTransaction(context.Context, kgo.TransactionEndTry) error
+	ProduceSync(context.Context, ...*kgo.Record) kgo.ProduceResults
+	Close()
+}
 
 // Destination writes batches to Kafka.
 type Destination struct {
 	spec              connector.Spec
-	client            *kgo.Client
+	client            producer
 	topic             string
 	codec             wire.Codec
 	maxMessageSize    int
@@ -58,6 +73,10 @@ type Destination struct {
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+	profile, err := d.ClassifyCapabilityProfile(spec)
+	if err != nil {
+		return err
+	}
 	d.spec = spec
 	brokers := splitCSV(spec.Options[optBrokers])
 	if len(brokers) == 0 {
@@ -86,17 +105,15 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	if err != nil {
 		return err
 	}
-	oversize := strings.ToLower(strings.TrimSpace(spec.Options[optOversize]))
-	if oversize == "" {
-		oversize = "error"
-	}
-	if oversize != "error" && oversize != "drop" {
-		return fmt.Errorf("unsupported oversize_policy %q (use error or drop)", oversize)
+	allowOversizeSkip := profile == CapabilityProfileLossyOnly || profile == CapabilityProfileTransactionalLossy
+	overSizePolicy := "error"
+	if allowOversizeSkip {
+		overSizePolicy = "drop"
 	}
 	d.maxMessageSize = maxMessage
 	d.maxBatchSize = maxBatch
 	d.maxRecordSize = maxRecord
-	d.oversizePolicy = oversize
+	d.oversizePolicy = overSizePolicy
 	d.messageMode = strings.ToLower(strings.TrimSpace(spec.Options[optMessageMode]))
 	if d.messageMode == "" {
 		d.messageMode = "batch"
@@ -116,6 +133,7 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.registrySubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistrySubject])
 	d.protoTypesSubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistryProtoTypes])
 
+	d.transactional = false
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(brokers...),
 		kgo.RequiredAcks(parseAcks(spec.Options[optAcks])),
@@ -131,7 +149,7 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		// #nosec G115 -- size validated above.
 		opts = append(opts, kgo.ProducerBatchMaxBytes(int32(d.maxMessageSize)))
 	}
-	if txnID := strings.TrimSpace(spec.Options[optTxnID]); txnID != "" {
+	if txnID := strings.TrimSpace(spec.Options[optTxnID]); profile == CapabilityProfileTransactionalOnly || profile == CapabilityProfileTransactionalLossy {
 		opts = append(opts, kgo.TransactionalID(txnID))
 		d.transactional = true
 		if raw := strings.TrimSpace(spec.Options[optTxnTimeout]); raw != "" {
@@ -178,12 +196,12 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	}
 	meta, err := d.ensureSchema(ctx, batch)
 	if err != nil {
-		if d.transactional {
-			_ = d.client.EndTransaction(ctx, kgo.TryAbort)
-		}
 		if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
 			meta = nil
 		} else {
+			if d.transactional {
+				_ = d.client.EndTransaction(ctx, kgo.TryAbort)
+			}
 			return err
 		}
 	}
@@ -209,12 +227,81 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	return err
 }
 
-// CapabilitiesFor refines transaction and loss guarantees from destination options.
-func (d *Destination) CapabilitiesFor(spec connector.Spec) connector.Capabilities {
+// CapabilityProfileIDs returns the complete closed Kafka capability profile set.
+func (*Destination) CapabilityProfileIDs() []connector.CapabilityProfileID {
+	return []connector.CapabilityProfileID{
+		CapabilityProfileBase,
+		CapabilityProfileTransactionalOnly,
+		CapabilityProfileLossyOnly,
+		CapabilityProfileTransactionalLossy,
+	}
+}
+
+// ClassifyCapabilityProfile validates capability-affecting Kafka options and
+// returns their typed profile identity.
+func (*Destination) ClassifyCapabilityProfile(spec connector.Spec) (connector.CapabilityProfileID, error) {
+	transactional, err := strictProfileBool(spec.Options, optTransactionalProducer)
+	if err != nil {
+		return "", err
+	}
+	lossy, err := strictProfileBool(spec.Options, optAllowOversizeSkip)
+	if err != nil {
+		return "", err
+	}
+	txnID := strings.TrimSpace(spec.Options[optTxnID])
+	if transactional && txnID == "" {
+		return "", fmt.Errorf("%s=true requires transactional_id", optTransactionalProducer)
+	}
+	if !transactional && txnID != "" {
+		return "", fmt.Errorf("transactional_id requires %s=true", optTransactionalProducer)
+	}
+	switch {
+	case transactional && lossy:
+		return CapabilityProfileTransactionalLossy, nil
+	case transactional:
+		return CapabilityProfileTransactionalOnly, nil
+	case lossy:
+		return CapabilityProfileLossyOnly, nil
+	default:
+		return CapabilityProfileBase, nil
+	}
+}
+
+func strictProfileBool(options map[string]string, key string) (bool, error) {
+	raw := strings.TrimSpace(options[key])
+	switch raw {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid %s %q: use true or false", key, raw)
+	}
+}
+
+// CapabilitiesFor resolves one of the four closed delivery profiles.
+func (d *Destination) CapabilitiesFor(spec connector.Spec) (connector.Capabilities, error) {
+	profile, err := d.ClassifyCapabilityProfile(spec)
+	if err != nil {
+		return connector.Capabilities{}, err
+	}
 	capabilities := d.Capabilities()
-	capabilities.Delivery.TransactionalBatch = strings.TrimSpace(spec.Options[optTxnID]) != ""
-	capabilities.Delivery.Lossy = strings.EqualFold(strings.TrimSpace(spec.Options[optOversize]), "drop")
-	return capabilities
+	switch profile {
+	case CapabilityProfileBase:
+		return capabilities, nil
+	case CapabilityProfileTransactionalOnly:
+		capabilities.Delivery.TransactionalBatch = true
+		return capabilities, nil
+	case CapabilityProfileLossyOnly:
+		capabilities.Delivery.Lossy = true
+		return capabilities, nil
+	case CapabilityProfileTransactionalLossy:
+		capabilities.Delivery.TransactionalBatch = true
+		capabilities.Delivery.Lossy = true
+		return capabilities, nil
+	default:
+		return connector.Capabilities{}, fmt.Errorf("unsupported Kafka capability profile %q", profile)
+	}
 }
 
 func (d *Destination) ApplyDDL(_ context.Context, _ connector.Schema, _ connector.Record) error {
@@ -235,12 +322,9 @@ func (d *Destination) Close(_ context.Context) error {
 
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		Support:     connector.SupportExperimental,
-		TableWrites: connector.TableWriteSemantics{Declared: true, Append: true},
-		Delivery: connector.DeliverySemantics{
-			Declared: true,
-		},
-		SupportsDDL:           true,
+		Support:               connector.SupportExperimental,
+		TableWrites:           connector.TableWriteSemantics{Append: true},
+		Delivery:              connector.DeliverySemantics{},
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      false,
@@ -562,7 +646,7 @@ func (d *Destination) handleOversize(batch connector.Batch, size, limit int, lim
 	msg := fmt.Sprintf("kafka %s payload size %d exceeds limit %d (records=%d)", limitType, size, limit, len(batch.Records))
 	switch d.oversizePolicy {
 	case "drop":
-		log.Printf("kafka oversize_policy=drop: %s", msg)
+		log.Printf("kafka allow_oversize_skip=true: %s", msg)
 		return nil
 	default:
 		return errors.New(msg)

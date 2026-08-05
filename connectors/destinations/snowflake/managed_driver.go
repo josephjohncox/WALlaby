@@ -19,22 +19,12 @@ var (
 	_ connector.ManagedSourceSchemaValidator  = (*Destination)(nil)
 )
 
-// ManagedHooks exposes deterministic rollback and ambiguous-response fault
-// boundaries around COMMIT. Production callers leave every hook nil.
-type ManagedHooks struct {
+type managedHooks struct {
 	BeforeCommit func() error
 	AfterCommit  func() error
 }
 
-// SetManagedHooks installs real-service fault injection for the constrained
-// managed profile.
-func (d *Destination) SetManagedHooks(hooks ManagedHooks) {
-	d.managedHooksMu.Lock()
-	d.managedHooks = hooks
-	d.managedHooksMu.Unlock()
-}
-
-func (d *Destination) managedHooksSnapshot() ManagedHooks {
+func (d *Destination) managedHooksSnapshot() managedHooks {
 	d.managedHooksMu.RLock()
 	defer d.managedHooksMu.RUnlock()
 	return d.managedHooks

@@ -71,21 +71,6 @@ func (p *PostgresStore) Get(ctx context.Context, flowID string) (connector.Check
 	return scanCheckpoint(row)
 }
 
-// CheckExternalOverrideAllowed is retained for read/check compatibility. New
-// administrative writers must call PutExternal so authority cannot be acquired
-// between this check and the checkpoint write.
-func (p *PostgresStore) CheckExternalOverrideAllowed(ctx context.Context, flowID string) error {
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin checkpoint override guard: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := checkExternalOverrideAllowed(ctx, tx, flowID); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
 // PutExternal atomically takes the flow authority lock, rejects every live
 // dispatch/execution/producer owner, validates monotonicity, and writes.
 func (p *PostgresStore) PutExternal(ctx context.Context, flowID string, cp connector.Checkpoint) error {
@@ -331,7 +316,7 @@ func scanCheckpoint(row pgx.Row) (connector.Checkpoint, error) {
 
 	if err := row.Scan(&cp.LSN, &metadataJSON, &updated); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return connector.Checkpoint{}, ErrNotFound
+			return connector.Checkpoint{}, connector.ErrCheckpointNotFound
 		}
 		return connector.Checkpoint{}, fmt.Errorf("scan checkpoint: %w", err)
 	}
@@ -357,7 +342,7 @@ func scanFlowCheckpoint(row pgx.Row) (connector.FlowCheckpoint, error) {
 
 	if err := row.Scan(&flowID, &lsn, &metadataJSON, &updated); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return connector.FlowCheckpoint{}, ErrNotFound
+			return connector.FlowCheckpoint{}, connector.ErrCheckpointNotFound
 		}
 		return connector.FlowCheckpoint{}, fmt.Errorf("scan flow checkpoint: %w", err)
 	}
