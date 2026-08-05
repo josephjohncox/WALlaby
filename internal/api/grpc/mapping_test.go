@@ -40,7 +40,7 @@ func TestEndpointWireValuesAndRoundTrips(t *testing.T) {
 		wire      wallabypb.EndpointType
 		wireValue int32
 	}{
-		{name: "redpanda", model: connector.EndpointRedpanda, wire: wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA, wireValue: 12},
+		{name: "redpanda", model: connector.EndpointRedpanda, wire: wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA, wireValue: 16},
 		{name: "iceberg", model: connector.EndpointIceberg, wire: wallabypb.EndpointType_ENDPOINT_TYPE_ICEBERG, wireValue: 15},
 	}
 	for _, test := range tests {

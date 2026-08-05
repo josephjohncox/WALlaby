@@ -97,15 +97,19 @@ const (
 	EndpointType_ENDPOINT_TYPE_SNOWPIPE    EndpointType = 9
 	EndpointType_ENDPOINT_TYPE_PARQUET     EndpointType = 10
 	EndpointType_ENDPOINT_TYPE_DUCKDB      EndpointType = 11
-	// Redpanda is Kafka API-compatible. Redpanda Iceberg topics require an
-	// enterprise license. Configure Iceberg in Redpanda, not WALlaby.
-	EndpointType_ENDPOINT_TYPE_REDPANDA   EndpointType = 12
+	// Deprecated. Use ENDPOINT_TYPE_REDPANDA.
+	//
+	// Deprecated: Marked as deprecated in wallaby/v1/types.proto.
+	EndpointType_ENDPOINT_TYPE_BUFSTREAM  EndpointType = 12
 	EndpointType_ENDPOINT_TYPE_CLICKHOUSE EndpointType = 13
 	EndpointType_ENDPOINT_TYPE_DUCKLAKE   EndpointType = 14
 	// Iceberg is an asynchronous consumer of the canonical artifact log,
 	// including AWS S3 Tables exposed read-only through external catalogs such
 	// as Snowflake. It is never a direct current-state/upsert destination.
 	EndpointType_ENDPOINT_TYPE_ICEBERG EndpointType = 15
+	// Redpanda is Kafka API-compatible. Redpanda Iceberg topics require an
+	// enterprise license. Configure Iceberg in Redpanda, not WALlaby.
+	EndpointType_ENDPOINT_TYPE_REDPANDA EndpointType = 16
 )
 
 // Enum value maps for EndpointType.
@@ -123,10 +127,11 @@ var (
 		9:  "ENDPOINT_TYPE_SNOWPIPE",
 		10: "ENDPOINT_TYPE_PARQUET",
 		11: "ENDPOINT_TYPE_DUCKDB",
-		12: "ENDPOINT_TYPE_REDPANDA",
+		12: "ENDPOINT_TYPE_BUFSTREAM",
 		13: "ENDPOINT_TYPE_CLICKHOUSE",
 		14: "ENDPOINT_TYPE_DUCKLAKE",
 		15: "ENDPOINT_TYPE_ICEBERG",
+		16: "ENDPOINT_TYPE_REDPANDA",
 	}
 	EndpointType_value = map[string]int32{
 		"ENDPOINT_TYPE_UNSPECIFIED": 0,
@@ -141,10 +146,11 @@ var (
 		"ENDPOINT_TYPE_SNOWPIPE":    9,
 		"ENDPOINT_TYPE_PARQUET":     10,
 		"ENDPOINT_TYPE_DUCKDB":      11,
-		"ENDPOINT_TYPE_REDPANDA":    12,
+		"ENDPOINT_TYPE_BUFSTREAM":   12,
 		"ENDPOINT_TYPE_CLICKHOUSE":  13,
 		"ENDPOINT_TYPE_DUCKLAKE":    14,
 		"ENDPOINT_TYPE_ICEBERG":     15,
+		"ENDPOINT_TYPE_REDPANDA":    16,
 	}
 )
 
@@ -881,7 +887,7 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\x11FLOW_STATE_PAUSED\x10\x03\x12\x17\n" +
 	"\x13FLOW_STATE_STOPPING\x10\x04\x12\x15\n" +
 	"\x11FLOW_STATE_FAILED\x10\x05\x12\x16\n" +
-	"\x12FLOW_STATE_STOPPED\x10\x06*\xbc\x03\n" +
+	"\x12FLOW_STATE_STOPPED\x10\x06*\xdd\x03\n" +
 	"\fEndpointType\x12\x1d\n" +
 	"\x19ENDPOINT_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16ENDPOINT_TYPE_POSTGRES\x10\x01\x12\x1b\n" +
@@ -895,11 +901,12 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\x16ENDPOINT_TYPE_SNOWPIPE\x10\t\x12\x19\n" +
 	"\x15ENDPOINT_TYPE_PARQUET\x10\n" +
 	"\x12\x18\n" +
-	"\x14ENDPOINT_TYPE_DUCKDB\x10\v\x12\x1a\n" +
-	"\x16ENDPOINT_TYPE_REDPANDA\x10\f\x12\x1c\n" +
+	"\x14ENDPOINT_TYPE_DUCKDB\x10\v\x12\x1f\n" +
+	"\x17ENDPOINT_TYPE_BUFSTREAM\x10\f\x1a\x02\b\x01\x12\x1c\n" +
 	"\x18ENDPOINT_TYPE_CLICKHOUSE\x10\r\x12\x1a\n" +
 	"\x16ENDPOINT_TYPE_DUCKLAKE\x10\x0e\x12\x19\n" +
-	"\x15ENDPOINT_TYPE_ICEBERG\x10\x0f*\x9c\x01\n" +
+	"\x15ENDPOINT_TYPE_ICEBERG\x10\x0f\x12\x1a\n" +
+	"\x16ENDPOINT_TYPE_REDPANDA\x10\x10*\x9c\x01\n" +
 	"\n" +
 	"WireFormat\x12\x1b\n" +
 	"\x17WIRE_FORMAT_UNSPECIFIED\x10\x00\x12\x15\n" +

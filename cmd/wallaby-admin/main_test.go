@@ -13,7 +13,7 @@ func TestRedpandaEndpointRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	wire := endpointTypeToProto("redpanda")
-	if wire != wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA || int32(wire) != 12 {
+	if wire != wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA || int32(wire) != 16 {
 		t.Fatalf("Redpanda endpoint wire value=%d", wire)
 	}
 	if model := endpointTypeFromProto(wire); model != connector.EndpointRedpanda {
