@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/josephjohncox/wallaby/connectors/destinations/snowpipe"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -17,30 +19,11 @@ import (
 func TestSnowpipeAutoIngestUpload(t *testing.T) {
 	dsn := os.Getenv("WALLABY_TEST_SNOWPIPE_DSN")
 	stage := os.Getenv("WALLABY_TEST_SNOWPIPE_STAGE")
-	var schema string
-	var stagePath string
-	if dsn == "" {
-		if usingFakesnow() {
-			derived, derivedSchema, ok := snowflakeTestDSN(t)
-			if !ok {
-				t.Skip("snowpipe DSN not configured")
-			}
-			dsn = derived
-			schema = derivedSchema
-		}
-	}
-	if schema == "" {
-		schema = os.Getenv("WALLABY_TEST_SNOWPIPE_SCHEMA")
-	}
-	if stage == "" && usingFakesnow() {
-		stage = "@~"
-	}
+	schema := os.Getenv("WALLABY_TEST_SNOWPIPE_SCHEMA")
 	if dsn == "" || stage == "" {
-		t.Skip("WALLABY_TEST_SNOWPIPE_DSN or WALLABY_TEST_SNOWPIPE_STAGE not set")
+		t.Skip("WALLABY_TEST_SNOWPIPE_DSN and WALLABY_TEST_SNOWPIPE_STAGE are required for the real-service Snowpipe integration test")
 	}
-	if usingFakesnow() && !allowFakesnowSnowflake() {
-		t.Skip("fakesnow enabled; set WALLABY_TEST_RUN_FAKESNOW=1 to run Snowpipe integration")
-	}
+	stagePath := fmt.Sprintf("wallaby_snowpipe_%d", time.Now().UnixNano())
 
 	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
 	defer cancel()
@@ -48,12 +31,13 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open snowflake: %v", err)
 	}
-	defer setupDB.Close()
-	if err := setupDB.PingContext(ctx); err != nil {
-		if usingFakesnow() {
-			t.Skipf("fakesnow ping failed: %v", err)
+	t.Cleanup(func() {
+		if err := setupDB.Close(); err != nil {
+			t.Errorf("close Snowflake setup connection: %v", err)
 		}
-		t.Fatalf("ping snowflake: %v", err)
+	})
+	if err := setupDB.PingContext(ctx); err != nil {
+		t.Fatalf("ping Snowflake: %v", err)
 	}
 	if schema != "" {
 		if _, err := setupDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", quoteSnowflakeIdent(schema))); err != nil {
@@ -69,6 +53,20 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 	if schema != "" {
 		fullTable = quoteSnowflakeIdent(schema) + "." + quoteSnowflakeIdent(table)
 	}
+	renamedTable := table + "_renamed"
+	renamedFullTable := quoteSnowflakeIdent(renamedTable)
+	if schema != "" {
+		renamedFullTable = quoteSnowflakeIdent(schema) + "." + renamedFullTable
+	}
+	stageLocation := joinStageForTest(stage, stagePath)
+	metaSchemaIdent := quoteSnowflakeIdent(metaSchema)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cleanupCancel()
+		if err := cleanupSnowpipeIntegrationResources(cleanupCtx, setupDB, stageLocation, fullTable, renamedFullTable, metaSchemaIdent); err != nil {
+			t.Errorf("Snowpipe integration cleanup: %v", err)
+		}
+	})
 	spec := connector.Spec{
 		Name: "snowpipe-test",
 		Type: connector.EndpointSnowpipe,
@@ -91,20 +89,19 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 			"table":                     table,
 		},
 	}
-	if usingFakesnow() {
-		spec.Options["compat_mode"] = "fakesnow"
-	} else {
-		stagePath = fmt.Sprintf("wallaby_snowpipe_%d", time.Now().UnixNano())
-		spec.Options["stage_path"] = stagePath
-	}
+	spec.Options["stage_path"] = stagePath
 
 	if err := dest.Open(ctx, spec); err != nil {
-		if usingFakesnow() {
-			t.Skipf("fakesnow open failed: %v", err)
-		}
 		t.Fatalf("open destination: %v", err)
 	}
-	defer dest.Close(ctx)
+	t.Cleanup(func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer closeCancel()
+		if err := dest.Close(closeCtx); err != nil {
+			t.Errorf("close Snowpipe destination: %v", err)
+		}
+	})
+	assertSnowpipeIntegrationPreflight(t, dest, spec)
 
 	schemaDef := connector.Schema{
 		Name:      table,
@@ -129,10 +126,7 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 		Key:       recordKey(t, map[string]any{"id": 1}),
 		After:     map[string]any{"id": 1, "name": "alpha"},
 	}
-	batch := connector.Batch{Records: []connector.Record{record}, Schema: schemaDef, Checkpoint: connector.Checkpoint{LSN: "1"}}
-	if err := dest.Write(ctx, batch); err != nil {
-		t.Fatalf("write batch: %v", err)
-	}
+	writeSnowpipeAppendBatch(t, ctx, dest, schemaDef, record, "1", "write batch")
 
 	metaTableIdent := quoteSnowflakeIdent(metaSchema) + "." + quoteSnowflakeIdent(metaTable)
 	registryVersionForID := func(id int) int {
@@ -157,7 +151,7 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 		t.Fatalf("unexpected name after write: %s", name)
 	}
 
-	if !usingFakesnow() {
+	{
 		evolveDDL := connector.Record{
 			Table:     table,
 			Operation: connector.OpDDL,
@@ -182,10 +176,7 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 				"note":  "n2",
 			},
 		}
-		batch = connector.Batch{Records: []connector.Record{record}, Schema: schemaDef, Checkpoint: connector.Checkpoint{LSN: "2"}}
-		if err := dest.Write(ctx, batch); err != nil {
-			t.Fatalf("write after evolve ddl: %v", err)
-		}
+		writeSnowpipeAppendBatch(t, ctx, dest, schemaDef, record, "2", "write after evolve ddl")
 		var extra string
 		var note string
 		if err := setupDB.QueryRowContext(ctx, fmt.Sprintf("SELECT extra, note FROM %s WHERE id = 2", fullTable)).Scan(&extra, &note); err != nil {
@@ -224,10 +215,7 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 				"note":         "n3",
 			},
 		}
-		batch = connector.Batch{Records: []connector.Record{record}, Schema: schemaDef, Checkpoint: connector.Checkpoint{LSN: "3"}}
-		if err := dest.Write(ctx, batch); err != nil {
-			t.Fatalf("write after rename ddl: %v", err)
-		}
+		writeSnowpipeAppendBatch(t, ctx, dest, schemaDef, record, "3", "write after rename ddl")
 		var displayName string
 		if err := setupDB.QueryRowContext(ctx, fmt.Sprintf("SELECT display_name FROM %s WHERE id = 3", fullTable)).Scan(&displayName); err != nil {
 			t.Fatalf("select display_name: %v", err)
@@ -264,10 +252,7 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 				"extra":        "v4",
 			},
 		}
-		batch = connector.Batch{Records: []connector.Record{record}, Schema: schemaDef, Checkpoint: connector.Checkpoint{LSN: "4"}}
-		if err := dest.Write(ctx, batch); err != nil {
-			t.Fatalf("write after set default/not null ddl: %v", err)
-		}
+		writeSnowpipeAppendBatch(t, ctx, dest, schemaDef, record, "4", "write after set default/not null ddl")
 		var seeded string
 		if err := setupDB.QueryRowContext(ctx, fmt.Sprintf("SELECT note FROM %s WHERE id = 4", fullTable)).Scan(&seeded); err != nil {
 			t.Fatalf("select note default: %v", err)
@@ -294,10 +279,7 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 				"extra":        "v5",
 			},
 		}
-		batch = connector.Batch{Records: []connector.Record{record}, Schema: schemaDef, Checkpoint: connector.Checkpoint{LSN: "5"}}
-		if err := dest.Write(ctx, batch); err != nil {
-			t.Fatalf("write after drop default/not null ddl: %v", err)
-		}
+		writeSnowpipeAppendBatch(t, ctx, dest, schemaDef, record, "5", "write after drop default/not null ddl")
 		var nullableNote sql.NullString
 		if err := setupDB.QueryRowContext(ctx, fmt.Sprintf("SELECT note FROM %s WHERE id = 5", fullTable)).Scan(&nullableNote); err != nil {
 			t.Fatalf("select dropped default note: %v", err)
@@ -307,8 +289,7 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 		}
 	}
 
-	if !usingFakesnow() {
-		stageLocation := joinStageForTest(stage, stagePath)
+	{
 		rows, err := setupDB.QueryContext(ctx, fmt.Sprintf("LIST %s", stageLocation))
 		if err != nil {
 			t.Fatalf("list stage: %v", err)
@@ -339,11 +320,6 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 			t.Fatalf("expected COPY history entries for %s", copyTable)
 		}
 
-		renamedTable := table + "_renamed"
-		renamedFullTable := quoteSnowflakeIdent(renamedTable)
-		if schema != "" {
-			renamedFullTable = quoteSnowflakeIdent(schema) + "." + renamedFullTable
-		}
 		renameTableDDL := connector.Record{
 			Table:     table,
 			Operation: connector.OpDDL,
@@ -379,6 +355,97 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 		if droppedCount != 0 {
 			t.Fatalf("expected renamed table %q to be dropped, found %d", renamedTable, droppedCount)
 		}
+	}
+}
+
+func assertSnowpipeIntegrationPreflight(t *testing.T, destination *snowpipe.Destination, spec connector.Spec) {
+	t.Helper()
+	appendPolicy := connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend}
+	if err := destination.Capabilities().SupportsTablePolicy(appendPolicy); err != nil {
+		t.Fatalf("Snowpipe append policy preflight: %v", err)
+	}
+	if err := destination.Capabilities().SupportsTablePolicy(connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}}); err == nil {
+		t.Fatal("Snowpipe preflight unexpectedly admits upsert")
+	}
+	for key, want := range map[string]string{
+		"auto_ingest":        "false",
+		"copy_on_write":      "true",
+		"meta_table_enabled": "true",
+	} {
+		if got := spec.Options[key]; got != want {
+			t.Fatalf("Snowpipe %s preflight=%q want=%q", key, got, want)
+		}
+	}
+	if strings.TrimSpace(spec.Options["stage"]) == "" || strings.TrimSpace(spec.Options["stage_path"]) == "" {
+		t.Fatal("Snowpipe PUT preflight requires a stage and isolated stage path")
+	}
+}
+
+func writeSnowpipeAppendBatch(
+	t *testing.T,
+	ctx context.Context,
+	destination *snowpipe.Destination,
+	schema connector.Schema,
+	record connector.Record,
+	lsn string,
+	operation string,
+) {
+	t.Helper()
+	batch := connector.Batch{
+		Records:     []connector.Record{record},
+		Schema:      schema,
+		Checkpoint:  connector.Checkpoint{LSN: lsn},
+		WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend},
+	}
+	if batch.WritePolicy.Mode != connector.ResolvedWriteAppend {
+		t.Fatalf("%s preflight write policy=%q", operation, batch.WritePolicy.Mode)
+	}
+	if err := destination.Write(ctx, batch); err != nil {
+		t.Fatalf("%s: %v", operation, err)
+	}
+}
+
+func cleanupSnowpipeIntegrationResources(
+	ctx context.Context,
+	db *sql.DB,
+	stageLocation string,
+	originalTable string,
+	renamedTable string,
+	metaSchema string,
+) error {
+	statements := []string{
+		fmt.Sprintf("REMOVE %s PATTERN = '.*'", stageLocation),
+		fmt.Sprintf("DROP TABLE IF EXISTS %s", renamedTable),
+		fmt.Sprintf("DROP TABLE IF EXISTS %s", originalTable),
+		fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", metaSchema),
+	}
+	var cleanupErrors []error
+	for _, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("%q: %w", statement, err))
+		}
+	}
+	return errors.Join(cleanupErrors...)
+}
+
+func TestSnowpipeIntegrationCleanupContinuesAfterFailure(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	mock.ExpectExec("REMOVE @stage/isolated").WillReturnError(errors.New("remove failed"))
+	mock.ExpectExec("DROP TABLE IF EXISTS renamed").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("DROP TABLE IF EXISTS original").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("DROP SCHEMA IF EXISTS metadata CASCADE").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err = cleanupSnowpipeIntegrationResources(context.Background(), db, "@stage/isolated", "original", "renamed", "metadata")
+	if err == nil || !strings.Contains(err.Error(), "remove failed") {
+		t.Fatalf("cleanup error=%v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

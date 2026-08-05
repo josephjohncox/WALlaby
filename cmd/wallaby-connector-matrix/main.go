@@ -54,6 +54,8 @@ func run() error {
 		)
 	}
 	fmt.Println()
+	fmt.Println("Snowpipe is append-only staged delivery: PUT, optional COPY, and metadata-receipt errors are returned unchanged; target tables change only through configured COPY or external pipe ingestion.")
+	fmt.Println()
 	fmt.Println("## Configuration-controlled capability profiles")
 	fmt.Println()
 	fmt.Println("| Connector | Profile | Append | Explicit-key upsert | Watermark guard | Transactional batch | Idempotent replay | Replay safe | Executes DDL | Lossy |")

@@ -71,6 +71,7 @@ nav:
       - Iceberg: connectors/iceberg.md
       - ClickHouse: connectors/clickhouse.md
       - Snowflake: connectors/snowflake.md
+      - Snowpipe: connectors/snowpipe.md
       - Extended connector notes: connectors.md
   - Reference:
       - Overview: reference/index.md

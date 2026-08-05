@@ -73,7 +73,7 @@ Cost tips:
 
 ## Snowpipe
 
-Snowpipe is a file-based sink. WALlaby writes files and can optionally issue COPY statements.
+Snowpipe is an append-only file-based sink. WALlaby writes files to the configured stage and can optionally issue COPY statements. PUT, COPY, and metadata-receipt errors are returned unchanged; target tables change only through configured COPY or external pipe ingestion.
 
 Options:
 
@@ -95,6 +95,7 @@ Auto-ingest mode:
 - Set `auto_ingest=true` to upload only.
 - You must configure an external stage + notification integration in Snowflake.
 - WALlaby will not issue COPY in this mode.
+- A failed upload remains a failed upload; WALlaby does not substitute another write mechanism for external notification or pipe behavior.
 
 ## DuckLake
 

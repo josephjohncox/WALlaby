@@ -39,6 +39,6 @@ Stable destination names are required for primary acknowledgement because pendin
 
 ## Extended adapter notes
 
-[Extended connector notes](../connectors.md) cover Kafka, Snowflake, Snowpipe, DuckLake, HTTP, and S3. Those notes supplement, rather than replace, adapter tests and the generated Go contracts.
+The [Snowpipe guide](snowpipe.md) documents its append-only staged-delivery and failure contract. [Extended connector notes](../connectors.md) cover Kafka, Snowflake, DuckLake, HTTP, and S3. Those notes supplement, rather than replace, adapter tests and the generated Go contracts.
 
 New connector and wire-format work is intentionally secondary to contract coverage for existing adapters.

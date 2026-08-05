@@ -74,7 +74,7 @@ See `examples/terraform/flow.tf` for a minimal provider + flow resource definiti
 - `examples/flows/postgres_to_bufstream.json`
 
 ## Snowpipe Auto-Ingest (Upload Only)
-Use the Snowpipe destination with external stage notifications. Set `auto_ingest=true` to skip COPY and only upload files:
+Use the Snowpipe destination with real external-stage notifications. Set `auto_ingest=true` to skip COPY and only upload files. Upload failures are returned unchanged, and target tables change only through configured COPY or external pipe ingestion:
 
 ```json
 {

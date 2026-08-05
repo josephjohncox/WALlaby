@@ -28,6 +28,9 @@ func TestGeneratedMatrixContainsEveryRegistryRowAndConfiguredProfile(t *testing.
 		t.Fatal(readErr)
 	}
 	matrix := string(output)
+	if !strings.Contains(matrix, "Snowpipe is append-only staged delivery") || !strings.Contains(matrix, "errors are returned unchanged") {
+		t.Fatal("matrix lacks Snowpipe staged-delivery failure semantics")
+	}
 	for _, registration := range runner.DestinationRegistrations() {
 		if !strings.Contains(matrix, "`"+string(registration.Type)+"`") {
 			t.Errorf("matrix missing destination %s", registration.Type)

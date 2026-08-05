@@ -46,14 +46,12 @@ const (
 	optCopyPurge        = "copy_purge"
 	optCopyMatch        = "copy_match_by_column_name"
 	optAutoIngest       = "auto_ingest"
-	optCompatMode       = "compat_mode"
 	optMetaTable        = "meta_table"
 	optMetaSchema       = "meta_schema"
 	optMetaEnabled      = "meta_table_enabled"
 	optMetaPKPrefix     = "meta_pk_prefix"
 	optFlowID           = "flow_id"
 
-	compatModeFakesnow = "fakesnow"
 	defaultMetaSchema  = "WALLABY_META"
 	defaultMetaTable   = "__METADATA"
 	defaultMetaPKPref  = "pk_"
@@ -73,8 +71,7 @@ type Destination struct {
 	copyPurge        *bool
 	copyMatch        string
 	fileFormat       string
-	compatMode       string
-	compatNoTx       bool
+	stagedTransport  execer
 	metaEnabled      bool
 	metaSchema       string
 	metaTable        string
@@ -110,6 +107,7 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		return fmt.Errorf("ping snowflake: %w", err)
 	}
 	d.db = db
+	d.stagedTransport = db
 
 	format := spec.Options[optFormat]
 	if format == "" {
@@ -141,17 +139,6 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		d.copyOnWrite = false
 	}
 	d.fileFormat = strings.TrimSpace(spec.Options[optFileFormat])
-
-	compatMode := strings.ToLower(strings.TrimSpace(spec.Options[optCompatMode]))
-	switch compatMode {
-	case "", "none":
-		d.compatMode = ""
-	case compatModeFakesnow:
-		d.compatMode = compatModeFakesnow
-		d.compatNoTx = true
-	default:
-		return fmt.Errorf("snowpipe compat_mode %s not supported", compatMode)
-	}
 
 	d.metaEnabled = parseBool(spec.Options[optMetaEnabled], true)
 	d.metaSchema = strings.TrimSpace(spec.Options[optMetaSchema])
@@ -283,12 +270,16 @@ func isUnsupportedSessionSetting(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "not implemented") || strings.Contains(msg, "fakesnow")
+	return strings.Contains(msg, "not implemented")
 }
 
 func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
-	if d.db == nil {
-		return errors.New("snowpipe destination not initialized")
+	transport := d.stagedTransport
+	if transport == nil {
+		if d.db == nil {
+			return errors.New("snowpipe destination not initialized")
+		}
+		transport = d.db
 	}
 	if len(batch.Records) == 0 {
 		return nil
@@ -326,15 +317,15 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	stageLocation := joinStage(stage, d.stagePath)
 
 	putStmt := fmt.Sprintf("PUT file://%s %s AUTO_COMPRESS=FALSE", filePath, stageLocation)
-	if _, err := d.db.ExecContext(ctx, putStmt); err != nil {
-		return d.fallbackIfCompat(ctx, batch, meta, err, "put to stage")
+	if _, err := transport.ExecContext(ctx, putStmt); err != nil {
+		return fmt.Errorf("put to stage: %w", err)
 	}
 
 	if d.copyOnWrite {
 		// #nosec G201 -- identifiers are quoted and derived from schema/config.
 		copyStmt := fmt.Sprintf("COPY INTO %s FROM %s FILES = ('%s') %s", d.targetTable(batch.Schema, batch.Records[0]), stageLocation, fileName, d.copyOptionsClause())
-		if _, err := d.db.ExecContext(ctx, copyStmt); err != nil {
-			return d.fallbackIfCompat(ctx, batch, meta, err, "copy into")
+		if _, err := transport.ExecContext(ctx, copyStmt); err != nil {
+			return fmt.Errorf("copy into: %w", err)
 		}
 	}
 
@@ -354,66 +345,6 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		}
 	}
 
-	return nil
-}
-
-func (d *Destination) fallbackIfCompat(ctx context.Context, batch connector.Batch, meta *schemaMeta, err error, action string) error {
-	if d.compatMode != compatModeFakesnow {
-		return fmt.Errorf("%s: %w", action, err)
-	}
-	log.Printf("snowpipe compat fallback (%s): %v", action, err)
-	return d.writeCompat(ctx, batch, meta)
-}
-
-func (d *Destination) writeCompat(ctx context.Context, batch connector.Batch, meta *schemaMeta) error {
-	if d.compatNoTx {
-		exec := execer(d.db)
-		for _, record := range batch.Records {
-			cols, vals := recordColumns(batch.Schema, record)
-			if len(cols) == 0 {
-				continue
-			}
-			target := d.targetTable(batch.Schema, record)
-			// #nosec G201 -- identifiers are quoted and derived from schema/config.
-			insertStmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols, '"'), placeholders(len(cols)))
-			if _, err := exec.ExecContext(ctx, insertStmt, vals...); err != nil {
-				return fmt.Errorf("compat insert: %w", err)
-			}
-			if d.metaEnabled {
-				if err := d.upsertMetadata(ctx, exec, batch.Schema, record, batch.Checkpoint, meta); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}
-
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin compat transaction: %w", err)
-	}
-	for _, record := range batch.Records {
-		cols, vals := recordColumns(batch.Schema, record)
-		if len(cols) == 0 {
-			continue
-		}
-		target := d.targetTable(batch.Schema, record)
-		// #nosec G201 -- identifiers are quoted and derived from schema/config.
-		insertStmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols, '"'), placeholders(len(cols)))
-		if _, err := tx.ExecContext(ctx, insertStmt, vals...); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("compat insert: %w", err)
-		}
-		if d.metaEnabled {
-			if err := d.upsertMetadata(ctx, tx, batch.Schema, record, batch.Checkpoint, meta); err != nil {
-				_ = tx.Rollback()
-				return err
-			}
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit compat transaction: %w", err)
-	}
 	return nil
 }
 
@@ -851,23 +782,6 @@ func (d *Destination) ensureMetaColumn(ctx context.Context, column string) error
 	}
 	d.metaColumns[key] = struct{}{}
 	return nil
-}
-
-func recordColumns(schema connector.Schema, record connector.Record) ([]string, []any) {
-	if record.After == nil {
-		return []string{}, []any{}
-	}
-	cols := make([]string, 0, len(schema.Columns))
-	vals := make([]any, 0, len(schema.Columns))
-	for _, col := range schema.Columns {
-		val, ok := record.After[col.Name]
-		if !ok {
-			continue
-		}
-		cols = append(cols, col.Name)
-		vals = append(vals, val)
-	}
-	return cols, vals
 }
 
 func decodeKey(raw []byte) (map[string]any, error) {

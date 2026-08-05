@@ -31,6 +31,8 @@
 | `proto` | placeholder | no | no | no | no | no | no | no | no | no | no |
 | `parquet` | placeholder | no | no | no | no | no | no | no | no | no | no |
 
+Snowpipe is append-only staged delivery: PUT, optional COPY, and metadata-receipt errors are returned unchanged; target tables change only through configured COPY or external pipe ingestion.
+
 ## Configuration-controlled capability profiles
 
 | Connector | Profile | Append | Explicit-key upsert | Watermark guard | Transactional batch | Idempotent replay | Replay safe | Executes DDL | Lossy |

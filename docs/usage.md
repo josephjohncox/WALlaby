@@ -393,7 +393,7 @@ Generic Snowflake is an experimental append-only mapping destination. Configure 
 
 ## Snowpipe destination
 
-Snowpipe is append-only. Configure `dsn`, `stage`, `stage_path`, file `format`, optional named `file_format`, COPY controls, and notification behavior on the endpoint. Mapping rules own logical targets and append metadata.
+Snowpipe is append-only. Configure `dsn`, `stage`, `stage_path`, file `format`, optional named `file_format`, COPY controls, and notification behavior on the endpoint. Mapping rules own logical targets and append metadata. PUT, COPY, and metadata-receipt errors are returned unchanged, and target tables change only through configured COPY or external pipe ingestion. See the [Snowpipe guide](connectors/snowpipe.md).
 
 ## DuckDB and DuckLake destinations
 
