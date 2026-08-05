@@ -36,7 +36,7 @@ func TestDestinationCatalogCoversEveryEndpointType(t *testing.T) {
 		connector.EndpointParquet,
 		connector.EndpointDuckDB,
 		connector.EndpointDuckLake,
-		connector.EndpointBufStream,
+		connector.EndpointRedpanda,
 		connector.EndpointClickHouse,
 		connector.EndpointIceberg,
 	}
@@ -73,7 +73,7 @@ func TestFactoryDestinationsDeclareOperationalContracts(t *testing.T) {
 		connector.EndpointSnowpipe,
 		connector.EndpointDuckDB,
 		connector.EndpointDuckLake,
-		connector.EndpointBufStream,
+		connector.EndpointRedpanda,
 		connector.EndpointClickHouse,
 		connector.EndpointIceberg,
 	}

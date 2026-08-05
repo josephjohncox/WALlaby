@@ -3,6 +3,7 @@
 These examples are intended to stay current with the API surface and connector options. If you change gRPC messages, connector option keys, or flow lifecycle behavior, update the files in this folder in the same PR.
 
 ## Quick Start (API Server)
+
 Set the minimum environment variables and launch the gRPC API server:
 
 ```bash
@@ -14,9 +15,11 @@ export WALLABY_WIRE_ENFORCE="true"
 ```
 
 ## Create a Flow (gRPC)
+
 Use `grpcurl` with local proto files. If you enable reflection (`WALLABY_GRPC_REFLECTION=true`), you can omit `-proto`. See `examples/grpc/create_flow.sh` for a runnable command, or copy a flow spec from `examples/flows/`.
 
 ## Run a Flow Worker (Standalone)
+
 Run a single flow in its own process (useful for Kubernetes deployments or per-flow scaling):
 
 ```bash
@@ -27,6 +30,7 @@ Run a single flow in its own process (useful for Kubernetes deployments or per-f
 For backfill runs that land in staging tables, add `--resolve-staging` to apply staged data before the worker exits.
 
 ## DBOS Scheduling (Durable Runs)
+
 Enable DBOS and optional scheduling to run flow batches durably:
 
 ```bash
@@ -37,6 +41,7 @@ export WALLABY_DBOS_SCHEDULE="*/10 * * * * *" # every 10 seconds
 ```
 
 ## DDL Gating + Approval
+
 Enable DDL gating to require explicit approval before continuing:
 
 ```bash
@@ -55,9 +60,11 @@ Or use the CLI admin tool:
 ```
 
 ## Terraform Provider
+
 See `examples/terraform/flow.tf` for a minimal provider + flow resource definition.
 
 ## Example Flow Specs
+
 - `examples/flows/postgres_to_kafka.json`
 - `examples/flows/postgres_to_kafka_http_primary.json`
 - `examples/flows/postgres_to_s3_parquet.json`
@@ -70,9 +77,10 @@ See `examples/terraform/flow.tf` for a minimal provider + flow resource definiti
 - `examples/flows/postgres_to_duckdb.json`
 - `examples/flows/postgres_to_ducklake.json`
 - `examples/flows/postgres_to_clickhouse.json`
-- `examples/flows/postgres_to_bufstream.json`
+- `examples/flows/postgres_to_redpanda.json`
 
 ## Snowpipe Auto-Ingest (Upload Only)
+
 Use the Snowpipe destination with external stage notifications. Set `auto_ingest=true` to skip COPY and only upload files:
 
 ```json
@@ -90,6 +98,7 @@ Use the Snowpipe destination with external stage notifications. Set `auto_ingest
 ```
 
 ## Stream Consumer Example
+
 - `examples/stream_consumer.sh` — minimal pull/ack loop using `wallaby-admin` + `jq`.
 - `examples/stream_consumer.go` — minimal Go client (no external tools).
 - `examples/workflows/` — CLI/DBOS/Kubernetes workflow configs.

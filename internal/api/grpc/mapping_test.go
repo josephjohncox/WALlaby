@@ -31,14 +31,29 @@ func TestMaterializedAckPolicyAndProjectionRoundTrip(t *testing.T) {
 	}
 }
 
-func TestIcebergEndpointWireValueAndRoundTrip(t *testing.T) {
+func TestEndpointWireValuesAndRoundTrips(t *testing.T) {
 	t.Parallel()
-	wire := endpointTypeToProto(connector.EndpointIceberg)
-	if wire != wallabypb.EndpointType_ENDPOINT_TYPE_ICEBERG || int32(wire) != 15 {
-		t.Fatalf("Iceberg endpoint wire value=%d", wire)
+
+	tests := []struct {
+		name      string
+		model     connector.EndpointType
+		wire      wallabypb.EndpointType
+		wireValue int32
+	}{
+		{name: "redpanda", model: connector.EndpointRedpanda, wire: wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA, wireValue: 16},
+		{name: "iceberg", model: connector.EndpointIceberg, wire: wallabypb.EndpointType_ENDPOINT_TYPE_ICEBERG, wireValue: 15},
 	}
-	if model := endpointTypeFromProto(wire); model != connector.EndpointIceberg {
-		t.Fatalf("Iceberg endpoint round trip=%q", model)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			wire := endpointTypeToProto(test.model)
+			if wire != test.wire || int32(wire) != test.wireValue {
+				t.Fatalf("endpoint wire value=%d, want %d", wire, test.wireValue)
+			}
+			if model := endpointTypeFromProto(wire); model != test.model {
+				t.Fatalf("endpoint round trip=%q, want %q", model, test.model)
+			}
+		})
 	}
 }
 

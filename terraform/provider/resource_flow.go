@@ -645,8 +645,8 @@ func endpointTypeFromString(value string) wallabypb.EndpointType {
 		return wallabypb.EndpointType_ENDPOINT_TYPE_PARQUET
 	case "duckdb":
 		return wallabypb.EndpointType_ENDPOINT_TYPE_DUCKDB
-	case "bufstream":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_BUFSTREAM
+	case "redpanda":
+		return wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA
 	case "clickhouse":
 		return wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE
 	case "iceberg":
@@ -784,8 +784,8 @@ func endpointTypeToString(value wallabypb.EndpointType) string {
 		return "parquet"
 	case wallabypb.EndpointType_ENDPOINT_TYPE_DUCKDB:
 		return "duckdb"
-	case wallabypb.EndpointType_ENDPOINT_TYPE_BUFSTREAM:
-		return "bufstream"
+	case wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA:
+		return "redpanda"
 	case wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE:
 		return "clickhouse"
 	case wallabypb.EndpointType_ENDPOINT_TYPE_ICEBERG:

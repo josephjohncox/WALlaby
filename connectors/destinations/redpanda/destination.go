@@ -1,4 +1,4 @@
-package bufstream
+package redpanda
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-// Destination writes batches to a Bufstream deployment using Kafka protocol semantics.
+// Destination writes batches to Redpanda using Kafka protocol semantics.
 type Destination struct {
 	inner kafka.Destination
 }

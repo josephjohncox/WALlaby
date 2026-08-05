@@ -876,7 +876,7 @@ func checkEndpointConnectivity(endpointType connector.EndpointType, options map[
 		}
 		return nil
 
-	case connector.EndpointKafka:
+	case connector.EndpointKafka, connector.EndpointRedpanda:
 		brokers := strings.TrimSpace(optionValue(options, "brokers"))
 		if brokers == "" {
 			return errors.New("brokers is required for connectivity check")
@@ -886,7 +886,7 @@ func checkEndpointConnectivity(endpointType connector.EndpointType, options map[
 			return err
 		}
 		if err := checkNetworkConnectivity(target, timeout); err != nil {
-			return fmt.Errorf("connect kafka broker: %w", err)
+			return fmt.Errorf("connect %s broker: %w", endpointType, err)
 		}
 		return nil
 
@@ -897,7 +897,7 @@ func checkEndpointConnectivity(endpointType connector.EndpointType, options map[
 		}
 		return checkHTTPConnectivity(target, timeout)
 
-	case connector.EndpointGRPC, connector.EndpointS3, connector.EndpointSnowflake, connector.EndpointSnowpipe, connector.EndpointParquet, connector.EndpointDuckLake, connector.EndpointDuckDB, connector.EndpointBufStream, connector.EndpointClickHouse, connector.EndpointProto:
+	case connector.EndpointGRPC, connector.EndpointS3, connector.EndpointSnowflake, connector.EndpointSnowpipe, connector.EndpointParquet, connector.EndpointDuckLake, connector.EndpointDuckDB, connector.EndpointClickHouse, connector.EndpointProto:
 		target := firstOption(options, []string{"url", "endpoint", "target", "address", "addr", "host", "dsn"}, "")
 		if target == "" {
 			return fmt.Errorf("connectivity target is required for endpoint type %q", endpointType)
@@ -5067,8 +5067,8 @@ func endpointTypeFromProto(t wallabypb.EndpointType) connector.EndpointType {
 		return connector.EndpointDuckDB
 	case wallabypb.EndpointType_ENDPOINT_TYPE_DUCKLAKE:
 		return connector.EndpointDuckLake
-	case wallabypb.EndpointType_ENDPOINT_TYPE_BUFSTREAM:
-		return connector.EndpointBufStream
+	case wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA:
+		return connector.EndpointRedpanda
 	case wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE:
 		return connector.EndpointClickHouse
 	default:
@@ -5291,8 +5291,8 @@ func endpointTypeToProto(value string) wallabypb.EndpointType {
 		return wallabypb.EndpointType_ENDPOINT_TYPE_DUCKDB
 	case "ducklake":
 		return wallabypb.EndpointType_ENDPOINT_TYPE_DUCKLAKE
-	case "bufstream":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_BUFSTREAM
+	case "redpanda":
+		return wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA
 	case "clickhouse":
 		return wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE
 	default:

@@ -5,8 +5,21 @@ import (
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/artifactlog"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 )
+
+func TestRedpandaEndpointRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	wire := endpointTypeToProto("redpanda")
+	if wire != wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA || int32(wire) != 16 {
+		t.Fatalf("Redpanda endpoint wire value=%d", wire)
+	}
+	if model := endpointTypeFromProto(wire); model != connector.EndpointRedpanda {
+		t.Fatalf("Redpanda endpoint round trip=%q", model)
+	}
+}
 
 func TestMaterializedFlowConfigRoundTrip(t *testing.T) {
 	input := flowRuntimeConfig{

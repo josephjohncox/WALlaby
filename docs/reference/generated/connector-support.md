@@ -18,7 +18,7 @@
 | `postgres` | experimental | yes | yes | yes | yes | yes | yes | no |
 | `pgstream` | experimental | yes | no | no | no | no | no | no |
 | `kafka` | experimental | yes | no | no | no | no | no | no |
-| `bufstream` | experimental | yes | no | no | no | no | no | no |
+| `redpanda` | experimental | yes | no | no | no | no | no | no |
 | `s3` | experimental | yes | no | no | no | no | no | no |
 | `http` | experimental | yes | no | no | no | no | no | no |
 | `grpc` | experimental | yes | no | no | no | no | no | no |

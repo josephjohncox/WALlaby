@@ -14,10 +14,12 @@ Read [PostgreSQL connectors](postgres.md) before using any of those three roles.
 | --- | --- | --- |
 | Replicate ordinary tables | `postgres` | Compatible target schema and stable keys |
 | Pull and acknowledge messages | `pgstream` | Consumer group, visibility timeout, and acknowledgement handling |
-| Publish ordered records | `kafka` or `bufstream` | Partition key, registry, and idempotent producer settings |
+| Publish ordered records | `kafka` or `redpanda` | Partition key, registry, and idempotent producer settings |
 | Write objects | `s3` or `parquet` | Object naming, partitioning, and replay behavior |
 | Call an application endpoint | `http` or `grpc` | Idempotency key and retry behavior |
 | Load an analytical store | [`snowflake`](snowflake.md), `snowpipe`, [`clickhouse`](clickhouse.md), `duckdb`, or `ducklake` | Type mapping, DDL behavior, and mutation support |
+
+Redpanda uses the Kafka API. Redpanda supports [Iceberg topics](https://docs.redpanda.com/streaming/current/manage/iceberg/about-iceberg-topics/) with an enterprise license. Configure Iceberg in Redpanda, not WALlaby.
 
 WALlaby includes these adapters, but destination adapters remain experimental until their restart, replay, schema-evolution, and integration contracts pass. Maintained status applies only to rows marked maintained in the support matrix, including `postgresql-to-postgresql-v1` and `postgresql-to-clickhouse-append-v1`; it does not promote every mode of the underlying adapter. The implemented Snowflake SQL, staged COPY append, and Streaming append contracts are modeled protocol profiles, not supported-profile claims. SQL and staged COPY lack a reviewed Snowflake service version/deployment cell with complete same-SHA live evidence. Streaming also lacks a linked reviewed append transport and fails closed before external I/O. Startup validation rejects lossy acknowledgement paths, unsafe primary acknowledgement, and automatic DDL execution through destinations that do not execute DDL.
 
