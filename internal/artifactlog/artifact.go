@@ -145,6 +145,14 @@ func NewEncoder() *Encoder {
 	}
 }
 
+func checkedArtifactRecordCount(count, limit int) (uint64, error) {
+	if count < 0 || limit < 0 || count > limit {
+		return 0, fmt.Errorf("artifact record count %d exceeds limit %d", count, limit)
+	}
+	// #nosec G115 -- count is non-negative above and Go int is no wider than uint64.
+	return uint64(count), nil
+}
+
 // EncodeTransaction preserves the original package interface for callers that
 // only need object candidates. New publication code uses PlanTransaction so it
 // also roots the logical batch and ordered barriers.
@@ -186,10 +194,11 @@ func (e *Encoder) PlanTransaction(_ context.Context, incarnationID uuid.UUID, tr
 	var recordOrdinal uint64
 	for fragmentIndex, fragment := range transaction.Fragments {
 		batch := fragment.Batch
-		totalRecords += len(batch.Records)
-		if totalRecords > e.maxRecords {
-			return Plan{}, fmt.Errorf("transaction has %d records, limit %d", totalRecords, e.maxRecords)
+		fragmentRecords := len(batch.Records)
+		if e.maxRecords < 0 || totalRecords > e.maxRecords || fragmentRecords > e.maxRecords-totalRecords {
+			return Plan{}, fmt.Errorf("transaction record count exceeds limit %d", e.maxRecords)
 		}
+		totalRecords += fragmentRecords
 		inputEstimate, err := estimateBatchInput(batch, e.maxNesting)
 		if err != nil {
 			return Plan{}, fmt.Errorf("measure fragment %d: %w", fragmentIndex, err)
@@ -215,6 +224,10 @@ func (e *Encoder) PlanTransaction(_ context.Context, incarnationID uuid.UUID, tr
 			partition := UnpartitionedValue
 			group := strings.Join([]string{transaction.SourceLineageID, canonical.Namespace, canonical.Name, schemaID, partition}, "\x00")
 			for _, encodedShard := range encodedShards {
+				recordCount, err := checkedArtifactRecordCount(len(encodedShard.records), e.maxRecords)
+				if err != nil {
+					return err
+				}
 				shard := shards[group]
 				shards[group] = shard + 1
 				totalEncoded += int64(len(encodedShard.encoded))
@@ -236,7 +249,7 @@ func (e *Encoder) PlanTransaction(_ context.Context, incarnationID uuid.UUID, tr
 					SourcePosition:     transaction.EndLSN,
 					FragmentOrdinal:    fragment.Ordinal,
 					FirstRecordOrdinal: encodedShard.records[0].ordinal,
-					RecordCount:        uint64(len(encodedShard.records)),
+					RecordCount:        recordCount,
 					LogicalContentHash: encodedShard.logicalHash,
 					EncodedByteHash:    encodedHash,
 					ChecksumSHA256:     encodedHash,
@@ -329,10 +342,11 @@ func (e *Encoder) PlanMappedTransaction(_ context.Context, incarnationID uuid.UU
 	var recordOrdinal uint64
 	for fragmentIndex, fragment := range transaction.Fragments {
 		batch := fragment.Batch
-		totalRecords += len(batch.Records)
-		if totalRecords > e.maxRecords {
-			return Plan{}, fmt.Errorf("transaction has %d records, limit %d", totalRecords, e.maxRecords)
+		fragmentRecords := len(batch.Records)
+		if e.maxRecords < 0 || totalRecords > e.maxRecords || fragmentRecords > e.maxRecords-totalRecords {
+			return Plan{}, fmt.Errorf("transaction record count exceeds limit %d", e.maxRecords)
 		}
+		totalRecords += fragmentRecords
 		inputEstimate, err := estimateBatchInput(batch, e.maxNesting)
 		if err != nil {
 			return Plan{}, fmt.Errorf("measure fragment %d: %w", fragmentIndex, err)
@@ -357,6 +371,10 @@ func (e *Encoder) PlanMappedTransaction(_ context.Context, incarnationID uuid.UU
 			partition := UnpartitionedValue
 			group := strings.Join([]string{transaction.SourceLineageID, mappingFingerprint, canonical.Namespace, canonical.Name, schemaID, partition}, "\x00")
 			for _, encodedShard := range encodedShards {
+				recordCount, err := checkedArtifactRecordCount(len(encodedShard.records), e.maxRecords)
+				if err != nil {
+					return err
+				}
 				shard := shards[group]
 				shards[group] = shard + 1
 				totalEncoded += int64(len(encodedShard.encoded))
@@ -366,7 +384,7 @@ func (e *Encoder) PlanMappedTransaction(_ context.Context, incarnationID uuid.UU
 				digest := sha256.Sum256(encodedShard.encoded)
 				encodedHash := hex.EncodeToString(digest[:])
 				artifactID := artifactIdentityV2(incarnationID, transaction.SourceLineageID, logicalBatchID, mappingFingerprint, canonical.Namespace, canonical.Name, schemaID, partition, shard)
-				plan.Artifacts = append(plan.Artifacts, Artifact{ID: artifactID, LogicalBatchID: logicalBatchID, SchemaID: schemaID, SchemaJSON: schemaJSON, Namespace: canonical.Namespace, Table: canonical.Name, Partition: partition, Shard: shard, SourcePosition: transaction.EndLSN, FragmentOrdinal: fragment.Ordinal, FirstRecordOrdinal: encodedShard.records[0].ordinal, RecordCount: uint64(len(encodedShard.records)), LogicalContentHash: encodedShard.logicalHash, EncodedByteHash: encodedHash, ChecksumSHA256: encodedHash, Encoded: encodedShard.encoded, ObjectKey: artifactObjectKeyV2(incarnationID, transaction.SourceLineageID, mappingFingerprint, canonical.Namespace, canonical.Name, schemaID, partition, shard, artifactID)})
+				plan.Artifacts = append(plan.Artifacts, Artifact{ID: artifactID, LogicalBatchID: logicalBatchID, SchemaID: schemaID, SchemaJSON: schemaJSON, Namespace: canonical.Namespace, Table: canonical.Name, Partition: partition, Shard: shard, SourcePosition: transaction.EndLSN, FragmentOrdinal: fragment.Ordinal, FirstRecordOrdinal: encodedShard.records[0].ordinal, RecordCount: recordCount, LogicalContentHash: encodedShard.logicalHash, EncodedByteHash: encodedHash, ChecksumSHA256: encodedHash, Encoded: encodedShard.encoded, ObjectKey: artifactObjectKeyV2(incarnationID, transaction.SourceLineageID, mappingFingerprint, canonical.Namespace, canonical.Name, schemaID, partition, shard, artifactID)})
 			}
 			run = nil
 			return nil
@@ -482,7 +500,11 @@ func canonicalArtifactBatch(transaction connector.SourceTransaction, logicalBatc
 		}
 		record.SourcePosition = position
 		after[canonicalSourcePositionColumn] = position
-		after[canonicalRecordOrdinalColumn] = int64(item.ordinal) // #nosec G115 -- bounded by maxRecords.
+		if item.ordinal > 1<<63-1 {
+			return connector.Batch{}, fmt.Errorf("record ordinal %d exceeds signed 64-bit canonical bounds", item.ordinal)
+		}
+		// #nosec G115 -- item.ordinal is explicitly bounded to MaxInt64 above.
+		after[canonicalRecordOrdinalColumn] = int64(item.ordinal)
 		after[canonicalLogicalBatchColumn] = logicalBatchID
 		after[canonicalUnchangedColumn] = json.RawMessage(unchanged)
 		record.After = after
@@ -492,6 +514,25 @@ func canonicalArtifactBatch(transaction connector.SourceTransaction, logicalBatc
 }
 
 const canonicalSystemFieldCount int32 = 11
+
+func sourceFieldIdentifiers(column connector.Column) (uint32, int16, error) {
+	relationID, err := strconv.ParseUint(column.TypeMetadata["source_relation_id"], 10, 64)
+	if err != nil || relationID == 0 {
+		return 0, 0, fmt.Errorf("column %q lacks source_relation_id", column.Name)
+	}
+	if relationID > uint64(^uint32(0)) {
+		return 0, 0, fmt.Errorf("column %q source_relation_id %d exceeds uint32 bounds", column.Name, relationID)
+	}
+	columnID, err := strconv.ParseInt(column.TypeMetadata["source_column_id"], 10, 64)
+	if err != nil || columnID <= 0 {
+		return 0, 0, fmt.Errorf("column %q lacks source_column_id", column.Name)
+	}
+	if columnID > int64(^uint16(0)>>1) {
+		return 0, 0, fmt.Errorf("column %q source_column_id %d exceeds int16 bounds", column.Name, columnID)
+	}
+	// #nosec G115 -- relationID and columnID are explicitly bounded above.
+	return uint32(relationID), int16(columnID), nil
+}
 
 var canonicalSystemFields = []CanonicalField{
 	{ID: 1, Name: "__op", Type: "text", Nullable: false},
@@ -529,15 +570,11 @@ func canonicalizeSchema(lineage string, schema connector.Schema) (connector.Sche
 		if _, reserved := reservedNames[column.Name]; reserved {
 			return connector.Schema{}, nil, "", fmt.Errorf("column %q collides with canonical envelope", column.Name)
 		}
-		relationID, err := strconv.ParseUint(column.TypeMetadata["source_relation_id"], 10, 32)
-		if err != nil || relationID == 0 {
-			return connector.Schema{}, nil, "", fmt.Errorf("column %q lacks source_relation_id", column.Name)
+		relationID, columnID, err := sourceFieldIdentifiers(column)
+		if err != nil {
+			return connector.Schema{}, nil, "", err
 		}
-		columnID, err := strconv.ParseInt(column.TypeMetadata["source_column_id"], 10, 16)
-		if err != nil || columnID <= 0 {
-			return connector.Schema{}, nil, "", fmt.Errorf("column %q lacks source_column_id", column.Name)
-		}
-		fieldID := stableFieldID(lineage, uint32(relationID), int16(columnID))
+		fieldID := stableFieldID(lineage, relationID, columnID)
 		if prior, ok := seen[fieldID]; ok {
 			return connector.Schema{}, nil, "", fmt.Errorf("stable field ID collision between %q and %q", prior, column.Name)
 		}
@@ -589,8 +626,8 @@ func canonicalizeSchemaV2(lineage, mappingFingerprint string, schema connector.S
 		synthetic := strings.TrimSpace(column.TypeMetadata["wallaby.synthetic_identity"])
 		syntheticRelation := strings.TrimSpace(column.TypeMetadata["wallaby.synthetic_source_relation"])
 		var fieldID int32
-		var relationID uint64
-		var columnID int64
+		var relationID uint32
+		var columnID int16
 		if synthetic != "" {
 			if synthetic != "append.operation.v1" && synthetic != "append.deleted.v1" {
 				return connector.Schema{}, nil, "", fmt.Errorf("column %q has unsupported synthetic identity %q", column.Name, synthetic)
@@ -600,16 +637,13 @@ func canonicalizeSchemaV2(lineage, mappingFingerprint string, schema connector.S
 			}
 			fieldID = stableSyntheticFieldID(lineage, syntheticRelation, synthetic)
 		} else {
-			var err error
-			relationID, err = strconv.ParseUint(column.TypeMetadata["source_relation_id"], 10, 32)
-			if err != nil || relationID == 0 {
-				return connector.Schema{}, nil, "", fmt.Errorf("column %q lacks source_relation_id", column.Name)
+			relationID32, columnID16, parseErr := sourceFieldIdentifiers(column)
+			if parseErr != nil {
+				return connector.Schema{}, nil, "", parseErr
 			}
-			columnID, err = strconv.ParseInt(column.TypeMetadata["source_column_id"], 10, 16)
-			if err != nil || columnID <= 0 {
-				return connector.Schema{}, nil, "", fmt.Errorf("column %q lacks source_column_id", column.Name)
-			}
-			fieldID = stableFieldID(lineage, uint32(relationID), int16(columnID))
+			relationID = relationID32
+			columnID = columnID16
+			fieldID = stableFieldID(lineage, relationID32, columnID16)
 		}
 		if prior, ok := seen[fieldID]; ok {
 			return connector.Schema{}, nil, "", fmt.Errorf("stable field ID collision between %q and %q", prior, column.Name)
@@ -622,7 +656,7 @@ func canonicalizeSchemaV2(lineage, mappingFingerprint string, schema connector.S
 		metadata["wallaby.field_id"] = strconv.FormatInt(int64(fieldID), 10)
 		column.TypeMetadata = metadata
 		result.Columns[index] = column
-		canonical.Fields = append(canonical.Fields, CanonicalField{ID: fieldID, Name: column.Name, Type: column.Type, Nullable: column.Nullable, Generated: column.Generated, Expression: column.Expression, Metadata: metadata, Quoted: schema.QuotedIdentifiers[column.Name], SourceLineageID: lineage, SourceRelationID: uint32(relationID), SourceColumnID: int32(columnID), SyntheticIdentity: synthetic, SyntheticSourceRelation: syntheticRelation})
+		canonical.Fields = append(canonical.Fields, CanonicalField{ID: fieldID, Name: column.Name, Type: column.Type, Nullable: column.Nullable, Generated: column.Generated, Expression: column.Expression, Metadata: metadata, Quoted: schema.QuotedIdentifiers[column.Name], SourceLineageID: lineage, SourceRelationID: relationID, SourceColumnID: int32(columnID), SyntheticIdentity: synthetic, SyntheticSourceRelation: syntheticRelation})
 	}
 	encoded, err := json.Marshal(canonical)
 	if err != nil {
@@ -644,6 +678,7 @@ func stableFieldID(lineage string, relationID uint32, columnID int16) int32 {
 
 func stableSyntheticFieldID(lineage, sourceRelation, identity string) int32 {
 	digest := sha256.Sum256([]byte("wallaby.synthetic-field.v1\x00" + lineage + "\x00" + sourceRelation + "\x00" + identity))
+	// #nosec G115 -- shifting an unsigned 32-bit value right yields at most MaxInt32.
 	value := int32(binary.BigEndian.Uint32(digest[:4]) >> 1)
 	if value <= canonicalSystemFieldCount {
 		value += canonicalSystemFieldCount + 1

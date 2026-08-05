@@ -324,12 +324,13 @@ func applyGeneratedWritePolicies(mapping *flow.DestinationTableMappings, spec co
 			continue
 		}
 		mode := table.Write.Mode
-		if hasOverride {
+		switch {
+		case hasOverride:
 			mode = override
 			applied[ref] = struct{}{}
-		} else if applyCapabilityDefault && mode == flow.TableWriteModeUpsert && !flow.SupportsExplicitKeyUpsert(spec) {
+		case applyCapabilityDefault && mode == flow.TableWriteModeUpsert && !flow.SupportsExplicitKeyUpsert(spec):
 			mode = flow.TableWriteModeAppend
-		} else {
+		default:
 			continue
 		}
 		switch mode {

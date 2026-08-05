@@ -2,6 +2,7 @@ package tablemap
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -231,6 +232,15 @@ func TestUpsertKeyChangeEmitsDeleteThenInsert(t *testing.T) {
 	_ = json.Unmarshal(got.Records[1].Key, &newKey)
 	if oldKey["event_id"] != float64(1) || newKey["event_id"] != float64(2) {
 		t.Fatalf("key-change keys old=%v new=%v", oldKey, newKey)
+	}
+}
+
+func TestDecodeKeyReportsMissingKey(t *testing.T) {
+	t.Parallel()
+
+	key, err := decodeKey(nil)
+	if key != nil || !errors.Is(err, errRecordKeyNotFound) {
+		t.Fatalf("decodeKey(nil)=%v,%v", key, err)
 	}
 }
 

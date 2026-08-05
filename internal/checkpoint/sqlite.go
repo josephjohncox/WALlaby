@@ -93,7 +93,7 @@ func NewSQLiteStore(ctx context.Context, dsn string) (*SQLiteStore, error) {
 	return &SQLiteStore{db: db}, nil
 }
 
-func ensureSQLiteOutboxProjectionSchema(ctx context.Context, db *sql.DB) error {
+func ensureSQLiteOutboxProjectionSchema(ctx context.Context, db *sql.DB) (returnErr error) {
 	rows, err := db.QueryContext(ctx, "PRAGMA table_info(checkpoint_outbox)")
 	if err != nil {
 		return fmt.Errorf("inspect checkpoint outbox schema: %w", err)
@@ -132,14 +132,26 @@ func ensureSQLiteOutboxProjectionSchema(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			returnErr = errors.Join(returnErr, fmt.Errorf("rollback checkpoint outbox schema migration: %w", rollbackErr))
+		}
+	}()
 	if _, err := tx.ExecContext(ctx, "DROP TABLE checkpoint_outbox"); err != nil {
 		return fmt.Errorf("drop empty legacy outbox: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, sqliteInitOutbox); err != nil {
 		return fmt.Errorf("recreate ordered checkpoint outbox: %w", err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit checkpoint outbox schema migration: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 func (s *SQLiteStore) Close() error {

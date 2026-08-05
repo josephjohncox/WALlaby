@@ -162,7 +162,7 @@ func ValidateDefinition(definition Flow) error {
 	}
 	for _, option := range []string{"namespace", "table_prefix", "fixed_table", "target_namespace", "target_table"} {
 		if strings.TrimSpace(destination.Options[option]) != "" {
-			return fmt.Errorf("Iceberg logical option %q is superseded by table mappings", option)
+			return fmt.Errorf("iceberg logical option %q is superseded by table mappings", option)
 		}
 	}
 	mapping, ok := definition.Config.TableMappings.ForDestination(destination.Name)

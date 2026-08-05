@@ -249,6 +249,16 @@ func TestStrictConfigFilePrecedenceAndDeprecatedEnvironmentAliases(t *testing.T)
 	}
 }
 
+func TestStrictDecoderRejectsInvalidUserPaths(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{"", "invalid\x00.yaml"} {
+		if _, err := decodeStrictConfigFile(path, &Config{}); err == nil {
+			t.Fatalf("decodeStrictConfigFile(%q) accepted an invalid path", path)
+		}
+	}
+}
+
 func TestStrictDecoderTracksExactlyPresentSchemaLeaves(t *testing.T) {
 	path := writeConfigTestFile(t, "presence.yaml", "environment: test\napi:\n  grpc_reflection: true\nkubernetes:\n  job_labels:\n    app: wallaby\n  job_command: [wallaby-worker]\n")
 	present, err := decodeStrictConfigFile(path, &Config{})

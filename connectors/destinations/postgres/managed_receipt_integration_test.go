@@ -76,10 +76,10 @@ func TestManagedReceiptReconcilesLogicalAndPositionIdentities(t *testing.T) {
 
 	t.Run("position_conflict_precedes_dml", func(t *testing.T) {
 		table := "wallaby_receipt_conflict_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-		if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE TABLE public.%s(event_id bigint,payload text,__wallaby_operation text,__wallaby_deleted boolean,__wallaby_source_position text)`, quoteIdent(table, '"'))); err != nil {
+		if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE TABLE public.%s(event_id bigint,payload text,__wallaby_operation text,__wallaby_deleted boolean,__wallaby_source_position text)`, quoteIdent(table))); err != nil {
 			t.Fatal(err)
 		}
-		defer pool.Exec(context.Background(), fmt.Sprintf(`DROP TABLE IF EXISTS public.%s`, quoteIdent(table, '"')))
+		defer pool.Exec(context.Background(), fmt.Sprintf(`DROP TABLE IF EXISTS public.%s`, quoteIdent(table)))
 		schema := connector.Schema{Namespace: "public", Name: table, Columns: []connector.Column{{Name: "event_id", Type: "bigint"}, {Name: "payload", Type: "text"}, {Name: connector.AppendOperationColumn, Type: "text"}, {Name: connector.AppendDeletedColumn, Type: "boolean"}, {Name: connector.AppendSourcePositionColumn, Type: "text"}}}
 		batch := connector.Batch{Schema: schema, WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend, ProjectionFingerprint: "different-policy"}, Records: []connector.Record{{Table: table, Operation: connector.OpInsert, After: map[string]any{"event_id": int64(1), "payload": "must-not-apply", connector.AppendOperationColumn: "insert", connector.AppendDeletedColumn: false, connector.AppendSourcePositionColumn: "0/20"}, SourcePosition: "0/20"}}}
 		hash, err := connector.BatchContentHash(batch)
@@ -93,7 +93,7 @@ func TestManagedReceiptReconcilesLogicalAndPositionIdentities(t *testing.T) {
 			t.Fatalf("pre-DML receipt conflict error=%v", err)
 		}
 		var rows int
-		if err := pool.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM public.%s`, quoteIdent(table, '"'))).Scan(&rows); err != nil {
+		if err := pool.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM public.%s`, quoteIdent(table))).Scan(&rows); err != nil {
 			t.Fatal(err)
 		}
 		if rows != 0 {
@@ -199,11 +199,11 @@ func TestManagedAppendBootstrapRetainsEarlierReceiptAcrossRestart(t *testing.T) 
 	}
 	suffix := strings.ReplaceAll(uuid.NewString(), "-", "")
 	table := "wallaby_bootstrap_receipts_" + suffix
-	if _, err := admin.Exec(ctx, fmt.Sprintf(`CREATE TABLE public.%s(event_id bigint,payload text,__wallaby_operation text,__wallaby_deleted boolean,__wallaby_source_position text)`, quoteIdent(table, '"'))); err != nil {
+	if _, err := admin.Exec(ctx, fmt.Sprintf(`CREATE TABLE public.%s(event_id bigint,payload text,__wallaby_operation text,__wallaby_deleted boolean,__wallaby_source_position text)`, quoteIdent(table))); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
-		_, _ = admin.Exec(context.Background(), fmt.Sprintf(`DROP TABLE IF EXISTS public.%s`, quoteIdent(table, '"')))
+		_, _ = admin.Exec(context.Background(), fmt.Sprintf(`DROP TABLE IF EXISTS public.%s`, quoteIdent(table)))
 		_, _ = admin.Exec(context.Background(), `DROP TABLE IF EXISTS wallaby_meta.__delivery_receipts`)
 	}()
 	open := func(name string) *Destination {
@@ -260,7 +260,11 @@ func TestManagedAppendBootstrapRetainsEarlierReceiptAcrossRestart(t *testing.T) 
 	if _, err := destination.ApplyBootstrap(ctx, bootstrap, firstIntent, first); err != nil {
 		t.Fatalf("adopt first bootstrap receipt: %v", err)
 	}
-	_, stage, _ := destination.bootstrapTables(bootstrap, schema)
+	stageSchema, _, stageTable := destination.bootstrapTableCoordinates(bootstrap, schema)
+	stage := quoteIdent(stageTable)
+	if stageSchema != "" {
+		stage = quoteIdent(stageSchema) + "." + stage
+	}
 	var stageRows, receipts int
 	if err := admin.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM %s`, stage)).Scan(&stageRows); err != nil {
 		t.Fatal(err)
@@ -275,7 +279,7 @@ func TestManagedAppendBootstrapRetainsEarlierReceiptAcrossRestart(t *testing.T) 
 		t.Fatal(err)
 	}
 	var targetRows, retainedReceipts int
-	if err := admin.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM public.%s`, quoteIdent(table, '"'))).Scan(&targetRows); err != nil {
+	if err := admin.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM public.%s`, quoteIdent(table))).Scan(&targetRows); err != nil {
 		t.Fatal(err)
 	}
 	if err := admin.QueryRow(ctx, `SELECT count(*) FROM wallaby_meta.__delivery_receipts WHERE flow_incarnation_id=$1 AND destination_revision_id=$2`, bootstrap.FlowIncarnationID, bootstrap.DestinationRevisionID).Scan(&retainedReceipts); err != nil {

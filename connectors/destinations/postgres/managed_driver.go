@@ -780,7 +780,7 @@ INSERT INTO wallaby_meta.__delivery_receipts (
 		return fmt.Errorf("insert postgres delivery receipt: %w", err)
 	}
 	if _, rollbackErr := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT wallaby_managed_receipt_insert`); rollbackErr != nil {
-		return fmt.Errorf("%w: recover concurrent postgres receipt insert: %v (insert: %v)", connector.ErrDeliveryIndeterminate, rollbackErr, err)
+		return fmt.Errorf("%w: recover concurrent postgres receipt insert: %w (insert: %w)", connector.ErrDeliveryIndeterminate, rollbackErr, err)
 	}
 	_, reconcileErr := d.loadManagedReceipt(ctx, tx, intent)
 	switch {
@@ -791,7 +791,7 @@ INSERT INTO wallaby_meta.__delivery_receipts (
 	case errors.Is(reconcileErr, pgx.ErrNoRows):
 		return fmt.Errorf("%w: postgres receipt uniqueness conflict is not yet reconcilable", connector.ErrDeliveryIndeterminate)
 	default:
-		return fmt.Errorf("%w: reconcile concurrent postgres receipt insert: %v", connector.ErrDeliveryIndeterminate, reconcileErr)
+		return fmt.Errorf("%w: reconcile concurrent postgres receipt insert: %w", connector.ErrDeliveryIndeterminate, reconcileErr)
 	}
 }
 

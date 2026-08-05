@@ -4187,7 +4187,7 @@ func flowPlanDiffInt(field string, before, after int) []flowPlanChange {
 }
 
 func compareFlowDefinitions(before, after flowDetail) []flowPlanChange {
-	var changes []flowPlanChange
+	changes := make([]flowPlanChange, 0, 6)
 	changes = append(changes, flowPlanDiff("name", before.Name, after.Name)...)
 	changes = append(changes, flowPlanDiff("wire_format", before.WireFormat, after.WireFormat)...)
 	changes = append(changes, compareFlowEndpoint("source", before.Source, after.Source)...)
@@ -4623,7 +4623,7 @@ func safeDiagnosticHost(host string) bool {
 			return false
 		}
 		for _, r := range label {
-			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' {
 				return false
 			}
 		}

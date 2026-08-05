@@ -256,6 +256,16 @@ type publicationTableSelection struct {
 	attributes map[int16]struct{}
 }
 
+var errPublicationNotConfigured = errors.New("publication not configured")
+
+func checkedCatalogOID(value int64, subject string) (uint32, error) {
+	if value <= 0 || value > int64(^uint32(0)) {
+		return 0, fmt.Errorf("%s OID %d is outside PostgreSQL oid bounds", subject, value)
+	}
+	// #nosec G115 -- the positive int64 value is explicitly bounded to MaxUint32 above.
+	return uint32(value), nil
+}
+
 func publicationTablesQuery(serverVersion int) string {
 	if serverVersion >= 150000 {
 		return `SELECT g.relid::bigint,CASE WHEN g.attrs IS NULL THEN NULL ELSE g.attrs::smallint[] END FROM pg_catalog.pg_get_publication_tables($1) AS g`
@@ -264,7 +274,7 @@ func publicationTablesQuery(serverVersion int) string {
 }
 func loadEffectivePublicationTables(ctx context.Context, tx pgx.Tx, publication string) (map[uint32]publicationTableSelection, error) {
 	if publication == "" {
-		return nil, nil
+		return nil, errPublicationNotConfigured
 	}
 	var exists bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_publication WHERE pubname=$1)`, publication).Scan(&exists); err != nil {
@@ -293,7 +303,10 @@ func loadEffectivePublicationTables(ctx context.Context, tx pgx.Tx, publication 
 		} else if err := rows.Scan(&oid); err != nil {
 			return nil, err
 		}
-		key := uint32(oid)
+		key, err := checkedCatalogOID(oid, "publication relation")
+		if err != nil {
+			return nil, err
+		}
 		current, seen := out[key]
 		if !seen {
 			current = publicationTableSelection{attributes: map[int16]struct{}{}}
@@ -303,6 +316,9 @@ func loadEffectivePublicationTables(ctx context.Context, tx pgx.Tx, publication 
 			current.attributes = nil
 		} else if !current.allColumns {
 			for _, attnum := range attrs {
+				if attnum <= 0 {
+					return nil, fmt.Errorf("publication relation OID %d has invalid attribute number %d", key, attnum)
+				}
 				current.attributes[attnum] = struct{}{}
 			}
 		}
@@ -329,8 +345,12 @@ func inspectCatalogTx(ctx context.Context, tx pgx.Tx, scope CatalogScope) ([]Cat
 		if oid == nil {
 			return nil, fmt.Errorf("selected table %q does not exist", selector)
 		}
+		resolvedOID, err := checkedCatalogOID(*oid, "selected relation")
+		if err != nil {
+			return nil, fmt.Errorf("resolve table selector %q: %w", selector, err)
+		}
 		resolvedTables = append(resolvedTables, CatalogTableName{Schema: parts[0], Table: parts[1]})
-		resolvedTableOIDs = append(resolvedTableOIDs, uint32(*oid))
+		resolvedTableOIDs = append(resolvedTableOIDs, resolvedOID)
 	}
 	resolvedSchemas := make([]string, 0, len(scope.SchemaSelectors))
 	for _, selector := range scope.SchemaSelectors {
@@ -354,7 +374,9 @@ func inspectCatalogTx(ctx context.Context, tx pgx.Tx, scope CatalogScope) ([]Cat
 	schemas := resolvedSchemas
 	publication := scope.Publication
 	published, err := loadEffectivePublicationTables(ctx, tx, publication)
-	if err != nil {
+	if errors.Is(err, errPublicationNotConfigured) {
+		published = map[uint32]publicationTableSelection{}
+	} else if err != nil {
 		return nil, err
 	}
 	publicationOIDs := make([]uint32, 0, len(published))
@@ -391,7 +413,10 @@ ORDER BY n.nspname,c.relname`, resolvedTableOIDs, schemas, publicationOIDs)
 		if err := rows.Scan(&table.Schema, &table.Table, &oid, &table.ReplicaIdentity); err != nil {
 			return nil, fmt.Errorf("scan catalog table: %w", err)
 		}
-		table.RelationOID = uint32(oid)
+		table.RelationOID, err = checkedCatalogOID(oid, "catalog relation")
+		if err != nil {
+			return nil, err
+		}
 		byOID[table.RelationOID] = len(tables)
 		foundOIDs[table.RelationOID] = struct{}{}
 		foundSchemas[table.Schema] = struct{}{}
@@ -463,7 +488,15 @@ ORDER BY a.attrelid,a.attnum`, oids)
 			columnRows.Close()
 			return nil, fmt.Errorf("scan catalog column: %w", err)
 		}
-		relationKey := uint32(relationOID)
+		if column.Attnum <= 0 {
+			columnRows.Close()
+			return nil, fmt.Errorf("catalog relation OID %d has invalid attribute number %d", relationOID, column.Attnum)
+		}
+		relationKey, err := checkedCatalogOID(relationOID, "catalog column relation")
+		if err != nil {
+			columnRows.Close()
+			return nil, err
+		}
 		if selection, ok := published[relationKey]; ok {
 			if _, explicit := explicitOIDs[relationKey]; !explicit && !selection.allColumns {
 				if _, included := selection.attributes[column.Attnum]; !included {
@@ -471,7 +504,11 @@ ORDER BY a.attrelid,a.attnum`, oids)
 				}
 			}
 		}
-		column.TypeOID = uint32(typeOID)
+		column.TypeOID, err = checkedCatalogOID(typeOID, "catalog column type")
+		if err != nil {
+			columnRows.Close()
+			return nil, err
+		}
 		if generatedExpression != nil {
 			column.GenerationExpression = *generatedExpression
 		}
@@ -512,7 +549,20 @@ ORDER BY i.indrelid,i.indisprimary DESC,k.ord`, oids)
 			keyRows.Close()
 			return nil, err
 		}
-		index := byOID[uint32(oid)]
+		if ordinal <= 0 {
+			keyRows.Close()
+			return nil, fmt.Errorf("catalog key relation OID %d has invalid ordinal %d", oid, ordinal)
+		}
+		relationOID, err := checkedCatalogOID(oid, "catalog key relation")
+		if err != nil {
+			keyRows.Close()
+			return nil, err
+		}
+		index, ok := byOID[relationOID]
+		if !ok {
+			keyRows.Close()
+			return nil, fmt.Errorf("catalog key references unselected relation OID %d", relationOID)
+		}
 		if primary {
 			tables[index].PrimaryKeyColumns = append(tables[index].PrimaryKeyColumns, name)
 		}

@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,11 +20,19 @@ var durationType = reflect.TypeOf(time.Duration(0))
 
 func decodeStrictConfigFile(path string, cfg *Config) (map[string]struct{}, error) {
 	present := make(map[string]struct{})
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read config file %s: %w", path, err)
+	if path == "" {
+		return nil, errors.New("config file path is required")
 	}
-	extension := strings.ToLower(filepath.Ext(path))
+	if strings.IndexByte(path, 0) >= 0 {
+		return nil, errors.New("config file path cannot contain NUL")
+	}
+	cleanPath := filepath.Clean(path)
+	// #nosec G304 -- cleanPath is the explicitly configured user-supplied config file, validated above.
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return nil, fmt.Errorf("read config file %s: %w", cleanPath, err)
+	}
+	extension := strings.ToLower(filepath.Ext(cleanPath))
 	if extension != ".yaml" && extension != ".yml" && extension != ".json" {
 		return nil, fmt.Errorf("config file %s: unsupported extension %q; use .yaml, .yml, or .json", path, extension)
 	}
@@ -35,7 +44,7 @@ func decodeStrictConfigFile(path string, cfg *Config) (map[string]struct{}, erro
 			return nil, fmt.Errorf("config file %s: decode JSON: %w", path, err)
 		}
 		var trailing any
-		if err := decoder.Decode(&trailing); err != io.EOF {
+		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 			if err == nil {
 				return nil, fmt.Errorf("config file %s: expected exactly one JSON document", path)
 			}
@@ -50,7 +59,7 @@ func decodeStrictConfigFile(path string, cfg *Config) (map[string]struct{}, erro
 		return nil, fmt.Errorf("config file %s: decode: %w", path, err)
 	}
 	var trailing yaml.Node
-	if err := decoder.Decode(&trailing); err != io.EOF {
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return nil, fmt.Errorf("config file %s: expected exactly one YAML document", path)
 		}
@@ -60,7 +69,7 @@ func decodeStrictConfigFile(path string, cfg *Config) (map[string]struct{}, erro
 		return nil, fmt.Errorf("config file %s: expected one mapping document", path)
 	}
 	root := document.Content[0]
-	if err := applyStrictNode(root, reflect.ValueOf(cfg).Elem(), "", path, present); err != nil {
+	if err := applyStrictNode(root, reflect.ValueOf(cfg).Elem(), "", cleanPath, present); err != nil {
 		return nil, err
 	}
 	applyTelemetryFileInheritance(root, cfg)

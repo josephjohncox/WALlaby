@@ -159,7 +159,7 @@ func TestManagedBootstrapMetadataFailsClosedOnCatalogMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(`CREATE TABLE public.%s(id bigint PRIMARY KEY,value text NOT NULL)`, quoteIdent(target, '"'))); err != nil {
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`CREATE TABLE public.%s(id bigint PRIMARY KEY,value text NOT NULL)`, quoteIdent(target))); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestManagedBootstrapMetadataFailsClosedOnCatalogMismatch(t *testing.T) {
 		_ = tx.Rollback(ctx)
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(`ALTER TABLE public.%s ADD COLUMN extra text`, quoteIdent(stage, '"'))); err != nil {
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`ALTER TABLE public.%s ADD COLUMN extra text`, quoteIdent(stage))); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatal(err)
 	}
@@ -282,11 +282,11 @@ func TestManagedTargetAdmissionUsesOrderedProjectedNaturalKeysUnderFullIdentity(
 	defer pool.Close()
 	table := "wallaby_natural_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	ordered := table + "_ordered"
-	if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE TABLE public.%s (id bigint PRIMARY KEY,email text NOT NULL UNIQUE,note text); CREATE TABLE public.%s (a bigint NOT NULL,b bigint NOT NULL,UNIQUE(b,a))`, quoteIdent(table, '"'), quoteIdent(ordered, '"'))); err != nil {
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE TABLE public.%s (id bigint PRIMARY KEY,email text NOT NULL UNIQUE,note text); CREATE TABLE public.%s (a bigint NOT NULL,b bigint NOT NULL,UNIQUE(b,a))`, quoteIdent(table), quoteIdent(ordered))); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
-		_, _ = pool.Exec(context.Background(), fmt.Sprintf(`DROP TABLE IF EXISTS public.%s,public.%s`, quoteIdent(table, '"'), quoteIdent(ordered, '"')))
+		_, _ = pool.Exec(context.Background(), fmt.Sprintf(`DROP TABLE IF EXISTS public.%s,public.%s`, quoteIdent(table), quoteIdent(ordered)))
 	}()
 	full := func(name string, columns ...connector.Column) connector.Schema {
 		for index := range columns {
@@ -324,11 +324,11 @@ func TestManagedAppendFullAdmissionAllowsRepeatedKeysAndRejectsMixedUniqueness(t
 	table, mixed := "wallaby_append_"+suffix, "wallaby_append_mixed_"+suffix
 	columns := []connector.Column{{Name: "event_id", Type: "bigint"}, {Name: "payload", Type: "text"}, {Name: connector.AppendOperationColumn, Type: "text"}, {Name: connector.AppendDeletedColumn, Type: "boolean"}, {Name: connector.AppendSourcePositionColumn, Type: "text"}}
 	createColumns := `event_id bigint,payload text,__wallaby_operation text,__wallaby_deleted boolean,__wallaby_source_position text`
-	if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE TABLE public.%s(%s);CREATE TABLE public.%s(%s,optional_default text DEFAULT '',UNIQUE(event_id,optional_default))`, quoteIdent(table, '"'), createColumns, quoteIdent(mixed, '"'), createColumns)); err != nil {
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE TABLE public.%s(%s);CREATE TABLE public.%s(%s,optional_default text DEFAULT '',UNIQUE(event_id,optional_default))`, quoteIdent(table), createColumns, quoteIdent(mixed), createColumns)); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
-		_, _ = pool.Exec(context.Background(), fmt.Sprintf(`DROP TABLE IF EXISTS public.%s,public.%s`, quoteIdent(table, '"'), quoteIdent(mixed, '"')))
+		_, _ = pool.Exec(context.Background(), fmt.Sprintf(`DROP TABLE IF EXISTS public.%s,public.%s`, quoteIdent(table), quoteIdent(mixed)))
 	}()
 	destination := &Destination{pool: pool, syncCommit: "on", batchMode: batchModeTarget, flowID: "append-live"}
 	if err := destination.ensureManagedReceiptTable(ctx); err != nil {
@@ -356,7 +356,7 @@ func TestManagedAppendFullAdmissionAllowsRepeatedKeysAndRejectsMixedUniqueness(t
 		t.Fatal(err)
 	}
 	var count int
-	if err := pool.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM public.%s WHERE event_id=1`, quoteIdent(table, '"'))).Scan(&count); err != nil {
+	if err := pool.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM public.%s WHERE event_id=1`, quoteIdent(table))).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 2 {

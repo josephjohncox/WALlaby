@@ -28,7 +28,7 @@ func TestBootstrapWatermarkReplacementDropsAbsentTombstonesAndIsIdempotent(t *te
 	defer pool.Close()
 	destination.pool = pool
 	tableName := fmt.Sprintf("wallaby_bootstrap_replace_%d", time.Now().UnixNano())
-	qualified := quoteIdent("public", '"') + "." + quoteIdent(tableName, '"')
+	qualified := quoteIdent("public") + "." + quoteIdent(tableName)
 	if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s (id bigint PRIMARY KEY,name text,updated_at bigint NOT NULL); INSERT INTO %s VALUES (2,'snapshot',100)`, qualified, qualified)); err != nil {
 		t.Fatal(err)
 	}

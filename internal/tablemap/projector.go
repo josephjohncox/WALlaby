@@ -23,6 +23,8 @@ type Projector struct {
 var _ stream.Projector = (*Projector)(nil)
 var _ connector.ManagedBootstrapProjector = (*Projector)(nil)
 
+var errRecordKeyNotFound = errors.New("record key not found")
+
 type resolvedColumn struct {
 	source string
 	target string
@@ -75,10 +77,7 @@ func (p *Projector) ProjectBootstrapSchema(schema connector.Schema) (connector.S
 	if !resolved.included {
 		return connector.Schema{}, connector.TableWritePolicy{}, false, nil
 	}
-	mapped, err := projectSchema(schema, resolved)
-	if err != nil {
-		return connector.Schema{}, connector.TableWritePolicy{}, false, err
-	}
+	mapped := projectSchema(schema, resolved)
 	keys := make([]string, 0, len(resolved.write.KeyColumns))
 	for _, key := range resolved.write.KeyColumns {
 		keys = append(keys, resolved.bySource[key])
@@ -129,10 +128,7 @@ func (p *Projector) projectBatch(batch connector.Batch, fallbackPosition string)
 	if !resolved.included {
 		return connector.Batch{Checkpoint: batch.Checkpoint, WireFormat: batch.WireFormat}, stream.ProjectionFiltered, nil
 	}
-	mappedSchema, err := projectSchema(batch.Schema, resolved)
-	if err != nil {
-		return connector.Batch{}, stream.ProjectionFiltered, err
-	}
+	mappedSchema := projectSchema(batch.Schema, resolved)
 	mappedRecords := make([]connector.Record, 0, len(batch.Records))
 	for _, record := range batch.Records {
 		records, err := p.projectRecord(batch.Schema, mappedSchema, resolved, record, fallbackPosition)
@@ -371,7 +367,7 @@ func (p *Projector) resolve(schema connector.Schema, allowEmptyColumns bool) (re
 	return resolved, nil
 }
 
-func projectSchema(schema connector.Schema, resolved resolvedTable) (connector.Schema, error) {
+func projectSchema(schema connector.Schema, resolved resolvedTable) connector.Schema {
 	out := schema
 	out.Namespace = resolved.targetSchema
 	out.Name = resolved.targetTable
@@ -423,7 +419,7 @@ func projectSchema(schema connector.Schema, resolved resolvedTable) (connector.S
 	if len(out.QuotedIdentifiers) == 0 {
 		out.QuotedIdentifiers = nil
 	}
-	return out, nil
+	return out
 }
 
 func (p *Projector) projectRecord(sourceSchema, targetSchema connector.Schema, resolved resolvedTable, record connector.Record, fallbackPosition string) ([]connector.Record, error) {
@@ -449,24 +445,24 @@ func (p *Projector) projectRecord(sourceSchema, targetSchema connector.Schema, r
 		newRecord := record
 		newRecord.Operation = connector.OpInsert
 		newRecord.Before = nil
-		first, err := p.projectDataRecord(sourceSchema, resolved, oldRecord, fallbackPosition, true)
+		first, err := p.projectDataRecord(resolved, oldRecord, fallbackPosition, true)
 		if err != nil {
 			return nil, err
 		}
-		second, err := p.projectDataRecord(sourceSchema, resolved, newRecord, fallbackPosition, false)
+		second, err := p.projectDataRecord(resolved, newRecord, fallbackPosition, false)
 		if err != nil {
 			return nil, err
 		}
 		return []connector.Record{first, second}, nil
 	}
-	mapped, err := p.projectDataRecord(sourceSchema, resolved, record, fallbackPosition, record.Operation == connector.OpDelete)
+	mapped, err := p.projectDataRecord(resolved, record, fallbackPosition, record.Operation == connector.OpDelete)
 	if err != nil {
 		return nil, err
 	}
 	return []connector.Record{mapped}, nil
 }
 
-func (p *Projector) projectDataRecord(schema connector.Schema, resolved resolvedTable, record connector.Record, fallbackPosition string, useOldKey bool) (connector.Record, error) {
+func (p *Projector) projectDataRecord(resolved resolvedTable, record connector.Record, fallbackPosition string, useOldKey bool) (connector.Record, error) {
 	out := record
 	out.Table = resolved.targetTable
 	out.Before = projectImage(record.Before, resolved)
@@ -476,7 +472,9 @@ func (p *Projector) projectDataRecord(schema connector.Schema, resolved resolved
 		out.Payload = nil
 	}
 	originalKey, err := decodeKey(record.Key)
-	if err != nil {
+	if errors.Is(err, errRecordKeyNotFound) {
+		originalKey = map[string]any{}
+	} else if err != nil {
 		return connector.Record{}, err
 	}
 	if resolved.write.Mode == flow.TableWriteModeUpsert {
@@ -574,7 +572,7 @@ func projectUnchanged(columns []string, resolved resolvedTable) []string {
 
 func decodeKey(raw []byte) (map[string]any, error) {
 	if len(raw) == 0 {
-		return nil, nil
+		return nil, errRecordKeyNotFound
 	}
 	var key map[string]any
 	if err := json.Unmarshal(raw, &key); err != nil {
@@ -632,7 +630,9 @@ func keysChanged(record connector.Record, columns []string) (bool, error) {
 		return false, nil
 	}
 	original, err := decodeKey(record.Key)
-	if err != nil {
+	if errors.Is(err, errRecordKeyNotFound) {
+		original = map[string]any{}
+	} else if err != nil {
 		return false, err
 	}
 	for _, column := range columns {

@@ -56,10 +56,10 @@ func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, iceber
 				return nil, errors.New("artifact publication supports exactly one Iceberg destination revision")
 			}
 			if f.Config.Materialization.ProjectionID != artifactlog.ProjectionIDV2 {
-				return nil, errors.New("Iceberg materialization requires canonical_cdc_parquet_v2")
+				return nil, errors.New("iceberg materialization requires canonical_cdc_parquet_v2")
 			}
 			if destination.Projector == nil || destination.MappingFingerprint == "" || destination.Projector.Fingerprint() != destination.MappingFingerprint {
-				return nil, errors.New("Iceberg artifact factory requires the sole immutable destination projector and mapping fingerprint")
+				return nil, errors.New("iceberg artifact factory requires the sole immutable destination projector and mapping fingerprint")
 			}
 			projector = destination.Projector
 			mappingFingerprint = destination.MappingFingerprint

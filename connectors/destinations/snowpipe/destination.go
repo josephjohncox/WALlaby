@@ -837,18 +837,6 @@ func quoteIdent(value string, quote rune) string {
 	return string(quote) + escaped + string(quote)
 }
 
-func quoteQualified(name string, quote rune) string {
-	parts := strings.Split(name, ".")
-	if len(parts) == 1 {
-		return quoteIdent(parts[0], quote)
-	}
-	quoted := make([]string, 0, len(parts))
-	for _, part := range parts {
-		quoted = append(quoted, quoteIdent(part, quote))
-	}
-	return strings.Join(quoted, ".")
-}
-
 func parseBool(value string, fallback bool) bool {
 	if value == "" {
 		return fallback

@@ -397,30 +397,12 @@ func Load(configPath string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg.Kubernetes.JobLabels, err = mapValue(fileCfg, []string{"kubernetes.job_labels"}, []string{"WALLABY_K8S_JOB_LABELS", "WALLABY_WORKER_K8S_JOB_LABELS"}, cfg.Kubernetes.JobLabels)
-	if err != nil {
-		return nil, err
-	}
-	cfg.Kubernetes.JobAnnotations, err = mapValue(fileCfg, []string{"kubernetes.job_annotations"}, []string{"WALLABY_K8S_JOB_ANNOTATIONS", "WALLABY_WORKER_K8S_JOB_ANNOTATIONS"}, cfg.Kubernetes.JobAnnotations)
-	if err != nil {
-		return nil, err
-	}
-	cfg.Kubernetes.JobCommand, err = stringSliceValue(fileCfg, []string{"kubernetes.job_command"}, []string{"WALLABY_K8S_JOB_COMMAND", "WALLABY_WORKER_K8S_JOB_COMMAND"}, cfg.Kubernetes.JobCommand)
-	if err != nil {
-		return nil, err
-	}
-	cfg.Kubernetes.JobArgs, err = stringSliceValue(fileCfg, []string{"kubernetes.job_args"}, []string{"WALLABY_K8S_JOB_ARGS", "WALLABY_WORKER_K8S_JOB_ARGS"}, cfg.Kubernetes.JobArgs)
-	if err != nil {
-		return nil, err
-	}
-	cfg.Kubernetes.JobEnv, err = mapValue(fileCfg, []string{"kubernetes.job_env"}, []string{"WALLABY_K8S_JOB_ENV", "WALLABY_WORKER_K8S_JOB_ENV"}, cfg.Kubernetes.JobEnv)
-	if err != nil {
-		return nil, err
-	}
-	cfg.Kubernetes.JobEnvFrom, err = stringSliceValue(fileCfg, []string{"kubernetes.job_env_from"}, []string{"WALLABY_K8S_JOB_ENV_FROM", "WALLABY_WORKER_K8S_JOB_ENV_FROM"}, cfg.Kubernetes.JobEnvFrom)
-	if err != nil {
-		return nil, err
-	}
+	cfg.Kubernetes.JobLabels = mapValue(fileCfg, []string{"kubernetes.job_labels"}, []string{"WALLABY_K8S_JOB_LABELS", "WALLABY_WORKER_K8S_JOB_LABELS"}, cfg.Kubernetes.JobLabels)
+	cfg.Kubernetes.JobAnnotations = mapValue(fileCfg, []string{"kubernetes.job_annotations"}, []string{"WALLABY_K8S_JOB_ANNOTATIONS", "WALLABY_WORKER_K8S_JOB_ANNOTATIONS"}, cfg.Kubernetes.JobAnnotations)
+	cfg.Kubernetes.JobCommand = stringSliceValue(fileCfg, []string{"kubernetes.job_command"}, []string{"WALLABY_K8S_JOB_COMMAND", "WALLABY_WORKER_K8S_JOB_COMMAND"}, cfg.Kubernetes.JobCommand)
+	cfg.Kubernetes.JobArgs = stringSliceValue(fileCfg, []string{"kubernetes.job_args"}, []string{"WALLABY_K8S_JOB_ARGS", "WALLABY_WORKER_K8S_JOB_ARGS"}, cfg.Kubernetes.JobArgs)
+	cfg.Kubernetes.JobEnv = mapValue(fileCfg, []string{"kubernetes.job_env"}, []string{"WALLABY_K8S_JOB_ENV", "WALLABY_WORKER_K8S_JOB_ENV"}, cfg.Kubernetes.JobEnv)
+	cfg.Kubernetes.JobEnvFrom = stringSliceValue(fileCfg, []string{"kubernetes.job_env_from"}, []string{"WALLABY_K8S_JOB_ENV_FROM", "WALLABY_WORKER_K8S_JOB_ENV_FROM"}, cfg.Kubernetes.JobEnvFrom)
 
 	cfg.Wire.DefaultFormat = stringValue(fileCfg, []string{"wire.format"}, []string{"WALLABY_WIRE_FORMAT", "WALLABY_WORKER_WIRE_FORMAT"}, cfg.Wire.DefaultFormat)
 	cfg.Wire.Enforce, err = boolValue(fileCfg, []string{"wire.enforce"}, []string{"WALLABY_WIRE_ENFORCE", "WALLABY_WORKER_WIRE_ENFORCE"}, cfg.Wire.Enforce)
@@ -436,10 +418,7 @@ func Load(configPath string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg.DDL.CatalogSchemas, err = stringSliceValue(fileCfg, []string{"ddl.catalog_schemas"}, []string{"WALLABY_DDL_CATALOG_SCHEMAS", "WALLABY_WORKER_DDL_CATALOG_SCHEMAS"}, cfg.DDL.CatalogSchemas)
-	if err != nil {
-		return nil, err
-	}
+	cfg.DDL.CatalogSchemas = stringSliceValue(fileCfg, []string{"ddl.catalog_schemas"}, []string{"WALLABY_DDL_CATALOG_SCHEMAS", "WALLABY_WORKER_DDL_CATALOG_SCHEMAS"}, cfg.DDL.CatalogSchemas)
 	cfg.DDL.AutoApprove, err = boolValue(fileCfg, []string{"ddl.auto_approve"}, []string{"WALLABY_DDL_AUTO_APPROVE", "WALLABY_WORKER_DDL_AUTO_APPROVE"}, cfg.DDL.AutoApprove)
 	if err != nil {
 		return nil, err
@@ -769,33 +748,33 @@ func durationValue(fileCfg *environmentConfig, fileKeys, envKeys []string, fallb
 	}
 	return value, nil
 }
-func stringSliceValue(fileCfg *environmentConfig, fileKeys, envKeys []string, fallback []string) ([]string, error) {
+func stringSliceValue(fileCfg *environmentConfig, fileKeys, envKeys []string, fallback []string) []string {
 	if fileCfg.has(fileKeys) {
-		return fallback, nil
+		return fallback
 	}
 	raw, _, ok := readEnvValue(envKeys)
 	if !ok {
-		return fallback, nil
+		return fallback
 	}
 	values := parseCSV(raw)
 	if len(values) == 0 {
-		return nil, nil
+		return nil
 	}
-	return values, nil
+	return values
 }
-func mapValue(fileCfg *environmentConfig, fileKeys, envKeys []string, fallback map[string]string) (map[string]string, error) {
+func mapValue(fileCfg *environmentConfig, fileKeys, envKeys []string, fallback map[string]string) map[string]string {
 	if fileCfg.has(fileKeys) {
-		return fallback, nil
+		return fallback
 	}
 	raw, _, ok := readEnvValue(envKeys)
 	if !ok {
-		return fallback, nil
+		return fallback
 	}
 	values := parseKVPairs(raw)
 	if len(values) == 0 {
-		return map[string]string{}, nil
+		return map[string]string{}
 	}
-	return values, nil
+	return values
 }
 
 type environmentConfig struct{ present map[string]struct{} }

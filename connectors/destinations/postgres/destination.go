@@ -603,7 +603,7 @@ func (d *Destination) upsertRows(ctx context.Context, tx pgx.Tx, target string, 
 		return nil
 	}
 	tempName := fmt.Sprintf("tmp_wallaby_%d", time.Now().UnixNano())
-	tempIdent := quoteIdent(tempName, '"')
+	tempIdent := quoteIdent(tempName)
 	create := fmt.Sprintf("CREATE TEMP TABLE %s (LIKE %s INCLUDING DEFAULTS INCLUDING IDENTITY EXCLUDING CONSTRAINTS) ON COMMIT DROP", tempIdent, target)
 	if _, err := tx.Exec(ctx, create); err != nil {
 		return fmt.Errorf("create temp table: %w", err)
@@ -630,7 +630,7 @@ func (d *Destination) upsertRows(ctx context.Context, tx pgx.Tx, target string, 
 		insertCols := quoteColumns(group.cols)
 		quotedKeyCols := make([]string, 0, len(group.keyCols))
 		for _, col := range group.keyCols {
-			quotedKeyCols = append(quotedKeyCols, quoteIdent(col, '"'))
+			quotedKeyCols = append(quotedKeyCols, quoteIdent(col))
 		}
 		keyCols := strings.Join(quotedKeyCols, ", ")
 		updateCols := make([]string, 0, len(group.cols))
@@ -648,7 +648,7 @@ func (d *Destination) upsertRows(ctx context.Context, tx pgx.Tx, target string, 
 		if len(updateCols) > 0 {
 			setClause := make([]string, 0, len(updateCols))
 			for _, col := range updateCols {
-				setClause = append(setClause, fmt.Sprintf("%s = EXCLUDED.%s", quoteIdent(col, '"'), quoteIdent(col, '"')))
+				setClause = append(setClause, fmt.Sprintf("%s = EXCLUDED.%s", quoteIdent(col), quoteIdent(col)))
 			}
 			conflictAction = "DO UPDATE SET " + strings.Join(setClause, ", ")
 		}
@@ -1010,19 +1010,19 @@ func (d *Destination) updateRows(ctx context.Context, tx pgx.Tx, target string, 
 		}
 		setClause := make([]string, 0, len(group.cols))
 		for _, col := range group.cols {
-			setClause = append(setClause, fmt.Sprintf("%s = v.%s", quoteIdent(col, '"'), quoteIdent(col, '"')))
+			setClause = append(setClause, fmt.Sprintf("%s = v.%s", quoteIdent(col), quoteIdent(col)))
 		}
 		whereClause := make([]string, 0, len(group.keyCols))
 		for idx, col := range group.keyCols {
 			alias := keyAliases[idx]
 			if colType := columnType(localTypes, col); colType != "" {
 				if postgresJSONType(colType) != "" {
-					whereClause = append(whereClause, fmt.Sprintf("t.%s::text = v.%s::text", quoteIdent(col, '"'), quoteIdent(alias, '"')))
+					whereClause = append(whereClause, fmt.Sprintf("t.%s::text = v.%s::text", quoteIdent(col), quoteIdent(alias)))
 				} else {
-					whereClause = append(whereClause, fmt.Sprintf("t.%s = v.%s", quoteIdent(col, '"'), quoteIdent(alias, '"')))
+					whereClause = append(whereClause, fmt.Sprintf("t.%s = v.%s", quoteIdent(col), quoteIdent(alias)))
 				}
 			} else {
-				whereClause = append(whereClause, fmt.Sprintf("t.%s::text = v.%s::text", quoteIdent(col, '"'), quoteIdent(alias, '"')))
+				whereClause = append(whereClause, fmt.Sprintf("t.%s::text = v.%s::text", quoteIdent(col), quoteIdent(alias)))
 			}
 		}
 		stmt := fmt.Sprintf(
@@ -1075,12 +1075,12 @@ func (d *Destination) deleteRows(ctx context.Context, tx pgx.Tx, target string, 
 		for _, col := range group.keyCols {
 			if colType := columnType(localTypes, col); colType != "" {
 				if postgresJSONType(colType) != "" {
-					whereClause = append(whereClause, fmt.Sprintf("t.%s::text = v.%s::text", quoteIdent(col, '"'), quoteIdent(col, '"')))
+					whereClause = append(whereClause, fmt.Sprintf("t.%s::text = v.%s::text", quoteIdent(col), quoteIdent(col)))
 				} else {
-					whereClause = append(whereClause, fmt.Sprintf("t.%s = v.%s", quoteIdent(col, '"'), quoteIdent(col, '"')))
+					whereClause = append(whereClause, fmt.Sprintf("t.%s = v.%s", quoteIdent(col), quoteIdent(col)))
 				}
 			} else {
-				whereClause = append(whereClause, fmt.Sprintf("t.%s::text = v.%s::text", quoteIdent(col, '"'), quoteIdent(col, '"')))
+				whereClause = append(whereClause, fmt.Sprintf("t.%s::text = v.%s::text", quoteIdent(col), quoteIdent(col)))
 			}
 		}
 		stmt := fmt.Sprintf(
@@ -1257,11 +1257,11 @@ func (d *Destination) ensureMetaTable(ctx context.Context) error {
 	if d.metaSchema == "" || d.metaTable == "" {
 		return errors.New("meta schema and table are required")
 	}
-	schemaIdent := quoteIdent(d.metaSchema, '"')
+	schemaIdent := quoteIdent(d.metaSchema)
 	if _, err := d.pool.Exec(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", schemaIdent)); err != nil {
 		return fmt.Errorf("create meta schema: %w", err)
 	}
-	tableIdent := schemaIdent + "." + quoteIdent(d.metaTable, '"')
+	tableIdent := schemaIdent + "." + quoteIdent(d.metaTable)
 	query := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
   flow_id TEXT,
   source_schema TEXT,
@@ -1317,7 +1317,7 @@ func (d *Destination) upsertMetadataBatch(ctx context.Context, tx pgx.Tx, schema
 	columns = append(columns, "flow_id", "source_schema", "source_table", "synced_at", "is_deleted", "lsn", "operation", "key_json")
 	columns = append(columns, pkColumns...)
 	const maxMetadataRowsPerInsert = 500
-	target := quoteIdent(d.metaSchema, '"') + "." + quoteIdent(d.metaTable, '"')
+	target := quoteIdent(d.metaSchema) + "." + quoteIdent(d.metaTable)
 	fallbackTimestamp := time.Now().UTC()
 	for start := 0; start < len(rows); start += maxMetadataRowsPerInsert {
 		end := min(start+maxMetadataRowsPerInsert, len(rows))
@@ -1360,8 +1360,8 @@ func (d *Destination) ensureMetaColumn(ctx context.Context, tx pgx.Tx, column st
 	if _, ok := d.metaColumns[key]; ok {
 		return nil
 	}
-	target := quoteIdent(d.metaSchema, '"') + "." + quoteIdent(d.metaTable, '"')
-	stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s TEXT", target, quoteIdent(column, '"'))
+	target := quoteIdent(d.metaSchema) + "." + quoteIdent(d.metaTable)
+	stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s TEXT", target, quoteIdent(column))
 	if _, err := tx.Exec(ctx, stmt); err != nil {
 		return fmt.Errorf("add meta column: %w", err)
 	}
@@ -1872,7 +1872,7 @@ func decodeKey(raw []byte) (map[string]any, error) {
 func quoteColumns(cols []string) string {
 	quoted := make([]string, 0, len(cols))
 	for _, col := range cols {
-		quoted = append(quoted, quoteIdent(col, '"'))
+		quoted = append(quoted, quoteIdent(col))
 	}
 	return strings.Join(quoted, ", ")
 }
@@ -1888,12 +1888,13 @@ func placeholders(start, count int) string {
 	return strings.Join(parts, ",")
 }
 
-func quoteIdent(value string, quote rune) string {
+func quoteIdent(value string) string {
 	if value == "" {
 		return value
 	}
-	escaped := strings.ReplaceAll(value, string(quote), string(quote)+string(quote))
-	return string(quote) + escaped + string(quote)
+	const quote = `"`
+	escaped := strings.ReplaceAll(value, quote, quote+quote)
+	return quote + escaped + quote
 }
 
 func parseBool(value string, fallback bool) bool {

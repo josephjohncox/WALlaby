@@ -35,7 +35,7 @@ func (d *Destination) PrepareBootstrap(ctx context.Context, intent connector.Boo
 			return fmt.Errorf("bootstrap table write policy: %w", err)
 		}
 		schema := table.Schema
-		target, _, _ := d.bootstrapTables(intent, schema)
+		target, _ := d.bootstrapTables(intent, schema)
 		if _, exists := seenTargets[target]; exists {
 			return fmt.Errorf("bootstrap manifest maps multiple source tables to destination %s", target)
 		}
@@ -60,7 +60,7 @@ func (d *Destination) PrepareBootstrap(ctx context.Context, intent connector.Boo
 	}
 	for _, table := range tables {
 		schema := table.Schema
-		target, _, stageName := d.bootstrapTables(intent, schema)
+		target, stageName := d.bootstrapTables(intent, schema)
 		targetSchema, targetTable, stageTable := d.bootstrapTableCoordinates(intent, schema)
 		if _, err := tx.Exec(ctx, `SELECT wallaby.prepare_managed_bootstrap_stage($1,$2,$3,$4)`, targetSchema, targetTable, targetSchema, stageTable); err != nil {
 			return fmt.Errorf("create bootstrap stage for %s: %w", target, err)
@@ -224,7 +224,7 @@ func (d *Destination) PublishBootstrap(ctx context.Context, intent connector.Boo
 		}
 		for _, table := range sorted {
 			schema := table.Schema
-			target, _, _ := d.bootstrapTables(intent, schema)
+			target, _ := d.bootstrapTables(intent, schema)
 			targetSchema, targetTable, stageTable := d.bootstrapTableCoordinates(intent, schema)
 			columns := schemaColumns(schema)
 			if len(columns) == 0 {
@@ -320,7 +320,7 @@ func (d *Destination) AbandonBootstrap(ctx context.Context, intent connector.Boo
 	}
 	for _, table := range tables {
 		schema := table.Schema
-		target, _, stageName := d.bootstrapTables(intent, schema)
+		target, stageName := d.bootstrapTables(intent, schema)
 		targetSchema, _, stageTable := d.bootstrapTableCoordinates(intent, schema)
 		var storedStage string
 		err := tx.QueryRow(ctx, `
@@ -372,13 +372,13 @@ func (d *Destination) seedBootstrapWatermarkState(ctx context.Context, tx pgx.Tx
 	}
 	keyParts := make([]string, len(table.WritePolicy.KeyColumns))
 	for index, key := range table.WritePolicy.KeyColumns {
-		keyParts[index] = quoteIdent(key, '"') + "::" + keyTypes[index] + "::text"
+		keyParts[index] = quoteIdent(key) + "::" + keyTypes[index] + "::text"
 	}
-	qualified := quoteIdent(targetTable, '"')
+	qualified := quoteIdent(targetTable)
 	if targetSchema != "" {
-		qualified = quoteIdent(targetSchema, '"') + "." + qualified
+		qualified = quoteIdent(targetSchema) + "." + qualified
 	}
-	watermark := quoteIdent(table.WritePolicy.WatermarkColumn, '"')
+	watermark := quoteIdent(table.WritePolicy.WatermarkColumn)
 	scopeArgs := []any{d.flowID, targetSchema, targetTable, table.WritePolicy.ProjectionFingerprint, table.WritePolicy.KeyColumns}
 	if _, err := tx.Exec(ctx, `DELETE FROM wallaby.watermark_state
 WHERE flow_id=$1 AND target_schema=$2 AND target_table=$3 AND projection_fingerprint=$4 AND key_columns=$5`, scopeArgs...); err != nil {
@@ -598,18 +598,16 @@ func (d *Destination) bootstrapTableCoordinates(intent connector.BootstrapIntent
 	return targetSchema, targetTable, stageBase + suffix
 }
 
-func (d *Destination) bootstrapTables(intent connector.BootstrapIntent, schema connector.Schema) (target, stage, stageName string) {
+func (d *Destination) bootstrapTables(intent connector.BootstrapIntent, schema connector.Schema) (target, stageName string) {
 	record := connector.Record{Table: schema.Name}
 	target = d.targetTable(schema, record)
 	targetSchema, _, stageTable := d.bootstrapTableCoordinates(intent, schema)
 	if targetSchema == "" {
-		stage = quoteIdent(stageTable, '"')
 		stageName = stageTable
 	} else {
-		stage = quoteIdent(targetSchema, '"') + "." + quoteIdent(stageTable, '"')
 		stageName = targetSchema + "." + stageTable
 	}
-	return target, stage, stageName
+	return target, stageName
 }
 
 func bootstrapPublicationMarker(intent connector.BootstrapIntent) string {

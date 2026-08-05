@@ -207,7 +207,7 @@ func (c Config) target(mappedNamespace, mappedTable string) ([]string, error) {
 	mappedNamespace = strings.TrimSpace(mappedNamespace)
 	mappedTable = strings.TrimSpace(mappedTable)
 	if mappedNamespace == "" || mappedTable == "" {
-		return nil, errors.New("Iceberg v2 mapped namespace and table are required")
+		return nil, errors.New("iceberg v2 mapped namespace and table are required")
 	}
 	return []string{mappedNamespace, mappedTable}, nil
 }
