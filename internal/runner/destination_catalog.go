@@ -21,7 +21,7 @@ func DestinationContracts() ([]DestinationContract, error) {
 		connector.EndpointPostgres,
 		connector.EndpointPGStream,
 		connector.EndpointKafka,
-		connector.EndpointBufStream,
+		connector.EndpointRedpanda,
 		connector.EndpointS3,
 		connector.EndpointHTTP,
 		connector.EndpointGRPC,

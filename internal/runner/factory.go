@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/josephjohncox/wallaby/connectors/destinations/bufstream"
 	"github.com/josephjohncox/wallaby/connectors/destinations/clickhouse"
 	"github.com/josephjohncox/wallaby/connectors/destinations/duckdb"
 	"github.com/josephjohncox/wallaby/connectors/destinations/ducklake"
@@ -14,6 +13,7 @@ import (
 	"github.com/josephjohncox/wallaby/connectors/destinations/kafka"
 	"github.com/josephjohncox/wallaby/connectors/destinations/pgstream"
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
+	"github.com/josephjohncox/wallaby/connectors/destinations/redpanda"
 	"github.com/josephjohncox/wallaby/connectors/destinations/s3"
 	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
 	"github.com/josephjohncox/wallaby/connectors/destinations/snowpipe"
@@ -121,8 +121,8 @@ func (f Factory) destination(spec connector.Spec) (connector.Destination, error)
 		return &icebergdest.Destination{}, nil
 	case connector.EndpointPostgres:
 		return &pgdest.Destination{}, nil
-	case connector.EndpointBufStream:
-		return &bufstream.Destination{}, nil
+	case connector.EndpointRedpanda:
+		return &redpanda.Destination{}, nil
 	default:
 		return nil, fmt.Errorf("unsupported destination type: %s", spec.Type)
 	}

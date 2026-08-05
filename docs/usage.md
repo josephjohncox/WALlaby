@@ -454,9 +454,11 @@ Generic ClickHouse target, append, mutation, and staging modes remain experiment
 - `meta_engine` (default `MergeTree`)
 - `meta_order_by` (default `flow_id, source_schema, source_table, key_json`)
 
-## Bufstream Destination
+## Redpanda Destination
 
-Bufstream is Kafka-compatible; use the same options as the Kafka destination (`brokers`, `topic`, `format`, `compression`, `acks`).
+Redpanda is Kafka API-compatible. Use the Kafka destination options: `brokers`, `topic`, `format`, `compression`, and `acks`.
+
+Redpanda supports [Iceberg topics](https://docs.redpanda.com/streaming/current/manage/iceberg/about-iceberg-topics/) with an enterprise license. Configure Iceberg in Redpanda. WALlaby only publishes records to the topic.
 
 ## Destination Metadata + Append/Soft Delete
 

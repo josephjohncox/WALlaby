@@ -1,5 +1,5 @@
 {
-  "name": "pg_to_bufstream",
+  "name": "pg_to_redpanda",
   "wire_format": "arrow",
   "source": {
     "name": "pg-source",
@@ -17,8 +17,8 @@
   },
   "destinations": [
     {
-      "name": "bufstream-out",
-      "type": "bufstream",
+      "name": "redpanda-out",
+      "type": "redpanda",
       "options": {
         "brokers": "localhost:9092",
         "topic": "wallaby.cdc",
