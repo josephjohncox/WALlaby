@@ -457,12 +457,17 @@ INSERT INTO delivery_receipts (
 	if err := controlplane.ApplyMigrations(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
+	// The monotonic upgrade must remain idempotent after recording migration 008.
+	if err := controlplane.ApplyMigrations(ctx, pool); err != nil {
+		t.Fatalf("idempotent control-plane migration replay: %v", err)
+	}
 	var columns, indexes, triggers, preserved int
 	if err := pool.QueryRow(ctx, `
 SELECT count(*) FROM information_schema.columns
 WHERE table_schema='public' AND (
   (table_name IN ('delivery_manifests','delivery_attempts','delivery_receipts') AND column_name='logical_batch_id')
   OR (table_name='delivery_attempts' AND column_name IN ('reconciliation_attempts','last_reconciled_at'))
+  OR (table_name='delivery_manifests' AND column_name IN ('checkpoint_metadata','checkpoint_timestamp'))
 )`).Scan(&columns); err != nil {
 		t.Fatal(err)
 	}
@@ -484,8 +489,8 @@ WHERE manifest.flow_incarnation_id=$1
   AND attempt.reconciliation_attempts=0`, incarnationID).Scan(&preserved); err != nil {
 		t.Fatal(err)
 	}
-	if columns != 5 || indexes != 4 || triggers != 1 || preserved != 1 {
-		t.Fatalf("delivery upgrade evidence columns/indexes/triggers/preserved=%d/%d/%d/%d, want 5/4/1/1", columns, indexes, triggers, preserved)
+	if columns != 7 || indexes != 4 || triggers != 1 || preserved != 1 {
+		t.Fatalf("delivery upgrade evidence columns/indexes/triggers/preserved=%d/%d/%d/%d, want 7/4/1/1", columns, indexes, triggers, preserved)
 	}
 	var migratedDomains int
 	if err := pool.QueryRow(ctx, `

@@ -23,7 +23,7 @@ import (
 // Snowflake staged COPY append profile contract. Every one requires a reviewed
 // real Snowflake account with internal-stage COPY support; the fixture skips
 // closed without WALLABY_TEST_SNOWFLAKE_MANAGED=1 and real credentials, and
-// fakesnow is explicitly rejected. Deterministic recovery is proven separately
+// fakesnow is explicitly rejected. Deterministic recovery is exercised separately
 // against the in-memory protocol fake; these gates are the promotion evidence.
 
 func TestSnowflakeStagedManagedProfileFakesnowFailsClosed(t *testing.T) {

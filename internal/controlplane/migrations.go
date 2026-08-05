@@ -88,7 +88,7 @@ var requiredManagedColumns = map[string][]string{
 	"source_resource_operations":    {"operation_id", "flow_incarnation_id", "resource_kind", "resource_id", "operation", "desired_revision", "generation", "acquisition_id", "lease_epoch", "status"},
 	"snapshot_delivery_attempts":    {"attempt_id", "bootstrap_id", "relation_id", "task_id", "batch_ordinal", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "claim_epoch"},
 	"snapshot_delivery_receipts":    {"bootstrap_id", "relation_id", "task_id", "batch_ordinal", "attempt_id", "durable_cursor", "completed_task"},
-	"delivery_manifests":            {"flow_incarnation_id", "destination_revision_id", "source_lineage_id", "logical_batch_id", "position_id", "content_hash", "checkpoint_lsn"},
+	"delivery_manifests":            {"flow_incarnation_id", "destination_revision_id", "source_lineage_id", "logical_batch_id", "position_id", "content_hash", "checkpoint_lsn", "checkpoint_metadata", "checkpoint_timestamp"},
 	"delivery_attempts":             {"attempt_id", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "logical_batch_id", "position_id", "content_hash", "attempt_number", "attempt_state", "next_attempt_at"},
 	"delivery_receipts":             {"flow_incarnation_id", "position_id", "destination_revision_id", "logical_batch_id", "attempt_id", "content_hash"},
 	"source_ack_intents":            {"flow_incarnation_id", "position_id", "checkpoint_lsn", "generation", "acquisition_id", "lease_epoch"},

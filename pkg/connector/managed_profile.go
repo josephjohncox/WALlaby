@@ -41,7 +41,7 @@ const (
 )
 
 // IsManagedSnowflakeProfile reports whether name is one of the constrained
-// Snowflake managed profiles. Both share the same PostgreSQL-authoritative
+// Snowflake managed profiles. All three share the same PostgreSQL-authoritative
 // source-cut, version-pin, and single-relation publication admission; they
 // differ only in how the destination materializes and reconciles a batch.
 func IsManagedSnowflakeProfile(name string) bool {
@@ -256,7 +256,7 @@ func PostgresToSnowflakeStagedAppendV1Profile() ManagedProfileContract {
 // real-service recovery evidence for the channel append / SQL-observed
 // completeness / durable-receipt protocol executed through a reviewed
 // high-performance append transport. Until such a transport is linked and
-// proven, the profile fails closed at admission.
+// exercised by live recovery evidence, the profile fails closed at admission.
 func PostgresToSnowflakeStreamingRestAppendV1Profile() ManagedProfileContract {
 	contract := ManagedProfileContract{
 		Name:                   ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,

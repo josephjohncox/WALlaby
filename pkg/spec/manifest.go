@@ -21,6 +21,8 @@ const (
 	SpecDDLExecution        SpecName = "DDLExecution"
 	SpecLifecycleGeneration SpecName = "LifecycleGeneration"
 	SpecSnapshotTransition  SpecName = "SnapshotTransition"
+	SpecManagedDurability   SpecName = "ManagedDurability"
+	SpecManagedPostgresDel  SpecName = "ManagedPostgresDelivery"
 	SpecUnknown             SpecName = ""
 )
 
@@ -71,6 +73,23 @@ const (
 	ActionCompleteSnapshot       Action = "CompleteSnapshot"
 	ActionStartStreaming         Action = "StartStreaming"
 	ActionReadStream             Action = "ReadStream"
+	// Managed durability (ArtifactPublication) and managed PostgreSQL delivery
+	// (SourceFeedback) actions.
+	ActionAcquire                  Action = "Acquire"
+	ActionApplyExternal            Action = "ApplyExternal"
+	ActionFinalizeDelivery         Action = "FinalizeDelivery"
+	ActionUploadArtifact           Action = "UploadArtifact"
+	ActionPublishArtifact          Action = "PublishArtifact"
+	ActionAuthorizeInitialCut      Action = "AuthorizeInitialCut"
+	ActionCompleteArtifactDelivery Action = "CompleteArtifactDelivery"
+	ActionMarkRetainedRoot         Action = "MarkRetainedRoot"
+	ActionCollectOrphan            Action = "CollectOrphan"
+	ActionSweepRetained            Action = "SweepRetained"
+	ActionFinalize                 Action = "Finalize"
+	ActionFlushSource              Action = "FlushSource"
+	ActionRecordFlushReceipt       Action = "RecordFlushReceipt"
+	ActionAdvanceRetentionRoot     Action = "AdvanceRetentionRoot"
+	ActionPruneTerminal            Action = "PruneTerminal"
 )
 
 const (
@@ -99,6 +118,17 @@ const (
 	InvDurableRowsWereScanned        Invariant = "DurableRowsWereScanned"
 	InvTransitionCompleteSnapshot    Invariant = "TransitionRequiresCompleteSnapshot"
 	InvStreamingSnapshotBoundary     Invariant = "StreamingStartsAtSnapshotBoundary"
+	// Managed durability + managed PostgreSQL delivery invariants.
+	InvReceiptCheckpointAckAtomic        Invariant = "ReceiptCheckpointAckAtomic"
+	InvArtifactCheckpointAckAtomic       Invariant = "ArtifactCheckpointAckAtomic"
+	InvAckSafety                         Invariant = "AckSafety"
+	InvActivePublishedArtifactsRemain    Invariant = "ActivePublishedArtifactsRemainPresent"
+	InvRetentionSafety                   Invariant = "RetentionSafety"
+	InvAuthoritativeWritesHaveFence      Invariant = "AuthoritativeWritesHaveFence"
+	InvSourceFlushRequiresAuthorization  Invariant = "SourceFlushRequiresAuthorization"
+	InvFlushReceiptRequiresObservedFlush Invariant = "FlushReceiptRequiresObservedSourceFlush"
+	InvRetryBounded                      Invariant = "RetryBounded"
+	InvRetentionRootProtectsCheckpoint   Invariant = "RetentionRootProtectsCheckpoint"
 )
 
 var DefaultManifestFiles = map[SpecName]string{
@@ -108,6 +138,8 @@ var DefaultManifestFiles = map[SpecName]string{
 	SpecDDLExecution:        "coverage.ddl_execution.json",
 	SpecLifecycleGeneration: "coverage.lifecycle_generation.json",
 	SpecSnapshotTransition:  "coverage.snapshot_transition.json",
+	SpecManagedDurability:   "coverage.managed_durability.json",
+	SpecManagedPostgresDel:  "coverage.managed_postgres_delivery.json",
 }
 
 var CDCFlowActions = []Action{
@@ -296,6 +328,70 @@ var LifecycleGenerationTraceUnreachableInvariants = append([]Invariant(nil), Lif
 var SnapshotTransitionTraceUnreachableActions = append([]Action(nil), SnapshotTransitionActions...)
 var SnapshotTransitionTraceUnreachableInvariants = append([]Invariant(nil), SnapshotTransitionInvariants...)
 
+// ManagedDurabilityActions mirrors the Next-block actions of ManagedDurability.tla
+// (the ArtifactPublication model).
+var ManagedDurabilityActions = []Action{
+	ActionAcquire,
+	ActionPrepare,
+	ActionApplyExternal,
+	ActionFinalizeDelivery,
+	ActionUploadArtifact,
+	ActionPublishArtifact,
+	ActionAuthorizeInitialCut,
+	ActionAckSource,
+	ActionCompleteArtifactDelivery,
+	ActionMarkRetainedRoot,
+	ActionCollectOrphan,
+	ActionSweepRetained,
+}
+
+// ManagedDurabilityInvariants mirrors the INVARIANTS in ManagedDurability.cfg.
+var ManagedDurabilityInvariants = []Invariant{
+	InvTypeInvariant,
+	InvExternalCommitRequiresAttempt,
+	InvReceiptRequiresExternalCommit,
+	InvReceiptCheckpointAckAtomic,
+	InvArtifactCheckpointAckAtomic,
+	InvAckSafety,
+	InvActivePublishedArtifactsRemain,
+	InvRetentionSafety,
+	InvAuthoritativeWritesHaveFence,
+}
+
+// ManagedPostgresDeliveryActions mirrors the Next-block actions of
+// ManagedPostgresDelivery.tla (the SourceFeedback model).
+var ManagedPostgresDeliveryActions = []Action{
+	ActionAcquire,
+	ActionPrepare,
+	ActionApplyExternal,
+	ActionReconcileIndeterminate,
+	ActionFinalize,
+	ActionFlushSource,
+	ActionRecordFlushReceipt,
+	ActionAdvanceRetentionRoot,
+	ActionPruneTerminal,
+}
+
+// ManagedPostgresDeliveryInvariants mirrors ManagedPostgresDelivery.cfg.
+var ManagedPostgresDeliveryInvariants = []Invariant{
+	InvTypeInvariant,
+	InvExternalCommitRequiresAttempt,
+	InvReceiptRequiresExternalCommit,
+	InvReceiptCheckpointAckAtomic,
+	InvSourceFlushRequiresAuthorization,
+	InvFlushReceiptRequiresObservedFlush,
+	InvRetryBounded,
+	InvRetentionRootProtectsCheckpoint,
+}
+
+// The managed models are checked by TLC and mirrored by the deterministic
+// process-failure matrix (internal/failmatrix) and property tests rather than
+// by the CDCFlow trace suite, so every action and invariant is trace-unreachable.
+var ManagedDurabilityTraceUnreachableActions = append([]Action(nil), ManagedDurabilityActions...)
+var ManagedDurabilityTraceUnreachableInvariants = append([]Invariant(nil), ManagedDurabilityInvariants...)
+var ManagedPostgresDeliveryTraceUnreachableActions = append([]Action(nil), ManagedPostgresDeliveryActions...)
+var ManagedPostgresDeliveryTraceUnreachableInvariants = append([]Invariant(nil), ManagedPostgresDeliveryInvariants...)
+
 // Manifest defines the spec coverage contract shared by TLC and Go tests.
 type Manifest struct {
 	Spec                  SpecName          `json:"spec"`
@@ -323,6 +419,8 @@ func AllManifests() []Manifest {
 		SpecDDLExecution,
 		SpecLifecycleGeneration,
 		SpecSnapshotTransition,
+		SpecManagedDurability,
+		SpecManagedPostgresDel,
 	} {
 		manifest, ok := ManifestForSpec(specName)
 		if !ok {
@@ -348,6 +446,10 @@ func ManifestForSpec(spec SpecName) (Manifest, bool) {
 		return newManifest(spec, LifecycleGenerationActions, LifecycleGenerationInvariants, LifecycleGenerationTraceUnreachableActions, LifecycleGenerationTraceUnreachableInvariants), true
 	case SpecSnapshotTransition:
 		return newManifest(spec, SnapshotTransitionActions, SnapshotTransitionInvariants, SnapshotTransitionTraceUnreachableActions, SnapshotTransitionTraceUnreachableInvariants), true
+	case SpecManagedDurability:
+		return newManifest(spec, ManagedDurabilityActions, ManagedDurabilityInvariants, ManagedDurabilityTraceUnreachableActions, ManagedDurabilityTraceUnreachableInvariants), true
+	case SpecManagedPostgresDel:
+		return newManifest(spec, ManagedPostgresDeliveryActions, ManagedPostgresDeliveryInvariants, ManagedPostgresDeliveryTraceUnreachableActions, ManagedPostgresDeliveryTraceUnreachableInvariants), true
 	default:
 		return Manifest{}, false
 	}
@@ -467,6 +569,10 @@ func ParseSpecName(value string) (SpecName, bool) {
 		return SpecLifecycleGeneration, true
 	case "snapshot", "snapshottransition":
 		return SpecSnapshotTransition, true
+	case "manageddurability":
+		return SpecManagedDurability, true
+	case "managedpostgresdelivery", "managedpostgresdel":
+		return SpecManagedPostgresDel, true
 	default:
 		return SpecUnknown, false
 	}

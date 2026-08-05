@@ -1,0 +1,37 @@
+WALlaby deterministic process-failure matrix
+============================================
+started_at         : 2026-07-28T04:27:54Z
+elapsed            : 22ms
+seed               : 20260728
+cycles_per_boundary: 100
+total_cycles       : 6000
+passed             : 6000
+failed             : 0
+fail_closed_cycles : 1000
+coverage_ok        : true
+
+per-boundary cycles:
+  after_side_effect      600
+  artifact_publication   600
+  before_side_effect     600
+  checkpoint             600
+  consumer_receipt       600
+  destination_receipt    600
+  gc                     600
+  postgres_adoption      600
+  retention_release      600
+  source_ack             600
+
+per-profile cycles:
+  clickhouse-append-v1           1000
+  postgres-to-postgres-v1        1000
+  snowflake-sql-v1               1000
+  snowpipe-copy-v1               1000
+  snowpipe-streaming-linked-v1   1000
+  snowpipe-streaming-v1          1000
+
+Note: this is an in-process protocol-fake model. It is an executable
+specification, not a substitute for the real local-service integration
+harnesses that provide promotion evidence for the exact maintained
+profiles. Experimental cells exercise the protocol only; live commercial
+cells remain credential-gated and are excluded from promotion evidence.

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -696,6 +698,270 @@ func TestCanonicalArtifactOrphanMarkSweepCrashRecovery(t *testing.T) {
 				t.Fatalf("republished artifact state/reserved=%s/%d, want rooted/0", state, reserved)
 			}
 		})
+	}
+}
+
+// TestCanonicalArtifactConsumerReceiptBoundaryRecovery injects a crash after the
+// consumer receipt commits and asserts recovery is idempotent: no duplicate
+// delivery receipt or consumer checkpoint is produced.
+func TestCanonicalArtifactConsumerReceiptBoundaryRecovery(t *testing.T) {
+	deps := newArtifactIntegrationDeps(t)
+	fence := deps.newFence(t, "consumer-receipt")
+	config := artifactlog.StreamConfig{
+		HardRetainedBytes: 128 << 20, BacklogCountHigh: 100,
+		BacklogBytesHigh: 128 << 20, BacklogAgeHigh: time.Hour, Consumers: []string{"destination-v1"},
+	}
+	publisher, err := artifactlog.NewPublisher(deps.ctx, deps.pool, deps.objects, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publisher.Publish(deps.ctx, fence, artifactSourceTransaction()); err != nil {
+		t.Fatal(err)
+	}
+
+	var once sync.Once
+	consumer, err := artifactlog.NewConsumer(deps.pool, &recordingAppendCatalog{}, artifactlog.WithConsumerHooks(artifactlog.ConsumerHooks{
+		Reach: func(_ context.Context, boundary string) error {
+			if boundary != "after_consumer_receipt" {
+				return nil
+			}
+			injected := false
+			once.Do(func() { injected = true })
+			if injected {
+				return errors.New("injected process loss after consumer receipt")
+			}
+			return nil
+		},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := consumer.ConsumeNext(deps.ctx, fence, "destination-v1", "public.events"); err == nil {
+		t.Fatal("consumer did not surface the injected loss after receipt")
+	}
+	// The receipt and checkpoint are already durable because finalize committed
+	// before the boundary fired.
+	assertArtifactConsumerReceiptCount(t, deps, fence, "destination-v1", 1)
+
+	recovered, err := artifactlog.NewConsumer(deps.pool, &recordingAppendCatalog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumed, err := recovered.ConsumeNext(deps.ctx, fence, "destination-v1", "public.events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumed {
+		t.Fatal("recovery re-consumed an already delivered publication")
+	}
+	assertArtifactConsumerReceiptCount(t, deps, fence, "destination-v1", 1)
+}
+
+// TestCanonicalArtifactConsumerReconcileBoundaryRecovery injects a crash after
+// the external catalog commit (before finalize), then a second crash after the
+// reconcile disposition is validated, and asserts that recovery finalizes
+// exactly one delivery receipt and consumer checkpoint without duplication.
+func TestCanonicalArtifactConsumerReconcileBoundaryRecovery(t *testing.T) {
+	deps := newArtifactIntegrationDeps(t)
+	fence := deps.newFence(t, "consumer-reconcile")
+	config := artifactlog.StreamConfig{
+		HardRetainedBytes: 128 << 20, BacklogCountHigh: 100,
+		BacklogBytesHigh: 128 << 20, BacklogAgeHigh: time.Hour, Consumers: []string{"destination-v1"},
+	}
+	publisher, err := artifactlog.NewPublisher(deps.ctx, deps.pool, deps.objects, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publisher.Publish(deps.ctx, fence, artifactSourceTransaction()); err != nil {
+		t.Fatal(err)
+	}
+
+	// First attempt commits externally then loses the process before finalize.
+	commitConsumer, err := artifactlog.NewConsumer(deps.pool, &recordingAppendCatalog{}, oneShotConsumerBoundary("after_catalog_commit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := commitConsumer.ConsumeNext(deps.ctx, fence, "destination-v1", "public.events"); err == nil {
+		t.Fatal("consumer did not surface the injected loss after catalog commit")
+	}
+	assertArtifactConsumerReceiptCount(t, deps, fence, "destination-v1", 0)
+
+	// Recovery reconciles the prior attempt but loses the process again right
+	// after the reconcile disposition is validated, before finalize.
+	reconcileConsumer, err := artifactlog.NewConsumer(deps.pool, &recordingAppendCatalog{}, oneShotConsumerBoundary("after_catalog_reconcile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconcileConsumer.ConsumeNext(deps.ctx, fence, "destination-v1", "public.events"); err == nil {
+		t.Fatal("consumer did not surface the injected loss after catalog reconcile")
+	}
+	assertArtifactConsumerReceiptCount(t, deps, fence, "destination-v1", 0)
+
+	// A clean consumer finalizes exactly once via reconciliation.
+	recovered, err := artifactlog.NewConsumer(deps.pool, &recordingAppendCatalog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumed, err := recovered.ConsumeNext(deps.ctx, fence, "destination-v1", "public.events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !consumed {
+		t.Fatal("recovery did not reconcile the ambiguous catalog commit")
+	}
+	assertArtifactConsumerReceiptCount(t, deps, fence, "destination-v1", 1)
+
+	// Idempotent re-run leaves the single receipt intact.
+	if consumedAgain, err := recovered.ConsumeNext(deps.ctx, fence, "destination-v1", "public.events"); err != nil || consumedAgain {
+		t.Fatalf("redundant consume changed state consumed=%t err=%v", consumedAgain, err)
+	}
+	assertArtifactConsumerReceiptCount(t, deps, fence, "destination-v1", 1)
+}
+
+// TestCanonicalArtifactRandomizedCrashCycles is the live mirror of the
+// deterministic in-process failure matrix. It publishes a distinct position per
+// cycle, injects one randomly chosen publisher boundary each cycle against real
+// PostgreSQL + MinIO, recovers, and asserts the standing invariants: exactly one
+// publication per position and a quota account that equals a fresh recompute.
+// The cycle count and seed are overridable so nightly can deepen the sweep.
+func TestCanonicalArtifactRandomizedCrashCycles(t *testing.T) {
+	deps := newArtifactIntegrationDeps(t)
+	cycles := 100
+	if v := os.Getenv("WALLABY_DURABLE_CYCLES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cycles = n
+		}
+	}
+	seed := int64(20260728)
+	if v := os.Getenv("WALLABY_DURABLE_SEED"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			seed = n
+		}
+	}
+	rng := rand.New(rand.NewSource(seed))
+	fence := deps.newFence(t, "randomized-cycles")
+	config := artifactlog.StreamConfig{
+		HardRetainedBytes: 1 << 30, BacklogCountHigh: int64(cycles) + 100,
+		BacklogBytesHigh: 1 << 30, BacklogAgeHigh: 24 * time.Hour, Consumers: []string{"destination-v1"},
+	}
+	boundaries := []string{
+		"after_upload_intent_commit",
+		"after_object_put",
+		"after_upload_evidence",
+		"after_object_verified",
+		"before_publication_transaction",
+		"before_publication_commit",
+		"after_publication_commit",
+	}
+	t.Logf("randomized crash cycles: cycles=%d seed=%d", cycles, seed)
+	for i := 0; i < cycles; i++ {
+		boundary := boundaries[rng.Intn(len(boundaries))]
+		position := 0x1000 + i
+		txn := artifactTransactionAt(uint32(1000+i),
+			fmt.Sprintf("0/%X0", position), fmt.Sprintf("0/%X8", position),
+			fmt.Sprintf("0/%XF", position), fmt.Sprintf("value-%d", i))
+
+		var once sync.Once
+		publisher, err := artifactlog.NewPublisher(deps.ctx, deps.pool, deps.objects, config, artifactlog.WithPublisherHooks(artifactlog.PublisherHooks{
+			Boundary: func(_ context.Context, reached string) error {
+				if reached != boundary {
+					return nil
+				}
+				injected := false
+				once.Do(func() { injected = true })
+				if injected {
+					return errors.New("injected process loss")
+				}
+				return nil
+			},
+		}))
+		if err != nil {
+			t.Fatalf("cycle %d: %v", i, err)
+		}
+		if _, err := publisher.Publish(deps.ctx, fence, txn); err == nil {
+			t.Fatalf("cycle %d boundary %s did not interrupt publication", i, boundary)
+		}
+
+		recovered, err := artifactlog.NewPublisher(deps.ctx, deps.pool, deps.objects, config)
+		if err != nil {
+			t.Fatalf("cycle %d recovery publisher: %v", i, err)
+		}
+		if _, err := recovered.Publish(deps.ctx, fence, txn); err != nil {
+			t.Fatalf("cycle %d recovery publish (boundary %s): %v", i, boundary, err)
+		}
+		// Republishing the identical position must remain idempotent.
+		if _, err := recovered.Publish(deps.ctx, fence, txn); err != nil {
+			t.Fatalf("cycle %d idempotent republish (boundary %s): %v", i, boundary, err)
+		}
+
+		var publications int
+		if err := deps.pool.QueryRow(deps.ctx, `SELECT count(*) FROM artifact_publications WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&publications); err != nil {
+			t.Fatalf("cycle %d count publications: %v", i, err)
+		}
+		if publications != i+1 {
+			t.Fatalf("cycle %d publications=%d, want %d (exactly one publication per position)", i, publications, i+1)
+		}
+
+		// Drain periodically so the consumer/GC boundaries participate too.
+		if i%5 == 4 {
+			if err := consumeArtifactPublication(deps.ctx, deps.pool, fence, "destination-v1"); err != nil {
+				t.Fatalf("cycle %d consume: %v", i, err)
+			}
+		}
+	}
+
+	// The quota account must equal a fresh recompute over the surviving roots.
+	clean, err := artifactlog.NewPublisher(deps.ctx, deps.pool, deps.objects, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rootedBefore int64
+	if err := deps.pool.QueryRow(deps.ctx, `SELECT rooted_bytes FROM artifact_quota_accounts WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&rootedBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := clean.RecomputeQuota(deps.ctx, fence); err != nil {
+		t.Fatal(err)
+	}
+	var rootedAfter int64
+	if err := deps.pool.QueryRow(deps.ctx, `SELECT rooted_bytes FROM artifact_quota_accounts WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&rootedAfter); err != nil {
+		t.Fatal(err)
+	}
+	if rootedAfter != rootedBefore {
+		t.Fatalf("quota drifted from recompute: before=%d after=%d", rootedBefore, rootedAfter)
+	}
+}
+
+func oneShotConsumerBoundary(target string) artifactlog.ConsumerOption {
+	var once sync.Once
+	return artifactlog.WithConsumerHooks(artifactlog.ConsumerHooks{
+		Reach: func(_ context.Context, boundary string) error {
+			if boundary != target {
+				return nil
+			}
+			injected := false
+			once.Do(func() { injected = true })
+			if injected {
+				return fmt.Errorf("injected process loss at %s", target)
+			}
+			return nil
+		},
+	})
+}
+
+func assertArtifactConsumerReceiptCount(t *testing.T, deps *artifactIntegrationDeps, fence authority.RunFence, consumerRevisionID string, want int) {
+	t.Helper()
+	var receipts, checkpoints int
+	if err := deps.pool.QueryRow(deps.ctx, `SELECT count(*) FROM artifact_delivery_receipts WHERE flow_incarnation_id=$1 AND consumer_revision_id=$2`, fence.FlowIncarnationID, consumerRevisionID).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if receipts != want {
+		t.Fatalf("delivery receipts=%d, want %d", receipts, want)
+	}
+	if err := deps.pool.QueryRow(deps.ctx, `SELECT count(*) FROM artifact_consumer_checkpoints WHERE flow_incarnation_id=$1 AND consumer_revision_id=$2`, fence.FlowIncarnationID, consumerRevisionID).Scan(&checkpoints); err != nil {
+		t.Fatal(err)
+	}
+	if checkpoints > 1 {
+		t.Fatalf("consumer checkpoints=%d, want at most 1", checkpoints)
 	}
 }
 

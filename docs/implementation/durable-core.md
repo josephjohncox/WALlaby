@@ -2,9 +2,9 @@
 
 ## Status
 
-This branch implements maintained PostgreSQL and ClickHouse managed profiles, the experimental constrained `postgresql-to-snowflake-sql-v1` profile, generic experimental connectors, and experimental `ack_policy=materialized` artifact publication. Every named profile remains at-least-once and requires `ack_policy=all`; none claims exactly-once delivery.
+This branch implements maintained PostgreSQL and ClickHouse managed profiles; experimental constrained Snowflake SQL (`postgresql-to-snowflake-sql-v1`), staged COPY (`postgresql-to-snowflake-staged-append-v1`), and Snowpipe Streaming REST (`postgresql-to-snowflake-streaming-rest-append-v1`) modeled protocol profiles; generic experimental connectors; and experimental `ack_policy=materialized` artifact publication. Every named profile remains at-least-once and requires `ack_policy=all`; none claims exactly-once delivery.
 
-Maintained profiles fail closed outside their exact admission contracts. The Snowflake SQL profile also fails closed, but it has no reviewed Snowflake service version or deployment cell. Unit tests, PostgreSQL-only runs, mocks, and fakesnow cannot promote it. Generic PostgreSQL, ClickHouse, Snowflake, and Snowpipe modes remain experimental.
+Maintained profiles fail closed outside their exact admission contracts. The Snowflake profiles also fail closed, but they have no reviewed Snowflake service version or deployment cell. The streaming profile is intentionally unavailable without a reviewed high-performance append transport and fails during admission before network side effects. Unit tests, PostgreSQL-only runs, mocks, and fakesnow cannot promote any Snowflake profile. Generic PostgreSQL, ClickHouse, Snowflake, and Snowpipe modes remain experimental.
 
 ## Implemented slices
 
@@ -51,7 +51,7 @@ The production worker and in-process DBOS path now run these primitives for `boo
 
 The experimental `ack_policy=materialized` worker path restores PostgreSQL quota/backlog state before source reads, encodes before destination transforms or retries, records durable upload intents, reconciles conditional S3 PUTs by exact `VersionId`/SHA-256/length/projection, and commits publication roots, quota conversion, checkpoint, and ACK intent in one revalidated generation-fenced transaction. Source feedback occurs only after commit. The production worker registers no catalog consumer and does not create destination delivery rows or open synchronous destination connectors for CDC; the public behavior is canonical publication only.
 
-Epoch-based mark/sweep handles uploaded/verified unpublished orphans and rooted retention. A reserved intent with a prepared PUT but no exact-version evidence remains quota-charged until replay because an old-fence request may still complete after takeover. Rooted objects require an observed source ACK receipt, any explicitly registered package-level deliveries to be complete, elapsed retention, and a newer checkpoint. Publication rechecks GC claims under its final fence. The package still provides only a catalog abstraction, not a production Iceberg REST or S3 Tables client.
+Epoch-based mark/sweep handles uploaded/verified unpublished orphans and rooted retention. A reserved intent with a prepared PUT but no exact-version evidence remains quota-charged until replay because an old-fence request may still complete after takeover. Rooted objects require an observed source ACK receipt, any explicitly registered package-level deliveries to be complete, elapsed retention, and a newer checkpoint. Publication rechecks GC claims under its final fence. The package provides the PostgreSQL-authoritative catalog abstraction used by the append-only Iceberg REST consumer and its experimental S3 Tables REST backend. Their real catalog and object-store behavior remains connector integration evidence rather than a guarantee of the package-local protocol tests.
 
 ## PostgreSQL migrations
 
@@ -100,12 +100,18 @@ The acceptance workflow requires the following gates; a gate is not evidence of 
 - `go test -count=1 ./...`;
 - `just test-rapid` and `just test-durable-race`;
 - `just test-durable-pr`;
-- `just test-durable-integration` — requires every named live PostgreSQL/MinIO worker, bootstrap, and fencing test to run without skips;
+- `just test-durable-seams` — requires the named live PostgreSQL/MinIO delivery recovery, metadata authority, stale fencing, bootstrap resume/abandon/handoff, artifact publication/quota/consumer, and GC tests to run without skips;
+- `just test-durable-integration` — preserves the broader named live PostgreSQL/MinIO worker, bootstrap, connector, and fencing suite without skips;
 - `just test-checkpoint2-postgres-profile` — CI runs the exact managed admission and evidence suite twice against each same-major PostgreSQL 14, 15, 16, and 17 profile;
 - `just test-durable-dbos-integration` — requires the named in-process DBOS bootstrap test to run without a skip;
 - `just check-tla` and `just spec-verify`;
-- `just generate-check`; and
-- `just docs-check`.
+- `just generate-check`;
+- `just docs-check`;
+- `just test-checkpoint5-iceberg-integration` for the live Iceberg REST/MinIO append and schema-evolution cell;
+- `just test-failure-matrix` for credential-free real-child PID kill/restart/overlap evidence over fsync-backed protocol-model state (not destination implementation proof);
+- `just test-failure-matrix-model` for the fast in-process executable model;
+- `just test-failure-matrix-race`; and
+- `just test-soak` for the bounded in-process protocol-model soak.
 
 The process recovery test starts the built worker with `bootstrap=required`, proves an existing source row is atomically published before CDC, sends SIGKILL, expires the abandoned lease, starts a replacement process, reopens the generated logical slot at the authoritative checkpoint, and delivers a subsequent transaction. This test also covers the replay-stable PostgreSQL commit timestamp used by managed records.
 
@@ -115,9 +121,6 @@ The following requested outcomes remain open and are not represented as maintain
 
 - external schema-registry publication intents/receipts beyond the admitted PostgreSQL relation-diff DDL plans;
 - a fenced administrative resource-revision workflow; legacy managed slot/publication mutation RPCs currently fail closed;
-- an Iceberg REST catalog implementation and live catalog recovery tests;
-- the append-only ClickHouse managed changelog connector;
-- a 100-cycle process-kill chaos profile and long-running soak gate; and
-- maintained Snowflake or Snowpipe profiles; `postgresql-to-snowflake-sql-v1` has no reviewed service version or deployment cell and still lacks same-SHA proof for every required network fault, detached transaction takeover, full worker `SIGKILL`, account edition/type, bounded-load, telemetry, redaction, and cleanup gate.
+- maintained Snowflake or Snowpipe profiles; the SQL, staged COPY, and streaming profiles have no reviewed service version or deployment cell and still lack same-SHA proof for every required network fault, detached transaction takeover, full worker `SIGKILL`, account edition/type, bounded-load, telemetry, redaction, and cleanup gate.
 
 Those deferred connectors and modes remain experimental.

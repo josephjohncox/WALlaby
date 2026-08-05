@@ -26,14 +26,16 @@ const (
 )
 
 type deliveryState struct {
-	receipt                bool
-	attemptID              uuid.UUID
-	hasAttempt             bool
-	attemptState           string
-	attemptNumber          int
-	reconciliationAttempts int
-	nextAttemptAt          time.Time
-	externalID             string
+	receipt                   bool
+	authoritativeCheckpoint   connector.Checkpoint
+	authoritativeCheckpointID string
+	attemptID                 uuid.UUID
+	hasAttempt                bool
+	attemptState              string
+	attemptNumber             int
+	reconciliationAttempts    int
+	nextAttemptAt             time.Time
+	externalID                string
 }
 
 // Coordinator implements the durable prepare -> external side effect ->
@@ -153,12 +155,12 @@ func (c *Coordinator) Recover(ctx context.Context, fence authority.RunFence, int
 	if driver == nil {
 		return AckGrant{}, errors.New("managed delivery driver is required")
 	}
-	state, err := c.inspect(ctx, fence, intent, checkpoint)
+	state, err := c.inspect(ctx, fence, intent, checkpoint, manifestLookupOnly)
 	if err != nil {
 		return AckGrant{}, err
 	}
 	if state.receipt {
-		return AckGrant{Checkpoint: checkpoint, PositionID: intent.PositionID}, nil
+		return AckGrant{Checkpoint: state.authoritativeCheckpoint, PositionID: state.authoritativeCheckpointID}, nil
 	}
 	if !state.hasAttempt {
 		return AckGrant{}, errors.New("no unfinished delivery attempt to recover")
@@ -175,7 +177,7 @@ func (c *Coordinator) Recover(ctx context.Context, fence authority.RunFence, int
 		if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "applied", ""); err != nil {
 			return AckGrant{}, recoverablePostCommitError("mark recovered delivery applied", err)
 		}
-		grant, err := c.finalize(ctx, fence, intent, state.attemptID, checkpoint)
+		grant, err := c.finalize(ctx, fence, intent, state.attemptID)
 		return grant, recoverablePostCommitError("finalize recovered delivery", err)
 	case connector.DeliveryNotApplied:
 		return AckGrant{}, nil
@@ -193,13 +195,13 @@ func (c *Coordinator) Deliver(ctx context.Context, fence authority.RunFence, int
 	if err := validateDeliveryInput(fence, intent, batch); err != nil {
 		return AckGrant{}, err
 	}
-	state, err := c.inspect(ctx, fence, intent, batch.Checkpoint)
+	state, err := c.inspect(ctx, fence, intent, batch.Checkpoint, manifestCreateOrValidate)
 	if err != nil {
 		return AckGrant{}, err
 	}
 	if state.receipt {
 		telemetry.RecordDeliveryOutcome(ctx, "receipt_reused")
-		return AckGrant{Checkpoint: batch.Checkpoint, PositionID: intent.PositionID}, nil
+		return AckGrant{Checkpoint: state.authoritativeCheckpoint, PositionID: state.authoritativeCheckpointID}, nil
 	}
 	if state.hasAttempt {
 		disposition, evidence, err := c.reconcileUnfinished(ctx, fence, intent, state, driver)
@@ -214,13 +216,13 @@ func (c *Coordinator) Deliver(ctx context.Context, fence authority.RunFence, int
 			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "applied", ""); err != nil {
 				return AckGrant{}, recoverablePostCommitError("mark reconciled delivery applied", err)
 			}
-			grant, err := c.finalize(ctx, fence, intent, state.attemptID, batch.Checkpoint)
+			grant, err := c.finalize(ctx, fence, intent, state.attemptID)
 			return grant, recoverablePostCommitError("finalize reconciled delivery", err)
 		case connector.DeliveryNotApplied:
 			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "not_applied", "target marker absent"); err != nil {
 				return AckGrant{}, err
 			}
-			retryState, err := c.inspect(ctx, fence, intent, batch.Checkpoint)
+			retryState, err := c.inspect(ctx, fence, intent, batch.Checkpoint, manifestCreateOrValidate)
 			if err != nil {
 				return AckGrant{}, err
 			}
@@ -256,7 +258,7 @@ func (c *Coordinator) Deliver(ctx context.Context, fence authority.RunFence, int
 	if err := c.markAttemptTerminal(ctx, fence, attemptID, "applied", ""); err != nil {
 		return AckGrant{}, recoverablePostCommitError("mark delivery applied", err)
 	}
-	grant, err := c.finalize(ctx, fence, intent, attemptID, batch.Checkpoint)
+	grant, err := c.finalize(ctx, fence, intent, attemptID)
 	return grant, recoverablePostCommitError("finalize delivery", err)
 }
 
@@ -277,13 +279,13 @@ func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.Ru
 	if err := validateTransactionDeliveryInput(fence, intent, transaction); err != nil {
 		return AckGrant{}, err
 	}
-	state, err := c.inspect(ctx, fence, intent, transaction.Checkpoint)
+	state, err := c.inspect(ctx, fence, intent, transaction.Checkpoint, manifestCreateOrValidate)
 	if err != nil {
 		return AckGrant{}, err
 	}
 	if state.receipt {
 		telemetry.RecordDeliveryOutcome(ctx, "receipt_reused")
-		return AckGrant{Checkpoint: transaction.Checkpoint, PositionID: intent.PositionID}, nil
+		return AckGrant{Checkpoint: state.authoritativeCheckpoint, PositionID: state.authoritativeCheckpointID}, nil
 	}
 	if state.hasAttempt {
 		disposition, evidence, err := c.reconcileUnfinished(ctx, fence, intent, state, driver)
@@ -298,13 +300,13 @@ func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.Ru
 			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "applied", ""); err != nil {
 				return AckGrant{}, recoverablePostCommitError("mark reconciled transaction applied", err)
 			}
-			grant, err := c.finalize(ctx, fence, intent, state.attemptID, transaction.Checkpoint)
+			grant, err := c.finalize(ctx, fence, intent, state.attemptID)
 			return grant, recoverablePostCommitError("finalize reconciled transaction", err)
 		case connector.DeliveryNotApplied:
 			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "not_applied", "target marker absent"); err != nil {
 				return AckGrant{}, err
 			}
-			retryState, err := c.inspect(ctx, fence, intent, transaction.Checkpoint)
+			retryState, err := c.inspect(ctx, fence, intent, transaction.Checkpoint, manifestCreateOrValidate)
 			if err != nil {
 				return AckGrant{}, err
 			}
@@ -354,7 +356,7 @@ func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.Ru
 	if err := c.markAttemptTerminal(ctx, fence, attemptID, "applied", ""); err != nil {
 		return AckGrant{}, recoverablePostCommitError("mark transaction applied", err)
 	}
-	grant, err := c.finalize(ctx, fence, intent, attemptID, transaction.Checkpoint)
+	grant, err := c.finalize(ctx, fence, intent, attemptID)
 	return grant, recoverablePostCommitError("finalize transaction", err)
 }
 
@@ -620,7 +622,14 @@ func validateDeliveryInput(fence authority.RunFence, intent connector.DeliveryIn
 	return nil
 }
 
-func (c *Coordinator) inspect(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint) (deliveryState, error) {
+type manifestInspectionMode uint8
+
+const (
+	manifestCreateOrValidate manifestInspectionMode = iota
+	manifestLookupOnly
+)
+
+func (c *Coordinator) inspect(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint, manifestMode manifestInspectionMode) (deliveryState, error) {
 	if err := intent.Validate(); err != nil {
 		return deliveryState{}, err
 	}
@@ -635,7 +644,15 @@ func (c *Coordinator) inspect(ctx context.Context, fence authority.RunFence, int
 	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
 		return deliveryState{}, err
 	}
-	if err := ensureManifest(ctx, tx, fence, intent, checkpoint); err != nil {
+	switch manifestMode {
+	case manifestCreateOrValidate:
+		err = ensureManifest(ctx, tx, fence, intent, checkpoint)
+	case manifestLookupOnly:
+		_, err = loadManifestCheckpoint(ctx, tx, fence, intent, "")
+	default:
+		err = fmt.Errorf("unknown manifest inspection mode %d", manifestMode)
+	}
+	if err != nil {
 		return deliveryState{}, err
 	}
 	state := deliveryState{}
@@ -662,6 +679,10 @@ UPDATE delivery_attempts SET logical_batch_id=$2
 WHERE attempt_id IN (SELECT attempt_id FROM adopted)`, state.attemptID, expectedLogicalBatchID); err != nil {
 				return deliveryState{}, fmt.Errorf("upgrade legacy delivery receipt identity: %w", err)
 			}
+		}
+		state.authoritativeCheckpoint, state.authoritativeCheckpointID, err = loadAuthoritativeReceiptCheckpoint(ctx, tx, fence)
+		if err != nil {
+			return deliveryState{}, err
 		}
 		state.receipt = true
 	case errors.Is(err, pgx.ErrNoRows):
@@ -697,6 +718,58 @@ LIMIT 1`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLi
 	return state, nil
 }
 
+// loadAuthoritativeReceiptCheckpoint implements monotonic receipt replay: once
+// inspect has proved the requested historical receipt exists and matches its
+// immutable identity, PostgreSQL's current checkpoint remains authoritative.
+// A retry of receipt A after authority advanced to B therefore returns grant B,
+// including B's actual position ID, stored metadata, and stored timestamp.
+func loadAuthoritativeReceiptCheckpoint(ctx context.Context, tx pgx.Tx, fence authority.RunFence) (connector.Checkpoint, string, error) {
+	var stored connector.Checkpoint
+	var metadataJSON []byte
+	var positionID string
+	if err := tx.QueryRow(ctx, `
+SELECT checkpoint.lsn,checkpoint.metadata,checkpoint.updated_at,intent.position_id
+FROM authoritative_checkpoints AS checkpoint
+JOIN source_ack_intents AS intent
+  ON intent.flow_incarnation_id=checkpoint.flow_incarnation_id
+ AND intent.checkpoint_lsn=checkpoint.lsn
+WHERE checkpoint.flow_incarnation_id=$1
+ORDER BY intent.authorized_at DESC,intent.position_id DESC
+LIMIT 1
+FOR UPDATE OF checkpoint,intent`, fence.FlowIncarnationID).Scan(&stored.LSN, &metadataJSON, &stored.Timestamp, &positionID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return connector.Checkpoint{}, "", fmt.Errorf("%w: current authoritative checkpoint has no matching source ACK intent", connector.ErrDeliveryConflict)
+		}
+		return connector.Checkpoint{}, "", fmt.Errorf("load authoritative checkpoint for delivery receipt: %w", err)
+	}
+	canonicalLSN, err := connector.CanonicalizeCheckpointPosition(stored.LSN)
+	if err != nil {
+		return connector.Checkpoint{}, "", fmt.Errorf("canonicalize authoritative receipt checkpoint: %w", err)
+	}
+	stored.LSN = canonicalLSN
+	if len(metadataJSON) > 0 {
+		if err := json.Unmarshal(metadataJSON, &stored.Metadata); err != nil {
+			return connector.Checkpoint{}, "", fmt.Errorf("decode authoritative receipt checkpoint metadata: %w", err)
+		}
+	}
+	if stored.Metadata == nil {
+		stored.Metadata = map[string]string{}
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE authoritative_checkpoints
+SET generation=$2,acquisition_id=$3,lease_epoch=$4
+WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch); err != nil {
+		return connector.Checkpoint{}, "", fmt.Errorf("rebind authoritative receipt checkpoint ownership: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE source_ack_intents
+SET generation=$3,acquisition_id=$4,lease_epoch=$5,authorized_at=clock_timestamp()
+WHERE flow_incarnation_id=$1 AND position_id=$2 AND checkpoint_lsn=$6`, fence.FlowIncarnationID, positionID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, stored.LSN); err != nil {
+		return connector.Checkpoint{}, "", fmt.Errorf("rebind authoritative receipt ACK ownership: %w", err)
+	}
+	return stored, positionID, nil
+}
+
 func ensureManifest(ctx context.Context, tx pgx.Tx, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint) error {
 	var registered int
 	if err := tx.QueryRow(ctx, `
@@ -710,42 +783,99 @@ SELECT 1 FROM destination_revisions WHERE destination_revision_id=$1`, intent.De
 	if err != nil {
 		return err
 	}
+	checkpoint.LSN = position
+	if checkpoint.Metadata == nil {
+		checkpoint.Metadata = map[string]string{}
+	}
+	if checkpoint.Timestamp.IsZero() {
+		checkpoint.Timestamp = time.Now().UTC()
+	}
+	metadataJSON, err := json.Marshal(checkpoint.Metadata)
+	if err != nil {
+		return fmt.Errorf("encode delivery manifest checkpoint metadata: %w", err)
+	}
 	sourceTransactionID := intent.SourceLineageID + ":" + position
 	tag, err := tx.Exec(ctx, `
 INSERT INTO delivery_manifests (
-  flow_incarnation_id,destination_revision_id,source_lineage_id,logical_batch_id,position_id,source_transaction_id,content_hash,checkpoint_lsn
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-ON CONFLICT (flow_incarnation_id,destination_revision_id,position_id) DO NOTHING`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, deliveryLogicalBatchID(intent), intent.PositionID, sourceTransactionID, intent.ContentHash, position)
+  flow_incarnation_id,destination_revision_id,source_lineage_id,logical_batch_id,position_id,
+  source_transaction_id,content_hash,checkpoint_lsn,checkpoint_metadata,checkpoint_timestamp
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+ON CONFLICT (flow_incarnation_id,destination_revision_id,position_id) DO NOTHING`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, deliveryLogicalBatchID(intent), intent.PositionID, sourceTransactionID, intent.ContentHash, position, metadataJSON, checkpoint.Timestamp)
 	if err != nil {
 		return fmt.Errorf("insert delivery manifest: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		var existingHash, existingLSN, existingLineage string
-		var existingLogicalBatchID pgtype.Text
-		if err := tx.QueryRow(ctx, `
-SELECT content_hash,checkpoint_lsn,source_lineage_id,logical_batch_id FROM delivery_manifests
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	_, err = loadManifestCheckpoint(ctx, tx, fence, intent, position)
+	return err
+}
+
+// loadManifestCheckpoint is lookup-only: it validates and returns an existing
+// immutable manifest, but never creates one from replay caller data. expectedLSN
+// is populated by Deliver/DeliverTransaction and empty for Recover/finalization.
+func loadManifestCheckpoint(ctx context.Context, tx pgx.Tx, fence authority.RunFence, intent connector.DeliveryIntent, expectedLSN string) (connector.Checkpoint, error) {
+	var existingHash, existingLSN, existingLineage string
+	var existingLogicalBatchID pgtype.Text
+	var existingMetadata []byte
+	var existingTimestamp pgtype.Timestamptz
+	if err := tx.QueryRow(ctx, `
+SELECT content_hash,checkpoint_lsn,source_lineage_id,logical_batch_id,
+       checkpoint_metadata,checkpoint_timestamp
+FROM delivery_manifests
 WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3
-FOR UPDATE`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.PositionID).Scan(&existingHash, &existingLSN, &existingLineage, &existingLogicalBatchID); err != nil {
-			return fmt.Errorf("load delivery manifest: %w", err)
+FOR UPDATE`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.PositionID).Scan(&existingHash, &existingLSN, &existingLineage, &existingLogicalBatchID, &existingMetadata, &existingTimestamp); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return connector.Checkpoint{}, fmt.Errorf("%w: immutable delivery manifest does not exist", connector.ErrDeliveryConflict)
 		}
-		expectedLogicalBatchID := deliveryLogicalBatchID(intent)
-		legacyLogicalBatch := !existingLogicalBatchID.Valid || existingLogicalBatchID.String == "legacy:"+intent.PositionID
-		hashDiffers := existingHash != intent.ContentHash
-		checkpointDiffers := existingLSN != position
-		lineageDiffers := existingLineage != intent.SourceLineageID
-		logicalBatchDiffers := !legacyLogicalBatch && existingLogicalBatchID.String != expectedLogicalBatchID
-		if hashDiffers || checkpointDiffers || lineageDiffers || logicalBatchDiffers {
-			return fmt.Errorf("%w: immutable delivery manifest differs (content_hash=%t checkpoint=%t lineage=%t logical_batch=%t)", connector.ErrDeliveryConflict, hashDiffers, checkpointDiffers, lineageDiffers, logicalBatchDiffers)
-		}
-		if legacyLogicalBatch {
-			if _, err := tx.Exec(ctx, `
+		return connector.Checkpoint{}, fmt.Errorf("load immutable delivery manifest: %w", err)
+	}
+	expectedLogicalBatchID := deliveryLogicalBatchID(intent)
+	legacyLogicalBatch := !existingLogicalBatchID.Valid || existingLogicalBatchID.String == "legacy:"+intent.PositionID
+	hashDiffers := existingHash != intent.ContentHash
+	checkpointDiffers := expectedLSN != "" && existingLSN != expectedLSN
+	lineageDiffers := existingLineage != intent.SourceLineageID
+	logicalBatchDiffers := !legacyLogicalBatch && existingLogicalBatchID.String != expectedLogicalBatchID
+	if hashDiffers || checkpointDiffers || lineageDiffers || logicalBatchDiffers {
+		return connector.Checkpoint{}, fmt.Errorf("%w: immutable delivery manifest differs (content_hash=%t checkpoint=%t lineage=%t logical_batch=%t)", connector.ErrDeliveryConflict, hashDiffers, checkpointDiffers, lineageDiffers, logicalBatchDiffers)
+	}
+	if legacyLogicalBatch {
+		if _, err := tx.Exec(ctx, `
 UPDATE delivery_manifests SET logical_batch_id=$4
 WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.PositionID, expectedLogicalBatchID); err != nil {
-				return fmt.Errorf("upgrade legacy delivery manifest identity: %w", err)
-			}
+			return connector.Checkpoint{}, fmt.Errorf("upgrade legacy delivery manifest identity: %w", err)
 		}
 	}
-	return nil
+	if len(existingMetadata) == 0 || !existingTimestamp.Valid {
+		// Legacy manifests did not retain the immutable metadata/timestamp. Only
+		// the exact current PostgreSQL authority row can safely prove that payload;
+		// replay caller fields are never used for historical reconstruction.
+		if err := tx.QueryRow(ctx, `
+SELECT metadata,updated_at FROM authoritative_checkpoints
+WHERE flow_incarnation_id=$1 AND lsn=$2
+FOR UPDATE`, fence.FlowIncarnationID, existingLSN).Scan(&existingMetadata, &existingTimestamp); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return connector.Checkpoint{}, fmt.Errorf("%w: legacy delivery manifest lacks an authoritative historical checkpoint payload", connector.ErrDeliveryConflict)
+			}
+			return connector.Checkpoint{}, fmt.Errorf("prove legacy delivery manifest checkpoint payload: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+UPDATE delivery_manifests
+SET checkpoint_metadata=$4,checkpoint_timestamp=$5
+WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.PositionID, existingMetadata, existingTimestamp.Time); err != nil {
+			return connector.Checkpoint{}, fmt.Errorf("backfill proven legacy delivery manifest checkpoint payload: %w", err)
+		}
+	}
+	stored := connector.Checkpoint{LSN: existingLSN, Timestamp: existingTimestamp.Time}
+	if len(existingMetadata) > 0 {
+		if err := json.Unmarshal(existingMetadata, &stored.Metadata); err != nil {
+			return connector.Checkpoint{}, fmt.Errorf("decode immutable delivery manifest checkpoint metadata: %w", err)
+		}
+	}
+	if stored.Metadata == nil {
+		stored.Metadata = map[string]string{}
+	}
+	return stored, nil
 }
 
 func (c *Coordinator) prepareAttempt(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint) (uuid.UUID, error) {
@@ -871,7 +1001,7 @@ ON CONFLICT (attempt_id) DO NOTHING`, attemptID, evidence.ExternalID, evidence.C
 	return nil
 }
 
-func (c *Coordinator) finalize(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, attemptID uuid.UUID, checkpoint connector.Checkpoint) (AckGrant, error) {
+func (c *Coordinator) finalize(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, attemptID uuid.UUID) (AckGrant, error) {
 	tx, err := c.pool.Begin(ctx)
 	if err != nil {
 		return AckGrant{}, fmt.Errorf("begin delivery finalization: %w", err)
@@ -913,6 +1043,10 @@ WHERE delivery_receipts.source_lineage_id=EXCLUDED.source_lineage_id
 		return AckGrant{}, fmt.Errorf("%w: immutable delivery receipt differs", connector.ErrDeliveryConflict)
 	}
 
+	checkpoint, err := loadManifestCheckpoint(ctx, tx, fence, intent, "")
+	if err != nil {
+		return AckGrant{}, err
+	}
 	checkpoint, err = finalizeCheckpointAndAck(ctx, tx, fence, intent.PositionID, checkpoint)
 	if err != nil {
 		return AckGrant{}, err
@@ -1018,8 +1152,9 @@ WITH candidates AS MATERIALIZED (
 SELECT count(*) FROM deleted_manifests`, fence.FlowIncarnationID, positionID, cutoff, limit).Scan(&deleted); err != nil {
 		return 0, fmt.Errorf("prune terminal delivery state: %w", err)
 	}
-	intentTag, err := tx.Exec(ctx, `
-WITH candidates AS (
+	var feedbackDeleted int64
+	if err := tx.QueryRow(ctx, `
+WITH candidates AS MATERIALIZED (
   SELECT intent.position_id
   FROM source_ack_intents AS intent
   JOIN source_ack_receipts AS receipt
@@ -1028,6 +1163,7 @@ WITH candidates AS (
   WHERE intent.flow_incarnation_id=$1
     AND intent.position_id<>$2
     AND intent.authorized_at<$3
+    AND receipt.recorded_at<$3
     AND receipt.observed_flush_lsn IS NOT NULL
     AND NOT EXISTS (
       SELECT 1 FROM delivery_manifests AS manifest
@@ -1042,43 +1178,24 @@ WITH candidates AS (
     )
   ORDER BY intent.authorized_at,intent.position_id
   LIMIT $4
+  FOR UPDATE OF intent,receipt
+), deleted_receipts AS (
+  DELETE FROM source_ack_receipts AS receipt USING candidates
+  WHERE receipt.flow_incarnation_id=$1
+    AND receipt.position_id=candidates.position_id
+  RETURNING 1
+), deleted_intents AS (
+  DELETE FROM source_ack_intents AS intent USING candidates
+  WHERE intent.flow_incarnation_id=$1
+    AND intent.position_id=candidates.position_id
+  RETURNING 1
 )
-DELETE FROM source_ack_intents AS intent USING candidates
-WHERE intent.flow_incarnation_id=$1
-  AND intent.position_id=candidates.position_id`, fence.FlowIncarnationID, positionID, cutoff, limit)
-	if err != nil {
-		return 0, fmt.Errorf("prune source feedback intents: %w", err)
+SELECT
+  (SELECT count(*) FROM deleted_receipts) +
+  (SELECT count(*) FROM deleted_intents)`, fence.FlowIncarnationID, positionID, cutoff, limit).Scan(&feedbackDeleted); err != nil {
+		return 0, fmt.Errorf("prune source feedback pairs: %w", err)
 	}
-	deleted += intentTag.RowsAffected()
-	receiptTag, err := tx.Exec(ctx, `
-WITH candidates AS (
-  SELECT ack.position_id
-  FROM source_ack_receipts AS ack
-  WHERE ack.flow_incarnation_id=$1
-    AND ack.position_id<>$2
-    AND ack.recorded_at<$3
-    AND ack.observed_flush_lsn IS NOT NULL
-    AND NOT EXISTS (
-      SELECT 1 FROM delivery_manifests AS manifest
-      WHERE manifest.flow_incarnation_id=ack.flow_incarnation_id
-        AND manifest.position_id=ack.position_id
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM source_ack_retention_roots AS retention_root
-      WHERE retention_root.flow_incarnation_id=ack.flow_incarnation_id
-        AND retention_root.position_id=ack.position_id
-        AND retention_root.released_at IS NULL
-    )
-  ORDER BY ack.recorded_at,ack.position_id
-  LIMIT $4
-)
-DELETE FROM source_ack_receipts AS ack USING candidates
-WHERE ack.flow_incarnation_id=$1
-  AND ack.position_id=candidates.position_id`, fence.FlowIncarnationID, positionID, cutoff, limit)
-	if err != nil {
-		return 0, fmt.Errorf("prune source feedback receipts: %w", err)
-	}
-	deleted += receiptTag.RowsAffected()
+	deleted += feedbackDeleted
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit delivery retention: %w", err)
 	}
@@ -1097,30 +1214,47 @@ func finalizeCheckpointAndAck(ctx context.Context, tx pgx.Tx, fence authority.Ru
 	if err != nil {
 		return connector.Checkpoint{}, err
 	}
-	metadata := checkpoint.Metadata
-	if metadata == nil {
-		metadata = map[string]string{}
+	if checkpoint.Metadata == nil {
+		checkpoint.Metadata = map[string]string{}
 	}
-	metadataJSON, err := json.Marshal(metadata)
-	if err != nil {
-		return connector.Checkpoint{}, err
+	checkpoint.LSN = canonicalLSN
+	if checkpoint.Timestamp.IsZero() {
+		checkpoint.Timestamp = time.Now().UTC()
 	}
-	var currentLSN string
-	err = tx.QueryRow(ctx, `SELECT lsn FROM authoritative_checkpoints WHERE flow_incarnation_id=$1 FOR UPDATE`, fence.FlowIncarnationID).Scan(&currentLSN)
+
+	var current connector.Checkpoint
+	var currentMetadata []byte
+	err = tx.QueryRow(ctx, `
+SELECT lsn,metadata,updated_at
+FROM authoritative_checkpoints
+WHERE flow_incarnation_id=$1
+FOR UPDATE`, fence.FlowIncarnationID).Scan(&current.LSN, &currentMetadata, &current.Timestamp)
 	if err == nil {
-		comparison, compareErr := connector.CompareCheckpointLSN(currentLSN, canonicalLSN)
+		comparison, compareErr := connector.CompareCheckpointLSN(current.LSN, canonicalLSN)
 		if compareErr != nil {
 			return connector.Checkpoint{}, compareErr
 		}
 		if comparison > 0 {
-			return connector.Checkpoint{}, fmt.Errorf("checkpoint regression from %s to %s", currentLSN, canonicalLSN)
+			return connector.Checkpoint{}, fmt.Errorf("checkpoint regression from %s to %s", current.LSN, canonicalLSN)
+		}
+		if comparison == 0 {
+			if len(currentMetadata) > 0 {
+				if err := json.Unmarshal(currentMetadata, &current.Metadata); err != nil {
+					return connector.Checkpoint{}, fmt.Errorf("decode authoritative checkpoint metadata: %w", err)
+				}
+			}
+			if current.Metadata == nil {
+				current.Metadata = map[string]string{}
+			}
+			current.LSN = canonicalLSN
+			checkpoint = current
 		}
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return connector.Checkpoint{}, fmt.Errorf("load authoritative checkpoint: %w", err)
 	}
-	updatedAt := checkpoint.Timestamp
-	if updatedAt.IsZero() {
-		updatedAt = time.Now().UTC()
+	metadataJSON, err := json.Marshal(checkpoint.Metadata)
+	if err != nil {
+		return connector.Checkpoint{}, err
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO authoritative_checkpoints (
@@ -1132,17 +1266,21 @@ ON CONFLICT (flow_incarnation_id) DO UPDATE SET
   lease_epoch=EXCLUDED.lease_epoch,
   lsn=EXCLUDED.lsn,
   metadata=EXCLUDED.metadata,
-  updated_at=EXCLUDED.updated_at`, fence.FlowIncarnationID, fence.FlowID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, canonicalLSN, metadataJSON, updatedAt); err != nil {
+  updated_at=EXCLUDED.updated_at`, fence.FlowIncarnationID, fence.FlowID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, checkpoint.LSN, metadataJSON, checkpoint.Timestamp); err != nil {
 		return connector.Checkpoint{}, fmt.Errorf("finalize authoritative checkpoint: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO source_ack_intents (
   flow_incarnation_id,position_id,checkpoint_lsn,generation,acquisition_id,lease_epoch
 ) VALUES ($1,$2,$3,$4,$5,$6)
-ON CONFLICT (flow_incarnation_id,position_id) DO NOTHING`, fence.FlowIncarnationID, positionID, canonicalLSN, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch); err != nil {
+ON CONFLICT (flow_incarnation_id,position_id) DO UPDATE SET
+  checkpoint_lsn=EXCLUDED.checkpoint_lsn,
+  generation=EXCLUDED.generation,
+  acquisition_id=EXCLUDED.acquisition_id,
+  lease_epoch=EXCLUDED.lease_epoch,
+  authorized_at=clock_timestamp()
+WHERE source_ack_intents.checkpoint_lsn=EXCLUDED.checkpoint_lsn`, fence.FlowIncarnationID, positionID, checkpoint.LSN, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch); err != nil {
 		return connector.Checkpoint{}, fmt.Errorf("authorize source ack intent: %w", err)
 	}
-	checkpoint.LSN = canonicalLSN
-	checkpoint.Timestamp = updatedAt
 	return checkpoint, nil
 }

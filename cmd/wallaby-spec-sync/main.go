@@ -66,6 +66,12 @@ func runWallabySpecSync(cmd *cobra.Command) error {
 		{Name: spec.SpecCDCFlow, TLA: filepath.Join(opts.specDir, "CDCFlow.tla"), CFG: filepath.Join(opts.specDir, "CDCFlow.cfg")},
 		{Name: spec.SpecFlowState, TLA: filepath.Join(opts.specDir, "FlowStateMachine.tla"), CFG: filepath.Join(opts.specDir, "FlowStateMachine.cfg")},
 		{Name: spec.SpecCDCFlowFanout, TLA: filepath.Join(opts.specDir, "CDCFlowFanout.tla"), CFG: filepath.Join(opts.specDir, "CDCFlowFanout.cfg")},
+		{Name: spec.SpecDDLExecution, TLA: filepath.Join(opts.specDir, "DDLExecution.tla"), CFG: filepath.Join(opts.specDir, "DDLExecution.cfg")},
+		// LifecycleGeneration and SnapshotTransition intentionally use a distinct
+		// action-naming layer (aliased in the manifest) and are reconciled
+		// separately; they are not synced here yet.
+		{Name: spec.SpecManagedDurability, TLA: filepath.Join(opts.specDir, "ManagedDurability.tla"), CFG: filepath.Join(opts.specDir, "ManagedDurability.cfg")},
+		{Name: spec.SpecManagedPostgresDel, TLA: filepath.Join(opts.specDir, "ManagedPostgresDelivery.tla"), CFG: filepath.Join(opts.specDir, "ManagedPostgresDelivery.cfg")},
 	}
 
 	var failures []string
@@ -154,9 +160,8 @@ func parseNextActions(path string) (map[string]struct{}, error) {
 		}
 		if strings.HasPrefix(trimmed, "\\/") {
 			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "\\/"))
-			fields := strings.Fields(rest)
-			if len(fields) > 0 {
-				actions[fields[0]] = struct{}{}
+			if action := extractActionName(rest); action != "" {
+				actions[action] = struct{}{}
 			}
 		}
 	}
@@ -167,6 +172,27 @@ func parseNextActions(path string) (map[string]struct{}, error) {
 		return nil, fmt.Errorf("no actions found in Next == block")
 	}
 	return actions, nil
+}
+
+// extractActionName returns the operator name of a Next-block disjunct. It
+// handles bare disjuncts ("\/ Start"), quantified disjuncts
+// ("\/ \E w \in Workers: Acquire(w)"), and multi-quantifier disjuncts
+// ("\/ \E w \in Workers, p \in Positions: Prepare(w, p)").
+func extractActionName(expr string) string {
+	expr = strings.TrimSpace(expr)
+	if strings.HasPrefix(expr, "\\E") || strings.HasPrefix(expr, "\\A") {
+		idx := strings.Index(expr, ":")
+		if idx < 0 {
+			return ""
+		}
+		expr = strings.TrimSpace(expr[idx+1:])
+	}
+	for i, r := range expr {
+		if r == '(' || r == ' ' || r == '\t' {
+			return expr[:i]
+		}
+	}
+	return expr
 }
 
 func parseCfgInvariants(path string) (map[string]struct{}, error) {

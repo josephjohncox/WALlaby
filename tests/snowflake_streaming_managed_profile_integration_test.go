@@ -18,9 +18,9 @@ import (
 
 // These functions are the same-SHA live-service gates named by the constrained
 // Snowpipe Streaming REST append profile contract. Deterministic channel /
-// append / SQL-observed-completeness / receipt recovery is proven separately
+// append / SQL-observed-completeness / receipt recovery is exercised separately
 // against the in-memory protocol fake in the snowflake connector package; the
-// fake proves logic only and never promotes.
+// fake exercises logic only and never promotes.
 //
 // Because no reviewed high-performance Snowpipe Streaming append transport is
 // linked into this build, the profile fails closed at admission. Each live gate
@@ -151,7 +151,7 @@ func TestSnowflakeStreamingManagedProfileTelemetry(t *testing.T) {
 	profile := connector.PostgresToSnowflakeStreamingRestAppendV1Profile()
 	for _, gate := range profile.Gates {
 		if gate.Capability == "telemetry" && gate.Live {
-			t.Fatal("telemetry is proven with the in-memory fake and must not be a live-only gate")
+			t.Fatal("telemetry is exercised with the in-memory fake and must not be a live-only gate")
 		}
 	}
 }

@@ -59,7 +59,9 @@ nav:
       - Choose a runtime: deployment/index.md
   - Operations:
       - Configuration: operations/configuration.md
+      - Upgrading: operations/upgrading.md
       - Recovery: operations/recovery.md
+      - Durable recovery runbooks: operations/durable-recovery-runbooks.md
       - S3 retention and object lock: operations/s3-retention-and-object-lock.md
       - Observability: observability.md
       - Runbooks: runbooks.md
@@ -87,5 +89,6 @@ nav:
   - Development:
       - Contributor guide: development/index.md
       - Durable core implementation report: implementation/durable-core.md
+      - Process-failure matrix and soak: development/failure-matrix.md
       - Formal verification: specs.md
       - Benchmarks: benchmarks.md
