@@ -184,6 +184,44 @@ func TestTableMappingsModelProtoStateRoundTripPreservesEveryFieldAndOrder(t *tes
 	}
 }
 
+func TestTerraformMappingStatePreservesQuotedWhitespacePostgresIdentifiers(t *testing.T) {
+	t.Parallel()
+	mapping := completeMappingProto()
+	table := mapping.Destinations[0].Tables[0]
+	table.SourceSchema = " "
+	table.SourceTable = " "
+	table.TargetSchema = " "
+	table.TargetTable = " "
+	table.Columns[0].SourceColumn = " ID "
+	table.Columns[0].TargetColumn = " id "
+	table.Write.KeyColumns = []string{" ID ", "id"}
+	table.Write.WatermarkColumn = " "
+	object := mappingObject(t, mapping)
+	internal, deferred, diagnostics := tableMappingsModelToInternal(context.Background(), object, false)
+	if diagnostics.HasError() || deferred {
+		t.Fatalf("exact identifier model diagnostics=%v deferred=%t", diagnostics, deferred)
+	}
+	roundTrip := tableMappingsInternalToProto(internal)
+	got := roundTrip.Destinations[0].Tables[0]
+	if got.SourceSchema != " " || got.SourceTable != " " || got.TargetSchema != " " || got.TargetTable != " " || got.Columns[0].SourceColumn != " ID " || got.Columns[0].TargetColumn != " id " || !reflect.DeepEqual(got.Write.KeyColumns, []string{" ID ", "id"}) || got.Write.WatermarkColumn != " " {
+		t.Fatalf("Terraform state changed exact PostgreSQL identifiers: %+v", got)
+	}
+	validationMapping := appendMappingProto("target")
+	validationMapping.Destinations[0].Tables = []*wallabypb.TableMapping{{
+		SourceSchema: " ", SourceTable: " ", Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE,
+		TargetSchema: " ", TargetTable: " ",
+		FutureColumns: &wallabypb.FutureColumnMapping{Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetColumn: "{column}"},
+		Columns:       []*wallabypb.ColumnMapping{{SourceColumn: " ", Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetColumn: " "}},
+		Write:         &wallabypb.TableWritePolicy{Mode: wallabypb.TableWriteMode_TABLE_WRITE_MODE_APPEND},
+	}}
+	validationMapping.Destinations = append(validationMapping.Destinations, appendMappingProto("archive").Destinations[0])
+	model := testCompleteMappingModel()
+	model.Config.TableMappings = mappingObject(t, validationMapping)
+	if diagnostics := validateTerraformTableMappings(context.Background(), model); diagnostics.HasError() {
+		t.Fatalf("Terraform validation rejected quoted whitespace PostgreSQL identifiers: %v", diagnostics)
+	}
+}
+
 func TestCanonicalMappingStateUsesKnownEmptyCollectionsAfterWireRoundTrip(t *testing.T) {
 	emptyRoot := mappingObject(t, &wallabypb.TableMappings{Version: 1})
 	emptyDestinations := objectField(t, emptyRoot, "destinations").(types.List)

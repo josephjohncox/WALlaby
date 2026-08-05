@@ -525,10 +525,14 @@ func runManagedAdmissionFlow(ctx context.Context, dsn string, engine *workflow.P
 	if err != nil {
 		return err
 	}
+	schemaBaselines, err := newManagedSchemaBaselines(pool)
+	if err != nil {
+		return err
+	}
 	return (&runner.FlowRunner{
-		Engine: engine, Checkpoints: checkpoints, ExpectedGeneration: control.Generation,
+		Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), ExpectedGeneration: control.Generation,
 		ExecutionBackend: "integration", ExecutionID: "admission-" + flowID,
-		Authority: authorityStore, Deliveries: coordinator,
+		Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: schemaBaselines,
 	}).Run(ctx, definition, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: definition.Destinations[0], Dest: &pgdest.Destination{}}})
 }
 

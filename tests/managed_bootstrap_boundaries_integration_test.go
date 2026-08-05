@@ -118,9 +118,9 @@ func runManagedBootstrapBoundaryRecovery(t *testing.T, boundary string) {
 	firstErr := make(chan error, 1)
 	go func() {
 		firstErr <- (&runner.FlowRunner{
-			Engine: engine, Checkpoints: checkpoints, ExpectedGeneration: control.Generation,
+			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), ExpectedGeneration: control.Generation,
 			ExecutionBackend: "integration", ExecutionID: "boundary-first-" + boundary,
-			Authority: authorityStore, Deliveries: coordinator,
+			Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
 		}).Run(ctx, flowDef, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore, BootstrapHooks: hooks}, []stream.DestinationConfig{{Spec: flowDef.Destinations[0], Dest: &pgdest.Destination{}}})
 	}()
 	select {
@@ -172,9 +172,9 @@ func runManagedBootstrapBoundaryRecovery(t *testing.T, boundary string) {
 	}
 	go func() {
 		replacementErr <- (&runner.FlowRunner{
-			Engine: engine, Checkpoints: checkpoints, ExpectedGeneration: control.Generation,
+			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), ExpectedGeneration: control.Generation,
 			ExecutionBackend: "integration", ExecutionID: "boundary-replacement-" + boundary,
-			Authority: authorityStore, Deliveries: coordinator,
+			Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
 		}).Run(replacementCtx, flowDef, replacementSource, []stream.DestinationConfig{{Spec: flowDef.Destinations[0], Dest: &pgdest.Destination{}}})
 	}()
 	if boundary == "snapshot_batch" {

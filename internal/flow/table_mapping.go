@@ -209,7 +209,7 @@ func (m TableMappings) Validate(destinations []connector.Spec) error {
 	byName := make(map[string]connector.Spec, len(destinations))
 	for _, destination := range destinations {
 		name := destination.Name
-		if err := validateIdentifier(name, "destination name"); err != nil {
+		if err := validateConfigName(name, "destination name"); err != nil {
 			return err
 		}
 		if _, duplicate := byName[name]; duplicate {
@@ -220,7 +220,7 @@ func (m TableMappings) Validate(destinations []connector.Spec) error {
 	seen := make(map[string]struct{}, len(m.Destinations))
 	for _, mapping := range m.Destinations {
 		name := mapping.Destination
-		if err := validateIdentifier(name, "table mapping destination"); err != nil {
+		if err := validateConfigName(name, "table mapping destination"); err != nil {
 			return err
 		}
 		destination, ok := byName[name]
@@ -466,12 +466,22 @@ func validateFutureTemplate(value, variable string) error {
 	return nil
 }
 
-func validateIdentifier(value, subject string) error {
+func validateConfigName(value, subject string) error {
 	if value == "" {
 		return fmt.Errorf("%s is required", subject)
 	}
 	if value != strings.TrimSpace(value) {
 		return fmt.Errorf("%s %q has leading or trailing whitespace", subject, value)
+	}
+	return nil
+}
+
+func validateIdentifier(value, subject string) error {
+	if value == "" {
+		return fmt.Errorf("%s is required", subject)
+	}
+	if strings.IndexByte(value, 0) >= 0 {
+		return fmt.Errorf("%s cannot contain NUL", subject)
 	}
 	return nil
 }

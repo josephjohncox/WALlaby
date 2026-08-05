@@ -127,8 +127,8 @@ func ManagedSchemaContractHash(schema connector.Schema) (string, error) {
 
 func canonicalManagedSchemaContract(schema connector.Schema) (managedSchemaContract, error) {
 	contract := managedSchemaContract{
-		Namespace: strings.TrimSpace(schema.Namespace),
-		Name:      strings.TrimSpace(schema.Name),
+		Namespace: schema.Namespace,
+		Name:      schema.Name,
 		Columns:   make([]managedSchemaColumn, 0, len(schema.Columns)),
 	}
 	if contract.Namespace == "" || contract.Name == "" || len(schema.Columns) == 0 {
@@ -143,7 +143,7 @@ func canonicalManagedSchemaContract(schema connector.Schema) (managedSchemaContr
 	}
 	seenPrimaryOrdinals := make(map[int]struct{}, primaryCount)
 	for _, column := range schema.Columns {
-		name := strings.TrimSpace(column.Name)
+		name := column.Name
 		if name == "" {
 			return managedSchemaContract{}, errors.New("managed Snowflake schema contract contains an unnamed column")
 		}
@@ -277,12 +277,12 @@ func validateManagedSnowflakeIntentBounds(intent connector.DeliveryIntent) error
 }
 
 func buildManagedSnowflakeOperation(cfg managedConfig, target string, schema connector.Schema, keyColumns []string, identity managedOperationIdentity, record connector.Record) (managedSnowflakeOperation, error) {
-	table := strings.TrimSpace(record.Table)
-	if table == "" {
-		table = schema.Name
+	table := record.Table
+	if table == "" || strings.ContainsRune(table, '\x00') || schema.Namespace == "" || strings.ContainsRune(schema.Namespace, '\x00') || schema.Name == "" || strings.ContainsRune(schema.Name, '\x00') {
+		return managedSnowflakeOperation{}, errors.New("managed Snowflake operation requires exact nonempty NUL-free projected schema and table identifiers")
 	}
-	if schema.Namespace != cfg.sourceSchema || schema.Name != cfg.sourceTable || table != cfg.sourceTable {
-		return managedSnowflakeOperation{}, fmt.Errorf("source relation %s.%s/%s is outside admitted relation %s.%s", schema.Namespace, schema.Name, table, cfg.sourceSchema, cfg.sourceTable)
+	if schema.Namespace != cfg.schemaContract.Namespace || schema.Name != cfg.schemaContract.Name || table != cfg.schemaContract.Name {
+		return managedSnowflakeOperation{}, fmt.Errorf("projected relation %s.%s/%s is outside admitted destination contract %s.%s", schema.Namespace, schema.Name, table, cfg.schemaContract.Namespace, cfg.schemaContract.Name)
 	}
 	encoded, err := json.Marshal(record)
 	if err != nil {

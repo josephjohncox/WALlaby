@@ -55,10 +55,23 @@ type ddlExecer interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }
 
+type txBeginner func(context.Context) (pgx.Tx, error)
+
+type postgresTarget struct {
+	identifier pgx.Identifier
+	sql        string
+}
+
+type postgresTargetRecords struct {
+	target  postgresTarget
+	records []connector.Record
+}
+
 // Destination writes change events into Postgres tables.
 type Destination struct {
 	spec                 connector.Spec
 	pool                 *pgxpool.Pool
+	beginTx              txBeginner
 	ddlExecutor          ddlExecer
 	batchMode            string
 	batchResolve         string
@@ -131,21 +144,29 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	if d.batchResolve == "" {
 		d.batchResolve = batchResolveNone
 	}
-	d.stagingSchema = strings.TrimSpace(spec.Options[optStagingSchema])
-	d.stagingTableName = strings.TrimSpace(spec.Options[optStagingTable])
-	d.stagingSuffix = strings.TrimSpace(spec.Options[optStagingSuffix])
+	d.stagingSchema = spec.Options[optStagingSchema]
+	d.stagingTableName = spec.Options[optStagingTable]
+	d.stagingSuffix = spec.Options[optStagingSuffix]
+	for option, identifier := range map[string]string{optStagingSchema: d.stagingSchema, optStagingTable: d.stagingTableName} {
+		if strings.ContainsRune(identifier, '\x00') {
+			return fmt.Errorf("postgres %s contains NUL", option)
+		}
+	}
 	if d.stagingSuffix == "" {
 		d.stagingSuffix = defaultStagingSuffix
 	}
 
 	d.metaEnabled = parseBool(spec.Options[optMetaEnabled], true)
-	d.metaSchema = strings.TrimSpace(spec.Options[optMetaSchema])
+	d.metaSchema = spec.Options[optMetaSchema]
 	if d.metaSchema == "" {
 		d.metaSchema = defaultMetaSchema
 	}
-	d.metaTable = strings.TrimSpace(spec.Options[optMetaTable])
+	d.metaTable = spec.Options[optMetaTable]
 	if d.metaTable == "" {
 		d.metaTable = defaultMetaTable
+	}
+	if strings.ContainsRune(d.metaSchema, '\x00') || strings.ContainsRune(d.metaTable, '\x00') {
+		return errors.New("postgres metadata identifiers must not contain NUL")
 	}
 	d.metaPKPrefix = spec.Options[optMetaPKPrefix]
 	if d.metaPKPrefix == "" {
@@ -172,11 +193,14 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 }
 
 func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
-	if d.pool == nil {
-		return errors.New("postgres destination not initialized")
-	}
 	if len(batch.Records) == 0 {
 		return nil
+	}
+	if err := validateTableScopedBatch(batch); err != nil {
+		return err
+	}
+	if d.pool == nil && d.beginTx == nil {
+		return errors.New("postgres destination not initialized")
 	}
 
 	tx, err := d.beginWriteTransaction(ctx)
@@ -193,8 +217,29 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	return nil
 }
 
+func validateTableScopedBatch(batch connector.Batch) error {
+	for _, record := range batch.Records {
+		if record.Operation == connector.OpDDL {
+			continue
+		}
+		if batch.Schema.Name == "" {
+			return errors.New("generic PostgreSQL data batches require one table-scoped schema")
+		}
+		if record.Table != batch.Schema.Name {
+			return fmt.Errorf("generic PostgreSQL data batch for table %q contains record for table %q; full-transaction delivery is a separate managed contract", batch.Schema.Name, record.Table)
+		}
+	}
+	return nil
+}
+
 func (d *Destination) beginWriteTransaction(ctx context.Context) (pgx.Tx, error) {
-	tx, err := d.pool.Begin(ctx)
+	var tx pgx.Tx
+	var err error
+	if d.beginTx != nil {
+		tx, err = d.beginTx(ctx)
+	} else {
+		tx, err = d.pool.Begin(ctx)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
@@ -208,16 +253,25 @@ func (d *Destination) beginWriteTransaction(ctx context.Context) (pgx.Tx, error)
 }
 
 func (d *Destination) applyTransaction(ctx context.Context, tx pgx.Tx, batch connector.Batch) error {
-	targetRecords := map[string][]connector.Record{}
+	targetRecords := map[string]*postgresTargetRecords{}
 	for _, record := range batch.Records {
 		if record.Operation == connector.OpDDL {
 			continue
 		}
-		target, isStaging := d.resolveTarget(batch.Schema, record)
+		target, isStaging, err := d.resolveTarget(batch.Schema, record)
+		if err != nil {
+			return err
+		}
 		if isStaging {
 			d.trackStaging(batch.Schema, record)
 		}
-		targetRecords[target] = append(targetRecords[target], record)
+		key := strings.Join(target.identifier, "\x00")
+		group := targetRecords[key]
+		if group == nil {
+			group = &postgresTargetRecords{target: target}
+			targetRecords[key] = group
+		}
+		group.records = append(group.records, record)
 	}
 	if len(targetRecords) == 0 {
 		return nil
@@ -230,8 +284,8 @@ func (d *Destination) applyTransaction(ctx context.Context, tx pgx.Tx, batch con
 	default:
 		return fmt.Errorf("postgres destination requires a resolved table write policy, got %q", batch.WritePolicy.Mode)
 	}
-	for target, records := range targetRecords {
-		if err := d.applyBatch(ctx, tx, target, batch.Schema, records, mode, batch.WritePolicy); err != nil {
+	for _, group := range targetRecords {
+		if err := d.applyBatch(ctx, tx, group.target, batch.Schema, group.records, mode, batch.WritePolicy); err != nil {
 			return err
 		}
 	}
@@ -336,7 +390,7 @@ func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, rec
 
 func (d *Destination) TypeMappings() map[string]string { return nil }
 
-func (d *Destination) applyBatch(ctx context.Context, tx pgx.Tx, target string, schema connector.Schema, records []connector.Record, mode string, policy connector.TableWritePolicy) error {
+func (d *Destination) applyBatch(ctx context.Context, tx pgx.Tx, target postgresTarget, schema connector.Schema, records []connector.Record, mode string, policy connector.TableWritePolicy) error {
 	if len(records) == 0 {
 		return nil
 	}
@@ -345,13 +399,13 @@ func (d *Destination) applyBatch(ctx context.Context, tx pgx.Tx, target string, 
 		return d.applyAppendBatch(ctx, tx, target, schema, records)
 	default:
 		if policy.WatermarkColumn != "" {
-			return d.applyWatermarkBatch(ctx, tx, target, schema, records, policy)
+			return d.applyWatermarkBatch(ctx, tx, target.sql, schema, records, policy)
 		}
 		return d.applyTargetBatch(ctx, tx, target, schema, records, policy)
 	}
 }
 
-func (d *Destination) applyAppendBatch(ctx context.Context, tx pgx.Tx, target string, schema connector.Schema, records []connector.Record) error {
+func (d *Destination) applyAppendBatch(ctx context.Context, tx pgx.Tx, target postgresTarget, schema connector.Schema, records []connector.Record) error {
 	inserts := make([]connector.Record, 0, len(records))
 	for _, record := range records {
 		if record.Operation == connector.OpDelete {
@@ -362,7 +416,7 @@ func (d *Destination) applyAppendBatch(ctx context.Context, tx pgx.Tx, target st
 	return d.insertRows(ctx, tx, target, schema, inserts)
 }
 
-func (d *Destination) applyTargetBatch(ctx context.Context, tx pgx.Tx, target string, schema connector.Schema, records []connector.Record, policy connector.TableWritePolicy) error {
+func (d *Destination) applyTargetBatch(ctx context.Context, tx pgx.Tx, target postgresTarget, schema connector.Schema, records []connector.Record, policy connector.TableWritePolicy) error {
 	groups, err := planTargetOperations(schema, records)
 	if err != nil {
 		return err
@@ -370,11 +424,11 @@ func (d *Destination) applyTargetBatch(ctx context.Context, tx pgx.Tx, target st
 	for _, group := range groups {
 		switch group.kind {
 		case targetOperationUpsert:
-			err = d.upsertRows(ctx, tx, target, schema, group.records, policy.KeyColumns)
+			err = d.upsertRows(ctx, tx, target.sql, schema, group.records, policy.KeyColumns)
 		case targetOperationKeyChange:
-			err = d.updateRows(ctx, tx, target, schema, group.records)
+			err = d.updateRows(ctx, tx, target.sql, schema, group.records)
 		case targetOperationDelete:
-			err = d.deleteRows(ctx, tx, target, schema, group.records)
+			err = d.deleteRows(ctx, tx, target.sql, schema, group.records)
 		}
 		if err != nil {
 			return err
@@ -446,7 +500,7 @@ type deleteGroup struct {
 	rows    [][]any
 }
 
-func (d *Destination) insertRows(ctx context.Context, tx pgx.Tx, target string, schema connector.Schema, records []connector.Record) error {
+func (d *Destination) insertRows(ctx context.Context, tx pgx.Tx, target postgresTarget, schema connector.Schema, records []connector.Record) error {
 	if len(records) == 0 {
 		return nil
 	}
@@ -472,12 +526,12 @@ func (d *Destination) insertRows(ctx context.Context, tx pgx.Tx, target string, 
 		if len(group.rows) == 0 {
 			continue
 		}
-		if err := d.copyRows(ctx, tx, target, group.cols, group.rows); err != nil {
+		if err := d.copyRows(ctx, tx, target.identifier, group.cols, group.rows); err != nil {
 			valuesClause, args, err := buildValuesClause(group.cols, colTypes, group.rows)
 			if err != nil {
 				return err
 			}
-			stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", target, quoteColumns(group.cols), valuesClause)
+			stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", target.sql, quoteColumns(group.cols), valuesClause)
 			if _, err := tx.Exec(ctx, stmt, args...); err != nil {
 				return fmt.Errorf("insert rows: %w", err)
 			}
@@ -1043,11 +1097,13 @@ func (d *Destination) deleteRows(ctx context.Context, tx pgx.Tx, target string, 
 	return nil
 }
 
-func (d *Destination) resolveTarget(schema connector.Schema, record connector.Record) (string, bool) {
+func (d *Destination) resolveTarget(schema connector.Schema, record connector.Record) (postgresTarget, bool, error) {
 	if record.Operation == connector.OpLoad && d.batchMode == batchModeStaging {
-		return d.stagingTable(schema, record), true
+		target, err := d.stagingTarget(schema, record)
+		return target, true, err
 	}
-	return d.targetTable(schema, record), false
+	target, err := d.targetRelation(schema, record)
+	return target, false, err
 }
 
 func (d *Destination) trackStaging(schema connector.Schema, record connector.Record) {
@@ -1062,31 +1118,48 @@ func (d *Destination) trackStaging(schema connector.Schema, record connector.Rec
 }
 
 func (d *Destination) targetTable(schema connector.Schema, record connector.Record) string {
-	targetSchema, table := d.targetParts(schema, record.Table)
-	if targetSchema == "" {
-		return quoteIdent(table, '"')
+	target, err := d.targetRelation(schema, record)
+	if err != nil {
+		return ""
 	}
-	return quoteIdent(targetSchema, '"') + "." + quoteIdent(table, '"')
+	return target.sql
+}
+
+func (d *Destination) targetRelation(schema connector.Schema, record connector.Record) (postgresTarget, error) {
+	targetSchema, table := d.targetParts(schema, record.Table)
+	return newPostgresTarget(targetSchema, table)
 }
 
 func (d *Destination) stagingTable(schema connector.Schema, record connector.Record) string {
-	stagingTable := strings.TrimSpace(d.stagingTableName)
-	stagingSchema := strings.TrimSpace(d.stagingSchema)
+	target, err := d.stagingTarget(schema, record)
+	if err != nil {
+		return ""
+	}
+	return target.sql
+}
 
+func (d *Destination) stagingTarget(schema connector.Schema, record connector.Record) (postgresTarget, error) {
+	stagingTable := d.stagingTableName
+	stagingSchema := d.stagingSchema
 	targetSchema, table := d.targetParts(schema, record.Table)
 	if stagingTable == "" {
 		stagingTable = table + d.stagingSuffix
 	}
-	if strings.Contains(stagingTable, ".") {
-		return quoteQualified(stagingTable, '"')
-	}
 	if stagingSchema == "" {
 		stagingSchema = targetSchema
 	}
-	if stagingSchema == "" {
-		return quoteIdent(stagingTable, '"')
+	return newPostgresTarget(stagingSchema, stagingTable)
+}
+
+func newPostgresTarget(schema, table string) (postgresTarget, error) {
+	if table == "" || strings.ContainsRune(table, '\x00') || strings.ContainsRune(schema, '\x00') {
+		return postgresTarget{}, errors.New("PostgreSQL target requires an exact nonempty table identifier and NUL-free schema")
 	}
-	return quoteIdent(stagingSchema, '"') + "." + quoteIdent(stagingTable, '"')
+	identifier := pgx.Identifier{table}
+	if schema != "" {
+		identifier = pgx.Identifier{schema, table}
+	}
+	return postgresTarget{identifier: identifier, sql: identifier.Sanitize()}, nil
 }
 
 func (d *Destination) finalizeStaging(ctx context.Context) error {
@@ -1283,7 +1356,7 @@ func (d *Destination) ensureMetaColumn(ctx context.Context, tx pgx.Tx, column st
 	if column == "" {
 		return nil
 	}
-	key := strings.ToLower(column)
+	key := column
 	if _, ok := d.metaColumns[key]; ok {
 		return nil
 	}
@@ -1375,9 +1448,6 @@ func columnTypeMap(schema connector.Schema) map[string]string {
 	out := make(map[string]string, len(schema.Columns))
 	for _, col := range schema.Columns {
 		out[col.Name] = col.Type
-		if lower := strings.ToLower(col.Name); lower != col.Name {
-			out[lower] = col.Type
-		}
 	}
 	return out
 }
@@ -1666,65 +1736,52 @@ func normalizeComparable(colType string, value any) (any, error) {
 	return value, nil
 }
 
-func (d *Destination) copyRows(ctx context.Context, tx pgx.Tx, target string, cols []string, rows [][]any) error {
-	ident, err := parseTargetIdent(target)
-	if err != nil {
-		return err
-	}
-	return d.copyRowsInto(ctx, tx, ident, cols, rows)
+func (d *Destination) copyRows(ctx context.Context, tx pgx.Tx, target pgx.Identifier, cols []string, rows [][]any) error {
+	return d.copyRowsInto(ctx, tx, target, cols, rows)
 }
 
 func (d *Destination) copyRowsInto(ctx context.Context, tx pgx.Tx, ident pgx.Identifier, cols []string, rows [][]any) error {
 	if len(cols) == 0 || len(rows) == 0 {
 		return nil
 	}
-	_, err := tx.CopyFrom(ctx, ident, cols, pgx.CopyFromRows(rows))
-	if err != nil {
-		return fmt.Errorf("copy from: %w", err)
+	const savepoint = "wallaby_copy_fallback"
+	if _, err := tx.Exec(ctx, "SAVEPOINT "+savepoint); err != nil {
+		return fmt.Errorf("create copy fallback savepoint: %w", err)
 	}
-	return nil
-}
-
-func parseTargetIdent(target string) (pgx.Identifier, error) {
-	trimmed := strings.TrimSpace(target)
-	if trimmed == "" {
-		return nil, errors.New("target table is required")
+	// Mark only the COPY substatement. Besides making server-side diagnostics
+	// unambiguous, rolling back this savepoint necessarily clears the local GUC
+	// before the ordinary INSERT fallback runs.
+	if _, err := tx.Exec(ctx, "SET LOCAL wallaby.copy_from_active = 'on'"); err != nil {
+		_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+savepoint)
+		_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT "+savepoint)
+		return fmt.Errorf("mark copy substatement: %w", err)
 	}
-	parts := strings.Split(trimmed, ".")
-	ident := make(pgx.Identifier, 0, len(parts))
-	for _, part := range parts {
-		ident = append(ident, unquoteIdent(part))
-	}
-	return ident, nil
-}
-
-func unquoteIdent(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) >= 2 {
-		quote := value[0]
-		if (quote == '"' || quote == '`') && value[len(value)-1] == quote {
-			value = value[1 : len(value)-1]
-			if quote == '"' {
-				value = strings.ReplaceAll(value, `""`, `"`)
-			} else {
-				value = strings.ReplaceAll(value, "``", "`")
-			}
+	_, copyErr := tx.CopyFrom(ctx, ident, cols, pgx.CopyFromRows(rows))
+	if copyErr == nil {
+		if _, err := tx.Exec(ctx, "SET LOCAL wallaby.copy_from_active = 'off'"); err != nil {
+			_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+savepoint)
+			_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT "+savepoint)
+			return fmt.Errorf("clear copy substatement marker: %w", err)
 		}
+		if _, err := tx.Exec(ctx, "RELEASE SAVEPOINT "+savepoint); err != nil {
+			return fmt.Errorf("release copy fallback savepoint: %w", err)
+		}
+		return nil
 	}
-	return value
+	if _, err := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+savepoint); err != nil {
+		return fmt.Errorf("copy from and rollback to fallback savepoint failed: %w", errors.Join(copyErr, err))
+	}
+	if _, err := tx.Exec(ctx, "RELEASE SAVEPOINT "+savepoint); err != nil {
+		return fmt.Errorf("copy from and release fallback savepoint failed: %w", errors.Join(copyErr, err))
+	}
+	return fmt.Errorf("copy from: %w", copyErr)
 }
 
 func columnType(colTypes map[string]string, col string) string {
 	if len(colTypes) == 0 {
 		return ""
 	}
-	if typ, ok := colTypes[col]; ok {
-		return typ
-	}
-	if typ, ok := colTypes[strings.ToLower(col)]; ok {
-		return typ
-	}
-	return ""
+	return colTypes[col]
 }
 
 func normalizeTypeKey(value string) string {
@@ -1767,9 +1824,6 @@ func normalizeKeyColumnTypes(colTypes map[string]string, keyCols []string, rows 
 			}
 		}
 		out[col] = "jsonb"
-		if lower := strings.ToLower(col); lower != col {
-			out[lower] = "jsonb"
-		}
 	}
 	if out == nil {
 		return colTypes
@@ -1840,18 +1894,6 @@ func quoteIdent(value string, quote rune) string {
 	}
 	escaped := strings.ReplaceAll(value, string(quote), string(quote)+string(quote))
 	return string(quote) + escaped + string(quote)
-}
-
-func quoteQualified(name string, quote rune) string {
-	parts := strings.Split(name, ".")
-	if len(parts) == 1 {
-		return quoteIdent(parts[0], quote)
-	}
-	quoted := make([]string, 0, len(parts))
-	for _, part := range parts {
-		quoted = append(quoted, quoteIdent(part, quote))
-	}
-	return strings.Join(quoted, ".")
 }
 
 func parseBool(value string, fallback bool) bool {
@@ -1927,5 +1969,7 @@ func tableKey(schema connector.Schema, table string) string {
 	if table == "" {
 		return schema.Namespace
 	}
-	return schema.Namespace + "." + table
+	// PostgreSQL identifiers cannot contain NUL. Preserve exact identifier
+	// bytes and avoid collisions between quoted identifiers containing dots.
+	return schema.Namespace + "\x00" + table
 }

@@ -2,15 +2,43 @@ package postgres
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"math/big"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/josephjohncox/wallaby/internal/bootstrap"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
+
+func TestManagedSnapshotRetriesPreserveLastTransientError(t *testing.T) {
+	t.Parallel()
+	last := &pgconn.PgError{Code: "40001", Message: "last serialization failure"}
+	err := managedSnapshotRetriesExhausted("bootstrap/task", last)
+	if !errors.Is(err, last) || !strings.Contains(err.Error(), "bootstrap/task") || !strings.Contains(err.Error(), "last serialization failure") {
+		t.Fatalf("exhausted retry error did not preserve last cause: %v", err)
+	}
+}
+
+func TestManagedSnapshotRetryClassificationFailsPermanentErrorsImmediately(t *testing.T) {
+	t.Parallel()
+	undefinedTable := &pgconn.PgError{Code: "42P01", Message: "missing receipt relation"}
+	if isTransientManagedSnapshotError(fmt.Errorf("catalog lookup: %w", undefinedTable)) {
+		t.Fatal("permanent SQL/catalog error classified transient")
+	}
+	if isTransientManagedSnapshotError(errors.New("invalid managed bootstrap configuration")) {
+		t.Fatal("plain configuration error classified transient")
+	}
+	serialization := &pgconn.PgError{Code: "40001", Message: "serialization failure"}
+	if !isTransientManagedSnapshotError(fmt.Errorf("snapshot query: %w", serialization)) {
+		t.Fatal("serialization failure was not classified transient")
+	}
+}
 
 func TestManagedSnapshotCursorIsVersionedLosslessAndTypeStable(t *testing.T) {
 	t.Parallel()

@@ -263,6 +263,7 @@ func (managedContractDestination) Apply(context.Context, connector.DeliveryInten
 func (managedContractDestination) Reconcile(context.Context, connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
 	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
 }
+func (managedContractDestination) InitializeManagedDelivery(context.Context) error { return nil }
 func (managedContractDestination) ValidateTransaction(context.Context, connector.SourceTransaction) error {
 	return nil
 }

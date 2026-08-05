@@ -18,7 +18,7 @@ import (
 	"github.com/snowflakedb/gosnowflake"
 )
 
-func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec connector.Spec, destinations []stream.DestinationConfig, cfg StreamRunnerConfig) error {
+func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec connector.Spec, destinations []stream.DestinationConfig, cfg StreamRunnerConfig, ddlPolicy flow.DDLPolicyDefaults) error {
 	profileName := strings.TrimSpace(sourceSpec.Options["managed_profile"])
 	switch profileName {
 	case "", connector.ManagedProfilePostgresToPostgresV1, connector.ManagedProfilePostgresToClickHouseAppendV1, connector.ManagedProfilePostgresToSnowflakeSQLV1:
@@ -119,7 +119,7 @@ func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec c
 	default:
 		return errors.New("managed PostgreSQL profile currently requires ack_policy=all or the explicit materialized artifact contract")
 	}
-	if f.Config.DDL.AutoApply != nil && *f.Config.DDL.AutoApply {
+	if ddlPolicy.AutoApply {
 		return errors.New("managed PostgreSQL profile rejects automatic raw-SQL DDL; structured receipt-backed DDL is not yet admitted")
 	}
 	if cfg.ResolveStaging {
@@ -440,7 +440,12 @@ func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.Spec,
 	if options["managed_owner_role"] == options["managed_execution_role"] {
 		return fmt.Errorf("%s execution role must not own target objects", profileName)
 	}
-	for _, key := range []string{"managed_source_schema", "managed_source_table", "managed_schema_contract", "managed_snowflake_version", "managed_target_created_on", "managed_receipts_created_on"} {
+	for _, key := range []string{"managed_source_schema", "managed_source_table"} {
+		if options[key] == "" || strings.ContainsRune(options[key], '\x00') {
+			return fmt.Errorf("%s requires exact nonempty NUL-free %s", profileName, key)
+		}
+	}
+	for _, key := range []string{"managed_schema_contract", "managed_snowflake_version", "managed_target_created_on", "managed_receipts_created_on"} {
 		if strings.TrimSpace(options[key]) == "" {
 			return fmt.Errorf("%s requires %s", profileName, key)
 		}

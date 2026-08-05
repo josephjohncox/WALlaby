@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,7 +88,16 @@ func TestPostgresAckOnlyCheckpointHasIntentAndReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	coordinator, err := delivery.NewCoordinator(ctx, pool)
+	failBeforeAckCommit := true
+	coordinator, err := delivery.NewCoordinator(ctx, pool, delivery.WithCoordinatorHooks(delivery.CoordinatorHooks{
+		BeforeAuthorizeAckCommit: func(context.Context, authority.RunFence, connector.ManagedSchemaBaselinePayload) error {
+			if failBeforeAckCommit {
+				failBeforeAckCommit = false
+				return errors.New("crash before ack authorization commit")
+			}
+			return nil
+		},
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +118,24 @@ func TestPostgresAckOnlyCheckpointHasIntentAndReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/A0"})
+	baseline, err := connector.NewManagedSchemaBaselinePayload("delivery-test-lineage", []connector.Schema{{Namespace: "public", Name: "filtered_events", Version: 2, Columns: []connector.Column{{Name: "id", Type: "bigint"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/A0"}, baseline); err == nil || !strings.Contains(err.Error(), "crash before ack authorization commit") {
+		t.Fatalf("injected authorization crash error=%v", err)
+	}
+	var crashCheckpoints, crashBaselines int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM authoritative_checkpoints WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&crashCheckpoints); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM managed_schema_baselines WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&crashBaselines); err != nil {
+		t.Fatal(err)
+	}
+	if crashCheckpoints != 0 || crashBaselines != 0 {
+		t.Fatalf("crash boundary checkpoint/baseline=%d/%d, want old/old", crashCheckpoints, crashBaselines)
+	}
+	grant, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/A0"}, baseline)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,8 +149,15 @@ func TestPostgresAckOnlyCheckpointHasIntentAndReceipt(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM source_ack_receipts WHERE flow_incarnation_id=$1", fence.FlowIncarnationID).Scan(&receipts); err != nil {
 		t.Fatal(err)
 	}
-	if intents != 1 || receipts != 1 {
-		t.Fatalf("ack-only intents=%d receipts=%d, want 1/1", intents, receipts)
+	var committedCheckpoint, committedBaseline int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM authoritative_checkpoints WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&committedCheckpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM managed_schema_baselines WHERE flow_incarnation_id=$1 AND source_relation='filtered_events'`, fence.FlowIncarnationID).Scan(&committedBaseline); err != nil {
+		t.Fatal(err)
+	}
+	if intents != 1 || receipts != 1 || committedCheckpoint != 1 || committedBaseline != 1 {
+		t.Fatalf("ack-only intents/receipts/checkpoint/baseline=%d/%d/%d/%d, want 1/1/1/1", intents, receipts, committedCheckpoint, committedBaseline)
 	}
 }
 
@@ -153,7 +187,16 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer checkpointStore.Close()
-	coordinator, err := delivery.NewCoordinator(ctx, pool)
+	crashBeforeFinalize := false
+	coordinator, err := delivery.NewCoordinator(ctx, pool, delivery.WithCoordinatorHooks(delivery.CoordinatorHooks{
+		BeforeFinalizeCommit: func(context.Context, authority.RunFence, connector.DeliveryIntent) error {
+			if crashBeforeFinalize {
+				crashBeforeFinalize = false
+				return errors.New("crash before delivery finalization commit")
+			}
+			return nil
+		},
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +240,7 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 		t.Fatal(err)
 	}
 	failing := &commitThenFailDriver{ManagedTransactionDestination: target, fail: true}
-	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, failing); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, managedBaselinePayload(t, transaction), failing); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("first DeliverTransaction error=%v, want indeterminate external commit", err)
 	}
 
@@ -217,14 +260,19 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 	if attempts != 1 || receipts != 0 || ackIntents != 0 || checkpoints != 0 {
 		t.Fatalf("after ambiguous commit attempts=%d receipts=%d ackIntents=%d checkpoints=%d, want 1/0/0/0", attempts, receipts, ackIntents, checkpoints)
 	}
+	swappedBaseline := managedBaselinePayload(t, transaction)
+	swappedBaseline.Schemas[0].QuotedIdentifiers = map[string]bool{"value": true}
+	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, swappedBaseline, target); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("delivery retry swapped baseline error=%v, want conflict", err)
+	}
 	conflictingBatch := batch
 	conflictingBatch.Records = []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "conflicting"}}}
 	conflictingTransaction := managedDeliveryTransaction(conflictingBatch)
 	conflictingIntent := deliveryIntentForFence(t, oldFence, conflictingTransaction)
-	if _, err := coordinator.DeliverTransaction(ctx, oldFence, conflictingIntent, conflictingTransaction, target); !errors.Is(err, connector.ErrDeliveryConflict) {
+	if _, err := coordinator.DeliverTransaction(ctx, oldFence, conflictingIntent, conflictingTransaction, managedBaselinePayload(t, conflictingTransaction), target); !errors.Is(err, connector.ErrDeliveryConflict) {
 		t.Fatalf("retry identity conflict error=%v, want ErrDeliveryConflict", err)
 	}
-	if _, err := coordinator.Recover(ctx, oldFence, conflictingIntent, conflictingTransaction.Checkpoint, target); !errors.Is(err, connector.ErrDeliveryConflict) {
+	if _, err := coordinator.Recover(ctx, oldFence, conflictingIntent, conflictingTransaction.Checkpoint, managedBaselinePayload(t, conflictingTransaction), target); !errors.Is(err, connector.ErrDeliveryConflict) {
 		t.Fatalf("recovery identity conflict error=%v, want ErrDeliveryConflict", err)
 	}
 
@@ -236,7 +284,7 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 		t.Fatal(err)
 	}
 	newIntent := deliveryIntentForFence(t, newFence, transaction)
-	grant, err := coordinator.DeliverTransaction(ctx, newFence, newIntent, transaction, target)
+	grant, err := coordinator.DeliverTransaction(ctx, newFence, newIntent, transaction, managedBaselinePayload(t, transaction), target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,6 +316,48 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 	}
 	if receipts != 1 || ackIntents != 1 || checkpoints != 1 {
 		t.Fatalf("after reconciliation receipts=%d ackIntents=%d checkpoints=%d, want 1/1/1", receipts, ackIntents, checkpoints)
+	}
+
+	secondBatch := batch
+	secondBatch.Schema.Version = 2
+	secondBatch.Schema.QuotedIdentifiers = map[string]bool{"value": true}
+	secondBatch.Records = []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 2}), After: map[string]any{"id": 2, "value": "atomic"}}}
+	secondTransaction := connector.SourceTransaction{
+		SourceLineageID: transaction.SourceLineageID, TransactionID: 2,
+		BeginLSN: "0/B1", CommitLSN: "0/B8", EndLSN: "0/C0",
+		Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: secondBatch}}, Checkpoint: connector.Checkpoint{LSN: "0/C0"},
+	}
+	secondIntent := deliveryIntentForFence(t, newFence, secondTransaction)
+	secondBaselines := managedBaselinePayload(t, secondTransaction)
+	crashBeforeFinalize = true
+	if _, err := coordinator.DeliverTransaction(ctx, newFence, secondIntent, secondTransaction, secondBaselines, target); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("delivery finalization crash error=%v, want indeterminate", err)
+	}
+	var crashCheckpoint, crashBaselineFingerprint string
+	var oldBaselineFingerprint string
+	if err := pool.QueryRow(ctx, `SELECT schema_fingerprint FROM managed_schema_baselines WHERE flow_incarnation_id=$1 AND source_relation=$2`, newFence.FlowIncarnationID, tableName).Scan(&oldBaselineFingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT lsn FROM authoritative_checkpoints WHERE flow_incarnation_id=$1`, newFence.FlowIncarnationID).Scan(&crashCheckpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT schema_fingerprint FROM managed_schema_baselines WHERE flow_incarnation_id=$1 AND source_relation=$2`, newFence.FlowIncarnationID, tableName).Scan(&crashBaselineFingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if crashCheckpoint != "0/B0" || crashBaselineFingerprint != oldBaselineFingerprint {
+		t.Fatalf("delivery crash checkpoint/baseline=%s/%s, want old/old 0/B0/%s", crashCheckpoint, crashBaselineFingerprint, oldBaselineFingerprint)
+	}
+	if _, err := coordinator.DeliverTransaction(ctx, newFence, secondIntent, secondTransaction, secondBaselines, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT lsn FROM authoritative_checkpoints WHERE flow_incarnation_id=$1`, newFence.FlowIncarnationID).Scan(&crashCheckpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT schema_fingerprint FROM managed_schema_baselines WHERE flow_incarnation_id=$1 AND source_relation=$2`, newFence.FlowIncarnationID, tableName).Scan(&crashBaselineFingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if crashCheckpoint != "0/C0" || crashBaselineFingerprint == oldBaselineFingerprint {
+		t.Fatalf("delivery retry checkpoint/baseline=%s/%s, want new/new with changed baseline", crashCheckpoint, crashBaselineFingerprint)
 	}
 }
 

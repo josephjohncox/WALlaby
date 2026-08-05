@@ -22,6 +22,30 @@ import (
 	"github.com/snowflakedb/gosnowflake"
 )
 
+func TestManagedAdmissionUsesResolvedDeploymentDDLPolicy(t *testing.T) {
+	t.Parallel()
+	f := managedAdmissionFlow()
+	f.Config.DDL.AutoApply = nil
+	defaults := flow.DDLPolicyDefaults{AutoApply: true}
+	fence := managedAdmissionFence()
+	_, err := NewStreamRunner(f, &pgsource.Source{}, managedAdmissionDestinations(), StreamRunnerConfig{
+		Checkpoints: managedCheckpointStore{}, RunFence: &fence,
+		DeliveryCoordinator: &delivery.Coordinator{}, DDLPolicyDefaults: &defaults,
+	})
+	if err == nil || !strings.Contains(err.Error(), "rejects automatic raw-SQL DDL") {
+		t.Fatalf("managed admission with omitted flow auto_apply and deployment=true error=%v", err)
+	}
+
+	disabled := false
+	f.Config.DDL.AutoApply = &disabled
+	if _, err := NewStreamRunner(f, &pgsource.Source{}, managedAdmissionDestinations(), StreamRunnerConfig{
+		Checkpoints: managedCheckpointStore{}, RunFence: &fence,
+		DeliveryCoordinator: &delivery.Coordinator{}, DDLPolicyDefaults: &defaults,
+	}); err != nil {
+		t.Fatalf("explicit flow auto_apply=false did not override deployment=true: %v", err)
+	}
+}
+
 func TestManagedAdmissionRequiresExactMaterializedContract(t *testing.T) {
 	t.Parallel()
 
@@ -68,7 +92,7 @@ func (materializedAdmissionLog) RestoreCheckpoint(_ context.Context, _ connector
 func (materializedAdmissionLog) WaitForReadAdmission(context.Context, connector.RunFence) error {
 	return nil
 }
-func (materializedAdmissionLog) Append(_ context.Context, _ connector.RunFence, transaction connector.SourceTransaction) (connector.AckGrant, error) {
+func (materializedAdmissionLog) Append(_ context.Context, _ connector.RunFence, transaction connector.SourceTransaction, _ connector.ManagedSchemaBaselinePayload) (connector.AckGrant, error) {
 	positionID, err := connector.CheckpointPositionID(transaction.Checkpoint)
 	return connector.AckGrant{Checkpoint: transaction.Checkpoint, PositionID: positionID}, err
 }
@@ -330,6 +354,43 @@ func TestManagedAdmissionAcceptsSnowflakeSQLProfileOnlyWithExactContract(t *test
 	}
 }
 
+func TestNewStreamRunnerManagedSnowflakePreservesWhitespaceOnlySourceAdmission(t *testing.T) {
+	f := managedSnowflakeFlowForTest()
+	mapping, _ := f.Config.TableMappings.ForDestination("target")
+	mapping.Tables[0].SourceSchema = " "
+	mapping.Tables[0].SourceTable = " "
+	f.Config.TableMappings.Destinations[0] = mapping
+	sourceContract := connector.Schema{Namespace: " ", Name: " ", Columns: []connector.Column{{Name: "id", Type: "int8", TypeMetadata: map[string]string{"primary_key": "true", "primary_key_ordinal": "1", "replica_identity": "true", "nullability_known": "true", "generated_known": "true"}}}}
+	destinations := managedSnowflakeAdmissionDestinationsForContract(t, sourceContract)
+	destinations[0].Spec.Options["managed_source_schema"] = " "
+	destinations[0].Spec.Options["managed_source_table"] = " "
+	fence := managedAdmissionFence()
+	runner, err := NewStreamRunner(f, &pgsource.Source{}, destinations, StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}})
+	if err != nil {
+		t.Fatalf("NewStreamRunner rejected whitespace-only exact Snowflake source admission: %v", err)
+	}
+	options := runner.Destinations[0].Spec.Options
+	if options["managed_source_schema"] != " " || options["managed_source_table"] != " " {
+		t.Fatalf("NewStreamRunner normalized exact Snowflake source identity: schema/table=%q/%q", options["managed_source_schema"], options["managed_source_table"])
+	}
+	var projected connector.Schema
+	if err := json.Unmarshal([]byte(options["managed_schema_contract"]), &projected); err != nil {
+		t.Fatal(err)
+	}
+	if projected.Namespace != "PUBLIC" || projected.Name != "WIDGETS" {
+		t.Fatalf("NewStreamRunner projected contract=%+v, want exact target PUBLIC.WIDGETS", projected)
+	}
+	for _, key := range []string{"managed_source_schema", "managed_source_table"} {
+		invalidDestinations := managedSnowflakeAdmissionDestinationsForContract(t, sourceContract)
+		invalidDestinations[0].Spec.Options["managed_source_schema"] = " "
+		invalidDestinations[0].Spec.Options["managed_source_table"] = " "
+		invalidDestinations[0].Spec.Options[key] = "bad\x00identifier"
+		if _, err := NewStreamRunner(f, &pgsource.Source{}, invalidDestinations, StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}}); err == nil {
+			t.Fatalf("NewStreamRunner admitted NUL-containing %s", key)
+		}
+	}
+}
+
 func TestManagedAdmissionRejectsUnsafeOptions(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -408,6 +469,8 @@ func managedAdmissionFlow() flow.Flow {
 		Config:       flow.Config{AckPolicy: stream.AckPolicyAll},
 	}
 	definition.Config.TableMappings = flow.NewTableMappings(definition.Destinations)
+	autoApply := false
+	definition.Config.DDL.AutoApply = &autoApply
 	return definition
 }
 

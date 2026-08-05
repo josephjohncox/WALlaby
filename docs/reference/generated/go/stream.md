@@ -125,7 +125,7 @@ type DDLExecutionStore interface {
 ```
 
 <a name="DestinationConfig"></a>
-## type [DestinationConfig](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L35-L40>)
+## type [DestinationConfig](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L37-L42>)
 
 DestinationConfig binds a destination to its spec.
 
@@ -224,7 +224,7 @@ type ManagedArtifactLog interface {
     Recover(context.Context, connector.RunFence) error
     RestoreCheckpoint(context.Context, connector.RunFence, connector.Checkpoint) (connector.AckGrant, error)
     WaitForReadAdmission(context.Context, connector.RunFence) error
-    Append(context.Context, connector.RunFence, connector.SourceTransaction) (connector.AckGrant, error)
+    Append(context.Context, connector.RunFence, connector.SourceTransaction, connector.ManagedSchemaBaselinePayload) (connector.AckGrant, error)
 }
 ```
 
@@ -235,8 +235,8 @@ ManagedDeliveryCoordinator is the complete fenced full\-transaction seam used by
 
 ```go
 type ManagedDeliveryCoordinator interface {
-    AuthorizeAck(context.Context, connector.RunFence, connector.Checkpoint) (connector.AckGrant, error)
-    DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedTransactionDestination) (connector.AckGrant, error)
+    AuthorizeAck(context.Context, connector.RunFence, connector.Checkpoint, connector.ManagedSchemaBaselinePayload) (connector.AckGrant, error)
+    DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedSchemaBaselinePayload, connector.ManagedTransactionDestination) (connector.AckGrant, error)
     ValidateAckGrant(context.Context, connector.RunFence, connector.AckGrant) error
     RecordAckReceipt(context.Context, connector.RunFence, connector.AckGrant, string) error
     CommitSourceFeedback(context.Context, connector.RunFence, connector.AckGrant, connector.FlushEvidenceSource) error
@@ -304,7 +304,7 @@ type Projector interface {
 ```
 
 <a name="Runner"></a>
-## type [Runner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L53-L78>)
+## type [Runner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L55-L81>)
 
 Runner streams data from a source to destinations.
 
@@ -333,12 +333,13 @@ type Runner struct {
     TraceSink           TraceSink
     RunFence            *connector.RunFence
     DeliveryCoordinator ManagedDeliveryCoordinator
+    SchemaBaselines     connector.ManagedSchemaBaselineStore
     ArtifactLog         ManagedArtifactLog
 }
 ```
 
 <a name="Runner.ManagedProfileEnabled"></a>
-### func \(\*Runner\) [ManagedProfileEnabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L791>)
+### func \(\*Runner\) [ManagedProfileEnabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L827>)
 
 ```go
 func (r *Runner) ManagedProfileEnabled() bool
@@ -347,7 +348,7 @@ func (r *Runner) ManagedProfileEnabled() bool
 
 
 <a name="Runner.Run"></a>
-### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L82>)
+### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L85>)
 
 ```go
 func (r *Runner) Run(ctx context.Context) (retErr error)
@@ -356,7 +357,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error)
 Run executes the streaming loop until context cancellation or error. It requires a stable flow ID and durable checkpoint storage before acknowledging the source.
 
 <a name="StagingResolver"></a>
-## type [StagingResolver](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L43-L45>)
+## type [StagingResolver](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L45-L47>)
 
 StagingResolver is implemented by destinations that can resolve staging tables.
 
@@ -367,7 +368,7 @@ type StagingResolver interface {
 ```
 
 <a name="StagingResolverFor"></a>
-## type [StagingResolverFor](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L48-L50>)
+## type [StagingResolverFor](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L50-L52>)
 
 StagingResolverFor lets destinations resolve staging tables for known schemas.
 

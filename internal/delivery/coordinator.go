@@ -12,7 +12,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/authority"
+	"github.com/josephjohncox/wallaby/internal/bootstrap"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
+	"github.com/josephjohncox/wallaby/internal/schemabaseline"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -45,9 +47,11 @@ type Coordinator struct {
 // CoordinatorHooks exposes deterministic crash boundaries to integration
 // tests without changing production ordering or relying on timing.
 type CoordinatorHooks struct {
-	AfterTargetApply       func(context.Context, authority.RunFence, connector.DeliveryIntent) error
-	AfterSourceFlush       func(context.Context, authority.RunFence, AckGrant, string) error
-	AfterRetentionRootLock func(context.Context, authority.RunFence, string) error
+	AfterTargetApply         func(context.Context, authority.RunFence, connector.DeliveryIntent) error
+	BeforeFinalizeCommit     func(context.Context, authority.RunFence, connector.DeliveryIntent) error
+	BeforeAuthorizeAckCommit func(context.Context, authority.RunFence, connector.ManagedSchemaBaselinePayload) error
+	AfterSourceFlush         func(context.Context, authority.RunFence, AckGrant, string) error
+	AfterRetentionRootLock   func(context.Context, authority.RunFence, string) error
 }
 
 // CoordinatorOption configures optional coordinator behavior.
@@ -69,6 +73,9 @@ func NewCoordinator(ctx context.Context, pool *pgxpool.Pool, options ...Coordina
 	// constructed outside centralized production startup as well.
 	if err := checkpoint.ApplyMigrations(ctx, pool); err != nil {
 		return nil, fmt.Errorf("prepare delivery checkpoint authority: %w", err)
+	}
+	if err := bootstrap.ApplyMigrations(ctx, pool); err != nil {
+		return nil, fmt.Errorf("prepare delivery schema-baseline authority: %w", err)
 	}
 	if err := runMigrations(ctx, pool); err != nil {
 		return nil, err
@@ -123,7 +130,7 @@ WHERE destination_revision_id=$1`, revisionID).Scan(&existingName, &existingFing
 
 // AuthorizeAck advances a fenced checkpoint and creates its source ACK intent
 // atomically for a source transaction that requires no external delivery.
-func (c *Coordinator) AuthorizeAck(ctx context.Context, fence authority.RunFence, checkpoint connector.Checkpoint) (AckGrant, error) {
+func (c *Coordinator) AuthorizeAck(ctx context.Context, fence authority.RunFence, checkpoint connector.Checkpoint, baselines connector.ManagedSchemaBaselinePayload) (AckGrant, error) {
 	positionID, err := connector.CheckpointPositionID(checkpoint)
 	if err != nil {
 		return AckGrant{}, err
@@ -140,6 +147,14 @@ func (c *Coordinator) AuthorizeAck(ctx context.Context, fence authority.RunFence
 	if err != nil {
 		return AckGrant{}, err
 	}
+	if err := schemabaseline.UpsertExactTx(ctx, tx, fence, baselines); err != nil {
+		return AckGrant{}, fmt.Errorf("advance schema baselines with source ack authorization: %w", err)
+	}
+	if c.hooks.BeforeAuthorizeAckCommit != nil {
+		if err := c.hooks.BeforeAuthorizeAckCommit(ctx, fence, baselines); err != nil {
+			return AckGrant{}, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return AckGrant{}, fmt.Errorf("commit checkpoint and source ack intent: %w", err)
 	}
@@ -148,11 +163,11 @@ func (c *Coordinator) AuthorizeAck(ctx context.Context, fence authority.RunFence
 
 // Recover reconciles one unfinished delivery. Applied evidence is adopted by
 // the current fence; indeterminate evidence is durably backed off and bounded.
-func (c *Coordinator) Recover(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint, driver connector.ManagedDestination) (AckGrant, error) {
+func (c *Coordinator) Recover(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint, baselines connector.ManagedSchemaBaselinePayload, driver connector.ManagedDestination) (AckGrant, error) {
 	if driver == nil {
 		return AckGrant{}, errors.New("managed delivery driver is required")
 	}
-	state, err := c.inspect(ctx, fence, intent, checkpoint)
+	state, err := c.inspect(ctx, fence, intent, checkpoint, baselines)
 	if err != nil {
 		return AckGrant{}, err
 	}
@@ -174,7 +189,7 @@ func (c *Coordinator) Recover(ctx context.Context, fence authority.RunFence, int
 		if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "applied", ""); err != nil {
 			return AckGrant{}, recoverablePostCommitError("mark recovered delivery applied", err)
 		}
-		grant, err := c.finalize(ctx, fence, intent, state.attemptID, checkpoint)
+		grant, err := c.finalize(ctx, fence, intent, state.attemptID, checkpoint, baselines)
 		return grant, recoverablePostCommitError("finalize recovered delivery", err)
 	case connector.DeliveryNotApplied:
 		return AckGrant{}, nil
@@ -193,14 +208,14 @@ func recoverablePostCommitError(stage string, err error) error {
 // DeliverTransaction applies one complete committed source transaction. The
 // immutable logical batch and attempt are durable before target I/O, while the
 // target receipt, checkpoint, and ACK intent are finalized under one fence.
-func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, transaction connector.SourceTransaction, driver connector.ManagedTransactionDestination) (AckGrant, error) {
+func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, transaction connector.SourceTransaction, baselines connector.ManagedSchemaBaselinePayload, driver connector.ManagedTransactionDestination) (AckGrant, error) {
 	if driver == nil {
 		return AckGrant{}, errors.New("managed transaction delivery driver is required")
 	}
 	if err := validateTransactionDeliveryInput(fence, intent, transaction); err != nil {
 		return AckGrant{}, err
 	}
-	state, err := c.inspect(ctx, fence, intent, transaction.Checkpoint)
+	state, err := c.inspect(ctx, fence, intent, transaction.Checkpoint, baselines)
 	if err != nil {
 		return AckGrant{}, err
 	}
@@ -221,13 +236,13 @@ func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.Ru
 			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "applied", ""); err != nil {
 				return AckGrant{}, recoverablePostCommitError("mark reconciled transaction applied", err)
 			}
-			grant, err := c.finalize(ctx, fence, intent, state.attemptID, transaction.Checkpoint)
+			grant, err := c.finalize(ctx, fence, intent, state.attemptID, transaction.Checkpoint, baselines)
 			return grant, recoverablePostCommitError("finalize reconciled transaction", err)
 		case connector.DeliveryNotApplied:
 			if err := c.markAttemptTerminal(ctx, fence, state.attemptID, "not_applied", "target marker absent"); err != nil {
 				return AckGrant{}, err
 			}
-			retryState, err := c.inspect(ctx, fence, intent, transaction.Checkpoint)
+			retryState, err := c.inspect(ctx, fence, intent, transaction.Checkpoint, baselines)
 			if err != nil {
 				return AckGrant{}, err
 			}
@@ -246,7 +261,7 @@ func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.Ru
 		return AckGrant{}, fmt.Errorf("validate managed target transaction: %w", err)
 	}
 
-	attemptID, err := c.prepareAttempt(ctx, fence, intent, transaction.Checkpoint)
+	attemptID, err := c.prepareAttempt(ctx, fence, intent, transaction.Checkpoint, baselines)
 	if err != nil {
 		return AckGrant{}, err
 	}
@@ -277,7 +292,7 @@ func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.Ru
 	if err := c.markAttemptTerminal(ctx, fence, attemptID, "applied", ""); err != nil {
 		return AckGrant{}, recoverablePostCommitError("mark transaction applied", err)
 	}
-	grant, err := c.finalize(ctx, fence, intent, attemptID, transaction.Checkpoint)
+	grant, err := c.finalize(ctx, fence, intent, attemptID, transaction.Checkpoint, baselines)
 	return grant, recoverablePostCommitError("finalize transaction", err)
 }
 
@@ -501,7 +516,7 @@ func validateTransactionDeliveryInput(fence authority.RunFence, intent connector
 	return nil
 }
 
-func (c *Coordinator) inspect(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint) (deliveryState, error) {
+func (c *Coordinator) inspect(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint, baselines connector.ManagedSchemaBaselinePayload) (deliveryState, error) {
 	if err := intent.Validate(); err != nil {
 		return deliveryState{}, err
 	}
@@ -516,7 +531,7 @@ func (c *Coordinator) inspect(ctx context.Context, fence authority.RunFence, int
 	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
 		return deliveryState{}, err
 	}
-	if err := ensureManifest(ctx, tx, fence, intent, checkpoint); err != nil {
+	if err := ensureManifest(ctx, tx, fence, intent, checkpoint, baselines); err != nil {
 		return deliveryState{}, err
 	}
 	state := deliveryState{}
@@ -563,7 +578,7 @@ LIMIT 1`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.LogicalB
 	return state, nil
 }
 
-func ensureManifest(ctx context.Context, tx pgx.Tx, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint) error {
+func ensureManifest(ctx context.Context, tx pgx.Tx, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint, baselines connector.ManagedSchemaBaselinePayload) error {
 	var registered int
 	if err := tx.QueryRow(ctx, `
 SELECT 1 FROM destination_revisions WHERE destination_revision_id=$1`, intent.DestinationRevisionID).Scan(&registered); err != nil {
@@ -576,39 +591,52 @@ SELECT 1 FROM destination_revisions WHERE destination_revision_id=$1`, intent.De
 	if err != nil {
 		return err
 	}
+	baselineJSON, baselineFingerprint, err := baselines.Canonical()
+	if err != nil {
+		return fmt.Errorf("canonicalize delivery schema-baseline manifest: %w", err)
+	}
+	if baselines.SourceLineageID != intent.SourceLineageID {
+		return fmt.Errorf("%w: delivery baseline lineage differs from intent", connector.ErrDeliveryConflict)
+	}
 	sourceTransactionID := intent.SourceLineageID + ":" + position
 	tag, err := tx.Exec(ctx, `
 INSERT INTO delivery_manifests (
-  flow_incarnation_id,destination_revision_id,source_lineage_id,logical_batch_id,position_id,source_transaction_id,content_hash,checkpoint_lsn
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-ON CONFLICT DO NOTHING`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.LogicalBatchID, intent.PositionID, sourceTransactionID, intent.ContentHash, position)
+  flow_incarnation_id,destination_revision_id,source_lineage_id,logical_batch_id,position_id,source_transaction_id,content_hash,checkpoint_lsn,
+  schema_baseline_payload,schema_baseline_fingerprint
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)
+ON CONFLICT DO NOTHING`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.SourceLineageID, intent.LogicalBatchID, intent.PositionID, sourceTransactionID, intent.ContentHash, position, baselineJSON, baselineFingerprint)
 	if err != nil {
 		return fmt.Errorf("insert delivery manifest: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		var existingHash, existingLSN, existingLineage, existingPosition string
+		var existingHash, existingLSN, existingLineage, existingPosition, existingBaselineFingerprint string
+		var existingBaselineJSON []byte
 		err := tx.QueryRow(ctx, `
-SELECT content_hash,checkpoint_lsn,source_lineage_id,position_id FROM delivery_manifests
+SELECT content_hash,checkpoint_lsn,source_lineage_id,position_id,schema_baseline_payload,schema_baseline_fingerprint FROM delivery_manifests
 WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND logical_batch_id=$3
-FOR UPDATE`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.LogicalBatchID).Scan(&existingHash, &existingLSN, &existingLineage, &existingPosition)
+FOR UPDATE`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.LogicalBatchID).Scan(&existingHash, &existingLSN, &existingLineage, &existingPosition, &existingBaselineJSON, &existingBaselineFingerprint)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("%w: delivery position is already bound to another logical batch", connector.ErrDeliveryConflict)
 		}
 		if err != nil {
 			return fmt.Errorf("load delivery manifest: %w", err)
 		}
+		var existingPayload connector.ManagedSchemaBaselinePayload
+		decodeErr := json.Unmarshal(existingBaselineJSON, &existingPayload)
+		_, actualBaselineFingerprint, fingerprintErr := existingPayload.Canonical()
 		hashDiffers := existingHash != intent.ContentHash
 		checkpointDiffers := existingLSN != position
 		lineageDiffers := existingLineage != intent.SourceLineageID
 		positionDiffers := existingPosition != intent.PositionID
-		if hashDiffers || checkpointDiffers || lineageDiffers || positionDiffers {
-			return fmt.Errorf("%w: immutable delivery manifest differs (content_hash=%t checkpoint=%t lineage=%t position=%t)", connector.ErrDeliveryConflict, hashDiffers, checkpointDiffers, lineageDiffers, positionDiffers)
+		baselineDiffers := decodeErr != nil || fingerprintErr != nil || existingBaselineFingerprint != baselineFingerprint || actualBaselineFingerprint != existingBaselineFingerprint
+		if hashDiffers || checkpointDiffers || lineageDiffers || positionDiffers || baselineDiffers {
+			return fmt.Errorf("%w: immutable delivery manifest differs (content_hash=%t checkpoint=%t lineage=%t position=%t baselines=%t)", connector.ErrDeliveryConflict, hashDiffers, checkpointDiffers, lineageDiffers, positionDiffers, baselineDiffers)
 		}
 	}
 	return nil
 }
 
-func (c *Coordinator) prepareAttempt(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint) (uuid.UUID, error) {
+func (c *Coordinator) prepareAttempt(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint, baselines connector.ManagedSchemaBaselinePayload) (uuid.UUID, error) {
 	tx, err := c.pool.Begin(ctx)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("begin delivery attempt: %w", err)
@@ -617,7 +645,7 @@ func (c *Coordinator) prepareAttempt(ctx context.Context, fence authority.RunFen
 	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
 		return uuid.Nil, err
 	}
-	if err := ensureManifest(ctx, tx, fence, intent, checkpoint); err != nil {
+	if err := ensureManifest(ctx, tx, fence, intent, checkpoint, baselines); err != nil {
 		return uuid.Nil, err
 	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(pg_catalog.hashtextextended($1,0))`, strings.Join([]string{fence.FlowIncarnationID.String(), intent.DestinationRevisionID, intent.LogicalBatchID}, "\x1f")); err != nil {
@@ -723,7 +751,7 @@ ON CONFLICT (attempt_id) DO NOTHING`, attemptID, evidence.ExternalID, evidence.C
 	return nil
 }
 
-func (c *Coordinator) finalize(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, attemptID uuid.UUID, checkpoint connector.Checkpoint) (AckGrant, error) {
+func (c *Coordinator) finalize(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, attemptID uuid.UUID, checkpoint connector.Checkpoint, baselines connector.ManagedSchemaBaselinePayload) (AckGrant, error) {
 	tx, err := c.pool.Begin(ctx)
 	if err != nil {
 		return AckGrant{}, fmt.Errorf("begin delivery finalization: %w", err)
@@ -768,6 +796,14 @@ WHERE delivery_receipts.source_lineage_id=EXCLUDED.source_lineage_id
 	checkpoint, err = finalizeCheckpointAndAck(ctx, tx, fence, intent.PositionID, checkpoint)
 	if err != nil {
 		return AckGrant{}, err
+	}
+	if err := schemabaseline.UpsertExactTx(ctx, tx, fence, baselines); err != nil {
+		return AckGrant{}, fmt.Errorf("advance delivery schema baselines: %w", err)
+	}
+	if c.hooks.BeforeFinalizeCommit != nil {
+		if err := c.hooks.BeforeFinalizeCommit(ctx, fence, intent); err != nil {
+			return AckGrant{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return AckGrant{}, fmt.Errorf("commit delivery receipt checkpoint and ack intent: %w", err)

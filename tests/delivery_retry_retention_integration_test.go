@@ -108,10 +108,10 @@ func TestPostgresManagedDeliveryRetryAndRetention(t *testing.T) {
 	first := retentionTransaction(table, 3001, "0/500", 1)
 	firstIntent := transactionIntentForFence(t, fence, revisionID, first)
 	failing := &failFirstTransactionDriver{ManagedTransactionDestination: target, fail: true}
-	if _, err := coordinator.DeliverTransaction(ctx, fence, firstIntent, first, failing); err == nil || errors.Is(err, connector.ErrDeliveryIndeterminate) {
+	if _, err := coordinator.DeliverTransaction(ctx, fence, firstIntent, first, managedBaselinePayload(t, first), failing); err == nil || errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("first deterministic failure=%v", err)
 	}
-	grant, err := coordinator.DeliverTransaction(ctx, fence, firstIntent, first, failing)
+	grant, err := coordinator.DeliverTransaction(ctx, fence, firstIntent, first, managedBaselinePayload(t, first), failing)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`,
 	postCommitCtx, cancelPostCommit := context.WithCancel(ctx)
 	cancelAfterTargetApply = cancelPostCommit
 	failAfterTargetApply.Store(true)
-	if _, err := coordinator.DeliverTransaction(postCommitCtx, fence, postCommitIntent, postCommit, target); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+	if _, err := coordinator.DeliverTransaction(postCommitCtx, fence, postCommitIntent, postCommit, managedBaselinePayload(t, postCommit), target); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		cancelPostCommit()
 		t.Fatalf("post-target control failure=%v, want recoverable indeterminate classification", err)
 	}
@@ -145,7 +145,7 @@ WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`,
 	if _, err := pool.Exec(ctx, `SELECT 1`); err != nil {
 		t.Fatalf("control store did not recover after canceled post-target transaction: %v", err)
 	}
-	if _, err := coordinator.DeliverTransaction(postCommitCtx, fence, postCommitIntent, postCommit, target); err == nil {
+	if _, err := coordinator.DeliverTransaction(postCommitCtx, fence, postCommitIntent, postCommit, managedBaselinePayload(t, postCommit), target); err == nil {
 		t.Fatal("canceled delivery context unexpectedly remained usable")
 	}
 	currentFlow, err := engine.Get(ctx, flowID)
@@ -155,7 +155,7 @@ WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`,
 	if currentFlow.State != flow.StateRunning {
 		t.Fatalf("flow state after post-target control failure=%s, want running", currentFlow.State)
 	}
-	postCommitGrant, err := coordinator.DeliverTransaction(ctx, fence, postCommitIntent, postCommit, target)
+	postCommitGrant, err := coordinator.DeliverTransaction(ctx, fence, postCommitIntent, postCommit, managedBaselinePayload(t, postCommit), target)
 	if err != nil {
 		t.Fatalf("reconcile post-target control failure: %v", err)
 	}
@@ -172,7 +172,7 @@ WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`,
 
 	second := retentionTransaction(table, 3002, "0/600", 2)
 	secondIntent := transactionIntentForFence(t, fence, revisionID, second)
-	secondGrant, err := coordinator.DeliverTransaction(ctx, fence, secondIntent, second, target)
+	secondGrant, err := coordinator.DeliverTransaction(ctx, fence, secondIntent, second, managedBaselinePayload(t, second), target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,14 +210,14 @@ WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`,
 	third := retentionTransaction(table, 3003, "0/700", 3)
 	thirdIntent := transactionIntentForFence(t, fence, revisionID, third)
 	indeterminate := &reconciliationFailureDriver{ManagedTransactionDestination: target}
-	if _, err := coordinator.DeliverTransaction(ctx, fence, thirdIntent, third, indeterminate); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+	if _, err := coordinator.DeliverTransaction(ctx, fence, thirdIntent, third, managedBaselinePayload(t, third), indeterminate); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("prepare indeterminate attempt error=%v, want ErrDeliveryIndeterminate", err)
 	}
 	for attempt := 1; attempt <= 16; attempt++ {
 		if _, err := pool.Exec(ctx, `UPDATE delivery_attempts SET next_attempt_at=clock_timestamp() WHERE flow_incarnation_id=$1 AND logical_batch_id=$2`, fence.FlowIncarnationID, thirdIntent.LogicalBatchID); err != nil {
 			t.Fatal(err)
 		}
-		_, err := coordinator.DeliverTransaction(ctx, fence, thirdIntent, third, indeterminate)
+		_, err := coordinator.DeliverTransaction(ctx, fence, thirdIntent, third, managedBaselinePayload(t, third), indeterminate)
 		if attempt < 16 {
 			if !errors.Is(err, connector.ErrDeliveryIndeterminate) || errors.Is(err, connector.ErrDeliveryRetryExhausted) {
 				t.Fatalf("reconciliation attempt %d error=%v, want recoverable indeterminate", attempt, err)
@@ -240,7 +240,7 @@ WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`,
 	observedPositions := make([]string, 0, 6)
 	for _, lsn := range []string{"0/800", "0/900", "0/A00", "0/B00", "0/C00"} {
 		checkpoint := connector.Checkpoint{LSN: lsn}
-		grant, err := coordinator.AuthorizeAck(ctx, fence, checkpoint)
+		grant, err := coordinator.AuthorizeAck(ctx, fence, checkpoint, emptyManagedBaselinePayload(t, "retention-lineage"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -249,11 +249,11 @@ WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`,
 		}
 		observedPositions = append(observedPositions, grant.PositionID)
 	}
-	unobservedGrant, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/D00"})
+	unobservedGrant, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/D00"}, emptyManagedBaselinePayload(t, "retention-lineage"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	currentGrant, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/E00"})
+	currentGrant, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/E00"}, emptyManagedBaselinePayload(t, "retention-lineage"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +314,7 @@ WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`,
 	var concurrentGrant connector.AckGrant
 	concurrentDone := make(chan error, 1)
 	go func() {
-		grant, deliveryErr := coordinator.DeliverTransaction(ctx, fence, concurrentIntent, concurrent, blockingDriver)
+		grant, deliveryErr := coordinator.DeliverTransaction(ctx, fence, concurrentIntent, concurrent, managedBaselinePayload(t, concurrent), blockingDriver)
 		concurrentGrant = grant
 		concurrentDone <- deliveryErr
 	}()

@@ -119,7 +119,7 @@ func (p *Projector) ProjectBatch(batch connector.Batch) (connector.Batch, stream
 }
 
 func (p *Projector) projectBatch(batch connector.Batch, fallbackPosition string) (connector.Batch, stream.ProjectionDecision, error) {
-	if strings.TrimSpace(batch.Schema.Name) == "" {
+	if batch.Schema.Name == "" {
 		return p.projectTablelessDDLBatch(batch)
 	}
 	resolved, err := p.resolve(batch.Schema, false)
@@ -211,7 +211,7 @@ func tablelessDDLSourceSchema(record connector.Record) (connector.Schema, error)
 	}
 	var namespace, table string
 	for _, change := range plan.Changes {
-		if strings.TrimSpace(change.Namespace) == "" || strings.TrimSpace(change.Table) == "" {
+		if change.Namespace == "" || change.Table == "" {
 			return connector.Schema{}, errors.New("tableless structured DDL change requires source namespace and table")
 		}
 		if namespace == "" {
@@ -283,7 +283,7 @@ func (p *Projector) resolve(schema connector.Schema, allowEmptyColumns bool) (re
 		}
 	}
 	resolved.futureColumns = futureColumns
-	if strings.TrimSpace(resolved.targetTable) == "" {
+	if resolved.targetTable == "" {
 		return resolvedTable{}, errors.New("projected target table is empty")
 	}
 	seenTargets := make(map[string]string, len(schema.Columns))
@@ -304,7 +304,7 @@ func (p *Projector) resolve(schema connector.Schema, allowEmptyColumns bool) (re
 			shapeChanged = true
 			continue
 		}
-		if strings.TrimSpace(target) == "" {
+		if target == "" {
 			return resolvedTable{}, fmt.Errorf("column %q resolves to an empty target", column.Name)
 		}
 		if prior, collision := seenTargets[target]; collision {

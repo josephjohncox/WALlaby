@@ -83,9 +83,12 @@ func (b *BackfillSource) Open(ctx context.Context, spec connector.Spec) error {
 			b.workers = alt
 		}
 	}
-	b.partitionCol = strings.TrimSpace(spec.Options[optPartitionColumn])
-	if strings.Contains(b.partitionCol, ".") {
-		return errors.New("partition_column must be a bare column name")
+	if rawPartitionColumn := spec.Options[optPartitionColumn]; rawPartitionColumn != "" {
+		partitionColumn, err := ParseCatalogColumnName(rawPartitionColumn)
+		if err != nil {
+			return fmt.Errorf("parse partition_column: %w", err)
+		}
+		b.partitionCol = partitionColumn
 	}
 	b.partitionCount = parseInt(spec.Options[optPartitionCount], 1)
 	if b.partitionCount < 1 {
@@ -116,7 +119,10 @@ func (b *BackfillSource) Open(ctx context.Context, spec connector.Spec) error {
 
 	tables := parseCSV(spec.Options[optTables])
 	if len(tables) == 0 {
-		schemas := parseCSV(spec.Options[optSchemas])
+		schemas, err := parseIdentifierCSV(spec.Options[optSchemas])
+		if err != nil {
+			return fmt.Errorf("parse schemas: %w", err)
+		}
 		if len(schemas) == 0 {
 			schemas = []string{"public"}
 		}
@@ -346,15 +352,18 @@ func normalizeGeneratedValue(value any) string {
 }
 
 func splitTable(value string) (string, string, error) {
-	parts := strings.Split(value, ".")
-	if len(parts) == 1 {
+	parts, err := parseIdentifierText(value)
+	if err != nil {
+		return "", "", err
+	}
+	switch len(parts) {
+	case 1:
 		return "public", parts[0], nil
-	}
-	if len(parts) == 2 {
+	case 2:
 		return parts[0], parts[1], nil
+	default:
+		return "", "", fmt.Errorf("invalid table name %q", value)
 	}
-	err := fmt.Errorf("invalid table name %q", value)
-	return "", "", err
 }
 
 type backfillTask struct {

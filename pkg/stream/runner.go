@@ -2,6 +2,7 @@ package stream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/replication"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
@@ -74,6 +76,7 @@ type Runner struct {
 	TraceSink           TraceSink
 	RunFence            *connector.RunFence
 	DeliveryCoordinator ManagedDeliveryCoordinator
+	SchemaBaselines     connector.ManagedSchemaBaselineStore
 	ArtifactLog         ManagedArtifactLog
 }
 
@@ -107,8 +110,8 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		return errors.New("ack_policy=materialized requires managed PostgreSQL transactional execution")
 	}
 	if r.managed() {
-		if r.RunFence == nil || r.DeliveryCoordinator == nil {
-			return errors.New("managed execution requires a run fence and delivery coordinator")
+		if r.RunFence == nil || r.DeliveryCoordinator == nil || r.SchemaBaselines == nil {
+			return errors.New("managed execution requires a run fence, delivery coordinator, and PostgreSQL-authoritative schema baselines")
 		}
 		if r.effectiveAckPolicy() != AckPolicyAll && r.effectiveAckPolicy() != AckPolicyMaterialized {
 			return errors.New("managed PostgreSQL execution requires ack_policy=all or materialized")
@@ -200,6 +203,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 
 	var restoredCheckpoint *connector.Checkpoint
 	var restoredArtifactGrant *connector.AckGrant
+	var loadedBaselines []connector.Schema
 	ackRestoredCheckpoint := false
 	explicitStartLSN := ""
 	if r.SourceSpec.Options != nil {
@@ -250,6 +254,15 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				return fmt.Errorf("open destination %s: %w", destination.Spec.Name, err)
 			}
 			openedDestinations = append(openedDestinations, destination.Dest)
+			if r.managed() && r.effectiveAckPolicy() != AckPolicyMaterialized {
+				driver, ok := destination.Dest.(connector.ManagedTransactionDestination)
+				if !ok {
+					return fmt.Errorf("destination %s lacks managed full-transaction initialization", destination.Spec.Name)
+				}
+				if err := driver.InitializeManagedDelivery(ctx); err != nil {
+					return fmt.Errorf("initialize managed destination %s: %w", destination.Spec.Name, err)
+				}
+			}
 		}
 		return nil
 	}
@@ -270,9 +283,16 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			bootstrapMode = "auto"
 		}
 	}
-	if r.managed() && bootstrapMode != "never" {
+	if r.managed() && r.effectiveAckPolicy() != AckPolicyMaterialized {
 		if err := openDestinations(); err != nil {
 			return err
+		}
+	}
+	if r.managed() && bootstrapMode != "never" {
+		if r.effectiveAckPolicy() == AckPolicyMaterialized {
+			if err := openDestinations(); err != nil {
+				return err
+			}
 		}
 		bootstrapSource, ok := r.Source.(connector.ManagedBootstrapSource)
 		if !ok {
@@ -323,10 +343,19 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		if !allowSnowflakeSourceCut {
 			r.SourceSpec.Options["create_slot"] = "false"
 		}
-		if restoredCheckpoint != nil && restoredCheckpoint.Metadata != nil {
-			if baselines := restoredCheckpoint.Metadata[connector.ManagedSchemaBaselinesMetadataKey]; baselines != "" {
-				r.SourceSpec.Options[connector.ManagedSchemaBaselinesMetadataKey] = baselines
+		baselines, err := r.SchemaBaselines.Load(ctx, *r.RunFence, strings.TrimSpace(r.SourceSpec.Options["source_lineage_id"]))
+		if err != nil {
+			return fmt.Errorf("load managed schema baselines: %w", err)
+		}
+		loadedBaselines = baselines
+		if len(baselines) > 0 {
+			encoded, err := json.Marshal(baselines)
+			if err != nil {
+				return fmt.Errorf("encode managed schema baselines for source: %w", err)
 			}
+			r.SourceSpec.Options[connector.ManagedSchemaBaselinesOptionKey] = string(encoded)
+		} else {
+			delete(r.SourceSpec.Options, connector.ManagedSchemaBaselinesOptionKey)
 		}
 	}
 
@@ -344,6 +373,10 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	defer func() { _ = r.Source.Close(ctx) }()
 
 	if r.managed() {
+		startupBaselines, err := connector.NewManagedSchemaBaselinePayload(r.SourceSpec.Options["source_lineage_id"], loadedBaselines)
+		if err != nil {
+			return fmt.Errorf("build managed startup schema-baseline payload: %w", err)
+		}
 		if restoredCheckpoint == nil {
 			initialSource, ok := r.Source.(connector.InitialCheckpointSource)
 			if !ok {
@@ -357,7 +390,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				restoredCheckpoint = &initial
 				ackRestoredCheckpoint = true
 			} else {
-				grant, err := r.DeliveryCoordinator.AuthorizeAck(ctx, *r.RunFence, initial)
+				grant, err := r.DeliveryCoordinator.AuthorizeAck(ctx, *r.RunFence, initial, startupBaselines)
 				if err != nil {
 					return fmt.Errorf("persist managed initial checkpoint: %w", err)
 				}
@@ -380,7 +413,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 						CommitLSN:       restoredCheckpoint.LSN,
 						EndLSN:          restoredCheckpoint.LSN,
 						Checkpoint:      *restoredCheckpoint,
-					})
+					}, startupBaselines)
 					if err != nil {
 						return fmt.Errorf("materialize managed startup checkpoint: %w", err)
 					}
@@ -398,7 +431,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		}
 	}
 
-	if r.effectiveAckPolicy() != AckPolicyMaterialized {
+	if !r.managed() && r.effectiveAckPolicy() != AckPolicyMaterialized {
 		if err := openDestinations(); err != nil {
 			return err
 		}
@@ -469,7 +502,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				return err
 			}
 		}
-		return r.runManaged(ctx, restoredCheckpoint)
+		return r.runManaged(ctx)
 	}
 
 	var secondaryQueues []*secondaryQueue
@@ -768,7 +801,10 @@ func validateManagedClickHouseVersionPair(sourceMajor int, clickHouseVersion str
 }
 
 func validateManagedSnowflakePublicationRelation(publicationTables []string, sourceSchema, sourceTable string) error {
-	expectedRelation := strings.TrimSpace(sourceSchema) + "." + strings.TrimSpace(sourceTable)
+	if sourceSchema == "" || sourceTable == "" || strings.ContainsRune(sourceSchema, '\x00') || strings.ContainsRune(sourceTable, '\x00') {
+		return fmt.Errorf("managed profile %s requires exact nonempty NUL-free source identifiers", connector.ManagedProfilePostgresToSnowflakeSQLV1)
+	}
+	expectedRelation := pgx.Identifier{sourceSchema, sourceTable}.Sanitize()
 	if len(publicationTables) != 1 || publicationTables[0] != expectedRelation {
 		return fmt.Errorf("managed profile %s requires live PostgreSQL publication relation [%s], got %v", connector.ManagedProfilePostgresToSnowflakeSQLV1, expectedRelation, publicationTables)
 	}
@@ -814,7 +850,7 @@ func (r *Runner) openSource(ctx context.Context) error {
 	}
 }
 
-func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint) error {
+func (r *Runner) runManaged(ctx context.Context) error {
 	source := r.Source.(connector.TransactionalSource)
 	fence := *r.RunFence
 	materialized := r.effectiveAckPolicy() == AckPolicyMaterialized
@@ -825,13 +861,6 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 		destination = r.Destinations[0]
 		driver = destination.Dest.(connector.ManagedTransactionDestination)
 	}
-	managedMetadata := map[string]string{}
-	if restored != nil {
-		for key, value := range restored.Metadata {
-			managedMetadata[key] = value
-		}
-	}
-
 	for {
 		if materialized {
 			// Durable backlog is restored before source open and rechecked before
@@ -853,9 +882,10 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 		if err := transaction.Validate(); err != nil {
 			return fmt.Errorf("validate managed source transaction: %w", err)
 		}
-		transaction.Checkpoint.Metadata, err = connector.MergeManagedSchemaBaselines(managedMetadata, transaction)
+		sourceSchemas := connector.SourceTransactionSchemas(transaction)
+		baselinePayload, err := connector.NewManagedSchemaBaselinePayload(transaction.SourceLineageID, sourceSchemas)
 		if err != nil {
-			return fmt.Errorf("merge managed schema baselines: %w", err)
+			return fmt.Errorf("build managed transaction schema-baseline payload: %w", err)
 		}
 		// Materialized Iceberg projection is performed exactly once inside the
 		// projection-bound canonical v2 artifact runtime. Ordinary managed delivery
@@ -882,7 +912,7 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 		r.emitCheckpointTrace(ctx, "read", transaction.Checkpoint, positionID, readAction, nil)
 
 		if materialized {
-			grant, err := r.ArtifactLog.Append(ctx, fence, transaction)
+			grant, err := r.ArtifactLog.Append(ctx, fence, transaction, baselinePayload)
 			if err != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
@@ -891,20 +921,17 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 			}
 			r.emitCheckpointTrace(ctx, "deliver", grant.Checkpoint, grant.PositionID, spec.ActionDeliver, nil)
 			r.emitCheckpointTrace(ctx, "checkpoint", grant.Checkpoint, grant.PositionID, spec.ActionPersistCheckpoint, nil)
-			// Append has committed the immutable roots, delivery rows, quota,
-			// checkpoint, and ACK intent. Source feedback is strictly later.
 			if err := r.ackManagedGrant(ctx, grant); err != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
 				return fmt.Errorf("ack materialized source transaction: %w", err)
 			}
-			managedMetadata = grant.Checkpoint.Metadata
 			continue
 		}
 
 		if len(transaction.Fragments) == 0 {
-			grant, err := r.DeliveryCoordinator.AuthorizeAck(ctx, fence, transaction.Checkpoint)
+			grant, err := r.DeliveryCoordinator.AuthorizeAck(ctx, fence, transaction.Checkpoint, baselinePayload)
 			if err != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
@@ -919,7 +946,6 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 				}
 				return fmt.Errorf("ack empty managed source transaction: %w", err)
 			}
-			managedMetadata = grant.Checkpoint.Metadata
 			continue
 		}
 		contentHash, logicalBatchID, err := connector.SourceTransactionIdentity(transaction)
@@ -942,7 +968,7 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 			PositionID:            positionID,
 			ContentHash:           contentHash,
 		}
-		grant, err := coordinator.DeliverTransaction(ctx, fence, intent, transaction, driver)
+		grant, err := coordinator.DeliverTransaction(ctx, fence, intent, transaction, baselinePayload, driver)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -957,7 +983,6 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 			}
 			return fmt.Errorf("ack managed source transaction: %w", err)
 		}
-		managedMetadata = grant.Checkpoint.Metadata
 	}
 }
 

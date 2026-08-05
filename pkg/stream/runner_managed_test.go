@@ -2,12 +2,15 @@ package stream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -37,12 +40,28 @@ func TestManagedClickHouseProfileRejectsUnprovenVersionPair(t *testing.T) {
 
 func TestManagedSnowflakePublicationRequiresExactlyTheAdmittedRelation(t *testing.T) {
 	t.Parallel()
-	if err := validateManagedSnowflakePublicationRelation([]string{"public.widgets"}, "public", "widgets"); err != nil {
+	if err := validateManagedSnowflakePublicationRelation([]string{`"public"."widgets"`}, "public", "widgets"); err != nil {
 		t.Fatal(err)
 	}
-	for _, tables := range [][]string{nil, {"public.widgets", "public.audit"}, {"other.widgets"}} {
+	for _, tables := range [][]string{nil, {`"public"."widgets"`, `"public"."audit"`}, {`"other"."widgets"`}} {
 		if err := validateManagedSnowflakePublicationRelation(tables, "public", "widgets"); err == nil {
 			t.Fatalf("publication tables %v were admitted", tables)
+		}
+	}
+}
+
+func TestManagedSnowflakePublicationPreservesExactWhitespaceIdentifiers(t *testing.T) {
+	t.Parallel()
+	for _, relation := range []struct{ schema, table string }{{" ", " "}, {" leading", "trailing "}, {" both ", " all "}} {
+		expected := pgx.Identifier{relation.schema, relation.table}.Sanitize()
+		if err := validateManagedSnowflakePublicationRelation([]string{expected}, relation.schema, relation.table); err != nil {
+			t.Fatalf("exact publication relation %q rejected: %v", expected, err)
+		}
+		trimmed := pgx.Identifier{strings.TrimSpace(relation.schema), strings.TrimSpace(relation.table)}.Sanitize()
+		if trimmed != expected {
+			if err := validateManagedSnowflakePublicationRelation([]string{trimmed}, relation.schema, relation.table); err == nil {
+				t.Fatalf("trimmed publication relation %q admitted for %q", trimmed, expected)
+			}
 		}
 	}
 }
@@ -60,7 +79,7 @@ func TestManagedSnowflakeProfileRequiresPostgres16AndExactRuntimePin(t *testing.
 	}
 }
 
-func TestManagedRestoreValidatesAckIntentBeforeFeedbackOrDestinationOpen(t *testing.T) {
+func TestManagedRestoreInitializesDestinationBeforeAckValidationOrFeedback(t *testing.T) {
 	t.Parallel()
 	events := []string{}
 	source := &managedTestSource{events: &events, initial: connector.Checkpoint{LSN: "0/10"}}
@@ -74,8 +93,9 @@ func TestManagedRestoreValidatesAckIntentBeforeFeedbackOrDestinationOpen(t *test
 	if source.acks != 0 {
 		t.Fatalf("source ACK calls=%d, want zero before intent validation", source.acks)
 	}
-	if containsEvent(events, "destination.open") {
-		t.Fatalf("destination opened before restored feedback validation: %v", events)
+	wantPrefix := []string{"destination.open", "destination.initialize", "source.open", "coordinator.validate"}
+	if len(events) < len(wantPrefix) || !reflect.DeepEqual(events[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("managed restore events=%v, want destination authority before source and ACK validation: %v", events, wantPrefix)
 	}
 }
 
@@ -84,14 +104,18 @@ func TestManagedRestoreSeedsSourceWithDeliveredSchemaBaselines(t *testing.T) {
 	events := []string{}
 	source := &managedTestSource{events: &events, initial: connector.Checkpoint{LSN: "0/10"}}
 	coordinator := &managedTestCoordinator{events: &events}
-	const baseline = `[{"Name":"widgets","Namespace":"public","Version":4,"Columns":[{"Name":"id","Type":"bigint"}]}]`
-	runner := managedTestRunner(source, &managedTestDestination{events: &events}, coordinator, managedTestCheckpointStore{checkpoint: connector.Checkpoint{
-		LSN: "0/10", Metadata: map[string]string{connector.ManagedSchemaBaselinesMetadataKey: baseline},
-	}})
+	loaded := []connector.Schema{{Name: "widgets", Namespace: "public", Version: 4, Columns: []connector.Column{{Name: "id", Type: "bigint"}}}}
+	baselineBytes, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := string(baselineBytes)
+	runner := managedTestRunner(source, &managedTestDestination{events: &events}, coordinator, managedTestCheckpointStore{checkpoint: connector.Checkpoint{LSN: "0/10"}})
+	runner.SchemaBaselines = &managedTestSchemaBaselines{load: loaded}
 	if err := runner.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := source.openSpec.Options[connector.ManagedSchemaBaselinesMetadataKey]; got != baseline {
+	if got := source.openSpec.Options[connector.ManagedSchemaBaselinesOptionKey]; got != baseline {
 		t.Fatalf("source schema baseline option=%q, want %q", got, baseline)
 	}
 }
@@ -149,6 +173,25 @@ func TestManagedCancellationDominatesSourceFeedbackTransportError(t *testing.T) 
 	}
 }
 
+func TestManagedDestinationInitializationFailsBeforeAllSourceIO(t *testing.T) {
+	t.Parallel()
+	for _, bootstrapMode := range []string{"never", "required"} {
+		t.Run(bootstrapMode, func(t *testing.T) {
+			events := []string{}
+			initializeErr := errors.New("receipt authority missing")
+			source := &managedTestSource{events: &events}
+			runner := managedTestRunner(source, &managedTestDestination{events: &events, initializeErr: initializeErr}, &managedTestCoordinator{events: &events}, managedTestCheckpointStore{err: connector.ErrCheckpointNotFound})
+			runner.SourceSpec.Options["bootstrap"] = bootstrapMode
+			if err := runner.Run(context.Background()); !errors.Is(err, initializeErr) {
+				t.Fatalf("Run() error=%v, want initialization failure", err)
+			}
+			if !reflect.DeepEqual(events, []string{"destination.open", "destination.initialize", "destination.close"}) {
+				t.Fatalf("managed initialization failure performed source I/O for bootstrap=%s: %v", bootstrapMode, events)
+			}
+		})
+	}
+}
+
 func TestManagedBootstrapPublishesBeforeCDCSourceOpen(t *testing.T) {
 	t.Parallel()
 	events := []string{}
@@ -166,7 +209,7 @@ func TestManagedBootstrapPublishesBeforeCDCSourceOpen(t *testing.T) {
 	if err := runner.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := []string{"destination.open", "source.bootstrap", "source.open", "coordinator.validate", "source.ack", "coordinator.receipt"}
+	wantPrefix := []string{"destination.open", "destination.initialize", "source.bootstrap", "source.open", "coordinator.validate", "source.ack", "coordinator.receipt"}
 	if len(events) < len(wantPrefix) || !reflect.DeepEqual(events[:len(wantPrefix)], wantPrefix) {
 		t.Fatalf("managed bootstrap startup events=%v, want prefix %v", events, wantPrefix)
 	}
@@ -200,7 +243,7 @@ func TestManagedMaterializedRestoresBackpressureBeforeBootstrapWork(t *testing.T
 	}
 }
 
-func TestManagedNewSlotPersistsInitialCutBeforeDestinationOpen(t *testing.T) {
+func TestManagedBootstrapNeverInitializesDestinationBeforeSourceAndInitialCut(t *testing.T) {
 	t.Parallel()
 	events := []string{}
 	source := &managedTestSource{events: &events, initial: connector.Checkpoint{LSN: "0/20"}}
@@ -210,7 +253,7 @@ func TestManagedNewSlotPersistsInitialCutBeforeDestinationOpen(t *testing.T) {
 	if err := runner.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := []string{"source.open", "coordinator.authorize", "coordinator.validate", "source.ack", "coordinator.receipt", "destination.open"}
+	wantPrefix := []string{"destination.open", "destination.initialize", "source.open", "coordinator.authorize", "coordinator.validate", "source.ack", "coordinator.receipt", "source.read-transaction"}
 	if len(events) < len(wantPrefix) || !reflect.DeepEqual(events[:len(wantPrefix)], wantPrefix) {
 		t.Fatalf("managed startup events=%v, want prefix %v", events, wantPrefix)
 	}
@@ -319,7 +362,7 @@ func (l *managedTestArtifactLog) WaitForReadAdmission(context.Context, connector
 	return nil
 }
 
-func (l *managedTestArtifactLog) Append(_ context.Context, _ connector.RunFence, transaction connector.SourceTransaction) (connector.AckGrant, error) {
+func (l *managedTestArtifactLog) Append(_ context.Context, _ connector.RunFence, transaction connector.SourceTransaction, _ connector.ManagedSchemaBaselinePayload) (connector.AckGrant, error) {
 	l.appends++
 	*l.events = append(*l.events, "artifact.append")
 	positionID, err := connector.CheckpointPositionID(transaction.Checkpoint)
@@ -361,7 +404,16 @@ func managedTestRunner(source connector.Source, destination connector.Destinatio
 		AckPolicy:           AckPolicyAll,
 		RunFence:            &fence,
 		DeliveryCoordinator: coordinator,
+		SchemaBaselines:     &managedTestSchemaBaselines{},
 	}
+}
+
+type managedTestSchemaBaselines struct {
+	load []connector.Schema
+}
+
+func (s *managedTestSchemaBaselines) Load(context.Context, connector.RunFence, string) ([]connector.Schema, error) {
+	return append([]connector.Schema(nil), s.load...), nil
 }
 
 type managedTestSource struct {
@@ -387,6 +439,7 @@ func (s *managedTestSource) Read(context.Context) (connector.Batch, error) {
 	return connector.Batch{}, io.EOF
 }
 func (s *managedTestSource) ReadTransaction(context.Context) (connector.SourceTransaction, error) {
+	*s.events = append(*s.events, "source.read-transaction")
 	if s.transactionRead >= len(s.transactions) {
 		return connector.SourceTransaction{}, io.EOF
 	}
@@ -416,7 +469,10 @@ func (*managedTestSource) Capabilities() connector.Capabilities {
 	return connector.Capabilities{Support: connector.SupportExperimental, SupportsStreaming: true}
 }
 
-type managedTestDestination struct{ events *[]string }
+type managedTestDestination struct {
+	events        *[]string
+	initializeErr error
+}
 
 func (d *managedTestDestination) Open(context.Context, connector.Spec) error {
 	*d.events = append(*d.events, "destination.open")
@@ -436,6 +492,10 @@ func (d *managedTestDestination) Close(context.Context) error {
 }
 func (*managedTestDestination) Apply(context.Context, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
 	return connector.DeliveryEvidence{}, nil
+}
+func (d *managedTestDestination) InitializeManagedDelivery(context.Context) error {
+	*d.events = append(*d.events, "destination.initialize")
+	return d.initializeErr
 }
 func (*managedTestDestination) ValidateTransaction(context.Context, connector.SourceTransaction) error {
 	return nil
@@ -471,12 +531,12 @@ type managedTestCoordinator struct {
 	commitFeedback func() error
 }
 
-func (c *managedTestCoordinator) AuthorizeAck(_ context.Context, _ connector.RunFence, checkpoint connector.Checkpoint) (connector.AckGrant, error) {
+func (c *managedTestCoordinator) AuthorizeAck(_ context.Context, _ connector.RunFence, checkpoint connector.Checkpoint, _ connector.ManagedSchemaBaselinePayload) (connector.AckGrant, error) {
 	*c.events = append(*c.events, "coordinator.authorize")
 	position, err := connector.CheckpointPositionID(checkpoint)
 	return connector.AckGrant{Checkpoint: checkpoint, PositionID: position}, err
 }
-func (*managedTestCoordinator) DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedTransactionDestination) (connector.AckGrant, error) {
+func (*managedTestCoordinator) DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedSchemaBaselinePayload, connector.ManagedTransactionDestination) (connector.AckGrant, error) {
 	return connector.AckGrant{}, errors.New("unexpected transaction delivery")
 }
 func (c *managedTestCoordinator) ValidateAckGrant(context.Context, connector.RunFence, connector.AckGrant) error {

@@ -227,7 +227,11 @@ func TestManagedAppendAcceptsRepeatedSourceKeys(t *testing.T) {
 		{Table: "events", Operation: connector.OpInsert, After: map[string]any{"id": int64(1), connector.AppendOperationColumn: "insert", connector.AppendDeletedColumn: false, connector.AppendSourcePositionColumn: "0/10"}},
 		{Table: "events", Operation: connector.OpInsert, After: map[string]any{"id": int64(1), connector.AppendOperationColumn: "update", connector.AppendDeletedColumn: false, connector.AppendSourcePositionColumn: "0/20"}},
 	}
-	if err := destination.applyBatch(context.Background(), tx, `"logs"."events"`, schema, records, writeModeAppend, connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend}); err != nil {
+	target, err := newPostgresTarget("logs", "events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := destination.applyBatch(context.Background(), tx, target, schema, records, writeModeAppend, connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend}); err != nil {
 		t.Fatal(err)
 	}
 	if tx.copiedRows != 2 {

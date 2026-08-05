@@ -44,12 +44,14 @@ type FlowRunner struct {
 	Parallelism        int
 	ResolveStaging     bool
 	DDLExecutions      stream.DDLExecutionStore
+	DDLPolicyDefaults  *flow.DDLPolicyDefaults
 	TraceSink          stream.TraceSink
 	ExecutionBackend   string
 	ExecutionID        string
 	ExpectedGeneration int64
 	Authority          authority.Store
 	Deliveries         managedDeliveryRuntime
+	SchemaBaselines    connector.ManagedSchemaBaselineStore
 	Artifacts          ArtifactLogFactory
 }
 
@@ -160,9 +162,11 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		DefaultParallelism:  r.Parallelism,
 		ResolveStaging:      r.ResolveStaging,
 		DDLExecutions:       ddlExecutions,
+		DDLPolicyDefaults:   r.DDLPolicyDefaults,
 		TraceSink:           r.TraceSink,
 		RunFence:            runFence,
 		DeliveryCoordinator: r.Deliveries,
+		SchemaBaselines:     r.SchemaBaselines,
 		ArtifactLog:         artifactLog,
 	})
 	if err != nil {

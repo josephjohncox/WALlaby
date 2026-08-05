@@ -39,6 +39,7 @@ func TestPostgresToPostgresManagedRecoveryContract(t *testing.T) {
 DROP PUBLICATION IF EXISTS wallaby_managed_e2e_publication;
 DROP TABLE IF EXISTS public.wallaby_managed_source;
 DROP TABLE IF EXISTS public.wallaby_managed_target;
+DROP TABLE IF EXISTS wallaby_meta.__delivery_receipts;
 CREATE TABLE public.wallaby_managed_source (id bigint PRIMARY KEY, value text, payload text, counter bigint NOT NULL DEFAULT 0);
 CREATE TABLE public.wallaby_managed_target (id bigint PRIMARY KEY, value text, payload text, counter bigint NOT NULL DEFAULT 0);
 CREATE PUBLICATION wallaby_managed_e2e_publication FOR TABLE public.wallaby_managed_source`); err != nil {
@@ -48,7 +49,8 @@ CREATE PUBLICATION wallaby_managed_e2e_publication FOR TABLE public.wallaby_mana
 		_, _ = pool.Exec(context.Background(), `
 DROP PUBLICATION IF EXISTS wallaby_managed_e2e_publication;
 DROP TABLE IF EXISTS public.wallaby_managed_source;
-DROP TABLE IF EXISTS public.wallaby_managed_target`)
+DROP TABLE IF EXISTS public.wallaby_managed_target;
+DROP TABLE IF EXISTS wallaby_meta.__delivery_receipts`)
 	}()
 
 	engine, err := workflow.NewPostgresEngine(ctx, dsn)
@@ -129,7 +131,7 @@ DROP TABLE IF EXISTS public.wallaby_managed_target`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := coordinator.AuthorizeAck(ctx, seedFence, connector.Checkpoint{LSN: provisionedLSN}); err != nil {
+	if _, err := coordinator.AuthorizeAck(ctx, seedFence, connector.Checkpoint{LSN: provisionedLSN}, emptyManagedBaselinePayload(t, created.Source.Options["source_lineage_id"])); err != nil {
 		t.Fatal(err)
 	}
 	if err := authorityStore.FinishProducer(ctx, seedFence, "checkpoint_seeded"); err != nil {
@@ -140,7 +142,7 @@ DROP TABLE IF EXISTS public.wallaby_managed_target`)
 	runErr := make(chan error, 1)
 	go func() {
 		flowRunner := runner.FlowRunner{
-			Engine: engine, Checkpoints: checkpoints, Authority: authorityStore, Deliveries: coordinator,
+			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
 			ExpectedGeneration: control.Generation, ExecutionID: "managed-e2e", ExecutionBackend: "test",
 		}
 		runErr <- flowRunner.Run(runCtx, started, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: started.Destinations[0], Dest: &pgdest.Destination{}}})
@@ -160,6 +162,13 @@ DROP TABLE IF EXISTS public.wallaby_managed_target`)
 		err := pool.QueryRow(ctx, `SELECT value,payload FROM public.wallaby_managed_target WHERE id=1`).Scan(&value, &payload)
 		return value == "managed" && payload == oldPayload, err
 	})
+	var destinationReceipts int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM wallaby_meta.__delivery_receipts WHERE flow_id=$1`, flowID).Scan(&destinationReceipts); err != nil {
+		t.Fatalf("bootstrap=never generic managed destination did not initialize receipts: %v", err)
+	}
+	if destinationReceipts != 1 {
+		t.Fatalf("generic managed destination receipts=%d, want one committed transaction", destinationReceipts)
+	}
 
 	var checkpointLSN string
 	waitForCondition(t, ctx, runErr, "managed checkpoint and source ACK receipt", func() (bool, error) {
@@ -263,7 +272,7 @@ WHERE checkpoint.flow_incarnation_id=$1`, incarnationID).Scan(&updatedCheckpoint
 	restartErr := make(chan error, 1)
 	go func() {
 		flowRunner := runner.FlowRunner{
-			Engine: engine, Checkpoints: checkpoints, Authority: authorityStore, Deliveries: coordinator,
+			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
 			ExpectedGeneration: control.Generation, ExecutionID: "managed-e2e-restart", ExecutionBackend: "test",
 		}
 		restartErr <- flowRunner.Run(restartCtx, started, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: started.Destinations[0], Dest: &pgdest.Destination{}}})

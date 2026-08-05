@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -12,8 +13,23 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	internalddl "github.com/josephjohncox/wallaby/internal/ddl"
+	internalschema "github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
+
+var _ connector.ManagedTransactionDestination = (*Destination)(nil)
+
+// InitializeManagedDelivery establishes and exactly verifies the immutable
+// destination receipt authority before any managed bootstrap or CDC I/O.
+func (d *Destination) InitializeManagedDelivery(ctx context.Context) error {
+	if d.pool == nil {
+		return errors.New("postgres destination not initialized")
+	}
+	if d.batchMode != batchModeTarget {
+		return errors.New("managed PostgreSQL delivery requires batch_mode=target")
+	}
+	return d.ensureManagedReceiptTable(ctx)
+}
 
 // Apply writes target DML, metadata, and a deterministic destination receipt in
 // one PostgreSQL transaction. A commit transport error remains indeterminate
@@ -114,7 +130,16 @@ func (d *Destination) ValidateTransaction(ctx context.Context, transaction conne
 		}
 		key := tableKey(batch.Schema, batch.Schema.Name)
 		if batchHasStructuredDDL(batch) {
-			dirty[key] = struct{}{}
+			keys, err := structuredDDLTableKeys(batch)
+			if err != nil {
+				return err
+			}
+			for _, changedKey := range keys {
+				dirty[changedKey] = struct{}{}
+			}
+			if len(keys) == 0 {
+				dirty[key] = struct{}{}
+			}
 			continue
 		}
 		if _, changedInTransaction := dirty[key]; changedInTransaction {
@@ -181,7 +206,7 @@ func (d *Destination) ApplyTransaction(ctx context.Context, intent connector.Del
 
 func (d *Destination) applyManagedFragment(ctx context.Context, tx pgx.Tx, batch connector.Batch, checkpoint connector.Checkpoint) error {
 	var pending []connector.Record
-	pendingTarget := ""
+	var pendingTarget postgresTarget
 	flush := func() error {
 		if len(pending) == 0 {
 			return nil
@@ -205,7 +230,7 @@ func (d *Destination) applyManagedFragment(ctx context.Context, tx pgx.Tx, batch
 			}
 		}
 		pending = nil
-		pendingTarget = ""
+		pendingTarget = postgresTarget{}
 		return nil
 	}
 
@@ -231,11 +256,14 @@ func (d *Destination) applyManagedFragment(ctx context.Context, tx pgx.Tx, batch
 			}
 			continue
 		}
-		target, isStaging := d.resolveTarget(batch.Schema, record)
+		target, isStaging, err := d.resolveTarget(batch.Schema, record)
+		if err != nil {
+			return err
+		}
 		if isStaging {
 			return errors.New("managed PostgreSQL profile cannot apply a staging fragment")
 		}
-		if pendingTarget != "" && pendingTarget != target {
+		if len(pendingTarget.identifier) != 0 && strings.Join(pendingTarget.identifier, "\x00") != strings.Join(target.identifier, "\x00") {
 			if err := flush(); err != nil {
 				return err
 			}
@@ -244,6 +272,31 @@ func (d *Destination) applyManagedFragment(ctx context.Context, tx pgx.Tx, batch
 		pending = append(pending, record)
 	}
 	return flush()
+}
+
+func structuredDDLTableKeys(batch connector.Batch) ([]string, error) {
+	seen := make(map[string]struct{})
+	for _, record := range batch.Records {
+		if record.Operation != connector.OpDDL || len(record.DDLPlan) == 0 {
+			continue
+		}
+		var plan internalschema.Plan
+		if err := json.Unmarshal(record.DDLPlan, &plan); err != nil {
+			return nil, fmt.Errorf("decode managed DDL plan for target validation: %w", err)
+		}
+		for _, change := range plan.Changes {
+			if change.Table == "" {
+				continue
+			}
+			seen[tableKey(connector.Schema{Namespace: change.Namespace, Name: change.Table}, change.Table)] = struct{}{}
+		}
+	}
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys, nil
 }
 
 func batchHasStructuredDDL(batch connector.Batch) bool {
@@ -508,7 +561,7 @@ func (d *Destination) ensureManagedReceiptTable(ctx context.Context) error {
 		return fmt.Errorf("create managed receipt schema: %w", err)
 	}
 	var exists bool
-	if err := tx.QueryRow(ctx, `SELECT to_regclass('wallaby_meta.__delivery_receipts') IS NOT NULL`).Scan(&exists); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT to_regclass('"wallaby_meta"."__delivery_receipts"') IS NOT NULL`).Scan(&exists); err != nil {
 		return fmt.Errorf("inspect managed receipt table existence: %w", err)
 	}
 	if !exists {
@@ -545,6 +598,9 @@ func (d *Destination) ensureManagedReceiptTable(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("managed receipt table contract: %w", err)
 	}
+	if err := verifyExactManagedReceiptRowVisibility(ctx, tx); err != nil {
+		return fmt.Errorf("managed receipt table row visibility: %w", err)
+	}
 	if err := verifyExactConstraintsAndIndexes(ctx, tx, "wallaby_meta", "__delivery_receipts", []string{
 		managedReceiptCanonicalConstraint,
 		"wallaby_delivery_receipts_logical_batch_unique|u|false|false|true|UNIQUE (flow_incarnation_id, destination_revision_id, logical_batch_id)",
@@ -575,6 +631,31 @@ WHERE n.nspname=$1 AND r.relname=$2 GROUP BY r.relkind,r.relpersistence`, namesp
 	}
 	if !exact {
 		return fmt.Errorf("exact columns/NOT NULL contract mismatch for %s.%s", namespace, table)
+	}
+	return nil
+}
+
+func verifyExactManagedReceiptRowVisibility(ctx context.Context, query managedSchemaQuerier) error {
+	var exact bool
+	if err := query.QueryRow(ctx, `
+SELECT COALESCE(
+  relation.relkind='r'
+  AND NOT relation.relispartition
+  AND NOT relation.relhassubclass
+  AND NOT relation.relrowsecurity
+  AND NOT relation.relforcerowsecurity
+  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits WHERE inhrelid=relation.oid OR inhparent=relation.oid)
+  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger WHERE tgrelid=relation.oid AND NOT tgisinternal)
+  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_rewrite WHERE ev_class=relation.oid)
+  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_policy WHERE polrelid=relation.oid),
+  false)
+FROM pg_catalog.pg_class AS relation
+JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid=relation.relnamespace
+WHERE namespace.nspname='wallaby_meta' AND relation.relname='__delivery_receipts'`).Scan(&exact); err != nil {
+		return fmt.Errorf("inspect exact row-visibility contract: %w", err)
+	}
+	if !exact {
+		return errors.New("delivery receipt relation admits inheritance, partitions, triggers, rules, or row-level visibility mutation")
 	}
 	return nil
 }
@@ -635,7 +716,7 @@ func (d *Destination) loadManagedReceipt(ctx context.Context, tx pgx.Tx, intent 
 	}
 	rows, err := tx.Query(ctx, `
 SELECT marker_id,flow_id,source_lineage_id,logical_batch_id,position_id,content_hash
-FROM wallaby_meta.__delivery_receipts
+FROM ONLY wallaby_meta.__delivery_receipts
 WHERE flow_incarnation_id=$1
   AND destination_revision_id=$2
   AND (logical_batch_id=$3 OR position_id=$4)

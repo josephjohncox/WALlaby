@@ -10,11 +10,11 @@ var _ ManagedDeliveryCoordinator = currentManagedCoordinator{}
 
 type currentManagedCoordinator struct{}
 
-func (currentManagedCoordinator) AuthorizeAck(context.Context, connector.RunFence, connector.Checkpoint) (connector.AckGrant, error) {
+func (currentManagedCoordinator) AuthorizeAck(context.Context, connector.RunFence, connector.Checkpoint, connector.ManagedSchemaBaselinePayload) (connector.AckGrant, error) {
 	return connector.AckGrant{}, nil
 }
 
-func (currentManagedCoordinator) DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedTransactionDestination) (connector.AckGrant, error) {
+func (currentManagedCoordinator) DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedSchemaBaselinePayload, connector.ManagedTransactionDestination) (connector.AckGrant, error) {
 	return connector.AckGrant{}, nil
 }
 

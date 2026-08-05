@@ -15,5 +15,9 @@ func mappedRunnerTestFlow(definition flow.Flow) flow.Flow {
 		}
 	}
 	definition.Config.TableMappings = flow.NewTableMappings(definition.Destinations)
+	if definition.Config.DDL.AutoApply == nil {
+		autoApply := false
+		definition.Config.DDL.AutoApply = &autoApply
+	}
 	return definition
 }

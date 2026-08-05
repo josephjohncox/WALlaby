@@ -23,6 +23,9 @@ func (d *Destination) PrepareBootstrap(ctx context.Context, intent connector.Boo
 	if d.pool == nil {
 		return errors.New("postgres destination not initialized")
 	}
+	if err := d.InitializeManagedDelivery(ctx); err != nil {
+		return fmt.Errorf("initialize managed bootstrap delivery authority: %w", err)
+	}
 	if len(tables) == 0 {
 		return errors.New("bootstrap manifest has no tables")
 	}
@@ -124,7 +127,11 @@ func (d *Destination) ApplyBootstrap(ctx context.Context, bootstrap connector.Bo
 	case !errors.Is(err, pgx.ErrNoRows):
 		return connector.DeliveryEvidence{}, err
 	}
-	_, stage, _ := d.bootstrapTables(bootstrap, batch.Schema)
+	targetSchema, _, stageTable := d.bootstrapTableCoordinates(bootstrap, batch.Schema)
+	stage, err := newPostgresTarget(targetSchema, stageTable)
+	if err != nil {
+		return connector.DeliveryEvidence{}, err
+	}
 	for _, record := range batch.Records {
 		if record.Operation != connector.OpLoad && record.Operation != connector.OpInsert {
 			return connector.DeliveryEvidence{}, fmt.Errorf("managed bootstrap accepts only load/insert records, got %s", record.Operation)

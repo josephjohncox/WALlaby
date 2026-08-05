@@ -77,7 +77,7 @@ func TestMappedArtifactFilteredTransactionAdvancesWithoutObjectOrCatalogAttempt(
 		t.Fatal(err)
 	}
 	transaction := artifactSourceTransaction()
-	grant, err := runtime.Append(ctx, fence, transaction)
+	grant, err := runtime.Append(ctx, fence, transaction, managedBaselinePayload(t, transaction))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,6 +103,88 @@ func TestMappedArtifactFilteredTransactionAdvancesWithoutObjectOrCatalogAttempt(
 	}
 	if err := mismatched.Recover(ctx, fence); err == nil || !errors.Is(err, connector.ErrDeliveryConflict) {
 		t.Fatalf("recovery mapping fingerprint mismatch error=%v", err)
+	}
+}
+
+func TestMappedArtifactFilteredBaselineCheckpointCrashIsAtomic(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	engine, err := workflow.NewPostgresEngine(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	pool, err := newAuthorityTestPool(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if _, err := delivery.NewCoordinator(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	authorityStore, err := authority.NewPostgresStore(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowID := "artifact-filtered-baseline-crash-" + uuid.NewString()
+	defer cleanupAuthorityTest(context.Background(), pool, flowID)
+	destination := connector.Spec{Name: "target", Type: connector.EndpointPostgres}
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{destination}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{destination})}}); err != nil {
+		t.Fatal(err)
+	}
+	_, control, err := engine.PlanStart(ctx, flowID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := authorityStore.AcquireProducer(ctx, flowID, "artifact-filtered-crash", "test", control.Generation, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mappings := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "ice", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: "events", Action: flow.MappingActionExclude}}}}}
+	projector, err := tablemap.New(mappings, "ice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceTransaction := artifactSourceTransaction()
+	projected, _, err := projector.ProjectTransaction(sourceTransaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := managedBaselinePayload(t, sourceTransaction)
+	config := artifactlog.StreamConfig{ProjectionID: artifactlog.ProjectionIDV2, MappingFingerprint: projector.Fingerprint(), HardRetainedBytes: 128 << 20, BacklogCountHigh: 100, BacklogBytesHigh: 128 << 20, BacklogAgeHigh: time.Hour}
+	failed := false
+	publisher, err := artifactlog.NewPublisher(ctx, pool, memoryMappedArtifactStore{}, config, artifactlog.WithPublisherHooks(artifactlog.PublisherHooks{Boundary: func(_ context.Context, boundary string) error {
+		if boundary == "before_publication_commit" && !failed {
+			failed = true
+			return errors.New("crash before filtered publication commit")
+		}
+		return nil
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publisher.Publish(ctx, fence, projected, baseline); err == nil {
+		t.Fatal("filtered publication crash was not injected")
+	}
+	var checkpoints, baselines int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM authoritative_checkpoints WHERE flow_incarnation_id=$1),(SELECT count(*) FROM managed_schema_baselines WHERE flow_incarnation_id=$1)`, fence.FlowIncarnationID).Scan(&checkpoints, &baselines); err != nil {
+		t.Fatal(err)
+	}
+	if checkpoints != 0 || baselines != 0 {
+		t.Fatalf("filtered crash checkpoint/baseline=%d/%d, want old/old", checkpoints, baselines)
+	}
+	if _, err := publisher.Publish(ctx, fence, projected, baseline); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM authoritative_checkpoints WHERE flow_incarnation_id=$1),(SELECT count(*) FROM managed_schema_baselines WHERE flow_incarnation_id=$1)`, fence.FlowIncarnationID).Scan(&checkpoints, &baselines); err != nil {
+		t.Fatal(err)
+	}
+	if checkpoints != 1 || baselines != 1 {
+		t.Fatalf("filtered retry checkpoint/baseline=%d/%d, want new/new", checkpoints, baselines)
 	}
 }
 
@@ -236,7 +318,7 @@ func TestMappedArtifactCrashRetryPreservesMetadataAndPublicationIdentity(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := publisher.Publish(ctx, fence, projected); err == nil || !strings.Contains(err.Error(), "injected crash") {
+			if _, err := publisher.Publish(ctx, fence, projected, managedBaselinePayload(t, projected)); err == nil || !strings.Contains(err.Error(), "injected crash") {
 				t.Fatalf("first publish error=%v", err)
 			}
 			var publicationCount int
@@ -246,11 +328,11 @@ func TestMappedArtifactCrashRetryPreservesMetadataAndPublicationIdentity(t *test
 			if publicationCount != 0 {
 				t.Fatal("publication committed before retry")
 			}
-			first, err := publisher.Publish(ctx, fence, projected)
+			first, err := publisher.Publish(ctx, fence, projected, managedBaselinePayload(t, projected))
 			if err != nil {
 				t.Fatal(err)
 			}
-			second, err := publisher.Publish(ctx, fence, projected)
+			second, err := publisher.Publish(ctx, fence, projected, managedBaselinePayload(t, projected))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -348,7 +430,8 @@ func TestArtifactCatalogAttemptNotAppliedRetryAndConflictStaySingleIdentity(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := publisher.Publish(ctx, fence, artifactSourceTransaction())
+	firstTransaction := artifactSourceTransaction()
+	first, err := publisher.Publish(ctx, fence, firstTransaction, managedBaselinePayload(t, firstTransaction))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +454,7 @@ func TestArtifactCatalogAttemptNotAppliedRetryAndConflictStaySingleIdentity(t *t
 		t.Fatalf("retry attempt/receipt/reconcile/commit=%d/%d/%d/%d", attempts, receipts, retry.reconciles, retry.commits)
 	}
 	secondTransaction := artifactTransactionAt(101, "0/E0", "0/E8", "0/F0", "conflict")
-	second, err := publisher.Publish(ctx, fence, secondTransaction)
+	second, err := publisher.Publish(ctx, fence, secondTransaction, managedBaselinePayload(t, secondTransaction))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +668,7 @@ func TestCanonicalArtifactPublicationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := publisher.Publish(ctx, fence, transaction); err == nil {
+	if _, err := publisher.Publish(ctx, fence, transaction, managedBaselinePayload(t, transaction)); err == nil {
 		t.Fatal("expected injected failure after durable quota reservation and before upload")
 	}
 	var reservedBefore int64
@@ -600,7 +683,7 @@ func TestCanonicalArtifactPublicationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	publication, err := publisher.Publish(ctx, fence, transaction)
+	publication, err := publisher.Publish(ctx, fence, transaction, managedBaselinePayload(t, transaction))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -716,7 +799,7 @@ WHERE flow_incarnation_id=$1 AND consumer_revision_id=$2`, fence.FlowIncarnation
 	if err := objects.DeleteVersion(ctx, evidence); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := publisher.Publish(ctx, fence, transaction); err == nil {
+	if _, err := publisher.Publish(ctx, fence, transaction, managedBaselinePayload(t, transaction)); err == nil {
 		t.Fatal("retry unexpectedly authorized ACK after rooted exact object version was deleted")
 	}
 }

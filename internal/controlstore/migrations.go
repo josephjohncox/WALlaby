@@ -136,7 +136,7 @@ func VerifyMigrations(ctx context.Context, pool *pgxpool.Pool, domain string, mi
 		return err
 	}
 	var ledgerExists bool
-	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.wallaby_control_migrations') IS NOT NULL`).Scan(&ledgerExists); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('"public"."wallaby_control_migrations"') IS NOT NULL`).Scan(&ledgerExists); err != nil {
 		return fmt.Errorf("verify authoritative migration ledger: %w", err)
 	}
 	if !ledgerExists {

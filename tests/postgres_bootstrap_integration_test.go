@@ -209,7 +209,7 @@ func TestBootstrapMigrationRejectsTasksWithoutDestinationContract(t *testing.T) 
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
-DELETE FROM wallaby_control_migrations WHERE domain='bootstrap' AND version='007_snapshot_destination_contract.sql';
+DELETE FROM wallaby_control_migrations WHERE domain='bootstrap' AND version IN ('007_snapshot_destination_contract.sql','008_managed_schema_baselines.sql');
 ALTER TABLE source_bootstrap_tasks
   DROP COLUMN destination_schema_json CASCADE,
   DROP COLUMN write_policy_json CASCADE,

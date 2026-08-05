@@ -352,7 +352,7 @@ func TestPostgresCatalogChangeAllocatesVersions(t *testing.T) {
 	for version, columnCount := range map[int64]int{0: 1, 1: 2, 2: 3} {
 		var storedSchema connector.Schema
 		if err := store.pool.QueryRow(ctx,
-			"SELECT schema_json FROM schema_versions WHERE namespace = $1 AND name = $2 AND version = $3",
+			"SELECT schema_json FROM schema_versions WHERE flow_id='' AND namespace = $1 AND name = $2 AND version = $3",
 			namespace, name, version,
 		).Scan(&storedSchema); err != nil {
 			t.Fatalf("read schema version %d: %v", version, err)
@@ -452,7 +452,7 @@ func TestPostgresCatalogChangeSerializesVersions(t *testing.T) {
 	}
 
 	rows, err := store.pool.Query(ctx,
-		"SELECT version, schema_json FROM schema_versions WHERE namespace = $1 AND name = $2 ORDER BY version",
+		"SELECT version, schema_json FROM schema_versions WHERE flow_id='' AND namespace = $1 AND name = $2 ORDER BY version",
 		namespace, name,
 	)
 	if err != nil {
@@ -480,7 +480,7 @@ func TestPostgresCatalogChangeSerializesVersions(t *testing.T) {
 
 	var latest connector.Schema
 	if err := store.pool.QueryRow(ctx,
-		"SELECT schema_json FROM schema_versions WHERE namespace = $1 AND name = $2 ORDER BY version DESC LIMIT 1",
+		"SELECT schema_json FROM schema_versions WHERE flow_id='' AND namespace = $1 AND name = $2 ORDER BY version DESC LIMIT 1",
 		namespace, name,
 	).Scan(&latest); err != nil {
 		t.Fatal(err)
@@ -515,7 +515,7 @@ func TestPostgresCatalogChangeSerializesVersions(t *testing.T) {
 	}
 	var finalCount int
 	if err := store.pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM schema_versions WHERE namespace = $1 AND name = $2",
+		"SELECT COUNT(*) FROM schema_versions WHERE flow_id='' AND namespace = $1 AND name = $2",
 		namespace, name,
 	).Scan(&finalCount); err != nil {
 		t.Fatal(err)

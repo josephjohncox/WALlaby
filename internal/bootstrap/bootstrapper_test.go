@@ -58,6 +58,37 @@ func TestDeliverTaskBatchRequiresFrozenManifestAndExactSchema(t *testing.T) {
 	}
 }
 
+func TestSnapshotTaskAndDestinationContractPreserveWhitespaceOnlyIdentifiers(t *testing.T) {
+	task := SnapshotTask{
+		RelationID: 1, TaskID: "full", Namespace: " ", Table: " ",
+		Schema:     connector.Schema{Namespace: " ", Name: " ", Columns: []connector.Column{{Name: "id", Type: "bigint"}}},
+		KeyColumns: []string{"id"},
+		Delivery: SnapshotDeliveryContract{
+			Version:               SnapshotDeliveryContractV1,
+			Schema:                connector.Schema{Namespace: "  ", Name: " ", Columns: []connector.Column{{Name: "mapped_id", Type: "bigint"}}},
+			ProjectionFingerprint: "mapping-v1",
+			WritePolicy:           connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend, ProjectionFingerprint: "mapping-v1"},
+		},
+	}
+	if _, err := SnapshotManifestHash([]SnapshotTask{task}); err != nil {
+		t.Fatalf("whitespace-only PostgreSQL identifiers rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*SnapshotTask){
+		"empty source namespace":  func(task *SnapshotTask) { task.Namespace = "" },
+		"NUL source table":        func(task *SnapshotTask) { task.Table = "bad\x00table" },
+		"empty destination table": func(task *SnapshotTask) { task.Delivery.Schema.Name = "" },
+		"NUL destination schema":  func(task *SnapshotTask) { task.Delivery.Schema.Namespace = "bad\x00schema" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := task
+			mutate(&invalid)
+			if _, err := SnapshotManifestHash([]SnapshotTask{invalid}); err == nil {
+				t.Fatal("invalid identifier admitted")
+			}
+		})
+	}
+}
+
 func TestImportSnapshotCommandRejectsUntrustedNames(t *testing.T) {
 	validNames := []string{
 		"00000003-0000001B-1",

@@ -142,12 +142,12 @@ func managedConfigFromSpec(dsn string, spec connector.Spec) (managedConfig, erro
 		ownerRole: strings.TrimSpace(options["managed_owner_role"]), executionRole: strings.TrimSpace(options["managed_execution_role"]),
 		warehouse: strings.TrimSpace(options["managed_warehouse"]), snowflakeVersion: strings.TrimSpace(options["managed_snowflake_version"]),
 		targetCreatedOn: strings.TrimSpace(options["managed_target_created_on"]), receiptsCreatedOn: strings.TrimSpace(options["managed_receipts_created_on"]),
-		sourceSchema: strings.TrimSpace(options["managed_source_schema"]), sourceTable: strings.TrimSpace(options["managed_source_table"]),
+		sourceSchema: options["managed_source_schema"], sourceTable: options["managed_source_table"],
 		schemaContractHash:  strings.TrimSpace(options["managed_schema_contract_hash"]),
 		destinationRevision: strings.TrimSpace(options["destination_revision_id"]),
 	}
-	if cfg.flowID == "" || cfg.account == "" || cfg.snowflakeVersion == "" || cfg.sourceSchema == "" || cfg.sourceTable == "" || cfg.destinationRevision == "" || cfg.targetCreatedOn == "" || cfg.receiptsCreatedOn == "" {
-		return managedConfig{}, errors.New("managed Snowflake flow, account, version, object creation identities, source relation, and destination revision are required")
+	if cfg.flowID == "" || cfg.account == "" || cfg.snowflakeVersion == "" || cfg.sourceSchema == "" || cfg.sourceTable == "" || strings.ContainsRune(cfg.sourceSchema, '\x00') || strings.ContainsRune(cfg.sourceTable, '\x00') || cfg.destinationRevision == "" || cfg.targetCreatedOn == "" || cfg.receiptsCreatedOn == "" {
+		return managedConfig{}, errors.New("managed Snowflake flow, account, version, object creation identities, exact nonempty NUL-free source relation, and destination revision are required")
 	}
 	if len(cfg.flowID) > 1024 || strings.TrimSpace(cfg.flowID) != cfg.flowID || strings.ContainsAny(cfg.flowID, "\r\n\x00") {
 		return managedConfig{}, errors.New("managed Snowflake flow_id must be a bounded single-line exact value")
@@ -196,9 +196,8 @@ func managedConfigFromSpec(dsn string, spec connector.Spec) (managedConfig, erro
 	if cfg.schemaContract.Namespace != cfg.schema || cfg.schemaContract.Name != cfg.table {
 		return managedConfig{}, errors.New("managed Snowflake projected schema contract does not identify the provisioned target relation")
 	}
-	// The cloned runtime contract is destination-shaped. Publication admission
-	// retains the persisted source options, while planning binds to this target identity.
-	cfg.sourceSchema, cfg.sourceTable = cfg.schemaContract.Namespace, cfg.schemaContract.Name
+	// The schema contract is destination-shaped. Keep the independently
+	// persisted PostgreSQL source identity byte-exact for publication admission.
 	contractHash, err := ManagedSchemaContractHash(cfg.schemaContract)
 	if err != nil {
 		return managedConfig{}, err

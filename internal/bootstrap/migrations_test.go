@@ -5,6 +5,17 @@ import (
 	"testing"
 )
 
+func TestManagedSchemaBaselineMigrationHasNoBackfill(t *testing.T) {
+	contents, err := migrationFS.ReadFile("migrations/008_managed_schema_baselines.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower := strings.ToLower(string(contents))
+	if strings.Contains(lower, "schema_versions") || strings.Contains(lower, "insert into public.managed_schema_baselines") {
+		t.Fatal("managed schema-baseline migration imports pre-authority schema rows")
+	}
+}
+
 func TestSnapshotDestinationContractMigrationFailsClosedWithoutInference(t *testing.T) {
 	raw, err := migrationFS.ReadFile("migrations/007_snapshot_destination_contract.sql")
 	if err != nil {

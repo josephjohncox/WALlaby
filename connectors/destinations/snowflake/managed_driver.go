@@ -30,6 +30,18 @@ func (d *Destination) managedHooksSnapshot() managedHooks {
 	return d.managedHooks
 }
 
+// InitializeManagedDelivery verifies that Open established the complete
+// Snowflake SQL transaction and receipt authority before managed source I/O.
+func (d *Destination) InitializeManagedDelivery(context.Context) error {
+	if d.db == nil || d.managedProfile != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+		return errors.New("managed Snowflake destination not initialized")
+	}
+	if strings.TrimSpace(d.managedConfig.destinationRevision) == "" {
+		return errors.New("managed Snowflake destination receipt authority is not configured")
+	}
+	return nil
+}
+
 // Apply is intentionally unavailable because the Snowflake SQL profile can
 // authorize only a complete source transaction and its atomic target receipt.
 func (d *Destination) Apply(_ context.Context, intent connector.DeliveryIntent, _ connector.Batch) (connector.DeliveryEvidence, error) {

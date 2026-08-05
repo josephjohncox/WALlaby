@@ -171,6 +171,7 @@ test-checkpoint2-postgres-profile:
     test -n "${TEST_PG_DSN:-}" || { echo 'TEST_PG_DSN is required' >&2; exit 2; }
     mkdir -p "$(dirname '{{ integration_worker_binary }}')"
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} build -o "{{ integration_worker_binary }}" ./cmd/wallaby-worker
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./scripts/apply-control-migrations.go
     results=$(mktemp)
     trap 'rm -f "${results}"' EXIT
     required=
@@ -181,7 +182,7 @@ test-checkpoint2-postgres-profile:
     required+=',TestPostgresManagedProfileDestinationSchemaEvolution'
     required+=',TestPostgresManagedProfileDDLTargetMapping'
     required+=',TestPostgresManagedProfileDDLCommitReconciliation'
-    required+=',TestPostgresManagedProfileUpgradeMigrations'
+    required+=',TestPostgresManagedTargetRejectsLegacyReceiptSchemaWithoutMutation'
     required+=',TestPostgresManagedFullTransactionPreservesFragmentsAndMarker'
     required+=',TestPostgresManagedTransactionCommitBeforeReceiptReconciles'
     required+=',TestPostgresManagedOverlappingTakeoverAdoptsConcurrentCommit'
@@ -193,13 +194,15 @@ test-checkpoint2-postgres-profile:
     required+=',TestPostgresManagedProfileSourceSchemaEvolutionAfterRestart'
     required+=',TestWallabyWorkerProcessKillRecovery'
     required+=',TestPostgresManagedProfilePoolExhaustion'
-    required+=',TestPostgresManagedTargetReceiptRollingCompatibility'
+    required+=',TestManagedReceiptReconcilesLogicalAndPositionIdentities'
     required+=',TestPostgresManagedProfileMetrics'
+    required+=',TestFencedSchemaRegistrationScopesCatalogAndFlowProvenance'
+    required+=',TestPostgresToPostgresE2E'
     filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
     set +e
     WALLABY_WORKER_BINARY="{{ integration_worker_binary }}" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" \
       {{ go }} test -p 1 -count=1 -json \
-      ./tests ./internal/runner ./internal/replication ./connectors/destinations/postgres ./internal/telemetry \
+      ./tests ./tests/integration ./internal/runner ./internal/replication ./connectors/destinations/postgres ./internal/telemetry \
       -run "${filter}" >"${results}"
     test_rc=$?
     set -e
@@ -207,6 +210,13 @@ test-checkpoint2-postgres-profile:
     test "${test_rc}" -eq 0
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./scripts/verify-go-test-json.go \
       -results "${results}" -required "${required}"
+    ./scripts/checkpoint2-accounting-selftest.sh --profile postgresql-to-postgresql-v1 --results "${results}"
+
+# Verify that every checkpoint-2 required name resolves to exactly one listed test.
+# The live checkpoint recipe separately proves that every listed test ran and did
+# not skip through verify-go-test-json.
+test-checkpoint2-accounting-selftest:
+    ./scripts/checkpoint2-accounting-selftest.sh
 
 # Checkpoint-3 exact PostgreSQL 16 + ClickHouse/Keeper 25.12.1.649 append profile. The harness
 # provisions both processes and verified native TLS. Required-test validation
@@ -220,13 +230,14 @@ test-clickhouse-managed-profile:
         if [[ "${IT_KEEP:-0}" != "1" ]] && command -v kind >/dev/null 2>&1; then
             kind delete cluster --name "${harness_cluster}" || true
         fi
+        rm -f "${telemetry_results:-}"
         return "$status"
     }
     trap cleanup EXIT
     required=
     required+='TestClickHouseManagedProfileVersionMatrix'
     required+=',TestClickHouseManagedProfileAdmission'
-    required+=',TestClickHouseManagedProfileCommitBeforeReceipt'
+    required+=',TestClickHouseManagedProfileCommitAndReconcile'
     required+=',TestClickHouseManagedProfileSecondaryEndpointWriteFailover'
     required+=',TestClickHouseManagedProfileSurvivorOnlyPrimaryStorageLossRecovery'
     required+=',TestClickHouseManagedProfileDedupWindowEviction'
@@ -241,8 +252,14 @@ test-clickhouse-managed-profile:
     required+=',TestClickHouseManagedProfileBackpressure'
     filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
     WALLABY_TEST_CLICKHOUSE_DESTRUCTIVE_STORAGE_LOSS=1 IT_KIND_CLUSTER="${harness_cluster}" IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' just test-integration
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 \
-      ./internal/telemetry -run '^TestClickHouseManagedProfileTelemetry$'
+    telemetry_results=$(mktemp)
+    telemetry_required='TestClickHouseManagedProfileTelemetry'
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 -json \
+      ./internal/telemetry -run "^(${telemetry_required})$" >"${telemetry_results}"
+    cat "${telemetry_results}"
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./scripts/verify-go-test-json.go \
+      -results "${telemetry_results}" -required "${telemetry_required}"
+    rm -f "${telemetry_results}"
 
 # Local/emulated Iceberg REST live gate. The ordinary package conformance tests
 # use httptest and always run in test-durable-pr; this recipe targets a real REST

@@ -40,7 +40,7 @@ func TestFreshArtifactCatalogAttemptIdentitySchema(t *testing.T) {
 	}
 }
 
-func TestArtifactCatalogAttemptMigrationAcceptsCanonicalIdentity(t *testing.T) {
+func TestArtifactCatalogAttemptMigrationRejectsLegacyStateWithoutBaselineInference(t *testing.T) {
 	dsn := managedProfileTestDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -49,15 +49,15 @@ func TestArtifactCatalogAttemptMigrationAcceptsCanonicalIdentity(t *testing.T) {
 	prepareArtifactAttemptMigrationFixture(t, ctx, pool)
 	identity := insertArtifactAttemptFixture(t, ctx, pool, artifactAttemptFixture{})
 	insertArtifactReceiptAndCheckpoint(t, ctx, pool, identity)
-	if err := artifactlog.ApplyMigrations(ctx, pool); err != nil {
-		t.Fatalf("apply canonical catalog-attempt migration: %v", err)
+	if err := artifactlog.ApplyMigrations(ctx, pool); err == nil || !strings.Contains(err.Error(), "existing baseline payloads are not inferred") {
+		t.Fatalf("legacy publication migration error=%v", err)
 	}
 	var attempts, receipts, checkpoints int
 	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM artifact_delivery_attempts),(SELECT count(*) FROM artifact_delivery_receipts),(SELECT count(*) FROM artifact_consumer_checkpoints)`).Scan(&attempts, &receipts, &checkpoints); err != nil {
 		t.Fatal(err)
 	}
 	if attempts != 1 || receipts != 1 || checkpoints != 1 {
-		t.Fatalf("canonical attempt/receipt/checkpoint=%d/%d/%d", attempts, receipts, checkpoints)
+		t.Fatalf("failed-closed legacy attempt/receipt/checkpoint=%d/%d/%d", attempts, receipts, checkpoints)
 	}
 }
 
@@ -128,7 +128,10 @@ func prepareArtifactAttemptMigrationFixture(t *testing.T, ctx context.Context, p
 	if err := controlplane.ApplyMigrations(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM wallaby_control_migrations WHERE domain='artifactlog' AND version='007_current_catalog_attempt_identity.sql';
+	if _, err := pool.Exec(ctx, `DELETE FROM wallaby_control_migrations WHERE domain='artifactlog' AND version IN ('007_current_catalog_attempt_identity.sql','008_schema_baseline_publication.sql');
+ALTER TABLE artifact_publications DROP CONSTRAINT artifact_publications_schema_baseline_fingerprint_check;
+ALTER TABLE artifact_publications DROP COLUMN schema_baseline_fingerprint;
+ALTER TABLE artifact_publications DROP COLUMN schema_baseline_payload;
 ALTER TABLE artifact_delivery_attempts DROP CONSTRAINT artifact_delivery_attempts_current_identity;
 ALTER TABLE artifact_delivery_attempts DROP CONSTRAINT artifact_delivery_attempts_publication_unique;
 ALTER TABLE artifact_delivery_attempts DROP CONSTRAINT artifact_delivery_attempts_commit_unique;

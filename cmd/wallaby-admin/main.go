@@ -3471,11 +3471,11 @@ func publicationScrape(cmd *cobra.Command, _ []string) error {
 
 		currentSet := make(map[string]struct{}, len(current))
 		for _, table := range current {
-			currentSet[strings.ToLower(table)] = struct{}{}
+			currentSet[table] = struct{}{}
 		}
 		missing = make([]string, 0)
 		for _, table := range discoveredTables {
-			if _, ok := currentSet[strings.ToLower(table)]; !ok {
+			if _, ok := currentSet[table]; !ok {
 				missing = append(missing, table)
 			}
 		}

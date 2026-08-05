@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -146,13 +147,17 @@ func (s *FlowService) ReconfigureFlow(ctx context.Context, req *wallabypb.Reconf
 	if req.Flow.Config == nil {
 		model.Config = existing.Config
 	}
+	syncPublication := optionalBool(req.SyncPublication, parseBool(existing.Source.Options["sync_publication"]))
+	if model.Source.Options == nil {
+		model.Source.Options = make(map[string]string)
+	}
+	model.Source.Options["sync_publication"] = strconv.FormatBool(syncPublication)
 	if err := flow.ValidateDefinition(model); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	pauseFirst := optionalBool(req.PauseFirst, true)
 	resumeAfter := optionalBool(req.ResumeAfter, true)
-	syncPublication := optionalBool(req.SyncPublication, parseBool(existing.Source.Options["sync_publication"]))
 	if syncPublication {
 		if err := checkFlowPublicationMutation(ctx, s.engine, model); err != nil {
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
@@ -583,11 +588,11 @@ func (s *FlowService) ScrapePublicationTables(ctx context.Context, req *wallabyp
 
 	currentSet := make(map[string]struct{}, len(current))
 	for _, table := range current {
-		currentSet[strings.ToLower(table)] = struct{}{}
+		currentSet[table] = struct{}{}
 	}
 	missing := make([]string, 0)
 	for _, table := range allTables {
-		if _, ok := currentSet[strings.ToLower(table)]; !ok {
+		if _, ok := currentSet[table]; !ok {
 			missing = append(missing, table)
 		}
 	}

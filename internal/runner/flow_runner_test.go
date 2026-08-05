@@ -143,7 +143,7 @@ func TestManagedHeartbeatFailureReturnsErrorWithoutFailingFlow(t *testing.T) {
 	authorityStore := &failingRenewAuthority{renewErr: renewFailure}
 	deliveries := &blockingManagedDelivery{}
 	runner := FlowRunner{
-		Engine: engine, Checkpoints: managedCheckpointStore{}, Authority: authorityStore, Deliveries: deliveries,
+		Engine: engine, Checkpoints: managedCheckpointStore{}, Authority: authorityStore, Deliveries: deliveries, SchemaBaselines: flowRunnerSchemaBaselines{},
 		ExpectedGeneration: control.Generation, ExecutionID: "managed-heartbeat", ExecutionBackend: "test",
 	}
 	err := runner.Run(ctx, f, &blockingManagedSource{}, []stream.DestinationConfig{{
@@ -177,7 +177,7 @@ func TestFlowRunnerPinsEffectiveArtifactDestinationFingerprint(t *testing.T) {
 	renewFailure := errors.New("stop after fingerprint registration")
 	deliveries := &blockingManagedDelivery{}
 	runner := FlowRunner{
-		Engine: engine, Checkpoints: managedCheckpointStore{}, Authority: &failingRenewAuthority{renewErr: renewFailure}, Deliveries: deliveries,
+		Engine: engine, Checkpoints: managedCheckpointStore{}, Authority: &failingRenewAuthority{renewErr: renewFailure}, Deliveries: deliveries, SchemaBaselines: flowRunnerSchemaBaselines{},
 		ExpectedGeneration: control.Generation, ExecutionID: "artifact-fingerprint", ExecutionBackend: "test",
 		Artifacts: func(_ context.Context, _ flow.Flow, destinations []stream.DestinationConfig) (stream.ManagedArtifactLog, error) {
 			if len(destinations) != 1 || destinations[0].Projector == nil || destinations[0].MappingFingerprint == "" || destinations[0].Projector.Fingerprint() != destinations[0].MappingFingerprint {
@@ -233,7 +233,7 @@ func TestFlowRunnerUsesProjectionBoundSpecFingerprintWithoutCatalogConsumer(t *t
 		t.Fatal(err)
 	}
 	runner := FlowRunner{
-		Engine: engine, Checkpoints: managedCheckpointStore{}, Authority: &failingRenewAuthority{renewErr: renewFailure}, Deliveries: deliveries,
+		Engine: engine, Checkpoints: managedCheckpointStore{}, Authority: &failingRenewAuthority{renewErr: renewFailure}, Deliveries: deliveries, SchemaBaselines: flowRunnerSchemaBaselines{},
 		ExpectedGeneration: control.Generation, ExecutionID: "artifact-no-catalog", ExecutionBackend: "test",
 		Artifacts: func(context.Context, flow.Flow, []stream.DestinationConfig) (stream.ManagedArtifactLog, error) {
 			return &effectiveArtifactLog{}, nil
@@ -283,7 +283,7 @@ func TestManagedDeliveryRetentionRunsDuringLongLivedFlow(t *testing.T) {
 	control, _ := engine.Control(ctx, f.ID)
 	deliveries := &blockingManagedDelivery{}
 	runner := FlowRunner{
-		Engine: engine, Checkpoints: managedCheckpointStore{}, Authority: &failingRenewAuthority{}, Deliveries: deliveries,
+		Engine: engine, Checkpoints: managedCheckpointStore{}, Authority: &failingRenewAuthority{}, Deliveries: deliveries, SchemaBaselines: flowRunnerSchemaBaselines{},
 		ExpectedGeneration: control.Generation, ExecutionID: "managed-retention", ExecutionBackend: "test",
 	}
 	err := runner.Run(ctx, f, &blockingManagedSource{}, []stream.DestinationConfig{{
@@ -313,7 +313,7 @@ func TestManagedIndeterminateDeliveryStaysRecoverable(t *testing.T) {
 	authorityStore := &failingRenewAuthority{}
 	deliveries := &blockingManagedDelivery{deliverErr: connector.ErrDeliveryIndeterminate}
 	runner := FlowRunner{
-		Engine: engine, Checkpoints: managedCheckpointStore{}, Authority: authorityStore, Deliveries: deliveries,
+		Engine: engine, Checkpoints: managedCheckpointStore{}, Authority: authorityStore, Deliveries: deliveries, SchemaBaselines: flowRunnerSchemaBaselines{},
 		ExpectedGeneration: control.Generation, ExecutionID: "managed-indeterminate", ExecutionBackend: "test",
 	}
 	err := runner.Run(ctx, f, &singleTransactionManagedSource{}, []stream.DestinationConfig{{
@@ -384,11 +384,11 @@ func (d *blockingManagedDelivery) PruneTerminalDeliveryState(context.Context, au
 	d.pruneCalls.Add(1)
 	return 0, nil
 }
-func (*blockingManagedDelivery) AuthorizeAck(_ context.Context, _ connector.RunFence, checkpoint connector.Checkpoint) (connector.AckGrant, error) {
+func (*blockingManagedDelivery) AuthorizeAck(_ context.Context, _ connector.RunFence, checkpoint connector.Checkpoint, _ connector.ManagedSchemaBaselinePayload) (connector.AckGrant, error) {
 	position, err := connector.CheckpointPositionID(checkpoint)
 	return connector.AckGrant{Checkpoint: checkpoint, PositionID: position}, err
 }
-func (d *blockingManagedDelivery) DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedTransactionDestination) (connector.AckGrant, error) {
+func (d *blockingManagedDelivery) DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedSchemaBaselinePayload, connector.ManagedTransactionDestination) (connector.AckGrant, error) {
 	if d.deliverErr != nil {
 		return connector.AckGrant{}, d.deliverErr
 	}
@@ -420,7 +420,7 @@ func (*effectiveArtifactLog) RestoreCheckpoint(_ context.Context, _ connector.Ru
 func (*effectiveArtifactLog) WaitForReadAdmission(context.Context, connector.RunFence) error {
 	return nil
 }
-func (*effectiveArtifactLog) Append(_ context.Context, _ connector.RunFence, transaction connector.SourceTransaction) (connector.AckGrant, error) {
+func (*effectiveArtifactLog) Append(_ context.Context, _ connector.RunFence, transaction connector.SourceTransaction, _ connector.ManagedSchemaBaselinePayload) (connector.AckGrant, error) {
 	position, err := connector.CheckpointPositionID(transaction.Checkpoint)
 	return connector.AckGrant{Checkpoint: transaction.Checkpoint, PositionID: position}, err
 }
@@ -516,6 +516,7 @@ func (blockingManagedDestination) Capabilities() connector.Capabilities {
 func (blockingManagedDestination) Apply(context.Context, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
 	return connector.DeliveryEvidence{}, nil
 }
+func (blockingManagedDestination) InitializeManagedDelivery(context.Context) error { return nil }
 func (blockingManagedDestination) ValidateTransaction(context.Context, connector.SourceTransaction) error {
 	return nil
 }
@@ -577,4 +578,14 @@ func (flowRunnerDestination) Capabilities() connector.Capabilities {
 			ExecutesDDL:        true,
 		},
 	}
+}
+
+type flowRunnerSchemaBaselines struct{}
+
+func (flowRunnerSchemaBaselines) Load(context.Context, connector.RunFence, string) ([]connector.Schema, error) {
+	return nil, nil
+}
+
+func (flowRunnerSchemaBaselines) Persist(context.Context, connector.RunFence, string, []connector.Schema) error {
+	return nil
 }

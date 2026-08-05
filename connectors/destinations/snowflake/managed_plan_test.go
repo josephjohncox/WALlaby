@@ -49,6 +49,24 @@ func TestManagedSnowflakePlannerReceivesMappedRenameAndSubsetTransaction(t *test
 	}
 }
 
+func TestManagedSnowflakePlannerPreservesExactSourceRelationIdentity(t *testing.T) {
+	t.Parallel()
+	for _, exact := range []string{" ", " leading", "trailing ", " both "} {
+		schema := connector.Schema{Namespace: exact, Name: exact, Columns: []connector.Column{{Name: "id", Type: "bigint", Nullable: false, TypeMetadata: map[string]string{"primary_key": "true", "replica_identity": "true"}}}}
+		cfg := managedConfig{sourceSchema: exact, sourceTable: exact, schemaContract: schema, typeMappings: defaultSnowflakeTypeMappings()}
+		record := connector.Record{Table: exact, Operation: connector.OpInsert, Key: []byte(`{"id":1}`), After: map[string]any{"id": int64(1)}}
+		if _, err := buildManagedSnowflakeOperation(cfg, `"DB"."PUBLIC"."TARGET"`, schema, []string{"id"}, managedOperationIdentity{}, record); err != nil {
+			t.Fatalf("exact source relation %q rejected: %v", exact, err)
+		}
+		record.Table = strings.TrimSpace(exact)
+		if record.Table != exact {
+			if _, err := buildManagedSnowflakeOperation(cfg, `"DB"."PUBLIC"."TARGET"`, schema, []string{"id"}, managedOperationIdentity{}, record); err == nil {
+				t.Fatalf("normalized source relation %q admitted for exact %q", record.Table, exact)
+			}
+		}
+	}
+}
+
 func TestManagedSnowflakeTypeMappingFailsClosedForUnboundedNumeric(t *testing.T) {
 	t.Parallel()
 	cfg := managedConfig{}

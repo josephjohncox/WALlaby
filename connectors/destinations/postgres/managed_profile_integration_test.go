@@ -89,28 +89,46 @@ CREATE TABLE wallaby_meta.__delivery_receipts (
 		t.Fatal("managed open recreated a missing receipt constraint")
 	}
 	for name, mutation := range map[string]string{
-		"removed_default":     `ALTER TABLE wallaby_meta.__delivery_receipts ALTER COLUMN committed_at DROP DEFAULT`,
-		"extra_check":         `ALTER TABLE wallaby_meta.__delivery_receipts ADD CONSTRAINT adversarial_check CHECK (generation>0)`,
-		"identity_column":     `ALTER TABLE wallaby_meta.__delivery_receipts ADD COLUMN adversarial_identity bigint GENERATED ALWAYS AS IDENTITY`,
-		"wrong_index":         `CREATE INDEX adversarial_hash_index ON wallaby_meta.__delivery_receipts USING hash(content_hash)`,
-		"weak_identity_check": `ALTER TABLE wallaby_meta.__delivery_receipts DROP CONSTRAINT wallaby_delivery_receipts_logical_batch_current;ALTER TABLE wallaby_meta.__delivery_receipts ADD CONSTRAINT wallaby_delivery_receipts_logical_batch_current CHECK (logical_batch_id<>'')`,
+		"removed_default":                      `ALTER TABLE wallaby_meta.__delivery_receipts ALTER COLUMN committed_at DROP DEFAULT`,
+		"extra_check":                          `ALTER TABLE wallaby_meta.__delivery_receipts ADD CONSTRAINT adversarial_check CHECK (generation>0)`,
+		"identity_column":                      `ALTER TABLE wallaby_meta.__delivery_receipts ADD COLUMN adversarial_identity bigint GENERATED ALWAYS AS IDENTITY`,
+		"wrong_index":                          `CREATE INDEX adversarial_hash_index ON wallaby_meta.__delivery_receipts USING hash(content_hash)`,
+		"weak_identity_check":                  `ALTER TABLE wallaby_meta.__delivery_receipts DROP CONSTRAINT wallaby_delivery_receipts_logical_batch_current;ALTER TABLE wallaby_meta.__delivery_receipts ADD CONSTRAINT wallaby_delivery_receipts_logical_batch_current CHECK (logical_batch_id<>'')`,
+		"inheritance_child_fabricated_receipt": `CREATE TABLE wallaby_meta.adversarial_receipt_child () INHERITS (wallaby_meta.__delivery_receipts); INSERT INTO wallaby_meta.adversarial_receipt_child(marker_id,flow_id,flow_incarnation_id,generation,acquisition_id,lease_epoch,destination_revision_id,source_lineage_id,logical_batch_id,position_id,content_hash) VALUES('fabricated','flow','incarnation',1,'acquisition',1,'revision','lineage','logical-batch:'||encode(sha256(convert_to('lineage','UTF8')||decode('00','hex')||convert_to('0/10','UTF8')||decode('00','hex')||convert_to('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','UTF8')),'hex'),'0/10','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')`,
+		"user_trigger":                         `CREATE FUNCTION wallaby_meta.adversarial_receipt_trigger() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RETURN NULL; END$$; CREATE TRIGGER adversarial_receipt_trigger BEFORE INSERT ON wallaby_meta.__delivery_receipts FOR EACH ROW EXECUTE FUNCTION wallaby_meta.adversarial_receipt_trigger()`,
+		"rewrite_rule":                         `CREATE RULE adversarial_receipt_rule AS ON UPDATE TO wallaby_meta.__delivery_receipts DO INSTEAD NOTHING`,
+		"row_security_policy":                  `ALTER TABLE wallaby_meta.__delivery_receipts ENABLE ROW LEVEL SECURITY; ALTER TABLE wallaby_meta.__delivery_receipts FORCE ROW LEVEL SECURITY; CREATE POLICY adversarial_receipt_policy ON wallaby_meta.__delivery_receipts USING (false)`,
 	} {
+		mutation := mutation
 		t.Run(name, func(t *testing.T) {
-			if _, err := admin.Exec(ctx, `DROP TABLE IF EXISTS wallaby_meta.__delivery_receipts`); err != nil {
+			if _, err := admin.Exec(ctx, `DROP TABLE IF EXISTS wallaby_meta.adversarial_receipt_child; DROP TABLE IF EXISTS wallaby_meta.__delivery_receipts; DROP FUNCTION IF EXISTS wallaby_meta.adversarial_receipt_trigger()`); err != nil {
 				t.Fatal(err)
 			}
-			verifier := &Destination{pool: admin}
-			if err := verifier.ensureManagedReceiptTable(ctx); err != nil {
+			verifier := &Destination{pool: admin, batchMode: batchModeTarget}
+			if err := verifier.InitializeManagedDelivery(ctx); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := admin.Exec(ctx, mutation); err != nil {
 				t.Fatal(err)
 			}
-			if err := verifier.ensureManagedReceiptTable(ctx); err == nil {
+			if err := verifier.InitializeManagedDelivery(ctx); err == nil {
 				t.Fatal("adversarial receipt catalog mutation admitted")
 			}
 		})
 	}
+	t.Run("partitioned_relation", func(t *testing.T) {
+		if _, err := admin.Exec(ctx, `DROP TABLE IF EXISTS wallaby_meta.adversarial_receipt_child; DROP TABLE IF EXISTS wallaby_meta.__delivery_receipts; CREATE TABLE wallaby_meta.__delivery_receipts (
+  marker_id text NOT NULL,flow_id text NOT NULL,flow_incarnation_id text NOT NULL,generation bigint NOT NULL,
+  acquisition_id text NOT NULL,lease_epoch bigint NOT NULL,destination_revision_id text NOT NULL,source_lineage_id text NOT NULL,
+  logical_batch_id text NOT NULL,position_id text NOT NULL,content_hash text NOT NULL,
+  committed_at timestamptz NOT NULL DEFAULT clock_timestamp()
+) PARTITION BY LIST (flow_id)`); err != nil {
+			t.Fatal(err)
+		}
+		if err := (&Destination{pool: admin, batchMode: batchModeTarget}).InitializeManagedDelivery(ctx); err == nil {
+			t.Fatal("partitioned receipt authority was admitted")
+		}
+	})
 }
 
 func TestManagedBootstrapMetadataFailsClosedOnCatalogMismatch(t *testing.T) {
@@ -468,7 +486,7 @@ SELECT count(*) FROM wallaby_meta.__delivery_receipts
 WHERE flow_incarnation_id=$1 AND destination_revision_id=$2`, intent.FlowIncarnationID, intent.DestinationRevisionID).Scan(&targetReceipts); err != nil {
 		t.Fatal(err)
 	}
-	if targetReceipts != 1 {
-		t.Fatalf("retained target delivery markers=%d, want one high-watermark marker", targetReceipts)
+	if targetReceipts != 2 {
+		t.Fatalf("immutable target delivery receipts=%d, want one receipt per committed transaction", targetReceipts)
 	}
 }

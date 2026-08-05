@@ -141,7 +141,7 @@ DROP TABLE IF EXISTS public.wallaby_clickhouse_managed_e2e_source`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := coordinator.AuthorizeAck(ctx, seedFence, connector.Checkpoint{LSN: initialLSN}); err != nil {
+	if _, err := coordinator.AuthorizeAck(ctx, seedFence, connector.Checkpoint{LSN: initialLSN}, emptyManagedBaselinePayload(t, flowID+":source")); err != nil {
 		t.Fatal(err)
 	}
 	if err := authorityStore.FinishProducer(ctx, seedFence, "checkpoint_seeded"); err != nil {
@@ -154,7 +154,7 @@ DROP TABLE IF EXISTS public.wallaby_clickhouse_managed_e2e_source`)
 	runErr := make(chan error, 1)
 	go func() {
 		flowRunner := runner.FlowRunner{
-			Engine: engine, Checkpoints: checkpoints, Authority: authorityStore, Deliveries: coordinator,
+			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
 			ExpectedGeneration: control.Generation, ExecutionID: "clickhouse-e2e-first", ExecutionBackend: "test",
 		}
 		runErr <- flowRunner.Run(runCtx, started, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: destinationSpec, Dest: failingDestination}})
@@ -206,7 +206,7 @@ INSERT INTO public.wallaby_clickhouse_managed_e2e_source (id,value,payload,tags)
 	recoveredDestination := &clickhousedest.Destination{}
 	go func() {
 		flowRunner := runner.FlowRunner{
-			Engine: engine, Checkpoints: checkpoints, Authority: authorityStore, Deliveries: coordinator,
+			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
 			ExpectedGeneration: control.Generation, ExecutionID: "clickhouse-e2e-recovery", ExecutionBackend: "test",
 		}
 		restartErr <- flowRunner.Run(restartCtx, started, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: destinationSpec, Dest: recoveredDestination}})

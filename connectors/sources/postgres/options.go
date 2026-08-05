@@ -2,6 +2,13 @@ package postgres
 
 import "strings"
 
+func parseIdentifierCSV(value string) ([]string, error) {
+	if value == "" {
+		return nil, nil
+	}
+	return ParseCatalogColumnNames(value)
+}
+
 func parseCSV(value string) []string {
 	if value == "" {
 		return nil

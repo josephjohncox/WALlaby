@@ -16,6 +16,43 @@ import (
 	"github.com/spf13/afero"
 )
 
+func TestMappingProtoRoundTripPreservesWhitespaceOnlyPostgresIdentifiers(t *testing.T) {
+	t.Parallel()
+	mapping := &flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{
+		Destination: "target", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude},
+		Tables: []flow.TableMapping{{
+			SourceSchema: " ", SourceTable: " ", Action: flow.MappingActionInclude,
+			TargetSchema: " ", TargetTable: " ", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"},
+			Columns: []flow.ColumnMapping{{SourceColumn: " ID ", Action: flow.MappingActionInclude, TargetColumn: " id "}},
+			Write:   flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{" ID "}, WatermarkColumn: " "},
+		}},
+	}}}
+	roundTrip := mappingsFromProto(mappingsToProto(mapping))
+	if !reflect.DeepEqual(roundTrip, mapping) {
+		t.Fatalf("mapping proto round trip changed exact identifiers:\ngot=%+v\nwant=%+v", roundTrip, mapping)
+	}
+}
+
+func TestMappingOverridesPreserveQuotedWhitespacePostgresIdentifiers(t *testing.T) {
+	t.Parallel()
+	watermarks, err := parseSingleColumnOverrides([]string{`" "." "=" "`}, "watermark")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blankRef := mappinggen.TableRef{Schema: " ", Table: " "}
+	if watermarks[blankRef] != " " {
+		t.Fatalf("quoted whitespace watermark changed: %q", watermarks[blankRef])
+	}
+	matches, err := parseMatchOverrides([]string{`" "." "="ID","id"," id ","a,b"`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"ID", "id", " id ", "a,b"}
+	if !reflect.DeepEqual(matches[blankRef], want) {
+		t.Fatalf("quoted exact match columns=%q, want %q", matches[blankRef], want)
+	}
+}
+
 func TestFullFlowEncodingPreservesEndpointOptionsWhileMappingsExcludeThem(t *testing.T) {
 	cfg := completeFlowFile()
 	cfg.Source.Options = map[string]string{"dsn": "postgres://user:source-secret@db/source", "host": "db"}

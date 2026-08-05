@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/artifactlog"
 	"github.com/josephjohncox/wallaby/internal/bootstrap"
@@ -73,7 +74,7 @@ func applyControlplaneMigrations(ctx context.Context, pool *pgxpool.Pool) error 
 var authorityMutableTables = []string{
 	"flows", "flow_incarnations", "flow_state_events", "flow_executions", "execution_acquisitions", "producer_leases", "work_claims",
 	"checkpoints", "checkpoint_outbox", "authoritative_checkpoints", "authoritative_checkpoint_outbox",
-	"schema_versions", "ddl_events", "ddl_execution_attempts", "ddl_execution_receipts", "ddl_execution_manifests", "ddl_execution_run_attempts", "schema_publication_operations",
+	"schema_versions", "ddl_events", "ddl_execution_attempts", "ddl_execution_receipts", "ddl_execution_manifests", "ddl_execution_run_attempts", "schema_publication_operations", "managed_schema_baselines",
 	"destination_revisions", "delivery_manifests", "delivery_attempts", "delivery_attempt_evidence", "delivery_receipts", "source_ack_intents", "source_ack_receipts", "delivery_retention_roots", "source_ack_retention_roots",
 	"source_bootstraps", "source_bootstrap_tasks", "snapshot_publication_receipts", "source_resources", "source_resource_operations", "snapshot_delivery_attempts", "snapshot_delivery_evidence", "snapshot_delivery_receipts",
 	"canonical_schemas", "artifact_streams", "artifact_objects", "artifact_upload_attempts", "artifact_publications", "artifact_publication_objects", "artifact_barriers", "artifact_deliveries", "artifact_quota_accounts", "artifact_quota_reservations", "artifact_gc_claims", "artifact_delivery_attempts", "artifact_delivery_receipts", "artifact_consumer_checkpoints",
@@ -84,17 +85,18 @@ var requiredManagedColumns = map[string][]string{
 	"execution_acquisitions":        {"acquisition_id", "incarnation_id", "generation", "execution_id", "lease_epoch"},
 	"producer_leases":               {"incarnation_id", "acquisition_id", "generation", "lease_epoch", "lease_expires_at"},
 	"authoritative_checkpoints":     {"flow_incarnation_id", "flow_id", "generation", "acquisition_id", "lease_epoch", "lsn", "metadata"},
-	"schema_versions":               {"namespace", "name", "version", "schema_json", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "authority_origin"},
+	"schema_versions":               {"flow_id", "namespace", "name", "version", "schema_json", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "authority_origin"},
 	"ddl_events":                    {"id", "flow_id", "lsn", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "authority_origin"},
 	"ddl_execution_run_attempts":    {"attempt_id", "event_id", "destination", "flow_incarnation_id", "flow_id", "lsn", "generation", "acquisition_id", "lease_epoch", "started_at"},
 	"schema_publication_operations": {"operation_id", "flow_incarnation_id", "flow_id", "subject", "schema_fingerprint", "registry_revision", "generation", "acquisition_id", "lease_epoch", "status", "external_id", "prepared_at", "completed_at"},
+	"managed_schema_baselines":      {"flow_id", "flow_incarnation_id", "source_lineage_id", "source_namespace", "source_relation", "generation", "acquisition_id", "lease_epoch", "schema_json", "schema_fingerprint", "updated_at"},
 	"source_bootstraps":             {"bootstrap_id", "flow_incarnation_id", "bootstrap_generation", "owner_generation", "owner_acquisition_id", "owner_lease_epoch", "slot_name", "publication_name", "consistent_lsn", "manifest_hash", "phase"},
 	"source_bootstrap_tasks":        {"bootstrap_id", "relation_id", "task_id", "table_schema", "table_name", "schema_json", "key_columns", "destination_schema_json", "write_policy_json", "projection_fingerprint", "projection_version", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "authority_origin"},
 	"source_resources":              {"flow_incarnation_id", "resource_kind", "resource_id", "generation", "acquisition_id", "lease_epoch", "created_generation", "created_acquisition_id", "created_lease_epoch", "ownership", "revision", "state"},
 	"source_resource_operations":    {"operation_id", "flow_incarnation_id", "resource_kind", "resource_id", "operation", "desired_revision", "generation", "acquisition_id", "lease_epoch", "status"},
 	"snapshot_delivery_attempts":    {"attempt_id", "bootstrap_id", "relation_id", "task_id", "batch_ordinal", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "claim_epoch"},
 	"snapshot_delivery_receipts":    {"bootstrap_id", "relation_id", "task_id", "batch_ordinal", "attempt_id", "durable_cursor", "completed_task"},
-	"delivery_manifests":            {"flow_incarnation_id", "destination_revision_id", "source_lineage_id", "logical_batch_id", "position_id", "content_hash", "checkpoint_lsn"},
+	"delivery_manifests":            {"flow_incarnation_id", "destination_revision_id", "source_lineage_id", "logical_batch_id", "position_id", "content_hash", "checkpoint_lsn", "schema_baseline_payload", "schema_baseline_fingerprint"},
 	"delivery_attempts":             {"attempt_id", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "logical_batch_id", "position_id", "content_hash", "attempt_number", "attempt_state", "next_attempt_at"},
 	"delivery_receipts":             {"flow_incarnation_id", "position_id", "destination_revision_id", "logical_batch_id", "attempt_id", "content_hash"},
 	"source_ack_intents":            {"flow_incarnation_id", "position_id", "checkpoint_lsn", "generation", "acquisition_id", "lease_epoch"},
@@ -103,7 +105,7 @@ var requiredManagedColumns = map[string][]string{
 	"source_ack_retention_roots":    {"flow_incarnation_id", "position_id", "root_kind", "root_id", "created_at", "released_at"},
 	"artifact_streams":              {"flow_incarnation_id", "flow_id", "projection_id", "consumer_fingerprint", "next_publication_sequence", "gc_epoch", "hard_retained_bytes", "backlog_count_high", "backlog_bytes_high", "backlog_age_high_seconds"},
 	"artifact_objects":              {"artifact_id", "flow_incarnation_id", "logical_batch_id", "source_position", "fragment_ordinal", "namespace", "table_name", "schema_id", "partition_value", "shard", "first_record_ordinal", "record_count", "logical_content_hash", "encoded_byte_hash", "encoded_length", "bucket", "object_key", "version_id", "checksum_sha256", "state"},
-	"artifact_publications":         {"publication_id", "flow_incarnation_id", "source_lineage_id", "source_transaction_id", "source_xid", "begin_lsn", "commit_lsn", "source_position", "checkpoint_lsn", "position_id", "content_hash", "logical_batch_id", "sequence", "checkpoint_metadata", "generation", "acquisition_id", "lease_epoch", "rooted_bytes", "published_at"},
+	"artifact_publications":         {"publication_id", "flow_incarnation_id", "source_lineage_id", "source_transaction_id", "source_xid", "begin_lsn", "commit_lsn", "source_position", "checkpoint_lsn", "position_id", "content_hash", "logical_batch_id", "sequence", "checkpoint_metadata", "generation", "acquisition_id", "lease_epoch", "rooted_bytes", "published_at", "schema_baseline_payload", "schema_baseline_fingerprint"},
 	"artifact_publication_objects":  {"publication_id", "artifact_id", "ordinal", "release_marked_at", "released_at"},
 	"artifact_barriers":             {"publication_id", "ordinal", "fragment_ordinal", "record_ordinal", "kind", "namespace", "table_name", "schema_id", "ddl", "ddl_plan", "content_hash"},
 	"artifact_gc_claims":            {"artifact_id", "claim_epoch", "generation", "acquisition_id", "lease_epoch", "claim_kind", "publication_id"},
@@ -178,6 +180,8 @@ type exactArtifactConstraint struct {
 const artifactProjectionMappingConstraintDefinition = "CHECK (projection_id = 'canonical_cdc_parquet_v1'::text AND mapping_fingerprint = ''::text OR projection_id = 'canonical_cdc_parquet_v2'::text AND mapping_fingerprint <> ''::text)"
 
 var exactArtifactConstraints = []exactArtifactConstraint{
+	{table: "schema_versions", name: "schema_versions_pkey", kind: "p", noInherit: true, columns: []string{"flow_id", "namespace", "name", "version"}, definition: "PRIMARY KEY (flow_id, namespace, name, version)"},
+	{table: "schema_versions", name: "schema_versions_authority_complete", kind: "c", definition: "CHECK (authority_origin = 'legacy_unfenced'::text AND flow_incarnation_id IS NULL AND generation IS NULL AND acquisition_id IS NULL AND lease_epoch IS NULL OR authority_origin = 'fenced'::text AND flow_incarnation_id IS NOT NULL AND generation > 0 AND acquisition_id IS NOT NULL AND lease_epoch > 0)"},
 	{table: "artifact_delivery_attempts", name: "artifact_delivery_attempts_pkey", kind: "p", noInherit: true, columns: []string{"attempt_id"}, definition: "PRIMARY KEY (attempt_id)"},
 	{table: "artifact_delivery_attempts", name: "artifact_delivery_attempts_flow_incarnation_id_fkey", kind: "f", noInherit: true, columns: []string{"flow_incarnation_id"}, definition: "FOREIGN KEY (flow_incarnation_id) REFERENCES flow_incarnations(incarnation_id) ON DELETE RESTRICT"},
 	{table: "artifact_delivery_attempts", name: "artifact_delivery_attempts_publication_id_fkey", kind: "f", noInherit: true, columns: []string{"publication_id"}, definition: "FOREIGN KEY (publication_id) REFERENCES artifact_publications(publication_id) ON DELETE RESTRICT"},
@@ -200,6 +204,7 @@ var exactArtifactConstraints = []exactArtifactConstraint{
 	{table: "artifact_streams", name: "artifact_streams_projection_mapping_contract", kind: "c", definition: artifactProjectionMappingConstraintDefinition},
 	{table: "artifact_objects", name: "artifact_objects_projection_mapping_contract", kind: "c", definition: artifactProjectionMappingConstraintDefinition},
 	{table: "artifact_publications", name: "artifact_publications_projection_mapping_contract", kind: "c", definition: artifactProjectionMappingConstraintDefinition},
+	{table: "artifact_publications", name: "artifact_publications_schema_baseline_fingerprint_check", kind: "c", definition: "CHECK (schema_baseline_fingerprint ~ '^[0-9a-f]{64}$'::text)"},
 }
 
 type exactArtifactIndex struct {
@@ -214,6 +219,7 @@ type exactArtifactIndex struct {
 }
 
 var exactArtifactIndexes = []exactArtifactIndex{
+	{table: "schema_versions", name: "schema_versions_pkey", unique: true, primary: true, columns: []string{"flow_id", "namespace", "name", "version"}, options: []int16{0, 0, 0, 0}},
 	{table: "artifact_delivery_attempts", name: "artifact_delivery_attempts_pkey", unique: true, primary: true, columns: []string{"attempt_id"}, options: []int16{0}},
 	{table: "artifact_delivery_attempts", name: "artifact_delivery_attempts_lookup_idx", columns: []string{"flow_incarnation_id", "consumer_revision_id", "publication_id", "prepared_at"}, options: []int16{0, 0, 0, 3}},
 	{table: "artifact_deliveries", name: "artifact_deliveries_pending_idx", columns: []string{"flow_incarnation_id", "consumer_revision_id", "sequence"}, options: []int16{0, 0, 0}, predicate: "(delivered_at IS NULL)"},
@@ -248,6 +254,15 @@ var requiredManagedConstraints = []requiredManagedObject{
 	{table: "schema_publication_operations", name: "schema_publication_operations_lease_epoch_check"},
 	{table: "schema_publication_operations", name: "schema_publication_operations_status_check"},
 	{table: "schema_publication_operations", name: "schema_publication_operations_identity_key"},
+	{table: "managed_schema_baselines", name: "managed_schema_baselines_pkey"},
+	{table: "managed_schema_baselines", name: "managed_schema_baselines_flow_incarnation_id_fkey"},
+	{table: "managed_schema_baselines", name: "managed_schema_baselines_acquisition_id_fkey"},
+	{table: "managed_schema_baselines", name: "managed_schema_baselines_generation_check"},
+	{table: "managed_schema_baselines", name: "managed_schema_baselines_lease_epoch_check"},
+	{table: "managed_schema_baselines", name: "managed_schema_baselines_lineage_check"},
+	{table: "managed_schema_baselines", name: "managed_schema_baselines_namespace_check"},
+	{table: "managed_schema_baselines", name: "managed_schema_baselines_relation_check"},
+	{table: "managed_schema_baselines", name: "managed_schema_baselines_fingerprint_check"},
 	{table: "source_resources", name: "source_resources_flow_incarnation_id_fkey"},
 	{table: "source_resources", name: "source_resources_acquisition_id_fkey"},
 	{table: "source_resources", name: "source_resources_bootstrap_id_fkey"},
@@ -255,8 +270,10 @@ var requiredManagedConstraints = []requiredManagedObject{
 	{table: "snapshot_delivery_attempts", name: "snapshot_delivery_attempts_flow_incarnation_id_fkey"},
 	{table: "snapshot_delivery_attempts", name: "snapshot_delivery_attempts_acquisition_id_fkey"},
 	{table: "snapshot_delivery_receipts", name: "snapshot_delivery_receipts_attempt_id_fkey"},
+	{table: "delivery_manifests", name: "delivery_manifests_schema_baseline_fingerprint_check"},
 	{table: "delivery_attempts", name: "delivery_attempts_state_valid"},
 	{table: "delivery_attempts", name: "delivery_attempts_number_positive"},
+	{table: "artifact_publications", name: "artifact_publications_schema_baseline_fingerprint_check"},
 	{table: "artifact_objects", name: "artifact_objects_version_evidence"},
 	{table: "artifact_objects", name: "artifact_objects_record_count_positive"},
 	{table: "artifact_gc_claims", name: "artifact_gc_claims_kind_valid"},
@@ -270,6 +287,7 @@ var requiredManagedIndexes = []requiredManagedObject{
 	{table: "ddl_execution_run_attempts", name: "ddl_execution_run_attempts_acquisition_idx"},
 	{table: "schema_publication_operations", name: "schema_publication_operations_incarnation_idx"},
 	{table: "schema_publication_operations", name: "schema_publication_operations_acquisition_idx"},
+	{table: "managed_schema_baselines", name: "managed_schema_baselines_current_fence_idx"},
 	{table: "source_resources", name: "source_resources_current_kind_idx"},
 	{table: "source_resources", name: "source_resources_active_physical_name_unique"},
 	{table: "delivery_manifests", name: "delivery_manifests_logical_batch_idx"},
@@ -282,10 +300,34 @@ var requiredManagedIndexes = []requiredManagedObject{
 	{table: "artifact_publication_objects", name: "artifact_publication_objects_active_roots_idx"},
 }
 
+type authorityCatalogQueryer interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
 func verifyManagedAuthoritySchema(ctx context.Context, pool *pgxpool.Pool) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin managed authority verification: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL search_path = pg_catalog, public`); err != nil {
+		return fmt.Errorf("pin managed authority verification search path: %w", err)
+	}
+	if err := verifyManagedAuthoritySchemaCatalog(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit managed authority verification: %w", err)
+	}
+	return nil
+}
+
+func verifyManagedAuthoritySchemaCatalog(ctx context.Context, pool authorityCatalogQueryer) error {
 	var missingTables []string
 	if err := pool.QueryRow(ctx, `
-SELECT COALESCE(array_agg(name ORDER BY name) FILTER (WHERE to_regclass(name) IS NULL),'{}')
+SELECT COALESCE(array_agg(name ORDER BY name) FILTER (
+  WHERE to_regclass(pg_catalog.format('%I.%I','public',name)) IS NULL
+),'{}')
 FROM unnest($1::text[]) AS expected(name)`, authorityMutableTables).Scan(&missingTables); err != nil {
 		return fmt.Errorf("verify required managed tables: %w", err)
 	}
@@ -301,7 +343,7 @@ SELECT COALESCE(array_agg(column_name ORDER BY column_name) FILTER (WHERE attrib
 FROM unnest($2::text[]) AS expected(column_name)
 LEFT JOIN pg_catalog.pg_attribute AS attribute
   ON attribute.attrelid=to_regclass($1) AND attribute.attname=expected.column_name
- AND attribute.attnum>0 AND NOT attribute.attisdropped`, table, columns).Scan(&missing); err != nil {
+ AND attribute.attnum>0 AND NOT attribute.attisdropped`, publicRegclass(table), columns).Scan(&missing); err != nil {
 			return fmt.Errorf("verify managed columns for %s: %w", table, err)
 		}
 		for _, column := range missing {
@@ -319,7 +361,7 @@ LEFT JOIN pg_catalog.pg_attribute AS attribute
 SELECT EXISTS (
   SELECT 1 FROM pg_catalog.pg_constraint
   WHERE conrelid=to_regclass($1) AND conname=$2 AND convalidated
-)`, expected.table, expected.name).Scan(&valid); err != nil {
+)`, publicRegclass(expected.table), expected.name).Scan(&valid); err != nil {
 			return fmt.Errorf("verify managed constraint %s.%s: %w", expected.table, expected.name, err)
 		}
 		if !valid {
@@ -341,7 +383,7 @@ SELECT EXISTS (
   WHERE index_relation.oid=to_regclass($2)
     AND index_row.indrelid=to_regclass($1)
     AND index_row.indisvalid AND index_row.indisready
-)`, expected.table, expected.name).Scan(&valid); err != nil {
+)`, publicRegclass(expected.table), publicRegclass(expected.name)).Scan(&valid); err != nil {
 			return fmt.Errorf("verify managed index %s.%s: %w", expected.table, expected.name, err)
 		}
 		if !valid {
@@ -367,7 +409,7 @@ SELECT COALESCE((
     AND regexp_replace(pg_catalog.pg_get_expr(index_row.indpred,index_row.indrelid),'[[:space:]]','','g')
       ='(state<>''retired''::text)'
   FROM pg_catalog.pg_index AS index_row
-  WHERE index_row.indexrelid=to_regclass('source_resources_active_physical_name_unique')
+  WHERE index_row.indexrelid=to_regclass('"public"."source_resources_active_physical_name_unique"')
 ),FALSE)`).Scan(&activePhysicalNameIndexExact); err != nil {
 		return fmt.Errorf("verify active physical source-resource uniqueness: %w", err)
 	}
@@ -386,13 +428,13 @@ SELECT COUNT(*)=1 AND bool_and(
   trigger.tgname=$2
   AND trigger.tgenabled='O'
   AND trigger.tgtype=31
-  AND trigger.tgfoid='wallaby_require_authority_protocol_v2()'::regprocedure
+  AND trigger.tgfoid='public.wallaby_require_authority_protocol_v2()'::regprocedure
 )
 FROM pg_catalog.pg_trigger AS trigger
 WHERE trigger.tgrelid=to_regclass($1)
   AND NOT trigger.tgisinternal
   AND (trigger.tgname=$2 OR trigger.tgname=$3
-       OR trigger.tgfoid='wallaby_require_authority_protocol_v2()'::regprocedure)`, table, table+"_require_authority_v2", table+"_require_authority_v1").Scan(&exact); err != nil {
+       OR trigger.tgfoid='public.wallaby_require_authority_protocol_v2()'::regprocedure)`, publicRegclass(table), table+"_require_authority_v2", table+"_require_authority_v1").Scan(&exact); err != nil {
 			return fmt.Errorf("verify authority-v2 trigger for %s: %w", table, err)
 		}
 		if !exact {
@@ -405,14 +447,14 @@ WHERE trigger.tgrelid=to_regclass($1)
 	return nil
 }
 
-func verifyExactArtifactAuthoritySchema(ctx context.Context, pool *pgxpool.Pool) error {
+func verifyExactArtifactAuthoritySchema(ctx context.Context, pool authorityCatalogQueryer) error {
 	for _, table := range []string{"artifact_delivery_attempts", "artifact_delivery_receipts", "artifact_consumer_checkpoints"} {
 		expectedColumns := exactArtifactAuthorityColumns[table]
 		var actualNames []string
 		if err := pool.QueryRow(ctx, `
 SELECT COALESCE(array_agg(attribute.attname::text ORDER BY attribute.attnum),'{}'::text[])
 FROM pg_catalog.pg_attribute AS attribute
-WHERE attribute.attrelid=to_regclass($1) AND attribute.attnum>0 AND NOT attribute.attisdropped`, table).Scan(&actualNames); err != nil {
+WHERE attribute.attrelid=to_regclass($1) AND attribute.attnum>0 AND NOT attribute.attisdropped`, publicRegclass(table)).Scan(&actualNames); err != nil {
 			return fmt.Errorf("verify exact artifact authority columns for %s: %w", table, err)
 		}
 		expectedNames := make([]string, len(expectedColumns))
@@ -434,7 +476,7 @@ FROM pg_catalog.pg_attribute AS attribute
 LEFT JOIN pg_catalog.pg_attrdef AS default_value
   ON default_value.adrelid=attribute.attrelid AND default_value.adnum=attribute.attnum
 WHERE attribute.attrelid=to_regclass($1) AND attribute.attname=$2
-  AND attribute.attnum>0 AND NOT attribute.attisdropped`, table, expected.name).Scan(&dataType, &notNull, &defaultExpr, &identity, &generated); err != nil {
+  AND attribute.attnum>0 AND NOT attribute.attisdropped`, publicRegclass(table), expected.name).Scan(&dataType, &notNull, &defaultExpr, &identity, &generated); err != nil {
 				return fmt.Errorf("verify exact artifact authority column %s.%s: %w", table, expected.name, err)
 			}
 			if dataType != expected.dataType || notNull != expected.notNull || defaultExpr != expected.defaultExpr || identity != expected.identity || generated != expected.generated {
@@ -477,7 +519,7 @@ FROM pg_catalog.pg_constraint AS constraint_row
 LEFT JOIN pg_catalog.pg_class AS index_relation ON index_relation.oid=constraint_row.conindid
 LEFT JOIN pg_catalog.pg_index AS index_row ON index_row.indexrelid=constraint_row.conindid
 LEFT JOIN pg_catalog.pg_am AS access_method ON access_method.oid=index_relation.relam
-WHERE constraint_row.conrelid=to_regclass($1) AND constraint_row.conname=$2`, expected.table, expected.name).Scan(
+WHERE constraint_row.conrelid=to_regclass($1) AND constraint_row.conname=$2`, publicRegclass(expected.table), expected.name).Scan(
 			&kind, &validated, &deferrable, &deferred, &noInherit, &definition, &constraintColumns,
 			&indexName, &method, &unique, &primary, &valid, &ready, &live,
 			&predicateNull, &expressionsNull, &keyCount, &attributeCount, &indexColumns,
@@ -537,7 +579,7 @@ FROM pg_catalog.pg_class AS index_relation
 JOIN pg_catalog.pg_index AS index_row ON index_row.indexrelid=index_relation.oid
 JOIN pg_catalog.pg_am AS access_method ON access_method.oid=index_relation.relam
 WHERE index_relation.oid=to_regclass($2) AND index_row.indrelid=to_regclass($1)
-  AND index_relation.relkind='i'`, expected.table, expected.name).Scan(
+  AND index_relation.relkind='i'`, publicRegclass(expected.table), publicRegclass(expected.name)).Scan(
 			&method, &unique, &primary, &valid, &ready, &live, &predicate,
 			&expression, &keyCount, &attributeCount, &columns, &options,
 		); err != nil {
@@ -548,6 +590,10 @@ WHERE index_relation.oid=to_regclass($2) AND index_row.indrelid=to_regclass($1)
 		}
 	}
 	return nil
+}
+
+func publicRegclass(name string) string {
+	return pgx.Identifier{"public", name}.Sanitize()
 }
 
 func equalStrings(left, right []string) bool {

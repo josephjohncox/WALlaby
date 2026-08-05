@@ -50,6 +50,43 @@ func TestProjectStructuredDDLRenamesAndFiltersColumns(t *testing.T) {
 	}
 }
 
+func TestProjectRenameAcceptsWhitespaceOnlyTargetAndRejectsNUL(t *testing.T) {
+	mappings := upsertMappings()
+	mappings.Destinations[0].Tables[0].Columns = append(mappings.Destinations[0].Tables[0].Columns,
+		flow.ColumnMapping{SourceColumn: "renamed", Action: flow.MappingActionInclude, TargetColumn: " "})
+	projector := testProjector(t, mappings)
+	project := func(toColumn string) error {
+		plan, err := json.Marshal(schema.Plan{Changes: []schema.Change{{Type: schema.ChangeRenameColumn, Namespace: "public", Table: "widgets", Column: "id", ToColumn: toColumn}}})
+		if err != nil {
+			return err
+		}
+		got, _, err := projector.ProjectBatch(connector.Batch{
+			Schema: connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{
+				{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"replica_identity": "true"}},
+				{Name: "updated_at", Type: "text", TypeMetadata: map[string]string{"replica_identity": "true"}},
+			}},
+			Records: []connector.Record{{Table: "widgets", Operation: connector.OpDDL, DDLPlan: plan, SourcePosition: "0/10"}}, Checkpoint: connector.Checkpoint{LSN: "0/10"},
+		})
+		if err != nil {
+			return err
+		}
+		var projected schema.Plan
+		if err := json.Unmarshal(got.Records[0].DDLPlan, &projected); err != nil {
+			return err
+		}
+		if projected.Changes[0].ToColumn != " " {
+			t.Fatalf("projected rename target=%q, want one space", projected.Changes[0].ToColumn)
+		}
+		return nil
+	}
+	if err := project("renamed"); err != nil {
+		t.Fatalf("whitespace-only rename target rejected: %v", err)
+	}
+	if err := project("bad\x00name"); err == nil {
+		t.Fatal("NUL rename target admitted")
+	}
+}
+
 func TestProjectTablelessStructuredDDLByPlanRelation(t *testing.T) {
 	projector := testProjector(t, upsertMappings())
 	first, _ := json.Marshal(schema.Plan{Changes: []schema.Change{{Type: schema.ChangeAddColumn, Namespace: "public", Table: "widgets", Column: "extra", ToType: "text"}}})

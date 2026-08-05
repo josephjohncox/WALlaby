@@ -551,7 +551,7 @@ func (p *PostgresEngine) Control(ctx context.Context, id string) (LifecycleContr
 func (p *PostgresEngine) CheckLegacySourceResourceMutation(ctx context.Context, sourceSystemID, databaseName, resourceKind, physicalName string) error {
 	var ownershipTable, managedBootstrapSchema bool
 	if err := p.pool.QueryRow(ctx, `
-SELECT to_regclass('source_resources') IS NOT NULL,
+SELECT to_regclass('"public"."source_resources"') IS NOT NULL,
        EXISTS (
          SELECT 1
          FROM unnest(ARRAY[
@@ -559,9 +559,9 @@ SELECT to_regclass('source_resources') IS NOT NULL,
            'source_resource_operations','snapshot_delivery_attempts',
            'snapshot_delivery_evidence','snapshot_delivery_receipts'
          ]) AS managed_table(name)
-         WHERE to_regclass(managed_table.name) IS NOT NULL
+         WHERE to_regclass(pg_catalog.format('%I.%I','public',managed_table.name)) IS NOT NULL
        ) OR EXISTS (
-         SELECT 1 FROM wallaby_control_migrations WHERE domain='bootstrap'
+         SELECT 1 FROM public.wallaby_control_migrations WHERE domain='bootstrap'
        )`).Scan(&ownershipTable, &managedBootstrapSchema); err != nil {
 		return fmt.Errorf("inspect managed source resource ownership schema: %w", err)
 	}

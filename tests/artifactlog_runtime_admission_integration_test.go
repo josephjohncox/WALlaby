@@ -50,7 +50,8 @@ func TestArtifactConsumerRetryDoesNotBlockReadsBelowBacklogWatermark(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtime.Append(deps.ctx, fence, artifactTransactionAt(9101, "0/910", "0/918", "0/920", "first")); err != nil {
+	first := artifactTransactionAt(9101, "0/910", "0/918", "0/920", "first")
+	if _, err := runtime.Append(deps.ctx, fence, first, managedBaselinePayload(t, first)); err != nil {
 		t.Fatal(err)
 	}
 	if err := runtime.Recover(deps.ctx, fence); err != nil {
@@ -63,7 +64,8 @@ func TestArtifactConsumerRetryDoesNotBlockReadsBelowBacklogWatermark(t *testing.
 		t.Fatalf("consumer commit attempts=%d, want 1", committer.commitCalls)
 	}
 
-	if _, err := runtime.Append(deps.ctx, fence, artifactTransactionAt(9102, "0/930", "0/938", "0/940", "second")); err != nil {
+	second := artifactTransactionAt(9102, "0/930", "0/938", "0/940", "second")
+	if _, err := runtime.Append(deps.ctx, fence, second, managedBaselinePayload(t, second)); err != nil {
 		t.Fatal(err)
 	}
 	waitCtx, cancel := context.WithTimeout(deps.ctx, 100*time.Millisecond)

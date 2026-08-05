@@ -122,7 +122,7 @@ func TestDBOSIntegrationBackfill(t *testing.T) {
 	created, err := engine.Create(ctx, flow.Flow{
 		ID:   flowID,
 		Name: "dbos-test", Source: sourceSpec, Destinations: []connector.Spec{destSpec}, State: flow.StateCreated, Parallelism: 1,
-		Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{destSpec})},
+		Config: flow.Config{DDL: disabledDDLPolicy(), TableMappings: flow.NewTableMappings([]connector.Spec{destSpec})},
 	})
 	if err != nil {
 		t.Fatalf("create flow: %v", err)
@@ -217,6 +217,9 @@ func TestDBOSIntegrationStreaming(t *testing.T) {
 	if _, err := pool.Exec(ctx, createTable); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
+	if err := pgstream.ApplyMigrations(ctx, pool); err != nil {
+		t.Fatalf("migrate stream store: %v", err)
+	}
 
 	sourceSpec := connector.Spec{
 		Name: "dbos-source",
@@ -257,7 +260,7 @@ func TestDBOSIntegrationStreaming(t *testing.T) {
 	created, err := engine.Create(ctx, flow.Flow{
 		ID:   flowID,
 		Name: "dbos-test-stream", Source: sourceSpec, Destinations: []connector.Spec{destSpec}, State: flow.StateCreated, Parallelism: 1,
-		Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{destSpec})},
+		Config: flow.Config{DDL: disabledDDLPolicy(), TableMappings: flow.NewTableMappings([]connector.Spec{destSpec})},
 	})
 	if err != nil {
 		t.Fatalf("create flow: %v", err)
@@ -361,7 +364,7 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 	created, err := engine.Create(ctx, flow.Flow{
 		ID:   flowID,
 		Name: "dbos-retry", Source: badSource, Destinations: []connector.Spec{destSpec}, State: flow.StateCreated, Parallelism: 1,
-		Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{destSpec})},
+		Config: flow.Config{DDL: disabledDDLPolicy(), TableMappings: flow.NewTableMappings([]connector.Spec{destSpec})},
 	})
 	if err != nil {
 		t.Fatalf("create flow: %v", err)
@@ -467,6 +470,9 @@ func TestDBOSIntegrationAdminRecovery(t *testing.T) {
 	if _, err := pool.Exec(ctx, createTable); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
+	if err := pgstream.ApplyMigrations(ctx, pool); err != nil {
+		t.Fatalf("migrate stream store: %v", err)
+	}
 	if _, err := pool.Exec(ctx,
 		fmt.Sprintf(`INSERT INTO %s.%s (id, payload, updated_at) VALUES ($1, $2::jsonb, $3)`, schema, table),
 		1, `{"status":"dbos"}`, time.Now().UTC(),
@@ -511,7 +517,7 @@ func TestDBOSIntegrationAdminRecovery(t *testing.T) {
 	created, err := engine.Create(ctx, flow.Flow{
 		ID:   flowID,
 		Name: "dbos-recovery", Source: sourceSpec, Destinations: []connector.Spec{destSpec}, State: flow.StateCreated, Parallelism: 1,
-		Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{destSpec})},
+		Config: flow.Config{DDL: disabledDDLPolicy(), TableMappings: flow.NewTableMappings([]connector.Spec{destSpec})},
 	})
 	if err != nil {
 		t.Fatalf("create flow: %v", err)
@@ -837,4 +843,9 @@ LIMIT 5`)
 		}
 		rows.Close()
 	}
+}
+
+func disabledDDLPolicy() flow.DDLPolicy {
+	autoApply := false
+	return flow.DDLPolicy{AutoApply: &autoApply}
 }

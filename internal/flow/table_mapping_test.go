@@ -37,6 +37,29 @@ func TestTableMappingsValidateAndFingerprint(t *testing.T) {
 	}
 }
 
+func TestTableMappingsPreserveExactCaseAndWhitespaceIdentifiers(t *testing.T) {
+	t.Parallel()
+	destination := connector.Spec{Name: "warehouse", Type: connector.EndpointPostgres}
+	mappings := TableMappings{
+		Version: TableMappingsVersion,
+		Destinations: []DestinationTableMappings{{
+			Destination: "warehouse", FutureTables: FutureTableMapping{Action: MappingActionExclude},
+			Tables: []TableMapping{
+				{SourceSchema: "Exact Schema", SourceTable: "Events", Action: MappingActionExclude},
+				{SourceSchema: "Exact Schema", SourceTable: "events", Action: MappingActionExclude},
+				{SourceSchema: " ", SourceTable: " ", Action: MappingActionInclude, TargetSchema: " ", TargetTable: " ", FutureColumns: FutureColumnMapping{Action: MappingActionInclude, TargetColumn: "{column}"}, Columns: []ColumnMapping{{SourceColumn: " ", Action: MappingActionInclude, TargetColumn: " "}}, Write: TableWritePolicy{Mode: TableWriteModeAppend}},
+			},
+		}},
+	}
+	if err := mappings.Validate([]connector.Spec{destination}); err != nil {
+		t.Fatalf("valid exact PostgreSQL identifiers rejected: %v", err)
+	}
+	clone := mappings.Clone()
+	if clone.Destinations[0].Tables[0].SourceTable != "Events" || clone.Destinations[0].Tables[1].SourceTable != "events" || clone.Destinations[0].Tables[2].SourceSchema != " " || clone.Destinations[0].Tables[2].SourceTable != " " || clone.Destinations[0].Tables[2].TargetSchema != " " || clone.Destinations[0].Tables[2].TargetTable != " " || clone.Destinations[0].Tables[2].Columns[0].SourceColumn != " " || clone.Destinations[0].Tables[2].Columns[0].TargetColumn != " " {
+		t.Fatalf("mapping clone changed exact identifiers: %+v", clone.Destinations[0].Tables)
+	}
+}
+
 func TestTableMappingsCanonicalEqualityFingerprintAndJSONRoundTrip(t *testing.T) {
 	t.Parallel()
 	base := richTestMappings()
@@ -139,10 +162,10 @@ func TestTableMappingsRejectInvalidContracts(t *testing.T) {
 		{name: "future column table variable", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.FutureColumns.TargetColumn = "{table}_{column}" }, dest: postgres, want: "placeholders other than {column}"},
 		{name: "destination whitespace", edit: func(m *TableMappings) { m.Destinations[0].Destination = " warehouse" }, dest: postgres, want: "whitespace"},
 		{name: "flow destination whitespace", edit: func(*TableMappings) {}, dest: []connector.Spec{{Name: "warehouse ", Type: connector.EndpointPostgres}}, want: "whitespace"},
-		{name: "source identifier whitespace", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].SourceTable = "customers " }, dest: postgres, want: "whitespace"},
-		{name: "target identifier whitespace", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].TargetTable = " accounts" }, dest: postgres, want: "whitespace"},
-		{name: "key whitespace", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].Write.KeyColumns[0] = " id" }, dest: postgres, want: "whitespace"},
-		{name: "watermark whitespace", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].Write.WatermarkColumn = "updated_at " }, dest: postgres, want: "whitespace"},
+		{name: "source identifier NUL", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].SourceTable = "customers\x00shadow" }, dest: postgres, want: "NUL"},
+		{name: "target identifier NUL", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].TargetTable = "accounts\x00shadow" }, dest: postgres, want: "NUL"},
+		{name: "key NUL", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].Write.KeyColumns[0] = "id\x00shadow" }, dest: postgres, want: "NUL"},
+		{name: "watermark NUL", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].Write.WatermarkColumn = "updated_at\x00shadow" }, dest: postgres, want: "NUL"},
 		{name: "template whitespace", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetTable = " {table}" }, dest: postgres, want: "whitespace"},
 		{name: "upsert append only", edit: func(*TableMappings) {}, dest: []connector.Spec{{Name: "warehouse", Type: connector.EndpointIceberg}}, want: "does not support upsert"},
 	}

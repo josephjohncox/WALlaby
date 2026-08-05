@@ -57,8 +57,8 @@ func (c SnapshotDeliveryContract) Validate() error {
 	if strings.TrimSpace(c.ProjectionFingerprint) == "" || c.ProjectionFingerprint != strings.TrimSpace(c.ProjectionFingerprint) {
 		return errors.New("projection fingerprint is required and must be canonical")
 	}
-	if strings.TrimSpace(c.Schema.Namespace) == "" || strings.TrimSpace(c.Schema.Name) == "" || len(c.Schema.Columns) == 0 {
-		return errors.New("projected destination schema, namespace, table, and columns are required")
+	if !validSnapshotIdentifier(c.Schema.Namespace) || !validSnapshotIdentifier(c.Schema.Name) || len(c.Schema.Columns) == 0 {
+		return errors.New("projected destination schema, namespace, table, and columns are required and identifiers must not contain NUL")
 	}
 	if c.WritePolicy.ProjectionFingerprint != c.ProjectionFingerprint {
 		return errors.New("write policy projection fingerprint differs from the destination contract")
@@ -75,6 +75,17 @@ func (c SnapshotDeliveryContract) Validate() error {
 	return nil
 }
 
+func validSnapshotIdentifier(value string) bool {
+	return len(value) > 0 && !strings.ContainsRune(value, '\x00')
+}
+
+func validateSnapshotTask(task SnapshotTask) error {
+	if task.RelationID == 0 || strings.TrimSpace(task.TaskID) == "" || !validSnapshotIdentifier(task.Namespace) || !validSnapshotIdentifier(task.Table) || !validSnapshotIdentifier(task.Schema.Namespace) || !validSnapshotIdentifier(task.Schema.Name) || len(task.Schema.Columns) == 0 || len(task.KeyColumns) == 0 {
+		return fmt.Errorf("bootstrap task %d/%q is incomplete, contains an empty or NUL source identifier, or lacks a primary key", task.RelationID, task.TaskID)
+	}
+	return nil
+}
+
 // SnapshotManifestHash returns the canonical identity of the complete source
 // query and mapped destination contracts for a frozen snapshot generation.
 func SnapshotManifestHash(tasks []SnapshotTask) (string, error) {
@@ -86,6 +97,9 @@ func SnapshotManifestHash(tasks []SnapshotTask) (string, error) {
 		return manifest[i].TaskID < manifest[j].TaskID
 	})
 	for _, task := range manifest {
+		if err := validateSnapshotTask(task); err != nil {
+			return "", err
+		}
 		if err := task.Delivery.Validate(); err != nil {
 			return "", fmt.Errorf("validate snapshot destination contract %d/%s: %w", task.RelationID, task.TaskID, err)
 		}
@@ -150,8 +164,8 @@ func (b *Bootstrapper) FreezeManifest(ctx context.Context, fence authority.RunFe
 		return ExportedSnapshot{}, errors.New("bootstrap manifest cannot change after a task receipt")
 	}
 	for _, task := range sorted {
-		if task.RelationID == 0 || strings.TrimSpace(task.TaskID) == "" || strings.TrimSpace(task.Namespace) == "" || strings.TrimSpace(task.Table) == "" || len(task.Schema.Columns) == 0 || len(task.KeyColumns) == 0 {
-			return ExportedSnapshot{}, fmt.Errorf("bootstrap task %d/%q is incomplete or lacks a primary key", task.RelationID, task.TaskID)
+		if err := validateSnapshotTask(task); err != nil {
+			return ExportedSnapshot{}, err
 		}
 		if err := task.Delivery.Validate(); err != nil {
 			return ExportedSnapshot{}, fmt.Errorf("bootstrap task %s destination contract: %w", task.WorkID(snapshot.BootstrapID), err)
@@ -225,8 +239,8 @@ func (b *Bootstrapper) DeliverTaskBatch(ctx context.Context, claim authority.Cla
 	if strings.TrimSpace(snapshot.SourceLineageID) == "" || strings.TrimSpace(snapshot.PublicationRevision) == "" || strings.TrimSpace(snapshot.ManifestHash) == "" {
 		return errors.New("bootstrap delivery requires a frozen manifest identity")
 	}
-	if task.RelationID == 0 || strings.TrimSpace(task.TaskID) == "" || len(task.Schema.Columns) == 0 || len(task.KeyColumns) == 0 {
-		return errors.New("bootstrap delivery requires a complete source task identity")
+	if err := validateSnapshotTask(task); err != nil {
+		return fmt.Errorf("bootstrap delivery requires a complete source task identity: %w", err)
 	}
 	if err := task.Delivery.Validate(); err != nil {
 		return fmt.Errorf("bootstrap delivery requires an explicit frozen destination contract: %w", err)

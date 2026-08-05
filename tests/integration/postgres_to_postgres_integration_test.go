@@ -13,12 +13,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
-	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
+	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/controlplane"
+	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/registry"
+	"github.com/josephjohncox/wallaby/internal/replication"
+	runnerpkg "github.com/josephjohncox/wallaby/internal/runner"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/spec"
 	"github.com/josephjohncox/wallaby/pkg/stream"
@@ -48,6 +52,7 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 	}
 
 	suffix := fmt.Sprintf("%d", rand.New(rand.NewSource(time.Now().UnixNano())).Int63())
+	flowID := "e2e-flow-" + suffix
 	srcDB := "wallaby_src_" + suffix
 	dstDB := "wallaby_dst_" + suffix
 	schemaName := "e2e_" + suffix
@@ -124,11 +129,6 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 		t.Fatalf("create dest table: %v", err)
 	}
 
-	var startLSN string
-	if err := srcPool.QueryRow(ctx, "SELECT pg_current_wal_lsn()").Scan(&startLSN); err != nil {
-		t.Fatalf("read start LSN: %v", err)
-	}
-
 	sourceSpec := connector.Spec{
 		Name: "e2e-source",
 		Type: connector.EndpointPostgres,
@@ -143,8 +143,6 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 			"batch_timeout":      "200ms",
 			"emit_empty":         "true",
 			"resolve_types":      "true",
-			"start_lsn":          startLSN,
-			"capture_ddl":        "true",
 		},
 	}
 
@@ -153,9 +151,8 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 		Type: connector.EndpointPostgres,
 		Options: map[string]string{
 			"dsn":                dstDSN,
-			"schema":             schemaName,
 			"meta_table_enabled": "true",
-			"flow_id":            "e2e-flow",
+			"flow_id":            flowID,
 			"synchronous_commit": "off",
 		},
 	}
@@ -174,23 +171,66 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 	}
 	defer registryStore.Close()
 
-	traceSink := &stream.MemoryTraceSink{}
-	runner := &stream.Runner{
-		Source: &pgsource.Source{SchemaHook: &registry.Hook{
-			Store: registryStore, FlowID: "e2e-flow", AutoApprove: true, AutoApply: true,
+	mappings := flow.TableMappings{
+		Version: flow.TableMappingsVersion,
+		Destinations: []flow.DestinationTableMappings{{
+			Destination: destSpec.Name,
+			FutureTables: flow.FutureTableMapping{
+				Action: flow.MappingActionExclude,
+			},
+			Tables: []flow.TableMapping{{
+				SourceSchema: schemaName,
+				SourceTable:  table,
+				Action:       flow.MappingActionInclude,
+				TargetSchema: schemaName,
+				TargetTable:  table,
+				FutureColumns: flow.FutureColumnMapping{
+					Action:       flow.MappingActionInclude,
+					TargetColumn: "{column}",
+				},
+				Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}},
+			}},
 		}},
-		SourceSpec:          sourceSpec,
-		Destinations:        []stream.DestinationConfig{{Spec: destSpec, Dest: &pgdest.Destination{}}},
-		Checkpoints:         checkpointStore,
-		FlowID:              "e2e-flow",
-		RequireDDLExecution: true,
-		DDLExecutions:       registryStore,
-		TraceSink:           traceSink,
+	}
+	if err := mappings.Validate([]connector.Spec{destSpec}); err != nil {
+		t.Fatalf("validate E2E mappings: %v", err)
+	}
+	gate, autoApprove, autoApply := true, false, true
+	definition := flow.Flow{
+		ID: flowID, Source: sourceSpec, Destinations: []connector.Spec{destSpec},
+		Config: flow.Config{TableMappings: mappings, DDL: flow.DDLPolicy{Gate: &gate, AutoApprove: &autoApprove, AutoApply: &autoApply}},
+	}
+	ddlDefaults := flow.ShippedDDLPolicyDefaults()
+	factory := runnerpkg.Factory{SchemaHookForFlow: func(f flow.Flow) replication.SchemaHook {
+		policy := flow.ResolveDDLPolicy(f.Config.DDL, &ddlDefaults)
+		return &registry.Hook{Store: registryStore, FlowID: f.ID, AutoApprove: policy.AutoApprove, GateApproval: policy.Gate, AutoApply: policy.AutoApply}
+	}}
+	traceSink := &stream.MemoryTraceSink{}
+	newRunner := func() stream.Runner {
+		source, err := factory.SourceForFlow(definition)
+		if err != nil {
+			t.Fatalf("construct production source: %v", err)
+		}
+		destinations, err := factory.DestinationsForFlow(definition)
+		if err != nil {
+			t.Fatalf("construct production destinations: %v", err)
+		}
+		streamRunner, err := runnerpkg.NewStreamRunner(definition, source, destinations, runnerpkg.StreamRunnerConfig{
+			Checkpoints: checkpointStore, DDLExecutions: registryStore, DDLPolicyDefaults: &ddlDefaults, TraceSink: traceSink,
+		})
+		if err != nil {
+			t.Fatalf("construct production stream runner: %v", err)
+		}
+		if !streamRunner.RequireDDLExecution {
+			t.Fatal("production construction did not resolve auto_apply=true")
+		}
+		return streamRunner
 	}
 
+	streamRunner := newRunner()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- runner.Run(ctx)
+		errCh <- streamRunner.Run(ctx)
 	}()
 
 	time.Sleep(1 * time.Second)
@@ -215,45 +255,54 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 		return count > 0, nil
 	})
 
-	ddlSQL := fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN extra TEXT`, schemaName, table)
-	if _, err := srcPool.Exec(ctx, ddlSQL); err != nil {
-		t.Fatalf("alter table: %v", err)
+	positionBeforeBaseline := ""
+	if initialCheckpoint, err := checkpointStore.Get(ctx, definition.ID); err == nil {
+		positionBeforeBaseline, err = connector.CheckpointPositionID(initialCheckpoint)
+		if err != nil {
+			t.Fatalf("identify initial checkpoint: %v", err)
+		}
+	} else if !errors.Is(err, connector.ErrCheckpointNotFound) {
+		t.Fatalf("load initial checkpoint: %v", err)
 	}
 
-	waitFor(t, 30*time.Second, 200*time.Millisecond, func() (bool, error) {
+	baselineTime := time.Now().UTC()
+	baselineInsert := fmt.Sprintf(`INSERT INTO %s.%s (id,payload,tags,amount,uid,updated_at) VALUES (0,'{"baseline":true}'::jsonb,'[]'::jsonb,0,'00000000-0000-0000-0000-000000000000'::uuid,$1)`, schemaName, table)
+	if _, err := srcPool.Exec(ctx, baselineInsert, baselineTime); err != nil {
+		t.Fatalf("seed pre-DDL relation baseline: %v", err)
+	}
+	positionBeforeDDL := ""
+	waitFor(t, 15*time.Second, 100*time.Millisecond, func() (bool, error) {
 		select {
 		case runnerErr := <-errCh:
-			if runnerErr == nil {
-				return false, errors.New("runner exited before applying DDL")
-			}
-			return false, fmt.Errorf("runner exited before applying DDL: %w", runnerErr)
+			return false, fmt.Errorf("runner exited before establishing the pre-DDL schema baseline: %w", runnerErr)
 		default:
 		}
-		var exists bool
-		err := dstPool.QueryRow(ctx,
-			`SELECT EXISTS (
-			   SELECT 1
-			   FROM information_schema.columns
-			   WHERE table_schema = $1 AND table_name = $2 AND column_name = 'extra'
-			 )`, schemaName, table,
-		).Scan(&exists)
+		var count int
+		if err := dstPool.QueryRow(ctx, fmt.Sprintf("SELECT count(*) FROM %s.%s WHERE id=0", schemaName, table)).Scan(&count); err != nil || count != 1 {
+			return false, err
+		}
+		checkpointBeforeDDL, err := checkpointStore.Get(ctx, definition.ID)
+		if errors.Is(err, connector.ErrCheckpointNotFound) {
+			return false, nil
+		}
 		if err != nil {
 			return false, err
 		}
-		return exists, nil
+		position, err := connector.CheckpointPositionID(checkpointBeforeDDL)
+		if err != nil {
+			return false, err
+		}
+		if position == positionBeforeBaseline {
+			return false, nil
+		}
+		positionBeforeDDL = position
+		return true, nil
 	})
-	waitFor(t, 10*time.Second, 100*time.Millisecond, func() (bool, error) {
-		var count int
-		err := srcPool.QueryRow(ctx,
-			`SELECT COUNT(*)
-			 FROM ddl_execution_receipts receipt
-			 JOIN ddl_events event ON event.id = receipt.event_id
-			 WHERE event.flow_id = $1 AND event.status = 'applied'
-			   AND receipt.destination = $2`,
-			"e2e-flow", "e2e-dest",
-		).Scan(&count)
-		return count == 1, err
-	})
+
+	ddlSQL := fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN extra TEXT`, schemaName, table)
+	if _, err := srcPool.Exec(ctx, ddlSQL); err != nil {
+		t.Fatalf("alter source table: %v", err)
+	}
 
 	now := time.Now().UTC()
 	uid1 := "11111111-1111-1111-1111-111111111111"
@@ -263,6 +312,136 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 	if _, err := srcPool.Exec(ctx, insertSQL, 1, `{"status":"new"}`, `["a","b"]`, "10.50", uid1, now, "extra-1"); err != nil {
 		t.Fatalf("insert row1: %v", err)
 	}
+	var gateErr error
+	select {
+	case gateErr = <-errCh:
+	case <-time.After(15 * time.Second):
+		t.Fatal("production runner did not pause on pending DDL gate")
+	}
+	if !errors.Is(gateErr, connector.ErrDDLApprovalRequired) {
+		t.Fatalf("first production runner error=%v, want DDL approval gate", gateErr)
+	}
+	gateDetails, ok := connector.AsDDLGate(gateErr)
+	if !ok || gateDetails.EventID == 0 {
+		t.Fatalf("DDL gate lacks durable event identity: %v", gateErr)
+	}
+	ddlEventID := gateDetails.EventID
+	var ddlStatus string
+	if err := srcPool.QueryRow(ctx, `SELECT status FROM ddl_events WHERE id=$1 AND flow_id=$2`, ddlEventID, definition.ID).Scan(&ddlStatus); err != nil {
+		t.Fatalf("read pending DDL: %v", err)
+	}
+	if ddlStatus != registry.StatusPending {
+		t.Fatalf("captured DDL status=%s, want pending before administrative approval", ddlStatus)
+	}
+	checkpointAtGate, err := checkpointStore.Get(ctx, definition.ID)
+	if err != nil {
+		t.Fatalf("load checkpoint at pending DDL gate: %v", err)
+	}
+	positionBeforeDDL, err = connector.CheckpointPositionID(checkpointAtGate)
+	if err != nil {
+		t.Fatalf("identify checkpoint at pending DDL gate: %v", err)
+	}
+	if err := registryStore.SetDDLStatus(ctx, ddlEventID, registry.StatusApproved); err != nil {
+		t.Fatalf("approve DDL through current registry administration API: %v", err)
+	}
+
+	// Simulate a process failure after the source hook has registered the new
+	// schema but before destination DDL or its execution receipt can commit. On
+	// the next restart the observed relation diff is empty, so recovery depends
+	// on replaying the exact approved durable plan by flow/fence/LSN.
+	injectedDDLFailure := errors.New("injected failure before destination DDL")
+	failedRunner := newRunner()
+	failedRunner.Destinations[0].Dest = &failingDDLDestination{
+		Destination: failedRunner.Destinations[0].Dest,
+		err:         injectedDDLFailure,
+	}
+	failedErrCh := make(chan error, 1)
+	go func() {
+		failedErrCh <- failedRunner.Run(ctx)
+	}()
+	select {
+	case failedErr := <-failedErrCh:
+		if !errors.Is(failedErr, injectedDDLFailure) {
+			t.Fatalf("failure-boundary runner error=%v, want injected DDL failure", failedErr)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("failure-boundary runner did not reach destination DDL")
+	}
+	registeredSchema, foundRegisteredSchema, err := registryStore.LatestSchemaForFlow(ctx, definition.ID, schemaName, table)
+	if err != nil {
+		t.Fatalf("load schema registered before injected destination failure: %v", err)
+	}
+	if !foundRegisteredSchema {
+		t.Fatal("new schema was not durably registered before injected destination failure")
+	}
+	registeredExtra := false
+	for _, column := range registeredSchema.Columns {
+		registeredExtra = registeredExtra || column.Name == "extra"
+	}
+	if !registeredExtra {
+		t.Fatalf("registered schema after injected failure=%+v, want already-new baseline", registeredSchema)
+	}
+	var destinationExtra bool
+	if err := dstPool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 AND column_name='extra')`, schemaName, table).Scan(&destinationExtra); err != nil {
+		t.Fatalf("inspect destination after injected DDL failure: %v", err)
+	}
+	if destinationExtra {
+		t.Fatal("destination DDL committed despite injected pre-ApplyDDL failure")
+	}
+	if err := srcPool.QueryRow(ctx, `SELECT status FROM ddl_events WHERE id=$1`, ddlEventID).Scan(&ddlStatus); err != nil {
+		t.Fatalf("read DDL status after injected failure: %v", err)
+	}
+	if ddlStatus != registry.StatusApproved {
+		t.Fatalf("DDL status after injected failure=%s, want approved for restart replay", ddlStatus)
+	}
+	checkpointAfterFailure, err := checkpointStore.Get(ctx, definition.ID)
+	if err != nil {
+		t.Fatalf("load checkpoint after injected DDL failure: %v", err)
+	}
+	positionAfterFailure, err := connector.CheckpointPositionID(checkpointAfterFailure)
+	if err != nil {
+		t.Fatalf("identify checkpoint after injected DDL failure: %v", err)
+	}
+	if positionAfterFailure != positionBeforeDDL {
+		t.Fatalf("checkpoint advanced across unreceipted DDL: before=%s after=%s", positionBeforeDDL, positionAfterFailure)
+	}
+
+	streamRunner = newRunner()
+	errCh = make(chan error, 1)
+	go func() {
+		errCh <- streamRunner.Run(ctx)
+	}()
+	waitFor(t, 15*time.Second, 100*time.Millisecond, func() (bool, error) {
+		select {
+		case runnerErr := <-errCh:
+			var columnExists bool
+			_ = dstPool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 AND column_name='extra')`, schemaName, table).Scan(&columnExists)
+			var attempts, receipts int
+			_ = srcPool.QueryRow(ctx, `SELECT count(*) FROM ddl_execution_attempts WHERE event_id=$1`, ddlEventID).Scan(&attempts)
+			_ = srcPool.QueryRow(ctx, `SELECT count(*) FROM ddl_execution_receipts WHERE event_id=$1`, ddlEventID).Scan(&receipts)
+			return false, fmt.Errorf("resumed production runner exited before structured DDL orchestration completed (column=%t attempts=%d receipts=%d): %w", columnExists, attempts, receipts, runnerErr)
+		default:
+		}
+		var columnExists bool
+		if err := dstPool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 AND column_name='extra')`, schemaName, table).Scan(&columnExists); err != nil || !columnExists {
+			return false, err
+		}
+		var applied int
+		err := srcPool.QueryRow(ctx, `SELECT count(*) FROM ddl_events event JOIN ddl_execution_manifests manifest ON manifest.event_id=event.id JOIN ddl_execution_receipts receipt ON receipt.event_id=event.id WHERE event.id=$1 AND event.flow_id=$2 AND event.status='applied' AND manifest.destinations=ARRAY[$3]::text[] AND manifest.manifest_hash<>'' AND receipt.destination=$3`, ddlEventID, definition.ID, destSpec.Name).Scan(&applied)
+		return applied == 1, err
+	})
+	var positionAfterApply string
+	waitFor(t, 5*time.Second, 50*time.Millisecond, func() (bool, error) {
+		checkpointAfterApply, err := checkpointStore.Get(ctx, definition.ID)
+		if err != nil {
+			return false, err
+		}
+		positionAfterApply, err = connector.CheckpointPositionID(checkpointAfterApply)
+		if err != nil {
+			return false, err
+		}
+		return positionAfterApply != positionBeforeDDL, nil
+	})
 	if _, err := srcPool.Exec(ctx, insertSQL, 2, `{"status":"old"}`, `["x","y"]`, "20.00", uid2, now, "extra-2"); err != nil {
 		t.Fatalf("insert row2: %v", err)
 	}
@@ -279,18 +458,27 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 		t.Fatalf("update row3 -> row4: %v", err)
 	}
 
-	deleteSQL := fmt.Sprintf(`DELETE FROM %s.%s WHERE id = $1`, schemaName, table)
-	if _, err := srcPool.Exec(ctx, deleteSQL, 2); err != nil {
-		t.Fatalf("delete row2: %v", err)
+	deleteSQL := fmt.Sprintf(`DELETE FROM %s.%s WHERE id = ANY($1)`, schemaName, table)
+	if _, err := srcPool.Exec(ctx, deleteSQL, []int64{0, 2}); err != nil {
+		t.Fatalf("delete baseline and row2: %v", err)
 	}
 
 	waitFor(t, 30*time.Second, 200*time.Millisecond, func() (bool, error) {
+		select {
+		case runnerErr := <-errCh:
+			if runnerErr == nil {
+				return false, errors.New("runner exited before delivering table-scoped batches")
+			}
+			return false, fmt.Errorf("runner exited before delivering table-scoped batches: %w", runnerErr)
+		default:
+		}
 		var count int
-		query := fmt.Sprintf("SELECT count(*) FROM %s.%s", schemaName, table)
-		if err := dstPool.QueryRow(ctx, query).Scan(&count); err != nil {
+		var rowOneStatus string
+		query := fmt.Sprintf(`SELECT count(*),COALESCE((SELECT payload->>'status' FROM %s.%s WHERE id=1),'') FROM %s.%s`, schemaName, table, schemaName, table)
+		if err := dstPool.QueryRow(ctx, query).Scan(&count, &rowOneStatus); err != nil {
 			return false, err
 		}
-		return count == 2, nil
+		return count == 2 && rowOneStatus == "updated", nil
 	})
 
 	var payloadRaw, tagsRaw []byte
@@ -371,6 +559,144 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 	}
 }
 
+func TestManagedBootstrapNeverRejectsTamperedPostgresAuthorityBeforeSourceIO(t *testing.T) {
+	baseDSN := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
+	if baseDSN == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	admin, err := pgxpool.New(ctx, baseDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	database := fmt.Sprintf("wallaby_tampered_destination_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+database); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+database+" WITH (FORCE)") }()
+	destinationDSN, err := dsnWithDatabase(baseDSN, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, destinationDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `CREATE SCHEMA wallaby_meta; CREATE TABLE wallaby_meta.__delivery_receipts (broken text)`); err != nil {
+		pool.Close()
+		t.Fatal(err)
+	}
+	pool.Close()
+
+	events := []string{}
+	source := &managedStartupProbeSource{events: &events}
+	fence := authority.RunFence{FlowID: "tampered-bootstrap-never", FlowIncarnationID: uuid.New(), Generation: 1, AcquisitionID: uuid.New(), ExecutionID: "test", LeaseEpoch: 1}
+	runner := stream.Runner{
+		Source: source,
+		SourceSpec: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
+			"managed": "true", "bootstrap": "never", "source_lineage_id": "lineage",
+		}},
+		Destinations: []stream.DestinationConfig{{Spec: connector.Spec{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
+			"dsn": destinationDSN, "batch_mode": "target", "destination_revision_id": "revision",
+		}}, Dest: &pgdest.Destination{}}},
+		Checkpoints: managedStartupCheckpointStore{}, FlowID: fence.FlowID, AckPolicy: stream.AckPolicyAll,
+		RunFence: &fence, DeliveryCoordinator: managedStartupCoordinator{}, SchemaBaselines: managedStartupSchemaBaselines{},
+	}
+	err = runner.Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "exact columns/NOT NULL contract mismatch") {
+		t.Fatalf("tampered destination startup error=%v, want exact authority rejection", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("tampered destination initialization invoked source methods: %v", events)
+	}
+}
+
+type managedStartupSchemaBaselines struct{}
+
+func (managedStartupSchemaBaselines) Load(context.Context, connector.RunFence, string) ([]connector.Schema, error) {
+	return nil, nil
+}
+func (managedStartupSchemaBaselines) Persist(context.Context, connector.RunFence, string, []connector.Schema) error {
+	return nil
+}
+
+type managedStartupProbeSource struct{ events *[]string }
+
+func (s *managedStartupProbeSource) Open(context.Context, connector.Spec) error {
+	*s.events = append(*s.events, "open")
+	return nil
+}
+func (s *managedStartupProbeSource) Read(context.Context) (connector.Batch, error) {
+	*s.events = append(*s.events, "read")
+	return connector.Batch{}, errors.New("unexpected source read")
+}
+func (s *managedStartupProbeSource) ReadTransaction(context.Context) (connector.SourceTransaction, error) {
+	*s.events = append(*s.events, "read-transaction")
+	return connector.SourceTransaction{}, errors.New("unexpected transaction read")
+}
+func (s *managedStartupProbeSource) Ack(context.Context, connector.Checkpoint) error {
+	*s.events = append(*s.events, "ack")
+	return nil
+}
+func (s *managedStartupProbeSource) AckWithEvidence(context.Context, connector.Checkpoint) (connector.SourceFlushEvidence, error) {
+	*s.events = append(*s.events, "ack-with-evidence")
+	return connector.SourceFlushEvidence{}, nil
+}
+func (s *managedStartupProbeSource) Close(context.Context) error {
+	*s.events = append(*s.events, "close")
+	return nil
+}
+func (*managedStartupProbeSource) Capabilities() connector.Capabilities {
+	return connector.Capabilities{Support: connector.SupportExperimental, SupportsStreaming: true}
+}
+
+type managedStartupCheckpointStore struct{}
+
+func (managedStartupCheckpointStore) Get(context.Context, string) (connector.Checkpoint, error) {
+	return connector.Checkpoint{}, connector.ErrCheckpointNotFound
+}
+func (managedStartupCheckpointStore) Put(context.Context, string, connector.Checkpoint) error {
+	return nil
+}
+func (managedStartupCheckpointStore) List(context.Context) ([]connector.FlowCheckpoint, error) {
+	return nil, nil
+}
+func (managedStartupCheckpointStore) GetFenced(context.Context, authority.RunFence) (connector.Checkpoint, error) {
+	return connector.Checkpoint{}, connector.ErrCheckpointNotFound
+}
+func (managedStartupCheckpointStore) PutFenced(context.Context, authority.RunFence, connector.Checkpoint) error {
+	return nil
+}
+func (managedStartupCheckpointStore) PersistCheckpointAndOutboxFenced(context.Context, authority.RunFence, connector.Checkpoint, []connector.OutboxEntry) error {
+	return nil
+}
+func (managedStartupCheckpointStore) ListOutboxFenced(context.Context, authority.RunFence) ([]connector.OutboxEntry, error) {
+	return nil, nil
+}
+func (managedStartupCheckpointStore) CompleteOutboxFenced(context.Context, authority.RunFence, string, string) error {
+	return nil
+}
+
+type managedStartupCoordinator struct{}
+
+func (managedStartupCoordinator) AuthorizeAck(context.Context, authority.RunFence, connector.Checkpoint, connector.ManagedSchemaBaselinePayload) (connector.AckGrant, error) {
+	return connector.AckGrant{}, errors.New("unexpected checkpoint authorization")
+}
+func (managedStartupCoordinator) DeliverTransaction(context.Context, authority.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedSchemaBaselinePayload, connector.ManagedTransactionDestination) (connector.AckGrant, error) {
+	return connector.AckGrant{}, errors.New("unexpected transaction delivery")
+}
+func (managedStartupCoordinator) ValidateAckGrant(context.Context, authority.RunFence, connector.AckGrant) error {
+	return errors.New("unexpected ACK validation")
+}
+func (managedStartupCoordinator) RecordAckReceipt(context.Context, authority.RunFence, connector.AckGrant, string) error {
+	return errors.New("unexpected ACK receipt")
+}
+func (managedStartupCoordinator) CommitSourceFeedback(context.Context, authority.RunFence, connector.AckGrant, connector.FlushEvidenceSource) error {
+	return errors.New("unexpected source feedback")
+}
+
 func loadCDCFlowManifest(t *testing.T) spec.Manifest {
 	t.Helper()
 	dir, err := os.Getwd()
@@ -394,6 +720,23 @@ func loadCDCFlowManifest(t *testing.T) spec.Manifest {
 	}
 	t.Fatalf("go.mod not found while resolving manifest path")
 	return spec.Manifest{}
+}
+
+type failingDDLDestination struct {
+	connector.Destination
+	err error
+}
+
+func (d *failingDDLDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
+	return d.err
+}
+
+func (d *failingDDLDestination) ReconcileDDL(ctx context.Context, schema connector.Schema, record connector.Record) (connector.DDLReconcileResult, error) {
+	reconciler, ok := d.Destination.(connector.DDLReconciler)
+	if !ok {
+		return 0, errors.New("wrapped destination does not implement DDL reconciliation")
+	}
+	return reconciler.ReconcileDDL(ctx, schema, record)
 }
 
 func dsnWithDatabase(baseDSN, database string) (string, error) {

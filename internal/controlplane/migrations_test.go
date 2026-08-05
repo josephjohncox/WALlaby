@@ -22,6 +22,146 @@ func TestMigrationDomainsKeepAuthorityBeforeMutations(t *testing.T) {
 	}
 }
 
+func TestEveryControlDomainRejectsChecksumDriftAndNonPrefixHistory(t *testing.T) {
+	ctx, pool := newControlplaneMigrationFixture(t)
+	if err := ApplyMigrations(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	for _, domain := range MigrationDomains() {
+		t.Run(domain, func(t *testing.T) {
+			var version, checksum string
+			if err := pool.QueryRow(ctx, `SELECT version,sql_checksum FROM public.wallaby_control_migrations WHERE domain=$1 ORDER BY version LIMIT 1`, domain).Scan(&version, &checksum); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, `UPDATE public.wallaby_control_migrations SET sql_checksum=$3 WHERE domain=$1 AND version=$2`, domain, version, strings.Repeat("0", 64)); err != nil {
+				t.Fatal(err)
+			}
+			if err := ApplyMigrations(ctx, pool); err == nil || !strings.Contains(err.Error(), domain) || !strings.Contains(err.Error(), "checksum drift") {
+				t.Fatalf("checksum verification error=%v", err)
+			}
+			if _, err := pool.Exec(ctx, `UPDATE public.wallaby_control_migrations SET sql_checksum=$3 WHERE domain=$1 AND version=$2`, domain, version, checksum); err != nil {
+				t.Fatal(err)
+			}
+
+			const nonPrefixVersion = "000_task17_nonprefix.sql"
+			if _, err := pool.Exec(ctx, `UPDATE public.wallaby_control_migrations SET version=$3 WHERE domain=$1 AND version=$2`, domain, version, nonPrefixVersion); err != nil {
+				t.Fatal(err)
+			}
+			if err := ApplyMigrations(ctx, pool); err == nil || !strings.Contains(err.Error(), domain) || !strings.Contains(err.Error(), "not an ordered prefix") {
+				t.Fatalf("ordered-prefix verification error=%v", err)
+			}
+			if _, err := pool.Exec(ctx, `UPDATE public.wallaby_control_migrations SET version=$3 WHERE domain=$1 AND version=$2`, domain, nonPrefixVersion, version); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	if err := ApplyMigrations(ctx, pool); err != nil {
+		t.Fatalf("restored ordered checksum histories: %v", err)
+	}
+}
+
+func TestManagedAuthorityVerificationPinsCanonicalSearchPath(t *testing.T) {
+	ctx, pool := newControlplaneMigrationFixture(t)
+	if err := ApplyMigrations(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	var role string
+	if err := pool.QueryRow(ctx, `SELECT current_user`).Scan(&role); err != nil {
+		t.Fatal(err)
+	}
+	quotedRole := pgx.Identifier{role}.Sanitize()
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s; CREATE TABLE %s.flows(id text); CREATE FUNCTION %s.wallaby_require_authority_protocol_v2() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RETURN NULL; END$$`, quotedRole, quotedRole, quotedRole)); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, quotedRole))
+	}()
+
+	hostileConfig := pool.Config().Copy()
+	if hostileConfig.ConnConfig.RuntimeParams == nil {
+		hostileConfig.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	hostileConfig.ConnConfig.RuntimeParams["search_path"] = quotedRole
+	hostileConfig.MaxConns = 1
+	hostilePool, err := pgxpool.NewWithConfig(ctx, hostileConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hostilePool.Close()
+	if err := hostilePool.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+	connection, err := hostilePool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.Exec(ctx, `CREATE TEMP TABLE flows(id text); CREATE FUNCTION pg_temp.wallaby_require_authority_protocol_v2() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RETURN NULL; END$$`); err != nil {
+		connection.Release()
+		t.Fatal(err)
+	}
+	connection.Release()
+	if err := verifyManagedAuthoritySchema(ctx, hostilePool); err != nil {
+		t.Fatalf("canonical authority verification under hostile nonpublic search_path: %v", err)
+	}
+}
+
+func TestManagedAuthorityVerificationNeverRepairsTamperedSchema(t *testing.T) {
+	ctx, pool := newControlplaneMigrationFixture(t)
+	if err := ApplyMigrations(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `ALTER TABLE ddl_execution_run_attempts RENAME COLUMN flow_id TO task17_broken_flow_id`); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyMigrations(ctx, pool); err == nil || !strings.Contains(err.Error(), "missing required columns") {
+		t.Fatalf("tampered authority startup error=%v", err)
+	}
+	var expectedExists, brokenExists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid='ddl_execution_run_attempts'::regclass AND attname='flow_id' AND attnum>0 AND NOT attisdropped), EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid='ddl_execution_run_attempts'::regclass AND attname='task17_broken_flow_id' AND attnum>0 AND NOT attisdropped)`).Scan(&expectedExists, &brokenExists); err != nil {
+		t.Fatal(err)
+	}
+	if expectedExists || !brokenExists {
+		t.Fatalf("startup repaired authority columns: flow_id=%t broken=%t", expectedExists, brokenExists)
+	}
+}
+
+func TestManagedSchemaBaselineAuthorityManifestIsCurrent(t *testing.T) {
+	if !containsString(authorityMutableTables, "managed_schema_baselines") {
+		t.Fatal("managed_schema_baselines is absent from authority tables")
+	}
+	if got := len(requiredManagedColumns["managed_schema_baselines"]); got != 11 {
+		t.Fatalf("managed schema-baseline required columns=%d want=11", got)
+	}
+	for _, required := range []requiredManagedObject{
+		{table: "managed_schema_baselines", name: "managed_schema_baselines_pkey"},
+		{table: "managed_schema_baselines", name: "managed_schema_baselines_flow_incarnation_id_fkey"},
+		{table: "managed_schema_baselines", name: "managed_schema_baselines_acquisition_id_fkey"},
+	} {
+		found := false
+		for _, actual := range requiredManagedConstraints {
+			if actual == required {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("managed schema-baseline constraint absent from manifest: %+v", required)
+		}
+	}
+	if !containsManagedObject(requiredManagedIndexes, requiredManagedObject{table: "managed_schema_baselines", name: "managed_schema_baselines_current_fence_idx"}) {
+		t.Fatal("managed schema-baseline current-fence index absent from manifest")
+	}
+}
+
+func containsManagedObject(values []requiredManagedObject, want requiredManagedObject) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestArtifactCatalogAuthorityManifestIsCurrent(t *testing.T) {
 	if !containsString(authorityMutableTables, "artifact_consumer_checkpoints") {
 		t.Fatal("artifact_consumer_checkpoints is absent from authority tables")
@@ -32,13 +172,13 @@ func TestArtifactCatalogAuthorityManifestIsCurrent(t *testing.T) {
 			t.Fatalf("%s exact column count=%d want=%d", table, got, want)
 		}
 	}
-	if len(exactArtifactConstraints) != 22 {
-		t.Fatalf("artifact constraint manifest count=%d want=22", len(exactArtifactConstraints))
+	if len(exactArtifactConstraints) != 25 {
+		t.Fatalf("authority constraint manifest count=%d want=25", len(exactArtifactConstraints))
 	}
-	if len(exactArtifactIndexes) != 12 {
-		t.Fatalf("artifact index manifest count=%d want=12", len(exactArtifactIndexes))
+	if len(exactArtifactIndexes) != 13 {
+		t.Fatalf("authority index manifest count=%d want=13", len(exactArtifactIndexes))
 	}
-	seen := make(map[string]struct{}, 34)
+	seen := make(map[string]struct{}, 37)
 	for _, contract := range exactArtifactConstraints {
 		key := contract.table + "." + contract.name
 		if _, duplicate := seen[key]; duplicate {
@@ -66,7 +206,7 @@ func TestArtifactAuthorityManifestMatchesFreshCatalog(t *testing.T) {
 	}
 	sort.Strings(expectedConstraints)
 	var actualConstraints []string
-	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(table_relation.relname||'.'||constraint_row.conname ORDER BY table_relation.relname,constraint_row.conname),'{}'::text[]) FROM pg_catalog.pg_constraint AS constraint_row JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid=constraint_row.conrelid WHERE table_relation.relname IN ('artifact_delivery_attempts','artifact_delivery_receipts','artifact_consumer_checkpoints')
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(table_relation.relname||'.'||constraint_row.conname ORDER BY table_relation.relname,constraint_row.conname),'{}'::text[]) FROM pg_catalog.pg_constraint AS constraint_row JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid=constraint_row.conrelid WHERE table_relation.relname IN ('schema_versions','artifact_delivery_attempts','artifact_delivery_receipts','artifact_consumer_checkpoints')
    OR (table_relation.relname IN ('artifact_deliveries','canonical_schemas','artifact_streams','artifact_objects','artifact_publications')
        AND constraint_row.conname NOT IN (
          'artifact_deliveries_flow_incarnation_id_consumer_revision_i_key','artifact_deliveries_flow_incarnation_id_fkey','artifact_deliveries_pkey','artifact_deliveries_publication_id_fkey',
@@ -86,7 +226,7 @@ func TestArtifactAuthorityManifestMatchesFreshCatalog(t *testing.T) {
 	}
 	sort.Strings(expectedIndexes)
 	var actualIndexes []string
-	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(table_relation.relname||'.'||index_relation.relname ORDER BY table_relation.relname,index_relation.relname),'{}'::text[]) FROM pg_catalog.pg_index AS index_row JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid=index_row.indrelid JOIN pg_catalog.pg_class AS index_relation ON index_relation.oid=index_row.indexrelid WHERE table_relation.relname IN ('artifact_delivery_attempts','artifact_delivery_receipts','artifact_consumer_checkpoints')
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(table_relation.relname||'.'||index_relation.relname ORDER BY table_relation.relname,index_relation.relname),'{}'::text[]) FROM pg_catalog.pg_index AS index_row JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid=index_row.indrelid JOIN pg_catalog.pg_class AS index_relation ON index_relation.oid=index_row.indexrelid WHERE table_relation.relname IN ('schema_versions','artifact_delivery_attempts','artifact_delivery_receipts','artifact_consumer_checkpoints')
    OR (table_relation.relname IN ('artifact_deliveries','canonical_schemas','artifact_streams','artifact_objects','artifact_publications')
        AND index_relation.relname NOT IN (
          'artifact_deliveries_flow_incarnation_id_consumer_revision_i_key','artifact_deliveries_pkey',
@@ -259,24 +399,24 @@ func newControlplaneMigrationFixture(t *testing.T) (context.Context, *pgxpool.Po
 		t.Fatal(err)
 	}
 	t.Cleanup(admin.Close)
-	schema := fmt.Sprintf("wallaby_controlplane_%d", time.Now().UnixNano())
-	identifier := pgx.Identifier{schema}.Sanitize()
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+identifier); err != nil {
+	database := fmt.Sprintf("wallaby_controlplane_%d", time.Now().UnixNano())
+	identifier := pgx.Identifier{database}.Sanitize()
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+identifier); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cleanupCancel()
-		_, _ = admin.Exec(cleanupCtx, "DROP SCHEMA IF EXISTS "+identifier+" CASCADE")
+		_, _ = admin.Exec(cleanupCtx, "DROP DATABASE IF EXISTS "+identifier+" WITH (FORCE)")
 	})
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
+	config.ConnConfig.Database = database
 	if config.ConnConfig.RuntimeParams == nil {
 		config.ConnConfig.RuntimeParams = make(map[string]string)
 	}
-	config.ConnConfig.RuntimeParams["search_path"] = schema
 	config.ConnConfig.RuntimeParams["wallaby.authority_protocol"] = "v2"
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {

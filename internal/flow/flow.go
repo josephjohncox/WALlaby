@@ -262,7 +262,23 @@ type DDLPolicyDefaults struct {
 	AutoApply   bool
 }
 
-// Resolve merges defaults with per-flow overrides.
+// ShippedDDLPolicyDefaults is the effective policy when deployment and flow
+// configuration both omit DDL settings.
+func ShippedDDLPolicyDefaults() DDLPolicyDefaults {
+	return DDLPolicyDefaults{Gate: false, AutoApprove: true, AutoApply: true}
+}
+
+// ResolveDDLPolicy applies deployment defaults, or the shipped defaults when
+// deployment configuration is absent, followed by per-flow overrides.
+func ResolveDDLPolicy(policy DDLPolicy, deploymentDefaults *DDLPolicyDefaults) DDLPolicyDefaults {
+	defaults := ShippedDDLPolicyDefaults()
+	if deploymentDefaults != nil {
+		defaults = *deploymentDefaults
+	}
+	return policy.Resolve(defaults)
+}
+
+// Resolve merges explicit defaults with per-flow overrides.
 func (p DDLPolicy) Resolve(defaults DDLPolicyDefaults) DDLPolicyDefaults {
 	resolved := defaults
 	if p.Gate != nil {

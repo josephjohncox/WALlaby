@@ -455,7 +455,7 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldIntent := snowflakeManagedIntentForFence(t, oldFence, fixture.spec.Options["destination_revision_id"], transaction)
-	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, fixture.destination); err != nil {
+	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, managedBaselinePayload(t, transaction), fixture.destination); err != nil {
 		t.Fatalf("first fenced delivery error=%v", err)
 	}
 	if err := oldSource.Close(context.Background()); err != nil {
@@ -502,7 +502,7 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 		t.Fatalf("WAL replay identity changed: %s/%s != %s/%s", originalHash, originalBatch, replayHash, replayBatch)
 	}
 	newIntent := snowflakeManagedIntentForFence(t, newFence, fixture.spec.Options["destination_revision_id"], replayed)
-	grant, err := coordinator.DeliverTransaction(ctx, newFence, newIntent, replayed, fixture.destination)
+	grant, err := coordinator.DeliverTransaction(ctx, newFence, newIntent, replayed, managedBaselinePayload(t, replayed), fixture.destination)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +519,7 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 	if err := newSource.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, fixture.destination); !errors.Is(err, authority.ErrFenceRejected) {
+	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, managedBaselinePayload(t, transaction), fixture.destination); !errors.Is(err, authority.ErrFenceRejected) {
 		t.Fatalf("stale destination owner error=%v", err)
 	}
 	if err := coordinator.RecordAckReceipt(ctx, oldFence, grant, grant.Checkpoint.LSN); !errors.Is(err, authority.ErrFenceRejected) {

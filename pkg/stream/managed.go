@@ -9,8 +9,8 @@ import (
 // ManagedDeliveryCoordinator is the complete fenced full-transaction seam used
 // by Runner without exposing internal repository implementations.
 type ManagedDeliveryCoordinator interface {
-	AuthorizeAck(context.Context, connector.RunFence, connector.Checkpoint) (connector.AckGrant, error)
-	DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedTransactionDestination) (connector.AckGrant, error)
+	AuthorizeAck(context.Context, connector.RunFence, connector.Checkpoint, connector.ManagedSchemaBaselinePayload) (connector.AckGrant, error)
+	DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedSchemaBaselinePayload, connector.ManagedTransactionDestination) (connector.AckGrant, error)
 	ValidateAckGrant(context.Context, connector.RunFence, connector.AckGrant) error
 	RecordAckReceipt(context.Context, connector.RunFence, connector.AckGrant, string) error
 	CommitSourceFeedback(context.Context, connector.RunFence, connector.AckGrant, connector.FlushEvidenceSource) error
@@ -25,7 +25,7 @@ type ManagedArtifactLog interface {
 	Recover(context.Context, connector.RunFence) error
 	RestoreCheckpoint(context.Context, connector.RunFence, connector.Checkpoint) (connector.AckGrant, error)
 	WaitForReadAdmission(context.Context, connector.RunFence) error
-	Append(context.Context, connector.RunFence, connector.SourceTransaction) (connector.AckGrant, error)
+	Append(context.Context, connector.RunFence, connector.SourceTransaction, connector.ManagedSchemaBaselinePayload) (connector.AckGrant, error)
 }
 
 // ManagedArtifactIdentity exposes the non-secret effective destination identity

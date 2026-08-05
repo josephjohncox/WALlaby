@@ -24,6 +24,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/registry"
 	"github.com/josephjohncox/wallaby/internal/replication"
 	"github.com/josephjohncox/wallaby/internal/runner"
+	"github.com/josephjohncox/wallaby/internal/schemabaseline"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -262,7 +263,7 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		ManagedControl:   controlPool,
 		ManagedAuthority: authorityStore,
 		SchemaHookForFlow: func(f flow.Flow) replication.SchemaHook {
-			policy := f.Config.DDL.Resolve(defaults)
+			policy := flow.ResolveDDLPolicy(f.Config.DDL, &defaults)
 			return &registry.Hook{
 				Store:        registryStore,
 				FlowID:       f.ID,
@@ -289,6 +290,11 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		return fmt.Errorf("build destinations: %w", err)
 	}
 
+	schemaBaselines, err := schemabaseline.NewStore(controlPool)
+	if err != nil {
+		return fmt.Errorf("build managed schema-baseline store: %w", err)
+	}
+
 	flowRunner := runner.FlowRunner{
 		Engine:             engine,
 		Checkpoints:        checkpoints,
@@ -297,11 +303,14 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		StrictWire:         cfg.Wire.Enforce,
 		MaxEmpty:           maxEmptyReads,
 		ResolveStaging:     resolveStaging,
+		DDLExecutions:      registryStore,
+		DDLPolicyDefaults:  &defaults,
 		ExecutionBackend:   executionBackend,
 		ExecutionID:        executionID,
 		ExpectedGeneration: generation,
 		Authority:          authorityStore,
 		Deliveries:         deliveryCoordinator,
+		SchemaBaselines:    schemaBaselines,
 		Artifacts:          runner.NewArtifactLogFactory(controlPool, cfg.Artifacts, cfg.Iceberg),
 	}
 	if cfg.Trace.Path != "" {

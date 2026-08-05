@@ -263,11 +263,15 @@ func parseSingleColumnOverrides(values []string, kind string) (map[mappinggen.Ta
 		if err != nil {
 			return nil, err
 		}
+		column, err := pgsource.ParseCatalogColumnName(right)
+		if err != nil {
+			return nil, fmt.Errorf("%s override column: %w", kind, err)
+		}
 		ref := mappinggen.TableRef{Schema: table.Schema, Table: table.Table}
 		if _, duplicate := out[ref]; duplicate {
 			return nil, fmt.Errorf("duplicate %s override for %s.%s", kind, ref.Schema, ref.Table)
 		}
-		out[ref] = strings.TrimSpace(right)
+		out[ref] = column
 	}
 	return out, nil
 }
@@ -429,19 +433,16 @@ func parseMatchOverrides(values []string) (map[mappinggen.TableRef][]string, err
 		if err != nil {
 			return nil, err
 		}
-		rawColumns := strings.Split(right, ",")
-		columns := make([]string, 0, len(rawColumns))
+		columns, err := pgsource.ParseCatalogColumnNames(right)
+		if err != nil {
+			return nil, fmt.Errorf("match-column override for %s.%s: %w", table.Schema, table.Table, err)
+		}
 		seen := map[string]struct{}{}
-		for _, raw := range rawColumns {
-			column := strings.TrimSpace(raw)
-			if column == "" {
-				return nil, fmt.Errorf("match-column override for %s.%s contains an empty column", table.Schema, table.Table)
-			}
+		for _, column := range columns {
 			if _, duplicate := seen[column]; duplicate {
 				return nil, fmt.Errorf("match-column override for %s.%s repeats column %s", table.Schema, table.Table, column)
 			}
 			seen[column] = struct{}{}
-			columns = append(columns, column)
 		}
 		ref := mappinggen.TableRef{Schema: table.Schema, Table: table.Table}
 		if _, duplicate := out[ref]; duplicate {

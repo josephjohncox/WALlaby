@@ -43,28 +43,29 @@ type PostgresStream struct {
 	connConfigFunc         func(context.Context, *pgconn.Config) error
 	protocolError          func(context.Context, string)
 
-	mu                 sync.Mutex
-	conn               *pgconn.PgConn
-	cancel             context.CancelFunc
-	wg                 sync.WaitGroup
-	changes            chan Change
-	lastErr            error
-	ackLSN             pglogrepl.LSN
-	recvLSN            pglogrepl.LSN
-	initialLSN         pglogrepl.LSN
-	feedbackBarrier    pglogrepl.LSN
-	feedbackWaiters    []*sourceFeedbackWaiter
-	streamedStarts     uint64
-	streamedSubaborts  uint64
-	relations          map[uint32]*pglogrepl.RelationMessage
-	schemas            map[uint32]connector.Schema
-	versions           map[uint32]int64
-	schemaBaselines    map[string]connector.Schema
-	transaction        *pendingTransaction
-	inStream           bool
-	streamXID          uint32
-	streamMessageXID   uint32
-	streamTransactions map[uint32]*pendingTransaction
+	mu                           sync.Mutex
+	conn                         *pgconn.PgConn
+	cancel                       context.CancelFunc
+	wg                           sync.WaitGroup
+	changes                      chan Change
+	lastErr                      error
+	ackLSN                       pglogrepl.LSN
+	recvLSN                      pglogrepl.LSN
+	initialLSN                   pglogrepl.LSN
+	feedbackBarrier              pglogrepl.LSN
+	feedbackWaiters              []*sourceFeedbackWaiter
+	streamedStarts               uint64
+	streamedSubaborts            uint64
+	relations                    map[uint32]*pglogrepl.RelationMessage
+	schemas                      map[uint32]connector.Schema
+	versions                     map[uint32]int64
+	schemaBaselines              map[string]connector.Schema
+	schemaBaselinesAuthoritative bool
+	transaction                  *pendingTransaction
+	inStream                     bool
+	streamXID                    uint32
+	streamMessageXID             uint32
+	streamTransactions           map[uint32]*pendingTransaction
 
 	emitPlanDDL      bool
 	ddlMessagePrefix string
@@ -310,13 +311,14 @@ func WithSchemaHook(hook SchemaHook) PostgresStreamOption {
 	}
 }
 
-// WithSchemaBaselines seeds the decoder from schemas stored on the last
-// PostgreSQL-authoritative checkpoint. This makes the first Relation message
-// after restart comparable with what was actually delivered before restart.
+// WithSchemaBaselines seeds the managed decoder from the fenced, flow-scoped
+// PostgreSQL schema-baseline authority. Supplying even an empty set marks this
+// source authoritative and disables fallback to the generic schema registry.
 func WithSchemaBaselines(baselines []connector.Schema) PostgresStreamOption {
 	return func(s *PostgresStream) {
+		s.schemaBaselinesAuthoritative = true
 		for _, schema := range baselines {
-			s.schemaBaselines[relationSchemaKey(schema.Namespace, schema.Name)] = schema
+			s.schemaBaselines[connector.ManagedSchemaBaselineKey(schema.Namespace, schema.Name)] = schema
 		}
 	}
 }
@@ -362,6 +364,21 @@ type SchemaHook interface {
 // hooks that require the exact WAL identity of a catalog transition.
 type SchemaChangeLSNHook interface {
 	OnSchemaChangeAtLSN(ctx context.Context, plan internalschema.Plan, lsn pglogrepl.LSN) error
+}
+
+// SchemaChangeLSNResolver restores a durable structured DDL plan before a
+// relation event is buffered. This is required when an approved schema was
+// registered before destination execution: the observed schema diff is empty
+// on restart, but the approved plan must be replayed until receipts mark it
+// applied.
+type SchemaChangeLSNResolver interface {
+	ResolveSchemaChangeAtLSN(ctx context.Context, observed internalschema.Plan, lsn pglogrepl.LSN) (internalschema.Plan, error)
+}
+
+// SchemaBaselineHook restores the last durably admitted schema before relation
+// diffing so a gated structured DDL record is replayed after process restart.
+type SchemaBaselineHook interface {
+	SchemaBaseline(context.Context, string, string) (connector.Schema, bool, error)
 }
 
 // TypeResolver resolves Postgres type OIDs to names.
@@ -1123,10 +1140,20 @@ func (p *PostgresStream) handleRelationMessage(ctx context.Context, xld pglogrep
 	}
 	fromDurableBaseline := false
 	if !hasPrev {
-		if baseline, ok := p.schemaBaselines[relationSchemaKey(msg.Namespace, msg.RelationName)]; ok {
+		if baseline, ok := p.schemaBaselines[connector.ManagedSchemaBaselineKey(msg.Namespace, msg.RelationName)]; ok {
 			prevSchema, hasPrev = baseline, true
 			fromDurableBaseline = true
 			p.versions[msg.RelationID] = baseline.Version
+		} else if baselineHook, ok := p.schemaHook.(SchemaBaselineHook); ok && !p.schemaBaselinesAuthoritative {
+			baseline, found, err := baselineHook.SchemaBaseline(ctx, msg.Namespace, msg.RelationName)
+			if err != nil {
+				return fmt.Errorf("restore schema baseline: %w", err)
+			}
+			if found {
+				prevSchema, hasPrev = baseline, true
+				fromDurableBaseline = true
+				p.versions[msg.RelationID] = baseline.Version
+			}
 		}
 	}
 	schemaDef := p.schemaForRelation(ctx, msg)
@@ -1139,6 +1166,13 @@ func (p *PostgresStream) handleRelationMessage(ctx context.Context, xld pglogrep
 	if fromDurableBaseline && !plan.HasChanges() {
 		schemaDef.Version = prevSchema.Version
 		p.versions[msg.RelationID] = prevSchema.Version
+	}
+	if resolver, ok := p.schemaHook.(SchemaChangeLSNResolver); ok {
+		resolved, err := resolver.ResolveSchemaChangeAtLSN(ctx, plan, xld.WALStart)
+		if err != nil {
+			return fmt.Errorf("resolve durable schema change: %w", err)
+		}
+		plan = resolved
 	}
 	if p.transaction != nil {
 		event := pendingRelationEvent{relation: msg, schema: schemaDef, plan: plan, lsn: xld.WALStart}
@@ -1154,9 +1188,16 @@ func (p *PostgresStream) handleRelationMessage(ctx context.Context, xld pglogrep
 		}
 		return nil
 	}
-	return p.commitRelationEvent(ctx, pendingRelationEvent{
-		relation: msg, schema: schemaDef, plan: plan, lsn: xld.WALStart,
-	})
+	event := pendingRelationEvent{relation: msg, schema: schemaDef, plan: plan, lsn: xld.WALStart}
+	if err := p.commitRelationEvent(ctx, event); err != nil {
+		return err
+	}
+	if plan.HasChanges() && p.emitPlanDDL {
+		if err := p.emitSchemaChange(ctx, xld, schemaDef, plan); err != nil {
+			return fmt.Errorf("schema change record: %w", err)
+		}
+	}
+	return nil
 }
 
 func (p *PostgresStream) commitMetadataEvents(ctx context.Context, transaction *pendingTransaction) error {
@@ -1184,9 +1225,6 @@ func (p *PostgresStream) commitMetadataEvents(ctx context.Context, transaction *
 
 func (p *PostgresStream) commitRelationEvent(ctx context.Context, event pendingRelationEvent) error {
 	if p.schemaHook != nil {
-		if err := p.schemaHook.OnSchema(ctx, event.schema); err != nil {
-			return fmt.Errorf("schema hook: %w", err)
-		}
 		if event.plan.HasChanges() {
 			var hookErr error
 			if lsnHook, ok := p.schemaHook.(SchemaChangeLSNHook); ok {
@@ -1197,6 +1235,12 @@ func (p *PostgresStream) commitRelationEvent(ctx context.Context, event pendingR
 			if hookErr != nil {
 				return fmt.Errorf("schema change hook: %w", hookErr)
 			}
+		}
+		// A gated schema must not become the durable baseline until its DDL event
+		// is approved. Otherwise restart observes the new baseline, suppresses the
+		// replayed structured DDL record, and can deliver new-shape DML first.
+		if err := p.schemaHook.OnSchema(ctx, event.schema); err != nil {
+			return fmt.Errorf("schema hook: %w", err)
 		}
 	}
 	p.relations[event.relation.RelationID] = event.relation
@@ -1550,10 +1594,6 @@ func (p *PostgresStream) schemaForRelation(ctx context.Context, rel *pglogrepl.R
 		Columns:           columns,
 		QuotedIdentifiers: quotedIdentifiersForSchema(rel.Namespace, rel.RelationName, columns),
 	}
-}
-
-func relationSchemaKey(namespace, name string) string {
-	return strings.ToLower(strings.TrimSpace(namespace)) + "\x00" + strings.ToLower(strings.TrimSpace(name))
 }
 
 func (p *PostgresStream) schemaForRelationID(relationID uint32) connector.Schema {

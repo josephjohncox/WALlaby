@@ -1,11 +1,30 @@
 package postgres
 
 import (
+	"context"
+	"encoding/json"
 	"reflect"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
+
+func TestStructuredDDLTableKeysMatchFollowingMappedFragment(t *testing.T) {
+	plan, err := json.Marshal(schema.Plan{Changes: []schema.Change{{Type: schema.ChangeAddColumn, Namespace: "mapped", Table: "events", Column: "note", ToType: "text"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := structuredDDLTableKeys(connector.Batch{Records: []connector.Record{{Operation: connector.OpDDL, DDLPlan: plan}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := tableKey(connector.Schema{Namespace: "mapped", Name: "events"}, "events")
+	if len(keys) != 1 || keys[0] != want {
+		t.Fatalf("structured DDL keys=%v want=%q", keys, want)
+	}
+}
 
 func TestSchemaColumnsExcludeGeneratedColumns(t *testing.T) {
 	t.Parallel()
@@ -19,6 +38,89 @@ func TestSchemaColumnsExcludeGeneratedColumns(t *testing.T) {
 		t.Fatalf("schemaColumns()=%v, want writable columns only", columns)
 	}
 }
+
+func TestGenericPostgresWriteEmptyNonDDLDoesNotBeginTransaction(t *testing.T) {
+	t.Parallel()
+	beginCalls := 0
+	destination := &Destination{beginTx: func(context.Context) (pgx.Tx, error) {
+		beginCalls++
+		return &scopeTestTx{}, nil
+	}}
+	if err := destination.Write(context.Background(), connector.Batch{Schema: connector.Schema{Namespace: "public", Name: "widgets"}}); err != nil {
+		t.Fatalf("empty non-DDL Write error=%v", err)
+	}
+	if beginCalls != 0 {
+		t.Fatalf("empty non-DDL Write began %d target transactions, want zero", beginCalls)
+	}
+}
+
+func TestGenericPostgresWriteRejectsCrossTableBeforeTransaction(t *testing.T) {
+	t.Parallel()
+	beginCalls := 0
+	destination := &Destination{beginTx: func(context.Context) (pgx.Tx, error) {
+		beginCalls++
+		return &scopeTestTx{}, nil
+	}}
+	batch := connector.Batch{
+		Schema:      connector.Schema{Namespace: "public", Name: "widgets"},
+		WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}},
+		Records: []connector.Record{
+			{Table: "widgets", Operation: connector.OpInsert},
+			{Table: "accounts", Operation: connector.OpUpdate},
+		},
+	}
+	if err := destination.Write(context.Background(), batch); err == nil {
+		t.Fatal("generic PostgreSQL accepted a cross-table batch through Write")
+	}
+	if beginCalls != 0 {
+		t.Fatalf("cross-table Write began %d target transactions, want zero", beginCalls)
+	}
+}
+
+func TestGenericPostgresWriteRejectsTablelessDMLBeforeTransaction(t *testing.T) {
+	t.Parallel()
+	beginCalls := 0
+	destination := &Destination{beginTx: func(context.Context) (pgx.Tx, error) {
+		beginCalls++
+		return &scopeTestTx{}, nil
+	}}
+	batch := connector.Batch{Records: []connector.Record{{Operation: connector.OpInsert}}}
+	if err := destination.Write(context.Background(), batch); err == nil {
+		t.Fatal("generic PostgreSQL accepted tableless DML through Write")
+	}
+	if beginCalls != 0 {
+		t.Fatalf("tableless DML Write began %d target transactions, want zero", beginCalls)
+	}
+}
+
+func TestGenericPostgresWriteAdmitsTablelessStructuredDDL(t *testing.T) {
+	t.Parallel()
+	tx := &scopeTestTx{}
+	beginCalls := 0
+	destination := &Destination{beginTx: func(context.Context) (pgx.Tx, error) {
+		beginCalls++
+		return tx, nil
+	}}
+	batch := connector.Batch{Records: []connector.Record{{Operation: connector.OpDDL, DDLPlan: []byte(`{"Changes":[]}`)}}}
+	if err := destination.Write(context.Background(), batch); err != nil {
+		t.Fatalf("tableless structured DDL control batch rejected through Write: %v", err)
+	}
+	if beginCalls != 1 || !tx.committed {
+		t.Fatalf("tableless structured DDL begin=%d committed=%t, want admitted real Write transaction", beginCalls, tx.committed)
+	}
+}
+
+type scopeTestTx struct {
+	pgx.Tx
+	committed bool
+}
+
+func (tx *scopeTestTx) Commit(context.Context) error {
+	tx.committed = true
+	return nil
+}
+
+func (*scopeTestTx) Rollback(context.Context) error { return nil }
 
 func TestPostgresTargetPreservesSameKeyOperationOrder(t *testing.T) {
 	schema := connector.Schema{

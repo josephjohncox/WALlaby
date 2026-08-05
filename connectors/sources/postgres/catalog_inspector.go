@@ -96,7 +96,60 @@ func ParseCatalogTableName(value string) (CatalogTableName, error) {
 	return CatalogTableName{Schema: parts[0], Table: parts[1]}, nil
 }
 
+// ParseCatalogColumnName parses one PostgreSQL identifier exactly. Unquoted
+// input follows PostgreSQL folding rules; quoted input preserves all bytes,
+// including leading, trailing, or whitespace-only names.
+func ParseCatalogColumnName(value string) (string, error) {
+	parts, err := parseIdentifierText(value)
+	if err != nil {
+		return "", err
+	}
+	if len(parts) != 1 {
+		return "", fmt.Errorf("column %q must contain exactly one identifier", value)
+	}
+	return parts[0], nil
+}
+
+// ParseCatalogColumnNames parses a comma-separated list of PostgreSQL column
+// identifiers without treating commas or whitespace inside quotes as syntax.
+func ParseCatalogColumnNames(value string) ([]string, error) {
+	tokens := make([]string, 0, 1)
+	start := 0
+	quoted := false
+	for index := 0; index < len(value); index++ {
+		switch value[index] {
+		case '"':
+			if quoted && index+1 < len(value) && value[index+1] == '"' {
+				index++
+				continue
+			}
+			quoted = !quoted
+		case ',':
+			if !quoted {
+				tokens = append(tokens, value[start:index])
+				start = index + 1
+			}
+		}
+	}
+	if quoted {
+		return nil, fmt.Errorf("unterminated quoted identifier in %q", value)
+	}
+	tokens = append(tokens, value[start:])
+	columns := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		column, err := ParseCatalogColumnName(token)
+		if err != nil {
+			return nil, err
+		}
+		columns = append(columns, column)
+	}
+	return columns, nil
+}
+
 func parseIdentifierText(value string) ([]string, error) {
+	if strings.IndexByte(value, 0) >= 0 {
+		return nil, fmt.Errorf("identifier %q cannot contain NUL", value)
+	}
 	parts := make([]string, 0, 2)
 	i := 0
 	skipSpace := func() {
@@ -177,6 +230,12 @@ func (s CatalogScope) validate() error {
 		if selector == "" {
 			return errors.New("catalog identifier selector cannot be empty")
 		}
+		if strings.IndexByte(selector, 0) >= 0 {
+			return errors.New("catalog identifier selector cannot contain NUL")
+		}
+	}
+	if strings.IndexByte(s.Publication, 0) >= 0 {
+		return errors.New("catalog publication identifier cannot contain NUL")
 	}
 	return nil
 }

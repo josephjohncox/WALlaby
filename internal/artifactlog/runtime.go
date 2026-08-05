@@ -171,7 +171,7 @@ func resolveRuntimeReadAdmission(consumerErr, admissionErr error, hasConsumers b
 	return false, true, nil
 }
 
-func (r *Runtime) Append(ctx context.Context, fence connector.RunFence, transaction connector.SourceTransaction) (connector.AckGrant, error) {
+func (r *Runtime) Append(ctx context.Context, fence connector.RunFence, transaction connector.SourceTransaction, baselines connector.ManagedSchemaBaselinePayload) (connector.AckGrant, error) {
 	if r.config.Stream.ProjectionID == ProjectionIDV2 {
 		projected, _, err := r.config.Projector.ProjectTransaction(transaction)
 		if err != nil {
@@ -179,7 +179,7 @@ func (r *Runtime) Append(ctx context.Context, fence connector.RunFence, transact
 		}
 		transaction = projected
 	}
-	return r.publisher.Append(ctx, fence, transaction)
+	return r.publisher.Append(ctx, fence, transaction, baselines)
 }
 
 func (r *Runtime) consume(ctx context.Context, fence authority.RunFence, limit int) error {

@@ -32,6 +32,7 @@
     }
   ],
   "config": {
+    "ddl": {"auto_apply": false},
     "table_mappings": {
       "version": 1,
       "destinations": [

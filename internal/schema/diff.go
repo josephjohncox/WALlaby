@@ -1,10 +1,6 @@
 package schema
 
-import (
-	"strings"
-
-	"github.com/josephjohncox/wallaby/pkg/connector"
-)
+import "github.com/josephjohncox/wallaby/pkg/connector"
 
 // Diff compares two schemas and returns a change plan. It treats newSchema as a
 // complete description of the relation, so a column that disappears is a drop.
@@ -32,7 +28,7 @@ func diff(oldSchema, newSchema connector.Schema, allowDrops bool) Plan {
 	changes := make([]Change, 0)
 	oldColumns := make(map[string]connector.Column)
 	for _, col := range oldSchema.Columns {
-		name := strings.ToLower(strings.TrimSpace(col.Name))
+		name := col.Name
 		if name == "" {
 			continue
 		}
@@ -40,7 +36,7 @@ func diff(oldSchema, newSchema connector.Schema, allowDrops bool) Plan {
 	}
 	newColumns := make(map[string]connector.Column)
 	for _, col := range newSchema.Columns {
-		name := strings.ToLower(strings.TrimSpace(col.Name))
+		name := col.Name
 		if name == "" {
 			continue
 		}
@@ -48,7 +44,7 @@ func diff(oldSchema, newSchema connector.Schema, allowDrops bool) Plan {
 	}
 
 	for _, newCol := range newSchema.Columns {
-		name := strings.ToLower(strings.TrimSpace(newCol.Name))
+		name := newCol.Name
 		if name == "" {
 			continue
 		}
@@ -105,7 +101,7 @@ func diff(oldSchema, newSchema connector.Schema, allowDrops bool) Plan {
 		if !allowDrops {
 			break
 		}
-		name := strings.ToLower(strings.TrimSpace(oldCol.Name))
+		name := oldCol.Name
 		if name == "" {
 			continue
 		}

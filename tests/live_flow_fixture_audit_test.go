@@ -20,7 +20,7 @@ func TestAllLiveFlowFixturesDeclareDurableTableMappings(t *testing.T) {
 	t.Parallel()
 	expectedFlows := map[string]int{
 		"artifactlog_failure_integration_test.go":                1,
-		"artifactlog_integration_test.go":                        4,
+		"artifactlog_integration_test.go":                        5,
 		"artifactlog_worker_integration_test.go":                 1,
 		"authority_integration_test.go":                          8,
 		"clickhouse_managed_e2e_integration_test.go":             1,
@@ -28,9 +28,10 @@ func TestAllLiveFlowFixturesDeclareDurableTableMappings(t *testing.T) {
 		"delivery_retry_retention_integration_test.go":           1,
 		"integration/dbos_integration_test.go":                   4,
 		"integration/dbos_managed_bootstrap_integration_test.go": 1,
+		"integration/postgres_to_postgres_integration_test.go":   1,
 		"managed_admission_ownership_integration_test.go":        2,
 		"managed_bootstrap_boundaries_integration_test.go":       1,
-		"managed_bootstrap_wiring_integration_test.go":           1,
+		"managed_bootstrap_wiring_integration_test.go":           2,
 		"postgres_bootstrap_integration_test.go":                 1,
 		"postgres_managed_e2e_integration_test.go":               1,
 		"postgres_managed_transaction_integration_test.go":       2,

@@ -35,7 +35,10 @@ var (
 // cover static contract violations (a missing FINAL view, a wrong deduplication
 // window, a bad table definition): those are operator misconfigurations that
 // must fail closed instead of silently degrading the destination.
-var errManagedReplicaLost = errors.New("managed ClickHouse replica metadata is lost")
+var (
+	errManagedReplicaLost         = errors.New("managed ClickHouse replica metadata is lost")
+	errManagedEndpointUnavailable = errors.New("managed ClickHouse endpoint is unavailable")
+)
 
 const (
 	managedDeploymentKeeper      = "self-managed-keeper"
@@ -161,8 +164,12 @@ func (d *Destination) openManaged(ctx context.Context, dsn string, spec connecto
 	replicaOptions.Compression = &chclient.Compression{Method: chclient.CompressionLZ4}
 	replicaOptions.MaxOpenConns = 2
 
-	conn, version, primaryErr := openManagedEndpoint(ctx, options, profile, "primary")
-	replicaConn, replicaVersion, replicaErr := openManagedEndpoint(ctx, replicaOptions, profile, "replica")
+	openEndpoint := d.managedOpenEndpointHook
+	if openEndpoint == nil {
+		openEndpoint = openManagedEndpoint
+	}
+	conn, version, primaryErr := openEndpoint(ctx, options, profile, "primary")
+	replicaConn, replicaVersion, replicaErr := openEndpoint(ctx, replicaOptions, profile, "replica")
 	opened := false
 	defer func() {
 		if opened {
@@ -182,7 +189,7 @@ func (d *Destination) openManaged(ctx context.Context, dsn string, spec connecto
 	d.managedConfig = cfg
 	d.managedRecoveryOnly = false
 	validationErrs := []error{primaryErr, replicaErr}
-	lossObserved := primaryErr != nil || replicaErr != nil
+	lossObserved := errors.Is(primaryErr, errManagedEndpointUnavailable) || errors.Is(replicaErr, errManagedEndpointUnavailable)
 	if primaryErr == nil && replicaErr == nil {
 		d.managedVersion = version
 		if err := d.validateManagedTarget(ctx, true, 0, 0); err == nil {
@@ -201,8 +208,9 @@ func (d *Destination) openManaged(ctx context.Context, dsn string, spec connecto
 		endpointErr     error
 		version         string
 		expectedReplica string
+		primary         bool
 	}{
-		{conn: conn, endpointErr: primaryErr, version: version, expectedReplica: cfg.replicaNames[0]},
+		{conn: conn, endpointErr: primaryErr, version: version, expectedReplica: cfg.replicaNames[0], primary: true},
 		{conn: replicaConn, endpointErr: replicaErr, version: replicaVersion, expectedReplica: cfg.replicaNames[1]},
 	} {
 		if survivor.endpointErr != nil || survivor.conn == nil {
@@ -219,12 +227,29 @@ func (d *Destination) openManaged(ctx context.Context, dsn string, spec connecto
 			continue
 		}
 		d.managedVersion = survivor.version
-		if err := d.validateManagedConnectionTarget(ctx, survivor.conn, survivor.expectedReplica, true, true, true, 0, 0); err != nil {
-			validationErrs = append(validationErrs, fmt.Errorf("recovery-only replica %s admission: %w", survivor.expectedReplica, err))
+		var validationErr error
+		if d.managedValidateTargetHook != nil {
+			validationErr = d.managedValidateTargetHook(ctx, survivor.conn, survivor.expectedReplica, true)
+		} else {
+			validationErr = d.validateManagedConnectionTarget(ctx, survivor.conn, survivor.expectedReplica, true, true, true, 0, 0)
+		}
+		if validationErr != nil {
+			validationErrs = append(validationErrs, fmt.Errorf("recovery-only replica %s admission: %w", survivor.expectedReplica, validationErr))
 			continue
 		}
 		d.managedVersion = survivor.version
 		d.managedRecoveryOnly = true
+		if survivor.primary {
+			if d.managedReplicaConn != nil {
+				_ = d.managedReplicaConn.Close()
+			}
+			d.managedReplicaConn = nil
+		} else {
+			if d.managedConn != nil {
+				_ = d.managedConn.Close()
+			}
+			d.managedConn = nil
+		}
 		opened = true
 		return nil
 	}
@@ -239,17 +264,20 @@ func (d *Destination) openManaged(ctx context.Context, dsn string, spec connecto
 func openManagedEndpoint(ctx context.Context, options *chclient.Options, profile connector.ManagedProfileContract, endpoint string) (chdriver.Conn, string, error) {
 	conn, err := chclient.Open(options)
 	if err != nil {
-		return nil, "", fmt.Errorf("open managed ClickHouse %s: %w", endpoint, err)
+		return nil, "", fmt.Errorf("%w: open managed ClickHouse %s: %w", errManagedEndpointUnavailable, endpoint, err)
 	}
 	if err := conn.Ping(ctx); err != nil {
-		return conn, "", fmt.Errorf("ping managed ClickHouse %s: %w", endpoint, err)
+		_ = conn.Close()
+		return nil, "", fmt.Errorf("%w: ping managed ClickHouse %s: %w", errManagedEndpointUnavailable, endpoint, err)
 	}
 	var version string
 	if err := conn.QueryRow(ctx, "SELECT version()").Scan(&version); err != nil {
-		return conn, "", fmt.Errorf("read managed ClickHouse %s version: %w", endpoint, err)
+		_ = conn.Close()
+		return nil, "", fmt.Errorf("%w: read managed ClickHouse %s version: %w", errManagedEndpointUnavailable, endpoint, err)
 	}
 	if !profile.SupportsClickHouseVersion(version) {
-		return conn, version, fmt.Errorf("managed profile %s does not admit ClickHouse %s %s", profile.Name, endpoint, version)
+		_ = conn.Close()
+		return nil, version, fmt.Errorf("managed profile %s does not admit ClickHouse %s %s", profile.Name, endpoint, version)
 	}
 	return conn, version, nil
 }
@@ -470,6 +498,41 @@ func parseManagedUintOption(options map[string]string, name string, fallback, mi
 // ManagedClickHouseVersion reports the live server version admitted during Open.
 func (d *Destination) ManagedClickHouseVersion() string {
 	return d.managedVersion
+}
+
+// InitializeManagedDelivery re-verifies the admitted receipt authority before
+// managed source I/O. Healthy execution remains a strict two-endpoint contract;
+// recovery-only execution may use its one already validated survivor solely to
+// adopt durable receipts while PrepareTransaction continues to fence new writes.
+func (d *Destination) InitializeManagedDelivery(ctx context.Context) error {
+	if d.managedProfile != connector.ManagedProfilePostgresToClickHouseAppendV1 || strings.TrimSpace(d.managedVersion) == "" || len(d.managedConfig.replicaNames) != 2 {
+		return errors.New("managed ClickHouse destination authority not initialized")
+	}
+	validate := func(conn chdriver.Conn, replica string, recoveryOnly bool) error {
+		if d.managedInitializeAuthorityHook != nil {
+			return d.managedInitializeAuthorityHook(ctx, conn, replica, recoveryOnly)
+		}
+		return d.validateManagedConnectionTarget(ctx, conn, replica, true, recoveryOnly, recoveryOnly, 0, 0)
+	}
+	if d.managedRecoveryOnly {
+		if (d.managedConn == nil) == (d.managedReplicaConn == nil) {
+			return errors.New("managed ClickHouse recovery-only authority requires exactly one surviving endpoint")
+		}
+		if d.managedConn != nil {
+			return validate(d.managedConn, d.managedConfig.replicaNames[0], true)
+		}
+		return validate(d.managedReplicaConn, d.managedConfig.replicaNames[1], true)
+	}
+	if d.managedConn == nil || d.managedReplicaConn == nil {
+		return errors.New("managed ClickHouse destination authority requires both endpoints")
+	}
+	if d.managedInitializeAuthorityHook != nil {
+		if err := validate(d.managedConn, d.managedConfig.replicaNames[0], false); err != nil {
+			return err
+		}
+		return validate(d.managedReplicaConn, d.managedConfig.replicaNames[1], false)
+	}
+	return d.validateManagedTarget(ctx, true, 0, 0)
 }
 
 // Apply is intentionally unavailable for the full-transaction append profile.

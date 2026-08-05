@@ -8,14 +8,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pglogrepl"
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/registry"
+	internalschema "github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-func TestFencedSchemaRegistrationRejectsForeignProvenance(t *testing.T) {
+func TestFencedSchemaRegistrationScopesCatalogAndFlowProvenance(t *testing.T) {
 	dsn := os.Getenv("TEST_PG_DSN")
 	if dsn == "" {
 		t.Skip("TEST_PG_DSN not set")
@@ -75,6 +77,48 @@ func TestFencedSchemaRegistrationRejectsForeignProvenance(t *testing.T) {
 	if err := otherHook.BindRunFence(other); err != nil {
 		t.Fatal(err)
 	}
+
+	// The same WAL position may exist in two flows. Fenced plan replay must use
+	// both the active incarnation and flow identity rather than adopting another
+	// flow's approved plan.
+	sharedLSN := pglogrepl.LSN(0x90)
+	firstPlan := internalschema.Plan{Changes: []internalschema.Change{{Type: internalschema.ChangeAddColumn, Namespace: "public", Table: "events", Column: "first_only", ToType: "text"}}}
+	otherPlan := internalschema.Plan{Changes: []internalschema.Change{{Type: internalschema.ChangeAddColumn, Namespace: "public", Table: "events", Column: "other_only", ToType: "text"}}}
+	if err := firstHook.OnSchemaChangeAtLSN(ctx, firstPlan, sharedLSN); err != nil {
+		t.Fatal(err)
+	}
+	firstEvent, err := registryStore.GetDDLByLSN(ctx, flowID, sharedLSN.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registryStore.SetDDLStatus(ctx, firstEvent.ID, registry.StatusApproved); err != nil {
+		t.Fatal(err)
+	}
+	if err := otherHook.OnSchemaChangeAtLSN(ctx, otherPlan, sharedLSN); err != nil {
+		t.Fatal(err)
+	}
+	otherEvent, err := registryStore.GetDDLByLSN(ctx, otherFlowID, sharedLSN.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registryStore.SetDDLStatus(ctx, otherEvent.ID, registry.StatusApproved); err != nil {
+		t.Fatal(err)
+	}
+	resolvedFirst, err := firstHook.ResolveSchemaChangeAtLSN(ctx, internalschema.Plan{}, sharedLSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedOther, err := otherHook.ResolveSchemaChangeAtLSN(ctx, internalschema.Plan{}, sharedLSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolvedFirst.Changes) != 1 || resolvedFirst.Changes[0].Column != "first_only" {
+		t.Fatalf("first flow resolved plan=%+v, want first_only", resolvedFirst)
+	}
+	if len(resolvedOther.Changes) != 1 || resolvedOther.Changes[0].Column != "other_only" {
+		t.Fatalf("other flow resolved plan=%+v, want other_only", resolvedOther)
+	}
+
 	newSchema := func(namespace string) connector.Schema {
 		return connector.Schema{
 			Namespace: namespace,
@@ -88,16 +132,31 @@ func TestFencedSchemaRegistrationRejectsForeignProvenance(t *testing.T) {
 	if err := registryStore.RegisterSchema(ctx, global); err != nil {
 		t.Fatal(err)
 	}
-	if err := firstHook.OnSchema(ctx, global); !errors.Is(err, connector.ErrDeliveryConflict) {
-		t.Fatalf("global schema collision error=%v, want ErrDeliveryConflict", err)
+	if err := firstHook.OnSchema(ctx, global); err != nil {
+		t.Fatalf("flow-scoped schema must coexist with catalog scope: %v", err)
+	}
+	if _, found, err := registryStore.LatestSchema(ctx, global.Namespace, global.Name); err != nil || !found {
+		t.Fatalf("catalog schema lookup found=%t err=%v", found, err)
+	}
+	if _, found, err := registryStore.LatestSchemaForFlow(ctx, flowID, global.Namespace, global.Name); err != nil || !found {
+		t.Fatalf("flow schema lookup found=%t err=%v", found, err)
 	}
 
 	foreign := newSchema(fmt.Sprintf("schema_fence_%d_foreign", suffix))
+	foreign.Columns = append(foreign.Columns, connector.Column{Name: "other_flow_only", Type: "text"})
 	if err := otherHook.OnSchema(ctx, foreign); err != nil {
 		t.Fatal(err)
 	}
-	if err := firstHook.OnSchema(ctx, foreign); !errors.Is(err, connector.ErrDeliveryConflict) {
-		t.Fatalf("other-incarnation schema collision error=%v, want ErrDeliveryConflict", err)
+	if _, found, err := firstHook.SchemaBaseline(ctx, foreign.Namespace, foreign.Name); err != nil || found {
+		t.Fatalf("foreign flow baseline leaked into first flow: found=%t err=%v", found, err)
+	}
+	firstForeign := newSchema(foreign.Namespace)
+	if err := firstHook.OnSchema(ctx, firstForeign); err != nil {
+		t.Fatalf("same relation identity in a different flow must not collide: %v", err)
+	}
+	loadedFirst, found, err := firstHook.SchemaBaseline(ctx, foreign.Namespace, foreign.Name)
+	if err != nil || !found || len(loadedFirst.Columns) != 1 {
+		t.Fatalf("first flow baseline=%+v found=%t err=%v, want isolated one-column schema", loadedFirst, found, err)
 	}
 
 	idempotent := newSchema(fmt.Sprintf("schema_fence_%d_idempotent", suffix))

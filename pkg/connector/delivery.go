@@ -147,12 +147,15 @@ type ManagedDestination interface {
 }
 
 // ManagedTransactionDestination is the full-transaction extension used by
-// named managed profiles. Validation runs immediately before a new control-plane
-// attempt is prepared, but never blocks adoption of an already committed target
-// marker. Transactional targets commit all fragments with the marker; append-only
-// targets insert ordered, replay-convergent fragments and write the marker last.
+// managed execution. Initialization establishes and verifies destination receipt
+// authority before bootstrap or CDC I/O. Validation runs immediately before a
+// new control-plane attempt is prepared, but never blocks adoption of an already
+// committed target marker. Transactional targets commit all fragments with the
+// marker; append-only targets insert ordered, replay-convergent fragments and
+// write the marker last.
 type ManagedTransactionDestination interface {
 	ManagedDestination
+	InitializeManagedDelivery(context.Context) error
 	ValidateTransaction(context.Context, SourceTransaction) error
 	ApplyTransaction(context.Context, DeliveryIntent, SourceTransaction) (DeliveryEvidence, error)
 }

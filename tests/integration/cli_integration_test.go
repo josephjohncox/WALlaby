@@ -2103,7 +2103,7 @@ func TestCLIIntegrationPublicationSync(t *testing.T) {
 
 	found := false
 	for _, table := range tables {
-		if strings.EqualFold(table, "public.beta") {
+		if table == (pgx.Identifier{"public", "beta"}.Sanitize()) {
 			found = true
 			break
 		}
@@ -2451,8 +2451,13 @@ func parsePublicationTables(t *testing.T, output []byte) []string {
 }
 
 func containsTable(tables []string, value string) bool {
+	parsed, err := pgsource.ParseCatalogTableName(value)
+	if err != nil {
+		return false
+	}
+	expected := pgx.Identifier{parsed.Schema, parsed.Table}.Sanitize()
 	for _, table := range tables {
-		if strings.EqualFold(table, value) {
+		if table == expected {
 			return true
 		}
 	}

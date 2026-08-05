@@ -79,7 +79,10 @@ func PostgresToPostgresV1Profile() ManagedProfileContract {
 			{Capability: "restart", Test: "TestPostgresManagedOverlappingTakeoverAdoptsConcurrentCommit", Live: true},
 			{Capability: "retry and retention", Test: "TestPostgresManagedDeliveryRetryAndRetention", Live: true},
 			{Capability: "metrics", Test: "TestPostgresManagedProfileMetrics", Live: false},
-			{Capability: "upgrade migrations", Test: "TestPostgresManagedProfileUpgradeMigrations", Live: true},
+			{Capability: "current receipt authority", Test: "TestPostgresManagedTargetRejectsLegacyReceiptSchemaWithoutMutation", Live: true},
+			{Capability: "receipt identity reconciliation", Test: "TestManagedReceiptReconcilesLogicalAndPositionIdentities", Live: true},
+			{Capability: "fenced schema isolation", Test: "TestFencedSchemaRegistrationScopesCatalogAndFlowProvenance", Live: true},
+			{Capability: "approved DDL crash replay", Test: "TestPostgresToPostgresE2E", Live: true},
 		},
 	}
 	contract.PostgresVersions = append([]int(nil), contract.PostgresVersions...)
@@ -106,7 +109,7 @@ func PostgresToClickHouseAppendV1Profile() ManagedProfileContract {
 		Gates: []ManagedProfileGate{
 			{Capability: "clickhouse versions", Test: "TestClickHouseManagedProfileVersionMatrix", Live: true},
 			{Capability: "target admission", Test: "TestClickHouseManagedProfileAdmission", Live: true},
-			{Capability: "ambiguous response", Test: "TestClickHouseManagedProfileCommitBeforeReceipt", Live: true},
+			{Capability: "ambiguous response", Test: "TestClickHouseManagedProfileCommitAndReconcile", Live: true},
 			{Capability: "deduplication window", Test: "TestClickHouseManagedProfileDedupWindowEviction", Live: true},
 			{Capability: "ordered fragments", Test: "TestClickHouseManagedProfileOrderingAndConcurrency", Live: true},
 			{Capability: "key changes and tombstones", Test: "TestClickHouseManagedProfileKeyChangesAndTombstones", Live: true},
@@ -283,7 +286,8 @@ func managedProfileRequiredGates(name string) (map[string]bool, error) {
 			"target admission": true, "schema evolution": true, "DDL reconciliation": true,
 			"snapshot to CDC": true, "process kill": true, "pool exhaustion": true,
 			"restart": true, "retry and retention": true, "metrics": false,
-			"upgrade migrations": true,
+			"current receipt authority": true, "receipt identity reconciliation": true,
+			"fenced schema isolation": true, "approved DDL crash replay": true,
 		}, nil
 	case ManagedProfilePostgresToClickHouseAppendV1:
 		return map[string]bool{

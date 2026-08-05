@@ -47,6 +47,34 @@ func TestDiffPublishedShapeNeverDropsUnpublishedColumns(t *testing.T) {
 	}
 }
 
+func TestDiffPreservesCaseAndWhitespaceDistinctColumnIdentifiers(t *testing.T) {
+	t.Parallel()
+	oldSchema := connector.Schema{Namespace: "Exact Schema", Name: "Events", Columns: []connector.Column{
+		{Name: "ID", Type: "bigint"},
+		{Name: "id", Type: "text"},
+		{Name: " id ", Type: "boolean"},
+	}}
+	newSchema := connector.Schema{Namespace: "Exact Schema", Name: "Events", Columns: []connector.Column{
+		{Name: "ID", Type: "uuid"},
+		{Name: "id", Type: "text"},
+		{Name: " ID ", Type: "numeric"},
+	}}
+	plan := Diff(oldSchema, newSchema)
+	if len(plan.Changes) != 3 {
+		t.Fatalf("exact identifier diff changes=%+v, want alter ID, add whitespace-ID, and drop whitespace-id", plan.Changes)
+	}
+	want := []Change{
+		{Type: ChangeAlterColumn, Namespace: "Exact Schema", Table: "Events", Column: "ID", FromType: "bigint", ToType: "uuid"},
+		{Type: ChangeAddColumn, Namespace: "Exact Schema", Table: "Events", Column: " ID ", ToType: "numeric"},
+		{Type: ChangeDropColumn, Namespace: "Exact Schema", Table: "Events", Column: " id "},
+	}
+	for index := range want {
+		if plan.Changes[index].Type != want[index].Type || plan.Changes[index].Namespace != want[index].Namespace || plan.Changes[index].Table != want[index].Table || plan.Changes[index].Column != want[index].Column || plan.Changes[index].FromType != want[index].FromType || plan.Changes[index].ToType != want[index].ToType {
+			t.Fatalf("exact identifier change[%d]=%+v, want %+v", index, plan.Changes[index], want[index])
+		}
+	}
+}
+
 func TestDiffDetectsGeneratedFlagChanges(t *testing.T) {
 	oldSchema := connector.Schema{
 		Namespace: "public",

@@ -73,7 +73,10 @@ Snowpipe is append-only staged delivery: PUT, optional COPY, and metadata-receip
 | restart | yes | `TestPostgresManagedOverlappingTakeoverAdoptsConcurrentCommit` |
 | retry and retention | yes | `TestPostgresManagedDeliveryRetryAndRetention` |
 | metrics | no | `TestPostgresManagedProfileMetrics` |
-| upgrade migrations | yes | `TestPostgresManagedProfileUpgradeMigrations` |
+| current receipt authority | yes | `TestPostgresManagedTargetRejectsLegacyReceiptSchemaWithoutMutation` |
+| receipt identity reconciliation | yes | `TestManagedReceiptReconcilesLogicalAndPositionIdentities` |
+| fenced schema isolation | yes | `TestFencedSchemaRegistrationScopesCatalogAndFlowProvenance` |
+| approved DDL crash replay | yes | `TestPostgresToPostgresE2E` |
 
 ### `postgresql-to-clickhouse-append-v1` evidence gates
 
@@ -81,7 +84,7 @@ Snowpipe is append-only staged delivery: PUT, optional COPY, and metadata-receip
 | --- | --- | --- |
 | clickhouse versions | yes | `TestClickHouseManagedProfileVersionMatrix` |
 | target admission | yes | `TestClickHouseManagedProfileAdmission` |
-| ambiguous response | yes | `TestClickHouseManagedProfileCommitBeforeReceipt` |
+| ambiguous response | yes | `TestClickHouseManagedProfileCommitAndReconcile` |
 | deduplication window | yes | `TestClickHouseManagedProfileDedupWindowEviction` |
 | ordered fragments | yes | `TestClickHouseManagedProfileOrderingAndConcurrency` |
 | key changes and tombstones | yes | `TestClickHouseManagedProfileKeyChangesAndTombstones` |

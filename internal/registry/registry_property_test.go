@@ -189,6 +189,94 @@ func (m *memoryStore) ListDDL(_ context.Context, flowID string, status string) (
 	return items, nil
 }
 
+func TestSchemaHookAutoApplyStillRequiresApprovalWhenGated(t *testing.T) {
+	t.Parallel()
+	store := &memoryStore{}
+	hook := &Hook{Store: store, FlowID: "flow", GateApproval: true, AutoApprove: false, AutoApply: true}
+	plan := schema.Plan{Changes: []schema.Change{{Type: schema.ChangeAddColumn, Namespace: "public", Table: "widgets", Column: "extra", ToType: "text"}}}
+	err := hook.OnSchemaChangeAtLSN(context.Background(), plan, pglogrepl.LSN(16))
+	gate, ok := connector.AsDDLGate(err)
+	if !ok || gate.Status != StatusPending || gate.EventID == 0 {
+		t.Fatalf("auto_apply gated schema error=%v, want durable pending approval gate", err)
+	}
+	event, err := store.GetDDL(context.Background(), gate.EventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Status != StatusPending {
+		t.Fatalf("auto_apply event status=%s, want pending until control-plane approval", event.Status)
+	}
+	if err := store.SetDDLStatus(context.Background(), gate.EventID, StatusApproved); err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.OnSchemaChangeAtLSN(context.Background(), plan, pglogrepl.LSN(16)); err != nil {
+		t.Fatalf("approved structured DDL replay remained gated: %v", err)
+	}
+	if len(store.events) != 1 {
+		t.Fatalf("approved structured DDL replay created %d events, want one durable identity", len(store.events))
+	}
+}
+
+func TestSchemaHookResolvesDurablePlanUntilApplied(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	lsn := pglogrepl.LSN(32)
+	plan := schema.Plan{Changes: []schema.Change{{Type: schema.ChangeAddColumn, Namespace: "public", Table: "widgets", Column: "extra", ToType: "text"}}}
+
+	t.Run("no durable event", func(t *testing.T) {
+		hook := &Hook{Store: &memoryStore{}, FlowID: "flow", GateApproval: true}
+		resolved, err := hook.ResolveSchemaChangeAtLSN(ctx, schema.Plan{}, lsn)
+		if err != nil || resolved.HasChanges() {
+			t.Fatalf("resolve empty observation without event=%+v err=%v, want empty", resolved, err)
+		}
+	})
+
+	for _, test := range []struct {
+		name     string
+		status   string
+		wantPlan bool
+		wantGate bool
+	}{
+		{name: "pending re-gates durable plan", status: StatusPending, wantGate: true},
+		{name: "approved replays durable plan", status: StatusApproved, wantPlan: true},
+		{name: "applied suppresses durable plan", status: StatusApplied},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &memoryStore{}
+			if _, err := store.RecordDDL(ctx, "flow", "", plan, lsn.String(), test.status); err != nil {
+				t.Fatal(err)
+			}
+			hook := &Hook{Store: store, FlowID: "flow", GateApproval: true}
+			resolved, err := hook.ResolveSchemaChangeAtLSN(ctx, schema.Plan{}, lsn)
+			if test.wantGate {
+				gate, ok := connector.AsDDLGate(err)
+				if !ok || gate.Status != test.status || gate.PlanJSON == "" {
+					t.Fatalf("resolve pending durable plan error=%v, want populated gate", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolved.HasChanges() != test.wantPlan {
+				t.Fatalf("resolved plan=%+v, want changes=%t", resolved, test.wantPlan)
+			}
+			if test.wantPlan && !plansEqual(resolved, plan) {
+				t.Fatalf("resolved plan=%+v, want durable plan=%+v", resolved, plan)
+			}
+		})
+	}
+
+	store := &memoryStore{}
+	if _, err := store.RecordDDL(ctx, "flow", "", plan, lsn.String(), StatusApproved); err != nil {
+		t.Fatal(err)
+	}
+	mismatch := schema.Plan{Changes: []schema.Change{{Type: schema.ChangeAddColumn, Namespace: "public", Table: "widgets", Column: "different", ToType: "text"}}}
+	if _, err := (&Hook{Store: store, FlowID: "flow", GateApproval: true}).ResolveSchemaChangeAtLSN(ctx, mismatch, lsn); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("mismatched observed plan error=%v, want delivery conflict", err)
+	}
+}
+
 func TestRegistryAppliedImpliesApprovedRapid(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		store := &memoryStore{}

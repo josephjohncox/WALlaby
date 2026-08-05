@@ -3,10 +3,14 @@ package grpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/workflow"
@@ -14,6 +18,196 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+func TestReconfigureFlowOptionalBooleansDriveEngineLifecycle(t *testing.T) {
+	ctx := context.Background()
+	falseValue := false
+	for _, tt := range []struct {
+		name                    string
+		pauseFirst, resumeAfter *bool
+		wantPause, wantResume   int
+	}{
+		{name: "omitted defaults pause and resume", wantPause: 1, wantResume: 1},
+		{name: "explicit false keeps runner active", pauseFirst: &falseValue, resumeAfter: &falseValue},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			engine := &recordingLifecycleEngine{MemoryEngine: workflow.NewMemoryEngine()}
+			definition := mappedGRPCTestFlow(flow.Flow{ID: "reconfigure-defaults", Name: "before", Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{}}})
+			if _, err := engine.Create(ctx, definition); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := engine.Start(ctx, definition.ID); err != nil {
+				t.Fatal(err)
+			}
+			definition.Name = "after"
+			response, err := NewFlowService(engine, nil).ReconfigureFlow(ctx, &wallabypb.ReconfigureFlowRequest{
+				Flow: flowToProto(definition), PauseFirst: tt.pauseFirst, ResumeAfter: tt.resumeAfter, SyncPublication: &falseValue,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if engine.pauseCalls != tt.wantPause || engine.resumeCalls != tt.wantResume {
+				t.Fatalf("Pause/Resume calls=%d/%d, want %d/%d", engine.pauseCalls, engine.resumeCalls, tt.wantPause, tt.wantResume)
+			}
+			if response.State != wallabypb.FlowState_FLOW_STATE_RUNNING || response.Name != "after" {
+				t.Fatalf("reconfigured flow=%+v, want running updated flow", response)
+			}
+			stored, err := engine.Get(ctx, definition.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.Source.Options["sync_publication"] != "false" {
+				t.Fatalf("stored sync_publication=%q, want explicit false", stored.Source.Options["sync_publication"])
+			}
+		})
+	}
+}
+
+func TestReconfigureFlowSyncPublicationExplicitFalseOverridesStoredTrue(t *testing.T) {
+	ctx := context.Background()
+	falseValue := false
+	newFlow := func(id string) flow.Flow {
+		return mappedGRPCTestFlow(flow.Flow{ID: id, Name: "before", Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
+			"dsn": "postgres://unreachable.invalid/wallaby", "publication": "wallaby_publication", "publication_tables": "public.widgets", "sync_publication": "true",
+		}}})
+	}
+
+	t.Run("explicit false bypasses ownership guard and network and persists", func(t *testing.T) {
+		engine := workflow.NewMemoryEngine()
+		definition := newFlow("sync-publication-explicit-false")
+		if _, err := engine.Create(ctx, definition); err != nil {
+			t.Fatal(err)
+		}
+		definition.Name = "after"
+		response, err := NewFlowService(engine, nil).ReconfigureFlow(ctx, &wallabypb.ReconfigureFlowRequest{
+			Flow: flowToProto(definition), PauseFirst: &falseValue, ResumeAfter: &falseValue, SyncPublication: &falseValue,
+		})
+		if err != nil {
+			t.Fatalf("explicit false reached source ownership/network synchronization: %v", err)
+		}
+		if response.Source.Options["sync_publication"] != "false" {
+			t.Fatalf("response sync_publication=%q, want false", response.Source.Options["sync_publication"])
+		}
+		stored, err := engine.Get(ctx, definition.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.Source.Options["sync_publication"] != "false" {
+			t.Fatalf("stored sync_publication=%q, want false", stored.Source.Options["sync_publication"])
+		}
+	})
+
+	t.Run("omitted inherits stored true and invokes ownership guard", func(t *testing.T) {
+		engine := workflow.NewMemoryEngine()
+		definition := newFlow("sync-publication-omitted")
+		if _, err := engine.Create(ctx, definition); err != nil {
+			t.Fatal(err)
+		}
+		_, err := NewFlowService(engine, nil).ReconfigureFlow(ctx, &wallabypb.ReconfigureFlowRequest{
+			Flow: flowToProto(definition), PauseFirst: &falseValue, ResumeAfter: &falseValue,
+		})
+		if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "ownership guard") {
+			t.Fatalf("omitted sync_publication error=%v, want stored-true ownership guard", err)
+		}
+		stored, getErr := engine.Get(ctx, definition.ID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if stored.Source.Options["sync_publication"] != "true" || stored.Name != "before" {
+			t.Fatalf("guarded flow mutated: %+v", stored)
+		}
+	})
+}
+
+type recordingLifecycleEngine struct {
+	*workflow.MemoryEngine
+	pauseCalls  int
+	resumeCalls int
+}
+
+func (e *recordingLifecycleEngine) Pause(ctx context.Context, flowID string) (flow.Flow, error) {
+	e.pauseCalls++
+	return e.MemoryEngine.Pause(ctx, flowID)
+}
+
+func (e *recordingLifecycleEngine) Resume(ctx context.Context, flowID string) (flow.Flow, error) {
+	e.resumeCalls++
+	return e.MemoryEngine.Resume(ctx, flowID)
+}
+
+func TestCleanupFlowOptionalBooleansDrivePostgresDrops(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	falseValue, trueValue := false, true
+	for _, tt := range []struct {
+		name                                       string
+		dropSlot, dropPublication, dropSourceState *bool
+		wantSlot, wantPublication, wantSourceState bool
+	}{
+		{name: "omitted drops slot and state but retains publication", wantPublication: true},
+		{name: "explicit values retain slot and state but drop publication", dropSlot: &falseValue, dropPublication: &trueValue, dropSourceState: &falseValue, wantSlot: true, wantSourceState: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+			slot := "wallaby_cleanup_slot_" + suffix
+			publication := "wallaby_cleanup_publication_" + suffix
+			stateSchema := "wallaby_cleanup_state_" + suffix
+			if _, err := pool.Exec(ctx, fmt.Sprintf("CREATE PUBLICATION %s", publication)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, "SELECT slot_name FROM pg_catalog.pg_create_logical_replication_slot($1,'pgoutput')", slot); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE SCHEMA %s; CREATE TABLE %s.source_state (id TEXT PRIMARY KEY,source_name TEXT,slot_name TEXT NOT NULL,publication_name TEXT NOT NULL,state TEXT NOT NULL,options JSONB NOT NULL DEFAULT '{}'::jsonb,last_lsn TEXT,last_ack_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`, stateSchema, stateSchema)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.source_state(id,slot_name,publication_name,state) VALUES ($1,$1,$2,'ready')`, stateSchema), slot, publication); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				_, _ = pool.Exec(context.Background(), "SELECT pg_catalog.pg_drop_replication_slot($1) WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_replication_slots WHERE slot_name=$1 AND NOT active)", slot)
+				_, _ = pool.Exec(context.Background(), fmt.Sprintf("DROP PUBLICATION IF EXISTS %s", publication))
+				_, _ = pool.Exec(context.Background(), fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", stateSchema))
+			}()
+			engine := workflow.NewMemoryEngine()
+			definition := mappedGRPCTestFlow(flow.Flow{ID: "cleanup-defaults-" + suffix, Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
+				"dsn": dsn, "slot": slot, "publication": publication, "state_schema": stateSchema, "state_table": "source_state",
+			}}})
+			if _, err := engine.Create(ctx, definition); err != nil {
+				t.Fatal(err)
+			}
+			_, err := NewFlowService(engine, nil).CleanupFlow(ctx, &wallabypb.CleanupFlowRequest{
+				FlowId: definition.ID, DropSlot: tt.dropSlot, DropPublication: tt.dropPublication, DropSourceState: tt.dropSourceState,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var slotExists, publicationExists, sourceStateExists bool
+			if err := pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_replication_slots WHERE slot_name=$1)", slot).Scan(&slotExists); err != nil {
+				t.Fatal(err)
+			}
+			if err := pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_publication WHERE pubname=$1)", publication).Scan(&publicationExists); err != nil {
+				t.Fatal(err)
+			}
+			if err := pool.QueryRow(ctx, fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM %s.source_state WHERE id=$1)", stateSchema), slot).Scan(&sourceStateExists); err != nil {
+				t.Fatal(err)
+			}
+			if slotExists != tt.wantSlot || publicationExists != tt.wantPublication || sourceStateExists != tt.wantSourceState {
+				t.Fatalf("slot/publication/source-state exists=%t/%t/%t, want %t/%t/%t", slotExists, publicationExists, sourceStateExists, tt.wantSlot, tt.wantPublication, tt.wantSourceState)
+			}
+		})
+	}
+}
 
 func TestDirectDSNResourceMutationsFailBeforeNetwork(t *testing.T) {
 	ctx := context.Background()
@@ -193,6 +387,14 @@ func testManagedAdministrativeResourceMutationsFailClosed(t *testing.T, managedO
 	if _, err := engine.Create(ctx, managed); err != nil {
 		t.Fatal(err)
 	}
+	beforeControl, err := engine.Control(ctx, managed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeFlow, err := engine.Get(ctx, managed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	service := NewFlowService(engine, nil)
 	tests := []struct {
 		name string
@@ -229,5 +431,16 @@ func testManagedAdministrativeResourceMutationsFailClosed(t *testing.T, managedO
 				t.Fatalf("status=%s, want FailedPrecondition", code)
 			}
 		})
+	}
+	afterControl, err := engine.Control(ctx, managed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterFlow, err := engine.Get(ctx, managed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterControl.Generation != beforeControl.Generation || afterControl.Target != beforeControl.Target || afterFlow.State != beforeFlow.State || !maps.Equal(afterFlow.Source.Options, beforeFlow.Source.Options) {
+		t.Fatalf("rejected managed mutations changed ownership generation or flow: before=%+v/%+v after=%+v/%+v", beforeControl, beforeFlow, afterControl, afterFlow)
 	}
 }

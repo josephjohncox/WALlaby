@@ -127,6 +127,30 @@ func TestNewStreamRunnerClonesConfigurationAndAppliesPolicies(t *testing.T) {
 	}
 }
 
+func TestNewStreamRunnerNilDDLPolicyUsesShippedAutoApplyDefault(t *testing.T) {
+	t.Parallel()
+	definition := flow.Flow{ID: "flow-ddl-default", Destinations: []connector.Spec{{Name: "destination"}}}
+	definition.Config.TableMappings = flow.NewTableMappings(definition.Destinations)
+	destinations := []stream.DestinationConfig{{Spec: definition.Destinations[0], Dest: flowRunnerDestination{}}}
+	_, err := NewStreamRunner(definition, nil, destinations, StreamRunnerConfig{Checkpoints: testCheckpointOutboxStore{}})
+	if err == nil || !strings.Contains(err.Error(), "execution receipt storage") {
+		t.Fatalf("nil DDL policy construction error=%v, want shipped auto_apply receipt requirement", err)
+	}
+
+	disabled := flow.DDLPolicyDefaults{}
+	got, err := NewStreamRunner(definition, nil, destinations, StreamRunnerConfig{Checkpoints: testCheckpointOutboxStore{}, DDLPolicyDefaults: &disabled})
+	if err != nil {
+		t.Fatalf("deployment auto_apply=false construction: %v", err)
+	}
+	if got.RequireDDLExecution {
+		t.Fatal("deployment auto_apply=false resolved to DDL execution")
+	}
+	resolved := flow.ResolveDDLPolicy(flow.DDLPolicy{}, nil)
+	if !resolved.AutoApprove || !resolved.AutoApply || resolved.Gate {
+		t.Fatalf("nil effective DDL policy=%+v, want shipped defaults", resolved)
+	}
+}
+
 func TestNewStreamRunnerRejectsAutoApplyWithoutReceiptStore(t *testing.T) {
 	t.Parallel()
 

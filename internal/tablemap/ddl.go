@@ -55,12 +55,15 @@ func projectDDLRecord(sourceSchema, targetSchema connector.Schema, resolved reso
 			mapped.Column = target
 		}
 		if change.Type == internalschema.ChangeRenameColumn {
-			if strings.TrimSpace(change.ToColumn) == "" {
-				return connector.Record{}, false, errors.New("rename column DDL requires to_column")
+			if len(change.ToColumn) == 0 || strings.ContainsRune(change.ToColumn, '\x00') {
+				return connector.Record{}, false, errors.New("rename column DDL requires an exact nonempty to_column without NUL")
 			}
 			target, included := resolveDDLColumn(resolved, change.ToColumn)
 			if !included {
 				return connector.Record{}, false, fmt.Errorf("rename target column %q is excluded", change.ToColumn)
+			}
+			if len(target) == 0 || strings.ContainsRune(target, '\x00') {
+				return connector.Record{}, false, errors.New("projected rename target column must be exact nonempty and contain no NUL")
 			}
 			mapped.ToColumn = target
 		}

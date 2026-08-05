@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/authority"
+	"github.com/josephjohncox/wallaby/internal/schemabaseline"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -508,13 +509,13 @@ FROM source_bootstrap_tasks WHERE bootstrap_id=$1`, persisted.BootstrapID).Scan(
 		return connector.Checkpoint{}, errors.New("complete snapshot task receipts and one publication receipt are required before CDC handoff")
 	}
 	rows, err := tx.Query(ctx, `
-SELECT destination_schema_json FROM source_bootstrap_tasks
+SELECT schema_json FROM source_bootstrap_tasks
 WHERE bootstrap_id=$1
 ORDER BY relation_id,task_id`, persisted.BootstrapID)
 	if err != nil {
 		return connector.Checkpoint{}, fmt.Errorf("load bootstrap handoff schemas: %w", err)
 	}
-	baselineTransaction := connector.SourceTransaction{}
+	var baselineSchemas []connector.Schema
 	for rows.Next() {
 		var encoded []byte
 		if err := rows.Scan(&encoded); err != nil {
@@ -530,20 +531,21 @@ ORDER BY relation_id,task_id`, persisted.BootstrapID)
 			rows.Close()
 			return connector.Checkpoint{}, fmt.Errorf("decode bootstrap handoff destination schema: %w", err)
 		}
-		baselineTransaction.Fragments = append(baselineTransaction.Fragments, connector.TransactionFragment{Batch: connector.Batch{Schema: schema}})
+		baselineSchemas = append(baselineSchemas, schema)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return connector.Checkpoint{}, fmt.Errorf("iterate bootstrap handoff schemas: %w", err)
 	}
 	rows.Close()
-	metadata := map[string]string{"bootstrap_id": persisted.BootstrapID.String()}
-	if len(baselineTransaction.Fragments) > 0 {
-		metadata, err = connector.MergeManagedSchemaBaselines(metadata, baselineTransaction)
-		if err != nil {
-			return connector.Checkpoint{}, err
-		}
+	baselinePayload, err := connector.NewManagedSchemaBaselinePayload(persisted.SourceLineageID, baselineSchemas)
+	if err != nil {
+		return connector.Checkpoint{}, fmt.Errorf("build bootstrap schema-baseline payload: %w", err)
 	}
+	if err := schemabaseline.UpsertExactTx(ctx, tx, fence, baselinePayload); err != nil {
+		return connector.Checkpoint{}, fmt.Errorf("persist bootstrap schema baselines: %w", err)
+	}
+	metadata := map[string]string{"bootstrap_id": persisted.BootstrapID.String()}
 	checkpoint = connector.Checkpoint{LSN: persisted.ConsistentLSN.String(), Metadata: metadata}
 	positionID, err := connector.CheckpointPositionID(checkpoint)
 	if err != nil {

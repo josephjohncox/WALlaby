@@ -356,6 +356,43 @@ func TestProjectionRejectsGeneratedExpressionRewrite(t *testing.T) {
 	}
 }
 
+func TestProjectionMatchesCaseAndWhitespaceDistinctSourceIdentifiersExactly(t *testing.T) {
+	t.Parallel()
+	mappings := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{
+		Destination: "sink", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude},
+		Tables: []flow.TableMapping{
+			{SourceSchema: "Exact Schema", SourceTable: "Events", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: "upper_events", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
+			{SourceSchema: "Exact Schema", SourceTable: "events", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: "lower_events", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
+			{SourceSchema: "Exact Schema", SourceTable: " ", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: " ", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
+		},
+	}}}
+	projector := testProjector(t, mappings)
+	for source, target := range map[string]string{"Events": "upper_events", "events": "lower_events", " ": " "} {
+		column := "id"
+		if source == " " {
+			column = " "
+		}
+		batch := connector.Batch{
+			Schema:     connector.Schema{Namespace: "Exact Schema", Name: source, Columns: []connector.Column{{Name: column, Type: "bigint"}}},
+			Records:    []connector.Record{{Table: source, Operation: connector.OpInsert, After: map[string]any{column: 1}}},
+			Checkpoint: connector.Checkpoint{LSN: "0/20"},
+		}
+		projected, decision, err := projector.ProjectBatch(batch)
+		if err != nil {
+			t.Fatalf("project exact source %q: %v", source, err)
+		}
+		projectedColumn := false
+		for _, candidate := range projected.Schema.Columns {
+			if candidate.Name == column {
+				projectedColumn = true
+			}
+		}
+		if decision != stream.ProjectionIncluded || projected.Schema.Name != target || !projectedColumn || len(projected.Records) != 1 || projected.Records[0].Table != target {
+			t.Fatalf("exact source %q projected to decision/schema/records=%v/%+v/%+v, want table %q with column %q", source, decision, projected.Schema, projected.Records, target, column)
+		}
+	}
+}
+
 func testProjector(t *testing.T, mappings flow.TableMappings) *Projector {
 	t.Helper()
 	destination := connector.Spec{Name: "sink", Type: connector.EndpointPostgres}

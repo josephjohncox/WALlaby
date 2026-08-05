@@ -18,6 +18,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/authority"
+	"github.com/josephjohncox/wallaby/internal/bootstrap"
+	"github.com/josephjohncox/wallaby/internal/schemabaseline"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -146,6 +148,9 @@ func NewPublisher(ctx context.Context, pool *pgxpool.Pool, objects ObjectStore, 
 	if err := ApplyMigrations(ctx, pool); err != nil {
 		return nil, err
 	}
+	if err := bootstrap.ApplyMigrations(ctx, pool); err != nil {
+		return nil, fmt.Errorf("prepare artifact schema-baseline authority: %w", err)
+	}
 	publisher := &Publisher{
 		pool: pool, objects: objects, encoder: NewEncoder(), config: config,
 		consumerFingerprint: consumerFingerprint,
@@ -158,7 +163,7 @@ func NewPublisher(ctx context.Context, pool *pgxpool.Pool, objects ObjectStore, 
 
 // Publish encodes locally, reserves exact bytes before PUT, reconciles exact S3
 // versions, then roots publication/checkpoint/ACK intent in one transaction.
-func (p *Publisher) Publish(ctx context.Context, fence authority.RunFence, transaction connector.SourceTransaction) (Publication, error) {
+func (p *Publisher) Publish(ctx context.Context, fence authority.RunFence, transaction connector.SourceTransaction, baselines connector.ManagedSchemaBaselinePayload) (Publication, error) {
 	transaction, err := canonicalSourceTransaction(transaction)
 	if err != nil {
 		return Publication{}, err
@@ -172,7 +177,7 @@ func (p *Publisher) Publish(ctx context.Context, fence authority.RunFence, trans
 	if err != nil {
 		return Publication{}, err
 	}
-	if existing, ok, err := p.loadPublication(ctx, fence, transaction, plan); err != nil {
+	if existing, ok, err := p.loadPublication(ctx, fence, transaction, plan, baselines); err != nil {
 		return Publication{}, err
 	} else if ok {
 		return existing, nil
@@ -191,9 +196,9 @@ func (p *Publisher) Publish(ctx context.Context, fence authority.RunFence, trans
 	if err := p.reach(ctx, "before_publication_transaction"); err != nil {
 		return Publication{}, err
 	}
-	publication, err := p.root(ctx, fence, transaction, plan)
+	publication, err := p.root(ctx, fence, transaction, plan, baselines)
 	if errors.Is(err, errPublicationExists) {
-		if existing, ok, loadErr := p.loadPublication(ctx, fence, transaction, plan); loadErr != nil {
+		if existing, ok, loadErr := p.loadPublication(ctx, fence, transaction, plan, baselines); loadErr != nil {
 			return Publication{}, loadErr
 		} else if ok {
 			return existing, nil
@@ -203,8 +208,8 @@ func (p *Publisher) Publish(ctx context.Context, fence authority.RunFence, trans
 }
 
 // Append is the small runner seam for ACK_POLICY_MATERIALIZED.
-func (p *Publisher) Append(ctx context.Context, fence connector.RunFence, transaction connector.SourceTransaction) (connector.AckGrant, error) {
-	publication, err := p.Publish(ctx, fence, transaction)
+func (p *Publisher) Append(ctx context.Context, fence connector.RunFence, transaction connector.SourceTransaction, baselines connector.ManagedSchemaBaselinePayload) (connector.AckGrant, error) {
+	publication, err := p.Publish(ctx, fence, transaction, baselines)
 	if err != nil {
 		return connector.AckGrant{}, err
 	}
@@ -249,12 +254,13 @@ func (p *Publisher) RestoreCheckpoint(ctx context.Context, fence connector.RunFe
 	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
 		return connector.AckGrant{}, err
 	}
-	var publicationLSN, positionID, authoritativeLSN, authorizedLSN, publicationProjection, mappingFingerprint string
-	var publicationMetadataJSON, authoritativeMetadataJSON []byte
+	var publicationLSN, positionID, authoritativeLSN, authorizedLSN, publicationProjection, mappingFingerprint, baselineFingerprint string
+	var publicationMetadataJSON, authoritativeMetadataJSON, baselineJSON []byte
 	if err := tx.QueryRow(ctx, `
 SELECT publication.checkpoint_lsn,publication.position_id,publication.checkpoint_metadata,
        checkpoint.lsn,checkpoint.metadata,intent.checkpoint_lsn,
-       publication.projection_id,publication.mapping_fingerprint
+       publication.projection_id,publication.mapping_fingerprint,
+       publication.schema_baseline_payload,publication.schema_baseline_fingerprint
 FROM artifact_publications AS publication
 JOIN authoritative_checkpoints AS checkpoint
   ON checkpoint.flow_incarnation_id=publication.flow_incarnation_id
@@ -264,9 +270,17 @@ JOIN source_ack_intents AS intent
 WHERE publication.flow_incarnation_id=$1 AND publication.publication_id=$2
 FOR UPDATE OF publication,checkpoint,intent`, fence.FlowIncarnationID, publicationID).Scan(
 		&publicationLSN, &positionID, &publicationMetadataJSON,
-		&authoritativeLSN, &authoritativeMetadataJSON, &authorizedLSN, &publicationProjection, &mappingFingerprint,
+		&authoritativeLSN, &authoritativeMetadataJSON, &authorizedLSN, &publicationProjection, &mappingFingerprint, &baselineJSON, &baselineFingerprint,
 	); err != nil {
 		return connector.AckGrant{}, fmt.Errorf("load restored artifact publication: %w", err)
+	}
+	var storedBaselines connector.ManagedSchemaBaselinePayload
+	if err := json.Unmarshal(baselineJSON, &storedBaselines); err != nil {
+		return connector.AckGrant{}, fmt.Errorf("decode restored artifact schema-baseline manifest: %w", err)
+	}
+	_, actualBaselineFingerprint, err := storedBaselines.Canonical()
+	if err != nil || actualBaselineFingerprint != baselineFingerprint {
+		return connector.AckGrant{}, fmt.Errorf("%w: restored artifact schema-baseline manifest fingerprint differs", connector.ErrDeliveryConflict)
 	}
 	var publicationMetadata, authoritativeMetadata map[string]string
 	if err := json.Unmarshal(publicationMetadataJSON, &publicationMetadata); err != nil {
@@ -752,7 +766,7 @@ WHERE artifact_id=$1 AND generation=$2 AND acquisition_id=$3 AND lease_epoch=$4
 	return tx.Commit(ctx)
 }
 
-func (p *Publisher) root(ctx context.Context, fence authority.RunFence, transaction connector.SourceTransaction, plan Plan) (Publication, error) {
+func (p *Publisher) root(ctx context.Context, fence authority.RunFence, transaction connector.SourceTransaction, plan Plan, baselines connector.ManagedSchemaBaselinePayload) (Publication, error) {
 	artifacts := plan.Artifacts
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -761,6 +775,13 @@ func (p *Publisher) root(ctx context.Context, fence authority.RunFence, transact
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
 		return Publication{}, err
+	}
+	baselineJSON, baselineFingerprint, err := baselines.Canonical()
+	if err != nil {
+		return Publication{}, fmt.Errorf("canonicalize artifact schema-baseline manifest: %w", err)
+	}
+	if baselines.SourceLineageID != transaction.SourceLineageID {
+		return Publication{}, fmt.Errorf("%w: artifact baseline lineage differs from transaction", connector.ErrDeliveryConflict)
 	}
 	if err := p.ensureStreamRows(ctx, tx, fence); err != nil {
 		return Publication{}, err
@@ -836,12 +857,12 @@ INSERT INTO artifact_publications (
   publication_id,flow_incarnation_id,source_lineage_id,source_transaction_id,source_xid,
   begin_lsn,commit_lsn,source_position,checkpoint_lsn,position_id,content_hash,
   generation,acquisition_id,lease_epoch,rooted_bytes,logical_batch_id,sequence,checkpoint_metadata,
-  projection_id,mapping_fingerprint
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+  projection_id,mapping_fingerprint,schema_baseline_payload,schema_baseline_fingerprint
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb,$22)`,
 		publicationID, fence.FlowIncarnationID, transaction.SourceLineageID, sourceTransactionID,
 		transaction.TransactionID, transaction.BeginLSN, transaction.CommitLSN, transaction.EndLSN,
 		canonicalLSN, positionID, plan.ContentHash, fence.Generation, fence.AcquisitionID,
-		fence.LeaseEpoch, rootedBytes, plan.LogicalBatchID, sequence, metadataJSON, p.config.ProjectionID, p.config.MappingFingerprint,
+		fence.LeaseEpoch, rootedBytes, plan.LogicalBatchID, sequence, metadataJSON, p.config.ProjectionID, p.config.MappingFingerprint, baselineJSON, baselineFingerprint,
 	); err != nil {
 		return Publication{}, fmt.Errorf("insert artifact publication: %w", err)
 	}
@@ -948,6 +969,9 @@ WHERE source_ack_intents.checkpoint_lsn=EXCLUDED.checkpoint_lsn`,
 	if tag.RowsAffected() != 1 {
 		return Publication{}, fmt.Errorf("%w: artifact ACK intent conflicts", connector.ErrDeliveryConflict)
 	}
+	if err := schemabaseline.UpsertExactTx(ctx, tx, fence, baselines); err != nil {
+		return Publication{}, fmt.Errorf("advance artifact schema baselines: %w", err)
+	}
 	tag, err = tx.Exec(ctx, `
 UPDATE artifact_streams SET next_publication_sequence=$2
 WHERE flow_incarnation_id=$1 AND next_publication_sequence=$3`, fence.FlowIncarnationID, sequence+1, sequence)
@@ -1021,7 +1045,7 @@ WHERE stream.flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&flowID, &pr
 	return nil
 }
 
-func (p *Publisher) loadPublication(ctx context.Context, fence authority.RunFence, transaction connector.SourceTransaction, plan Plan) (Publication, bool, error) {
+func (p *Publisher) loadPublication(ctx context.Context, fence authority.RunFence, transaction connector.SourceTransaction, plan Plan, baselines connector.ManagedSchemaBaselinePayload) (Publication, bool, error) {
 	artifacts := plan.Artifacts
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -1041,15 +1065,24 @@ func (p *Publisher) loadPublication(ctx context.Context, fence authority.RunFenc
 	}
 	expectedTransactionID := fmt.Sprintf("%s:%d:%s:%s:%s", transaction.SourceLineageID, transaction.TransactionID, transaction.BeginLSN, transaction.CommitLSN, transaction.EndLSN)
 	expectedContentHash := plan.ContentHash
+	_, expectedBaselineFingerprint, err := baselines.Canonical()
+	if err != nil {
+		return Publication{}, false, fmt.Errorf("canonicalize restored artifact schema-baseline manifest: %w", err)
+	}
+	if baselines.SourceLineageID != transaction.SourceLineageID {
+		return Publication{}, false, fmt.Errorf("%w: artifact baseline lineage differs from transaction", connector.ErrDeliveryConflict)
+	}
 	var publicationID uuid.UUID
-	var sourceLineage, sourceTransactionID, checkpointLSN, positionID, contentHash, authorizedLSN, logicalBatchID, projectionID, mappingFingerprint string
+	var sourceLineage, sourceTransactionID, checkpointLSN, positionID, contentHash, authorizedLSN, logicalBatchID, projectionID, mappingFingerprint, baselineFingerprint string
+	var baselineJSON []byte
 	var sourceXID, sequence int64
 	var metadataJSON []byte
 	err = tx.QueryRow(ctx, `
 SELECT publication.publication_id,publication.source_lineage_id,publication.source_transaction_id,
        publication.source_xid,publication.checkpoint_lsn,publication.position_id,publication.content_hash,
        publication.logical_batch_id,publication.sequence,publication.checkpoint_metadata,intent.checkpoint_lsn,
-       publication.projection_id,publication.mapping_fingerprint
+       publication.projection_id,publication.mapping_fingerprint,
+       publication.schema_baseline_payload,publication.schema_baseline_fingerprint
 FROM artifact_publications AS publication
 JOIN authoritative_checkpoints AS checkpoint
   ON checkpoint.flow_incarnation_id=publication.flow_incarnation_id
@@ -1060,7 +1093,7 @@ JOIN source_ack_intents AS intent
 WHERE publication.flow_incarnation_id=$1 AND publication.source_position=$2
 FOR UPDATE`, fence.FlowIncarnationID, canonicalLSN).Scan(
 		&publicationID, &sourceLineage, &sourceTransactionID, &sourceXID, &checkpointLSN,
-		&positionID, &contentHash, &logicalBatchID, &sequence, &metadataJSON, &authorizedLSN, &projectionID, &mappingFingerprint,
+		&positionID, &contentHash, &logicalBatchID, &sequence, &metadataJSON, &authorizedLSN, &projectionID, &mappingFingerprint, &baselineJSON, &baselineFingerprint,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
@@ -1075,7 +1108,10 @@ FOR UPDATE`, fence.FlowIncarnationID, canonicalLSN).Scan(
 	if err != nil {
 		return Publication{}, false, err
 	}
-	if sourceLineage != transaction.SourceLineageID || sourceTransactionID != expectedTransactionID || sourceXID != int64(transaction.TransactionID) || checkpointLSN != canonicalLSN || positionID != expectedPositionID || contentHash != expectedContentHash || logicalBatchID != plan.LogicalBatchID || authorizedLSN != canonicalLSN || projectionID != p.config.ProjectionID || mappingFingerprint != p.config.MappingFingerprint {
+	var storedBaselines connector.ManagedSchemaBaselinePayload
+	decodeBaselineErr := json.Unmarshal(baselineJSON, &storedBaselines)
+	_, storedBaselineFingerprint, fingerprintErr := storedBaselines.Canonical()
+	if sourceLineage != transaction.SourceLineageID || sourceTransactionID != expectedTransactionID || sourceXID != int64(transaction.TransactionID) || checkpointLSN != canonicalLSN || positionID != expectedPositionID || contentHash != expectedContentHash || logicalBatchID != plan.LogicalBatchID || authorizedLSN != canonicalLSN || projectionID != p.config.ProjectionID || mappingFingerprint != p.config.MappingFingerprint || decodeBaselineErr != nil || fingerprintErr != nil || baselineFingerprint != expectedBaselineFingerprint || storedBaselineFingerprint != baselineFingerprint {
 		return Publication{}, false, fmt.Errorf("%w: existing artifact publication identity or ACK authorization differs", connector.ErrDeliveryConflict)
 	}
 	rows, err := tx.Query(ctx, `

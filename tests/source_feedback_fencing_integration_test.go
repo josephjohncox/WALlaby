@@ -55,7 +55,7 @@ func TestPostgresAuthorizedSourceFlushRejectsStaleWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant, err := coordinator.AuthorizeAck(ctx, oldFence, connector.Checkpoint{LSN: "0/D0"})
+	grant, err := coordinator.AuthorizeAck(ctx, oldFence, connector.Checkpoint{LSN: "0/D0"}, emptyManagedBaselinePayload(t, "feedback-lineage"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ WHERE flow_incarnation_id=$1 AND position_id=$2`, newFence.FlowIncarnationID, gr
 		t.Fatalf("source flush receipt=(%s,%s), want 0/D0/%s", observed, acquisition, newFence.AcquisitionID)
 	}
 
-	grantAfterCrash, err := coordinator.AuthorizeAck(ctx, newFence, connector.Checkpoint{LSN: "0/E0"})
+	grantAfterCrash, err := coordinator.AuthorizeAck(ctx, newFence, connector.Checkpoint{LSN: "0/E0"}, emptyManagedBaselinePayload(t, "feedback-lineage"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -30,25 +30,27 @@ import (
 
 // Config configures the DBOS orchestrator.
 type Config struct {
-	AppName       string
-	DatabaseURL   string
-	Queue         string
-	Schedule      string
-	MaxEmptyReads int
-	MaxRetries    int
-	MaxRetriesSet bool
-	DefaultWire   connector.WireFormat
-	StrictWire    bool
-	AdminServer   bool
-	AdminPort     int
-	Tracer        trace.Tracer
-	Meters        *telemetry.Meters
-	DDLExecutions stream.DDLExecutionStore
-	TraceSink     stream.TraceSink
-	TracePath     string
-	Authority     authority.Store
-	Deliveries    *delivery.Coordinator
-	Artifacts     runner.ArtifactLogFactory
+	AppName           string
+	DatabaseURL       string
+	Queue             string
+	Schedule          string
+	MaxEmptyReads     int
+	MaxRetries        int
+	MaxRetriesSet     bool
+	DefaultWire       connector.WireFormat
+	StrictWire        bool
+	AdminServer       bool
+	AdminPort         int
+	Tracer            trace.Tracer
+	Meters            *telemetry.Meters
+	DDLExecutions     stream.DDLExecutionStore
+	DDLPolicyDefaults *flow.DDLPolicyDefaults
+	TraceSink         stream.TraceSink
+	TracePath         string
+	Authority         authority.Store
+	Deliveries        *delivery.Coordinator
+	SchemaBaselines   connector.ManagedSchemaBaselineStore
+	Artifacts         runner.ArtifactLogFactory
 }
 
 // FlowRunInput is the generation-fenced workflow input for one flow.
@@ -60,24 +62,26 @@ type FlowRunInput struct {
 
 // DBOSOrchestrator schedules flow runs via DBOS.
 type DBOSOrchestrator struct {
-	ctx           dbos.DBOSContext
-	engine        workflow.LifecycleStore
-	checkpoints   connector.CheckpointStore
-	factory       runner.Factory
-	queue         string
-	maxEmptyReads int
-	maxRetries    int
-	maxRetriesSet bool
-	defaultWire   connector.WireFormat
-	strictWire    bool
-	tracer        trace.Tracer
-	meters        *telemetry.Meters
-	ddlExecutions stream.DDLExecutionStore
-	traceSink     stream.TraceSink
-	tracePath     string
-	authority     authority.Store
-	deliveries    *delivery.Coordinator
-	artifacts     runner.ArtifactLogFactory
+	ctx               dbos.DBOSContext
+	engine            workflow.LifecycleStore
+	checkpoints       connector.CheckpointStore
+	factory           runner.Factory
+	queue             string
+	maxEmptyReads     int
+	maxRetries        int
+	maxRetriesSet     bool
+	defaultWire       connector.WireFormat
+	strictWire        bool
+	tracer            trace.Tracer
+	meters            *telemetry.Meters
+	ddlExecutions     stream.DDLExecutionStore
+	ddlPolicyDefaults *flow.DDLPolicyDefaults
+	traceSink         stream.TraceSink
+	tracePath         string
+	authority         authority.Store
+	deliveries        *delivery.Coordinator
+	schemaBaselines   connector.ManagedSchemaBaselineStore
+	artifacts         runner.ArtifactLogFactory
 }
 
 // FlowWorkflowName returns the fully qualified workflow name used by DBOS recovery.
@@ -116,24 +120,26 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Lifecy
 	}
 
 	orchestrator := &DBOSOrchestrator{
-		ctx:           dbosCtx,
-		engine:        engine,
-		checkpoints:   checkpoints,
-		factory:       factory,
-		queue:         cfg.Queue,
-		maxEmptyReads: cfg.MaxEmptyReads,
-		maxRetries:    cfg.MaxRetries,
-		maxRetriesSet: cfg.MaxRetriesSet,
-		defaultWire:   cfg.DefaultWire,
-		strictWire:    cfg.StrictWire,
-		tracer:        cfg.Tracer,
-		meters:        cfg.Meters,
-		ddlExecutions: cfg.DDLExecutions,
-		traceSink:     cfg.TraceSink,
-		tracePath:     cfg.TracePath,
-		authority:     cfg.Authority,
-		deliveries:    cfg.Deliveries,
-		artifacts:     cfg.Artifacts,
+		ctx:               dbosCtx,
+		engine:            engine,
+		checkpoints:       checkpoints,
+		factory:           factory,
+		queue:             cfg.Queue,
+		maxEmptyReads:     cfg.MaxEmptyReads,
+		maxRetries:        cfg.MaxRetries,
+		maxRetriesSet:     cfg.MaxRetriesSet,
+		defaultWire:       cfg.DefaultWire,
+		strictWire:        cfg.StrictWire,
+		tracer:            cfg.Tracer,
+		meters:            cfg.Meters,
+		ddlExecutions:     cfg.DDLExecutions,
+		ddlPolicyDefaults: cfg.DDLPolicyDefaults,
+		traceSink:         cfg.TraceSink,
+		tracePath:         cfg.TracePath,
+		authority:         cfg.Authority,
+		deliveries:        cfg.Deliveries,
+		schemaBaselines:   cfg.SchemaBaselines,
+		artifacts:         cfg.Artifacts,
 	}
 
 	orchestrator.registerWorkflows(cfg.Schedule)
@@ -324,10 +330,11 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunIn
 	flowRunner := runner.FlowRunner{
 		Engine: o.engine, Checkpoints: o.checkpoints, Tracer: tracer, Meters: o.meters,
 		WireFormat: o.defaultWire, StrictWire: o.strictWire, MaxEmpty: maxEmptyReads,
-		DDLExecutions: o.ddlExecutions,
-		TraceSink:     traceSink, ExecutionBackend: "dbos",
+		DDLExecutions:     o.ddlExecutions,
+		DDLPolicyDefaults: o.ddlPolicyDefaults,
+		TraceSink:         traceSink, ExecutionBackend: "dbos",
 		ExecutionID: executionID, ExpectedGeneration: input.Generation,
-		Authority: o.authority, Deliveries: o.deliveries, Artifacts: o.artifacts,
+		Authority: o.authority, Deliveries: o.deliveries, SchemaBaselines: o.schemaBaselines, Artifacts: o.artifacts,
 	}
 	if err := flowRunner.Run(ctx, f, source, destinations); err != nil {
 		return "", fmt.Errorf("run flow %s generation %d: %w", f.ID, input.Generation, err)

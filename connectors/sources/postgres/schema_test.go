@@ -50,12 +50,115 @@ func TestParseCatalogTableNameQuotedIdentifiers(t *testing.T) {
 	if spaced.Schema != "  Odd Schema  " || spaced.Table != " Table Name " {
 		t.Fatalf("quoted whitespace lost: %+v", spaced)
 	}
-	for _, invalid := range []string{"public.bad name", "public.events trailing", "public.events;drop", "public..events", "public.events.extra"} {
+	blank, err := ParseCatalogTableName(`" "." "`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blank.Schema != " " || blank.Table != " " {
+		t.Fatalf("quoted whitespace-only identifiers lost: %+v", blank)
+	}
+	columns, err := ParseCatalogColumnNames(`"ID","id"," id ","a,b"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(columns, []string{"ID", "id", " id ", "a,b"}) {
+		t.Fatalf("quoted exact columns=%q", columns)
+	}
+	for _, invalid := range []string{"public.bad name", "public.events trailing", "public.events;drop", "public..events", "public.events.extra", "public.\x00events"} {
 		if _, err := ParseCatalogTableName(invalid); err == nil {
 			t.Fatalf("invalid selector %q accepted", invalid)
 		}
 	}
 }
+func TestParseIdentifierCSVPreservesWhitespaceAndQuotedPunctuation(t *testing.T) {
+	t.Parallel()
+	got, err := parseIdentifierCSV(`" "," leading","trailing ","a,b","a.b","a""b"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{" ", " leading", "trailing ", "a,b", "a.b", `a"b`}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("exact PostgreSQL identifier list=%q, want %q", got, want)
+	}
+}
+
+func TestQualifyPublicationTablePreservesExactIdentifiers(t *testing.T) {
+	t.Parallel()
+	upper, err := qualifyTable(`"Exact Schema"."Events"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower, err := qualifyTable(`"Exact Schema"."events"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blank, err := qualifyTable(`" "." "`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upper != `"Exact Schema"."Events"` || lower != `"Exact Schema"."events"` || blank != `" "." "` || upper == lower {
+		t.Fatalf("qualified exact tables=%q/%q/%q", upper, lower, blank)
+	}
+}
+
+func TestSyncPublicationTablesPreservesExactQuotedIdentifiers(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := newPool(ctx, dsn, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	const publication = "wallaby_exact_publication"
+	if _, err := pool.Exec(ctx, `
+DROP PUBLICATION IF EXISTS wallaby_exact_publication;
+DROP SCHEMA IF EXISTS wallaby_exact_publication CASCADE;
+CREATE SCHEMA wallaby_exact_publication;
+CREATE TABLE wallaby_exact_publication."Events" (id bigint);
+CREATE TABLE wallaby_exact_publication.events (id bigint);
+CREATE TABLE wallaby_exact_publication." " (id bigint);
+CREATE PUBLICATION wallaby_exact_publication FOR TABLE wallaby_exact_publication."Events"`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `DROP PUBLICATION IF EXISTS wallaby_exact_publication; DROP SCHEMA IF EXISTS wallaby_exact_publication CASCADE`)
+	}()
+	desired := []string{`"wallaby_exact_publication"." "`, `"wallaby_exact_publication"."Events"`, `"wallaby_exact_publication"."events"`}
+	added, dropped, err := SyncPublicationTables(ctx, dsn, publication, desired, "sync", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(added) != 2 || len(dropped) != 0 {
+		t.Fatalf("exact publication first sync added/dropped=%v/%v", added, dropped)
+	}
+	current, err := ListPublicationTables(ctx, dsn, publication, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentSet := make(map[string]bool, len(current))
+	for _, table := range current {
+		currentSet[table] = true
+	}
+	if len(current) != len(desired) || !currentSet[desired[0]] || !currentSet[desired[1]] || !currentSet[desired[2]] {
+		t.Fatalf("exact publication membership=%q, want %q", current, desired)
+	}
+	added, dropped, err = SyncPublicationTables(ctx, dsn, publication, []string{desired[2]}, "sync", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	droppedSet := make(map[string]bool, len(dropped))
+	for _, table := range dropped {
+		droppedSet[table] = true
+	}
+	if len(added) != 0 || len(dropped) != 2 || !droppedSet[desired[0]] || !droppedSet[desired[1]] {
+		t.Fatalf("exact publication second sync added/dropped=%v/%v", added, dropped)
+	}
+}
+
 func TestInspectCatalogLivePG14PublicationQuery(t *testing.T) {
 	dsn := os.Getenv("TEST_PG_DSN")
 	if dsn == "" {

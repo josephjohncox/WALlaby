@@ -69,31 +69,34 @@ type ddlExecutor interface {
 }
 
 type Destination struct {
-	spec                connector.Spec
-	db                  *sql.DB
-	ddlExecutor         ddlExecutor
-	managedConn         chdriver.Conn
-	managedReplicaConn  chdriver.Conn
-	managedOptions      *chclient.Options
-	managedProfile      string
-	managedConfig       managedConfig
-	managedVersion      string
-	managedRecoveryOnly bool
-	batchMode           string
-	batchResolve        string
-	stagingSchema       string
-	stagingTableName    string
-	stagingSuffix       string
-	metaEnabled         bool
-	metaSchema          string
-	metaTable           string
-	metaPKPrefix        string
-	flowID              string
-	metaColumns         map[string]struct{}
-	metaEngine          string
-	metaOrderBy         string
-	stagingTables       map[string]tableInfo
-	stagingResolved     bool
+	spec                           connector.Spec
+	db                             *sql.DB
+	ddlExecutor                    ddlExecutor
+	managedConn                    chdriver.Conn
+	managedReplicaConn             chdriver.Conn
+	managedOptions                 *chclient.Options
+	managedProfile                 string
+	managedConfig                  managedConfig
+	managedVersion                 string
+	managedRecoveryOnly            bool
+	managedInitializeAuthorityHook func(context.Context, chdriver.Conn, string, bool) error
+	managedOpenEndpointHook        func(context.Context, *chclient.Options, connector.ManagedProfileContract, string) (chdriver.Conn, string, error)
+	managedValidateTargetHook      func(context.Context, chdriver.Conn, string, bool) error
+	batchMode                      string
+	batchResolve                   string
+	stagingSchema                  string
+	stagingTableName               string
+	stagingSuffix                  string
+	metaEnabled                    bool
+	metaSchema                     string
+	metaTable                      string
+	metaPKPrefix                   string
+	flowID                         string
+	metaColumns                    map[string]struct{}
+	metaEngine                     string
+	metaOrderBy                    string
+	stagingTables                  map[string]tableInfo
+	stagingResolved                bool
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {

@@ -8,6 +8,42 @@ import (
 	"time"
 )
 
+func TestDocumentedSemanticDefaultsRemainOrdinaryDefaults(t *testing.T) {
+	t.Setenv("WALLABY_ENV", "test")
+	t.Setenv("WALLABY_WORKFLOW_STORE", "memory")
+	for _, key := range []string{
+		"WALLABY_GRPC_LISTEN", "WALLABY_GRPC_REFLECTION", "WALLABY_WIRE_ENFORCE",
+		"WALLABY_DDL_CATALOG_INTERVAL", "WALLABY_DDL_AUTO_APPROVE", "WALLABY_DDL_GATE", "WALLABY_DDL_AUTO_APPLY",
+		"WALLABY_OTEL_METRICS_INTERVAL", "WALLABY_DBOS_MAX_EMPTY_READS",
+	} {
+		key := key
+		old, existed := os.LookupEnv(key)
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if existed {
+				_ = os.Setenv(key, old)
+			} else {
+				_ = os.Unsetenv(key)
+			}
+		})
+	}
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.API.GRPCListen != ":8080" || cfg.API.GRPCReflection || !cfg.Wire.Enforce {
+		t.Fatalf("API/wire defaults=%+v/%+v", cfg.API, cfg.Wire)
+	}
+	if cfg.DDL.CatalogInterval != 30*time.Second || !cfg.DDL.AutoApprove || cfg.DDL.Gate || !cfg.DDL.AutoApply {
+		t.Fatalf("DDL defaults=%+v", cfg.DDL)
+	}
+	if cfg.Telemetry.MetricsInterval != 30*time.Second || cfg.DBOS.MaxEmptyReads != 1 {
+		t.Fatalf("telemetry/DBOS defaults=%+v/%+v", cfg.Telemetry, cfg.DBOS)
+	}
+}
+
 func TestShippedWorkerConfigurationExampleLoads(t *testing.T) {
 	t.Setenv("WALLABY_ENV", "test")
 	t.Setenv("WALLABY_WORKFLOW_STORE", "memory")

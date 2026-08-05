@@ -203,6 +203,22 @@ func TestManagedSnowflakeConfigRequiresExactSecureRevisionAndSchemaContract(t *t
 	if cfg.schemaContractHash != hash || cfg.destinationRevision != "snowflake-v1" || cfg.maxOpenConnections != 4 {
 		t.Fatalf("config=%+v", cfg)
 	}
+	for _, exact := range []string{" ", " leading", "trailing ", " both "} {
+		exactSpec := spec
+		exactSpec.Options = make(map[string]string, len(spec.Options))
+		for key, value := range spec.Options {
+			exactSpec.Options[key] = value
+		}
+		exactSpec.Options["managed_source_schema"] = exact
+		exactSpec.Options["managed_source_table"] = exact
+		exactConfig, err := managedConfigFromSpec(exactSpec.Options["dsn"], exactSpec)
+		if err != nil {
+			t.Fatalf("exact source identifier %q rejected: %v", exact, err)
+		}
+		if exactConfig.sourceSchema != exact || exactConfig.sourceTable != exact {
+			t.Fatalf("exact source identifier changed: schema/table=%q/%q", exactConfig.sourceSchema, exactConfig.sourceTable)
+		}
+	}
 
 	tests := []struct {
 		name  string
@@ -211,6 +227,8 @@ func TestManagedSnowflakeConfigRequiresExactSecureRevisionAndSchemaContract(t *t
 		want  string
 	}{
 		{name: "missing flow binding", key: "flow_id", value: "", want: "flow, account"},
+		{name: "empty source schema", key: "managed_source_schema", value: "", want: "NUL-free source relation"},
+		{name: "NUL source table", key: "managed_source_table", value: "bad\x00table", want: "NUL-free source relation"},
 		{name: "fakesnow HTTP", key: "dsn", value: managedSnowflakeTestDSN(t, func(cfg *gosnowflake.Config) { cfg.Protocol = "http" }), want: "verified HTTPS"},
 		{name: "OCSP fail-open", key: "dsn", value: managedSnowflakeTestDSN(t, func(cfg *gosnowflake.Config) { cfg.OCSPFailOpen = gosnowflake.OCSPFailOpenTrue }), want: "OCSP fail-closed"},
 		{name: "deprecated insecure mode", key: "dsn", value: spec.Options["dsn"] + "&insecureMode=true", want: "OCSP fail-closed"},

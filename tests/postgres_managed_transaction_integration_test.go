@@ -229,7 +229,7 @@ func TestPostgresManagedTransactionCommitBeforeReceiptReconciles(t *testing.T) {
 	}
 	oldIntent := transactionIntentForFence(t, oldFence, revisionID, transaction)
 	driver := &commitBeforeReceiptTransactionDriver{ManagedTransactionDestination: target}
-	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, driver); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, managedBaselinePayload(t, transaction), driver); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("commit-before-receipt error=%v, want ErrDeliveryIndeterminate", err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE producer_leases SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE incarnation_id=$1`, oldFence.FlowIncarnationID); err != nil {
@@ -241,7 +241,7 @@ func TestPostgresManagedTransactionCommitBeforeReceiptReconciles(t *testing.T) {
 	}
 	driver.rejectValidation = true
 	newIntent := transactionIntentForFence(t, newFence, revisionID, transaction)
-	grant, err := coordinator.DeliverTransaction(ctx, newFence, newIntent, transaction, driver)
+	grant, err := coordinator.DeliverTransaction(ctx, newFence, newIntent, transaction, managedBaselinePayload(t, transaction), driver)
 	if err != nil {
 		t.Fatalf("reconcile committed transaction before target revalidation: %v", err)
 	}
@@ -353,7 +353,7 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.wallaby_transaction_overlap_block()`)
 	oldIntent := transactionIntentForFence(t, oldFence, revisionID, transaction)
 	oldResult := make(chan error, 1)
 	go func() {
-		_, deliverErr := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, target)
+		_, deliverErr := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, managedBaselinePayload(t, transaction), target)
 		oldResult <- deliverErr
 	}()
 	waitForAdvisoryWaiters(t, ctx, pool, blocker.Conn().PgConn().PID(), 1)
@@ -367,7 +367,7 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.wallaby_transaction_overlap_block()`)
 	newIntent := transactionIntentForFence(t, newFence, revisionID, transaction)
 	newResult := make(chan error, 1)
 	go func() {
-		_, deliverErr := coordinator.DeliverTransaction(ctx, newFence, newIntent, transaction, target)
+		_, deliverErr := coordinator.DeliverTransaction(ctx, newFence, newIntent, transaction, managedBaselinePayload(t, transaction), target)
 		newResult <- deliverErr
 	}()
 	waitForAdvisoryWaiters(t, ctx, pool, blocker.Conn().PgConn().PID(), 2)
@@ -380,7 +380,7 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.wallaby_transaction_overlap_block()`)
 	if err := <-newResult; !errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("new overlapping owner error=%v, want indeterminate receipt collision", err)
 	}
-	grant, err := coordinator.DeliverTransaction(ctx, newFence, newIntent, transaction, target)
+	grant, err := coordinator.DeliverTransaction(ctx, newFence, newIntent, transaction, managedBaselinePayload(t, transaction), target)
 	if err != nil {
 		t.Fatalf("adopt concurrently committed marker: %v", err)
 	}

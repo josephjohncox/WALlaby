@@ -27,6 +27,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/registry"
 	"github.com/josephjohncox/wallaby/internal/replication"
 	"github.com/josephjohncox/wallaby/internal/runner"
+	"github.com/josephjohncox/wallaby/internal/schemabaseline"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -92,6 +93,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	var controlPool *pgxpool.Pool
 	var authorityStore authority.Store
 	var deliveryCoordinator *delivery.Coordinator
+	var schemaBaselines connector.ManagedSchemaBaselineStore
 	if postgresDSN != "" {
 		control, err := controlstore.New(ctx, postgresDSN)
 		if err != nil {
@@ -109,6 +111,10 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		deliveryCoordinator, err = delivery.NewCoordinator(ctx, controlPool)
 		if err != nil {
 			return fmt.Errorf("start delivery coordinator: %w", err)
+		}
+		schemaBaselines, err = schemabaseline.NewStore(controlPool)
+		if err != nil {
+			return fmt.Errorf("start managed schema-baseline store: %w", err)
 		}
 	}
 	if cfg.Workflow.Store == "memory" && (cfg.DBOS.Enabled || cfg.Kubernetes.Enabled) {
@@ -203,17 +209,17 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		return errors.New("unsupported checkpoint backend: " + backend)
 	}
 
+	ddlDefaults := flow.DDLPolicyDefaults{
+		Gate:        cfg.DDL.Gate,
+		AutoApprove: cfg.DDL.AutoApprove,
+		AutoApply:   cfg.DDL.AutoApply,
+	}
 	factory := runner.Factory{
 		Meters: telemetryProvider.Meters(), ManagedControl: controlPool, ManagedAuthority: authorityStore,
 	}
 	if registryStore != nil {
-		defaults := flow.DDLPolicyDefaults{
-			Gate:        cfg.DDL.Gate,
-			AutoApprove: cfg.DDL.AutoApprove,
-			AutoApply:   cfg.DDL.AutoApply,
-		}
 		factory.SchemaHookForFlow = func(f flow.Flow) replication.SchemaHook {
-			policy := f.Config.DDL.Resolve(defaults)
+			policy := flow.ResolveDDLPolicy(f.Config.DDL, &ddlDefaults)
 			return &registry.Hook{
 				Store:        registryStore,
 				FlowID:       f.ID,
@@ -224,9 +230,9 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		}
 		factory.SchemaHook = &registry.Hook{
 			Store:        registryStore,
-			AutoApprove:  defaults.AutoApprove,
-			GateApproval: defaults.Gate,
-			AutoApply:    defaults.AutoApply,
+			AutoApprove:  ddlDefaults.AutoApprove,
+			GateApproval: ddlDefaults.Gate,
+			AutoApply:    ddlDefaults.AutoApply,
 		}
 	}
 
@@ -263,23 +269,25 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			maxEmptyReads = 1
 		}
 		dbosRunner, err := orchestrator.NewDBOSOrchestrator(ctx, orchestrator.Config{
-			AppName:       cfg.DBOS.AppName,
-			DatabaseURL:   cfg.Postgres.DSN,
-			Queue:         cfg.DBOS.Queue,
-			Schedule:      cfg.DBOS.Schedule,
-			MaxEmptyReads: maxEmptyReads,
-			MaxRetries:    cfg.DBOS.MaxRetries,
-			MaxRetriesSet: cfg.DBOS.MaxRetriesSet,
-			DefaultWire:   connector.WireFormat(cfg.Wire.DefaultFormat),
-			StrictWire:    cfg.Wire.Enforce,
-			Tracer:        tracer,
-			Meters:        telemetryProvider.Meters(),
-			DDLExecutions: ddlExecutions,
-			TraceSink:     traceSink,
-			TracePath:     tracePath,
-			Authority:     authorityStore,
-			Deliveries:    deliveryCoordinator,
-			Artifacts:     runner.NewArtifactLogFactory(controlPool, cfg.Artifacts, cfg.Iceberg),
+			AppName:           cfg.DBOS.AppName,
+			DatabaseURL:       cfg.Postgres.DSN,
+			Queue:             cfg.DBOS.Queue,
+			Schedule:          cfg.DBOS.Schedule,
+			MaxEmptyReads:     maxEmptyReads,
+			MaxRetries:        cfg.DBOS.MaxRetries,
+			MaxRetriesSet:     cfg.DBOS.MaxRetriesSet,
+			DefaultWire:       connector.WireFormat(cfg.Wire.DefaultFormat),
+			StrictWire:        cfg.Wire.Enforce,
+			Tracer:            tracer,
+			Meters:            telemetryProvider.Meters(),
+			DDLExecutions:     ddlExecutions,
+			DDLPolicyDefaults: &ddlDefaults,
+			TraceSink:         traceSink,
+			TracePath:         tracePath,
+			Authority:         authorityStore,
+			Deliveries:        deliveryCoordinator,
+			SchemaBaselines:   schemaBaselines,
+			Artifacts:         runner.NewArtifactLogFactory(controlPool, cfg.Artifacts, cfg.Iceberg),
 		}, baseEngine, checkpoints, factory)
 		if err != nil {
 			return err

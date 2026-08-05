@@ -76,10 +76,10 @@ func expectedSchemaChangeSignatures(oldSchema, newSchema connector.Schema) []str
 	oldColumns := make(map[string]connector.Column, len(oldSchema.Columns))
 	newColumns := make(map[string]connector.Column, len(newSchema.Columns))
 	for _, column := range oldSchema.Columns {
-		oldColumns[strings.ToLower(strings.TrimSpace(column.Name))] = column
+		oldColumns[column.Name] = column
 	}
 	for _, column := range newSchema.Columns {
-		newColumns[strings.ToLower(strings.TrimSpace(column.Name))] = column
+		newColumns[column.Name] = column
 	}
 	var signatures []string
 	for name, newColumn := range newColumns {
@@ -111,7 +111,7 @@ func expectedSchemaChangeSignatures(oldSchema, newSchema connector.Schema) []str
 func schemaChangeSignatures(changes []Change) []string {
 	signatures := make([]string, 0, len(changes))
 	for _, change := range changes {
-		name := strings.ToLower(strings.TrimSpace(change.Column))
+		name := change.Column
 		switch change.Type {
 		case ChangeAddColumn, ChangeAlterColumn:
 			signatures = append(signatures, fmt.Sprintf("%s:%s:%s:%t", change.Type, name, change.ToType, change.Nullable))

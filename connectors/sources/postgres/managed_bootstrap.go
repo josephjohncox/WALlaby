@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/bootstrap"
@@ -447,6 +449,7 @@ func (s *Source) runManagedSnapshotTask(ctx context.Context, coordinator *bootst
 func (s *Source) runClaimedManagedSnapshotTask(ctx context.Context, coordinator *bootstrap.Bootstrapper, session *bootstrap.Session, fence authority.RunFence, claim authority.ClaimFence, task bootstrap.SnapshotTask, destinationRevisionID string, batchSize int, projector connector.ManagedBootstrapProjector, driver connector.ManagedBootstrapDestination) (retErr error) {
 	ctx, endSpan := telemetry.StartBootstrapSpan(ctx, "task", fence.FlowID, session.Snapshot.BootstrapID.String(), task.TaskID, session.Snapshot.BootstrapGeneration)
 	defer func() { endSpan(retErr) }()
+	var lastTransientErr error
 	for taskAttempt := 0; taskAttempt < defaultManagedSnapshotRetries; taskAttempt++ {
 		ordinal, cursor, complete, err := coordinator.TaskProgress(ctx, fence, session.Snapshot, task)
 		if err != nil {
@@ -463,6 +466,11 @@ func (s *Source) runClaimedManagedSnapshotTask(ctx context.Context, coordinator 
 			records, nextCursor, done, err := queryManagedSnapshotBatch(ctx, tx, task, cursor, batchSize)
 			if err != nil {
 				_ = tx.Rollback(context.WithoutCancel(ctx))
+				wrapped := fmt.Errorf("query snapshot task %s batch: %w", task.WorkID(session.Snapshot.BootstrapID), err)
+				if !isTransientManagedSnapshotError(err) {
+					return wrapped
+				}
+				lastTransientErr = wrapped
 				break
 			}
 			ordinal++
@@ -482,9 +490,11 @@ func (s *Source) runClaimedManagedSnapshotTask(ctx context.Context, coordinator 
 			}
 			if err := coordinator.DeliverTaskBatch(ctx, claim, session.Snapshot, task, ordinal, nextCursor, done, destinationRevisionID, batch, driver); err != nil {
 				_ = tx.Rollback(context.WithoutCancel(ctx))
-				if errors.Is(err, authority.ErrFenceRejected) || errors.Is(err, connector.ErrDeliveryConflict) || errors.Is(err, connector.ErrDeliveryIndeterminate) {
-					return err
+				wrapped := fmt.Errorf("deliver snapshot task %s batch %d: %w", task.WorkID(session.Snapshot.BootstrapID), ordinal, err)
+				if !isTransientManagedSnapshotError(err) {
+					return wrapped
 				}
+				lastTransientErr = wrapped
 				break
 			}
 			telemetry.RecordBootstrapProgress(ctx, len(records))
@@ -497,7 +507,42 @@ func (s *Source) runClaimedManagedSnapshotTask(ctx context.Context, coordinator 
 			return errors.New("bootstrap exporter lost while snapshot task was active")
 		}
 	}
-	return fmt.Errorf("snapshot task %s exhausted transient retries", task.WorkID(session.Snapshot.BootstrapID))
+	return managedSnapshotRetriesExhausted(task.WorkID(session.Snapshot.BootstrapID), lastTransientErr)
+}
+
+func managedSnapshotRetriesExhausted(workID string, lastErr error) error {
+	if lastErr == nil {
+		return fmt.Errorf("snapshot task %s exhausted retries without a classified transient error", workID)
+	}
+	return fmt.Errorf("snapshot task %s exhausted transient retries: %w", workID, lastErr)
+}
+
+func isTransientManagedSnapshotError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, authority.ErrFenceRejected) || errors.Is(err, connector.ErrDeliveryConflict) || errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		if strings.HasPrefix(pgErr.Code, "08") {
+			return true
+		}
+		switch pgErr.Code {
+		case "40001", "40P01", "53300", "53400", "55P03", "57P01", "57P02", "57P03":
+			return true
+		default:
+			return false
+		}
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && networkErr.Timeout() {
+		return true
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return false
+	}
+	var operationErr *net.OpError
+	return errors.As(err, &operationErr)
 }
 
 func runWithRenewedSnapshotClaim(ctx context.Context, store authority.Store, claim authority.ClaimFence, lease time.Duration, work func(context.Context) error) error {
@@ -613,7 +658,7 @@ ORDER BY n.nspname,c.relname`, publication)
 		if err != nil {
 			return nil, nil, err
 		}
-		tables = append(tables, relation.Namespace+"."+relation.Table)
+		tables = append(tables, pgx.Identifier{relation.Namespace, relation.Table}.Sanitize())
 		schemas = append(schemas, schema)
 	}
 	return tables, schemas, nil
@@ -634,9 +679,15 @@ JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
 WHERE c.oid = ANY($1::regclass[]) AND c.relkind IN ('r','p')
 ORDER BY c.oid`, requested)
 	} else {
-		schemas := parseCSV(spec.Options[optPublicationSchemas])
+		schemas, parseErr := parseIdentifierCSV(spec.Options[optPublicationSchemas])
+		if parseErr != nil {
+			return nil, nil, fmt.Errorf("parse publication_schemas: %w", parseErr)
+		}
 		if len(schemas) == 0 {
-			schemas = parseCSV(spec.Options["schemas"])
+			schemas, parseErr = parseIdentifierCSV(spec.Options["schemas"])
+			if parseErr != nil {
+				return nil, nil, fmt.Errorf("parse schemas: %w", parseErr)
+			}
 		}
 		if len(schemas) == 0 {
 			schemas = []string{"public"}

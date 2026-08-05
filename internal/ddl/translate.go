@@ -221,9 +221,9 @@ func TranslatePlanDDL(schemaDef connector.Schema, plan internalschema.Plan, dial
 				continue
 			}
 		case internalschema.ChangeRenameColumn:
-			newName := strings.TrimSpace(change.ToColumn)
+			newName := change.ToColumn
 			if newName == "" {
-				newName = strings.TrimSpace(change.ToType)
+				newName = change.ToType
 			}
 			if newName == "" {
 				return nil, fmt.Errorf("rename column missing target name for %s", change.Column)
@@ -256,27 +256,18 @@ func TranslatePlanDDL(schemaDef connector.Schema, plan internalschema.Plan, dial
 }
 
 func planQualifiedTable(schemaDef connector.Schema, change internalschema.Change, dialect DialectConfig) (string, error) {
-	table := strings.TrimSpace(change.Table)
+	table := change.Table
 	if table == "" {
-		table = strings.TrimSpace(schemaDef.Name)
+		table = schemaDef.Name
 	}
 	if table == "" {
 		return "", fmt.Errorf("change has no table")
 	}
-	if !strings.Contains(table, ".") && strings.TrimSpace(change.Namespace) != "" {
-		table = change.Namespace + "." + table
+	namespace := change.Namespace
+	if namespace == "" {
+		namespace = schemaDef.Namespace
 	}
-	qualified, err := quoteTableNamePreserve(table, schemaDef, dialect)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(qualified) != "" {
-		return qualified, nil
-	}
-	if table == "" {
-		return "", fmt.Errorf("invalid table name")
-	}
-	return qualified, nil
+	return quoteRelationExact(namespace, table, dialect.Quote), nil
 }
 
 // TranslateRecordDDL resolves a change record into translated DDL statements.
@@ -295,21 +286,14 @@ func TranslateRecordDDL(schemaDef connector.Schema, record connector.Record, dia
 		return TranslatePlanDDL(schemaDef, plan, dialect, baseMappings, options)
 	}
 	if ddlText == "" {
-		table := strings.TrimSpace(record.Table)
-		if table == "" {
-			table = strings.TrimSpace(schemaDef.Name)
+		table := record.Table
+		if table == "" || table == schemaDef.Namespace+"."+schemaDef.Name {
+			table = schemaDef.Name
 		}
 		if table == "" {
 			return []string{}, nil
 		}
-		if !strings.Contains(table, ".") && strings.TrimSpace(schemaDef.Namespace) != "" {
-			table = schemaDef.Namespace + "." + table
-		}
-		qualified, err := quoteTableNamePreserve(table, schemaDef, dialect)
-		if err != nil {
-			return nil, err
-		}
-		ddlText = "TRUNCATE TABLE " + qualified
+		ddlText = "TRUNCATE TABLE " + quoteRelationExact(schemaDef.Namespace, table, dialect.Quote)
 	}
 	return TranslatePostgresDDL(ddlText, dialect, mappings)
 }
@@ -848,29 +832,18 @@ func quoteIdent(value, quote string) string {
 }
 
 func quoteIdentPreserve(value, quote string) string {
-	ident, _ := parseIdent(value)
-	if ident == "" {
+	if value == "" {
 		return ""
 	}
-	escaped := strings.ReplaceAll(ident, quote, quote+quote)
+	escaped := strings.ReplaceAll(value, quote, quote+quote)
 	return quote + escaped + quote
 }
 
-func quoteTableNamePreserve(name string, schema connector.Schema, dialect DialectConfig) (string, error) {
-	if strings.TrimSpace(name) == "" {
-		return "", errors.New("truncate missing table name")
+func quoteRelationExact(namespace, table, quote string) string {
+	if namespace == "" {
+		return quoteIdentPreserve(table, quote)
 	}
-	schemaName, tableName := splitQualifiedName(name)
-	if tableName == "" {
-		return "", fmt.Errorf("invalid table name %q", name)
-	}
-	if schemaName == "" {
-		schemaName = strings.TrimSpace(schema.Namespace)
-	}
-	if schemaName != "" {
-		return quoteIdentPreserve(schemaName, dialect.Quote) + "." + quoteIdentPreserve(tableName, dialect.Quote), nil
-	}
-	return quoteIdentPreserve(tableName, dialect.Quote), nil
+	return quoteIdentPreserve(namespace, quote) + "." + quoteIdentPreserve(table, quote)
 }
 
 func parseIdent(value string) (string, bool) {

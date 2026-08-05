@@ -23,7 +23,7 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [func DeliveryLogicalBatchID\(sourceLineageID, positionID, contentHash string\) \(string, error\)](<#DeliveryLogicalBatchID>)
 - [func IsManagedSourceSpec\(spec Spec\) bool](<#IsManagedSourceSpec>)
 - [func IsPostgresToSnowflakeSQLV1Spec\(spec Spec\) bool](<#IsPostgresToSnowflakeSQLV1Spec>)
-- [func MergeManagedSchemaBaselines\(metadata map\[string\]string, transaction SourceTransaction\) \(map\[string\]string, error\)](<#MergeManagedSchemaBaselines>)
+- [func ManagedSchemaBaselineKey\(namespace, name string\) string](<#ManagedSchemaBaselineKey>)
 - [func NormalizeKeyForSchema\(schema Schema, key map\[string\]any\) \(map\[string\]any, error\)](<#NormalizeKeyForSchema>)
 - [func NormalizePostgresRecord\(schema Schema, values map\[string\]any\) error](<#NormalizePostgresRecord>)
 - [func NormalizeSourceMode\(raw string\) \(string, error\)](<#NormalizeSourceMode>)
@@ -93,6 +93,10 @@ Package connector defines the stable source, destination, checkpoint, schema, an
   - [func \(c ManagedProfileContract\) SupportsPostgresVersion\(major int\) bool](<#ManagedProfileContract.SupportsPostgresVersion>)
   - [func \(c ManagedProfileContract\) ValidatePromotion\(\) error](<#ManagedProfileContract.ValidatePromotion>)
 - [type ManagedProfileGate](<#ManagedProfileGate>)
+- [type ManagedSchemaBaselinePayload](<#ManagedSchemaBaselinePayload>)
+  - [func NewManagedSchemaBaselinePayload\(sourceLineageID string, schemas \[\]Schema\) \(ManagedSchemaBaselinePayload, error\)](<#NewManagedSchemaBaselinePayload>)
+  - [func \(p ManagedSchemaBaselinePayload\) Canonical\(\) \(\[\]byte, string, error\)](<#ManagedSchemaBaselinePayload.Canonical>)
+- [type ManagedSchemaBaselineStore](<#ManagedSchemaBaselineStore>)
 - [type ManagedSnowflakeVersionProvider](<#ManagedSnowflakeVersionProvider>)
 - [type ManagedSourceResourceCleaner](<#ManagedSourceResourceCleaner>)
 - [type ManagedSourceSchemaValidator](<#ManagedSourceSchemaValidator>)
@@ -109,7 +113,8 @@ Package connector defines the stable source, destination, checkpoint, schema, an
   - [func \(f RunFence\) Validate\(\) error](<#RunFence.Validate>)
 - [type RunFenceBinder](<#RunFenceBinder>)
 - [type Schema](<#Schema>)
-  - [func DecodeManagedSchemaBaselines\(raw string\) \(\[\]Schema, error\)](<#DecodeManagedSchemaBaselines>)
+  - [func DecodeManagedSchemaBaselineOption\(raw string\) \(\[\]Schema, error\)](<#DecodeManagedSchemaBaselineOption>)
+  - [func SourceTransactionSchemas\(transaction SourceTransaction\) \[\]Schema](<#SourceTransactionSchemas>)
 - [type SlotDropper](<#SlotDropper>)
 - [type Source](<#Source>)
 - [type SourceFlushEvidence](<#SourceFlushEvidence>)
@@ -163,10 +168,10 @@ const (
 )
 ```
 
-<a name="ManagedSchemaBaselinesMetadataKey"></a>ManagedSchemaBaselinesMetadataKey stores the last delivered source schema set on the authoritative checkpoint. The baseline lets a restarted pgoutput decoder diff the first Relation message against the schema that actually reached the destination, rather than an empty process\-local cache.
+<a name="ManagedSchemaBaselinesOptionKey"></a>ManagedSchemaBaselinesOptionKey carries a fence\-validated baseline snapshot from the runner into the in\-process PostgreSQL decoder. It is never stored in checkpoint metadata and is not an authority source.
 
 ```go
-const ManagedSchemaBaselinesMetadataKey = "managed_postgres_schema_baselines_v1"
+const ManagedSchemaBaselinesOptionKey = "managed_postgres_schema_baselines_v1"
 ```
 
 ## Variables
@@ -300,14 +305,14 @@ func IsPostgresToSnowflakeSQLV1Spec(spec Spec) bool
 
 IsPostgresToSnowflakeSQLV1Spec reports whether spec selects the exact named Snowflake SQL profile whose configured capabilities advertise explicit\-key upsert.
 
-<a name="MergeManagedSchemaBaselines"></a>
-## func [MergeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L186>)
+<a name="ManagedSchemaBaselineKey"></a>
+## func [ManagedSchemaBaselineKey](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L288>)
 
 ```go
-func MergeManagedSchemaBaselines(metadata map[string]string, transaction SourceTransaction) (map[string]string, error)
+func ManagedSchemaBaselineKey(namespace, name string) string
 ```
 
-MergeManagedSchemaBaselines returns a copied checkpoint metadata map with every schema observed in transaction merged into a stable, sorted encoding.
+ManagedSchemaBaselineKey encodes an exact PostgreSQL relation identity for in\-memory indexing. PostgreSQL identifiers cannot contain NUL, so the NUL delimiter is unambiguous and preserves every identifier byte, including case and leading or trailing spaces.
 
 <a name="NormalizeKeyForSchema"></a>
 ## func [NormalizeKeyForSchema](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/normalize.go#L251>)
@@ -366,7 +371,7 @@ func SourceTransactionLogicalBatchID(transaction SourceTransaction) (string, err
 SourceTransactionLogicalBatchID identifies one source commit independently from any worker generation or destination revision.
 
 <a name="ValidateBatch"></a>
-## func [ValidateBatch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/batch_validation.go#L19>)
+## func [ValidateBatch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/batch_validation.go#L18>)
 
 ```go
 func ValidateBatch(batch Batch) error
@@ -928,7 +933,7 @@ type FlowCheckpoint struct {
 ```
 
 <a name="FlushEvidenceSource"></a>
-## type [FlushEvidenceSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L282-L285>)
+## type [FlushEvidenceSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L337-L340>)
 
 FlushEvidenceSource sends source feedback and proves the resulting logical slot flush position. The managed coordinator validates authority before and after this external source operation; feedback itself is monotonic.
 
@@ -940,7 +945,7 @@ type FlushEvidenceSource interface {
 ```
 
 <a name="InitialCheckpointSource"></a>
-## type [InitialCheckpointSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L268-L271>)
+## type [InitialCheckpointSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L323-L326>)
 
 InitialCheckpointSource exposes the validated stream start after Open. A managed coordinator persists this cut and an ACK intent before the first source transaction, so a crash immediately after slot creation is recoverable.
 
@@ -1017,7 +1022,7 @@ type ManagedBootstrapSource interface {
 ```
 
 <a name="ManagedClickHouseVersionProvider"></a>
-## type [ManagedClickHouseVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L353-L355>)
+## type [ManagedClickHouseVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L357-L359>)
 
 ManagedClickHouseVersionProvider exposes the admitted live server version after connector Open.
 
@@ -1041,7 +1046,7 @@ type ManagedDestination interface {
 ```
 
 <a name="ManagedFlowScopeValidator"></a>
-## type [ManagedFlowScopeValidator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L347-L349>)
+## type [ManagedFlowScopeValidator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L351-L353>)
 
 ManagedFlowScopeValidator proves that an already\-open destination contains no receipts owned by another incarnation before the runner reads WAL.
 
@@ -1052,7 +1057,7 @@ type ManagedFlowScopeValidator interface {
 ```
 
 <a name="ManagedPostgresPublicationProvider"></a>
-## type [ManagedPostgresPublicationProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L334-L337>)
+## type [ManagedPostgresPublicationProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L338-L341>)
 
 ManagedPostgresPublicationProvider exposes the exact live publication relation set observed during named\-profile source admission.
 
@@ -1064,7 +1069,7 @@ type ManagedPostgresPublicationProvider interface {
 ```
 
 <a name="ManagedPostgresVersionProvider"></a>
-## type [ManagedPostgresVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L328-L330>)
+## type [ManagedPostgresVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L332-L334>)
 
 SupportsPostgresVersion reports whether the named profile admits a live PostgreSQL server\_version\_num major. ManagedPostgresVersionProvider exposes the admitted live server major after connector Open. The runner compares both endpoints before managed delivery.
 
@@ -1100,7 +1105,7 @@ type ManagedProfileContract struct {
 ```
 
 <a name="PostgresToClickHouseAppendV1Profile"></a>
-### func [PostgresToClickHouseAppendV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L94>)
+### func [PostgresToClickHouseAppendV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L97>)
 
 ```go
 func PostgresToClickHouseAppendV1Profile() ManagedProfileContract
@@ -1118,7 +1123,7 @@ func PostgresToPostgresV1Profile() ManagedProfileContract
 PostgresToPostgresV1Profile returns a defensive copy of the promoted profile.
 
 <a name="PostgresToSnowflakeSQLV1Profile"></a>
-### func [PostgresToSnowflakeSQLV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L134>)
+### func [PostgresToSnowflakeSQLV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L137>)
 
 ```go
 func PostgresToSnowflakeSQLV1Profile() ManagedProfileContract
@@ -1127,7 +1132,7 @@ func PostgresToSnowflakeSQLV1Profile() ManagedProfileContract
 PostgresToSnowflakeSQLV1Profile returns the constrained but unpromoted transactional Snowflake SQL profile. Admission compares a configured service version with CURRENT\_VERSION\(\), but no service version or deployment cell is reviewed yet. Promotion requires complete same\-SHA real\-service evidence.
 
 <a name="ManagedProfileContract.SupportsClickHouseVersion"></a>
-### func \(ManagedProfileContract\) [SupportsClickHouseVersion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L314>)
+### func \(ManagedProfileContract\) [SupportsClickHouseVersion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L318>)
 
 ```go
 func (c ManagedProfileContract) SupportsClickHouseVersion(version string) bool
@@ -1136,7 +1141,7 @@ func (c ManagedProfileContract) SupportsClickHouseVersion(version string) bool
 SupportsClickHouseVersion reports whether the server version is one exact ClickHouse patch build admitted by this profile.
 
 <a name="ManagedProfileContract.SupportsPostgresVersion"></a>
-### func \(ManagedProfileContract\) [SupportsPostgresVersion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L363>)
+### func \(ManagedProfileContract\) [SupportsPostgresVersion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L367>)
 
 ```go
 func (c ManagedProfileContract) SupportsPostgresVersion(major int) bool
@@ -1145,7 +1150,7 @@ func (c ManagedProfileContract) SupportsPostgresVersion(major int) bool
 
 
 <a name="ManagedProfileContract.ValidatePromotion"></a>
-### func \(ManagedProfileContract\) [ValidatePromotion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L178>)
+### func \(ManagedProfileContract\) [ValidatePromotion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L181>)
 
 ```go
 func (c ManagedProfileContract) ValidatePromotion() error
@@ -1166,8 +1171,49 @@ type ManagedProfileGate struct {
 }
 ```
 
+<a name="ManagedSchemaBaselinePayload"></a>
+## type [ManagedSchemaBaselinePayload](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L181-L184>)
+
+ManagedSchemaBaselinePayload is the exact source\-schema state advanced with one authoritative checkpoint. Its canonical encoding and fingerprint are bound into delivery/publication manifests before external I/O.
+
+```go
+type ManagedSchemaBaselinePayload struct {
+    SourceLineageID string   `json:"source_lineage_id"`
+    Schemas         []Schema `json:"schemas"`
+}
+```
+
+<a name="NewManagedSchemaBaselinePayload"></a>
+### func [NewManagedSchemaBaselinePayload](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L189>)
+
+```go
+func NewManagedSchemaBaselinePayload(sourceLineageID string, schemas []Schema) (ManagedSchemaBaselinePayload, error)
+```
+
+NewManagedSchemaBaselinePayload canonicalizes one transaction's source schemas. Duplicate relation identities collapse to the greatest observed schema version and relation order is deterministic.
+
+<a name="ManagedSchemaBaselinePayload.Canonical"></a>
+### func \(ManagedSchemaBaselinePayload\) [Canonical](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L220>)
+
+```go
+func (p ManagedSchemaBaselinePayload) Canonical() ([]byte, string, error)
+```
+
+Canonical returns the immutable JSON payload and lowercase SHA\-256 identity.
+
+<a name="ManagedSchemaBaselineStore"></a>
+## type [ManagedSchemaBaselineStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L252-L254>)
+
+ManagedSchemaBaselineStore is the PostgreSQL\-authoritative managed decoder baseline read contract. Advancement is available only through the internal transaction\-scoped upsert helper owned by checkpoint finalizers.
+
+```go
+type ManagedSchemaBaselineStore interface {
+    Load(context.Context, RunFence, string) ([]Schema, error)
+}
+```
+
 <a name="ManagedSnowflakeVersionProvider"></a>
-## type [ManagedSnowflakeVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L359-L361>)
+## type [ManagedSnowflakeVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L363-L365>)
 
 ManagedSnowflakeVersionProvider exposes the exact CURRENT\_VERSION\(\) value admitted by the constrained Snowflake SQL destination during Open.
 
@@ -1189,7 +1235,7 @@ type ManagedSourceResourceCleaner interface {
 ```
 
 <a name="ManagedSourceSchemaValidator"></a>
-## type [ManagedSourceSchemaValidator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L341-L343>)
+## type [ManagedSourceSchemaValidator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L345-L347>)
 
 ManagedSourceSchemaValidator lets a named destination compare a live source catalog schema with its immutable destination contract before reading WAL.
 
@@ -1200,20 +1246,21 @@ type ManagedSourceSchemaValidator interface {
 ```
 
 <a name="ManagedTransactionDestination"></a>
-## type [ManagedTransactionDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L154-L158>)
+## type [ManagedTransactionDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L156-L161>)
 
-ManagedTransactionDestination is the full\-transaction extension used by named managed profiles. Validation runs immediately before a new control\-plane attempt is prepared, but never blocks adoption of an already committed target marker. Transactional targets commit all fragments with the marker; append\-only targets insert ordered, replay\-convergent fragments and write the marker last.
+ManagedTransactionDestination is the full\-transaction extension used by managed execution. Initialization establishes and verifies destination receipt authority before bootstrap or CDC I/O. Validation runs immediately before a new control\-plane attempt is prepared, but never blocks adoption of an already committed target marker. Transactional targets commit all fragments with the marker; append\-only targets insert ordered, replay\-convergent fragments and write the marker last.
 
 ```go
 type ManagedTransactionDestination interface {
     ManagedDestination
+    InitializeManagedDelivery(context.Context) error
     ValidateTransaction(context.Context, SourceTransaction) error
     ApplyTransaction(context.Context, DeliveryIntent, SourceTransaction) (DeliveryEvidence, error)
 }
 ```
 
 <a name="ManagedTransactionPreparer"></a>
-## type [ManagedTransactionPreparer](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L171-L173>)
+## type [ManagedTransactionPreparer](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L174-L176>)
 
 ManagedTransactionPreparer is an optional deep interface implemented by managed destinations that can validate and retain one bounded transaction plan before PostgreSQL persists the external attempt.
 
@@ -1276,7 +1323,7 @@ type OutboxStore interface {
 ```
 
 <a name="PreparedManagedTransaction"></a>
-## type [PreparedManagedTransaction](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L164-L166>)
+## type [PreparedManagedTransaction](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L167-L169>)
 
 PreparedManagedTransaction is a bounded, validated destination operation. The implementation hides destination\-specific planning behind one Apply method so the coordinator does not ask an adapter to materialize a full transaction twice around the durable attempt boundary.
 
@@ -1389,14 +1436,23 @@ type Schema struct {
 }
 ```
 
-<a name="DecodeManagedSchemaBaselines"></a>
-### func [DecodeManagedSchemaBaselines](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L224>)
+<a name="DecodeManagedSchemaBaselineOption"></a>
+### func [DecodeManagedSchemaBaselineOption](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L262>)
 
 ```go
-func DecodeManagedSchemaBaselines(raw string) ([]Schema, error)
+func DecodeManagedSchemaBaselineOption(raw string) ([]Schema, error)
 ```
 
-DecodeManagedSchemaBaselines validates a checkpoint baseline encoding.
+DecodeManagedSchemaBaselineOption validates the runner\-to\-decoder snapshot.
+
+<a name="SourceTransactionSchemas"></a>
+### func [SourceTransactionSchemas](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L235>)
+
+```go
+func SourceTransactionSchemas(transaction SourceTransaction) []Schema
+```
+
+SourceTransactionSchemas extracts exact source relation schemas before any destination projection filters or renames them.
 
 <a name="SlotDropper"></a>
 ## type [SlotDropper](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L145-L147>)
@@ -1425,7 +1481,7 @@ type Source interface {
 ```
 
 <a name="SourceFlushEvidence"></a>
-## type [SourceFlushEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L275-L277>)
+## type [SourceFlushEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L330-L332>)
 
 SourceFlushEvidence is the source PostgreSQL position observed after a standby\-status update, not merely an in\-process scheduling acknowledgement.
 
@@ -1531,7 +1587,7 @@ type TableWriteSemantics struct {
 ```
 
 <a name="TransactionFragment"></a>
-## type [TransactionFragment](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L252-L255>)
+## type [TransactionFragment](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L307-L310>)
 
 TransactionFragment is a deterministic, ordered table/schema fragment of a committed source transaction.
 
@@ -1543,7 +1599,7 @@ type TransactionFragment struct {
 ```
 
 <a name="TransactionalSource"></a>
-## type [TransactionalSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L260-L263>)
+## type [TransactionalSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L315-L318>)
 
 TransactionalSource is an optional source contract for managed execution. Legacy Source.Read remains available for compatibility, but managed PostgreSQL execution consumes complete transactions through this interface.
 

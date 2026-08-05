@@ -31,9 +31,11 @@ type StreamRunnerConfig struct {
 	DefaultParallelism  int
 	ResolveStaging      bool
 	DDLExecutions       stream.DDLExecutionStore
+	DDLPolicyDefaults   *flow.DDLPolicyDefaults
 	TraceSink           stream.TraceSink
 	RunFence            *authority.RunFence
 	DeliveryCoordinator stream.ManagedDeliveryCoordinator
+	SchemaBaselines     connector.ManagedSchemaBaselineStore
 	ArtifactLog         stream.ManagedArtifactLog
 }
 
@@ -106,12 +108,13 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 		return stream.Runner{}, fmt.Errorf("streaming requires a non-empty flow id for durable checkpoints")
 	}
 
-	requireDDLExecution := f.Config.DDL.AutoApply != nil && *f.Config.DDL.AutoApply
+	ddlPolicy := flow.ResolveDDLPolicy(f.Config.DDL, cfg.DDLPolicyDefaults)
+	requireDDLExecution := ddlPolicy.AutoApply
 	if f.Config.AckPolicy == stream.AckPolicyMaterialized && !connector.IsManagedSourceSpec(sourceSpec) {
 		return stream.Runner{}, fmt.Errorf("ack_policy=materialized requires managed PostgreSQL transactional execution")
 	}
 	if connector.IsManagedSourceSpec(sourceSpec) {
-		if err := validateManagedAdmission(f, source, sourceSpec, clonedDestinations, cfg); err != nil {
+		if err := validateManagedAdmission(f, source, sourceSpec, clonedDestinations, cfg, ddlPolicy); err != nil {
 			return stream.Runner{}, err
 		}
 	}
@@ -159,6 +162,7 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 		TraceSink:           cfg.TraceSink,
 		RunFence:            cfg.RunFence,
 		DeliveryCoordinator: cfg.DeliveryCoordinator,
+		SchemaBaselines:     cfg.SchemaBaselines,
 		ArtifactLog:         cfg.ArtifactLog,
 	}, nil
 }

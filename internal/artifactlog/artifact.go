@@ -523,10 +523,10 @@ func canonicalizeSchema(lineage string, schema connector.Schema) (connector.Sche
 	reservedNames := make(map[string]struct{}, len(canonicalSystemFields))
 	for _, field := range canonicalSystemFields {
 		seen[field.ID] = field.Name
-		reservedNames[strings.ToLower(field.Name)] = struct{}{}
+		reservedNames[field.Name] = struct{}{}
 	}
 	for index, column := range result.Columns {
-		if _, reserved := reservedNames[strings.ToLower(column.Name)]; reserved {
+		if _, reserved := reservedNames[column.Name]; reserved {
 			return connector.Schema{}, nil, "", fmt.Errorf("column %q collides with canonical envelope", column.Name)
 		}
 		relationID, err := strconv.ParseUint(column.TypeMetadata["source_relation_id"], 10, 32)
@@ -580,10 +580,10 @@ func canonicalizeSchemaV2(lineage, mappingFingerprint string, schema connector.S
 	reservedNames := make(map[string]struct{}, len(system))
 	for _, field := range system {
 		seen[field.ID] = field.Name
-		reservedNames[strings.ToLower(field.Name)] = struct{}{}
+		reservedNames[field.Name] = struct{}{}
 	}
 	for index, column := range result.Columns {
-		if _, reserved := reservedNames[strings.ToLower(column.Name)]; reserved {
+		if _, reserved := reservedNames[column.Name]; reserved {
 			return connector.Schema{}, nil, "", fmt.Errorf("column %q collides with canonical envelope", column.Name)
 		}
 		synthetic := strings.TrimSpace(column.TypeMetadata["wallaby.synthetic_identity"])

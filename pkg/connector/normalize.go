@@ -258,14 +258,10 @@ func NormalizeKeyForSchema(schema Schema, key map[string]any) (map[string]any, e
 			continue
 		}
 		cols[col.Name] = col
-		cols[strings.ToLower(col.Name)] = col
 	}
 	out := make(map[string]any, len(key))
 	for name, value := range key {
 		col, ok := cols[name]
-		if !ok {
-			col, ok = cols[strings.ToLower(name)]
-		}
 		if ok {
 			normalized, err := normalizePostgresValueWithColumn(col, value)
 			if err != nil {
