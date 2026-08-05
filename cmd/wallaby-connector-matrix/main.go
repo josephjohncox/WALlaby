@@ -62,6 +62,7 @@ func run() error {
 		connector.PostgresToClickHouseAppendV1Profile(),
 		connector.PostgresToSnowflakeSQLV1Profile(),
 		connector.PostgresToSnowflakeStagedAppendV1Profile(),
+		connector.PostgresToSnowflakeStreamingRestAppendV1Profile(),
 	}
 	fmt.Println("| Profile | Status | Source | Destination | PostgreSQL | ClickHouse | Snowflake version | Deployment | Pairing | Ack | Sinks | Delivery |")
 	fmt.Println("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")

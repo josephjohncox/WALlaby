@@ -335,7 +335,8 @@ func RecordSnowflakeQueryID(ctx context.Context, queryID string) {
 func boundedSnowflakeOperation(operation string) string {
 	switch operation {
 	case "dml", "receipt", "reconcile", "admission", "transaction",
-		"stage", "stage_put", "copy", "verify", "cleanup":
+		"stage", "stage_put", "copy", "verify", "cleanup",
+		"channel", "append", "observe":
 		return operation
 	default:
 		return "other"
