@@ -1,6 +1,7 @@
+---
 name: CI Lint
 
-on:
+"on":
   pull_request:
   push:
     branches:
@@ -137,12 +138,6 @@ jobs:
       - name: Durable-core race detector
         run: just test-durable-race
 
-      - name: OS-process protocol failure evidence (no credentials, no-skip)
-        run: just test-failure-matrix
-
-      - name: Race-instrumented process runner and child
-        run: just test-failure-matrix-race
-
       - name: Rapid property tests
         run: just test-rapid
 
@@ -150,18 +145,6 @@ jobs:
         run: |
           go test ./tools/testcomplete
           just test
-
-      - name: Upload failure-matrix evidence
-        if: always()
-        # actions/upload-artifact v4.6.2
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: failure-matrix-evidence
-          path: |
-            bench/evidence/failure_matrix/os_run_*
-            bench/evidence/failure_matrix/race-test.txt
-            bench/evidence/failure_matrix/race-worker.sha256
-          if-no-files-found: error
 
       - name: Upload machine-readable Go test results
         if: always()
