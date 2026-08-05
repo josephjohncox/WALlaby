@@ -589,7 +589,7 @@ bench-down:
     docker compose -f bench/docker-compose.yml down
 
 bench: bench-up
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-bench -profile "{{ profile }}" -targets "{{ targets }}" -scenario "{{ scenario }}"
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-bench --profile "{{ profile }}" --targets "{{ targets }}" --scenario "{{ scenario }}"
 
 bench-ddl:
     SCENARIO=ddl just bench
@@ -602,8 +602,8 @@ benchmark-profile:
 
 benchstat:
     test -n "{{ baseline }}" && test -n "{{ candidate }}" || { echo "BASELINE and CANDIDATE are required" >&2; exit 2; }
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-bench-summary -dir "{{ baseline }}" -format benchstat -latest=false -output "{{ baseline }}/benchstat.txt"
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-bench-summary -dir "{{ candidate }}" -format benchstat -latest=false -output "{{ candidate }}/benchstat.txt"
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-bench-summary --dir "{{ baseline }}" --format benchstat --latest=false --output "{{ baseline }}/benchstat.txt"
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./cmd/wallaby-bench-summary --dir "{{ candidate }}" --format benchstat --latest=false --output "{{ candidate }}/benchstat.txt"
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run golang.org/x/perf/cmd/benchstat@latest "{{ baseline }}/benchstat.txt" "{{ candidate }}/benchstat.txt"
 
 tla: tla-flow tla-state tla-fanout tla-ddl-execution tla-lifecycle-generation tla-snapshot-transition tla-managed-durability tla-managed-postgres-delivery tla-liveness tla-witness

@@ -27,6 +27,7 @@ import (
 	"github.com/josephjohncox/wallaby/connectors/destinations/kafka"
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
+	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/internal/ddl"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -179,7 +180,7 @@ func newWallabyBenchCommand() *cobra.Command {
 			return runWallabyBench(cmd)
 		},
 	}
-	command.Flags().String("profile", "small", "profile: small|medium|large")
+	command.Flags().String("profile", "small", "profile: ci|small|medium|large")
 	command.Flags().String("targets", "all", "targets: all|kafka,postgres,clickhouse")
 	command.Flags().String("scenario", "base", "scenario: base|ddl")
 	command.Flags().String("pg-dsn", defaultPGDSN, "postgres DSN")
@@ -362,6 +363,16 @@ func runBench(opts benchOptions) error {
 
 func resolveProfile(name string) (profile, error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ci":
+		return profile{
+			Name:         "ci",
+			InitialRows:  250,
+			Operations:   1000,
+			Writers:      2,
+			BatchSize:    50,
+			BatchTimeout: 100 * time.Millisecond,
+			EmptyReads:   10,
+		}, nil
 	case "small":
 		return profile{
 			Name:         "small",
@@ -808,6 +819,12 @@ func runTarget(ctx context.Context, target string, prof profile, scenario string
 		}
 	}
 
+	checkpointStore, err := checkpoint.NewSQLiteStore(ctx, ":memory:")
+	if err != nil {
+		return benchResult{}, fmt.Errorf("open benchmark checkpoint store: %w", err)
+	}
+	defer func() { _ = checkpointStore.Close() }()
+
 	stats := &benchStats{}
 	metricsDest := &metricsDestination{inner: dest, stats: stats, rowSizes: rowSizes}
 
@@ -815,6 +832,8 @@ func runTarget(ctx context.Context, target string, prof profile, scenario string
 		Source:        &pgsource.Source{},
 		SourceSpec:    sourceSpec,
 		Destinations:  []stream.DestinationConfig{{Spec: destSpec, Dest: metricsDest}},
+		Checkpoints:   checkpointStore,
+		FlowID:        fmt.Sprintf("bench-%s-%s-%s", target, prof.Name, scenario),
 		MaxEmptyReads: prof.EmptyReads,
 		WireFormat:    connector.WireFormatArrow,
 	}

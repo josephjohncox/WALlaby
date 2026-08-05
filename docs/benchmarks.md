@@ -59,6 +59,7 @@ Default table sizes:
 
 Profiles control scale and concurrency:
 
+- `ci`: 250 seed rows, 1k ops, 2 writers (GitHub Actions harness validation only; not performance evidence)
 - `small`: 10k seed rows, 50k ops, 4 writers
 - `medium`: 50k seed rows, 250k ops, 8 writers
 - `large`: 200k seed rows, 1M ops, 16 writers
@@ -163,3 +164,7 @@ BASELINE=bench/results/external/debezium CANDIDATE=bench/results/run_<timestamp>
 ```
 
 Keep notes about versions, config, and hardware so we can reproduce results later.
+
+## GitHub Actions
+
+The `CI Evidence` workflow runs the `ci` profile against PostgreSQL, ClickHouse, and Kafka on pull requests and pushes to `main`. A weekly scheduled run uses the `small` profile. The workflow uploads JSON, CSV, and summary artifacts. Treat the `ci` profile as an executable harness check, not a comparative benchmark or regression baseline.

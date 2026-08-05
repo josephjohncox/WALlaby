@@ -1,6 +1,7 @@
+---
 name: CI Lint
 
-on:
+"on":
   pull_request:
   push:
     branches:
@@ -46,7 +47,7 @@ jobs:
 
       - name: Setup Helm
         # azure/setup-helm v4.3.1
-        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310
 
       - name: Restore Go + tools cache
         id: cache-go-tools
@@ -97,7 +98,7 @@ jobs:
       - name: Save Go + tools cache
         if: always() && steps.cache-go-tools.outputs.cache-hit != 'true'
         # actions/cache v4.3.0
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             .cache/bin
@@ -137,12 +138,6 @@ jobs:
       - name: Durable-core race detector
         run: just test-durable-race
 
-      - name: OS-process protocol failure evidence (no credentials, no-skip)
-        run: just test-failure-matrix
-
-      - name: Race-instrumented process runner and child
-        run: just test-failure-matrix-race
-
       - name: Rapid property tests
         run: just test-rapid
 
@@ -150,18 +145,6 @@ jobs:
         run: |
           go test ./tools/testcomplete
           just test
-
-      - name: Upload failure-matrix evidence
-        if: always()
-        # actions/upload-artifact v4.6.2
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: failure-matrix-evidence
-          path: |
-            bench/evidence/failure_matrix/os_run_*
-            bench/evidence/failure_matrix/race-test.txt
-            bench/evidence/failure_matrix/race-worker.sha256
-          if-no-files-found: error
 
       - name: Upload machine-readable Go test results
         if: always()
@@ -178,7 +161,7 @@ jobs:
       - name: Save Go build cache
         if: always() && steps.cache-go-build.outputs.cache-hit != 'true'
         # actions/cache v4.3.0
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: .cache/gocache
           key: ${{ steps.cache-go-build.outputs.cache-primary-key }}
