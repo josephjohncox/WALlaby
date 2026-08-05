@@ -599,6 +599,15 @@ func TestCLIIntegrationStreamPullAck(t *testing.T) {
 
 	dbName, dbDSN := createTempDatabase(t, ctx, adminPool, "wallaby_stream")
 	defer dropDatabase(t, adminPool, dbName)
+	migrationPool, err := pgxpool.New(ctx, dbDSN)
+	if err != nil {
+		t.Fatalf("connect stream migration pool: %v", err)
+	}
+	if err := pgstream.ApplyMigrations(ctx, migrationPool); err != nil {
+		migrationPool.Close()
+		t.Fatalf("migrate stream store: %v", err)
+	}
+	migrationPool.Close()
 
 	store, err := pgstream.NewStore(ctx, dbDSN)
 	if err != nil {

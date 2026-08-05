@@ -53,7 +53,7 @@ func NewPostgresStoreWithPool(ctx context.Context, pool *pgxpool.Pool) (*Postgre
 	if pool == nil {
 		return nil, errors.New("postgres control pool is required")
 	}
-	if err := runMigrations(ctx, pool); err != nil {
+	if err := ApplyMigrations(ctx, pool); err != nil {
 		return nil, err
 	}
 	return &PostgresStore{pool: pool}, nil

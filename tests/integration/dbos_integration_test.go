@@ -68,6 +68,9 @@ func TestDBOSIntegrationBackfill(t *testing.T) {
 		t.Fatalf("create table: %v", err)
 	}
 
+	if err := pgstream.ApplyMigrations(ctx, pool); err != nil {
+		t.Fatalf("migrate stream store: %v", err)
+	}
 	store, err := pgstream.NewStore(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open stream store: %v", err)

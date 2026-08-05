@@ -109,7 +109,7 @@ func NewBootstrapper(ctx context.Context, control *pgxpool.Pool, sourceDSN strin
 	if control == nil || source == nil || strings.TrimSpace(sourceDSN) == "" {
 		return nil, errors.New("control pool, source pool, and source DSN are required")
 	}
-	if err := runMigrations(ctx, control); err != nil {
+	if err := ApplyMigrations(ctx, control); err != nil {
 		return nil, err
 	}
 	return &Bootstrapper{control: control, source: source, dsn: sourceDSN, hooks: hooks}, nil

@@ -14,6 +14,7 @@ Package schemaregistry registers wire schemas with Confluent\-compatible, AWS Gl
 
 - [Constants](<#constants>)
 - [Variables](<#variables>)
+- [func ApplyMigrations\(ctx context.Context, pool \*pgxpool.Pool\) error](<#ApplyMigrations>)
 - [type Config](<#Config>)
   - [func ConfigFromOptions\(options map\[string\]string\) Config](<#ConfigFromOptions>)
 - [type Reference](<#Reference>)
@@ -58,6 +59,15 @@ const (
 ```go
 var ErrRegistryDisabled = errors.New("schema registry disabled")
 ```
+
+<a name="ApplyMigrations"></a>
+## func [ApplyMigrations](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/schemaregistry/migrations.go#L19>)
+
+```go
+func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool) error
+```
+
+ApplyMigrations explicitly prepares the PostgreSQL schema\-registry schema through the shared, checksummed public.wallaby\_control\_migrations ledger.
 
 <a name="Config"></a>
 ## type [Config](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/schemaregistry/config.go#L31-L46>)

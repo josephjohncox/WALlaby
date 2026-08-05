@@ -44,7 +44,7 @@ func TestAuthorityV2CatalogAndRepresentativeMutations(t *testing.T) {
 		"schema_versions", "ddl_events", "ddl_execution_attempts", "ddl_execution_receipts", "ddl_execution_manifests", "ddl_execution_run_attempts", "schema_publication_operations",
 		"destination_revisions", "delivery_manifests", "delivery_attempts", "delivery_attempt_evidence", "delivery_receipts", "source_ack_intents", "source_ack_receipts",
 		"source_bootstraps", "source_bootstrap_tasks", "snapshot_publication_receipts", "source_resources", "source_resource_operations", "snapshot_delivery_attempts", "snapshot_delivery_evidence", "snapshot_delivery_receipts",
-		"canonical_schemas", "artifact_streams", "artifact_objects", "artifact_upload_attempts", "artifact_publications", "artifact_publication_objects", "artifact_deliveries", "artifact_quota_accounts", "artifact_quota_reservations", "artifact_gc_claims", "artifact_delivery_attempts", "artifact_delivery_receipts",
+		"canonical_schemas", "artifact_streams", "artifact_objects", "artifact_upload_attempts", "artifact_publications", "artifact_publication_objects", "artifact_deliveries", "artifact_quota_accounts", "artifact_quota_reservations", "artifact_gc_claims", "artifact_delivery_attempts", "artifact_delivery_receipts", "artifact_consumer_checkpoints",
 	}
 	for _, table := range expectedTables {
 		var count int

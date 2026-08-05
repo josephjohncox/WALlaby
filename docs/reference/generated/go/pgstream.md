@@ -13,6 +13,7 @@ Package pgstream stores pull\-based change streams and consumer acknowledgements
 ## Index
 
 - [Constants](<#constants>)
+- [func ApplyMigrations\(ctx context.Context, pool \*pgxpool.Pool\) error](<#ApplyMigrations>)
 - [type Message](<#Message>)
 - [type ReplayOptions](<#ReplayOptions>)
 - [type Store](<#Store>)
@@ -35,6 +36,15 @@ const (
     DeliveryStatusAcked     = "acked"
 )
 ```
+
+<a name="ApplyMigrations"></a>
+## func [ApplyMigrations](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/pgstream/migrations.go#L19>)
+
+```go
+func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool) error
+```
+
+ApplyMigrations explicitly prepares the pgstream schema through the shared, checksummed public.wallaby\_control\_migrations ledger.
 
 <a name="Message"></a>
 ## type [Message](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/pgstream/store.go#L21-L33>)

@@ -20,7 +20,7 @@ func (c *retryingArtifactCommitter) Commit(context.Context, artifactlog.CommitRe
 	return artifactlog.CommitResult{}, c.err
 }
 
-func (c *retryingArtifactCommitter) Reconcile(context.Context, artifactlog.ReconcileRequest) (artifactlog.ReconcileResult, error) {
+func (c *retryingArtifactCommitter) Reconcile(context.Context, artifactlog.CommitRequest) (artifactlog.ReconcileResult, error) {
 	c.reconcileCalls++
 	return artifactlog.ReconcileResult{}, c.err
 }

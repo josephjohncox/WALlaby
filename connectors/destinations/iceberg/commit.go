@@ -264,7 +264,7 @@ func (c *Committer) commitGroup(ctx context.Context, request artifactlog.CommitR
 	return "", fmt.Errorf("%w: projection group %s exceeded %d retries", ErrCatalogConflict, group.id, c.config.MaxCommitRetries)
 }
 
-func (c *Committer) Reconcile(ctx context.Context, request artifactlog.ReconcileRequest) (result artifactlog.ReconcileResult, retErr error) {
+func (c *Committer) Reconcile(ctx context.Context, request artifactlog.CommitRequest) (result artifactlog.ReconcileResult, retErr error) {
 	ctx, finish := telemetry.StartIcebergConsumerSpan(ctx, "reconcile", request.FlowID, request.LogicalBatchID, request.CommitID)
 	defer func() { finish(retErr) }()
 	if err := validateRequest(request); err != nil {

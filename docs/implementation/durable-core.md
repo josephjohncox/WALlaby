@@ -55,7 +55,7 @@ Epoch-based mark/sweep handles uploaded/verified unpublished orphans and rooted 
 
 ## PostgreSQL migrations
 
-`internal/controlstore` owns the worker's shared control pool. All changed migration domains delegate to one checksum-verifying coordinator, import legacy workflow/checkpoint/registry history, and apply SQL plus history in one transaction under `wallaby_control_migrations`. Runtime pools set the `wallaby.authority_protocol=v2` session capability; workflow, checkpoint, registry, delivery, bootstrap, and artifact-log mutation tables have exact enabled v2 trigger coverage after the quiesced cutover. A separately ledgered controlplane repair promotes historical registry-only 006/007 histories, and central startup verifies required tables, columns, constraints, indexes, and triggers before workers start.
+`internal/controlstore` owns the worker's shared control pool. Every shared control-plane migration domain delegates to one ordered, checksum-verifying coordinator and records SQL plus history atomically under the sole authoritative ledger, `public.wallaby_control_migrations`. Old workflow/checkpoint/registry/pgstream/schema-registry ledgers and any conflicting `wallaby*_migrations` relation fail startup explicitly; they are never discovered, imported, copied, or dual-written. Runtime pools set the `wallaby.authority_protocol=v2` session capability; workflow, checkpoint, registry, delivery, bootstrap, and artifact-log mutation tables have exact enabled v2 trigger coverage after the quiesced cutover. Central startup migrates pgstream and the PostgreSQL schema registry after the core domains and before opening components. Their constructors only verify the authoritative checksummed history and required table shape; package users must call the explicit current `ApplyMigrations` API before `NewStore` or a PostgreSQL `NewRegistry`.
 
 - `internal/workflow/migrations/006_authority_fences.sql`
   - flow incarnations, execution acquisitions, producer leases, and work claims;
@@ -74,6 +74,10 @@ Epoch-based mark/sweep handles uploaded/verified unpublished orphans and rooted 
   - streams, quotas, objects, upload attempts, GC claims, publications, and publication objects.
 - `internal/artifactlog/migrations/002_consumers.sql`, `003_authority_protocol_v2.sql`, and `004_materialized_publication.sql`
   - artifact delivery queues, attempts, and receipts; deterministic logical/shard identity, publication sequencing, ordered barriers, upload-attempt state, GC epochs/claim kinds, and rooted-retention marks; authority-v2 triggers cover every mutable artifact table.
+- `internal/artifactlog/migrations/007_current_catalog_attempt_identity.sql`
+  - fail-closed canonical catalog commit and logical-batch identities, one durable attempt per publication, exact receipt linkage, and no legacy attempt adoption or inferred backfill. Startup verifies the exact attempt, receipt, and consumer-checkpoint column sets, types, nullability, defaults, identity/generated state, and authority triggers. A single manifest covers all 22 current PK, FK, unique, sequence/projection, and canonical-identity constraints plus all 12 explicit and backing indexes introduced by artifact migrations 002, 005, 006, and 007, including exact definitions, ordered keys, sort options, btree method, predicate/expression form, readiness, and validity. Missing, extra-key, nullable, defaulted, weakened, or otherwise altered state fails restart without migration replay or runtime repair; incompatible consumer state must be recreated.
+- `pkg/pgstream/migrations/*.sql` and `pkg/schemaregistry/migrations/*.sql`
+  - embedded package schemas registered as the ordered `pgstream` and `schema_registry` domains in the authoritative control ledger; constructors never create an independent ledger or auto-migrate.
 
 ## Runtime admission
 

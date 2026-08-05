@@ -70,7 +70,7 @@ func NewPostgresEngineWithPool(ctx context.Context, pool *pgxpool.Pool) (*Postgr
 	if pool == nil {
 		return nil, errors.New("postgres control pool is required")
 	}
-	if err := runMigrations(ctx, pool); err != nil {
+	if err := ApplyMigrations(ctx, pool); err != nil {
 		return nil, err
 	}
 	lockCfg := pool.Config().Copy()

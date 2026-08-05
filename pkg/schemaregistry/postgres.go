@@ -22,7 +22,7 @@ func newPostgresRegistry(ctx context.Context, dsn string) (*postgresRegistry, er
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres registry: %w", err)
 	}
-	if err := runMigrations(ctx, pool); err != nil {
+	if err := verifyPreparedSchema(ctx, pool); err != nil {
 		pool.Close()
 		return nil, err
 	}

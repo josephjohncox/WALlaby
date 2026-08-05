@@ -120,7 +120,7 @@ func (s *metadataArtifactStore) Bucket() string { return "metadata-memory" }
 func (s *metadataArtifactStore) PutImmutable(_ context.Context, key string, body []byte, checksum, projection, mapping string) (artifactlog.ObjectEvidence, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if projection != artifactlog.ProjectionIDV2 || len(mapping) != 64 {
+	if !((projection == artifactlog.ProjectionIDV2 && len(mapping) == 64) || (projection == artifactlog.ProjectionID && mapping == "")) {
 		return artifactlog.ObjectEvidence{}, errors.New("invalid upload metadata")
 	}
 	if existing, ok := s.objects[key]; ok {
@@ -165,7 +165,7 @@ func (c *countingArtifactCommitter) Commit(context.Context, artifactlog.CommitRe
 	c.commits++
 	return artifactlog.CommitResult{}, errors.New("unexpected catalog commit")
 }
-func (c *countingArtifactCommitter) Reconcile(context.Context, artifactlog.ReconcileRequest) (artifactlog.ReconcileResult, error) {
+func (c *countingArtifactCommitter) Reconcile(context.Context, artifactlog.CommitRequest) (artifactlog.ReconcileResult, error) {
 	c.reconciles++
 	return artifactlog.ReconcileResult{}, errors.New("unexpected catalog reconcile")
 }
@@ -295,6 +295,139 @@ func TestMappedArtifactCrashRetryPreservesMetadataAndPublicationIdentity(t *test
 			}
 		})
 	}
+}
+
+func TestArtifactCatalogAttemptNotAppliedRetryAndConflictStaySingleIdentity(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	databasePool, databaseCleanup := newDeliveryMigrationDatabase(t, ctx, dsn, "artifact_attempt_recovery")
+	dsn = isolatedDatabaseDSN(t, ctx, databasePool, dsn)
+	defer databaseCleanup()
+	engine, err := workflow.NewPostgresEngine(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	pool, err := newAuthorityTestPool(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	authorityStore, err := authority.NewPostgresStore(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointStore, err := checkpoint.NewPostgresStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointStore.Close()
+	if _, err := delivery.NewCoordinator(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	flowID := "artifact-attempt-current-" + uuid.NewString()
+	defer cleanupAuthorityTest(context.Background(), pool, flowID)
+	flowDef := flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}
+	if _, err := engine.Create(ctx, flowDef); err != nil {
+		t.Fatal(err)
+	}
+	_, control, err := engine.PlanStart(ctx, flowID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := authorityStore.AcquireProducer(ctx, flowID, "artifact-worker", "test", control.Generation, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &metadataArtifactStore{objects: map[string]metadataArtifactObject{}}
+	publisher, err := artifactlog.NewPublisher(ctx, pool, store, artifactlog.StreamConfig{ProjectionID: artifactlog.ProjectionID, HardRetainedBytes: 128 << 20, BacklogCountHigh: 100, BacklogBytesHigh: 128 << 20, BacklogAgeHigh: time.Hour, Consumers: []string{"ice-current"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := publisher.Publish(ctx, fence, artifactSourceTransaction())
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry := &catalogAttemptTestCommitter{failCommit: true}
+	consumer, err := artifactlog.NewConsumer(pool, retry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := consumer.ConsumeNext(ctx, fence, "ice-current"); err == nil {
+		t.Fatal("catalog attempt did not fail at injected commit boundary")
+	}
+	if consumed, err := consumer.ConsumeNext(ctx, fence, "ice-current"); err != nil || !consumed {
+		t.Fatalf("not-applied recovery consumed/error=%t/%v", consumed, err)
+	}
+	var attempts, receipts int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM artifact_delivery_attempts WHERE publication_id=$1),(SELECT count(*) FROM artifact_delivery_receipts WHERE publication_id=$1)`, first.ID).Scan(&attempts, &receipts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 || receipts != 1 || retry.reconciles != 1 || retry.commits != 2 {
+		t.Fatalf("retry attempt/receipt/reconcile/commit=%d/%d/%d/%d", attempts, receipts, retry.reconciles, retry.commits)
+	}
+	secondTransaction := artifactTransactionAt(101, "0/E0", "0/E8", "0/F0", "conflict")
+	second, err := publisher.Publish(ctx, fence, secondTransaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := &catalogAttemptTestCommitter{}
+	crashing, err := artifactlog.NewConsumer(pool, committed, artifactlog.WithConsumerHooks(artifactlog.ConsumerHooks{Reach: func(_ context.Context, boundary string) error {
+		if boundary == "after_catalog_commit" {
+			return errors.New("injected crash after catalog commit")
+		}
+		return nil
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := crashing.ConsumeNext(ctx, fence, "ice-current"); err == nil {
+		t.Fatal("catalog commit crash boundary did not fire")
+	}
+	conflicting := &catalogAttemptTestCommitter{conflict: true}
+	recovery, err := artifactlog.NewConsumer(pool, conflicting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recovery.ConsumeNext(ctx, fence, "ice-current"); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("catalog reconciliation conflict error=%v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM artifact_delivery_attempts WHERE publication_id=$1),(SELECT count(*) FROM artifact_delivery_receipts WHERE publication_id=$1)`, second.ID).Scan(&attempts, &receipts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 || receipts != 0 {
+		t.Fatalf("conflicting attempt/receipt=%d/%d", attempts, receipts)
+	}
+}
+
+type catalogAttemptTestCommitter struct {
+	commits, reconciles  int
+	failCommit, conflict bool
+}
+
+func (c *catalogAttemptTestCommitter) Commit(_ context.Context, request artifactlog.CommitRequest) (artifactlog.CommitResult, error) {
+	c.commits++
+	if c.failCommit {
+		c.failCommit = false
+		return artifactlog.CommitResult{}, errors.New("injected catalog commit failure")
+	}
+	return catalogAttemptResult(request), nil
+}
+func (c *catalogAttemptTestCommitter) Reconcile(_ context.Context, request artifactlog.CommitRequest) (artifactlog.ReconcileResult, error) {
+	c.reconciles++
+	if c.conflict {
+		result := catalogAttemptResult(request)
+		result.ManifestSHA256 = "conflicting-manifest"
+		return artifactlog.ReconcileResult{Disposition: artifactlog.CommitApplied, Commit: result}, nil
+	}
+	return artifactlog.ReconcileResult{Disposition: artifactlog.CommitNotApplied}, nil
+}
+func catalogAttemptResult(request artifactlog.CommitRequest) artifactlog.CommitResult {
+	return artifactlog.CommitResult{SnapshotID: "snapshot-" + request.PublicationID.String(), SnapshotIDs: map[string]string{"test": "snapshot-" + request.PublicationID.String()}, ManifestSHA256: request.ManifestSHA256, CommitID: request.CommitID, LogicalBatchID: request.LogicalBatchID}
 }
 
 type memoryMappedArtifactStore struct{}
@@ -536,12 +669,15 @@ func TestCanonicalArtifactPublicationRecovery(t *testing.T) {
 	if consumed {
 		t.Fatal("artifact consumer replayed an already receipted publication")
 	}
-	var consumerReceipts int
+	var consumerReceipts, consumerAttempts int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM artifact_delivery_attempts WHERE flow_incarnation_id=$1 AND publication_id=$2`, fence.FlowIncarnationID, publication.ID).Scan(&consumerAttempts); err != nil {
+		t.Fatal(err)
+	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM artifact_delivery_receipts WHERE flow_incarnation_id=$1 AND publication_id=$2`, fence.FlowIncarnationID, publication.ID).Scan(&consumerReceipts); err != nil {
 		t.Fatal(err)
 	}
-	if consumerReceipts != 1 {
-		t.Fatalf("artifact consumer receipts=%d, want 1", consumerReceipts)
+	if consumerAttempts != 1 || consumerReceipts != 1 {
+		t.Fatalf("artifact consumer attempts/receipts=%d/%d, want 1/1", consumerAttempts, consumerReceipts)
 	}
 	var consumerSequence int64
 	var consumerPosition, consumerCommitID string
@@ -602,7 +738,7 @@ func (c *recordingAppendCatalog) Commit(_ context.Context, request artifactlog.C
 	return c.result(request), nil
 }
 
-func (c *recordingAppendCatalog) Reconcile(_ context.Context, request artifactlog.ReconcileRequest) (artifactlog.ReconcileResult, error) {
+func (c *recordingAppendCatalog) Reconcile(_ context.Context, request artifactlog.CommitRequest) (artifactlog.ReconcileResult, error) {
 	return artifactlog.ReconcileResult{Disposition: artifactlog.CommitApplied, Commit: c.result(request)}, nil
 }
 

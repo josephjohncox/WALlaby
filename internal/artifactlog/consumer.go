@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -84,9 +83,8 @@ func (c *Consumer) reach(ctx context.Context, boundary string) error {
 
 // ConsumeNext processes one publication in PostgreSQL sequence order. Attempts
 // are persisted before catalog I/O; ambiguous commits reconcile by exact
-// publication/content identity or fail closed. The optional legacy table value
-// is ignored; target mapping belongs behind ChangelogCommitter.
-func (c *Consumer) ConsumeNext(ctx context.Context, fence authority.RunFence, consumerRevisionID string, _ ...string) (bool, error) {
+// publication/content identity or fail closed.
+func (c *Consumer) ConsumeNext(ctx context.Context, fence authority.RunFence, consumerRevisionID string) (bool, error) {
 	publication, err := c.loadNext(ctx, fence, consumerRevisionID)
 	if err != nil {
 		return false, err
@@ -135,11 +133,15 @@ func (c *Consumer) ConsumeNext(ctx context.Context, fence authority.RunFence, co
 		}
 	}
 
-	attemptID, attemptedAt, err := c.prepare(ctx, fence, publication.request)
-	if err != nil {
-		return false, err
+	attemptID := publication.attemptID
+	if !publication.hasAttempt {
+		var attemptedAt time.Time
+		attemptID, attemptedAt, err = c.prepare(ctx, fence, publication.request)
+		if err != nil {
+			return false, err
+		}
+		publication.request.AttemptedAt = attemptedAt
 	}
-	publication.request.AttemptedAt = attemptedAt
 	commit, err := c.committer.Commit(ctx, publication.request)
 	if err != nil {
 		telemetry.RecordArtifactConsumerOutcome(ctx, "commit_failed")
@@ -369,16 +371,7 @@ LIMIT 1`, fence.FlowIncarnationID, consumerRevisionID, result.request.Publicatio
 	}
 	if result.hasAttempt {
 		expected := DeterministicCommitID(result.request.FlowIncarnationID, result.request.ConsumerRevisionID, result.request.PublicationID, result.request.ManifestSHA256)
-		if strings.HasPrefix(result.request.CommitID, "legacy:") && storedManifestSHA256 == "" && storedLogicalBatchID == "" {
-			if _, err := tx.Exec(ctx, `
-UPDATE artifact_delivery_attempts
-SET commit_id=$2,manifest_sha256=$3,logical_batch_id=$4
-WHERE attempt_id=$1 AND commit_id LIKE 'legacy:%' AND manifest_sha256='' AND logical_batch_id=''`,
-				result.attemptID, expected, result.request.ManifestSHA256, result.request.LogicalBatchID); err != nil {
-				return result, fmt.Errorf("upgrade legacy catalog attempt identity: %w", err)
-			}
-			result.request.CommitID = expected
-		} else if result.request.CommitID != expected || storedManifestSHA256 != result.request.ManifestSHA256 || storedLogicalBatchID != result.request.LogicalBatchID {
+		if result.request.CommitID != expected || storedManifestSHA256 != result.request.ManifestSHA256 || storedLogicalBatchID != result.request.LogicalBatchID {
 			return result, fmt.Errorf("%w: prepared catalog commit identity differs", connector.ErrDeliveryConflict)
 		}
 	}

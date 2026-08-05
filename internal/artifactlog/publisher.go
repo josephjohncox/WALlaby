@@ -143,7 +143,7 @@ func NewPublisher(ctx context.Context, pool *pgxpool.Pool, objects ObjectStore, 
 	}
 	sort.Strings(config.Consumers)
 	consumerFingerprint := consumerRevisionFingerprint(config.Consumers)
-	if err := runMigrations(ctx, pool); err != nil {
+	if err := ApplyMigrations(ctx, pool); err != nil {
 		return nil, err
 	}
 	publisher := &Publisher{

@@ -129,7 +129,7 @@ func TestCanonicalArtifactBarrierOnlyDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	consumed, err := consumer.ConsumeNext(deps.ctx, fence, "destination-v1", "public.artifact_events")
+	consumed, err := consumer.ConsumeNext(deps.ctx, fence, "destination-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -835,7 +835,7 @@ LIMIT 1`, fence.FlowIncarnationID, consumerRevisionID).Scan(&publicationID); err
 	if err != nil {
 		return err
 	}
-	consumed, err := consumer.ConsumeNext(ctx, fence, consumerRevisionID, "public.events")
+	consumed, err := consumer.ConsumeNext(ctx, fence, consumerRevisionID)
 	if err != nil {
 		return err
 	}

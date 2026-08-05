@@ -20,7 +20,7 @@ func TestAllLiveFlowFixturesDeclareDurableTableMappings(t *testing.T) {
 	t.Parallel()
 	expectedFlows := map[string]int{
 		"artifactlog_failure_integration_test.go":                1,
-		"artifactlog_integration_test.go":                        3,
+		"artifactlog_integration_test.go":                        4,
 		"artifactlog_worker_integration_test.go":                 1,
 		"authority_integration_test.go":                          8,
 		"clickhouse_managed_e2e_integration_test.go":             1,

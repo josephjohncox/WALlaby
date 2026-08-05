@@ -108,7 +108,7 @@ func NewPostgresStoreWithPool(ctx context.Context, pool *pgxpool.Pool) (*Postgre
 	if pool == nil {
 		return nil, errors.New("postgres control pool is required")
 	}
-	if err := runMigrations(ctx, pool); err != nil {
+	if err := ApplyMigrations(ctx, pool); err != nil {
 		return nil, err
 	}
 	return &PostgresStore{pool: pool, lockPool: pool}, nil
@@ -1101,8 +1101,12 @@ func PrepareDDLExecution(
 // and advances the approved registry event without fabricating a receipt.
 func RecordVacuousDDLExecution(ctx context.Context, store Store, flowID, lsn, ddl string) error {
 	receipts, ok := store.(DDLExecutionStore)
-	if !ok { return ErrExecutionReceiptRequired }
-	if err := receipts.RecordVacuousDDLExecution(ctx, flowID, lsn, ddl); err != nil { return fmt.Errorf("record vacuous DDL execution: %w", err) }
+	if !ok {
+		return ErrExecutionReceiptRequired
+	}
+	if err := receipts.RecordVacuousDDLExecution(ctx, flowID, lsn, ddl); err != nil {
+		return fmt.Errorf("record vacuous DDL execution: %w", err)
+	}
 	return nil
 }
 
