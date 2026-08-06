@@ -137,6 +137,18 @@ func TestClickHouseManagedProfileDedupWindowEviction(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	// Changing the window does not eagerly remove the prior Keeper block ID.
+	// Commit distinct blocks so the replicated table applies the new zero-sized
+	// window and evicts the original transaction before replay.
+	for id := int64(100); id < 103; id++ {
+		filler := clickHouseManagedTransaction("widgets", id, []connector.Record{
+			clickHouseManagedRecord("widgets", connector.OpInsert, id, map[string]any{"id": id, "value": "eviction-filler"}),
+		})
+		fillerIntent := clickHouseManagedIntent(t, filler)
+		if _, err := fixture.destination.ApplyTransaction(ctx, fillerIntent, filler); err != nil {
+			t.Fatalf("dedup eviction filler %d: %v", id, err)
+		}
+	}
 	var physicalBeforeReplay int
 	if err := fixture.db.QueryRowContext(ctx,
 		"SELECT count() FROM {database:Identifier}.{table:Identifier} WHERE logical_batch_id={logical:String}",
@@ -144,8 +156,12 @@ func TestClickHouseManagedProfileDedupWindowEviction(t *testing.T) {
 	).Scan(&physicalBeforeReplay); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err != nil {
-		t.Fatalf("replay after window eviction: %v", err)
+	prepared, err := fixture.destination.PrepareTransaction(ctx, intent, transaction)
+	if err != nil {
+		t.Fatalf("prepare physical replay after window eviction: %v", err)
+	}
+	if _, err := prepared.Apply(ctx); err != nil {
+		t.Fatalf("physical replay after window eviction: %v", err)
 	}
 	var physical int
 	if err := fixture.db.QueryRowContext(ctx,
