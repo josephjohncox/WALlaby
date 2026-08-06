@@ -1,15 +1,17 @@
 # Snowflake destination
 
-WALlaby exposes two Snowflake modes:
+WALlaby exposes these Snowflake modes:
 
 | Contract | Status | Delivery contract |
 | --- | --- | --- |
 | `postgresql-to-snowflake-sql-v1` | experimental | PostgreSQL 16 CDC into one hybrid table, with external-commit reconciliation |
+| `postgresql-to-snowflake-staged-append-v1` | experimental | PostgreSQL 16 CDC into one append changelog table via deterministic internal-stage COPY, with load-history reconciliation |
+| `postgresql-to-snowflake-streaming-rest-append-v1` | experimental (fails closed) | PostgreSQL 16 CDC appended to a Snowpipe Streaming channel, adopted only on SQL-observed row completeness. Admission is refused until a reviewed high-performance append transport is linked |
 | Generic `snowflake` and `snowpipe` | experimental | Legacy direct-table and file-loading behavior |
 
-The named SQL profile has no reviewed Snowflake service version or deployment cell. Local tests, PostgreSQL tests, mocks, and fakesnow cannot promote it. A maintained declaration requires an unskipped real-service run on the reviewed SHA.
+These are implemented modeled protocol profiles, not blanket support claims for the Snowflake adapters. SQL and staged COPY have no reviewed Snowflake service version or deployment cell with every required same-SHA live recovery gate. Local tests, PostgreSQL tests, mocks, and fakesnow cannot promote them. Streaming additionally has no linked reviewed append transport, so it fails closed before external I/O. A maintained declaration requires complete unskipped real-service evidence on the reviewed SHA; Streaming also requires the concrete reviewed transport.
 
-The profile provides **at-least-once delivery with external-commit reconciliation**. It does not claim exactly-once delivery.
+The SQL profile provides **at-least-once delivery with external-commit reconciliation**. It does not claim exactly-once delivery.
 
 ## Admission contract
 
@@ -305,4 +307,99 @@ just test-snowflake-managed-profile
 
 The recipe rejects skipped or missing required tests. It records the PostgreSQL version, Snowflake version and region, Go driver version, and JWT auth mode. Fakesnow must fail managed admission and cannot satisfy this gate.
 
-The current tests still do not supply reviewed same-SHA evidence for every required network fault, detached-transaction takeover, full worker `SIGKILL`, account edition/type, bounded-load, telemetry, redaction, and cleanup cell. The profile therefore remains experimental.
+The SQL implementation still lacks reviewed same-SHA evidence for every required network fault, detached-transaction takeover, full worker `SIGKILL`, account edition/type, bounded-load, telemetry, redaction, and cleanup cell. Those are genuine promotion gaps rather than missing modeled-protocol code. The profile therefore remains experimental.
+
+## Staged COPY append profile
+
+`postgresql-to-snowflake-staged-append-v1` is a second, independent experimental managed profile. Instead of transactional DML into a hybrid table, it serializes each committed PostgreSQL transaction into one deterministic, immutable internal-stage object and loads it with a fail-closed `COPY INTO` into an append-only changelog table. It provides **at-least-once delivery**; it never claims exactly-once. Like the SQL profile, fakesnow and mocks prove logic only and never promote it.
+
+### Delivery protocol
+
+A committed transaction becomes one newline-delimited JSON stage object whose byte content is a pure function of the transaction. Each line is a changelog row carrying the full delivery identity (`FLOW_ID`, `FLOW_INCARNATION_ID`, `SOURCE_LINEAGE_ID`, `DESTINATION_REVISION_ID`, `LOGICAL_BATCH_ID`, `CONTENT_HASH`, source position and LSNs, fragment/record ordinals), the operation, the key, before/after images as `VARIANT`, and a per-row `RECORD_HASH`.
+
+The stage-object path is a deterministic, immutable function of the flow incarnation, destination revision, logical batch, plan hash, and logical content hash, rooted under one per-incarnation retention prefix (`wallaby_staged_append_v1/<incarnation>/…`). Delivery proceeds as:
+
+1. **Adopt** — if a durable load receipt for the logical batch already exists, return it; a receipt whose identity, file digest, or transaction manifest differs is a conflict.
+2. **Stage** — `LIST`/`PUT` the immutable bytes. A `PUT` whose response is lost is reconciled by re-reading the stage. Before any load, WALlaby first requires Snowflake `LIST` to report a stored size no larger than the planned plaintext plus a fixed 64 KiB encryption-envelope allowance; only then does it perform Snowflake `GET` into a plan-sized writer and require the decrypted, uncompressed plaintext to be byte-for-byte equal to the deterministic NDJSON plan. The `GET` runs against a private per-call download directory and emits its own `stage_verify` span. Verification is unconditional, including immediately after this process staged the bytes, so every transaction costs one extra bounded download; that egress is the deliberate price of not treating an encrypted-stage `LIST` checksum as an equality oracle. A different LIST MD5 remains an additional collision signal, but a missing checksum is never accepted as the sole evidence. Because `LIST` and `GET` are both prefix-scoped, a foreign object that merely starts with the deterministic path is reported as a conflict during `LIST` rather than silently joining the download. Unavailable GET evidence is indeterminate; oversized or unequal plaintext is a conflict. Every one of these fails closed before `COPY` and before a receipt.
+3. **Load** — `COPY INTO … MATCH_BY_COLUMN_NAME=CASE_SENSITIVE ON_ERROR=ABORT_STATEMENT FORCE=FALSE PURGE=FALSE`. The statement inlines every admitted JSON parsing option instead of referencing the named file format, so a concurrent `ALTER FILE FORMAT` between admission and load cannot change how the immutable staged bytes are parsed; the inline values are derived from the same admitted property table the catalog validator enforces and are bound into the stage-object plan hash. For auto-ingest the same requirement is pushed into admission: a pipe whose `DEFINITION` references `FORMAT_NAME`, or that omits any inlined option value, is rejected. Option scanning ignores string literals and SQL comments, so a crafted comment cannot satisfy it. There is no lossy `ON_ERROR` continuation, so a partial file can never be mistaken for a complete load. For auto-ingest, the pipe is refreshed instead of running `COPY`.
+4. **Verify** — completion and the absence of a partial load are proven through Snowflake load history (`INFORMATION_SCHEMA.COPY_HISTORY`): the file must be `LOADED` with the exact expected row count and zero errors. A lost `COPY` response is reconciled through the same history. Auto-ingest cannot acknowledge until a completed load is verifiable.
+5. **Receipt** — insert one durable load receipt into an owned hybrid receipt table whose enforced primary key serializes concurrent generations; a duplicate key adopts the winning attempt.
+
+Because the durable receipt plus load history are the joint completion proof, `Reconcile` is read-only: an absent receipt is *not applied* so a replay converges idempotently (`COPY FORCE=FALSE` skips an already-loaded file), and only a fully matching receipt is *applied*.
+
+### Provisioned objects
+
+The profile admits, in one dedicated schema owned by a distinct object-owner role:
+
+- an **internal named stage** (execution role granted `READ, WRITE`);
+- a **JSON file format** (execution role granted `USAGE`);
+- a **standard append changelog table** with the exact wallaby column contract (execution role granted `SELECT, INSERT`); a hybrid target is rejected;
+- a **hybrid receipt table** with an enforced primary key on `(RECEIPT_KIND, FLOW_INCARNATION_ID, DESTINATION_REVISION_ID, LOGICAL_BATCH_ID)` and a unique `EXTERNAL_ID` (execution role granted `SELECT, INSERT`); and
+- optionally, when `managed_auto_ingest=true`, one owned **pipe** with `AUTO_INGEST=TRUE`.
+
+> **Upgrade note.** Inlining the parsing options changes the deterministic COPY plan hash, and therefore the stage path, manifest hash, and external ID of every batch. Drain and acknowledge in-flight batches before upgrading, or assign a new destination revision. An un-acknowledged batch carried across the upgrade is reported as a receipt-identity conflict and requires operator action rather than silently double-loading.
+
+Every object carries an exact creation-identity timestamp and an ownership comment binding the destination revision, schema-contract hash, and flow. Admission executes `DESCRIBE FILE FORMAT` and requires the exact complete JSON property set and effective values: `TYPE=JSON`, empty `FILE_EXTENSION`, `DATE_FORMAT=TIME_FORMAT=TIMESTAMP_FORMAT=AUTO`, `BINARY_FORMAT=HEX`, `TRIM_SPACE=FALSE`, `MULTI_LINE=FALSE`, `NULL_IF=[]`, `COMPRESSION=AUTO`, `ENABLE_OCTAL=FALSE`, `ALLOW_DUPLICATE=FALSE`, `STRIP_OUTER_ARRAY=FALSE`, `STRIP_NULL_VALUES=FALSE`, `IGNORE_UTF8_ERRORS=FALSE`, `REPLACE_INVALID_CHARACTERS=FALSE`, and `SKIP_BYTE_ORDER_MARK=TRUE`. Missing, duplicate, additional, type-changed, or value-changed properties fail closed. Property type, effective value, and reported default are all included in the catalog fingerprint. Because Snowflake currently documents `MULTI_LINE` for JSON but omits it from documented `DESCRIBE FILE FORMAT` output, admission also requires explicit `MULTI_LINE=FALSE` in the bounded `GET_DDL` definition and fingerprints that complete definition.
+
+No task may be visible in the schema. The profile rejects generated columns, generic metadata/staging options, type-mapping overrides, DDL, arbitrary start LSNs, and multiple sinks. Admission requires key-pair JWT over verified HTTPS with OCSP fail-closed, DSN session parameters `READ_LATEST_WRITES=true` and `TIMEZONE=UTC`, and an inline-secret-free DSN.
+
+### Cleanup and retention
+
+Stage objects are released by a bounded, idempotent cleanup pass keyed on durable load receipts: only fully loaded, acknowledged batches older than the retention window are removed, each removal writes an idempotent release receipt, and an object without a durable load receipt is never removed.
+
+### Evidence gate
+
+The staged gate reuses the managed Snowflake credentials plus the provisioning DSN and skips closed without them:
+
+```bash
+WALLABY_TEST_SNOWFLAKE_MANAGED=1 \
+WALLABY_TEST_SNOWFLAKE_DSN='...' \
+WALLABY_TEST_SNOWFLAKE_PROVISION_DSN='...' \
+WALLABY_TEST_SNOWFLAKE_VERSION='<reviewed version>' \
+WALLABY_TEST_SNOWFLAKE_OWNER_ROLE='WALLABY_OWNER' \
+go test ./tests/ -run 'TestSnowflakeStagedManagedProfile|TestPostgresToSnowflakeStagedManagedProfileRecoveryContract'
+```
+
+Deterministic PUT/GET/COPY/load-history/receipt recovery — including bounded plaintext equality, unavailable or corrupt GET evidence, wrong-byte collisions, partial-load rejection, lost responses, receipt adoption, concurrent generations, and bounded cleanup — is exercised against an in-memory protocol fake and property/fuzz tests. The modeled protocol profile is implemented, but live commercial-Snowflake evidence for every named gate is still absent. That evidence gap, not a claim of missing staged-COPY logic, keeps the profile experimental and fail-closed outside its exact admission contract.
+
+## Snowpipe Streaming REST append profile
+
+`postgresql-to-snowflake-streaming-rest-append-v1` is a third, independent experimental managed profile. It appends each committed PostgreSQL transaction to a durable Snowpipe Streaming channel on a pipe that loads an append-only changelog table, and it adopts a batch **only** after the destination's SQL-observed row completeness plus a durable receipt prove full arrival. It provides **at-least-once delivery**; it never claims exactly-once.
+
+### Fail-closed admission
+
+There is no officially supported Go SDK or high-performance REST client for Snowpipe Streaming: the `database/sql` gosnowflake driver speaks the query API, not the channel append protocol. Proving delivery from a build with no append transport would mean trusting local continuation/offset tokens — token theater. WALlaby refuses that. `ManagedStreamingTransportAvailable()` is a compile-time constant that is **false** until a reviewed high-performance append transport is linked, and both runner admission and destination `Open` **fail closed** with `ErrManagedStreamingTransportUnavailable` before any network side effect. The full admission contract (DSN, JWT, session parameters, identifiers, schema contract, limits, and the `managed_streaming_transport` declaration) is still validated first, so a misconfiguration produces its own precise error rather than the blanket refusal. Flipping the constant is a promotion action that must ship a concrete append transport and pass the same-SHA live recovery matrix.
+
+### Delivery protocol (exercised against the in-memory fake)
+
+A committed transaction becomes an ordered set of deterministic-identity append rows. Every row carries the full delivery identity, the operation, the key, before/after images, the sorted set of unchanged-TOAST columns, a deterministic per-batch `OFFSET_TOKEN`, an `APPEND_ORDINAL`, and a per-row `ROW_HASH`. The `ROW_HASH` — not any transport token — is the identity that SQL observation counts. Delivery proceeds as:
+
+1. **Adopt** — if a durable append receipt for the logical batch already exists, return it; a receipt whose identity or row-content hash differs is a conflict.
+2. **Open channel** — open (or reopen) the deterministic per-incarnation channel and persist its exact channel/pipe revision, continuation token, and committed-offset token to an owned channel-state table.
+3. **Observe** — read, by `ROW_HASH`, which rows are already durably present for this logical batch. A row observed more than once is a duplicate-identity hazard that fails closed.
+4. **Append proven-missing** — append only the rows SQL observation proves are missing. Channel invalidation reopens, re-observes, and re-appends only the still-missing rows; auth expiry refreshes credentials; throttling backs off within a bound; a terminal response with rejected rows or an oversize row fails closed. Never blindly re-append.
+5. **Verify** — poll SQL observation until every `ROW_HASH` is present, then read the committed offset token as corroborating evidence (required when this incarnation performed the append). SQL-observed completeness is the adoption authority; the committed token alone is never sufficient.
+6. **Receipt** — insert one durable append receipt into an owned receipt table whose enforced primary key serializes concurrent generations; a duplicate key adopts the winning attempt.
+
+Because the durable receipt plus SQL-observed completeness are the joint proof, `Reconcile` is read-only: an absent receipt is *not applied* so a replay converges idempotently (already-present rows are never re-appended), and only a fully matching receipt is *applied*. Complete-unreceipted recovery (rows already present from a prior incarnation, no receipt yet) appends nothing and writes the receipt on the SQL-observed completeness.
+
+### Provisioned objects
+
+The profile admits, in one dedicated schema owned by a distinct object-owner role: an append changelog **target table** with the exact wallaby column contract (including `ROW_HASH` and `OFFSET_TOKEN`), a **pipe** the channel appends through, an owned **receipt table**, and an owned **channel-state table** that persists the channel/pipe revision and token evidence. It requires key-pair JWT over verified HTTPS with OCSP fail-closed, DSN session parameters `READ_LATEST_WRITES=true` and `TIMEZONE=UTC`, an inline-secret-free DSN, `toast_fetch=off`, and rejects generated columns, generic metadata/staging options, type-mapping overrides, DDL, arbitrary start LSNs, and multiple sinks.
+
+### Cleanup and retention
+
+Channel state is released by a bounded, idempotent cleanup pass keyed on durable append receipts: only fully committed, acknowledged batches older than the retention window write an idempotent release receipt and have their durable channel state removed. A batch without a durable append receipt is never released.
+
+### Evidence gate
+
+The streaming gate reuses the managed Snowflake credentials and skips closed without them. Because no reviewed append transport is linked, the live entrypoints assert the fail-closed refusal rather than proving delivery:
+
+```bash
+WALLABY_TEST_SNOWFLAKE_MANAGED=1 \
+WALLABY_TEST_SNOWFLAKE_DSN='...' \
+WALLABY_TEST_SNOWFLAKE_VERSION='<reviewed version>' \
+go test ./tests/ -run 'TestSnowflakeStreamingManagedProfile|TestPostgresToSnowflakeStreamingManagedProfileRecoveryContract'
+```
+
+Deterministic channel/append/observe/receipt recovery — reopen after uncommitted rows, append-only-proven-missing, terminal-token rejection, complete-unreceipted recovery, receipt conflicts, channel invalidation, schema evolution, TOAST unchanged fields, auth expiry, throttling, oversize rejection, and bounded cleanup — is exercised against an in-memory protocol fake and property/fuzz tests. This implements the modeled protocol profile only. The genuine runtime gap is the absent reviewed high-performance append transport; without it there can be no live delivery evidence, so the profile remains experimental and **fails closed** at admission.

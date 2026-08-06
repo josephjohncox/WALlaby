@@ -168,6 +168,8 @@ var DefaultManifestFiles = map[SpecName]string{
     SpecDDLExecution:        "coverage.ddl_execution.json",
     SpecLifecycleGeneration: "coverage.lifecycle_generation.json",
     SpecSnapshotTransition:  "coverage.snapshot_transition.json",
+    SpecManagedDurability:   "coverage.managed_durability.json",
+    SpecManagedPostgresDel:  "coverage.managed_postgres_delivery.json",
 }
 ```
 
@@ -290,6 +292,96 @@ var LifecycleGenerationTraceUnreachableActions = append([]Action(nil), Lifecycle
 var LifecycleGenerationTraceUnreachableInvariants = append([]Invariant(nil), LifecycleGenerationInvariants...)
 ```
 
+<a name="ManagedDurabilityActions"></a>ManagedDurabilityActions mirrors the Next\-block actions of ManagedDurability.tla \(the ArtifactPublication model\).
+
+```go
+var ManagedDurabilityActions = []Action{
+    ActionAcquire,
+    ActionPrepare,
+    ActionApplyExternal,
+    ActionFinalizeDelivery,
+    ActionUploadArtifact,
+    ActionPublishArtifact,
+    ActionAuthorizeInitialCut,
+    ActionAckSource,
+    ActionCompleteArtifactDelivery,
+    ActionMarkRetainedRoot,
+    ActionCollectOrphan,
+    ActionSweepRetained,
+}
+```
+
+<a name="ManagedDurabilityInvariants"></a>ManagedDurabilityInvariants mirrors the INVARIANTS in ManagedDurability.cfg.
+
+```go
+var ManagedDurabilityInvariants = []Invariant{
+    InvTypeInvariant,
+    InvExternalCommitRequiresAttempt,
+    InvReceiptRequiresExternalCommit,
+    InvReceiptCheckpointAckAtomic,
+    InvArtifactCheckpointAckAtomic,
+    InvAckSafety,
+    InvActivePublishedArtifactsRemain,
+    InvRetentionSafety,
+    InvAuthoritativeWritesHaveFence,
+}
+```
+
+<a name="ManagedDurabilityTraceUnreachableActions"></a>The managed models are checked by TLC and mirrored by the deterministic process\-failure matrix \(internal/failmatrix\) and property tests rather than by the CDCFlow trace suite, so every action and invariant is trace\-unreachable.
+
+```go
+var ManagedDurabilityTraceUnreachableActions = append([]Action(nil), ManagedDurabilityActions...)
+```
+
+<a name="ManagedDurabilityTraceUnreachableInvariants"></a>
+
+```go
+var ManagedDurabilityTraceUnreachableInvariants = append([]Invariant(nil), ManagedDurabilityInvariants...)
+```
+
+<a name="ManagedPostgresDeliveryActions"></a>ManagedPostgresDeliveryActions mirrors the Next\-block actions of ManagedPostgresDelivery.tla \(the SourceFeedback model\).
+
+```go
+var ManagedPostgresDeliveryActions = []Action{
+    ActionAcquire,
+    ActionPrepare,
+    ActionApplyExternal,
+    ActionReconcileIndeterminate,
+    ActionFinalize,
+    ActionFlushSource,
+    ActionRecordFlushReceipt,
+    ActionAdvanceRetentionRoot,
+    ActionPruneTerminal,
+}
+```
+
+<a name="ManagedPostgresDeliveryInvariants"></a>ManagedPostgresDeliveryInvariants mirrors ManagedPostgresDelivery.cfg.
+
+```go
+var ManagedPostgresDeliveryInvariants = []Invariant{
+    InvTypeInvariant,
+    InvExternalCommitRequiresAttempt,
+    InvReceiptRequiresExternalCommit,
+    InvReceiptCheckpointAckAtomic,
+    InvSourceFlushRequiresAuthorization,
+    InvFlushReceiptRequiresObservedFlush,
+    InvRetryBounded,
+    InvRetentionRootProtectsCheckpoint,
+}
+```
+
+<a name="ManagedPostgresDeliveryTraceUnreachableActions"></a>
+
+```go
+var ManagedPostgresDeliveryTraceUnreachableActions = append([]Action(nil), ManagedPostgresDeliveryActions...)
+```
+
+<a name="ManagedPostgresDeliveryTraceUnreachableInvariants"></a>
+
+```go
+var ManagedPostgresDeliveryTraceUnreachableInvariants = append([]Invariant(nil), ManagedPostgresDeliveryInvariants...)
+```
+
 <a name="SnapshotTransitionActions"></a>
 
 ```go
@@ -330,7 +422,7 @@ var SnapshotTransitionTraceUnreachableInvariants = append([]Invariant(nil), Snap
 ```
 
 <a name="LoadManifests"></a>
-## func [LoadManifests](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L409>)
+## func [LoadManifests](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L511>)
 
 ```go
 func LoadManifests(path string) (map[SpecName]Manifest, error)
@@ -339,7 +431,7 @@ func LoadManifests(path string) (map[SpecName]Manifest, error)
 LoadManifests loads one or more manifests from a file or directory.
 
 <a name="ManifestPath"></a>
-## func [ManifestPath](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L448>)
+## func [ManifestPath](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L550>)
 
 ```go
 func ManifestPath(dir string, spec SpecName) string
@@ -406,6 +498,23 @@ const (
     ActionCompleteSnapshot       Action = "CompleteSnapshot"
     ActionStartStreaming         Action = "StartStreaming"
     ActionReadStream             Action = "ReadStream"
+    // Managed durability (ArtifactPublication) and managed PostgreSQL delivery
+    // (SourceFeedback) actions.
+    ActionAcquire                  Action = "Acquire"
+    ActionApplyExternal            Action = "ApplyExternal"
+    ActionFinalizeDelivery         Action = "FinalizeDelivery"
+    ActionUploadArtifact           Action = "UploadArtifact"
+    ActionPublishArtifact          Action = "PublishArtifact"
+    ActionAuthorizeInitialCut      Action = "AuthorizeInitialCut"
+    ActionCompleteArtifactDelivery Action = "CompleteArtifactDelivery"
+    ActionMarkRetainedRoot         Action = "MarkRetainedRoot"
+    ActionCollectOrphan            Action = "CollectOrphan"
+    ActionSweepRetained            Action = "SweepRetained"
+    ActionFinalize                 Action = "Finalize"
+    ActionFlushSource              Action = "FlushSource"
+    ActionRecordFlushReceipt       Action = "RecordFlushReceipt"
+    ActionAdvanceRetentionRoot     Action = "AdvanceRetentionRoot"
+    ActionPruneTerminal            Action = "PruneTerminal"
 )
 ```
 
@@ -447,11 +556,22 @@ const (
     InvDurableRowsWereScanned        Invariant = "DurableRowsWereScanned"
     InvTransitionCompleteSnapshot    Invariant = "TransitionRequiresCompleteSnapshot"
     InvStreamingSnapshotBoundary     Invariant = "StreamingStartsAtSnapshotBoundary"
+    // Managed durability + managed PostgreSQL delivery invariants.
+    InvReceiptCheckpointAckAtomic        Invariant = "ReceiptCheckpointAckAtomic"
+    InvArtifactCheckpointAckAtomic       Invariant = "ArtifactCheckpointAckAtomic"
+    InvAckSafety                         Invariant = "AckSafety"
+    InvActivePublishedArtifactsRemain    Invariant = "ActivePublishedArtifactsRemainPresent"
+    InvRetentionSafety                   Invariant = "RetentionSafety"
+    InvAuthoritativeWritesHaveFence      Invariant = "AuthoritativeWritesHaveFence"
+    InvSourceFlushRequiresAuthorization  Invariant = "SourceFlushRequiresAuthorization"
+    InvFlushReceiptRequiresObservedFlush Invariant = "FlushReceiptRequiresObservedSourceFlush"
+    InvRetryBounded                      Invariant = "RetryBounded"
+    InvRetentionRootProtectsCheckpoint   Invariant = "RetentionRootProtectsCheckpoint"
 )
 ```
 
 <a name="Manifest"></a>
-## type [Manifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L300-L308>)
+## type [Manifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L396-L404>)
 
 Manifest defines the spec coverage contract shared by TLC and Go tests.
 
@@ -468,7 +588,7 @@ type Manifest struct {
 ```
 
 <a name="AllManifests"></a>
-### func [AllManifests](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L317>)
+### func [AllManifests](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L413>)
 
 ```go
 func AllManifests() []Manifest
@@ -477,7 +597,7 @@ func AllManifests() []Manifest
 AllManifests returns manifests for all known specs.
 
 <a name="LoadManifest"></a>
-### func [LoadManifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L385>)
+### func [LoadManifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L487>)
 
 ```go
 func LoadManifest(path string) (Manifest, error)
@@ -486,7 +606,7 @@ func LoadManifest(path string) (Manifest, error)
 LoadManifest loads a coverage manifest from disk.
 
 <a name="ManifestForSpec"></a>
-### func [ManifestForSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L337>)
+### func [ManifestForSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L435>)
 
 ```go
 func ManifestForSpec(spec SpecName) (Manifest, bool)
@@ -495,7 +615,7 @@ func ManifestForSpec(spec SpecName) (Manifest, bool)
 ManifestForSpec builds a manifest for the named spec.
 
 <a name="TraceSuiteManifest"></a>
-### func [TraceSuiteManifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L311>)
+### func [TraceSuiteManifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L407>)
 
 ```go
 func TraceSuiteManifest() Manifest
@@ -504,7 +624,7 @@ func TraceSuiteManifest() Manifest
 TraceSuiteManifest returns the CDC flow manifest used by trace suite tests.
 
 <a name="Manifest.ActionMin"></a>
-### func \(Manifest\) [ActionMin](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L499>)
+### func \(Manifest\) [ActionMin](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L605>)
 
 ```go
 func (m Manifest) ActionMin(action Action) int
@@ -513,7 +633,7 @@ func (m Manifest) ActionMin(action Action) int
 
 
 <a name="Manifest.ActionSet"></a>
-### func \(Manifest\) [ActionSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L475>)
+### func \(Manifest\) [ActionSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L581>)
 
 ```go
 func (m Manifest) ActionSet() map[Action]struct{}
@@ -522,7 +642,7 @@ func (m Manifest) ActionSet() map[Action]struct{}
 
 
 <a name="Manifest.InvariantMin"></a>
-### func \(Manifest\) [InvariantMin](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L508>)
+### func \(Manifest\) [InvariantMin](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L614>)
 
 ```go
 func (m Manifest) InvariantMin(inv Invariant) int
@@ -531,7 +651,7 @@ func (m Manifest) InvariantMin(inv Invariant) int
 
 
 <a name="Manifest.InvariantSet"></a>
-### func \(Manifest\) [InvariantSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L483>)
+### func \(Manifest\) [InvariantSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L589>)
 
 ```go
 func (m Manifest) InvariantSet() map[Invariant]struct{}
@@ -540,7 +660,7 @@ func (m Manifest) InvariantSet() map[Invariant]struct{}
 
 
 <a name="Manifest.UnreachableActionSet"></a>
-### func \(Manifest\) [UnreachableActionSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L491>)
+### func \(Manifest\) [UnreachableActionSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L597>)
 
 ```go
 func (m Manifest) UnreachableActionSet() map[Action]struct{}
@@ -549,7 +669,7 @@ func (m Manifest) UnreachableActionSet() map[Action]struct{}
 
 
 <a name="Manifest.UnreachableInvariantSet"></a>
-### func \(Manifest\) [UnreachableInvariantSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L495>)
+### func \(Manifest\) [UnreachableInvariantSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L601>)
 
 ```go
 func (m Manifest) UnreachableInvariantSet() map[Invariant]struct{}
@@ -576,12 +696,14 @@ const (
     SpecDDLExecution        SpecName = "DDLExecution"
     SpecLifecycleGeneration SpecName = "LifecycleGeneration"
     SpecSnapshotTransition  SpecName = "SnapshotTransition"
+    SpecManagedDurability   SpecName = "ManagedDurability"
+    SpecManagedPostgresDel  SpecName = "ManagedPostgresDelivery"
     SpecUnknown             SpecName = ""
 )
 ```
 
 <a name="ParseSpecName"></a>
-### func [ParseSpecName](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L456>)
+### func [ParseSpecName](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L558>)
 
 ```go
 func ParseSpecName(value string) (SpecName, bool)
@@ -590,7 +712,7 @@ func ParseSpecName(value string) (SpecName, bool)
 
 
 <a name="SortedSpecs"></a>
-### func [SortedSpecs](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L551>)
+### func [SortedSpecs](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L657>)
 
 ```go
 func SortedSpecs() []SpecName

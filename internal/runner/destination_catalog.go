@@ -154,10 +154,24 @@ var destinationRegistry = []DestinationRegistration{
 			SupportsSchemaChanges: true, SupportsStreaming: true, SupportsBulkLoad: true, SupportsTypeMapping: true,
 			SupportedWireFormats: []connector.WireFormat{connector.WireFormatArrow, connector.WireFormatParquet, connector.WireFormatAvro, connector.WireFormatProto, connector.WireFormatJSON},
 		}},
-		{ID: snowflake.CapabilityProfileManaged, Options: map[string]string{"managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1}, Capabilities: connector.Capabilities{
+		{ID: snowflake.CapabilityProfileManagedSQL, Options: map[string]string{"managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1}, Capabilities: connector.Capabilities{
 			Support: connector.SupportExperimental, Evidence: connector.ContractEvidence{Restart: false, Replay: false, SchemaEvolution: false, Integration: false},
 			Delivery:              connector.DeliverySemantics{TransactionalBatch: true, IdempotentReplay: true, ReplaySafe: true, ExecutesDDL: false, Lossy: false},
 			TableWrites:           connector.TableWriteSemantics{Append: false, Upsert: true, ExplicitKey: true, WatermarkGuard: false},
+			SupportsSchemaChanges: true, SupportsStreaming: true, SupportsBulkLoad: true, SupportsTypeMapping: true,
+			SupportedWireFormats: []connector.WireFormat{connector.WireFormatArrow, connector.WireFormatParquet, connector.WireFormatAvro, connector.WireFormatProto, connector.WireFormatJSON},
+		}},
+		{ID: snowflake.CapabilityProfileManagedStaged, Options: map[string]string{"managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1}, Capabilities: connector.Capabilities{
+			Support: connector.SupportExperimental, Evidence: connector.ContractEvidence{Restart: false, Replay: false, SchemaEvolution: false, Integration: false},
+			Delivery:              connector.DeliverySemantics{TransactionalBatch: false, IdempotentReplay: true, ReplaySafe: true, ExecutesDDL: false, Lossy: false},
+			TableWrites:           connector.TableWriteSemantics{Append: true, Upsert: false, ExplicitKey: false, WatermarkGuard: false},
+			SupportsSchemaChanges: true, SupportsStreaming: true, SupportsBulkLoad: true, SupportsTypeMapping: true,
+			SupportedWireFormats: []connector.WireFormat{connector.WireFormatArrow, connector.WireFormatParquet, connector.WireFormatAvro, connector.WireFormatProto, connector.WireFormatJSON},
+		}},
+		{ID: snowflake.CapabilityProfileManagedStreaming, Options: map[string]string{"managed_profile": connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1}, Capabilities: connector.Capabilities{
+			Support: connector.SupportExperimental, Evidence: connector.ContractEvidence{Restart: false, Replay: false, SchemaEvolution: false, Integration: false},
+			Delivery:              connector.DeliverySemantics{TransactionalBatch: false, IdempotentReplay: true, ReplaySafe: true, ExecutesDDL: false, Lossy: false},
+			TableWrites:           connector.TableWriteSemantics{Append: true, Upsert: false, ExplicitKey: false, WatermarkGuard: false},
 			SupportsSchemaChanges: true, SupportsStreaming: true, SupportsBulkLoad: true, SupportsTypeMapping: true,
 			SupportedWireFormats: []connector.WireFormat{connector.WireFormatArrow, connector.WireFormatParquet, connector.WireFormatAvro, connector.WireFormatProto, connector.WireFormatJSON},
 		}},

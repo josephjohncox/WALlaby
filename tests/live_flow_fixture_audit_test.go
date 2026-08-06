@@ -24,7 +24,7 @@ func TestAllLiveFlowFixturesDeclareDurableTableMappings(t *testing.T) {
 		"artifactlog_worker_integration_test.go":                 1,
 		"authority_integration_test.go":                          8,
 		"clickhouse_managed_e2e_integration_test.go":             1,
-		"delivery_integration_test.go":                           3,
+		"delivery_integration_test.go":                           5,
 		"delivery_retry_retention_integration_test.go":           1,
 		"integration/dbos_integration_test.go":                   4,
 		"integration/dbos_managed_bootstrap_integration_test.go": 1,

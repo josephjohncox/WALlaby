@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -96,7 +97,6 @@ var requiredManagedColumns = map[string][]string{
 	"source_resource_operations":    {"operation_id", "flow_incarnation_id", "resource_kind", "resource_id", "operation", "desired_revision", "generation", "acquisition_id", "lease_epoch", "status"},
 	"snapshot_delivery_attempts":    {"attempt_id", "bootstrap_id", "relation_id", "task_id", "batch_ordinal", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "claim_epoch"},
 	"snapshot_delivery_receipts":    {"bootstrap_id", "relation_id", "task_id", "batch_ordinal", "attempt_id", "durable_cursor", "completed_task"},
-	"delivery_manifests":            {"flow_incarnation_id", "destination_revision_id", "source_lineage_id", "logical_batch_id", "position_id", "content_hash", "checkpoint_lsn", "schema_baseline_payload", "schema_baseline_fingerprint"},
 	"delivery_attempts":             {"attempt_id", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "logical_batch_id", "position_id", "content_hash", "attempt_number", "attempt_state", "next_attempt_at"},
 	"delivery_receipts":             {"flow_incarnation_id", "position_id", "destination_revision_id", "logical_batch_id", "attempt_id", "content_hash"},
 	"source_ack_intents":            {"flow_incarnation_id", "position_id", "checkpoint_lsn", "generation", "acquisition_id", "lease_epoch"},
@@ -123,7 +123,22 @@ type exactManagedColumn struct {
 	generated   string
 }
 
-var exactArtifactAuthorityColumns = map[string][]exactManagedColumn{
+var exactAuthorityColumns = map[string][]exactManagedColumn{
+	"delivery_manifests": {
+		{name: "flow_incarnation_id", dataType: "uuid", notNull: true},
+		{name: "destination_revision_id", dataType: "text", notNull: true},
+		{name: "source_lineage_id", dataType: "text", notNull: true},
+		{name: "position_id", dataType: "text", notNull: true},
+		{name: "source_transaction_id", dataType: "text", notNull: true},
+		{name: "content_hash", dataType: "text", notNull: true},
+		{name: "checkpoint_lsn", dataType: "text", notNull: true},
+		{name: "created_at", dataType: "timestamp with time zone", notNull: true, defaultExpr: "clock_timestamp()"},
+		{name: "logical_batch_id", dataType: "text", notNull: true},
+		{name: "checkpoint_metadata", dataType: "jsonb", notNull: true},
+		{name: "checkpoint_timestamp", dataType: "timestamp with time zone", notNull: true},
+		{name: "schema_baseline_payload", dataType: "jsonb", notNull: true},
+		{name: "schema_baseline_fingerprint", dataType: "text", notNull: true},
+	},
 	"artifact_delivery_attempts": {
 		{name: "attempt_id", dataType: "uuid", notNull: true},
 		{name: "flow_incarnation_id", dataType: "uuid", notNull: true},
@@ -167,7 +182,7 @@ var exactArtifactAuthorityColumns = map[string][]exactManagedColumn{
 	},
 }
 
-type exactArtifactConstraint struct {
+type exactAuthorityConstraint struct {
 	table            string
 	name             string
 	kind             string
@@ -179,7 +194,10 @@ type exactArtifactConstraint struct {
 
 const artifactProjectionMappingConstraintDefinition = "CHECK (projection_id = 'canonical_cdc_parquet_v1'::text AND mapping_fingerprint = ''::text OR projection_id = 'canonical_cdc_parquet_v2'::text AND mapping_fingerprint <> ''::text)"
 
-var exactArtifactConstraints = []exactArtifactConstraint{
+var exactAuthorityConstraints = []exactAuthorityConstraint{
+	{table: "delivery_manifests", name: "delivery_manifests_pkey", kind: "p", noInherit: true, columns: []string{"flow_incarnation_id", "destination_revision_id", "position_id"}, definitionSHA256: "dd9e7d0865213ca03a3aa15aa34573d844c45ef6c00475f643ad3e5c6d0566a8"},
+	{table: "delivery_manifests", name: "delivery_manifests_logical_batch_current", kind: "c", columns: []string{"logical_batch_id", "source_lineage_id", "position_id", "content_hash"}, definitionSHA256: "915b56facf7930044439b61996d57c507de416ce97022f2b6f3302bace331647"},
+	{table: "delivery_manifests", name: "delivery_manifests_schema_baseline_fingerprint_check", kind: "c", columns: []string{"schema_baseline_fingerprint"}, definitionSHA256: "e5f7f7fde4b3288bfd1370e9358a2ee1e1feb95e2628a47c9f501be33938d75e"},
 	{table: "schema_versions", name: "schema_versions_pkey", kind: "p", noInherit: true, columns: []string{"flow_id", "namespace", "name", "version"}, definition: "PRIMARY KEY (flow_id, namespace, name, version)"},
 	{table: "schema_versions", name: "schema_versions_authority_complete", kind: "c", definition: "CHECK (authority_origin = 'legacy_unfenced'::text AND flow_incarnation_id IS NULL AND generation IS NULL AND acquisition_id IS NULL AND lease_epoch IS NULL OR authority_origin = 'fenced'::text AND flow_incarnation_id IS NOT NULL AND generation > 0 AND acquisition_id IS NOT NULL AND lease_epoch > 0)"},
 	{table: "artifact_delivery_attempts", name: "artifact_delivery_attempts_pkey", kind: "p", noInherit: true, columns: []string{"attempt_id"}, definition: "PRIMARY KEY (attempt_id)"},
@@ -200,6 +218,11 @@ var exactArtifactConstraints = []exactArtifactConstraint{
 	{table: "artifact_consumer_checkpoints", name: "artifact_consumer_checkpoints_publication_sequence_check", kind: "c", definition: "CHECK (publication_sequence > 0)"},
 	{table: "artifact_consumer_checkpoints", name: "artifact_consumer_checkpoints_flow_incarnation_id_consumer__key", kind: "u", noInherit: true, columns: []string{"flow_incarnation_id", "consumer_revision_id", "publication_sequence"}, definition: "UNIQUE (flow_incarnation_id, consumer_revision_id, publication_sequence)"},
 	{table: "artifact_consumer_checkpoints", name: "artifact_consumer_checkpoints_flow_incarnation_id_consumer_key1", kind: "u", noInherit: true, columns: []string{"flow_incarnation_id", "consumer_revision_id", "publication_id"}, definition: "UNIQUE (flow_incarnation_id, consumer_revision_id, publication_id)"},
+}
+
+// selectiveAuthorityConstraints are individually exact but belong to tables
+// whose complete constraint sets are owned by broader domain manifests.
+var selectiveAuthorityConstraints = []exactAuthorityConstraint{
 	{table: "canonical_schemas", name: "canonical_schemas_projection_mapping_contract", kind: "c", definition: artifactProjectionMappingConstraintDefinition},
 	{table: "artifact_streams", name: "artifact_streams_projection_mapping_contract", kind: "c", definition: artifactProjectionMappingConstraintDefinition},
 	{table: "artifact_objects", name: "artifact_objects_projection_mapping_contract", kind: "c", definition: artifactProjectionMappingConstraintDefinition},
@@ -207,7 +230,7 @@ var exactArtifactConstraints = []exactArtifactConstraint{
 	{table: "artifact_publications", name: "artifact_publications_schema_baseline_fingerprint_check", kind: "c", definition: "CHECK (schema_baseline_fingerprint ~ '^[0-9a-f]{64}$'::text)"},
 }
 
-type exactArtifactIndex struct {
+type exactAuthorityIndex struct {
 	table      string
 	name       string
 	unique     bool
@@ -218,11 +241,12 @@ type exactArtifactIndex struct {
 	expression string
 }
 
-var exactArtifactIndexes = []exactArtifactIndex{
+var exactAuthorityIndexes = []exactAuthorityIndex{
+	{table: "delivery_manifests", name: "delivery_manifests_pkey", unique: true, primary: true, columns: []string{"flow_incarnation_id", "destination_revision_id", "position_id"}, options: []int16{0, 0, 0}},
+	{table: "delivery_manifests", name: "delivery_manifests_logical_batch_idx", unique: true, columns: []string{"flow_incarnation_id", "destination_revision_id", "logical_batch_id"}, options: []int16{0, 0, 0}},
 	{table: "schema_versions", name: "schema_versions_pkey", unique: true, primary: true, columns: []string{"flow_id", "namespace", "name", "version"}, options: []int16{0, 0, 0, 0}},
 	{table: "artifact_delivery_attempts", name: "artifact_delivery_attempts_pkey", unique: true, primary: true, columns: []string{"attempt_id"}, options: []int16{0}},
 	{table: "artifact_delivery_attempts", name: "artifact_delivery_attempts_lookup_idx", columns: []string{"flow_incarnation_id", "consumer_revision_id", "publication_id", "prepared_at"}, options: []int16{0, 0, 0, 3}},
-	{table: "artifact_deliveries", name: "artifact_deliveries_pending_idx", columns: []string{"flow_incarnation_id", "consumer_revision_id", "sequence"}, options: []int16{0, 0, 0}, predicate: "(delivered_at IS NULL)"},
 	{table: "artifact_delivery_receipts", name: "artifact_delivery_receipts_pkey", unique: true, primary: true, columns: []string{"flow_incarnation_id", "consumer_revision_id", "publication_id"}, options: []int16{0, 0, 0}},
 	{table: "artifact_delivery_receipts", name: "artifact_delivery_receipts_attempt_idx", columns: []string{"attempt_id"}, options: []int16{0}},
 	{table: "artifact_delivery_attempts", name: "artifact_delivery_attempts_commit_idx", columns: []string{"flow_incarnation_id", "consumer_revision_id", "commit_id", "prepared_at"}, options: []int16{0, 0, 0, 3}},
@@ -232,6 +256,12 @@ var exactArtifactIndexes = []exactArtifactIndex{
 	{table: "artifact_delivery_attempts", name: "artifact_delivery_attempts_publication_unique", unique: true, columns: []string{"flow_incarnation_id", "consumer_revision_id", "publication_id"}, options: []int16{0, 0, 0}},
 	{table: "artifact_delivery_attempts", name: "artifact_delivery_attempts_commit_unique", unique: true, columns: []string{"flow_incarnation_id", "consumer_revision_id", "commit_id"}, options: []int16{0, 0, 0}},
 	{table: "artifact_delivery_receipts", name: "artifact_delivery_receipts_attempt_unique", unique: true, columns: []string{"attempt_id"}, options: []int16{0}},
+}
+
+// selectiveAuthorityIndexes are individually exact but do not claim ownership
+// of every index on their table.
+var selectiveAuthorityIndexes = []exactAuthorityIndex{
+	{table: "artifact_deliveries", name: "artifact_deliveries_pending_idx", columns: []string{"flow_incarnation_id", "consumer_revision_id", "sequence"}, options: []int16{0, 0, 0}, predicate: "(delivered_at IS NULL)"},
 }
 
 type requiredManagedObject struct {
@@ -270,7 +300,6 @@ var requiredManagedConstraints = []requiredManagedObject{
 	{table: "snapshot_delivery_attempts", name: "snapshot_delivery_attempts_flow_incarnation_id_fkey"},
 	{table: "snapshot_delivery_attempts", name: "snapshot_delivery_attempts_acquisition_id_fkey"},
 	{table: "snapshot_delivery_receipts", name: "snapshot_delivery_receipts_attempt_id_fkey"},
-	{table: "delivery_manifests", name: "delivery_manifests_schema_baseline_fingerprint_check"},
 	{table: "delivery_attempts", name: "delivery_attempts_state_valid"},
 	{table: "delivery_attempts", name: "delivery_attempts_number_positive"},
 	{table: "artifact_publications", name: "artifact_publications_schema_baseline_fingerprint_check"},
@@ -290,7 +319,6 @@ var requiredManagedIndexes = []requiredManagedObject{
 	{table: "managed_schema_baselines", name: "managed_schema_baselines_current_fence_idx"},
 	{table: "source_resources", name: "source_resources_current_kind_idx"},
 	{table: "source_resources", name: "source_resources_active_physical_name_unique"},
-	{table: "delivery_manifests", name: "delivery_manifests_logical_batch_idx"},
 	{table: "delivery_receipts", name: "delivery_receipts_logical_batch_idx"},
 	{table: "delivery_attempts", name: "delivery_attempts_retry_idx"},
 	{table: "source_ack_retention_roots", name: "source_ack_retention_roots_active_idx"},
@@ -416,7 +444,7 @@ SELECT COALESCE((
 	if !activePhysicalNameIndexExact {
 		return errors.New("managed authority schema requires source_resources_active_physical_name_unique to be a unique index on source_system_id,database_name,resource_kind,physical_name with predicate state <> 'retired'; restore migration 005 before startup")
 	}
-	if err := verifyExactArtifactAuthoritySchema(ctx, pool); err != nil {
+	if err := verifyExactAuthoritySchema(ctx, pool); err != nil {
 		return err
 	}
 
@@ -447,15 +475,18 @@ WHERE trigger.tgrelid=to_regclass($1)
 	return nil
 }
 
-func verifyExactArtifactAuthoritySchema(ctx context.Context, pool authorityCatalogQueryer) error {
-	for _, table := range []string{"artifact_delivery_attempts", "artifact_delivery_receipts", "artifact_consumer_checkpoints"} {
-		expectedColumns := exactArtifactAuthorityColumns[table]
+func verifyExactAuthoritySchema(ctx context.Context, pool authorityCatalogQueryer) error {
+	if err := verifyExactAuthorityObjectSets(ctx, pool); err != nil {
+		return err
+	}
+	for _, table := range []string{"delivery_manifests", "artifact_delivery_attempts", "artifact_delivery_receipts", "artifact_consumer_checkpoints"} {
+		expectedColumns := exactAuthorityColumns[table]
 		var actualNames []string
 		if err := pool.QueryRow(ctx, `
 SELECT COALESCE(array_agg(attribute.attname::text ORDER BY attribute.attnum),'{}'::text[])
 FROM pg_catalog.pg_attribute AS attribute
 WHERE attribute.attrelid=to_regclass($1) AND attribute.attnum>0 AND NOT attribute.attisdropped`, publicRegclass(table)).Scan(&actualNames); err != nil {
-			return fmt.Errorf("verify exact artifact authority columns for %s: %w", table, err)
+			return fmt.Errorf("verify exact managed authority columns for %s: %w", table, err)
 		}
 		expectedNames := make([]string, len(expectedColumns))
 		for index, expected := range expectedColumns {
@@ -477,7 +508,7 @@ LEFT JOIN pg_catalog.pg_attrdef AS default_value
   ON default_value.adrelid=attribute.attrelid AND default_value.adnum=attribute.attnum
 WHERE attribute.attrelid=to_regclass($1) AND attribute.attname=$2
   AND attribute.attnum>0 AND NOT attribute.attisdropped`, publicRegclass(table), expected.name).Scan(&dataType, &notNull, &defaultExpr, &identity, &generated); err != nil {
-				return fmt.Errorf("verify exact artifact authority column %s.%s: %w", table, expected.name, err)
+				return fmt.Errorf("verify exact managed authority column %s.%s: %w", table, expected.name, err)
 			}
 			if dataType != expected.dataType || notNull != expected.notNull || defaultExpr != expected.defaultExpr || identity != expected.identity || generated != expected.generated {
 				return fmt.Errorf("managed authority schema column %s.%s differs: type=%q not_null=%t default=%q identity=%q generated=%q; expected type=%q not_null=%t default=%q identity=%q generated=%q", table, expected.name, dataType, notNull, defaultExpr, identity, generated, expected.dataType, expected.notNull, expected.defaultExpr, expected.identity, expected.generated)
@@ -485,7 +516,8 @@ WHERE attribute.attrelid=to_regclass($1) AND attribute.attname=$2
 		}
 	}
 
-	for _, expected := range exactArtifactConstraints {
+	constraintContracts := append(append([]exactAuthorityConstraint(nil), exactAuthorityConstraints...), selectiveAuthorityConstraints...)
+	for _, expected := range constraintContracts {
 		var kind, definition, indexName, method string
 		var validated, deferrable, deferred, noInherit bool
 		var unique, primary, valid, ready, live, predicateNull, expressionsNull bool
@@ -524,7 +556,7 @@ WHERE constraint_row.conrelid=to_regclass($1) AND constraint_row.conname=$2`, pu
 			&indexName, &method, &unique, &primary, &valid, &ready, &live,
 			&predicateNull, &expressionsNull, &keyCount, &attributeCount, &indexColumns,
 		); err != nil {
-			return fmt.Errorf("verify exact artifact authority constraint %s.%s: %w", expected.table, expected.name, err)
+			return fmt.Errorf("verify exact managed authority constraint %s.%s: %w", expected.table, expected.name, err)
 		}
 		if kind != expected.kind || !validated || deferrable || deferred || noInherit != expected.noInherit {
 			return fmt.Errorf("managed authority schema constraint %s.%s has weakened kind/validation/deferrability/inheritance: kind=%q validated=%t deferrable=%t deferred=%t no_inherit=%t", expected.table, expected.name, kind, validated, deferrable, deferred, noInherit)
@@ -555,7 +587,8 @@ WHERE constraint_row.conrelid=to_regclass($1) AND constraint_row.conname=$2`, pu
 		}
 	}
 
-	for _, expected := range exactArtifactIndexes {
+	indexContracts := append(append([]exactAuthorityIndex(nil), exactAuthorityIndexes...), selectiveAuthorityIndexes...)
+	for _, expected := range indexContracts {
 		var method, predicate, expression string
 		var unique, primary, valid, ready, live bool
 		var keyCount, attributeCount int
@@ -583,10 +616,69 @@ WHERE index_relation.oid=to_regclass($2) AND index_row.indrelid=to_regclass($1)
 			&method, &unique, &primary, &valid, &ready, &live, &predicate,
 			&expression, &keyCount, &attributeCount, &columns, &options,
 		); err != nil {
-			return fmt.Errorf("verify exact artifact authority index %s.%s: %w", expected.table, expected.name, err)
+			return fmt.Errorf("verify exact managed authority index %s.%s: %w", expected.table, expected.name, err)
 		}
 		if method != "btree" || unique != expected.unique || primary != expected.primary || !valid || !ready || !live || predicate != expected.predicate || expression != expected.expression || keyCount != len(expected.columns) || attributeCount != len(expected.columns) || !equalStrings(columns, expected.columns) || !equalInt16s(options, expected.options) {
 			return fmt.Errorf("managed authority schema index %s.%s differs from the exact btree key/predicate/expression contract", expected.table, expected.name)
+		}
+	}
+	return nil
+}
+
+func verifyExactAuthorityObjectSets(ctx context.Context, pool authorityCatalogQueryer) error {
+	constraintNames := make(map[string][]string)
+	constraintSeen := make(map[string]struct{})
+	for _, contract := range exactAuthorityConstraints {
+		key := contract.table + "\x00" + contract.name
+		if _, duplicate := constraintSeen[key]; duplicate {
+			return fmt.Errorf("exact authority constraint manifest duplicates %s.%s", contract.table, contract.name)
+		}
+		constraintSeen[key] = struct{}{}
+		constraintNames[contract.table] = append(constraintNames[contract.table], contract.name)
+	}
+	indexNames := make(map[string][]string)
+	indexCounts := make(map[string]int)
+	for _, contract := range exactAuthorityIndexes {
+		key := contract.table + "\x00" + contract.name
+		indexCounts[key]++
+		if indexCounts[key] != 1 {
+			return fmt.Errorf("exact authority index manifest duplicates %s.%s", contract.table, contract.name)
+		}
+		indexNames[contract.table] = append(indexNames[contract.table], contract.name)
+	}
+	for _, contract := range exactAuthorityConstraints {
+		if contract.kind != "p" && contract.kind != "u" {
+			continue
+		}
+		if indexCounts[contract.table+"\x00"+contract.name] != 1 {
+			return fmt.Errorf("exact authority constraint backing index %s.%s must be represented exactly once", contract.table, contract.name)
+		}
+	}
+	for table, expected := range constraintNames {
+		sort.Strings(expected)
+		var actual []string
+		if err := pool.QueryRow(ctx, `
+SELECT COALESCE(array_agg(constraint_row.conname::text ORDER BY constraint_row.conname),'{}'::text[])
+FROM pg_catalog.pg_constraint AS constraint_row
+WHERE constraint_row.conrelid=to_regclass($1)`, publicRegclass(table)).Scan(&actual); err != nil {
+			return fmt.Errorf("enumerate exact authority constraints for %s: %w", table, err)
+		}
+		if !equalStrings(actual, expected) {
+			return fmt.Errorf("managed authority schema constraint set for %s differs: database=%v binary=%v", table, actual, expected)
+		}
+	}
+	for table, expected := range indexNames {
+		sort.Strings(expected)
+		var actual []string
+		if err := pool.QueryRow(ctx, `
+SELECT COALESCE(array_agg(index_relation.relname::text ORDER BY index_relation.relname),'{}'::text[])
+FROM pg_catalog.pg_index AS index_row
+JOIN pg_catalog.pg_class AS index_relation ON index_relation.oid=index_row.indexrelid
+WHERE index_row.indrelid=to_regclass($1) AND index_relation.relkind='i'`, publicRegclass(table)).Scan(&actual); err != nil {
+			return fmt.Errorf("enumerate exact authority indexes for %s: %w", table, err)
+		}
+		if !equalStrings(actual, expected) {
+			return fmt.Errorf("managed authority schema index set for %s differs: database=%v binary=%v", table, actual, expected)
 		}
 	}
 	return nil

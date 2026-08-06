@@ -773,6 +773,9 @@ func newSnowflakeManagedFixtureForFlowSource(t *testing.T, flowID, sourceSchema,
 	if err := destination.Open(ctx, spec); err != nil {
 		t.Fatalf("open managed Snowflake destination: %v", err)
 	}
+	if err := destination.InitializeManagedDelivery(ctx); err != nil {
+		t.Fatalf("initialize Open-managed Snowflake SQL authority: %v", err)
+	}
 	return &snowflakeManagedFixture{db: db, provisionDB: provisionDB, destination: destination, spec: spec, schema: schema, version: version, targetQualified: targetQualified, receiptQualified: receiptQualified}
 }
 

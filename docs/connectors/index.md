@@ -4,7 +4,7 @@ A connector is an adapter at the data-path seam. It translates WALlaby batches t
 
 ## Start with PostgreSQL
 
-The supported source is PostgreSQL logical replication. The clearest first destination is another PostgreSQL table. A separate `pgstream` destination provides pull/ack queue semantics.
+The implemented source is PostgreSQL logical replication. Its generic adapter remains experimental; maintained status belongs only to an explicitly promoted profile. The clearest first destination is another PostgreSQL table. A separate `pgstream` destination provides pull/ack queue semantics.
 
 Read [PostgreSQL connectors](postgres.md) before using any of those three roles.
 
@@ -19,7 +19,7 @@ Read [PostgreSQL connectors](postgres.md) before using any of those three roles.
 | Call an application endpoint | `http` or `grpc` | Idempotency key and retry behavior |
 | Load an analytical store | [`snowflake`](snowflake.md), `snowpipe`, [`clickhouse`](clickhouse.md), `duckdb`, or `ducklake` | Type mapping, DDL behavior, and mutation support |
 
-WALlaby includes these adapters, but destination adapters remain experimental until their restart, replay, schema-evolution, and integration contracts pass. Maintained status applies only to rows marked maintained in the support matrix, including `postgresql-to-postgresql-v1` and `postgresql-to-clickhouse-append-v1`; it does not promote every mode of the underlying adapter. The constrained `postgresql-to-snowflake-sql-v1` profile has no reviewed Snowflake service version or deployment cell and remains experimental. Startup validation rejects lossy acknowledgement paths, unsafe primary acknowledgement, and automatic DDL execution through destinations that do not execute DDL.
+WALlaby includes these adapters, but destination adapters remain experimental until their restart, replay, schema-evolution, and integration contracts pass. Maintained status applies only to rows marked maintained in the support matrix, including `postgresql-to-postgresql-v1` and `postgresql-to-clickhouse-append-v1`; it does not promote every mode of the underlying adapter. The implemented Snowflake SQL, staged COPY append, and Streaming append contracts are modeled protocol profiles, not supported-profile claims. SQL and staged COPY lack a reviewed Snowflake service version/deployment cell with complete same-SHA live evidence. Streaming also lacks a linked reviewed append transport and fails closed before external I/O. Startup validation rejects lossy acknowledgement paths, unsafe primary acknowledgement, and automatic DDL execution through destinations that do not execute DDL.
 
 ## Flow shape
 

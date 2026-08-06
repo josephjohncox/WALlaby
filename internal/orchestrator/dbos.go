@@ -62,11 +62,11 @@ type FlowRunInput struct {
 
 // DBOSOrchestrator schedules flow runs via DBOS.
 type DBOSOrchestrator struct {
-	ctx               dbos.DBOSContext
+	ctx               dbos.Context
 	engine            workflow.LifecycleStore
 	checkpoints       connector.CheckpointStore
 	factory           runner.Factory
-	queue             string
+	queue             dbos.Queue
 	maxEmptyReads     int
 	maxRetries        int
 	maxRetriesSet     bool
@@ -105,7 +105,7 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Lifecy
 		return nil, errors.New("dbos app name is required")
 	}
 
-	dbosCtx, err := dbos.NewDBOSContext(ctx, dbos.Config{
+	dbosCtx, err := dbos.NewContext(ctx, dbos.Config{
 		AppName:         cfg.AppName,
 		DatabaseURL:     cfg.DatabaseURL,
 		AdminServer:     cfg.AdminServer,
@@ -115,8 +115,12 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Lifecy
 		return nil, err
 	}
 
+	var queue dbos.Queue
 	if cfg.Queue != "" {
-		dbos.NewWorkflowQueue(dbosCtx, cfg.Queue)
+		queue, err = dbos.RegisterQueue(dbosCtx, cfg.Queue)
+		if err != nil {
+			return nil, fmt.Errorf("register dbos queue %q: %w", cfg.Queue, err)
+		}
 	}
 
 	orchestrator := &DBOSOrchestrator{
@@ -124,7 +128,7 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Lifecy
 		engine:            engine,
 		checkpoints:       checkpoints,
 		factory:           factory,
-		queue:             cfg.Queue,
+		queue:             queue,
 		maxEmptyReads:     cfg.MaxEmptyReads,
 		maxRetries:        cfg.MaxRetries,
 		maxRetriesSet:     cfg.MaxRetriesSet,
@@ -142,8 +146,10 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Lifecy
 		artifacts:         cfg.Artifacts,
 	}
 
-	orchestrator.registerWorkflows(cfg.Schedule)
-	if err := dbosCtx.Launch(); err != nil {
+	if err := orchestrator.registerWorkflows(cfg.Schedule, cfg.AppName); err != nil {
+		return nil, err
+	}
+	if err := dbos.Launch(dbosCtx); err != nil {
 		return nil, err
 	}
 
@@ -161,16 +167,15 @@ func (o *DBOSOrchestrator) EnqueueGeneration(_ context.Context, flowID string, g
 
 func (o *DBOSOrchestrator) enqueueWorkflow(flowID string, generation int64, identity string) error {
 	input := FlowRunInput{FlowID: flowID, Generation: generation, MaxEmptyReads: o.maxEmptyReads}
-	opts := []dbos.WorkflowOption{dbos.WithWorkflowID(identity), dbos.WithDeduplicationID(identity)}
-	if o.queue != "" {
-		opts = append(opts, dbos.WithQueue(o.queue))
+	opts := []dbos.WorkflowOption{dbos.WithWorkflowID(identity)}
+	if o.queue != nil {
+		opts = append(opts, dbos.WithQueue(o.queue), dbos.WithDeduplicationID(identity))
 	}
 	_, err := dbos.RunWorkflow(o.ctx, o.runFlowWorkflow, input, opts...)
 	if err == nil {
 		return nil
 	}
-	var dbosErr *dbos.DBOSError
-	if errors.As(err, &dbosErr) && dbosErr.Code == dbos.QueueDeduplicated {
+	if errors.Is(err, dbos.ErrQueueDeduplicated) {
 		return nil
 	}
 	return err
@@ -196,7 +201,7 @@ func (o *DBOSOrchestrator) CancelThroughGeneration(ctx context.Context, flowID s
 	}
 	prefix := flowWorkflowPrefix(flowID)
 	for {
-		workflows, err := dbos.ListWorkflows(o.ctx, dbos.WithWorkflowIDPrefix(prefix))
+		workflows, err := dbos.ListWorkflows(o.ctx, dbos.WithFilterWorkflowIDPrefix(prefix))
 		if err != nil {
 			return receipt, fmt.Errorf("list dbos flow workflows: %w", err)
 		}
@@ -268,24 +273,31 @@ func flowWorkflowPrefix(flowID string) string {
 // Shutdown stops the DBOS runtime.
 func (o *DBOSOrchestrator) Shutdown(timeout time.Duration) {
 	if o.ctx != nil {
-		o.ctx.Shutdown(timeout)
+		_ = dbos.Shutdown(o.ctx, timeout)
 	}
 }
 
-func (o *DBOSOrchestrator) registerWorkflows(schedule string) {
+func (o *DBOSOrchestrator) registerWorkflows(schedule, appName string) error {
 	opts := []dbos.WorkflowRegistrationOption{}
 	if o.maxRetriesSet {
-		opts = append(opts, dbos.WithMaxRetries(o.maxRetries))
+		opts = append(opts, dbos.WithMaxRecoveryAttempts(o.maxRetries))
 	}
 	dbos.RegisterWorkflow(o.ctx, o.runFlowWorkflow, opts...)
-	if schedule != "" {
-		dispatchOpts := append([]dbos.WorkflowRegistrationOption{}, opts...)
-		dispatchOpts = append(dispatchOpts, dbos.WithSchedule(schedule))
-		dbos.RegisterWorkflow(o.ctx, o.dispatchWorkflow, dispatchOpts...)
+	if schedule == "" {
+		return nil
 	}
+	dbos.RegisterWorkflow(o.ctx, o.dispatchWorkflow, opts...)
+	if err := dbos.ApplySchedules(o.ctx, []dbos.ScheduleSpec{{
+		ScheduleName: fmt.Sprintf("%s-flow-dispatch", appName),
+		Schedule:     schedule,
+		Workflow:     o.dispatchWorkflow,
+	}}); err != nil {
+		return fmt.Errorf("apply dbos flow dispatch schedule: %w", err)
+	}
+	return nil
 }
 
-func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunInput) (string, error) {
+func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.Context, input FlowRunInput) (string, error) {
 	if input.FlowID == "" || input.Generation <= 0 {
 		return "", errors.New("flow id and positive generation are required")
 	}
@@ -342,7 +354,8 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.DBOSContext, input FlowRunIn
 	return "ok", nil
 }
 
-func (o *DBOSOrchestrator) dispatchWorkflow(ctx dbos.DBOSContext, scheduledAt time.Time) (string, error) {
+func (o *DBOSOrchestrator) dispatchWorkflow(ctx dbos.Context, input dbos.ScheduledWorkflowInput) (string, error) {
+	scheduledAt := input.ScheduledTime
 	flows, err := o.engine.List(ctx)
 	if err != nil {
 		return "", err

@@ -1,0 +1,182 @@
+---
+name: CI Evidence
+
+"on":
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "43 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  failure-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GOBIN: ${{ github.workspace }}/.cache/bin
+      GOMODCACHE: ${{ github.workspace }}/.cache/gomod
+      GOCACHE: ${{ github.workspace }}/.cache/gocache
+      FAILURE_CYCLES: ${{ github.event_name == 'schedule' && '1000' || '100' }}
+      SOAK_DURATION: ${{ github.event_name == 'schedule' && '5m' || '30s' }}
+    steps:
+      - name: Checkout
+        # actions/checkout v5.0.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup just
+        uses: ./.github/actions/setup-just
+
+      - name: Setup Go
+        # actions/setup-go v6.5.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: OS-process failure matrix
+        run: just test-failure-matrix
+
+      - name: Race-instrumented failure matrix
+        run: just test-failure-matrix-race
+
+      - name: Bounded protocol soak
+        run: just test-soak
+
+      - name: Upload failure-matrix evidence
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: failure-matrix-evidence
+          path: |
+            bench/evidence/failure_matrix/os_run_*
+            bench/evidence/failure_matrix/race-test.txt
+            bench/evidence/failure_matrix/race-worker.sha256
+            bench/evidence/soak/run_*
+          if-no-files-found: error
+
+  connector-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        # actions/checkout v5.0.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Go
+        # actions/setup-go v6.5.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify executable connector matrix
+        run: |
+          set -euo pipefail
+          mkdir -p .cache/evidence
+          go run ./cmd/wallaby-connector-matrix \
+            > .cache/evidence/connector-support.md
+          diff -u docs/reference/generated/connector-support.md \
+            .cache/evidence/connector-support.md
+
+      - name: Upload connector matrix
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: connector-matrix
+          path: .cache/evidence/connector-support.md
+          if-no-files-found: error
+
+  benchmark-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GOBIN: ${{ github.workspace }}/.cache/bin
+      GOMODCACHE: ${{ github.workspace }}/.cache/gomod
+      GOCACHE: ${{ github.workspace }}/.cache/gocache
+      OUTPUT_ROOT: ${{ github.workspace }}/.cache/bench-results
+      PROFILES: ${{ github.event_name == 'schedule' && 'small' || 'ci' }}
+      SCENARIOS: base
+      TARGETS: all
+      RESET_VOLUMES: "1"
+      RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout
+        # actions/checkout v5.0.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup just
+        uses: ./.github/actions/setup-just
+
+      - name: Setup Go
+        # actions/setup-go v6.5.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run benchmark harness
+        run: just benchmark
+
+      - name: Verify benchmark artifacts
+        run: |
+          set -euo pipefail
+          test "$(find "${OUTPUT_ROOT}" -type f \
+            -name 'bench_*.json' | wc -l)" -ge 1
+          test "$(find "${OUTPUT_ROOT}" -type f \
+            -name 'bench_*.csv' | wc -l)" -ge 1
+          test "$(find "${OUTPUT_ROOT}" -type f \
+            -name 'summary.txt' | wc -l)" -ge 1
+          test "$(find "${OUTPUT_ROOT}" -type f \
+            -name 'summary.md' | wc -l)" -ge 1
+          python3 - <<'PY'
+          import glob
+          import json
+          import os
+
+          paths = glob.glob(
+              os.path.join(os.environ["OUTPUT_ROOT"], "**", "bench_*.json"),
+              recursive=True,
+          )
+          results = []
+          for path in paths:
+              with open(path, encoding="utf-8") as handle:
+                  results.extend(json.load(handle))
+          targets = {result["target"] for result in results}
+          expected = {"kafka", "postgres", "clickhouse"}
+          if targets != expected:
+              raise SystemExit(
+                  f"benchmark targets {sorted(targets)} != {sorted(expected)}"
+              )
+          PY
+
+      - name: Stop benchmark services
+        if: always()
+        run: docker compose -f bench/docker-compose.yml down -v --remove-orphans
+
+      - name: Upload benchmark results
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: benchmark-results-${{ env.PROFILES }}
+          path: .cache/bench-results/
+          if-no-files-found: warn

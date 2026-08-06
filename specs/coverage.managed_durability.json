@@ -1,0 +1,53 @@
+{
+  "spec": "ManagedDurability",
+  "actions": [
+    "Acquire",
+    "Prepare",
+    "ApplyExternal",
+    "FinalizeDelivery",
+    "UploadArtifact",
+    "PublishArtifact",
+    "AuthorizeInitialCut",
+    "AckSource",
+    "CompleteArtifactDelivery",
+    "MarkRetainedRoot",
+    "CollectOrphan",
+    "SweepRetained"
+  ],
+  "invariants": [
+    "TypeInvariant",
+    "ExternalCommitRequiresAttempt",
+    "ReceiptRequiresExternalCommit",
+    "ReceiptCheckpointAckAtomic",
+    "ArtifactCheckpointAckAtomic",
+    "AckSafety",
+    "ActivePublishedArtifactsRemainPresent",
+    "RetentionSafety",
+    "AuthoritativeWritesHaveFence"
+  ],
+  "unreachable_actions": [
+    "Acquire",
+    "Prepare",
+    "ApplyExternal",
+    "FinalizeDelivery",
+    "UploadArtifact",
+    "PublishArtifact",
+    "AuthorizeInitialCut",
+    "AckSource",
+    "CompleteArtifactDelivery",
+    "MarkRetainedRoot",
+    "CollectOrphan",
+    "SweepRetained"
+  ],
+  "unreachable_invariants": [
+    "TypeInvariant",
+    "ExternalCommitRequiresAttempt",
+    "ReceiptRequiresExternalCommit",
+    "ReceiptCheckpointAckAtomic",
+    "ArtifactCheckpointAckAtomic",
+    "AckSafety",
+    "ActivePublishedArtifactsRemainPresent",
+    "RetentionSafety",
+    "AuthoritativeWritesHaveFence"
+  ]
+}

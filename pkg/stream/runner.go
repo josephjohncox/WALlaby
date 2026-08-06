@@ -335,7 +335,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		// The Snowflake SQL clean-start path is the sole exception: Source.Open
 		// creates and roots one deterministic slot while holding the RunFence.
 		allowSnowflakeSourceCut := bootstrapMode == "never" && restoredCheckpoint == nil &&
-			strings.TrimSpace(r.SourceSpec.Options["managed_profile"]) == connector.ManagedProfilePostgresToSnowflakeSQLV1 &&
+			connector.IsManagedSnowflakeProfile(strings.TrimSpace(r.SourceSpec.Options["managed_profile"])) &&
 			strings.EqualFold(strings.TrimSpace(r.SourceSpec.Options["create_slot"]), "true")
 		for _, option := range []string{"ensure_state", "ensure_publication", "sync_publication"} {
 			r.SourceSpec.Options[option] = "false"
@@ -457,7 +457,8 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			if err := validateManagedClickHouseVersionPair(sourceVersion.ManagedPostgresMajor(), destinationVersion.ManagedClickHouseVersion()); err != nil {
 				return err
 			}
-		case connector.ManagedProfilePostgresToSnowflakeSQLV1:
+		case connector.ManagedProfilePostgresToSnowflakeSQLV1, connector.ManagedProfilePostgresToSnowflakeStagedAppendV1, connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
+			snowflakeProfileName := strings.TrimSpace(r.SourceSpec.Options["managed_profile"])
 			sourceVersion, sourceOK := r.Source.(connector.ManagedPostgresVersionProvider)
 			sourcePublication, publicationOK := r.Source.(connector.ManagedPostgresPublicationProvider)
 			destinationVersion, destinationOK := r.Destinations[0].Dest.(connector.ManagedSnowflakeVersionProvider)
@@ -467,6 +468,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				return errors.New("named managed Snowflake profile requires live endpoint version, publication, schema, and flow-scope evidence")
 			}
 			if err := validateManagedSnowflakeVersionPair(
+				snowflakeProfileName,
 				sourceVersion.ManagedPostgresMajor(),
 				destinationVersion.ManagedSnowflakeVersion(),
 				r.Destinations[0].Spec.Options["managed_snowflake_version"],
@@ -474,6 +476,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				return err
 			}
 			if err := validateManagedSnowflakePublicationRelation(
+				snowflakeProfileName,
 				sourcePublication.ManagedPostgresPublicationTables(),
 				r.Destinations[0].Spec.Options["managed_source_schema"],
 				r.Destinations[0].Spec.Options["managed_source_table"],
@@ -482,7 +485,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			}
 			publicationSchemas := sourcePublication.ManagedPostgresPublicationSchemas()
 			if len(publicationSchemas) != 1 {
-				return fmt.Errorf("managed profile %s requires one live PostgreSQL publication schema, got %d", connector.ManagedProfilePostgresToSnowflakeSQLV1, len(publicationSchemas))
+				return fmt.Errorf("managed profile %s requires one live PostgreSQL publication schema, got %d", snowflakeProfileName, len(publicationSchemas))
 			}
 			projector, ok := r.Destinations[0].Projector.(connector.ManagedBootstrapProjector)
 			if !ok {
@@ -492,10 +495,18 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			if err != nil {
 				return fmt.Errorf("project live managed Snowflake source schema: %w", err)
 			}
-			if !included || policy.Mode != connector.ResolvedWriteUpsert || policy.WatermarkColumn != "" {
-				return errors.New("managed Snowflake live source projection must be included upsert without watermark")
+			expectedMode := connector.ResolvedWriteAppend
+			if snowflakeProfileName == connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+				expectedMode = connector.ResolvedWriteUpsert
 			}
-			if err := destinationSchema.ValidateManagedSourceSchema(projected); err != nil {
+			if !included || policy.Mode != expectedMode || policy.WatermarkColumn != "" {
+				return fmt.Errorf("managed Snowflake profile %s live source projection must be included %s without watermark", snowflakeProfileName, expectedMode)
+			}
+			validatedSchema := projected
+			if snowflakeProfileName != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+				validatedSchema = publicationSchemas[0]
+			}
+			if err := destinationSchema.ValidateManagedSourceSchema(validatedSchema); err != nil {
 				return err
 			}
 			if err := destinationScope.ValidateManagedFlowScope(ctx, r.RunFence.FlowID, r.RunFence.FlowIncarnationID.String()); err != nil {
@@ -800,19 +811,26 @@ func validateManagedClickHouseVersionPair(sourceMajor int, clickHouseVersion str
 	return nil
 }
 
-func validateManagedSnowflakePublicationRelation(publicationTables []string, sourceSchema, sourceTable string) error {
+func validateManagedSnowflakePublicationRelation(profileName string, publicationTables []string, sourceSchema, sourceTable string) error {
 	if sourceSchema == "" || sourceTable == "" || strings.ContainsRune(sourceSchema, '\x00') || strings.ContainsRune(sourceTable, '\x00') {
-		return fmt.Errorf("managed profile %s requires exact nonempty NUL-free source identifiers", connector.ManagedProfilePostgresToSnowflakeSQLV1)
+		return fmt.Errorf("managed profile %s requires exact nonempty NUL-free source identifiers", profileName)
 	}
 	expectedRelation := pgx.Identifier{sourceSchema, sourceTable}.Sanitize()
 	if len(publicationTables) != 1 || publicationTables[0] != expectedRelation {
-		return fmt.Errorf("managed profile %s requires live PostgreSQL publication relation [%s], got %v", connector.ManagedProfilePostgresToSnowflakeSQLV1, expectedRelation, publicationTables)
+		return fmt.Errorf("managed profile %s requires live PostgreSQL publication relation [%s], got %v", profileName, expectedRelation, publicationTables)
 	}
 	return nil
 }
 
-func validateManagedSnowflakeVersionPair(sourceMajor int, snowflakeVersion, exactPin string) error {
-	profile := connector.PostgresToSnowflakeSQLV1Profile()
+func managedSnowflakeProfileByName(profileName string) connector.ManagedProfileContract {
+	if profileName == connector.ManagedProfilePostgresToSnowflakeStagedAppendV1 {
+		return connector.PostgresToSnowflakeStagedAppendV1Profile()
+	}
+	return connector.PostgresToSnowflakeSQLV1Profile()
+}
+
+func validateManagedSnowflakeVersionPair(profileName string, sourceMajor int, snowflakeVersion, exactPin string) error {
+	profile := managedSnowflakeProfileByName(profileName)
 	if !profile.SupportsPostgresVersion(sourceMajor) {
 		return fmt.Errorf("managed profile %s does not admit PostgreSQL %d", profile.Name, sourceMajor)
 	}
@@ -888,10 +906,20 @@ func (r *Runner) runManaged(ctx context.Context) error {
 			return fmt.Errorf("build managed transaction schema-baseline payload: %w", err)
 		}
 		// Materialized Iceberg projection is performed exactly once inside the
-		// projection-bound canonical v2 artifact runtime. Ordinary managed delivery
-		// projects before transaction identity, DDL, intent creation, and I/O.
+		// projection-bound canonical v2 artifact runtime. SQL managed delivery uses
+		// the ordinary data projector. Staged COPY and Streaming REST encode the raw
+		// source transaction into a changelog, so only their append policy and
+		// structured DDL are projected here; data images must not be mapped twice.
 		if !materialized && destination.Projector != nil {
-			projected, _, projectErr := destination.Projector.ProjectTransaction(transaction)
+			profile := strings.TrimSpace(destination.Spec.Options["managed_profile"])
+			var projected connector.SourceTransaction
+			var projectErr error
+			switch profile {
+			case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1, connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
+				projected, _, projectErr = projectManagedRawAppendTransaction(destination.Projector, transaction)
+			default:
+				projected, _, projectErr = destination.Projector.ProjectTransaction(transaction)
+			}
 			if projectErr != nil {
 				return fmt.Errorf("project managed destination %s: %w", destination.Spec.Name, projectErr)
 			}
@@ -995,6 +1023,48 @@ func (r *Runner) ackManagedGrant(ctx context.Context, grant connector.AckGrant) 
 	r.emitCheckpointTrace(ctx, "source_flush", grant.Checkpoint, grant.PositionID, spec.ActionAck, nil)
 	r.emitCheckpointTrace(ctx, "ack", grant.Checkpoint, grant.PositionID, spec.ActionAck, nil)
 	return nil
+}
+
+func projectManagedRawAppendTransaction(projector Projector, transaction connector.SourceTransaction) (connector.SourceTransaction, ProjectionDecision, error) {
+	bootstrapProjector, ok := projector.(connector.ManagedBootstrapProjector)
+	if !ok {
+		return connector.SourceTransaction{}, ProjectionFiltered, errors.New("managed raw append profile requires a typed table projector")
+	}
+	out := transaction
+	out.Fragments = make([]connector.TransactionFragment, 0, len(transaction.Fragments))
+	for _, fragment := range transaction.Fragments {
+		batch := fragment.Batch
+		if batchContainsDDL(batch) {
+			projected, decision, err := projector.ProjectBatch(batch)
+			if err != nil {
+				return connector.SourceTransaction{}, ProjectionFiltered, fmt.Errorf("project structured DDL fragment %d: %w", fragment.Ordinal, err)
+			}
+			if decision == ProjectionFiltered {
+				continue
+			}
+			batch = projected
+		} else {
+			_, policy, included, err := bootstrapProjector.ProjectBootstrapSchema(batch.Schema)
+			if err != nil {
+				return connector.SourceTransaction{}, ProjectionFiltered, fmt.Errorf("resolve raw append fragment %d mapping: %w", fragment.Ordinal, err)
+			}
+			if !included {
+				return connector.SourceTransaction{}, ProjectionFiltered, fmt.Errorf("raw append fragment %d source relation is not included by its mandatory mapping", fragment.Ordinal)
+			}
+			if policy.Mode != connector.ResolvedWriteAppend || policy.WatermarkColumn != "" || len(policy.KeyColumns) != 0 {
+				return connector.SourceTransaction{}, ProjectionFiltered, fmt.Errorf("raw append fragment %d requires append policy without keys or watermark", fragment.Ordinal)
+			}
+			batch.WritePolicy = policy
+		}
+		out.Fragments = append(out.Fragments, connector.TransactionFragment{Ordinal: uint64(len(out.Fragments)), Batch: batch})
+	}
+	if len(out.Fragments) == 0 {
+		return out, ProjectionFiltered, nil
+	}
+	if err := out.Validate(); err != nil {
+		return connector.SourceTransaction{}, ProjectionFiltered, fmt.Errorf("validate managed raw append transaction after DDL policy mapping: %w", err)
+	}
+	return out, ProjectionIncluded, nil
 }
 
 func sourceTransactionContainsDDL(transaction connector.SourceTransaction) bool {

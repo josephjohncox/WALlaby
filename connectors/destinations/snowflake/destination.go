@@ -28,8 +28,10 @@ func safeMetaCapacity(base, extra int) int {
 }
 
 const (
-	CapabilityProfileBase    connector.CapabilityProfileID = "base"
-	CapabilityProfileManaged connector.CapabilityProfileID = connector.ManagedProfilePostgresToSnowflakeSQLV1
+	CapabilityProfileBase             connector.CapabilityProfileID = "base"
+	CapabilityProfileManagedSQL       connector.CapabilityProfileID = connector.ManagedProfilePostgresToSnowflakeSQLV1
+	CapabilityProfileManagedStaged    connector.CapabilityProfileID = connector.ManagedProfilePostgresToSnowflakeStagedAppendV1
+	CapabilityProfileManagedStreaming connector.CapabilityProfileID = connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1
 )
 
 const (
@@ -68,35 +70,43 @@ const (
 
 // Destination writes change events into Snowflake tables.
 type Destination struct {
-	spec                   connector.Spec
-	db                     *sql.DB
-	managedProfile         string
-	managedConfig          managedConfig
-	managedHooksMu         sync.RWMutex
-	managedHooks           managedHooks
-	managedScopeMu         sync.Mutex
-	managedFlowIncarnation string
-	disableTx              bool
-	batchMode              string
-	batchResolve           string
-	stagingSchema          string
-	stagingTableName       string
-	stagingSuffix          string
-	metaEnabled            bool
-	metaSchema             string
-	metaTable              string
-	metaPKPrefix           string
-	flowID                 string
-	metaColumns            map[string]struct{}
-	registry               schemaregistry.Registry
-	registrySubject        string
-	stagingTables          map[string]tableInfo
-	stagingResolved        bool
-	warehouse              string
-	warehouseSize          string
-	warehouseSuspend       *int
-	warehouseResume        *bool
-	sessionKeepAlive       *bool
+	spec                     connector.Spec
+	db                       *sql.DB
+	managedProfile           string
+	managedConfig            managedConfig
+	managedHooksMu           sync.RWMutex
+	managedHooks             managedHooks
+	managedScopeMu           sync.Mutex
+	managedFlowIncarnation   string
+	stagedConfig             stagedConfig
+	stagedCatalogFingerprint string
+	stagedHooksMu            sync.RWMutex
+	stagedHooks              stagedHooks
+	streamConfig             streamConfig
+	streamCatalogFingerprint string
+	streamHooksMu            sync.RWMutex
+	streamHooks              streamingHooks
+	disableTx                bool
+	batchMode                string
+	batchResolve             string
+	stagingSchema            string
+	stagingTableName         string
+	stagingSuffix            string
+	metaEnabled              bool
+	metaSchema               string
+	metaTable                string
+	metaPKPrefix             string
+	flowID                   string
+	metaColumns              map[string]struct{}
+	registry                 schemaregistry.Registry
+	registrySubject          string
+	stagingTables            map[string]tableInfo
+	stagingResolved          bool
+	warehouse                string
+	warehouseSize            string
+	warehouseSuspend         *int
+	warehouseResume          *bool
+	sessionKeepAlive         *bool
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
@@ -107,10 +117,16 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		return errors.New("snowflake dsn is required")
 	}
 	if d.managedProfile != "" {
-		if d.managedProfile != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+		switch d.managedProfile {
+		case connector.ManagedProfilePostgresToSnowflakeSQLV1:
+			return d.openManaged(ctx, dsn, spec)
+		case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
+			return d.openManagedStaged(ctx, dsn, spec)
+		case connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
+			return d.openManagedStreaming(ctx, dsn, spec)
+		default:
 			return fmt.Errorf("unsupported Snowflake managed profile %q", d.managedProfile)
 		}
-		return d.openManaged(ctx, dsn, spec)
 	}
 
 	db, err := sql.Open("snowflake", dsn)
@@ -421,25 +437,34 @@ func (d *Destination) Capabilities() connector.Capabilities {
 
 // CapabilityProfileIDs returns the complete closed Snowflake capability profile set.
 func (*Destination) CapabilityProfileIDs() []connector.CapabilityProfileID {
-	return []connector.CapabilityProfileID{CapabilityProfileBase, CapabilityProfileManaged}
+	return []connector.CapabilityProfileID{
+		CapabilityProfileBase,
+		CapabilityProfileManagedSQL,
+		CapabilityProfileManagedStaged,
+		CapabilityProfileManagedStreaming,
+	}
 }
 
-// ClassifyCapabilityProfile validates the exact managed Snowflake profile.
+// ClassifyCapabilityProfile validates the exact configured Snowflake profile.
 func (*Destination) ClassifyCapabilityProfile(spec connector.Spec) (connector.CapabilityProfileID, error) {
 	profile := strings.TrimSpace(spec.Options["managed_profile"])
 	switch profile {
 	case "":
 		return CapabilityProfileBase, nil
 	case connector.ManagedProfilePostgresToSnowflakeSQLV1:
-		return CapabilityProfileManaged, nil
+		return CapabilityProfileManagedSQL, nil
+	case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
+		return CapabilityProfileManagedStaged, nil
+	case connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
+		return CapabilityProfileManagedStreaming, nil
 	default:
 		return "", fmt.Errorf("unsupported Snowflake managed profile %q", profile)
 	}
 }
 
-// CapabilitiesFor scopes durable transaction/reconciliation claims to the
-// exact named profile. Generic Snowflake and all Snowpipe modes stay experimental
-// without replay-safe capability claims.
+// CapabilitiesFor scopes table-write and durable delivery claims to the exact
+// configured profile. The SQL profile is explicit-key upsert; staged COPY and
+// Streaming REST profiles remain append-only.
 func (d *Destination) CapabilitiesFor(spec connector.Spec) (connector.Capabilities, error) {
 	profile, err := d.ClassifyCapabilityProfile(spec)
 	if err != nil {
@@ -449,13 +474,17 @@ func (d *Destination) CapabilitiesFor(spec connector.Spec) (connector.Capabiliti
 	switch profile {
 	case CapabilityProfileBase:
 		return capabilities, nil
-	case CapabilityProfileManaged:
+	case CapabilityProfileManagedSQL:
 		capabilities.TableWrites = connector.TableWriteSemantics{Upsert: true, ExplicitKey: true}
 		capabilities.Delivery.TransactionalBatch = true
 		capabilities.Delivery.IdempotentReplay = true
 		capabilities.Delivery.ReplaySafe = true
 		capabilities.Delivery.ExecutesDDL = false
 		return capabilities, nil
+	case CapabilityProfileManagedStaged:
+		return d.capabilitiesForStaged(capabilities), nil
+	case CapabilityProfileManagedStreaming:
+		return d.capabilitiesForStreaming(capabilities), nil
 	default:
 		return connector.Capabilities{}, fmt.Errorf("unsupported Snowflake capability profile %q", profile)
 	}

@@ -1,0 +1,29 @@
+{
+  "seed": 20260728,
+  "cycles_per_boundary": 100,
+  "total_cycles": 6000,
+  "passed": 6000,
+  "failed": 0,
+  "fail_closed_cycles": 1000,
+  "coverage_ok": true,
+  "per_boundary": {
+    "after_side_effect": 600,
+    "artifact_publication": 600,
+    "before_side_effect": 600,
+    "checkpoint": 600,
+    "consumer_receipt": 600,
+    "destination_receipt": 600,
+    "gc": 600,
+    "postgres_adoption": 600,
+    "retention_release": 600,
+    "source_ack": 600
+  },
+  "per_profile": {
+    "clickhouse-append-v1": 1000,
+    "postgres-to-postgres-v1": 1000,
+    "snowflake-sql-v1": 1000,
+    "snowpipe-copy-v1": 1000,
+    "snowpipe-streaming-linked-v1": 1000,
+    "snowpipe-streaming-v1": 1000
+  }
+}

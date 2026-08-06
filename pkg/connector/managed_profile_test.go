@@ -99,6 +99,89 @@ func TestSnowflakeSQLManagedProfileRemainsExperimentalWithoutLiveRecoveryEvidenc
 	}
 }
 
+func TestSnowflakeStagedAppendManagedProfileRemainsExperimentalWithoutLiveRecoveryEvidence(t *testing.T) {
+	t.Parallel()
+	profile := PostgresToSnowflakeStagedAppendV1Profile()
+	if err := profile.ValidatePromotion(); err != nil {
+		t.Fatal(err)
+	}
+	if profile.Name != ManagedProfilePostgresToSnowflakeStagedAppendV1 || profile.Support != SupportExperimental {
+		t.Fatalf("profile=%+v", profile)
+	}
+	if profile.Destination != EndpointSnowflake || profile.Deployment != "commercial-aws-snowflake-internal-stage-copy" {
+		t.Fatalf("endpoint/deployment=%s/%q", profile.Destination, profile.Deployment)
+	}
+	if profile.SnowflakeVersionPolicy != "configured-exact-version-unreviewed" {
+		t.Fatalf("Snowflake version policy=%q", profile.SnowflakeVersionPolicy)
+	}
+	if len(profile.SnowflakeVersions) != 0 || len(profile.SnowflakeDeploymentCells) != 0 {
+		t.Fatalf("unproven staged Snowflake profile contains reviewed live cells: versions=%v cells=%v", profile.SnowflakeVersions, profile.SnowflakeDeploymentCells)
+	}
+	if !profile.SupportsPostgresVersion(16) || profile.SupportsPostgresVersion(14) || profile.SupportsPostgresVersion(17) {
+		t.Fatalf("PostgreSQL version admission exceeds the unpromoted live pairing: %v", profile.PostgresVersions)
+	}
+	if profile.DeliveryGuarantee != "at-least-once" || !profile.SingleSink {
+		t.Fatalf("profile guarantee=%q single_sink=%t", profile.DeliveryGuarantee, profile.SingleSink)
+	}
+	for _, gate := range profile.Gates {
+		if gate.Capability != "telemetry" && !gate.Live {
+			t.Fatalf("recovery gate is not marked as requiring a real Snowflake service: %+v", gate)
+		}
+	}
+	profile.Support = SupportMaintained
+	if err := profile.ValidatePromotion(); err == nil {
+		t.Fatal("staged Snowflake profile was promoted without a reviewed executable promotion gate set")
+	}
+}
+
+func TestSnowflakeStreamingAppendManagedProfileRemainsExperimentalWithoutLiveRecoveryEvidence(t *testing.T) {
+	t.Parallel()
+	profile := PostgresToSnowflakeStreamingRestAppendV1Profile()
+	if err := profile.ValidatePromotion(); err != nil {
+		t.Fatal(err)
+	}
+	if profile.Name != ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 || profile.Support != SupportExperimental {
+		t.Fatalf("profile=%+v", profile)
+	}
+	if profile.Destination != EndpointSnowflake || profile.Deployment != "commercial-aws-snowpipe-streaming-highperf-rest" {
+		t.Fatalf("endpoint/deployment=%s/%q", profile.Destination, profile.Deployment)
+	}
+	if profile.SnowflakeVersionPolicy != "configured-exact-version-unreviewed" {
+		t.Fatalf("Snowflake version policy=%q", profile.SnowflakeVersionPolicy)
+	}
+	if len(profile.SnowflakeVersions) != 0 || len(profile.SnowflakeDeploymentCells) != 0 {
+		t.Fatalf("unproven streaming Snowflake profile contains reviewed live cells: versions=%v cells=%v", profile.SnowflakeVersions, profile.SnowflakeDeploymentCells)
+	}
+	if !profile.SupportsPostgresVersion(16) || profile.SupportsPostgresVersion(14) || profile.SupportsPostgresVersion(17) {
+		t.Fatalf("PostgreSQL version admission exceeds the unpromoted live pairing: %v", profile.PostgresVersions)
+	}
+	if profile.DeliveryGuarantee != "at-least-once" || !profile.SingleSink {
+		t.Fatalf("profile guarantee=%q single_sink=%t", profile.DeliveryGuarantee, profile.SingleSink)
+	}
+	for _, gate := range profile.Gates {
+		if gate.Capability != "telemetry" && !gate.Live {
+			t.Fatalf("recovery gate is not marked as requiring a real Snowflake service: %+v", gate)
+		}
+	}
+	profile.Support = SupportMaintained
+	if err := profile.ValidatePromotion(); err == nil {
+		t.Fatal("streaming Snowflake profile was promoted without a reviewed executable promotion gate set")
+	}
+}
+
+func TestIsManagedSnowflakeProfile(t *testing.T) {
+	t.Parallel()
+	if !IsManagedSnowflakeProfile(ManagedProfilePostgresToSnowflakeSQLV1) || !IsManagedSnowflakeProfile(ManagedProfilePostgresToSnowflakeStagedAppendV1) ||
+		!IsManagedSnowflakeProfile(ManagedProfilePostgresToSnowflakeStreamingRestAppendV1) {
+		t.Fatal("every constrained Snowflake profile must be recognized as a Snowflake managed profile")
+	}
+	for _, name := range []string{"", ManagedProfilePostgresToPostgresV1, ManagedProfilePostgresToClickHouseAppendV1, "postgresql-to-snowflake-staged-append-v2"} {
+		if IsManagedSnowflakeProfile(name) {
+			t.Fatalf("non-Snowflake profile %q was misclassified as a Snowflake managed profile", name)
+		}
+	}
+}
+
 func TestMaintainedManagedProfileRequiresEveryLiveGate(t *testing.T) {
 	t.Parallel()
 	for _, profile := range []ManagedProfileContract{PostgresToPostgresV1Profile(), PostgresToClickHouseAppendV1Profile()} {

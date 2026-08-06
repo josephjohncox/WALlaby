@@ -40,11 +40,11 @@ func TestManagedClickHouseProfileRejectsUnprovenVersionPair(t *testing.T) {
 
 func TestManagedSnowflakePublicationRequiresExactlyTheAdmittedRelation(t *testing.T) {
 	t.Parallel()
-	if err := validateManagedSnowflakePublicationRelation([]string{`"public"."widgets"`}, "public", "widgets"); err != nil {
+	if err := validateManagedSnowflakePublicationRelation(connector.ManagedProfilePostgresToSnowflakeSQLV1, []string{`"public"."widgets"`}, "public", "widgets"); err != nil {
 		t.Fatal(err)
 	}
 	for _, tables := range [][]string{nil, {`"public"."widgets"`, `"public"."audit"`}, {`"other"."widgets"`}} {
-		if err := validateManagedSnowflakePublicationRelation(tables, "public", "widgets"); err == nil {
+		if err := validateManagedSnowflakePublicationRelation(connector.ManagedProfilePostgresToSnowflakeStagedAppendV1, tables, "public", "widgets"); err == nil {
 			t.Fatalf("publication tables %v were admitted", tables)
 		}
 	}
@@ -54,12 +54,12 @@ func TestManagedSnowflakePublicationPreservesExactWhitespaceIdentifiers(t *testi
 	t.Parallel()
 	for _, relation := range []struct{ schema, table string }{{" ", " "}, {" leading", "trailing "}, {" both ", " all "}} {
 		expected := pgx.Identifier{relation.schema, relation.table}.Sanitize()
-		if err := validateManagedSnowflakePublicationRelation([]string{expected}, relation.schema, relation.table); err != nil {
+		if err := validateManagedSnowflakePublicationRelation(connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1, []string{expected}, relation.schema, relation.table); err != nil {
 			t.Fatalf("exact publication relation %q rejected: %v", expected, err)
 		}
 		trimmed := pgx.Identifier{strings.TrimSpace(relation.schema), strings.TrimSpace(relation.table)}.Sanitize()
 		if trimmed != expected {
-			if err := validateManagedSnowflakePublicationRelation([]string{trimmed}, relation.schema, relation.table); err == nil {
+			if err := validateManagedSnowflakePublicationRelation(connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1, []string{trimmed}, relation.schema, relation.table); err == nil {
 				t.Fatalf("trimmed publication relation %q admitted for %q", trimmed, expected)
 			}
 		}
@@ -68,13 +68,13 @@ func TestManagedSnowflakePublicationPreservesExactWhitespaceIdentifiers(t *testi
 
 func TestManagedSnowflakeProfileRequiresPostgres16AndExactRuntimePin(t *testing.T) {
 	t.Parallel()
-	if err := validateManagedSnowflakeVersionPair(16, "9.99.0", "9.99.0"); err != nil {
+	if err := validateManagedSnowflakeVersionPair(connector.ManagedProfilePostgresToSnowflakeSQLV1, 16, "9.99.0", "9.99.0"); err != nil {
 		t.Fatalf("exact runtime pin rejected: %v", err)
 	}
-	if err := validateManagedSnowflakeVersionPair(15, "9.99.0", "9.99.0"); err == nil {
+	if err := validateManagedSnowflakeVersionPair(connector.ManagedProfilePostgresToSnowflakeStagedAppendV1, 15, "9.99.0", "9.99.0"); err == nil {
 		t.Fatal("unproven PostgreSQL major was admitted")
 	}
-	if err := validateManagedSnowflakeVersionPair(16, "9.99.1", "9.99.0"); err == nil {
+	if err := validateManagedSnowflakeVersionPair(connector.ManagedProfilePostgresToSnowflakeSQLV1, 16, "9.99.1", "9.99.0"); err == nil {
 		t.Fatal("Snowflake service version outside the exact runtime pin was admitted")
 	}
 }
@@ -117,6 +117,97 @@ func TestManagedRestoreSeedsSourceWithDeliveredSchemaBaselines(t *testing.T) {
 	}
 	if got := source.openSpec.Options[connector.ManagedSchemaBaselinesOptionKey]; got != baseline {
 		t.Fatalf("source schema baseline option=%q, want %q", got, baseline)
+	}
+}
+
+func TestManagedSnowflakeAppendProfilesMapPolicyWithoutDoubleMappingRawData(t *testing.T) {
+	t.Parallel()
+	projector := rawAppendRenameProjector{}
+	schema := connector.Schema{Namespace: "public", Name: "widgets", Version: 1, Columns: []connector.Column{
+		{Name: "id", Type: "int8"}, {Name: "payload", Type: "text"}, {Name: "secret", Type: "text"},
+	}}
+	transaction := connector.SourceTransaction{
+		SourceLineageID: "source/publication-v1", TransactionID: 7,
+		BeginLSN: "0/10", CommitLSN: "0/20", EndLSN: "0/20", Checkpoint: connector.Checkpoint{LSN: "0/20"},
+		Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: connector.Batch{
+			Schema:  schema,
+			Records: []connector.Record{{Table: "widgets", Operation: connector.OpInsert, After: map[string]any{"id": int64(1), "payload": "visible", "secret": "raw-only"}}},
+		}}},
+	}
+	for _, profile := range []string{
+		connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
+		connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
+	} {
+		t.Run(profile, func(t *testing.T) {
+			projected, decision, err := projectManagedRawAppendTransaction(projector, transaction)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision != ProjectionIncluded || len(projected.Fragments) != 1 {
+				t.Fatalf("raw append projection decision/fragments=%v/%d", decision, len(projected.Fragments))
+			}
+			batch := projected.Fragments[0].Batch
+			if batch.Schema.Namespace != "public" || batch.Schema.Name != "widgets" || len(batch.Schema.Columns) != 3 {
+				t.Fatalf("raw schema was double-mapped: %+v", batch.Schema)
+			}
+			after := batch.Records[0].After
+			if after["id"] != int64(1) || after["secret"] != "raw-only" || after["EVENT_ID"] != nil || after["PAYLOAD"] != nil {
+				t.Fatalf("raw changelog image was renamed/subset before planner encoding: %+v", after)
+			}
+			if batch.WritePolicy.Mode != connector.ResolvedWriteAppend || batch.WritePolicy.ProjectionFingerprint != projector.Fingerprint() {
+				t.Fatalf("append policy was not mapping-bound: %+v", batch.WritePolicy)
+			}
+		})
+	}
+}
+
+type rawAppendRenameProjector struct{}
+
+func (rawAppendRenameProjector) Fingerprint() string { return "rename-subset-v1" }
+func (rawAppendRenameProjector) IncludeBootstrapRelation(namespace, table string) (bool, error) {
+	return namespace == "public" && table == "widgets", nil
+}
+func (rawAppendRenameProjector) ProjectBootstrapSchema(connector.Schema) (connector.Schema, connector.TableWritePolicy, bool, error) {
+	return connector.Schema{Namespace: "PUBLIC", Name: "WALLABY_CHANGELOG", Columns: []connector.Column{{Name: "EVENT_ID", Type: "int8"}, {Name: "PAYLOAD", Type: "text"}}}, connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend, ProjectionFingerprint: "rename-subset-v1"}, true, nil
+}
+func (p rawAppendRenameProjector) ProjectBootstrapBatch(batch connector.Batch) (connector.Batch, bool, error) {
+	projected, decision, err := p.ProjectBatch(batch)
+	return projected, decision == ProjectionIncluded, err
+}
+func (rawAppendRenameProjector) ProjectBatch(batch connector.Batch) (connector.Batch, ProjectionDecision, error) {
+	batch.Schema.Namespace, batch.Schema.Name = "PUBLIC", "WALLABY_CHANGELOG"
+	batch.WritePolicy = connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend, ProjectionFingerprint: "rename-subset-v1"}
+	for index := range batch.Records {
+		batch.Records[index].Table = "WALLABY_CHANGELOG"
+	}
+	return batch, ProjectionIncluded, nil
+}
+func (rawAppendRenameProjector) ProjectTransaction(transaction connector.SourceTransaction) (connector.SourceTransaction, ProjectionDecision, error) {
+	out := transaction
+	out.Fragments[0].Batch.Schema = connector.Schema{Namespace: "PUBLIC", Name: "WALLABY_CHANGELOG", Columns: []connector.Column{{Name: "EVENT_ID", Type: "int8"}}}
+	out.Fragments[0].Batch.Records[0].After = map[string]any{"EVENT_ID": int64(1)}
+	return out, ProjectionIncluded, nil
+}
+
+func TestManagedSnowflakeAppendProfilesProjectStructuredDDLPolicyOnce(t *testing.T) {
+	t.Parallel()
+	transaction := connector.SourceTransaction{
+		SourceLineageID: "source/publication-v1", TransactionID: 8,
+		BeginLSN: "0/30", CommitLSN: "0/40", EndLSN: "0/40", Checkpoint: connector.Checkpoint{LSN: "0/40"},
+		Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: connector.Batch{
+			Schema:  connector.Schema{Namespace: "public", Name: "widgets", Version: 2, Columns: []connector.Column{{Name: "id", Type: "int8"}}},
+			Records: []connector.Record{{Table: "widgets", Operation: connector.OpDDL, DDLPlan: json.RawMessage(`{"Changes":[{"Type":"add_column","Namespace":"public","Table":"widgets","Column":"added","ToType":"text"}]}`)}},
+		}}},
+	}
+	projected, decision, err := projectManagedRawAppendTransaction(rawAppendRenameProjector{}, transaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision != ProjectionIncluded || projected.Fragments[0].Batch.Schema.Name != "WALLABY_CHANGELOG" || projected.Fragments[0].Batch.Records[0].Table != "WALLABY_CHANGELOG" {
+		t.Fatalf("structured DDL mapping was not applied exactly once: %+v", projected)
+	}
+	if projected.Fragments[0].Batch.WritePolicy.ProjectionFingerprint != "rename-subset-v1" {
+		t.Fatalf("structured DDL policy is not mapping-bound: %+v", projected.Fragments[0].Batch.WritePolicy)
 	}
 }
 

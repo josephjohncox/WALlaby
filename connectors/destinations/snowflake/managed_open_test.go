@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -54,6 +56,72 @@ func TestManagedSnowflakeCapabilitiesAreScopedToTheNamedProfile(t *testing.T) {
 	}
 	if managed.Support != connector.SupportExperimental {
 		t.Fatalf("unproven managed Snowflake support=%s", managed.Support)
+	}
+	for _, profile := range []string{
+		connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
+		connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
+	} {
+		capabilities, err := destination.CapabilitiesFor(connector.Spec{Type: connector.EndpointSnowflake, Options: map[string]string{"managed_profile": profile}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !capabilities.TableWrites.Append || capabilities.TableWrites.Upsert || capabilities.TableWrites.ExplicitKey || capabilities.TableWrites.WatermarkGuard {
+			t.Fatalf("managed append profile %s table writes=%+v", profile, capabilities.TableWrites)
+		}
+		if capabilities.Delivery.TransactionalBatch || !capabilities.Delivery.IdempotentReplay || !capabilities.Delivery.ReplaySafe || capabilities.Delivery.ExecutesDDL {
+			t.Fatalf("managed append profile %s delivery=%+v", profile, capabilities.Delivery)
+		}
+	}
+	wantProfiles := []connector.CapabilityProfileID{
+		CapabilityProfileBase,
+		CapabilityProfileManagedSQL,
+		CapabilityProfileManagedStaged,
+		CapabilityProfileManagedStreaming,
+	}
+	if got := destination.CapabilityProfileIDs(); !reflect.DeepEqual(got, wantProfiles) {
+		t.Fatalf("Snowflake capability profiles=%v, want closed set %v", got, wantProfiles)
+	}
+	if _, err := destination.ClassifyCapabilityProfile(connector.Spec{Type: connector.EndpointSnowflake, Options: map[string]string{"managed_profile": "unknown"}}); err == nil {
+		t.Fatal("unknown Snowflake profile was admitted outside the closed registry")
+	}
+}
+
+func TestManagedSnowflakeOpenStateInitializesEveryProfileAuthority(t *testing.T) {
+	t.Parallel()
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, test := range []struct {
+		name        string
+		destination *Destination
+		wantErr     error
+	}{
+		{name: "SQL", destination: &Destination{
+			db: db, managedProfile: connector.ManagedProfilePostgresToSnowflakeSQLV1,
+			managedConfig: managedConfig{destinationRevision: "sql-v1", receiptsTable: "RECEIPTS", schemaContractHash: strings.Repeat("a", 64)},
+		}},
+		{name: "staged COPY", destination: &Destination{
+			db: db, managedProfile: connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
+			stagedConfig:             stagedConfig{destinationRevision: "staged-v1", receiptsTable: "RECEIPTS", schemaContractHash: strings.Repeat("b", 64)},
+			stagedCatalogFingerprint: strings.Repeat("c", 64),
+		}},
+		{name: "Streaming REST", destination: &Destination{
+			db: db, managedProfile: connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
+			streamConfig:             streamConfig{destinationRevision: "stream-v1", receiptsTable: "RECEIPTS", channelStateTable: "CHANNELS", schemaContractHash: strings.Repeat("d", 64)},
+			streamCatalogFingerprint: strings.Repeat("e", 64),
+		}, wantErr: ErrManagedStreamingTransportUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.destination.InitializeManagedDelivery(context.Background())
+			if test.wantErr == nil && err != nil {
+				t.Fatalf("Open-established %s authority rejected: %v", test.name, err)
+			}
+			if test.wantErr != nil && !errors.Is(err, test.wantErr) {
+				t.Fatalf("Open-established %s authority error=%v, want %v", test.name, err, test.wantErr)
+			}
+		})
 	}
 }
 

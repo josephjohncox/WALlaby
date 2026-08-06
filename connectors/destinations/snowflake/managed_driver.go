@@ -30,14 +30,30 @@ func (d *Destination) managedHooksSnapshot() managedHooks {
 	return d.managedHooks
 }
 
-// InitializeManagedDelivery verifies that Open established the complete
-// Snowflake SQL transaction and receipt authority before managed source I/O.
+// InitializeManagedDelivery verifies that Open established the exact authority
+// required by the configured managed profile before any managed source I/O.
 func (d *Destination) InitializeManagedDelivery(context.Context) error {
-	if d.db == nil || d.managedProfile != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+	if d.db == nil {
 		return errors.New("managed Snowflake destination not initialized")
 	}
-	if strings.TrimSpace(d.managedConfig.destinationRevision) == "" {
-		return errors.New("managed Snowflake destination receipt authority is not configured")
+	switch d.managedProfile {
+	case connector.ManagedProfilePostgresToSnowflakeSQLV1:
+		if strings.TrimSpace(d.managedConfig.destinationRevision) == "" || strings.TrimSpace(d.managedConfig.receiptsTable) == "" || strings.TrimSpace(d.managedConfig.schemaContractHash) == "" {
+			return errors.New("managed Snowflake SQL receipt authority is not configured")
+		}
+	case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
+		if strings.TrimSpace(d.stagedConfig.destinationRevision) == "" || strings.TrimSpace(d.stagedConfig.receiptsTable) == "" || strings.TrimSpace(d.stagedConfig.schemaContractHash) == "" || strings.TrimSpace(d.stagedCatalogFingerprint) == "" {
+			return errors.New("managed staged Snowflake receipt and catalog authority is not configured")
+		}
+	case connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
+		if !ManagedStreamingTransportAvailable() {
+			return ErrManagedStreamingTransportUnavailable
+		}
+		if strings.TrimSpace(d.streamConfig.destinationRevision) == "" || strings.TrimSpace(d.streamConfig.receiptsTable) == "" || strings.TrimSpace(d.streamConfig.channelStateTable) == "" || strings.TrimSpace(d.streamConfig.schemaContractHash) == "" || strings.TrimSpace(d.streamCatalogFingerprint) == "" {
+			return errors.New("managed streaming Snowflake receipt, channel, and catalog authority is not configured")
+		}
+	default:
+		return errors.New("managed Snowflake destination not initialized")
 	}
 	return nil
 }
@@ -54,13 +70,24 @@ func (d *Destination) Apply(_ context.Context, intent connector.DeliveryIntent, 
 // ValidateManagedSourceSchema compares the projected live pg_catalog relation
 // with the immutable projected contract before the runner reads WAL.
 func (d *Destination) ValidateManagedSourceSchema(schema connector.Schema) error {
-	if d.db == nil || d.managedProfile != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+	if d.db == nil {
 		return errors.New("managed Snowflake destination not initialized")
 	}
-	if err := validateManagedRuntimeSchema(d.managedConfig.schemaContract, schema); err != nil {
+	var contract connector.Schema
+	switch d.managedProfile {
+	case connector.ManagedProfilePostgresToSnowflakeSQLV1:
+		contract = d.managedConfig.schemaContract
+	case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
+		contract = d.stagedConfig.schemaContract
+	case connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
+		contract = d.streamConfig.schemaContract
+	default:
+		return errors.New("managed Snowflake destination not initialized")
+	}
+	if err := validateManagedRuntimeSchema(contract, schema); err != nil {
 		return fmt.Errorf("validate projected live PostgreSQL schema for managed Snowflake: %w", err)
 	}
-	expectedIdentity, err := managedIdentityColumns(d.managedConfig.schemaContract)
+	expectedIdentity, err := managedIdentityColumns(contract)
 	if err != nil {
 		return err
 	}
@@ -100,6 +127,12 @@ type preparedManagedSnowflakeTransaction struct {
 // PrepareTransaction validates and retains one immutable SQL plan before the
 // PostgreSQL coordinator creates a new destination attempt.
 func (d *Destination) PrepareTransaction(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (connector.PreparedManagedTransaction, error) {
+	if d.managedProfile == connector.ManagedProfilePostgresToSnowflakeStagedAppendV1 {
+		return d.prepareManagedStaged(ctx, intent, transaction)
+	}
+	if d.managedProfile == connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 {
+		return d.prepareManagedStreaming(ctx, intent, transaction)
+	}
 	if d.db == nil || d.managedProfile != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
 		return nil, errors.New("managed Snowflake destination not initialized")
 	}
@@ -301,6 +334,12 @@ func (p *preparedManagedSnowflakeTransaction) Apply(ctx context.Context) (_ conn
 // include every stable identity so a reused logical batch, position, or external
 // marker fails as a conflict instead of appearing absent.
 func (d *Destination) Reconcile(ctx context.Context, intent connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
+	if d.managedProfile == connector.ManagedProfilePostgresToSnowflakeStagedAppendV1 {
+		return d.reconcileManagedStaged(ctx, intent)
+	}
+	if d.managedProfile == connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 {
+		return d.reconcileManagedStreaming(ctx, intent)
+	}
 	if err := intent.Validate(); err != nil {
 		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
 	}
@@ -373,6 +412,15 @@ func (d *Destination) Reconcile(ctx context.Context, intent connector.DeliveryIn
 // ValidateManagedFlowScope rejects object reuse across flow incarnations before
 // the managed runner reads WAL or acknowledges any new source position.
 func (d *Destination) ValidateManagedFlowScope(ctx context.Context, flowID, flowIncarnationID string) error {
+	if d.managedProfile == connector.ManagedProfilePostgresToSnowflakeStagedAppendV1 {
+		if d.db == nil {
+			return errors.New("managed staged Snowflake destination is not open")
+		}
+		if flowID != d.stagedConfig.flowID || strings.TrimSpace(flowIncarnationID) == "" {
+			return fmt.Errorf("%w: managed staged Snowflake flow scope differs from admitted configuration", connector.ErrDeliveryConflict)
+		}
+		return d.validateStagedSnowflakeReceiptScope(ctx, connector.DeliveryIntent{FlowIncarnationID: flowIncarnationID, LogicalBatchID: "scope-validation"})
+	}
 	if d.db == nil || d.managedProfile != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
 		return errors.New("managed Snowflake destination is not open")
 	}

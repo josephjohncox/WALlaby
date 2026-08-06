@@ -4,6 +4,8 @@ set -eu
 GO=${GO:-go}
 GO_TEST_VERBOSE=${GO_TEST_VERBOSE:-1}
 GO_TEST_VERBOSE_FLAG=${GO_TEST_VERBOSE_FLAG:-}
+GO_TEST_COVERPKG=${GO_TEST_COVERPKG:-}
+GO_TEST_COVERPROFILE=${GO_TEST_COVERPROFILE:-}
 if [ -z "$GO_TEST_VERBOSE_FLAG" ] && [ "$GO_TEST_VERBOSE" = "1" ]; then
 	GO_TEST_VERBOSE_FLAG=-v
 fi
@@ -34,6 +36,12 @@ if [ -n "$IT_RUN_FILTER" ]; then
 fi
 if [ -n "$IT_COUNT" ]; then
 	set -- "$@" -count="$IT_COUNT"
+fi
+if [ -n "$GO_TEST_COVERPKG" ]; then
+	set -- "$@" -coverpkg="$GO_TEST_COVERPKG"
+fi
+if [ -n "$GO_TEST_COVERPROFILE" ]; then
+	set -- "$@" -coverprofile="$GO_TEST_COVERPROFILE"
 fi
 
 export IT_VERBOSE=$GO_TEST_VERBOSE

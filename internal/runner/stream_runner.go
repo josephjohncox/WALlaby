@@ -168,11 +168,18 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 }
 
 func projectManagedSnowflakeContract(spec *connector.Spec, mapping flow.DestinationTableMappings, projector *tablemap.Projector) error {
-	if strings.TrimSpace(spec.Options["managed_profile"]) != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+	profile := strings.TrimSpace(spec.Options["managed_profile"])
+	if !connector.IsManagedSnowflakeProfile(profile) {
 		return nil
 	}
 	if mapping.FutureTables.Action != flow.MappingActionExclude {
-		return errors.New("managed Snowflake SQL requires future_tables=exclude")
+		return fmt.Errorf("managed Snowflake profile %s requires future_tables=exclude", profile)
+	}
+	expectedFlowMode := flow.TableWriteModeAppend
+	expectedResolvedMode := connector.ResolvedWriteAppend
+	if profile == connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+		expectedFlowMode = flow.TableWriteModeUpsert
+		expectedResolvedMode = connector.ResolvedWriteUpsert
 	}
 	included := 0
 	var admitted flow.TableMapping
@@ -182,15 +189,15 @@ func projectManagedSnowflakeContract(spec *connector.Spec, mapping flow.Destinat
 		}
 		included++
 		admitted = table
-		if table.Write.Mode != flow.TableWriteModeUpsert {
-			return fmt.Errorf("managed Snowflake SQL relation %s.%s requires upsert", table.SourceSchema, table.SourceTable)
+		if table.Write.Mode != expectedFlowMode {
+			return fmt.Errorf("managed Snowflake profile %s relation %s.%s requires %s", profile, table.SourceSchema, table.SourceTable, expectedFlowMode)
 		}
 		if table.Write.WatermarkColumn != "" {
-			return fmt.Errorf("managed Snowflake SQL relation %s.%s does not support watermark", table.SourceSchema, table.SourceTable)
+			return fmt.Errorf("managed Snowflake profile %s relation %s.%s does not support watermark", profile, table.SourceSchema, table.SourceTable)
 		}
 	}
 	if included != 1 {
-		return fmt.Errorf("managed Snowflake SQL requires exactly one admitted relation mapping, got %d", included)
+		return fmt.Errorf("managed Snowflake profile %s requires exactly one admitted relation mapping, got %d", profile, included)
 	}
 	if !isLowerHexDigest(spec.Options["managed_schema_contract_hash"]) {
 		return errors.New("managed_schema_contract_hash must be 64 lowercase hexadecimal characters")
@@ -210,8 +217,30 @@ func projectManagedSnowflakeContract(spec *connector.Spec, mapping flow.Destinat
 	if err != nil {
 		return err
 	}
-	if !slices.Equal(admitted.Write.KeyColumns, sourcePrimary) {
+	if expectedFlowMode == flow.TableWriteModeUpsert && !slices.Equal(admitted.Write.KeyColumns, sourcePrimary) {
 		return fmt.Errorf("managed Snowflake key_columns %v must equal complete ordered source primary key %v", admitted.Write.KeyColumns, sourcePrimary)
+	}
+	if expectedFlowMode == flow.TableWriteModeAppend {
+		if admitted.SourceSchema != source.Namespace || admitted.SourceTable != source.Name {
+			return fmt.Errorf("managed Snowflake append mapping source %s.%s must equal schema contract %s.%s", admitted.SourceSchema, admitted.SourceTable, source.Namespace, source.Name)
+		}
+		mapped, policy, included, err := projector.ProjectBootstrapSchema(source)
+		if err != nil {
+			return err
+		}
+		if !included || policy.Mode != connector.ResolvedWriteAppend || policy.WatermarkColumn != "" || len(policy.KeyColumns) != 0 {
+			return fmt.Errorf("managed Snowflake profile %s mapping must resolve to one append target without keys or watermark", profile)
+		}
+		if err := validateManagedSnowflakeIdentifier("managed_schema", spec.Options["managed_schema"]); err != nil {
+			return err
+		}
+		if err := validateManagedSnowflakeIdentifier("managed_table", spec.Options["managed_table"]); err != nil {
+			return err
+		}
+		if mapped.Namespace != spec.Options["managed_schema"] || mapped.Name != spec.Options["managed_table"] {
+			return fmt.Errorf("managed Snowflake append mapping target %s.%s must equal provisioned target %s.%s", mapped.Namespace, mapped.Name, spec.Options["managed_schema"], spec.Options["managed_table"])
+		}
+		return nil
 	}
 	mapped, policy, ok, err := projector.ProjectBootstrapSchema(source)
 	if err != nil {
@@ -220,8 +249,8 @@ func projectManagedSnowflakeContract(spec *connector.Spec, mapping flow.Destinat
 	if !ok {
 		return errors.New("managed Snowflake source relation is excluded by its destination mapping")
 	}
-	if policy.Mode != connector.ResolvedWriteUpsert || policy.WatermarkColumn != "" {
-		return errors.New("managed Snowflake projected policy must be upsert without watermark")
+	if policy.Mode != expectedResolvedMode || policy.WatermarkColumn != "" {
+		return fmt.Errorf("managed Snowflake profile %s projected policy must be %s without watermark", profile, expectedResolvedMode)
 	}
 	projectedPrimary, err := orderedManagedSnowflakePrimaryKey(mapped, "projected")
 	if err != nil {
@@ -230,7 +259,7 @@ func projectManagedSnowflakeContract(spec *connector.Spec, mapping flow.Destinat
 	if len(projectedPrimary) != len(sourcePrimary) {
 		return fmt.Errorf("managed Snowflake projection must preserve every source primary-key component: source %v projected %v", sourcePrimary, projectedPrimary)
 	}
-	if !slices.Equal(policy.KeyColumns, projectedPrimary) {
+	if expectedResolvedMode == connector.ResolvedWriteUpsert && !slices.Equal(policy.KeyColumns, projectedPrimary) {
 		return fmt.Errorf("managed Snowflake projected key columns %v must equal complete projected primary key %v", policy.KeyColumns, projectedPrimary)
 	}
 	if err := validateManagedSnowflakeIdentifier("managed_schema", spec.Options["managed_schema"]); err != nil {

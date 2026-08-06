@@ -161,7 +161,7 @@ What it models:
 - orphan collection that cannot delete an active abstract PostgreSQL root; and
 - abstract root release only after source ACK, one modeled delivery-completion bit, and a newer checkpoint.
 
-This model does **not** represent elapsed time or retention eligibility, delivery-row cardinality, multi-object publications, partial object release, exact S3 versions, or the worker startup recovery path. `AuthorizeInitialCut` models only checkpoint/ACK authorization for an object-free cut. `ManagedDurability` is checked by `just check-tla`, but it is not part of the trace coverage manifests listed below.
+This model does **not** represent elapsed time or retention eligibility, delivery-row cardinality, multi-object publications, partial object release, exact S3 versions, or the worker startup recovery path. `AuthorizeInitialCut` models only checkpoint/ACK authorization for an object-free cut. `ManagedDurability` is checked by `just check-tla`; its nonzero action coverage is enforced by `just tla-coverage-check` (it is generated into `specs/coverage/ManagedDurability.txt` by `just tla-coverage`); its manifest (`specs/coverage.managed_durability.json`) is registered in `pkg/spec` and validated for Next-block/cfg drift by `just spec-sync`. It is not part of the CDCFlow trace coverage manifests; instead its safety invariants are mirrored as executable runtime checks by the deterministic process-failure matrix in `internal/failmatrix` (see [Process-failure matrix and soak](../docs/development/failure-matrix.md)).
 
 Run TLC:
 
@@ -207,6 +207,8 @@ unreachable items for the trace suite:
 - `specs/coverage.ddl_execution.json` (DDLExecution)
 - `specs/coverage.lifecycle_generation.json` (LifecycleGeneration)
 - `specs/coverage.snapshot_transition.json` (SnapshotTransition)
+- `specs/coverage.managed_durability.json` (ManagedDurability / ArtifactPublication)
+- `specs/coverage.managed_postgres_delivery.json` (ManagedPostgresDelivery / SourceFeedback)
 
 Regenerate them with:
 
@@ -220,6 +222,18 @@ invariants, run:
 ```
 just spec-sync
 ```
+
+`spec-sync` validates CDCFlow, FlowStateMachine, CDCFlowFanout, DDLExecution, and
+both managed models (ManagedDurability, ManagedPostgresDelivery). LifecycleGeneration
+and SnapshotTransition use a distinct action-naming layer in their manifests and are
+reconciled separately, so they are not synced by this tool yet.
+
+Known formal follow-up: `DDLExecution.tla` defines `IndeterminateFailsClosed` as an
+action predicate (it references `UNCHANGED vars`), so it cannot be checked as a TLC
+state invariant and is intentionally absent from `DDLExecution.cfg`. The managed
+models cover the indeterminate-fail-closed behavior through `ReconcileIndeterminate`
+plus bounded retries, and it is mirrored as an executable check
+(`adopted_indeterminate_effect`) in `internal/failmatrix`.
 
 Static analysis (`just spec-lint`) enforces that `SpecAction` values in code are
 constants from the manifest.
