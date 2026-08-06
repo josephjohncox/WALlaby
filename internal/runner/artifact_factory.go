@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -32,6 +33,18 @@ func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, iceber
 		if strings.TrimSpace(cfg.Bucket) == "" {
 			return nil, errors.New("artifact publication requires artifacts.bucket or WALLABY_ARTIFACT_BUCKET")
 		}
+		var icebergDefaults icebergdest.Config
+		for _, destination := range destinations {
+			if destination.Spec.Type != connector.EndpointIceberg {
+				continue
+			}
+			var err error
+			icebergDefaults, err = icebergDestinationConfig(icebergCfg)
+			if err != nil {
+				return nil, fmt.Errorf("configure Iceberg deployment defaults: %w", err)
+			}
+			break
+		}
 		objects, err := artifactlog.NewS3Store(ctx, artifactlog.S3Config{
 			Bucket: cfg.Bucket, Region: cfg.Region, Endpoint: cfg.Endpoint,
 			AccessKey: cfg.AccessKey, SecretKey: cfg.SecretKey, SessionToken: cfg.SessionToken,
@@ -48,7 +61,7 @@ func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, iceber
 			if destination.Spec.Type != connector.EndpointIceberg {
 				continue
 			}
-			parsed, err := icebergdest.ParseSpec(destination.Spec, icebergDestinationConfig(icebergCfg))
+			parsed, err := icebergdest.ParseSpec(destination.Spec, icebergDefaults)
 			if err != nil {
 				return nil, fmt.Errorf("configure Iceberg artifact consumer: %w", err)
 			}
@@ -101,7 +114,15 @@ func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, iceber
 	}
 }
 
-func icebergDestinationConfig(cfg config.IcebergConfig) icebergdest.Config {
+func icebergDestinationConfig(cfg config.IcebergConfig) (icebergdest.Config, error) {
+	minSnapshots, err := checkedInt32Config("s3_tables_min_snapshots_to_keep", cfg.S3TablesMinSnapshotsToKeep)
+	if err != nil {
+		return icebergdest.Config{}, err
+	}
+	maxSnapshotAgeHours, err := checkedInt32Config("s3_tables_max_snapshot_age_hours", cfg.S3TablesMaxSnapshotAgeHours)
+	if err != nil {
+		return icebergdest.Config{}, err
+	}
 	return icebergdest.Config{
 		Profile: cfg.Profile, URI: cfg.URI, Warehouse: cfg.Warehouse, Prefix: cfg.Prefix,
 		ControlTable:     cfg.ControlTable,
@@ -116,7 +137,14 @@ func icebergDestinationConfig(cfg config.IcebergConfig) icebergdest.Config {
 		ClientCertFile: cfg.ClientCertFile, ClientKeyFile: cfg.ClientKeyFile,
 		ServerName: cfg.ServerName, S3TablesTableBucketARN: cfg.S3TablesTableBucketARN,
 		S3TablesConfigureMaintenance: cfg.S3TablesConfigureMaintenance,
-		S3TablesMinSnapshotsToKeep:   int32(cfg.S3TablesMinSnapshotsToKeep),  // #nosec G115 -- validated positive bounded operational setting.
-		S3TablesMaxSnapshotAgeHours:  int32(cfg.S3TablesMaxSnapshotAgeHours), // #nosec G115 -- validated positive bounded operational setting.
+		S3TablesMinSnapshotsToKeep:   minSnapshots,
+		S3TablesMaxSnapshotAgeHours:  maxSnapshotAgeHours,
+	}, nil
+}
+
+func checkedInt32Config(name string, value int) (int32, error) {
+	if int64(value) < math.MinInt32 || int64(value) > math.MaxInt32 {
+		return 0, fmt.Errorf("%s value %d exceeds int32 bounds", name, value)
 	}
+	return int32(value), nil // #nosec G115 -- value is explicitly range-checked against int32 bounds above.
 }
