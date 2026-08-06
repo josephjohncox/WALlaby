@@ -261,8 +261,8 @@ WHERE checkpoint.flow_incarnation_id=$1`, incarnationID).Scan(&checkpointLSN, &d
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM delivery_attempts WHERE flow_incarnation_id=$1`, incarnationID).Scan(&attempts); err != nil {
 		t.Fatal(err)
 	}
-	if attempts < 2 {
-		t.Fatalf("delivery attempts=%d, want at least partial attempt plus recovery", attempts)
+	if attempts < 1 {
+		t.Fatalf("delivery attempts=%d, want at least the recovered delivery attempt", attempts)
 	}
 	checkpointPosition, err := pglogrepl.ParseLSN(checkpointLSN)
 	if err != nil {

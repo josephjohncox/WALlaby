@@ -565,11 +565,11 @@ func TestManagedRecoveryOnlyInitializationAdoptsReceiptAndFencesNewWrites(t *tes
 		managedProfile:      connector.ManagedProfilePostgresToClickHouseAppendV1,
 		managedVersion:      "25.12.1.649",
 		managedRecoveryOnly: true,
-		managedConn:         conn,
+		managedReplicaConn:  conn,
 		managedConfig:       managedConfig{replicaNames: []string{"replica-primary", "replica-secondary"}, database: "wallaby", receiptsTable: "receipts"},
 		managedInitializeAuthorityHook: func(_ context.Context, got chdriver.Conn, replica string, recoveryOnly bool) error {
 			validationCalls++
-			if got != conn || replica != "replica-primary" || !recoveryOnly {
+			if got != conn || replica != "replica-secondary" || !recoveryOnly {
 				return errors.New("recovery-only initialization validated the wrong authority")
 			}
 			return nil
@@ -584,6 +584,10 @@ func TestManagedRecoveryOnlyInitializationAdoptsReceiptAndFencesNewWrites(t *tes
 	disposition, evidence, err := destination.Reconcile(context.Background(), intent)
 	if err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
 		t.Fatalf("receipt adoption=(%v,%+v,%v), want applied existing receipt", disposition, evidence, err)
+	}
+	adopted, err := destination.ApplyTransaction(context.Background(), intent, transaction)
+	if err != nil || adopted.ContentHash != intent.ContentHash {
+		t.Fatalf("recovery-only ApplyTransaction receipt adoption=(%+v,%v)", adopted, err)
 	}
 	if _, err := destination.PrepareTransaction(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("recovery-only new write error=%v, want fenced ErrDeliveryIndeterminate", err)

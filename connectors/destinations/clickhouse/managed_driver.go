@@ -597,7 +597,7 @@ func (p *preparedManagedTransaction) Apply(ctx context.Context) (connector.Deliv
 // deduplication token; replay convergence does not depend on the finite token
 // retention window because the event identity is the ReplacingMergeTree key.
 func (d *Destination) ApplyTransaction(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (connector.DeliveryEvidence, error) {
-	if d.managedConn == nil {
+	if d.managedConn == nil && d.managedReplicaConn == nil {
 		return connector.DeliveryEvidence{}, errors.New("managed ClickHouse destination not initialized")
 	}
 	disposition, evidence, err := d.Reconcile(ctx, intent)
