@@ -204,8 +204,15 @@ func TestControlplaneRestartRejectsTamperedArtifactCatalogAuthority(t *testing.T
 		{table: "artifact_objects", name: "artifact_objects_projection_mapping_contract"},
 		{table: "artifact_publications", name: "artifact_publications_projection_mapping_contract"},
 	}
+	exactConstraintTables := map[string]bool{
+		"artifact_delivery_attempts": true, "artifact_delivery_receipts": true, "artifact_consumer_checkpoints": true,
+	}
 	for _, constraint := range constraints {
-		cases = append(cases, tamperCase{name: "drop_constraint_" + constraint.name, sql: fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s CASCADE", constraint.table, constraint.name), want: "verify exact artifact authority constraint"})
+		want := fmt.Sprintf("verify exact managed authority constraint %s.%s", constraint.table, constraint.name)
+		if exactConstraintTables[constraint.table] {
+			want = "constraint set"
+		}
+		cases = append(cases, tamperCase{name: "drop_constraint_" + constraint.name, sql: fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s CASCADE", constraint.table, constraint.name), want: want})
 	}
 	indexes := []struct {
 		table, name string
@@ -224,12 +231,20 @@ func TestControlplaneRestartRejectsTamperedArtifactCatalogAuthority(t *testing.T
 		{table: "artifact_delivery_attempts", name: "artifact_delivery_attempts_commit_unique", owned: true},
 		{table: "artifact_delivery_receipts", name: "artifact_delivery_receipts_attempt_unique", owned: true},
 	}
+	exactIndexTables := map[string]bool{
+		"artifact_delivery_attempts": true, "artifact_delivery_receipts": true, "artifact_consumer_checkpoints": true,
+	}
 	for index, contract := range indexes {
 		sql := "DROP INDEX " + contract.name
-		want := "verify exact artifact authority index"
+		want := fmt.Sprintf("verify exact managed authority index %s.%s", contract.table, contract.name)
+		if exactIndexTables[contract.table] {
+			want = "index set"
+		}
 		if contract.owned {
 			sql = fmt.Sprintf("ALTER INDEX %s RENAME TO broken_artifact_index_%d", contract.name, index)
-			want = "verify exact artifact authority constraint"
+			if exactConstraintTables[contract.table] {
+				want = "constraint set"
+			}
 		}
 		cases = append(cases, tamperCase{name: "drop_or_rename_index_" + contract.name, sql: sql, want: want})
 	}
