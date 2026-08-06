@@ -47,7 +47,7 @@ func TestTableMappingsPreserveExactCaseAndWhitespaceIdentifiers(t *testing.T) {
 			Tables: []TableMapping{
 				{SourceSchema: "Exact Schema", SourceTable: "Events", Action: MappingActionExclude},
 				{SourceSchema: "Exact Schema", SourceTable: "events", Action: MappingActionExclude},
-				{SourceSchema: " ", SourceTable: " ", Action: MappingActionInclude, TargetSchema: " ", TargetTable: " ", FutureColumns: FutureColumnMapping{Action: MappingActionInclude, TargetColumn: "{column}"}, Columns: []ColumnMapping{{SourceColumn: " ", Action: MappingActionInclude, TargetColumn: " "}}, Write: TableWritePolicy{Mode: TableWriteModeAppend}},
+				{SourceSchema: " ", SourceTable: " ", Action: MappingActionInclude, TargetSchema: " ", TargetTable: " ", FutureColumns: FutureColumnMapping{Action: MappingActionInclude, TargetColumn: "{{ .Column }}"}, Columns: []ColumnMapping{{SourceColumn: " ", Action: MappingActionInclude, TargetColumn: " "}}, Write: TableWritePolicy{Mode: TableWriteModeAppend}},
 			},
 		}},
 	}
@@ -118,6 +118,163 @@ func TestTableMappingsCanonicalEqualityFingerprintAndJSONRoundTrip(t *testing.T)
 	}
 }
 
+func TestExactTargetsAllowLiteralBracesButRejectExecutableTemplates(t *testing.T) {
+	t.Parallel()
+	destination := []connector.Spec{{Name: "warehouse", Type: connector.EndpointPostgres}}
+	valid := richTestMappings()
+	valid.Destinations[0].Tables[0].TargetSchema = "schema{literal}"
+	valid.Destinations[0].Tables[0].TargetTable = "table{{not valid Go template syntax"
+	valid.Destinations[0].Tables[0].Columns[0].TargetColumn = "column}literal{"
+	valid.Destinations[0].Tables[0].Columns = append(valid.Destinations[0].Tables[0].Columns, ColumnMapping{SourceColumn: "column}literal{", Action: MappingActionExclude})
+	valid.Destinations[0].Tables = append(valid.Destinations[0].Tables, TableMapping{SourceSchema: "schema{literal}", SourceTable: "table{{not valid Go template syntax", Action: MappingActionExclude})
+	if err := valid.Validate(destination); err != nil {
+		t.Fatalf("literal exact target braces rejected: %v", err)
+	}
+	for _, mutate := range []func(*TableMappings){
+		func(m *TableMappings) { m.Destinations[0].Tables[0].TargetSchema = "{{ .Schema }}" },
+		func(m *TableMappings) { m.Destinations[0].Tables[0].TargetTable = "{{ print \"table\" }}" },
+		func(m *TableMappings) {
+			m.Destinations[0].Tables[0].Columns[0].TargetColumn = "{{ if true }}column{{ end }}"
+		},
+		func(m *TableMappings) { m.Destinations[0].Tables[0].TargetTable = "events{{/* comment */}}" },
+	} {
+		candidate := richTestMappings()
+		mutate(&candidate)
+		if err := candidate.Validate(destination); err == nil || !strings.Contains(err.Error(), "executable Go template") {
+			t.Fatalf("Validate() error = %v, want executable Go template rejection", err)
+		}
+	}
+}
+
+func TestFutureTableTemplatesDoNotCollideWithExactTargets(t *testing.T) {
+	t.Parallel()
+	destination := []connector.Spec{{Name: "warehouse", Type: connector.EndpointPostgres}}
+	makeMappings := func(schemaTemplate, tableTemplate string, exact TableMapping, overrides ...TableMapping) TableMappings {
+		tables := append([]TableMapping{exact}, overrides...)
+		return TableMappings{Version: TableMappingsVersion, Destinations: []DestinationTableMappings{{
+			Destination: "warehouse",
+			FutureTables: FutureTableMapping{
+				Action: MappingActionInclude, TargetSchema: schemaTemplate, TargetTable: tableTemplate,
+				FutureColumns: FutureColumnMapping{Action: MappingActionInclude, TargetColumn: "{{ .Column }}"},
+				Write:         TableWritePolicy{Mode: TableWriteModeAppend},
+			},
+			Tables: tables,
+		}}}
+	}
+	exact := func(sourceSchema, sourceTable, targetSchema, targetTable string) TableMapping {
+		return TableMapping{
+			SourceSchema: sourceSchema, SourceTable: sourceTable, Action: MappingActionInclude,
+			TargetSchema: targetSchema, TargetTable: targetTable,
+			FutureColumns: FutureColumnMapping{Action: MappingActionExclude},
+			Write:         TableWritePolicy{Mode: TableWriteModeAppend},
+		}
+	}
+	exclude := func(schema, table string) TableMapping {
+		return TableMapping{SourceSchema: schema, SourceTable: table, Action: MappingActionExclude}
+	}
+
+	tests := []struct {
+		name     string
+		mappings TableMappings
+		wantErr  string
+	}{
+		{
+			name:     "identity future renamed exact collision",
+			mappings: makeMappings("{{ .Schema }}", "{{ .Table }}", exact("public", "orders", "archive", "orders")),
+			wantErr:  `unoverridden source "archive"."orders"`,
+		},
+		{
+			name:     "prefix suffix inverse collision",
+			mappings: makeMappings("dst_{{ .Schema }}_end", "tbl_{{ .Table }}_end", exact("public", "orders", "dst_archive_end", "tbl_history_end")),
+			wantErr:  `unoverridden source "archive"."history"`,
+		},
+		{
+			name:     "candidate overridden by exact exclude",
+			mappings: makeMappings("{{ .Schema }}", "{{ .Table }}", exact("public", "orders", "archive", "orders"), exclude("archive", "orders")),
+		},
+		{
+			name: "candidate overridden by exact include",
+			mappings: makeMappings("dst_{{ .Schema }}_end", "tbl_{{ .Table }}_end",
+				exact("public", "orders", "dst_archive_end", "tbl_history_end"),
+				exact("archive", "history", "literal", "target")),
+		},
+		{
+			name:     "same source exact precedence",
+			mappings: makeMappings("{{ .Schema }}", "{{ .Table }}", exact("public", "orders", "public", "orders")),
+		},
+		{
+			name:     "dots spaces and case are exact bytes",
+			mappings: makeMappings("pre{{ .Schema }}post", "pre{{ .Table }}post", exact("source", "table", "pre Exact.Schema post", "pre Table.Name post")),
+			wantErr:  `unoverridden source " Exact.Schema "." Table.Name "`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.mappings.Validate(destination)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Validate() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestFutureColumnTemplatesDoNotCollideWithExactTargets(t *testing.T) {
+	t.Parallel()
+	destination := []connector.Spec{{Name: "warehouse", Type: connector.EndpointPostgres}}
+	makeMappings := func(columnTemplate string, columns ...ColumnMapping) TableMappings {
+		return TableMappings{Version: TableMappingsVersion, Destinations: []DestinationTableMappings{{
+			Destination:  "warehouse",
+			FutureTables: FutureTableMapping{Action: MappingActionExclude},
+			Tables: []TableMapping{{
+				SourceSchema: "public", SourceTable: "events", Action: MappingActionInclude,
+				TargetSchema: "public", TargetTable: "events",
+				FutureColumns: FutureColumnMapping{Action: MappingActionInclude, TargetColumn: columnTemplate},
+				Columns:       columns,
+				Write:         TableWritePolicy{Mode: TableWriteModeAppend},
+			}},
+		}}}
+	}
+	include := func(source, target string) ColumnMapping {
+		return ColumnMapping{SourceColumn: source, Action: MappingActionInclude, TargetColumn: target}
+	}
+	exclude := func(source string) ColumnMapping {
+		return ColumnMapping{SourceColumn: source, Action: MappingActionExclude}
+	}
+
+	tests := []struct {
+		name     string
+		mappings TableMappings
+		wantErr  string
+	}{
+		{name: "identity future renamed exact collision", mappings: makeMappings("{{ .Column }}", include("legacy", "current")), wantErr: `source column "current"`},
+		{name: "prefix suffix inverse collision", mappings: makeMappings("pre{{ .Column }}post", include("legacy", "precurrentpost")), wantErr: `source column "current"`},
+		{name: "candidate overridden by exact exclude", mappings: makeMappings("{{ .Column }}", include("legacy", "current"), exclude("current"))},
+		{name: "candidate overridden by exact include", mappings: makeMappings("pre{{ .Column }}post", include("legacy", "precurrentpost"), include("current", "literal"))},
+		{name: "same source exact precedence", mappings: makeMappings("pre{{ .Column }}post", include(" Mixed.Name ", "pre Mixed.Name post"))},
+		{name: "dots spaces and case are exact bytes", mappings: makeMappings("pre{{ .Column }}post", include("legacy", "pre Exact.Name post")), wantErr: `source column " Exact.Name "`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.mappings.Validate(destination)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Validate() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestTableMappingsRejectInvalidContracts(t *testing.T) {
 	t.Parallel()
 	postgres := []connector.Spec{{Name: "warehouse", Type: connector.EndpointPostgres}}
@@ -128,6 +285,7 @@ func TestTableMappingsRejectInvalidContracts(t *testing.T) {
 		want string
 	}{
 		{name: "missing version", edit: func(m *TableMappings) { m.Version = 0 }, dest: postgres, want: "version"},
+		{name: "version 1 explicitly unsupported", edit: func(m *TableMappings) { m.Version = 1 }, dest: postgres, want: "version 1 is unsupported; expected 2"},
 		{name: "missing destination mapping", edit: func(m *TableMappings) { m.Destinations = nil }, dest: postgres, want: "at least one"},
 		{name: "unknown destination", edit: func(m *TableMappings) { m.Destinations[0].Destination = "missing" }, dest: postgres, want: "unknown destination"},
 		{name: "duplicate source table", edit: func(m *TableMappings) {
@@ -139,34 +297,31 @@ func TestTableMappingsRejectInvalidContracts(t *testing.T) {
 		}, dest: postgres, want: "key column"},
 		{name: "keyless upsert", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].Write.KeyColumns = nil }, dest: postgres, want: "at least one key"},
 		{name: "append with key columns", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].Write.Mode = TableWriteModeAppend }, dest: postgres, want: "append write policy cannot define key_columns"},
-		{name: "unknown future template", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetTable = "{unknown}" }, dest: postgres, want: "exactly one {table}"},
-		{name: "future table missing placeholder", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetTable = "fixed" }, dest: postgres, want: "exactly one {table}"},
-		{name: "future schema missing placeholder", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetSchema = "analytics" }, dest: postgres, want: "exactly one {schema}"},
-		{name: "future schema duplicate placeholder", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetSchema = "{schema}_{schema}" }, dest: postgres, want: "exactly one {schema}"},
-		{name: "future schema table variable", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetSchema = "{schema}_{table}" }, dest: postgres, want: "placeholders other than {schema}"},
-		{name: "future schema column variable", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetSchema = "{schema}_{column}" }, dest: postgres, want: "placeholders other than {schema}"},
-		{name: "future table duplicate placeholder", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetTable = "{table}_{table}" }, dest: postgres, want: "exactly one {table}"},
-		{name: "future table schema variable", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetTable = "{schema}_{table}" }, dest: postgres, want: "placeholders other than {table}"},
-		{name: "future table column variable", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetTable = "{column}_{table}" }, dest: postgres, want: "placeholders other than {table}"},
-		{name: "future schema and table both cross variables", edit: func(m *TableMappings) {
-			m.Destinations[0].FutureTables.TargetSchema = "{schema}_{table}"
-			m.Destinations[0].FutureTables.TargetTable = "{schema}_{table}"
-		}, dest: postgres, want: "placeholders other than {schema}"},
-		{name: "future column missing placeholder", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.FutureColumns.TargetColumn = "fixed" }, dest: postgres, want: "exactly one {column}"},
-		{name: "future column duplicate placeholder", edit: func(m *TableMappings) {
-			m.Destinations[0].FutureTables.FutureColumns.TargetColumn = "{column}_{column}"
-		}, dest: postgres, want: "exactly one {column}"},
-		{name: "future column schema variable", edit: func(m *TableMappings) {
-			m.Destinations[0].FutureTables.FutureColumns.TargetColumn = "{schema}_{column}"
-		}, dest: postgres, want: "placeholders other than {column}"},
-		{name: "future column table variable", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.FutureColumns.TargetColumn = "{table}_{column}" }, dest: postgres, want: "placeholders other than {column}"},
+		{name: "legacy schema placeholder", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetSchema = "{schema}" }, dest: postgres, want: "exactly one action"},
+		{name: "legacy table placeholder", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetTable = "{table}" }, dest: postgres, want: "exactly one action"},
+		{name: "legacy column placeholder", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.FutureColumns.TargetColumn = "{column}" }, dest: postgres, want: "exactly one action"},
+		{name: "unknown future template", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetTable = "{{ .Unknown }}" }, dest: postgres, want: ".Table"},
+		{name: "future table missing action", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetTable = "fixed" }, dest: postgres, want: "exactly one action"},
+		{name: "future schema missing action", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetSchema = "analytics" }, dest: postgres, want: "exactly one action"},
+		{name: "future schema duplicate action", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetSchema = "{{ .Schema }}_{{ .Schema }}" }, dest: postgres, want: "exactly one action"},
+		{name: "future schema table field", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetSchema = "{{ .Table }}" }, dest: postgres, want: ".Schema"},
+		{name: "future schema column field", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetSchema = "{{ .Column }}" }, dest: postgres, want: ".Schema"},
+		{name: "future table duplicate action", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetTable = "{{ .Table }}_{{ .Table }}" }, dest: postgres, want: "exactly one action"},
+		{name: "future table schema field", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetTable = "{{ .Schema }}" }, dest: postgres, want: ".Table"},
+		{name: "future table column field", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetTable = "{{ .Column }}" }, dest: postgres, want: ".Table"},
+		{name: "future column missing action", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.FutureColumns.TargetColumn = "fixed" }, dest: postgres, want: "exactly one action"},
+		{name: "future column duplicate action", edit: func(m *TableMappings) {
+			m.Destinations[0].FutureTables.FutureColumns.TargetColumn = "{{ .Column }}_{{ .Column }}"
+		}, dest: postgres, want: "exactly one action"},
+		{name: "future column schema field", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.FutureColumns.TargetColumn = "{{ .Schema }}" }, dest: postgres, want: ".Column"},
+		{name: "future column table field", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.FutureColumns.TargetColumn = "{{ .Table }}" }, dest: postgres, want: ".Column"},
 		{name: "destination whitespace", edit: func(m *TableMappings) { m.Destinations[0].Destination = " warehouse" }, dest: postgres, want: "whitespace"},
 		{name: "flow destination whitespace", edit: func(*TableMappings) {}, dest: []connector.Spec{{Name: "warehouse ", Type: connector.EndpointPostgres}}, want: "whitespace"},
 		{name: "source identifier NUL", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].SourceTable = "customers\x00shadow" }, dest: postgres, want: "NUL"},
 		{name: "target identifier NUL", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].TargetTable = "accounts\x00shadow" }, dest: postgres, want: "NUL"},
 		{name: "key NUL", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].Write.KeyColumns[0] = "id\x00shadow" }, dest: postgres, want: "NUL"},
 		{name: "watermark NUL", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].Write.WatermarkColumn = "updated_at\x00shadow" }, dest: postgres, want: "NUL"},
-		{name: "template whitespace", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetTable = " {table}" }, dest: postgres, want: "whitespace"},
+		{name: "template whitespace", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetTable = " {{ .Table }}" }, dest: postgres, want: "whitespace"},
 		{name: "upsert append only", edit: func(*TableMappings) {}, dest: []connector.Spec{{Name: "warehouse", Type: connector.EndpointIceberg}}, want: "does not support upsert"},
 	}
 	for _, test := range tests {
@@ -228,20 +383,24 @@ func richTestMappings() TableMappings {
 	return TableMappings{Version: TableMappingsVersion, Destinations: []DestinationTableMappings{{
 		Destination: "warehouse",
 		FutureTables: FutureTableMapping{
-			Action: MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}",
-			FutureColumns: FutureColumnMapping{Action: MappingActionInclude, TargetColumn: "{column}"},
+			Action: MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}",
+			FutureColumns: FutureColumnMapping{Action: MappingActionInclude, TargetColumn: "{{ .Column }}"},
 			Write:         TableWritePolicy{Mode: TableWriteModeAppend},
 		},
 		Tables: []TableMapping{{
 			SourceSchema: "public", SourceTable: "customers", Action: MappingActionInclude,
 			TargetSchema: "analytics", TargetTable: "accounts",
-			FutureColumns: FutureColumnMapping{Action: MappingActionInclude, TargetColumn: "{column}"},
+			FutureColumns: FutureColumnMapping{Action: MappingActionInclude, TargetColumn: "{{ .Column }}"},
 			Columns: []ColumnMapping{
 				{SourceColumn: "id", Action: MappingActionInclude, TargetColumn: "account_id"},
 				{SourceColumn: "secret", Action: MappingActionExclude},
 				{SourceColumn: "updated_at", Action: MappingActionInclude, TargetColumn: "modified_at"},
+				{SourceColumn: "account_id", Action: MappingActionExclude},
+				{SourceColumn: "modified_at", Action: MappingActionExclude},
 			},
 			Write: TableWritePolicy{Mode: TableWriteModeUpsert, KeyColumns: []string{"id"}, WatermarkColumn: "updated_at"},
+		}, {
+			SourceSchema: "analytics", SourceTable: "accounts", Action: MappingActionExclude,
 		}},
 	}}}
 }

@@ -1,0 +1,63 @@
+{
+  "name": "postgres_to_grpc_typed",
+  "wire_format": "json",
+  "parallelism": 2,
+  "source": {
+    "name": "postgres_source",
+    "type": "postgres",
+    "options": {
+      "dsn": "postgres://wallaby:example@localhost:5432/app?sslmode=disable",
+      "slot": "wallaby_grpc_typed",
+      "publication": "wallaby_grpc_typed",
+      "batch_size": "500",
+      "batch_timeout": "1s",
+      "status_interval": "10s",
+      "create_slot": "true",
+      "format": "json"
+    }
+  },
+  "destinations": [
+    {
+      "name": "grpc_typed",
+      "type": "grpc",
+      "options": {
+        "endpoint": "localhost:9090",
+        "format": "json",
+        "payload_mode": "record_json",
+        "insecure": "true",
+        "timeout": "6s",
+        "headers": "\"x-routing-tags: blue,green\",\"x-tenant: example\"",
+        "max_retries": "5",
+        "backoff_base": "125ms",
+        "backoff_max": "4s",
+        "backoff_factor": "1.5",
+        "type_mappings": "double precision: number\ntimestamp with time zone: string\njsonb: object\n"
+      }
+    }
+  ],
+  "config": {
+    "ack_policy": "all",
+    "table_mappings": {
+      "version": 2,
+      "destinations": [
+        {
+          "destination": "grpc_typed",
+          "future_tables": {
+            "action": "include",
+            "target_schema": "{{ .Schema }}",
+            "target_table": "{{ .Table }}",
+            "future_columns": {
+              "action": "include",
+              "target_column": "{{ .Column }}"
+            },
+            "write": {
+              "mode": "append",
+              "key_columns": []
+            }
+          },
+          "tables": []
+        }
+      ]
+    }
+  }
+}

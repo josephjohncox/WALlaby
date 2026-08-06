@@ -14,7 +14,7 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-const TableMappingsVersion uint32 = 1
+const TableMappingsVersion uint32 = 2
 
 type MappingAction string
 
@@ -85,8 +85,8 @@ func NewTableMappings(destinations []connector.Spec) TableMappings {
 		mappings.Destinations = append(mappings.Destinations, DestinationTableMappings{
 			Destination: destination.Name,
 			FutureTables: FutureTableMapping{
-				Action: MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}",
-				FutureColumns: FutureColumnMapping{Action: MappingActionInclude, TargetColumn: "{column}"},
+				Action: MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}",
+				FutureColumns: FutureColumnMapping{Action: MappingActionInclude, TargetColumn: "{{ .Column }}"},
 				Write:         TableWritePolicy{Mode: TableWriteModeAppend},
 			},
 		})
@@ -116,7 +116,7 @@ func (m TableMappings) Clone() TableMappings {
 
 func (m TableMappings) Fingerprint() (string, error) {
 	if m.Version != TableMappingsVersion {
-		return "", fmt.Errorf("table mappings version must be %d", TableMappingsVersion)
+		return "", incompatibleTableMappingsVersion(m.Version)
 	}
 	encoded, err := json.Marshal(m.canonical())
 	if err != nil {
@@ -176,8 +176,8 @@ func (m TableMappings) ForDestination(name string) (DestinationTableMappings, bo
 func (m TableMappings) IdentityForDestination(name string) bool {
 	destination, ok := m.ForDestination(name)
 	if !ok || destination.FutureTables.Action != MappingActionInclude ||
-		destination.FutureTables.TargetSchema != "{schema}" || destination.FutureTables.TargetTable != "{table}" ||
-		destination.FutureTables.FutureColumns.Action != MappingActionInclude || destination.FutureTables.FutureColumns.TargetColumn != "{column}" {
+		destination.FutureTables.TargetSchema != "{{ .Schema }}" || destination.FutureTables.TargetTable != "{{ .Table }}" ||
+		destination.FutureTables.FutureColumns.Action != MappingActionInclude || destination.FutureTables.FutureColumns.TargetColumn != "{{ .Column }}" {
 		return false
 	}
 	// Future tables must use append. Append changes update/delete operations and
@@ -187,7 +187,7 @@ func (m TableMappings) IdentityForDestination(name string) bool {
 	}
 	for _, table := range destination.Tables {
 		if table.Action != MappingActionInclude || table.TargetSchema != table.SourceSchema || table.TargetTable != table.SourceTable ||
-			table.FutureColumns.Action != MappingActionInclude || table.FutureColumns.TargetColumn != "{column}" ||
+			table.FutureColumns.Action != MappingActionInclude || table.FutureColumns.TargetColumn != "{{ .Column }}" ||
 			table.Write.Mode == TableWriteModeAppend {
 			return false
 		}
@@ -202,7 +202,7 @@ func (m TableMappings) IdentityForDestination(name string) bool {
 
 func (m TableMappings) Validate(destinations []connector.Spec) error {
 	if m.Version != TableMappingsVersion {
-		return fmt.Errorf("table mappings version must be %d", TableMappingsVersion)
+		return incompatibleTableMappingsVersion(m.Version)
 	}
 	if len(m.Destinations) == 0 {
 		return errors.New("table mappings require at least one destination mapping")
@@ -282,8 +282,8 @@ func validateDestinationMappings(mapping DestinationTableMappings, destination c
 		if err := validateIdentifier(table.TargetTable, "target_table"); err != nil {
 			return fmt.Errorf("included table %s.%s: %w", sourceSchema, sourceTable, err)
 		}
-		if containsTemplate(table.TargetSchema) || containsTemplate(table.TargetTable) {
-			return fmt.Errorf("exact table %s.%s target names cannot contain templates", sourceSchema, sourceTable)
+		if mappingtemplate.ContainsExecutableAction(table.TargetSchema) || mappingtemplate.ContainsExecutableAction(table.TargetTable) {
+			return fmt.Errorf("exact table %s.%s target names cannot contain executable Go template actions", sourceSchema, sourceTable)
 		}
 		targetKey := table.TargetSchema + "\x00" + table.TargetTable
 		if prior, collision := seenTarget[targetKey]; collision {
@@ -308,6 +308,40 @@ func validateDestinationMappings(mapping DestinationTableMappings, destination c
 			return fmt.Errorf("table %s.%s watermark column %q is excluded", sourceSchema, sourceTable, table.Write.WatermarkColumn)
 		}
 	}
+	if err := validateFutureTableInjectivity(mapping, seenSource); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateFutureTableInjectivity(mapping DestinationTableMappings, explicitSources map[string]struct{}) error {
+	if mapping.FutureTables.Action != MappingActionInclude {
+		return nil
+	}
+	schemaTemplate, err := mappingtemplate.Parse(mapping.FutureTables.TargetSchema, mappingtemplate.Schema)
+	if err != nil {
+		return err
+	}
+	tableTemplate, err := mappingtemplate.Parse(mapping.FutureTables.TargetTable, mappingtemplate.Table)
+	if err != nil {
+		return err
+	}
+	for _, table := range mapping.Tables {
+		if table.Action != MappingActionInclude {
+			continue
+		}
+		candidateSchema, schemaMatch := schemaTemplate.Inverse(table.TargetSchema)
+		candidateTable, tableMatch := tableTemplate.Inverse(table.TargetTable)
+		if !schemaMatch || !tableMatch || candidateSchema == "" || candidateTable == "" ||
+			(candidateSchema == table.SourceSchema && candidateTable == table.SourceTable) {
+			continue
+		}
+		candidateKey := candidateSchema + "\x00" + candidateTable
+		if _, overridden := explicitSources[candidateKey]; overridden {
+			continue
+		}
+		return fmt.Errorf("exact table %q.%q target %q.%q collides with future mapping of unoverridden source %q.%q", table.SourceSchema, table.SourceTable, table.TargetSchema, table.TargetTable, candidateSchema, candidateTable)
+	}
 	return nil
 }
 
@@ -321,10 +355,10 @@ func validateFutureTable(future FutureTableMapping, destination connector.Spec) 
 		}
 		return nil
 	}
-	if _, err := mappingtemplate.Parse(future.TargetSchema, mappingtemplate.Schema); err != nil {
+	if err := validateMappingTemplate(future.TargetSchema, mappingtemplate.Schema); err != nil {
 		return fmt.Errorf("future target_schema: %w", err)
 	}
-	if _, err := mappingtemplate.Parse(future.TargetTable, mappingtemplate.Table); err != nil {
+	if err := validateMappingTemplate(future.TargetTable, mappingtemplate.Table); err != nil {
 		return fmt.Errorf("future target_table: %w", err)
 	}
 	if err := validateFutureColumn(future.FutureColumns, "future tables"); err != nil {
@@ -361,13 +395,33 @@ func validateColumns(table TableMapping) error {
 		if err := validateIdentifier(target, "target_column"); err != nil {
 			return fmt.Errorf("included column %s.%s.%s: %w", table.SourceSchema, table.SourceTable, source, err)
 		}
-		if containsTemplate(target) {
-			return fmt.Errorf("included column %s.%s.%s requires a literal target_column", table.SourceSchema, table.SourceTable, source)
+		if mappingtemplate.ContainsExecutableAction(target) {
+			return fmt.Errorf("included column %s.%s.%s requires a literal target_column without executable Go template actions", table.SourceSchema, table.SourceTable, source)
 		}
 		if prior, collision := seenTarget[target]; collision {
 			return fmt.Errorf("source columns %s and %s map to target column %q", prior, source, target)
 		}
 		seenTarget[target] = source
+	}
+	if table.FutureColumns.Action != MappingActionInclude {
+		return nil
+	}
+	futureTemplate, err := mappingtemplate.Parse(table.FutureColumns.TargetColumn, mappingtemplate.Column)
+	if err != nil {
+		return err
+	}
+	for _, column := range table.Columns {
+		if column.Action != MappingActionInclude {
+			continue
+		}
+		candidate, match := futureTemplate.Inverse(column.TargetColumn)
+		if !match || candidate == "" || candidate == column.SourceColumn {
+			continue
+		}
+		if _, overridden := seenSource[candidate]; overridden {
+			continue
+		}
+		return fmt.Errorf("table %s.%s exact column %q target %q collides with future mapping of unoverridden source column %q", table.SourceSchema, table.SourceTable, column.SourceColumn, column.TargetColumn, candidate)
 	}
 	return nil
 }
@@ -382,10 +436,19 @@ func validateFutureColumn(future FutureColumnMapping, scope string) error {
 		}
 		return nil
 	}
-	if _, err := mappingtemplate.Parse(future.TargetColumn, mappingtemplate.Column); err != nil {
+	if err := validateMappingTemplate(future.TargetColumn, mappingtemplate.Column); err != nil {
 		return fmt.Errorf("%s future target_column: %w", scope, err)
 	}
 	return nil
+}
+
+func validateMappingTemplate(raw string, component mappingtemplate.Component) error {
+	compiled, err := mappingtemplate.Parse(raw, component)
+	if err != nil {
+		return err
+	}
+	_, err = compiled.Expand(mappingtemplate.Data{Schema: "schema", Table: "table", Column: "column"})
+	return err
 }
 
 func validateWritePolicy(write TableWritePolicy, destination connector.Spec, future bool) error {
@@ -470,4 +533,6 @@ func validateIdentifier(value, subject string) error {
 	return nil
 }
 
-func containsTemplate(value string) bool { return strings.ContainsAny(value, "{}") }
+func incompatibleTableMappingsVersion(version uint32) error {
+	return fmt.Errorf("table mappings version %d is unsupported; expected %d", version, TableMappingsVersion)
+}

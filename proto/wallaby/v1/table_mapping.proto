@@ -17,6 +17,7 @@ enum TableWriteMode {
 }
 
 message TableMappings {
+  // Version 2 is required. Version 1 and legacy placeholder syntax are unsupported.
   uint32 version = 1;
   repeated DestinationTableMappings destinations = 2;
 }
@@ -29,7 +30,11 @@ message DestinationTableMappings {
 
 message FutureTableMapping {
   MappingAction action = 1;
+  // When action is INCLUDE, version 2 requires one restricted Go text/template
+  // field action: {{ .Schema }}. When action is EXCLUDE, this must be empty.
   string target_schema = 2;
+  // When action is INCLUDE, version 2 requires one restricted Go text/template
+  // field action: {{ .Table }}. When action is EXCLUDE, this must be empty.
   string target_table = 3;
   FutureColumnMapping future_columns = 4;
   TableWritePolicy write = 5;
@@ -48,6 +53,10 @@ message TableMapping {
 
 message FutureColumnMapping {
   MappingAction action = 1;
+  // When action is INCLUDE, version 2 requires one restricted Go text/template
+  // field action: {{ .Column }}. When action is EXCLUDE, this must be empty.
+  // Only typed Schema, Table, and Column data is injected. Functions, pipelines,
+  // variables, conditions, loops, and template inclusion are unsupported.
   string target_column = 2;
 }
 

@@ -7,15 +7,110 @@ import (
 	"math"
 	nethttp "net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/josephjohncox/wallaby/internal/typemapping"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
+	"gopkg.in/yaml.v3"
 )
+
+func TestShippedHTTPTypedExampleUsesProductionParsers(t *testing.T) {
+	t.Parallel()
+	root, options := shippedHTTPExampleOptions(t)
+	cfg, err := parseDestinationConfig(connector.Spec{Name: "webhook_typed", Type: connector.EndpointHTTP, Options: options})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.payloadMode != payloadModeRecordJSON || cfg.timeout != 7*time.Second || cfg.maxRetries != 4 || cfg.backoffBase != 150*time.Millisecond || cfg.backoffMax != 3*time.Second || cfg.backoffFactor != 1.75 {
+		t.Fatalf("parsed HTTP typed options = %+v", cfg)
+	}
+	if got := cfg.headers["x-labels"]; got != "alpha,beta" {
+		t.Fatalf("decoded comma-bearing header = %q", got)
+	}
+
+	mappingOptions := copyOptions(options)
+	mappingOptions[typemapping.OptTypeMappingsFile] = filepath.Join(root, filepath.FromSlash(mappingOptions[typemapping.OptTypeMappingsFile]))
+	got, err := typemapping.Load(mappingOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"double precision":         "number",
+		"timestamp with time zone": "string",
+		"jsonb":                    "object",
+		"bytea":                    "base64_string",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("type mappings = %#v, want %#v", got, want)
+	}
+}
+
+func TestShippedHTTPTypedExampleMutationsAreRejected(t *testing.T) {
+	t.Parallel()
+	root, options := shippedHTTPExampleOptions(t)
+
+	malformedOptions := copyOptions(options)
+	malformedOptions[optTimeout] = "eventually"
+	if _, err := parseDestinationConfig(connector.Spec{Name: "webhook_typed", Type: connector.EndpointHTTP, Options: malformedOptions}); err == nil || !strings.Contains(err.Error(), optTimeout) {
+		t.Fatalf("parseDestinationConfig() error = %v, want %s", err, optTimeout)
+	}
+
+	mappingPath := filepath.Join(root, filepath.FromSlash(options[typemapping.OptTypeMappingsFile]))
+	payload, err := os.ReadFile(mappingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated := strings.Replace(string(payload), "double precision: number", "double precision: [number", 1)
+	mutatedPath := filepath.Join(t.TempDir(), "web.yaml")
+	if err := os.WriteFile(mutatedPath, []byte(mutated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := typemapping.Load(map[string]string{typemapping.OptTypeMappingsFile: mutatedPath}); err == nil || !strings.Contains(err.Error(), "parse type_mappings") {
+		t.Fatalf("typemapping.Load() error = %v, want parse failure", err)
+	}
+}
+
+func shippedHTTPExampleOptions(t *testing.T) (string, map[string]string) {
+	t.Helper()
+	root := filepath.Clean(filepath.Join("..", "..", ".."))
+	payload, err := os.ReadFile(filepath.Join(root, "examples", "flows", "postgres_to_http_typed.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Destinations []struct {
+			Name    string            `yaml:"name"`
+			Type    string            `yaml:"type"`
+			Options map[string]string `yaml:"options"`
+		} `yaml:"destinations"`
+	}
+	if err := yaml.Unmarshal(payload, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	for _, destination := range fixture.Destinations {
+		if destination.Name == "webhook_typed" && destination.Type == string(connector.EndpointHTTP) {
+			return root, destination.Options
+		}
+	}
+	t.Fatal("HTTP typed example omits webhook_typed destination")
+	return "", nil
+}
+
+func copyOptions(options map[string]string) map[string]string {
+	out := make(map[string]string, len(options))
+	for key, value := range options {
+		out[key] = value
+	}
+	return out
+}
 
 func TestAppendWriteSendsMappedBatch(t *testing.T) {
 	var body []byte

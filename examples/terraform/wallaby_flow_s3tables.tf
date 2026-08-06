@@ -36,17 +36,17 @@ resource "wallaby_flow" "postgres_to_iceberg_s3tables" {
     }
 
     table_mappings = {
-      version = 1
+      version = 2
       destinations = [
         {
           destination = "iceberg-s3tables"
           future_tables = {
             action        = "include"
-            target_schema = "{schema}"
-            target_table  = "{table}"
+            target_schema = "{{ .Schema }}"
+            target_table  = "{{ .Table }}"
             future_columns = {
               action        = "include"
-              target_column = "{column}"
+              target_column = "{{ .Column }}"
             }
             write = {
               mode        = "append"

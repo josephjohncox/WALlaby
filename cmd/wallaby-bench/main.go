@@ -942,7 +942,7 @@ func benchmarkProjector(target string, destination connector.Spec, specs []table
 		tables = append(tables, flow.TableMapping{
 			SourceSchema: schemaName(spec.Name), SourceTable: tableName(spec.Name),
 			Action: flow.MappingActionInclude, TargetSchema: targetNamespace, TargetTable: tableName(spec.Name),
-			FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"},
+			FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"},
 			Write:         write,
 		})
 	}

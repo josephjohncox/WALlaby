@@ -50,6 +50,55 @@ func TestProjectStructuredDDLRenamesAndFiltersColumns(t *testing.T) {
 	}
 }
 
+func TestDDLAdmissionRejectsExactFutureColumnCollisions(t *testing.T) {
+	t.Parallel()
+	destination := connector.Spec{Name: "sink", Type: connector.EndpointPostgres}
+	admitAndProject := func(target string, change schema.Change) error {
+		mappings := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{
+			Destination:  "sink",
+			FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude},
+			Tables: []flow.TableMapping{{
+				SourceSchema: "public", SourceTable: "widgets", Action: flow.MappingActionInclude,
+				TargetSchema: "public", TargetTable: "widgets",
+				FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"},
+				Columns:       []flow.ColumnMapping{{SourceColumn: "legacy", Action: flow.MappingActionInclude, TargetColumn: target}},
+				Write:         flow.TableWritePolicy{Mode: flow.TableWriteModeAppend},
+			}},
+		}}}
+		if err := mappings.Validate([]connector.Spec{destination}); err != nil {
+			return err
+		}
+		projector, err := New(mappings, destination.Name)
+		if err != nil {
+			return err
+		}
+		plan, err := json.Marshal(schema.Plan{Changes: []schema.Change{change}})
+		if err != nil {
+			return err
+		}
+		_, _, err = projector.ProjectBatch(connector.Batch{
+			Schema:  connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "legacy", Type: "text"}}},
+			Records: []connector.Record{{Table: "widgets", Operation: connector.OpDDL, DDLPlan: plan}},
+		})
+		return err
+	}
+	for _, test := range []struct {
+		name   string
+		target string
+		change schema.Change
+	}{
+		{name: "add", target: "added", change: schema.Change{Type: schema.ChangeAddColumn, Namespace: "public", Table: "widgets", Column: "added", ToType: "text"}},
+		{name: "rename", target: "renamed", change: schema.Change{Type: schema.ChangeRenameColumn, Namespace: "public", Table: "widgets", Column: "legacy", ToColumn: "renamed"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := admitAndProject(test.target, test.change)
+			if err == nil || !strings.Contains(err.Error(), "collides with future mapping") {
+				t.Fatalf("DDL admission error = %v, want exact/future collision", err)
+			}
+		})
+	}
+}
+
 func TestProjectRenameAcceptsWhitespaceOnlyTargetAndRejectsNUL(t *testing.T) {
 	mappings := upsertMappings()
 	mappings.Destinations[0].Tables[0].Columns = append(mappings.Destinations[0].Tables[0].Columns,

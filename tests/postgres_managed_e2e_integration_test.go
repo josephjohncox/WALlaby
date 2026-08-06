@@ -118,7 +118,7 @@ DROP TABLE IF EXISTS wallaby_meta.__delivery_receipts`)
 	started.Source = created.Source
 	started.Destinations = created.Destinations
 	started.Config.AckPolicy = stream.AckPolicyAll
-	started.Config.TableMappings = flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "target", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: "wallaby_managed_source", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: "wallaby_managed_target", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}}}}
+	started.Config.TableMappings = flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "target", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: "wallaby_managed_source", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: "wallaby_managed_target", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}}}}
 
 	var provisionedSlot, provisionedLSN string
 	if err := pool.QueryRow(ctx, `SELECT slot_name,lsn::text FROM pg_catalog.pg_create_logical_replication_slot($1,'pgoutput')`, slotName).Scan(&provisionedSlot, &provisionedLSN); err != nil {

@@ -302,8 +302,16 @@ func (p *Projector) resolve(schema connector.Schema, allowEmptyColumns bool) (re
 			return resolved, nil
 		}
 		resolved.included = true
-		resolved.targetSchema = p.futureTableTemplates.targetSchema.Expand(schema.Namespace)
-		resolved.targetTable = p.futureTableTemplates.targetTable.Expand(schema.Name)
+		data := mappingtemplate.Data{Schema: schema.Namespace, Table: schema.Name}
+		var err error
+		resolved.targetSchema, err = p.futureTableTemplates.targetSchema.Expand(data)
+		if err != nil {
+			return resolvedTable{}, fmt.Errorf("expand future target_schema for %s.%s: %w", schema.Namespace, schema.Name, err)
+		}
+		resolved.targetTable, err = p.futureTableTemplates.targetTable.Expand(data)
+		if err != nil {
+			return resolvedTable{}, fmt.Errorf("expand future target_table for %s.%s: %w", schema.Namespace, schema.Name, err)
+		}
 		resolved.write = future.Write
 		futureColumns = future.FutureColumns
 		resolved.futureColumnTemplate = p.futureTableTemplates.targetColumn
@@ -329,7 +337,14 @@ func (p *Projector) resolve(schema connector.Schema, allowEmptyColumns bool) (re
 	shapeChanged := resolved.targetSchema != schema.Namespace || resolved.targetTable != schema.Name
 	for _, column := range schema.Columns {
 		action := futureColumns.Action
-		target := resolved.futureColumnTemplate.Expand(column.Name)
+		target := ""
+		if action == flow.MappingActionInclude {
+			var err error
+			target, err = resolved.futureColumnTemplate.Expand(mappingtemplate.Data{Schema: schema.Namespace, Table: schema.Name, Column: column.Name})
+			if err != nil {
+				return resolvedTable{}, fmt.Errorf("expand future target_column for %s.%s.%s: %w", schema.Namespace, schema.Name, column.Name, err)
+			}
+		}
 		if exact != nil {
 			for _, configured := range exact.Columns {
 				if configured.SourceColumn == column.Name {

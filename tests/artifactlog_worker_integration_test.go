@@ -54,7 +54,7 @@ func materializedWorkerDefinition(flowID, dsn, publication, slotName, sourceSyst
 				Tables: []flow.TableMapping{{
 					SourceSchema: "public", SourceTable: "wallaby_worker_materialized_source", Action: flow.MappingActionInclude,
 					TargetSchema: "wallaby", TargetTable: "worker_materialized",
-					FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"},
+					FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"},
 					Columns:       []flow.ColumnMapping{}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend, KeyColumns: []string{}},
 				}},
 			}}},

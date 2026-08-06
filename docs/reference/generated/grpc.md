@@ -175,7 +175,7 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | action | [MappingAction](#wallaby-v1-MappingAction) |  |  |
-| target_column | [string](#string) |  |  |
+| target_column | [string](#string) |  | When action is INCLUDE, version 2 requires one restricted Go text/template field action: {{ .Column }}. When action is EXCLUDE, this must be empty. Only typed Schema, Table, and Column data is injected. Functions, pipelines, variables, conditions, loops, and template inclusion are unsupported. |
 
 
 
@@ -191,8 +191,8 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | action | [MappingAction](#wallaby-v1-MappingAction) |  |  |
-| target_schema | [string](#string) |  |  |
-| target_table | [string](#string) |  |  |
+| target_schema | [string](#string) |  | When action is INCLUDE, version 2 requires one restricted Go text/template field action: {{ .Schema }}. When action is EXCLUDE, this must be empty. |
+| target_table | [string](#string) |  | When action is INCLUDE, version 2 requires one restricted Go text/template field action: {{ .Table }}. When action is EXCLUDE, this must be empty. |
 | future_columns | [FutureColumnMapping](#wallaby-v1-FutureColumnMapping) |  |  |
 | write | [TableWritePolicy](#wallaby-v1-TableWritePolicy) |  |  |
 
@@ -231,7 +231,7 @@
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| version | [uint32](#uint32) |  |  |
+| version | [uint32](#uint32) |  | Version 2 is required. Version 1 and legacy placeholder syntax are unsupported. |
 | destinations | [DestinationTableMappings](#wallaby-v1-DestinationTableMappings) | repeated |  |
 
 

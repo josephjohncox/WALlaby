@@ -22,7 +22,7 @@ func TestMappingProtoRoundTripPreservesWhitespaceOnlyPostgresIdentifiers(t *test
 		Destination: "target", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude},
 		Tables: []flow.TableMapping{{
 			SourceSchema: " ", SourceTable: " ", Action: flow.MappingActionInclude,
-			TargetSchema: " ", TargetTable: " ", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"},
+			TargetSchema: " ", TargetTable: " ", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"},
 			Columns: []flow.ColumnMapping{{SourceColumn: " ID ", Action: flow.MappingActionInclude, TargetColumn: " id "}},
 			Write:   flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{" ID "}, WatermarkColumn: " "},
 		}},

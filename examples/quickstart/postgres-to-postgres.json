@@ -30,6 +30,6 @@
   ],
   "config": {
     "ack_policy":"all",
-    "table_mappings":{"version":1,"destinations":[{"destination":"orders-postgres","future_tables":{"action":"exclude"},"tables":[{"source_schema":"public","source_table":"orders","action":"include","target_schema":"public","target_table":"orders","future_columns":{"action":"include","target_column":"{column}"},"columns":[],"write":{"mode":"upsert","key_columns":["id"]}}]}]}
+    "table_mappings":{"version":2,"destinations":[{"destination":"orders-postgres","future_tables":{"action":"exclude"},"tables":[{"source_schema":"public","source_table":"orders","action":"include","target_schema":"public","target_table":"orders","future_columns":{"action":"include","target_column":"{{ .Column }}"},"columns":[],"write":{"mode":"upsert","key_columns":["id"]}}]}]}
   }
 }

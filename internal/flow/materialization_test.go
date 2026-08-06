@@ -66,7 +66,7 @@ func TestValidateDefinitionMaterializationContract(t *testing.T) {
 		{name: "upsert mapping", edit: func(f *Flow) {
 			mapping := &f.Config.TableMappings.Destinations[0]
 			mapping.FutureTables = FutureTableMapping{Action: MappingActionExclude}
-			mapping.Tables = []TableMapping{{SourceSchema: "public", SourceTable: "events", Action: MappingActionInclude, TargetSchema: "lake", TargetTable: "events", FutureColumns: FutureColumnMapping{Action: MappingActionInclude, TargetColumn: "{column}"}, Write: TableWritePolicy{Mode: TableWriteModeUpsert, KeyColumns: []string{"id"}}}}
+			mapping.Tables = []TableMapping{{SourceSchema: "public", SourceTable: "events", Action: MappingActionInclude, TargetSchema: "lake", TargetTable: "events", FutureColumns: FutureColumnMapping{Action: MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: TableWritePolicy{Mode: TableWriteModeUpsert, KeyColumns: []string{"id"}}}}
 		}, want: "upsert"},
 		{name: "watermark mapping", edit: func(f *Flow) {
 			f.Config.TableMappings.Destinations[0].FutureTables.Write.WatermarkColumn = "updated_at"

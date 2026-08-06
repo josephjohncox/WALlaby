@@ -61,7 +61,7 @@ destinations:
 
 config:
   table_mappings:
-    version: 1
+    version: 2
     destinations:
       - destination: lake
         future_tables:
@@ -74,7 +74,7 @@ config:
             target_table: cdc_events
             future_columns:
               action: include
-              target_column: "{column}"
+              target_column: "{{ .Column }}"
             columns: []
             write:
               mode: append

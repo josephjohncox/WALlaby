@@ -173,7 +173,7 @@ func TestNewStreamRunnerRejectsUnsupportedTablePolicyBeforeOpen(t *testing.T) {
 	mapping := &definition.Config.TableMappings.Destinations[0]
 	mapping.Tables = []flow.TableMapping{{
 		SourceSchema: "public", SourceTable: "widgets", Action: flow.MappingActionInclude,
-		TargetSchema: "public", TargetTable: "widgets", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"},
+		TargetSchema: "public", TargetTable: "widgets", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"},
 		Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}},
 	}}
 	_, err := NewStreamRunner(definition, nil, []stream.DestinationConfig{{Spec: definition.Destinations[0], Dest: appendOnlyRunnerDestination{}}}, StreamRunnerConfig{Checkpoints: testCheckpointOutboxStore{}})

@@ -34,7 +34,7 @@
   "config": {
     "ddl": {"auto_apply": false},
     "table_mappings": {
-      "version": 1,
+      "version": 2,
       "destinations": [
         {
           "destination": "s3tables-lake",
@@ -46,7 +46,7 @@
               "action": "include",
               "target_schema": "wallaby",
               "target_table": "cdc_events",
-              "future_columns":{"action":"include","target_column":"{column}"},
+              "future_columns":{"action":"include","target_column":"{{ .Column }}"},
               "columns":[],
               "write":{"mode":"append","key_columns":[]}
             }

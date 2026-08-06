@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/internal/mappingtemplate"
 	internalschema "github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -45,7 +46,10 @@ func projectDDLRecord(sourceSchema, targetSchema connector.Schema, resolved reso
 			return connector.Record{}, false, fmt.Errorf("DDL expression for %s cannot be rewritten by a nonidentity projection", change.Type)
 		}
 		if change.Column != "" {
-			target, included := resolveDDLColumn(resolved, change.Column)
+			target, included, err := resolveDDLColumn(resolved, change.Column)
+			if err != nil {
+				return connector.Record{}, false, fmt.Errorf("project DDL column %q: %w", change.Column, err)
+			}
 			if !included {
 				if change.Type == internalschema.ChangeRenameColumn {
 					return connector.Record{}, false, fmt.Errorf("rename source column %q is excluded", change.Column)
@@ -58,7 +62,10 @@ func projectDDLRecord(sourceSchema, targetSchema connector.Schema, resolved reso
 			if len(change.ToColumn) == 0 || strings.ContainsRune(change.ToColumn, '\x00') {
 				return connector.Record{}, false, errors.New("rename column DDL requires an exact nonempty to_column without NUL")
 			}
-			target, included := resolveDDLColumn(resolved, change.ToColumn)
+			target, included, err := resolveDDLColumn(resolved, change.ToColumn)
+			if err != nil {
+				return connector.Record{}, false, fmt.Errorf("project DDL rename target column %q: %w", change.ToColumn, err)
+			}
 			if !included {
 				return connector.Record{}, false, fmt.Errorf("rename target column %q is excluded", change.ToColumn)
 			}
@@ -73,7 +80,10 @@ func projectDDLRecord(sourceSchema, targetSchema connector.Schema, resolved reso
 		if len(change.PrimaryKeys) > 0 && resolved.write.Mode != flow.TableWriteModeAppend {
 			mapped.PrimaryKeys = make([]string, 0, len(change.PrimaryKeys))
 			for _, key := range change.PrimaryKeys {
-				target, included := resolveDDLColumn(resolved, key)
+				target, included, err := resolveDDLColumn(resolved, key)
+				if err != nil {
+					return connector.Record{}, false, fmt.Errorf("project DDL primary key column %q: %w", key, err)
+				}
 				if !included {
 					return connector.Record{}, false, fmt.Errorf("primary key DDL references excluded column %q", key)
 				}
@@ -97,15 +107,19 @@ func projectDDLRecord(sourceSchema, targetSchema connector.Schema, resolved reso
 	return out, true, nil
 }
 
-func resolveDDLColumn(resolved resolvedTable, source string) (string, bool) {
+func resolveDDLColumn(resolved resolvedTable, source string) (string, bool, error) {
 	if column, ok := resolved.exactColumns[source]; ok {
 		if column.Action == flow.MappingActionExclude {
-			return "", false
+			return "", false, nil
 		}
-		return column.TargetColumn, true
+		return column.TargetColumn, true, nil
 	}
 	if resolved.futureColumns.Action == flow.MappingActionExclude {
-		return "", false
+		return "", false, nil
 	}
-	return resolved.futureColumnTemplate.Expand(source), true
+	target, err := resolved.futureColumnTemplate.Expand(mappingtemplate.Data{Schema: resolved.sourceSchema, Table: resolved.sourceTable, Column: source})
+	if err != nil {
+		return "", false, err
+	}
+	return target, true, nil
 }

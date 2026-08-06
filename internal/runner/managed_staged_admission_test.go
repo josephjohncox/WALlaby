@@ -98,7 +98,7 @@ func managedAppendSnowflakeMappings(destination string) flow.TableMappings {
 		Tables: []flow.TableMapping{{
 			SourceSchema: "public", SourceTable: "widgets", Action: flow.MappingActionInclude,
 			TargetSchema: "PUBLIC", TargetTable: "WALLABY_CHANGELOG",
-			FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"},
+			FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"},
 			Write:         flow.TableWritePolicy{Mode: flow.TableWriteModeAppend},
 		}},
 	}}}

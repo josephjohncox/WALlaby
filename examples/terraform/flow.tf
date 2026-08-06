@@ -50,17 +50,17 @@ resource "wallaby_flow" "pg_to_s3" {
     ack_policy = "all"
 
     table_mappings = {
-      version = 1
+      version = 2
       destinations = [
         {
           destination = "s3-out"
           future_tables = {
             action        = "include"
-            target_schema = "{schema}"
-            target_table  = "{table}"
+            target_schema = "{{ .Schema }}"
+            target_table  = "{{ .Table }}"
             future_columns = {
               action        = "include"
-              target_column = "{column}"
+              target_column = "{{ .Column }}"
             }
             write = {
               mode        = "append"

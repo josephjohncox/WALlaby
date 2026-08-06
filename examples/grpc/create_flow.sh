@@ -6,11 +6,11 @@ ROOT_DIR=$(cd "$(dirname "$0")/../.." && pwd)
 # Create a flow via gRPC. Update this payload when Flow/Endpoint schemas change.
 
 grpcurl -plaintext \
-  -import-path "$ROOT_DIR/proto" \
-  -proto wallaby/v1/flow.proto \
-  -proto wallaby/v1/types.proto \
-  -d @ \
-  localhost:8080 wallaby.v1.FlowService/CreateFlow <<'JSON'
+	-import-path "$ROOT_DIR/proto" \
+	-proto wallaby/v1/flow.proto \
+	-proto wallaby/v1/types.proto \
+	-d @ \
+	localhost:8080 wallaby.v1.FlowService/CreateFlow <<'JSON'
 {
   "flow": {
     "name": "pg_to_kafka",
@@ -20,7 +20,7 @@ grpcurl -plaintext \
       "primary_destination": "kafka-out",
       "failure_mode": "FAILURE_MODE_HOLD_SLOT",
       "give_up_policy":"GIVE_UP_POLICY_ON_RETRY_EXHAUSTION",
-      "table_mappings":{"version":1,"destinations":[{"destination":"kafka-out","future_tables":{"action":"MAPPING_ACTION_INCLUDE","target_schema":"{schema}","target_table":"{table}","future_columns":{"action":"MAPPING_ACTION_INCLUDE","target_column":"{column}"},"write":{"mode":"TABLE_WRITE_MODE_APPEND","key_columns":[]}},"tables":[]}]}
+      "table_mappings":{"version":2,"destinations":[{"destination":"kafka-out","future_tables":{"action":"MAPPING_ACTION_INCLUDE","target_schema":"{{ .Schema }}","target_table":"{{ .Table }}","future_columns":{"action":"MAPPING_ACTION_INCLUDE","target_column":"{{ .Column }}"},"write":{"mode":"TABLE_WRITE_MODE_APPEND","key_columns":[]}},"tables":[]}]}
     },
     "source": {
       "name": "pg-source",

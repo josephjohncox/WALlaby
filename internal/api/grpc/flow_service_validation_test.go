@@ -48,7 +48,7 @@ func TestFlowServiceRejectsInvalidTableMappingsBeforePersistence(t *testing.T) {
 	destination := connector.Spec{Name: "warehouse", Type: connector.EndpointPostgres}
 	definition := flow.Flow{ID: "invalid-mappings", Source: connector.Spec{Type: connector.EndpointPostgres}, Destinations: []connector.Spec{destination}}
 	definition.Config.TableMappings = flow.NewTableMappings(definition.Destinations)
-	columns := flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}
+	columns := flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}
 	definition.Config.TableMappings.Destinations[0].Tables = []flow.TableMapping{
 		{SourceSchema: "public", SourceTable: "left", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: "same", FutureColumns: columns, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
 		{SourceSchema: "public", SourceTable: "right", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: "same", FutureColumns: columns, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},

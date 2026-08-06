@@ -51,7 +51,7 @@ func TestPostgresTableMappingChangeRotatesIncarnation(t *testing.T) {
 	if first != canonical {
 		t.Fatal("nil/empty canonical mapping change rotated postgres flow incarnation")
 	}
-	created.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "mapped_{table}"
+	created.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "mapped_{{ .Table }}"
 	if _, err := store.Update(ctx, created); err != nil {
 		t.Fatal(err)
 	}

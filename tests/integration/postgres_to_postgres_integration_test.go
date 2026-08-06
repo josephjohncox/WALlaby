@@ -186,7 +186,7 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 				TargetTable:  table,
 				FutureColumns: flow.FutureColumnMapping{
 					Action:       flow.MappingActionInclude,
-					TargetColumn: "{column}",
+					TargetColumn: "{{ .Column }}",
 				},
 				Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}},
 			}},

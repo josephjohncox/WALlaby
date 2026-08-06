@@ -36,7 +36,7 @@ func Generate(request Request) (flow.TableMappings, error) {
 		return tables[i].Table < tables[j].Table
 	})
 	selected := make(map[TableRef]map[string]struct{}, len(tables))
-	result := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: destination, FutureTables: flow.FutureTableMapping{Action: flow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}}}}}
+	result := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: destination, FutureTables: flow.FutureTableMapping{Action: flow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}}}}}
 	mapping := &result.Destinations[0]
 	for _, table := range tables {
 		ref := TableRef{Schema: table.Schema, Table: table.Table}
@@ -83,7 +83,7 @@ func Generate(request Request) (flow.TableMappings, error) {
 			}
 			policy.WatermarkColumn = watermark
 		}
-		mapping.Tables = append(mapping.Tables, flow.TableMapping{SourceSchema: table.Schema, SourceTable: table.Table, Action: flow.MappingActionInclude, TargetSchema: table.Schema, TargetTable: table.Table, FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Columns: columnMappings, Write: policy})
+		mapping.Tables = append(mapping.Tables, flow.TableMapping{SourceSchema: table.Schema, SourceTable: table.Table, Action: flow.MappingActionInclude, TargetSchema: table.Schema, TargetTable: table.Table, FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Columns: columnMappings, Write: policy})
 	}
 	for ref := range request.MatchColumns {
 		if _, ok := selected[ref]; !ok {

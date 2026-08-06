@@ -223,7 +223,7 @@ func exactIdentifierMapping(sourceSchema, sourceTable, targetTable string) flow.
 	return flow.TableMapping{
 		SourceSchema: sourceSchema, SourceTable: sourceTable, Action: flow.MappingActionInclude,
 		TargetSchema: "public", TargetTable: targetTable,
-		FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"},
+		FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"},
 		Write:         flow.TableWritePolicy{Mode: flow.TableWriteModeAppend},
 	}
 }

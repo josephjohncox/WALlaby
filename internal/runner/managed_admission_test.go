@@ -575,7 +575,7 @@ func TestManagedSnowflakeMappingRejectsAppendWatermarkAndFutureDefaults(t *testi
 	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}}
 	for name, mutate := range map[string]func(*flow.Flow){
 		"future_include": func(f *flow.Flow) {
-			f.Config.TableMappings.Destinations[0].FutureTables = flow.FutureTableMapping{Action: flow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}}
+			f.Config.TableMappings.Destinations[0].FutureTables = flow.FutureTableMapping{Action: flow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}}
 		},
 		"append": func(f *flow.Flow) {
 			f.Config.TableMappings.Destinations[0].Tables[0].Write = flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}
@@ -600,7 +600,7 @@ func managedSnowflakeFlowForTest() flow.Flow {
 	f.Source.Options["max_transaction_records"], f.Source.Options["max_transaction_bytes"], f.Source.Options["max_transaction_fragments"] = "1000", "8388608", "64"
 	mapping, _ := f.Config.TableMappings.ForDestination("target")
 	mapping.FutureTables = flow.FutureTableMapping{Action: flow.MappingActionExclude}
-	mapping.Tables = []flow.TableMapping{{SourceSchema: "public", SourceTable: "widgets", Action: flow.MappingActionInclude, TargetSchema: "PUBLIC", TargetTable: "WIDGETS", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}
+	mapping.Tables = []flow.TableMapping{{SourceSchema: "public", SourceTable: "widgets", Action: flow.MappingActionInclude, TargetSchema: "PUBLIC", TargetTable: "WIDGETS", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}
 	f.Config.TableMappings.Destinations[0] = mapping
 	return f
 }

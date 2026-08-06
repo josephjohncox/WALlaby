@@ -5,18 +5,96 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/typemapping"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 	gogrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+func TestShippedGRPCTypedExampleUsesProductionParsers(t *testing.T) {
+	t.Parallel()
+	options := shippedGRPCExampleOptions(t)
+	cfg, err := parseDestinationConfig(connector.Spec{Name: "grpc_typed", Type: connector.EndpointGRPC, Options: options})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.endpoint != "localhost:9090" || cfg.payloadMode != payloadModeRecordJSON || !cfg.insecure || cfg.tlsCAFile != "" || cfg.tlsServerName != "" || cfg.timeout != 6*time.Second || cfg.maxRetries != 5 || cfg.backoffBase != 125*time.Millisecond || cfg.backoffMax != 4*time.Second || cfg.backoffFactor != 1.5 {
+		t.Fatalf("parsed gRPC typed options = %+v", cfg)
+	}
+	if got := cfg.headers["x-routing-tags"]; got != "blue,green" {
+		t.Fatalf("decoded comma-bearing metadata = %q", got)
+	}
+	got, err := typemapping.Load(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"double precision": "number", "timestamp with time zone": "string", "jsonb": "object"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("type mappings = %#v, want %#v", got, want)
+	}
+}
+
+func TestShippedGRPCTypedExampleMutationsAreRejected(t *testing.T) {
+	t.Parallel()
+	options := shippedGRPCExampleOptions(t)
+
+	malformedOptions := copyExampleOptions(options)
+	malformedOptions[optBackoffFactor] = "many"
+	if _, err := parseDestinationConfig(connector.Spec{Name: "grpc_typed", Type: connector.EndpointGRPC, Options: malformedOptions}); err == nil || !strings.Contains(err.Error(), optBackoffFactor) {
+		t.Fatalf("parseDestinationConfig() error = %v, want %s", err, optBackoffFactor)
+	}
+
+	malformedMappings := copyExampleOptions(options)
+	malformedMappings[typemapping.OptTypeMappings] = "double precision: [number"
+	if _, err := typemapping.Load(malformedMappings); err == nil || !strings.Contains(err.Error(), "parse type_mappings") {
+		t.Fatalf("typemapping.Load() error = %v, want parse failure", err)
+	}
+}
+
+func shippedGRPCExampleOptions(t *testing.T) map[string]string {
+	t.Helper()
+	root := filepath.Clean(filepath.Join("..", "..", ".."))
+	payload, err := os.ReadFile(filepath.Join(root, "examples", "flows", "postgres_to_grpc_typed.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Destinations []struct {
+			Name    string            `json:"name"`
+			Type    string            `json:"type"`
+			Options map[string]string `json:"options"`
+		} `json:"destinations"`
+	}
+	if err := json.Unmarshal(payload, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	for _, destination := range fixture.Destinations {
+		if destination.Name == "grpc_typed" && destination.Type == string(connector.EndpointGRPC) {
+			return destination.Options
+		}
+	}
+	t.Fatal("gRPC typed example omits grpc_typed destination")
+	return nil
+}
+
+func copyExampleOptions(options map[string]string) map[string]string {
+	out := make(map[string]string, len(options))
+	for key, value := range options {
+		out[key] = value
+	}
+	return out
+}
 
 type closeTrackingRegistry struct {
 	closeCalls int
