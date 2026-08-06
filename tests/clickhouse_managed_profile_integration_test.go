@@ -438,9 +438,12 @@ func TestClickHouseManagedProfileProcessKillRecovery(t *testing.T) {
 		t.Fatalf("open after ClickHouse process kill: %v", err)
 	}
 	t.Cleanup(func() { _ = restarted.Close(context.Background()) })
+	if err := restarted.InitializeManagedDelivery(context.Background()); err != nil {
+		t.Fatalf("initialize after ClickHouse process kill: %v", err)
+	}
 	disposition, evidence, err := restarted.Reconcile(context.Background(), intent)
-	if err != nil || disposition != connector.DeliveryNotApplied || evidence.ContentHash != "" {
-		t.Fatalf("post-kill partial reconciliation=(%v,%+v,%v)", disposition, evidence, err)
+	if err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
+		t.Fatalf("post-kill receipt reconciliation=(%v,%+v,%v)", disposition, evidence, err)
 	}
 	if _, err := restarted.ApplyTransaction(context.Background(), intent, transaction); err != nil {
 		t.Fatalf("duplicate after restart: %v", err)
@@ -486,6 +489,9 @@ func TestClickHouseManagedProfileSurvivorOnlyPrimaryStorageLossRecovery(t *testi
 		t.Fatalf("open recovery-only destination after primary storage loss: %v", err)
 	}
 	t.Cleanup(func() { _ = restarted.Close(context.Background()) })
+	if err := restarted.InitializeManagedDelivery(context.Background()); err != nil {
+		t.Fatalf("initialize recovery-only destination after primary storage loss: %v", err)
+	}
 	disposition, evidence, err := restarted.Reconcile(context.Background(), intent)
 	if err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
 		t.Fatalf("survivor-only reconciliation=(%v,%+v,%v)", disposition, evidence, err)
@@ -552,8 +558,11 @@ func TestClickHouseManagedProfileKeeperFailureRecovery(t *testing.T) {
 		t.Fatalf("open after Keeper process kill: %v", err)
 	}
 	t.Cleanup(func() { _ = restarted.Close(context.Background()) })
-	if disposition, _, err := restarted.Reconcile(context.Background(), beforeIntent); err != nil || disposition != connector.DeliveryNotApplied {
-		t.Fatalf("Keeper partial recovery reconciliation=(%v,%v)", disposition, err)
+	if err := restarted.InitializeManagedDelivery(context.Background()); err != nil {
+		t.Fatalf("initialize after Keeper process kill: %v", err)
+	}
+	if disposition, evidence, err := restarted.Reconcile(context.Background(), beforeIntent); err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != beforeIntent.ContentHash {
+		t.Fatalf("Keeper receipt recovery reconciliation=(%v,%+v,%v)", disposition, evidence, err)
 	}
 	if _, err := restarted.ApplyTransaction(context.Background(), beforeIntent, before); err != nil {
 		t.Fatalf("Keeper partial replay: %v", err)

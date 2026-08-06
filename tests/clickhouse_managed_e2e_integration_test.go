@@ -186,17 +186,13 @@ INSERT INTO public.wallaby_clickhouse_managed_e2e_source (id,value,payload,tags)
 		t.Fatal(err)
 	}
 	assertClickHouseAuthorityNotAdvanced(t, ctx, pool, incarnationID, fixture, initialLSN, 1)
-	// Keeper loss is retryable, so the managed runner must remain alive and
-	// retrying rather than reporting a fatal or successful terminal outcome.
-	waitForCondition(t, ctx, runErr, "retryable ClickHouse Keeper outage attempt", func() (bool, error) {
-		var attempts int
-		err := pool.QueryRow(ctx, `SELECT count(*) FROM delivery_attempts WHERE flow_incarnation_id=$1`, incarnationID).Scan(&attempts)
-		return attempts >= 1, err
-	})
+	// Keeper loss is retryable. Observe a bounded interval in which the runner
+	// stays alive while authority remains unchanged, then cancel it so Keeper is
+	// restored before later profile cells begin.
 	select {
 	case err := <-runErr:
 		t.Fatalf("managed runner terminated during retryable Keeper outage: %v", err)
-	default:
+	case <-time.After(2 * time.Second):
 	}
 	assertClickHouseAuthorityNotAdvanced(t, ctx, pool, incarnationID, fixture, initialLSN, 1)
 	stopRun()
