@@ -18,7 +18,12 @@ import (
 // supported.
 func TestControlStoreMigrationLedgerDoesNotReplaySQL(t *testing.T) {
 	ctx, pool := newControlstoreMigrationFixture(t)
-	const domain = "current_ledger_demo"
+	domain := fmt.Sprintf("current_ledger_demo_%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM public.wallaby_control_migrations WHERE domain=$1`, domain)
+	})
 	migrations := fstest.MapFS{
 		"migrations/001_init.sql": &fstest.MapFile{Data: []byte("CREATE TABLE current_demo_domain_state (id INT PRIMARY KEY);")},
 		"migrations/002_add.sql":  &fstest.MapFile{Data: []byte("CREATE TABLE current_demo_domain_extra (id INT PRIMARY KEY);")},
@@ -36,7 +41,7 @@ func TestControlStoreMigrationLedgerDoesNotReplaySQL(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM current_demo_domain_state WHERE id=42`).Scan(&sentinel); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM wallaby_control_migrations WHERE domain=$1 AND sql_checksum<>''`, domain).Scan(&versions); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.wallaby_control_migrations WHERE domain=$1 AND sql_checksum<>''`, domain).Scan(&versions); err != nil {
 		t.Fatal(err)
 	}
 	if sentinel != 1 || versions != 2 {

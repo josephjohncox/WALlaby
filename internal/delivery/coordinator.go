@@ -693,11 +693,14 @@ ON CONFLICT DO NOTHING`, fence.FlowIncarnationID, intent.DestinationRevisionID, 
 		return fmt.Errorf("canonicalize existing delivery schema-baseline manifest: %w", err)
 	}
 	metadataDiffers := !stringMapEqual(existingCheckpoint.Metadata, checkpoint.Metadata)
-	timestampDiffers := !checkpoint.Timestamp.IsZero() && !existingCheckpoint.Timestamp.Equal(checkpoint.Timestamp)
-	checkpointDiffers := existingCheckpoint.LSN != position || metadataDiffers || timestampDiffers
+	// Checkpoint timestamps are observation metadata and can change when the
+	// same WAL transaction is decoded again. The first prepared manifest keeps
+	// its timestamp for checkpoint reconstruction, but replay identity is bound
+	// only to the canonical LSN, metadata, content, and schema baselines.
+	checkpointDiffers := existingCheckpoint.LSN != position || metadataDiffers
 	baselineDiffers := existingBaselineFingerprint != baselineFingerprint
 	if checkpointDiffers || baselineDiffers {
-		return fmt.Errorf("%w: immutable delivery manifest differs (checkpoint=%t metadata=%t timestamp=%t baselines=%t)", connector.ErrDeliveryConflict, checkpointDiffers, metadataDiffers, timestampDiffers, baselineDiffers)
+		return fmt.Errorf("%w: immutable delivery manifest differs (checkpoint=%t metadata=%t baselines=%t)", connector.ErrDeliveryConflict, checkpointDiffers, metadataDiffers, baselineDiffers)
 	}
 	return nil
 }
@@ -746,7 +749,8 @@ func stringMapEqual(left, right map[string]string) bool {
 		return false
 	}
 	for key, value := range left {
-		if right[key] != value {
+		other, exists := right[key]
+		if !exists || other != value {
 			return false
 		}
 	}

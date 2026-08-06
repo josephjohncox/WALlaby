@@ -214,7 +214,7 @@ func TestCoordinatorRecoverAbsentManifestFailsClosedWithoutPoisoningDeliver(t *t
 		t.Fatal(err)
 	}
 	poison := connector.Checkpoint{LSN: transaction.Checkpoint.LSN, Metadata: map[string]string{"payload": "poison"}, Timestamp: time.Unix(1_900_000_000, 0).UTC()}
-	driver := &metadataRecoveryDestination{}
+	driver := &timestampReplayDestination{failFirstApply: true}
 	baselines := managedBaselinePayload(t, transaction)
 	if _, err := coordinator.Recover(ctx, fence, intent, poison, baselines, driver); !errors.Is(err, connector.ErrDeliveryConflict) {
 		t.Fatalf("Recover without manifest error=%v, want ErrDeliveryConflict", err)
@@ -232,12 +232,8 @@ SELECT
 	if manifests != 0 || attempts != 0 || receipts != 0 || checkpoints != 0 || ackIntents != 0 {
 		t.Fatalf("failed Recover persisted manifests/attempts/receipts/checkpoints/ACKs=%d/%d/%d/%d/%d, want all zero", manifests, attempts, receipts, checkpoints, ackIntents)
 	}
-	grant, err := coordinator.DeliverTransaction(ctx, fence, intent, transaction, baselines, driver)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if grant.Checkpoint.Metadata["payload"] != "legitimate" || !grant.Checkpoint.Timestamp.Equal(transaction.Checkpoint.Timestamp) {
-		t.Fatalf("DeliverTransaction grant checkpoint=%+v, want legitimate payload %+v", grant.Checkpoint, transaction.Checkpoint)
+	if _, err := coordinator.DeliverTransaction(ctx, fence, intent, transaction, baselines, driver); !errors.Is(err, errTimestampReplayFirstApply) {
+		t.Fatalf("first delivery error=%v, want injected pre-receipt failure", err)
 	}
 	var metadataJSON []byte
 	var storedTimestamp time.Time
@@ -254,8 +250,17 @@ WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`,
 	if metadata["payload"] != "legitimate" || !storedTimestamp.Equal(transaction.Checkpoint.Timestamp) {
 		t.Fatalf("persisted manifest metadata/timestamp=%v/%s, want legitimate payload %v/%s", metadata, storedTimestamp, transaction.Checkpoint.Metadata, transaction.Checkpoint.Timestamp)
 	}
-	if driver.reconcileCalls != 0 {
-		t.Fatalf("absent-manifest Recover called destination reconciliation %d times, want 0", driver.reconcileCalls)
+	replayed := transaction
+	replayed.Checkpoint.Timestamp = transaction.Checkpoint.Timestamp.Add(2 * time.Hour)
+	replayedGrant, err := coordinator.DeliverTransaction(ctx, fence, intent, replayed, baselines, driver)
+	if err != nil {
+		t.Fatalf("replay with a different observation timestamp conflicted: %v", err)
+	}
+	if !replayedGrant.Checkpoint.Timestamp.Equal(transaction.Checkpoint.Timestamp) {
+		t.Fatalf("replayed grant timestamp=%s, want first immutable manifest timestamp=%s", replayedGrant.Checkpoint.Timestamp, transaction.Checkpoint.Timestamp)
+	}
+	if driver.reconcileCalls != 1 {
+		t.Fatalf("timestamp replay reconciliation calls=%d, want one not-applied reconciliation", driver.reconcileCalls)
 	}
 }
 
@@ -750,6 +755,26 @@ func (*metadataRecoveryDestination) ValidateTransaction(context.Context, connect
 }
 func (*metadataRecoveryDestination) ApplyTransaction(_ context.Context, intent connector.DeliveryIntent, _ connector.SourceTransaction) (connector.DeliveryEvidence, error) {
 	return connector.DeliveryEvidence{ExternalID: "scripted-transaction:" + intent.PositionID, ContentHash: intent.ContentHash}, nil
+}
+
+var errTimestampReplayFirstApply = errors.New("injected failure after manifest preparation")
+
+type timestampReplayDestination struct {
+	metadataRecoveryDestination
+	failFirstApply bool
+}
+
+func (d *timestampReplayDestination) ApplyTransaction(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (connector.DeliveryEvidence, error) {
+	if d.failFirstApply {
+		d.failFirstApply = false
+		return connector.DeliveryEvidence{}, errTimestampReplayFirstApply
+	}
+	return d.metadataRecoveryDestination.ApplyTransaction(ctx, intent, transaction)
+}
+
+func (d *timestampReplayDestination) Reconcile(context.Context, connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
+	d.reconcileCalls++
+	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
 }
 
 func metadataTransaction(lsn string, xid uint32, authorityMetadata string, timestamp time.Time) connector.SourceTransaction {
