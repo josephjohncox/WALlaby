@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	nethttp "net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 )
 
 func TestAppendWriteSendsMappedBatch(t *testing.T) {
@@ -285,6 +288,150 @@ func TestCancellationReleasesReservation(t *testing.T) {
 	}
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("requests after cancellation = %d, want 2", got)
+	}
+}
+
+func TestOpenRejectsTypedOptionsBeforeRegistryCreation(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     string
+		value   string
+		wantErr string
+	}{
+		{name: "numeric", key: optMaxRetries, value: "many", wantErr: "http options.max_retries"},
+		{name: "maximum integer retries", key: optMaxRetries, value: strconv.Itoa(int(^uint(0) >> 1)), wantErr: "exceeds the supported retry count"},
+		{name: "headers", key: optHeaders, value: `"X-Broken: value`, wantErr: "http options.headers"},
+		{name: "payload mode", key: optPayloadMode, value: "unexpected", wantErr: "http options.payload_mode"},
+		{name: "registry timeout", key: schemaregistry.OptRegistryTimeout, value: "soon", wantErr: "schema registry options.schema_registry_timeout"},
+		{name: "registry bool", key: schemaregistry.OptRegistryApicurioCompat, value: "yes", wantErr: "schema registry options.schema_registry_apicurio_compat"},
+		{name: "relative URL", key: optURL, value: "/relative", wantErr: "absolute http or https URL"},
+		{name: "invalid method", key: optMethod, value: "BAD METHOD", wantErr: "invalid HTTP method"},
+		{name: "case-colliding headers", key: optHeaders, value: "X-Test:one,x-test:two", wantErr: "case normalization"},
+		{name: "invalid idempotency header", key: optIdempotencyHeader, value: "Bad Header", wantErr: optIdempotencyHeader},
+		{name: "negative retries", key: optMaxRetries, value: "-1", wantErr: optMaxRetries},
+		{name: "zero backoff base", key: optBackoffBase, value: "0", wantErr: optBackoffBase},
+		{name: "negative backoff max", key: optBackoffMax, value: "-1s", wantErr: optBackoffMax},
+		{name: "zero backoff factor", key: optBackoffFactor, value: "0", wantErr: optBackoffFactor},
+		{name: "negative backoff factor", key: optBackoffFactor, value: "-1", wantErr: optBackoffFactor},
+		{name: "NaN backoff factor", key: optBackoffFactor, value: "NaN", wantErr: optBackoffFactor},
+		{name: "infinite backoff factor", key: optBackoffFactor, value: "+Inf", wantErr: optBackoffFactor},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			options := map[string]string{
+				optURL:                         "http://unused.invalid",
+				optFormat:                      string(connector.WireFormatAvro),
+				schemaregistry.OptRegistryType: "postgres",
+				schemaregistry.OptRegistryDSN:  "://invalid registry DSN",
+				test.key:                       test.value,
+			}
+			err := (&Destination{}).Open(context.Background(), connector.Spec{Options: options})
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Open() error = %v, want %q", err, test.wantErr)
+			}
+			if strings.Contains(err.Error(), "schema_registry_dsn") || strings.Contains(err.Error(), "connect") {
+				t.Fatalf("Open() reached registry creation before option validation: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseDestinationConfigPayloadModeAliases(t *testing.T) {
+	for raw, want := range map[string]string{"": payloadModeWire, "wire": payloadModeWire, "record": payloadModeRecordJSON, "record_json": payloadModeRecordJSON, "raw": payloadModeRecordJSON, "wal": payloadModeWAL} {
+		cfg, err := parseDestinationConfig(connector.Spec{Options: map[string]string{optURL: "https://example.test/hook", optPayloadMode: raw}})
+		if err != nil {
+			t.Fatalf("payload_mode %q: %v", raw, err)
+		}
+		if cfg.payloadMode != want {
+			t.Errorf("payload_mode %q = %q, want %q", raw, cfg.payloadMode, want)
+		}
+	}
+}
+
+func TestParseDestinationConfigValidatesHTTPFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		options map[string]string
+		wantErr string
+	}{
+		{name: "relative URL", options: map[string]string{optURL: "/relative"}, wantErr: "absolute http or https URL"},
+		{name: "wrong URL scheme", options: map[string]string{optURL: "ftp://example.test/file"}, wantErr: "absolute http or https URL"},
+		{name: "invalid method", options: map[string]string{optURL: "https://example.test", optMethod: "BAD METHOD"}, wantErr: "invalid HTTP method"},
+		{name: "invalid idempotency header", options: map[string]string{optURL: "https://example.test", optIdempotencyHeader: "Bad Header"}, wantErr: optIdempotencyHeader},
+		{name: "invalid transaction header", options: map[string]string{optURL: "https://example.test", optTransactionHeader: "Bad Header"}, wantErr: optTransactionHeader},
+		{name: "case-colliding headers", options: map[string]string{optURL: "https://example.test", optHeaders: "X-Test:one,x-test:two"}, wantErr: "case normalization"},
+		{name: "invalid header value", options: map[string]string{optURL: "https://example.test", optHeaders: "X-Test:value\x00bad"}, wantErr: "invalid value"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := parseDestinationConfig(connector.Spec{Options: test.options})
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("parseDestinationConfig() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestBackoffDurationSaturatesSafely(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	tests := []struct {
+		name    string
+		base    time.Duration
+		max     time.Duration
+		factor  float64
+		attempt int
+	}{
+		{name: "max float and huge attempt", base: time.Millisecond, max: 5 * time.Second, factor: math.MaxFloat64, attempt: maxInt},
+		{name: "huge base", base: time.Duration(1<<63 - 1), max: 5 * time.Second, factor: 2, attempt: maxInt},
+		{name: "underflow remains positive", base: time.Millisecond, max: 5 * time.Second, factor: math.SmallestNonzeroFloat64, attempt: maxInt},
+		{name: "unconfigured max saturates duration", base: time.Second, max: 0, factor: math.MaxFloat64, attempt: maxInt},
+		{name: "invalid direct factor is safe", base: time.Millisecond, max: 5 * time.Second, factor: math.Inf(1), attempt: maxInt},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			destination := &Destination{backoffBase: test.base, backoffMax: test.max, backoffFactor: test.factor}
+			got := destination.backoffDuration(test.attempt)
+			if got <= 0 {
+				t.Fatalf("backoffDuration() = %v", got)
+			}
+			if test.max > 0 && got > test.max {
+				t.Fatalf("backoffDuration() = %v, exceeds max %v", got, test.max)
+			}
+		})
+	}
+
+	cfg, err := parseDestinationConfig(connector.Spec{Options: map[string]string{optURL: "https://example.test", optBackoffFactor: "1.7976931348623157e308", optBackoffMax: "0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.backoffFactor != math.MaxFloat64 || cfg.backoffMax != 0 {
+		t.Fatalf("backoff config: factor=%v max=%v", cfg.backoffFactor, cfg.backoffMax)
+	}
+}
+
+func TestQuotedHeaderCommaIsDelivered(t *testing.T) {
+	var header string
+	server := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, request *nethttp.Request) {
+		header = request.Header.Get("X-List")
+		w.WriteHeader(nethttp.StatusNoContent)
+	}))
+	defer server.Close()
+
+	destination := &Destination{}
+	err := destination.Open(context.Background(), connector.Spec{Options: map[string]string{
+		optURL:         server.URL,
+		optPayloadMode: payloadModeRecordJSON,
+		optMaxRetries:  "0",
+		optHeaders:     `"X-List: alpha,beta"`,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := destination.Write(context.Background(), testBatch()); err != nil {
+		t.Fatal(err)
+	}
+	if header != "alpha,beta" {
+		t.Fatalf("X-List header = %q", header)
 	}
 }
 

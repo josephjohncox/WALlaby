@@ -185,6 +185,33 @@ func TestFutureTemplatesKeepSchemaAndTableComponentsDistinct(t *testing.T) {
 	}
 }
 
+func TestCompiledFutureTemplatesMatchProjectionGolden(t *testing.T) {
+	t.Parallel()
+	mappings := flow.NewTableMappings([]connector.Spec{{Name: "sink", Type: connector.EndpointPostgres}})
+	mappings.Destinations[0].FutureTables.TargetSchema = "pre-{schema}-post"
+	mappings.Destinations[0].FutureTables.TargetTable = "raw.{table}.v1"
+	mappings.Destinations[0].FutureTables.FutureColumns.TargetColumn = "[{column}]"
+	projector := testProjector(t, mappings)
+
+	resolved, err := projector.resolve(connector.Schema{
+		Namespace: " Mixed {schema} 日本語 ",
+		Name:      "Table.Bytes",
+		Columns:   []connector.Column{{Name: " Column {x} ", Type: "text"}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resolved.targetSchema, "pre- Mixed {schema} 日本語 -post"; got != want {
+		t.Fatalf("target schema = %q, want %q", got, want)
+	}
+	if got, want := resolved.targetTable, "raw.Table.Bytes.v1"; got != want {
+		t.Fatalf("target table = %q, want %q", got, want)
+	}
+	if got, want := resolved.columns[0].target, "[ Column {x} ]"; got != want {
+		t.Fatalf("target column = %q, want %q", got, want)
+	}
+}
+
 func TestProjectTransactionRenumbersFilteredFragmentsContiguously(t *testing.T) {
 	t.Parallel()
 	mappings := upsertMappings()

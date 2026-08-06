@@ -15,9 +15,27 @@ import (
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 	"github.com/josephjohncox/wallaby/pkg/wire"
 	"pgregory.net/rapid"
 )
+
+func TestOpenRejectsRegistryOptionsBeforeAWSConfiguration(t *testing.T) {
+	for key, value := range map[string]string{
+		schemaregistry.OptRegistryTimeout:        "soon",
+		schemaregistry.OptRegistryApicurioCompat: "yes",
+	} {
+		t.Run(key, func(t *testing.T) {
+			err := (&Destination{}).Open(context.Background(), connector.Spec{Options: map[string]string{key: value}})
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("Open() error = %v", err)
+			}
+			if strings.Contains(err.Error(), "bucket is required") {
+				t.Fatalf("registry config was not parsed first: %v", err)
+			}
+		})
+	}
+}
 
 func TestCapabilitiesDoNotOverstateRestartReplaySafety(t *testing.T) {
 	t.Parallel()

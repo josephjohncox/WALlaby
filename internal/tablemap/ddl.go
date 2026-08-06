@@ -107,5 +107,5 @@ func resolveDDLColumn(resolved resolvedTable, source string) (string, bool) {
 	if resolved.futureColumns.Action == flow.MappingActionExclude {
 		return "", false
 	}
-	return expand(resolved.futureColumns.TargetColumn, resolved.sourceSchema, resolved.sourceTable, source), true
+	return resolved.futureColumnTemplate.Expand(source), true
 }

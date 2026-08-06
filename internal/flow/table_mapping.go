@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/josephjohncox/wallaby/internal/mappingtemplate"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
@@ -320,10 +321,10 @@ func validateFutureTable(future FutureTableMapping, destination connector.Spec) 
 		}
 		return nil
 	}
-	if err := validateFutureTemplate(future.TargetSchema, "schema"); err != nil {
+	if _, err := mappingtemplate.Parse(future.TargetSchema, mappingtemplate.Schema); err != nil {
 		return fmt.Errorf("future target_schema: %w", err)
 	}
-	if err := validateFutureTemplate(future.TargetTable, "table"); err != nil {
+	if _, err := mappingtemplate.Parse(future.TargetTable, mappingtemplate.Table); err != nil {
 		return fmt.Errorf("future target_table: %w", err)
 	}
 	if err := validateFutureColumn(future.FutureColumns, "future tables"); err != nil {
@@ -381,7 +382,7 @@ func validateFutureColumn(future FutureColumnMapping, scope string) error {
 		}
 		return nil
 	}
-	if err := validateFutureTemplate(future.TargetColumn, "column"); err != nil {
+	if _, err := mappingtemplate.Parse(future.TargetColumn, mappingtemplate.Column); err != nil {
 		return fmt.Errorf("%s future target_column: %w", scope, err)
 	}
 	return nil
@@ -445,23 +446,6 @@ func tableIncludesColumn(table TableMapping, name string) bool {
 func validateAction(action MappingAction, subject string) error {
 	if action != MappingActionInclude && action != MappingActionExclude {
 		return fmt.Errorf("%s action must be include or exclude", subject)
-	}
-	return nil
-}
-
-func validateFutureTemplate(value, variable string) error {
-	if value == "" {
-		return errors.New("template is required")
-	}
-	if value != strings.TrimSpace(value) {
-		return fmt.Errorf("template %q has leading or trailing whitespace", value)
-	}
-	placeholder := "{" + variable + "}"
-	if strings.Count(value, placeholder) != 1 {
-		return fmt.Errorf("template %q must contain exactly one %s", value, placeholder)
-	}
-	if remainder := strings.Replace(value, placeholder, "", 1); strings.ContainsAny(remainder, "{}") {
-		return fmt.Errorf("template %q cannot contain placeholders other than %s", value, placeholder)
 	}
 	return nil
 }

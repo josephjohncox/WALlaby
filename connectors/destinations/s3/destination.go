@@ -118,6 +118,10 @@ type Destination struct {
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+	registryCfg, err := schemaregistry.ConfigFromOptions(spec.Options)
+	if err != nil {
+		return err
+	}
 	d.spec = spec
 	d.bucket = spec.Options[optBucket]
 	if d.bucket == "" {
@@ -142,18 +146,6 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.codec = codec
 	d.registrySubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistrySubject])
 	d.protoTypesSubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistryProtoTypes])
-	switch d.codec.Name() {
-	case connector.WireFormatAvro, connector.WireFormatProto:
-		registryCfg := schemaregistry.ConfigFromOptions(spec.Options)
-		registry, err := schemaregistry.NewRegistry(ctx, registryCfg)
-		if err != nil && !errors.Is(err, schemaregistry.ErrRegistryDisabled) {
-			return err
-		}
-		if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
-			registry = nil
-		}
-		d.registry = registry
-	}
 
 	loadOpts := []func(*config.LoadOptions) error{}
 	region := strings.TrimSpace(spec.Options[optRegion])
@@ -187,8 +179,29 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 			o.EndpointOptions.UseDualStackEndpoint = aws.DualStackEndpointStateEnabled
 		}
 	})
-	d.client = client
 
+	var registry schemaregistry.Registry
+	switch d.codec.Name() {
+	case connector.WireFormatAvro, connector.WireFormatProto:
+		registry, err = schemaregistry.NewRegistry(ctx, registryCfg)
+		if err != nil && !errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+			if registry != nil {
+				return errors.Join(err, registry.Close())
+			}
+			return err
+		}
+		if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+			if registry != nil {
+				if cleanupErr := registry.Close(); cleanupErr != nil {
+					return cleanupErr
+				}
+			}
+			registry = nil
+		}
+	}
+
+	d.client = client
+	d.registry = registry
 	return nil
 }
 

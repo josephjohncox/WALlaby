@@ -12,15 +12,18 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"path"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/josephjohncox/wallaby/internal/options"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 	"github.com/josephjohncox/wallaby/pkg/wire"
+	"golang.org/x/net/http/httpguts"
 )
 
 const (
@@ -44,6 +47,34 @@ const (
 	payloadModeRecordJSON = "record_json"
 	payloadModeWAL        = "wal"
 )
+
+var payloadModeAliases = map[string]string{
+	"":            payloadModeWire,
+	"wire":        payloadModeWire,
+	"record":      payloadModeRecordJSON,
+	"record_json": payloadModeRecordJSON,
+	"raw":         payloadModeRecordJSON,
+	"wal":         payloadModeWAL,
+}
+
+type destinationConfig struct {
+	url               string
+	method            string
+	format            string
+	payloadMode       string
+	timeout           time.Duration
+	headers           map[string]string
+	maxRetries        int
+	backoffBase       time.Duration
+	backoffMax        time.Duration
+	backoffFactor     float64
+	idempotencyHeader string
+	dedupeWindow      time.Duration
+	transactionHeader string
+	registrySubject   string
+	protoTypesSubject string
+	registryConfig    schemaregistry.Config
+}
 
 type dedupeEntry struct {
 	done        chan struct{}
@@ -76,78 +107,132 @@ type Destination struct {
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
-	d.spec = spec
-	d.url = spec.Options[optURL]
-	if d.url == "" {
-		return errors.New("http url is required")
+	cfg, err := parseDestinationConfig(spec)
+	if err != nil {
+		return err
 	}
 
-	d.method = strings.ToUpper(spec.Options[optMethod])
-	if d.method == "" {
-		d.method = http.MethodPost
-	}
-
-	d.payloadMode = normalizePayloadMode(spec.Options[optPayloadMode])
-
-	format := spec.Options[optFormat]
-	if format == "" {
-		format = string(connector.WireFormatJSON)
-	}
-	if d.payloadMode == payloadModeWire {
-		codec, err := wire.NewCodec(format)
+	var codec wire.Codec
+	if cfg.payloadMode == payloadModeWire {
+		codec, err = wire.NewCodec(cfg.format)
 		if err != nil {
 			return err
 		}
-		d.codec = codec
 	}
-	d.registrySubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistrySubject])
-	d.protoTypesSubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistryProtoTypes])
-	if d.payloadMode == payloadModeWire && d.codec != nil {
-		switch d.codec.Name() {
+	var registry schemaregistry.Registry
+	if cfg.payloadMode == payloadModeWire && codec != nil {
+		switch codec.Name() {
 		case connector.WireFormatAvro, connector.WireFormatProto:
-			registryCfg := schemaregistry.ConfigFromOptions(spec.Options)
-			registry, err := schemaregistry.NewRegistry(ctx, registryCfg)
+			registry, err = schemaregistry.NewRegistry(ctx, cfg.registryConfig)
 			if err != nil && !errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+				if registry != nil {
+					return errors.Join(err, registry.Close())
+				}
 				return err
 			}
 			if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+				if registry != nil {
+					if cleanupErr := registry.Close(); cleanupErr != nil {
+						return cleanupErr
+					}
+				}
 				registry = nil
 			}
-			d.registry = registry
 		}
 	}
 
-	if spec.Options[optTimeout] == "" {
-		d.client = &http.Client{Timeout: 10 * time.Second}
-	} else {
-		timeout, err := time.ParseDuration(spec.Options[optTimeout])
-		if err != nil {
-			return fmt.Errorf("parse timeout: %w", err)
-		}
-		d.client = &http.Client{Timeout: timeout}
-	}
-
-	d.headers = parseHeaders(spec.Options[optHeaders])
-	d.maxRetries = parseInt(spec.Options[optMaxRetries], 3)
-	d.backoffBase = parseDuration(spec.Options[optBackoffBase], 200*time.Millisecond)
-	d.backoffMax = parseDuration(spec.Options[optBackoffMax], 5*time.Second)
-	d.backoffFactor = parseFloat(spec.Options[optBackoffFactor], 2.0)
-	d.idempotencyHeader = spec.Options[optIdempotencyHeader]
-	if d.idempotencyHeader == "" {
-		d.idempotencyHeader = "Idempotency-Key"
-	}
-	d.transactionHeader = strings.TrimSpace(spec.Options[optTransactionHeader])
-	if d.transactionHeader == "" {
-		d.transactionHeader = "X-Wallaby-Transaction-Id"
-	}
-	d.dedupeWindow = parseDuration(spec.Options[optDedupeWindow], 0)
+	d.spec = spec
+	d.url = cfg.url
+	d.method = cfg.method
+	d.codec = codec
+	d.payloadMode = cfg.payloadMode
+	d.registrySubject = cfg.registrySubject
+	d.protoTypesSubject = cfg.protoTypesSubject
+	d.registry = registry
+	d.client = &http.Client{Timeout: cfg.timeout}
+	d.headers = cfg.headers
+	d.maxRetries = cfg.maxRetries
+	d.backoffBase = cfg.backoffBase
+	d.backoffMax = cfg.backoffMax
+	d.backoffFactor = cfg.backoffFactor
+	d.idempotencyHeader = cfg.idempotencyHeader
+	d.transactionHeader = cfg.transactionHeader
+	d.dedupeWindow = cfg.dedupeWindow
 	d.dedupe = nil
 	d.now = time.Now
 	if d.dedupeWindow > 0 {
 		d.dedupe = make(map[string]*dedupeEntry)
 	}
-
 	return nil
+}
+
+func parseDestinationConfig(spec connector.Spec) (destinationConfig, error) {
+	decoder := options.NewDecoder("http options", spec.Options)
+	registryConfig, registryErr := schemaregistry.ConfigFromOptions(spec.Options)
+	cfg := destinationConfig{
+		url:               decoder.Raw(optURL, ""),
+		method:            strings.ToUpper(decoder.Raw(optMethod, http.MethodPost)),
+		format:            decoder.Raw(optFormat, string(connector.WireFormatJSON)),
+		payloadMode:       decoder.AliasedEnum(optPayloadMode, payloadModeWire, payloadModeAliases),
+		timeout:           decoder.Duration(optTimeout, 10*time.Second),
+		headers:           decoder.HeaderList(optHeaders),
+		maxRetries:        decoder.Int(optMaxRetries, 3),
+		backoffBase:       decoder.Duration(optBackoffBase, 200*time.Millisecond),
+		backoffMax:        decoder.Duration(optBackoffMax, 5*time.Second),
+		backoffFactor:     decoder.Float64(optBackoffFactor, 2.0),
+		idempotencyHeader: decoder.Raw(optIdempotencyHeader, "Idempotency-Key"),
+		dedupeWindow:      decoder.Duration(optDedupeWindow, 0),
+		transactionHeader: decoder.String(optTransactionHeader, "X-Wallaby-Transaction-Id"),
+		registrySubject:   decoder.String(schemaregistry.OptRegistrySubject, ""),
+		protoTypesSubject: decoder.String(schemaregistry.OptRegistryProtoTypes, ""),
+		registryConfig:    registryConfig,
+	}
+	if err := errors.Join(decoder.Err(), registryErr); err != nil {
+		return destinationConfig{}, err
+	}
+	if cfg.maxRetries < 0 {
+		return destinationConfig{}, fmt.Errorf("http options.%s: must be non-negative", optMaxRetries)
+	}
+	if cfg.maxRetries == int(^uint(0)>>1) {
+		return destinationConfig{}, fmt.Errorf("http options.%s: exceeds the supported retry count", optMaxRetries)
+	}
+	if cfg.backoffBase <= 0 {
+		return destinationConfig{}, fmt.Errorf("http options.%s: must be positive", optBackoffBase)
+	}
+	// A zero maximum intentionally disables the configured cap; the runtime
+	// still saturates at the largest representable duration.
+	if cfg.backoffMax < 0 {
+		return destinationConfig{}, fmt.Errorf("http options.%s: must be non-negative", optBackoffMax)
+	}
+	if cfg.backoffFactor <= 0 {
+		return destinationConfig{}, fmt.Errorf("http options.%s: must be positive and finite", optBackoffFactor)
+	}
+	parsedURL, err := url.Parse(cfg.url)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
+		return destinationConfig{}, fmt.Errorf("http options.%s: must be an absolute http or https URL", optURL)
+	}
+	if cfg.method == "" {
+		cfg.method = http.MethodPost
+	}
+	if !httpguts.ValidHeaderFieldName(cfg.method) {
+		return destinationConfig{}, fmt.Errorf("http options.%s: invalid HTTP method %q", optMethod, cfg.method)
+	}
+	if cfg.format == "" {
+		cfg.format = string(connector.WireFormatJSON)
+	}
+	if cfg.idempotencyHeader == "" {
+		cfg.idempotencyHeader = "Idempotency-Key"
+	}
+	if !httpguts.ValidHeaderFieldName(cfg.idempotencyHeader) {
+		return destinationConfig{}, fmt.Errorf("http options.%s: invalid header name %q", optIdempotencyHeader, cfg.idempotencyHeader)
+	}
+	if cfg.transactionHeader == "" {
+		cfg.transactionHeader = "X-Wallaby-Transaction-Id"
+	}
+	if !httpguts.ValidHeaderFieldName(cfg.transactionHeader) {
+		return destinationConfig{}, fmt.Errorf("http options.%s: invalid header name %q", optTransactionHeader, cfg.transactionHeader)
+	}
+	return cfg, nil
 }
 
 func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
@@ -258,19 +343,6 @@ func (d *Destination) encodePayload(batch connector.Batch, record connector.Reco
 	}
 }
 
-func normalizePayloadMode(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", payloadModeWire:
-		return payloadModeWire
-	case "record", "record_json", "raw":
-		return payloadModeRecordJSON
-	case "wal":
-		return payloadModeWAL
-	default:
-		return payloadModeWire
-	}
-}
-
 func marshalRecordJSON(record connector.Record) ([]byte, error) {
 	type recordJSON struct {
 		Table         string         `json:"table"`
@@ -298,12 +370,15 @@ func marshalRecordJSON(record connector.Record) ([]byte, error) {
 }
 
 func (d *Destination) sendWithRetry(ctx context.Context, payload []byte, contentType, idempotencyKey, txnID string, meta *schemaMeta) error {
-	attempts := d.maxRetries + 1
-	if attempts < 1 {
-		attempts = 1
+	attempts := d.maxRetries
+	if attempts < 0 {
+		attempts = 0
+	}
+	if attempts < int(^uint(0)>>1) {
+		attempts++
 	}
 
-	for attempt := 1; attempt <= attempts; attempt++ {
+	for attempt := 1; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, d.method, d.url, bytes.NewReader(payload))
 		if err != nil {
 			return err
@@ -356,8 +431,6 @@ func (d *Destination) sendWithRetry(ctx context.Context, payload []byte, content
 		case <-timer.C:
 		}
 	}
-
-	return errors.New("http destination retries exhausted")
 }
 
 type schemaMeta struct {
@@ -457,23 +530,55 @@ func (d *Destination) protoReferenceSubject(subject, ref string) string {
 }
 
 func (d *Destination) backoffDuration(attempt int) time.Duration {
-	base := float64(d.backoffBase)
+	base := d.backoffBase
 	if base <= 0 {
-		base = float64(200 * time.Millisecond)
+		base = 200 * time.Millisecond
 	}
 	factor := d.backoffFactor
-	if factor <= 0 {
+	if math.IsNaN(factor) || math.IsInf(factor, 0) || factor <= 0 {
 		factor = 2.0
 	}
-	pow := math.Pow(factor, float64(attempt-1))
-	delay := time.Duration(base * pow)
-	if d.backoffMax > 0 && delay > d.backoffMax {
-		delay = d.backoffMax
+	limit := d.backoffMax
+	if limit <= 0 {
+		limit = time.Duration(1<<63 - 1)
+	}
+	if base > limit {
+		base = limit
 	}
 
+	exponent := 0
+	if attempt > 1 {
+		exponent = attempt - 1
+	}
+	delay := base
+	if exponent > 0 {
+		logCandidate := math.Log(float64(base)) + float64(exponent)*math.Log(factor)
+		if math.IsInf(logCandidate, 1) || logCandidate >= math.Log(float64(limit)) {
+			delay = limit
+		} else {
+			candidate := float64(base) * math.Pow(factor, float64(exponent))
+			switch {
+			case math.IsNaN(candidate), math.IsInf(candidate, 0), candidate >= float64(limit):
+				delay = limit
+			case candidate < 1:
+				delay = 1
+			default:
+				delay = time.Duration(candidate)
+			}
+		}
+	}
+	if delay >= limit {
+		return limit
+	}
+	jitterLimit := delay / 4
+	if remaining := limit - delay; jitterLimit > remaining {
+		jitterLimit = remaining
+	}
+	if jitterLimit <= 0 {
+		return delay
+	}
 	// #nosec G404 -- jitter does not require cryptographic randomness.
-	jitter := 0.5 + rand.Float64()
-	return time.Duration(float64(delay) * jitter)
+	return delay + time.Duration(rand.Int63n(int64(jitterLimit)+1))
 }
 
 func (d *Destination) reserveDelivery(ctx context.Context, idempotencyKey string) (*dedupeEntry, bool, error) {
@@ -588,61 +693,4 @@ func retryable(err error, resp *http.Response) bool {
 	default:
 		return resp.StatusCode >= 500
 	}
-}
-
-func parseHeaders(value string) map[string]string {
-	out := map[string]string{}
-	if value == "" {
-		return out
-	}
-	pairs := strings.Split(value, ",")
-	for _, pair := range pairs {
-		item := strings.TrimSpace(pair)
-		if item == "" {
-			continue
-		}
-		parts := strings.SplitN(item, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		val := strings.TrimSpace(parts[1])
-		if key != "" {
-			out[key] = val
-		}
-	}
-	return out
-}
-
-func parseInt(value string, fallback int) int {
-	if value == "" {
-		return fallback
-	}
-	var parsed int
-	if _, err := fmt.Sscanf(value, "%d", &parsed); err != nil {
-		return fallback
-	}
-	return parsed
-}
-
-func parseFloat(value string, fallback float64) float64 {
-	if value == "" {
-		return fallback
-	}
-	var parsed float64
-	if _, err := fmt.Sscanf(value, "%f", &parsed); err != nil {
-		return fallback
-	}
-	return parsed
-}
-
-func parseDuration(value string, fallback time.Duration) time.Duration {
-	if value == "" {
-		return fallback
-	}
-	parsed, err := time.ParseDuration(value)
-	if err != nil {
-		return fallback
-	}
-	return parsed
 }

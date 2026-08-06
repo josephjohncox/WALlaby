@@ -52,6 +52,11 @@ type producer interface {
 	Close()
 }
 
+type destinationFactories struct {
+	newClient   func(...kgo.Opt) (producer, error)
+	newRegistry func(context.Context, schemaregistry.Config) (schemaregistry.Registry, error)
+}
+
 // Destination writes batches to Kafka.
 type Destination struct {
 	spec              connector.Spec
@@ -73,7 +78,18 @@ type Destination struct {
 }
 
 func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+	return d.open(ctx, spec, destinationFactories{
+		newClient:   func(opts ...kgo.Opt) (producer, error) { return kgo.NewClient(opts...) },
+		newRegistry: schemaregistry.NewRegistry,
+	})
+}
+
+func (d *Destination) open(ctx context.Context, spec connector.Spec, factories destinationFactories) error {
 	profile, err := d.ClassifyCapabilityProfile(spec)
+	if err != nil {
+		return err
+	}
+	registryCfg, err := schemaregistry.ConfigFromOptions(spec.Options)
 	if err != nil {
 		return err
 	}
@@ -161,24 +177,38 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		}
 	}
 
-	client, err := kgo.NewClient(opts...)
+	client, err := factories.newClient(opts...)
 	if err != nil {
+		if client != nil {
+			client.Close()
+		}
 		return fmt.Errorf("create kafka client: %w", err)
 	}
-	d.client = client
 
+	var registry schemaregistry.Registry
 	if d.codec.Name() == connector.WireFormatAvro || d.codec.Name() == connector.WireFormatProto {
-		registryCfg := schemaregistry.ConfigFromOptions(spec.Options)
-		registry, err := schemaregistry.NewRegistry(ctx, registryCfg)
+		registry, err = factories.newRegistry(ctx, registryCfg)
 		if err != nil && !errors.Is(err, schemaregistry.ErrRegistryDisabled) {
-			return err
+			var cleanupErr error
+			if registry != nil {
+				cleanupErr = registry.Close()
+			}
+			client.Close()
+			return errors.Join(err, cleanupErr)
 		}
 		if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+			if registry != nil {
+				if cleanupErr := registry.Close(); cleanupErr != nil {
+					client.Close()
+					return cleanupErr
+				}
+			}
 			registry = nil
 		}
-		d.registry = registry
 	}
 
+	d.client = client
+	d.registry = registry
 	return nil
 }
 
