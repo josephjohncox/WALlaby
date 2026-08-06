@@ -407,12 +407,15 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 		}
 	})
 	slotOwned = true
-	if tables := oldSource.ManagedPostgresPublicationTables(); len(tables) != 1 || tables[0] != sourceSchema+"."+sourceTable {
+	if tables := oldSource.ManagedPostgresPublicationTables(); len(tables) != 1 || tables[0] != sourceQualified {
 		t.Fatalf("live managed publication tables=%v", tables)
 	}
 	liveSchemas := oldSource.ManagedPostgresPublicationSchemas()
 	if len(liveSchemas) != 1 {
 		t.Fatalf("live managed publication schemas=%d", len(liveSchemas))
+	}
+	if liveSchemas[0].Namespace != sourceSchema || liveSchemas[0].Name != sourceTable {
+		t.Fatalf("live managed publication schema identity=%s.%s, want %s.%s", liveSchemas[0].Namespace, liveSchemas[0].Name, sourceSchema, sourceTable)
 	}
 	projectedLive := liveSchemas[0]
 	projectedLive.Namespace, projectedLive.Name = fixture.schema.Namespace, fixture.schema.Name
