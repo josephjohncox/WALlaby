@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -143,8 +143,9 @@ func icebergDestinationConfig(cfg config.IcebergConfig) (icebergdest.Config, err
 }
 
 func checkedInt32Config(name string, value int) (int32, error) {
-	if int64(value) < math.MinInt32 || int64(value) > math.MaxInt32 {
-		return 0, fmt.Errorf("%s value %d exceeds int32 bounds", name, value)
+	parsed, err := strconv.ParseInt(strconv.Itoa(value), 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("%s value %d exceeds int32 bounds: %w", name, value, err)
 	}
-	return int32(value), nil // #nosec G115 -- value is explicitly range-checked against int32 bounds above.
+	return int32(parsed), nil // #nosec G115 -- ParseInt with bitSize 32 guarantees the representable range.
 }
