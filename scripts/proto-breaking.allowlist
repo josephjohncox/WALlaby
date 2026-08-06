@@ -1,3 +1,4 @@
-message MarkDDLAppliedRequest deleted
-message MarkDDLAppliedResponse deleted
-rpc DDLService.MarkDDLApplied deleted
+proto/wallaby/v1/types.proto: enum EndpointType.12 deleted
+proto/wallaby/v1/ddl.proto: message MarkDDLAppliedRequest deleted
+proto/wallaby/v1/ddl.proto: message MarkDDLAppliedResponse deleted
+proto/wallaby/v1/ddl.proto: rpc DDLService.MarkDDLApplied deleted

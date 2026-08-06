@@ -9,19 +9,21 @@ import (
 type EndpointType string
 
 const (
-	EndpointPostgres   EndpointType = "postgres"
-	EndpointSnowflake  EndpointType = "snowflake"
-	EndpointS3         EndpointType = "s3"
-	EndpointKafka      EndpointType = "kafka"
-	EndpointHTTP       EndpointType = "http"
-	EndpointGRPC       EndpointType = "grpc"
-	EndpointProto      EndpointType = "proto"
-	EndpointPGStream   EndpointType = "pgstream"
-	EndpointSnowpipe   EndpointType = "snowpipe"
-	EndpointParquet    EndpointType = "parquet"
-	EndpointDuckDB     EndpointType = "duckdb"
-	EndpointDuckLake   EndpointType = "ducklake"
-	EndpointBufStream  EndpointType = "bufstream"
+	EndpointPostgres  EndpointType = "postgres"
+	EndpointSnowflake EndpointType = "snowflake"
+	EndpointS3        EndpointType = "s3"
+	EndpointKafka     EndpointType = "kafka"
+	EndpointHTTP      EndpointType = "http"
+	EndpointGRPC      EndpointType = "grpc"
+	EndpointProto     EndpointType = "proto"
+	EndpointPGStream  EndpointType = "pgstream"
+	EndpointSnowpipe  EndpointType = "snowpipe"
+	EndpointParquet   EndpointType = "parquet"
+	EndpointDuckDB    EndpointType = "duckdb"
+	EndpointDuckLake  EndpointType = "ducklake"
+	// EndpointRedpanda uses Redpanda's Kafka-compatible protocol. Redpanda
+	// Iceberg topics require an enterprise license.
+	EndpointRedpanda   EndpointType = "redpanda"
 	EndpointClickHouse EndpointType = "clickhouse"
 	EndpointIceberg    EndpointType = "iceberg"
 )

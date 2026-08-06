@@ -3,6 +3,7 @@
 These examples are intended to stay current with the API surface and connector options. Every flow has complete destination-scoped table mappings and an explicit write policy. `TestShippedFlowExamplesStrictLoadValidateAndUseCurrentMappings` strictly loads and validates every JSON/YAML flow example and rejects removed logical endpoint options. If you change gRPC messages, connector option keys, mappings, or lifecycle behavior, update the files in this folder in the same PR.
 
 ## Quick Start (API Server)
+
 Set the minimum environment variables and launch the gRPC API server:
 
 ```bash
@@ -14,9 +15,11 @@ export WALLABY_WIRE_ENFORCE="true"
 ```
 
 ## Create a Flow (gRPC)
+
 Use `grpcurl` with local proto files. If you enable reflection (`WALLABY_GRPC_REFLECTION=true`), you can omit `-proto`. See `examples/grpc/create_flow.sh` for a runnable command, or copy a flow spec from `examples/flows/`.
 
 ## Run a Flow Worker (Standalone)
+
 Run a single flow in its own process (useful for Kubernetes deployments or per-flow scaling):
 
 ```bash
@@ -27,6 +30,7 @@ Run a single flow in its own process (useful for Kubernetes deployments or per-f
 For backfill runs that land in staging tables, add `--resolve-staging` to apply staged data before the worker exits.
 
 ## DBOS Scheduling (Durable Runs)
+
 Enable DBOS and optional scheduling to run flow batches durably:
 
 ```bash
@@ -37,6 +41,7 @@ export WALLABY_DBOS_SCHEDULE="*/10 * * * * *" # every 10 seconds
 ```
 
 ## DDL Gating + Approval
+
 Enable DDL gating to require explicit approval before continuing:
 
 ```bash
@@ -56,9 +61,11 @@ Use the DDLService to list and approve/reject DDL events (see `examples/grpc/ddl
 Approval records the control-plane decision. The running flow's data plane applies approved DDL when automatic DDL execution is enabled; there is no separate administrative apply subcommand.
 
 ## Terraform Provider
+
 See `examples/terraform/flow.tf` for a minimal provider + flow resource definition.
 
 ## Example Flow Specs
+
 - `examples/flows/postgres_to_kafka.json`
 - `examples/flows/postgres_to_kafka_http_primary.json`
 - `examples/flows/postgres_to_s3_parquet.json`
@@ -71,9 +78,10 @@ See `examples/terraform/flow.tf` for a minimal provider + flow resource definiti
 - `examples/flows/postgres_to_duckdb.json`
 - `examples/flows/postgres_to_ducklake.json`
 - `examples/flows/postgres_to_clickhouse.json`
-- `examples/flows/postgres_to_bufstream.json`
+- `examples/flows/postgres_to_redpanda.json`
 
 ## Snowpipe Auto-Ingest (Upload Only)
+
 Use the Snowpipe destination with real external-stage notifications. Set `auto_ingest=true` to skip COPY and only upload files. Upload failures are returned unchanged, and target tables change only through configured COPY or external pipe ingestion:
 
 ```json
@@ -91,6 +99,7 @@ Use the Snowpipe destination with real external-stage notifications. Set `auto_i
 ```
 
 ## Stream Consumer Example
+
 - `examples/stream_consumer.sh` — minimal pull/ack loop using `wallaby-admin` + `jq`.
 - `examples/stream_consumer.go` — minimal Go client (no external tools).
 - `examples/workflows/` — CLI/DBOS/Kubernetes workflow configs.

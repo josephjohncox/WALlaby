@@ -435,8 +435,8 @@ func endpointTypeToProto(t connector.EndpointType) wallabypb.EndpointType {
 		return wallabypb.EndpointType_ENDPOINT_TYPE_DUCKDB
 	case connector.EndpointDuckLake:
 		return wallabypb.EndpointType_ENDPOINT_TYPE_DUCKLAKE
-	case connector.EndpointBufStream:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_BUFSTREAM
+	case connector.EndpointRedpanda:
+		return wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA
 	case connector.EndpointClickHouse:
 		return wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE
 	case connector.EndpointIceberg:
@@ -472,8 +472,8 @@ func endpointTypeFromProto(t wallabypb.EndpointType) connector.EndpointType {
 		return connector.EndpointDuckDB
 	case wallabypb.EndpointType_ENDPOINT_TYPE_DUCKLAKE:
 		return connector.EndpointDuckLake
-	case wallabypb.EndpointType_ENDPOINT_TYPE_BUFSTREAM:
-		return connector.EndpointBufStream
+	case wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA:
+		return connector.EndpointRedpanda
 	case wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE:
 		return connector.EndpointClickHouse
 	case wallabypb.EndpointType_ENDPOINT_TYPE_ICEBERG:

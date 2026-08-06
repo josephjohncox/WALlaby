@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/josephjohncox/wallaby/connectors/destinations/bufstream"
 	"github.com/josephjohncox/wallaby/connectors/destinations/clickhouse"
 	"github.com/josephjohncox/wallaby/connectors/destinations/duckdb"
 	"github.com/josephjohncox/wallaby/connectors/destinations/ducklake"
@@ -14,6 +13,7 @@ import (
 	"github.com/josephjohncox/wallaby/connectors/destinations/kafka"
 	"github.com/josephjohncox/wallaby/connectors/destinations/pgstream"
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
+	"github.com/josephjohncox/wallaby/connectors/destinations/redpanda"
 	"github.com/josephjohncox/wallaby/connectors/destinations/s3"
 	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
 	"github.com/josephjohncox/wallaby/connectors/destinations/snowpipe"
@@ -113,29 +113,29 @@ var destinationRegistry = []DestinationRegistration{
 			SupportedWireFormats: []connector.WireFormat{connector.WireFormatArrow, connector.WireFormatAvro, connector.WireFormatProto, connector.WireFormatJSON},
 		}},
 	}},
-	{Type: connector.EndpointBufStream, New: func() connector.Destination { return &bufstream.Destination{} }, Profiles: []DestinationProfile{
-		{ID: bufstream.CapabilityProfileBase, Options: map[string]string{"transactional_producer": "false", "allow_oversize_skip": "false"}, Capabilities: connector.Capabilities{
+	{Type: connector.EndpointRedpanda, New: func() connector.Destination { return &redpanda.Destination{} }, Profiles: []DestinationProfile{
+		{ID: redpanda.CapabilityProfileBase, Options: map[string]string{"transactional_producer": "false", "allow_oversize_skip": "false"}, Capabilities: connector.Capabilities{
 			Support: connector.SupportExperimental, Evidence: connector.ContractEvidence{Restart: false, Replay: false, SchemaEvolution: false, Integration: false},
 			Delivery:              connector.DeliverySemantics{TransactionalBatch: false, IdempotentReplay: false, ReplaySafe: false, ExecutesDDL: false, Lossy: false},
 			TableWrites:           connector.TableWriteSemantics{Append: true, Upsert: false, ExplicitKey: false, WatermarkGuard: false},
 			SupportsSchemaChanges: true, SupportsStreaming: true, SupportsBulkLoad: false, SupportsTypeMapping: true,
 			SupportedWireFormats: []connector.WireFormat{connector.WireFormatArrow, connector.WireFormatAvro, connector.WireFormatProto, connector.WireFormatJSON},
 		}},
-		{ID: bufstream.CapabilityProfileTransactionalOnly, Options: map[string]string{"transactional_producer": "true", "transactional_id": "wallaby-profile", "allow_oversize_skip": "false"}, Capabilities: connector.Capabilities{
+		{ID: redpanda.CapabilityProfileTransactionalOnly, Options: map[string]string{"transactional_producer": "true", "transactional_id": "wallaby-profile", "allow_oversize_skip": "false"}, Capabilities: connector.Capabilities{
 			Support: connector.SupportExperimental, Evidence: connector.ContractEvidence{Restart: false, Replay: false, SchemaEvolution: false, Integration: false},
 			Delivery:              connector.DeliverySemantics{TransactionalBatch: true, IdempotentReplay: false, ReplaySafe: false, ExecutesDDL: false, Lossy: false},
 			TableWrites:           connector.TableWriteSemantics{Append: true, Upsert: false, ExplicitKey: false, WatermarkGuard: false},
 			SupportsSchemaChanges: true, SupportsStreaming: true, SupportsBulkLoad: false, SupportsTypeMapping: true,
 			SupportedWireFormats: []connector.WireFormat{connector.WireFormatArrow, connector.WireFormatAvro, connector.WireFormatProto, connector.WireFormatJSON},
 		}},
-		{ID: bufstream.CapabilityProfileLossyOnly, Options: map[string]string{"transactional_producer": "false", "allow_oversize_skip": "true"}, Capabilities: connector.Capabilities{
+		{ID: redpanda.CapabilityProfileLossyOnly, Options: map[string]string{"transactional_producer": "false", "allow_oversize_skip": "true"}, Capabilities: connector.Capabilities{
 			Support: connector.SupportExperimental, Evidence: connector.ContractEvidence{Restart: false, Replay: false, SchemaEvolution: false, Integration: false},
 			Delivery:              connector.DeliverySemantics{TransactionalBatch: false, IdempotentReplay: false, ReplaySafe: false, ExecutesDDL: false, Lossy: true},
 			TableWrites:           connector.TableWriteSemantics{Append: true, Upsert: false, ExplicitKey: false, WatermarkGuard: false},
 			SupportsSchemaChanges: true, SupportsStreaming: true, SupportsBulkLoad: false, SupportsTypeMapping: true,
 			SupportedWireFormats: []connector.WireFormat{connector.WireFormatArrow, connector.WireFormatAvro, connector.WireFormatProto, connector.WireFormatJSON},
 		}},
-		{ID: bufstream.CapabilityProfileTransactionalLossy, Options: map[string]string{"transactional_producer": "true", "transactional_id": "wallaby-profile", "allow_oversize_skip": "true"}, Capabilities: connector.Capabilities{
+		{ID: redpanda.CapabilityProfileTransactionalLossy, Options: map[string]string{"transactional_producer": "true", "transactional_id": "wallaby-profile", "allow_oversize_skip": "true"}, Capabilities: connector.Capabilities{
 			Support: connector.SupportExperimental, Evidence: connector.ContractEvidence{Restart: false, Replay: false, SchemaEvolution: false, Integration: false},
 			Delivery:              connector.DeliverySemantics{TransactionalBatch: true, IdempotentReplay: false, ReplaySafe: false, ExecutesDDL: false, Lossy: true},
 			TableWrites:           connector.TableWriteSemantics{Append: true, Upsert: false, ExplicitKey: false, WatermarkGuard: false},

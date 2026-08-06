@@ -1,4 +1,4 @@
-package bufstream
+package redpanda
 
 import (
 	"context"
@@ -39,7 +39,7 @@ func TestKafkaBackedProfilesProduceCommittedAppendRecords(t *testing.T) {
 			if profile.transactional {
 				options["transactional_id"] = "wallaby-" + string(profile.id)
 			}
-			spec := connector.Spec{Name: "bufstream", Type: connector.EndpointBufStream, Options: options}
+			spec := connector.Spec{Name: "redpanda", Type: connector.EndpointRedpanda, Options: options}
 			destination := &Destination{}
 			if err := destination.Open(context.Background(), spec); err != nil {
 				t.Fatal(err)
@@ -49,7 +49,7 @@ func TestKafkaBackedProfilesProduceCommittedAppendRecords(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := exactBufstreamCapabilities(profile.transactional, profile.lossy)
+			want := exactRedpandaCapabilities(profile.transactional, profile.lossy)
 			if !reflect.DeepEqual(capabilities, want) {
 				t.Fatalf("capabilities=\n%+v\nwant=\n%+v", capabilities, want)
 			}
@@ -97,7 +97,7 @@ func TestKafkaBackedProfilesEnforceOversizePolicy(t *testing.T) {
 			topic := "oversize-" + test.name
 			cluster := kfake.MustCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, topic))
 			defer cluster.Close()
-			spec := connector.Spec{Name: "bufstream", Type: connector.EndpointBufStream, Options: map[string]string{
+			spec := connector.Spec{Name: "redpanda", Type: connector.EndpointRedpanda, Options: map[string]string{
 				"brokers": strings.Join(cluster.ListenAddrs(), ","), "topic": topic, "format": "json", "message_mode": "record",
 				"max_record_bytes": "1", "allow_oversize_skip": test.policy,
 			}}
@@ -115,7 +115,7 @@ func TestKafkaBackedProfilesEnforceOversizePolicy(t *testing.T) {
 	}
 }
 
-func exactBufstreamCapabilities(transactional, lossy bool) connector.Capabilities {
+func exactRedpandaCapabilities(transactional, lossy bool) connector.Capabilities {
 	return connector.Capabilities{
 		Support:               connector.SupportExperimental,
 		Evidence:              connector.ContractEvidence{Restart: false, Replay: false, SchemaEvolution: false, Integration: false},

@@ -186,8 +186,8 @@ func TestConfiguredCapabilityProfilesRejectUnknownValuesBeforeIO(t *testing.T) {
 		{Name: "kafka-invalid-lossy-bool", Type: connector.EndpointKafka, Options: map[string]string{"allow_oversize_skip": "1"}},
 		{Name: "kafka-missing-transaction-id", Type: connector.EndpointKafka, Options: map[string]string{"transactional_producer": "true"}},
 		{Name: "kafka-unclaimed-transaction-id", Type: connector.EndpointKafka, Options: map[string]string{"transactional_id": "unclassified"}},
-		{Name: "bufstream-invalid-transactional-bool", Type: connector.EndpointBufStream, Options: map[string]string{"transactional_producer": "TRUE"}},
-		{Name: "bufstream-invalid-lossy-bool", Type: connector.EndpointBufStream, Options: map[string]string{"allow_oversize_skip": "drop"}},
+		{Name: "redpanda-invalid-transactional-bool", Type: connector.EndpointRedpanda, Options: map[string]string{"transactional_producer": "TRUE"}},
+		{Name: "redpanda-invalid-lossy-bool", Type: connector.EndpointRedpanda, Options: map[string]string{"allow_oversize_skip": "drop"}},
 		{Name: "snowflake", Type: connector.EndpointSnowflake, Options: map[string]string{"managed_profile": "future-profile"}},
 		{Name: "clickhouse", Type: connector.EndpointClickHouse, Options: map[string]string{"managed_profile": "future-profile"}},
 	}

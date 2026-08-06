@@ -1,5 +1,5 @@
 {
-  "name": "pg_to_bufstream",
+  "name": "pg_to_redpanda",
   "wire_format": "arrow",
   "source": {
     "name": "pg-source",
@@ -17,8 +17,8 @@
   },
   "destinations": [
     {
-      "name": "bufstream-out",
-      "type": "bufstream",
+      "name": "redpanda-out",
+      "type": "redpanda",
       "options": {
         "brokers": "localhost:9092",
         "topic": "wallaby.cdc",
@@ -30,6 +30,6 @@
   ],
   "config": {
     "ack_policy": "all",
-    "table_mappings": {"version": 1, "destinations": [{"destination": "bufstream-out", "future_tables": {"action": "include", "target_schema": "{schema}", "target_table": "{table}", "future_columns": {"action": "include", "target_column": "{column}"}, "write": {"mode": "append", "key_columns": []}}, "tables": []}]}
+    "table_mappings": {"version": 1, "destinations": [{"destination": "redpanda-out", "future_tables": {"action": "include", "target_schema": "{schema}", "target_table": "{table}", "future_columns": {"action": "include", "target_column": "{column}"}, "write": {"mode": "append", "key_columns": []}}, "tables": []}]}
   }
 }

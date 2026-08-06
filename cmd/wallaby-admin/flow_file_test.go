@@ -21,7 +21,7 @@ import (
 func TestShippedFlowExamplesStrictLoadValidateAndUseCurrentMappings(t *testing.T) {
 	t.Parallel()
 	root := "../../examples"
-	expected := []string{"flows/postgres_to_bufstream.json", "flows/postgres_to_clickhouse.json", "flows/postgres_to_duckdb.json", "flows/postgres_to_ducklake.json", "flows/postgres_to_grpc.json", "flows/postgres_to_http.json", "flows/postgres_to_http_toast_full.json", "flows/postgres_to_iceberg_s3tables.json", "flows/postgres_to_kafka.json", "flows/postgres_to_kafka_http_primary.json", "flows/postgres_to_pgstream.json", "flows/postgres_to_s3_parquet.json", "flows/postgres_to_snowflake.json", "flows/postgres_to_snowpipe.json", "quickstart/postgres-to-postgres.json"}
+	expected := []string{"flows/postgres_to_clickhouse.json", "flows/postgres_to_duckdb.json", "flows/postgres_to_ducklake.json", "flows/postgres_to_grpc.json", "flows/postgres_to_http.json", "flows/postgres_to_http_toast_full.json", "flows/postgres_to_iceberg_s3tables.json", "flows/postgres_to_kafka.json", "flows/postgres_to_kafka_http_primary.json", "flows/postgres_to_pgstream.json", "flows/postgres_to_redpanda.json", "flows/postgres_to_s3_parquet.json", "flows/postgres_to_snowflake.json", "flows/postgres_to_snowpipe.json", "quickstart/postgres-to-postgres.json"}
 	removed := map[string]struct{}{"schema": {}, "table": {}, "database": {}, "write_mode": {}, "append_mode": {}, "soft_delete": {}, "meta_enabled": {}, "meta_synced_at": {}, "meta_deleted": {}, "meta_watermark": {}, "meta_op": {}, "watermark_source": {}, "namespace": {}, "table_prefix": {}, "fixed_table": {}, "target_namespace": {}, "target_table": {}}
 	var found []string
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {

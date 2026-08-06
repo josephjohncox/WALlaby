@@ -18,7 +18,7 @@
 | `postgres` | experimental | yes | yes | yes | yes | yes | no | no | yes | yes | no |
 | `pgstream` | experimental | yes | yes | no | no | no | no | no | no | no | no |
 | `kafka` | experimental | yes | yes | no | no | no | no | no | no | no | no |
-| `bufstream` | experimental | yes | yes | no | no | no | no | no | no | no | no |
+| `redpanda` | experimental | yes | yes | no | no | no | no | no | no | no | no |
 | `s3` | experimental | yes | yes | no | no | no | no | no | no | no | no |
 | `http` | experimental | yes | yes | no | no | no | no | no | no | no | no |
 | `grpc` | experimental | yes | yes | no | no | no | no | no | no | no | no |
@@ -41,10 +41,10 @@ Snowpipe is append-only staged delivery: PUT, optional COPY, and metadata-receip
 | `kafka` | `transactional-only` | yes | no | no | yes | no | no | no | no |
 | `kafka` | `lossy-only` | yes | no | no | no | no | no | no | yes |
 | `kafka` | `transactional+lossy` | yes | no | no | yes | no | no | no | yes |
-| `bufstream` | `base` | yes | no | no | no | no | no | no | no |
-| `bufstream` | `transactional-only` | yes | no | no | yes | no | no | no | no |
-| `bufstream` | `lossy-only` | yes | no | no | no | no | no | no | yes |
-| `bufstream` | `transactional+lossy` | yes | no | no | yes | no | no | no | yes |
+| `redpanda` | `base` | yes | no | no | no | no | no | no | no |
+| `redpanda` | `transactional-only` | yes | no | no | yes | no | no | no | no |
+| `redpanda` | `lossy-only` | yes | no | no | no | no | no | no | yes |
+| `redpanda` | `transactional+lossy` | yes | no | no | yes | no | no | no | yes |
 | `snowflake` | `base` | yes | no | no | no | no | no | yes | no |
 | `snowflake` | `postgresql-to-snowflake-sql-v1` | no | yes | no | yes | yes | yes | no | no |
 | `snowflake` | `postgresql-to-snowflake-staged-append-v1` | yes | no | no | no | yes | yes | no | no |

@@ -14,6 +14,16 @@ case ${FAKE_BUF_CASE:-} in
 proto/wallaby/v1/ddl.proto:91:7:Previously present message "MarkDDLAppliedRequest" was deleted from file.
 proto/wallaby/v1/ddl.proto:4:99:Previously present message "MarkDDLAppliedResponse" was deleted from file.
 proto/wallaby/v1/ddl.proto:812:3:Previously present RPC "MarkDDLApplied" on service "DDLService" was deleted.
+proto/wallaby/v1/types.proto:19:1:Previously present enum value "12" on enum "EndpointType" was deleted.
+OUTPUT
+		exit 100
+		;;
+	path-substitution)
+		cat <<'OUTPUT'
+proto/wallaby/v1/ddl.proto:91:7:Previously present message "MarkDDLAppliedRequest" was deleted from file.
+proto/wallaby/v1/ddl.proto:4:99:Previously present message "MarkDDLAppliedResponse" was deleted from file.
+proto/wallaby/v1/ddl.proto:812:3:Previously present RPC "MarkDDLApplied" on service "DDLService" was deleted.
+proto/other/types.proto:19:1:Previously present enum value "12" on enum "EndpointType" was deleted.
 OUTPUT
 		exit 100
 		;;
@@ -22,6 +32,7 @@ OUTPUT
 proto/wallaby/v1/ddl.proto:1:1:Previously present message "MarkDDLAppliedRequest" was deleted from file.
 proto/wallaby/v1/ddl.proto:1:1:Previously present message "MarkDDLAppliedResponse" was deleted from file.
 proto/wallaby/v1/ddl.proto:54:1:Previously present RPC "MarkDDLApplied" on service "DDLService" was deleted.
+proto/wallaby/v1/types.proto:19:1:Previously present enum value "12" on enum "EndpointType" was deleted.
 proto/wallaby/v1/flow.proto:8:2:Previously present message "UnexpectedRemoval" was deleted from file.
 OUTPUT
 		exit 100
@@ -99,6 +110,7 @@ OUTPUT
 proto-dir/wallaby_v1/ddl-file.proto:91:7:Previously present message "MarkDDLAppliedRequest" was deleted from file.
 proto-dir/wallaby_v1/ddl-file.proto:4:99:Previously present message "MarkDDLAppliedResponse" was deleted from file.
 proto-dir/wallaby_v1/ddl-file.proto:812:3:Previously present RPC "MarkDDLApplied" on service "DDLService" was deleted.
+proto-dir/wallaby_v1/types-file.proto:19:1:Previously present enum value "12" on enum "EndpointType" was deleted.
 OUTPUT
 		exit 100
 		;;
@@ -121,6 +133,13 @@ allowlist=$tmpdir/allowlist
 cp "$script_dir/proto-breaking.allowlist" "$allowlist"
 empty_allowlist=$tmpdir/empty-allowlist
 : >"$empty_allowlist"
+edge_allowlist=$tmpdir/edge-allowlist
+cat >"$edge_allowlist" <<'EOF'
+proto-dir/wallaby_v1/types-file.proto: enum EndpointType.12 deleted
+proto-dir/wallaby_v1/ddl-file.proto: message MarkDDLAppliedRequest deleted
+proto-dir/wallaby_v1/ddl-file.proto: message MarkDDLAppliedResponse deleted
+proto-dir/wallaby_v1/ddl-file.proto: rpc DDLService.MarkDDLApplied deleted
+EOF
 
 run_case() {
 	name=$1
@@ -149,6 +168,7 @@ run_case() {
 }
 
 run_case exact-match exact "$allowlist" 0 ''
+run_case path-substitution path-substitution "$allowlist" 1 'unexpected break(s):'
 run_case extra-break extra "$allowlist" 1 'unexpected break(s):'
 run_case missing-break missing "$allowlist" 1 'missing allowed break(s):'
 run_case malformed-output malformed "$allowlist" 1 'malformed or unsupported buf breaking diagnostic'
@@ -164,7 +184,7 @@ run_case colon-path colon-path "$allowlist" 1 'malformed or unsupported buf brea
 run_case empty-path empty-path "$allowlist" 1 'malformed or unsupported buf breaking diagnostic'
 run_case double-slash-path double-slash-path "$allowlist" 1 'malformed or unsupported buf breaking diagnostic'
 run_case zero-location zero-location "$allowlist" 1 'malformed or unsupported buf breaking diagnostic'
-run_case valid-path-edge valid-path-edge "$allowlist" 0 ''
+run_case valid-path-edge valid-path-edge "$edge_allowlist" 0 ''
 run_case tool-failure failure "$allowlist" 1 'buf breaking execution failed with status 2'
 run_case zero-break-obsolete-allowlist zero "$allowlist" 1 'allowlist is nonempty and obsolete'
 run_case zero-break-empty-allowlist zero "$empty_allowlist" 0 ''

@@ -111,7 +111,7 @@ For an unmanaged flow, the server fences new work, quiesces a running generation
 
 ## Write behavior and recovery
 
-`append` records every source event and adds `__wallaby_operation`, `__wallaby_deleted`, and `__wallaby_source_position`. A configured append watermark is projected metadata only; it does not suppress events and does not require destination watermark-guard capability. Kafka, Bufstream, HTTP, gRPC, S3, Snowpipe, ClickHouse, DuckDB, DuckLake, pgstream, generic Snowflake, and Iceberg are append-only mapping destinations.
+`append` records every source event and adds `__wallaby_operation`, `__wallaby_deleted`, and `__wallaby_source_position`. A configured append watermark is projected metadata only; it does not suppress events and does not require destination watermark-guard capability. Kafka, Redpanda, HTTP, gRPC, S3, Snowpipe, ClickHouse, DuckDB, DuckLake, pgstream, generic Snowflake, and Iceberg are append-only mapping destinations.
 
 `upsert` requires a nonempty ordered `key_columns` list. The list is the complete user-selected match identity. It is not combined with source primary-key metadata. PostgreSQL supports explicit-key upsert and durable watermark-guarded upsert. Generic Snowflake is append-only. The exact `postgresql-to-snowflake-sql-v1` profile supports current-state explicit-key upsert only and requires exactly one mapped source relation whose keys equal the complete ordered source primary key; every key component must survive projection. That profile rejects watermarks and unknown future tables.
 

@@ -403,9 +403,9 @@ Both are append-only mapping destinations. DuckDB uses `dsn`. DuckLake additiona
 
 Use the exact `postgresql-to-clickhouse-append-v1` profile for maintained append-only changelog delivery on its admitted PostgreSQL and ClickHouse/Keeper deployment. Generic ClickHouse remains experimental and append-only at the mapping boundary. See the [ClickHouse guide](connectors/clickhouse.md).
 
-## Bufstream destination
+## Redpanda destination
 
-Bufstream is Kafka-compatible; use the same transport options as Kafka. Its table mapping is append-only.
+Redpanda is Kafka API-compatible; use the same transport options as Kafka. Its table mapping is append-only. Redpanda Iceberg topics require an enterprise license and are configured in Redpanda; WALlaby only publishes records to the topic.
 
 ## Append metadata
 

@@ -317,7 +317,7 @@ func structuredEndpointType(line string) (string, bool) {
 	if !containsAny(lower, "type:", "type =", "\"type\"") {
 		return "", false
 	}
-	for _, endpointType := range []string{"snowpipe", "snowflake", "postgres", "clickhouse", "kafka", "bufstream", "http", "grpc", "s3", "iceberg", "duckdb", "ducklake", "pgstream"} {
+	for _, endpointType := range []string{"snowpipe", "snowflake", "postgres", "clickhouse", "kafka", "redpanda", "http", "grpc", "s3", "iceberg", "duckdb", "ducklake", "pgstream"} {
 		if strings.Contains(lower, endpointType) {
 			return endpointType, true
 		}

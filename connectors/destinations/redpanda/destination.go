@@ -1,4 +1,4 @@
-package bufstream
+package redpanda
 
 import (
 	"context"
@@ -15,7 +15,7 @@ const (
 	CapabilityProfileTransactionalLossy connector.CapabilityProfileID = "transactional+lossy"
 )
 
-// Destination writes batches to a Bufstream deployment using Kafka protocol semantics.
+// Destination writes batches to Redpanda using Kafka protocol semantics.
 type Destination struct {
 	inner *kafka.Destination
 }
@@ -51,7 +51,7 @@ func (d *Destination) Capabilities() connector.Capabilities {
 	return d.protocol().Capabilities()
 }
 
-// CapabilityProfileIDs returns the complete closed Bufstream capability profile set.
+// CapabilityProfileIDs returns the complete closed Redpanda capability profile set.
 func (*Destination) CapabilityProfileIDs() []connector.CapabilityProfileID {
 	return []connector.CapabilityProfileID{
 		CapabilityProfileBase,
@@ -61,7 +61,7 @@ func (*Destination) CapabilityProfileIDs() []connector.CapabilityProfileID {
 	}
 }
 
-// ClassifyCapabilityProfile maps the Kafka protocol classifier to Bufstream's
+// ClassifyCapabilityProfile maps the Kafka protocol classifier to Redpanda's
 // endpoint-scoped typed profile set.
 func (d *Destination) ClassifyCapabilityProfile(spec connector.Spec) (connector.CapabilityProfileID, error) {
 	profile, err := d.protocol().ClassifyCapabilityProfile(spec)
@@ -95,6 +95,6 @@ func (d *Destination) CapabilitiesFor(spec connector.Spec) (connector.Capabiliti
 	case CapabilityProfileBase, CapabilityProfileTransactionalOnly, CapabilityProfileLossyOnly, CapabilityProfileTransactionalLossy:
 		return capabilities, nil
 	default:
-		return connector.Capabilities{}, fmt.Errorf("unsupported Bufstream capability profile %q", profile)
+		return connector.Capabilities{}, fmt.Errorf("unsupported Redpanda capability profile %q", profile)
 	}
 }

@@ -581,10 +581,6 @@ func bindTestUpsertPolicy(transaction *connector.SourceTransaction, keys ...stri
 func testUpsertPolicy(keys ...string) connector.TableWritePolicy {
 	return connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: append([]string(nil), keys...)}
 }
-func testAppendPolicy() connector.TableWritePolicy {
-	return connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend}
-}
-
 func cleanupAuthorityTest(ctx context.Context, pool *pgxpool.Pool, flowID string) {
 	var incarnations []string
 	rows, err := pool.Query(ctx, `SELECT incarnation_id::text FROM flow_incarnations WHERE flow_id=$1`, flowID)
