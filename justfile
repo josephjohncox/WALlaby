@@ -67,6 +67,7 @@ it_kind_cluster := env_var_or_default("IT_KIND_CLUSTER", "")
 it_kind_node_image := env_var_or_default("IT_KIND_NODE_IMAGE", "")
 it_service_ready_timeout_seconds := env_var_or_default("IT_SERVICE_READY_TIMEOUT_SECONDS", "240")
 it_run_filter := env_var_or_default("IT_RUN_FILTER", "")
+it_skip_filter := env_var_or_default("IT_SKIP_FILTER", "")
 it_count := env_var_or_default("IT_COUNT", "")
 it_package_parallelism := env_var_or_default("IT_PACKAGE_PARALLELISM", "1")
 it_expected_harness_participants := env_var_or_default("IT_EXPECTED_HARNESS_PARTICIPANTS", it_package_parallelism)
@@ -125,9 +126,13 @@ test-rapid:
 test-integration:
     mkdir -p "$(dirname '{{ integration_worker_binary }}')"
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} build -o "{{ integration_worker_binary }}" ./cmd/wallaby-worker
-    WALLABY_WORKER_BINARY="${WALLABY_WORKER_BINARY:-{{ integration_worker_binary }}}" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" GO="{{ go }}" GO_TEST_TIMEOUT="{{ go_test_timeout }}" GO_TEST_VERBOSE="{{ go_test_verbose }}" GO_TEST_VERBOSE_FLAG="{{ go_test_verbose_flag }}" IT_KIND="{{ it_kind }}" IT_KEEP="{{ it_keep }}" IT_KIND_CLUSTER="{{ it_kind_cluster }}" IT_KIND_NODE_IMAGE="{{ it_kind_node_image }}" IT_SERVICE_READY_TIMEOUT_SECONDS="{{ it_service_ready_timeout_seconds }}" IT_RUN_FILTER="{{ it_run_filter }}" IT_COUNT="{{ it_count }}" IT_PACKAGE_PARALLELISM="{{ it_package_parallelism }}" IT_EXPECTED_HARNESS_PARTICIPANTS="{{ it_expected_harness_participants }}" INTEGRATION_PACKAGE="{{ integration_package }}" ./scripts/test-integration.sh
+    WALLABY_WORKER_BINARY="${WALLABY_WORKER_BINARY:-{{ integration_worker_binary }}}" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" GO="{{ go }}" GO_TEST_TIMEOUT="{{ go_test_timeout }}" GO_TEST_VERBOSE="{{ go_test_verbose }}" GO_TEST_VERBOSE_FLAG="{{ go_test_verbose_flag }}" IT_KIND="{{ it_kind }}" IT_KEEP="{{ it_keep }}" IT_KIND_CLUSTER="{{ it_kind_cluster }}" IT_KIND_NODE_IMAGE="{{ it_kind_node_image }}" IT_SERVICE_READY_TIMEOUT_SECONDS="{{ it_service_ready_timeout_seconds }}" IT_RUN_FILTER="{{ it_run_filter }}" IT_SKIP_FILTER="{{ it_skip_filter }}" IT_COUNT="{{ it_count }}" IT_PACKAGE_PARALLELISM="{{ it_package_parallelism }}" IT_EXPECTED_HARNESS_PARTICIPANTS="{{ it_expected_harness_participants }}" INTEGRATION_PACKAGE="{{ integration_package }}" ./scripts/test-integration.sh
 
-test-integration-ci: test-integration
+# Broad integration excludes managed ClickHouse/Keeper fault cells. Those run
+# immediately afterward through test-clickhouse-managed-profile with strict
+# required-test/no-skip accounting and an isolated harness identity.
+test-integration-ci:
+    IT_SKIP_FILTER='^(TestClickHouseManagedProfile|TestPostgresToClickHouseManagedProfile)' just test-integration
 
 # Durable-core unit and contract gate. Real-service evidence runs separately.
 test-durable-pr:

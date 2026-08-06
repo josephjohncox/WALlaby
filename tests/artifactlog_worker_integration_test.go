@@ -33,6 +33,7 @@ func TestMaterializedWorkerFixtureUsesCurrentAdmission(t *testing.T) {
 }
 
 func materializedWorkerDefinition(flowID, dsn, publication, slotName, sourceSystemID, publicationRevision, destinationRevisionID string) flow.Flow {
+	autoApply := false
 	return flow.Flow{
 		ID: flowID,
 		Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
@@ -46,6 +47,7 @@ func materializedWorkerDefinition(flowID, dsn, publication, slotName, sourceSyst
 		}}},
 		Config: flow.Config{
 			AckPolicy:       stream.AckPolicyMaterialized,
+			DDL:             flow.DDLPolicy{AutoApply: &autoApply},
 			Materialization: flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v2"},
 			TableMappings: flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{
 				Destination: "lake", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude},
