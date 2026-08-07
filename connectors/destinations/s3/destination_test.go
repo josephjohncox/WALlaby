@@ -26,7 +26,7 @@ func TestOpenRejectsRegistryOptionsBeforeAWSConfiguration(t *testing.T) {
 		schemaregistry.OptRegistryApicurioCompat: "yes",
 	} {
 		t.Run(key, func(t *testing.T) {
-			err := (&Destination{}).Open(context.Background(), connector.Spec{Options: map[string]string{key: value}})
+			err := (&Destination{}).Open(context.Background(), connector.RuntimeSpec{Options: map[string]string{key: value}})
 			if err == nil || !strings.Contains(err.Error(), key) {
 				t.Fatalf("Open() error = %v", err)
 			}
@@ -282,7 +282,7 @@ func testDestination(t testing.TB, client objectClient, format, partitionBy stri
 		t.Fatalf("NewCodec(%q) error = %v", format, err)
 	}
 	return &Destination{
-		spec: connector.Spec{
+		spec: connector.RuntimeSpec{
 			Name:    "archive",
 			Options: map[string]string{"flow_id": "flow/orders"},
 		},

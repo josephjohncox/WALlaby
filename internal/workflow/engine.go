@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 // Engine coordinates durable flow execution.
@@ -148,16 +149,27 @@ type MemoryEngine struct {
 	controls     map[string]LifecycleControl
 	executions   map[string]map[string]memoryExecution
 	incarnations map[string]uuid.UUID
+	registry     *connector.Registry
 	opMu         sync.Mutex
 	opLocks      map[string]*sync.Mutex
 }
 
 func NewMemoryEngine() *MemoryEngine {
+	return NewMemoryEngineWithRegistry(connector.DefaultRegistry)
+}
+
+// NewMemoryEngineWithRegistry uses the same connector registration boundary as
+// API admission while preserving typed endpoint branches in memory.
+func NewMemoryEngineWithRegistry(registry *connector.Registry) *MemoryEngine {
+	if registry == nil {
+		registry = connector.NewRegistry()
+	}
 	return &MemoryEngine{
 		flows:        make(map[string]flow.Flow),
 		controls:     make(map[string]LifecycleControl),
 		executions:   make(map[string]map[string]memoryExecution),
 		incarnations: make(map[string]uuid.UUID),
+		registry:     registry,
 		opLocks:      make(map[string]*sync.Mutex),
 	}
 }
@@ -200,7 +212,7 @@ func (m *MemoryEngine) WithFlowLock(ctx context.Context, flowID string, try bool
 }
 
 func (m *MemoryEngine) Create(_ context.Context, f flow.Flow) (flow.Flow, error) {
-	if err := flow.ValidateDefinition(f); err != nil {
+	if err := flow.ValidateDefinitionWithRegistry(f, m.registry); err != nil {
 		return flow.Flow{}, err
 	}
 	m.mu.Lock()
@@ -228,7 +240,7 @@ func (m *MemoryEngine) Create(_ context.Context, f flow.Flow) (flow.Flow, error)
 }
 
 func (m *MemoryEngine) Update(_ context.Context, f flow.Flow) (flow.Flow, error) {
-	if err := flow.ValidateDefinition(f); err != nil {
+	if err := flow.ValidateDefinitionWithRegistry(f, m.registry); err != nil {
 		return flow.Flow{}, err
 	}
 	m.mu.Lock()
@@ -241,7 +253,11 @@ func (m *MemoryEngine) Update(_ context.Context, f flow.Flow) (flow.Flow, error)
 	if f.Parallelism <= 0 {
 		f.Parallelism = 1
 	}
-	identityChanged := !current.Config.TableMappings.Equal(f.Config.TableMappings) || current.WireFormat != f.WireFormat
+	identityEqual, err := flow.ExecutionIdentityEqual(current, f)
+	if err != nil {
+		return flow.Flow{}, err
+	}
+	identityChanged := !identityEqual
 	if identityChanged && (current.State == flow.StateRunning || current.State == flow.StateStopping) {
 		return flow.Flow{}, fmt.Errorf("%w: table mappings or wire format cannot change while flow is %s", ErrInvalidState, current.State)
 	}

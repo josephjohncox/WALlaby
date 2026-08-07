@@ -8,6 +8,7 @@ import (
 
 	snowflakedest "github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/delivery"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/tablemap"
@@ -30,7 +31,7 @@ func managedSnowflakeStagedAdmissionDestinations(t *testing.T) []stream.Destinat
 		t.Fatal(err)
 	}
 	return []stream.DestinationConfig{{
-		Spec: connector.Spec{Name: "snowflake-staged", Type: connector.EndpointSnowflake, Options: map[string]string{
+		Spec: connector.RuntimeSpec{Name: "snowflake-staged", Type: connector.EndpointSnowflake, Options: map[string]string{
 			"dsn":                               managedAdmissionSnowflakeDSN(t, nil),
 			"flow_id":                           "managed-flow",
 			"managed_profile":                   connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
@@ -75,16 +76,12 @@ func managedSnowflakeStagedAdmissionDestinations(t *testing.T) []stream.Destinat
 
 func managedStagedAdmissionFlowConfigured() (flow.Flow, StreamRunnerConfig) {
 	f := managedAdmissionFlow()
-	delete(f.Source.Options, "managed")
-	f.Source.Options["managed_profile"] = connector.ManagedProfilePostgresToSnowflakeStagedAppendV1
-	f.Source.Options["create_slot"] = "true"
-	f.Source.Options["slot"] = "managed"
-	f.Source.Options["streaming_transactions"] = "true"
-	f.Source.Options["toast_fetch"] = "off"
-	f.Source.Options["max_transaction_records"] = "1000"
-	f.Source.Options["max_transaction_bytes"] = "8388608"
-	f.Source.Options["max_transaction_fragments"] = "64"
-	f.Destinations = []connector.Spec{{Name: "snowflake-staged", Type: connector.EndpointSnowflake}}
+	setRunnerSourceOptions(&f, map[string]string{
+		"managed": "", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
+		"create_slot": "true", "slot": "managed", "streaming_transactions": "true", "toast_fetch": "off",
+		"max_transaction_records": "1000", "max_transaction_bytes": "8388608", "max_transaction_fragments": "64",
+	})
+	f.Destinations = []*wallabypb.Endpoint{runnerTestDestination(connector.RuntimeSpec{Name: "snowflake-staged", Type: connector.EndpointSnowflake})}
 	f.Config.TableMappings = managedAppendSnowflakeMappings("snowflake-staged")
 	fence := managedAdmissionFence()
 	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}}
@@ -158,15 +155,13 @@ func TestManagedAdmissionAcceptsStagedAppendProfileOnlyWithExactContract(t *test
 
 func TestManagedAdmissionStagedAppendRequiresSourceContract(t *testing.T) {
 	f, cfg := managedStagedAdmissionFlowConfigured()
-	wrongSlot := f
-	wrongSlot.Source.Options = cloneStringMap(f.Source.Options)
-	wrongSlot.Source.Options["slot"] = "fixed"
+	wrongSlot := flow.Clone(f)
+	setRunnerSourceOptions(&wrongSlot, map[string]string{"slot": "fixed"})
 	if _, err := NewStreamRunner(wrongSlot, &pgsource.Source{}, managedSnowflakeStagedAdmissionDestinations(t), cfg); err == nil || !strings.Contains(err.Error(), "slot=managed") {
 		t.Fatalf("staged admission without a managed slot error=%v", err)
 	}
-	noToast := f
-	noToast.Source.Options = cloneStringMap(f.Source.Options)
-	delete(noToast.Source.Options, "toast_fetch")
+	noToast := flow.Clone(f)
+	setRunnerSourceOptions(&noToast, map[string]string{"toast_fetch": ""})
 	if _, err := NewStreamRunner(noToast, &pgsource.Source{}, managedSnowflakeStagedAdmissionDestinations(t), cfg); err == nil || !strings.Contains(err.Error(), "toast_fetch=off") {
 		t.Fatalf("staged admission without toast_fetch=off error=%v", err)
 	}

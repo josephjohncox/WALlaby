@@ -23,7 +23,9 @@ func TestMaterializedWorkerFixtureUsesCurrentAdmission(t *testing.T) {
 	if err := flow.ValidateDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if definition.Source.Options["bootstrap"] != "never" || len(definition.Destinations) != 1 || definition.Destinations[0].Type != connector.EndpointIceberg || definition.Config.Materialization.ProjectionID != "canonical_cdc_parquet_v2" {
+	source := testFlowRuntimeSource(definition.Source)
+	destinations := testFlowRuntimeDestinations(definition.Destinations)
+	if source.Options["bootstrap"] != "never" || len(destinations) != 1 || destinations[0].Type != connector.EndpointIceberg || definition.Config.Materialization.ProjectionID != "canonical_cdc_parquet_v2" {
 		t.Fatalf("definition=%+v", definition)
 	}
 	mapping := definition.Config.TableMappings.Destinations[0]
@@ -36,15 +38,15 @@ func materializedWorkerDefinition(flowID, dsn, publication, slotName, sourceSyst
 	autoApply := false
 	return flow.Flow{
 		ID: flowID,
-		Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
-			"dsn": dsn, "publication": publication, "tables": "public.wallaby_worker_materialized_source", "slot": slotName,
+		Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
+			"dsn": dsn, "publication": publication, "publication_tables": "public.wallaby_worker_materialized_source", "slot": slotName,
 			"ensure_publication": "false", "sync_publication": "false", "create_slot": "false", "managed": "true", "bootstrap": "never",
 			"streaming_transactions": "true", "status_interval": "10ms", "batch_timeout": "10ms", "ensure_state": "false",
 			"source_system_identifier": sourceSystemID, "source_lineage_id": sourceSystemID + ":" + publication + ":v1", "publication_revision": publicationRevision,
-		}},
-		Destinations: []connector.Spec{{Name: "lake", Type: connector.EndpointIceberg, Options: map[string]string{
+		}}),
+		Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "lake", Type: connector.EndpointIceberg, Options: map[string]string{
 			"catalog_profile": "rest", "control_table": "__wallaby_control", "destination_revision_id": destinationRevisionID,
-		}}},
+		}}),
 		Config: flow.Config{
 			AckPolicy:       stream.AckPolicyMaterialized,
 			DDL:             flow.DDLPolicy{AutoApply: &autoApply},

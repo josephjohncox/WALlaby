@@ -44,7 +44,7 @@ func TestOpenRejectsRegistryOptionsBeforeDatabaseOrRegistryCreation(t *testing.T
 					return nil, nil
 				},
 			}
-			err := (&Destination{}).open(context.Background(), connector.Spec{Options: map[string]string{optDSN: "unused", key: value}}, factories)
+			err := (&Destination{}).open(context.Background(), connector.RuntimeSpec{Options: map[string]string{optDSN: "unused", key: value}}, factories)
 			if err == nil || !strings.Contains(err.Error(), key) {
 				t.Fatalf("open() error = %v", err)
 			}
@@ -72,7 +72,7 @@ func TestOpenRegistryFailureClosesDatabaseAndPartialRegistry(t *testing.T) {
 		},
 	}
 	destination := &Destination{}
-	err = destination.open(context.Background(), connector.Spec{Options: map[string]string{optDSN: "unused"}}, factories)
+	err = destination.open(context.Background(), connector.RuntimeSpec{Options: map[string]string{optDSN: "unused"}}, factories)
 	if !errors.Is(err, registryErr) || !errors.Is(err, closeErr) {
 		t.Fatalf("open() error = %v", err)
 	}
@@ -115,7 +115,7 @@ func TestCloseJoinsDatabaseAndRegistryErrorsAndIsIdempotent(t *testing.T) {
 
 func TestEnsureSchemaRegistryVersionChanges(t *testing.T) {
 	ctx := context.Background()
-	registry, err := schemaregistry.NewRegistry(ctx, schemaregistry.Config{Type: "local"})
+	registry, err := schemaregistry.NewRegistry(ctx, schemaregistry.Config{Type: "local", LocalDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatalf("new registry: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestEnsureSchemaRegistryVersionChanges(t *testing.T) {
 
 func TestEnsureSchemaRespectsRegistrySubjectOverride(t *testing.T) {
 	ctx := context.Background()
-	registry, err := schemaregistry.NewRegistry(ctx, schemaregistry.Config{Type: "local"})
+	registry, err := schemaregistry.NewRegistry(ctx, schemaregistry.Config{Type: "local", LocalDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatalf("new registry: %v", err)
 	}

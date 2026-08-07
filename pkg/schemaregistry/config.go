@@ -14,6 +14,7 @@ const (
 	OptRegistryPassword       = "schema_registry_password"
 	OptRegistryToken          = "schema_registry_token"
 	OptRegistryDSN            = "schema_registry_dsn"
+	OptRegistryLocalDirectory = "schema_registry_local_directory"
 	OptRegistryTimeout        = "schema_registry_timeout"
 	OptRegistryApicurioCompat = "schema_registry_apicurio_compat"
 	OptRegistrySubjectMode    = "schema_registry_subject_mode"
@@ -36,6 +37,7 @@ type Config struct {
 	Password       string
 	Token          string
 	DSN            string
+	LocalDirectory string
 	Timeout        time.Duration
 	ApicurioCompat bool
 	Region         string
@@ -56,6 +58,7 @@ func ConfigFromOptions(values map[string]string) (Config, error) {
 		Password:       decoder.Raw(OptRegistryPassword, ""),
 		Token:          decoder.String(OptRegistryToken, ""),
 		DSN:            decoder.String(OptRegistryDSN, ""),
+		LocalDirectory: decoder.String(OptRegistryLocalDirectory, ""),
 		Timeout:        decoder.Duration(OptRegistryTimeout, 0),
 		ApicurioCompat: decoder.Bool(OptRegistryApicurioCompat, true),
 		Region:         decoder.String(OptRegistryRegion, ""),
@@ -67,13 +70,6 @@ func ConfigFromOptions(values map[string]string) (Config, error) {
 	}
 	if err := decoder.Err(); err != nil {
 		return Config{}, err
-	}
-	if cfg.Type == "" {
-		if cfg.URL != "" {
-			cfg.Type = "csr"
-		} else if cfg.DSN != "" {
-			cfg.Type = "postgres"
-		}
 	}
 	return cfg, nil
 }

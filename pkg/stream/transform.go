@@ -8,7 +8,7 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-func transformBatchForDestination(batch connector.Batch, spec connector.Spec, baseMappings map[string]string) (connector.Batch, bool, error) {
+func transformBatchForDestination(batch connector.Batch, spec connector.RuntimeSpec, baseMappings map[string]string) (connector.Batch, bool, error) {
 	overrides, err := typemapping.Load(spec.Options)
 	if err != nil {
 		return connector.Batch{}, false, err

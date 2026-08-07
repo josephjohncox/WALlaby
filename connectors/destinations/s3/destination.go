@@ -97,7 +97,7 @@ type objectClient interface {
 
 // Destination writes batches to S3.
 type Destination struct {
-	spec              connector.Spec
+	spec              connector.RuntimeSpec
 	bucket            string
 	prefix            string
 	format            string
@@ -117,7 +117,7 @@ type Destination struct {
 	protoTypesSubject string
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	registryCfg, err := schemaregistry.ConfigFromOptions(spec.Options)
 	if err != nil {
 		return err

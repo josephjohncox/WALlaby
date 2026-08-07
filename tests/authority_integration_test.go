@@ -72,7 +72,7 @@ func TestAuthorityV2CatalogAndRepresentativeMutations(t *testing.T) {
 		t.Fatal(err)
 	}
 	flowID := "authority-v2-workflow-" + suffix
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
@@ -140,7 +140,7 @@ func TestExternalCheckpointPutSerializesProducerAcquisition(t *testing.T) {
 	authorityStore, _ := authority.NewPostgresStore(pool)
 	flowID := fmt.Sprintf("external-checkpoint-atomic-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -238,7 +238,7 @@ func TestPostgresGenerationFenceRejectsStaleCommit(t *testing.T) {
 
 	flowID := fmt.Sprintf("authority-stale-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -303,7 +303,7 @@ func TestPostgresRunFenceValidationSerializesTakeover(t *testing.T) {
 	store, _ := authority.NewPostgresStore(pool)
 	flowID := fmt.Sprintf("authority-linearizable-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -383,7 +383,7 @@ func TestPostgresCheckpointGenerationFenceRejectsStaleCommit(t *testing.T) {
 
 	flowID := fmt.Sprintf("checkpoint-fence-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -450,7 +450,7 @@ func TestPostgresFlowIDReuseDoesNotRestoreOldState(t *testing.T) {
 
 	flowID := fmt.Sprintf("authority-reuse-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -496,7 +496,7 @@ func TestPostgresFlowIDReuseDoesNotRestoreOldState(t *testing.T) {
 	if err := engine.Delete(ctx, flowID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, newControl, err := engine.PlanStart(ctx, flowID, false)
@@ -537,7 +537,7 @@ func TestAuthorityProtocolGateRejectsStaleBinarySession(t *testing.T) {
 	}
 	defer engine.Close()
 	flowID := fmt.Sprintf("authority-protocol-%d", time.Now().UnixNano())
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	currentPool, err := newAuthorityTestPool(ctx, dsn)

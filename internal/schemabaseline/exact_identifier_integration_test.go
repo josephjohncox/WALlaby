@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/controlplane"
 	"github.com/josephjohncox/wallaby/internal/controlstore"
@@ -78,11 +79,11 @@ WHERE namespace.nspname=$1 AND relation.relname=ANY($2::text[])`, sourceSchema, 
 		t.Fatalf("live PostgreSQL case/whitespace-distinct relations=%d, want 3", exactRelations)
 	}
 
-	destination := connector.Spec{Name: "target", Type: connector.EndpointPostgres}
+	destination := connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}
 	definition := flow.Flow{
 		ID: flowID, Name: flowID,
-		Source:       connector.Spec{Name: "source", Type: connector.EndpointPostgres},
-		Destinations: []connector.Spec{destination}, State: flow.StateCreated,
+		Source:       schemaBaselineSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}),
+		Destinations: []*wallabypb.Endpoint{schemaBaselineDestination(destination)}, State: flow.StateCreated,
 		Config: flow.Config{TableMappings: flow.TableMappings{
 			Version: flow.TableMappingsVersion,
 			Destinations: []flow.DestinationTableMappings{{

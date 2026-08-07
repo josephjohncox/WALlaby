@@ -96,7 +96,7 @@ func streamProfileAllowedOptions() map[string]struct{} {
 	return map[string]struct{}{
 		"dsn": {}, "flow_id": {}, "managed_profile": {}, "destination_revision_id": {},
 		"batch_mode": {}, "batch_resolution": {}, "meta_table_enabled": {},
-		"disable_transactions": {}, "session_keep_alive": {}, "type_mappings": {}, "type_mappings_file": {},
+		"disable_transactions": {}, "session_keep_alive": {},
 		"managed_account": {}, "managed_database": {}, "managed_schema": {}, "managed_pipe": {},
 		"managed_table": {}, "managed_receipts_table": {}, "managed_channel_state_table": {},
 		"managed_channel_name_prefix": {},
@@ -111,11 +111,6 @@ func streamProfileAllowedOptions() map[string]struct{} {
 		"managed_observe_interval_ms": {}, "managed_append_attempts": {}, "managed_append_backoff_ms": {},
 		"managed_cleanup_max_objects": {}, "managed_cleanup_retention_seconds": {},
 		"managed_streaming_transport": {},
-		// Known generic options remain listed so the tailored rejection below can
-		// explain the incompatible mode.
-		"schema": {}, "table": {}, "staging_schema": {}, "staging_table": {}, "staging_suffix": {},
-		"warehouse": {}, "warehouse_size": {}, "warehouse_auto_suspend": {}, "warehouse_auto_resume": {},
-		"meta_schema": {}, "meta_table": {}, "meta_pk_prefix": {},
 	}
 }
 
@@ -142,12 +137,12 @@ func ValidateManagedStreamingProfileOptions(options map[string]string) error {
 
 // ValidateManagedStreamingProfileSpec performs the complete side-effect-free
 // portion of streaming append admission.
-func ValidateManagedStreamingProfileSpec(spec connector.Spec) error {
+func ValidateManagedStreamingProfileSpec(spec connector.RuntimeSpec) error {
 	_, err := streamConfigFromSpec(strings.TrimSpace(spec.Options["dsn"]), spec)
 	return err
 }
 
-func streamConfigFromSpec(dsn string, spec connector.Spec) (streamConfig, error) {
+func streamConfigFromSpec(dsn string, spec connector.RuntimeSpec) (streamConfig, error) {
 	const profileName = connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1
 	options := spec.Options
 	if strings.TrimSpace(options["managed_profile"]) != profileName {
@@ -279,7 +274,7 @@ func streamConfigFromSpec(dsn string, spec connector.Spec) (streamConfig, error)
 			return streamConfig{}, fmt.Errorf("managed streaming Snowflake schema contract rejects generated column %q", column.Name)
 		}
 	}
-	if strings.TrimSpace(options["type_mappings"]) != "" || strings.TrimSpace(options["type_mappings_file"]) != "" {
+	if strings.TrimSpace(options["type_mappings"]) != "" {
 		return streamConfig{}, errors.New("managed streaming Snowflake profile rejects type mapping overrides until each mapping has real-service recovery evidence")
 	}
 	cfg.typeMappings = defaultSnowflakeTypeMappings()

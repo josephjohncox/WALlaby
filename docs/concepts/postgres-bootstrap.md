@@ -1,6 +1,6 @@
 # PostgreSQL slot-anchored bootstrap
 
-`internal/bootstrap` and the PostgreSQL source implement the slot-anchored managed bootstrap used by `wallaby-worker` and in-process DBOS execution. The exact maintained `postgresql-to-postgresql-v1` profile requires `bootstrap=required`. Generic managed execution may use `bootstrap=auto|required|never`, but those broader configurations remain experimental.
+`internal/bootstrap` and the PostgreSQL source implement the slot-anchored managed bootstrap used by `wallaby-worker` and in-process DBOS execution. The exact maintained `postgresql-to-postgresql-v1` profile requires `bootstrap=BOOTSTRAP_MODE_REQUIRED`. Generic managed execution may use `BOOTSTRAP_MODE_AUTO`, `BOOTSTRAP_MODE_REQUIRED`, or `BOOTSTRAP_MODE_NEVER`,  but those broader configurations remain experimental.
 
 The bootstrapper creates a bootstrap-generation-qualified logical slot with `EXPORT_SNAPSHOT`. PostgreSQL stores the returned system identity, slot, publication, manifest hash, consistent point, and snapshot name under the producer fence while the exporter connection stays open.
 

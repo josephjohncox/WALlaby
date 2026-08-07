@@ -11,6 +11,7 @@ import (
 	"time"
 
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/mappinggen"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -57,12 +58,17 @@ func flowMappingsGenerate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if !strings.EqualFold(strings.TrimSpace(cfg.Source.Type), "postgres") {
+	sourcePB, err := cfg.Source.toProto(endpointcodec.RoleSource)
+	if err != nil {
+		return fmt.Errorf("decode source endpoint: %w", err)
+	}
+	sourceSpec, err := endpointcodec.Decode(sourcePB, endpointcodec.RoleSource)
+	if err != nil || sourceSpec.Type != connector.EndpointPostgres {
 		return errors.New("mapping generation requires a PostgreSQL source")
 	}
 	destinationName, _ := cmd.Flags().GetString("destination")
 	var destination endpointConfig
-	var destinationSpec connector.Spec
+	var destinationSpec connector.RuntimeSpec
 	if mode == "mappings" {
 		destination, err = selectFlowConfigDestination(cfg.Destinations, destinationName)
 		if err != nil {
@@ -100,7 +106,7 @@ func flowMappingsGenerate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	options := mergeOptionMaps(cfg.Source.Options, iam.options())
+	options := mergeOptionMaps(sourceSpec.Options, iam.options())
 	dsn := options["dsn"]
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -111,14 +117,14 @@ func flowMappingsGenerate(cmd *cobra.Command, _ []string) error {
 	var output any
 	switch mode {
 	case "mappings":
-		generated, err := mappinggen.Generate(mappinggen.Request{Destination: destination.Name, Tables: catalog, Watermarks: watermarks, MatchColumns: matches})
+		generated, err := mappinggen.Generate(mappinggen.Request{Destination: destinationSpec.Name, Tables: catalog, Watermarks: watermarks, MatchColumns: matches})
 		if err != nil {
 			return err
 		}
 		if err := applyGeneratedWritePolicies(&generated.Destinations[0], destinationSpec, catalog, watermarks, matches, writeModes, true); err != nil {
 			return err
 		}
-		if err := generated.Validate([]connector.Spec{destinationSpec}); err != nil {
+		if err := generated.Validate([]connector.RuntimeSpec{destinationSpec}); err != nil {
 			return fmt.Errorf("validate generated mappings: %w", err)
 		}
 		output = generated
@@ -144,30 +150,30 @@ func flowMappingsGenerate(cmd *cobra.Command, _ []string) error {
 	return writeGeneratedOutput(outputPath, payload, force)
 }
 
-func flowEndpointSpec(destination endpointConfig) (connector.Spec, error) {
-	pb, err := endpointConfigToProto(destination)
+func flowEndpointSpec(destination endpointConfig) (connector.RuntimeSpec, error) {
+	pb, err := destination.toProto(endpointcodec.RoleDestination)
 	if err != nil {
-		return connector.Spec{}, err
+		return connector.RuntimeSpec{}, err
 	}
-	return endpointFromProto(pb)
+	return endpointcodec.Decode(pb, endpointcodec.RoleDestination)
 }
-func validateFlowDestinations(destinations []endpointConfig, selected string) (map[string]connector.Spec, error) {
+func validateFlowDestinations(destinations []endpointConfig, selected string) (map[string]connector.RuntimeSpec, error) {
 	if len(destinations) == 0 {
 		return nil, errors.New("flow has no destinations")
 	}
-	out := make(map[string]connector.Spec, len(destinations))
+	out := make(map[string]connector.RuntimeSpec, len(destinations))
 	for _, destination := range destinations {
-		if strings.TrimSpace(destination.Name) == "" {
-			return nil, errors.New("flow destination name is required")
-		}
-		if _, duplicate := out[destination.Name]; duplicate {
-			return nil, fmt.Errorf("duplicate destination name %q", destination.Name)
-		}
 		spec, err := flowEndpointSpec(destination)
 		if err != nil {
 			return nil, err
 		}
-		out[destination.Name] = spec
+		if strings.TrimSpace(spec.Name) == "" {
+			return nil, errors.New("flow destination name is required")
+		}
+		if _, duplicate := out[spec.Name]; duplicate {
+			return nil, fmt.Errorf("duplicate destination name %q", spec.Name)
+		}
+		out[spec.Name] = spec
 	}
 	if selected != "" {
 		if _, ok := out[selected]; !ok {
@@ -198,27 +204,32 @@ func completeFlowMappings(cfg flowConfig, tables []mappinggen.CatalogTable, wate
 	}
 	out := &flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: make([]flow.DestinationTableMappings, 0, len(cfg.Destinations))}
 	for _, destination := range cfg.Destinations {
-		spec := specs[destination.Name]
-		if existing, ok := existingByName[destination.Name]; ok {
+		destinationSpec, err := flowEndpointSpec(destination)
+		if err != nil {
+			return nil, err
+		}
+		destinationName := destinationSpec.Name
+		spec := specs[destinationName]
+		if existing, ok := existingByName[destinationName]; ok {
 			single := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{existing}}.Clone()
 			if err := applyGeneratedWritePolicies(&single.Destinations[0], spec, tables, watermarks, matches, writeModes, false); err != nil {
-				return nil, fmt.Errorf("apply write-mode overrides for destination %s: %w", destination.Name, err)
+				return nil, fmt.Errorf("apply write-mode overrides for destination %s: %w", destinationName, err)
 			}
-			if err := single.Validate([]connector.Spec{spec}); err != nil {
-				return nil, fmt.Errorf("validate existing mappings for destination %s: %w", destination.Name, err)
+			if err := single.Validate([]connector.RuntimeSpec{spec}); err != nil {
+				return nil, fmt.Errorf("validate existing mappings for destination %s: %w", destinationName, err)
 			}
 			out.Destinations = append(out.Destinations, single.Destinations[0])
 			continue
 		}
-		generated, err := mappinggen.Generate(mappinggen.Request{Destination: destination.Name, Tables: tables, Watermarks: watermarks, MatchColumns: matches})
+		generated, err := mappinggen.Generate(mappinggen.Request{Destination: destinationName, Tables: tables, Watermarks: watermarks, MatchColumns: matches})
 		if err != nil {
 			return nil, err
 		}
 		if err := applyGeneratedWritePolicies(&generated.Destinations[0], spec, tables, watermarks, matches, writeModes, true); err != nil {
-			return nil, fmt.Errorf("generate policies for destination %s: %w", destination.Name, err)
+			return nil, fmt.Errorf("generate policies for destination %s: %w", destinationName, err)
 		}
-		if err := generated.Validate([]connector.Spec{spec}); err != nil {
-			return nil, fmt.Errorf("validate generated mappings for destination %s: %w", destination.Name, err)
+		if err := generated.Validate([]connector.RuntimeSpec{spec}); err != nil {
+			return nil, fmt.Errorf("validate generated mappings for destination %s: %w", destinationName, err)
 		}
 		out.Destinations = append(out.Destinations, generated.Destinations[0])
 	}
@@ -231,13 +242,17 @@ func selectFlowConfigDestination(destinations []endpointConfig, name string) (en
 	}
 	seen := map[string]struct{}{}
 	for _, destination := range destinations {
-		if strings.TrimSpace(destination.Name) == "" {
+		spec, err := flowEndpointSpec(destination)
+		if err != nil {
+			return endpointConfig{}, err
+		}
+		if strings.TrimSpace(spec.Name) == "" {
 			return endpointConfig{}, errors.New("flow destination name is required")
 		}
-		if _, duplicate := seen[destination.Name]; duplicate {
-			return endpointConfig{}, fmt.Errorf("duplicate destination name %q", destination.Name)
+		if _, duplicate := seen[spec.Name]; duplicate {
+			return endpointConfig{}, fmt.Errorf("duplicate destination name %q", spec.Name)
 		}
-		seen[destination.Name] = struct{}{}
+		seen[spec.Name] = struct{}{}
 	}
 	if strings.TrimSpace(name) == "" {
 		if len(destinations) != 1 {
@@ -246,7 +261,11 @@ func selectFlowConfigDestination(destinations []endpointConfig, name string) (en
 		return destinations[0], nil
 	}
 	for _, destination := range destinations {
-		if destination.Name == name {
+		spec, err := flowEndpointSpec(destination)
+		if err != nil {
+			return endpointConfig{}, err
+		}
+		if spec.Name == name {
 			return destination, nil
 		}
 	}
@@ -299,7 +318,7 @@ func parseWriteModeOverrides(values []string) (map[mappinggen.TableRef]flow.Tabl
 	return out, nil
 }
 
-func applyGeneratedWritePolicies(mapping *flow.DestinationTableMappings, spec connector.Spec, catalog []mappinggen.CatalogTable, watermarks map[mappinggen.TableRef]string, matches map[mappinggen.TableRef][]string, overrides map[mappinggen.TableRef]flow.TableWriteMode, applyCapabilityDefault bool) error {
+func applyGeneratedWritePolicies(mapping *flow.DestinationTableMappings, spec connector.RuntimeSpec, catalog []mappinggen.CatalogTable, watermarks map[mappinggen.TableRef]string, matches map[mappinggen.TableRef][]string, overrides map[mappinggen.TableRef]flow.TableWriteMode, applyCapabilityDefault bool) error {
 	if connector.IsPostgresToSnowflakeSQLV1Spec(spec) {
 		return applyManagedSnowflakeSQLGeneratedPolicy(mapping, catalog, watermarks, matches, overrides, applyCapabilityDefault)
 	}

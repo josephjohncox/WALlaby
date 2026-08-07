@@ -35,14 +35,14 @@ func TestManagedSnowflakeApplyDDLRejectsBeforeExecutor(t *testing.T) {
 func TestManagedSnowflakeCapabilitiesAreScopedToTheNamedProfile(t *testing.T) {
 	t.Parallel()
 	destination := &Destination{}
-	generic, err := destination.CapabilitiesFor(connector.Spec{Type: connector.EndpointSnowflake})
+	generic, err := destination.CapabilitiesFor(connector.RuntimeSpec{Type: connector.EndpointSnowflake})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if generic.Delivery.TransactionalBatch || generic.Delivery.IdempotentReplay || generic.Delivery.ReplaySafe {
 		t.Fatalf("generic Snowflake mode inherited managed guarantees: %+v", generic.Delivery)
 	}
-	managed, err := destination.CapabilitiesFor(connector.Spec{Type: connector.EndpointSnowflake, Options: map[string]string{
+	managed, err := destination.CapabilitiesFor(connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: map[string]string{
 		"managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1,
 	}})
 	if err != nil {
@@ -61,7 +61,7 @@ func TestManagedSnowflakeCapabilitiesAreScopedToTheNamedProfile(t *testing.T) {
 		connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
 		connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
 	} {
-		capabilities, err := destination.CapabilitiesFor(connector.Spec{Type: connector.EndpointSnowflake, Options: map[string]string{"managed_profile": profile}})
+		capabilities, err := destination.CapabilitiesFor(connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: map[string]string{"managed_profile": profile}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -81,7 +81,7 @@ func TestManagedSnowflakeCapabilitiesAreScopedToTheNamedProfile(t *testing.T) {
 	if got := destination.CapabilityProfileIDs(); !reflect.DeepEqual(got, wantProfiles) {
 		t.Fatalf("Snowflake capability profiles=%v, want closed set %v", got, wantProfiles)
 	}
-	if _, err := destination.ClassifyCapabilityProfile(connector.Spec{Type: connector.EndpointSnowflake, Options: map[string]string{"managed_profile": "unknown"}}); err == nil {
+	if _, err := destination.ClassifyCapabilityProfile(connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: map[string]string{"managed_profile": "unknown"}}); err == nil {
 		t.Fatal("unknown Snowflake profile was admitted outside the closed registry")
 	}
 }
@@ -232,7 +232,7 @@ func TestManagedSnowflakeConfigRequiresExactSecureRevisionAndSchemaContract(t *t
 		t.Fatal(err)
 	}
 	hash := mustManagedSchemaHash(t, schema)
-	spec := connector.Spec{Name: "snowflake", Type: connector.EndpointSnowflake, Options: map[string]string{
+	spec := connector.RuntimeSpec{Name: "snowflake", Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn":                                       managedSnowflakeTestDSN(t, nil),
 		"flow_id":                                   "flow-1",
 		"managed_profile":                           connector.ManagedProfilePostgresToSnowflakeSQLV1,
@@ -312,10 +312,10 @@ func TestManagedSnowflakeConfigRequiresExactSecureRevisionAndSchemaContract(t *t
 		{name: "transaction overflow", key: "managed_max_transaction_bytes", value: "8388609", want: "between 1 and 8388608"},
 		{name: "pool overflow", key: "managed_max_open_conns", value: "9", want: "between 1 and 8"},
 		{name: "invalid transaction boolean", key: "disable_transactions", value: "sometimes", want: "must be true or false"},
-		{name: "generic warehouse mutation", key: "warehouse_size", value: "XSMALL", want: "rejects generic option warehouse_size"},
+		{name: "generic warehouse mutation", key: "warehouse_size", value: "XSMALL", want: "does not allow option warehouse_size"},
 		{name: "unknown managed option", key: "managed_typo", value: "true", want: "does not allow option managed_typo"},
-		{name: "inline type mapping override", key: "type_mappings", value: `{"text":"VARIANT"}`, want: "type mapping overrides"},
-		{name: "mutable type mapping file", key: "type_mappings_file", value: "mappings.json", want: "type mapping overrides"},
+		{name: "inline type mapping override", key: "type_mappings", value: `{"text":"VARIANT"}`, want: "does not allow option type_mappings"},
+		{name: "removed type mapping file", key: "type_mappings_file", value: "mappings.json", want: "does not allow option type_mappings_file"},
 		{name: "unknown nullability", key: "managed_schema_contract", value: `{"Name":"WIDGETS","Namespace":"PUBLIC","Columns":[{"Name":"id","Type":"int8","TypeMetadata":{"primary_key":"true"}}]}`, want: "schema contract hash"},
 	}
 	for _, tt := range tests {

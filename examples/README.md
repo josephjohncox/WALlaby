@@ -71,9 +71,9 @@ See `examples/terraform/flow.tf` for a minimal provider + flow resource definiti
 - `examples/flows/postgres_to_s3_parquet.json`
 - `examples/flows/postgres_to_http.json`
 - `examples/flows/postgres_to_http_toast_full.json`
-- `examples/flows/postgres_to_http_typed.yaml` — record-JSON HTTP delivery with typed retry/timing options, CSV-quoted headers, root-relative type mappings, and a flow-relative table-mapping import.
+- `examples/flows/postgres_to_http_typed.yaml` — advanced strict-authoring example covering record-JSON HTTP delivery, nested retry/timing objects, native header and type-mapping maps, and inline version 2 table mappings. The `_typed` suffix distinguishes this exhaustive option example; all current flow examples use typed endpoint branches.
 - `examples/flows/postgres_to_grpc.json`
-- `examples/flows/postgres_to_grpc_typed.json` — record-JSON gRPC delivery to an explicit insecure localhost development endpoint with typed retry/timing options, CSV-quoted metadata, inline type mappings, and component-local Go templates.
+- `examples/flows/postgres_to_grpc_typed.json` — advanced strict-authoring example covering record-JSON gRPC delivery, nested TLS/retry objects, native metadata and type-mapping maps, and component-local Go templates. The `_typed` suffix distinguishes exhaustive option coverage, not a second endpoint format.
 - `examples/flows/postgres_to_pgstream.json`
 - `examples/flows/postgres_to_snowflake.json`
 - `examples/flows/postgres_to_snowpipe.json`
@@ -85,7 +85,6 @@ See `examples/terraform/flow.tf` for a minimal provider + flow resource definiti
 Supporting executable configuration:
 
 - `examples/mappings/http_typed.yaml` — version 2 HTTP destination projection using append writes and component-local schema, table, and column Go templates.
-- `examples/type-mappings/web.yaml` — canonical PostgreSQL-to-web/wire type overrides used by the typed HTTP flow.
 
 The shipped-example tests mutate in-memory copies to prove unknown flow and protobuf fields, malformed typed options and type maps, mapping version 1, wrong mapping destinations, legacy or foreign template fields, and other invalid contracts are rejected without checking malformed examples into the repository.
 
@@ -96,13 +95,12 @@ Use the Snowpipe destination with real external-stage notifications. Set `auto_i
 ```json
 {
   "name": "snowpipe-out",
-  "type": "snowpipe",
-  "options": {
+  "snowpipe": {
     "dsn": "user:pass@account/db/schema?role=SYSADMIN",
     "stage": "@my_external_stage",
-    "format": "parquet",
-    "auto_ingest": "true",
-    "copy_on_write": "false"
+    "format": "WIRE_FORMAT_PARQUET",
+    "auto_ingest": true,
+    "copy_on_write": false
   }
 }
 ```

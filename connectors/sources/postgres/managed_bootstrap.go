@@ -34,7 +34,7 @@ const (
 // CleanupManagedResources retires exact owned source resources under terminal
 // lifecycle authority. It constructs a fresh source connection so cleanup is
 // recoverable by the control-plane process even when the worker was killed.
-func (s *Source) CleanupManagedResources(ctx context.Context, fence connector.CleanupFence, spec connector.Spec) (retErr error) {
+func (s *Source) CleanupManagedResources(ctx context.Context, fence connector.CleanupFence, spec connector.RuntimeSpec) (retErr error) {
 	if err := fence.Validate(); err != nil {
 		return err
 	}
@@ -62,7 +62,7 @@ func (s *Source) CleanupManagedResources(ctx context.Context, fence connector.Cl
 // PrepareManagedBootstrap runs or recovers the slot-anchored snapshot before
 // the ordinary logical replication source is opened. The destination has
 // already been opened by the stream runner.
-func (s *Source) PrepareManagedBootstrap(ctx context.Context, fence connector.RunFence, spec connector.Spec, destinationRevisionID string, projector connector.ManagedBootstrapProjector, driver connector.ManagedBootstrapDestination) (connector.ManagedBootstrapResult, error) {
+func (s *Source) PrepareManagedBootstrap(ctx context.Context, fence connector.RunFence, spec connector.RuntimeSpec, destinationRevisionID string, projector connector.ManagedBootstrapProjector, driver connector.ManagedBootstrapDestination) (connector.ManagedBootstrapResult, error) {
 	if err := fence.Validate(); err != nil {
 		return connector.ManagedBootstrapResult{}, err
 	}
@@ -203,7 +203,7 @@ func (s *Source) PrepareManagedBootstrap(ctx context.Context, fence connector.Ru
 	return connector.ManagedBootstrapResult{}, fmt.Errorf("managed bootstrap exhausted %d full-generation restarts: %w", restartLimit, lastErr)
 }
 
-func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator *bootstrap.Bootstrapper, sourcePool *pgxpool.Pool, fence authority.RunFence, spec connector.Spec, destinationRevisionID string, projector connector.ManagedBootstrapProjector, driver connector.ManagedBootstrapDestination) (result connector.ManagedBootstrapResult, retry bool, retErr error) {
+func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator *bootstrap.Bootstrapper, sourcePool *pgxpool.Pool, fence authority.RunFence, spec connector.RuntimeSpec, destinationRevisionID string, projector connector.ManagedBootstrapProjector, driver connector.ManagedBootstrapDestination) (result connector.ManagedBootstrapResult, retry bool, retErr error) {
 	publication := strings.TrimSpace(spec.Options[optPublication])
 	if publication == "" {
 		publication = managedPublicationName(fence)
@@ -664,7 +664,7 @@ ORDER BY n.nspname,c.relname`, publication)
 	return tables, schemas, nil
 }
 
-func discoverManagedSnapshotTasks(ctx context.Context, tx pgx.Tx, spec connector.Spec, projector connector.ManagedBootstrapProjector, maxTables int) ([]bootstrap.SnapshotTask, []bootstrap.PublicationRelation, error) {
+func discoverManagedSnapshotTasks(ctx context.Context, tx pgx.Tx, spec connector.RuntimeSpec, projector connector.ManagedBootstrapProjector, maxTables int) ([]bootstrap.SnapshotTask, []bootstrap.PublicationRelation, error) {
 	requested := parseCSV(spec.Options[optPublicationTables])
 	if len(requested) == 0 {
 		requested = parseCSV(spec.Options["tables"])
@@ -1041,7 +1041,7 @@ func loadManagedAuthoritativeCheckpoint(ctx context.Context, control *pgxpool.Po
 	return checkpoint, nil
 }
 
-func managedSelectionHash(spec connector.Spec, projectionFingerprint string) string {
+func managedSelectionHash(spec connector.RuntimeSpec, projectionFingerprint string) string {
 	keys := []string{optSourceSystemID, optSourceLineageID, optPublication, optPublicationTables, optPublicationSchemas, "tables", "schemas"}
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "projection_fingerprint=%s\n", projectionFingerprint)

@@ -22,34 +22,6 @@ var (
 	ErrDeliveryRetryExhausted = errors.New("delivery retry budget exhausted")
 )
 
-// DeliveryConfigFingerprint returns a deterministic identity for one
-// destination revision bound to its immutable logical projection. The revision
-// ID itself is excluded so independently named equivalent revisions compare
-// equal. Projection-free recovery identities are not supported.
-func DeliveryConfigFingerprint(spec Spec, projectionFingerprint string) (string, error) {
-	if strings.TrimSpace(projectionFingerprint) == "" {
-		return "", errors.New("projection fingerprint is required")
-	}
-	options := make(map[string]string, len(spec.Options))
-	for key, value := range spec.Options {
-		if key == "destination_revision_id" || key == "flow_id" {
-			continue
-		}
-		options[key] = value
-	}
-	payload, err := json.Marshal(struct {
-		Name       string            `json:"name"`
-		Type       EndpointType      `json:"type"`
-		Options    map[string]string `json:"options"`
-		Projection string            `json:"projection_fingerprint"`
-	}{Name: spec.Name, Type: spec.Type, Options: options, Projection: projectionFingerprint})
-	if err != nil {
-		return "", fmt.Errorf("encode delivery config fingerprint: %w", err)
-	}
-	digest := sha256.Sum256(payload)
-	return hex.EncodeToString(digest[:]), nil
-}
-
 // BindProjectionFingerprint binds a deployment-effective destination identity
 // to the immutable logical projection revision.
 func BindProjectionFingerprint(destinationFingerprint, projectionFingerprint string) (string, error) {

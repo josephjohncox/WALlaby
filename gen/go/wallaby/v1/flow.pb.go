@@ -802,7 +802,7 @@ type ListReplicationSlotsRequest struct {
 	FlowId        string                 `protobuf:"bytes,1,opt,name=flow_id,json=flowId,proto3" json:"flow_id,omitempty"`
 	Dsn           string                 `protobuf:"bytes,2,opt,name=dsn,proto3" json:"dsn,omitempty"`
 	Slot          string                 `protobuf:"bytes,3,opt,name=slot,proto3" json:"slot,omitempty"`
-	Options       map[string]string      `protobuf:"bytes,4,rep,name=options,proto3" json:"options,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	RdsIam        *RDSIAMConfig          `protobuf:"bytes,5,opt,name=rds_iam,json=rdsIam,proto3" json:"rds_iam,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -858,9 +858,9 @@ func (x *ListReplicationSlotsRequest) GetSlot() string {
 	return ""
 }
 
-func (x *ListReplicationSlotsRequest) GetOptions() map[string]string {
+func (x *ListReplicationSlotsRequest) GetRdsIam() *RDSIAMConfig {
 	if x != nil {
-		return x.Options
+		return x.RdsIam
 	}
 	return nil
 }
@@ -1046,7 +1046,7 @@ type GetReplicationSlotRequest struct {
 	FlowId        string                 `protobuf:"bytes,1,opt,name=flow_id,json=flowId,proto3" json:"flow_id,omitempty"`
 	Dsn           string                 `protobuf:"bytes,2,opt,name=dsn,proto3" json:"dsn,omitempty"`
 	Slot          string                 `protobuf:"bytes,3,opt,name=slot,proto3" json:"slot,omitempty"`
-	Options       map[string]string      `protobuf:"bytes,4,rep,name=options,proto3" json:"options,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	RdsIam        *RDSIAMConfig          `protobuf:"bytes,5,opt,name=rds_iam,json=rdsIam,proto3" json:"rds_iam,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1102,9 +1102,9 @@ func (x *GetReplicationSlotRequest) GetSlot() string {
 	return ""
 }
 
-func (x *GetReplicationSlotRequest) GetOptions() map[string]string {
+func (x *GetReplicationSlotRequest) GetRdsIam() *RDSIAMConfig {
 	if x != nil {
-		return x.Options
+		return x.RdsIam
 	}
 	return nil
 }
@@ -1159,7 +1159,7 @@ type DropReplicationSlotRequest struct {
 	Dsn           string                 `protobuf:"bytes,2,opt,name=dsn,proto3" json:"dsn,omitempty"`
 	Slot          string                 `protobuf:"bytes,3,opt,name=slot,proto3" json:"slot,omitempty"`
 	IfExists      bool                   `protobuf:"varint,4,opt,name=if_exists,json=ifExists,proto3" json:"if_exists,omitempty"`
-	Options       map[string]string      `protobuf:"bytes,5,rep,name=options,proto3" json:"options,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	RdsIam        *RDSIAMConfig          `protobuf:"bytes,6,opt,name=rds_iam,json=rdsIam,proto3" json:"rds_iam,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1222,9 +1222,9 @@ func (x *DropReplicationSlotRequest) GetIfExists() bool {
 	return false
 }
 
-func (x *DropReplicationSlotRequest) GetOptions() map[string]string {
+func (x *DropReplicationSlotRequest) GetRdsIam() *RDSIAMConfig {
 	if x != nil {
-		return x.Options
+		return x.RdsIam
 	}
 	return nil
 }
@@ -1302,7 +1302,7 @@ type ListPublicationTablesRequest struct {
 	FlowId        string                 `protobuf:"bytes,1,opt,name=flow_id,json=flowId,proto3" json:"flow_id,omitempty"`
 	Dsn           string                 `protobuf:"bytes,2,opt,name=dsn,proto3" json:"dsn,omitempty"`
 	Publication   string                 `protobuf:"bytes,3,opt,name=publication,proto3" json:"publication,omitempty"`
-	Options       map[string]string      `protobuf:"bytes,4,rep,name=options,proto3" json:"options,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	RdsIam        *RDSIAMConfig          `protobuf:"bytes,5,opt,name=rds_iam,json=rdsIam,proto3" json:"rds_iam,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1358,9 +1358,9 @@ func (x *ListPublicationTablesRequest) GetPublication() string {
 	return ""
 }
 
-func (x *ListPublicationTablesRequest) GetOptions() map[string]string {
+func (x *ListPublicationTablesRequest) GetRdsIam() *RDSIAMConfig {
 	if x != nil {
-		return x.Options
+		return x.RdsIam
 	}
 	return nil
 }
@@ -1431,7 +1431,7 @@ type AddPublicationTablesRequest struct {
 	Dsn           string                 `protobuf:"bytes,2,opt,name=dsn,proto3" json:"dsn,omitempty"`
 	Publication   string                 `protobuf:"bytes,3,opt,name=publication,proto3" json:"publication,omitempty"`
 	Tables        []string               `protobuf:"bytes,4,rep,name=tables,proto3" json:"tables,omitempty"`
-	Options       map[string]string      `protobuf:"bytes,5,rep,name=options,proto3" json:"options,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	RdsIam        *RDSIAMConfig          `protobuf:"bytes,6,opt,name=rds_iam,json=rdsIam,proto3" json:"rds_iam,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1494,9 +1494,9 @@ func (x *AddPublicationTablesRequest) GetTables() []string {
 	return nil
 }
 
-func (x *AddPublicationTablesRequest) GetOptions() map[string]string {
+func (x *AddPublicationTablesRequest) GetRdsIam() *RDSIAMConfig {
 	if x != nil {
-		return x.Options
+		return x.RdsIam
 	}
 	return nil
 }
@@ -1507,7 +1507,7 @@ type DropPublicationTablesRequest struct {
 	Dsn           string                 `protobuf:"bytes,2,opt,name=dsn,proto3" json:"dsn,omitempty"`
 	Publication   string                 `protobuf:"bytes,3,opt,name=publication,proto3" json:"publication,omitempty"`
 	Tables        []string               `protobuf:"bytes,4,rep,name=tables,proto3" json:"tables,omitempty"`
-	Options       map[string]string      `protobuf:"bytes,5,rep,name=options,proto3" json:"options,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	RdsIam        *RDSIAMConfig          `protobuf:"bytes,6,opt,name=rds_iam,json=rdsIam,proto3" json:"rds_iam,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1570,9 +1570,9 @@ func (x *DropPublicationTablesRequest) GetTables() []string {
 	return nil
 }
 
-func (x *DropPublicationTablesRequest) GetOptions() map[string]string {
+func (x *DropPublicationTablesRequest) GetRdsIam() *RDSIAMConfig {
 	if x != nil {
-		return x.Options
+		return x.RdsIam
 	}
 	return nil
 }
@@ -1636,7 +1636,7 @@ type SyncPublicationTablesRequest struct {
 	Publication   string                 `protobuf:"bytes,3,opt,name=publication,proto3" json:"publication,omitempty"`
 	Tables        []string               `protobuf:"bytes,4,rep,name=tables,proto3" json:"tables,omitempty"`
 	Mode          string                 `protobuf:"bytes,5,opt,name=mode,proto3" json:"mode,omitempty"`
-	Options       map[string]string      `protobuf:"bytes,6,rep,name=options,proto3" json:"options,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	RdsIam        *RDSIAMConfig          `protobuf:"bytes,7,opt,name=rds_iam,json=rdsIam,proto3" json:"rds_iam,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1706,9 +1706,9 @@ func (x *SyncPublicationTablesRequest) GetMode() string {
 	return ""
 }
 
-func (x *SyncPublicationTablesRequest) GetOptions() map[string]string {
+func (x *SyncPublicationTablesRequest) GetRdsIam() *RDSIAMConfig {
 	if x != nil {
-		return x.Options
+		return x.RdsIam
 	}
 	return nil
 }
@@ -1788,7 +1788,7 @@ type ScrapePublicationTablesRequest struct {
 	Publication   string                 `protobuf:"bytes,3,opt,name=publication,proto3" json:"publication,omitempty"`
 	Schemas       []string               `protobuf:"bytes,4,rep,name=schemas,proto3" json:"schemas,omitempty"`
 	Apply         bool                   `protobuf:"varint,5,opt,name=apply,proto3" json:"apply,omitempty"`
-	Options       map[string]string      `protobuf:"bytes,6,rep,name=options,proto3" json:"options,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	RdsIam        *RDSIAMConfig          `protobuf:"bytes,7,opt,name=rds_iam,json=rdsIam,proto3" json:"rds_iam,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1858,9 +1858,9 @@ func (x *ScrapePublicationTablesRequest) GetApply() bool {
 	return false
 }
 
-func (x *ScrapePublicationTablesRequest) GetOptions() map[string]string {
+func (x *ScrapePublicationTablesRequest) GetRdsIam() *RDSIAMConfig {
 	if x != nil {
-		return x.Options
+		return x.RdsIam
 	}
 	return nil
 }
@@ -1990,15 +1990,12 @@ const file_wallaby_v1_flow_proto_rawDesc = "" +
 	"\x11_drop_publicationB\x14\n" +
 	"\x12_drop_source_state\"/\n" +
 	"\x13CleanupFlowResponse\x12\x18\n" +
-	"\acleaned\x18\x01 \x01(\bR\acleaned\"\xe8\x01\n" +
+	"\acleaned\x18\x01 \x01(\bR\acleaned\"\x9e\x01\n" +
 	"\x1bListReplicationSlotsRequest\x12\x17\n" +
 	"\aflow_id\x18\x01 \x01(\tR\x06flowId\x12\x10\n" +
 	"\x03dsn\x18\x02 \x01(\tR\x03dsn\x12\x12\n" +
-	"\x04slot\x18\x03 \x01(\tR\x04slot\x12N\n" +
-	"\aoptions\x18\x04 \x03(\v24.wallaby.v1.ListReplicationSlotsRequest.OptionsEntryR\aoptions\x1a:\n" +
-	"\fOptionsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf6\x02\n" +
+	"\x04slot\x18\x03 \x01(\tR\x04slot\x121\n" +
+	"\ards_iam\x18\x05 \x01(\v2\x18.wallaby.v1.RDSIAMConfigR\x06rdsIamJ\x04\b\x04\x10\x05R\aoptions\"\xf6\x02\n" +
 	"\x13ReplicationSlotInfo\x12\x1b\n" +
 	"\tslot_name\x18\x01 \x01(\tR\bslotName\x12\x16\n" +
 	"\x06plugin\x18\x02 \x01(\tR\x06plugin\x12\x1b\n" +
@@ -2017,89 +2014,68 @@ const file_wallaby_v1_flow_proto_rawDesc = "" +
 	"\x12active_pid_present\x18\v \x01(\bR\x10activePidPresent\"n\n" +
 	"\x1cListReplicationSlotsResponse\x125\n" +
 	"\x05slots\x18\x01 \x03(\v2\x1f.wallaby.v1.ReplicationSlotInfoR\x05slots\x12\x17\n" +
-	"\aflow_id\x18\x02 \x01(\tR\x06flowId\"\xe4\x01\n" +
+	"\aflow_id\x18\x02 \x01(\tR\x06flowId\"\x9c\x01\n" +
 	"\x19GetReplicationSlotRequest\x12\x17\n" +
 	"\aflow_id\x18\x01 \x01(\tR\x06flowId\x12\x10\n" +
 	"\x03dsn\x18\x02 \x01(\tR\x03dsn\x12\x12\n" +
-	"\x04slot\x18\x03 \x01(\tR\x04slot\x12L\n" +
-	"\aoptions\x18\x04 \x03(\v22.wallaby.v1.GetReplicationSlotRequest.OptionsEntryR\aoptions\x1a:\n" +
-	"\fOptionsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"Q\n" +
+	"\x04slot\x18\x03 \x01(\tR\x04slot\x121\n" +
+	"\ards_iam\x18\x05 \x01(\v2\x18.wallaby.v1.RDSIAMConfigR\x06rdsIamJ\x04\b\x04\x10\x05R\aoptions\"Q\n" +
 	"\x1aGetReplicationSlotResponse\x123\n" +
-	"\x04slot\x18\x01 \x01(\v2\x1f.wallaby.v1.ReplicationSlotInfoR\x04slot\"\x83\x02\n" +
+	"\x04slot\x18\x01 \x01(\v2\x1f.wallaby.v1.ReplicationSlotInfoR\x04slot\"\xba\x01\n" +
 	"\x1aDropReplicationSlotRequest\x12\x17\n" +
 	"\aflow_id\x18\x01 \x01(\tR\x06flowId\x12\x10\n" +
 	"\x03dsn\x18\x02 \x01(\tR\x03dsn\x12\x12\n" +
 	"\x04slot\x18\x03 \x01(\tR\x04slot\x12\x1b\n" +
-	"\tif_exists\x18\x04 \x01(\bR\bifExists\x12M\n" +
-	"\aoptions\x18\x05 \x03(\v23.wallaby.v1.DropReplicationSlotRequest.OptionsEntryR\aoptions\x1a:\n" +
-	"\fOptionsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"z\n" +
+	"\tif_exists\x18\x04 \x01(\bR\bifExists\x121\n" +
+	"\ards_iam\x18\x06 \x01(\v2\x18.wallaby.v1.RDSIAMConfigR\x06rdsIamJ\x04\b\x05\x10\x06R\aoptions\"z\n" +
 	"\x1bDropReplicationSlotResponse\x12\x12\n" +
 	"\x04slot\x18\x01 \x01(\tR\x04slot\x12\x14\n" +
 	"\x05found\x18\x02 \x01(\bR\x05found\x12\x18\n" +
 	"\adropped\x18\x03 \x01(\bR\adropped\x12\x17\n" +
-	"\aflow_id\x18\x04 \x01(\tR\x06flowId\"\xf8\x01\n" +
+	"\aflow_id\x18\x04 \x01(\tR\x06flowId\"\xad\x01\n" +
 	"\x1cListPublicationTablesRequest\x12\x17\n" +
 	"\aflow_id\x18\x01 \x01(\tR\x06flowId\x12\x10\n" +
 	"\x03dsn\x18\x02 \x01(\tR\x03dsn\x12 \n" +
-	"\vpublication\x18\x03 \x01(\tR\vpublication\x12O\n" +
-	"\aoptions\x18\x04 \x03(\v25.wallaby.v1.ListPublicationTablesRequest.OptionsEntryR\aoptions\x1a:\n" +
-	"\fOptionsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"r\n" +
+	"\vpublication\x18\x03 \x01(\tR\vpublication\x121\n" +
+	"\ards_iam\x18\x05 \x01(\v2\x18.wallaby.v1.RDSIAMConfigR\x06rdsIamJ\x04\b\x04\x10\x05R\aoptions\"r\n" +
 	"\x1dListPublicationTablesResponse\x12\x16\n" +
 	"\x06tables\x18\x01 \x03(\tR\x06tables\x12 \n" +
 	"\vpublication\x18\x02 \x01(\tR\vpublication\x12\x17\n" +
-	"\aflow_id\x18\x03 \x01(\tR\x06flowId\"\x8e\x02\n" +
+	"\aflow_id\x18\x03 \x01(\tR\x06flowId\"\xc4\x01\n" +
 	"\x1bAddPublicationTablesRequest\x12\x17\n" +
 	"\aflow_id\x18\x01 \x01(\tR\x06flowId\x12\x10\n" +
 	"\x03dsn\x18\x02 \x01(\tR\x03dsn\x12 \n" +
 	"\vpublication\x18\x03 \x01(\tR\vpublication\x12\x16\n" +
-	"\x06tables\x18\x04 \x03(\tR\x06tables\x12N\n" +
-	"\aoptions\x18\x05 \x03(\v24.wallaby.v1.AddPublicationTablesRequest.OptionsEntryR\aoptions\x1a:\n" +
-	"\fOptionsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x90\x02\n" +
+	"\x06tables\x18\x04 \x03(\tR\x06tables\x121\n" +
+	"\ards_iam\x18\x06 \x01(\v2\x18.wallaby.v1.RDSIAMConfigR\x06rdsIamJ\x04\b\x05\x10\x06R\aoptions\"\xc5\x01\n" +
 	"\x1cDropPublicationTablesRequest\x12\x17\n" +
 	"\aflow_id\x18\x01 \x01(\tR\x06flowId\x12\x10\n" +
 	"\x03dsn\x18\x02 \x01(\tR\x03dsn\x12 \n" +
 	"\vpublication\x18\x03 \x01(\tR\vpublication\x12\x16\n" +
-	"\x06tables\x18\x04 \x03(\tR\x06tables\x12O\n" +
-	"\aoptions\x18\x05 \x03(\v25.wallaby.v1.DropPublicationTablesRequest.OptionsEntryR\aoptions\x1a:\n" +
-	"\fOptionsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"]\n" +
+	"\x06tables\x18\x04 \x03(\tR\x06tables\x121\n" +
+	"\ards_iam\x18\x06 \x01(\v2\x18.wallaby.v1.RDSIAMConfigR\x06rdsIamJ\x04\b\x05\x10\x06R\aoptions\"]\n" +
 	"!PublicationTablesMutationResponse\x12\x16\n" +
 	"\x06tables\x18\x01 \x03(\tR\x06tables\x12 \n" +
-	"\vpublication\x18\x02 \x01(\tR\vpublication\"\xa4\x02\n" +
+	"\vpublication\x18\x02 \x01(\tR\vpublication\"\xd9\x01\n" +
 	"\x1cSyncPublicationTablesRequest\x12\x17\n" +
 	"\aflow_id\x18\x01 \x01(\tR\x06flowId\x12\x10\n" +
 	"\x03dsn\x18\x02 \x01(\tR\x03dsn\x12 \n" +
 	"\vpublication\x18\x03 \x01(\tR\vpublication\x12\x16\n" +
 	"\x06tables\x18\x04 \x03(\tR\x06tables\x12\x12\n" +
-	"\x04mode\x18\x05 \x01(\tR\x04mode\x12O\n" +
-	"\aoptions\x18\x06 \x03(\v25.wallaby.v1.SyncPublicationTablesRequest.OptionsEntryR\aoptions\x1a:\n" +
-	"\fOptionsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8a\x01\n" +
+	"\x04mode\x18\x05 \x01(\tR\x04mode\x121\n" +
+	"\ards_iam\x18\a \x01(\v2\x18.wallaby.v1.RDSIAMConfigR\x06rdsIamJ\x04\b\x06\x10\aR\aoptions\"\x8a\x01\n" +
 	"\x1dSyncPublicationTablesResponse\x12\x14\n" +
 	"\x05added\x18\x01 \x03(\tR\x05added\x12\x18\n" +
 	"\aremoved\x18\x02 \x03(\tR\aremoved\x12 \n" +
 	"\vpublication\x18\x03 \x01(\tR\vpublication\x12\x17\n" +
-	"\aflow_id\x18\x04 \x01(\tR\x06flowId\"\xac\x02\n" +
+	"\aflow_id\x18\x04 \x01(\tR\x06flowId\"\xdf\x01\n" +
 	"\x1eScrapePublicationTablesRequest\x12\x17\n" +
 	"\aflow_id\x18\x01 \x01(\tR\x06flowId\x12\x10\n" +
 	"\x03dsn\x18\x02 \x01(\tR\x03dsn\x12 \n" +
 	"\vpublication\x18\x03 \x01(\tR\vpublication\x12\x18\n" +
 	"\aschemas\x18\x04 \x03(\tR\aschemas\x12\x14\n" +
-	"\x05apply\x18\x05 \x01(\bR\x05apply\x12Q\n" +
-	"\aoptions\x18\x06 \x03(\v27.wallaby.v1.ScrapePublicationTablesRequest.OptionsEntryR\aoptions\x1a:\n" +
-	"\fOptionsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa8\x01\n" +
+	"\x05apply\x18\x05 \x01(\bR\x05apply\x121\n" +
+	"\ards_iam\x18\a \x01(\v2\x18.wallaby.v1.RDSIAMConfigR\x06rdsIamJ\x04\b\x06\x10\aR\aoptions\"\xa8\x01\n" +
 	"\x1fScrapePublicationTablesResponse\x12+\n" +
 	"\x11discovered_tables\x18\x01 \x03(\tR\x10discoveredTables\x12%\n" +
 	"\x0emissing_tables\x18\x02 \x03(\tR\rmissingTables\x12\x18\n" +
@@ -2143,7 +2119,7 @@ func file_wallaby_v1_flow_proto_rawDescGZIP() []byte {
 	return file_wallaby_v1_flow_proto_rawDescData
 }
 
-var file_wallaby_v1_flow_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
+var file_wallaby_v1_flow_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_wallaby_v1_flow_proto_goTypes = []any{
 	(*CreateFlowRequest)(nil),                 // 0: wallaby.v1.CreateFlowRequest
 	(*UpdateFlowRequest)(nil),                 // 1: wallaby.v1.UpdateFlowRequest
@@ -2177,31 +2153,24 @@ var file_wallaby_v1_flow_proto_goTypes = []any{
 	(*SyncPublicationTablesResponse)(nil),     // 29: wallaby.v1.SyncPublicationTablesResponse
 	(*ScrapePublicationTablesRequest)(nil),    // 30: wallaby.v1.ScrapePublicationTablesRequest
 	(*ScrapePublicationTablesResponse)(nil),   // 31: wallaby.v1.ScrapePublicationTablesResponse
-	nil,                                       // 32: wallaby.v1.ListReplicationSlotsRequest.OptionsEntry
-	nil,                                       // 33: wallaby.v1.GetReplicationSlotRequest.OptionsEntry
-	nil,                                       // 34: wallaby.v1.DropReplicationSlotRequest.OptionsEntry
-	nil,                                       // 35: wallaby.v1.ListPublicationTablesRequest.OptionsEntry
-	nil,                                       // 36: wallaby.v1.AddPublicationTablesRequest.OptionsEntry
-	nil,                                       // 37: wallaby.v1.DropPublicationTablesRequest.OptionsEntry
-	nil,                                       // 38: wallaby.v1.SyncPublicationTablesRequest.OptionsEntry
-	nil,                                       // 39: wallaby.v1.ScrapePublicationTablesRequest.OptionsEntry
-	(*Flow)(nil),                              // 40: wallaby.v1.Flow
+	(*Flow)(nil),                              // 32: wallaby.v1.Flow
+	(*RDSIAMConfig)(nil),                      // 33: wallaby.v1.RDSIAMConfig
 }
 var file_wallaby_v1_flow_proto_depIdxs = []int32{
-	40, // 0: wallaby.v1.CreateFlowRequest.flow:type_name -> wallaby.v1.Flow
-	40, // 1: wallaby.v1.UpdateFlowRequest.flow:type_name -> wallaby.v1.Flow
-	40, // 2: wallaby.v1.ReconfigureFlowRequest.flow:type_name -> wallaby.v1.Flow
-	40, // 3: wallaby.v1.ListFlowsResponse.flows:type_name -> wallaby.v1.Flow
-	32, // 4: wallaby.v1.ListReplicationSlotsRequest.options:type_name -> wallaby.v1.ListReplicationSlotsRequest.OptionsEntry
+	32, // 0: wallaby.v1.CreateFlowRequest.flow:type_name -> wallaby.v1.Flow
+	32, // 1: wallaby.v1.UpdateFlowRequest.flow:type_name -> wallaby.v1.Flow
+	32, // 2: wallaby.v1.ReconfigureFlowRequest.flow:type_name -> wallaby.v1.Flow
+	32, // 3: wallaby.v1.ListFlowsResponse.flows:type_name -> wallaby.v1.Flow
+	33, // 4: wallaby.v1.ListReplicationSlotsRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
 	17, // 5: wallaby.v1.ListReplicationSlotsResponse.slots:type_name -> wallaby.v1.ReplicationSlotInfo
-	33, // 6: wallaby.v1.GetReplicationSlotRequest.options:type_name -> wallaby.v1.GetReplicationSlotRequest.OptionsEntry
+	33, // 6: wallaby.v1.GetReplicationSlotRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
 	17, // 7: wallaby.v1.GetReplicationSlotResponse.slot:type_name -> wallaby.v1.ReplicationSlotInfo
-	34, // 8: wallaby.v1.DropReplicationSlotRequest.options:type_name -> wallaby.v1.DropReplicationSlotRequest.OptionsEntry
-	35, // 9: wallaby.v1.ListPublicationTablesRequest.options:type_name -> wallaby.v1.ListPublicationTablesRequest.OptionsEntry
-	36, // 10: wallaby.v1.AddPublicationTablesRequest.options:type_name -> wallaby.v1.AddPublicationTablesRequest.OptionsEntry
-	37, // 11: wallaby.v1.DropPublicationTablesRequest.options:type_name -> wallaby.v1.DropPublicationTablesRequest.OptionsEntry
-	38, // 12: wallaby.v1.SyncPublicationTablesRequest.options:type_name -> wallaby.v1.SyncPublicationTablesRequest.OptionsEntry
-	39, // 13: wallaby.v1.ScrapePublicationTablesRequest.options:type_name -> wallaby.v1.ScrapePublicationTablesRequest.OptionsEntry
+	33, // 8: wallaby.v1.DropReplicationSlotRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
+	33, // 9: wallaby.v1.ListPublicationTablesRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
+	33, // 10: wallaby.v1.AddPublicationTablesRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
+	33, // 11: wallaby.v1.DropPublicationTablesRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
+	33, // 12: wallaby.v1.SyncPublicationTablesRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
+	33, // 13: wallaby.v1.ScrapePublicationTablesRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
 	0,  // 14: wallaby.v1.FlowService.CreateFlow:input_type -> wallaby.v1.CreateFlowRequest
 	1,  // 15: wallaby.v1.FlowService.UpdateFlow:input_type -> wallaby.v1.UpdateFlowRequest
 	2,  // 16: wallaby.v1.FlowService.ReconfigureFlow:input_type -> wallaby.v1.ReconfigureFlowRequest
@@ -2222,15 +2191,15 @@ var file_wallaby_v1_flow_proto_depIdxs = []int32{
 	26, // 31: wallaby.v1.FlowService.DropPublicationTables:input_type -> wallaby.v1.DropPublicationTablesRequest
 	28, // 32: wallaby.v1.FlowService.SyncPublicationTables:input_type -> wallaby.v1.SyncPublicationTablesRequest
 	30, // 33: wallaby.v1.FlowService.ScrapePublicationTables:input_type -> wallaby.v1.ScrapePublicationTablesRequest
-	40, // 34: wallaby.v1.FlowService.CreateFlow:output_type -> wallaby.v1.Flow
-	40, // 35: wallaby.v1.FlowService.UpdateFlow:output_type -> wallaby.v1.Flow
-	40, // 36: wallaby.v1.FlowService.ReconfigureFlow:output_type -> wallaby.v1.Flow
-	40, // 37: wallaby.v1.FlowService.StartFlow:output_type -> wallaby.v1.Flow
+	32, // 34: wallaby.v1.FlowService.CreateFlow:output_type -> wallaby.v1.Flow
+	32, // 35: wallaby.v1.FlowService.UpdateFlow:output_type -> wallaby.v1.Flow
+	32, // 36: wallaby.v1.FlowService.ReconfigureFlow:output_type -> wallaby.v1.Flow
+	32, // 37: wallaby.v1.FlowService.StartFlow:output_type -> wallaby.v1.Flow
 	5,  // 38: wallaby.v1.FlowService.RunFlowOnce:output_type -> wallaby.v1.RunFlowOnceResponse
-	40, // 39: wallaby.v1.FlowService.PauseFlow:output_type -> wallaby.v1.Flow
-	40, // 40: wallaby.v1.FlowService.StopFlow:output_type -> wallaby.v1.Flow
-	40, // 41: wallaby.v1.FlowService.ResumeFlow:output_type -> wallaby.v1.Flow
-	40, // 42: wallaby.v1.FlowService.GetFlow:output_type -> wallaby.v1.Flow
+	32, // 39: wallaby.v1.FlowService.PauseFlow:output_type -> wallaby.v1.Flow
+	32, // 40: wallaby.v1.FlowService.StopFlow:output_type -> wallaby.v1.Flow
+	32, // 41: wallaby.v1.FlowService.ResumeFlow:output_type -> wallaby.v1.Flow
+	32, // 42: wallaby.v1.FlowService.GetFlow:output_type -> wallaby.v1.Flow
 	11, // 43: wallaby.v1.FlowService.ListFlows:output_type -> wallaby.v1.ListFlowsResponse
 	13, // 44: wallaby.v1.FlowService.DeleteFlow:output_type -> wallaby.v1.DeleteFlowResponse
 	15, // 45: wallaby.v1.FlowService.CleanupFlow:output_type -> wallaby.v1.CleanupFlowResponse
@@ -2263,7 +2232,7 @@ func file_wallaby_v1_flow_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wallaby_v1_flow_proto_rawDesc), len(file_wallaby_v1_flow_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   40,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

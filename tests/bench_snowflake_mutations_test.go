@@ -48,7 +48,7 @@ func BenchmarkSnowflakeUpdate(b *testing.B) {
 	}
 
 	dest := &snowflake.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "snowflake-bench",
 		Type: connector.EndpointSnowflake,
 		Options: map[string]string{
@@ -121,7 +121,7 @@ func BenchmarkSnowflakeAppend(b *testing.B) {
 	}
 
 	dest := &snowflake.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "snowflake-bench-append",
 		Type: connector.EndpointSnowflake,
 		Options: map[string]string{

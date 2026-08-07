@@ -74,10 +74,10 @@ type fakeSource struct {
 	ackErr   error
 	openErrs []error
 	opens    int
-	openSpec connector.Spec
+	openSpec connector.RuntimeSpec
 }
 
-func (s *fakeSource) Open(_ context.Context, spec connector.Spec) error {
+func (s *fakeSource) Open(_ context.Context, spec connector.RuntimeSpec) error {
 	s.opens++
 	s.openSpec = spec
 	if len(s.openErrs) == 0 {
@@ -121,7 +121,7 @@ type recordingDest struct {
 	name   string
 }
 
-func (d *recordingDest) Open(context.Context, connector.Spec) error { return nil }
+func (d *recordingDest) Open(context.Context, connector.RuntimeSpec) error { return nil }
 
 func (d *recordingDest) Write(_ context.Context, batch connector.Batch) error {
 	seq := seqForCheckpoint(batch.Checkpoint)
@@ -291,9 +291,9 @@ func TestRunnerProtocolInvariantsQuick(t *testing.T) {
 
 		runner := Runner{
 			Source:     source,
-			SourceSpec: connector.Spec{Options: map[string]string{"mode": "backfill"}},
+			SourceSpec: connector.RuntimeSpec{Options: map[string]string{"mode": "backfill"}},
 			Destinations: []DestinationConfig{{
-				Spec: connector.Spec{Name: "dest"},
+				Spec: connector.RuntimeSpec{Name: "dest"},
 				Dest: dest,
 			}},
 			Checkpoints:         checkpoints,
@@ -416,7 +416,7 @@ type flakyDest struct {
 	name    string
 }
 
-func (d *flakyDest) Open(context.Context, connector.Spec) error { return nil }
+func (d *flakyDest) Open(context.Context, connector.RuntimeSpec) error { return nil }
 
 func (d *flakyDest) Write(_ context.Context, batch connector.Batch) error {
 	seq := seqForCheckpoint(batch.Checkpoint)
@@ -496,9 +496,9 @@ func TestRunnerStopsOnWriteFailureQuick(t *testing.T) {
 
 		runner := Runner{
 			Source:     source,
-			SourceSpec: connector.Spec{Options: map[string]string{"mode": "backfill"}},
+			SourceSpec: connector.RuntimeSpec{Options: map[string]string{"mode": "backfill"}},
 			Destinations: []DestinationConfig{{
-				Spec: connector.Spec{Name: "dest"},
+				Spec: connector.RuntimeSpec{Name: "dest"},
 				Dest: dest,
 			}},
 			Checkpoints: &recordingCheckpointStore{},
@@ -550,7 +550,7 @@ func TestRunnerMultiDestAckOrderingQuick(t *testing.T) {
 		destinations := make([]DestinationConfig, 0, destCount)
 		for i := 0; i < destCount; i++ {
 			destinations = append(destinations, DestinationConfig{
-				Spec: connector.Spec{Name: fmt.Sprintf("dest-%d", i)},
+				Spec: connector.RuntimeSpec{Name: fmt.Sprintf("dest-%d", i)},
 				Dest: &recordingDest{log: log, name: fmt.Sprintf("dest-%d", i)},
 			})
 		}
@@ -597,7 +597,7 @@ func TestRunnerMultiDestAckOrderingQuick(t *testing.T) {
 		source := &fakeSource{batches: batches, log: log}
 		runner := Runner{
 			Source:       source,
-			SourceSpec:   connector.Spec{Options: map[string]string{"mode": "backfill"}},
+			SourceSpec:   connector.RuntimeSpec{Options: map[string]string{"mode": "backfill"}},
 			Destinations: destinations,
 			Checkpoints:  &recordingCheckpointStore{},
 			FlowID:       "flow-multi",

@@ -50,7 +50,7 @@ func TestKafkaDestinationJSON(t *testing.T) {
 	}
 
 	dest := &kafkadest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "kafka-test",
 		Type: connector.EndpointKafka,
 		Options: map[string]string{
@@ -173,7 +173,7 @@ func TestKafkaDestinationWireFormats(t *testing.T) {
 			}
 
 			dest := &kafkadest.Destination{}
-			spec := connector.Spec{
+			spec := connector.RuntimeSpec{
 				Name: "kafka-test-" + tc.name,
 				Type: connector.EndpointKafka,
 				Options: map[string]string{
@@ -242,7 +242,7 @@ func TestKafkaDestinationRecordModeHeaders(t *testing.T) {
 	}
 
 	dest := &kafkadest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "kafka-test-record",
 		Type: connector.EndpointKafka,
 		Options: map[string]string{
@@ -354,7 +354,7 @@ func TestKafkaDestinationSchemaRegistryHeaders(t *testing.T) {
 	}
 
 	dest := &kafkadest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "kafka-test-registry",
 		Type: connector.EndpointKafka,
 		Options: map[string]string{

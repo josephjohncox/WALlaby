@@ -44,7 +44,7 @@ func TestDuckLakeDestination(t *testing.T) {
 	_ = setupDB.Close()
 
 	dest := &ducklake.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "ducklake-test",
 		Type: connector.EndpointDuckLake,
 		Options: map[string]string{
@@ -406,7 +406,7 @@ func TestDuckLakeDestinationGeneratedColumns(t *testing.T) {
 
 	dest := &ducklake.Destination{}
 	table := fmt.Sprintf("wallaby_ducklake_generated_%d", time.Now().UnixNano())
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "ducklake-generated",
 		Type: connector.EndpointDuckLake,
 		Options: map[string]string{
@@ -568,7 +568,7 @@ func TestDuckLakeDestinationDefaults(t *testing.T) {
 
 	dest := &ducklake.Destination{}
 	table := fmt.Sprintf("wallaby_ducklake_defaults_%d", time.Now().UnixNano())
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "ducklake-defaults",
 		Type: connector.EndpointDuckLake,
 		Options: map[string]string{

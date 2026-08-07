@@ -70,8 +70,8 @@ func TestImportSnapshotRejectsMissingSessionBeforeDatabaseAccess(t *testing.T) {
 
 type recordingBootstrapDestination struct{ externalCalls int }
 
-func (*recordingBootstrapDestination) Open(context.Context, connector.Spec) error   { return nil }
-func (*recordingBootstrapDestination) Write(context.Context, connector.Batch) error { return nil }
+func (*recordingBootstrapDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
+func (*recordingBootstrapDestination) Write(context.Context, connector.Batch) error      { return nil }
 func (*recordingBootstrapDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
 	return nil
 }

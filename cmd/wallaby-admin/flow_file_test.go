@@ -12,7 +12,9 @@ import (
 	"testing"
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/spf13/afero"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -20,6 +22,33 @@ import (
 )
 
 var removedLogicalEndpointOptions = map[string]struct{}{"schema": {}, "table": {}, "database": {}, "write_mode": {}, "append_mode": {}, "soft_delete": {}, "meta_enabled": {}, "meta_synced_at": {}, "meta_deleted": {}, "meta_watermark": {}, "meta_op": {}, "watermark_source": {}, "namespace": {}, "table_prefix": {}, "fixed_table": {}, "target_namespace": {}, "target_table": {}}
+
+func TestDecodeStrictDocumentRejectsWholeDocumentStructuralAmbiguity(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		path    string
+		payload string
+		want    string
+	}{
+		{name: "JSON duplicate root", path: "flow.json", payload: `{"name":"one","name":"two"}`, want: "duplicate JSON key"},
+		{name: "JSON duplicate nested mapping", path: "flow.json", payload: `{"config":{"table_mappings":{"version":2,"version":3}}}`, want: "duplicate JSON key"},
+		{name: "JSON duplicate inside array", path: "flow.json", payload: `{"destinations":[{"name":"one","name":"two"}]}`, want: "duplicate JSON key"},
+		{name: "YAML duplicate root", path: "flow.yaml", payload: "name: one\nname: two\n", want: "duplicate YAML key"},
+		{name: "YAML duplicate nested mapping", path: "flow.yaml", payload: "config:\n  table_mappings:\n    version: 2\n    version: 3\n", want: "duplicate YAML key"},
+		{name: "YAML alias", path: "flow.yaml", payload: "source: &source\n  name: one\ncopy: *source\n", want: "aliases are not allowed"},
+		{name: "YAML non-string key", path: "flow.yaml", payload: "1: value\n", want: "keys must be strings"},
+		{name: "YAML multiple documents", path: "flow.yaml", payload: "name: one\n---\nname: two\n", want: "multiple YAML documents"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			var decoded map[string]any
+			if err := decodeStrictDocument([]byte(test.payload), test.path, &decoded); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("decodeStrictDocument() error=%v, want %q", err, test.want)
+			}
+		})
+	}
+}
 
 func TestShippedFlowExamplesStrictLoadValidateAndUseCurrentMappings(t *testing.T) {
 	t.Parallel()
@@ -82,21 +111,6 @@ func TestShippedFlowExamplesStrictLoadValidateAndUseCurrentMappings(t *testing.T
 
 func assertShippedFlowExample(t *testing.T, path, relative string) {
 	t.Helper()
-	if relative == "flows/postgres_to_http_typed.yaml" {
-		payload, err := os.ReadFile(path)
-		if err != nil {
-			t.Errorf("read unexpanded %s: %v", path, err)
-			return
-		}
-		var declared flowConfig
-		if err := decodeStrictDocument(payload, path, &declared); err != nil {
-			t.Errorf("strict-decode unexpanded %s: %v", path, err)
-			return
-		}
-		if declared.Config.TableMappingsFile != "../mappings/http_typed.yaml" || declared.Config.TableMappings != nil {
-			t.Errorf("%s mapping import declaration=%q inline=%v", path, declared.Config.TableMappingsFile, declared.Config.TableMappings != nil)
-		}
-	}
 	cfg, err := loadFlowConfigFile(path)
 	if err != nil {
 		t.Errorf("strict-load %s: %v", path, err)
@@ -114,10 +128,12 @@ func assertShippedFlowExample(t *testing.T, path, relative string) {
 	}
 	var destinationNames []string
 	for _, destination := range cfg.Destinations {
-		destinationNames = append(destinationNames, destination.Name)
-		for option := range destination.Options {
+		spec := testEndpointOptions(destination, endpointcodec.RoleDestination)
+		name := testEndpointName(destination)
+		destinationNames = append(destinationNames, name)
+		for option := range spec {
 			if _, obsolete := removedLogicalEndpointOptions[option]; obsolete {
-				t.Errorf("%s destination %s uses removed option %q", path, destination.Name, option)
+				t.Errorf("%s destination %s uses removed option %q", path, name, option)
 			}
 		}
 	}
@@ -303,7 +319,11 @@ func decodeAndValidateGRPCCreateFlowPayload(payload []byte) (flow.Flow, error) {
 	destinationNames := make([]string, 0, len(model.Destinations))
 	for _, destination := range model.Destinations {
 		destinationNames = append(destinationNames, destination.Name)
-		for option := range destination.Options {
+		spec, decodeErr := endpointcodec.Decode(destination, endpointcodec.RoleDestination)
+		if decodeErr != nil {
+			return flow.Flow{}, decodeErr
+		}
+		for option := range spec.Options {
 			if _, obsolete := removedLogicalEndpointOptions[option]; obsolete {
 				return flow.Flow{}, fmt.Errorf("destination %s uses removed option %q", destination.Name, option)
 			}
@@ -371,7 +391,7 @@ func completeTestMappings() flow.TableMappings {
 }
 func completeFlowFile() flowConfig {
 	m := completeTestMappings()
-	return flowConfig{ID: "flow-1", Name: "flow", WireFormat: "arrow", Parallelism: 3, Source: endpointConfig{Name: "source", Type: "postgres", Options: map[string]string{"dsn": "secret-source"}}, Destinations: []endpointConfig{{Name: "target", Type: "postgres", Options: map[string]string{"dsn": "secret-target"}}}, Config: flowRuntimeConfig{AckPolicy: "primary", PrimaryDestination: "target", FailureMode: "hold_slot", GiveUpPolicy: "never", DDL: &flowDDLConfig{Gate: boolp(false), AutoApprove: boolp(true), AutoApply: boolp(false)}, SchemaRegistrySubject: "subject", SchemaRegistryProtoTypesSubject: "types", SchemaRegistrySubjectMode: "record", TableMappings: &m}}
+	return flowConfig{ID: "flow-1", Name: "flow", WireFormat: "arrow", Parallelism: 3, Source: testSourceEndpoint("source", map[string]string{"dsn": "secret-source"}), Destinations: []endpointConfig{testDestinationEndpoint("target", connector.EndpointPostgres, map[string]string{"dsn": "secret-target"})}, Config: flowRuntimeConfig{AckPolicy: "primary", PrimaryDestination: "target", FailureMode: "hold_slot", GiveUpPolicy: "never", DDL: &flowDDLConfig{Gate: boolp(false), AutoApprove: boolp(true), AutoApply: boolp(false)}, TableMappings: &m}}
 }
 func TestStrictFlowLoaderJSONYAMLEquivalenceAndRelativeMappingExpansion(t *testing.T) {
 	old := adminFileSystem
@@ -512,7 +532,7 @@ func TestFlowConfigProtoDetailRoundTripEveryField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if model.Config.SchemaRegistrySubject != "subject" || model.Config.DDL.Gate == nil || *model.Config.DDL.Gate || !model.Config.TableMappings.Equal(*cfg.Config.TableMappings) {
+	if model.Config.DDL.Gate == nil || *model.Config.DDL.Gate || !model.Config.TableMappings.Equal(*cfg.Config.TableMappings) {
 		t.Fatalf("model=%+v", model.Config)
 	}
 	detail := flowDetailFromProto(pb)
@@ -535,12 +555,12 @@ func TestFlowConfigProtoDetailRoundTripEveryField(t *testing.T) {
 	}
 }
 func TestMappingsDestinationRequiredForMultipleFlows(t *testing.T) {
-	destinations := []endpointConfig{{Name: "a"}, {Name: "b"}}
+	destinations := []endpointConfig{testDestinationEndpoint("a", connector.EndpointPostgres, nil), testDestinationEndpoint("b", connector.EndpointPostgres, nil)}
 	if _, err := selectFlowConfigDestination(destinations, ""); err == nil {
 		t.Fatal("missing destination accepted")
 	}
 	selected, err := selectFlowConfigDestination(destinations, "b")
-	if err != nil || selected.Name != "b" {
+	if err != nil || testEndpointName(selected) != "b" {
 		t.Fatalf("selected=%+v err=%v", selected, err)
 	}
 }

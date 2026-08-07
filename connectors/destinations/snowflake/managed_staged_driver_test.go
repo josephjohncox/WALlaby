@@ -171,7 +171,7 @@ func TestStagedDollarIdentifiersOpenInitializeAndObjectProtocol(t *testing.T) {
 	options["managed_table"] = "TABLE$4"
 	options["managed_receipts_table"] = "RECEIPTS$5"
 	options["managed_file_format"] = "FORMAT$6"
-	cfg, err := stagedConfigFromSpec(dsn, connector.Spec{Type: connector.EndpointSnowflake, Options: options})
+	cfg, err := stagedConfigFromSpec(dsn, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options})
 	if err != nil {
 		t.Fatalf("Open admission rejected dollar identifiers: %v", err)
 	}

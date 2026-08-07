@@ -22,8 +22,8 @@ func TestShippedHTTPTypedMappingsStrictValidateAndProjectCompiledTemplates(t *te
 	t.Parallel()
 	payload := shippedHTTPTypedMappingsPayload(t)
 	mappings := decodeStrictTableMappingsYAML(t, payload)
-	destination := connector.Spec{Name: "webhook_typed", Type: connector.EndpointHTTP}
-	if err := mappings.Validate([]connector.Spec{destination}); err != nil {
+	destination := connector.RuntimeSpec{Name: "webhook_typed", Type: connector.EndpointHTTP}
+	if err := mappings.Validate([]connector.RuntimeSpec{destination}); err != nil {
 		t.Fatal(err)
 	}
 	projector, err := New(mappings, destination.Name)
@@ -59,12 +59,12 @@ func TestShippedHTTPTypedMappingsStrictValidateAndProjectCompiledTemplates(t *te
 func TestShippedHTTPTypedMappingsMutationsAreRejected(t *testing.T) {
 	t.Parallel()
 	payload := shippedHTTPTypedMappingsPayload(t)
-	destination := connector.Spec{Name: "webhook_typed", Type: connector.EndpointHTTP}
+	destination := connector.RuntimeSpec{Name: "webhook_typed", Type: connector.EndpointHTTP}
 
 	t.Run("wrong destination", func(t *testing.T) {
 		mutated := bytes.Replace(payload, []byte("destination: webhook_typed"), []byte("destination: other_webhook"), 1)
 		mappings := decodeStrictTableMappingsYAML(t, mutated)
-		if err := mappings.Validate([]connector.Spec{destination}); err == nil || !strings.Contains(err.Error(), "unknown destination") {
+		if err := mappings.Validate([]connector.RuntimeSpec{destination}); err == nil || !strings.Contains(err.Error(), "unknown destination") {
 			t.Fatalf("Validate() error = %v, want unknown destination", err)
 		}
 	})
@@ -72,7 +72,7 @@ func TestShippedHTTPTypedMappingsMutationsAreRejected(t *testing.T) {
 	t.Run("foreign component placeholder", func(t *testing.T) {
 		mutated := bytes.Replace(payload, []byte("web_{{ .Schema }}_archive"), []byte("web_{{ .Table }}_archive"), 1)
 		mappings := decodeStrictTableMappingsYAML(t, mutated)
-		if err := mappings.Validate([]connector.Spec{destination}); err == nil || !strings.Contains(err.Error(), "Schema") {
+		if err := mappings.Validate([]connector.RuntimeSpec{destination}); err == nil || !strings.Contains(err.Error(), "Schema") {
 			t.Fatalf("Validate() error = %v, want component-local template failure", err)
 		}
 	})
@@ -174,7 +174,7 @@ func TestProjectBatchRenamesFiltersKeysAndCarriesWritePolicy(t *testing.T) {
 }
 
 func TestAppendProjectionStripsSourceIdentityAndPreservesRepeatedKeys(t *testing.T) {
-	mappings := flow.NewTableMappings([]connector.Spec{{Name: "sink", Type: connector.EndpointKafka}})
+	mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointKafka}})
 	projector := testProjector(t, mappings)
 	batch := connector.Batch{Schema: connector.Schema{Namespace: "public", Name: "events", Columns: []connector.Column{{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"primary_key": "true", "primary_key_ordinal": "1", "replica_identity": "true"}}}}, Checkpoint: connector.Checkpoint{LSN: "0/20"}, Records: []connector.Record{
 		{Table: "events", Operation: connector.OpInsert, Key: []byte(`{"id":1}`), After: map[string]any{"id": 1}, SourcePosition: "0/18"},
@@ -197,7 +197,7 @@ func TestAppendProjectionStripsSourceIdentityAndPreservesRepeatedKeys(t *testing
 
 func TestAppendProjectionUsesStableSourcePositionAndDeleteImage(t *testing.T) {
 	t.Parallel()
-	mappings := flow.NewTableMappings([]connector.Spec{{Name: "sink", Type: connector.EndpointKafka}})
+	mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointKafka}})
 	projector := testProjector(t, mappings)
 	batch := connector.Batch{
 		Schema:     connector.Schema{Namespace: "public", Name: "logs", Columns: []connector.Column{{Name: "message", Type: "text"}}},
@@ -237,7 +237,7 @@ func TestAppendProjectionUsesStableSourcePositionAndDeleteImage(t *testing.T) {
 
 func TestTemplateExecutionErrorsPropagateThroughProjectorAndDDL(t *testing.T) {
 	t.Parallel()
-	projector := testProjector(t, flow.NewTableMappings([]connector.Spec{{Name: "sink", Type: connector.EndpointPostgres}}))
+	projector := testProjector(t, flow.NewTableMappings([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointPostgres}}))
 	if _, _, _, err := projector.ProjectBootstrapSchema(connector.Schema{Namespace: "public\x00shadow", Name: "events", Columns: []connector.Column{{Name: "id", Type: "bigint"}}}); err == nil || !strings.Contains(err.Error(), "target_schema") || !strings.Contains(err.Error(), "NUL") {
 		t.Fatalf("ProjectBootstrapSchema() error = %v, want target_schema execution error", err)
 	}
@@ -256,17 +256,17 @@ func TestTemplateExecutionErrorsPropagateThroughProjectorAndDDL(t *testing.T) {
 
 func TestFutureTemplatesRejectCrossVariablesInBothComponents(t *testing.T) {
 	t.Parallel()
-	mappings := flow.NewTableMappings([]connector.Spec{{Name: "sink", Type: connector.EndpointPostgres}})
+	mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointPostgres}})
 	mappings.Destinations[0].FutureTables.TargetSchema = "{{ .Table }}"
 	mappings.Destinations[0].FutureTables.TargetTable = "{{ .Schema }}"
-	if err := mappings.Validate([]connector.Spec{{Name: "sink", Type: connector.EndpointPostgres}}); err == nil || !strings.Contains(err.Error(), ".Schema") {
+	if err := mappings.Validate([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointPostgres}}); err == nil || !strings.Contains(err.Error(), ".Schema") {
 		t.Fatalf("cross-variable future templates error=%v", err)
 	}
 }
 
 func TestFutureTemplatesKeepSchemaAndTableComponentsDistinct(t *testing.T) {
 	t.Parallel()
-	mappings := flow.NewTableMappings([]connector.Spec{{Name: "sink", Type: connector.EndpointPostgres}})
+	mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointPostgres}})
 	mappings.Destinations[0].FutureTables.TargetSchema = "raw_{{ .Schema }}"
 	mappings.Destinations[0].FutureTables.TargetTable = "tbl_{{ .Table }}"
 	mappings.Destinations[0].FutureTables.FutureColumns.TargetColumn = "dst_{{ .Column }}"
@@ -297,7 +297,7 @@ func TestFutureTemplatesKeepSchemaAndTableComponentsDistinct(t *testing.T) {
 
 func TestCompiledFutureTemplatesMatchProjectionGolden(t *testing.T) {
 	t.Parallel()
-	mappings := flow.NewTableMappings([]connector.Spec{{Name: "sink", Type: connector.EndpointPostgres}})
+	mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointPostgres}})
 	mappings.Destinations[0].FutureTables.TargetSchema = "pre-{{ .Schema }}-post"
 	mappings.Destinations[0].FutureTables.TargetTable = "raw.{{ .Table }}.v1"
 	mappings.Destinations[0].FutureTables.FutureColumns.TargetColumn = "[{{ .Column }}]"
@@ -542,8 +542,8 @@ func TestProjectionMatchesCaseAndWhitespaceDistinctSourceIdentifiersExactly(t *t
 
 func testProjector(t *testing.T, mappings flow.TableMappings) *Projector {
 	t.Helper()
-	destination := connector.Spec{Name: "sink", Type: connector.EndpointPostgres}
-	if err := mappings.Validate([]connector.Spec{destination}); err != nil {
+	destination := connector.RuntimeSpec{Name: "sink", Type: connector.EndpointPostgres}
+	if err := mappings.Validate([]connector.RuntimeSpec{destination}); err != nil {
 		t.Fatalf("validate mappings: %v", err)
 	}
 	projector, err := New(mappings, "sink")

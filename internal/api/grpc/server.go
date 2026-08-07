@@ -28,6 +28,12 @@ type Server struct {
 }
 
 func New(engine workflow.ControlEngine, dispatcher RunOnceDispatcher, checkpoints connector.CheckpointStore, registryStore registry.Store, streamStore *pgstream.Store, enableReflection bool, meters *telemetry.Meters) *Server {
+	return NewWithConnectorRegistry(engine, dispatcher, checkpoints, registryStore, streamStore, enableReflection, meters, connector.DefaultRegistry)
+}
+
+// NewWithConnectorRegistry wires the same custom connector registry through
+// API validation and all runtime/persistence construction paths.
+func NewWithConnectorRegistry(engine workflow.ControlEngine, dispatcher RunOnceDispatcher, checkpoints connector.CheckpointStore, registryStore registry.Store, streamStore *pgstream.Store, enableReflection bool, meters *telemetry.Meters, connectorRegistry *connector.Registry) *Server {
 	var opts []gogrpc.ServerOption
 	if meters != nil {
 		opts = append(opts, gogrpc.UnaryInterceptor(MetricsInterceptor(meters)))
@@ -38,7 +44,7 @@ func New(engine workflow.ControlEngine, dispatcher RunOnceDispatcher, checkpoint
 	for _, service := range []string{"", HealthServiceStartup, HealthServiceReadiness, HealthServiceLiveness} {
 		healthServer.SetServingStatus(service, healthpb.HealthCheckResponse_SERVING)
 	}
-	wallabypb.RegisterFlowServiceServer(server, NewFlowService(engine, dispatcher))
+	wallabypb.RegisterFlowServiceServer(server, NewFlowServiceWithRegistry(engine, dispatcher, connectorRegistry))
 	if checkpoints != nil {
 		wallabypb.RegisterCheckpointServiceServer(server, NewCheckpointService(checkpoints, meters))
 	}

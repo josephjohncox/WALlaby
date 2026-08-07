@@ -76,14 +76,14 @@ type BootstrapTable struct {
 // ManagedBootstrapSource owns the source-specific exported-snapshot protocol.
 // The destination is already open when this method is called.
 type ManagedBootstrapSource interface {
-	PrepareManagedBootstrap(context.Context, RunFence, Spec, string, ManagedBootstrapProjector, ManagedBootstrapDestination) (ManagedBootstrapResult, error)
+	PrepareManagedBootstrap(context.Context, RunFence, RuntimeSpec, string, ManagedBootstrapProjector, ManagedBootstrapDestination) (ManagedBootstrapResult, error)
 }
 
 // ManagedSourceResourceCleaner retires source resources owned by a managed
 // flow after its stopping generation has quiesced. Implementations must never
 // drop adopted resources and must prove external absence before returning.
 type ManagedSourceResourceCleaner interface {
-	CleanupManagedResources(context.Context, CleanupFence, Spec) error
+	CleanupManagedResources(context.Context, CleanupFence, RuntimeSpec) error
 }
 
 // ManagedBootstrapDestination stages one immutable snapshot generation and

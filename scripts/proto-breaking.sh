@@ -41,7 +41,9 @@ allowed_sorted=$tmpdir/allowed.sorted
 : >"$allowed"
 
 path='[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*\.proto'
-allowlist_grammar="^${path}: (message [A-Za-z_][A-Za-z0-9_]* deleted|rpc [A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]* deleted|enum [A-Za-z_][A-Za-z0-9_]*\.(0|[1-9][0-9]*) deleted)$"
+identifier='[A-Za-z_][A-Za-z0-9_]*'
+qualified_identifier="${identifier}(\\.${identifier})*"
+allowlist_grammar="^${path}: (message ${qualified_identifier} deleted|rpc ${qualified_identifier}\.${identifier} deleted|enum ${identifier}(\.(0|[1-9][0-9]*))? deleted|field ${qualified_identifier}\.${identifier}#(0|[1-9][0-9]*) deleted)$"
 while IFS= read -r entry || [ -n "$entry" ]; do
 	if ! printf '%s\n' "$entry" | LC_ALL=C grep -Eq "$allowlist_grammar"; then
 		echo "malformed proto breaking allowlist entry: $entry" >&2
@@ -87,10 +89,11 @@ case "$status" in
 esac
 
 location='[1-9][0-9]*:[1-9][0-9]*'
-identifier='[A-Za-z_][A-Za-z0-9_]*'
-message_grammar="^${path}:${location}:Previously present message \"${identifier}\" was deleted from file\\.$"
-rpc_grammar="^${path}:${location}:Previously present RPC \"${identifier}\" on service \"${identifier}\" was deleted\\.$"
+message_grammar="^${path}:${location}:Previously present message \"${qualified_identifier}\" was deleted from file\\.$"
+rpc_grammar="^${path}:${location}:Previously present RPC \"${identifier}\" on service \"${qualified_identifier}\" was deleted\\.$"
 enum_value_grammar="^${path}:${location}:Previously present enum value \"(0|[1-9][0-9]*)\" on enum \"${identifier}\" was deleted\\.$"
+enum_grammar="^${path}:${location}:Previously present enum \"${identifier}\" was deleted from file\\.$"
+field_grammar="^${path}:${location}:Previously present field \"(0|[1-9][0-9]*)\" with name \"${identifier}\" on message \"${qualified_identifier}\" was deleted\\.$"
 
 while IFS= read -r diagnostic || [ -n "$diagnostic" ]; do
 	proto_file=${diagnostic%%:*}
@@ -100,6 +103,10 @@ while IFS= read -r diagnostic || [ -n "$diagnostic" ]; do
 		identity=$(printf '%s\n' "$diagnostic" | awk -F'"' -v path="$proto_file" '{ print path ": rpc " $4 "." $2 " deleted" }')
 	elif printf '%s\n' "$diagnostic" | LC_ALL=C grep -Eq "$enum_value_grammar"; then
 		identity=$(printf '%s\n' "$diagnostic" | awk -F'"' -v path="$proto_file" '{ print path ": enum " $4 "." $2 " deleted" }')
+	elif printf '%s\n' "$diagnostic" | LC_ALL=C grep -Eq "$enum_grammar"; then
+		identity=$(printf '%s\n' "$diagnostic" | awk -F'"' -v path="$proto_file" '{ print path ": enum " $2 " deleted" }')
+	elif printf '%s\n' "$diagnostic" | LC_ALL=C grep -Eq "$field_grammar"; then
+		identity=$(printf '%s\n' "$diagnostic" | awk -F'"' -v path="$proto_file" '{ print path ": field " $6 "." $4 "#" $2 " deleted" }')
 	else
 		echo "malformed or unsupported buf breaking diagnostic: $diagnostic" >&2
 		exit 1

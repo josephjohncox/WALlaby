@@ -21,7 +21,7 @@ func (e *recordingDDLExecer) Exec(_ context.Context, statement string, _ ...any)
 
 func TestApplyDDLExecutesTranslatedStatement(t *testing.T) {
 	executor := &recordingDDLExecer{}
-	destination := &Destination{ddlExecutor: executor, spec: connector.Spec{Type: connector.EndpointPostgres}}
+	destination := &Destination{ddlExecutor: executor, spec: connector.RuntimeSpec{Type: connector.EndpointPostgres}}
 	plan, err := json.Marshal(internalschema.Plan{Changes: []internalschema.Change{{Type: internalschema.ChangeAddColumn, Namespace: "mapped", Table: "events", Column: "status", ToType: "text", Nullable: false}}})
 	if err != nil {
 		t.Fatal(err)

@@ -27,7 +27,7 @@ type messageStore interface {
 
 // Destination writes change events into a Postgres-backed stream.
 type Destination struct {
-	spec              connector.Spec
+	spec              connector.RuntimeSpec
 	store             messageStore
 	stream            string
 	codec             wire.Codec
@@ -36,7 +36,7 @@ type Destination struct {
 	protoTypesSubject string
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	registryCfg, err := schemaregistry.ConfigFromOptions(spec.Options)
 	if err != nil {
 		return err

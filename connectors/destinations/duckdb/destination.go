@@ -52,7 +52,7 @@ const (
 
 // Destination writes change events into DuckDB tables.
 type Destination struct {
-	spec             connector.Spec
+	spec             connector.RuntimeSpec
 	db               *sql.DB
 	batchMode        string
 	batchResolve     string
@@ -69,7 +69,7 @@ type Destination struct {
 	stagingResolved  bool
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	d.spec = spec
 	dsn := spec.Options[optDSN]
 	if dsn == "" {

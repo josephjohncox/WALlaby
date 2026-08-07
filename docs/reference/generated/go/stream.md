@@ -131,7 +131,7 @@ DestinationConfig binds a destination to its spec.
 
 ```go
 type DestinationConfig struct {
-    Spec               connector.Spec
+    Spec               connector.RuntimeSpec
     Dest               connector.Destination
     Projector          Projector
     MappingFingerprint string
@@ -311,7 +311,7 @@ Runner streams data from a source to destinations.
 ```go
 type Runner struct {
     Source              connector.Source
-    SourceSpec          connector.Spec
+    SourceSpec          connector.RuntimeSpec
     Destinations        []DestinationConfig
     Checkpoints         connector.CheckpointStore
     CheckpointOutbox    connector.CheckpointOutboxStore

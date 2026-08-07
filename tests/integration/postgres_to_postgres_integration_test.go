@@ -129,7 +129,7 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 		t.Fatalf("create dest table: %v", err)
 	}
 
-	sourceSpec := connector.Spec{
+	sourceSpec := connector.RuntimeSpec{
 		Name: "e2e-source",
 		Type: connector.EndpointPostgres,
 		Options: map[string]string{
@@ -146,7 +146,7 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 		},
 	}
 
-	destSpec := connector.Spec{
+	destSpec := connector.RuntimeSpec{
 		Name: "e2e-dest",
 		Type: connector.EndpointPostgres,
 		Options: map[string]string{
@@ -192,12 +192,12 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 			}},
 		}},
 	}
-	if err := mappings.Validate([]connector.Spec{destSpec}); err != nil {
+	if err := mappings.Validate([]connector.RuntimeSpec{destSpec}); err != nil {
 		t.Fatalf("validate E2E mappings: %v", err)
 	}
 	gate, autoApprove, autoApply := true, false, true
 	definition := flow.Flow{
-		ID: flowID, Source: sourceSpec, Destinations: []connector.Spec{destSpec},
+		ID: flowID, Source: testFlowSource(sourceSpec), Destinations: testFlowDestinations(destSpec),
 		Config: flow.Config{TableMappings: mappings, DDL: flow.DDLPolicy{Gate: &gate, AutoApprove: &autoApprove, AutoApply: &autoApply}},
 	}
 	ddlDefaults := flow.ShippedDDLPolicyDefaults()
@@ -595,10 +595,10 @@ func TestManagedBootstrapNeverRejectsTamperedPostgresAuthorityBeforeSourceIO(t *
 	fence := authority.RunFence{FlowID: "tampered-bootstrap-never", FlowIncarnationID: uuid.New(), Generation: 1, AcquisitionID: uuid.New(), ExecutionID: "test", LeaseEpoch: 1}
 	runner := stream.Runner{
 		Source: source,
-		SourceSpec: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
+		SourceSpec: connector.RuntimeSpec{Type: connector.EndpointPostgres, Options: map[string]string{
 			"managed": "true", "bootstrap": "never", "source_lineage_id": "lineage",
 		}},
-		Destinations: []stream.DestinationConfig{{Spec: connector.Spec{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
+		Destinations: []stream.DestinationConfig{{Spec: connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
 			"dsn": destinationDSN, "batch_mode": "target", "destination_revision_id": "revision",
 		}}, Dest: &pgdest.Destination{}}},
 		Checkpoints: managedStartupCheckpointStore{}, FlowID: fence.FlowID, AckPolicy: stream.AckPolicyAll,
@@ -624,7 +624,7 @@ func (managedStartupSchemaBaselines) Persist(context.Context, connector.RunFence
 
 type managedStartupProbeSource struct{ events *[]string }
 
-func (s *managedStartupProbeSource) Open(context.Context, connector.Spec) error {
+func (s *managedStartupProbeSource) Open(context.Context, connector.RuntimeSpec) error {
 	*s.events = append(*s.events, "open")
 	return nil
 }

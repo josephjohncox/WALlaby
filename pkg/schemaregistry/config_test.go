@@ -1,6 +1,7 @@
 package schemaregistry
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -8,15 +9,17 @@ import (
 
 func TestConfigFromOptionsStrictTypedValues(t *testing.T) {
 	cfg, err := ConfigFromOptions(map[string]string{
+		OptRegistryType:           "csr",
 		OptRegistryURL:            " https://registry.example ",
 		OptRegistryPassword:       "  exact secret  ",
+		OptRegistryLocalDirectory: " /var/lib/wallaby/registry ",
 		OptRegistryTimeout:        " 3s ",
 		OptRegistryApicurioCompat: "false",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Type != "csr" || cfg.URL != "https://registry.example" || cfg.Password != "  exact secret  " || cfg.Timeout != 3*time.Second || cfg.ApicurioCompat {
+	if cfg.Type != "csr" || cfg.URL != "https://registry.example" || cfg.Password != "  exact secret  " || cfg.LocalDirectory != "/var/lib/wallaby/registry" || cfg.Timeout != 3*time.Second || cfg.ApicurioCompat {
 		t.Fatalf("ConfigFromOptions() = %+v", cfg)
 	}
 }
@@ -28,6 +31,17 @@ func TestConfigFromOptionsDefaults(t *testing.T) {
 	}
 	if cfg.Timeout != 0 || !cfg.ApicurioCompat {
 		t.Fatalf("ConfigFromOptions() defaults = %+v", cfg)
+	}
+}
+
+func TestNewRegistryRejectsRemovedAliases(t *testing.T) {
+	t.Parallel()
+	for _, alias := range []string{"disabled", "confluent", "memory", "mem", "db"} {
+		t.Run(alias, func(t *testing.T) {
+			if _, err := NewRegistry(context.Background(), Config{Type: alias}); err == nil || !strings.Contains(err.Error(), "unsupported schema registry type") {
+				t.Fatalf("NewRegistry(%q) error=%v, want unsupported type", alias, err)
+			}
+		})
 	}
 }
 

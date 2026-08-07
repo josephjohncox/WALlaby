@@ -76,7 +76,7 @@ type destinationFactories struct {
 // Destination writes change events into Snowflake tables.
 type Destination struct {
 	closeMu                  sync.Mutex
-	spec                     connector.Spec
+	spec                     connector.RuntimeSpec
 	db                       *sql.DB
 	managedProfile           string
 	managedConfig            managedConfig
@@ -115,11 +115,11 @@ type Destination struct {
 	sessionKeepAlive         *bool
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	return d.open(ctx, spec, destinationFactories{openDB: sql.Open, newRegistry: schemaregistry.NewRegistry})
 }
 
-func (d *Destination) open(ctx context.Context, spec connector.Spec, factories destinationFactories) (err error) {
+func (d *Destination) open(ctx context.Context, spec connector.RuntimeSpec, factories destinationFactories) (err error) {
 	registryCfg, err := schemaregistry.ConfigFromOptions(spec.Options)
 	if err != nil {
 		return err
@@ -479,7 +479,7 @@ func (*Destination) CapabilityProfileIDs() []connector.CapabilityProfileID {
 }
 
 // ClassifyCapabilityProfile validates the exact configured Snowflake profile.
-func (*Destination) ClassifyCapabilityProfile(spec connector.Spec) (connector.CapabilityProfileID, error) {
+func (*Destination) ClassifyCapabilityProfile(spec connector.RuntimeSpec) (connector.CapabilityProfileID, error) {
 	profile := strings.TrimSpace(spec.Options["managed_profile"])
 	switch profile {
 	case "":
@@ -498,7 +498,7 @@ func (*Destination) ClassifyCapabilityProfile(spec connector.Spec) (connector.Ca
 // CapabilitiesFor scopes table-write and durable delivery claims to the exact
 // configured profile. The SQL profile is explicit-key upsert; staged COPY and
 // Streaming REST profiles remain append-only.
-func (d *Destination) CapabilitiesFor(spec connector.Spec) (connector.Capabilities, error) {
+func (d *Destination) CapabilitiesFor(spec connector.RuntimeSpec) (connector.Capabilities, error) {
 	profile, err := d.ClassifyCapabilityProfile(spec)
 	if err != nil {
 		return connector.Capabilities{}, err

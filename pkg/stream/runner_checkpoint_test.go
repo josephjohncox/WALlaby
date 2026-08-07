@@ -21,7 +21,7 @@ func TestManagedRunnerRetriesTransientActiveSlotOnOpen(t *testing.T) {
 	}}
 	runner := Runner{
 		Source:     source,
-		SourceSpec: connector.Spec{Options: map[string]string{"managed": "true"}},
+		SourceSpec: connector.RuntimeSpec{Options: map[string]string{"managed": "true"}},
 	}
 	if err := runner.openSource(context.Background()); err != nil {
 		t.Fatalf("openSource() error = %v", err)
@@ -50,9 +50,9 @@ func TestRunnerRejectsMissingCheckpointStore(t *testing.T) {
 	source := &fakeSource{batches: []connector.Batch{{Checkpoint: connector.Checkpoint{LSN: "1"}}}}
 	runner := Runner{
 		Source:     source,
-		SourceSpec: connector.Spec{Options: map[string]string{"mode": connector.SourceModeBackfill}},
+		SourceSpec: connector.RuntimeSpec{Options: map[string]string{"mode": connector.SourceModeBackfill}},
 		Destinations: []DestinationConfig{{
-			Spec: connector.Spec{Name: "dest"},
+			Spec: connector.RuntimeSpec{Name: "dest"},
 			Dest: &recordingDest{name: "dest"},
 		}},
 		FlowID: "flow-no-checkpoint-store",
@@ -388,9 +388,9 @@ func TestRunnerPropagatesRestoredCheckpointAckErrors(t *testing.T) {
 func checkpointTestRunner(source connector.Source, store connector.CheckpointStore, traceSink TraceSink) Runner {
 	return Runner{
 		Source:     source,
-		SourceSpec: connector.Spec{Options: map[string]string{"mode": "backfill"}},
+		SourceSpec: connector.RuntimeSpec{Options: map[string]string{"mode": "backfill"}},
 		Destinations: []DestinationConfig{{
-			Spec: connector.Spec{Name: "dest"},
+			Spec: connector.RuntimeSpec{Name: "dest"},
 			Dest: &recordingDest{log: &eventLog{}, name: "dest"},
 		}},
 		Checkpoints: store,

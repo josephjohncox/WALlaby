@@ -39,7 +39,7 @@ func BenchmarkDuckDBUpdate(b *testing.B) {
 	}
 
 	dest := &duckdb.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "duckdb-bench",
 		Type: connector.EndpointDuckDB,
 		Options: map[string]string{
@@ -100,7 +100,7 @@ func BenchmarkDuckDBAppend(b *testing.B) {
 	}
 
 	dest := &duckdb.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "duckdb-bench-append",
 		Type: connector.EndpointDuckDB,
 		Options: map[string]string{

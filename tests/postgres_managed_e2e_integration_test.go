@@ -74,7 +74,7 @@ DROP TABLE IF EXISTS wallaby_meta.__delivery_receipts`)
 
 	flowID := "postgres-managed-e2e-" + uuid.NewString()
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
-	created, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}})
+	created, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,23 +94,23 @@ DROP TABLE IF EXISTS wallaby_meta.__delivery_receipts`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	created.Source = connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
+	created.Source = testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "slot": slotName, "publication": "wallaby_managed_e2e_publication",
 		"ensure_publication": "false", "sync_publication": "false", "create_slot": "false",
 		"managed": "true", "bootstrap": "never",
 		"status_interval": "10ms", "batch_timeout": "10ms", "ensure_state": "false",
 		"source_system_identifier": sourceSystemID, "source_lineage_id": sourceSystemID + ":wallaby_managed_e2e_publication:v1",
 		"publication_revision": publicationRevision,
-	}}
+	}})
 	destinationRevisionID := "postgres-managed-e2e-" + uuid.NewString()
 	defer func() {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM destination_revisions WHERE destination_revision_id=$1", destinationRevisionID)
 	}()
-	created.Destinations = []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
+	created.Destinations = testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn":        dsn,
 		"batch_mode": "target", "meta_table_enabled": "false",
 		"synchronous_commit": "on", "destination_revision_id": destinationRevisionID,
-	}}}
+	}})
 	started, control, err := engine.PlanStart(ctx, flowID, false)
 	if err != nil {
 		t.Fatal(err)
@@ -131,7 +131,7 @@ DROP TABLE IF EXISTS wallaby_meta.__delivery_receipts`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := coordinator.AuthorizeAck(ctx, seedFence, connector.Checkpoint{LSN: provisionedLSN}, emptyManagedBaselinePayload(t, created.Source.Options["source_lineage_id"])); err != nil {
+	if _, err := coordinator.AuthorizeAck(ctx, seedFence, connector.Checkpoint{LSN: provisionedLSN}, emptyManagedBaselinePayload(t, testFlowRuntimeSource(created.Source).Options["source_lineage_id"])); err != nil {
 		t.Fatal(err)
 	}
 	if err := authorityStore.FinishProducer(ctx, seedFence, "checkpoint_seeded"); err != nil {
@@ -145,7 +145,7 @@ DROP TABLE IF EXISTS wallaby_meta.__delivery_receipts`)
 			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
 			ExpectedGeneration: control.Generation, ExecutionID: "managed-e2e", ExecutionBackend: "test",
 		}
-		runErr <- flowRunner.Run(runCtx, started, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: started.Destinations[0], Dest: &pgdest.Destination{}}})
+		runErr <- flowRunner.Run(runCtx, started, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: testFlowRuntimeDestinations(started.Destinations)[0], Dest: &pgdest.Destination{}}})
 	}()
 
 	waitForCondition(t, ctx, runErr, "managed replication slot activation", func() (bool, error) {
@@ -275,7 +275,7 @@ WHERE checkpoint.flow_incarnation_id=$1`, incarnationID).Scan(&updatedCheckpoint
 			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
 			ExpectedGeneration: control.Generation, ExecutionID: "managed-e2e-restart", ExecutionBackend: "test",
 		}
-		restartErr <- flowRunner.Run(restartCtx, started, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: started.Destinations[0], Dest: &pgdest.Destination{}}})
+		restartErr <- flowRunner.Run(restartCtx, started, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: testFlowRuntimeDestinations(started.Destinations)[0], Dest: &pgdest.Destination{}}})
 	}()
 	waitForCondition(t, ctx, restartErr, "managed replication slot reactivation from authoritative checkpoint", func() (bool, error) {
 		var active bool

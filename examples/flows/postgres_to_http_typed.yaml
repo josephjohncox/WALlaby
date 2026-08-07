@@ -1,34 +1,58 @@
+config:
+  ack_policy: all
+  table_mappings:
+    version: 2
+    destinations:
+      - destination: webhook_typed
+        future_tables:
+          action: include
+          target_schema: "web_{{ .Schema }}_archive"
+          target_table: "event_{{ .Table }}_v1"
+          future_columns:
+            action: include
+            target_column: "field_{{ .Column }}_raw"
+          write:
+            mode: append
+            key_columns: []
+        tables: []
+destinations:
+  - name: webhook_typed
+    http:
+      dedupe_window: 600s
+      format: WIRE_FORMAT_JSON
+      headers:
+        authorization: Bearer example-token
+        x-labels: alpha,beta
+      method: POST
+      payload_mode: PAYLOAD_MODE_RECORD_JSON
+      retry:
+        backoff_base: 0.150s
+        backoff_factor: 1.75
+        backoff_max: 3s
+        max_retries: 4
+      timeout: 7s
+      type_mappings:
+        mappings:
+          bytea: base64_string
+          double precision: number
+          jsonb: object
+          timestamp with time zone: string
+      url: https://webhook.example.test/v1/events
 name: postgres_to_http_typed
-wire_format: json
 parallelism: 2
 source:
   name: postgres_source
-  type: postgres
-  options:
-    dsn: postgres://wallaby:example@localhost:5432/app?sslmode=disable
-    slot: wallaby_http_typed
-    publication: wallaby_http_typed
-    batch_size: "500"
+  postgres_source:
+    mode: POSTGRES_SOURCE_MODE_CDC
+    batch_size: 500
     batch_timeout: 1s
+    connection:
+      dsn: postgres://wallaby:example@localhost:5432/app?sslmode=disable
+    create_slot: true
+    format: WIRE_FORMAT_JSON
+    publication: wallaby_http_typed
+    publication_schemas:
+      - public
+    slot: wallaby_http_typed
     status_interval: 10s
-    create_slot: "true"
-    format: json
-destinations:
-  - name: webhook_typed
-    type: http
-    options:
-      url: https://webhook.example.test/v1/events
-      method: POST
-      format: json
-      payload_mode: record_json
-      timeout: 7s
-      headers: '"X-Labels: alpha,beta","Authorization: Bearer example-token"'
-      max_retries: "4"
-      backoff_base: 150ms
-      backoff_max: 3s
-      backoff_factor: "1.75"
-      dedupe_window: 10m
-      type_mappings_file: examples/type-mappings/web.yaml
-config:
-  ack_policy: all
-  table_mappings_file: ../mappings/http_typed.yaml
+wire_format: json

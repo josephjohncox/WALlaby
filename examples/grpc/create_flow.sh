@@ -24,28 +24,30 @@ grpcurl -plaintext \
     },
     "source": {
       "name": "pg-source",
-      "type": "ENDPOINT_TYPE_POSTGRES",
-      "options": {
-        "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
+      "postgres_source": {
+          "mode": "POSTGRES_SOURCE_MODE_CDC",
+        "connection": {
+          "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable"
+        },
         "slot": "wallaby_slot",
         "publication": "wallaby_pub",
-        "batch_size": "500",
+        "publication_tables": ["public.events"],
+        "batch_size": 500,
         "batch_timeout": "1s",
         "status_interval": "10s",
-        "create_slot": "true",
-        "format": "arrow"
+        "create_slot": true,
+        "format": "WIRE_FORMAT_ARROW"
       }
     },
     "destinations": [
       {
         "name": "kafka-out",
-        "type": "ENDPOINT_TYPE_KAFKA",
-        "options": {
-          "brokers": "localhost:9092",
+        "kafka": {
+          "brokers": ["localhost:9092"],
           "topic": "wallaby.cdc",
-          "format": "arrow",
-          "compression": "lz4",
-          "acks": "all"
+          "format": "WIRE_FORMAT_ARROW",
+          "compression": "COMPRESSION_LZ4",
+          "acks": "KAFKA_ACKS_ALL"
         }
       }
     ]

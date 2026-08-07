@@ -62,13 +62,13 @@ CREATE SCHEMA %s; CREATE TABLE %s (id bigint PRIMARY KEY,value text NOT NULL)`,
 	}
 	destinationRevisionID := "exact-bootstrap-target-v1"
 	flowDef := flow.Flow{ID: flowID,
-		Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
+		Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
 			"dsn": dsn, "managed": "true", "bootstrap": "required", "managed_profile": connector.ManagedProfilePostgresToPostgresV1,
 			"streaming_transactions": "true", "ensure_publication": "true", "ensure_state": "true", "publication": publication,
 			"tables": pgx.Identifier{sourceSchema, sourceTable}.Sanitize(), "snapshot_workers": "1", "batch_size": "10", "batch_timeout": "20ms", "status_interval": "20ms",
 			"source_system_identifier": systemID, "source_lineage_id": "exact-bootstrap-lineage-v1", "publication_revision": "bootstrap-pending",
-		}},
-		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "batch_mode": "target", "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "destination_revision_id": destinationRevisionID, "synchronous_commit": "on", "meta_table_enabled": "false"}}},
+		}}),
+		Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "batch_mode": "target", "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "destination_revision_id": destinationRevisionID, "synchronous_commit": "on", "meta_table_enabled": "false"}}),
 		Config: flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "target", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{
 			SourceSchema: sourceSchema, SourceTable: sourceTable, Action: flow.MappingActionInclude, TargetSchema: targetSchema, TargetTable: targetTable,
 			FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}},
@@ -92,7 +92,7 @@ CREATE SCHEMA %s; CREATE TABLE %s (id bigint PRIMARY KEY,value text NOT NULL)`,
 	runCtx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- (&runner.FlowRunner{Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), ExpectedGeneration: control.Generation, ExecutionBackend: "integration", ExecutionID: "managed-bootstrap-exact-identifiers", Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool)}).Run(runCtx, flowDef, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: flowDef.Destinations[0], Dest: &pgdest.Destination{}}})
+		errCh <- (&runner.FlowRunner{Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), ExpectedGeneration: control.Generation, ExecutionBackend: "integration", ExecutionID: "managed-bootstrap-exact-identifiers", Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool)}).Run(runCtx, flowDef, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: testFlowRuntimeDestinations(flowDef.Destinations)[0], Dest: &pgdest.Destination{}}})
 	}()
 	deadline := time.Now().Add(20 * time.Second)
 	for {
@@ -222,15 +222,15 @@ DROP TABLE IF EXISTS public.wallaby_bootstrap_wiring_b`)
 	destinationRevisionID := "wiring-postgres-" + flowID
 	flowDef := flow.Flow{
 		ID: flowID,
-		Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
+		Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
 			"dsn": dsn, "managed": "true", "bootstrap": "required",
 			"managed_profile": connector.ManagedProfilePostgresToPostgresV1, "streaming_transactions": "true",
 			"ensure_publication": "true", "ensure_state": "true",
 			"tables":           "public.wallaby_bootstrap_wiring_a,public.wallaby_bootstrap_wiring_b",
 			"snapshot_workers": "2", "batch_size": "2", "batch_timeout": "20ms", "status_interval": "20ms",
 			"source_system_identifier": systemID, "source_lineage_id": "wiring-lineage-v1", "publication_revision": "bootstrap-pending",
-		}},
-		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "batch_mode": "target", "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "destination_revision_id": destinationRevisionID, "synchronous_commit": "on", "meta_table_enabled": "false"}}},
+		}}),
+		Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "batch_mode": "target", "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "destination_revision_id": destinationRevisionID, "synchronous_commit": "on", "meta_table_enabled": "false"}}),
 		Config: flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "target", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{
 			{SourceSchema: "public", SourceTable: "wallaby_bootstrap_wiring_a", Action: flow.MappingActionInclude, TargetSchema: "wallaby_bootstrap_target", TargetTable: "wallaby_bootstrap_wiring_accounts", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Columns: []flow.ColumnMapping{{SourceColumn: "id", Action: flow.MappingActionInclude, TargetColumn: "account_id"}, {SourceColumn: "value", Action: flow.MappingActionInclude, TargetColumn: "display_value"}, {SourceColumn: "rendered", Action: flow.MappingActionExclude}}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}},
 			{SourceSchema: "public", SourceTable: "wallaby_bootstrap_wiring_b", Action: flow.MappingActionInclude, TargetSchema: "wallaby_bootstrap_target", TargetTable: "wallaby_bootstrap_wiring_b", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}},
@@ -288,7 +288,7 @@ DROP TABLE IF EXISTS public.wallaby_bootstrap_wiring_b`)
 			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), ExpectedGeneration: control.Generation,
 			ExecutionBackend: "integration", ExecutionID: "managed-bootstrap-wiring",
 			Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
-		}).Run(runCtx, flowDef, source, []stream.DestinationConfig{{Spec: flowDef.Destinations[0], Dest: destination}})
+		}).Run(runCtx, flowDef, source, []stream.DestinationConfig{{Spec: testFlowRuntimeDestinations(flowDef.Destinations)[0], Dest: destination}})
 	}()
 
 	select {
@@ -325,7 +325,7 @@ INSERT INTO public.wallaby_bootstrap_wiring_a(id,value) VALUES(2,'after-cut')`);
 			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), ExpectedGeneration: control.Generation,
 			ExecutionBackend: "integration", ExecutionID: "managed-bootstrap-publication-replacement",
 			Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
-		}).Run(replacementCtx, flowDef, replacementSource, []stream.DestinationConfig{{Spec: flowDef.Destinations[0], Dest: &pgdest.Destination{}}})
+		}).Run(replacementCtx, flowDef, replacementSource, []stream.DestinationConfig{{Spec: testFlowRuntimeDestinations(flowDef.Destinations)[0], Dest: &pgdest.Destination{}}})
 	}()
 
 	deadline := time.Now().Add(20 * time.Second)
@@ -475,7 +475,7 @@ FROM source_bootstraps WHERE flow_incarnation_id=(SELECT incarnation_id FROM flo
 			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), ExpectedGeneration: resumeControl.Generation,
 			ExecutionBackend: "integration", ExecutionID: "managed-bootstrap-resumed",
 			Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
-		}).Run(resumedCtx, flowDef, resumedSource, []stream.DestinationConfig{{Spec: flowDef.Destinations[0], Dest: &pgdest.Destination{}}})
+		}).Run(resumedCtx, flowDef, resumedSource, []stream.DestinationConfig{{Spec: testFlowRuntimeDestinations(flowDef.Destinations)[0], Dest: &pgdest.Destination{}}})
 	}()
 	resumeDeadline := time.Now().Add(20 * time.Second)
 	for {
@@ -543,7 +543,7 @@ UPDATE public.wallaby_bootstrap_wiring_a SET value='evolved-after-restart',note=
 			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), ExpectedGeneration: evolutionControl.Generation,
 			ExecutionBackend: "integration", ExecutionID: "managed-schema-evolution-restart",
 			Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
-		}).Run(evolutionCtx, flowDef, evolutionSource, []stream.DestinationConfig{{Spec: flowDef.Destinations[0], Dest: &pgdest.Destination{}}})
+		}).Run(evolutionCtx, flowDef, evolutionSource, []stream.DestinationConfig{{Spec: testFlowRuntimeDestinations(flowDef.Destinations)[0], Dest: &pgdest.Destination{}}})
 	}()
 	evolutionDeadline := time.Now().Add(20 * time.Second)
 	for {

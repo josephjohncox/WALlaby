@@ -1,62 +1,76 @@
 {
-  "id": "postgres-to-s3tables",
-  "name": "PostgreSQL CDC to Iceberg on S3 Tables",
-  "source": {
-    "name": "postgres-source",
-    "type": "postgres",
-    "options": {
-      "dsn": "postgres://wallaby@postgres.example:5432/app?sslmode=verify-full",
-      "slot": "wallaby_s3tables",
-      "publication": "wallaby_s3tables",
-      "managed": "true",
-      "bootstrap": "never",
-      "create_slot": "false",
-      "ensure_state": "false",
-      "ensure_publication": "false",
-      "sync_publication": "false",
-      "streaming_transactions": "true",
-      "source_system_identifier": "REPLACE_WITH_PG_SYSTEM_IDENTIFIER",
-      "source_lineage_id": "REPLACE_WITH_STABLE_SOURCE_LINEAGE",
-      "publication_revision": "REPLACE_WITH_PUBLICATION_FINGERPRINT"
+  "config": {
+    "ack_policy": "materialized",
+    "ddl": {
+      "auto_apply": false
+    },
+    "materialization": {
+      "projection_id": "canonical_cdc_parquet_v2"
+    },
+    "table_mappings": {
+      "destinations": [
+        {
+          "destination": "s3tables-lake",
+          "future_tables": {
+            "action": "exclude"
+          },
+          "tables": [
+            {
+              "action": "include",
+              "columns": [],
+              "future_columns": {
+                "action": "include",
+                "target_column": "{{ .Column }}"
+              },
+              "source_schema": "public",
+              "source_table": "events",
+              "target_schema": "wallaby",
+              "target_table": "cdc_events",
+              "write": {
+                "key_columns": [],
+                "mode": "append"
+              }
+            }
+          ]
+        }
+      ],
+      "version": 2
     }
   },
   "destinations": [
     {
-      "name": "s3tables-lake",
-      "type": "iceberg",
-      "options": {
-        "catalog_profile": "s3tables",
-        "destination_revision_id": "s3tables-lake-v1",
-        "control_table": "__wallaby_control"
-      }
+      "iceberg": {
+        "catalog_profile": "ICEBERG_CATALOG_PROFILE_S3_TABLES",
+        "control_table": "__wallaby_control",
+        "destination_revision_id": "s3tables-lake-v1"
+      },
+      "name": "s3tables-lake"
     }
   ],
-  "config": {
-    "ddl": {"auto_apply": false},
-    "table_mappings": {
-      "version": 2,
-      "destinations": [
-        {
-          "destination": "s3tables-lake",
-          "future_tables": {"action": "exclude"},
-          "tables": [
-            {
-              "source_schema": "public",
-              "source_table": "events",
-              "action": "include",
-              "target_schema": "wallaby",
-              "target_table": "cdc_events",
-              "future_columns":{"action":"include","target_column":"{{ .Column }}"},
-              "columns":[],
-              "write":{"mode":"append","key_columns":[]}
-            }
-          ]
-        }
-      ]
-    },
-    "ack_policy": "materialized",
-    "materialization": {
-      "projection_id": "canonical_cdc_parquet_v2"
+  "id": "postgres-to-s3tables",
+  "name": "PostgreSQL CDC to Iceberg on S3 Tables",
+  "source": {
+    "name": "postgres-source",
+    "postgres_source": {
+      "mode": "POSTGRES_SOURCE_MODE_CDC",
+      "bootstrap": "BOOTSTRAP_MODE_NEVER",
+      "connection": {
+        "dsn": "postgres://wallaby@postgres.example:5432/app?sslmode=verify-full"
+      },
+      "create_slot": false,
+      "ensure_publication": false,
+      "ensure_state": false,
+      "managed": true,
+      "publication": "wallaby_s3tables",
+      "publication_revision": "REPLACE_WITH_PUBLICATION_FINGERPRINT",
+      "publication_schemas": [
+        "public"
+      ],
+      "slot": "wallaby_s3tables",
+      "source_lineage_id": "REPLACE_WITH_STABLE_SOURCE_LINEAGE",
+      "source_system_identifier": "REPLACE_WITH_PG_SYSTEM_IDENTIFIER",
+      "streaming_transactions": true,
+      "sync_publication": false
     }
   }
 }

@@ -66,7 +66,7 @@ func run() error {
 		}
 		destination := registration.New()
 		for _, profile := range registration.Profiles {
-			spec := connector.Spec{Name: string(registration.Type), Type: registration.Type, Options: profile.Options}
+			spec := connector.RuntimeSpec{Name: string(registration.Type), Type: registration.Type, Options: profile.Options}
 			capabilities, err := registration.ResolveCapabilities(destination, spec)
 			if err != nil {
 				return err

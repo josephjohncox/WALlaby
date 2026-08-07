@@ -170,7 +170,8 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		return fmt.Errorf("migrate shared control store: %w", err)
 	}
 
-	engine, err := workflow.NewPostgresEngineWithPool(ctx, controlPool)
+	connectorRegistry := connector.DefaultRegistry
+	engine, err := workflow.NewPostgresEngineWithPoolAndRegistry(ctx, controlPool, connectorRegistry)
 	if err != nil {
 		return fmt.Errorf("start workflow engine: %w", err)
 	}
@@ -202,10 +203,11 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		return fmt.Errorf("load flow: %w", err)
 	}
 
-	flowSource := flowDef.Source
-	if flowSource.Options != nil {
-		flowSource.Options = copyStringMap(flowDef.Source.Options)
+	flowSource, err := flowDef.DecodeSource(connectorRegistry)
+	if err != nil {
+		return fmt.Errorf("decode source endpoint: %w", err)
 	}
+	flowSource.Options = copyStringMap(flowSource.Options)
 
 	if maxEmptyReads > 0 {
 		if flowSource.Options == nil {
@@ -248,8 +250,7 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		flowSource.Options["start_lsn"] = startLSN
 	}
 
-	runFlow := flowDef
-	runFlow.Source = flowSource
+	runFlow := flow.Clone(flowDef)
 	if flowDef.WireFormat == "" && cfg.Wire.DefaultFormat != "" {
 		runFlow.WireFormat = connector.WireFormat(cfg.Wire.DefaultFormat)
 	}
@@ -260,8 +261,9 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		AutoApply:   cfg.DDL.AutoApply,
 	}
 	factory := runner.Factory{
-		ManagedControl:   controlPool,
-		ManagedAuthority: authorityStore,
+		ManagedControl:    controlPool,
+		ManagedAuthority:  authorityStore,
+		ConnectorRegistry: connectorRegistry,
 		SchemaHookForFlow: func(f flow.Flow) replication.SchemaHook {
 			policy := flow.ResolveDDLPolicy(f.Config.DDL, &defaults)
 			return &registry.Hook{
@@ -281,7 +283,7 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		},
 	}
 
-	source, err := factory.SourceForFlow(runFlow)
+	source, err := factory.Source(flowSource)
 	if err != nil {
 		return fmt.Errorf("build source: %w", err)
 	}
@@ -312,6 +314,8 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		Deliveries:         deliveryCoordinator,
 		SchemaBaselines:    schemaBaselines,
 		Artifacts:          runner.NewArtifactLogFactory(controlPool, cfg.Artifacts, cfg.Iceberg),
+		ConnectorRegistry:  connectorRegistry,
+		SourceSpecOverride: &flowSource,
 	}
 	if cfg.Trace.Path != "" {
 		tracePath := strings.ReplaceAll(cfg.Trace.Path, "{flow_id}", flowDef.ID)

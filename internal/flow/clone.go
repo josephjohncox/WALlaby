@@ -1,14 +1,17 @@
 package flow
 
-import "github.com/josephjohncox/wallaby/pkg/connector"
+import (
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"google.golang.org/protobuf/proto"
+)
 
 // Clone returns a deep copy suitable for storage boundaries.
 func Clone(in Flow) Flow {
 	out := in
-	out.Source = cloneSpec(in.Source)
-	out.Destinations = make([]connector.Spec, len(in.Destinations))
+	out.Source = cloneEndpoint(in.Source)
+	out.Destinations = make([]*wallabypb.Endpoint, len(in.Destinations))
 	for index, destination := range in.Destinations {
-		out.Destinations[index] = cloneSpec(destination)
+		out.Destinations[index] = cloneEndpoint(destination)
 	}
 	out.Config.TableMappings = in.Config.TableMappings.Clone()
 	out.Config.DDL.Gate = cloneBool(in.Config.DDL.Gate)
@@ -17,15 +20,11 @@ func Clone(in Flow) Flow {
 	return out
 }
 
-func cloneSpec(in connector.Spec) connector.Spec {
-	out := in
-	if in.Options != nil {
-		out.Options = make(map[string]string, len(in.Options))
-		for key, value := range in.Options {
-			out.Options[key] = value
-		}
+func cloneEndpoint(in *wallabypb.Endpoint) *wallabypb.Endpoint {
+	if in == nil {
+		return nil
 	}
-	return out
+	return proto.Clone(in).(*wallabypb.Endpoint)
 }
 
 func cloneBool(value *bool) *bool {

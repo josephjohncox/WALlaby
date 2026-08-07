@@ -71,7 +71,7 @@ func TestPostgresManagedDeliveryRetryAndRetention(t *testing.T) {
 	}
 	flowID := fmt.Sprintf("delivery-retention-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -91,7 +91,7 @@ func TestPostgresManagedDeliveryRetryAndRetention(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DROP TABLE IF EXISTS public.wallaby_delivery_retention`)
 	}()
 	target := &pgdest.Destination{}
-	if err := target.Open(ctx, connector.Spec{Name: "retry-retention", Type: connector.EndpointPostgres, Options: map[string]string{
+	if err := target.Open(ctx, connector.RuntimeSpec{Name: "retry-retention", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
 	}}); err != nil {
 		t.Fatal(err)

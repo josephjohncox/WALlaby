@@ -24,7 +24,7 @@ func (d *Destination) streamHooksSnapshot() streamingHooks {
 // network side effect. The deterministic recovery protocol is proven separately
 // against the in-memory protocol fake and is promotion evidence only once a
 // reviewed transport is linked and its live matrix passes.
-func (d *Destination) openManagedStreaming(ctx context.Context, dsn string, spec connector.Spec) (resultErr error) {
+func (d *Destination) openManagedStreaming(ctx context.Context, dsn string, spec connector.RuntimeSpec) (resultErr error) {
 	_, endAdmission := telemetry.StartSnowflakeManagedSpan(ctx, "admission", "", "", 0, 0)
 	defer func() { endAdmission(resultErr) }()
 	cfg, err := streamConfigFromSpec(dsn, spec)

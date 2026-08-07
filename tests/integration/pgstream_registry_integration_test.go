@@ -41,7 +41,7 @@ func TestPGStreamSchemaRegistryMetadata(t *testing.T) {
 	migrationPool.Close()
 
 	dest := &pgstreamdest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "pgstream-registry",
 		Type: connector.EndpointPGStream,
 		Options: map[string]string{

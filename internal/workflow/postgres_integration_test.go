@@ -12,9 +12,90 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/controlstore"
 	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/pkg/connector"
+	"google.golang.org/protobuf/proto"
 )
+
+func TestPostgresCustomEndpointsCreateGetUpdateListAndRestartWithInjectedRegistry(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+	registry := connector.NewRegistry()
+	if err := registry.RegisterSource("postgres-store-test-source", func() connector.Source { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.RegisterDestination("postgres-store-test-destination", func() connector.Destination { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store, err := NewPostgresEngineWithRegistry(ctx, dsn, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowID := fmt.Sprintf("custom-registry-%d", time.Now().UnixNano())
+	destinationSpec := connector.RuntimeSpec{Name: "custom-destination", Type: "postgres-store-test-destination", Options: map[string]string{"destination": " exact "}}
+	destination := &wallabypb.Endpoint{Name: destinationSpec.Name, Config: &wallabypb.Endpoint_Custom{Custom: &wallabypb.CustomEndpointConfig{ConnectorType: string(destinationSpec.Type), Options: destinationSpec.Options}}}
+	source := &wallabypb.Endpoint{Name: "custom-source", Config: &wallabypb.Endpoint_Custom{Custom: &wallabypb.CustomEndpointConfig{ConnectorType: "postgres-store-test-source", Options: map[string]string{"source": " exact "}}}}
+	definition := flow.Flow{
+		ID:           flowID,
+		Name:         "custom-before",
+		Source:       source,
+		Destinations: []*wallabypb.Endpoint{destination},
+		Config:       flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{destinationSpec})},
+	}
+	created, err := store.Create(ctx, definition)
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if !proto.Equal(created.Source, definition.Source) {
+		store.Close()
+		t.Fatalf("created source=%v", created.Source)
+	}
+	loaded, err := store.Get(ctx, flowID)
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	loaded.Name = "custom-after"
+	if _, err := store.Update(ctx, loaded); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	listed, err := store.List(ctx)
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range listed {
+		found = found || item.ID == flowID
+	}
+	if !found {
+		store.Close()
+		t.Fatal("custom flow missing from List")
+	}
+	store.Close()
+
+	restarted, err := NewPostgresEngineWithRegistry(ctx, dsn, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	defer func() { _, _ = restarted.pool.Exec(context.Background(), "DELETE FROM flows WHERE id=$1", flowID) }()
+	afterRestart, err := restarted.Get(ctx, flowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRestart.Name != "custom-after" || !proto.Equal(afterRestart.Source, definition.Source) || afterRestart.Destinations[0].GetCustom().GetConnectorType() != string(destinationSpec.Type) || afterRestart.Source.GetCustom().GetOptions()["source"] != " exact " || afterRestart.Destinations[0].GetCustom().GetOptions()["destination"] != " exact " {
+		t.Fatalf("restarted custom flow=%#v", afterRestart)
+	}
+}
 
 func TestPostgresTableMappingChangeRotatesIncarnation(t *testing.T) {
 	dsn := os.Getenv("TEST_PG_DSN")

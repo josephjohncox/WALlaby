@@ -67,7 +67,7 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 			t.Errorf("Snowpipe integration cleanup: %v", err)
 		}
 	})
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "snowpipe-test",
 		Type: connector.EndpointSnowpipe,
 		Options: map[string]string{
@@ -358,7 +358,7 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 	}
 }
 
-func assertSnowpipeIntegrationPreflight(t *testing.T, destination *snowpipe.Destination, spec connector.Spec) {
+func assertSnowpipeIntegrationPreflight(t *testing.T, destination *snowpipe.Destination, spec connector.RuntimeSpec) {
 	t.Helper()
 	appendPolicy := connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend}
 	if err := destination.Capabilities().SupportsTablePolicy(appendPolicy); err != nil {

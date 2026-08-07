@@ -37,13 +37,26 @@ type StreamRunnerConfig struct {
 	DeliveryCoordinator stream.ManagedDeliveryCoordinator
 	SchemaBaselines     connector.ManagedSchemaBaselineStore
 	ArtifactLog         stream.ManagedArtifactLog
+	ConnectorRegistry   *connector.Registry
+	SourceSpecOverride  *connector.RuntimeSpec
 }
 
 // NewStreamRunner constructs a stream runner without mutating the flow or
 // destination configuration supplied by the caller. Construction fails unless
 // the flow has durable checkpoint storage and a stable identity.
 func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream.DestinationConfig, cfg StreamRunnerConfig) (stream.Runner, error) {
-	sourceSpec := cloneSpec(f.Source)
+	registry := cfg.ConnectorRegistry
+	if registry == nil {
+		registry = connector.DefaultRegistry
+	}
+	decodedSource, err := f.DecodeSource(registry)
+	if err != nil {
+		return stream.Runner{}, fmt.Errorf("decode source endpoint: %w", err)
+	}
+	sourceSpec := cloneSpec(decodedSource)
+	if cfg.SourceSpecOverride != nil {
+		sourceSpec = cloneSpec(*cfg.SourceSpecOverride)
+	}
 	if sourceSpec.Type == connector.EndpointPostgres {
 		if sourceSpec.Options == nil {
 			sourceSpec.Options = make(map[string]string)
@@ -167,7 +180,7 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 	}, nil
 }
 
-func projectManagedSnowflakeContract(spec *connector.Spec, mapping flow.DestinationTableMappings, projector *tablemap.Projector) error {
+func projectManagedSnowflakeContract(spec *connector.RuntimeSpec, mapping flow.DestinationTableMappings, projector *tablemap.Projector) error {
 	profile := strings.TrimSpace(spec.Options["managed_profile"])
 	if !connector.IsManagedSnowflakeProfile(profile) {
 		return nil
@@ -346,7 +359,7 @@ func validateDestinationTableWrites(destination stream.DestinationConfig, mappin
 	return nil
 }
 
-func cloneSpec(spec connector.Spec) connector.Spec {
+func cloneSpec(spec connector.RuntimeSpec) connector.RuntimeSpec {
 	clone := spec
 	if spec.Options != nil {
 		clone.Options = make(map[string]string, len(spec.Options))

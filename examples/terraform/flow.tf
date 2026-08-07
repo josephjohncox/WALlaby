@@ -19,29 +19,31 @@ resource "wallaby_flow" "pg_to_s3" {
 
   source = {
     name = "pg-source"
-    type = "postgres"
-    options = {
-      dsn             = "postgres://user:pass@localhost:5432/app?sslmode=disable"
-      slot            = "wallaby_slot"
-      publication     = "wallaby_pub"
-      batch_size      = "1000"
-      batch_timeout   = "2s"
-      status_interval = "10s"
-      create_slot     = "true"
-      format          = "parquet"
+    postgres_source = {
+      mode = "POSTGRES_SOURCE_MODE_CDC"
+      connection = {
+        dsn = "postgres://user:pass@localhost:5432/app?sslmode=disable"
+      }
+      slot               = "wallaby_slot"
+      publication        = "wallaby_pub"
+      publication_tables = ["public.events"]
+      batch_size         = 1000
+      batch_timeout      = "2s"
+      status_interval    = "10s"
+      create_slot        = true
+      format             = "WIRE_FORMAT_PARQUET"
     }
   }
 
   destinations = [
     {
       name = "s3-out"
-      type = "s3"
-      options = {
+      s3 = {
         bucket      = "my-wallaby-bucket"
         prefix      = "cdc/"
         region      = "us-east-1"
-        format      = "parquet"
-        compression = "gzip"
+        format      = "WIRE_FORMAT_PARQUET"
+        compression = "COMPRESSION_GZIP"
       }
     }
   ]

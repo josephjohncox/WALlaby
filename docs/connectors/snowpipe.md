@@ -20,19 +20,15 @@ A PUT error remains a PUT error. A COPY error after a confirmed PUT remains a CO
 
 Credential-free tests use an unexported package-local staged transport. It is unavailable to production configuration. The external integration test requires `WALLABY_TEST_SNOWPIPE_DSN` and `WALLABY_TEST_SNOWPIPE_STAGE` for a real Snowflake service.
 
-## Endpoint options
+## Typed `snowpipe` fields
 
 - `dsn` (required)
 - `stage` and `stage_path`
-- `format` (`parquet`, `avro`, or `json`)
+- `format` (`WIRE_FORMAT_PARQUET`, `WIRE_FORMAT_AVRO`, or `WIRE_FORMAT_JSON`)
 - `file_format`
-- `copy_on_write`
-- `copy_pattern`
-- `copy_on_error`
-- `copy_purge`
-- `copy_match_by_column_name`
-- `auto_ingest`
-- `warehouse`, `warehouse_size`, `warehouse_auto_suspend`, and `warehouse_auto_resume`
-- metadata and schema-registry options
+- native booleans `copy_on_write`, `copy_purge`, and `auto_ingest`
+- `copy_pattern`, `copy_on_error`, and `copy_match_by_column_name`
+- nested `warehouse.name`, `warehouse.size`, `warehouse.auto_suspend_seconds`, `warehouse.auto_resume`, and `warehouse.session_keep_alive`
+- nested `metadata` and `schema_registry` branches; a local registry requires `schema_registry.local.directory`
 
 COPY string values are escaped and emitted in deterministic option order. The generated file name is bound into `FILES = (...)`, so COPY addresses the exact uploaded object rather than a broad stage scan.

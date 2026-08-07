@@ -39,7 +39,7 @@ type DestinationRegistration struct {
 
 // ResolveCapabilities classifies a runtime spec, requires a registered profile,
 // and compares the connector output with the registry's independent full oracle.
-func (registration DestinationRegistration) ResolveCapabilities(destination connector.Destination, spec connector.Spec) (connector.Capabilities, error) {
+func (registration DestinationRegistration) ResolveCapabilities(destination connector.Destination, spec connector.RuntimeSpec) (connector.Capabilities, error) {
 	if registration.Type != spec.Type {
 		return connector.Capabilities{}, fmt.Errorf("destination capability registry row %s cannot resolve endpoint %s", registration.Type, spec.Type)
 	}
@@ -196,8 +196,6 @@ var destinationRegistry = []DestinationRegistration{
 	{Type: connector.EndpointDuckDB, New: func() connector.Destination { return &duckdb.Destination{} }},
 	{Type: connector.EndpointDuckLake, New: func() connector.Destination { return &ducklake.Destination{} }},
 	{Type: connector.EndpointIceberg, New: func() connector.Destination { return &icebergdest.Destination{} }},
-	{Type: connector.EndpointProto},
-	{Type: connector.EndpointParquet},
 }
 
 // DestinationRegistrations returns a defensive copy of the authoritative registry.
@@ -289,7 +287,7 @@ func DestinationContracts() ([]DestinationContract, error) {
 				if _, ok := declared[profile.ID]; !ok {
 					return nil, fmt.Errorf("destination registry row %s contains classifier-undeclared profile %q", registration.Type, profile.ID)
 				}
-				spec := connector.Spec{Name: string(registration.Type), Type: registration.Type, Options: cloneOptions(profile.Options)}
+				spec := connector.RuntimeSpec{Name: string(registration.Type), Type: registration.Type, Options: cloneOptions(profile.Options)}
 				classified, err := configured.ClassifyCapabilityProfile(spec)
 				if err != nil {
 					return nil, fmt.Errorf("destination registry row %s profile %s classifier: %w", registration.Type, profile.ID, err)
@@ -314,7 +312,7 @@ func DestinationContracts() ([]DestinationContract, error) {
 				}
 			}
 		}
-		spec := connector.Spec{Name: string(registration.Type), Type: registration.Type}
+		spec := connector.RuntimeSpec{Name: string(registration.Type), Type: registration.Type}
 		capabilities, err := registration.ResolveCapabilities(destination, spec)
 		if err != nil {
 			return nil, fmt.Errorf("destination registry row %s default profile: %w", registration.Type, err)

@@ -48,12 +48,10 @@ const (
 	payloadModeWAL        = "wal"
 )
 
-var payloadModeAliases = map[string]string{
+var payloadModes = map[string]string{
 	"":            payloadModeWire,
 	"wire":        payloadModeWire,
-	"record":      payloadModeRecordJSON,
 	"record_json": payloadModeRecordJSON,
-	"raw":         payloadModeRecordJSON,
 	"wal":         payloadModeWAL,
 }
 
@@ -84,7 +82,7 @@ type dedupeEntry struct {
 
 // Destination delivers records to an HTTP endpoint.
 type Destination struct {
-	spec              connector.Spec
+	spec              connector.RuntimeSpec
 	url               string
 	method            string
 	codec             wire.Codec
@@ -106,7 +104,7 @@ type Destination struct {
 	protoTypesSubject string
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	cfg, err := parseDestinationConfig(spec)
 	if err != nil {
 		return err
@@ -166,14 +164,14 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	return nil
 }
 
-func parseDestinationConfig(spec connector.Spec) (destinationConfig, error) {
+func parseDestinationConfig(spec connector.RuntimeSpec) (destinationConfig, error) {
 	decoder := options.NewDecoder("http options", spec.Options)
 	registryConfig, registryErr := schemaregistry.ConfigFromOptions(spec.Options)
 	cfg := destinationConfig{
 		url:               decoder.Raw(optURL, ""),
 		method:            strings.ToUpper(decoder.Raw(optMethod, http.MethodPost)),
 		format:            decoder.Raw(optFormat, string(connector.WireFormatJSON)),
-		payloadMode:       decoder.AliasedEnum(optPayloadMode, payloadModeWire, payloadModeAliases),
+		payloadMode:       decoder.AliasedEnum(optPayloadMode, payloadModeWire, payloadModes),
 		timeout:           decoder.Duration(optTimeout, 10*time.Second),
 		headers:           decoder.HeaderList(optHeaders),
 		maxRetries:        decoder.Int(optMaxRetries, 3),

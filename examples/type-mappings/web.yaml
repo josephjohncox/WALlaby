@@ -1,4 +1,0 @@
-double precision: number
-timestamp with time zone: string
-jsonb: object
-bytea: base64_string

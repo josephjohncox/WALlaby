@@ -57,7 +57,7 @@ func TestSnowflakeDestination(t *testing.T) {
 	}
 
 	dest := &snowflake.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "snowflake-test",
 		Type: connector.EndpointSnowflake,
 		Options: map[string]string{
@@ -404,7 +404,7 @@ func TestSnowflakeDestination(t *testing.T) {
 	closed = true
 
 	renamedDest := &snowflake.Destination{}
-	renamedSpec := connector.Spec{
+	renamedSpec := connector.RuntimeSpec{
 		Name: "snowflake-test-renamed",
 		Type: connector.EndpointSnowflake,
 		Options: map[string]string{

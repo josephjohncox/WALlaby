@@ -104,13 +104,13 @@ func TestRunnerPrimaryAckInvariantsRapid(t *testing.T) {
 		}
 		runner := Runner{
 			Source:           source,
-			SourceSpec:       connector.Spec{Options: map[string]string{"mode": "backfill"}},
+			SourceSpec:       connector.RuntimeSpec{Options: map[string]string{"mode": "backfill"}},
 			Checkpoints:      checkpointStore,
 			CheckpointOutbox: checkpointStore,
 			Destinations: []DestinationConfig{
-				{Spec: connector.Spec{Name: "primary"}, Dest: primaryDest},
-				{Spec: connector.Spec{Name: "secondary-a"}, Dest: secondaryDestA},
-				{Spec: connector.Spec{Name: "secondary-b"}, Dest: secondaryDestB},
+				{Spec: connector.RuntimeSpec{Name: "primary"}, Dest: primaryDest},
+				{Spec: connector.RuntimeSpec{Name: "secondary-a"}, Dest: secondaryDestA},
+				{Spec: connector.RuntimeSpec{Name: "secondary-b"}, Dest: secondaryDestB},
 			},
 			FlowID:              "flow-primary-ack",
 			AckPolicy:           AckPolicyPrimary,

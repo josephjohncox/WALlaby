@@ -13,9 +13,9 @@ var ErrRegistryDisabled = errors.New("schema registry disabled")
 func NewRegistry(ctx context.Context, cfg Config) (Registry, error) {
 	typ := strings.ToLower(strings.TrimSpace(cfg.Type))
 	switch typ {
-	case "", "none", "disabled":
+	case "", "none":
 		return nil, ErrRegistryDisabled
-	case "csr", "confluent":
+	case "csr":
 		reg, err := newConfluentRegistry(cfg)
 		if err != nil {
 			return nil, err
@@ -33,9 +33,9 @@ func NewRegistry(ctx context.Context, cfg Config) (Registry, error) {
 			return nil, err
 		}
 		return newCachedRegistry(reg), nil
-	case "local", "memory", "mem":
-		return newCachedRegistry(newLocalRegistry()), nil
-	case "postgres", "db":
+	case "local":
+		return newLocalRegistry(ctx, cfg.LocalDirectory)
+	case "postgres":
 		if cfg.DSN == "" {
 			return nil, fmt.Errorf("schema_registry_dsn is required for postgres registry")
 		}

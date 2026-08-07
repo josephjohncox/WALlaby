@@ -14,18 +14,20 @@ import (
 	"time"
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/internal/typemapping"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 	gogrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func TestShippedGRPCTypedExampleUsesProductionParsers(t *testing.T) {
 	t.Parallel()
 	options := shippedGRPCExampleOptions(t)
-	cfg, err := parseDestinationConfig(connector.Spec{Name: "grpc_typed", Type: connector.EndpointGRPC, Options: options})
+	cfg, err := parseDestinationConfig(connector.RuntimeSpec{Name: "grpc_typed", Type: connector.EndpointGRPC, Options: options})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +53,7 @@ func TestShippedGRPCTypedExampleMutationsAreRejected(t *testing.T) {
 
 	malformedOptions := copyExampleOptions(options)
 	malformedOptions[optBackoffFactor] = "many"
-	if _, err := parseDestinationConfig(connector.Spec{Name: "grpc_typed", Type: connector.EndpointGRPC, Options: malformedOptions}); err == nil || !strings.Contains(err.Error(), optBackoffFactor) {
+	if _, err := parseDestinationConfig(connector.RuntimeSpec{Name: "grpc_typed", Type: connector.EndpointGRPC, Options: malformedOptions}); err == nil || !strings.Contains(err.Error(), optBackoffFactor) {
 		t.Fatalf("parseDestinationConfig() error = %v, want %s", err, optBackoffFactor)
 	}
 
@@ -70,18 +72,25 @@ func shippedGRPCExampleOptions(t *testing.T) map[string]string {
 		t.Fatal(err)
 	}
 	var fixture struct {
-		Destinations []struct {
-			Name    string            `json:"name"`
-			Type    string            `json:"type"`
-			Options map[string]string `json:"options"`
-		} `json:"destinations"`
+		Destinations []json.RawMessage `json:"destinations"`
 	}
 	if err := json.Unmarshal(payload, &fixture); err != nil {
 		t.Fatal(err)
 	}
-	for _, destination := range fixture.Destinations {
-		if destination.Name == "grpc_typed" && destination.Type == string(connector.EndpointGRPC) {
-			return destination.Options
+	for _, raw := range fixture.Destinations {
+		var endpoint wallabypb.Endpoint
+		if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(raw, &endpoint); err != nil {
+			t.Fatal(err)
+		}
+		if endpoint.GetName() != "grpc_typed" {
+			continue
+		}
+		spec, err := endpointcodec.Decode(&endpoint, endpointcodec.RoleDestination)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if spec.Type == connector.EndpointGRPC {
+			return spec.Options
 		}
 	}
 	t.Fatal("gRPC typed example omits grpc_typed destination")
@@ -153,7 +162,7 @@ func TestOpenRejectsTypedOptionsBeforeRegistryTLSAndDial(t *testing.T) {
 				schemaregistry.OptRegistryDSN:  "://invalid registry DSN",
 				test.key:                       test.value,
 			}
-			err := (&Destination{}).Open(context.Background(), connector.Spec{Options: options})
+			err := (&Destination{}).Open(context.Background(), connector.RuntimeSpec{Options: options})
 			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 				t.Fatalf("Open() error = %v, want %q", err, test.wantErr)
 			}
@@ -164,14 +173,19 @@ func TestOpenRejectsTypedOptionsBeforeRegistryTLSAndDial(t *testing.T) {
 	}
 }
 
-func TestParseDestinationConfigPayloadModeAliases(t *testing.T) {
-	for raw, want := range map[string]string{"": payloadModeWire, "wire": payloadModeWire, "record": payloadModeRecordJSON, "record_json": payloadModeRecordJSON, "raw": payloadModeRecordJSON, "wal": payloadModeWAL} {
-		cfg, err := parseDestinationConfig(connector.Spec{Name: "sink", Options: map[string]string{optEndpoint: "unused.invalid:443", optPayloadMode: raw}})
+func TestParseDestinationConfigPayloadModesAreCanonical(t *testing.T) {
+	for raw, want := range map[string]string{"": payloadModeWire, "wire": payloadModeWire, "record_json": payloadModeRecordJSON, "wal": payloadModeWAL} {
+		cfg, err := parseDestinationConfig(connector.RuntimeSpec{Name: "sink", Options: map[string]string{optEndpoint: "unused.invalid:443", optPayloadMode: raw}})
 		if err != nil {
 			t.Fatalf("payload_mode %q: %v", raw, err)
 		}
 		if cfg.payloadMode != want {
 			t.Errorf("payload_mode %q = %q, want %q", raw, cfg.payloadMode, want)
+		}
+	}
+	for _, alias := range []string{"record", "raw"} {
+		if _, err := parseDestinationConfig(connector.RuntimeSpec{Name: "sink", Options: map[string]string{optEndpoint: "unused.invalid:443", optPayloadMode: alias}}); err == nil {
+			t.Fatalf("legacy payload mode %q was accepted", alias)
 		}
 	}
 }
@@ -192,7 +206,7 @@ func TestParseDestinationConfigRejectsInvalidMetadataAndTLSCombinations(t *testi
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := parseDestinationConfig(connector.Spec{Options: test.options})
+			_, err := parseDestinationConfig(connector.RuntimeSpec{Options: test.options})
 			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 				t.Fatalf("parseDestinationConfig() error = %v, want %q", err, test.wantErr)
 			}
@@ -202,7 +216,7 @@ func TestParseDestinationConfigRejectsInvalidMetadataAndTLSCombinations(t *testi
 
 func TestParseDestinationConfigAllowsBinaryMetadataBytes(t *testing.T) {
 	binaryValue := string([]byte{0, 0xff, 'x'})
-	cfg, err := parseDestinationConfig(connector.Spec{Name: "sink", Options: map[string]string{
+	cfg, err := parseDestinationConfig(connector.RuntimeSpec{Name: "sink", Options: map[string]string{
 		optEndpoint: "unused.invalid:443",
 		optHeaders:  "Trace-Bin:" + binaryValue,
 	}})
@@ -215,7 +229,7 @@ func TestParseDestinationConfigAllowsBinaryMetadataBytes(t *testing.T) {
 }
 
 func TestParseDestinationConfigSupportsQuotedHeaderComma(t *testing.T) {
-	cfg, err := parseDestinationConfig(connector.Spec{Name: "sink", Options: map[string]string{
+	cfg, err := parseDestinationConfig(connector.RuntimeSpec{Name: "sink", Options: map[string]string{
 		optEndpoint: "unused.invalid:443",
 		optHeaders:  `"X-List: alpha,beta","X-Colon: one:two"`,
 	}})
@@ -255,7 +269,7 @@ func TestBackoffDurationSaturatesSafely(t *testing.T) {
 		})
 	}
 
-	cfg, err := parseDestinationConfig(connector.Spec{Options: map[string]string{optEndpoint: "unused:443", optBackoffFactor: "1.7976931348623157e308", optBackoffMax: "0"}})
+	cfg, err := parseDestinationConfig(connector.RuntimeSpec{Options: map[string]string{optEndpoint: "unused:443", optBackoffFactor: "1.7976931348623157e308", optBackoffMax: "0"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +289,7 @@ func TestOpenLoadsTLSBeforeCreatingClientOrRegistry(t *testing.T) {
 			return nil, nil
 		},
 	}
-	err := (&Destination{}).open(context.Background(), connector.Spec{Options: map[string]string{
+	err := (&Destination{}).open(context.Background(), connector.RuntimeSpec{Options: map[string]string{
 		optEndpoint:  "unused.invalid:443",
 		optFormat:    string(connector.WireFormatAvro),
 		optInsecure:  "false",
@@ -301,7 +315,7 @@ func TestOpenCleansUpClientAndPartialRegistryOnRegistryFailure(t *testing.T) {
 		},
 	}
 	destination := &Destination{}
-	err := destination.open(context.Background(), connector.Spec{Options: map[string]string{
+	err := destination.open(context.Background(), connector.RuntimeSpec{Options: map[string]string{
 		optEndpoint: "unused.invalid:443",
 		optFormat:   string(connector.WireFormatAvro),
 	}}, factories)

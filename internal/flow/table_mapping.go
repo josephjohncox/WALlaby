@@ -78,8 +78,10 @@ type TableWritePolicy struct {
 	WatermarkColumn string         `json:"watermark_column,omitempty" yaml:"watermark_column,omitempty"`
 }
 
-// NewTableMappings returns the required include-by-name, append-safe policy for the supplied destinations.
-func NewTableMappings(destinations []connector.Spec) TableMappings {
+// NewTableMappings returns the required include-by-name, append-safe policy.
+// RuntimeSpec is accepted here only as the internal capability-validation view;
+// persisted Flow endpoint ownership remains with typed protobuf endpoints.
+func NewTableMappings(destinations []connector.RuntimeSpec) TableMappings {
 	mappings := TableMappings{Version: TableMappingsVersion, Destinations: make([]DestinationTableMappings, 0, len(destinations))}
 	for _, destination := range destinations {
 		mappings.Destinations = append(mappings.Destinations, DestinationTableMappings{
@@ -200,14 +202,17 @@ func (m TableMappings) IdentityForDestination(name string) bool {
 	return true
 }
 
-func (m TableMappings) Validate(destinations []connector.Spec) error {
+// Validate checks mapping identity and connector capabilities against decoded
+// runtime views. Callers must decode from the Flow's typed endpoints at an
+// explicit boundary; RuntimeSpec is never persisted as endpoint authority.
+func (m TableMappings) Validate(destinations []connector.RuntimeSpec) error {
 	if m.Version != TableMappingsVersion {
 		return incompatibleTableMappingsVersion(m.Version)
 	}
 	if len(m.Destinations) == 0 {
 		return errors.New("table mappings require at least one destination mapping")
 	}
-	byName := make(map[string]connector.Spec, len(destinations))
+	byName := make(map[string]connector.RuntimeSpec, len(destinations))
 	for _, destination := range destinations {
 		name := destination.Name
 		if err := validateConfigName(name, "destination name"); err != nil {
@@ -247,7 +252,7 @@ func (m TableMappings) Validate(destinations []connector.Spec) error {
 	return nil
 }
 
-func validateDestinationMappings(mapping DestinationTableMappings, destination connector.Spec) error {
+func validateDestinationMappings(mapping DestinationTableMappings, destination connector.RuntimeSpec) error {
 	if err := validateFutureTable(mapping.FutureTables, destination); err != nil {
 		return err
 	}
@@ -345,7 +350,7 @@ func validateFutureTableInjectivity(mapping DestinationTableMappings, explicitSo
 	return nil
 }
 
-func validateFutureTable(future FutureTableMapping, destination connector.Spec) error {
+func validateFutureTable(future FutureTableMapping, destination connector.RuntimeSpec) error {
 	if err := validateAction(future.Action, "future table"); err != nil {
 		return err
 	}
@@ -451,7 +456,7 @@ func validateMappingTemplate(raw string, component mappingtemplate.Component) er
 	return err
 }
 
-func validateWritePolicy(write TableWritePolicy, destination connector.Spec, future bool) error {
+func validateWritePolicy(write TableWritePolicy, destination connector.RuntimeSpec, future bool) error {
 	switch write.Mode {
 	case TableWriteModeAppend:
 		if len(write.KeyColumns) != 0 {
@@ -493,7 +498,7 @@ func validateWritePolicy(write TableWritePolicy, destination connector.Spec, fut
 
 // SupportsExplicitKeyUpsert reports the exact configured destination/profile
 // admission used by mapping validation and authoring tools.
-func SupportsExplicitKeyUpsert(destination connector.Spec) bool {
+func SupportsExplicitKeyUpsert(destination connector.RuntimeSpec) bool {
 	return destination.Type == connector.EndpointPostgres || connector.IsPostgresToSnowflakeSQLV1Spec(destination)
 }
 

@@ -28,7 +28,7 @@ func (d *Destination) stagedSessionShim(cfg stagedConfig) managedConfig {
 	}
 }
 
-func (d *Destination) openManagedStaged(ctx context.Context, dsn string, spec connector.Spec) (resultErr error) {
+func (d *Destination) openManagedStaged(ctx context.Context, dsn string, spec connector.RuntimeSpec) (resultErr error) {
 	ctx, endAdmission := telemetry.StartSnowflakeManagedSpan(ctx, "admission", "", "", 0, 0)
 	defer func() { endAdmission(resultErr) }()
 	cfg, err := stagedConfigFromSpec(dsn, spec)

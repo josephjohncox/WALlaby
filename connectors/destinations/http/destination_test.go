@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -16,16 +17,19 @@ import (
 	"testing"
 	"time"
 
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/internal/typemapping"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
+	"google.golang.org/protobuf/encoding/protojson"
 	"gopkg.in/yaml.v3"
 )
 
 func TestShippedHTTPTypedExampleUsesProductionParsers(t *testing.T) {
 	t.Parallel()
-	root, options := shippedHTTPExampleOptions(t)
-	cfg, err := parseDestinationConfig(connector.Spec{Name: "webhook_typed", Type: connector.EndpointHTTP, Options: options})
+	_, options := shippedHTTPExampleOptions(t)
+	cfg, err := parseDestinationConfig(connector.RuntimeSpec{Name: "webhook_typed", Type: connector.EndpointHTTP, Options: options})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,9 +40,7 @@ func TestShippedHTTPTypedExampleUsesProductionParsers(t *testing.T) {
 		t.Fatalf("decoded comma-bearing header = %q", got)
 	}
 
-	mappingOptions := copyOptions(options)
-	mappingOptions[typemapping.OptTypeMappingsFile] = filepath.Join(root, filepath.FromSlash(mappingOptions[typemapping.OptTypeMappingsFile]))
-	got, err := typemapping.Load(mappingOptions)
+	got, err := typemapping.Load(options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,25 +57,15 @@ func TestShippedHTTPTypedExampleUsesProductionParsers(t *testing.T) {
 
 func TestShippedHTTPTypedExampleMutationsAreRejected(t *testing.T) {
 	t.Parallel()
-	root, options := shippedHTTPExampleOptions(t)
+	_, options := shippedHTTPExampleOptions(t)
 
 	malformedOptions := copyOptions(options)
 	malformedOptions[optTimeout] = "eventually"
-	if _, err := parseDestinationConfig(connector.Spec{Name: "webhook_typed", Type: connector.EndpointHTTP, Options: malformedOptions}); err == nil || !strings.Contains(err.Error(), optTimeout) {
+	if _, err := parseDestinationConfig(connector.RuntimeSpec{Name: "webhook_typed", Type: connector.EndpointHTTP, Options: malformedOptions}); err == nil || !strings.Contains(err.Error(), optTimeout) {
 		t.Fatalf("parseDestinationConfig() error = %v, want %s", err, optTimeout)
 	}
 
-	mappingPath := filepath.Join(root, filepath.FromSlash(options[typemapping.OptTypeMappingsFile]))
-	payload, err := os.ReadFile(mappingPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mutated := strings.Replace(string(payload), "double precision: number", "double precision: [number", 1)
-	mutatedPath := filepath.Join(t.TempDir(), "web.yaml")
-	if err := os.WriteFile(mutatedPath, []byte(mutated), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := typemapping.Load(map[string]string{typemapping.OptTypeMappingsFile: mutatedPath}); err == nil || !strings.Contains(err.Error(), "parse type_mappings") {
+	if _, err := typemapping.Load(map[string]string{typemapping.OptTypeMappings: "[not: a: mapping"}); err == nil || !strings.Contains(err.Error(), "parse type_mappings") {
 		t.Fatalf("typemapping.Load() error = %v, want parse failure", err)
 	}
 }
@@ -86,18 +78,29 @@ func shippedHTTPExampleOptions(t *testing.T) (string, map[string]string) {
 		t.Fatal(err)
 	}
 	var fixture struct {
-		Destinations []struct {
-			Name    string            `yaml:"name"`
-			Type    string            `yaml:"type"`
-			Options map[string]string `yaml:"options"`
-		} `yaml:"destinations"`
+		Destinations []map[string]any `yaml:"destinations"`
 	}
 	if err := yaml.Unmarshal(payload, &fixture); err != nil {
 		t.Fatal(err)
 	}
-	for _, destination := range fixture.Destinations {
-		if destination.Name == "webhook_typed" && destination.Type == string(connector.EndpointHTTP) {
-			return root, destination.Options
+	for _, document := range fixture.Destinations {
+		encoded, err := json.Marshal(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var endpoint wallabypb.Endpoint
+		if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(encoded, &endpoint); err != nil {
+			t.Fatal(err)
+		}
+		if endpoint.GetName() != "webhook_typed" {
+			continue
+		}
+		spec, err := endpointcodec.Decode(&endpoint, endpointcodec.RoleDestination)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if spec.Type == connector.EndpointHTTP {
+			return root, spec.Options
 		}
 	}
 	t.Fatal("HTTP typed example omits webhook_typed destination")
@@ -420,7 +423,7 @@ func TestOpenRejectsTypedOptionsBeforeRegistryCreation(t *testing.T) {
 				schemaregistry.OptRegistryDSN:  "://invalid registry DSN",
 				test.key:                       test.value,
 			}
-			err := (&Destination{}).Open(context.Background(), connector.Spec{Options: options})
+			err := (&Destination{}).Open(context.Background(), connector.RuntimeSpec{Options: options})
 			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 				t.Fatalf("Open() error = %v, want %q", err, test.wantErr)
 			}
@@ -431,14 +434,19 @@ func TestOpenRejectsTypedOptionsBeforeRegistryCreation(t *testing.T) {
 	}
 }
 
-func TestParseDestinationConfigPayloadModeAliases(t *testing.T) {
-	for raw, want := range map[string]string{"": payloadModeWire, "wire": payloadModeWire, "record": payloadModeRecordJSON, "record_json": payloadModeRecordJSON, "raw": payloadModeRecordJSON, "wal": payloadModeWAL} {
-		cfg, err := parseDestinationConfig(connector.Spec{Options: map[string]string{optURL: "https://example.test/hook", optPayloadMode: raw}})
+func TestParseDestinationConfigPayloadModesAreCanonical(t *testing.T) {
+	for raw, want := range map[string]string{"": payloadModeWire, "wire": payloadModeWire, "record_json": payloadModeRecordJSON, "wal": payloadModeWAL} {
+		cfg, err := parseDestinationConfig(connector.RuntimeSpec{Options: map[string]string{optURL: "https://example.test/hook", optPayloadMode: raw}})
 		if err != nil {
 			t.Fatalf("payload_mode %q: %v", raw, err)
 		}
 		if cfg.payloadMode != want {
 			t.Errorf("payload_mode %q = %q, want %q", raw, cfg.payloadMode, want)
+		}
+	}
+	for _, alias := range []string{"record", "raw"} {
+		if _, err := parseDestinationConfig(connector.RuntimeSpec{Options: map[string]string{optURL: "https://example.test/hook", optPayloadMode: alias}}); err == nil {
+			t.Fatalf("legacy payload mode %q was accepted", alias)
 		}
 	}
 }
@@ -459,7 +467,7 @@ func TestParseDestinationConfigValidatesHTTPFields(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := parseDestinationConfig(connector.Spec{Options: test.options})
+			_, err := parseDestinationConfig(connector.RuntimeSpec{Options: test.options})
 			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 				t.Fatalf("parseDestinationConfig() error = %v, want %q", err, test.wantErr)
 			}
@@ -495,7 +503,7 @@ func TestBackoffDurationSaturatesSafely(t *testing.T) {
 		})
 	}
 
-	cfg, err := parseDestinationConfig(connector.Spec{Options: map[string]string{optURL: "https://example.test", optBackoffFactor: "1.7976931348623157e308", optBackoffMax: "0"}})
+	cfg, err := parseDestinationConfig(connector.RuntimeSpec{Options: map[string]string{optURL: "https://example.test", optBackoffFactor: "1.7976931348623157e308", optBackoffMax: "0"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +521,7 @@ func TestQuotedHeaderCommaIsDelivered(t *testing.T) {
 	defer server.Close()
 
 	destination := &Destination{}
-	err := destination.Open(context.Background(), connector.Spec{Options: map[string]string{
+	err := destination.Open(context.Background(), connector.RuntimeSpec{Options: map[string]string{
 		optURL:         server.URL,
 		optPayloadMode: payloadModeRecordJSON,
 		optMaxRetries:  "0",
@@ -533,7 +541,7 @@ func TestQuotedHeaderCommaIsDelivered(t *testing.T) {
 func openTestDestination(t *testing.T, url string, dedupeWindow time.Duration) *Destination {
 	t.Helper()
 	destination := &Destination{}
-	err := destination.Open(context.Background(), connector.Spec{Options: map[string]string{
+	err := destination.Open(context.Background(), connector.RuntimeSpec{Options: map[string]string{
 		optURL:          url,
 		optPayloadMode:  payloadModeRecordJSON,
 		optMaxRetries:   "0",

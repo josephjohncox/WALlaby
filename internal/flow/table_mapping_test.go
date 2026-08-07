@@ -5,12 +5,13 @@ import (
 	"strings"
 	"testing"
 
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 func TestTableMappingsValidateAndFingerprint(t *testing.T) {
 	t.Parallel()
-	destinations := []connector.Spec{{Name: "warehouse", Type: connector.EndpointPostgres}}
+	destinations := []connector.RuntimeSpec{{Name: "warehouse", Type: connector.EndpointPostgres}}
 	mappings := richTestMappings()
 	if err := mappings.Validate(destinations); err != nil {
 		t.Fatalf("Validate(): %v", err)
@@ -39,7 +40,7 @@ func TestTableMappingsValidateAndFingerprint(t *testing.T) {
 
 func TestTableMappingsPreserveExactCaseAndWhitespaceIdentifiers(t *testing.T) {
 	t.Parallel()
-	destination := connector.Spec{Name: "warehouse", Type: connector.EndpointPostgres}
+	destination := connector.RuntimeSpec{Name: "warehouse", Type: connector.EndpointPostgres}
 	mappings := TableMappings{
 		Version: TableMappingsVersion,
 		Destinations: []DestinationTableMappings{{
@@ -51,7 +52,7 @@ func TestTableMappingsPreserveExactCaseAndWhitespaceIdentifiers(t *testing.T) {
 			},
 		}},
 	}
-	if err := mappings.Validate([]connector.Spec{destination}); err != nil {
+	if err := mappings.Validate([]connector.RuntimeSpec{destination}); err != nil {
 		t.Fatalf("valid exact PostgreSQL identifiers rejected: %v", err)
 	}
 	clone := mappings.Clone()
@@ -65,7 +66,7 @@ func TestTableMappingsCanonicalEqualityFingerprintAndJSONRoundTrip(t *testing.T)
 	base := richTestMappings()
 	base.Destinations[0].Tables[0].Write.KeyColumns = []string{"id", "updated_at"}
 	base.Destinations[0].Tables = append(base.Destinations[0].Tables, TableMapping{SourceSchema: "public", SourceTable: "ignored", Action: MappingActionExclude})
-	base.Destinations = append(base.Destinations, NewTableMappings([]connector.Spec{{Name: "archive", Type: connector.EndpointPostgres}}).Destinations[0])
+	base.Destinations = append(base.Destinations, NewTableMappings([]connector.RuntimeSpec{{Name: "archive", Type: connector.EndpointPostgres}}).Destinations[0])
 	permuted := base.Clone()
 	permuted.Destinations[0], permuted.Destinations[1] = permuted.Destinations[1], permuted.Destinations[0]
 	for destinationIndex := range permuted.Destinations {
@@ -120,7 +121,7 @@ func TestTableMappingsCanonicalEqualityFingerprintAndJSONRoundTrip(t *testing.T)
 
 func TestExactTargetsAllowLiteralBracesButRejectExecutableTemplates(t *testing.T) {
 	t.Parallel()
-	destination := []connector.Spec{{Name: "warehouse", Type: connector.EndpointPostgres}}
+	destination := []connector.RuntimeSpec{{Name: "warehouse", Type: connector.EndpointPostgres}}
 	valid := richTestMappings()
 	valid.Destinations[0].Tables[0].TargetSchema = "schema{literal}"
 	valid.Destinations[0].Tables[0].TargetTable = "table{{not valid Go template syntax"
@@ -148,7 +149,7 @@ func TestExactTargetsAllowLiteralBracesButRejectExecutableTemplates(t *testing.T
 
 func TestFutureTableTemplatesDoNotCollideWithExactTargets(t *testing.T) {
 	t.Parallel()
-	destination := []connector.Spec{{Name: "warehouse", Type: connector.EndpointPostgres}}
+	destination := []connector.RuntimeSpec{{Name: "warehouse", Type: connector.EndpointPostgres}}
 	makeMappings := func(schemaTemplate, tableTemplate string, exact TableMapping, overrides ...TableMapping) TableMappings {
 		tables := append([]TableMapping{exact}, overrides...)
 		return TableMappings{Version: TableMappingsVersion, Destinations: []DestinationTableMappings{{
@@ -226,7 +227,7 @@ func TestFutureTableTemplatesDoNotCollideWithExactTargets(t *testing.T) {
 
 func TestFutureColumnTemplatesDoNotCollideWithExactTargets(t *testing.T) {
 	t.Parallel()
-	destination := []connector.Spec{{Name: "warehouse", Type: connector.EndpointPostgres}}
+	destination := []connector.RuntimeSpec{{Name: "warehouse", Type: connector.EndpointPostgres}}
 	makeMappings := func(columnTemplate string, columns ...ColumnMapping) TableMappings {
 		return TableMappings{Version: TableMappingsVersion, Destinations: []DestinationTableMappings{{
 			Destination:  "warehouse",
@@ -277,11 +278,11 @@ func TestFutureColumnTemplatesDoNotCollideWithExactTargets(t *testing.T) {
 
 func TestTableMappingsRejectInvalidContracts(t *testing.T) {
 	t.Parallel()
-	postgres := []connector.Spec{{Name: "warehouse", Type: connector.EndpointPostgres}}
+	postgres := []connector.RuntimeSpec{{Name: "warehouse", Type: connector.EndpointPostgres}}
 	tests := []struct {
 		name string
 		edit func(*TableMappings)
-		dest []connector.Spec
+		dest []connector.RuntimeSpec
 		want string
 	}{
 		{name: "missing version", edit: func(m *TableMappings) { m.Version = 0 }, dest: postgres, want: "version"},
@@ -316,13 +317,13 @@ func TestTableMappingsRejectInvalidContracts(t *testing.T) {
 		{name: "future column schema field", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.FutureColumns.TargetColumn = "{{ .Schema }}" }, dest: postgres, want: ".Column"},
 		{name: "future column table field", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.FutureColumns.TargetColumn = "{{ .Table }}" }, dest: postgres, want: ".Column"},
 		{name: "destination whitespace", edit: func(m *TableMappings) { m.Destinations[0].Destination = " warehouse" }, dest: postgres, want: "whitespace"},
-		{name: "flow destination whitespace", edit: func(*TableMappings) {}, dest: []connector.Spec{{Name: "warehouse ", Type: connector.EndpointPostgres}}, want: "whitespace"},
+		{name: "flow destination whitespace", edit: func(*TableMappings) {}, dest: []connector.RuntimeSpec{{Name: "warehouse ", Type: connector.EndpointPostgres}}, want: "whitespace"},
 		{name: "source identifier NUL", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].SourceTable = "customers\x00shadow" }, dest: postgres, want: "NUL"},
 		{name: "target identifier NUL", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].TargetTable = "accounts\x00shadow" }, dest: postgres, want: "NUL"},
 		{name: "key NUL", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].Write.KeyColumns[0] = "id\x00shadow" }, dest: postgres, want: "NUL"},
 		{name: "watermark NUL", edit: func(m *TableMappings) { m.Destinations[0].Tables[0].Write.WatermarkColumn = "updated_at\x00shadow" }, dest: postgres, want: "NUL"},
 		{name: "template whitespace", edit: func(m *TableMappings) { m.Destinations[0].FutureTables.TargetTable = " {{ .Table }}" }, dest: postgres, want: "whitespace"},
-		{name: "upsert append only", edit: func(*TableMappings) {}, dest: []connector.Spec{{Name: "warehouse", Type: connector.EndpointIceberg}}, want: "does not support upsert"},
+		{name: "upsert append only", edit: func(*TableMappings) {}, dest: []connector.RuntimeSpec{{Name: "warehouse", Type: connector.EndpointIceberg}}, want: "does not support upsert"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -339,41 +340,43 @@ func TestAppendWatermarkIsMetadataAndSnowflakeUpsertIsProfileScoped(t *testing.T
 	t.Parallel()
 	appendMapping := richTestMappings()
 	appendMapping.Destinations[0].Tables[0].Write = TableWritePolicy{Mode: TableWriteModeAppend, WatermarkColumn: "updated_at"}
-	if err := appendMapping.Validate([]connector.Spec{{Name: "warehouse", Type: connector.EndpointS3}}); err != nil {
+	if err := appendMapping.Validate([]connector.RuntimeSpec{{Name: "warehouse", Type: connector.EndpointS3}}); err != nil {
 		t.Fatalf("append watermark metadata rejected: %v", err)
 	}
 	upsert := richTestMappings()
 	upsert.Destinations[0].FutureTables = FutureTableMapping{Action: MappingActionExclude}
 	upsert.Destinations[0].Tables[0].Write.WatermarkColumn = ""
-	generic := connector.Spec{Name: "warehouse", Type: connector.EndpointSnowflake}
-	if err := upsert.Validate([]connector.Spec{generic}); err == nil || !strings.Contains(err.Error(), "does not support upsert") {
+	generic := connector.RuntimeSpec{Name: "warehouse", Type: connector.EndpointSnowflake}
+	if err := upsert.Validate([]connector.RuntimeSpec{generic}); err == nil || !strings.Contains(err.Error(), "does not support upsert") {
 		t.Fatalf("generic Snowflake upsert error=%v", err)
 	}
 	managed := generic
 	managed.Options = map[string]string{"managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1}
-	if err := upsert.Validate([]connector.Spec{managed}); err != nil {
+	if err := upsert.Validate([]connector.RuntimeSpec{managed}); err != nil {
 		t.Fatalf("managed Snowflake explicit-key upsert rejected: %v", err)
 	}
 	wrongProfile := generic
 	wrongProfile.Options = map[string]string{"managed_profile": "postgresql-to-snowflake-sql-v2"}
-	if err := upsert.Validate([]connector.Spec{wrongProfile}); err == nil {
+	if err := upsert.Validate([]connector.RuntimeSpec{wrongProfile}); err == nil {
 		t.Fatal("unknown Snowflake profile admitted upsert")
 	}
 	upsert.Destinations[0].Tables[0].Write.WatermarkColumn = "updated_at"
-	if err := upsert.Validate([]connector.Spec{managed}); err == nil || !strings.Contains(err.Error(), "watermark-guarded") {
+	if err := upsert.Validate([]connector.RuntimeSpec{managed}); err == nil || !strings.Contains(err.Error(), "watermark-guarded") {
 		t.Fatalf("managed Snowflake watermark upsert error=%v", err)
 	}
 }
 
 func TestValidateDefinitionRejectsMissingMappingsAndProjectedWAL(t *testing.T) {
 	t.Parallel()
-	destination := connector.Spec{Name: "warehouse", Type: connector.EndpointPostgres}
-	definition := Flow{Destinations: []connector.Spec{destination}}
+	definition := Flow{
+		Source:       &wallabypb.Endpoint{Name: "source", Config: &wallabypb.Endpoint_PostgresSource{PostgresSource: &wallabypb.PostgresSourceConfig{Mode: wallabypb.PostgresSourceMode_POSTGRES_SOURCE_MODE_CDC}}},
+		Destinations: []*wallabypb.Endpoint{{Name: "warehouse", Config: &wallabypb.Endpoint_Http{Http: &wallabypb.HTTPDestinationConfig{}}}},
+	}
 	if err := ValidateDefinition(definition); err == nil || !strings.Contains(err.Error(), "version") {
 		t.Fatalf("missing mappings error=%v", err)
 	}
-	definition.Config.TableMappings = richTestMappings()
-	definition.Destinations[0].Options = map[string]string{"payload_mode": "wal"}
+	definition.Config.TableMappings = NewTableMappings([]connector.RuntimeSpec{{Name: "warehouse", Type: connector.EndpointHTTP}})
+	definition.Destinations[0].GetHttp().PayloadMode = wallabypb.PayloadMode_PAYLOAD_MODE_WAL
 	if err := ValidateDefinition(definition); err == nil || !strings.Contains(err.Error(), "payload_mode=wal") {
 		t.Fatalf("projected WAL error=%v", err)
 	}

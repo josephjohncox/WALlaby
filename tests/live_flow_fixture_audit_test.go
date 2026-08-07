@@ -105,9 +105,9 @@ func TestLiveFlowFixtureAuditInspectsUntranslatedDefinitions(t *testing.T) {
 	t.Parallel()
 	source := `package fixture
 import "github.com/josephjohncox/wallaby/internal/flow"
-var missing=flow.Flow{Destinations:[]connector.Spec{{Name:"target"}},Config:flow.Config{AckPolicy:"all"}}
+var missing=flow.Flow{Destinations:[]connector.RuntimeSpec{{Name:"target"}},Config:flow.Config{AckPolicy:"all"}}
 var legacy=map[string]string{"schema":"target","write_mode":"upsert"}
-var empty=flow.Flow{Destinations:[]connector.Spec{{Name:"target",Options:legacy}},Config:flow.Config{TableMappings:flow.TableMappings{}}}
+var empty=flow.Flow{Destinations:[]connector.RuntimeSpec{{Name:"target",Options:legacy}},Config:flow.Config{TableMappings:flow.TableMappings{}}}
 var wrong=flowConfigPayload{Destinations:[]endpointConfigPayload{{Name:"target"}},Config:flow.Config{TableMappings:flow.TableMappings{Version:flow.TableMappingsVersion,Destinations:[]flow.DestinationTableMappings{{Destination:"other"}}}}}
 var valid=flowConfigPayload{Destinations:[]endpointConfigPayload{{Name:"target"}},Config:flow.Config{TableMappings:flow.TableMappings{Version:flow.TableMappingsVersion,Destinations:[]flow.DestinationTableMappings{{Destination:"target"}}}}}
 func writeFlowConfig(cfg flowConfigPayload){cfg.Config.TableMappings=flow.TableMappings{}}`
@@ -243,12 +243,12 @@ func fixtureMappingNames(expression ast.Expr, definitions map[string]ast.Expr) (
 }
 
 func fixtureDestinationNames(expression ast.Expr, definitions map[string]ast.Expr) ([]string, error) {
-	list, ok := resolveComposite(expression, definitions)
+	elements, ok := fixtureDestinationElements(expression, definitions)
 	if !ok {
 		return nil, fmt.Errorf("destinations must be an explicit collection")
 	}
-	names := make([]string, 0, len(list.Elts))
-	for _, element := range list.Elts {
+	names := make([]string, 0, len(elements))
+	for _, element := range elements {
 		entry, ok := resolveComposite(element, definitions)
 		if !ok {
 			return nil, fmt.Errorf("destination entry must be explicit")
@@ -260,6 +260,25 @@ func fixtureDestinationNames(expression ast.Expr, definitions map[string]ast.Exp
 		names = append(names, name)
 	}
 	return names, nil
+}
+
+func fixtureDestinationElements(expression ast.Expr, definitions map[string]ast.Expr) ([]ast.Expr, bool) {
+	expression = resolveExpression(expression, definitions)
+	if call, ok := expression.(*ast.CallExpr); ok {
+		switch identifierName(call.Fun) {
+		case "testFlowDestinations":
+			return call.Args, true
+		case "testFlowRuntimeDestinations":
+			if len(call.Args) == 1 {
+				return fixtureDestinationElements(call.Args[0], definitions)
+			}
+		}
+	}
+	list, ok := expression.(*ast.CompositeLit)
+	if !ok {
+		return nil, false
+	}
+	return list.Elts, true
 }
 
 func fixtureMappingDestinationNames(expression ast.Expr, definitions map[string]ast.Expr) ([]string, error) {

@@ -10,11 +10,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/authority"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func TestFlowRunnerPreservesExecutionSourceOverrides(t *testing.T) {
@@ -24,11 +27,11 @@ func TestFlowRunnerPreservesExecutionSourceOverrides(t *testing.T) {
 	engine := workflow.NewMemoryEngine()
 	durable := flow.Flow{
 		ID: "flow-override",
-		Source: connector.Spec{
+		Source: runnerTestSource(connector.RuntimeSpec{
 			Type:    connector.EndpointPostgres,
-			Options: map[string]string{"mode": connector.SourceModeCDC, "tables": "durable.table"},
-		},
-		Destinations: []connector.Spec{{Name: "dest", Type: connector.EndpointPostgres}},
+			Options: map[string]string{"mode": connector.SourceModeCDC, "publication_tables": "durable.table"},
+		}),
+		Destinations: []*wallabypb.Endpoint{runnerTestDestination(connector.RuntimeSpec{Name: "dest", Type: connector.EndpointPostgres})},
 	}
 	durable = mappedRunnerTestFlow(durable)
 	if _, err := engine.Create(ctx, durable); err != nil {
@@ -38,28 +41,27 @@ func TestFlowRunnerPreservesExecutionSourceOverrides(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 
-	execution := durable
-	execution.Source.Options = map[string]string{
-		"mode":             connector.SourceModeBackfill,
-		"tables":           "public.accounts",
-		"schemas":          "public",
-		"snapshot_workers": "4",
-		"partition_column": "id",
-		"partition_count":  "8",
-		"start_lsn":        "0/16B6C50",
-	}
+	execution := flow.Clone(durable)
+	execution.Source = runnerTestSource(connector.RuntimeSpec{Type: connector.EndpointPostgres, Options: map[string]string{
+		"mode": connector.SourceModeBackfill, "tables": "public.accounts", "schemas": "public",
+		"snapshot_workers": "4", "partition_column": "id", "partition_count": "8",
+	}})
 	source := &flowRunnerSource{}
 	runner := FlowRunner{Engine: engine, Checkpoints: testCheckpointOutboxStore{}}
 	err := runner.Run(ctx, execution, source, []stream.DestinationConfig{{
-		Spec: connector.Spec{Name: "dest"},
+		Spec: connector.RuntimeSpec{Name: "dest"},
 		Dest: flowRunnerDestination{},
 	}})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	wantOptions := make(map[string]string, len(execution.Source.Options)+1)
-	for key, value := range execution.Source.Options {
+	executionSource, err := execution.DecodeSource(connector.DefaultRegistry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOptions := make(map[string]string, len(executionSource.Options)+1)
+	for key, value := range executionSource.Options {
 		wantOptions[key] = value
 	}
 	wantOptions["flow_id"] = durable.ID
@@ -81,7 +83,7 @@ func TestFlowRunnerRegistersProvidedExecutionIdentity(t *testing.T) {
 	ctx := context.Background()
 	memory := workflow.NewMemoryEngine()
 	engine := &recordingExecutionEngine{MemoryEngine: memory}
-	f := mappedRunnerTestFlow(flow.Flow{ID: "provided-identity", Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{"mode": connector.SourceModeBackfill}}})
+	f := mappedRunnerTestFlow(flow.Flow{ID: "provided-identity", Source: runnerTestSource(connector.RuntimeSpec{Type: connector.EndpointPostgres, Options: map[string]string{"mode": connector.SourceModeBackfill}})})
 	if _, err := engine.Create(ctx, f); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +96,7 @@ func TestFlowRunnerRegistersProvidedExecutionIdentity(t *testing.T) {
 		ExecutionID: "job-exact-id", ExpectedGeneration: control.Generation,
 	}
 	if err := runner.Run(ctx, f, &flowRunnerSource{}, []stream.DestinationConfig{{
-		Spec: connector.Spec{Name: "dest"}, Dest: flowRunnerDestination{},
+		Spec: connector.RuntimeSpec{Name: "dest"}, Dest: flowRunnerDestination{},
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +109,7 @@ func TestFlowRunnerRejectsFencedExpectedGeneration(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	engine := workflow.NewMemoryEngine()
-	f := mappedRunnerTestFlow(flow.Flow{ID: "fenced", Source: connector.Spec{Type: connector.EndpointPostgres}})
+	f := mappedRunnerTestFlow(flow.Flow{ID: "fenced", Source: runnerTestSource(connector.RuntimeSpec{Type: connector.EndpointPostgres})})
 	if _, err := engine.Create(ctx, f); err != nil {
 		t.Fatal(err)
 	}
@@ -165,8 +167,9 @@ func TestFlowRunnerPinsEffectiveArtifactDestinationFingerprint(t *testing.T) {
 	f := managedAdmissionFlow()
 	f.Config.AckPolicy = stream.AckPolicyMaterialized
 	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v2"}
-	f.Destinations = []connector.Spec{{Name: "lake", Type: connector.EndpointIceberg, Options: map[string]string{"destination_revision_id": "iceberg-v1"}}}
-	f.Config.TableMappings = flow.NewTableMappings(f.Destinations)
+	lakeSpec := connector.RuntimeSpec{Name: "lake", Type: connector.EndpointIceberg, Options: map[string]string{"destination_revision_id": "iceberg-v1"}}
+	f.Destinations = []*wallabypb.Endpoint{runnerTestDestination(lakeSpec)}
+	f.Config.TableMappings = flow.NewTableMappings([]connector.RuntimeSpec{lakeSpec})
 	if _, err := engine.Create(ctx, f); err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +189,7 @@ func TestFlowRunnerPinsEffectiveArtifactDestinationFingerprint(t *testing.T) {
 			return &effectiveArtifactLog{fingerprint: "effective-deployment-fingerprint"}, nil
 		},
 	}
-	err := runner.Run(ctx, f, &blockingManagedSource{}, []stream.DestinationConfig{{Spec: f.Destinations[0], Dest: artifactMarkerDestination{}}})
+	err := runner.Run(ctx, f, &blockingManagedSource{}, []stream.DestinationConfig{{Spec: lakeSpec, Dest: artifactMarkerDestination{}}})
 	if !errors.Is(err, renewFailure) {
 		t.Fatalf("Run() error=%v, want controlled heartbeat failure", err)
 	}
@@ -210,8 +213,9 @@ func TestFlowRunnerUsesProjectionBoundSpecFingerprintWithoutCatalogConsumer(t *t
 	f := managedAdmissionFlow()
 	f.Config.AckPolicy = stream.AckPolicyMaterialized
 	f.Config.Materialization = flow.MaterializationPolicy{ProjectionID: "canonical_cdc_parquet_v2"}
-	f.Destinations = []connector.Spec{{Name: "lake", Type: connector.EndpointIceberg, Options: map[string]string{"destination_revision_id": "iceberg-v1"}}}
-	f.Config.TableMappings = flow.NewTableMappings(f.Destinations)
+	lakeSpec := connector.RuntimeSpec{Name: "lake", Type: connector.EndpointIceberg, Options: map[string]string{"destination_revision_id": "iceberg-v1"}}
+	f.Destinations = []*wallabypb.Endpoint{runnerTestDestination(lakeSpec)}
+	f.Config.TableMappings = flow.NewTableMappings([]connector.RuntimeSpec{lakeSpec})
 	if _, err := engine.Create(ctx, f); err != nil {
 		t.Fatal(err)
 	}
@@ -223,12 +227,12 @@ func TestFlowRunnerUsesProjectionBoundSpecFingerprintWithoutCatalogConsumer(t *t
 	deliveries := &blockingManagedDelivery{}
 	// A materialized barrier-only publication whose destination is not a canonical
 	// artifact consumer has no catalog identity, so the spec fingerprint must stand.
-	destination := stream.DestinationConfig{Spec: f.Destinations[0], Dest: artifactMarkerDestination{}}
+	destination := stream.DestinationConfig{Spec: lakeSpec, Dest: artifactMarkerDestination{}}
 	projectionFingerprint, err := f.Config.TableMappings.Fingerprint()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := connector.DeliveryConfigFingerprint(destination.Spec, projectionFingerprint)
+	want, err := endpointcodec.DeliveryConfigFingerprint(f.Destinations[0], projectionFingerprint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +277,7 @@ func TestManagedDeliveryRetentionRunsDuringLongLivedFlow(t *testing.T) {
 	engine := workflow.NewMemoryEngine()
 	f := managedAdmissionFlow()
 	f.ID = "managed-periodic-retention"
-	f.Source.Options["delivery_prune_interval"] = "10ms"
+	f.Source.GetPostgresSource().DeliveryPruneInterval = durationpb.New(10 * time.Millisecond)
 	if _, err := engine.Create(ctx, f); err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +431,7 @@ func (*effectiveArtifactLog) Append(_ context.Context, _ connector.RunFence, tra
 
 type artifactMarkerDestination struct{}
 
-func (artifactMarkerDestination) Open(context.Context, connector.Spec) error { return nil }
+func (artifactMarkerDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
 func (artifactMarkerDestination) Write(context.Context, connector.Batch) error {
 	return errors.New("unexpected direct artifact write")
 }
@@ -447,8 +451,8 @@ func (artifactMarkerDestination) Capabilities() connector.Capabilities {
 
 type blockingManagedSource struct{}
 
-func (*blockingManagedSource) BindRunFence(connector.RunFence) error      { return nil }
-func (*blockingManagedSource) Open(context.Context, connector.Spec) error { return nil }
+func (*blockingManagedSource) BindRunFence(connector.RunFence) error             { return nil }
+func (*blockingManagedSource) Open(context.Context, connector.RuntimeSpec) error { return nil }
 func (*blockingManagedSource) Read(ctx context.Context) (connector.Batch, error) {
 	<-ctx.Done()
 	return connector.Batch{}, ctx.Err()
@@ -471,8 +475,8 @@ func (*blockingManagedSource) Capabilities() connector.Capabilities {
 
 type singleTransactionManagedSource struct{ read bool }
 
-func (*singleTransactionManagedSource) BindRunFence(connector.RunFence) error      { return nil }
-func (*singleTransactionManagedSource) Open(context.Context, connector.Spec) error { return nil }
+func (*singleTransactionManagedSource) BindRunFence(connector.RunFence) error             { return nil }
+func (*singleTransactionManagedSource) Open(context.Context, connector.RuntimeSpec) error { return nil }
 func (*singleTransactionManagedSource) Read(context.Context) (connector.Batch, error) {
 	return connector.Batch{}, io.EOF
 }
@@ -503,8 +507,8 @@ func (*singleTransactionManagedSource) Capabilities() connector.Capabilities {
 
 type blockingManagedDestination struct{}
 
-func (blockingManagedDestination) Open(context.Context, connector.Spec) error   { return nil }
-func (blockingManagedDestination) Write(context.Context, connector.Batch) error { return nil }
+func (blockingManagedDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
+func (blockingManagedDestination) Write(context.Context, connector.Batch) error      { return nil }
 func (blockingManagedDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
 	return nil
 }
@@ -540,10 +544,10 @@ func (e *recordingExecutionEngine) RegisterExecutionFence(ctx context.Context, f
 }
 
 type flowRunnerSource struct {
-	openSpec connector.Spec
+	openSpec connector.RuntimeSpec
 }
 
-func (s *flowRunnerSource) Open(_ context.Context, spec connector.Spec) error {
+func (s *flowRunnerSource) Open(_ context.Context, spec connector.RuntimeSpec) error {
 	s.openSpec = spec
 	return nil
 }
@@ -558,8 +562,8 @@ func (*flowRunnerSource) Capabilities() connector.Capabilities            { retu
 
 type flowRunnerDestination struct{}
 
-func (flowRunnerDestination) Open(context.Context, connector.Spec) error   { return nil }
-func (flowRunnerDestination) Write(context.Context, connector.Batch) error { return nil }
+func (flowRunnerDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
+func (flowRunnerDestination) Write(context.Context, connector.Batch) error      { return nil }
 func (flowRunnerDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
 	return nil
 }

@@ -37,6 +37,7 @@ const (
     OptRegistryPassword       = "schema_registry_password"
     OptRegistryToken          = "schema_registry_token"
     OptRegistryDSN            = "schema_registry_dsn"
+    OptRegistryLocalDirectory = "schema_registry_local_directory"
     OptRegistryTimeout        = "schema_registry_timeout"
     OptRegistryApicurioCompat = "schema_registry_apicurio_compat"
     OptRegistrySubjectMode    = "schema_registry_subject_mode"
@@ -70,7 +71,7 @@ func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool) error
 ApplyMigrations explicitly prepares the PostgreSQL schema\-registry schema through the shared, checksummed public.wallaby\_control\_migrations ledger.
 
 <a name="Config"></a>
-## type [Config](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/schemaregistry/config.go#L32-L47>)
+## type [Config](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/schemaregistry/config.go#L33-L49>)
 
 Config defines schema registry connection settings.
 
@@ -82,6 +83,7 @@ type Config struct {
     Password       string
     Token          string
     DSN            string
+    LocalDirectory string
     Timeout        time.Duration
     ApicurioCompat bool
     Region         string
@@ -94,7 +96,7 @@ type Config struct {
 ```
 
 <a name="ConfigFromOptions"></a>
-### func [ConfigFromOptions](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/schemaregistry/config.go#L50>)
+### func [ConfigFromOptions](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/schemaregistry/config.go#L52>)
 
 ```go
 func ConfigFromOptions(values map[string]string) (Config, error)

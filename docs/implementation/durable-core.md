@@ -43,7 +43,7 @@ Attempts use persisted numbering, bounded exponential backoff, and a 16-attempt 
 
 `internal/bootstrap` creates a bootstrap-generation-qualified logical slot with `EXPORT_SNAPSHOT` and retains the exporter connection while bounded tasks import that snapshot in read-only repeatable-read transactions. Task cursor/receipt updates are atomic. A replacement process cannot import the lost exporter's snapshot: exporter loss uses a retryable `abandoning` cleanup phase, starts a new exported snapshot generation and physical slot, and restarts every task from zero.
 
-The production worker and in-process DBOS path now run these primitives for `bootstrap=auto|required`. A pre-slot relation barrier prevents DDL from crossing planning; the publication is created or exactly adopted before slot creation so it is visible at the decoding consistent point. Bounded table tasks import the slot snapshot, write generation-qualified PostgreSQL staging tables, and publish every table in one destination transaction. Exporter loss abandons all cursors and restarts from zero with a new physical slot. `bootstrap=never` is normally pre-provisioned. The experimental Snowflake SQL profile is the narrow exception: `slot=managed` proves the source relation and bound Snowflake objects are empty, then creates and roots a flow-incarnation-specific slot under the run fence without taking a snapshot.
+The production worker and in-process DBOS path now run these primitives for `bootstrap=BOOTSTRAP_MODE_AUTO` or `bootstrap=BOOTSTRAP_MODE_REQUIRED`. A pre-slot relation barrier prevents DDL from crossing planning; the publication is created or exactly adopted before slot creation so it is visible at the decoding consistent point. Bounded table tasks import the slot snapshot, write generation-qualified PostgreSQL staging tables, and publish every table in one destination transaction. Exporter loss abandons all cursors and restarts from zero with a new physical slot. `bootstrap=never` is normally pre-provisioned. The experimental Snowflake SQL profile is the narrow exception: `slot=managed` proves the source relation and bound Snowflake objects are empty, then creates and roots a flow-incarnation-specific slot under the run fence without taking a snapshot.
 
 ### Canonical artifact log
 
@@ -85,16 +85,16 @@ The worker constructs workflow, checkpoint, authority, delivery, and registry re
 
 The maintained profile admission requires:
 
-- `managed_profile=postgresql-to-postgresql-v1` on both endpoints;
+- `managed_profile=MANAGED_PROFILE_POSTGRES_TO_POSTGRES_V1` on both typed endpoints;
 - matching PostgreSQL majors from 14 through 17 at both ends; mixed-major pairs remain unpromoted;
-- a transactional source with observed flush evidence, `bootstrap=required`, and `streaming_transactions=true`;
+- a transactional source with observed flush evidence, `bootstrap=BOOTSTRAP_MODE_REQUIRED`, and `streaming_transactions=true`;
 - explicit source system, lineage, and publication revision identities;
 - exactly one PostgreSQL destination revision and `ack_policy=all`;
 - compatible target columns and a valid, non-partial, non-deferrable target primary/unique constraint over source identity columns;
 - target write and batch modes plus explicit durable `synchronous_commit`; and
 - no arbitrary `start_lsn`, legacy backfill, file/disabled snapshot authority, drop-slot failure mode, generic staging, raw DDL capture, or raw automatic DDL.
 
-The experimental Snowflake SQL profile requires PostgreSQL 16, `bootstrap=never`, `slot=managed`, `create_slot=true`, `toast_fetch=off`, one source relation, two pre-provisioned hybrid tables, distinct owner and execution roles, exact grants and creation identities, no schema tasks, enforced identity constraints, an immutable schema contract and hash, and a live `CURRENT_VERSION()` equal to its configured pin. Its complete type cell and transaction bounds are documented in the Snowflake connector reference. Generic managed modes remain experimental even when they pass narrower startup checks.
+The experimental Snowflake SQL profile requires PostgreSQL 16, `bootstrap=BOOTSTRAP_MODE_NEVER`, `slot=managed`, `create_slot=true`, `toast_fetch=TOAST_FETCH_MODE_OFF`, one source relation, two pre-provisioned hybrid tables, distinct owner and execution roles, exact grants and creation identities, no schema tasks, enforced identity constraints, an immutable schema contract and hash, and a live `CURRENT_VERSION()` equal to its configured pin. Its complete type cell and transaction bounds are documented in the Snowflake connector reference. Generic managed modes remain experimental even when they pass narrower startup checks.
 
 ## Executable evidence
 
@@ -117,7 +117,7 @@ The acceptance workflow requires the following gates; a gate is not evidence of 
 - `just test-failure-matrix-race`; and
 - `just test-soak` for the bounded in-process protocol-model soak.
 
-The process recovery test starts the built worker with `bootstrap=required`, proves an existing source row is atomically published before CDC, sends SIGKILL, expires the abandoned lease, starts a replacement process, reopens the generated logical slot at the authoritative checkpoint, and delivers a subsequent transaction. This test also covers the replay-stable PostgreSQL commit timestamp used by managed records.
+The process recovery test starts the built worker with `bootstrap=BOOTSTRAP_MODE_REQUIRED`, proves an existing source row is atomically published before CDC, sends SIGKILL, expires the abandoned lease, starts a replacement process, reopens the generated logical slot at the authoritative checkpoint, and delivers a subsequent transaction. This test also covers the replay-stable PostgreSQL commit timestamp used by managed records.
 
 ## Deferred work
 

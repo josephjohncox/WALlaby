@@ -52,7 +52,7 @@ func TestProjectStructuredDDLRenamesAndFiltersColumns(t *testing.T) {
 
 func TestDDLAdmissionRejectsExactFutureColumnCollisions(t *testing.T) {
 	t.Parallel()
-	destination := connector.Spec{Name: "sink", Type: connector.EndpointPostgres}
+	destination := connector.RuntimeSpec{Name: "sink", Type: connector.EndpointPostgres}
 	admitAndProject := func(target string, change schema.Change) error {
 		mappings := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{
 			Destination:  "sink",
@@ -65,7 +65,7 @@ func TestDDLAdmissionRejectsExactFutureColumnCollisions(t *testing.T) {
 				Write:         flow.TableWritePolicy{Mode: flow.TableWriteModeAppend},
 			}},
 		}}}
-		if err := mappings.Validate([]connector.Spec{destination}); err != nil {
+		if err := mappings.Validate([]connector.RuntimeSpec{destination}); err != nil {
 			return err
 		}
 		projector, err := New(mappings, destination.Name)
@@ -185,7 +185,7 @@ func TestProjectTablelessDDLRejectsAmbiguity(t *testing.T) {
 }
 
 func TestAppendProjectionRemovesSourcePrimaryKeyDDL(t *testing.T) {
-	mappings := flow.NewTableMappings([]connector.Spec{{Name: "sink", Type: connector.EndpointKafka}})
+	mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointKafka}})
 	projector := testProjector(t, mappings)
 	plan, _ := json.Marshal(schema.Plan{Changes: []schema.Change{
 		{Type: schema.ChangeCreateTable, Namespace: "public", Table: "events", PrimaryKeys: []string{"id"}},

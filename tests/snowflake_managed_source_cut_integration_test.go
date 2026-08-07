@@ -58,7 +58,7 @@ func TestSnowflakeManagedProfileFencedCleanSourceCut(t *testing.T) {
 	tableName := "widgets"
 	publication := "wallaby_sf_cut_pub_" + suffix
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -112,7 +112,7 @@ func TestSnowflakeManagedProfileFencedCleanSourceCut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := connector.Spec{Name: "snowflake-source-cut", Type: connector.EndpointPostgres, Options: map[string]string{
+	spec := connector.RuntimeSpec{Name: "snowflake-source-cut", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "slot": "managed", "publication": publication,
 		"managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1,
 		"create_slot":     "true", "ensure_state": "false", "ensure_publication": "false", "sync_publication": "false",

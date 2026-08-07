@@ -18,7 +18,6 @@ const (
 	optTables               = "tables"
 	optSchemas              = "schemas"
 	optSnapshotWorkers      = "snapshot_workers"
-	optParallelTables       = "parallel_tables"
 	optPartitionColumn      = "partition_column"
 	optPartitionCount       = "partition_count"
 	optSnapshotConsistent   = "snapshot_consistent"
@@ -31,7 +30,7 @@ const (
 
 // BackfillSource reads existing table data in bulk.
 type BackfillSource struct {
-	spec           connector.Spec
+	spec           connector.RuntimeSpec
 	pool           *pgxpool.Pool
 	tables         []string
 	batchSize      int
@@ -51,7 +50,7 @@ type BackfillSource struct {
 	primaryKeys    map[string][]string
 }
 
-func (b *BackfillSource) Open(ctx context.Context, spec connector.Spec) error {
+func (b *BackfillSource) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	b.spec = spec
 
 	dsn := spec.Options[optDSN]
@@ -77,11 +76,6 @@ func (b *BackfillSource) Open(ctx context.Context, spec connector.Spec) error {
 	b.workers = parseInt(spec.Options[optSnapshotWorkers], 1)
 	if b.workers <= 0 {
 		b.workers = 1
-	}
-	if b.workers == 1 {
-		if alt := parseInt(spec.Options[optParallelTables], 0); alt > 0 {
-			b.workers = alt
-		}
 	}
 	if rawPartitionColumn := spec.Options[optPartitionColumn]; rawPartitionColumn != "" {
 		partitionColumn, err := ParseCatalogColumnName(rawPartitionColumn)
@@ -714,7 +708,7 @@ func (b *BackfillSource) endSnapshot(ctx context.Context) {
 	b.snapshotName = ""
 }
 
-func snapshotFlowID(spec connector.Spec) string {
+func snapshotFlowID(spec connector.RuntimeSpec) string {
 	if spec.Options != nil {
 		if value := spec.Options[optFlowID]; value != "" {
 			return value

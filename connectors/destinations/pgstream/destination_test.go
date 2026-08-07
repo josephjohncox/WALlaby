@@ -29,7 +29,7 @@ func TestOpenRejectsRegistryOptionsBeforeStoreCreation(t *testing.T) {
 		schemaregistry.OptRegistryApicurioCompat: "yes",
 	} {
 		t.Run(key, func(t *testing.T) {
-			err := (&Destination{}).Open(context.Background(), connector.Spec{Options: map[string]string{key: value}})
+			err := (&Destination{}).Open(context.Background(), connector.RuntimeSpec{Options: map[string]string{key: value}})
 			if err == nil || !strings.Contains(err.Error(), key) {
 				t.Fatalf("Open() error = %v", err)
 			}

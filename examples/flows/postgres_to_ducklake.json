@@ -1,35 +1,60 @@
 {
-  "name": "pg_to_ducklake",
-  "wire_format": "json",
-  "source": {
-    "name": "pg-source",
-    "type": "postgres",
-    "options": {
-      "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
-      "slot": "wallaby_slot",
-      "publication": "wallaby_pub",
-      "batch_size": "1000",
-      "batch_timeout": "2s",
-      "status_interval": "10s",
-      "create_slot": "true",
-      "format": "json"
+  "config": {
+    "ack_policy": "all",
+    "table_mappings": {
+      "destinations": [
+        {
+          "destination": "ducklake-out",
+          "future_tables": {
+            "action": "include",
+            "future_columns": {
+              "action": "include",
+              "target_column": "{{ .Column }}"
+            },
+            "target_schema": "{{ .Schema }}",
+            "target_table": "{{ .Table }}",
+            "write": {
+              "key_columns": [],
+              "mode": "append"
+            }
+          },
+          "tables": []
+        }
+      ],
+      "version": 2
     }
   },
   "destinations": [
     {
-      "name": "ducklake-out",
-      "type": "ducklake",
-      "options": {
-        "dsn": "duckdb.db",
+      "ducklake": {
         "catalog": "metadata.ducklake",
         "catalog_name": "lake",
         "data_path": "s3://my-ducklake-data",
-        "override_data_path": "true"
-      }
+        "dsn": "duckdb.db",
+        "override_data_path": true
+      },
+      "name": "ducklake-out"
     }
   ],
-  "config": {
-    "ack_policy": "all",
-    "table_mappings": {"version": 2, "destinations": [{"destination": "ducklake-out", "future_tables": {"action": "include", "target_schema": "{{ .Schema }}", "target_table": "{{ .Table }}", "future_columns": {"action": "include", "target_column": "{{ .Column }}"}, "write": {"mode": "append", "key_columns": []}}, "tables": []}]}
-  }
+  "name": "pg_to_ducklake",
+  "source": {
+    "name": "pg-source",
+    "postgres_source": {
+      "mode": "POSTGRES_SOURCE_MODE_CDC",
+      "batch_size": 1000,
+      "batch_timeout": "2s",
+      "connection": {
+        "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable"
+      },
+      "create_slot": true,
+      "format": "WIRE_FORMAT_JSON",
+      "publication": "wallaby_pub",
+      "publication_schemas": [
+        "public"
+      ],
+      "slot": "wallaby_slot",
+      "status_interval": "10s"
+    }
+  },
+  "wire_format": "json"
 }

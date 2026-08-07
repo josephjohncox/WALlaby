@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
@@ -45,7 +46,7 @@ func TestNewStreamRunnerPrecedence(t *testing.T) {
 			t.Parallel()
 			got, err := NewStreamRunner(mappedRunnerTestFlow(flow.Flow{
 				ID:          "flow-1",
-				Source:      connector.Spec{Type: connector.EndpointPostgres},
+				Source:      runnerTestSource(connector.RuntimeSpec{Type: connector.EndpointPostgres}),
 				WireFormat:  tt.flowWire,
 				Parallelism: tt.flowParallel,
 			}), nil, nil, StreamRunnerConfig{
@@ -71,10 +72,10 @@ func TestNewStreamRunnerClonesConfigurationAndAppliesPolicies(t *testing.T) {
 
 	f := flow.Flow{
 		ID: "flow-1",
-		Source: connector.Spec{
+		Source: runnerTestSource(connector.RuntimeSpec{
 			Type:    connector.EndpointPostgres,
-			Options: map[string]string{"emit_empty": "false", "source": "original"},
-		},
+			Options: map[string]string{"emit_empty": "false", "dsn": "postgres://original"},
+		}),
 		Config: flow.Config{
 			AckPolicy:          stream.AckPolicyPrimary,
 			PrimaryDestination: "primary",
@@ -83,10 +84,10 @@ func TestNewStreamRunnerClonesConfigurationAndAppliesPolicies(t *testing.T) {
 		},
 	}
 	destinations := []stream.DestinationConfig{{
-		Spec: connector.Spec{Name: "primary", Options: map[string]string{"dest": "original"}},
+		Spec: connector.RuntimeSpec{Name: "primary", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": "postgres://original"}},
 		Dest: flowRunnerDestination{},
 	}}
-	f.Destinations = []connector.Spec{destinations[0].Spec}
+	f.Destinations = []*wallabypb.Endpoint{runnerTestDestination(destinations[0].Spec)}
 	f = mappedRunnerTestFlow(f)
 
 	got, err := NewStreamRunner(f, nil, destinations, StreamRunnerConfig{
@@ -113,13 +114,13 @@ func TestNewStreamRunnerClonesConfigurationAndAppliesPolicies(t *testing.T) {
 		t.Fatalf("runtime defaults not propagated: %+v", got)
 	}
 
-	got.SourceSpec.Options["source"] = "changed"
-	got.Destinations[0].Spec.Options["dest"] = "changed"
+	got.SourceSpec.Options["dsn"] = "postgres://changed"
+	got.Destinations[0].Spec.Options["dsn"] = "postgres://changed"
 	got.Destinations = append(got.Destinations, stream.DestinationConfig{})
-	if f.Source.Options["source"] != "original" {
-		t.Fatalf("source options mutated: %v", f.Source.Options)
+	if got := f.Source.GetPostgresSource().GetConnection().GetDsn(); got != "postgres://original" {
+		t.Fatalf("source endpoint mutated: %v", f.Source)
 	}
-	if destinations[0].Spec.Options["dest"] != "original" {
+	if destinations[0].Spec.Options["dsn"] != "postgres://original" {
 		t.Fatalf("destination options mutated: %v", destinations[0].Spec.Options)
 	}
 	if len(destinations) != 1 {
@@ -129,9 +130,10 @@ func TestNewStreamRunnerClonesConfigurationAndAppliesPolicies(t *testing.T) {
 
 func TestNewStreamRunnerNilDDLPolicyUsesShippedAutoApplyDefault(t *testing.T) {
 	t.Parallel()
-	definition := flow.Flow{ID: "flow-ddl-default", Destinations: []connector.Spec{{Name: "destination"}}}
-	definition.Config.TableMappings = flow.NewTableMappings(definition.Destinations)
-	destinations := []stream.DestinationConfig{{Spec: definition.Destinations[0], Dest: flowRunnerDestination{}}}
+	destination := connector.RuntimeSpec{Name: "destination", Type: connector.EndpointPostgres}
+	definition := flow.Flow{ID: "flow-ddl-default", Source: runnerTestSource(connector.RuntimeSpec{Type: connector.EndpointPostgres}), Destinations: []*wallabypb.Endpoint{runnerTestDestination(destination)}}
+	definition.Config.TableMappings = flow.NewTableMappings([]connector.RuntimeSpec{destination})
+	destinations := []stream.DestinationConfig{{Spec: destination, Dest: flowRunnerDestination{}}}
 	_, err := NewStreamRunner(definition, nil, destinations, StreamRunnerConfig{Checkpoints: testCheckpointOutboxStore{}})
 	if err == nil || !strings.Contains(err.Error(), "execution receipt storage") {
 		t.Fatalf("nil DDL policy construction error=%v, want shipped auto_apply receipt requirement", err)
@@ -156,10 +158,10 @@ func TestNewStreamRunnerRejectsAutoApplyWithoutReceiptStore(t *testing.T) {
 
 	autoApply := true
 	_, err := NewStreamRunner(mappedRunnerTestFlow(flow.Flow{
-		ID: "flow-ddl", Destinations: []connector.Spec{{Name: "destination"}},
+		ID: "flow-ddl", Destinations: []*wallabypb.Endpoint{runnerTestDestination(connector.RuntimeSpec{Name: "destination", Type: connector.EndpointPostgres})},
 		Config: flow.Config{DDL: flow.DDLPolicy{AutoApply: &autoApply}},
 	}), nil, []stream.DestinationConfig{{
-		Spec: connector.Spec{Name: "destination"},
+		Spec: connector.RuntimeSpec{Name: "destination"},
 		Dest: flowRunnerDestination{},
 	}}, StreamRunnerConfig{Checkpoints: testCheckpointOutboxStore{}})
 	if err == nil || !strings.Contains(err.Error(), "execution receipt storage") {
@@ -168,15 +170,16 @@ func TestNewStreamRunnerRejectsAutoApplyWithoutReceiptStore(t *testing.T) {
 }
 
 func TestNewStreamRunnerRejectsUnsupportedTablePolicyBeforeOpen(t *testing.T) {
-	definition := flow.Flow{ID: "flow-policy", Source: connector.Spec{Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}}
-	definition.Config.TableMappings = flow.NewTableMappings(definition.Destinations)
+	destination := connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}
+	definition := flow.Flow{ID: "flow-policy", Source: runnerTestSource(connector.RuntimeSpec{Type: connector.EndpointPostgres}), Destinations: []*wallabypb.Endpoint{runnerTestDestination(destination)}}
+	definition.Config.TableMappings = flow.NewTableMappings([]connector.RuntimeSpec{destination})
 	mapping := &definition.Config.TableMappings.Destinations[0]
 	mapping.Tables = []flow.TableMapping{{
 		SourceSchema: "public", SourceTable: "widgets", Action: flow.MappingActionInclude,
 		TargetSchema: "public", TargetTable: "widgets", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"},
 		Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}},
 	}}
-	_, err := NewStreamRunner(definition, nil, []stream.DestinationConfig{{Spec: definition.Destinations[0], Dest: appendOnlyRunnerDestination{}}}, StreamRunnerConfig{Checkpoints: testCheckpointOutboxStore{}})
+	_, err := NewStreamRunner(definition, nil, []stream.DestinationConfig{{Spec: destination, Dest: appendOnlyRunnerDestination{}}}, StreamRunnerConfig{Checkpoints: testCheckpointOutboxStore{}})
 	if err == nil || !strings.Contains(err.Error(), "upsert") {
 		t.Fatalf("error=%v, want pre-open upsert rejection", err)
 	}

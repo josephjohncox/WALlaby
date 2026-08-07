@@ -4,39 +4,24 @@ package typemapping
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	OptTypeMappings     = "type_mappings"
-	OptTypeMappingsFile = "type_mappings_file"
-)
+const OptTypeMappings = "type_mappings"
 
-// Load resolves type mappings from connector options. A nonempty inline value
-// takes precedence over a file. Files are read on every call so replacements
-// are observed even when modification times are preserved.
+// Load resolves native inline type mappings from connector runtime options.
 func Load(options map[string]string) (map[string]string, error) {
 	if options == nil {
 		return nil, nil //nolint:nilnil // absence of mappings is not an error
 	}
-	if raw := strings.TrimSpace(options[OptTypeMappings]); raw != "" {
-		return Parse(raw)
-	}
-	path := strings.TrimSpace(options[OptTypeMappingsFile])
-	if path == "" {
+	raw := strings.TrimSpace(options[OptTypeMappings])
+	if raw == "" {
 		return nil, nil //nolint:nilnil // absence of mappings is not an error
 	}
-	// #nosec G304 -- path is user-configured and explicitly opted-in.
-	data, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return nil, fmt.Errorf("read type mappings file: %w", err)
-	}
-	return Parse(string(data))
+	return Parse(raw)
 }
 
 // NormalizeKey returns the canonical type-mapping lookup key.

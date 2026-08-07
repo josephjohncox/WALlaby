@@ -17,7 +17,7 @@ import (
 	"github.com/snowflakedb/gosnowflake"
 )
 
-func (d *Destination) openManaged(ctx context.Context, dsn string, spec connector.Spec) (resultErr error) {
+func (d *Destination) openManaged(ctx context.Context, dsn string, spec connector.RuntimeSpec) (resultErr error) {
 	ctx, endAdmission := telemetry.StartSnowflakeManagedSpan(ctx, "admission", "", "", 0, 0)
 	defer func() { endAdmission(resultErr) }()
 	cfg, err := managedConfigFromSpec(dsn, spec)
@@ -100,12 +100,12 @@ func validateManagedSnowflakeCleanStartState(receiptRows int, targetHasRows bool
 
 // ValidateManagedProfileSpec performs the complete side-effect-free portion of
 // managed Snowflake admission.
-func ValidateManagedProfileSpec(spec connector.Spec) error {
+func ValidateManagedProfileSpec(spec connector.RuntimeSpec) error {
 	_, err := managedConfigFromSpec(strings.TrimSpace(spec.Options["dsn"]), spec)
 	return err
 }
 
-func managedConfigFromSpec(dsn string, spec connector.Spec) (managedConfig, error) {
+func managedConfigFromSpec(dsn string, spec connector.RuntimeSpec) (managedConfig, error) {
 	const profileName = connector.ManagedProfilePostgresToSnowflakeSQLV1
 	options := spec.Options
 	if strings.TrimSpace(options["managed_profile"]) != profileName {
@@ -216,7 +216,7 @@ func managedConfigFromSpec(dsn string, spec connector.Spec) (managedConfig, erro
 			return managedConfig{}, fmt.Errorf("managed Snowflake schema contract rejects generated column %q", column.Name)
 		}
 	}
-	if strings.TrimSpace(options["type_mappings"]) != "" || strings.TrimSpace(options["type_mappings_file"]) != "" {
+	if strings.TrimSpace(options["type_mappings"]) != "" {
 		return managedConfig{}, errors.New("managed Snowflake profile rejects type mapping overrides until each mapping has real-service recovery evidence")
 	}
 	cfg.typeMappings = defaultSnowflakeTypeMappings()
@@ -279,7 +279,7 @@ func ValidateManagedProfileOptions(options map[string]string) error {
 	allowed := map[string]struct{}{
 		"dsn": {}, "flow_id": {}, "managed_profile": {}, "destination_revision_id": {},
 		"batch_mode": {}, "batch_resolution": {}, "meta_table_enabled": {},
-		"disable_transactions": {}, "session_keep_alive": {}, "type_mappings": {}, "type_mappings_file": {},
+		"disable_transactions": {}, "session_keep_alive": {},
 		"managed_account": {}, "managed_database": {}, "managed_schema": {}, "managed_table": {},
 		"managed_receipts_table": {}, "managed_owner_role": {}, "managed_execution_role": {}, "managed_warehouse": {},
 		"managed_snowflake_version": {}, "managed_target_created_on": {}, "managed_receipts_created_on": {},
@@ -288,11 +288,6 @@ func ValidateManagedProfileOptions(options map[string]string) error {
 		"managed_max_transaction_rows": {}, "managed_max_transaction_bytes": {},
 		"managed_max_transaction_fragments": {}, "managed_max_open_conns": {},
 		"managed_statement_timeout_seconds": {}, "managed_hybrid_table_lock_timeout_seconds": {},
-		// Known generic options remain in the set so the tailored rejection below
-		// can explain which incompatible mode was requested.
-		"schema": {}, "table": {}, "staging_schema": {}, "staging_table": {}, "staging_suffix": {},
-		"warehouse": {}, "warehouse_size": {}, "warehouse_auto_suspend": {}, "warehouse_auto_resume": {},
-		"meta_schema": {}, "meta_table": {}, "meta_pk_prefix": {},
 	}
 	for option := range options {
 		if _, ok := allowed[option]; !ok {

@@ -34,7 +34,7 @@ func TestSnowflakeStagedManagedProfileFakesnowFailsClosed(t *testing.T) {
 		t.Skip("fakesnow DSN is not configured")
 	}
 	destination := &snowflake.Destination{}
-	err := destination.Open(context.Background(), connector.Spec{Type: connector.EndpointSnowflake, Options: map[string]string{
+	err := destination.Open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": dsn, "flow_id": "snowflake-staged-flow", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
 	}})
 	if err == nil {
@@ -333,7 +333,7 @@ func TestSnowflakeStagedManagedProfileSecretRedaction(t *testing.T) {
 		leaky += "?password=hunter2"
 	}
 	destination := &snowflake.Destination{}
-	err := destination.Open(context.Background(), connector.Spec{Type: connector.EndpointSnowflake, Options: map[string]string{
+	err := destination.Open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": leaky, "flow_id": "staged", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
 		"managed_source_schema": "public", "managed_source_table": "widgets",
 	}})
@@ -383,7 +383,7 @@ type snowflakeStagedManagedFixture struct {
 	db               *sql.DB
 	provisionDB      *sql.DB
 	destination      *snowflake.Destination
-	spec             connector.Spec
+	spec             connector.RuntimeSpec
 	schema           connector.Schema
 	version          string
 	targetQualified  string
@@ -511,7 +511,7 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	targetCreated := readCreated("SELECT TO_VARCHAR(CREATED, '"+catalogTimestampFormat+"') FROM "+q(database)+".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", strings.ToUpper(schemaName), target)
 	receiptsCreated := readCreated("SELECT TO_VARCHAR(CREATED, '"+catalogTimestampFormat+"') FROM "+q(database)+".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", strings.ToUpper(schemaName), receipts)
 
-	spec := connector.Spec{Name: "snowflake-staged", Type: connector.EndpointSnowflake, Options: map[string]string{
+	spec := connector.RuntimeSpec{Name: "snowflake-staged", Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": dsn, "flow_id": flowID, "managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
 		"destination_revision_id": revision, "batch_mode": "target", "batch_resolution": "none",
 		"meta_table_enabled": "false", "disable_transactions": "false", "session_keep_alive": "false",

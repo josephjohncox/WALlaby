@@ -16,7 +16,7 @@ func TestGenericAppendPlanAndDDLBehavior(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	destination := &Destination{db: db, disableTx: true, metaEnabled: false, spec: connector.Spec{Type: connector.EndpointSnowflake}}
+	destination := &Destination{db: db, disableTx: true, metaEnabled: false, spec: connector.RuntimeSpec{Type: connector.EndpointSnowflake}}
 	mock.ExpectExec(`INSERT INTO "MAPPED"\."EVENTS" \("EVENT_ID"\) VALUES \(\?\)`).WithArgs(int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
 	batch := connector.Batch{
 		Schema:      connector.Schema{Namespace: "MAPPED", Name: "EVENTS", Columns: []connector.Column{{Name: "EVENT_ID", Type: "int8"}}},

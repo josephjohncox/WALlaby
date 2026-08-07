@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/controlplane"
 	"github.com/josephjohncox/wallaby/internal/controlstore"
@@ -155,11 +156,11 @@ func persistBaselineTest(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 
 func createBaselineTestFence(t *testing.T, ctx context.Context, engine *workflow.PostgresEngine, authorityStore *authority.PostgresStore, flowID, executionID string) connector.RunFence {
 	t.Helper()
-	destination := connector.Spec{Name: "target", Type: connector.EndpointPostgres}
+	destination := connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}
 	definition := flow.Flow{
-		ID: flowID, Name: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres},
-		Destinations: []connector.Spec{destination}, State: flow.StateCreated,
-		Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{destination})},
+		ID: flowID, Name: flowID, Source: schemaBaselineSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}),
+		Destinations: []*wallabypb.Endpoint{schemaBaselineDestination(destination)}, State: flow.StateCreated,
+		Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{destination})},
 	}
 	if _, err := engine.Create(ctx, definition); err != nil {
 		t.Fatal(err)

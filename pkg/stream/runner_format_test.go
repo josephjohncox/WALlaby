@@ -10,13 +10,13 @@ func TestRunnerNormalizeWireFormatMismatch(t *testing.T) {
 	r := &Runner{
 		WireFormat:   connector.WireFormatArrow,
 		StrictFormat: true,
-		SourceSpec: connector.Spec{
+		SourceSpec: connector.RuntimeSpec{
 			Name:    "src",
 			Type:    "postgres",
 			Options: map[string]string{"format": "json"},
 		},
 		Destinations: []DestinationConfig{
-			{Spec: connector.Spec{Name: "dest", Type: "kafka", Options: map[string]string{}}},
+			{Spec: connector.RuntimeSpec{Name: "dest", Type: "kafka", Options: map[string]string{}}},
 		},
 	}
 
@@ -28,13 +28,13 @@ func TestRunnerNormalizeWireFormatMismatch(t *testing.T) {
 func TestRunnerNormalizeWireFormatPropagates(t *testing.T) {
 	r := &Runner{
 		WireFormat: connector.WireFormatAvro,
-		SourceSpec: connector.Spec{
+		SourceSpec: connector.RuntimeSpec{
 			Name:    "src",
 			Type:    "postgres",
 			Options: map[string]string{},
 		},
 		Destinations: []DestinationConfig{
-			{Spec: connector.Spec{Name: "dest", Type: "kafka", Options: map[string]string{}}},
+			{Spec: connector.RuntimeSpec{Name: "dest", Type: "kafka", Options: map[string]string{}}},
 		},
 	}
 
@@ -53,13 +53,13 @@ func TestRunnerNormalizeWireFormatDestMismatch(t *testing.T) {
 	r := &Runner{
 		WireFormat:   connector.WireFormatProto,
 		StrictFormat: true,
-		SourceSpec: connector.Spec{
+		SourceSpec: connector.RuntimeSpec{
 			Name:    "src",
 			Type:    "postgres",
 			Options: map[string]string{},
 		},
 		Destinations: []DestinationConfig{
-			{Spec: connector.Spec{Name: "dest", Type: "kafka", Options: map[string]string{"format": "avro"}}},
+			{Spec: connector.RuntimeSpec{Name: "dest", Type: "kafka", Options: map[string]string{"format": "avro"}}},
 		},
 	}
 

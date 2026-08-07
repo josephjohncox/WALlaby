@@ -60,8 +60,8 @@ func TestGenericAppendWriteExecutesInsert(t *testing.T) {
 
 func TestGenericApplyDDLExecutesTranslatedStatement(t *testing.T) {
 	executor := &recordingDDLExecutor{}
-	destination := &Destination{ddlExecutor: executor, spec: connector.Spec{Type: connector.EndpointClickHouse}}
-	spec := connector.Spec{Type: connector.EndpointClickHouse}
+	destination := &Destination{ddlExecutor: executor, spec: connector.RuntimeSpec{Type: connector.EndpointClickHouse}}
+	spec := connector.RuntimeSpec{Type: connector.EndpointClickHouse}
 	capabilities, err := destination.CapabilitiesFor(spec)
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestGenericApplyDDLExecutesTranslatedStatement(t *testing.T) {
 
 func TestManagedApplyDDLRejectsBeforeExecutor(t *testing.T) {
 	executor := &recordingDDLExecutor{}
-	spec := connector.Spec{Type: connector.EndpointClickHouse, Options: map[string]string{"managed_profile": connector.ManagedProfilePostgresToClickHouseAppendV1}}
+	spec := connector.RuntimeSpec{Type: connector.EndpointClickHouse, Options: map[string]string{"managed_profile": connector.ManagedProfilePostgresToClickHouseAppendV1}}
 	destination := &Destination{ddlExecutor: executor, managedProfile: connector.ManagedProfilePostgresToClickHouseAppendV1}
 	capabilities, err := destination.CapabilitiesFor(spec)
 	if err != nil {

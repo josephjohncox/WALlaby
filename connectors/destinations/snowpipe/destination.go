@@ -67,7 +67,7 @@ type destinationFactories struct {
 // Destination writes batches to Snowflake stages and optionally issues COPY INTO.
 type Destination struct {
 	closeMu          sync.Mutex
-	spec             connector.Spec
+	spec             connector.RuntimeSpec
 	db               *sql.DB
 	codec            wire.Codec
 	stage            string
@@ -98,11 +98,11 @@ type execer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	return d.open(ctx, spec, destinationFactories{openDB: sql.Open, newRegistry: schemaregistry.NewRegistry})
 }
 
-func (d *Destination) open(ctx context.Context, spec connector.Spec, factories destinationFactories) (err error) {
+func (d *Destination) open(ctx context.Context, spec connector.RuntimeSpec, factories destinationFactories) (err error) {
 	registryCfg, err := schemaregistry.ConfigFromOptions(spec.Options)
 	if err != nil {
 		return err

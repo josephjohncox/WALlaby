@@ -31,7 +31,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 		{
 			name: "all acknowledgement accepts one at-least-once destination",
 			dests: []DestinationConfig{{
-				Spec: connector.Spec{Name: "sink", Type: connector.EndpointHTTP},
+				Spec: connector.RuntimeSpec{Name: "sink", Type: connector.EndpointHTTP},
 				Dest: contractDestination{},
 			}},
 		},
@@ -39,11 +39,11 @@ func TestValidateDestinationContracts(t *testing.T) {
 			name: "all acknowledgement rejects unsafe fan-out",
 			dests: []DestinationConfig{
 				{
-					Spec: connector.Spec{Name: "safe", Type: connector.EndpointPostgres},
+					Spec: connector.RuntimeSpec{Name: "safe", Type: connector.EndpointPostgres},
 					Dest: contractDestination{capabilities: safeSecondary},
 				},
 				{
-					Spec: connector.Spec{Name: "unsafe", Type: connector.EndpointHTTP},
+					Spec: connector.RuntimeSpec{Name: "unsafe", Type: connector.EndpointHTTP},
 					Dest: contractDestination{},
 				},
 			},
@@ -52,14 +52,14 @@ func TestValidateDestinationContracts(t *testing.T) {
 		{
 			name: "all acknowledgement accepts replay-safe idempotent destination",
 			dests: []DestinationConfig{{
-				Spec: connector.Spec{Name: "sink", Type: connector.EndpointPostgres},
+				Spec: connector.RuntimeSpec{Name: "sink", Type: connector.EndpointPostgres},
 				Dest: contractDestination{capabilities: safeSecondary},
 			}},
 		},
 		{
 			name: "lossy destination cannot be acknowledged",
 			dests: []DestinationConfig{{
-				Spec: connector.Spec{Name: "sink"},
+				Spec: connector.RuntimeSpec{Name: "sink"},
 				Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{Lossy: true}}},
 			}},
 			wantError: "may drop records",
@@ -67,7 +67,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 		{
 			name: "auto apply requires DDL execution",
 			dests: []DestinationConfig{{
-				Spec: connector.Spec{Name: "sink"},
+				Spec: connector.RuntimeSpec{Name: "sink"},
 				Dest: contractDestination{},
 			}},
 			requireDDL: true,
@@ -76,7 +76,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 		{
 			name: "auto apply requires DDL reconciliation",
 			dests: []DestinationConfig{{
-				Spec: connector.Spec{Name: "sink"},
+				Spec: connector.RuntimeSpec{Name: "sink"},
 				Dest: contractDestination{capabilities: safePrimary},
 			}},
 			requireDDL: true,
@@ -85,7 +85,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 		{
 			name: "auto apply accepts replay-safe DDL destination",
 			dests: []DestinationConfig{{
-				Spec: connector.Spec{Name: "sink"},
+				Spec: connector.RuntimeSpec{Name: "sink"},
 				Dest: reconcilingContractDestination{contractDestination{capabilities: safePrimary}},
 			}},
 			requireDDL: true,
@@ -94,11 +94,11 @@ func TestValidateDestinationContracts(t *testing.T) {
 			name: "materialized acknowledgement rejects unsupported fan-out",
 			dests: []DestinationConfig{
 				{
-					Spec: connector.Spec{Name: "first", Type: connector.EndpointHTTP},
+					Spec: connector.RuntimeSpec{Name: "first", Type: connector.EndpointHTTP},
 					Dest: contractDestination{},
 				},
 				{
-					Spec: connector.Spec{Name: "second", Type: connector.EndpointHTTP},
+					Spec: connector.RuntimeSpec{Name: "second", Type: connector.EndpointHTTP},
 					Dest: contractDestination{},
 				},
 			},
@@ -108,7 +108,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 		{
 			name: "materialized acknowledgement requires managed transaction destination identity",
 			dests: []DestinationConfig{{
-				Spec: connector.Spec{Name: "consumer", Type: connector.EndpointHTTP},
+				Spec: connector.RuntimeSpec{Name: "consumer", Type: connector.EndpointHTTP},
 				Dest: contractDestination{},
 			}},
 			ack:       AckPolicyMaterialized,
@@ -117,7 +117,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 		{
 			name: "materialized acknowledgement accepts canonical artifact consumer",
 			dests: []DestinationConfig{{
-				Spec: connector.Spec{Name: "consumer", Type: connector.EndpointIceberg},
+				Spec: connector.RuntimeSpec{Name: "consumer", Type: connector.EndpointIceberg},
 				Dest: artifactContractDestination{contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{
 					IdempotentReplay: true, ReplaySafe: true,
 				}}}},
@@ -127,7 +127,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 		{
 			name: "materialized acknowledgement accepts one managed destination revision",
 			dests: []DestinationConfig{{
-				Spec: connector.Spec{Name: "consumer", Type: connector.EndpointPostgres},
+				Spec: connector.RuntimeSpec{Name: "consumer", Type: connector.EndpointPostgres},
 				Dest: managedContractDestination{contractDestination{capabilities: safePrimary}},
 			}},
 			ack: AckPolicyMaterialized,
@@ -135,7 +135,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 		{
 			name: "primary acknowledgement requires replay safety",
 			dests: []DestinationConfig{{
-				Spec: connector.Spec{Name: "primary"},
+				Spec: connector.RuntimeSpec{Name: "primary"},
 				Dest: contractDestination{capabilities: connector.Capabilities{Delivery: connector.DeliverySemantics{TransactionalBatch: true}}},
 			}},
 			ack:       AckPolicyPrimary,
@@ -145,7 +145,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 		{
 			name: "primary destination requires transactional batch",
 			dests: []DestinationConfig{{
-				Spec: connector.Spec{Name: "primary"},
+				Spec: connector.RuntimeSpec{Name: "primary"},
 				Dest: contractDestination{capabilities: safeSecondary},
 			}},
 			ack:       AckPolicyPrimary,
@@ -155,8 +155,8 @@ func TestValidateDestinationContracts(t *testing.T) {
 		{
 			name: "primary acknowledgement validates secondaries",
 			dests: []DestinationConfig{
-				{Spec: connector.Spec{Name: "primary"}, Dest: contractDestination{capabilities: safePrimary}},
-				{Spec: connector.Spec{Name: "secondary"}, Dest: contractDestination{}},
+				{Spec: connector.RuntimeSpec{Name: "primary"}, Dest: contractDestination{capabilities: safePrimary}},
+				{Spec: connector.RuntimeSpec{Name: "secondary"}, Dest: contractDestination{}},
 			},
 			ack:       AckPolicyPrimary,
 			primary:   "primary",
@@ -165,7 +165,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 		{
 			name: "primary destination must exist",
 			dests: []DestinationConfig{{
-				Spec: connector.Spec{Name: "other"},
+				Spec: connector.RuntimeSpec{Name: "other"},
 				Dest: contractDestination{capabilities: safeSecondary},
 			}},
 			ack:       AckPolicyPrimary,
@@ -175,8 +175,8 @@ func TestValidateDestinationContracts(t *testing.T) {
 		{
 			name: "valid primary acknowledgement contract",
 			dests: []DestinationConfig{
-				{Spec: connector.Spec{Name: "primary"}, Dest: contractDestination{capabilities: safePrimary}},
-				{Spec: connector.Spec{Name: "secondary"}, Dest: contractDestination{capabilities: safeSecondary}},
+				{Spec: connector.RuntimeSpec{Name: "primary"}, Dest: contractDestination{capabilities: safePrimary}},
+				{Spec: connector.RuntimeSpec{Name: "secondary"}, Dest: contractDestination{capabilities: safeSecondary}},
 			},
 			ack:     AckPolicyPrimary,
 			primary: "primary",
@@ -203,7 +203,7 @@ func TestValidateDestinationContracts(t *testing.T) {
 func TestWriteDestinationRejectsUnclaimedPolicyBeforeExternalIO(t *testing.T) {
 	destination := &writeCountingDestination{capabilities: connector.Capabilities{TableWrites: connector.TableWriteSemantics{Append: true}}}
 	runner := &Runner{}
-	config := DestinationConfig{Spec: connector.Spec{Name: "append-only"}, Dest: destination}
+	config := DestinationConfig{Spec: connector.RuntimeSpec{Name: "append-only"}, Dest: destination}
 	batch := connector.Batch{WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}}, Records: []connector.Record{{Operation: connector.OpInsert}}}
 	if err := runner.writeDestination(context.Background(), config, batch); err == nil || !strings.Contains(err.Error(), "does not support explicit-key upsert") {
 		t.Fatalf("writeDestination error=%v", err)
@@ -218,7 +218,7 @@ type writeCountingDestination struct {
 	writes       int
 }
 
-func (*writeCountingDestination) Open(context.Context, connector.Spec) error { return nil }
+func (*writeCountingDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
 func (d *writeCountingDestination) Write(context.Context, connector.Batch) error {
 	d.writes++
 	return nil
@@ -236,8 +236,8 @@ type contractDestination struct {
 	capabilities connector.Capabilities
 }
 
-func (contractDestination) Open(context.Context, connector.Spec) error   { return nil }
-func (contractDestination) Write(context.Context, connector.Batch) error { return nil }
+func (contractDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
+func (contractDestination) Write(context.Context, connector.Batch) error      { return nil }
 func (contractDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
 	return nil
 }

@@ -71,14 +71,13 @@ func testAppendMappings(destination string) types.Object { // used by resource_f
 func testCompleteMappingModel() flowResourceModel {
 	return flowResourceModel{
 		ID: types.StringValue("flow-1"), Name: types.StringValue("mapped"), WireFormat: types.StringValue("arrow"), Parallelism: types.Int64Value(3), State: types.StringValue("running"), StartImmediately: types.BoolValue(true),
-		Source: endpointModel{Name: types.StringValue("source"), Type: types.StringValue("postgres"), Options: types.MapNull(types.StringType)},
+		Source: endpointFromProto(&wallabypb.Endpoint{Name: "source", Config: &wallabypb.Endpoint_PostgresSource{PostgresSource: &wallabypb.PostgresSourceConfig{}}}),
 		Destinations: []endpointModel{
-			{Name: types.StringValue("target"), Type: types.StringValue("postgres"), Options: types.MapNull(types.StringType)},
-			{Name: types.StringValue("archive"), Type: types.StringValue("s3"), Options: types.MapNull(types.StringType)},
+			endpointFromProto(&wallabypb.Endpoint{Name: "target", Config: &wallabypb.Endpoint_PostgresDestination{PostgresDestination: &wallabypb.PostgresDestinationConfig{}}}),
+			endpointFromProto(&wallabypb.Endpoint{Name: "archive", Config: &wallabypb.Endpoint_S3{S3: &wallabypb.S3DestinationConfig{}}}),
 		},
 		Config: &flowConfigModel{
 			AckPolicy: types.StringValue("primary"), PrimaryDestination: types.StringValue("target"), FailureMode: types.StringValue("hold_slot"), GiveUpPolicy: types.StringValue("never"),
-			SchemaRegistrySubject: types.StringValue("orders-value"), SchemaRegistryProtoTypesSubject: types.StringValue("wallaby-types"), SchemaRegistrySubjectMode: types.StringValue("record"),
 			DDL: &flowDDLConfigModel{Gate: types.BoolValue(true), AutoApprove: types.BoolValue(false), AutoApply: types.BoolValue(true)}, TableMappings: testObjectFromProto(completeMappingProto()),
 		},
 	}
@@ -323,7 +322,7 @@ func TestRequiredMappingCollectionsRejectOmission(t *testing.T) {
 func TestExplicitEmptyCollectionsRemainStableAcrossFrameworkApplyAndRefresh(t *testing.T) {
 	ctx := context.Background()
 	model := testCompleteMappingModel()
-	model.Destinations = []endpointModel{{Name: types.StringValue("archive"), Type: types.StringValue("s3"), Options: types.MapNull(types.StringType)}}
+	model.Destinations = []endpointModel{endpointFromProto(&wallabypb.Endpoint{Name: "archive", Config: &wallabypb.Endpoint_S3{S3: &wallabypb.S3DestinationConfig{}}})}
 	config := *model.Config
 	config.AckPolicy = types.StringValue("all")
 	config.PrimaryDestination = types.StringNull()
@@ -459,7 +458,7 @@ func TestTerraformAppendWatermarkIsMetadata(t *testing.T) {
 	mapping := appendMappingProto("archive")
 	mapping.Destinations[0].FutureTables.Write.WatermarkColumn = "observed_at"
 	model := testCompleteMappingModel()
-	model.Destinations = []endpointModel{{Name: types.StringValue("archive"), Type: types.StringValue("s3"), Options: types.MapNull(types.StringType)}}
+	model.Destinations = []endpointModel{endpointFromProto(&wallabypb.Endpoint{Name: "archive", Config: &wallabypb.Endpoint_S3{S3: &wallabypb.S3DestinationConfig{}}})}
 	model.Config.TableMappings = mappingObject(t, mapping)
 	if diagnostics := validateTerraformTableMappings(context.Background(), model); diagnostics.HasError() {
 		t.Fatalf("append watermark metadata rejected: %v", diagnostics)
@@ -645,7 +644,7 @@ func TestMappingAndConfigChangesUseControlledReconfigureWhileOrdinaryUpdatesRema
 	}
 
 	identityChange := prior
-	identityChange.Source.Options = types.MapValueMust(types.StringType, map[string]attr.Value{"dsn": types.StringValue("postgres://changed")})
+	identityChange.Source = endpointFromProto(&wallabypb.Endpoint{Name: "source", Config: &wallabypb.Endpoint_PostgresSource{PostgresSource: &wallabypb.PostgresSourceConfig{Connection: &wallabypb.PostgresConnectionConfig{Dsn: "postgres://changed"}}}})
 	identityClient := &flowRPCFake{}
 	identityInstance := &flowResource{client: &Client{Flow: identityClient}}
 	identityResponse := resource.UpdateResponse{State: stateForModel(t, prior)}
@@ -793,8 +792,8 @@ func TestFlowResourceSchemaExposesDurableMappingsWithoutReplacementOrFilePath(t 
 		t.Fatalf("config schema=%T %+v", response.Schema.Attributes["config"], config)
 	}
 	for _, name := range []string{"schema_registry_subject", "schema_registry_proto_types_subject", "schema_registry_subject_mode"} {
-		if _, ok := config.Attributes[name]; !ok {
-			t.Fatalf("missing config attribute %q", name)
+		if _, ok := config.Attributes[name]; ok {
+			t.Fatalf("obsolete flow-level schema registry attribute %q remains", name)
 		}
 	}
 	mappings, ok := config.Attributes["table_mappings"].(schema.SingleNestedAttribute)

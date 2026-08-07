@@ -52,7 +52,7 @@ func BenchmarkClickHouseMutationUpdate(b *testing.B) {
 	}
 
 	dest := &clickhouse.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "clickhouse-bench",
 		Type: connector.EndpointClickHouse,
 		Options: map[string]string{
@@ -128,7 +128,7 @@ func BenchmarkClickHouseAppendInsert(b *testing.B) {
 	}
 
 	dest := &clickhouse.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "clickhouse-bench-append",
 		Type: connector.EndpointClickHouse,
 		Options: map[string]string{

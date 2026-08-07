@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,8 @@ import (
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/artifactlog"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
+	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 	"github.com/spf13/afero"
@@ -18,17 +21,21 @@ import (
 	"github.com/spf13/viper"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"gopkg.in/yaml.v3"
 )
 
 func TestRedpandaEndpointRoundTrip(t *testing.T) {
 	t.Parallel()
-
-	wire := endpointTypeToProto("redpanda")
-	if wire != wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA || int32(wire) != 16 {
-		t.Fatalf("Redpanda endpoint wire value=%d", wire)
+	endpoint, err := endpointcodec.Encode(connector.RuntimeSpec{Name: "redpanda", Type: connector.EndpointRedpanda}, endpointcodec.RoleDestination)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if model := endpointTypeFromProto(wire); model != connector.EndpointRedpanda {
-		t.Fatalf("Redpanda endpoint round trip=%q", model)
+	if _, ok := endpoint.GetConfig().(*wallabypb.Endpoint_Redpanda); !ok {
+		t.Fatalf("Redpanda endpoint branch=%T", endpoint.GetConfig())
+	}
+	model, err := endpointcodec.Decode(endpoint, endpointcodec.RoleDestination)
+	if err != nil || model.Type != connector.EndpointRedpanda {
+		t.Fatalf("Redpanda endpoint round trip=%q err=%v", model.Type, err)
 	}
 }
 
@@ -52,27 +59,27 @@ func TestMaterializedFlowConfigRoundTrip(t *testing.T) {
 }
 
 func TestIcebergCLIEndpointRoundTrip(t *testing.T) {
-	pb, err := endpointConfigToProto(endpointConfig{Name: "lake", Type: "iceberg", Options: map[string]string{"catalog_profile": "aws_s3_tables_v1"}})
+	config := testDestinationEndpoint("lake", connector.EndpointIceberg, map[string]string{"catalog_profile": "s3tables", "destination_revision_id": "revision-1"})
+	pb, err := config.toProto(endpointcodec.RoleDestination)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pb.Type != wallabypb.EndpointType_ENDPOINT_TYPE_ICEBERG {
-		t.Fatalf("proto type=%v", pb.Type)
+	if _, ok := pb.GetConfig().(*wallabypb.Endpoint_Iceberg); !ok {
+		t.Fatalf("proto branch=%T", pb.GetConfig())
 	}
-	model, err := endpointFromProto(pb)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if model.Type != connector.EndpointIceberg {
-		t.Fatalf("model type=%q", model.Type)
-	}
-	if endpointTypeFromProto(wallabypb.EndpointType_ENDPOINT_TYPE_ICEBERG) != connector.EndpointIceberg {
-		t.Fatal("from-proto Iceberg conversion missing")
+	model, err := endpointcodec.Decode(pb, endpointcodec.RoleDestination)
+	if err != nil || model.Type != connector.EndpointIceberg {
+		t.Fatalf("model type=%q err=%v", model.Type, err)
 	}
 }
 
 func TestFlowPlanComparesCompleteDefinitionWithoutRuntimeState(t *testing.T) {
-	before := flowDetail{Name: "flow", WireFormat: "arrow", Parallelism: 2, State: "running", StateRaw: int32(wallabypb.FlowState_FLOW_STATE_RUNNING), Source: flowEndpointInfoDetail{Name: "source", Type: "postgres", TypeRaw: int32(wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES), Options: map[string]string{"host": "old"}}, Destinations: []flowEndpointInfoDetail{{Name: "target", Type: "postgres", TypeRaw: int32(wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES)}}, Config: flowConfigInfo{AckPolicy: "all"}}
+	before := flowDetailForComparisonFromProto(&wallabypb.Flow{
+		Name: "flow", WireFormat: wallabypb.WireFormat_WIRE_FORMAT_ARROW, Parallelism: 2, State: wallabypb.FlowState_FLOW_STATE_RUNNING,
+		Source:       &wallabypb.Endpoint{Name: "source", Config: &wallabypb.Endpoint_PostgresSource{PostgresSource: &wallabypb.PostgresSourceConfig{Connection: &wallabypb.PostgresConnectionConfig{Dsn: "postgres://old"}}}},
+		Destinations: []*wallabypb.Endpoint{{Name: "target", Config: &wallabypb.Endpoint_PostgresDestination{PostgresDestination: &wallabypb.PostgresDestinationConfig{}}}},
+		Config:       &wallabypb.FlowConfig{AckPolicy: wallabypb.AckPolicy_ACK_POLICY_ALL},
+	})
 	after := before
 	after.State = "unspecified"
 	after.StateRaw = 0
@@ -86,7 +93,8 @@ func TestFlowPlanComparesCompleteDefinitionWithoutRuntimeState(t *testing.T) {
 	after.WireFormat = "json"
 	assertSinglePlanPath(t, compareFlowDefinitions(before, after), "wire_format")
 	after = before
-	after.Source.Options = map[string]string{"host": "new"}
+	after.Source = flowEndpointInfoDetailFromProto(endpointcodec.Clone(before.Source.endpoint))
+	after.Source.endpoint.GetPostgresSource().Connection.Dsn = "postgres://new"
 	assertSinglePlanPath(t, compareFlowDefinitions(before, after), "source")
 	after = before
 	after.Parallelism = 3
@@ -95,7 +103,7 @@ func TestFlowPlanComparesCompleteDefinitionWithoutRuntimeState(t *testing.T) {
 	after.Config.AckPolicy = "primary"
 	assertSinglePlanPath(t, compareFlowDefinitions(before, after), "config")
 	after = before
-	after.Destinations = []flowEndpointInfoDetail{{Name: "other", Type: "postgres", TypeRaw: int32(wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES)}, before.Destinations[0]}
+	after.Destinations = []flowEndpointInfoDetail{flowEndpointInfoDetailFromProto(&wallabypb.Endpoint{Name: "other", Config: &wallabypb.Endpoint_Duckdb{Duckdb: &wallabypb.DuckDBDestinationConfig{}}}), before.Destinations[0]}
 	assertSinglePlanPath(t, compareFlowDefinitions(before, after), "destinations")
 }
 func TestResolveFlowPlanIDOverrideAndConflict(t *testing.T) {
@@ -278,10 +286,9 @@ func TestClickHouseTLSKeyFileRedactedAcrossOutputFormats(t *testing.T) {
 	adminFileSystem = afero.NewMemMapFs()
 	t.Cleanup(func() { adminFileSystem = oldFS })
 	cfg := completeFlowFile()
-	cfg.Destinations[0].Type = "clickhouse"
+	cfg.Destinations[0] = testDestinationEndpoint("target", connector.EndpointClickHouse, map[string]string{"managed_profile": connector.ManagedProfilePostgresToClickHouseAppendV1, "tls_key_file": "/var/run/secrets/clickhouse/client-private-key.pem", "tls_ca_file": "/etc/wallaby/clickhouse-ca.pem", "tls_cert_file": "/etc/wallaby/clickhouse-client.pem", "tls_server_name": "clickhouse.example"})
 	cfg.Config.TableMappings.Destinations[0].Tables[0].Write.Mode = "append"
 	cfg.Config.TableMappings.Destinations[0].Tables[0].Write.KeyColumns = nil
-	cfg.Destinations[0].Options = map[string]string{"tls_key_file": "/var/run/secrets/clickhouse/client-private-key.pem", "tls_ca_file": "/etc/wallaby/clickhouse-ca.pem", "tls_cert_file": "/etc/wallaby/clickhouse-client.pem", "tls_server_name": "clickhouse.example"}
 	payload, err := encodeDeterministic(cfg, "json")
 	if err != nil {
 		t.Fatal(err)
@@ -312,7 +319,7 @@ func TestClickHouseTLSKeyFileRedactedAcrossOutputFormats(t *testing.T) {
 				}
 			}
 			if outputFlag != "" {
-				for _, key := range []string{"tls_key_file", "tls_ca_file", "tls_cert_file"} {
+				for _, key := range []string{"private_key_file", "ca_file", "certificate_file"} {
 					if !strings.Contains(text, key) {
 						t.Fatalf("%s output omitted audited key %q: %s", name, key, text)
 					}
@@ -389,50 +396,113 @@ func TestEndpointOptionClassificationAndSanitization(t *testing.T) {
 			if got := classifyEndpointOptionKey(tt.key); got != tt.class {
 				t.Fatalf("classify %q=%d, want %d", tt.key, got, tt.class)
 			}
-			safe := redactFlowEndpoint(flowEndpointInfoDetail{Options: map[string]string{tt.key: tt.value}})
-			if got := safe.Options[tt.key]; got != tt.want {
-				t.Fatalf("render %q=%q, want %q", tt.key, got, tt.want)
+			var rendered string
+			switch tt.class {
+			case endpointOptionSensitive:
+				rendered = redactedEndpointOption
+			case endpointOptionURL:
+				rendered = sanitizeEndpointURL(tt.value)
+			case endpointOptionNetwork:
+				rendered = sanitizeEndpointNetworkValue(tt.value)
+			default:
+				rendered = tt.value
+			}
+			if rendered != tt.want {
+				t.Fatalf("render %q=%q, want %q", tt.key, rendered, tt.want)
 			}
 		})
 	}
 }
 
+func TestFlowEndpointDetailMarshalsPublicTypedBranchesAndRedactsRecursively(t *testing.T) {
+	t.Parallel()
+	endpoint := &wallabypb.Endpoint{Name: "archive", Config: &wallabypb.Endpoint_S3{S3: &wallabypb.S3DestinationConfig{
+		Bucket: "events", AccessKey: "access-secret", SecretKey: "secret-secret", SessionToken: "session-secret",
+	}}}
+	detail := redactFlowEndpoint(flowEndpointInfoDetailFromProto(endpoint))
+	encoded, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"name":"archive","s3":{"bucket":"events","access_key":"[REDACTED]","secret_key":"[REDACTED]","session_token":"[REDACTED]"}}`
+	if string(encoded) != want {
+		t.Fatalf("typed endpoint JSON=%s, want %s", encoded, want)
+	}
+	var jsonShape map[string]any
+	if err := json.Unmarshal(encoded, &jsonShape); err != nil {
+		t.Fatal(err)
+	}
+	yamlEncoded, err := yaml.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var yamlShape map[string]any
+	if err := yaml.Unmarshal(yamlEncoded, &yamlShape); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := jsonShape["s3"]; !ok || fmt.Sprint(jsonShape) != fmt.Sprint(yamlShape) {
+		t.Fatalf("JSON/YAML branch mismatch: json=%v yaml=%v", jsonShape, yamlShape)
+	}
+	for _, legacy := range []string{`"type":`, `"options":`, "\ntype:", "\noptions:"} {
+		if strings.Contains(string(encoded), legacy) || strings.Contains(string(yamlEncoded), legacy) {
+			t.Fatalf("typed endpoint output contains legacy field %q: json=%s yaml=%s", legacy, encoded, yamlEncoded)
+		}
+	}
+
+	custom := &wallabypb.Endpoint{Name: "plugin", Config: &wallabypb.Endpoint_Custom{Custom: &wallabypb.CustomEndpointConfig{
+		ConnectorType: "acme", Options: map[string]string{"ordinary": "visible-looking", "token": "secret"},
+	}}}
+	customJSON, err := json.Marshal(redactFlowEndpoint(flowEndpointInfoDetailFromProto(custom)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(customJSON), "visible-looking") || strings.Contains(string(customJSON), `"secret"`) || strings.Count(string(customJSON), redactedEndpointOption) != 2 || !strings.Contains(string(customJSON), `"custom"`) {
+		t.Fatalf("custom options were not conservatively redacted: %s", customJSON)
+	}
+}
+
+func TestFlowPlanPreservesTypedBranchIdentity(t *testing.T) {
+	t.Parallel()
+	before := flowEndpointInfoDetailFromProto(&wallabypb.Endpoint{Name: "target", Config: &wallabypb.Endpoint_Kafka{Kafka: &wallabypb.KafkaDestinationConfig{Brokers: []string{"broker:9092"}, Topic: "events"}}})
+	after := flowEndpointInfoDetailFromProto(&wallabypb.Endpoint{Name: "target", Config: &wallabypb.Endpoint_Redpanda{Redpanda: &wallabypb.RedpandaDestinationConfig{Kafka: &wallabypb.KafkaDestinationConfig{Brokers: []string{"broker:9092"}, Topic: "events"}}}})
+	changes := compareFlowEndpoint("destinations", before, after)
+	assertSinglePlanPath(t, changes, "destinations")
+	if !strings.Contains(changes[0].Before, `"kafka"`) || !strings.Contains(changes[0].After, `"redpanda"`) || strings.Contains(changes[0].Before+changes[0].After, `"options"`) {
+		t.Fatalf("plan lost typed branch identity: %+v", changes)
+	}
+}
+
 func TestFlowDetailAndPlanRedactSecretsWithoutMaskingComparison(t *testing.T) {
-	pb := &wallabypb.Flow{Name: "flow", Source: &wallabypb.Endpoint{Name: "source", Type: wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES, Options: map[string]string{"host": "db.internal", "dsn": "postgres://user:dsn-secret@db.internal/db", "password": "password-secret", "oauth_client_secret": "oauth-secret", "aws_access_key_id": "access-secret", "endpoint_url": "https://catalog.internal/v1", "broker_url": "https://user:url-secret@broker.internal/v1", "webhook_url": "https://hooks.internal/v1?access_token=query-secret", "sasl_jaas_config": "password=jaas-secret", "oauth_token_endpoint": "https://identity.internal/token", "username": "visible-user", "headers": "{\"Authorization\":\"Bearer raw-secret\"}", "header": "QXV0aG9yaXphdGlvbjogQmVhcmVyIGVuY29kZWQtc2VjcmV0", "http_authorization_header": "Bearer http-secret", "grpc_authorization_header": "Basic grpc-secret", "http_auth_header": "Bearer http-short-secret", "grpc_auth_header": "Basic grpc-short-secret", "url": "https://hooks.slack.com/services/T000/B000/slack-path-secret", "github_webhook_url": "https://api.github.com/repos/org/repo/hooks/github-path-secret", "signed_url": "https://objects.example/bucket/object?signed=query-secret", "userinfo_uri": "https://url-user:url-password@example.internal/private", "plain_url": "https://plain.example:8443", "malformed_url": "://not-a-url", "endpoint": "https://endpoint.example/endpoint-path-secret", "uri": "https://uri.example/uri-path-secret", "webhook": "https://discord.example/api/webhooks/id/webhook-path-secret"}}, Destinations: []*wallabypb.Endpoint{{Name: "target", Type: wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES, Options: map[string]string{"token": "destination-token", "host": "sink.internal"}}}}
+	pb := &wallabypb.Flow{
+		Name: "flow",
+		Source: &wallabypb.Endpoint{Name: "source", Config: &wallabypb.Endpoint_PostgresSource{PostgresSource: &wallabypb.PostgresSourceConfig{
+			Connection: &wallabypb.PostgresConnectionConfig{Dsn: "postgres://user:dsn-secret@db.internal/db"},
+		}}},
+		Destinations: []*wallabypb.Endpoint{{Name: "target", Config: &wallabypb.Endpoint_S3{S3: &wallabypb.S3DestinationConfig{
+			Bucket: "events", Endpoint: "https://s3.internal/private", AccessKey: "destination-access", SecretKey: "destination-secret",
+		}}}},
+	}
 	raw := flowDetailForComparisonFromProto(pb)
 	safe := flowDetailFromProto(pb)
-	if safe.Destinations[0].Options["token"] != redactedEndpointOption || safe.Destinations[0].Options["host"] != "sink.internal" {
-		t.Fatalf("destination options not safely rendered: %+v", safe.Destinations[0].Options)
+	rawDSN := raw.Source.endpoint.GetPostgresSource().GetConnection().GetDsn()
+	safeDSN := safe.Source.endpoint.GetPostgresSource().GetConnection().GetDsn()
+	if rawDSN == redactedEndpointOption || safeDSN != redactedEndpointOption {
+		t.Fatalf("source DSN redaction mismatch: raw=%q safe=%q", rawDSN, safeDSN)
 	}
-	if raw.Source.Options["password"] != "password-secret" {
-		t.Fatalf("comparison input was redacted: %+v", raw.Source.Options)
+	safeS3 := safe.Destinations[0].endpoint.GetS3()
+	if safeS3.GetAccessKey() != redactedEndpointOption || safeS3.GetSecretKey() != redactedEndpointOption {
+		t.Fatalf("destination credentials not redacted: %+v", safeS3)
 	}
-	for _, key := range []string{"dsn", "password", "oauth_client_secret", "aws_access_key_id", "malformed_url", "sasl_jaas_config", "headers", "header", "http_authorization_header", "grpc_authorization_header", "http_auth_header", "grpc_auth_header"} {
-		if safe.Source.Options[key] != redactedEndpointOption {
-			t.Fatalf("%s not redacted: %+v", key, safe.Source.Options)
-		}
+	if safeS3.GetBucket() != "events" || safeS3.GetEndpoint() != "https://s3.internal/[REDACTED]" {
+		t.Fatalf("ordinary typed fields not safely rendered: %+v", safeS3)
 	}
-	for _, key := range []string{"host", "username", "plain_url"} {
-		if safe.Source.Options[key] != pb.Source.Options[key] {
-			t.Fatalf("nonsecret %s hidden: %+v", key, safe.Source.Options)
-		}
-	}
-	wantURLs := map[string]string{"endpoint_url": "https://catalog.internal/[REDACTED]", "broker_url": "https://broker.internal/[REDACTED]", "webhook_url": "https://hooks.internal/[REDACTED]", "oauth_token_endpoint": "https://identity.internal/[REDACTED]", "url": "https://hooks.slack.com/[REDACTED]", "github_webhook_url": "https://api.github.com/[REDACTED]", "signed_url": "https://objects.example/[REDACTED]", "userinfo_uri": "https://example.internal/[REDACTED]", "endpoint": "https://endpoint.example/[REDACTED]", "uri": "https://uri.example/[REDACTED]", "webhook": "https://discord.example/[REDACTED]"}
-	for key, want := range wantURLs {
-		if safe.Source.Options[key] != want {
-			t.Fatalf("sanitized %s=%q, want %q", key, safe.Source.Options[key], want)
-		}
-	}
-	changed := flowDetailForComparisonFromProto(pb)
-	changed.Source.Options = map[string]string{}
-	for key, value := range raw.Source.Options {
-		changed.Source.Options[key] = value
-	}
-	changed.Source.Options["password"] = "new-password-secret"
+	changed := raw
+	changed.Source = flowEndpointInfoDetailFromProto(endpointcodec.Clone(raw.Source.endpoint))
+	changed.Source.endpoint.GetPostgresSource().Connection.Dsn = "postgres://user:new-secret@db.internal/db"
 	changes := compareFlowDefinitions(raw, changed)
 	assertSinglePlanPath(t, changes, "source")
 	encoded := changes[0].Before + changes[0].After
-	if strings.Contains(encoded, "password-secret") || strings.Contains(encoded, "new-password-secret") || strings.Contains(encoded, "slack-path-secret") || strings.Contains(encoded, "github-path-secret") || strings.Contains(encoded, "query-secret") || strings.Contains(encoded, "url-user") || strings.Contains(encoded, "endpoint-path-secret") || strings.Contains(encoded, "uri-path-secret") || strings.Contains(encoded, "webhook-path-secret") || !strings.Contains(encoded, redactedEndpointOption) {
+	if strings.Contains(encoded, "dsn-secret") || strings.Contains(encoded, "new-secret") || !strings.Contains(encoded, redactedEndpointOption) {
 		t.Fatalf("plan change leaked secret: %s", encoded)
 	}
 }
@@ -442,8 +512,9 @@ func TestFlowValidateRedactsJSONAndYAMLInputsAndOutputs(t *testing.T) {
 	adminFileSystem = afero.NewMemMapFs()
 	t.Cleanup(func() { adminFileSystem = oldFS })
 	cfg := completeFlowFile()
-	cfg.Source.Options = map[string]string{"headers": "{\"Authorization\":\"Bearer source-secret\"}", "host": "source.internal", "webhook_url": "https://hooks.slack.com/services/T/B/validate-slack-secret", "plain_url": "https://plain.example:8443"}
-	cfg.Destinations[0].Options = map[string]string{"grpc_authorization_header": "Basic destination-secret", "stream": "orders", "api_endpoint": "https://api.github.com/hooks/validate-github-secret?signature=signed-secret"}
+	cfg.Source = testSourceEndpoint("source", map[string]string{"dsn": "postgres://user:source-secret@source.internal/db", "publication_tables": "public.events"})
+	cfg.Destinations[0] = testDestinationEndpoint("target", connector.EndpointHTTP, map[string]string{"url": "https://hooks.example/private/validate-secret", "headers": "authorization:Bearer destination-secret"})
+	cfg.Config.TableMappings.Destinations[0].Tables[0].Write = flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}
 	for _, inputFormat := range []string{"json", "yaml"} {
 		input, err := encodeDeterministic(cfg, inputFormat)
 		if err != nil {
@@ -461,7 +532,7 @@ func TestFlowValidateRedactsJSONAndYAMLInputsAndOutputs(t *testing.T) {
 				t.Fatal(err)
 			}
 			text := string(output)
-			if strings.Contains(text, "source-secret") || strings.Contains(text, "destination-secret") || strings.Contains(text, "validate-slack-secret") || strings.Contains(text, "validate-github-secret") || strings.Contains(text, "signed-secret") || !strings.Contains(text, redactedEndpointOption) || !strings.Contains(text, "source.internal") || !strings.Contains(text, "https://hooks.slack.com/[REDACTED]") || !strings.Contains(text, "https://api.github.com/[REDACTED]") || !strings.Contains(text, "https://plain.example:8443") || !strings.Contains(text, "orders") || !strings.Contains(text, "destinations") {
+			if strings.Contains(text, "source-secret") || strings.Contains(text, "destination-secret") || strings.Contains(text, "validate-secret") || !strings.Contains(text, redactedEndpointOption) || !strings.Contains(text, "public.events") || !strings.Contains(text, "destinations") {
 				t.Fatalf("%s input %s output was unsafe or incomplete: %s", inputFormat, outputFlag, text)
 			}
 		}

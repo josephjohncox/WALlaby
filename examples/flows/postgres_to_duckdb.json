@@ -1,31 +1,56 @@
 {
-  "name": "pg_to_duckdb",
-  "wire_format": "arrow",
-  "source": {
-    "name": "pg-source",
-    "type": "postgres",
-    "options": {
-      "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
-      "slot": "wallaby_slot",
-      "publication": "wallaby_pub",
-      "batch_size": "500",
-      "batch_timeout": "1s",
-      "status_interval": "10s",
-      "create_slot": "true",
-      "format": "arrow"
+  "config": {
+    "ack_policy": "all",
+    "table_mappings": {
+      "destinations": [
+        {
+          "destination": "duckdb-out",
+          "future_tables": {
+            "action": "include",
+            "future_columns": {
+              "action": "include",
+              "target_column": "{{ .Column }}"
+            },
+            "target_schema": "{{ .Schema }}",
+            "target_table": "{{ .Table }}",
+            "write": {
+              "key_columns": [],
+              "mode": "append"
+            }
+          },
+          "tables": []
+        }
+      ],
+      "version": 2
     }
   },
   "destinations": [
     {
-      "name": "duckdb-out",
-      "type": "duckdb",
-      "options": {
+      "duckdb": {
         "dsn": "./data/warehouse.duckdb"
-      }
+      },
+      "name": "duckdb-out"
     }
   ],
-  "config": {
-    "ack_policy": "all",
-    "table_mappings": {"version": 2, "destinations": [{"destination": "duckdb-out", "future_tables": {"action": "include", "target_schema": "{{ .Schema }}", "target_table": "{{ .Table }}", "future_columns": {"action": "include", "target_column": "{{ .Column }}"}, "write": {"mode": "append", "key_columns": []}}, "tables": []}]}
-  }
+  "name": "pg_to_duckdb",
+  "source": {
+    "name": "pg-source",
+    "postgres_source": {
+      "mode": "POSTGRES_SOURCE_MODE_CDC",
+      "batch_size": 500,
+      "batch_timeout": "1s",
+      "connection": {
+        "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable"
+      },
+      "create_slot": true,
+      "format": "WIRE_FORMAT_ARROW",
+      "publication": "wallaby_pub",
+      "publication_schemas": [
+        "public"
+      ],
+      "slot": "wallaby_slot",
+      "status_interval": "10s"
+    }
+  },
+  "wire_format": "arrow"
 }

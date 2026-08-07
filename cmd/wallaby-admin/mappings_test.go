@@ -11,8 +11,10 @@ import (
 	"time"
 
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/mappinggen"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/spf13/afero"
 )
 
@@ -55,8 +57,8 @@ func TestMappingOverridesPreserveQuotedWhitespacePostgresIdentifiers(t *testing.
 
 func TestFullFlowEncodingPreservesEndpointOptionsWhileMappingsExcludeThem(t *testing.T) {
 	cfg := completeFlowFile()
-	cfg.Source.Options = map[string]string{"dsn": "postgres://user:source-secret@db/source", "host": "db"}
-	cfg.Destinations[0].Options = map[string]string{"password": "destination-secret", "host": "sink"}
+	cfg.Source = testSourceEndpoint("source", map[string]string{"dsn": "postgres://user:source-secret@db/source"})
+	cfg.Destinations[0] = testDestinationEndpoint("target", connector.EndpointPostgres, map[string]string{"dsn": "postgres://user:destination-secret@sink/target"})
 	fullPayload, err := encodeDeterministic(cfg, "json")
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +77,7 @@ func TestFullFlowEncodingPreservesEndpointOptionsWhileMappingsExcludeThem(t *tes
 	if err := decodeStrictDocument(fullPayload, "flow.json", &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(decoded.Source.Options, cfg.Source.Options) || !reflect.DeepEqual(decoded.Destinations[0].Options, cfg.Destinations[0].Options) {
+	if !reflect.DeepEqual(testEndpointOptions(decoded.Source, endpointcodec.RoleSource), testEndpointOptions(cfg.Source, endpointcodec.RoleSource)) || !reflect.DeepEqual(testEndpointOptions(decoded.Destinations[0], endpointcodec.RoleDestination), testEndpointOptions(cfg.Destinations[0], endpointcodec.RoleDestination)) {
 		t.Fatalf("full-flow endpoint options were not lossless: %+v", decoded)
 	}
 }
@@ -97,7 +99,7 @@ func TestMappingsGenerateHelpExplainsCredentialBoundary(t *testing.T) {
 
 func TestCompleteFlowMappingsFillsEveryMissingDestinationAndPreservesValidExisting(t *testing.T) {
 	cfg := completeFlowFile()
-	cfg.Destinations = append(cfg.Destinations, endpointConfig{Name: "second", Type: "postgres", Options: map[string]string{"dsn": "second"}})
+	cfg.Destinations = append(cfg.Destinations, testDestinationEndpoint("second", connector.EndpointPostgres, map[string]string{"dsn": "second"}))
 	catalog := []mappinggen.CatalogTable{{Schema: "public", Table: "events", PrimaryKeyColumns: []string{"id"}, Columns: []mappinggen.CatalogColumn{{Attnum: 1, Name: "id"}}}}
 	complete, err := completeFlowMappings(cfg, catalog, nil, nil, nil)
 	if err != nil {
@@ -127,7 +129,7 @@ func TestCompleteFlowMappingsUsesExactDestinationCapabilitiesAndWriteModeOverrid
 	catalog := []mappinggen.CatalogTable{{Schema: "public", Table: "events", PrimaryKeyColumns: []string{"id"}, Columns: []mappinggen.CatalogColumn{{Attnum: 1, Name: "id"}, {Attnum: 2, Name: "updated_at"}}}}
 	cfg := completeFlowFile()
 	cfg.Config.TableMappings = nil
-	cfg.Destinations = []endpointConfig{{Name: "postgres", Type: "postgres"}, {Name: "stream", Type: "pgstream"}, {Name: "snowflake-generic", Type: "snowflake"}, {Name: "snowflake-managed", Type: "snowflake", Options: map[string]string{"managed_profile": "postgresql-to-snowflake-sql-v1"}}}
+	cfg.Destinations = []endpointConfig{testDestinationEndpoint("postgres", connector.EndpointPostgres, nil), testDestinationEndpoint("stream", connector.EndpointPGStream, nil), testDestinationEndpoint("snowflake-generic", connector.EndpointSnowflake, nil), testDestinationEndpoint("snowflake-managed", connector.EndpointSnowflake, map[string]string{"managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1})}
 	generated, err := completeFlowMappings(cfg, catalog, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +142,7 @@ func TestCompleteFlowMappingsUsesExactDestinationCapabilitiesAndWriteModeOverrid
 		t.Fatalf("capability-aware policies=%+v", modes)
 	}
 	appendOnly := cfg
-	appendOnly.Destinations = []endpointConfig{{Name: "stream", Type: "pgstream"}}
+	appendOnly.Destinations = []endpointConfig{testDestinationEndpoint("stream", connector.EndpointPGStream, nil)}
 	withWatermark, err := completeFlowMappings(appendOnly, catalog, map[mappinggen.TableRef]string{{Schema: "public", Table: "events"}: "updated_at"}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -160,13 +162,13 @@ func TestCompleteFlowMappingsUsesExactDestinationCapabilitiesAndWriteModeOverrid
 			t.Fatalf("append override %s=%+v", destination.Destination, policy)
 		}
 	}
-	cfg.Destinations = []endpointConfig{{Name: "stream", Type: "pgstream"}}
+	cfg.Destinations = []endpointConfig{testDestinationEndpoint("stream", connector.EndpointPGStream, nil)}
 	override[mappinggen.TableRef{Schema: "public", Table: "events"}] = flow.TableWriteModeUpsert
 	if _, err := completeFlowMappings(cfg, catalog, nil, nil, override); err == nil || !strings.Contains(err.Error(), "does not support explicit-key upsert") {
 		t.Fatalf("append-only upsert override error=%v", err)
 	}
 	catalog[0].PrimaryKeyColumns = nil
-	cfg.Destinations = []endpointConfig{{Name: "postgres", Type: "postgres"}}
+	cfg.Destinations = []endpointConfig{testDestinationEndpoint("postgres", connector.EndpointPostgres, nil)}
 	if _, err := completeFlowMappings(cfg, catalog, nil, nil, override); err == nil || !strings.Contains(err.Error(), "requires match columns or a source primary key") {
 		t.Fatalf("keyless upsert override error=%v", err)
 	}
@@ -176,7 +178,7 @@ func TestManagedSnowflakeSQLGenerationJSONYAMLAndFullFlow(t *testing.T) {
 	catalog := []mappinggen.CatalogTable{{Schema: "sales", Table: "orders", PrimaryKeyColumns: []string{"tenant_id", "id"}, Columns: []mappinggen.CatalogColumn{{Attnum: 1, Name: "tenant_id"}, {Attnum: 2, Name: "id"}, {Attnum: 3, Name: "payload"}}}}
 	cfg := completeFlowFile()
 	cfg.Config.TableMappings = nil
-	cfg.Destinations = []endpointConfig{{Name: "snowflake", Type: "snowflake", Options: map[string]string{"managed_profile": "postgresql-to-snowflake-sql-v1"}}}
+	cfg.Destinations = []endpointConfig{testDestinationEndpoint("snowflake", connector.EndpointSnowflake, map[string]string{"managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1})}
 	ref := mappinggen.TableRef{Schema: "sales", Table: "orders"}
 	generated, err := completeFlowMappings(cfg, catalog, nil, map[mappinggen.TableRef][]string{ref: {"tenant_id", "id"}}, map[mappinggen.TableRef]flow.TableWriteMode{ref: flow.TableWriteModeUpsert})
 	if err != nil {
@@ -229,7 +231,7 @@ func TestManagedSnowflakeSQLGenerationIsPerDestinationInFullFlow(t *testing.T) {
 	catalog := []mappinggen.CatalogTable{{Schema: "public", Table: "events", PrimaryKeyColumns: []string{"id"}, Columns: []mappinggen.CatalogColumn{{Attnum: 1, Name: "id"}}}}
 	cfg := completeFlowFile()
 	cfg.Config.TableMappings = nil
-	cfg.Destinations = []endpointConfig{{Name: "stream", Type: "pgstream"}, {Name: "generic-snowflake", Type: "snowflake"}, {Name: "managed-snowflake", Type: "snowflake", Options: map[string]string{"managed_profile": "postgresql-to-snowflake-sql-v1"}}}
+	cfg.Destinations = []endpointConfig{testDestinationEndpoint("stream", connector.EndpointPGStream, nil), testDestinationEndpoint("generic-snowflake", connector.EndpointSnowflake, nil), testDestinationEndpoint("managed-snowflake", connector.EndpointSnowflake, map[string]string{"managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1})}
 	generated, err := completeFlowMappings(cfg, catalog, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -264,7 +266,7 @@ func TestManagedSnowflakeSQLGenerationRejectsContractViolations(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := completeFlowFile()
 			cfg.Config.TableMappings = nil
-			cfg.Destinations = []endpointConfig{{Name: "snowflake", Type: "snowflake", Options: map[string]string{"managed_profile": "postgresql-to-snowflake-sql-v1"}}}
+			cfg.Destinations = []endpointConfig{testDestinationEndpoint("snowflake", connector.EndpointSnowflake, map[string]string{"managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1})}
 			_, err := completeFlowMappings(cfg, test.catalog, test.watermarks, test.matches, test.modes)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error=%v want %q", err, test.want)
@@ -306,8 +308,8 @@ func TestMappingsGenerateLiveDeterministicNoCredentialLeakage(t *testing.T) {
 	t.Cleanup(func() { adminFileSystem = old })
 	cfg := completeFlowFile()
 	cfg.Config.TableMappings = nil
-	cfg.Destinations = append(cfg.Destinations, endpointConfig{Name: "second", Type: "postgres", Options: map[string]string{"dsn": "second-secret"}})
-	cfg.Source.Options = map[string]string{"dsn": dsn, "password": "must-not-leak"}
+	cfg.Destinations = append(cfg.Destinations, testDestinationEndpoint("second", connector.EndpointPostgres, map[string]string{"dsn": "second-secret"}))
+	cfg.Source = testSourceEndpoint("source", map[string]string{"dsn": dsn})
 	raw, _ := encodeDeterministic(cfg, "json")
 	_ = afero.WriteFile(adminFileSystem, "flow.json", raw, 0600)
 	run := func(output string) error {
@@ -372,11 +374,11 @@ func TestMappingsGenerateLiveDeterministicNoCredentialLeakage(t *testing.T) {
 	if full.Config.TableMappingsFile != "" || full.Config.TableMappings == nil || len(full.Config.TableMappings.Destinations) != 2 || len(full.Config.TableMappings.Destinations[0].Tables) != 2 || len(full.Config.TableMappings.Destinations[1].Tables) != 2 || !reflect.DeepEqual(full.Config.TableMappings.Destinations[0].Tables[0].Write.KeyColumns, []string{"b", "a"}) {
 		t.Fatalf("full output=%+v", full.Config)
 	}
-	if !reflect.DeepEqual(full.Source.Options, cfg.Source.Options) || !reflect.DeepEqual(full.Destinations[0].Options, cfg.Destinations[0].Options) || !reflect.DeepEqual(full.Destinations[1].Options, cfg.Destinations[1].Options) {
-		t.Fatalf("full-flow expansion lost endpoint options: source=%+v destinations=%+v", full.Source.Options, full.Destinations)
+	if !reflect.DeepEqual(testEndpointOptions(full.Source, endpointcodec.RoleSource), testEndpointOptions(cfg.Source, endpointcodec.RoleSource)) || !reflect.DeepEqual(testEndpointOptions(full.Destinations[0], endpointcodec.RoleDestination), testEndpointOptions(cfg.Destinations[0], endpointcodec.RoleDestination)) || !reflect.DeepEqual(testEndpointOptions(full.Destinations[1], endpointcodec.RoleDestination), testEndpointOptions(cfg.Destinations[1], endpointcodec.RoleDestination)) {
+		t.Fatalf("full-flow expansion lost typed endpoint configuration")
 	}
 	fullPayload, _ := afero.ReadFile(adminFileSystem, "full.json")
-	if !bytes.Contains(fullPayload, []byte("must-not-leak")) || !bytes.Contains(fullPayload, []byte("second-secret")) {
+	if !bytes.Contains(fullPayload, []byte(dsn)) || !bytes.Contains(fullPayload, []byte("second-secret")) {
 		t.Fatalf("full-flow output silently redacted input secrets: %s", fullPayload)
 	}
 	cmd := newAdminCommand()

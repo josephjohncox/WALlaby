@@ -55,7 +55,7 @@ func TestMappedArtifactFilteredTransactionAdvancesWithoutObjectOrCatalogAttempt(
 	}
 	flowID := "artifact-mapped-filtered-" + uuid.NewString()
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
-	authorityFlow := flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}
+	authorityFlow := flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}
 	if _, err := engine.Create(ctx, authorityFlow); err != nil {
 		t.Fatal(err)
 	}
@@ -132,8 +132,8 @@ func TestMappedArtifactFilteredBaselineCheckpointCrashIsAtomic(t *testing.T) {
 	}
 	flowID := "artifact-filtered-baseline-crash-" + uuid.NewString()
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
-	destination := connector.Spec{Name: "target", Type: connector.EndpointPostgres}
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{destination}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{destination})}}); err != nil {
+	destination := connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(destination), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{destination})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -285,7 +285,7 @@ func TestMappedArtifactCrashRetryPreservesMetadataAndPublicationIdentity(t *test
 			}
 			flowID := "artifact-v2-retry-" + uuid.NewString()
 			defer cleanupAuthorityTest(context.Background(), pool, flowID)
-			authorityFlow := flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}
+			authorityFlow := flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}
 			if _, err := engine.Create(ctx, authorityFlow); err != nil {
 				t.Fatal(err)
 			}
@@ -297,7 +297,7 @@ func TestMappedArtifactCrashRetryPreservesMetadataAndPublicationIdentity(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			mappings := flow.NewTableMappings([]connector.Spec{{Name: "ice", Type: connector.EndpointIceberg}})
+			mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "ice", Type: connector.EndpointIceberg}})
 			projector, err := tablemap.New(mappings, "ice")
 			if err != nil {
 				t.Fatal(err)
@@ -413,7 +413,7 @@ func TestArtifactCatalogAttemptNotAppliedRetryAndConflictStaySingleIdentity(t *t
 	}
 	flowID := "artifact-attempt-current-" + uuid.NewString()
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
-	flowDef := flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}
+	flowDef := flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}
 	if _, err := engine.Create(ctx, flowDef); err != nil {
 		t.Fatal(err)
 	}
@@ -644,7 +644,7 @@ func TestCanonicalArtifactPublicationRecovery(t *testing.T) {
 	}
 	flowID := fmt.Sprintf("artifact-publication-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)

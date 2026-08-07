@@ -28,7 +28,6 @@ import (
 
 const (
 	optEndpoint      = "endpoint"
-	optAddress       = "address"
 	optInsecure      = "insecure"
 	optTLSCAFile     = "tls_ca_file"
 	optTLSServerName = "tls_server_name"
@@ -50,12 +49,10 @@ const (
 	payloadModeWAL        = "wal"
 )
 
-var payloadModeAliases = map[string]string{
+var payloadModes = map[string]string{
 	"":            payloadModeWire,
 	"wire":        payloadModeWire,
-	"record":      payloadModeRecordJSON,
 	"record_json": payloadModeRecordJSON,
-	"raw":         payloadModeRecordJSON,
 	"wal":         payloadModeWAL,
 }
 
@@ -87,7 +84,7 @@ type destinationFactories struct {
 // Destination delivers batches to a gRPC ingest endpoint.
 type Destination struct {
 	resourceMu        sync.Mutex
-	spec              connector.Spec
+	spec              connector.RuntimeSpec
 	endpoint          string
 	codec             wire.Codec
 	payloadMode       string
@@ -106,11 +103,11 @@ type Destination struct {
 	protoTypesSubject string
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	return d.open(ctx, spec, destinationFactories{newClient: grpc.NewClient, newRegistry: schemaregistry.NewRegistry})
 }
 
-func (d *Destination) open(ctx context.Context, spec connector.Spec, factories destinationFactories) error {
+func (d *Destination) open(ctx context.Context, spec connector.RuntimeSpec, factories destinationFactories) error {
 	cfg, err := parseDestinationConfig(spec)
 	if err != nil {
 		return err
@@ -194,17 +191,13 @@ func (d *Destination) open(ctx context.Context, spec connector.Spec, factories d
 	return nil
 }
 
-func parseDestinationConfig(spec connector.Spec) (destinationConfig, error) {
+func parseDestinationConfig(spec connector.RuntimeSpec) (destinationConfig, error) {
 	decoder := options.NewDecoder("grpc options", spec.Options)
 	registryConfig, registryErr := schemaregistry.ConfigFromOptions(spec.Options)
-	endpoint := decoder.String(optEndpoint, "")
-	if endpoint == "" {
-		endpoint = decoder.String(optAddress, "")
-	}
 	cfg := destinationConfig{
-		endpoint:          endpoint,
+		endpoint:          decoder.String(optEndpoint, ""),
 		format:            decoder.String(optFormat, string(connector.WireFormatJSON)),
-		payloadMode:       decoder.AliasedEnum(optPayloadMode, payloadModeWire, payloadModeAliases),
+		payloadMode:       decoder.AliasedEnum(optPayloadMode, payloadModeWire, payloadModes),
 		headers:           decoder.CaseInsensitiveKeyValueList(optHeaders),
 		timeout:           decoder.Duration(optTimeout, 10*time.Second),
 		maxRetries:        decoder.Int(optMaxRetries, 3),

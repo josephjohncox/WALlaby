@@ -70,7 +70,7 @@ func TestOpenRejectsRegistryOptionsBeforeClientCreation(t *testing.T) {
 					return nil, nil
 				},
 			}
-			err := (&Destination{}).open(context.Background(), connector.Spec{Type: connector.EndpointKafka, Options: map[string]string{
+			err := (&Destination{}).open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointKafka, Options: map[string]string{
 				optBrokers: "localhost:9092",
 				optTopic:   "events",
 				optFormat:  string(connector.WireFormatJSON),
@@ -98,7 +98,7 @@ func TestOpenRegistryFailureClosesLocalResources(t *testing.T) {
 		},
 	}
 	destination := &Destination{}
-	err := destination.open(context.Background(), connector.Spec{Type: connector.EndpointKafka, Options: map[string]string{
+	err := destination.open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointKafka, Options: map[string]string{
 		optBrokers: "localhost:9092",
 		optTopic:   "events",
 		optFormat:  string(connector.WireFormatAvro),
@@ -149,7 +149,7 @@ func TestClosedCapabilityProfilesDeclareEveryField(t *testing.T) {
 	destination := &Destination{}
 	for _, test := range tests {
 		t.Run(string(test.id), func(t *testing.T) {
-			spec := connector.Spec{Type: connector.EndpointKafka, Options: test.options}
+			spec := connector.RuntimeSpec{Type: connector.EndpointKafka, Options: test.options}
 			profileID, err := destination.ClassifyCapabilityProfile(spec)
 			if err != nil {
 				t.Fatal(err)
@@ -190,14 +190,14 @@ func TestCapabilityProfileClassifierRejectsInvalidBooleansAndTransactions(t *tes
 		{optTxnID: "unclassified-transaction"},
 	}
 	for _, options := range tests {
-		if _, err := (&Destination{}).ClassifyCapabilityProfile(connector.Spec{Options: options}); err == nil {
+		if _, err := (&Destination{}).ClassifyCapabilityProfile(connector.RuntimeSpec{Options: options}); err == nil {
 			t.Fatalf("options=%v unexpectedly classified", options)
 		}
 	}
 }
 
 func TestCapabilitiesForDeliveryOptions(t *testing.T) {
-	spec := connector.Spec{Options: map[string]string{optTransactionalProducer: "true", optTxnID: "wallaby-flow", optAllowOversizeSkip: "true"}}
+	spec := connector.RuntimeSpec{Options: map[string]string{optTransactionalProducer: "true", optTxnID: "wallaby-flow", optAllowOversizeSkip: "true"}}
 	producer := &recordingProducer{}
 	destination := &Destination{client: producer, topic: "events", codec: &wire.JSONCodec{}, transactional: true, oversizePolicy: "drop", messageMode: "batch"}
 	capabilities, err := destination.CapabilitiesFor(spec)

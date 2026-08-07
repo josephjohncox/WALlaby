@@ -27,7 +27,7 @@ func (d *Destination) protocol() *kafka.Destination {
 	return d.inner
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	return d.protocol().Open(ctx, spec)
 }
 
@@ -63,7 +63,7 @@ func (*Destination) CapabilityProfileIDs() []connector.CapabilityProfileID {
 
 // ClassifyCapabilityProfile maps the Kafka protocol classifier to Redpanda's
 // endpoint-scoped typed profile set.
-func (d *Destination) ClassifyCapabilityProfile(spec connector.Spec) (connector.CapabilityProfileID, error) {
+func (d *Destination) ClassifyCapabilityProfile(spec connector.RuntimeSpec) (connector.CapabilityProfileID, error) {
 	profile, err := d.protocol().ClassifyCapabilityProfile(spec)
 	if err != nil {
 		return "", err
@@ -82,7 +82,7 @@ func (d *Destination) ClassifyCapabilityProfile(spec connector.Spec) (connector.
 	}
 }
 
-func (d *Destination) CapabilitiesFor(spec connector.Spec) (connector.Capabilities, error) {
+func (d *Destination) CapabilitiesFor(spec connector.RuntimeSpec) (connector.Capabilities, error) {
 	profile, err := d.ClassifyCapabilityProfile(spec)
 	if err != nil {
 		return connector.Capabilities{}, err

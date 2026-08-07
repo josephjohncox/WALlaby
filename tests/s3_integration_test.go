@@ -87,7 +87,7 @@ func TestS3PartitionedParquet(t *testing.T) {
 	}
 
 	dest := &s3dest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "s3-test",
 		Type: connector.EndpointS3,
 		Options: map[string]string{
@@ -166,7 +166,7 @@ func TestS3SchemaRegistryMetadata(t *testing.T) {
 
 	prefix := fmt.Sprintf("wallaby-registry-%d", time.Now().UnixNano())
 	dest := &s3dest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "s3-registry",
 		Type: connector.EndpointS3,
 		Options: map[string]string{

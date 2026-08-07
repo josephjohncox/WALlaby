@@ -15,7 +15,7 @@ var ErrArtifactConsumerOnly = errors.New("iceberg is only available as a canonic
 // the artifact runtime and never runs through Destination.Write.
 type Destination struct{}
 
-func (*Destination) Open(_ context.Context, spec connector.Spec) error {
+func (*Destination) Open(_ context.Context, spec connector.RuntimeSpec) error {
 	return ValidateFlowSpec(spec)
 }
 

@@ -69,7 +69,7 @@ type postgresTargetRecords struct {
 
 // Destination writes change events into Postgres tables.
 type Destination struct {
-	spec                 connector.Spec
+	spec                 connector.RuntimeSpec
 	pool                 *pgxpool.Pool
 	beginTx              txBeginner
 	ddlExecutor          ddlExecer
@@ -90,7 +90,7 @@ type Destination struct {
 	stagingResolved      bool
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	d.spec = spec
 	opened := false
 	defer func() {

@@ -47,7 +47,7 @@ func TestPostgresDestinationRevisionIsImmutable(t *testing.T) {
 	}
 	flowID := fmt.Sprintf("destination-revision-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -109,7 +109,7 @@ func TestPostgresAckOnlyCheckpointHasIntentAndReceipt(t *testing.T) {
 	}
 	flowID := fmt.Sprintf("ack-only-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -190,7 +190,7 @@ func TestCoordinatorRecoverAbsentManifestFailsClosedWithoutPoisoningDeliver(t *t
 	}
 	flowID := fmt.Sprintf("recover-absent-manifest-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -306,7 +306,7 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 
 	flowID := fmt.Sprintf("delivery-recovery-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -326,7 +326,7 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS public.wallaby_delivery_recovery_test")
 	}()
 	target := &pgdest.Destination{}
-	if err := target.Open(ctx, connector.Spec{Name: "managed-postgres", Options: map[string]string{
+	if err := target.Open(ctx, connector.RuntimeSpec{Name: "managed-postgres", Options: map[string]string{
 		"dsn": dsn, "schema": "public", "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "synchronous_commit": "on", "meta_table_enabled": "false",
 	}}); err != nil {
 		t.Fatal(err)
@@ -501,7 +501,7 @@ func TestCoordinatorRecoverReturnsPostgresAuthoritativeCheckpointMetadata(t *tes
 	defer checkpointStore.Close()
 	flowID := fmt.Sprintf("delivery-authoritative-metadata-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -732,8 +732,8 @@ type metadataRecoveryDestination struct {
 	reconcileCalls int
 }
 
-func (*metadataRecoveryDestination) Open(context.Context, connector.Spec) error   { return nil }
-func (*metadataRecoveryDestination) Write(context.Context, connector.Batch) error { return nil }
+func (*metadataRecoveryDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
+func (*metadataRecoveryDestination) Write(context.Context, connector.Batch) error      { return nil }
 func (*metadataRecoveryDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
 	return nil
 }

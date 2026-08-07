@@ -49,7 +49,7 @@ CREATE TABLE wallaby_meta.__delivery_receipts (
 		_, _ = admin.Exec(context.Background(), `DROP TABLE IF EXISTS wallaby_meta.__delivery_receipts`)
 	}()
 	destination := &Destination{}
-	err = destination.Open(ctx, connector.Spec{Name: "rolling-target", Type: connector.EndpointPostgres, Options: map[string]string{
+	err = destination.Open(ctx, connector.RuntimeSpec{Name: "rolling-target", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1,
 		"batch_mode": "target", "synchronous_commit": "on", "meta_table_enabled": "false",
 	}})
@@ -68,7 +68,7 @@ CREATE TABLE wallaby_meta.__delivery_receipts (
 		t.Fatal(err)
 	}
 	canonical := &Destination{}
-	if err := canonical.Open(ctx, connector.Spec{Name: "canonical-target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "synchronous_commit": "on", "meta_table_enabled": "false"}}); err != nil {
+	if err := canonical.Open(ctx, connector.RuntimeSpec{Name: "canonical-target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "synchronous_commit": "on", "meta_table_enabled": "false"}}); err != nil {
 		t.Fatal(err)
 	}
 	_ = canonical.Close(ctx)
@@ -76,7 +76,7 @@ CREATE TABLE wallaby_meta.__delivery_receipts (
 		t.Fatal(err)
 	}
 	mismatch := &Destination{}
-	err = mismatch.Open(ctx, connector.Spec{Name: "mismatch-target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "synchronous_commit": "on", "meta_table_enabled": "false"}})
+	err = mismatch.Open(ctx, connector.RuntimeSpec{Name: "mismatch-target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "synchronous_commit": "on", "meta_table_enabled": "false"}})
 	_ = mismatch.Close(ctx)
 	if err == nil || !strings.Contains(err.Error(), "contract mismatch") {
 		t.Fatalf("receipt unique-index mismatch error=%v", err)
@@ -377,7 +377,7 @@ func TestPostgresManagedProfilePoolExhaustion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	destination := &Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "pool-exhaustion", Type: connector.EndpointPostgres, Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "pool-exhaustion", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1,
 		"batch_mode": "target", "synchronous_commit": "on",
 		"meta_table_enabled": "true", "pool_max_conns": "1", "flow_id": "pool-exhaustion",

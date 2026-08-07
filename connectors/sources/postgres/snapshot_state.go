@@ -41,7 +41,7 @@ type snapshotStateStore interface {
 	Close()
 }
 
-func newSnapshotStateStore(ctx context.Context, backend string, spec connector.Spec, dsn string) (snapshotStateStore, error) {
+func newSnapshotStateStore(ctx context.Context, backend string, spec connector.RuntimeSpec, dsn string) (snapshotStateStore, error) {
 	switch strings.ToLower(backend) {
 	case "", "postgres":
 		stateDSN := dsn

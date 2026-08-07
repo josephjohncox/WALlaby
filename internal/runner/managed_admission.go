@@ -18,7 +18,7 @@ import (
 	"github.com/snowflakedb/gosnowflake"
 )
 
-func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec connector.Spec, destinations []stream.DestinationConfig, cfg StreamRunnerConfig, ddlPolicy flow.DDLPolicyDefaults) error {
+func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec connector.RuntimeSpec, destinations []stream.DestinationConfig, cfg StreamRunnerConfig, ddlPolicy flow.DDLPolicyDefaults) error {
 	profileName := strings.TrimSpace(sourceSpec.Options["managed_profile"])
 	switch profileName {
 	case "", connector.ManagedProfilePostgresToPostgresV1, connector.ManagedProfilePostgresToClickHouseAppendV1,
@@ -165,7 +165,7 @@ func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec c
 	}
 }
 
-func validateManagedPostgresDestinationAdmission(sourceSpec connector.Spec, destination stream.DestinationConfig, bootstrapMode, profileName string) error {
+func validateManagedPostgresDestinationAdmission(sourceSpec connector.RuntimeSpec, destination stream.DestinationConfig, bootstrapMode, profileName string) error {
 	if destination.Spec.Type == connector.EndpointClickHouse {
 		return errors.New("generic ClickHouse mutation delivery is experimental; use the exact append-only managed profile")
 	}
@@ -197,7 +197,7 @@ func validateManagedPostgresDestinationAdmission(sourceSpec connector.Spec, dest
 	return nil
 }
 
-func validateManagedClickHouseAdmission(sourceSpec connector.Spec, destination stream.DestinationConfig, bootstrapMode string) error {
+func validateManagedClickHouseAdmission(sourceSpec connector.RuntimeSpec, destination stream.DestinationConfig, bootstrapMode string) error {
 	const profileName = connector.ManagedProfilePostgresToClickHouseAppendV1
 	if destination.Spec.Type != connector.EndpointClickHouse {
 		return fmt.Errorf("%s requires a ClickHouse destination", profileName)
@@ -318,7 +318,7 @@ func validateManagedClickHouseAdmission(sourceSpec connector.Spec, destination s
 	return nil
 }
 
-func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.Spec, destination stream.DestinationConfig, bootstrapMode string) error {
+func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.RuntimeSpec, destination stream.DestinationConfig, bootstrapMode string) error {
 	const profileName = connector.ManagedProfilePostgresToSnowflakeSQLV1
 	if strings.TrimSpace(destination.Spec.Options["flow_id"]) != flowID {
 		return fmt.Errorf("%s destination flow_id %q does not match flow %q", profileName, destination.Spec.Options["flow_id"], flowID)
@@ -366,7 +366,7 @@ func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.Spec,
 	if parseEnabledOption(options["session_keep_alive"], false) {
 		return fmt.Errorf("%s requires session_keep_alive=false", profileName)
 	}
-	if strings.TrimSpace(options["type_mappings"]) != "" || strings.TrimSpace(options["type_mappings_file"]) != "" {
+	if strings.TrimSpace(options["type_mappings"]) != "" {
 		return fmt.Errorf("%s rejects type mapping overrides until each mapping has real-service evidence", profileName)
 	}
 	for _, key := range []string{
@@ -526,7 +526,7 @@ func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.Spec,
 	return nil
 }
 
-func validateManagedSnowflakeStagedAppendAdmission(flowID string, sourceSpec connector.Spec, destination stream.DestinationConfig, bootstrapMode string) error {
+func validateManagedSnowflakeStagedAppendAdmission(flowID string, sourceSpec connector.RuntimeSpec, destination stream.DestinationConfig, bootstrapMode string) error {
 	const profileName = connector.ManagedProfilePostgresToSnowflakeStagedAppendV1
 	if strings.TrimSpace(destination.Spec.Options["flow_id"]) != flowID {
 		return fmt.Errorf("%s destination flow_id %q does not match flow %q", profileName, destination.Spec.Options["flow_id"], flowID)
@@ -574,7 +574,7 @@ func validateManagedSnowflakeStagedAppendAdmission(flowID string, sourceSpec con
 	if parseEnabledOption(options["session_keep_alive"], false) {
 		return fmt.Errorf("%s requires session_keep_alive=false", profileName)
 	}
-	if strings.TrimSpace(options["type_mappings"]) != "" || strings.TrimSpace(options["type_mappings_file"]) != "" {
+	if strings.TrimSpace(options["type_mappings"]) != "" {
 		return fmt.Errorf("%s rejects type mapping overrides until each mapping has real-service evidence", profileName)
 	}
 	for _, key := range []string{
@@ -728,7 +728,7 @@ func validateManagedSnowflakeStagedAppendAdmission(flowID string, sourceSpec con
 	return nil
 }
 
-func validateManagedSnowflakeStreamingAppendAdmission(flowID string, sourceSpec connector.Spec, destination stream.DestinationConfig, bootstrapMode string) error {
+func validateManagedSnowflakeStreamingAppendAdmission(flowID string, sourceSpec connector.RuntimeSpec, destination stream.DestinationConfig, bootstrapMode string) error {
 	const profileName = connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1
 	if strings.TrimSpace(destination.Spec.Options["flow_id"]) != flowID {
 		return fmt.Errorf("%s destination flow_id %q does not match flow %q", profileName, destination.Spec.Options["flow_id"], flowID)
@@ -776,7 +776,7 @@ func validateManagedSnowflakeStreamingAppendAdmission(flowID string, sourceSpec 
 	if parseEnabledOption(options["session_keep_alive"], false) {
 		return fmt.Errorf("%s requires session_keep_alive=false", profileName)
 	}
-	if strings.TrimSpace(options["type_mappings"]) != "" || strings.TrimSpace(options["type_mappings_file"]) != "" {
+	if strings.TrimSpace(options["type_mappings"]) != "" {
 		return fmt.Errorf("%s rejects type mapping overrides until each mapping has real-service evidence", profileName)
 	}
 	for _, key := range []string{
