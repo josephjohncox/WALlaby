@@ -1040,6 +1040,8 @@ contract accepts only a DSN and ignores connection-pool and IAM options.
 | mode | [PostgresSourceMode](#wallaby-v1-PostgresSourceMode) |  |  |
 | delivery_retention | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
 | delivery_prune_interval | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+| bootstrap_tables | [string](#string) | repeated |  |
+| bootstrap_schemas | [string](#string) | repeated |  |
 
 
 
