@@ -202,7 +202,7 @@ FROM %s WHERE id = $1`, tableIdent)
 	return row, true, nil
 }
 
-func sourceStateID(spec connector.Spec, slot string) string {
+func sourceStateID(spec connector.RuntimeSpec, slot string) string {
 	if spec.Options != nil {
 		if value := spec.Options[optFlowID]; value != "" {
 			return value
@@ -218,7 +218,7 @@ func sourceStateID(spec connector.Spec, slot string) string {
 }
 
 // LookupSourceState returns the slot/publication from the durable state table when present.
-func LookupSourceState(ctx context.Context, spec connector.Spec, slot string) (SourceStateInfo, bool, error) {
+func LookupSourceState(ctx context.Context, spec connector.RuntimeSpec, slot string) (SourceStateInfo, bool, error) {
 	if !parseBool(spec.Options[optEnsureState], true) {
 		return SourceStateInfo{}, false, nil
 	}

@@ -87,7 +87,7 @@ func TestS3PartitionedParquet(t *testing.T) {
 	}
 
 	dest := &s3dest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "s3-test",
 		Type: connector.EndpointS3,
 		Options: map[string]string{
@@ -166,19 +166,20 @@ func TestS3SchemaRegistryMetadata(t *testing.T) {
 
 	prefix := fmt.Sprintf("wallaby-registry-%d", time.Now().UnixNano())
 	dest := &s3dest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "s3-registry",
 		Type: connector.EndpointS3,
 		Options: map[string]string{
-			"bucket":           bucket,
-			"region":           region,
-			"endpoint":         endpoint,
-			"access_key":       accessKey,
-			"secret_key":       secretKey,
-			"force_path_style": "true",
-			"format":           "avro",
-			"prefix":           prefix,
-			"schema_registry":  "local",
+			"bucket":                          bucket,
+			"region":                          region,
+			"endpoint":                        endpoint,
+			"access_key":                      accessKey,
+			"secret_key":                      secretKey,
+			"force_path_style":                "true",
+			"format":                          "avro",
+			"prefix":                          prefix,
+			"schema_registry":                 "local",
+			"schema_registry_local_directory": t.TempDir(),
 		},
 	}
 	if err := dest.Open(ctx, spec); err != nil {

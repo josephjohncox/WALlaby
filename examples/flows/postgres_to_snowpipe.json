@@ -1,36 +1,61 @@
 {
-  "name": "pg_to_snowpipe",
-  "wire_format": "parquet",
-  "source": {
-    "name": "pg-source",
-    "type": "postgres",
-    "options": {
-      "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
-      "slot": "wallaby_slot",
-      "publication": "wallaby_pub",
-      "batch_size": "1000",
-      "batch_timeout": "2s",
-      "status_interval": "10s",
-      "create_slot": "true",
-      "format": "parquet"
+  "config": {
+    "ack_policy": "all",
+    "table_mappings": {
+      "destinations": [
+        {
+          "destination": "snowpipe-out",
+          "future_tables": {
+            "action": "include",
+            "future_columns": {
+              "action": "include",
+              "target_column": "{{ .Column }}"
+            },
+            "target_schema": "{{ .Schema }}",
+            "target_table": "{{ .Table }}",
+            "write": {
+              "key_columns": [],
+              "mode": "append"
+            }
+          },
+          "tables": []
+        }
+      ],
+      "version": 2
     }
   },
   "destinations": [
     {
       "name": "snowpipe-out",
-      "type": "snowpipe",
-      "options": {
+      "snowpipe": {
+        "auto_ingest": true,
+        "copy_on_write": false,
         "dsn": "user:pass@account/db/schema?role=SYSADMIN",
+        "format": "WIRE_FORMAT_PARQUET",
         "stage": "@my_external_stage",
-        "stage_path": "wallaby/",
-        "format": "parquet",
-        "auto_ingest": "true",
-        "copy_on_write": "false"
+        "stage_path": "wallaby/"
       }
     }
   ],
-  "config": {
-    "ack_policy": "all",
-    "table_mappings": {"version": 1, "destinations": [{"destination": "snowpipe-out", "future_tables": {"action": "include", "target_schema": "{schema}", "target_table": "{table}", "future_columns": {"action": "include", "target_column": "{column}"}, "write": {"mode": "append", "key_columns": []}}, "tables": []}]}
-  }
+  "name": "pg_to_snowpipe",
+  "source": {
+    "name": "pg-source",
+    "postgres_source": {
+      "mode": "POSTGRES_SOURCE_MODE_CDC",
+      "batch_size": 1000,
+      "batch_timeout": "2s",
+      "connection": {
+        "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable"
+      },
+      "create_slot": true,
+      "format": "WIRE_FORMAT_PARQUET",
+      "publication": "wallaby_pub",
+      "publication_schemas": [
+        "public"
+      ],
+      "slot": "wallaby_slot",
+      "status_interval": "10s"
+    }
+  },
+  "wire_format": "parquet"
 }

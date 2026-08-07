@@ -35,7 +35,7 @@ var (
 
 // DestinationConfig binds a destination to its spec.
 type DestinationConfig struct {
-	Spec               connector.Spec
+	Spec               connector.RuntimeSpec
 	Dest               connector.Destination
 	Projector          Projector
 	MappingFingerprint string
@@ -54,7 +54,7 @@ type StagingResolverFor interface {
 // Runner streams data from a source to destinations.
 type Runner struct {
 	Source              connector.Source
-	SourceSpec          connector.Spec
+	SourceSpec          connector.RuntimeSpec
 	Destinations        []DestinationConfig
 	Checkpoints         connector.CheckpointStore
 	CheckpointOutbox    connector.CheckpointOutboxStore

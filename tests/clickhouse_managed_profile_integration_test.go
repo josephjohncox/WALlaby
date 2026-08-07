@@ -686,7 +686,7 @@ type clickHouseManagedFixture struct {
 	keeperProxy     *keeperProbeProxy
 	tlsProxy        *keeperProbeProxy
 	replicaTLSProxy *keeperProbeProxy
-	spec            connector.Spec
+	spec            connector.RuntimeSpec
 	database        string
 	changelogTable  string
 	receiptsTable   string
@@ -800,7 +800,7 @@ parts_to_delay_insert=100,parts_to_throw_insert=200,max_parts_in_total=1000`, da
 			_, _ = fixture.db.ExecContext(context.Background(), "DROP TABLE IF EXISTS {database:Identifier}.{table:Identifier} SYNC", chclient.Named("database", database), chclient.Named("table", table))
 		}
 	})
-	fixture.spec = connector.Spec{Name: "clickhouse-managed", Type: connector.EndpointClickHouse, Options: map[string]string{
+	fixture.spec = connector.RuntimeSpec{Name: "clickhouse-managed", Type: connector.EndpointClickHouse, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToClickHouseAppendV1,
 		"destination_revision_id": "clickhouse-managed-v1", "batch_mode": "target", "batch_resolution": "none",
 		"meta_table_enabled": "false", "managed_database": database, "managed_changelog_table": fixture.changelogTable,

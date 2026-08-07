@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package wallaby.v1;
 
+import "google/protobuf/duration.proto";
 import "wallaby/v1/table_mapping.proto";
 
 option go_package = "github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabypb";
@@ -14,31 +15,6 @@ enum FlowState {
   FLOW_STATE_STOPPING = 4;
   FLOW_STATE_FAILED = 5;
   FLOW_STATE_STOPPED = 6;
-}
-
-enum EndpointType {
-  ENDPOINT_TYPE_UNSPECIFIED = 0;
-  ENDPOINT_TYPE_POSTGRES = 1;
-  ENDPOINT_TYPE_SNOWFLAKE = 2;
-  ENDPOINT_TYPE_S3 = 3;
-  ENDPOINT_TYPE_KAFKA = 4;
-  ENDPOINT_TYPE_HTTP = 5;
-  ENDPOINT_TYPE_GRPC = 6;
-  ENDPOINT_TYPE_PROTO = 7;
-  ENDPOINT_TYPE_PGSTREAM = 8;
-  ENDPOINT_TYPE_SNOWPIPE = 9;
-  ENDPOINT_TYPE_PARQUET = 10;
-  ENDPOINT_TYPE_DUCKDB = 11;
-  reserved 12;
-  ENDPOINT_TYPE_CLICKHOUSE = 13;
-  ENDPOINT_TYPE_DUCKLAKE = 14;
-  // Iceberg is an asynchronous consumer of the canonical artifact log,
-  // including AWS S3 Tables exposed read-only through external catalogs such
-  // as Snowflake. It is never a direct current-state/upsert destination.
-  ENDPOINT_TYPE_ICEBERG = 15;
-  // Redpanda is Kafka API-compatible. Redpanda Iceberg topics require an
-  // enterprise license. Configure Iceberg in Redpanda, not WALlaby.
-  ENDPOINT_TYPE_REDPANDA = 16;
 }
 
 enum WireFormat {
@@ -74,10 +50,593 @@ enum GiveUpPolicy {
   GIVE_UP_POLICY_ON_RETRY_EXHAUSTION = 2;
 }
 
+enum Compression {
+  COMPRESSION_UNSPECIFIED = 0;
+  COMPRESSION_NONE = 1;
+  COMPRESSION_GZIP = 2;
+  COMPRESSION_SNAPPY = 3;
+  COMPRESSION_LZ4 = 4;
+  COMPRESSION_ZSTD = 5;
+}
+
+enum PayloadMode {
+  PAYLOAD_MODE_UNSPECIFIED = 0;
+  PAYLOAD_MODE_WIRE = 1;
+  PAYLOAD_MODE_RECORD_JSON = 2;
+  PAYLOAD_MODE_WAL = 3;
+}
+
+enum KafkaAcks {
+  KAFKA_ACKS_UNSPECIFIED = 0;
+  KAFKA_ACKS_NONE = 1;
+  KAFKA_ACKS_LEADER = 2;
+  KAFKA_ACKS_ALL = 3;
+}
+
+enum KafkaMessageMode {
+  KAFKA_MESSAGE_MODE_UNSPECIFIED = 0;
+  KAFKA_MESSAGE_MODE_BATCH = 1;
+  KAFKA_MESSAGE_MODE_RECORD = 2;
+}
+
+enum KafkaKeyMode {
+  KAFKA_KEY_MODE_UNSPECIFIED = 0;
+  KAFKA_KEY_MODE_HASH = 1;
+  KAFKA_KEY_MODE_RAW = 2;
+}
+
+enum BatchMode {
+  BATCH_MODE_UNSPECIFIED = 0;
+  BATCH_MODE_STAGING = 1;
+  BATCH_MODE_TARGET = 2;
+}
+
+enum BatchResolution {
+  BATCH_RESOLUTION_UNSPECIFIED = 0;
+  BATCH_RESOLUTION_NONE = 1;
+  BATCH_RESOLUTION_APPEND = 2;
+  BATCH_RESOLUTION_REPLACE = 3;
+}
+
+enum SyncPublicationMode {
+  SYNC_PUBLICATION_MODE_UNSPECIFIED = 0;
+  SYNC_PUBLICATION_MODE_ADD = 1;
+  SYNC_PUBLICATION_MODE_SYNC = 2;
+}
+
+enum PostgresSourceMode {
+  POSTGRES_SOURCE_MODE_UNSPECIFIED = 0;
+  POSTGRES_SOURCE_MODE_CDC = 1;
+  POSTGRES_SOURCE_MODE_BACKFILL = 2;
+}
+
+enum ToastFetchMode {
+  TOAST_FETCH_MODE_UNSPECIFIED = 0;
+  TOAST_FETCH_MODE_OFF = 1;
+  TOAST_FETCH_MODE_SOURCE = 2;
+  TOAST_FETCH_MODE_CACHE = 3;
+  TOAST_FETCH_MODE_FULL = 4;
+}
+
+enum BootstrapMode {
+  BOOTSTRAP_MODE_UNSPECIFIED = 0;
+  BOOTSTRAP_MODE_NEVER = 1;
+  BOOTSTRAP_MODE_AUTO = 2;
+  BOOTSTRAP_MODE_REQUIRED = 3;
+}
+
+enum ManagedProfile {
+  MANAGED_PROFILE_UNSPECIFIED = 0;
+  MANAGED_PROFILE_POSTGRES_TO_POSTGRES_V1 = 1;
+  MANAGED_PROFILE_POSTGRES_TO_CLICKHOUSE_APPEND_V1 = 2;
+  MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_SQL_V1 = 3;
+  MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_STAGED_V1 = 4;
+  MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_STREAMING_V1 = 5;
+}
+
+enum IcebergCatalogProfile {
+  ICEBERG_CATALOG_PROFILE_UNSPECIFIED = 0;
+  ICEBERG_CATALOG_PROFILE_REST = 1;
+  ICEBERG_CATALOG_PROFILE_S3_TABLES = 2;
+}
+
+message RDSIAMConfig {
+  string region = 1;
+  string profile = 2;
+  string role_arn = 3;
+  string role_session_name = 4;
+  string role_external_id = 5;
+  string endpoint = 6;
+}
+
+message PostgresConnectionConfig {
+  string dsn = 1;
+  optional uint32 pool_max_connections = 2;
+  RDSIAMConfig rds_iam = 3;
+}
+
+// PostgresDSNConfig is intentionally narrow for components whose runtime
+// contract accepts only a DSN and ignores connection-pool and IAM options.
+message PostgresDSNConfig {
+  string dsn = 1;
+}
+
+message RetryConfig {
+  optional uint32 max_retries = 1;
+  google.protobuf.Duration backoff_base = 2;
+  google.protobuf.Duration backoff_max = 3;
+  optional double backoff_factor = 4;
+}
+
+message GRPCTLSConfig {
+  optional bool insecure = 1;
+  string ca_file = 2;
+  string server_name = 3;
+}
+
+message ClickHouseTLSConfig {
+  optional bool insecure = 1;
+  string ca_file = 2;
+  string server_name = 3;
+  string certificate_file = 4;
+  string private_key_file = 5;
+  string replica_server_name = 6;
+}
+
+message StagingConfig {
+  BatchMode batch_mode = 1;
+  BatchResolution batch_resolution = 2;
+  string schema = 3;
+  string table = 4;
+  string suffix = 5;
+}
+
+message MetadataConfig {
+  optional bool enabled = 1;
+  string schema = 2;
+  string table = 3;
+  string primary_key_prefix = 4;
+}
+
+message ClickHouseMetadataConfig {
+  optional bool enabled = 1;
+  string schema = 2;
+  string table = 3;
+  string primary_key_prefix = 4;
+  string engine = 5;
+  string order_by = 6;
+}
+
+message WarehouseConfig {
+  string name = 1;
+  string size = 2;
+  optional uint32 auto_suspend_seconds = 3;
+  optional bool auto_resume = 4;
+  optional bool session_keep_alive = 5;
+}
+
+message TypeMappingsConfig {
+  map<string, string> mappings = 1;
+}
+
+message ConfluentSchemaRegistryConfig {
+  string url = 1;
+  string username = 2;
+  string password = 3;
+  string token = 4;
+  google.protobuf.Duration timeout = 5;
+}
+
+message ApicurioSchemaRegistryConfig {
+  string url = 1;
+  string username = 2;
+  string password = 3;
+  string token = 4;
+  google.protobuf.Duration timeout = 5;
+  optional bool compatibility = 6;
+}
+
+message GlueSchemaRegistryConfig {
+  string region = 1;
+  string endpoint = 2;
+  string profile = 3;
+  string role_arn = 4;
+  string registry = 5;
+  string schema = 6;
+}
+
+message PostgresSchemaRegistryConfig {
+  PostgresDSNConfig connection = 1;
+  google.protobuf.Duration timeout = 2;
+}
+
+message LocalSchemaRegistryConfig {
+  string directory = 1;
+}
+
+message SchemaRegistryConfig {
+  oneof backend {
+    ConfluentSchemaRegistryConfig confluent = 1;
+    ApicurioSchemaRegistryConfig apicurio = 2;
+    GlueSchemaRegistryConfig glue = 3;
+    PostgresSchemaRegistryConfig postgres = 4;
+    LocalSchemaRegistryConfig local = 5;
+  }
+}
+
+message SnapshotStateConfig {
+  oneof backend {
+    bool disabled = 1;
+    string file_path = 2;
+    PostgresDSNConfig postgres = 3;
+  }
+  string schema = 4;
+  string table = 5;
+}
+
+message PostgresSourceConfig {
+  PostgresConnectionConfig connection = 1;
+  string slot = 2;
+  string publication = 3;
+  optional uint32 batch_size = 4;
+  google.protobuf.Duration batch_timeout = 5;
+  google.protobuf.Duration status_interval = 6;
+  optional bool create_slot = 7;
+  optional bool emit_empty = 8;
+  optional bool ensure_publication = 9;
+  optional bool validate_replication = 10;
+  repeated string publication_tables = 11;
+  repeated string publication_schemas = 12;
+  optional bool sync_publication = 13;
+  SyncPublicationMode sync_publication_mode = 14;
+  optional bool resolve_types = 15;
+  optional bool ensure_state = 16;
+  string state_schema = 17;
+  string state_table = 18;
+  optional bool capture_ddl = 19;
+  string ddl_trigger_schema = 20;
+  string ddl_trigger_name = 21;
+  string ddl_message_prefix = 22;
+  ToastFetchMode toast_fetch = 23;
+  optional uint32 toast_cache_size = 24;
+  optional bool managed = 25;
+  ManagedProfile managed_profile = 26;
+  optional uint64 max_transaction_records = 27;
+  optional uint64 max_transaction_bytes = 28;
+  optional uint32 max_transaction_fragments = 29;
+  optional bool streaming_transactions = 30;
+  string source_system_identifier = 31;
+  string source_lineage_id = 32;
+  string publication_revision = 33;
+  BootstrapMode bootstrap = 34;
+  optional uint32 bootstrap_restart_limit = 35;
+  optional uint32 snapshot_max_tables = 36;
+  optional uint32 snapshot_workers = 37;
+  google.protobuf.Duration snapshot_claim_lease = 38;
+  repeated string backfill_tables = 39;
+  repeated string backfill_schemas = 40;
+  string partition_column = 41;
+  optional uint32 partition_count = 42;
+  optional bool snapshot_consistent = 43;
+  SnapshotStateConfig snapshot_state = 44;
+  WireFormat format = 45;
+  PostgresSourceMode mode = 46;
+  google.protobuf.Duration delivery_retention = 47;
+  google.protobuf.Duration delivery_prune_interval = 48;
+  repeated string bootstrap_tables = 49;
+  repeated string bootstrap_schemas = 50;
+}
+
+message PostgresDestinationConfig {
+  PostgresConnectionConfig connection = 1;
+  StagingConfig staging = 2;
+  MetadataConfig metadata = 3;
+  string synchronous_commit = 4;
+  TypeMappingsConfig type_mappings = 5;
+  ManagedProfile managed_profile = 6;
+  string destination_revision_id = 7;
+}
+
+message PGStreamDestinationConfig {
+  PostgresDSNConfig connection = 1;
+  string stream = 2;
+  WireFormat format = 3;
+  TypeMappingsConfig type_mappings = 4;
+  SchemaRegistryConfig schema_registry = 5;
+  string schema_registry_subject = 6;
+  string schema_registry_proto_types_subject = 7;
+}
+
+message KafkaDestinationConfig {
+  repeated string brokers = 1;
+  string topic = 2;
+  WireFormat format = 3;
+  Compression compression = 4;
+  KafkaAcks acks = 5;
+  optional uint32 max_message_bytes = 6;
+  optional uint32 max_batch_bytes = 7;
+  optional uint32 max_record_bytes = 8;
+  optional bool transactional_producer = 9;
+  optional bool allow_oversize_skip = 10;
+  KafkaMessageMode message_mode = 11;
+  KafkaKeyMode key_mode = 12;
+  string transactional_id = 13;
+  google.protobuf.Duration transaction_timeout = 14;
+  string transaction_header = 15;
+  SchemaRegistryConfig schema_registry = 16;
+  TypeMappingsConfig type_mappings = 17;
+  string schema_registry_subject = 18;
+  string schema_registry_proto_types_subject = 19;
+  string schema_registry_subject_mode = 20;
+}
+
+message RedpandaDestinationConfig {
+  KafkaDestinationConfig kafka = 1;
+}
+
+message S3DestinationConfig {
+  string bucket = 1;
+  string prefix = 2;
+  string region = 3;
+  WireFormat format = 4;
+  Compression compression = 5;
+  repeated string partition_by = 6;
+  string endpoint = 7;
+  string access_key = 8;
+  string secret_key = 9;
+  string session_token = 10;
+  optional bool force_path_style = 11;
+  optional bool use_fips = 12;
+  optional bool use_dualstack = 13;
+  TypeMappingsConfig type_mappings = 14;
+  SchemaRegistryConfig schema_registry = 15;
+  string schema_registry_subject = 16;
+  string schema_registry_proto_types_subject = 17;
+}
+
+message HTTPDestinationConfig {
+  string url = 1;
+  string method = 2;
+  WireFormat format = 3;
+  PayloadMode payload_mode = 4;
+  google.protobuf.Duration timeout = 5;
+  map<string, string> headers = 6;
+  RetryConfig retry = 7;
+  string idempotency_header = 8;
+  google.protobuf.Duration dedupe_window = 9;
+  string transaction_header = 10;
+  SchemaRegistryConfig schema_registry = 11;
+  TypeMappingsConfig type_mappings = 12;
+  string schema_registry_subject = 13;
+  string schema_registry_proto_types_subject = 14;
+}
+
+message GRPCDestinationConfig {
+  string endpoint = 1;
+  GRPCTLSConfig tls = 2;
+  google.protobuf.Duration timeout = 3;
+  WireFormat format = 4;
+  PayloadMode payload_mode = 5;
+  map<string, string> metadata = 6;
+  RetryConfig retry = 7;
+  SchemaRegistryConfig schema_registry = 8;
+  TypeMappingsConfig type_mappings = 9;
+  string schema_registry_subject = 10;
+  string schema_registry_proto_types_subject = 11;
+}
+
+message SnowflakeDestinationConfig {
+  string dsn = 1;
+  optional bool disable_transactions = 2;
+  WarehouseConfig warehouse = 3;
+  StagingConfig staging = 4;
+  MetadataConfig metadata = 5;
+  TypeMappingsConfig type_mappings = 6;
+  SchemaRegistryConfig schema_registry = 7;
+  string schema_registry_subject = 8;
+}
+
+message SnowflakePostgresSQLConfig {
+  string dsn = 1;
+  reserved 2, 3, 4, 6;
+  reserved "warehouse", "staging", "metadata", "type_mappings";
+  string destination_revision_id = 5;
+  string account = 7;
+  string database = 8;
+  string schema = 9;
+  string table = 10;
+  string receipts_table = 11;
+  string owner_role = 12;
+  string execution_role = 13;
+  string managed_warehouse = 14;
+  string snowflake_version = 15;
+  string target_created_on = 16;
+  string receipts_created_on = 17;
+  optional uint32 max_transaction_rows = 18;
+  optional uint64 max_transaction_bytes = 19;
+  optional uint32 max_transaction_fragments = 20;
+  optional uint32 max_open_connections = 21;
+  optional uint32 statement_timeout_seconds = 22;
+  optional uint32 hybrid_table_lock_timeout_seconds = 23;
+}
+
+message SnowflakePostgresStagedConfig {
+  string dsn = 1;
+  string stage = 2;
+  reserved 3, 5, 6, 7, 8, 9, 10, 12, 14;
+  reserved "stage_path", "warehouse", "copy_on_write", "copy_pattern", "copy_on_error", "copy_purge", "copy_match_by_column_name", "metadata", "type_mappings";
+  string file_format = 4;
+  optional bool auto_ingest = 11;
+  string destination_revision_id = 13;
+  string account = 15;
+  string database = 16;
+  string schema = 17;
+  string table = 18;
+  string receipts_table = 19;
+  string pipe = 20;
+  string owner_role = 21;
+  string execution_role = 22;
+  string managed_warehouse = 23;
+  string snowflake_version = 24;
+  string stage_created_on = 25;
+  string target_created_on = 26;
+  string receipts_created_on = 27;
+  string file_format_created_on = 28;
+  string pipe_created_on = 29;
+  optional uint32 max_transaction_rows = 30;
+  optional uint64 max_transaction_bytes = 31;
+  optional uint32 max_transaction_fragments = 32;
+  optional uint32 max_open_connections = 33;
+  optional uint32 statement_timeout_seconds = 34;
+  optional uint32 load_verify_attempts = 35;
+  optional uint32 load_verify_interval_millis = 36;
+  optional uint32 cleanup_max_objects = 37;
+  optional uint32 cleanup_retention_seconds = 38;
+}
+
+message SnowflakePostgresStreamingConfig {
+  string dsn = 1;
+  string destination_revision_id = 2;
+  reserved 3;
+  reserved "type_mappings";
+  string transport = 4;
+  string account = 5;
+  string database = 6;
+  string schema = 7;
+  string pipe = 8;
+  string table = 9;
+  string receipts_table = 10;
+  string channel_state_table = 11;
+  string owner_role = 12;
+  string execution_role = 13;
+  string managed_warehouse = 14;
+  string snowflake_version = 15;
+  string pipe_created_on = 16;
+  string target_created_on = 17;
+  string receipts_created_on = 18;
+  string channel_state_created_on = 19;
+  optional uint32 max_transaction_rows = 20;
+  optional uint64 max_transaction_bytes = 21;
+  optional uint32 max_transaction_fragments = 22;
+  optional uint64 max_row_bytes = 23;
+  optional uint32 max_open_connections = 24;
+  optional uint32 statement_timeout_seconds = 25;
+  optional uint32 observe_attempts = 26;
+  optional uint32 observe_interval_millis = 27;
+  optional uint32 append_attempts = 28;
+  optional uint32 append_backoff_millis = 29;
+  optional uint32 cleanup_max_objects = 30;
+  optional uint32 cleanup_retention_seconds = 31;
+  string channel_name_prefix = 32;
+}
+
+message SnowpipeDestinationConfig {
+  string dsn = 1;
+  string stage = 2;
+  string stage_path = 3;
+  WireFormat format = 4;
+  string file_format = 5;
+  WarehouseConfig warehouse = 6;
+  optional bool copy_on_write = 7;
+  string copy_pattern = 8;
+  string copy_on_error = 9;
+  optional bool copy_purge = 10;
+  string copy_match_by_column_name = 11;
+  optional bool auto_ingest = 12;
+  MetadataConfig metadata = 13;
+  TypeMappingsConfig type_mappings = 14;
+  SchemaRegistryConfig schema_registry = 15;
+  string schema_registry_subject = 16;
+}
+
+message ClickHouseDestinationConfig {
+  string dsn = 1;
+  StagingConfig staging = 2;
+  ClickHouseMetadataConfig metadata = 3;
+  TypeMappingsConfig type_mappings = 4;
+}
+
+message ClickHousePostgresAppendConfig {
+  string dsn = 1;
+  reserved 2, 3;
+  reserved "staging", "metadata";
+  ClickHouseTLSConfig tls = 4;
+  reserved 5;
+  reserved "replica_tls_server_name";
+  string destination_revision_id = 6;
+  TypeMappingsConfig type_mappings = 7;
+  string database = 8;
+  string changelog_table = 9;
+  string receipts_table = 10;
+  string final_view = 11;
+  string keeper_path_prefix = 12;
+  string keeper_address = 13;
+  string replica_dsn = 14;
+  repeated string replica_names = 15;
+  optional uint32 insert_quorum = 16;
+  optional uint32 max_active_parts = 17;
+  optional uint32 max_transaction_rows = 18;
+  optional uint64 max_transaction_bytes = 19;
+  optional uint32 max_transaction_fragments = 20;
+  optional uint32 max_rows_per_batch = 21;
+  optional uint64 max_batch_bytes = 22;
+}
+
+message DuckDBDestinationConfig {
+  string dsn = 1;
+  StagingConfig staging = 2;
+  MetadataConfig metadata = 3;
+  TypeMappingsConfig type_mappings = 4;
+}
+
+message DuckLakeDestinationConfig {
+  string dsn = 1;
+  string catalog = 2;
+  string catalog_name = 3;
+  string data_path = 4;
+  optional bool override_data_path = 5;
+  optional bool install_extensions = 6;
+  StagingConfig staging = 7;
+  MetadataConfig metadata = 8;
+  TypeMappingsConfig type_mappings = 9;
+}
+
+message IcebergDestinationConfig {
+  IcebergCatalogProfile catalog_profile = 1;
+  string control_table = 2;
+  string destination_revision_id = 3;
+}
+
+message CustomEndpointConfig {
+  string connector_type = 1;
+  map<string, string> options = 2;
+}
+
 message Endpoint {
   string name = 1;
-  EndpointType type = 2;
-  map<string, string> options = 3;
+  reserved 2, 3;
+  reserved "type", "options";
+  oneof config {
+    PostgresSourceConfig postgres_source = 10;
+    PostgresDestinationConfig postgres_destination = 11;
+    PGStreamDestinationConfig pgstream = 12;
+    KafkaDestinationConfig kafka = 13;
+    RedpandaDestinationConfig redpanda = 14;
+    S3DestinationConfig s3 = 15;
+    HTTPDestinationConfig http = 16;
+    GRPCDestinationConfig grpc = 17;
+    SnowflakeDestinationConfig snowflake = 18;
+    SnowflakePostgresSQLConfig snowflake_postgres_sql = 19;
+    SnowflakePostgresStagedConfig snowflake_postgres_staged = 20;
+    SnowflakePostgresStreamingConfig snowflake_postgres_streaming = 21;
+    SnowpipeDestinationConfig snowpipe = 22;
+    ClickHouseDestinationConfig clickhouse = 23;
+    ClickHousePostgresAppendConfig clickhouse_postgres_append = 24;
+    DuckDBDestinationConfig duckdb = 25;
+    DuckLakeDestinationConfig ducklake = 26;
+    IcebergDestinationConfig iceberg = 27;
+    CustomEndpointConfig custom = 28;
+  }
 }
 
 message FlowConfig {
@@ -86,9 +645,8 @@ message FlowConfig {
   FailureMode failure_mode = 3;
   GiveUpPolicy give_up_policy = 4;
   DDLPolicy ddl = 5;
-  string schema_registry_subject = 6;
-  string schema_registry_proto_types_subject = 7;
-  string schema_registry_subject_mode = 8;
+  reserved 6, 7, 8;
+  reserved "schema_registry_subject", "schema_registry_proto_types_subject", "schema_registry_subject_mode";
   MaterializationPolicy materialization = 9;
   TableMappings table_mappings = 10;
 }

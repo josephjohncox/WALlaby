@@ -1,39 +1,70 @@
 {
-  "name": "pg_to_grpc",
-  "wire_format": "json",
-  "source": {
-    "name": "pg-source",
-    "type": "postgres",
-    "options": {
-      "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
-      "slot": "wallaby_slot",
-      "publication": "wallaby_pub",
-      "batch_size": "500",
-      "batch_timeout": "1s",
-      "status_interval": "10s",
-      "create_slot": "true",
-      "format": "json"
+  "config": {
+    "ack_policy": "all",
+    "table_mappings": {
+      "destinations": [
+        {
+          "destination": "grpc_ingest",
+          "future_tables": {
+            "action": "include",
+            "future_columns": {
+              "action": "include",
+              "target_column": "{{ .Column }}"
+            },
+            "target_schema": "{{ .Schema }}",
+            "target_table": "{{ .Table }}",
+            "write": {
+              "key_columns": [],
+              "mode": "append"
+            }
+          },
+          "tables": []
+        }
+      ],
+      "version": 2
     }
   },
   "destinations": [
     {
-      "name": "grpc_ingest",
-      "type": "grpc",
-      "options": {
+      "grpc": {
         "endpoint": "localhost:9090",
-        "format": "json",
-        "insecure": "true",
+        "format": "WIRE_FORMAT_JSON",
+        "metadata": {
+          "x-tenant": "demo"
+        },
+        "retry": {
+          "backoff_base": "0.200s",
+          "backoff_factor": 2,
+          "backoff_max": "5s",
+          "max_retries": 3
+        },
         "timeout": "10s",
-        "max_retries": "3",
-        "backoff_base": "200ms",
-        "backoff_max": "5s",
-        "backoff_factor": "2",
-        "headers": "x-tenant:demo"
-      }
+        "tls": {
+          "insecure": true
+        }
+      },
+      "name": "grpc_ingest"
     }
   ],
-  "config": {
-    "ack_policy": "all",
-    "table_mappings": {"version": 1, "destinations": [{"destination": "grpc_ingest", "future_tables": {"action": "include", "target_schema": "{schema}", "target_table": "{table}", "future_columns": {"action": "include", "target_column": "{column}"}, "write": {"mode": "append", "key_columns": []}}, "tables": []}]}
-  }
+  "name": "pg_to_grpc",
+  "source": {
+    "name": "pg-source",
+    "postgres_source": {
+      "mode": "POSTGRES_SOURCE_MODE_CDC",
+      "batch_size": 500,
+      "batch_timeout": "1s",
+      "connection": {
+        "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable"
+      },
+      "create_slot": true,
+      "format": "WIRE_FORMAT_JSON",
+      "publication": "wallaby_pub",
+      "publication_schemas": [
+        "public"
+      ],
+      "slot": "wallaby_slot",
+      "status_interval": "10s"
+    }
+  },
+  "wire_format": "json"
 }

@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"strings"
 
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 )
 
@@ -58,8 +59,8 @@ func ValidState(state State) bool {
 type Flow struct {
 	ID           string
 	Name         string
-	Source       connector.Spec
-	Destinations []connector.Spec
+	Source       *wallabypb.Endpoint
+	Destinations []*wallabypb.Endpoint
 	State        State
 	WireFormat   connector.WireFormat
 	Parallelism  int
@@ -68,16 +69,13 @@ type Flow struct {
 
 // Config captures flow-level runtime behavior.
 type Config struct {
-	AckPolicy                       stream.AckPolicy      `json:"ack_policy,omitempty"`
-	PrimaryDestination              string                `json:"primary_destination,omitempty"`
-	FailureMode                     stream.FailureMode    `json:"failure_mode,omitempty"`
-	GiveUpPolicy                    stream.GiveUpPolicy   `json:"give_up_policy,omitempty"`
-	DDL                             DDLPolicy             `json:"ddl,omitempty"`
-	SchemaRegistrySubject           string                `json:"schema_registry_subject,omitempty"`
-	SchemaRegistryProtoTypesSubject string                `json:"schema_registry_proto_types_subject,omitempty"`
-	SchemaRegistrySubjectMode       string                `json:"schema_registry_subject_mode,omitempty"`
-	Materialization                 MaterializationPolicy `json:"materialization,omitempty"`
-	TableMappings                   TableMappings         `json:"table_mappings"`
+	AckPolicy          stream.AckPolicy      `json:"ack_policy,omitempty"`
+	PrimaryDestination string                `json:"primary_destination,omitempty"`
+	FailureMode        stream.FailureMode    `json:"failure_mode,omitempty"`
+	GiveUpPolicy       stream.GiveUpPolicy   `json:"give_up_policy,omitempty"`
+	DDL                DDLPolicy             `json:"ddl,omitempty"`
+	Materialization    MaterializationPolicy `json:"materialization,omitempty"`
+	TableMappings      TableMappings         `json:"table_mappings"`
 }
 
 // MaterializationPolicy selects the frozen canonical projection used by
@@ -91,7 +89,21 @@ type MaterializationPolicy struct {
 // persisted by any API adapter. Runtime admission repeats capability checks
 // after concrete connector construction.
 func ValidateDefinition(definition Flow) error {
-	if err := definition.Config.TableMappings.Validate(definition.Destinations); err != nil {
+	return ValidateDefinitionWithRegistry(definition, connector.DefaultRegistry)
+}
+
+// ValidateDefinitionWithRegistry validates typed endpoint branches and decodes
+// runtime adapters only for validation that depends on connector capabilities.
+func ValidateDefinitionWithRegistry(definition Flow, registry *connector.Registry) error {
+	source, err := definition.DecodeSource(registry)
+	if err != nil {
+		return fmt.Errorf("decode source endpoint: %w", err)
+	}
+	destinations, err := definition.DecodeDestinations(registry)
+	if err != nil {
+		return err
+	}
+	if err := definition.Config.TableMappings.Validate(destinations); err != nil {
 		return fmt.Errorf("validate table mappings: %w", err)
 	}
 	ackPolicy := definition.Config.AckPolicy
@@ -103,7 +115,7 @@ func ValidateDefinition(definition Flow) error {
 	default:
 		return fmt.Errorf("unsupported acknowledgement policy %q", ackPolicy)
 	}
-	for _, destination := range definition.Destinations {
+	for _, destination := range destinations {
 		if destination.Type == connector.EndpointIceberg {
 			if err := connector.ValidatePersistedSpec(destination); err != nil {
 				return fmt.Errorf("validate persisted Iceberg destination: %w", err)
@@ -136,24 +148,24 @@ func ValidateDefinition(definition Flow) error {
 	if strings.TrimSpace(definition.Config.PrimaryDestination) != "" {
 		return errors.New("primary_destination is not valid with ack_policy=materialized")
 	}
-	if definition.Source.Type != connector.EndpointPostgres {
+	if source.Type != connector.EndpointPostgres {
 		return errors.New("ack_policy=materialized requires a PostgreSQL source")
 	}
-	if strings.TrimSpace(definition.Source.Options["managed_profile"]) != "" {
+	if strings.TrimSpace(source.Options["managed_profile"]) != "" {
 		return errors.New("ack_policy=materialized is not admitted by named managed profiles")
 	}
-	switch strings.ToLower(strings.TrimSpace(definition.Source.Options["managed"])) {
+	switch strings.ToLower(strings.TrimSpace(source.Options["managed"])) {
 	case "1", "true", "yes", "on":
 	default:
 		return errors.New("ack_policy=materialized requires managed PostgreSQL transactional execution")
 	}
-	if !strings.EqualFold(strings.TrimSpace(definition.Source.Options["bootstrap"]), "never") {
+	if !strings.EqualFold(strings.TrimSpace(source.Options["bootstrap"]), "never") {
 		return errors.New("ack_policy=materialized currently requires source.options.bootstrap=never")
 	}
 	if len(definition.Destinations) != 1 {
 		return errors.New("ack_policy=materialized requires exactly one Iceberg destination revision")
 	}
-	destination := definition.Destinations[0]
+	destination := destinations[0]
 	if destination.Type != connector.EndpointIceberg {
 		return errors.New("ack_policy=materialized requires an Iceberg destination")
 	}
@@ -207,15 +219,6 @@ func (c Config) Equal(other Config) bool {
 	if c.GiveUpPolicy != other.GiveUpPolicy {
 		return false
 	}
-	if c.SchemaRegistrySubject != other.SchemaRegistrySubject {
-		return false
-	}
-	if c.SchemaRegistryProtoTypesSubject != other.SchemaRegistryProtoTypesSubject {
-		return false
-	}
-	if c.SchemaRegistrySubjectMode != other.SchemaRegistrySubjectMode {
-		return false
-	}
 	if c.Materialization != other.Materialization {
 		return false
 	}
@@ -228,8 +231,7 @@ func (c Config) Equal(other Config) bool {
 // IsZero reports whether no flow-level behavior was configured.
 func (c Config) IsZero() bool {
 	return c.AckPolicy == "" && c.PrimaryDestination == "" && c.FailureMode == "" && c.GiveUpPolicy == "" &&
-		c.DDL == (DDLPolicy{}) && c.SchemaRegistrySubject == "" && c.SchemaRegistryProtoTypesSubject == "" &&
-		c.SchemaRegistrySubjectMode == "" && c.Materialization == (MaterializationPolicy{}) && c.TableMappings.Version == 0 && len(c.TableMappings.Destinations) == 0
+		c.DDL == (DDLPolicy{}) && c.Materialization == (MaterializationPolicy{}) && c.TableMappings.Version == 0 && len(c.TableMappings.Destinations) == 0
 }
 
 func ddlPolicyEqual(a, b DDLPolicy) bool {
@@ -293,36 +295,20 @@ func (p DDLPolicy) Resolve(defaults DDLPolicyDefaults) DDLPolicyDefaults {
 	return resolved
 }
 
-// ApplyRegistryDefaults applies flow-level schema registry defaults to destination specs.
-func ApplyRegistryDefaults(specs []connector.Spec, cfg Config) []connector.Spec {
-	if cfg.SchemaRegistrySubject == "" && cfg.SchemaRegistryProtoTypesSubject == "" && cfg.SchemaRegistrySubjectMode == "" {
-		return specs
-	}
-	out := make([]connector.Spec, len(specs))
-	for i, spec := range specs {
-		out[i] = spec
-		opts := copyOptions(spec.Options)
-		if cfg.SchemaRegistrySubject != "" && opts[schemaregistry.OptRegistrySubject] == "" {
-			opts[schemaregistry.OptRegistrySubject] = cfg.SchemaRegistrySubject
-		}
-		if cfg.SchemaRegistryProtoTypesSubject != "" && opts[schemaregistry.OptRegistryProtoTypes] == "" {
-			opts[schemaregistry.OptRegistryProtoTypes] = cfg.SchemaRegistryProtoTypesSubject
-		}
-		if cfg.SchemaRegistrySubjectMode != "" && opts[schemaregistry.OptRegistrySubjectMode] == "" {
-			opts[schemaregistry.OptRegistrySubjectMode] = cfg.SchemaRegistrySubjectMode
-		}
-		out[i].Options = opts
-	}
-	return out
+// DecodeSource returns a detached runtime adapter for the connector factory.
+func (f Flow) DecodeSource(registry *connector.Registry) (connector.RuntimeSpec, error) {
+	return endpointcodec.DecodeWithRegistry(endpointcodec.Clone(f.Source), endpointcodec.RoleSource, registry)
 }
 
-func copyOptions(in map[string]string) map[string]string {
-	if in == nil {
-		return map[string]string{}
+// DecodeDestinations returns detached runtime adapters for connector factories.
+func (f Flow) DecodeDestinations(registry *connector.Registry) ([]connector.RuntimeSpec, error) {
+	out := make([]connector.RuntimeSpec, 0, len(f.Destinations))
+	for index, endpoint := range f.Destinations {
+		spec, err := endpointcodec.DecodeWithRegistry(endpointcodec.Clone(endpoint), endpointcodec.RoleDestination, registry)
+		if err != nil {
+			return nil, fmt.Errorf("decode destination %d: %w", index, err)
+		}
+		out = append(out, spec)
 	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
+	return out, nil
 }

@@ -52,7 +52,7 @@ func TestPostgresManagedProfileVersionContract(t *testing.T) {
 		t.Fatal("maintained profile exposed untested mixed-major pairing")
 	}
 	destination := &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "version-admission", Type: connector.EndpointPostgres, Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "version-admission", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": profile.Name, "synchronous_commit": "on", "meta_table_enabled": "false",
 	}}); err != nil {
 		t.Fatalf("open exact named profile on PostgreSQL %d: %v", major, err)
@@ -283,7 +283,7 @@ func TestPostgresManagedProfileDDLTargetMapping(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DROP TABLE IF EXISTS public.wallaby_profile_target_mapping`)
 	}()
 	destination := &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "mapped-profile", Type: connector.EndpointPostgres, Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "mapped-profile", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1,
 		"batch_mode": "target", "synchronous_commit": "on",
 		"meta_table_enabled": "false", "schema": "public", "table": targetTable,
@@ -311,7 +311,7 @@ func TestPostgresManagedProfileDDLTargetMapping(t *testing.T) {
 			}}}},
 		},
 	}
-	mappings := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "mapped-profile", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: sourceTable, Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: targetTable, FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}}}}
+	mappings := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "mapped-profile", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: sourceTable, Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: targetTable, FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}}}}
 	projector, err := tablemap.New(mappings, "mapped-profile")
 	if err != nil {
 		t.Fatal(err)
@@ -489,7 +489,7 @@ func managedProfileTestDSN(t *testing.T) string {
 func openNamedProfileDestination(t *testing.T, ctx context.Context, dsn string, poolSize int) *pgdest.Destination {
 	t.Helper()
 	destination := &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "named-profile", Type: connector.EndpointPostgres, Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "named-profile", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1,
 		"batch_mode": "target", "synchronous_commit": "on",
 		"meta_table_enabled": "false", "pool_max_conns": strconv.Itoa(poolSize),

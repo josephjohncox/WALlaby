@@ -8,7 +8,7 @@ import (
 func TestValidatePersistedIcebergSpecUsesAllowlist(t *testing.T) {
 	t.Parallel()
 
-	valid := Spec{Type: EndpointIceberg, Options: map[string]string{
+	valid := RuntimeSpec{Type: EndpointIceberg, Options: map[string]string{
 		"catalog_profile": "s3tables", "destination_revision_id": "iceberg-v1",
 		"control_table": "__wallaby_control",
 	}}
@@ -22,7 +22,7 @@ func TestValidatePersistedIcebergSpecUsesAllowlist(t *testing.T) {
 	} {
 		t.Run(key, func(t *testing.T) {
 			t.Parallel()
-			candidate := Spec{Type: EndpointIceberg, Options: map[string]string{
+			candidate := RuntimeSpec{Type: EndpointIceberg, Options: map[string]string{
 				"destination_revision_id": "iceberg-v1", key: "secret-or-unsafe",
 			}}
 			if err := ValidatePersistedSpec(candidate); err == nil || !strings.Contains(err.Error(), "unsupported persisted Iceberg option") {

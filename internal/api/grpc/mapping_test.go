@@ -2,9 +2,11 @@ package grpc
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
@@ -40,11 +42,11 @@ func TestTableMappingsRoundTrip(t *testing.T) {
 	t.Parallel()
 	model := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{
 		Destination:  "warehouse",
-		FutureTables: flow.FutureTableMapping{Action: flow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "raw_{table}", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
+		FutureTables: flow.FutureTableMapping{Action: flow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "raw_{{ .Table }}", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
 		Tables:       []flow.TableMapping{{SourceSchema: "public", SourceTable: "customers", Action: flow.MappingActionInclude, TargetSchema: "analytics", TargetTable: "accounts", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionExclude}, Columns: []flow.ColumnMapping{{SourceColumn: "id", Action: flow.MappingActionInclude, TargetColumn: "account_id"}}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}, WatermarkColumn: "updated_at"}}},
 	}}}
 	wire := tableMappingsToProto(model)
-	if wire.GetVersion() != 1 || len(wire.GetDestinations()) != 1 || wire.GetDestinations()[0].GetTables()[0].GetColumns()[0].GetTargetColumn() != "account_id" ||
+	if wire.GetVersion() != flow.TableMappingsVersion || len(wire.GetDestinations()) != 1 || wire.GetDestinations()[0].GetTables()[0].GetColumns()[0].GetTargetColumn() != "account_id" ||
 		!reflect.DeepEqual(wire.GetDestinations()[0].GetTables()[0].GetWrite().GetKeyColumns(), []string{"id"}) {
 		t.Fatalf("unexpected wire table mappings: %+v", wire)
 	}
@@ -63,9 +65,9 @@ func TestTableMappingsFromProtoRejectsNilListEntries(t *testing.T) {
 		name     string
 		mappings *wallabypb.TableMappings
 	}{
-		{name: "destination", mappings: &wallabypb.TableMappings{Version: 1, Destinations: []*wallabypb.DestinationTableMappings{nil}}},
-		{name: "table", mappings: &wallabypb.TableMappings{Version: 1, Destinations: []*wallabypb.DestinationTableMappings{{Destination: "warehouse", Tables: []*wallabypb.TableMapping{nil}}}}},
-		{name: "column", mappings: &wallabypb.TableMappings{Version: 1, Destinations: []*wallabypb.DestinationTableMappings{{Destination: "warehouse", Tables: []*wallabypb.TableMapping{{Columns: []*wallabypb.ColumnMapping{nil}}}}}}},
+		{name: "destination", mappings: &wallabypb.TableMappings{Version: flow.TableMappingsVersion, Destinations: []*wallabypb.DestinationTableMappings{nil}}},
+		{name: "table", mappings: &wallabypb.TableMappings{Version: flow.TableMappingsVersion, Destinations: []*wallabypb.DestinationTableMappings{{Destination: "warehouse", Tables: []*wallabypb.TableMapping{nil}}}}},
+		{name: "column", mappings: &wallabypb.TableMappings{Version: flow.TableMappingsVersion, Destinations: []*wallabypb.DestinationTableMappings{{Destination: "warehouse", Tables: []*wallabypb.TableMapping{{Columns: []*wallabypb.ColumnMapping{nil}}}}}}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -78,50 +80,65 @@ func TestTableMappingsFromProtoRejectsNilListEntries(t *testing.T) {
 
 func TestFlowFromProtoPropagatesNilTableMappingEntry(t *testing.T) {
 	t.Parallel()
-	_, err := flowFromProto(&wallabypb.Flow{
-		Source: &wallabypb.Endpoint{Type: wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES},
+	_, err := flowFromProtoWithRegistry(&wallabypb.Flow{
+		Source: &wallabypb.Endpoint{Config: &wallabypb.Endpoint_PostgresSource{PostgresSource: &wallabypb.PostgresSourceConfig{}}},
 		Config: &wallabypb.FlowConfig{TableMappings: &wallabypb.TableMappings{
-			Version: 1, Destinations: []*wallabypb.DestinationTableMappings{nil},
+			Version: flow.TableMappingsVersion, Destinations: []*wallabypb.DestinationTableMappings{nil},
 		}},
-	})
+	}, connector.DefaultRegistry)
 	if err == nil {
 		t.Fatal("flow conversion silently accepted nil table mapping entry")
 	}
 }
 
-func TestEndpointWireValuesAndRoundTrips(t *testing.T) {
+func TestEndpointBranchesAndRoundTrips(t *testing.T) {
 	t.Parallel()
-
-	tests := []struct {
-		name      string
-		model     connector.EndpointType
-		wire      wallabypb.EndpointType
-		wireValue int32
+	for _, test := range []struct {
+		name  string
+		model connector.EndpointType
 	}{
-		{name: "redpanda", model: connector.EndpointRedpanda, wire: wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA, wireValue: 16},
-		{name: "iceberg", model: connector.EndpointIceberg, wire: wallabypb.EndpointType_ENDPOINT_TYPE_ICEBERG, wireValue: 15},
-	}
-	for _, test := range tests {
+		{name: "redpanda", model: connector.EndpointRedpanda},
+		{name: "iceberg", model: connector.EndpointIceberg},
+	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			wire := endpointTypeToProto(test.model)
-			if wire != test.wire || int32(wire) != test.wireValue {
-				t.Fatalf("endpoint wire value=%d, want %d", wire, test.wireValue)
+			options := map[string]string{}
+			if test.model == connector.EndpointIceberg {
+				options["destination_revision_id"] = "revision-1"
 			}
-			if model := endpointTypeFromProto(wire); model != test.model {
-				t.Fatalf("endpoint round trip=%q, want %q", model, test.model)
+			wire, err := endpointcodec.Encode(connector.RuntimeSpec{Name: test.name, Type: test.model, Options: options}, endpointcodec.RoleDestination)
+			if err != nil {
+				t.Fatal(err)
+			}
+			model, err := endpointcodec.Decode(wire, endpointcodec.RoleDestination)
+			if err != nil || model.Type != test.model {
+				t.Fatalf("endpoint round trip=%q, want %q (err=%v)", model.Type, test.model, err)
 			}
 		})
+	}
+}
+
+func TestFlowFromProtoRejectsEveryUnknownEnumBeforeMappingToAbsence(t *testing.T) {
+	t.Parallel()
+	cases := []*wallabypb.Flow{
+		{State: wallabypb.FlowState(99)},
+		{WireFormat: wallabypb.WireFormat(99)},
+		{Config: &wallabypb.FlowConfig{FailureMode: wallabypb.FailureMode(99)}},
+		{Config: &wallabypb.FlowConfig{GiveUpPolicy: wallabypb.GiveUpPolicy(99)}},
+	}
+	for _, candidate := range cases {
+		if _, err := flowFromProtoWithRegistry(candidate, connector.DefaultRegistry); err == nil || !strings.Contains(err.Error(), "unknown enum value") {
+			t.Fatalf("unknown enum flow=%v error=%v", candidate, err)
+		}
 	}
 }
 
 func TestFlowFromProtoRejectsUnknownAcknowledgementPolicy(t *testing.T) {
 	t.Parallel()
 
-	_, err := flowFromProto(&wallabypb.Flow{
-		Source: &wallabypb.Endpoint{Type: wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES},
+	_, err := flowFromProtoWithRegistry(&wallabypb.Flow{
+		Source: &wallabypb.Endpoint{Config: &wallabypb.Endpoint_PostgresSource{PostgresSource: &wallabypb.PostgresSourceConfig{}}},
 		Config: &wallabypb.FlowConfig{AckPolicy: wallabypb.AckPolicy(99)},
-	})
+	}, connector.DefaultRegistry)
 	if err == nil {
 		t.Fatal("unknown acknowledgement policy was silently mapped to unspecified")
 	}

@@ -15,7 +15,7 @@ The configuration is a documented WALlaby materialized-destination preview with 
 - Source acknowledgement occurs after PostgreSQL commits canonical publication, before asynchronous Iceberg and Snowflake visibility.
 - Tables are append-only CDC changelogs. Updates and deletes are rows identified by `__op`; they do not mutate older rows.
 - Delivery is not exactly-once, and a multi-table source transaction is not atomically visible across all Iceberg tables.
-- Initial snapshot publication is not yet admitted. Start from a provisioned logical slot/publication and an agreed streaming cut with `bootstrap=never`.
+- Initial snapshot publication is not yet admitted. Start from a provisioned logical slot/publication and an agreed streaming cut with `bootstrap=BOOTSTRAP_MODE_NEVER`.
 
 The connector remains classified experimental until the credential-gated AWS S3 Tables and commercial Snowflake readback gates pass on the same commit. The configuration, security boundary, examples, and local REST compatibility gate are supported and versioned now; do not describe an unrun deployment as maintained evidence.
 
@@ -85,15 +85,14 @@ The persisted destination contains target mapping and immutable revision identit
 ```yaml
 destinations:
   - name: s3tables-lake
-    type: iceberg
-    options:
-      catalog_profile: s3tables
+    iceberg:
+      catalog_profile: ICEBERG_CATALOG_PROFILE_S3_TABLES
       destination_revision_id: s3tables-lake-v1
       control_table: __wallaby_control
 
 config:
   table_mappings:
-    version: 1
+    version: 2
     destinations:
       - destination: s3tables-lake
         future_tables:
@@ -106,7 +105,7 @@ config:
             target_table: cdc_events
             future_columns:
               action: include
-              target_column: "{column}"
+              target_column: "{{ .Column }}"
             columns: []
             write:
               mode: append

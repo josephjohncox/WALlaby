@@ -119,7 +119,7 @@ type metricsDestination struct {
 	rowSizes map[string]int64
 }
 
-func (m *metricsDestination) Open(ctx context.Context, spec connector.Spec) error {
+func (m *metricsDestination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	return m.inner.Open(ctx, spec)
 }
 
@@ -793,7 +793,7 @@ func runTarget(ctx context.Context, target string, prof profile, scenario string
 		}
 	}
 
-	sourceSpec := connector.Spec{
+	sourceSpec := connector.RuntimeSpec{
 		Name: "bench-source",
 		Type: connector.EndpointPostgres,
 		Options: map[string]string{
@@ -880,14 +880,14 @@ func runTarget(ctx context.Context, target string, prof profile, scenario string
 	return result, nil
 }
 
-func buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix string) (connector.Spec, connector.Destination, error) {
+func buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix string) (connector.RuntimeSpec, connector.Destination, error) {
 	pgSyncCommit := strings.TrimSpace(os.Getenv("BENCH_PG_SYNC_COMMIT"))
 	if pgSyncCommit == "" {
 		pgSyncCommit = "off"
 	}
 	switch target {
 	case "kafka":
-		spec := connector.Spec{
+		spec := connector.RuntimeSpec{
 			Name: "bench-kafka",
 			Type: connector.EndpointKafka,
 			Options: map[string]string{
@@ -899,7 +899,7 @@ func buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix string) (c
 		}
 		return spec, &kafka.Destination{}, nil
 	case "postgres":
-		spec := connector.Spec{
+		spec := connector.RuntimeSpec{
 			Name: "bench-postgres",
 			Type: connector.EndpointPostgres,
 			Options: map[string]string{
@@ -910,7 +910,7 @@ func buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix string) (c
 		}
 		return spec, &pgdest.Destination{}, nil
 	case "clickhouse":
-		spec := connector.Spec{
+		spec := connector.RuntimeSpec{
 			Name: "bench-clickhouse",
 			Type: connector.EndpointClickHouse,
 			Options: map[string]string{
@@ -920,11 +920,11 @@ func buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix string) (c
 		}
 		return spec, &clickhouse.Destination{}, nil
 	default:
-		return connector.Spec{}, nil, fmt.Errorf("unsupported target %q", target)
+		return connector.RuntimeSpec{}, nil, fmt.Errorf("unsupported target %q", target)
 	}
 }
 
-func benchmarkProjector(target string, destination connector.Spec, specs []tableSpec) (*tablemap.Projector, error) {
+func benchmarkProjector(target string, destination connector.RuntimeSpec, specs []tableSpec) (*tablemap.Projector, error) {
 	targetNamespace := "bench_src"
 	write := flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}
 	switch target {
@@ -942,7 +942,7 @@ func benchmarkProjector(target string, destination connector.Spec, specs []table
 		tables = append(tables, flow.TableMapping{
 			SourceSchema: schemaName(spec.Name), SourceTable: tableName(spec.Name),
 			Action: flow.MappingActionInclude, TargetSchema: targetNamespace, TargetTable: tableName(spec.Name),
-			FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"},
+			FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"},
 			Write:         write,
 		})
 	}
@@ -953,7 +953,7 @@ func benchmarkProjector(target string, destination connector.Spec, specs []table
 		},
 		Tables: tables,
 	}}}
-	if err := mappings.Validate([]connector.Spec{destination}); err != nil {
+	if err := mappings.Validate([]connector.RuntimeSpec{destination}); err != nil {
 		return nil, fmt.Errorf("validate benchmark table mappings: %w", err)
 	}
 	projector, err := tablemap.New(mappings, destination.Name)

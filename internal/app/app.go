@@ -94,6 +94,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	var authorityStore authority.Store
 	var deliveryCoordinator *delivery.Coordinator
 	var schemaBaselines connector.ManagedSchemaBaselineStore
+	connectorRegistry := connector.DefaultRegistry
 	if postgresDSN != "" {
 		control, err := controlstore.New(ctx, postgresDSN)
 		if err != nil {
@@ -125,7 +126,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		if controlPool == nil {
 			return errors.New("postgres workflow store requires WALLABY_POSTGRES_DSN")
 		}
-		postgresEngine, err := workflow.NewPostgresEngineWithPool(ctx, controlPool)
+		postgresEngine, err := workflow.NewPostgresEngineWithPoolAndRegistry(ctx, controlPool, connectorRegistry)
 		if err != nil {
 			return err
 		}
@@ -216,6 +217,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 	factory := runner.Factory{
 		Meters: telemetryProvider.Meters(), ManagedControl: controlPool, ManagedAuthority: authorityStore,
+		ConnectorRegistry: connectorRegistry,
 	}
 	if registryStore != nil {
 		factory.SchemaHookForFlow = func(f flow.Flow) replication.SchemaHook {
@@ -359,7 +361,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		dispatcher = kubeDispatcher
 	}
 
-	server := apigrpc.New(engine, dispatcher, checkpoints, registryStore, streamStore, cfg.API.GRPCReflection, telemetryProvider.Meters())
+	server := apigrpc.NewWithConnectorRegistry(engine, dispatcher, checkpoints, registryStore, streamStore, cfg.API.GRPCReflection, telemetryProvider.Meters(), connectorRegistry)
 	addCleanup(func() {
 		_ = listener.Close()
 	})

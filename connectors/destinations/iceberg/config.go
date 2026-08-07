@@ -65,7 +65,7 @@ type Config struct {
 
 // ValidateFlowSpec validates the persisted, non-secret half of an Iceberg
 // destination through the connector-wide pre-persistence contract.
-func ValidateFlowSpec(spec connector.Spec) error {
+func ValidateFlowSpec(spec connector.RuntimeSpec) error {
 	return connector.ValidatePersistedSpec(spec)
 }
 
@@ -121,7 +121,7 @@ func ConfigFingerprint(cfg Config) (string, error) {
 // endpoint identity is deployment-bound: a flow may repeat an identical value
 // for readability, but it cannot redirect deployment OAuth, mTLS, SigV4, or S3
 // credentials to another catalog, region, warehouse, bucket, or object endpoint.
-func ParseSpec(spec connector.Spec, defaults Config) (Config, error) {
+func ParseSpec(spec connector.RuntimeSpec, defaults Config) (Config, error) {
 	if err := ValidateFlowSpec(spec); err != nil {
 		return Config{}, err
 	}

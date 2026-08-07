@@ -48,7 +48,7 @@ func streamValidOptions(t *testing.T) (string, map[string]string) {
 func TestStreamConfigFromSpecAdmitsValidSpec(t *testing.T) {
 	t.Parallel()
 	dsn, options := streamValidOptions(t)
-	cfg, err := streamConfigFromSpec(dsn, connector.Spec{Type: connector.EndpointSnowflake, Options: options})
+	cfg, err := streamConfigFromSpec(dsn, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options})
 	if err != nil {
 		t.Fatalf("valid streaming spec rejected: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestStreamConfigRejectsLossyAndUnsafeOptions(t *testing.T) {
 			t.Parallel()
 			dsn, options := streamValidOptions(t)
 			mutate(options)
-			if _, err := streamConfigFromSpec(dsn, connector.Spec{Type: connector.EndpointSnowflake, Options: options}); err == nil {
+			if _, err := streamConfigFromSpec(dsn, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options}); err == nil {
 				t.Fatalf("streaming admission accepted an unsafe spec (%s)", name)
 			}
 		})
@@ -96,7 +96,7 @@ func TestStreamConfigRequiresFailClosedTransport(t *testing.T) {
 		cfg.OCSPFailOpen = gosnowflake.OCSPFailOpenTrue
 	})
 	options["dsn"] = insecure
-	if _, err := streamConfigFromSpec(insecure, connector.Spec{Type: connector.EndpointSnowflake, Options: options}); err == nil || !strings.Contains(err.Error(), "OCSP fail-closed") {
+	if _, err := streamConfigFromSpec(insecure, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options}); err == nil || !strings.Contains(err.Error(), "OCSP fail-closed") {
 		t.Fatalf("OCSP fail-open admission error=%v, want fail-closed requirement", err)
 	}
 }
@@ -109,7 +109,7 @@ func TestStreamConfigRequiresReadLatestWrites(t *testing.T) {
 		cfg.Params = map[string]*string{"TIMEZONE": &timezone}
 	})
 	options["dsn"] = noReadLatest
-	if _, err := streamConfigFromSpec(noReadLatest, connector.Spec{Type: connector.EndpointSnowflake, Options: options}); err == nil || !strings.Contains(err.Error(), "READ_LATEST_WRITES") {
+	if _, err := streamConfigFromSpec(noReadLatest, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options}); err == nil || !strings.Contains(err.Error(), "READ_LATEST_WRITES") {
 		t.Fatalf("missing READ_LATEST_WRITES error=%v", err)
 	}
 }
@@ -162,7 +162,7 @@ func TestStreamTransportUnavailableFailsClosed(t *testing.T) {
 	}
 	dsn, options := streamValidOptions(t)
 	destination := &Destination{}
-	err := destination.Open(context.Background(), connector.Spec{Type: connector.EndpointSnowflake, Options: options})
+	err := destination.Open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options})
 	if !errors.Is(err, ErrManagedStreamingTransportUnavailable) {
 		t.Fatalf("streaming Open must fail closed with the transport-unavailable error, got %v", err)
 	}
@@ -177,7 +177,7 @@ func TestStreamOpenRejectsInvalidSpecBeforeTransportCheck(t *testing.T) {
 	_, options := streamValidOptions(t)
 	options["managed_schema_contract_hash"] = "deadbeef"
 	destination := &Destination{}
-	err := destination.Open(context.Background(), connector.Spec{Type: connector.EndpointSnowflake, Options: options})
+	err := destination.Open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options})
 	if err == nil || errors.Is(err, ErrManagedStreamingTransportUnavailable) {
 		t.Fatalf("invalid spec must be rejected before the transport refusal, got %v", err)
 	}

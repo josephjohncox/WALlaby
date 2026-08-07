@@ -19,7 +19,7 @@ func TestAppendWriteAndDDLBehavior(t *testing.T) {
 	if _, err := db.Exec(`CREATE TABLE main.events (event_id BIGINT)`); err != nil {
 		t.Fatal(err)
 	}
-	destination := &Destination{db: db, metaEnabled: false, spec: connector.Spec{Type: connector.EndpointDuckLake}}
+	destination := &Destination{db: db, metaEnabled: false, spec: connector.RuntimeSpec{Type: connector.EndpointDuckLake}}
 	plan, err := json.Marshal(internalschema.Plan{Changes: []internalschema.Change{{Type: internalschema.ChangeAddColumn, Namespace: "main", Table: "events", Column: "status", ToType: "text", Nullable: true}}})
 	if err != nil {
 		t.Fatal(err)

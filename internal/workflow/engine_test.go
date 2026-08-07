@@ -72,12 +72,12 @@ func TestMemoryEngineCopiesAndFencesTableMappings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := stored.Config.TableMappings.Destinations[0].FutureTables.TargetTable; got != "{table}" {
+	if got := stored.Config.TableMappings.Destinations[0].FutureTables.TargetTable; got != "{{ .Table }}" {
 		t.Fatalf("stored mapping aliased caller: %q", got)
 	}
 	stored.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "changed-get"
 	again, _ := engine.Get(ctx, definition.ID)
-	if got := again.Config.TableMappings.Destinations[0].FutureTables.TargetTable; got != "{table}" {
+	if got := again.Config.TableMappings.Destinations[0].FutureTables.TargetTable; got != "{{ .Table }}" {
 		t.Fatalf("Get returned aliased mapping: %q", got)
 	}
 	again.Config.TableMappings.Destinations[0].Tables = []flow.TableMapping{}
@@ -89,7 +89,7 @@ func TestMemoryEngineCopiesAndFencesTableMappings(t *testing.T) {
 		t.Fatal("nil/empty canonical mapping change rotated memory flow incarnation")
 	}
 	again, _ = engine.Get(ctx, definition.ID)
-	again.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "mapped_{table}"
+	again.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "mapped_{{ .Table }}"
 	if _, err := engine.Update(ctx, again); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestMemoryEngineCopiesAndFencesTableMappings(t *testing.T) {
 		t.Fatal(err)
 	}
 	running, _ := engine.Get(ctx, definition.ID)
-	running.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "again_{table}"
+	running.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "again_{{ .Table }}"
 	if _, err := engine.Update(ctx, running); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("running mapping update error=%v, want ErrInvalidState", err)
 	}
@@ -125,12 +125,12 @@ func TestMemoryEngineLifecycleReturnsAreMutationIsolated(t *testing.T) {
 	ctx := context.Background()
 	assertIsolated := func(t *testing.T, engine *MemoryEngine, returned flow.Flow) {
 		t.Helper()
-		returned.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "caller_mutation_{table}"
+		returned.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "caller_mutation_{{ .Table }}"
 		stored, err := engine.Get(ctx, returned.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := stored.Config.TableMappings.Destinations[0].FutureTables.TargetTable; got != "{table}" {
+		if got := stored.Config.TableMappings.Destinations[0].FutureTables.TargetTable; got != "{{ .Table }}" {
 			t.Fatalf("lifecycle result mutated stored mapping: %q", got)
 		}
 	}

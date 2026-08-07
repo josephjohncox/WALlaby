@@ -39,7 +39,7 @@ func TestKafkaBackedProfilesProduceCommittedAppendRecords(t *testing.T) {
 			if profile.transactional {
 				options["transactional_id"] = "wallaby-" + string(profile.id)
 			}
-			spec := connector.Spec{Name: "redpanda", Type: connector.EndpointRedpanda, Options: options}
+			spec := connector.RuntimeSpec{Name: "redpanda", Type: connector.EndpointRedpanda, Options: options}
 			destination := &Destination{}
 			if err := destination.Open(context.Background(), spec); err != nil {
 				t.Fatal(err)
@@ -97,7 +97,7 @@ func TestKafkaBackedProfilesEnforceOversizePolicy(t *testing.T) {
 			topic := "oversize-" + test.name
 			cluster := kfake.MustCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, topic))
 			defer cluster.Close()
-			spec := connector.Spec{Name: "redpanda", Type: connector.EndpointRedpanda, Options: map[string]string{
+			spec := connector.RuntimeSpec{Name: "redpanda", Type: connector.EndpointRedpanda, Options: map[string]string{
 				"brokers": strings.Join(cluster.ListenAddrs(), ","), "topic": topic, "format": "json", "message_mode": "record",
 				"max_record_bytes": "1", "allow_oversize_skip": test.policy,
 			}}
@@ -137,7 +137,7 @@ func TestCapabilityProfileClassifierRejectsInvalidBooleansAndTransactions(t *tes
 		{"transactional_id": "unclassified-transaction"},
 	}
 	for _, options := range tests {
-		if _, err := (&Destination{}).ClassifyCapabilityProfile(connector.Spec{Options: options}); err == nil {
+		if _, err := (&Destination{}).ClassifyCapabilityProfile(connector.RuntimeSpec{Options: options}); err == nil {
 			t.Fatalf("options=%v unexpectedly classified", options)
 		}
 	}

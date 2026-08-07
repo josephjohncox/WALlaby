@@ -33,7 +33,7 @@ func TestPostgresDestinationDDLAndMutations(t *testing.T) {
 	fullTable := fmt.Sprintf(`public."%s"`, tableName)
 
 	dest := &pgdest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "dest",
 		Type: connector.EndpointPostgres,
 		Options: map[string]string{
@@ -185,7 +185,7 @@ func TestPostgresDestinationPlanDDL(t *testing.T) {
 	fullTable := fmt.Sprintf(`public."%s"`, tableName)
 
 	dest := &pgdest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "plan-dest",
 		Type: connector.EndpointPostgres,
 		Options: map[string]string{
@@ -420,7 +420,7 @@ func TestPostgresManagedDriverMarkerReconciles(t *testing.T) {
 	}()
 
 	destination := &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "managed", Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "managed", Options: map[string]string{
 		"dsn": dsn, "schema": "public", "write_mode": "target", "meta_table_enabled": "false",
 	}}); err != nil {
 		t.Fatal(err)
@@ -449,7 +449,7 @@ func TestPostgresManagedDriverMarkerReconciles(t *testing.T) {
 		t.Fatal(err)
 	}
 	destination = &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "managed", Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "managed", Options: map[string]string{
 		"dsn": dsn, "schema": "public", "write_mode": "target", "meta_table_enabled": "false",
 	}}); err != nil {
 		t.Fatal(err)
@@ -487,7 +487,7 @@ func TestPostgresTargetReplayConvergesIncludingMetadata(t *testing.T) {
 	defer func() { _, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS public.wallaby_meta_replay_test") }()
 
 	destination := &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "managed", Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "managed", Options: map[string]string{
 		"dsn": dsn, "schema": "public", "write_mode": "target", "flow_id": flowID,
 	}}); err != nil {
 		t.Fatal(err)
@@ -535,7 +535,7 @@ func TestPostgresTargetPreservesSameKeyOperationOrderIntegration(t *testing.T) {
 	}()
 
 	destination := &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "managed", Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "managed", Options: map[string]string{
 		"dsn": dsn, "schema": "public", "write_mode": "target", "meta_table_enabled": "false",
 	}}); err != nil {
 		t.Fatal(err)

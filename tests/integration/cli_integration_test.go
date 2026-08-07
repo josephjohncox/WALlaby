@@ -19,12 +19,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	apigrpc "github.com/josephjohncox/wallaby/internal/api/grpc"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	internalflow "github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/registry"
 	"github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/internal/workflow"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/pgstream"
 	"github.com/josephjohncox/wallaby/pkg/stream"
+	"google.golang.org/protobuf/encoding/protojson"
 	"gopkg.in/yaml.v3"
 )
 
@@ -442,7 +445,7 @@ func TestCLIIntegrationCompletion(t *testing.T) {
 
 func TestCLIIntegrationFlowPlan(t *testing.T) {
 	configPath := writeFlowConfig(t, flowConfigPayload{
-		Name: "cli-flow-plan", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "plan-dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
+		Name: "cli-flow-plan", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "plan-dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
 		WireFormat: "json",
 		Source: endpointConfigPayload{
 			Name: "plan-src",
@@ -476,10 +479,19 @@ func TestCLIIntegrationFlowPlan(t *testing.T) {
 			Name   string `json:"name"`
 			State  string `json:"state"`
 			Source struct {
-				Options map[string]string `json:"options"`
+				PostgresSource struct {
+					Connection struct {
+						DSN string `json:"dsn"`
+					} `json:"connection"`
+				} `json:"postgres_source"`
 			} `json:"source"`
 			Destinations []struct {
-				Options map[string]string `json:"options"`
+				PGStream struct {
+					Connection struct {
+						DSN string `json:"dsn"`
+					} `json:"connection"`
+					Stream string `json:"stream"`
+				} `json:"pgstream"`
 			} `json:"destinations"`
 		} `json:"desired"`
 		ChangeCount int  `json:"change_count"`
@@ -494,7 +506,7 @@ func TestCLIIntegrationFlowPlan(t *testing.T) {
 	if resp.Desired.Name != "cli-flow-plan" {
 		t.Fatalf("expected desired.name cli-flow-plan, got %s", resp.Desired.Name)
 	}
-	if resp.Desired.Source.Options["dsn"] != "[REDACTED]" || len(resp.Desired.Destinations) != 1 || resp.Desired.Destinations[0].Options["dsn"] != "[REDACTED]" || resp.Desired.Destinations[0].Options["stream"] != "orders" || bytes.Contains(output, []byte(testPostgresAppDSN(t))) {
+	if resp.Desired.Source.PostgresSource.Connection.DSN != "[REDACTED]" || len(resp.Desired.Destinations) != 1 || resp.Desired.Destinations[0].PGStream.Connection.DSN != "[REDACTED]" || resp.Desired.Destinations[0].PGStream.Stream != "orders" || bytes.Contains(output, []byte(testPostgresAppDSN(t))) {
 		t.Fatalf("flow plan did not redact secrets while preserving topology: %s", output)
 	}
 	if resp.Compared {
@@ -507,7 +519,7 @@ func TestCLIIntegrationFlowPlan(t *testing.T) {
 
 func TestCLIIntegrationCheckCommand(t *testing.T) {
 	configPath := writeFlowConfig(t, flowConfigPayload{
-		Name: "cli-flow-check", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "check-dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
+		Name: "cli-flow-check", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "check-dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
 		WireFormat: "json",
 		Source: endpointConfigPayload{
 			Name: "check-src",
@@ -720,7 +732,7 @@ func TestCLIIntegrationFlowCreateRunOnce(t *testing.T) {
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
 	configPath := writeFlowConfig(t, flowConfigPayload{
-		Name: "cli-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
+		Name: "cli-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
 		WireFormat: "json",
 		Source: endpointConfigPayload{
 			Name: "src",
@@ -823,7 +835,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
 	gate, approve, apply := false, true, false
-	configPath := writeFlowConfig(t, flowConfigPayload{Name: "cli-flow-list-get-delete-wait", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}, AckPolicy: stream.AckPolicyPrimary, PrimaryDestination: "dest", FailureMode: stream.FailureModeHoldSlot, GiveUpPolicy: stream.GiveUpPolicyNever, DDL: internalflow.DDLPolicy{Gate: &gate, AutoApprove: &approve, AutoApply: &apply}, SchemaRegistrySubject: "subject", SchemaRegistryProtoTypesSubject: "types", SchemaRegistrySubjectMode: "record"}, WireFormat: "json", Parallelism: 1, Source: endpointConfigPayload{Name: "src", Type: "postgres", Options: map[string]string{"dsn": testPostgresAppDSN(t), "headers": "{\"Authorization\":\"Bearer source-header-secret\"}", "webhook_url": "https://hooks.slack.com/services/T/B/integration-slack-secret"}}, Destinations: []endpointConfigPayload{{Name: "dest", Type: "pgstream", Options: map[string]string{"dsn": testPostgresAppDSN(t), "stream": "orders", "grpc_authorization_header": "Bearer destination-header-secret", "api_endpoint": "https://api.github.com/hooks/integration-github-secret?signature=integration-signed-secret", "plain_url": "https://plain.example:8443"}}}})
+	configPath := writeFlowConfig(t, flowConfigPayload{Name: "cli-flow-list-get-delete-wait", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}, AckPolicy: stream.AckPolicyPrimary, PrimaryDestination: "dest", FailureMode: stream.FailureModeHoldSlot, GiveUpPolicy: stream.GiveUpPolicyNever, DDL: internalflow.DDLPolicy{Gate: &gate, AutoApprove: &approve, AutoApply: &apply}}, WireFormat: "json", Parallelism: 1, Source: endpointConfigPayload{Name: "src", Type: "postgres", Options: map[string]string{"dsn": testPostgresAppDSN(t), "aws_rds_iam": "true", "aws_region": "us-east-1", "aws_role_external_id": "source-external-secret"}}, Destinations: []endpointConfigPayload{{Name: "dest", Type: "http", Options: map[string]string{"url": "https://api.github.com/hooks/integration-github-secret?signature=integration-signed-secret", "headers": "authorization:Bearer destination-header-secret", "payload_mode": "record_json"}}}})
 
 	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "--file", configPath, "--json")
 	if err != nil {
@@ -856,7 +868,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 	if unchangedPlan.FlowID != createResp.ID || !unchangedPlan.Compared || unchangedPlan.ChangeCount != 0 || len(unchangedPlan.Changes) != 0 {
 		t.Fatalf("expected ID-less authoring file to compare by override without runtime changes: %s", output)
 	}
-	if bytes.Contains(output, []byte(testPostgresAppDSN(t))) || bytes.Contains(output, []byte("source-header-secret")) || bytes.Contains(output, []byte("destination-header-secret")) || bytes.Contains(output, []byte("integration-slack-secret")) || bytes.Contains(output, []byte("integration-github-secret")) || bytes.Contains(output, []byte("integration-signed-secret")) || !bytes.Contains(output, []byte("https://hooks.slack.com/[REDACTED]")) || !bytes.Contains(output, []byte("https://api.github.com/[REDACTED]")) || !bytes.Contains(output, []byte("https://plain.example:8443")) {
+	if bytes.Contains(output, []byte(testPostgresAppDSN(t))) || bytes.Contains(output, []byte("source-external-secret")) || bytes.Contains(output, []byte("destination-header-secret")) || bytes.Contains(output, []byte("integration-github-secret")) || bytes.Contains(output, []byte("integration-signed-secret")) || !bytes.Contains(output, []byte("https://api.github.com/[REDACTED]")) || !bytes.Contains(output, []byte("postgres_source")) || !bytes.Contains(output, []byte(`"http"`)) {
 		t.Fatalf("compared plan leaked endpoint secret: %s", output)
 	}
 
@@ -939,14 +951,22 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 		State    string `json:"state"`
 		StateRaw int32  `json:"state_raw"`
 		Source   struct {
-			Name    string            `json:"name"`
-			Type    string            `json:"type"`
-			Options map[string]string `json:"options"`
+			Name           string `json:"name"`
+			PostgresSource struct {
+				Connection struct {
+					DSN    string `json:"dsn"`
+					RDSIAM struct {
+						RoleExternalID string `json:"role_external_id"`
+					} `json:"rds_iam"`
+				} `json:"connection"`
+			} `json:"postgres_source"`
 		} `json:"source"`
 		Destinations []struct {
-			Name    string            `json:"name"`
-			Type    string            `json:"type"`
-			Options map[string]string `json:"options"`
+			Name string `json:"name"`
+			HTTP struct {
+				URL     string            `json:"url"`
+				Headers map[string]string `json:"headers"`
+			} `json:"http"`
 		} `json:"destinations"`
 		WireFormat string `json:"wire_format"`
 		Config     struct {
@@ -959,10 +979,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 				AutoApprove *bool `json:"auto_approve"`
 				AutoApply   *bool `json:"auto_apply"`
 			} `json:"ddl"`
-			SchemaRegistrySubject           string                     `json:"schema_registry_subject"`
-			SchemaRegistryProtoTypesSubject string                     `json:"schema_registry_proto_types_subject"`
-			SchemaRegistrySubjectMode       string                     `json:"schema_registry_subject_mode"`
-			TableMappings                   internalflow.TableMappings `json:"table_mappings"`
+			TableMappings internalflow.TableMappings `json:"table_mappings"`
 		} `json:"config"`
 	}
 	if err := json.Unmarshal(output, &getResp); err != nil {
@@ -977,16 +994,16 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 	if getResp.StateRaw == 0 {
 		t.Fatalf("expected non-zero flow state, got: %s", output)
 	}
-	if getResp.Source.Name == "" || getResp.Source.Type == "" {
-		t.Fatalf("missing source info in flow get: %s", output)
+	if getResp.Source.Name == "" || getResp.Source.PostgresSource.Connection.DSN == "" {
+		t.Fatalf("missing typed source info in flow get: %s", output)
 	}
 	if len(getResp.Destinations) != 1 || getResp.Destinations[0].Name == "" {
 		t.Fatalf("missing destination in flow get: %s", output)
 	}
-	if getResp.Source.Options["dsn"] != "[REDACTED]" || getResp.Source.Options["headers"] != "[REDACTED]" || getResp.Source.Options["webhook_url"] != "https://hooks.slack.com/[REDACTED]" || getResp.Destinations[0].Options["dsn"] != "[REDACTED]" || getResp.Destinations[0].Options["grpc_authorization_header"] != "[REDACTED]" || getResp.Destinations[0].Options["api_endpoint"] != "https://api.github.com/[REDACTED]" || getResp.Destinations[0].Options["plain_url"] != "https://plain.example:8443" || getResp.Destinations[0].Options["stream"] != "orders" || bytes.Contains(output, []byte(testPostgresAppDSN(t))) {
+	if getResp.Source.PostgresSource.Connection.DSN != "[REDACTED]" || getResp.Source.PostgresSource.Connection.RDSIAM.RoleExternalID != "[REDACTED]" || getResp.Destinations[0].HTTP.URL != "https://api.github.com/[REDACTED]" || getResp.Destinations[0].HTTP.Headers["authorization"] != "[REDACTED]" || bytes.Contains(output, []byte(testPostgresAppDSN(t))) || bytes.Contains(output, []byte(`"type"`)) || bytes.Contains(output, []byte(`"options"`)) {
 		t.Fatalf("flow get did not redact secrets while preserving topology: %s", output)
 	}
-	if getResp.Config.TableMappings.Version != internalflow.TableMappingsVersion || len(getResp.Config.TableMappings.Destinations) != 1 || getResp.Config.AckPolicy != "primary" || getResp.Config.PrimaryDestination != "dest" || getResp.Config.FailureMode != "hold_slot" || getResp.Config.GiveUpPolicy != "never" || getResp.Config.DDL.Gate == nil || *getResp.Config.DDL.Gate || getResp.Config.DDL.AutoApprove == nil || !*getResp.Config.DDL.AutoApprove || getResp.Config.DDL.AutoApply == nil || *getResp.Config.DDL.AutoApply || getResp.Config.SchemaRegistrySubject != "subject" || getResp.Config.SchemaRegistryProtoTypesSubject != "types" || getResp.Config.SchemaRegistrySubjectMode != "record" {
+	if getResp.Config.TableMappings.Version != internalflow.TableMappingsVersion || len(getResp.Config.TableMappings.Destinations) != 1 || getResp.Config.AckPolicy != "primary" || getResp.Config.PrimaryDestination != "dest" || getResp.Config.FailureMode != "hold_slot" || getResp.Config.GiveUpPolicy != "never" || getResp.Config.DDL.Gate == nil || *getResp.Config.DDL.Gate || getResp.Config.DDL.AutoApprove == nil || !*getResp.Config.DDL.AutoApprove || getResp.Config.DDL.AutoApply == nil || *getResp.Config.DDL.AutoApply {
 		t.Fatalf("incomplete config round trip: %s", output)
 	}
 	if getResp.WireFormat != "json" {
@@ -1055,8 +1072,19 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 		t.Fatalf("wallaby-admin flow validate: %v\n%s", err, output)
 	}
 	type validateEndpoint struct {
-		Name    string            `json:"name" yaml:"name"`
-		Options map[string]string `json:"options" yaml:"options"`
+		Name           string `json:"name" yaml:"name"`
+		PostgresSource struct {
+			Connection struct {
+				DSN    string `json:"dsn" yaml:"dsn"`
+				RDSIAM struct {
+					RoleExternalID string `json:"role_external_id" yaml:"role_external_id"`
+				} `json:"rds_iam" yaml:"rds_iam"`
+			} `json:"connection" yaml:"connection"`
+		} `json:"postgres_source" yaml:"postgres_source"`
+		HTTP struct {
+			URL     string            `json:"url" yaml:"url"`
+			Headers map[string]string `json:"headers" yaml:"headers"`
+		} `json:"http" yaml:"http"`
 	}
 	type validateResponse struct {
 		Valid            bool               `json:"valid" yaml:"valid"`
@@ -1070,7 +1098,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 		if !response.Valid || response.Name != "cli-flow-list-get-delete-wait" || response.Source.Name == "" || response.DestinationCount != 1 || len(response.Destinations) != 1 {
 			t.Fatalf("incomplete %s validation output: %s", format, payload)
 		}
-		if response.Source.Options["dsn"] != "[REDACTED]" || response.Source.Options["headers"] != "[REDACTED]" || response.Source.Options["webhook_url"] != "https://hooks.slack.com/[REDACTED]" || response.Destinations[0].Options["dsn"] != "[REDACTED]" || response.Destinations[0].Options["grpc_authorization_header"] != "[REDACTED]" || response.Destinations[0].Options["api_endpoint"] != "https://api.github.com/[REDACTED]" || response.Destinations[0].Options["plain_url"] != "https://plain.example:8443" || response.Destinations[0].Options["stream"] != "orders" || bytes.Contains(payload, []byte("source-header-secret")) || bytes.Contains(payload, []byte("destination-header-secret")) || bytes.Contains(payload, []byte("integration-slack-secret")) || bytes.Contains(payload, []byte("integration-github-secret")) || bytes.Contains(payload, []byte("integration-signed-secret")) || bytes.Contains(payload, []byte(testPostgresAppDSN(t))) {
+		if response.Source.PostgresSource.Connection.DSN != "[REDACTED]" || response.Source.PostgresSource.Connection.RDSIAM.RoleExternalID != "[REDACTED]" || response.Destinations[0].HTTP.URL != "https://api.github.com/[REDACTED]" || response.Destinations[0].HTTP.Headers["authorization"] != "[REDACTED]" || bytes.Contains(payload, []byte("source-external-secret")) || bytes.Contains(payload, []byte("destination-header-secret")) || bytes.Contains(payload, []byte("integration-github-secret")) || bytes.Contains(payload, []byte("integration-signed-secret")) || bytes.Contains(payload, []byte(testPostgresAppDSN(t))) {
 			t.Fatalf("%s validation leaked secrets or hid topology: %s", format, payload)
 		}
 	}
@@ -1109,7 +1137,7 @@ func TestCLIIntegrationFlowDryRunCheck(t *testing.T) {
 	_ = baseDSN
 
 	configPath := writeFlowConfig(t, flowConfigPayload{
-		Name: "cli-flow-dry-run-check", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
+		Name: "cli-flow-dry-run-check", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
 		WireFormat: "json",
 		Source: endpointConfigPayload{
 			Name: "src",
@@ -1138,14 +1166,21 @@ func TestCLIIntegrationFlowDryRunCheck(t *testing.T) {
 		ID     string `json:"id"`
 		Name   string `json:"name"`
 		Source struct {
-			Name    string            `json:"name"`
-			Type    string            `json:"type"`
-			Options map[string]string `json:"options"`
+			Name           string `json:"name"`
+			PostgresSource struct {
+				Connection struct {
+					DSN string `json:"dsn"`
+				} `json:"connection"`
+			} `json:"postgres_source"`
 		} `json:"source"`
 		Destinations []struct {
-			Name    string            `json:"name"`
-			Type    string            `json:"type"`
-			Options map[string]string `json:"options"`
+			Name     string `json:"name"`
+			PGStream struct {
+				Connection struct {
+					DSN string `json:"dsn"`
+				} `json:"connection"`
+				Stream string `json:"stream"`
+			} `json:"pgstream"`
 		} `json:"destinations"`
 	}
 	if err := json.Unmarshal(output, &dryRunResp); err != nil {
@@ -1154,13 +1189,13 @@ func TestCLIIntegrationFlowDryRunCheck(t *testing.T) {
 	if dryRunResp.Name != "cli-flow-dry-run-check" {
 		t.Fatalf("expected dry-run name cli-flow-dry-run-check, got %q", dryRunResp.Name)
 	}
-	if dryRunResp.Source.Name == "" || dryRunResp.Source.Type == "" {
+	if dryRunResp.Source.Name == "" || dryRunResp.Source.PostgresSource.Connection.DSN == "" {
 		t.Fatalf("expected source in dry-run output: %s", output)
 	}
 	if len(dryRunResp.Destinations) != 1 {
 		t.Fatalf("expected 1 destination in dry-run output, got %d", len(dryRunResp.Destinations))
 	}
-	if dryRunResp.Source.Options["dsn"] != "[REDACTED]" || dryRunResp.Destinations[0].Options["dsn"] != "[REDACTED]" || dryRunResp.Destinations[0].Options["stream"] != "orders" || bytes.Contains(output, []byte(testPostgresAppDSN(t))) {
+	if dryRunResp.Source.PostgresSource.Connection.DSN != "[REDACTED]" || dryRunResp.Destinations[0].PGStream.Connection.DSN != "[REDACTED]" || dryRunResp.Destinations[0].PGStream.Stream != "orders" || bytes.Contains(output, []byte(testPostgresAppDSN(t))) {
 		t.Fatalf("dry-run detail did not redact secrets while preserving topology: %s", output)
 	}
 
@@ -1183,8 +1218,8 @@ func TestCLIIntegrationFlowDryRunCheck(t *testing.T) {
 	if checkResp.Name != "cli-flow-dry-run-check" {
 		t.Fatalf("expected checked name cli-flow-dry-run-check, got %q", checkResp.Name)
 	}
-	if checkResp.SourceType != "postgres" {
-		t.Fatalf("expected source_type postgres, got %q", checkResp.SourceType)
+	if checkResp.SourceType != "postgres_source" {
+		t.Fatalf("expected source_type postgres_source, got %q", checkResp.SourceType)
 	}
 	if checkResp.DestinationCount != 1 {
 		t.Fatalf("expected destination_count 1, got %d", checkResp.DestinationCount)
@@ -1229,7 +1264,7 @@ func TestCLIIntegrationFlowUpdate(t *testing.T) {
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
 	configPath := writeFlowConfig(t, flowConfigPayload{
-		Name: "update-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
+		Name: "update-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
 		WireFormat: "json",
 		Source: endpointConfigPayload{
 			Name: "src",
@@ -1266,7 +1301,7 @@ func TestCLIIntegrationFlowUpdate(t *testing.T) {
 	}
 
 	updatePath := writeFlowConfig(t, flowConfigPayload{
-		ID: createResp.ID, Name: "update-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
+		ID: createResp.ID, Name: "update-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
 		WireFormat: "json",
 		Source: endpointConfigPayload{
 			Name: "src",
@@ -1309,8 +1344,9 @@ func TestCLIIntegrationFlowUpdate(t *testing.T) {
 	if len(updated.Destinations) != 1 {
 		t.Fatalf("expected 1 destination, got %d", len(updated.Destinations))
 	}
-	if updated.Destinations[0].Options["stream"] != "orders_v2" {
-		t.Fatalf("expected updated stream option, got %v", updated.Destinations[0].Options)
+	updatedDestinations := testFlowRuntimeDestinations(updated.Destinations)
+	if updatedDestinations[0].Options["stream"] != "orders_v2" {
+		t.Fatalf("expected updated stream option, got %v", updatedDestinations[0].Options)
 	}
 	if updated.Config.TableMappings.Version != internalflow.TableMappingsVersion || len(updated.Config.TableMappings.Destinations) != 1 {
 		t.Fatalf("updated mappings=%+v", updated.Config.TableMappings)
@@ -1355,7 +1391,7 @@ func TestCLIIntegrationFlowReconfigure(t *testing.T) {
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
 	configPath := writeFlowConfig(t, flowConfigPayload{
-		Name: "reconfigure-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
+		Name: "reconfigure-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
 		WireFormat: "json",
 		Source: endpointConfigPayload{
 			Name: "src",
@@ -1392,7 +1428,7 @@ func TestCLIIntegrationFlowReconfigure(t *testing.T) {
 	}
 
 	updatePath := writeFlowConfig(t, flowConfigPayload{
-		ID: createResp.ID, Name: "reconfigure-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
+		ID: createResp.ID, Name: "reconfigure-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
 		WireFormat: "json",
 		Source: endpointConfigPayload{
 			Name: "src",
@@ -1512,7 +1548,7 @@ func TestCLIIntegrationFlowCleanup(t *testing.T) {
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
 	configPath := writeFlowConfig(t, flowConfigPayload{
-		Name: "cleanup-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
+		Name: "cleanup-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
 		WireFormat: "json",
 		Source: endpointConfigPayload{
 			Name: "src",
@@ -1697,7 +1733,7 @@ func TestCLIIntegrationSlotCommands(t *testing.T) {
 	}
 
 	configPath := writeFlowConfig(t, flowConfigPayload{
-		Name: "slot-command-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
+		Name: "slot-command-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
 		WireFormat: "json",
 		Source: endpointConfigPayload{
 			Name: "src",
@@ -1852,7 +1888,7 @@ func TestCLIIntegrationFlowStartStopResume(t *testing.T) {
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
 	configPath := writeFlowConfig(t, flowConfigPayload{
-		Name: "cli-flow-state", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
+		Name: "cli-flow-state", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
 		WireFormat: "json",
 		Source: endpointConfigPayload{
 			Name: "src",
@@ -1960,7 +1996,7 @@ func TestCLIIntegrationFlowCreateStartFlag(t *testing.T) {
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
 	configPath := writeFlowConfig(t, flowConfigPayload{
-		Name: "cli-flow-start", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
+		Name: "cli-flow-start", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
 		WireFormat: "json",
 		Source: endpointConfigPayload{
 			Name: "src",
@@ -2056,7 +2092,7 @@ func TestCLIIntegrationPublicationSync(t *testing.T) {
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
 	configPath := writeFlowConfig(t, flowConfigPayload{
-		Name: "pub-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
+		Name: "pub-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
 		WireFormat: "json",
 		Source: endpointConfigPayload{
 			Name: "src",
@@ -2172,7 +2208,7 @@ func TestCLIIntegrationPublicationRemoteCommands(t *testing.T) {
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
 	configPath := writeFlowConfig(t, flowConfigPayload{
-		Name: "pub-remote-command-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{column}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
+		Name: "pub-remote-command-flow", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}},
 		WireFormat: "json",
 		Source: endpointConfigPayload{
 			Name: "src",
@@ -2475,9 +2511,43 @@ type flowConfigPayload struct {
 }
 
 type endpointConfigPayload struct {
-	Name    string            `json:"name"`
-	Type    string            `json:"type"`
-	Options map[string]string `json:"options"`
+	Name    string
+	Type    string
+	Options map[string]string
+}
+
+func (cfg flowConfigPayload) MarshalJSON() ([]byte, error) {
+	type flowDocument struct {
+		ID           string              `json:"id,omitempty"`
+		Config       internalflow.Config `json:"config"`
+		Name         string              `json:"name"`
+		WireFormat   string              `json:"wire_format"`
+		Parallelism  int32               `json:"parallelism,omitempty"`
+		Source       json.RawMessage     `json:"source"`
+		Destinations []json.RawMessage   `json:"destinations"`
+	}
+	source, err := cfg.Source.marshalTyped(endpointcodec.RoleSource)
+	if err != nil {
+		return nil, err
+	}
+	destinations := make([]json.RawMessage, 0, len(cfg.Destinations))
+	for index, destination := range cfg.Destinations {
+		encoded, encodeErr := destination.marshalTyped(endpointcodec.RoleDestination)
+		if encodeErr != nil {
+			return nil, fmt.Errorf("destination %d: %w", index, encodeErr)
+		}
+		destinations = append(destinations, encoded)
+	}
+	return json.Marshal(flowDocument{ID: cfg.ID, Config: cfg.Config, Name: cfg.Name, WireFormat: cfg.WireFormat, Parallelism: cfg.Parallelism, Source: source, Destinations: destinations})
+}
+
+func (endpoint endpointConfigPayload) marshalTyped(role endpointcodec.Role) (json.RawMessage, error) {
+	typed, err := endpointcodec.Encode(connector.RuntimeSpec{Name: endpoint.Name, Type: connector.EndpointType(endpoint.Type), Options: endpoint.Options}, role)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(typed)
+	return json.RawMessage(encoded), err
 }
 
 func writeFlowConfig(t *testing.T, cfg flowConfigPayload) string {

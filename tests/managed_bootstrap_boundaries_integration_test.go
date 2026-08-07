@@ -57,13 +57,13 @@ func runManagedBootstrapBoundaryRecovery(t *testing.T, boundary string) {
 	destinationRevisionID := "boundary-postgres-" + flowID
 	flowDef := flow.Flow{
 		ID: flowID,
-		Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
+		Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
 			"dsn": dsn, "managed": "true", "bootstrap": "required", "ensure_publication": "true", "ensure_state": "true",
 			"tables": "public." + sourceTable, "snapshot_workers": "1", "batch_size": "100", "batch_timeout": "20ms", "status_interval": "20ms",
 			"source_system_identifier": systemID, "source_lineage_id": "boundary-lineage-v1", "publication_revision": "bootstrap-pending",
-		}},
-		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "batch_mode": "target", "destination_revision_id": destinationRevisionID, "synchronous_commit": "on", "meta_table_enabled": "false"}}},
-		Config:       flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "target", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: sourceTable, Action: flow.MappingActionInclude, TargetSchema: targetSchema, TargetTable: sourceTable, FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}}}}},
+		}}),
+		Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "batch_mode": "target", "destination_revision_id": destinationRevisionID, "synchronous_commit": "on", "meta_table_enabled": "false"}}),
+		Config:       flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "target", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: sourceTable, Action: flow.MappingActionInclude, TargetSchema: targetSchema, TargetTable: sourceTable, FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}}}}},
 	}
 	if _, err := engine.Create(ctx, flowDef); err != nil {
 		t.Fatal(err)
@@ -121,7 +121,7 @@ func runManagedBootstrapBoundaryRecovery(t *testing.T, boundary string) {
 			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), ExpectedGeneration: control.Generation,
 			ExecutionBackend: "integration", ExecutionID: "boundary-first-" + boundary,
 			Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
-		}).Run(ctx, flowDef, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore, BootstrapHooks: hooks}, []stream.DestinationConfig{{Spec: flowDef.Destinations[0], Dest: &pgdest.Destination{}}})
+		}).Run(ctx, flowDef, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore, BootstrapHooks: hooks}, []stream.DestinationConfig{{Spec: testFlowRuntimeDestinations(flowDef.Destinations)[0], Dest: &pgdest.Destination{}}})
 	}()
 	select {
 	case <-cutReady:
@@ -175,7 +175,7 @@ func runManagedBootstrapBoundaryRecovery(t *testing.T, boundary string) {
 			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), ExpectedGeneration: control.Generation,
 			ExecutionBackend: "integration", ExecutionID: "boundary-replacement-" + boundary,
 			Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
-		}).Run(replacementCtx, flowDef, replacementSource, []stream.DestinationConfig{{Spec: flowDef.Destinations[0], Dest: &pgdest.Destination{}}})
+		}).Run(replacementCtx, flowDef, replacementSource, []stream.DestinationConfig{{Spec: testFlowRuntimeDestinations(flowDef.Destinations)[0], Dest: &pgdest.Destination{}}})
 	}()
 	if boundary == "snapshot_batch" {
 		select {

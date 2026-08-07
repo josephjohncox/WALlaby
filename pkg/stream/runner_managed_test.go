@@ -486,10 +486,10 @@ func managedTestRunner(source connector.Source, destination connector.Destinatio
 	}
 	return Runner{
 		Source: source,
-		SourceSpec: connector.Spec{Options: map[string]string{
+		SourceSpec: connector.RuntimeSpec{Options: map[string]string{
 			"managed": "true", "bootstrap": "never", "source_lineage_id": "lineage-1",
 		}},
-		Destinations:        []DestinationConfig{{Dest: destination, Spec: connector.Spec{Options: map[string]string{"destination_revision_id": "destination-1"}}, Projector: managedBootstrapTestProjector{}, MappingFingerprint: "managed-bootstrap-test-v1"}},
+		Destinations:        []DestinationConfig{{Dest: destination, Spec: connector.RuntimeSpec{Options: map[string]string{"destination_revision_id": "destination-1"}}, Projector: managedBootstrapTestProjector{}, MappingFingerprint: "managed-bootstrap-test-v1"}},
 		Checkpoints:         checkpoints,
 		FlowID:              fence.FlowID,
 		AckPolicy:           AckPolicyAll,
@@ -511,18 +511,18 @@ type managedTestSource struct {
 	events          *[]string
 	initial         connector.Checkpoint
 	bootstrapResult connector.ManagedBootstrapResult
-	openSpec        connector.Spec
+	openSpec        connector.RuntimeSpec
 	acks            int
 	transactions    []connector.SourceTransaction
 	transactionRead int
 }
 
-func (s *managedTestSource) Open(_ context.Context, spec connector.Spec) error {
+func (s *managedTestSource) Open(_ context.Context, spec connector.RuntimeSpec) error {
 	s.openSpec = spec
 	*s.events = append(*s.events, "source.open")
 	return nil
 }
-func (s *managedTestSource) PrepareManagedBootstrap(context.Context, connector.RunFence, connector.Spec, string, connector.ManagedBootstrapProjector, connector.ManagedBootstrapDestination) (connector.ManagedBootstrapResult, error) {
+func (s *managedTestSource) PrepareManagedBootstrap(context.Context, connector.RunFence, connector.RuntimeSpec, string, connector.ManagedBootstrapProjector, connector.ManagedBootstrapDestination) (connector.ManagedBootstrapResult, error) {
 	*s.events = append(*s.events, "source.bootstrap")
 	return s.bootstrapResult, nil
 }
@@ -565,7 +565,7 @@ type managedTestDestination struct {
 	initializeErr error
 }
 
-func (d *managedTestDestination) Open(context.Context, connector.Spec) error {
+func (d *managedTestDestination) Open(context.Context, connector.RuntimeSpec) error {
 	*d.events = append(*d.events, "destination.open")
 	return nil
 }

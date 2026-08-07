@@ -33,7 +33,7 @@ func TestRunnerProjectsBeforeDirectWrite(t *testing.T) {
 	batch := outboxTestBatch("0/10")
 	source := &fakeSource{batches: []connector.Batch{batch}, log: &eventLog{}}
 	destination := &recordingDest{log: &eventLog{}, name: "mapped"}
-	runner := Runner{Source: source, SourceSpec: connector.Spec{}, Destinations: []DestinationConfig{{Spec: connector.Spec{Name: "mapped"}, Dest: destination, Projector: testRenameProjector{}, MappingFingerprint: "projection-v1"}}, Checkpoints: store, FlowID: "projection-flow", AckPolicy: AckPolicyAll}
+	runner := Runner{Source: source, SourceSpec: connector.RuntimeSpec{}, Destinations: []DestinationConfig{{Spec: connector.RuntimeSpec{Name: "mapped"}, Dest: destination, Projector: testRenameProjector{}, MappingFingerprint: "projection-v1"}}, Checkpoints: store, FlowID: "projection-flow", AckPolicy: AckPolicyAll}
 	if err := runner.Run(ctx); err != nil && !errors.Is(err, io.EOF) {
 		t.Fatal(err)
 	}
@@ -160,8 +160,8 @@ func TestRunnerPrimaryAckRequiresDurableOutbox(t *testing.T) {
 	runner := Runner{
 		Source: &fakeSource{log: &eventLog{}},
 		Destinations: []DestinationConfig{
-			{Spec: connector.Spec{Name: "primary"}, Dest: &recordingDest{log: &eventLog{}, name: "primary"}},
-			{Spec: connector.Spec{Name: "secondary"}, Dest: &recordingDest{log: &eventLog{}, name: "secondary"}},
+			{Spec: connector.RuntimeSpec{Name: "primary"}, Dest: &recordingDest{log: &eventLog{}, name: "primary"}},
+			{Spec: connector.RuntimeSpec{Name: "secondary"}, Dest: &recordingDest{log: &eventLog{}, name: "secondary"}},
 		},
 		FlowID: "flow", AckPolicy: AckPolicyPrimary, PrimaryDestination: "primary",
 	}
@@ -243,11 +243,11 @@ func TestRunnerPrimaryAckPreservesOnlyFailedSecondary(t *testing.T) {
 	completed := &recordingDest{log: &eventLog{}, name: "secondary-a"}
 	failed := &flakySecondaryDest{recordingDest: recordingDest{log: &eventLog{}, name: "secondary-b"}, failures: 10}
 	runner := Runner{
-		Source: source, SourceSpec: connector.Spec{Options: map[string]string{"mode": "backfill"}}, Checkpoints: store, CheckpointOutbox: store,
+		Source: source, SourceSpec: connector.RuntimeSpec{Options: map[string]string{"mode": "backfill"}}, Checkpoints: store, CheckpointOutbox: store,
 		Destinations: []DestinationConfig{
-			{Spec: connector.Spec{Name: "primary"}, Dest: &recordingDest{log: &eventLog{}, name: "primary"}, MappingFingerprint: "projection-primary"},
-			{Spec: connector.Spec{Name: "secondary-a"}, Dest: completed, MappingFingerprint: "projection-a"},
-			{Spec: connector.Spec{Name: "secondary-b"}, Dest: failed, MappingFingerprint: "projection-b"},
+			{Spec: connector.RuntimeSpec{Name: "primary"}, Dest: &recordingDest{log: &eventLog{}, name: "primary"}, MappingFingerprint: "projection-primary"},
+			{Spec: connector.RuntimeSpec{Name: "secondary-a"}, Dest: completed, MappingFingerprint: "projection-a"},
+			{Spec: connector.RuntimeSpec{Name: "secondary-b"}, Dest: failed, MappingFingerprint: "projection-b"},
 		},
 		FlowID: "outbox-flow", AckPolicy: AckPolicyPrimary, PrimaryDestination: "primary", GiveUpPolicy: GiveUpPolicyOnRetryExhaustion,
 	}
@@ -325,10 +325,10 @@ func newSQLiteOutboxStore(t *testing.T, ctx context.Context) *checkpointstore.SQ
 
 func outboxTestRunner(source connector.Source, secondary connector.Destination, store connector.CheckpointOutboxStore) Runner {
 	return Runner{
-		Source: source, SourceSpec: connector.Spec{Options: map[string]string{"mode": "backfill"}}, Checkpoints: store, CheckpointOutbox: store,
+		Source: source, SourceSpec: connector.RuntimeSpec{Options: map[string]string{"mode": "backfill"}}, Checkpoints: store, CheckpointOutbox: store,
 		Destinations: []DestinationConfig{
-			{Spec: connector.Spec{Name: "primary"}, Dest: &recordingDest{log: &eventLog{}, name: "primary"}, MappingFingerprint: "projection-primary"},
-			{Spec: connector.Spec{Name: "secondary"}, Dest: secondary, MappingFingerprint: "projection-secondary"},
+			{Spec: connector.RuntimeSpec{Name: "primary"}, Dest: &recordingDest{log: &eventLog{}, name: "primary"}, MappingFingerprint: "projection-primary"},
+			{Spec: connector.RuntimeSpec{Name: "secondary"}, Dest: secondary, MappingFingerprint: "projection-secondary"},
 		},
 		FlowID: "outbox-flow", AckPolicy: AckPolicyPrimary, PrimaryDestination: "primary", GiveUpPolicy: GiveUpPolicyNever,
 	}

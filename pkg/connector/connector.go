@@ -15,10 +15,8 @@ const (
 	EndpointKafka     EndpointType = "kafka"
 	EndpointHTTP      EndpointType = "http"
 	EndpointGRPC      EndpointType = "grpc"
-	EndpointProto     EndpointType = "proto"
 	EndpointPGStream  EndpointType = "pgstream"
 	EndpointSnowpipe  EndpointType = "snowpipe"
-	EndpointParquet   EndpointType = "parquet"
 	EndpointDuckDB    EndpointType = "duckdb"
 	EndpointDuckLake  EndpointType = "ducklake"
 	// EndpointRedpanda uses Redpanda's Kafka-compatible protocol. Redpanda
@@ -27,6 +25,18 @@ const (
 	EndpointClickHouse EndpointType = "clickhouse"
 	EndpointIceberg    EndpointType = "iceberg"
 )
+
+// IsBuiltinEndpointType reports whether endpointType is reserved by a first-party connector.
+func IsBuiltinEndpointType(endpointType EndpointType) bool {
+	switch endpointType {
+	case EndpointPostgres, EndpointSnowflake, EndpointS3, EndpointKafka, EndpointHTTP,
+		EndpointGRPC, EndpointPGStream, EndpointSnowpipe, EndpointDuckDB, EndpointDuckLake,
+		EndpointRedpanda, EndpointClickHouse, EndpointIceberg:
+		return true
+	default:
+		return false
+	}
+}
 
 // WireFormat describes the wire encoding used between connectors.
 type WireFormat string
@@ -50,8 +60,11 @@ const (
 	OpLoad   Operation = "load"
 )
 
-// Spec defines a connector instance plus implementation-specific options.
-type Spec struct {
+// RuntimeSpec is the internal runtime-adapter/plugin representation. It is
+// never a public authoring or persistence shape; public and durable flow
+// definitions use typed wallaby.v1.Endpoint messages and cross the boundary
+// through internal/endpointcodec.
+type RuntimeSpec struct {
 	Name    string
 	Type    EndpointType
 	Options map[string]string
@@ -131,7 +144,7 @@ type Batch struct {
 
 // Source reads from an upstream system.
 type Source interface {
-	Open(ctx context.Context, spec Spec) error
+	Open(ctx context.Context, spec RuntimeSpec) error
 	Read(ctx context.Context) (Batch, error)
 	Ack(ctx context.Context, checkpoint Checkpoint) error
 	Close(ctx context.Context) error
@@ -150,7 +163,7 @@ type SlotDropper interface {
 
 // Destination writes to a downstream system.
 type Destination interface {
-	Open(ctx context.Context, spec Spec) error
+	Open(ctx context.Context, spec RuntimeSpec) error
 	Write(ctx context.Context, batch Batch) error
 	ApplyDDL(ctx context.Context, schema Schema, record Record) error
 	TypeMappings() map[string]string

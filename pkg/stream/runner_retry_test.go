@@ -67,7 +67,7 @@ func TestRunnerAcknowledgesOnlyAfterAllUnresolvedDestinationsSucceed(t *testing.
 	destinations, implementations := retryDestinations(3, 1)
 	runner := Runner{
 		Source:       source,
-		SourceSpec:   connector.Spec{Options: map[string]string{"mode": "backfill"}},
+		SourceSpec:   connector.RuntimeSpec{Options: map[string]string{"mode": "backfill"}},
 		Destinations: destinations,
 		Checkpoints:  &recordingCheckpointStore{},
 		FlowID:       "retry-ack-order",
@@ -107,7 +107,7 @@ func TestWriteWithRetryRetriesRealHTTPDestinationAfterConnectorFailure(t *testin
 	defer server.Close()
 
 	destination := &httpdest.Destination{}
-	if err := destination.Open(context.Background(), connector.Spec{Options: map[string]string{
+	if err := destination.Open(context.Background(), connector.RuntimeSpec{Options: map[string]string{
 		"url":           server.URL,
 		"payload_mode":  "record_json",
 		"max_retries":   "0",
@@ -117,7 +117,7 @@ func TestWriteWithRetryRetriesRealHTTPDestinationAfterConnectorFailure(t *testin
 	}
 	defer destination.Close(context.Background())
 
-	config := DestinationConfig{Spec: connector.Spec{Name: "http"}, Dest: destination}
+	config := DestinationConfig{Spec: connector.RuntimeSpec{Name: "http"}, Dest: destination}
 	runner := Runner{Destinations: []DestinationConfig{config}, Parallelism: 1}
 	if err := runner.writeWithRetry(context.Background(), retryTestBatch(), runner.Destinations); err != nil {
 		t.Fatalf("writeWithRetry() error = %v", err)
@@ -140,9 +140,9 @@ func TestRunnerRejectsInvalidBatchBeforeDestinationWriteOrAcknowledgement(t *tes
 	destination := &retryDestination{}
 	runner := Runner{
 		Source:     source,
-		SourceSpec: connector.Spec{Options: map[string]string{"mode": "backfill"}},
+		SourceSpec: connector.RuntimeSpec{Options: map[string]string{"mode": "backfill"}},
 		Destinations: []DestinationConfig{{
-			Spec: connector.Spec{Name: "destination"},
+			Spec: connector.RuntimeSpec{Name: "destination"},
 			Dest: destination,
 		}},
 		Checkpoints: &recordingCheckpointStore{},
@@ -166,7 +166,7 @@ func TestWriteWithRetryCancellationStopsPendingRetry(t *testing.T) {
 
 	firstAttempt := make(chan struct{})
 	destination := &retryDestination{failures: 10, firstAttempt: firstAttempt}
-	config := DestinationConfig{Spec: connector.Spec{Name: "failing"}, Dest: destination}
+	config := DestinationConfig{Spec: connector.RuntimeSpec{Name: "failing"}, Dest: destination}
 	runner := Runner{
 		Destinations: []DestinationConfig{config},
 		Parallelism:  1,
@@ -204,7 +204,7 @@ func benchmarkWriteWithRetryOneFailure(b *testing.B, count int) {
 		destination := &retryBenchmarkDestination{failFirst: index == count/2}
 		implementations = append(implementations, destination)
 		destinations = append(destinations, DestinationConfig{
-			Spec: connector.Spec{Name: fmt.Sprintf("destination-%d", index)},
+			Spec: connector.RuntimeSpec{Name: fmt.Sprintf("destination-%d", index)},
 			Dest: destination,
 		})
 	}
@@ -237,7 +237,7 @@ type retryDestination struct {
 	firstAttempt chan struct{}
 }
 
-func (d *retryDestination) Open(context.Context, connector.Spec) error { return nil }
+func (d *retryDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
 
 func (d *retryDestination) Write(context.Context, connector.Batch) error {
 	d.mu.Lock()
@@ -274,7 +274,7 @@ type retryBenchmarkDestination struct {
 	failFirst bool
 }
 
-func (d *retryBenchmarkDestination) Open(context.Context, connector.Spec) error { return nil }
+func (d *retryBenchmarkDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
 func (d *retryBenchmarkDestination) Write(context.Context, connector.Batch) error {
 	call := d.calls.Add(1)
 	if d.failFirst && call%2 == 1 {
@@ -301,7 +301,7 @@ func retryDestinations(count, failingIndex int) ([]DestinationConfig, []*retryDe
 		}
 		implementations = append(implementations, destination)
 		destinations = append(destinations, DestinationConfig{
-			Spec: connector.Spec{Name: fmt.Sprintf("destination-%d", index)},
+			Spec: connector.RuntimeSpec{Name: fmt.Sprintf("destination-%d", index)},
 			Dest: destination,
 		})
 	}

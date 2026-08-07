@@ -137,9 +137,9 @@ func runPlan(plan batchPlan) ([]TraceEvent, error) {
 
 	runner := Runner{
 		Source:     source,
-		SourceSpec: connector.Spec{Options: map[string]string{"mode": "backfill"}},
+		SourceSpec: connector.RuntimeSpec{Options: map[string]string{"mode": "backfill"}},
 		Destinations: []DestinationConfig{{
-			Spec: connector.Spec{Name: "dest"},
+			Spec: connector.RuntimeSpec{Name: "dest"},
 			Dest: dest,
 		}},
 		Checkpoints:         checkpoints,

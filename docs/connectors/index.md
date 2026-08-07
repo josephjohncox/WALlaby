@@ -25,17 +25,21 @@ WALlaby includes these adapters, but destination adapters remain experimental un
 
 ## Flow shape
 
-Every endpoint has a stable name, a type, and string-valued options:
+Every endpoint has a stable name and exactly one typed configuration branch. Native booleans, integers, lists, maps, durations, and enums are preserved:
 
 ```json
 {
   "name": "orders-postgres",
-  "type": "postgres",
-  "options": {
-    "dsn":"postgres://user:password@destination:5432/app?sslmode=require"
+  "postgres_destination": {
+    "connection": {
+      "dsn": "postgres://user:password@destination:5432/app?sslmode=require"
+    },
+    "synchronous_commit": "on"
   }
 }
 ```
+
+`custom` is the only branch with a free-form option map. Its `connector_type` must be registered for the endpoint role in both API and worker processes.
 
 Stable destination names are required for primary acknowledgement because pending outbox rows address destinations by name. Logical table and column targets and write behavior belong only to the mandatory mapping for this destination name.
 

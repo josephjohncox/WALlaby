@@ -35,33 +35,33 @@ Wallaby creates missing tables as unpartitioned Iceberg v2 tables and evolves ex
 
 ## Flow configuration
 
-Use a managed PostgreSQL CDC source with `bootstrap=never` and disabled source-resource mutation options. Initial snapshot publication through the canonical artifact log is not implemented.
+Use a managed PostgreSQL CDC source with `bootstrap=BOOTSTRAP_MODE_NEVER` and disabled source-resource mutation fields. Initial snapshot publication through the canonical artifact log is not implemented.
 
 ```yaml
 source:
-  type: postgres
-  options:
-    managed: "true"
-    bootstrap: "never"
-    create_slot: "false"
-    ensure_state: "false"
-    ensure_publication: "false"
-    sync_publication: "false"
+  name: source
+  postgres_source:
+    mode: POSTGRES_SOURCE_MODE_CDC
+    managed: true
+    bootstrap: BOOTSTRAP_MODE_NEVER
+    create_slot: false
+    ensure_state: false
+    ensure_publication: false
+    sync_publication: false
     source_system_identifier: system-1
     source_lineage_id: lineage-1
     publication_revision: revision-1
 
 destinations:
   - name: lake
-    type: iceberg
-    options:
+    iceberg:
       destination_revision_id: iceberg-append-v1
-      catalog_profile: rest
+      catalog_profile: ICEBERG_CATALOG_PROFILE_REST
       control_table: __wallaby_control
 
 config:
   table_mappings:
-    version: 1
+    version: 2
     destinations:
       - destination: lake
         future_tables:
@@ -74,7 +74,7 @@ config:
             target_table: cdc_events
             future_columns:
               action: include
-              target_column: "{column}"
+              target_column: "{{ .Column }}"
             columns: []
             write:
               mode: append
@@ -84,7 +84,7 @@ config:
     projection_id: canonical_cdc_parquet_v2
 ```
 
-The Iceberg endpoint options select only catalog profile, control table, and immutable destination revision identity. Logical table and column targets exist only in durable destination-scoped table mappings; endpoint-level logical target overrides are rejected. Deployment configuration owns URI, warehouse, REST prefix, region, S3 Tables bucket ARN, S3 FileIO endpoint/region, and behavior controls. Persisting any deployment-owned, unknown, or secret option is rejected before storage. Supply OAuth tokens, OAuth credentials, client certificates, CA data, and AWS credentials only through deployment configuration or environment variables.
+The typed `iceberg` endpoint fields select only catalog profile, control table, and immutable destination revision identity. Logical table and column targets exist only in durable destination-scoped table mappings; endpoint-level logical target overrides are rejected. Deployment configuration owns URI, warehouse, REST prefix, region, S3 Tables bucket ARN, S3 FileIO endpoint/region, and behavior controls. Persisting any deployment-owned, unknown, or secret field is rejected before storage. Supply OAuth tokens, OAuth credentials, client certificates, CA data, and AWS credentials only through deployment configuration or environment variables.
 
 ## REST client
 

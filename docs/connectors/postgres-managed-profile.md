@@ -12,17 +12,33 @@ does not claim exactly-once delivery.
 
 ## Exact admission contract
 
-The source and destination must both set:
+The source and destination must select the exact protobuf enum in their respective typed branches:
 
 ```json
 {
-  "managed_profile": "postgresql-to-postgresql-v1"
+  "source": {
+    "name": "source",
+    "postgres_source": {
+      "managed_profile": "MANAGED_PROFILE_POSTGRES_TO_POSTGRES_V1",
+      "bootstrap": "BOOTSTRAP_MODE_REQUIRED",
+      "streaming_transactions": true
+    }
+  },
+  "destinations": [
+    {
+      "name": "target",
+      "postgres_destination": {
+        "managed_profile": "MANAGED_PROFILE_POSTGRES_TO_POSTGRES_V1",
+        "synchronous_commit": "on"
+      }
+    }
+  ]
 }
 ```
 
-On the source, the named profile implies managed execution; the older
-`managed=true` switch is accepted but is not required. A profile declaration
-can never fall through to the generic runner.
+On the source, the named profile implies managed execution; the optional typed
+`managed` boolean is not required. A profile declaration can never fall through
+to the generic runner.
 
 The admitted configuration is deliberately narrow:
 
@@ -30,7 +46,7 @@ The admitted configuration is deliberately narrow:
   destination majors; mixed-major pairs remain unpromoted;
 - one PostgreSQL source and exactly one PostgreSQL destination revision;
 - `ack_policy=all`;
-- `bootstrap=required` and PostgreSQL-backed snapshot state;
+- `bootstrap=BOOTSTRAP_MODE_REQUIRED` and a `snapshot_state.postgres` branch;
 - `streaming_transactions=true`;
 - target write and batch modes;
 - explicit `synchronous_commit=on` or `remote_apply`;

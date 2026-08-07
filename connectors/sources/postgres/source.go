@@ -75,7 +75,7 @@ const (
 
 // Source implements Postgres logical replication as a connector.Source.
 type Source struct {
-	spec                      connector.Spec
+	spec                      connector.RuntimeSpec
 	dsn                       string
 	stream                    *replication.PostgresStream
 	changes                   <-chan replication.Change
@@ -152,7 +152,7 @@ func changeEndsBatch(current changeBatchIdentity, change replication.Change) boo
 		current.schemaVersion != change.SchemaDef.Version
 }
 
-func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
+func (s *Source) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	s.spec = spec
 	s.managedPublicationTables = nil
 	s.managedPublicationSchemas = nil
@@ -222,9 +222,6 @@ func (s *Source) Open(ctx context.Context, spec connector.Spec) error {
 	}
 	ddlPrefix := strings.TrimSpace(spec.Options[optDDLMessagePrefix])
 	publicationTables := parseCSV(spec.Options[optPublicationTables])
-	if len(publicationTables) == 0 {
-		publicationTables = parseCSV(spec.Options[optTables])
-	}
 	publicationSchemas, err := parseIdentifierCSV(spec.Options[optPublicationSchemas])
 	if err != nil {
 		return fmt.Errorf("parse publication_schemas: %w", err)

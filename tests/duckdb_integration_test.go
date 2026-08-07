@@ -34,7 +34,7 @@ func TestDuckDBDestination(t *testing.T) {
 	}
 
 	dest := &duckdb.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "duckdb-test",
 		Type: connector.EndpointDuckDB,
 		Options: map[string]string{
@@ -142,7 +142,7 @@ func TestDuckDBDestinationDDLAndTableLifecycle(t *testing.T) {
 	}
 
 	dest := &duckdb.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "duckdb-ddl",
 		Type: connector.EndpointDuckDB,
 		Options: map[string]string{
@@ -263,7 +263,7 @@ func TestDuckDBDestinationDDLAndTableLifecycle(t *testing.T) {
 	}
 
 	renamedDest := &duckdb.Destination{}
-	renamedSpec := connector.Spec{
+	renamedSpec := connector.RuntimeSpec{
 		Name: "duckdb-ddl-renamed",
 		Type: connector.EndpointDuckDB,
 		Options: map[string]string{
@@ -342,7 +342,7 @@ func TestDuckDBDestinationWithTempFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wallaby.duckdb")
 	ctx := context.Background()
 	dest := &duckdb.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "duckdb-temp",
 		Type: connector.EndpointDuckDB,
 		Options: map[string]string{

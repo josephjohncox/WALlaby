@@ -126,7 +126,7 @@ func ValidateDestinationContracts(
 	return nil
 }
 
-func destinationLabel(spec connector.Spec) string {
+func destinationLabel(spec connector.RuntimeSpec) string {
 	if strings.TrimSpace(spec.Name) != "" {
 		return fmt.Sprintf("%q", spec.Name)
 	}

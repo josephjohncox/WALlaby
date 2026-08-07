@@ -2,15 +2,120 @@ package snowpipe
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"strings"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 )
 
+type closeTrackingRegistry struct {
+	closeCalls int
+	closeErr   error
+}
+
+func (*closeTrackingRegistry) Register(context.Context, schemaregistry.RegisterRequest) (schemaregistry.RegisterResult, error) {
+	return schemaregistry.RegisterResult{}, nil
+}
+
+func (r *closeTrackingRegistry) Close() error {
+	r.closeCalls++
+	return r.closeErr
+}
+
+func TestOpenRejectsRegistryOptionsBeforeDatabaseOrRegistryCreation(t *testing.T) {
+	for key, value := range map[string]string{
+		schemaregistry.OptRegistryTimeout:        "soon",
+		schemaregistry.OptRegistryApicurioCompat: "yes",
+	} {
+		t.Run(key, func(t *testing.T) {
+			dbCalls := 0
+			registryCalls := 0
+			factories := destinationFactories{
+				openDB: func(string, string) (*sql.DB, error) {
+					dbCalls++
+					return nil, nil
+				},
+				newRegistry: func(context.Context, schemaregistry.Config) (schemaregistry.Registry, error) {
+					registryCalls++
+					return nil, nil
+				},
+			}
+			err := (&Destination{}).open(context.Background(), connector.RuntimeSpec{Options: map[string]string{optDSN: "unused", key: value}}, factories)
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("open() error = %v", err)
+			}
+			if dbCalls != 0 || registryCalls != 0 {
+				t.Fatalf("side effects before config error: db=%d registry=%d", dbCalls, registryCalls)
+			}
+		})
+	}
+}
+
+func TestOpenRegistryFailureClosesDatabaseAndPartialRegistry(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectPing()
+	mock.ExpectClose()
+	closeErr := errors.New("registry close failed")
+	registry := &closeTrackingRegistry{closeErr: closeErr}
+	registryErr := errors.New("registry creation failed")
+	factories := destinationFactories{
+		openDB: func(string, string) (*sql.DB, error) { return db, nil },
+		newRegistry: func(context.Context, schemaregistry.Config) (schemaregistry.Registry, error) {
+			return registry, registryErr
+		},
+	}
+	destination := &Destination{}
+	err = destination.open(context.Background(), connector.RuntimeSpec{Options: map[string]string{optDSN: "unused"}}, factories)
+	if !errors.Is(err, registryErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("open() error = %v", err)
+	}
+	if registry.closeCalls != 1 || destination.db != nil || destination.registry != nil || destination.stagedTransport != nil {
+		t.Fatalf("cleanup: registry calls=%d db=%v registry=%v transport=%v", registry.closeCalls, destination.db, destination.registry, destination.stagedTransport)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCloseJoinsDatabaseAndRegistryErrorsAndIsIdempotent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbErr := errors.New("database close failed")
+	registryErr := errors.New("registry close failed")
+	mock.ExpectClose().WillReturnError(dbErr)
+	registry := &closeTrackingRegistry{closeErr: registryErr}
+	destination := &Destination{db: db, stagedTransport: db, registry: registry}
+
+	err = destination.Close(context.Background())
+	if !errors.Is(err, dbErr) || !errors.Is(err, registryErr) {
+		t.Fatalf("first Close() error = %v", err)
+	}
+	if destination.db != nil || destination.stagedTransport != nil || destination.registry != nil || registry.closeCalls != 1 {
+		t.Fatalf("cleanup: db=%v transport=%v registry=%v calls=%d", destination.db, destination.stagedTransport, destination.registry, registry.closeCalls)
+	}
+	if err := destination.Close(context.Background()); err != nil {
+		t.Fatalf("second Close() = %v", err)
+	}
+	if registry.closeCalls != 1 {
+		t.Fatalf("registry close calls = %d", registry.closeCalls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEnsureSchemaRegistryVersionChanges(t *testing.T) {
 	ctx := context.Background()
-	registry, err := schemaregistry.NewRegistry(ctx, schemaregistry.Config{Type: "local"})
+	registry, err := schemaregistry.NewRegistry(ctx, schemaregistry.Config{Type: "local", LocalDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatalf("new registry: %v", err)
 	}
@@ -45,7 +150,7 @@ func TestEnsureSchemaRegistryVersionChanges(t *testing.T) {
 
 func TestEnsureSchemaRespectsRegistrySubjectOverride(t *testing.T) {
 	ctx := context.Background()
-	registry, err := schemaregistry.NewRegistry(ctx, schemaregistry.Config{Type: "local"})
+	registry, err := schemaregistry.NewRegistry(ctx, schemaregistry.Config{Type: "local", LocalDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatalf("new registry: %v", err)
 	}

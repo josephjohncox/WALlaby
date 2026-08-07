@@ -281,7 +281,7 @@ CREATE TABLE wallaby_append_target.accounts_log(account_id bigint,display_value 
 		t.Fatal(err)
 	}
 	destination := &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "synchronous_commit": "on", "meta_table_enabled": "false", "flow_id": flowID}}); err != nil {
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "synchronous_commit": "on", "meta_table_enabled": "false", "flow_id": flowID}}); err != nil {
 		t.Fatal(err)
 	}
 	defer destination.Close(context.Background())
@@ -741,7 +741,7 @@ func setupBootstrapControl(t *testing.T) (context.Context, string, *workflow.Pos
 
 func createRunningFence(t *testing.T, ctx context.Context, engine *workflow.PostgresEngine, store *authority.PostgresStore, flowID string) authority.RunFence {
 	t.Helper()
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -757,8 +757,8 @@ func createRunningFence(t *testing.T, ctx context.Context, engine *workflow.Post
 
 type bootstrapReceiptDestination struct{}
 
-func (bootstrapReceiptDestination) Open(context.Context, connector.Spec) error   { return nil }
-func (bootstrapReceiptDestination) Write(context.Context, connector.Batch) error { return nil }
+func (bootstrapReceiptDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
+func (bootstrapReceiptDestination) Write(context.Context, connector.Batch) error      { return nil }
 func (bootstrapReceiptDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
 	return nil
 }

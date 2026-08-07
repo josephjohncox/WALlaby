@@ -506,9 +506,9 @@ func runManagedAdmissionFlow(ctx context.Context, dsn string, engine *workflow.P
 	}
 	definition := flow.Flow{
 		ID:           flowID,
-		Source:       connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: sourceOptions},
-		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "batch_mode": "target", "destination_revision_id": "revision-" + flowID, "synchronous_commit": "on", "meta_table_enabled": "false"}}},
-		Config:       flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "target", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: sourceTable, Action: flow.MappingActionInclude, TargetSchema: targetSchema, TargetTable: sourceTable, FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}}}}},
+		Source:       testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres, Options: sourceOptions}),
+		Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "batch_mode": "target", "destination_revision_id": "revision-" + flowID, "synchronous_commit": "on", "meta_table_enabled": "false"}}),
+		Config:       flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "target", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: sourceTable, Action: flow.MappingActionInclude, TargetSchema: targetSchema, TargetTable: sourceTable, FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}}}}},
 	}
 	if _, err := engine.Create(ctx, definition); err != nil {
 		return err
@@ -533,7 +533,7 @@ func runManagedAdmissionFlow(ctx context.Context, dsn string, engine *workflow.P
 		Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), ExpectedGeneration: control.Generation,
 		ExecutionBackend: "integration", ExecutionID: "admission-" + flowID,
 		Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: schemaBaselines,
-	}).Run(ctx, definition, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: definition.Destinations[0], Dest: &pgdest.Destination{}}})
+	}).Run(ctx, definition, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: testFlowRuntimeDestinations(definition.Destinations)[0], Dest: &pgdest.Destination{}}})
 }
 
 func admissionSideEffects(t *testing.T, ctx context.Context, pool *pgxpool.Pool, flowID, publication, targetSchema, targetTable string) liveAdmissionEvidence {
@@ -597,7 +597,7 @@ func livePublicationRelations(t *testing.T, ctx context.Context, pool *pgxpool.P
 
 func createManagedResourceFence(t *testing.T, ctx context.Context, engine *workflow.PostgresEngine, store *authority.PostgresStore, flowID, dsn string) authority.RunFence {
 	t.Helper()
-	definition := flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "managed": "true"}}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}
+	definition := flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "managed": "true"}}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}
 	if _, err := engine.Create(ctx, definition); err != nil {
 		t.Fatal(err)
 	}

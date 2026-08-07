@@ -49,7 +49,7 @@ func TestClickHouseManagedAppendProfilePromotionContract(t *testing.T) {
 
 func TestSnowflakeSQLProfileSpecIdentityIsExact(t *testing.T) {
 	t.Parallel()
-	valid := Spec{Type: EndpointSnowflake, Options: map[string]string{"managed_profile": ManagedProfilePostgresToSnowflakeSQLV1}}
+	valid := RuntimeSpec{Type: EndpointSnowflake, Options: map[string]string{"managed_profile": ManagedProfilePostgresToSnowflakeSQLV1}}
 	if !IsPostgresToSnowflakeSQLV1Spec(valid) {
 		t.Fatal("exact Snowflake SQL profile was not recognized")
 	}

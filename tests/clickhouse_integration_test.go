@@ -48,7 +48,7 @@ func TestClickHouseAppendChangelog(t *testing.T) {
 	}
 
 	dest := &clickhouse.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "clickhouse-test",
 		Type: connector.EndpointClickHouse,
 		Options: map[string]string{
@@ -179,7 +179,7 @@ func TestClickHouseStagingAndDDL(t *testing.T) {
 	}
 
 	dest := &clickhouse.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "clickhouse-staging",
 		Type: connector.EndpointClickHouse,
 		Options: map[string]string{

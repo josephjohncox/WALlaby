@@ -52,9 +52,14 @@ type producer interface {
 	Close()
 }
 
+type destinationFactories struct {
+	newClient   func(...kgo.Opt) (producer, error)
+	newRegistry func(context.Context, schemaregistry.Config) (schemaregistry.Registry, error)
+}
+
 // Destination writes batches to Kafka.
 type Destination struct {
-	spec              connector.Spec
+	spec              connector.RuntimeSpec
 	client            producer
 	topic             string
 	codec             wire.Codec
@@ -72,8 +77,19 @@ type Destination struct {
 	protoTypesSubject string
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
+	return d.open(ctx, spec, destinationFactories{
+		newClient:   func(opts ...kgo.Opt) (producer, error) { return kgo.NewClient(opts...) },
+		newRegistry: schemaregistry.NewRegistry,
+	})
+}
+
+func (d *Destination) open(ctx context.Context, spec connector.RuntimeSpec, factories destinationFactories) error {
 	profile, err := d.ClassifyCapabilityProfile(spec)
+	if err != nil {
+		return err
+	}
+	registryCfg, err := schemaregistry.ConfigFromOptions(spec.Options)
 	if err != nil {
 		return err
 	}
@@ -134,9 +150,13 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.protoTypesSubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistryProtoTypes])
 
 	d.transactional = false
+	acks, err := parseAcks(spec.Options[optAcks])
+	if err != nil {
+		return err
+	}
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(brokers...),
-		kgo.RequiredAcks(parseAcks(spec.Options[optAcks])),
+		kgo.RequiredAcks(acks),
 	}
 
 	if compression := strings.ToLower(spec.Options[optCompression]); compression != "" {
@@ -161,24 +181,38 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		}
 	}
 
-	client, err := kgo.NewClient(opts...)
+	client, err := factories.newClient(opts...)
 	if err != nil {
+		if client != nil {
+			client.Close()
+		}
 		return fmt.Errorf("create kafka client: %w", err)
 	}
-	d.client = client
 
+	var registry schemaregistry.Registry
 	if d.codec.Name() == connector.WireFormatAvro || d.codec.Name() == connector.WireFormatProto {
-		registryCfg := schemaregistry.ConfigFromOptions(spec.Options)
-		registry, err := schemaregistry.NewRegistry(ctx, registryCfg)
+		registry, err = factories.newRegistry(ctx, registryCfg)
 		if err != nil && !errors.Is(err, schemaregistry.ErrRegistryDisabled) {
-			return err
+			var cleanupErr error
+			if registry != nil {
+				cleanupErr = registry.Close()
+			}
+			client.Close()
+			return errors.Join(err, cleanupErr)
 		}
 		if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+			if registry != nil {
+				if cleanupErr := registry.Close(); cleanupErr != nil {
+					client.Close()
+					return cleanupErr
+				}
+			}
 			registry = nil
 		}
-		d.registry = registry
 	}
 
+	d.client = client
+	d.registry = registry
 	return nil
 }
 
@@ -239,7 +273,7 @@ func (*Destination) CapabilityProfileIDs() []connector.CapabilityProfileID {
 
 // ClassifyCapabilityProfile validates capability-affecting Kafka options and
 // returns their typed profile identity.
-func (*Destination) ClassifyCapabilityProfile(spec connector.Spec) (connector.CapabilityProfileID, error) {
+func (*Destination) ClassifyCapabilityProfile(spec connector.RuntimeSpec) (connector.CapabilityProfileID, error) {
 	transactional, err := strictProfileBool(spec.Options, optTransactionalProducer)
 	if err != nil {
 		return "", err
@@ -280,7 +314,7 @@ func strictProfileBool(options map[string]string, key string) (bool, error) {
 }
 
 // CapabilitiesFor resolves one of the four closed delivery profiles.
-func (d *Destination) CapabilitiesFor(spec connector.Spec) (connector.Capabilities, error) {
+func (d *Destination) CapabilitiesFor(spec connector.RuntimeSpec) (connector.Capabilities, error) {
 	profile, err := d.ClassifyCapabilityProfile(spec)
 	if err != nil {
 		return connector.Capabilities{}, err
@@ -668,13 +702,15 @@ func parseCompression(value string) kgo.CompressionCodec {
 	}
 }
 
-func parseAcks(value string) kgo.Acks {
-	switch strings.ToLower(value) {
-	case "none", "0":
-		return kgo.NoAck()
-	case "leader", "1":
-		return kgo.LeaderAck()
+func parseAcks(value string) (kgo.Acks, error) {
+	switch value {
+	case "none":
+		return kgo.NoAck(), nil
+	case "leader":
+		return kgo.LeaderAck(), nil
+	case "", "all":
+		return kgo.AllISRAcks(), nil
 	default:
-		return kgo.AllISRAcks()
+		return kgo.AllISRAcks(), fmt.Errorf("unsupported kafka acks %q; want none, leader, or all", value)
 	}
 }

@@ -208,7 +208,7 @@ func TestManagedAppendBootstrapRetainsEarlierReceiptAcrossRestart(t *testing.T) 
 	}()
 	open := func(name string) *Destination {
 		d := &Destination{}
-		if err := d.Open(ctx, connector.Spec{Name: name, Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "synchronous_commit": "on", "meta_table_enabled": "false", "flow_id": "bootstrap-receipt-flow"}}); err != nil {
+		if err := d.Open(ctx, connector.RuntimeSpec{Name: name, Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "synchronous_commit": "on", "meta_table_enabled": "false", "flow_id": "bootstrap-receipt-flow"}}); err != nil {
 			t.Fatal(err)
 		}
 		return d

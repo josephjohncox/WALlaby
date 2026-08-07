@@ -145,7 +145,7 @@ func TestCanonicalProjectionV2MappedReplayAndStableSourceFieldIDs(t *testing.T) 
 
 func TestMappedV2ProductionAppendProjectorOwnsMetadataWithoutEnvelopeCollision(t *testing.T) {
 	t.Parallel()
-	destinations := []connector.Spec{{Name: "ice", Type: connector.EndpointIceberg}}
+	destinations := []connector.RuntimeSpec{{Name: "ice", Type: connector.EndpointIceberg}}
 	mappings := flow.NewTableMappings(destinations)
 	projector, err := tablemap.New(mappings, "ice")
 	if err != nil {

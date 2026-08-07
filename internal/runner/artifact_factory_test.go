@@ -23,7 +23,7 @@ func TestArtifactFactoryRejectsIcebergBoundsBeforeObjectStoreIO(t *testing.T) {
 		S3TablesMinSnapshotsToKeep: int(int64(math.MaxInt32) + 1),
 	})
 	_, err := factory(context.Background(), flow.Flow{}, []stream.DestinationConfig{{
-		Spec: connector.Spec{Name: "iceberg", Type: connector.EndpointIceberg},
+		Spec: connector.RuntimeSpec{Name: "iceberg", Type: connector.EndpointIceberg},
 	}})
 	if err == nil || !strings.Contains(err.Error(), "s3_tables_min_snapshots_to_keep") {
 		t.Fatalf("artifact factory error=%v, want pre-I/O Iceberg bounds rejection", err)

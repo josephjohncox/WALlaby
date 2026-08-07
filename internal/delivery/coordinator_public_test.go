@@ -105,8 +105,8 @@ func transactionFixture(t *testing.T) (authority.RunFence, connector.SourceTrans
 
 type recordingManagedDestination struct{ externalCalls int }
 
-func (*recordingManagedDestination) Open(context.Context, connector.Spec) error   { return nil }
-func (*recordingManagedDestination) Write(context.Context, connector.Batch) error { return nil }
+func (*recordingManagedDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
+func (*recordingManagedDestination) Write(context.Context, connector.Batch) error      { return nil }
 func (*recordingManagedDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
 	return nil
 }

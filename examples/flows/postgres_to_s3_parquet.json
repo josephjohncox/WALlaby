@@ -1,36 +1,64 @@
 {
-  "name": "pg_to_s3",
-  "wire_format": "parquet",
-  "source": {
-    "name": "pg-source",
-    "type": "postgres",
-    "options": {
-      "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable",
-      "slot": "wallaby_slot",
-      "publication": "wallaby_pub",
-      "batch_size": "1000",
-      "batch_timeout": "2s",
-      "status_interval": "10s",
-      "create_slot": "true",
-      "format": "parquet"
+  "config": {
+    "ack_policy": "all",
+    "table_mappings": {
+      "destinations": [
+        {
+          "destination": "s3-out",
+          "future_tables": {
+            "action": "include",
+            "future_columns": {
+              "action": "include",
+              "target_column": "{{ .Column }}"
+            },
+            "target_schema": "{{ .Schema }}",
+            "target_table": "{{ .Table }}",
+            "write": {
+              "key_columns": [],
+              "mode": "append"
+            }
+          },
+          "tables": []
+        }
+      ],
+      "version": 2
     }
   },
   "destinations": [
     {
       "name": "s3-out",
-      "type": "s3",
-      "options": {
+      "s3": {
         "bucket": "my-wallaby-bucket",
+        "compression": "COMPRESSION_GZIP",
+        "format": "WIRE_FORMAT_PARQUET",
+        "partition_by": [
+          "region",
+          "created_at:day"
+        ],
         "prefix": "cdc/",
-        "region": "us-east-1",
-        "format": "parquet",
-        "compression": "gzip",
-        "partition_by": "region,created_at:day"
+        "region": "us-east-1"
       }
     }
   ],
-  "config": {
-    "ack_policy": "all",
-    "table_mappings": {"version": 1, "destinations": [{"destination": "s3-out", "future_tables": {"action": "include", "target_schema": "{schema}", "target_table": "{table}", "future_columns": {"action": "include", "target_column": "{column}"}, "write": {"mode": "append", "key_columns": []}}, "tables": []}]}
-  }
+  "name": "pg_to_s3",
+  "source": {
+    "name": "pg-source",
+    "postgres_source": {
+      "mode": "POSTGRES_SOURCE_MODE_CDC",
+      "batch_size": 1000,
+      "batch_timeout": "2s",
+      "connection": {
+        "dsn": "postgres://user:pass@localhost:5432/app?sslmode=disable"
+      },
+      "create_slot": true,
+      "format": "WIRE_FORMAT_PARQUET",
+      "publication": "wallaby_pub",
+      "publication_schemas": [
+        "public"
+      ],
+      "slot": "wallaby_slot",
+      "status_interval": "10s"
+    }
+  },
+  "wire_format": "parquet"
 }

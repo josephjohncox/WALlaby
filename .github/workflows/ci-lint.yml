@@ -130,7 +130,9 @@ jobs:
       - name: Proto breaking
         run: just proto-breaking
         env:
-          BUF_BREAKING_REF: ${{ github.event.pull_request.base.sha }}
+          # The checked-in allowlist is cumulative for the aggregate stack, so
+          # always compare it with main rather than only the immediate PR base.
+          BUF_BREAKING_REF: refs/remotes/origin/main
 
       - name: Durable-core PR contracts
         run: just test-durable-pr

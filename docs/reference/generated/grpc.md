@@ -16,20 +16,72 @@
     - [TableWriteMode](#wallaby-v1-TableWriteMode)
 
 - [wallaby/v1/types.proto](#wallaby_v1_types-proto)
+    - [ApicurioSchemaRegistryConfig](#wallaby-v1-ApicurioSchemaRegistryConfig)
     - [Checkpoint](#wallaby-v1-Checkpoint)
     - [Checkpoint.MetadataEntry](#wallaby-v1-Checkpoint-MetadataEntry)
+    - [ClickHouseDestinationConfig](#wallaby-v1-ClickHouseDestinationConfig)
+    - [ClickHouseMetadataConfig](#wallaby-v1-ClickHouseMetadataConfig)
+    - [ClickHousePostgresAppendConfig](#wallaby-v1-ClickHousePostgresAppendConfig)
+    - [ClickHouseTLSConfig](#wallaby-v1-ClickHouseTLSConfig)
+    - [ConfluentSchemaRegistryConfig](#wallaby-v1-ConfluentSchemaRegistryConfig)
+    - [CustomEndpointConfig](#wallaby-v1-CustomEndpointConfig)
+    - [CustomEndpointConfig.OptionsEntry](#wallaby-v1-CustomEndpointConfig-OptionsEntry)
     - [DDLPolicy](#wallaby-v1-DDLPolicy)
+    - [DuckDBDestinationConfig](#wallaby-v1-DuckDBDestinationConfig)
+    - [DuckLakeDestinationConfig](#wallaby-v1-DuckLakeDestinationConfig)
     - [Endpoint](#wallaby-v1-Endpoint)
-    - [Endpoint.OptionsEntry](#wallaby-v1-Endpoint-OptionsEntry)
     - [Flow](#wallaby-v1-Flow)
     - [FlowConfig](#wallaby-v1-FlowConfig)
+    - [GRPCDestinationConfig](#wallaby-v1-GRPCDestinationConfig)
+    - [GRPCDestinationConfig.MetadataEntry](#wallaby-v1-GRPCDestinationConfig-MetadataEntry)
+    - [GRPCTLSConfig](#wallaby-v1-GRPCTLSConfig)
+    - [GlueSchemaRegistryConfig](#wallaby-v1-GlueSchemaRegistryConfig)
+    - [HTTPDestinationConfig](#wallaby-v1-HTTPDestinationConfig)
+    - [HTTPDestinationConfig.HeadersEntry](#wallaby-v1-HTTPDestinationConfig-HeadersEntry)
+    - [IcebergDestinationConfig](#wallaby-v1-IcebergDestinationConfig)
+    - [KafkaDestinationConfig](#wallaby-v1-KafkaDestinationConfig)
+    - [LocalSchemaRegistryConfig](#wallaby-v1-LocalSchemaRegistryConfig)
     - [MaterializationPolicy](#wallaby-v1-MaterializationPolicy)
+    - [MetadataConfig](#wallaby-v1-MetadataConfig)
+    - [PGStreamDestinationConfig](#wallaby-v1-PGStreamDestinationConfig)
+    - [PostgresConnectionConfig](#wallaby-v1-PostgresConnectionConfig)
+    - [PostgresDSNConfig](#wallaby-v1-PostgresDSNConfig)
+    - [PostgresDestinationConfig](#wallaby-v1-PostgresDestinationConfig)
+    - [PostgresSchemaRegistryConfig](#wallaby-v1-PostgresSchemaRegistryConfig)
+    - [PostgresSourceConfig](#wallaby-v1-PostgresSourceConfig)
+    - [RDSIAMConfig](#wallaby-v1-RDSIAMConfig)
+    - [RedpandaDestinationConfig](#wallaby-v1-RedpandaDestinationConfig)
+    - [RetryConfig](#wallaby-v1-RetryConfig)
+    - [S3DestinationConfig](#wallaby-v1-S3DestinationConfig)
+    - [SchemaRegistryConfig](#wallaby-v1-SchemaRegistryConfig)
+    - [SnapshotStateConfig](#wallaby-v1-SnapshotStateConfig)
+    - [SnowflakeDestinationConfig](#wallaby-v1-SnowflakeDestinationConfig)
+    - [SnowflakePostgresSQLConfig](#wallaby-v1-SnowflakePostgresSQLConfig)
+    - [SnowflakePostgresStagedConfig](#wallaby-v1-SnowflakePostgresStagedConfig)
+    - [SnowflakePostgresStreamingConfig](#wallaby-v1-SnowflakePostgresStreamingConfig)
+    - [SnowpipeDestinationConfig](#wallaby-v1-SnowpipeDestinationConfig)
+    - [StagingConfig](#wallaby-v1-StagingConfig)
+    - [TypeMappingsConfig](#wallaby-v1-TypeMappingsConfig)
+    - [TypeMappingsConfig.MappingsEntry](#wallaby-v1-TypeMappingsConfig-MappingsEntry)
+    - [WarehouseConfig](#wallaby-v1-WarehouseConfig)
 
     - [AckPolicy](#wallaby-v1-AckPolicy)
-    - [EndpointType](#wallaby-v1-EndpointType)
+    - [BatchMode](#wallaby-v1-BatchMode)
+    - [BatchResolution](#wallaby-v1-BatchResolution)
+    - [BootstrapMode](#wallaby-v1-BootstrapMode)
+    - [Compression](#wallaby-v1-Compression)
     - [FailureMode](#wallaby-v1-FailureMode)
     - [FlowState](#wallaby-v1-FlowState)
     - [GiveUpPolicy](#wallaby-v1-GiveUpPolicy)
+    - [IcebergCatalogProfile](#wallaby-v1-IcebergCatalogProfile)
+    - [KafkaAcks](#wallaby-v1-KafkaAcks)
+    - [KafkaKeyMode](#wallaby-v1-KafkaKeyMode)
+    - [KafkaMessageMode](#wallaby-v1-KafkaMessageMode)
+    - [ManagedProfile](#wallaby-v1-ManagedProfile)
+    - [PayloadMode](#wallaby-v1-PayloadMode)
+    - [PostgresSourceMode](#wallaby-v1-PostgresSourceMode)
+    - [SyncPublicationMode](#wallaby-v1-SyncPublicationMode)
+    - [ToastFetchMode](#wallaby-v1-ToastFetchMode)
     - [WireFormat](#wallaby-v1-WireFormat)
 
 - [wallaby/v1/checkpoint.proto](#wallaby_v1_checkpoint-proto)
@@ -62,28 +114,22 @@
 
 - [wallaby/v1/flow.proto](#wallaby_v1_flow-proto)
     - [AddPublicationTablesRequest](#wallaby-v1-AddPublicationTablesRequest)
-    - [AddPublicationTablesRequest.OptionsEntry](#wallaby-v1-AddPublicationTablesRequest-OptionsEntry)
     - [CleanupFlowRequest](#wallaby-v1-CleanupFlowRequest)
     - [CleanupFlowResponse](#wallaby-v1-CleanupFlowResponse)
     - [CreateFlowRequest](#wallaby-v1-CreateFlowRequest)
     - [DeleteFlowRequest](#wallaby-v1-DeleteFlowRequest)
     - [DeleteFlowResponse](#wallaby-v1-DeleteFlowResponse)
     - [DropPublicationTablesRequest](#wallaby-v1-DropPublicationTablesRequest)
-    - [DropPublicationTablesRequest.OptionsEntry](#wallaby-v1-DropPublicationTablesRequest-OptionsEntry)
     - [DropReplicationSlotRequest](#wallaby-v1-DropReplicationSlotRequest)
-    - [DropReplicationSlotRequest.OptionsEntry](#wallaby-v1-DropReplicationSlotRequest-OptionsEntry)
     - [DropReplicationSlotResponse](#wallaby-v1-DropReplicationSlotResponse)
     - [GetFlowRequest](#wallaby-v1-GetFlowRequest)
     - [GetReplicationSlotRequest](#wallaby-v1-GetReplicationSlotRequest)
-    - [GetReplicationSlotRequest.OptionsEntry](#wallaby-v1-GetReplicationSlotRequest-OptionsEntry)
     - [GetReplicationSlotResponse](#wallaby-v1-GetReplicationSlotResponse)
     - [ListFlowsRequest](#wallaby-v1-ListFlowsRequest)
     - [ListFlowsResponse](#wallaby-v1-ListFlowsResponse)
     - [ListPublicationTablesRequest](#wallaby-v1-ListPublicationTablesRequest)
-    - [ListPublicationTablesRequest.OptionsEntry](#wallaby-v1-ListPublicationTablesRequest-OptionsEntry)
     - [ListPublicationTablesResponse](#wallaby-v1-ListPublicationTablesResponse)
     - [ListReplicationSlotsRequest](#wallaby-v1-ListReplicationSlotsRequest)
-    - [ListReplicationSlotsRequest.OptionsEntry](#wallaby-v1-ListReplicationSlotsRequest-OptionsEntry)
     - [ListReplicationSlotsResponse](#wallaby-v1-ListReplicationSlotsResponse)
     - [PauseFlowRequest](#wallaby-v1-PauseFlowRequest)
     - [PublicationTablesMutationResponse](#wallaby-v1-PublicationTablesMutationResponse)
@@ -93,12 +139,10 @@
     - [RunFlowOnceRequest](#wallaby-v1-RunFlowOnceRequest)
     - [RunFlowOnceResponse](#wallaby-v1-RunFlowOnceResponse)
     - [ScrapePublicationTablesRequest](#wallaby-v1-ScrapePublicationTablesRequest)
-    - [ScrapePublicationTablesRequest.OptionsEntry](#wallaby-v1-ScrapePublicationTablesRequest-OptionsEntry)
     - [ScrapePublicationTablesResponse](#wallaby-v1-ScrapePublicationTablesResponse)
     - [StartFlowRequest](#wallaby-v1-StartFlowRequest)
     - [StopFlowRequest](#wallaby-v1-StopFlowRequest)
     - [SyncPublicationTablesRequest](#wallaby-v1-SyncPublicationTablesRequest)
-    - [SyncPublicationTablesRequest.OptionsEntry](#wallaby-v1-SyncPublicationTablesRequest-OptionsEntry)
     - [SyncPublicationTablesResponse](#wallaby-v1-SyncPublicationTablesResponse)
     - [UpdateFlowRequest](#wallaby-v1-UpdateFlowRequest)
 
@@ -175,7 +219,7 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | action | [MappingAction](#wallaby-v1-MappingAction) |  |  |
-| target_column | [string](#string) |  |  |
+| target_column | [string](#string) |  | When action is INCLUDE, version 2 requires one restricted Go text/template field action: {{ .Column }}. When action is EXCLUDE, this must be empty. Only typed Schema, Table, and Column data is injected. Functions, pipelines, variables, conditions, loops, and template inclusion are unsupported. |
 
 
 
@@ -191,8 +235,8 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | action | [MappingAction](#wallaby-v1-MappingAction) |  |  |
-| target_schema | [string](#string) |  |  |
-| target_table | [string](#string) |  |  |
+| target_schema | [string](#string) |  | When action is INCLUDE, version 2 requires one restricted Go text/template field action: {{ .Schema }}. When action is EXCLUDE, this must be empty. |
+| target_table | [string](#string) |  | When action is INCLUDE, version 2 requires one restricted Go text/template field action: {{ .Table }}. When action is EXCLUDE, this must be empty. |
 | future_columns | [FutureColumnMapping](#wallaby-v1-FutureColumnMapping) |  |  |
 | write | [TableWritePolicy](#wallaby-v1-TableWritePolicy) |  |  |
 
@@ -231,7 +275,7 @@
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| version | [uint32](#uint32) |  |  |
+| version | [uint32](#uint32) |  | Version 2 is required. Version 1 and legacy placeholder syntax are unsupported. |
 | destinations | [DestinationTableMappings](#wallaby-v1-DestinationTableMappings) | repeated |  |
 
 
@@ -298,6 +342,26 @@
 
 
 
+<a name="wallaby-v1-ApicurioSchemaRegistryConfig"></a>
+
+### ApicurioSchemaRegistryConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| url | [string](#string) |  |  |
+| username | [string](#string) |  |  |
+| password | [string](#string) |  |  |
+| token | [string](#string) |  |  |
+| timeout | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+| compatibility | [bool](#bool) | optional |  |
+
+
+
+
+
+
 <a name="wallaby-v1-Checkpoint"></a>
 
 ### Checkpoint
@@ -331,6 +395,148 @@
 
 
 
+<a name="wallaby-v1-ClickHouseDestinationConfig"></a>
+
+### ClickHouseDestinationConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| dsn | [string](#string) |  |  |
+| staging | [StagingConfig](#wallaby-v1-StagingConfig) |  |  |
+| metadata | [ClickHouseMetadataConfig](#wallaby-v1-ClickHouseMetadataConfig) |  |  |
+| type_mappings | [TypeMappingsConfig](#wallaby-v1-TypeMappingsConfig) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-ClickHouseMetadataConfig"></a>
+
+### ClickHouseMetadataConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| enabled | [bool](#bool) | optional |  |
+| schema | [string](#string) |  |  |
+| table | [string](#string) |  |  |
+| primary_key_prefix | [string](#string) |  |  |
+| engine | [string](#string) |  |  |
+| order_by | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-ClickHousePostgresAppendConfig"></a>
+
+### ClickHousePostgresAppendConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| dsn | [string](#string) |  |  |
+| tls | [ClickHouseTLSConfig](#wallaby-v1-ClickHouseTLSConfig) |  |  |
+| destination_revision_id | [string](#string) |  |  |
+| type_mappings | [TypeMappingsConfig](#wallaby-v1-TypeMappingsConfig) |  |  |
+| database | [string](#string) |  |  |
+| changelog_table | [string](#string) |  |  |
+| receipts_table | [string](#string) |  |  |
+| final_view | [string](#string) |  |  |
+| keeper_path_prefix | [string](#string) |  |  |
+| keeper_address | [string](#string) |  |  |
+| replica_dsn | [string](#string) |  |  |
+| replica_names | [string](#string) | repeated |  |
+| insert_quorum | [uint32](#uint32) | optional |  |
+| max_active_parts | [uint32](#uint32) | optional |  |
+| max_transaction_rows | [uint32](#uint32) | optional |  |
+| max_transaction_bytes | [uint64](#uint64) | optional |  |
+| max_transaction_fragments | [uint32](#uint32) | optional |  |
+| max_rows_per_batch | [uint32](#uint32) | optional |  |
+| max_batch_bytes | [uint64](#uint64) | optional |  |
+
+
+
+
+
+
+<a name="wallaby-v1-ClickHouseTLSConfig"></a>
+
+### ClickHouseTLSConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| insecure | [bool](#bool) | optional |  |
+| ca_file | [string](#string) |  |  |
+| server_name | [string](#string) |  |  |
+| certificate_file | [string](#string) |  |  |
+| private_key_file | [string](#string) |  |  |
+| replica_server_name | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-ConfluentSchemaRegistryConfig"></a>
+
+### ConfluentSchemaRegistryConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| url | [string](#string) |  |  |
+| username | [string](#string) |  |  |
+| password | [string](#string) |  |  |
+| token | [string](#string) |  |  |
+| timeout | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-CustomEndpointConfig"></a>
+
+### CustomEndpointConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| connector_type | [string](#string) |  |  |
+| options | [CustomEndpointConfig.OptionsEntry](#wallaby-v1-CustomEndpointConfig-OptionsEntry) | repeated |  |
+
+
+
+
+
+
+<a name="wallaby-v1-CustomEndpointConfig-OptionsEntry"></a>
+
+### CustomEndpointConfig.OptionsEntry
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| key | [string](#string) |  |  |
+| value | [string](#string) |  |  |
+
+
+
+
+
+
 <a name="wallaby-v1-DDLPolicy"></a>
 
 ### DDLPolicy
@@ -348,6 +554,47 @@
 
 
 
+<a name="wallaby-v1-DuckDBDestinationConfig"></a>
+
+### DuckDBDestinationConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| dsn | [string](#string) |  |  |
+| staging | [StagingConfig](#wallaby-v1-StagingConfig) |  |  |
+| metadata | [MetadataConfig](#wallaby-v1-MetadataConfig) |  |  |
+| type_mappings | [TypeMappingsConfig](#wallaby-v1-TypeMappingsConfig) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-DuckLakeDestinationConfig"></a>
+
+### DuckLakeDestinationConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| dsn | [string](#string) |  |  |
+| catalog | [string](#string) |  |  |
+| catalog_name | [string](#string) |  |  |
+| data_path | [string](#string) |  |  |
+| override_data_path | [bool](#bool) | optional |  |
+| install_extensions | [bool](#bool) | optional |  |
+| staging | [StagingConfig](#wallaby-v1-StagingConfig) |  |  |
+| metadata | [MetadataConfig](#wallaby-v1-MetadataConfig) |  |  |
+| type_mappings | [TypeMappingsConfig](#wallaby-v1-TypeMappingsConfig) |  |  |
+
+
+
+
+
+
 <a name="wallaby-v1-Endpoint"></a>
 
 ### Endpoint
@@ -357,24 +604,25 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | name | [string](#string) |  |  |
-| type | [EndpointType](#wallaby-v1-EndpointType) |  |  |
-| options | [Endpoint.OptionsEntry](#wallaby-v1-Endpoint-OptionsEntry) | repeated |  |
-
-
-
-
-
-
-<a name="wallaby-v1-Endpoint-OptionsEntry"></a>
-
-### Endpoint.OptionsEntry
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| key | [string](#string) |  |  |
-| value | [string](#string) |  |  |
+| postgres_source | [PostgresSourceConfig](#wallaby-v1-PostgresSourceConfig) |  |  |
+| postgres_destination | [PostgresDestinationConfig](#wallaby-v1-PostgresDestinationConfig) |  |  |
+| pgstream | [PGStreamDestinationConfig](#wallaby-v1-PGStreamDestinationConfig) |  |  |
+| kafka | [KafkaDestinationConfig](#wallaby-v1-KafkaDestinationConfig) |  |  |
+| redpanda | [RedpandaDestinationConfig](#wallaby-v1-RedpandaDestinationConfig) |  |  |
+| s3 | [S3DestinationConfig](#wallaby-v1-S3DestinationConfig) |  |  |
+| http | [HTTPDestinationConfig](#wallaby-v1-HTTPDestinationConfig) |  |  |
+| grpc | [GRPCDestinationConfig](#wallaby-v1-GRPCDestinationConfig) |  |  |
+| snowflake | [SnowflakeDestinationConfig](#wallaby-v1-SnowflakeDestinationConfig) |  |  |
+| snowflake_postgres_sql | [SnowflakePostgresSQLConfig](#wallaby-v1-SnowflakePostgresSQLConfig) |  |  |
+| snowflake_postgres_staged | [SnowflakePostgresStagedConfig](#wallaby-v1-SnowflakePostgresStagedConfig) |  |  |
+| snowflake_postgres_streaming | [SnowflakePostgresStreamingConfig](#wallaby-v1-SnowflakePostgresStreamingConfig) |  |  |
+| snowpipe | [SnowpipeDestinationConfig](#wallaby-v1-SnowpipeDestinationConfig) |  |  |
+| clickhouse | [ClickHouseDestinationConfig](#wallaby-v1-ClickHouseDestinationConfig) |  |  |
+| clickhouse_postgres_append | [ClickHousePostgresAppendConfig](#wallaby-v1-ClickHousePostgresAppendConfig) |  |  |
+| duckdb | [DuckDBDestinationConfig](#wallaby-v1-DuckDBDestinationConfig) |  |  |
+| ducklake | [DuckLakeDestinationConfig](#wallaby-v1-DuckLakeDestinationConfig) |  |  |
+| iceberg | [IcebergDestinationConfig](#wallaby-v1-IcebergDestinationConfig) |  |  |
+| custom | [CustomEndpointConfig](#wallaby-v1-CustomEndpointConfig) |  |  |
 
 
 
@@ -416,11 +664,196 @@
 | failure_mode | [FailureMode](#wallaby-v1-FailureMode) |  |  |
 | give_up_policy | [GiveUpPolicy](#wallaby-v1-GiveUpPolicy) |  |  |
 | ddl | [DDLPolicy](#wallaby-v1-DDLPolicy) |  |  |
+| materialization | [MaterializationPolicy](#wallaby-v1-MaterializationPolicy) |  |  |
+| table_mappings | [TableMappings](#wallaby-v1-TableMappings) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-GRPCDestinationConfig"></a>
+
+### GRPCDestinationConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| endpoint | [string](#string) |  |  |
+| tls | [GRPCTLSConfig](#wallaby-v1-GRPCTLSConfig) |  |  |
+| timeout | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+| format | [WireFormat](#wallaby-v1-WireFormat) |  |  |
+| payload_mode | [PayloadMode](#wallaby-v1-PayloadMode) |  |  |
+| metadata | [GRPCDestinationConfig.MetadataEntry](#wallaby-v1-GRPCDestinationConfig-MetadataEntry) | repeated |  |
+| retry | [RetryConfig](#wallaby-v1-RetryConfig) |  |  |
+| schema_registry | [SchemaRegistryConfig](#wallaby-v1-SchemaRegistryConfig) |  |  |
+| type_mappings | [TypeMappingsConfig](#wallaby-v1-TypeMappingsConfig) |  |  |
+| schema_registry_subject | [string](#string) |  |  |
+| schema_registry_proto_types_subject | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-GRPCDestinationConfig-MetadataEntry"></a>
+
+### GRPCDestinationConfig.MetadataEntry
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| key | [string](#string) |  |  |
+| value | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-GRPCTLSConfig"></a>
+
+### GRPCTLSConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| insecure | [bool](#bool) | optional |  |
+| ca_file | [string](#string) |  |  |
+| server_name | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-GlueSchemaRegistryConfig"></a>
+
+### GlueSchemaRegistryConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| region | [string](#string) |  |  |
+| endpoint | [string](#string) |  |  |
+| profile | [string](#string) |  |  |
+| role_arn | [string](#string) |  |  |
+| registry | [string](#string) |  |  |
+| schema | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-HTTPDestinationConfig"></a>
+
+### HTTPDestinationConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| url | [string](#string) |  |  |
+| method | [string](#string) |  |  |
+| format | [WireFormat](#wallaby-v1-WireFormat) |  |  |
+| payload_mode | [PayloadMode](#wallaby-v1-PayloadMode) |  |  |
+| timeout | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+| headers | [HTTPDestinationConfig.HeadersEntry](#wallaby-v1-HTTPDestinationConfig-HeadersEntry) | repeated |  |
+| retry | [RetryConfig](#wallaby-v1-RetryConfig) |  |  |
+| idempotency_header | [string](#string) |  |  |
+| dedupe_window | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+| transaction_header | [string](#string) |  |  |
+| schema_registry | [SchemaRegistryConfig](#wallaby-v1-SchemaRegistryConfig) |  |  |
+| type_mappings | [TypeMappingsConfig](#wallaby-v1-TypeMappingsConfig) |  |  |
+| schema_registry_subject | [string](#string) |  |  |
+| schema_registry_proto_types_subject | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-HTTPDestinationConfig-HeadersEntry"></a>
+
+### HTTPDestinationConfig.HeadersEntry
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| key | [string](#string) |  |  |
+| value | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-IcebergDestinationConfig"></a>
+
+### IcebergDestinationConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| catalog_profile | [IcebergCatalogProfile](#wallaby-v1-IcebergCatalogProfile) |  |  |
+| control_table | [string](#string) |  |  |
+| destination_revision_id | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-KafkaDestinationConfig"></a>
+
+### KafkaDestinationConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| brokers | [string](#string) | repeated |  |
+| topic | [string](#string) |  |  |
+| format | [WireFormat](#wallaby-v1-WireFormat) |  |  |
+| compression | [Compression](#wallaby-v1-Compression) |  |  |
+| acks | [KafkaAcks](#wallaby-v1-KafkaAcks) |  |  |
+| max_message_bytes | [uint32](#uint32) | optional |  |
+| max_batch_bytes | [uint32](#uint32) | optional |  |
+| max_record_bytes | [uint32](#uint32) | optional |  |
+| transactional_producer | [bool](#bool) | optional |  |
+| allow_oversize_skip | [bool](#bool) | optional |  |
+| message_mode | [KafkaMessageMode](#wallaby-v1-KafkaMessageMode) |  |  |
+| key_mode | [KafkaKeyMode](#wallaby-v1-KafkaKeyMode) |  |  |
+| transactional_id | [string](#string) |  |  |
+| transaction_timeout | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+| transaction_header | [string](#string) |  |  |
+| schema_registry | [SchemaRegistryConfig](#wallaby-v1-SchemaRegistryConfig) |  |  |
+| type_mappings | [TypeMappingsConfig](#wallaby-v1-TypeMappingsConfig) |  |  |
 | schema_registry_subject | [string](#string) |  |  |
 | schema_registry_proto_types_subject | [string](#string) |  |  |
 | schema_registry_subject_mode | [string](#string) |  |  |
-| materialization | [MaterializationPolicy](#wallaby-v1-MaterializationPolicy) |  |  |
-| table_mappings | [TableMappings](#wallaby-v1-TableMappings) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-LocalSchemaRegistryConfig"></a>
+
+### LocalSchemaRegistryConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| directory | [string](#string) |  |  |
 
 
 
@@ -436,6 +869,543 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | projection_id | [string](#string) |  | Mapped materialized flows require exactly canonical_cdc_parquet_v2. canonical_cdc_parquet_v1 is frozen for historical encoder verification only. |
+
+
+
+
+
+
+<a name="wallaby-v1-MetadataConfig"></a>
+
+### MetadataConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| enabled | [bool](#bool) | optional |  |
+| schema | [string](#string) |  |  |
+| table | [string](#string) |  |  |
+| primary_key_prefix | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-PGStreamDestinationConfig"></a>
+
+### PGStreamDestinationConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| connection | [PostgresDSNConfig](#wallaby-v1-PostgresDSNConfig) |  |  |
+| stream | [string](#string) |  |  |
+| format | [WireFormat](#wallaby-v1-WireFormat) |  |  |
+| type_mappings | [TypeMappingsConfig](#wallaby-v1-TypeMappingsConfig) |  |  |
+| schema_registry | [SchemaRegistryConfig](#wallaby-v1-SchemaRegistryConfig) |  |  |
+| schema_registry_subject | [string](#string) |  |  |
+| schema_registry_proto_types_subject | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-PostgresConnectionConfig"></a>
+
+### PostgresConnectionConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| dsn | [string](#string) |  |  |
+| pool_max_connections | [uint32](#uint32) | optional |  |
+| rds_iam | [RDSIAMConfig](#wallaby-v1-RDSIAMConfig) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-PostgresDSNConfig"></a>
+
+### PostgresDSNConfig
+PostgresDSNConfig is intentionally narrow for components whose runtime
+contract accepts only a DSN and ignores connection-pool and IAM options.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| dsn | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-PostgresDestinationConfig"></a>
+
+### PostgresDestinationConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| connection | [PostgresConnectionConfig](#wallaby-v1-PostgresConnectionConfig) |  |  |
+| staging | [StagingConfig](#wallaby-v1-StagingConfig) |  |  |
+| metadata | [MetadataConfig](#wallaby-v1-MetadataConfig) |  |  |
+| synchronous_commit | [string](#string) |  |  |
+| type_mappings | [TypeMappingsConfig](#wallaby-v1-TypeMappingsConfig) |  |  |
+| managed_profile | [ManagedProfile](#wallaby-v1-ManagedProfile) |  |  |
+| destination_revision_id | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-PostgresSchemaRegistryConfig"></a>
+
+### PostgresSchemaRegistryConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| connection | [PostgresDSNConfig](#wallaby-v1-PostgresDSNConfig) |  |  |
+| timeout | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-PostgresSourceConfig"></a>
+
+### PostgresSourceConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| connection | [PostgresConnectionConfig](#wallaby-v1-PostgresConnectionConfig) |  |  |
+| slot | [string](#string) |  |  |
+| publication | [string](#string) |  |  |
+| batch_size | [uint32](#uint32) | optional |  |
+| batch_timeout | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+| status_interval | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+| create_slot | [bool](#bool) | optional |  |
+| emit_empty | [bool](#bool) | optional |  |
+| ensure_publication | [bool](#bool) | optional |  |
+| validate_replication | [bool](#bool) | optional |  |
+| publication_tables | [string](#string) | repeated |  |
+| publication_schemas | [string](#string) | repeated |  |
+| sync_publication | [bool](#bool) | optional |  |
+| sync_publication_mode | [SyncPublicationMode](#wallaby-v1-SyncPublicationMode) |  |  |
+| resolve_types | [bool](#bool) | optional |  |
+| ensure_state | [bool](#bool) | optional |  |
+| state_schema | [string](#string) |  |  |
+| state_table | [string](#string) |  |  |
+| capture_ddl | [bool](#bool) | optional |  |
+| ddl_trigger_schema | [string](#string) |  |  |
+| ddl_trigger_name | [string](#string) |  |  |
+| ddl_message_prefix | [string](#string) |  |  |
+| toast_fetch | [ToastFetchMode](#wallaby-v1-ToastFetchMode) |  |  |
+| toast_cache_size | [uint32](#uint32) | optional |  |
+| managed | [bool](#bool) | optional |  |
+| managed_profile | [ManagedProfile](#wallaby-v1-ManagedProfile) |  |  |
+| max_transaction_records | [uint64](#uint64) | optional |  |
+| max_transaction_bytes | [uint64](#uint64) | optional |  |
+| max_transaction_fragments | [uint32](#uint32) | optional |  |
+| streaming_transactions | [bool](#bool) | optional |  |
+| source_system_identifier | [string](#string) |  |  |
+| source_lineage_id | [string](#string) |  |  |
+| publication_revision | [string](#string) |  |  |
+| bootstrap | [BootstrapMode](#wallaby-v1-BootstrapMode) |  |  |
+| bootstrap_restart_limit | [uint32](#uint32) | optional |  |
+| snapshot_max_tables | [uint32](#uint32) | optional |  |
+| snapshot_workers | [uint32](#uint32) | optional |  |
+| snapshot_claim_lease | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+| backfill_tables | [string](#string) | repeated |  |
+| backfill_schemas | [string](#string) | repeated |  |
+| partition_column | [string](#string) |  |  |
+| partition_count | [uint32](#uint32) | optional |  |
+| snapshot_consistent | [bool](#bool) | optional |  |
+| snapshot_state | [SnapshotStateConfig](#wallaby-v1-SnapshotStateConfig) |  |  |
+| format | [WireFormat](#wallaby-v1-WireFormat) |  |  |
+| mode | [PostgresSourceMode](#wallaby-v1-PostgresSourceMode) |  |  |
+| delivery_retention | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+| delivery_prune_interval | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+| bootstrap_tables | [string](#string) | repeated |  |
+| bootstrap_schemas | [string](#string) | repeated |  |
+
+
+
+
+
+
+<a name="wallaby-v1-RDSIAMConfig"></a>
+
+### RDSIAMConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| region | [string](#string) |  |  |
+| profile | [string](#string) |  |  |
+| role_arn | [string](#string) |  |  |
+| role_session_name | [string](#string) |  |  |
+| role_external_id | [string](#string) |  |  |
+| endpoint | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-RedpandaDestinationConfig"></a>
+
+### RedpandaDestinationConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| kafka | [KafkaDestinationConfig](#wallaby-v1-KafkaDestinationConfig) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-RetryConfig"></a>
+
+### RetryConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| max_retries | [uint32](#uint32) | optional |  |
+| backoff_base | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+| backoff_max | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+| backoff_factor | [double](#double) | optional |  |
+
+
+
+
+
+
+<a name="wallaby-v1-S3DestinationConfig"></a>
+
+### S3DestinationConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| bucket | [string](#string) |  |  |
+| prefix | [string](#string) |  |  |
+| region | [string](#string) |  |  |
+| format | [WireFormat](#wallaby-v1-WireFormat) |  |  |
+| compression | [Compression](#wallaby-v1-Compression) |  |  |
+| partition_by | [string](#string) | repeated |  |
+| endpoint | [string](#string) |  |  |
+| access_key | [string](#string) |  |  |
+| secret_key | [string](#string) |  |  |
+| session_token | [string](#string) |  |  |
+| force_path_style | [bool](#bool) | optional |  |
+| use_fips | [bool](#bool) | optional |  |
+| use_dualstack | [bool](#bool) | optional |  |
+| type_mappings | [TypeMappingsConfig](#wallaby-v1-TypeMappingsConfig) |  |  |
+| schema_registry | [SchemaRegistryConfig](#wallaby-v1-SchemaRegistryConfig) |  |  |
+| schema_registry_subject | [string](#string) |  |  |
+| schema_registry_proto_types_subject | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-SchemaRegistryConfig"></a>
+
+### SchemaRegistryConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| confluent | [ConfluentSchemaRegistryConfig](#wallaby-v1-ConfluentSchemaRegistryConfig) |  |  |
+| apicurio | [ApicurioSchemaRegistryConfig](#wallaby-v1-ApicurioSchemaRegistryConfig) |  |  |
+| glue | [GlueSchemaRegistryConfig](#wallaby-v1-GlueSchemaRegistryConfig) |  |  |
+| postgres | [PostgresSchemaRegistryConfig](#wallaby-v1-PostgresSchemaRegistryConfig) |  |  |
+| local | [LocalSchemaRegistryConfig](#wallaby-v1-LocalSchemaRegistryConfig) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-SnapshotStateConfig"></a>
+
+### SnapshotStateConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| disabled | [bool](#bool) |  |  |
+| file_path | [string](#string) |  |  |
+| postgres | [PostgresDSNConfig](#wallaby-v1-PostgresDSNConfig) |  |  |
+| schema | [string](#string) |  |  |
+| table | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-SnowflakeDestinationConfig"></a>
+
+### SnowflakeDestinationConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| dsn | [string](#string) |  |  |
+| disable_transactions | [bool](#bool) | optional |  |
+| warehouse | [WarehouseConfig](#wallaby-v1-WarehouseConfig) |  |  |
+| staging | [StagingConfig](#wallaby-v1-StagingConfig) |  |  |
+| metadata | [MetadataConfig](#wallaby-v1-MetadataConfig) |  |  |
+| type_mappings | [TypeMappingsConfig](#wallaby-v1-TypeMappingsConfig) |  |  |
+| schema_registry | [SchemaRegistryConfig](#wallaby-v1-SchemaRegistryConfig) |  |  |
+| schema_registry_subject | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-SnowflakePostgresSQLConfig"></a>
+
+### SnowflakePostgresSQLConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| dsn | [string](#string) |  |  |
+| destination_revision_id | [string](#string) |  |  |
+| account | [string](#string) |  |  |
+| database | [string](#string) |  |  |
+| schema | [string](#string) |  |  |
+| table | [string](#string) |  |  |
+| receipts_table | [string](#string) |  |  |
+| owner_role | [string](#string) |  |  |
+| execution_role | [string](#string) |  |  |
+| managed_warehouse | [string](#string) |  |  |
+| snowflake_version | [string](#string) |  |  |
+| target_created_on | [string](#string) |  |  |
+| receipts_created_on | [string](#string) |  |  |
+| max_transaction_rows | [uint32](#uint32) | optional |  |
+| max_transaction_bytes | [uint64](#uint64) | optional |  |
+| max_transaction_fragments | [uint32](#uint32) | optional |  |
+| max_open_connections | [uint32](#uint32) | optional |  |
+| statement_timeout_seconds | [uint32](#uint32) | optional |  |
+| hybrid_table_lock_timeout_seconds | [uint32](#uint32) | optional |  |
+
+
+
+
+
+
+<a name="wallaby-v1-SnowflakePostgresStagedConfig"></a>
+
+### SnowflakePostgresStagedConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| dsn | [string](#string) |  |  |
+| stage | [string](#string) |  |  |
+| file_format | [string](#string) |  |  |
+| auto_ingest | [bool](#bool) | optional |  |
+| destination_revision_id | [string](#string) |  |  |
+| account | [string](#string) |  |  |
+| database | [string](#string) |  |  |
+| schema | [string](#string) |  |  |
+| table | [string](#string) |  |  |
+| receipts_table | [string](#string) |  |  |
+| pipe | [string](#string) |  |  |
+| owner_role | [string](#string) |  |  |
+| execution_role | [string](#string) |  |  |
+| managed_warehouse | [string](#string) |  |  |
+| snowflake_version | [string](#string) |  |  |
+| stage_created_on | [string](#string) |  |  |
+| target_created_on | [string](#string) |  |  |
+| receipts_created_on | [string](#string) |  |  |
+| file_format_created_on | [string](#string) |  |  |
+| pipe_created_on | [string](#string) |  |  |
+| max_transaction_rows | [uint32](#uint32) | optional |  |
+| max_transaction_bytes | [uint64](#uint64) | optional |  |
+| max_transaction_fragments | [uint32](#uint32) | optional |  |
+| max_open_connections | [uint32](#uint32) | optional |  |
+| statement_timeout_seconds | [uint32](#uint32) | optional |  |
+| load_verify_attempts | [uint32](#uint32) | optional |  |
+| load_verify_interval_millis | [uint32](#uint32) | optional |  |
+| cleanup_max_objects | [uint32](#uint32) | optional |  |
+| cleanup_retention_seconds | [uint32](#uint32) | optional |  |
+
+
+
+
+
+
+<a name="wallaby-v1-SnowflakePostgresStreamingConfig"></a>
+
+### SnowflakePostgresStreamingConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| dsn | [string](#string) |  |  |
+| destination_revision_id | [string](#string) |  |  |
+| transport | [string](#string) |  |  |
+| account | [string](#string) |  |  |
+| database | [string](#string) |  |  |
+| schema | [string](#string) |  |  |
+| pipe | [string](#string) |  |  |
+| table | [string](#string) |  |  |
+| receipts_table | [string](#string) |  |  |
+| channel_state_table | [string](#string) |  |  |
+| owner_role | [string](#string) |  |  |
+| execution_role | [string](#string) |  |  |
+| managed_warehouse | [string](#string) |  |  |
+| snowflake_version | [string](#string) |  |  |
+| pipe_created_on | [string](#string) |  |  |
+| target_created_on | [string](#string) |  |  |
+| receipts_created_on | [string](#string) |  |  |
+| channel_state_created_on | [string](#string) |  |  |
+| max_transaction_rows | [uint32](#uint32) | optional |  |
+| max_transaction_bytes | [uint64](#uint64) | optional |  |
+| max_transaction_fragments | [uint32](#uint32) | optional |  |
+| max_row_bytes | [uint64](#uint64) | optional |  |
+| max_open_connections | [uint32](#uint32) | optional |  |
+| statement_timeout_seconds | [uint32](#uint32) | optional |  |
+| observe_attempts | [uint32](#uint32) | optional |  |
+| observe_interval_millis | [uint32](#uint32) | optional |  |
+| append_attempts | [uint32](#uint32) | optional |  |
+| append_backoff_millis | [uint32](#uint32) | optional |  |
+| cleanup_max_objects | [uint32](#uint32) | optional |  |
+| cleanup_retention_seconds | [uint32](#uint32) | optional |  |
+| channel_name_prefix | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-SnowpipeDestinationConfig"></a>
+
+### SnowpipeDestinationConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| dsn | [string](#string) |  |  |
+| stage | [string](#string) |  |  |
+| stage_path | [string](#string) |  |  |
+| format | [WireFormat](#wallaby-v1-WireFormat) |  |  |
+| file_format | [string](#string) |  |  |
+| warehouse | [WarehouseConfig](#wallaby-v1-WarehouseConfig) |  |  |
+| copy_on_write | [bool](#bool) | optional |  |
+| copy_pattern | [string](#string) |  |  |
+| copy_on_error | [string](#string) |  |  |
+| copy_purge | [bool](#bool) | optional |  |
+| copy_match_by_column_name | [string](#string) |  |  |
+| auto_ingest | [bool](#bool) | optional |  |
+| metadata | [MetadataConfig](#wallaby-v1-MetadataConfig) |  |  |
+| type_mappings | [TypeMappingsConfig](#wallaby-v1-TypeMappingsConfig) |  |  |
+| schema_registry | [SchemaRegistryConfig](#wallaby-v1-SchemaRegistryConfig) |  |  |
+| schema_registry_subject | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-StagingConfig"></a>
+
+### StagingConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| batch_mode | [BatchMode](#wallaby-v1-BatchMode) |  |  |
+| batch_resolution | [BatchResolution](#wallaby-v1-BatchResolution) |  |  |
+| schema | [string](#string) |  |  |
+| table | [string](#string) |  |  |
+| suffix | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-TypeMappingsConfig"></a>
+
+### TypeMappingsConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| mappings | [TypeMappingsConfig.MappingsEntry](#wallaby-v1-TypeMappingsConfig-MappingsEntry) | repeated |  |
+
+
+
+
+
+
+<a name="wallaby-v1-TypeMappingsConfig-MappingsEntry"></a>
+
+### TypeMappingsConfig.MappingsEntry
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| key | [string](#string) |  |  |
+| value | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-WarehouseConfig"></a>
+
+### WarehouseConfig
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| name | [string](#string) |  |  |
+| size | [string](#string) |  |  |
+| auto_suspend_seconds | [uint32](#uint32) | optional |  |
+| auto_resume | [bool](#bool) | optional |  |
+| session_keep_alive | [bool](#bool) | optional |  |
 
 
 
@@ -458,29 +1428,60 @@
 
 
 
-<a name="wallaby-v1-EndpointType"></a>
+<a name="wallaby-v1-BatchMode"></a>
 
-### EndpointType
+### BatchMode
 
 
 | Name | Number | Description |
 | ---- | ------ | ----------- |
-| ENDPOINT_TYPE_UNSPECIFIED | 0 |  |
-| ENDPOINT_TYPE_POSTGRES | 1 |  |
-| ENDPOINT_TYPE_SNOWFLAKE | 2 |  |
-| ENDPOINT_TYPE_S3 | 3 |  |
-| ENDPOINT_TYPE_KAFKA | 4 |  |
-| ENDPOINT_TYPE_HTTP | 5 |  |
-| ENDPOINT_TYPE_GRPC | 6 |  |
-| ENDPOINT_TYPE_PROTO | 7 |  |
-| ENDPOINT_TYPE_PGSTREAM | 8 |  |
-| ENDPOINT_TYPE_SNOWPIPE | 9 |  |
-| ENDPOINT_TYPE_PARQUET | 10 |  |
-| ENDPOINT_TYPE_DUCKDB | 11 |  |
-| ENDPOINT_TYPE_CLICKHOUSE | 13 |  |
-| ENDPOINT_TYPE_DUCKLAKE | 14 |  |
-| ENDPOINT_TYPE_ICEBERG | 15 | Iceberg is an asynchronous consumer of the canonical artifact log, including AWS S3 Tables exposed read-only through external catalogs such as Snowflake. It is never a direct current-state/upsert destination. |
-| ENDPOINT_TYPE_REDPANDA | 16 | Redpanda is Kafka API-compatible. Redpanda Iceberg topics require an enterprise license. Configure Iceberg in Redpanda, not WALlaby. |
+| BATCH_MODE_UNSPECIFIED | 0 |  |
+| BATCH_MODE_STAGING | 1 |  |
+| BATCH_MODE_TARGET | 2 |  |
+
+
+
+<a name="wallaby-v1-BatchResolution"></a>
+
+### BatchResolution
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| BATCH_RESOLUTION_UNSPECIFIED | 0 |  |
+| BATCH_RESOLUTION_NONE | 1 |  |
+| BATCH_RESOLUTION_APPEND | 2 |  |
+| BATCH_RESOLUTION_REPLACE | 3 |  |
+
+
+
+<a name="wallaby-v1-BootstrapMode"></a>
+
+### BootstrapMode
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| BOOTSTRAP_MODE_UNSPECIFIED | 0 |  |
+| BOOTSTRAP_MODE_NEVER | 1 |  |
+| BOOTSTRAP_MODE_AUTO | 2 |  |
+| BOOTSTRAP_MODE_REQUIRED | 3 |  |
+
+
+
+<a name="wallaby-v1-Compression"></a>
+
+### Compression
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| COMPRESSION_UNSPECIFIED | 0 |  |
+| COMPRESSION_NONE | 1 |  |
+| COMPRESSION_GZIP | 2 |  |
+| COMPRESSION_SNAPPY | 3 |  |
+| COMPRESSION_LZ4 | 4 |  |
+| COMPRESSION_ZSTD | 5 |  |
 
 
 
@@ -524,6 +1525,130 @@
 | GIVE_UP_POLICY_UNSPECIFIED | 0 |  |
 | GIVE_UP_POLICY_NEVER | 1 |  |
 | GIVE_UP_POLICY_ON_RETRY_EXHAUSTION | 2 |  |
+
+
+
+<a name="wallaby-v1-IcebergCatalogProfile"></a>
+
+### IcebergCatalogProfile
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| ICEBERG_CATALOG_PROFILE_UNSPECIFIED | 0 |  |
+| ICEBERG_CATALOG_PROFILE_REST | 1 |  |
+| ICEBERG_CATALOG_PROFILE_S3_TABLES | 2 |  |
+
+
+
+<a name="wallaby-v1-KafkaAcks"></a>
+
+### KafkaAcks
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| KAFKA_ACKS_UNSPECIFIED | 0 |  |
+| KAFKA_ACKS_NONE | 1 |  |
+| KAFKA_ACKS_LEADER | 2 |  |
+| KAFKA_ACKS_ALL | 3 |  |
+
+
+
+<a name="wallaby-v1-KafkaKeyMode"></a>
+
+### KafkaKeyMode
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| KAFKA_KEY_MODE_UNSPECIFIED | 0 |  |
+| KAFKA_KEY_MODE_HASH | 1 |  |
+| KAFKA_KEY_MODE_RAW | 2 |  |
+
+
+
+<a name="wallaby-v1-KafkaMessageMode"></a>
+
+### KafkaMessageMode
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| KAFKA_MESSAGE_MODE_UNSPECIFIED | 0 |  |
+| KAFKA_MESSAGE_MODE_BATCH | 1 |  |
+| KAFKA_MESSAGE_MODE_RECORD | 2 |  |
+
+
+
+<a name="wallaby-v1-ManagedProfile"></a>
+
+### ManagedProfile
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| MANAGED_PROFILE_UNSPECIFIED | 0 |  |
+| MANAGED_PROFILE_POSTGRES_TO_POSTGRES_V1 | 1 |  |
+| MANAGED_PROFILE_POSTGRES_TO_CLICKHOUSE_APPEND_V1 | 2 |  |
+| MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_SQL_V1 | 3 |  |
+| MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_STAGED_V1 | 4 |  |
+| MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_STREAMING_V1 | 5 |  |
+
+
+
+<a name="wallaby-v1-PayloadMode"></a>
+
+### PayloadMode
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| PAYLOAD_MODE_UNSPECIFIED | 0 |  |
+| PAYLOAD_MODE_WIRE | 1 |  |
+| PAYLOAD_MODE_RECORD_JSON | 2 |  |
+| PAYLOAD_MODE_WAL | 3 |  |
+
+
+
+<a name="wallaby-v1-PostgresSourceMode"></a>
+
+### PostgresSourceMode
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| POSTGRES_SOURCE_MODE_UNSPECIFIED | 0 |  |
+| POSTGRES_SOURCE_MODE_CDC | 1 |  |
+| POSTGRES_SOURCE_MODE_BACKFILL | 2 |  |
+
+
+
+<a name="wallaby-v1-SyncPublicationMode"></a>
+
+### SyncPublicationMode
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| SYNC_PUBLICATION_MODE_UNSPECIFIED | 0 |  |
+| SYNC_PUBLICATION_MODE_ADD | 1 |  |
+| SYNC_PUBLICATION_MODE_SYNC | 2 |  |
+
+
+
+<a name="wallaby-v1-ToastFetchMode"></a>
+
+### ToastFetchMode
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| TOAST_FETCH_MODE_UNSPECIFIED | 0 |  |
+| TOAST_FETCH_MODE_OFF | 1 |  |
+| TOAST_FETCH_MODE_SOURCE | 2 |  |
+| TOAST_FETCH_MODE_CACHE | 3 |  |
+| TOAST_FETCH_MODE_FULL | 4 |  |
 
 
 
@@ -935,23 +2060,7 @@ advanced only by durable data-plane execution receipts.
 | dsn | [string](#string) |  |  |
 | publication | [string](#string) |  |  |
 | tables | [string](#string) | repeated |  |
-| options | [AddPublicationTablesRequest.OptionsEntry](#wallaby-v1-AddPublicationTablesRequest-OptionsEntry) | repeated |  |
-
-
-
-
-
-
-<a name="wallaby-v1-AddPublicationTablesRequest-OptionsEntry"></a>
-
-### AddPublicationTablesRequest.OptionsEntry
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| key | [string](#string) |  |  |
-| value | [string](#string) |  |  |
+| rds_iam | [RDSIAMConfig](#wallaby-v1-RDSIAMConfig) |  |  |
 
 
 
@@ -1049,23 +2158,7 @@ advanced only by durable data-plane execution receipts.
 | dsn | [string](#string) |  |  |
 | publication | [string](#string) |  |  |
 | tables | [string](#string) | repeated |  |
-| options | [DropPublicationTablesRequest.OptionsEntry](#wallaby-v1-DropPublicationTablesRequest-OptionsEntry) | repeated |  |
-
-
-
-
-
-
-<a name="wallaby-v1-DropPublicationTablesRequest-OptionsEntry"></a>
-
-### DropPublicationTablesRequest.OptionsEntry
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| key | [string](#string) |  |  |
-| value | [string](#string) |  |  |
+| rds_iam | [RDSIAMConfig](#wallaby-v1-RDSIAMConfig) |  |  |
 
 
 
@@ -1084,23 +2177,7 @@ advanced only by durable data-plane execution receipts.
 | dsn | [string](#string) |  |  |
 | slot | [string](#string) |  |  |
 | if_exists | [bool](#bool) |  |  |
-| options | [DropReplicationSlotRequest.OptionsEntry](#wallaby-v1-DropReplicationSlotRequest-OptionsEntry) | repeated |  |
-
-
-
-
-
-
-<a name="wallaby-v1-DropReplicationSlotRequest-OptionsEntry"></a>
-
-### DropReplicationSlotRequest.OptionsEntry
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| key | [string](#string) |  |  |
-| value | [string](#string) |  |  |
+| rds_iam | [RDSIAMConfig](#wallaby-v1-RDSIAMConfig) |  |  |
 
 
 
@@ -1151,23 +2228,7 @@ advanced only by durable data-plane execution receipts.
 | flow_id | [string](#string) |  |  |
 | dsn | [string](#string) |  |  |
 | slot | [string](#string) |  |  |
-| options | [GetReplicationSlotRequest.OptionsEntry](#wallaby-v1-GetReplicationSlotRequest-OptionsEntry) | repeated |  |
-
-
-
-
-
-
-<a name="wallaby-v1-GetReplicationSlotRequest-OptionsEntry"></a>
-
-### GetReplicationSlotRequest.OptionsEntry
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| key | [string](#string) |  |  |
-| value | [string](#string) |  |  |
+| rds_iam | [RDSIAMConfig](#wallaby-v1-RDSIAMConfig) |  |  |
 
 
 
@@ -1232,23 +2293,7 @@ advanced only by durable data-plane execution receipts.
 | flow_id | [string](#string) |  |  |
 | dsn | [string](#string) |  |  |
 | publication | [string](#string) |  |  |
-| options | [ListPublicationTablesRequest.OptionsEntry](#wallaby-v1-ListPublicationTablesRequest-OptionsEntry) | repeated |  |
-
-
-
-
-
-
-<a name="wallaby-v1-ListPublicationTablesRequest-OptionsEntry"></a>
-
-### ListPublicationTablesRequest.OptionsEntry
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| key | [string](#string) |  |  |
-| value | [string](#string) |  |  |
+| rds_iam | [RDSIAMConfig](#wallaby-v1-RDSIAMConfig) |  |  |
 
 
 
@@ -1283,23 +2328,7 @@ advanced only by durable data-plane execution receipts.
 | flow_id | [string](#string) |  |  |
 | dsn | [string](#string) |  |  |
 | slot | [string](#string) |  |  |
-| options | [ListReplicationSlotsRequest.OptionsEntry](#wallaby-v1-ListReplicationSlotsRequest-OptionsEntry) | repeated |  |
-
-
-
-
-
-
-<a name="wallaby-v1-ListReplicationSlotsRequest-OptionsEntry"></a>
-
-### ListReplicationSlotsRequest.OptionsEntry
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| key | [string](#string) |  |  |
-| value | [string](#string) |  |  |
+| rds_iam | [RDSIAMConfig](#wallaby-v1-RDSIAMConfig) |  |  |
 
 
 
@@ -1454,23 +2483,7 @@ advanced only by durable data-plane execution receipts.
 | publication | [string](#string) |  |  |
 | schemas | [string](#string) | repeated |  |
 | apply | [bool](#bool) |  |  |
-| options | [ScrapePublicationTablesRequest.OptionsEntry](#wallaby-v1-ScrapePublicationTablesRequest-OptionsEntry) | repeated |  |
-
-
-
-
-
-
-<a name="wallaby-v1-ScrapePublicationTablesRequest-OptionsEntry"></a>
-
-### ScrapePublicationTablesRequest.OptionsEntry
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| key | [string](#string) |  |  |
-| value | [string](#string) |  |  |
+| rds_iam | [RDSIAMConfig](#wallaby-v1-RDSIAMConfig) |  |  |
 
 
 
@@ -1538,23 +2551,7 @@ advanced only by durable data-plane execution receipts.
 | publication | [string](#string) |  |  |
 | tables | [string](#string) | repeated |  |
 | mode | [string](#string) |  |  |
-| options | [SyncPublicationTablesRequest.OptionsEntry](#wallaby-v1-SyncPublicationTablesRequest-OptionsEntry) | repeated |  |
-
-
-
-
-
-
-<a name="wallaby-v1-SyncPublicationTablesRequest-OptionsEntry"></a>
-
-### SyncPublicationTablesRequest.OptionsEntry
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| key | [string](#string) |  |  |
-| value | [string](#string) |  |  |
+| rds_iam | [RDSIAMConfig](#wallaby-v1-RDSIAMConfig) |  |  |
 
 
 

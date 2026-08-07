@@ -15,7 +15,7 @@ import (
 )
 
 func TestManagedSnowflakePlannerReceivesMappedRenameAndSubsetTransaction(t *testing.T) {
-	mappings := flow.NewTableMappings([]connector.Spec{{Name: "snow", Type: connector.EndpointSnowflake}})
+	mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "snow", Type: connector.EndpointSnowflake}})
 	mapping := &mappings.Destinations[0]
 	mapping.FutureTables = flow.FutureTableMapping{Action: flow.MappingActionExclude}
 	mapping.Tables = []flow.TableMapping{{SourceSchema: "public", SourceTable: "widgets", Action: flow.MappingActionInclude, TargetSchema: "PUBLIC", TargetTable: "WIDGETS", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionExclude}, Columns: []flow.ColumnMapping{{SourceColumn: "tenant_id", Action: flow.MappingActionInclude, TargetColumn: "TENANT_ID"}, {SourceColumn: "id", Action: flow.MappingActionInclude, TargetColumn: "EVENT_ID"}, {SourceColumn: "value", Action: flow.MappingActionInclude, TargetColumn: "DISPLAY"}, {SourceColumn: "secret", Action: flow.MappingActionExclude}}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"tenant_id", "id"}}}}

@@ -4,19 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	internalschema "github.com/josephjohncox/wallaby/internal/schema"
+	"github.com/josephjohncox/wallaby/internal/typemapping"
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	"gopkg.in/yaml.v3"
-)
-
-const (
-	optTypeMappings     = "type_mappings"
-	optTypeMappingsFile = "type_mappings_file"
 )
 
 // Dialect identifies a downstream SQL dialect.
@@ -163,7 +157,7 @@ func TranslatePostgresDDL(ddl string, dialect DialectConfig, mappings map[string
 
 // TranslatePlanDDL resolves a schema plan into translated DDL statements.
 func TranslatePlanDDL(schemaDef connector.Schema, plan internalschema.Plan, dialect DialectConfig, baseMappings map[string]string, options map[string]string) ([]string, error) {
-	overrides, err := LoadTypeMappings(options)
+	overrides, err := typemapping.Load(options)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +266,7 @@ func planQualifiedTable(schemaDef connector.Schema, change internalschema.Change
 
 // TranslateRecordDDL resolves a change record into translated DDL statements.
 func TranslateRecordDDL(schemaDef connector.Schema, record connector.Record, dialect DialectConfig, baseMappings map[string]string, options map[string]string) ([]string, error) {
-	overrides, err := LoadTypeMappings(options)
+	overrides, err := typemapping.Load(options)
 	if err != nil {
 		return nil, err
 	}
@@ -890,16 +884,16 @@ func splitTypeSuffix(value string) (string, string) {
 	}
 	idx := strings.IndexRune(value, '(')
 	if idx <= 0 {
-		return normalizeTypeKey(value), ""
+		return typemapping.NormalizeKey(value), ""
 	}
-	return normalizeTypeKey(value[:idx]), value[idx:]
+	return typemapping.NormalizeKey(value[:idx]), value[idx:]
 }
 
 func mapTypeKey(value string, mappings map[string]string) string {
 	if len(mappings) == 0 {
 		return ""
 	}
-	key := normalizeTypeKey(value)
+	key := typemapping.NormalizeKey(value)
 	if mapped, ok := mappings[key]; ok {
 		return mapped
 	}
@@ -911,70 +905,26 @@ func mapTypeKey(value string, mappings map[string]string) string {
 	return ""
 }
 
-func normalizeTypeKey(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	parts := strings.Fields(strings.ToLower(value))
-	return strings.Join(parts, " ")
-}
-
-// LoadTypeMappings loads per-destination type mappings from connector options.
-func LoadTypeMappings(options map[string]string) (map[string]string, error) {
-	if options == nil {
-		return nil, nil //nolint:nilnil // absence of mappings is not an error
-	}
-	if raw := strings.TrimSpace(options[optTypeMappings]); raw != "" {
-		return parseTypeMappings(raw)
-	}
-	if path := strings.TrimSpace(options[optTypeMappingsFile]); path != "" {
-		// #nosec G304 -- path is user-configured and explicitly opted-in.
-		data, err := os.ReadFile(filepath.Clean(path))
-		if err != nil {
-			return nil, fmt.Errorf("read type mappings file: %w", err)
-		}
-		return parseTypeMappings(string(data))
-	}
-	return nil, nil //nolint:nilnil // absence of mappings is not an error
-}
-
 // MergeTypeMappings merges base and overrides, with overrides winning.
 func MergeTypeMappings(base, override map[string]string) map[string]string {
 	if len(base) == 0 && len(override) == 0 {
 		return nil
 	}
 	out := make(map[string]string, len(base)+len(override))
-	for key, value := range base {
-		if key == "" {
-			continue
+	merge := func(mappings map[string]string) {
+		keys := make([]string, 0, len(mappings))
+		for key := range mappings {
+			keys = append(keys, key)
 		}
-		out[normalizeTypeKey(key)] = strings.TrimSpace(value)
-	}
-	for key, value := range override {
-		if key == "" {
-			continue
+		sort.Strings(keys)
+		for _, key := range keys {
+			normalized := typemapping.NormalizeKey(key)
+			if normalized != "" {
+				out[normalized] = strings.TrimSpace(mappings[key])
+			}
 		}
-		out[normalizeTypeKey(key)] = strings.TrimSpace(value)
 	}
+	merge(base)
+	merge(override)
 	return out
-}
-
-func parseTypeMappings(raw string) (map[string]string, error) {
-	var mappings map[string]string
-	data := []byte(raw)
-	if err := json.Unmarshal(data, &mappings); err != nil {
-		if err := yaml.Unmarshal(data, &mappings); err != nil {
-			return nil, fmt.Errorf("parse type_mappings: %w", err)
-		}
-	}
-	out := make(map[string]string, len(mappings))
-	for key, value := range mappings {
-		normalized := normalizeTypeKey(key)
-		if normalized == "" {
-			continue
-		}
-		out[normalized] = strings.TrimSpace(value)
-	}
-	return out, nil
 }

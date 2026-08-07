@@ -12,11 +12,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestReconfigureFlowOptionalBooleansDriveEngineLifecycle(t *testing.T) {
@@ -32,7 +34,7 @@ func TestReconfigureFlowOptionalBooleansDriveEngineLifecycle(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			engine := &recordingLifecycleEngine{MemoryEngine: workflow.NewMemoryEngine()}
-			definition := mappedGRPCTestFlow(flow.Flow{ID: "reconfigure-defaults", Name: "before", Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{}}})
+			definition := mappedGRPCTestFlow(flow.Flow{ID: "reconfigure-defaults", Name: "before", Source: testSourceEndpoint(connector.RuntimeSpec{Type: connector.EndpointPostgres, Options: map[string]string{"sync_publication": "false"}})})
 			if _, err := engine.Create(ctx, definition); err != nil {
 				t.Fatal(err)
 			}
@@ -41,7 +43,7 @@ func TestReconfigureFlowOptionalBooleansDriveEngineLifecycle(t *testing.T) {
 			}
 			definition.Name = "after"
 			response, err := NewFlowService(engine, nil).ReconfigureFlow(ctx, &wallabypb.ReconfigureFlowRequest{
-				Flow: flowToProto(definition), PauseFirst: tt.pauseFirst, ResumeAfter: tt.resumeAfter, SyncPublication: &falseValue,
+				Flow: flowToProtoForTest(definition), PauseFirst: tt.pauseFirst, ResumeAfter: tt.resumeAfter, SyncPublication: &falseValue,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -56,8 +58,8 @@ func TestReconfigureFlowOptionalBooleansDriveEngineLifecycle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if stored.Source.Options["sync_publication"] != "false" {
-				t.Fatalf("stored sync_publication=%q, want explicit false", stored.Source.Options["sync_publication"])
+			if stored.Source.GetPostgresSource().GetSyncPublication() {
+				t.Fatal("stored sync_publication=true, want explicit false")
 			}
 		})
 	}
@@ -67,9 +69,9 @@ func TestReconfigureFlowSyncPublicationExplicitFalseOverridesStoredTrue(t *testi
 	ctx := context.Background()
 	falseValue := false
 	newFlow := func(id string) flow.Flow {
-		return mappedGRPCTestFlow(flow.Flow{ID: id, Name: "before", Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
+		return mappedGRPCTestFlow(flow.Flow{ID: id, Name: "before", Source: testSourceEndpoint(connector.RuntimeSpec{Type: connector.EndpointPostgres, Options: map[string]string{
 			"dsn": "postgres://unreachable.invalid/wallaby", "publication": "wallaby_publication", "publication_tables": "public.widgets", "sync_publication": "true",
-		}}})
+		}})})
 	}
 
 	t.Run("explicit false bypasses ownership guard and network and persists", func(t *testing.T) {
@@ -80,20 +82,24 @@ func TestReconfigureFlowSyncPublicationExplicitFalseOverridesStoredTrue(t *testi
 		}
 		definition.Name = "after"
 		response, err := NewFlowService(engine, nil).ReconfigureFlow(ctx, &wallabypb.ReconfigureFlowRequest{
-			Flow: flowToProto(definition), PauseFirst: &falseValue, ResumeAfter: &falseValue, SyncPublication: &falseValue,
+			Flow: flowToProtoForTest(definition), PauseFirst: &falseValue, ResumeAfter: &falseValue, SyncPublication: &falseValue,
 		})
 		if err != nil {
 			t.Fatalf("explicit false reached source ownership/network synchronization: %v", err)
 		}
-		if response.Source.Options["sync_publication"] != "false" {
-			t.Fatalf("response sync_publication=%q, want false", response.Source.Options["sync_publication"])
+		responseSource, err := endpointcodec.Decode(response.Source, endpointcodec.RoleSource)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if responseSource.Options["sync_publication"] != "false" {
+			t.Fatalf("response sync_publication=%q, want false", responseSource.Options["sync_publication"])
 		}
 		stored, err := engine.Get(ctx, definition.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if stored.Source.Options["sync_publication"] != "false" {
-			t.Fatalf("stored sync_publication=%q, want false", stored.Source.Options["sync_publication"])
+		if stored.Source.GetPostgresSource().GetSyncPublication() {
+			t.Fatal("stored sync_publication=true, want false")
 		}
 	})
 
@@ -104,7 +110,7 @@ func TestReconfigureFlowSyncPublicationExplicitFalseOverridesStoredTrue(t *testi
 			t.Fatal(err)
 		}
 		_, err := NewFlowService(engine, nil).ReconfigureFlow(ctx, &wallabypb.ReconfigureFlowRequest{
-			Flow: flowToProto(definition), PauseFirst: &falseValue, ResumeAfter: &falseValue,
+			Flow: flowToProtoForTest(definition), PauseFirst: &falseValue, ResumeAfter: &falseValue,
 		})
 		if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "ownership guard") {
 			t.Fatalf("omitted sync_publication error=%v, want stored-true ownership guard", err)
@@ -113,7 +119,7 @@ func TestReconfigureFlowSyncPublicationExplicitFalseOverridesStoredTrue(t *testi
 		if getErr != nil {
 			t.Fatal(getErr)
 		}
-		if stored.Source.Options["sync_publication"] != "true" || stored.Name != "before" {
+		if !stored.Source.GetPostgresSource().GetSyncPublication() || stored.Name != "before" {
 			t.Fatalf("guarded flow mutated: %+v", stored)
 		}
 	})
@@ -180,9 +186,9 @@ func TestCleanupFlowOptionalBooleansDrivePostgresDrops(t *testing.T) {
 				_, _ = pool.Exec(context.Background(), fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", stateSchema))
 			}()
 			engine := workflow.NewMemoryEngine()
-			definition := mappedGRPCTestFlow(flow.Flow{ID: "cleanup-defaults-" + suffix, Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
+			definition := mappedGRPCTestFlow(flow.Flow{ID: "cleanup-defaults-" + suffix, Source: testSourceEndpoint(connector.RuntimeSpec{Type: connector.EndpointPostgres, Options: map[string]string{
 				"dsn": dsn, "slot": slot, "publication": publication, "state_schema": stateSchema, "state_table": "source_state",
-			}}})
+			}})})
 			if _, err := engine.Create(ctx, definition); err != nil {
 				t.Fatal(err)
 			}
@@ -240,14 +246,14 @@ func TestDirectDSNResourceMutationsFailBeforeNetwork(t *testing.T) {
 func TestFlowBoundResourceMutationRejectsOverridesBeforeNetwork(t *testing.T) {
 	ctx := context.Background()
 	engine := workflow.NewMemoryEngine()
-	f := mappedGRPCTestFlow(flow.Flow{ID: "legacy-admin", Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
+	f := mappedGRPCTestFlow(flow.Flow{ID: "legacy-admin", Source: testSourceEndpoint(connector.RuntimeSpec{Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": "postgres://127.0.0.1:1/unreachable", "slot": "configured_slot", "publication": "configured_publication",
-	}}})
+	}})})
 	if _, err := engine.Create(ctx, f); err != nil {
 		t.Fatal(err)
 	}
 	service := NewFlowService(engine, nil)
-	_, err := service.DropReplicationSlot(ctx, &wallabypb.DropReplicationSlotRequest{FlowId: f.ID, Dsn: f.Source.Options["dsn"], Slot: "configured_slot"})
+	_, err := service.DropReplicationSlot(ctx, &wallabypb.DropReplicationSlotRequest{FlowId: f.ID, Dsn: f.Source.GetPostgresSource().GetConnection().GetDsn(), Slot: "configured_slot"})
 	if code := status.Code(err); code != codes.InvalidArgument {
 		t.Fatalf("DSN override status=%s, want InvalidArgument", code)
 	}
@@ -277,9 +283,9 @@ func (e *rejectingResourceGuardEngine) CheckLegacySourceResourceMutation(_ conte
 func TestLegacyMutationConsultsManagedResourceOwnershipBeforeNetwork(t *testing.T) {
 	ctx := context.Background()
 	engine := &rejectingResourceGuardEngine{MemoryEngine: workflow.NewMemoryEngine()}
-	f := mappedGRPCTestFlow(flow.Flow{ID: "guarded-admin", Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
+	f := mappedGRPCTestFlow(flow.Flow{ID: "guarded-admin", Source: testSourceEndpoint(connector.RuntimeSpec{Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": "postgres://host/exact_database", "slot": "exact_slot", "source_system_identifier": "exact_system",
-	}}})
+	}})})
 	if _, err := engine.Create(ctx, f); err != nil {
 		t.Fatal(err)
 	}
@@ -295,24 +301,20 @@ func TestLegacyMutationConsultsManagedResourceOwnershipBeforeNetwork(t *testing.
 func TestReconfigurePublicationConsultsGuardBeforeUpdateOrNetwork(t *testing.T) {
 	ctx := context.Background()
 	engine := &rejectingResourceGuardEngine{MemoryEngine: workflow.NewMemoryEngine()}
-	existing := flow.Flow{ID: "guarded-reconfigure", Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{
+	existing := flow.Flow{ID: "guarded-reconfigure", Source: testSourceEndpoint(connector.RuntimeSpec{Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn":                      "postgres://127.0.0.1:1/exact_database",
 		"publication":              "exact_publication",
 		"publication_tables":       "public.original",
 		"source_system_identifier": "exact_system",
 		"sync_publication":         "true",
-	}}}
+	}})}
 	existing = mappedGRPCTestFlow(existing)
 	if _, err := engine.Create(ctx, existing); err != nil {
 		t.Fatal(err)
 	}
-	requested := existing
-	requested.Source.Options = make(map[string]string, len(existing.Source.Options))
-	for key, value := range existing.Source.Options {
-		requested.Source.Options[key] = value
-	}
-	requested.Source.Options["publication_tables"] = "public.changed"
-	_, err := NewFlowService(engine, nil).ReconfigureFlow(ctx, &wallabypb.ReconfigureFlowRequest{Flow: flowToProto(requested)})
+	requested := flow.Clone(existing)
+	requested.Source.GetPostgresSource().PublicationTables = []string{"public.changed"}
+	_, err := NewFlowService(engine, nil).ReconfigureFlow(ctx, &wallabypb.ReconfigureFlowRequest{Flow: flowToProtoForTest(requested)})
 	if code := status.Code(err); code != codes.FailedPrecondition {
 		t.Fatalf("status=%s, want FailedPrecondition before update or source network access", code)
 	}
@@ -323,8 +325,8 @@ func TestReconfigurePublicationConsultsGuardBeforeUpdateOrNetwork(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := stored.Source.Options["publication_tables"]; got != "public.original" {
-		t.Fatalf("flow was updated before ownership guard: publication_tables=%q", got)
+	if got := stored.Source.GetPostgresSource().GetPublicationTables(); len(got) != 1 || got[0] != "public.original" {
+		t.Fatalf("flow was updated before ownership guard: publication_tables=%v", got)
 	}
 }
 
@@ -341,24 +343,23 @@ func TestManagedProfileOnlyUpdateAndReconfigureFailClosed(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			engine := workflow.NewMemoryEngine()
-			existing := flow.Flow{ID: "profile-update-" + strings.ReplaceAll(tt.name, " ", "-"), Source: connector.Spec{Type: connector.EndpointPostgres, Options: map[string]string{}}}
+			existing := flow.Flow{ID: "profile-update-" + strings.ReplaceAll(tt.name, " ", "-"), Source: testSourceEndpoint(connector.RuntimeSpec{Type: connector.EndpointPostgres, Options: map[string]string{}})}
 			if tt.existingManaged {
-				existing.Source.Options["managed_profile"] = "postgres_to_postgres_v1"
+				existing.Source.GetPostgresSource().ManagedProfile = wallabypb.ManagedProfile_MANAGED_PROFILE_POSTGRES_TO_POSTGRES_V1
 			}
 			existing = mappedGRPCTestFlow(existing)
 			if _, err := engine.Create(ctx, existing); err != nil {
 				t.Fatal(err)
 			}
-			requested := existing
-			requested.Source.Options = maps.Clone(existing.Source.Options)
+			requested := flow.Clone(existing)
 			if tt.requestedManaged {
-				requested.Source.Options["managed_profile"] = "postgres_to_postgres_v1"
+				requested.Source.GetPostgresSource().ManagedProfile = wallabypb.ManagedProfile_MANAGED_PROFILE_POSTGRES_TO_POSTGRES_V1
 			}
 			service := NewFlowService(engine, nil)
-			if _, err := service.UpdateFlow(ctx, &wallabypb.UpdateFlowRequest{Flow: flowToProto(requested)}); status.Code(err) != codes.FailedPrecondition {
+			if _, err := service.UpdateFlow(ctx, &wallabypb.UpdateFlowRequest{Flow: flowToProtoForTest(requested)}); status.Code(err) != codes.FailedPrecondition {
 				t.Fatalf("UpdateFlow status=%s, want FailedPrecondition", status.Code(err))
 			}
-			if _, err := service.ReconfigureFlow(ctx, &wallabypb.ReconfigureFlowRequest{Flow: flowToProto(requested)}); status.Code(err) != codes.FailedPrecondition {
+			if _, err := service.ReconfigureFlow(ctx, &wallabypb.ReconfigureFlowRequest{Flow: flowToProtoForTest(requested)}); status.Code(err) != codes.FailedPrecondition {
 				t.Fatalf("ReconfigureFlow status=%s, want FailedPrecondition", status.Code(err))
 			}
 		})
@@ -370,7 +371,7 @@ func TestManagedAdministrativeResourceMutationsFailClosed(t *testing.T) {
 }
 
 func TestManagedProfileOnlyAdministrativeResourceMutationsFailClosed(t *testing.T) {
-	testManagedAdministrativeResourceMutationsFailClosed(t, map[string]string{"managed_profile": "postgres_to_postgres_v1"})
+	testManagedAdministrativeResourceMutationsFailClosed(t, map[string]string{"managed_profile": connector.ManagedProfilePostgresToPostgresV1})
 }
 
 func testManagedAdministrativeResourceMutationsFailClosed(t *testing.T, managedOptions map[string]string) {
@@ -382,7 +383,7 @@ func testManagedAdministrativeResourceMutationsFailClosed(t *testing.T, managedO
 	options["publication"] = "owned_publication"
 	managed := mappedGRPCTestFlow(flow.Flow{
 		ID:     "managed-admin-" + strings.ReplaceAll(t.Name(), "/", "-"),
-		Source: connector.Spec{Type: connector.EndpointPostgres, Options: options},
+		Source: testSourceEndpoint(connector.RuntimeSpec{Type: connector.EndpointPostgres, Options: options}),
 	})
 	if _, err := engine.Create(ctx, managed); err != nil {
 		t.Fatal(err)
@@ -440,7 +441,7 @@ func testManagedAdministrativeResourceMutationsFailClosed(t *testing.T, managedO
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterControl.Generation != beforeControl.Generation || afterControl.Target != beforeControl.Target || afterFlow.State != beforeFlow.State || !maps.Equal(afterFlow.Source.Options, beforeFlow.Source.Options) {
+	if afterControl.Generation != beforeControl.Generation || afterControl.Target != beforeControl.Target || afterFlow.State != beforeFlow.State || !proto.Equal(afterFlow.Source, beforeFlow.Source) {
 		t.Fatalf("rejected managed mutations changed ownership generation or flow: before=%+v/%+v after=%+v/%+v", beforeControl, beforeFlow, afterControl, afterFlow)
 	}
 }

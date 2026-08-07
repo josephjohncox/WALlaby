@@ -42,7 +42,6 @@ const (
 	optStagingSuffix   = "staging_suffix"
 	optMetaTable       = "meta_table"
 	optMetaSchema      = "meta_schema"
-	optMetaDatabase    = "meta_database"
 	optMetaEnabled     = "meta_table_enabled"
 	optMetaPKPrefix    = "meta_pk_prefix"
 	optMetaEngine      = "meta_engine"
@@ -69,7 +68,7 @@ type ddlExecutor interface {
 }
 
 type Destination struct {
-	spec                           connector.Spec
+	spec                           connector.RuntimeSpec
 	db                             *sql.DB
 	ddlExecutor                    ddlExecutor
 	managedConn                    chdriver.Conn
@@ -99,7 +98,7 @@ type Destination struct {
 	stagingResolved                bool
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	d.spec = spec
 	d.managedProfile = strings.TrimSpace(spec.Options["managed_profile"])
 	dsn := spec.Options[optDSN]
@@ -140,9 +139,6 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 
 	d.metaEnabled = parseBool(spec.Options[optMetaEnabled], true)
 	d.metaSchema = strings.TrimSpace(spec.Options[optMetaSchema])
-	if d.metaSchema == "" {
-		d.metaSchema = strings.TrimSpace(spec.Options[optMetaDatabase])
-	}
 	if d.metaSchema == "" {
 		d.metaSchema = defaultMetaSchema
 	}
@@ -282,7 +278,7 @@ func (*Destination) CapabilityProfileIDs() []connector.CapabilityProfileID {
 }
 
 // ClassifyCapabilityProfile validates the exact managed ClickHouse profile.
-func (*Destination) ClassifyCapabilityProfile(spec connector.Spec) (connector.CapabilityProfileID, error) {
+func (*Destination) ClassifyCapabilityProfile(spec connector.RuntimeSpec) (connector.CapabilityProfileID, error) {
 	profile := strings.TrimSpace(spec.Options["managed_profile"])
 	switch profile {
 	case "":
@@ -296,7 +292,7 @@ func (*Destination) ClassifyCapabilityProfile(spec connector.Spec) (connector.Ca
 
 // CapabilitiesFor removes generic DDL execution from the exact managed append
 // profile, whose ApplyDDL path records barriers and rejects target mutation.
-func (d *Destination) CapabilitiesFor(spec connector.Spec) (connector.Capabilities, error) {
+func (d *Destination) CapabilitiesFor(spec connector.RuntimeSpec) (connector.Capabilities, error) {
 	profile, err := d.ClassifyCapabilityProfile(spec)
 	if err != nil {
 		return connector.Capabilities{}, err

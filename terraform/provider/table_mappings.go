@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	flowmodel "github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -600,25 +601,23 @@ func validateTerraformTableMappings(ctx context.Context, model flowResourceModel
 	if deferred || diagnostics.HasError() {
 		return diagnostics
 	}
-	destinations := make([]connector.Spec, 0, len(model.Destinations))
+	destinations := make([]connector.RuntimeSpec, 0, len(model.Destinations))
 	for index, destination := range model.Destinations {
-		if destination.Name.IsUnknown() || destination.Type.IsUnknown() || destination.Options.IsUnknown() {
-			return diagnostics
+		endpoint, endpointDiagnostics := endpointModelToProto(ctx, destination, false)
+		diagnostics.Append(endpointDiagnostics...)
+		if endpointDiagnostics.HasError() {
+			continue
 		}
-		options := map[string]string{}
-		if !destination.Options.IsNull() {
-			optionDiagnostics := destination.Options.ElementsAs(ctx, &options, false)
-			diagnostics.Append(optionDiagnostics...)
-			if optionDiagnostics.HasError() {
-				return diagnostics
-			}
+		spec, err := endpointcodec.Decode(endpoint, endpointcodec.RoleDestination)
+		if err != nil {
+			diagnostics.AddError("Invalid typed destination", err.Error())
+			continue
 		}
-		name := knownString(destination.Name)
-		if strings.TrimSpace(name) == "" {
+		if strings.TrimSpace(spec.Name) == "" {
 			diagnostics.AddError("Invalid destination name", fmt.Sprintf("destinations[%d].name must be a nonblank identifier", index))
 			continue
 		}
-		destinations = append(destinations, connector.Spec{Name: name, Type: connector.EndpointType(strings.ToLower(strings.TrimSpace(knownString(destination.Type)))), Options: options})
+		destinations = append(destinations, spec)
 	}
 	if diagnostics.HasError() {
 		return diagnostics

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -21,8 +20,9 @@ import (
 // FlowService implements the gRPC FlowService API.
 type FlowService struct {
 	wallabypb.UnimplementedFlowServiceServer
-	engine     workflow.ControlEngine
-	dispatcher RunOnceDispatcher
+	engine            workflow.ControlEngine
+	dispatcher        RunOnceDispatcher
+	connectorRegistry *connector.Registry
 }
 
 // RunOnceDispatcher schedules one attempt against a captured lifecycle fence.
@@ -31,7 +31,15 @@ type RunOnceDispatcher interface {
 }
 
 func NewFlowService(engine workflow.ControlEngine, dispatcher RunOnceDispatcher) *FlowService {
-	return &FlowService{engine: engine, dispatcher: dispatcher}
+	return NewFlowServiceWithRegistry(engine, dispatcher, connector.DefaultRegistry)
+}
+
+// NewFlowServiceWithRegistry injects the custom connector registry shared with workers.
+func NewFlowServiceWithRegistry(engine workflow.ControlEngine, dispatcher RunOnceDispatcher, registry *connector.Registry) *FlowService {
+	if registry == nil {
+		registry = connector.NewRegistry()
+	}
+	return &FlowService{engine: engine, dispatcher: dispatcher, connectorRegistry: registry}
 }
 
 func (s *FlowService) CreateFlow(ctx context.Context, req *wallabypb.CreateFlowRequest) (*wallabypb.Flow, error) {
@@ -39,7 +47,7 @@ func (s *FlowService) CreateFlow(ctx context.Context, req *wallabypb.CreateFlowR
 		return nil, status.Error(codes.InvalidArgument, "flow is required")
 	}
 
-	model, err := flowFromProto(req.Flow)
+	model, err := flowFromProtoWithRegistry(req.Flow, s.connectorRegistry)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -50,7 +58,7 @@ func (s *FlowService) CreateFlow(ctx context.Context, req *wallabypb.CreateFlowR
 		return nil, status.Error(codes.InvalidArgument, "flows must be created in created state")
 	}
 	model.State = flow.StateCreated
-	if err := flow.ValidateDefinition(model); err != nil {
+	if err := flow.ValidateDefinitionWithRegistry(model, s.connectorRegistry); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
@@ -66,7 +74,7 @@ func (s *FlowService) CreateFlow(ctx context.Context, req *wallabypb.CreateFlowR
 		}
 	}
 
-	return flowToProto(created), nil
+	return s.flowToProto(created)
 }
 
 func (s *FlowService) UpdateFlow(ctx context.Context, req *wallabypb.UpdateFlowRequest) (*wallabypb.Flow, error) {
@@ -74,7 +82,7 @@ func (s *FlowService) UpdateFlow(ctx context.Context, req *wallabypb.UpdateFlowR
 		return nil, status.Error(codes.InvalidArgument, "flow is required")
 	}
 
-	model, err := flowFromProto(req.Flow)
+	model, err := flowFromProtoWithRegistry(req.Flow, s.connectorRegistry)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -86,7 +94,15 @@ func (s *FlowService) UpdateFlow(ctx context.Context, req *wallabypb.UpdateFlowR
 	if err != nil {
 		return nil, mapWorkflowError(err)
 	}
-	if connector.IsManagedSourceSpec(existing.Source) || connector.IsManagedSourceSpec(model.Source) {
+	existingSource, err := existing.DecodeSource(s.connectorRegistry)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	modelSource, err := model.DecodeSource(s.connectorRegistry)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if connector.IsManagedSourceSpec(existingSource) || connector.IsManagedSourceSpec(modelSource) {
 		return nil, status.Error(codes.FailedPrecondition, "managed flow updates require a fenced source-resource revision")
 	}
 	model.State = existing.State
@@ -102,7 +118,7 @@ func (s *FlowService) UpdateFlow(ctx context.Context, req *wallabypb.UpdateFlowR
 	if req.Flow.Config == nil {
 		model.Config = existing.Config
 	}
-	if err := flow.ValidateDefinition(model); err != nil {
+	if err := flow.ValidateDefinitionWithRegistry(model, s.connectorRegistry); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
@@ -111,7 +127,7 @@ func (s *FlowService) UpdateFlow(ctx context.Context, req *wallabypb.UpdateFlowR
 		return nil, mapWorkflowError(err)
 	}
 
-	return flowToProto(updated), nil
+	return s.flowToProto(updated)
 }
 
 func (s *FlowService) ReconfigureFlow(ctx context.Context, req *wallabypb.ReconfigureFlowRequest) (*wallabypb.Flow, error) {
@@ -119,7 +135,7 @@ func (s *FlowService) ReconfigureFlow(ctx context.Context, req *wallabypb.Reconf
 		return nil, status.Error(codes.InvalidArgument, "flow is required")
 	}
 
-	model, err := flowFromProto(req.Flow)
+	model, err := flowFromProtoWithRegistry(req.Flow, s.connectorRegistry)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -131,7 +147,15 @@ func (s *FlowService) ReconfigureFlow(ctx context.Context, req *wallabypb.Reconf
 	if err != nil {
 		return nil, mapWorkflowError(err)
 	}
-	if connector.IsManagedSourceSpec(existing.Source) || connector.IsManagedSourceSpec(model.Source) {
+	existingSource, err := existing.DecodeSource(s.connectorRegistry)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	modelSource, err := model.DecodeSource(s.connectorRegistry)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if connector.IsManagedSourceSpec(existingSource) || connector.IsManagedSourceSpec(modelSource) {
 		return nil, status.Error(codes.FailedPrecondition, "managed flow reconfiguration requires a fenced source-resource revision")
 	}
 	model.State = existing.State
@@ -147,12 +171,14 @@ func (s *FlowService) ReconfigureFlow(ctx context.Context, req *wallabypb.Reconf
 	if req.Flow.Config == nil {
 		model.Config = existing.Config
 	}
-	syncPublication := optionalBool(req.SyncPublication, parseBool(existing.Source.Options["sync_publication"]))
-	if model.Source.Options == nil {
-		model.Source.Options = make(map[string]string)
+	existingPostgres := existing.Source.GetPostgresSource()
+	modelPostgres := model.Source.GetPostgresSource()
+	if modelPostgres == nil {
+		return nil, status.Error(codes.InvalidArgument, "flow source is not postgres")
 	}
-	model.Source.Options["sync_publication"] = strconv.FormatBool(syncPublication)
-	if err := flow.ValidateDefinition(model); err != nil {
+	syncPublication := optionalBool(req.SyncPublication, existingPostgres != nil && existingPostgres.GetSyncPublication())
+	modelPostgres.SyncPublication = &syncPublication
+	if err := flow.ValidateDefinitionWithRegistry(model, s.connectorRegistry); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
@@ -191,7 +217,7 @@ func (s *FlowService) ReconfigureFlow(ctx context.Context, req *wallabypb.Reconf
 		current = resumed
 	}
 
-	return flowToProto(current), nil
+	return s.flowToProto(current)
 }
 
 func (s *FlowService) StartFlow(ctx context.Context, req *wallabypb.StartFlowRequest) (*wallabypb.Flow, error) {
@@ -202,7 +228,7 @@ func (s *FlowService) StartFlow(ctx context.Context, req *wallabypb.StartFlowReq
 	if err != nil {
 		return nil, mapWorkflowError(err)
 	}
-	return flowToProto(started), nil
+	return s.flowToProto(started)
 }
 
 func (s *FlowService) RunFlowOnce(ctx context.Context, req *wallabypb.RunFlowOnceRequest) (*wallabypb.RunFlowOnceResponse, error) {
@@ -233,7 +259,7 @@ func (s *FlowService) PauseFlow(ctx context.Context, req *wallabypb.PauseFlowReq
 	if err != nil {
 		return nil, mapWorkflowError(err)
 	}
-	return flowToProto(paused), nil
+	return s.flowToProto(paused)
 }
 
 func (s *FlowService) StopFlow(ctx context.Context, req *wallabypb.StopFlowRequest) (*wallabypb.Flow, error) {
@@ -244,7 +270,7 @@ func (s *FlowService) StopFlow(ctx context.Context, req *wallabypb.StopFlowReque
 	if err != nil {
 		return nil, mapWorkflowError(err)
 	}
-	return flowToProto(stopped), nil
+	return s.flowToProto(stopped)
 }
 
 func (s *FlowService) ResumeFlow(ctx context.Context, req *wallabypb.ResumeFlowRequest) (*wallabypb.Flow, error) {
@@ -255,7 +281,7 @@ func (s *FlowService) ResumeFlow(ctx context.Context, req *wallabypb.ResumeFlowR
 	if err != nil {
 		return nil, mapWorkflowError(err)
 	}
-	return flowToProto(resumed), nil
+	return s.flowToProto(resumed)
 }
 
 func (s *FlowService) GetFlow(ctx context.Context, req *wallabypb.GetFlowRequest) (*wallabypb.Flow, error) {
@@ -266,7 +292,7 @@ func (s *FlowService) GetFlow(ctx context.Context, req *wallabypb.GetFlowRequest
 	if err != nil {
 		return nil, mapWorkflowError(err)
 	}
-	return flowToProto(found), nil
+	return s.flowToProto(found)
 }
 
 func (s *FlowService) ListFlows(ctx context.Context, _ *wallabypb.ListFlowsRequest) (*wallabypb.ListFlowsResponse, error) {
@@ -277,10 +303,22 @@ func (s *FlowService) ListFlows(ctx context.Context, _ *wallabypb.ListFlowsReque
 
 	items := make([]*wallabypb.Flow, 0, len(flows))
 	for _, f := range flows {
-		items = append(items, flowToProto(f))
+		item, conversionErr := s.flowToProto(f)
+		if conversionErr != nil {
+			return nil, conversionErr
+		}
+		items = append(items, item)
 	}
 
 	return &wallabypb.ListFlowsResponse{Flows: items}, nil
+}
+
+func (s *FlowService) flowToProto(definition flow.Flow) (*wallabypb.Flow, error) {
+	encoded, err := flowToProto(definition, s.connectorRegistry)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return encoded, nil
 }
 
 func (s *FlowService) DeleteFlow(ctx context.Context, req *wallabypb.DeleteFlowRequest) (*wallabypb.DeleteFlowResponse, error) {
@@ -302,10 +340,14 @@ func (s *FlowService) CleanupFlow(ctx context.Context, req *wallabypb.CleanupFlo
 	if err != nil {
 		return nil, mapWorkflowError(err)
 	}
-	if f.Source.Type != connector.EndpointPostgres {
+	source, err := f.DecodeSource(s.connectorRegistry)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	if source.Type != connector.EndpointPostgres {
 		return &wallabypb.CleanupFlowResponse{Cleaned: true}, nil
 	}
-	if connector.IsManagedSourceSpec(f.Source) {
+	if connector.IsManagedSourceSpec(source) {
 		return nil, status.Error(codes.FailedPrecondition, "managed source cleanup requires exact fenced ownership and cannot use the legacy cleanup RPC")
 	}
 
@@ -313,9 +355,9 @@ func (s *FlowService) CleanupFlow(ctx context.Context, req *wallabypb.CleanupFlo
 	dropPublication := optionalBool(req.DropPublication, false)
 	dropState := optionalBool(req.DropSourceState, true)
 
-	dsn := strings.TrimSpace(f.Source.Options["dsn"])
-	slot := strings.TrimSpace(f.Source.Options["slot"])
-	publication := strings.TrimSpace(f.Source.Options["publication"])
+	dsn := strings.TrimSpace(source.Options["dsn"])
+	slot := strings.TrimSpace(source.Options["slot"])
+	publication := strings.TrimSpace(source.Options["publication"])
 
 	if dsn == "" {
 		return nil, status.Error(codes.InvalidArgument, "postgres dsn is required for cleanup")
@@ -336,7 +378,7 @@ func (s *FlowService) CleanupFlow(ctx context.Context, req *wallabypb.CleanupFlo
 
 	if dropSlot || dropPublication {
 		if slot == "" || publication == "" {
-			if stateInfo, ok, err := pgsource.LookupSourceState(ctx, f.Source, slot); err != nil {
+			if stateInfo, ok, err := pgsource.LookupSourceState(ctx, source, slot); err != nil {
 				return nil, status.Error(codes.Internal, err.Error())
 			} else if ok {
 				if slot == "" {
@@ -350,17 +392,17 @@ func (s *FlowService) CleanupFlow(ctx context.Context, req *wallabypb.CleanupFlo
 	}
 
 	if dropSlot {
-		if err := pgsource.DropReplicationSlot(ctx, dsn, slot, f.Source.Options); err != nil {
+		if err := pgsource.DropReplicationSlot(ctx, dsn, slot, source.Options); err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 	}
 	if dropPublication {
-		if err := pgsource.DropPublication(ctx, dsn, publication, f.Source.Options); err != nil {
+		if err := pgsource.DropPublication(ctx, dsn, publication, source.Options); err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 	}
 	if dropState {
-		if err := pgsource.DeleteSourceState(ctx, f.Source, slot); err != nil {
+		if err := pgsource.DeleteSourceState(ctx, source, slot); err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 	}
@@ -380,7 +422,7 @@ func (s *FlowService) ListReplicationSlots(ctx context.Context, req *wallabypb.L
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
 
-	cfg, err := s.resolveSlotCommandConfig(ctx, req.FlowId, req.Dsn, strings.TrimSpace(req.Slot), false, req.Options)
+	cfg, err := s.resolveSlotCommandConfig(ctx, req.FlowId, req.Dsn, strings.TrimSpace(req.Slot), false, postgresAdminOptions(req.GetRdsIam()))
 	if err != nil {
 		return nil, err
 	}
@@ -416,7 +458,7 @@ func (s *FlowService) GetReplicationSlot(ctx context.Context, req *wallabypb.Get
 		return nil, status.Error(codes.InvalidArgument, "slot is required")
 	}
 
-	cfg, err := s.resolveSlotCommandConfig(ctx, req.FlowId, req.Dsn, req.Slot, true, req.Options)
+	cfg, err := s.resolveSlotCommandConfig(ctx, req.FlowId, req.Dsn, req.Slot, true, postgresAdminOptions(req.GetRdsIam()))
 	if err != nil {
 		return nil, err
 	}
@@ -435,11 +477,11 @@ func (s *FlowService) DropReplicationSlot(ctx context.Context, req *wallabypb.Dr
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
-	if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, req.Dsn, req.Slot, req.Options, "slot"); err != nil {
+	if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, req.Dsn, req.Slot, postgresAdminOptions(req.GetRdsIam()), "slot"); err != nil {
 		return nil, err
 	}
 
-	cfg, err := s.resolveSlotCommandConfig(ctx, req.FlowId, req.Dsn, req.Slot, true, req.Options)
+	cfg, err := s.resolveSlotCommandConfig(ctx, req.FlowId, req.Dsn, req.Slot, true, postgresAdminOptions(req.GetRdsIam()))
 	if err != nil {
 		return nil, err
 	}
@@ -467,7 +509,7 @@ func (s *FlowService) ListPublicationTables(ctx context.Context, req *wallabypb.
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
 
-	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, req.Options)
+	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, postgresAdminOptions(req.GetRdsIam()))
 	if err != nil {
 		return nil, err
 	}
@@ -483,14 +525,14 @@ func (s *FlowService) AddPublicationTables(ctx context.Context, req *wallabypb.A
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
-	if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, req.Dsn, req.Publication, req.Options, "publication"); err != nil {
+	if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, req.Dsn, req.Publication, postgresAdminOptions(req.GetRdsIam()), "publication"); err != nil {
 		return nil, err
 	}
 	if len(req.Tables) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "tables are required")
 	}
 
-	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, req.Options)
+	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, postgresAdminOptions(req.GetRdsIam()))
 	if err != nil {
 		return nil, err
 	}
@@ -508,14 +550,14 @@ func (s *FlowService) DropPublicationTables(ctx context.Context, req *wallabypb.
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
-	if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, req.Dsn, req.Publication, req.Options, "publication"); err != nil {
+	if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, req.Dsn, req.Publication, postgresAdminOptions(req.GetRdsIam()), "publication"); err != nil {
 		return nil, err
 	}
 	if len(req.Tables) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "tables are required")
 	}
 
-	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, req.Options)
+	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, postgresAdminOptions(req.GetRdsIam()))
 	if err != nil {
 		return nil, err
 	}
@@ -533,11 +575,11 @@ func (s *FlowService) SyncPublicationTables(ctx context.Context, req *wallabypb.
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
-	if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, req.Dsn, req.Publication, req.Options, "publication"); err != nil {
+	if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, req.Dsn, req.Publication, postgresAdminOptions(req.GetRdsIam()), "publication"); err != nil {
 		return nil, err
 	}
 
-	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, req.Options)
+	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, postgresAdminOptions(req.GetRdsIam()))
 	if err != nil {
 		return nil, err
 	}
@@ -561,7 +603,7 @@ func (s *FlowService) ScrapePublicationTables(ctx context.Context, req *wallabyp
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
 	if req.Apply {
-		if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, req.Dsn, req.Publication, req.Options, "publication"); err != nil {
+		if err := s.authorizeLegacyResourceMutation(ctx, req.FlowId, req.Dsn, req.Publication, postgresAdminOptions(req.GetRdsIam()), "publication"); err != nil {
 			return nil, err
 		}
 	}
@@ -569,7 +611,7 @@ func (s *FlowService) ScrapePublicationTables(ctx context.Context, req *wallabyp
 		return nil, status.Error(codes.InvalidArgument, "schemas are required")
 	}
 
-	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, req.Options)
+	cfg, err := s.resolvePublicationCommandConfig(ctx, req.FlowId, req.Dsn, req.Publication, postgresAdminOptions(req.GetRdsIam()))
 	if err != nil {
 		return nil, err
 	}
@@ -630,17 +672,21 @@ func (s *FlowService) authorizeLegacyResourceMutation(ctx context.Context, flowI
 	if err != nil {
 		return err
 	}
-	if f.Source.Type != connector.EndpointPostgres {
+	source, err := f.DecodeSource(s.connectorRegistry)
+	if err != nil {
+		return status.Error(codes.Internal, err.Error())
+	}
+	if source.Type != connector.EndpointPostgres {
 		return status.Error(codes.InvalidArgument, "flow source is not postgres")
 	}
-	if connector.IsManagedSourceSpec(f.Source) {
+	if connector.IsManagedSourceSpec(source) {
 		return status.Error(codes.FailedPrecondition, "managed source-resource mutation requires the current fenced resource owner")
 	}
 	optionName := resourceKind
 	if resourceKind == "publication" {
 		optionName = "publication"
 	}
-	expectedName := strings.TrimSpace(f.Source.Options[optionName])
+	expectedName := strings.TrimSpace(source.Options[optionName])
 	if expectedName == "" || strings.TrimSpace(physicalName) != "" {
 		return status.Error(codes.InvalidArgument, "flow-bound source-resource mutation rejects physical-name overrides")
 	}
@@ -649,10 +695,10 @@ func (s *FlowService) authorizeLegacyResourceMutation(ctx context.Context, flowI
 		return nil
 	}
 	databaseName := ""
-	if config, parseErr := pgx.ParseConfig(strings.TrimSpace(f.Source.Options["dsn"])); parseErr == nil {
+	if config, parseErr := pgx.ParseConfig(strings.TrimSpace(source.Options["dsn"])); parseErr == nil {
 		databaseName = config.Database
 	}
-	if err := guard.CheckLegacySourceResourceMutation(ctx, strings.TrimSpace(f.Source.Options["source_system_identifier"]), databaseName, resourceKind, expectedName); err != nil {
+	if err := guard.CheckLegacySourceResourceMutation(ctx, strings.TrimSpace(source.Options["source_system_identifier"]), databaseName, resourceKind, expectedName); err != nil {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	return nil
@@ -678,11 +724,15 @@ func (s *FlowService) resolveSlotCommandConfig(ctx context.Context, flowID, dsn,
 	if err != nil {
 		return postgresHelperConfig{}, err
 	}
-	if flowModel.Source.Type != connector.EndpointPostgres {
+	source, err := flowModel.DecodeSource(s.connectorRegistry)
+	if err != nil {
+		return postgresHelperConfig{}, status.Error(codes.Internal, err.Error())
+	}
+	if source.Type != connector.EndpointPostgres {
 		return postgresHelperConfig{}, status.Error(codes.InvalidArgument, "flow source is not postgres")
 	}
 
-	baseDSN := strings.TrimSpace(flowModel.Source.Options["dsn"])
+	baseDSN := strings.TrimSpace(source.Options["dsn"])
 	resolvedDSN := strings.TrimSpace(dsn)
 	if resolvedDSN == "" {
 		resolvedDSN = baseDSN
@@ -693,11 +743,11 @@ func (s *FlowService) resolveSlotCommandConfig(ctx context.Context, flowID, dsn,
 
 	resolvedSlot := strings.TrimSpace(slot)
 	if resolvedSlot == "" {
-		resolvedSlot = strings.TrimSpace(flowModel.Source.Options["slot"])
+		resolvedSlot = strings.TrimSpace(source.Options["slot"])
 	}
 
 	if requireSlot && resolvedSlot == "" {
-		state, found, stateErr := pgsource.LookupSourceState(ctx, flowModel.Source, resolvedSlot)
+		state, found, stateErr := pgsource.LookupSourceState(ctx, source, resolvedSlot)
 		if stateErr != nil {
 			return postgresHelperConfig{}, status.Error(codes.Internal, stateErr.Error())
 		}
@@ -712,9 +762,9 @@ func (s *FlowService) resolveSlotCommandConfig(ctx context.Context, flowID, dsn,
 	return postgresHelperConfig{
 		dsn:         resolvedDSN,
 		slot:        resolvedSlot,
-		publication: strings.TrimSpace(flowModel.Source.Options["publication"]),
-		options:     mergeOptionMaps(flowModel.Source.Options, options),
-		managed:     connector.IsManagedSourceSpec(flowModel.Source),
+		publication: strings.TrimSpace(source.Options["publication"]),
+		options:     mergeOptionMaps(source.Options, options),
+		managed:     connector.IsManagedSourceSpec(source),
 	}, nil
 }
 
@@ -734,10 +784,14 @@ func (s *FlowService) resolvePublicationCommandConfig(ctx context.Context, flowI
 	if err != nil {
 		return postgresHelperConfig{}, err
 	}
-	if flowModel.Source.Type != connector.EndpointPostgres {
+	source, err := flowModel.DecodeSource(s.connectorRegistry)
+	if err != nil {
+		return postgresHelperConfig{}, status.Error(codes.Internal, err.Error())
+	}
+	if source.Type != connector.EndpointPostgres {
 		return postgresHelperConfig{}, status.Error(codes.InvalidArgument, "flow source is not postgres")
 	}
-	baseDSN := strings.TrimSpace(flowModel.Source.Options["dsn"])
+	baseDSN := strings.TrimSpace(source.Options["dsn"])
 	resolvedDSN := strings.TrimSpace(dsn)
 	if resolvedDSN == "" {
 		resolvedDSN = baseDSN
@@ -748,10 +802,10 @@ func (s *FlowService) resolvePublicationCommandConfig(ctx context.Context, flowI
 
 	resolvedPublication := strings.TrimSpace(publication)
 	if resolvedPublication == "" {
-		resolvedPublication = strings.TrimSpace(flowModel.Source.Options["publication"])
+		resolvedPublication = strings.TrimSpace(source.Options["publication"])
 	}
 	if resolvedPublication == "" {
-		if state, found, stateErr := pgsource.LookupSourceState(ctx, flowModel.Source, ""); stateErr != nil {
+		if state, found, stateErr := pgsource.LookupSourceState(ctx, source, ""); stateErr != nil {
 			return postgresHelperConfig{}, status.Error(codes.Internal, stateErr.Error())
 		} else if found {
 			resolvedPublication = strings.TrimSpace(state.Publication)
@@ -764,8 +818,8 @@ func (s *FlowService) resolvePublicationCommandConfig(ctx context.Context, flowI
 	return postgresHelperConfig{
 		dsn:         resolvedDSN,
 		publication: resolvedPublication,
-		options:     mergeOptionMaps(flowModel.Source.Options, options),
-		managed:     connector.IsManagedSourceSpec(flowModel.Source),
+		options:     mergeOptionMaps(source.Options, options),
+		managed:     connector.IsManagedSourceSpec(source),
 	}, nil
 }
 
@@ -775,6 +829,26 @@ func flowServiceGetFlow(ctx context.Context, engine workflow.Engine, flowID stri
 		return flow.Flow{}, mapWorkflowError(err)
 	}
 	return f, nil
+}
+
+func postgresAdminOptions(iam *wallabypb.RDSIAMConfig) map[string]string {
+	if iam == nil {
+		return nil
+	}
+	options := map[string]string{"aws_rds_iam": "true"}
+	for key, value := range map[string]string{
+		"aws_region":            iam.GetRegion(),
+		"aws_profile":           iam.GetProfile(),
+		"aws_role_arn":          iam.GetRoleArn(),
+		"aws_role_session_name": iam.GetRoleSessionName(),
+		"aws_role_external_id":  iam.GetRoleExternalId(),
+		"aws_endpoint":          iam.GetEndpoint(),
+	} {
+		if value != "" {
+			options[key] = value
+		}
+	}
+	return options
 }
 
 func replicationSlotInfoFromConnector(item pgsource.ReplicationSlotInfo) *wallabypb.ReplicationSlotInfo {
@@ -834,23 +908,18 @@ func optionalBool(value *bool, fallback bool) bool {
 	return *value
 }
 
-func parseBool(raw string) bool {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "1", "true", "yes", "y":
-		return true
-	default:
-		return false
-	}
-}
-
 func syncFlowPublication(ctx context.Context, engine workflow.ControlEngine, f flow.Flow) error {
 	if err := checkFlowPublicationMutation(ctx, engine, f); err != nil {
 		return err
 	}
-	if f.Source.Type != connector.EndpointPostgres || f.Source.Options == nil {
+	source, err := f.DecodeSource(connector.DefaultRegistry)
+	if err != nil {
+		return err
+	}
+	if source.Type != connector.EndpointPostgres || source.Options == nil {
 		return nil
 	}
-	opts := f.Source.Options
+	opts := source.Options
 	dsn := strings.TrimSpace(opts["dsn"])
 	publication := strings.TrimSpace(opts["publication"])
 	if dsn == "" || publication == "" {
@@ -874,7 +943,7 @@ func syncFlowPublication(ctx context.Context, engine workflow.ControlEngine, f f
 		return nil
 	}
 	mode := strings.TrimSpace(opts["sync_publication_mode"])
-	mode, err := pgsource.NormalizeSyncPublicationMode(mode)
+	mode, err = pgsource.NormalizeSyncPublicationMode(mode)
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -883,10 +952,14 @@ func syncFlowPublication(ctx context.Context, engine workflow.ControlEngine, f f
 }
 
 func checkFlowPublicationMutation(ctx context.Context, engine workflow.ControlEngine, f flow.Flow) error {
-	if f.Source.Type != connector.EndpointPostgres || f.Source.Options == nil {
+	source, err := f.DecodeSource(connector.DefaultRegistry)
+	if err != nil {
+		return err
+	}
+	if source.Type != connector.EndpointPostgres || source.Options == nil {
 		return nil
 	}
-	opts := f.Source.Options
+	opts := source.Options
 	dsn := strings.TrimSpace(opts["dsn"])
 	publication := strings.TrimSpace(opts["publication"])
 	if dsn == "" || publication == "" {

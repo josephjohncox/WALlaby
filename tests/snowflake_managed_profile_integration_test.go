@@ -21,6 +21,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/bootstrap"
 	"github.com/josephjohncox/wallaby/internal/delivery"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -36,7 +37,7 @@ func TestSnowflakeManagedProfileFakesnowFailsClosed(t *testing.T) {
 		t.Skip("fakesnow DSN is not configured")
 	}
 	destination := &snowflake.Destination{}
-	err := destination.Open(context.Background(), connector.Spec{Type: connector.EndpointSnowflake, Options: map[string]string{
+	err := destination.Open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": dsn, "flow_id": "snowflake-flow", "managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1,
 	}})
 	if err == nil || !strings.Contains(err.Error(), "verified HTTPS") {
@@ -264,7 +265,7 @@ func TestSnowflakeManagedProfileProcessKillHelper(t *testing.T) {
 	if os.Getenv("WALLABY_SNOWFLAKE_PROCESS_HELPER") != "1" {
 		t.Skip("process-kill helper")
 	}
-	var spec connector.Spec
+	var spec connector.RuntimeSpec
 	if err := json.Unmarshal([]byte(os.Getenv("WALLABY_SNOWFLAKE_PROCESS_SPEC")), &spec); err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +329,7 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 	t.Logf("live recovery pair: PostgreSQL server_version_num=%d Snowflake CURRENT_VERSION()=%s", postgresVersion, fixture.version)
 
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -385,7 +386,7 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sourceSpec := connector.Spec{Name: "postgres-managed-snowflake", Type: connector.EndpointPostgres, Options: map[string]string{
+	sourceSpec := connector.RuntimeSpec{Name: "postgres-managed-snowflake", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "slot": "managed", "publication": publication,
 		"managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1,
 		"create_slot":     "true", "ensure_state": "false", "ensure_publication": "false", "sync_publication": "false",
@@ -436,7 +437,11 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 	if rootedLSN != initial.LSN || sourceResources != 1 {
 		t.Fatalf("fenced source cut checkpoint/resources=%s/%d, want %s/1", rootedLSN, sourceResources, initial.LSN)
 	}
-	fingerprint, err := connector.DeliveryConfigFingerprint(fixture.spec, "integration-mapping-v1")
+	fingerprintEndpoint, err := endpointcodec.Encode(fixture.spec, endpointcodec.RoleDestination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := endpointcodec.DeliveryConfigFingerprint(fingerprintEndpoint, "integration-mapping-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +549,7 @@ type snowflakeManagedFixture struct {
 	db               *sql.DB
 	provisionDB      *sql.DB
 	destination      *snowflake.Destination
-	spec             connector.Spec
+	spec             connector.RuntimeSpec
 	schema           connector.Schema
 	version          string
 	targetQualified  string
@@ -759,7 +764,7 @@ func newSnowflakeManagedFixtureForFlowSource(t *testing.T, flowID, sourceSchema,
 	if err := provisionDB.QueryRowContext(ctx, createdQuery, strings.ToUpper(schemaName), receipts).Scan(&receiptsCreatedOn); err != nil {
 		t.Fatal(err)
 	}
-	spec := connector.Spec{Name: "snowflake-managed", Type: connector.EndpointSnowflake, Options: map[string]string{
+	spec := connector.RuntimeSpec{Name: "snowflake-managed", Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": dsn, "flow_id": flowID, "managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1,
 		"destination_revision_id": revision, "batch_mode": "target", "batch_resolution": "none",
 		"meta_table_enabled": "false", "disable_transactions": "false", "session_keep_alive": "false",

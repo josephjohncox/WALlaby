@@ -120,7 +120,8 @@ func (TableWriteMode) EnumDescriptor() ([]byte, []int) {
 }
 
 type TableMappings struct {
-	state         protoimpl.MessageState      `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Version 2 is required. Version 1 and legacy placeholder syntax are unsupported.
 	Version       uint32                      `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
 	Destinations  []*DestinationTableMappings `protobuf:"bytes,2,rep,name=destinations,proto3" json:"destinations,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -232,12 +233,16 @@ func (x *DestinationTableMappings) GetTables() []*TableMapping {
 }
 
 type FutureTableMapping struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Action        MappingAction          `protobuf:"varint,1,opt,name=action,proto3,enum=wallaby.v1.MappingAction" json:"action,omitempty"`
-	TargetSchema  string                 `protobuf:"bytes,2,opt,name=target_schema,json=targetSchema,proto3" json:"target_schema,omitempty"`
-	TargetTable   string                 `protobuf:"bytes,3,opt,name=target_table,json=targetTable,proto3" json:"target_table,omitempty"`
-	FutureColumns *FutureColumnMapping   `protobuf:"bytes,4,opt,name=future_columns,json=futureColumns,proto3" json:"future_columns,omitempty"`
-	Write         *TableWritePolicy      `protobuf:"bytes,5,opt,name=write,proto3" json:"write,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Action MappingAction          `protobuf:"varint,1,opt,name=action,proto3,enum=wallaby.v1.MappingAction" json:"action,omitempty"`
+	// When action is INCLUDE, version 2 requires one restricted Go text/template
+	// field action: {{ .Schema }}. When action is EXCLUDE, this must be empty.
+	TargetSchema string `protobuf:"bytes,2,opt,name=target_schema,json=targetSchema,proto3" json:"target_schema,omitempty"`
+	// When action is INCLUDE, version 2 requires one restricted Go text/template
+	// field action: {{ .Table }}. When action is EXCLUDE, this must be empty.
+	TargetTable   string               `protobuf:"bytes,3,opt,name=target_table,json=targetTable,proto3" json:"target_table,omitempty"`
+	FutureColumns *FutureColumnMapping `protobuf:"bytes,4,opt,name=future_columns,json=futureColumns,proto3" json:"future_columns,omitempty"`
+	Write         *TableWritePolicy    `protobuf:"bytes,5,opt,name=write,proto3" json:"write,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -408,9 +413,13 @@ func (x *TableMapping) GetWrite() *TableWritePolicy {
 }
 
 type FutureColumnMapping struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Action        MappingAction          `protobuf:"varint,1,opt,name=action,proto3,enum=wallaby.v1.MappingAction" json:"action,omitempty"`
-	TargetColumn  string                 `protobuf:"bytes,2,opt,name=target_column,json=targetColumn,proto3" json:"target_column,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Action MappingAction          `protobuf:"varint,1,opt,name=action,proto3,enum=wallaby.v1.MappingAction" json:"action,omitempty"`
+	// When action is INCLUDE, version 2 requires one restricted Go text/template
+	// field action: {{ .Column }}. When action is EXCLUDE, this must be empty.
+	// Only typed Schema, Table, and Column data is injected. Functions, pipelines,
+	// variables, conditions, loops, and template inclusion are unsupported.
+	TargetColumn  string `protobuf:"bytes,2,opt,name=target_column,json=targetColumn,proto3" json:"target_column,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

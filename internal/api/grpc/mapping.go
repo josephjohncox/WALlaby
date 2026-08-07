@@ -6,35 +6,42 @@ import (
 	"math"
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-func flowToProto(f flow.Flow) *wallabypb.Flow {
+func flowToProto(f flow.Flow, registry *connector.Registry) (*wallabypb.Flow, error) {
+	if _, err := endpointcodec.DecodeWithRegistry(f.Source, endpointcodec.RoleSource, registry); err != nil {
+		return nil, fmt.Errorf("encode durable source endpoint: %w", err)
+	}
+	destinations := make([]*wallabypb.Endpoint, 0, len(f.Destinations))
+	for index, endpoint := range f.Destinations {
+		if _, err := endpointcodec.DecodeWithRegistry(endpoint, endpointcodec.RoleDestination, registry); err != nil {
+			return nil, fmt.Errorf("encode durable destination %d: %w", index, err)
+		}
+		destinations = append(destinations, endpointcodec.Clone(endpoint))
+	}
 	return &wallabypb.Flow{
 		Id:           f.ID,
 		Name:         f.Name,
-		Source:       endpointToProto(f.Source),
-		Destinations: endpointsToProto(f.Destinations),
+		Source:       endpointcodec.Clone(f.Source),
+		Destinations: destinations,
 		State:        flowStateToProto(f.State),
 		WireFormat:   wireFormatToProto(f.WireFormat),
 		Parallelism:  safeInt32(f.Parallelism),
 		Config:       flowConfigToProto(f.Config),
-	}
+	}, nil
 }
 
-func endpointsToProto(specs []connector.Spec) []*wallabypb.Endpoint {
-	items := make([]*wallabypb.Endpoint, 0, len(specs))
-	for _, spec := range specs {
-		items = append(items, endpointToProto(spec))
-	}
-	return items
-}
-
-func flowFromProto(pb *wallabypb.Flow) (flow.Flow, error) {
+func flowFromProtoWithRegistry(pb *wallabypb.Flow, registry *connector.Registry) (flow.Flow, error) {
 	if pb == nil {
 		return flow.Flow{}, errors.New("flow is required")
+	}
+	if err := validateKnownProtoEnums(pb.ProtoReflect(), "flow"); err != nil {
+		return flow.Flow{}, err
 	}
 	if pb.Config != nil {
 		switch pb.Config.AckPolicy {
@@ -47,18 +54,16 @@ func flowFromProto(pb *wallabypb.Flow) (flow.Flow, error) {
 		}
 	}
 
-	source, err := endpointFromProto(pb.Source)
-	if err != nil {
+	if _, err := endpointcodec.DecodeWithRegistry(pb.Source, endpointcodec.RoleSource, registry); err != nil {
 		return flow.Flow{}, err
 	}
 
-	dests := make([]connector.Spec, 0, len(pb.Destinations))
+	dests := make([]*wallabypb.Endpoint, 0, len(pb.Destinations))
 	for _, dest := range pb.Destinations {
-		spec, err := endpointFromProto(dest)
-		if err != nil {
+		if _, err := endpointcodec.DecodeWithRegistry(dest, endpointcodec.RoleDestination, registry); err != nil {
 			return flow.Flow{}, err
 		}
-		dests = append(dests, spec)
+		dests = append(dests, endpointcodec.Clone(dest))
 	}
 	config, err := flowConfigFromProto(pb.Config)
 	if err != nil {
@@ -68,13 +73,58 @@ func flowFromProto(pb *wallabypb.Flow) (flow.Flow, error) {
 	return flow.Flow{
 		ID:           pb.Id,
 		Name:         pb.Name,
-		Source:       source,
+		Source:       endpointcodec.Clone(pb.Source),
 		Destinations: dests,
 		State:        flowStateFromProto(pb.State),
 		WireFormat:   wireFormatFromProto(pb.WireFormat),
 		Parallelism:  int(pb.Parallelism),
 		Config:       config,
 	}, nil
+}
+
+func validateKnownProtoEnums(message protoreflect.Message, path string) error {
+	var validationErr error
+	message.Range(func(field protoreflect.FieldDescriptor, value protoreflect.Value) bool {
+		fieldPath := path + "." + string(field.Name())
+		switch {
+		case field.IsMap():
+			if field.MapValue().Kind() == protoreflect.MessageKind {
+				value.Map().Range(func(key protoreflect.MapKey, item protoreflect.Value) bool {
+					if err := validateKnownProtoEnums(item.Message(), fmt.Sprintf("%s[%q]", fieldPath, key.String())); err != nil {
+						validationErr = err
+						return false
+					}
+					return true
+				})
+			}
+		case field.IsList():
+			for index := 0; index < value.List().Len(); index++ {
+				item := value.List().Get(index)
+				if field.Kind() == protoreflect.EnumKind && field.Enum().Values().ByNumber(item.Enum()) == nil {
+					validationErr = fmt.Errorf("%s[%d] contains unknown enum value %d", fieldPath, index, item.Enum())
+					return false
+				}
+				if field.Kind() == protoreflect.MessageKind {
+					if err := validateKnownProtoEnums(item.Message(), fmt.Sprintf("%s[%d]", fieldPath, index)); err != nil {
+						validationErr = err
+						return false
+					}
+				}
+			}
+		case field.Kind() == protoreflect.EnumKind:
+			if field.Enum().Values().ByNumber(value.Enum()) == nil {
+				validationErr = fmt.Errorf("%s contains unknown enum value %d", fieldPath, value.Enum())
+				return false
+			}
+		case field.Kind() == protoreflect.MessageKind:
+			if err := validateKnownProtoEnums(value.Message(), fieldPath); err != nil {
+				validationErr = err
+				return false
+			}
+		}
+		return true
+	})
+	return validationErr
 }
 
 func safeInt32(value int) int32 {
@@ -93,16 +143,13 @@ func flowConfigToProto(cfg flow.Config) *wallabypb.FlowConfig {
 		return nil
 	}
 	return &wallabypb.FlowConfig{
-		AckPolicy:                       ackPolicyToProto(cfg.AckPolicy),
-		PrimaryDestination:              cfg.PrimaryDestination,
-		FailureMode:                     failureModeToProto(cfg.FailureMode),
-		GiveUpPolicy:                    giveUpPolicyToProto(cfg.GiveUpPolicy),
-		Ddl:                             ddlPolicyToProto(cfg.DDL),
-		SchemaRegistrySubject:           cfg.SchemaRegistrySubject,
-		SchemaRegistryProtoTypesSubject: cfg.SchemaRegistryProtoTypesSubject,
-		SchemaRegistrySubjectMode:       cfg.SchemaRegistrySubjectMode,
-		Materialization:                 materializationPolicyToProto(cfg.Materialization),
-		TableMappings:                   tableMappingsToProto(cfg.TableMappings),
+		AckPolicy:          ackPolicyToProto(cfg.AckPolicy),
+		PrimaryDestination: cfg.PrimaryDestination,
+		FailureMode:        failureModeToProto(cfg.FailureMode),
+		GiveUpPolicy:       giveUpPolicyToProto(cfg.GiveUpPolicy),
+		Ddl:                ddlPolicyToProto(cfg.DDL),
+		Materialization:    materializationPolicyToProto(cfg.Materialization),
+		TableMappings:      tableMappingsToProto(cfg.TableMappings),
 	}
 }
 
@@ -115,16 +162,13 @@ func flowConfigFromProto(cfg *wallabypb.FlowConfig) (flow.Config, error) {
 		return flow.Config{}, err
 	}
 	return flow.Config{
-		AckPolicy:                       ackPolicyFromProto(cfg.AckPolicy),
-		PrimaryDestination:              cfg.PrimaryDestination,
-		FailureMode:                     failureModeFromProto(cfg.FailureMode),
-		GiveUpPolicy:                    giveUpPolicyFromProto(cfg.GiveUpPolicy),
-		DDL:                             ddlPolicyFromProto(cfg.Ddl),
-		SchemaRegistrySubject:           cfg.SchemaRegistrySubject,
-		SchemaRegistryProtoTypesSubject: cfg.SchemaRegistryProtoTypesSubject,
-		SchemaRegistrySubjectMode:       cfg.SchemaRegistrySubjectMode,
-		Materialization:                 materializationPolicyFromProto(cfg.Materialization),
-		TableMappings:                   mappings,
+		AckPolicy:          ackPolicyFromProto(cfg.AckPolicy),
+		PrimaryDestination: cfg.PrimaryDestination,
+		FailureMode:        failureModeFromProto(cfg.FailureMode),
+		GiveUpPolicy:       giveUpPolicyFromProto(cfg.GiveUpPolicy),
+		DDL:                ddlPolicyFromProto(cfg.Ddl),
+		Materialization:    materializationPolicyFromProto(cfg.Materialization),
+		TableMappings:      mappings,
 	}, nil
 }
 
@@ -382,102 +426,6 @@ func giveUpPolicyFromProto(policy wallabypb.GiveUpPolicy) stream.GiveUpPolicy {
 		return stream.GiveUpPolicyNever
 	case wallabypb.GiveUpPolicy_GIVE_UP_POLICY_ON_RETRY_EXHAUSTION:
 		return stream.GiveUpPolicyOnRetryExhaustion
-	default:
-		return ""
-	}
-}
-
-func endpointToProto(spec connector.Spec) *wallabypb.Endpoint {
-	return &wallabypb.Endpoint{
-		Name:    spec.Name,
-		Type:    endpointTypeToProto(spec.Type),
-		Options: spec.Options,
-	}
-}
-
-func endpointFromProto(endpoint *wallabypb.Endpoint) (connector.Spec, error) {
-	if endpoint == nil {
-		return connector.Spec{}, errors.New("endpoint is required")
-	}
-	if endpoint.Type == wallabypb.EndpointType_ENDPOINT_TYPE_UNSPECIFIED {
-		return connector.Spec{}, errors.New("endpoint type is required")
-	}
-	return connector.Spec{
-		Name:    endpoint.Name,
-		Type:    endpointTypeFromProto(endpoint.Type),
-		Options: endpoint.Options,
-	}, nil
-}
-
-func endpointTypeToProto(t connector.EndpointType) wallabypb.EndpointType {
-	switch t {
-	case connector.EndpointPostgres:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES
-	case connector.EndpointSnowflake:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_SNOWFLAKE
-	case connector.EndpointS3:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_S3
-	case connector.EndpointKafka:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_KAFKA
-	case connector.EndpointHTTP:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_HTTP
-	case connector.EndpointGRPC:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_GRPC
-	case connector.EndpointProto:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_PROTO
-	case connector.EndpointPGStream:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_PGSTREAM
-	case connector.EndpointSnowpipe:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_SNOWPIPE
-	case connector.EndpointParquet:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_PARQUET
-	case connector.EndpointDuckDB:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_DUCKDB
-	case connector.EndpointDuckLake:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_DUCKLAKE
-	case connector.EndpointRedpanda:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA
-	case connector.EndpointClickHouse:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE
-	case connector.EndpointIceberg:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_ICEBERG
-	default:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_UNSPECIFIED
-	}
-}
-
-func endpointTypeFromProto(t wallabypb.EndpointType) connector.EndpointType {
-	switch t {
-	case wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES:
-		return connector.EndpointPostgres
-	case wallabypb.EndpointType_ENDPOINT_TYPE_SNOWFLAKE:
-		return connector.EndpointSnowflake
-	case wallabypb.EndpointType_ENDPOINT_TYPE_S3:
-		return connector.EndpointS3
-	case wallabypb.EndpointType_ENDPOINT_TYPE_KAFKA:
-		return connector.EndpointKafka
-	case wallabypb.EndpointType_ENDPOINT_TYPE_HTTP:
-		return connector.EndpointHTTP
-	case wallabypb.EndpointType_ENDPOINT_TYPE_GRPC:
-		return connector.EndpointGRPC
-	case wallabypb.EndpointType_ENDPOINT_TYPE_PROTO:
-		return connector.EndpointProto
-	case wallabypb.EndpointType_ENDPOINT_TYPE_PGSTREAM:
-		return connector.EndpointPGStream
-	case wallabypb.EndpointType_ENDPOINT_TYPE_SNOWPIPE:
-		return connector.EndpointSnowpipe
-	case wallabypb.EndpointType_ENDPOINT_TYPE_PARQUET:
-		return connector.EndpointParquet
-	case wallabypb.EndpointType_ENDPOINT_TYPE_DUCKDB:
-		return connector.EndpointDuckDB
-	case wallabypb.EndpointType_ENDPOINT_TYPE_DUCKLAKE:
-		return connector.EndpointDuckLake
-	case wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA:
-		return connector.EndpointRedpanda
-	case wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE:
-		return connector.EndpointClickHouse
-	case wallabypb.EndpointType_ENDPOINT_TYPE_ICEBERG:
-		return connector.EndpointIceberg
 	default:
 		return ""
 	}

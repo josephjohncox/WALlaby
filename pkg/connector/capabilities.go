@@ -71,14 +71,14 @@ type CapabilityProfileID string
 // configuration into a closed, typed profile before returning its guarantees.
 type ConfiguredDestinationCapabilities interface {
 	CapabilityProfileIDs() []CapabilityProfileID
-	ClassifyCapabilityProfile(spec Spec) (CapabilityProfileID, error)
-	CapabilitiesFor(spec Spec) (Capabilities, error)
+	ClassifyCapabilityProfile(spec RuntimeSpec) (CapabilityProfileID, error)
+	CapabilitiesFor(spec RuntimeSpec) (Capabilities, error)
 }
 
 // ResolveDestinationCapabilities returns the guarantees for one validated
 // configured destination, falling back to its static declaration. A classifier
 // result that is not in the connector's declared closed profile set fails.
-func ResolveDestinationCapabilities(destination Destination, spec Spec) (Capabilities, error) {
+func ResolveDestinationCapabilities(destination Destination, spec RuntimeSpec) (Capabilities, error) {
 	configured, ok := destination.(ConfiguredDestinationCapabilities)
 	if !ok {
 		return destination.Capabilities(), nil

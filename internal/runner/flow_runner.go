@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/josephjohncox/wallaby/internal/authority"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/registry"
 	"github.com/josephjohncox/wallaby/internal/tablemap"
@@ -53,6 +54,8 @@ type FlowRunner struct {
 	Deliveries         managedDeliveryRuntime
 	SchemaBaselines    connector.ManagedSchemaBaselineStore
 	Artifacts          ArtifactLogFactory
+	ConnectorRegistry  *connector.Registry
+	SourceSpecOverride *connector.RuntimeSpec
 }
 
 func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Source, destinations []stream.DestinationConfig) (runErr error) {
@@ -70,7 +73,18 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 	if err != nil {
 		return err
 	}
-	managed := connector.IsManagedSourceSpec(f.Source)
+	connectorRegistry := r.ConnectorRegistry
+	if connectorRegistry == nil {
+		connectorRegistry = connector.DefaultRegistry
+	}
+	sourceSpec, err := f.DecodeSource(connectorRegistry)
+	if err != nil {
+		return err
+	}
+	if r.SourceSpecOverride != nil {
+		sourceSpec = cloneSpec(*r.SourceSpecOverride)
+	}
+	managed := connector.IsManagedSourceSpec(sourceSpec)
 	generation := r.ExpectedGeneration
 	if managed && generation <= 0 {
 		return errors.New("managed flow execution requires an explicit positive lifecycle generation")
@@ -168,6 +182,8 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		DeliveryCoordinator: r.Deliveries,
 		SchemaBaselines:     r.SchemaBaselines,
 		ArtifactLog:         artifactLog,
+		ConnectorRegistry:   connectorRegistry,
+		SourceSpecOverride:  &sourceSpec,
 	})
 	if err != nil {
 		if runFence != nil {
@@ -180,7 +196,8 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 	if managed {
 		destinationSpec := streamRunner.Destinations[0].Spec
 		revisionID := strings.TrimSpace(destinationSpec.Options["destination_revision_id"])
-		fingerprint, fingerprintErr := connector.DeliveryConfigFingerprint(destinationSpec, streamRunner.Destinations[0].MappingFingerprint)
+		fingerprintSpec := f.Destinations[0]
+		fingerprint, fingerprintErr := endpointcodec.DeliveryConfigFingerprint(fingerprintSpec, streamRunner.Destinations[0].MappingFingerprint)
 		// A materialized runtime that owns a deployment-merged catalog identity the
 		// flow spec cannot express (today: Iceberg) reports it here and it wins. A
 		// runtime with no such consumer reports the empty string, and the
@@ -198,7 +215,7 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 			_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
 			return fingerprintErr
 		}
-		if raw := strings.TrimSpace(f.Source.Options["delivery_retention"]); raw != "" {
+		if raw := strings.TrimSpace(sourceSpec.Options["delivery_retention"]); raw != "" {
 			parsed, parseErr := time.ParseDuration(raw)
 			if parseErr != nil || parsed <= 0 {
 				_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")
@@ -206,7 +223,7 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 			}
 			deliveryRetention = parsed
 		}
-		if raw := strings.TrimSpace(f.Source.Options["delivery_prune_interval"]); raw != "" {
+		if raw := strings.TrimSpace(sourceSpec.Options["delivery_prune_interval"]); raw != "" {
 			parsed, parseErr := time.ParseDuration(raw)
 			if parseErr != nil || parsed <= 0 {
 				_ = r.Authority.FinishProducer(context.WithoutCancel(ctx), *runFence, "admission_rejected")

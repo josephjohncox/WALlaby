@@ -7,6 +7,7 @@ import (
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	storepkg "github.com/josephjohncox/wallaby/pkg/pgstream"
+	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 	"github.com/josephjohncox/wallaby/pkg/wire"
 )
 
@@ -21,6 +22,23 @@ func (s *recordingMessageStore) Enqueue(_ context.Context, stream string, messag
 	return nil
 }
 func (*recordingMessageStore) Close() {}
+
+func TestOpenRejectsRegistryOptionsBeforeStoreCreation(t *testing.T) {
+	for key, value := range map[string]string{
+		schemaregistry.OptRegistryTimeout:        "soon",
+		schemaregistry.OptRegistryApicurioCompat: "yes",
+	} {
+		t.Run(key, func(t *testing.T) {
+			err := (&Destination{}).Open(context.Background(), connector.RuntimeSpec{Options: map[string]string{key: value}})
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("Open() error = %v", err)
+			}
+			if strings.Contains(err.Error(), "dsn is required") {
+				t.Fatalf("registry config was not parsed first: %v", err)
+			}
+		})
+	}
+}
 
 func TestWriteEnqueuesMappedAppendMessage(t *testing.T) {
 	store := &recordingMessageStore{}

@@ -13,19 +13,19 @@ Every action is explicit:
 - exact rules override future rules; and
 - exact column rules override `future_columns`.
 
-Future table and column targets preserve identifier components independently. `target_schema` contains exactly one `{schema}`, `target_table` exactly one `{table}`, and `target_column` exactly one `{column}`. Prefixes and suffixes such as `raw_{schema}` are valid. Cross-variable, repeated, or brace-bearing templates are rejected. This component-wise contract is injective: ambiguous-looking source pairs cannot collapse through dot joining. Exact targets are literal identifiers and may rename or exclude individual tables and columns.
+Future table and column targets preserve identifier components independently using a restricted Go `text/template` contract. `target_schema` contains exactly one `{{ .Schema }}` action, `target_table` exactly one `{{ .Table }}` action, and `target_column` exactly one `{{ .Column }}` action. Literal prefixes and suffixes such as `raw_{{ .Schema }}` are valid. WALlaby executes the template once with typed `Schema`, `Table`, and `Column` string data; injected bytes, including braces and template-looking text, are never interpreted recursively. Cross-field, repeated, nested, or otherwise executable actions are rejected. Gomplate functions and datasources, Sprig, environment access, file or network access, conditions, loops, functions, pipelines, variables, and template includes are unsupported. This component-wise contract is injective: ambiguous-looking source pairs cannot collapse through dot joining. Validation also inverses exact targets through future templates and rejects any exact/future table or column collision unless the inverse source is explicitly overridden by an include or exclude rule. Exact-rule precedence therefore remains safe without leaving an unruled future source able to reuse the same target. Exact targets are literal identifiers and may rename or exclude individual tables and columns; only executable Go-template actions are rejected, while ordinary single braces remain literal.
 
 ```yaml
-version: 1
+version: 2
 destinations:
   - destination: warehouse
     future_tables:
       action: include
-      target_schema: "{schema}"
-      target_table: "{table}"
+      target_schema: "{{ .Schema }}"
+      target_table: "{{ .Table }}"
       future_columns:
         action: include
-        target_column: "{column}"
+        target_column: "{{ .Column }}"
       write:
         mode: append
         key_columns: []
@@ -37,16 +37,23 @@ destinations:
         target_table: accounts
         future_columns:
           action: include
-          target_column: "{column}"
+          target_column: "{{ .Column }}"
         columns:
           - source_column: id
             action: include
             target_column: account_id
           - source_column: secret
             action: exclude
+          # Prevent future source account_id from also mapping to target account_id.
+          - source_column: account_id
+            action: exclude
         write:
           mode: upsert
           key_columns: [id]
+      # Prevent a future analytics.accounts source from reusing this exact target.
+      - source_schema: analytics
+        source_table: accounts
+        action: exclude
 ```
 
 ## Generate from the PostgreSQL catalog

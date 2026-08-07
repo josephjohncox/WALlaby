@@ -44,7 +44,7 @@ func TestPostgresAuthorizedSourceFlushRejectsStaleWorker(t *testing.T) {
 
 	flowID := fmt.Sprintf("source-flush-fence-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres}}, Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.Spec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -133,7 +133,7 @@ WHERE flow_incarnation_id=$1 AND position_id=$2`, newFence.FlowIncarnationID, gr
 
 type flushEvidenceTestSource struct{ calls int }
 
-func (*flushEvidenceTestSource) Open(context.Context, connector.Spec) error { return nil }
+func (*flushEvidenceTestSource) Open(context.Context, connector.RuntimeSpec) error { return nil }
 func (*flushEvidenceTestSource) Read(context.Context) (connector.Batch, error) {
 	return connector.Batch{}, io.EOF
 }

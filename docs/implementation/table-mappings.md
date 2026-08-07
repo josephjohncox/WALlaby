@@ -9,16 +9,16 @@ The CLI can read a local mapping file, but it expands the file before it sends t
 ## Contract
 
 ```yaml
-version: 1
+version: 2
 destinations:
   - destination: warehouse
     future_tables:
       action: include
-      target_schema: "{schema}"
-      target_table: "{table}"
+      target_schema: "{{ .Schema }}"
+      target_table: "{{ .Table }}"
       future_columns:
         action: include
-        target_column: "{column}"
+        target_column: "{{ .Column }}"
       write:
         mode: append
     tables:
@@ -29,24 +29,31 @@ destinations:
         target_table: accounts
         future_columns:
           action: include
-          target_column: "{column}"
+          target_column: "{{ .Column }}"
         columns:
           - source_column: id
             action: include
             target_column: account_id
           - source_column: secret
             action: exclude
+          # Prevent future source account_id from also mapping to target account_id.
+          - source_column: account_id
+            action: exclude
         write:
           mode: upsert
           key_columns: [id]
           watermark_column: updated_at
+      # Prevent a future analytics.accounts source from reusing this exact target.
+      - source_schema: analytics
+        source_table: accounts
+        action: exclude
 ```
 
 Each flow destination has exactly one mapping set. Exact table rules override `future_tables`. Exact column rules override `future_columns`. Every action must explicitly use `include` or `exclude`.
 
 The generated future policy includes new tables and columns with their source names. New tables use append mode because their key contract is unknown. The generator retains ordered source-primary-key identity, while the CLI admits its default per exact destination/profile: capable destinations use upsert for current primary-key tables and append-only destinations automatically use append. Current keyless tables use append. Explicit per-table write-mode overrides can select append, or request upsert only when keys and the exact destination/profile capability allow it. The exact managed Snowflake SQL profile is narrower: selection must contain exactly one relation with a complete ordered source primary key; generation emits only that upsert relation and excludes future tables. It rejects append, watermark, multi-relation, keyless, and nonexact match-column overrides before output.
 
-Future templates preserve each identifier component independently. Future `target_schema` must contain exactly one `{schema}` and no other placeholder. Future `target_table` must contain exactly one `{table}` and no other placeholder. Future `target_column` must contain exactly one `{column}` and no other placeholder. Fixed prefixes and suffixes remain valid, for example `raw_{schema}`, `tbl_{table}`, and `dst_{column}`. Cross-variable or duplicate forms such as `{schema}_{table}` and `{table}_{table}` are invalid. This keeps ambiguous-looking source pairs such as `a.b_c` and `a_b.c` distinct. Exact table and column target identifiers remain unrestricted literal identifiers without templates. Exact target names do not support templates. Identifier matching and output preserve source case. Leading or trailing whitespace in destination, table, column, key, watermark, or template identifiers is invalid rather than normalized.
+Version 2 future templates preserve each identifier component independently through a deliberately restricted Go `text/template` AST. Future `target_schema` must contain exactly one `{{ .Schema }}` field action, future `target_table` exactly one `{{ .Table }}`, and future `target_column` exactly one `{{ .Column }}`. Fixed literal prefixes and suffixes remain valid, for example `raw_{{ .Schema }}`, `tbl_{{ .Table }}`, and `dst_{{ .Column }}`. WALlaby executes the compiled template once with typed `Data{Schema, Table, Column string}`; injected bytes are copied unchanged and are never recursively interpreted. Cross-field or duplicate actions, nested fields, chains, literals, declarations, conditions, loops, functions, pipelines, variables, and template definitions or includes are invalid. Gomplate functions and datasources, Sprig, environment variables, and file or network access are unsupported. This keeps ambiguous-looking source pairs such as `a.b_c` and `a_b.c` distinct. Validation inverses every exact target through the applicable future template and rejects exact/future relation or column collisions unless the inverse source has an explicit include or exclude override. Exact table and column target identifiers remain literal: executable Go-template actions are rejected, but arbitrary single braces are preserved. Identifier matching and output preserve source case, dots, quotes, Unicode, and quoted-identifier whitespace. Mapping template strings themselves may not have outer whitespace.
 
 ## Write behavior
 

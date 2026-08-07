@@ -45,7 +45,7 @@ func stagedValidOptions(t *testing.T) (string, map[string]string) {
 func TestStagedConfigFromSpecAdmitsValidSpec(t *testing.T) {
 	t.Parallel()
 	dsn, options := stagedValidOptions(t)
-	cfg, err := stagedConfigFromSpec(dsn, connector.Spec{Type: connector.EndpointSnowflake, Options: options})
+	cfg, err := stagedConfigFromSpec(dsn, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options})
 	if err != nil {
 		t.Fatalf("valid staged spec rejected: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestStagedConfigRejectsLossyAndUnsafeOptions(t *testing.T) {
 			t.Parallel()
 			dsn, options := stagedValidOptions(t)
 			mutate(options)
-			if _, err := stagedConfigFromSpec(dsn, connector.Spec{Type: connector.EndpointSnowflake, Options: options}); err == nil {
+			if _, err := stagedConfigFromSpec(dsn, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options}); err == nil {
 				t.Fatalf("staged admission accepted an unsafe spec (%s)", name)
 			}
 		})
@@ -140,7 +140,7 @@ func TestManagedAppendConfigsPreserveExactSourceIdentifiers(t *testing.T) {
 						}
 					}
 					if profile == "staged" {
-						cfg, err := stagedConfigFromSpec(dsn, connector.Spec{Type: connector.EndpointSnowflake, Options: options})
+						cfg, err := stagedConfigFromSpec(dsn, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options})
 						if err != nil || cfg.sourceSchema != relation.schema || cfg.sourceTable != relation.table {
 							t.Fatalf("staged exact relation=%q.%q config=%q.%q err=%v", relation.schema, relation.table, cfg.sourceSchema, cfg.sourceTable, err)
 						}
@@ -148,7 +148,7 @@ func TestManagedAppendConfigsPreserveExactSourceIdentifiers(t *testing.T) {
 							t.Fatalf("staged exact relation planner rejected %q.%q: %v", relation.schema, relation.table, err)
 						}
 					} else {
-						cfg, err := streamConfigFromSpec(dsn, connector.Spec{Type: connector.EndpointSnowflake, Options: options})
+						cfg, err := streamConfigFromSpec(dsn, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options})
 						if err != nil || cfg.sourceSchema != relation.schema || cfg.sourceTable != relation.table {
 							t.Fatalf("streaming exact relation=%q.%q config=%q.%q err=%v", relation.schema, relation.table, cfg.sourceSchema, cfg.sourceTable, err)
 						}
@@ -166,12 +166,12 @@ func TestStagedConfigRequiresPipeForAutoIngest(t *testing.T) {
 	t.Parallel()
 	dsn, options := stagedValidOptions(t)
 	options["managed_auto_ingest"] = "true"
-	if _, err := stagedConfigFromSpec(dsn, connector.Spec{Type: connector.EndpointSnowflake, Options: options}); err == nil || !strings.Contains(err.Error(), "requires managed_pipe") {
+	if _, err := stagedConfigFromSpec(dsn, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options}); err == nil || !strings.Contains(err.Error(), "requires managed_pipe") {
 		t.Fatalf("auto-ingest without a pipe error=%v, want a pipe requirement", err)
 	}
 	options["managed_pipe"] = "WALLABY_PIPE"
 	options["managed_pipe_created_on"] = "2026-01-01T00:00:00.000000000+00:00"
-	cfg, err := stagedConfigFromSpec(dsn, connector.Spec{Type: connector.EndpointSnowflake, Options: options})
+	cfg, err := stagedConfigFromSpec(dsn, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options})
 	if err != nil {
 		t.Fatalf("valid auto-ingest spec rejected: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestStagedConfigRequiresFailClosedTransport(t *testing.T) {
 		cfg.OCSPFailOpen = gosnowflake.OCSPFailOpenTrue
 	})
 	options["dsn"] = insecure
-	if _, err := stagedConfigFromSpec(insecure, connector.Spec{Type: connector.EndpointSnowflake, Options: options}); err == nil || !strings.Contains(err.Error(), "OCSP fail-closed") {
+	if _, err := stagedConfigFromSpec(insecure, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options}); err == nil || !strings.Contains(err.Error(), "OCSP fail-closed") {
 		t.Fatalf("OCSP fail-open admission error=%v, want fail-closed requirement", err)
 	}
 }
@@ -200,7 +200,7 @@ func TestStagedConfigRequiresReadLatestWrites(t *testing.T) {
 		cfg.Params = map[string]*string{"TIMEZONE": &timezone}
 	})
 	options["dsn"] = noReadLatest
-	if _, err := stagedConfigFromSpec(noReadLatest, connector.Spec{Type: connector.EndpointSnowflake, Options: options}); err == nil || !strings.Contains(err.Error(), "READ_LATEST_WRITES") {
+	if _, err := stagedConfigFromSpec(noReadLatest, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options}); err == nil || !strings.Contains(err.Error(), "READ_LATEST_WRITES") {
 		t.Fatalf("missing READ_LATEST_WRITES error=%v", err)
 	}
 }

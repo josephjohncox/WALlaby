@@ -94,15 +94,17 @@ fmt-check:
 
 # Run golangci-lint.
 lint:
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" GOLANGCI_LINT_CACHE="{{ golangci_lint_cache }}" {{ golangci_lint }} run ./...
+    GOFLAGS="-buildvcs=false" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" GOLANGCI_LINT_CACHE="{{ golangci_lint_cache }}" {{ golangci_lint }} run ./...
 
-# Run staticcheck at the repository-pinned version.
+# Run staticcheck at the repository-pinned version. Tooling does not need VCS
+# build metadata, and disabling it keeps this gate deterministic in worktrees.
 staticcheck:
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run honnef.co/go/tools/cmd/staticcheck@{{ staticcheck_version }} ./...
+    GOFLAGS="-buildvcs=false" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run honnef.co/go/tools/cmd/staticcheck@{{ staticcheck_version }} ./...
 
-# Scan reachable Go code for known vulnerabilities.
+# Scan reachable Go code for known vulnerabilities. Tool binaries do not need
+# VCS build metadata and must run identically in the primary tree and worktrees.
 vulncheck:
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run golang.org/x/vuln/cmd/govulncheck@{{ govulncheck_version }} ./...
+    GOFLAGS="-buildvcs=false" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run golang.org/x/vuln/cmd/govulncheck@{{ govulncheck_version }} ./...
 
 lint-full: lint staticcheck vulncheck proto-lint proto-breaking
 
@@ -510,19 +512,19 @@ check-integration-core: test-integration
 check-integration-full: test-integration test-e2e
 
 avro-shim-generate:
-    cd third_party/hamba-avro-shim && {{ go }} run ./cmd/shimgen
+    cd third_party/hamba-avro-shim && GOFLAGS="-buildvcs=false" {{ go }} run ./cmd/shimgen
 
 avro-shim-check:
     #!/usr/bin/env bash
     set -euo pipefail
     cd third_party/hamba-avro-shim
-    {{ go }} test ./...
-    {{ go }} mod tidy -diff
-    {{ go }} mod verify
-    {{ go }} run ./cmd/shimgen -check
+    GOFLAGS="-buildvcs=false" {{ go }} test ./...
+    GOFLAGS="-buildvcs=false" {{ go }} mod tidy -diff
+    GOFLAGS="-buildvcs=false" {{ go }} mod verify
+    GOFLAGS="-buildvcs=false" {{ go }} run ./cmd/shimgen -check
     cd ../..
     template="$(printf '%s' '{''{range .Imports}''}{''{println .}''}{''{end}''}{''{range .TestImports}''}{''{println .}''}{''{end}''}{''{range .XTestImports}''}{''{println .}''}{''{end}''}')"
-    imports="$({{ go }} list -f "${template}" ./... | sort -u | grep '^github.com/hamba/avro/v2' || true)"
+    imports="$(GOFLAGS="-buildvcs=false" {{ go }} list -f "${template}" ./... | sort -u | grep '^github.com/hamba/avro/v2' || true)"
     unexpected="$(printf '%s\n' "${imports}" | grep -Ev '^github.com/hamba/avro/v2(/ocf)?$' || true)"
     if [[ -n "${unexpected}" ]]; then
       printf 'unsupported hamba Avro subpackage import(s):\n%s\n' "${unexpected}" >&2
@@ -549,13 +551,13 @@ proto-breaking-selftest:
     ./scripts/proto-breaking-selftest.sh
 
 proto-tools:
-    GOBIN="{{ gobin }}" {{ go }} install google.golang.org/protobuf/cmd/protoc-gen-go@{{ protoc_gen_go_version }}
-    GOBIN="{{ gobin }}" {{ go }} install google.golang.org/grpc/cmd/protoc-gen-go-grpc@{{ protoc_gen_go_grpc_version }}
+    GOFLAGS="-buildvcs=false" GOBIN="{{ gobin }}" {{ go }} install google.golang.org/protobuf/cmd/protoc-gen-go@{{ protoc_gen_go_version }}
+    GOFLAGS="-buildvcs=false" GOBIN="{{ gobin }}" {{ go }} install google.golang.org/grpc/cmd/protoc-gen-go-grpc@{{ protoc_gen_go_grpc_version }}
 
 docs-tools:
     @command -v {{ uv }} >/dev/null 2>&1 || { echo "uv {{ uv_version }} is required: https://docs.astral.sh/uv/" >&2; exit 1; }
-    GOBIN="{{ gobin }}" {{ go }} install github.com/princjef/gomarkdoc/cmd/gomarkdoc@{{ gomarkdoc_version }}
-    GOBIN="{{ gobin }}" {{ go }} install github.com/pseudomuto/protoc-gen-doc/cmd/protoc-gen-doc@{{ protoc_gen_doc_version }}
+    GOFLAGS="-buildvcs=false" GOBIN="{{ gobin }}" {{ go }} install github.com/princjef/gomarkdoc/cmd/gomarkdoc@{{ gomarkdoc_version }}
+    GOFLAGS="-buildvcs=false" GOBIN="{{ gobin }}" {{ go }} install github.com/pseudomuto/protoc-gen-doc/cmd/protoc-gen-doc@{{ protoc_gen_doc_version }}
     {{ uv }} sync --frozen
 
 docs-generate: docs-tools

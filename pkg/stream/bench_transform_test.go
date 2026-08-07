@@ -8,7 +8,7 @@ import (
 )
 
 func BenchmarkTransformMetadata(b *testing.B) {
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "bench",
 		Type: connector.EndpointClickHouse,
 		Options: map[string]string{

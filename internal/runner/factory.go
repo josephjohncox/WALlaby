@@ -22,9 +22,10 @@ type Factory struct {
 	ManagedControl    *pgxpool.Pool
 	ManagedAuthority  authority.Store
 	BootstrapHooks    bootstrap.Hooks
+	ConnectorRegistry *connector.Registry
 }
 
-func (f Factory) Source(spec connector.Spec) (connector.Source, error) {
+func (f Factory) Source(spec connector.RuntimeSpec) (connector.Source, error) {
 	return f.source(spec, f.SchemaHook)
 }
 
@@ -36,16 +37,31 @@ func (f Factory) SourceForFlow(fdef flow.Flow) (connector.Source, error) {
 			hook = candidate
 		}
 	}
-	return f.source(fdef.Source, hook)
+	registry := f.ConnectorRegistry
+	if registry == nil {
+		registry = connector.DefaultRegistry
+	}
+	spec, err := fdef.DecodeSource(registry)
+	if err != nil {
+		return nil, err
+	}
+	return f.source(spec, hook)
 }
 
-func (f Factory) source(spec connector.Spec, hook replication.SchemaHook) (connector.Source, error) {
+func (f Factory) source(spec connector.RuntimeSpec, hook replication.SchemaHook) (connector.Source, error) {
 	mode, err := connector.NormalizeSourceMode("")
 	if spec.Options != nil {
 		mode, err = connector.NormalizeSourceMode(spec.Options["mode"])
 	}
 	if err != nil {
 		return nil, err
+	}
+	if spec.Type == connector.EndpointPostgres && mode == connector.SourceModeBackfill {
+		for _, key := range []string{"publication_tables", "publication_schemas", "sync_publication", "sync_publication_mode"} {
+			if spec.Options[key] != "" {
+				return nil, fmt.Errorf("postgres backfill source rejects CDC publication option %s", key)
+			}
+		}
 	}
 
 	switch spec.Type {
@@ -60,11 +76,15 @@ func (f Factory) source(spec connector.Spec, hook replication.SchemaHook) (conne
 		}
 		return source, nil
 	default:
-		return nil, fmt.Errorf("unsupported source type: %s", spec.Type)
+		registry := f.ConnectorRegistry
+		if registry == nil {
+			registry = connector.DefaultRegistry
+		}
+		return registry.NewSource(spec.Type)
 	}
 }
 
-func (f Factory) Destinations(specs []connector.Spec) ([]stream.DestinationConfig, error) {
+func (f Factory) Destinations(specs []connector.RuntimeSpec) ([]stream.DestinationConfig, error) {
 	items := make([]stream.DestinationConfig, 0, len(specs))
 	for _, spec := range specs {
 		dest, err := f.destination(spec)
@@ -76,15 +96,29 @@ func (f Factory) Destinations(specs []connector.Spec) ([]stream.DestinationConfi
 	return items, nil
 }
 
-// DestinationsForFlow builds destinations, applying flow-level defaults.
+// DestinationsForFlow builds destinations from detached runtime adapters.
 func (f Factory) DestinationsForFlow(fdef flow.Flow) ([]stream.DestinationConfig, error) {
-	specs := flow.ApplyRegistryDefaults(fdef.Destinations, fdef.Config)
+	registry := f.ConnectorRegistry
+	if registry == nil {
+		registry = connector.DefaultRegistry
+	}
+	specs, err := fdef.DecodeDestinations(registry)
+	if err != nil {
+		return nil, err
+	}
 	return f.Destinations(specs)
 }
 
-func (f Factory) destination(spec connector.Spec) (connector.Destination, error) {
+func (f Factory) destination(spec connector.RuntimeSpec) (connector.Destination, error) {
 	registration, ok := destinationRegistration(spec.Type)
-	if !ok || registration.New == nil {
+	if !ok {
+		registry := f.ConnectorRegistry
+		if registry == nil {
+			registry = connector.DefaultRegistry
+		}
+		return registry.NewDestination(spec.Type)
+	}
+	if registration.New == nil {
 		return nil, fmt.Errorf("unsupported destination type: %s", spec.Type)
 	}
 	destination := registration.New()

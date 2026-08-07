@@ -10,14 +10,23 @@ import (
 	"strings"
 
 	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/internal/mappingtemplate"
 	internalschema "github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 )
 
 type Projector struct {
-	mapping     flow.DestinationTableMappings
-	fingerprint string
+	mapping               flow.DestinationTableMappings
+	fingerprint           string
+	futureTableTemplates  compiledTableTemplates
+	futureColumnTemplates map[string]mappingtemplate.Template
+}
+
+type compiledTableTemplates struct {
+	targetSchema mappingtemplate.Template
+	targetTable  mappingtemplate.Template
+	targetColumn mappingtemplate.Template
 }
 
 var _ stream.Projector = (*Projector)(nil)
@@ -31,17 +40,18 @@ type resolvedColumn struct {
 }
 
 type resolvedTable struct {
-	included      bool
-	sourceSchema  string
-	sourceTable   string
-	targetSchema  string
-	targetTable   string
-	columns       []resolvedColumn
-	bySource      map[string]string
-	write         flow.TableWritePolicy
-	futureColumns flow.FutureColumnMapping
-	exactColumns  map[string]flow.ColumnMapping
-	nonidentity   bool
+	included             bool
+	sourceSchema         string
+	sourceTable          string
+	targetSchema         string
+	targetTable          string
+	columns              []resolvedColumn
+	bySource             map[string]string
+	write                flow.TableWritePolicy
+	futureColumns        flow.FutureColumnMapping
+	futureColumnTemplate mappingtemplate.Template
+	exactColumns         map[string]flow.ColumnMapping
+	nonidentity          bool
 }
 
 func New(policy flow.TableMappings, destination string) (*Projector, error) {
@@ -56,7 +66,38 @@ func New(policy flow.TableMappings, destination string) (*Projector, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Projector{mapping: mapping, fingerprint: fingerprint}, nil
+	projector := &Projector{
+		mapping:               mapping,
+		fingerprint:           fingerprint,
+		futureColumnTemplates: make(map[string]mappingtemplate.Template),
+	}
+	if mapping.FutureTables.Action == flow.MappingActionInclude {
+		projector.futureTableTemplates.targetSchema, err = mappingtemplate.Parse(mapping.FutureTables.TargetSchema, mappingtemplate.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("compile future target_schema: %w", err)
+		}
+		projector.futureTableTemplates.targetTable, err = mappingtemplate.Parse(mapping.FutureTables.TargetTable, mappingtemplate.Table)
+		if err != nil {
+			return nil, fmt.Errorf("compile future target_table: %w", err)
+		}
+		if mapping.FutureTables.FutureColumns.Action == flow.MappingActionInclude {
+			projector.futureTableTemplates.targetColumn, err = mappingtemplate.Parse(mapping.FutureTables.FutureColumns.TargetColumn, mappingtemplate.Column)
+			if err != nil {
+				return nil, fmt.Errorf("compile future target_column: %w", err)
+			}
+		}
+	}
+	for _, table := range mapping.Tables {
+		if table.Action != flow.MappingActionInclude || table.FutureColumns.Action != flow.MappingActionInclude {
+			continue
+		}
+		compiled, err := mappingtemplate.Parse(table.FutureColumns.TargetColumn, mappingtemplate.Column)
+		if err != nil {
+			return nil, fmt.Errorf("compile table %s.%s future target_column: %w", table.SourceSchema, table.SourceTable, err)
+		}
+		projector.futureColumnTemplates[table.SourceSchema+"\x00"+table.SourceTable] = compiled
+	}
+	return projector, nil
 }
 
 func (p *Projector) Fingerprint() string { return p.fingerprint }
@@ -261,10 +302,19 @@ func (p *Projector) resolve(schema connector.Schema, allowEmptyColumns bool) (re
 			return resolved, nil
 		}
 		resolved.included = true
-		resolved.targetSchema = expand(future.TargetSchema, schema.Namespace, schema.Name, "")
-		resolved.targetTable = expand(future.TargetTable, schema.Namespace, schema.Name, "")
+		data := mappingtemplate.Data{Schema: schema.Namespace, Table: schema.Name}
+		var err error
+		resolved.targetSchema, err = p.futureTableTemplates.targetSchema.Expand(data)
+		if err != nil {
+			return resolvedTable{}, fmt.Errorf("expand future target_schema for %s.%s: %w", schema.Namespace, schema.Name, err)
+		}
+		resolved.targetTable, err = p.futureTableTemplates.targetTable.Expand(data)
+		if err != nil {
+			return resolvedTable{}, fmt.Errorf("expand future target_table for %s.%s: %w", schema.Namespace, schema.Name, err)
+		}
 		resolved.write = future.Write
 		futureColumns = future.FutureColumns
+		resolved.futureColumnTemplate = p.futureTableTemplates.targetColumn
 	} else {
 		if exact.Action == flow.MappingActionExclude {
 			return resolved, nil
@@ -274,6 +324,7 @@ func (p *Projector) resolve(schema connector.Schema, allowEmptyColumns bool) (re
 		resolved.targetTable = exact.TargetTable
 		resolved.write = exact.Write
 		futureColumns = exact.FutureColumns
+		resolved.futureColumnTemplate = p.futureColumnTemplates[schema.Namespace+"\x00"+schema.Name]
 		for _, column := range exact.Columns {
 			resolved.exactColumns[column.SourceColumn] = column
 		}
@@ -286,7 +337,14 @@ func (p *Projector) resolve(schema connector.Schema, allowEmptyColumns bool) (re
 	shapeChanged := resolved.targetSchema != schema.Namespace || resolved.targetTable != schema.Name
 	for _, column := range schema.Columns {
 		action := futureColumns.Action
-		target := expand(futureColumns.TargetColumn, schema.Namespace, schema.Name, column.Name)
+		target := ""
+		if action == flow.MappingActionInclude {
+			var err error
+			target, err = resolved.futureColumnTemplate.Expand(mappingtemplate.Data{Schema: schema.Namespace, Table: schema.Name, Column: column.Name})
+			if err != nil {
+				return resolvedTable{}, fmt.Errorf("expand future target_column for %s.%s.%s: %w", schema.Namespace, schema.Name, column.Name, err)
+			}
+		}
 		if exact != nil {
 			for _, configured := range exact.Columns {
 				if configured.SourceColumn == column.Name {
@@ -661,9 +719,4 @@ func logicalValuesEqual(left, right any) bool {
 	leftJSON, leftErr := json.Marshal(left)
 	rightJSON, rightErr := json.Marshal(right)
 	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
-}
-
-func expand(template, schema, table, column string) string {
-	replacer := strings.NewReplacer("{schema}", schema, "{table}", table, "{column}", column)
-	return replacer.Replace(template)
 }

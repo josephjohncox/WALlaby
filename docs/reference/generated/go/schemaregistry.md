@@ -16,7 +16,7 @@ Package schemaregistry registers wire schemas with Confluent\-compatible, AWS Gl
 - [Variables](<#variables>)
 - [func ApplyMigrations\(ctx context.Context, pool \*pgxpool.Pool\) error](<#ApplyMigrations>)
 - [type Config](<#Config>)
-  - [func ConfigFromOptions\(options map\[string\]string\) Config](<#ConfigFromOptions>)
+  - [func ConfigFromOptions\(values map\[string\]string\) \(Config, error\)](<#ConfigFromOptions>)
 - [type Reference](<#Reference>)
 - [type RegisterRequest](<#RegisterRequest>)
 - [type RegisterResult](<#RegisterResult>)
@@ -37,6 +37,7 @@ const (
     OptRegistryPassword       = "schema_registry_password"
     OptRegistryToken          = "schema_registry_token"
     OptRegistryDSN            = "schema_registry_dsn"
+    OptRegistryLocalDirectory = "schema_registry_local_directory"
     OptRegistryTimeout        = "schema_registry_timeout"
     OptRegistryApicurioCompat = "schema_registry_apicurio_compat"
     OptRegistrySubjectMode    = "schema_registry_subject_mode"
@@ -70,7 +71,7 @@ func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool) error
 ApplyMigrations explicitly prepares the PostgreSQL schema\-registry schema through the shared, checksummed public.wallaby\_control\_migrations ledger.
 
 <a name="Config"></a>
-## type [Config](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/schemaregistry/config.go#L31-L46>)
+## type [Config](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/schemaregistry/config.go#L33-L49>)
 
 Config defines schema registry connection settings.
 
@@ -82,6 +83,7 @@ type Config struct {
     Password       string
     Token          string
     DSN            string
+    LocalDirectory string
     Timeout        time.Duration
     ApicurioCompat bool
     Region         string
@@ -94,13 +96,13 @@ type Config struct {
 ```
 
 <a name="ConfigFromOptions"></a>
-### func [ConfigFromOptions](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/schemaregistry/config.go#L49>)
+### func [ConfigFromOptions](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/schemaregistry/config.go#L52>)
 
 ```go
-func ConfigFromOptions(options map[string]string) Config
+func ConfigFromOptions(values map[string]string) (Config, error)
 ```
 
-ConfigFromOptions parses registry configuration from connector options.
+ConfigFromOptions strictly parses registry configuration from connector options.
 
 <a name="Reference"></a>
 ## type [Reference](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/schemaregistry/registry.go#L14-L18>)

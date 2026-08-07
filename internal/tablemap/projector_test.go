@@ -1,16 +1,107 @@
 package tablemap
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/josephjohncox/wallaby/internal/flow"
+	internalschema "github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
+	"gopkg.in/yaml.v3"
 )
+
+func TestShippedHTTPTypedMappingsStrictValidateAndProjectCompiledTemplates(t *testing.T) {
+	t.Parallel()
+	payload := shippedHTTPTypedMappingsPayload(t)
+	mappings := decodeStrictTableMappingsYAML(t, payload)
+	destination := connector.RuntimeSpec{Name: "webhook_typed", Type: connector.EndpointHTTP}
+	if err := mappings.Validate([]connector.RuntimeSpec{destination}); err != nil {
+		t.Fatal(err)
+	}
+	projector, err := New(mappings, destination.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := connector.Schema{
+		Namespace: "Sales.Data West",
+		Name:      "Order.Events 2026",
+		Columns:   []connector.Column{{Name: "Customer.ID Mixed", Type: "text"}},
+	}
+	projected, policy, included, err := projector.ProjectBootstrapSchema(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !included || policy.Mode != connector.ResolvedWriteAppend {
+		t.Fatalf("included/policy = %v/%+v", included, policy)
+	}
+	if got, want := []byte(projected.Namespace), []byte("web_Sales.Data West_archive"); !bytes.Equal(got, want) {
+		t.Fatalf("projected schema = %q, want %q", got, want)
+	}
+	if got, want := []byte(projected.Name), []byte("event_Order.Events 2026_v1"); !bytes.Equal(got, want) {
+		t.Fatalf("projected table = %q, want %q", got, want)
+	}
+	if len(projected.Columns) < 1 {
+		t.Fatal("projected schema has no columns")
+	}
+	if got, want := []byte(projected.Columns[0].Name), []byte("field_Customer.ID Mixed_raw"); !bytes.Equal(got, want) {
+		t.Fatalf("projected column = %q, want %q", got, want)
+	}
+}
+
+func TestShippedHTTPTypedMappingsMutationsAreRejected(t *testing.T) {
+	t.Parallel()
+	payload := shippedHTTPTypedMappingsPayload(t)
+	destination := connector.RuntimeSpec{Name: "webhook_typed", Type: connector.EndpointHTTP}
+
+	t.Run("wrong destination", func(t *testing.T) {
+		mutated := bytes.Replace(payload, []byte("destination: webhook_typed"), []byte("destination: other_webhook"), 1)
+		mappings := decodeStrictTableMappingsYAML(t, mutated)
+		if err := mappings.Validate([]connector.RuntimeSpec{destination}); err == nil || !strings.Contains(err.Error(), "unknown destination") {
+			t.Fatalf("Validate() error = %v, want unknown destination", err)
+		}
+	})
+
+	t.Run("foreign component placeholder", func(t *testing.T) {
+		mutated := bytes.Replace(payload, []byte("web_{{ .Schema }}_archive"), []byte("web_{{ .Table }}_archive"), 1)
+		mappings := decodeStrictTableMappingsYAML(t, mutated)
+		if err := mappings.Validate([]connector.RuntimeSpec{destination}); err == nil || !strings.Contains(err.Error(), "Schema") {
+			t.Fatalf("Validate() error = %v, want component-local template failure", err)
+		}
+	})
+}
+
+func shippedHTTPTypedMappingsPayload(t *testing.T) []byte {
+	t.Helper()
+	root := filepath.Clean(filepath.Join("..", ".."))
+	payload, err := os.ReadFile(filepath.Join(root, "examples", "mappings", "http_typed.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+func decodeStrictTableMappingsYAML(t *testing.T, payload []byte) flow.TableMappings {
+	t.Helper()
+	decoder := yaml.NewDecoder(bytes.NewReader(payload))
+	decoder.KnownFields(true)
+	var mappings flow.TableMappings
+	if err := decoder.Decode(&mappings); err != nil {
+		t.Fatalf("strict decode table mappings: %v", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		t.Fatalf("strict decode trailing document: %v", err)
+	}
+	return mappings
+}
 
 func TestProjectBatchRenamesFiltersKeysAndCarriesWritePolicy(t *testing.T) {
 	t.Parallel()
@@ -83,7 +174,7 @@ func TestProjectBatchRenamesFiltersKeysAndCarriesWritePolicy(t *testing.T) {
 }
 
 func TestAppendProjectionStripsSourceIdentityAndPreservesRepeatedKeys(t *testing.T) {
-	mappings := flow.NewTableMappings([]connector.Spec{{Name: "sink", Type: connector.EndpointKafka}})
+	mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointKafka}})
 	projector := testProjector(t, mappings)
 	batch := connector.Batch{Schema: connector.Schema{Namespace: "public", Name: "events", Columns: []connector.Column{{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"primary_key": "true", "primary_key_ordinal": "1", "replica_identity": "true"}}}}, Checkpoint: connector.Checkpoint{LSN: "0/20"}, Records: []connector.Record{
 		{Table: "events", Operation: connector.OpInsert, Key: []byte(`{"id":1}`), After: map[string]any{"id": 1}, SourcePosition: "0/18"},
@@ -106,7 +197,7 @@ func TestAppendProjectionStripsSourceIdentityAndPreservesRepeatedKeys(t *testing
 
 func TestAppendProjectionUsesStableSourcePositionAndDeleteImage(t *testing.T) {
 	t.Parallel()
-	mappings := flow.NewTableMappings([]connector.Spec{{Name: "sink", Type: connector.EndpointKafka}})
+	mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointKafka}})
 	projector := testProjector(t, mappings)
 	batch := connector.Batch{
 		Schema:     connector.Schema{Namespace: "public", Name: "logs", Columns: []connector.Column{{Name: "message", Type: "text"}}},
@@ -144,22 +235,41 @@ func TestAppendProjectionUsesStableSourcePositionAndDeleteImage(t *testing.T) {
 	}
 }
 
+func TestTemplateExecutionErrorsPropagateThroughProjectorAndDDL(t *testing.T) {
+	t.Parallel()
+	projector := testProjector(t, flow.NewTableMappings([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointPostgres}}))
+	if _, _, _, err := projector.ProjectBootstrapSchema(connector.Schema{Namespace: "public\x00shadow", Name: "events", Columns: []connector.Column{{Name: "id", Type: "bigint"}}}); err == nil || !strings.Contains(err.Error(), "target_schema") || !strings.Contains(err.Error(), "NUL") {
+		t.Fatalf("ProjectBootstrapSchema() error = %v, want target_schema execution error", err)
+	}
+	if _, _, _, err := projector.ProjectBootstrapSchema(connector.Schema{Namespace: "public", Name: "events", Columns: []connector.Column{{Name: "id\x00shadow", Type: "bigint"}}}); err == nil || !strings.Contains(err.Error(), "target_column") || !strings.Contains(err.Error(), "NUL") {
+		t.Fatalf("ProjectBootstrapSchema() error = %v, want target_column execution error", err)
+	}
+	plan, err := json.Marshal(internalschema.Plan{Changes: []internalschema.Change{{Type: internalschema.ChangeAddColumn, Namespace: "public", Table: "events", Column: "id\x00shadow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := connector.Batch{Records: []connector.Record{{Operation: connector.OpDDL, DDLPlan: plan}}}
+	if _, _, err := projector.ProjectBatch(batch); err == nil || !strings.Contains(err.Error(), "project DDL column") || !strings.Contains(err.Error(), "NUL") {
+		t.Fatalf("ProjectBatch(DDL) error = %v, want propagated column execution error", err)
+	}
+}
+
 func TestFutureTemplatesRejectCrossVariablesInBothComponents(t *testing.T) {
 	t.Parallel()
-	mappings := flow.NewTableMappings([]connector.Spec{{Name: "sink", Type: connector.EndpointPostgres}})
-	mappings.Destinations[0].FutureTables.TargetSchema = "{schema}_{table}"
-	mappings.Destinations[0].FutureTables.TargetTable = "{schema}_{table}"
-	if err := mappings.Validate([]connector.Spec{{Name: "sink", Type: connector.EndpointPostgres}}); err == nil || !strings.Contains(err.Error(), "placeholders other than {schema}") {
+	mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointPostgres}})
+	mappings.Destinations[0].FutureTables.TargetSchema = "{{ .Table }}"
+	mappings.Destinations[0].FutureTables.TargetTable = "{{ .Schema }}"
+	if err := mappings.Validate([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointPostgres}}); err == nil || !strings.Contains(err.Error(), ".Schema") {
 		t.Fatalf("cross-variable future templates error=%v", err)
 	}
 }
 
 func TestFutureTemplatesKeepSchemaAndTableComponentsDistinct(t *testing.T) {
 	t.Parallel()
-	mappings := flow.NewTableMappings([]connector.Spec{{Name: "sink", Type: connector.EndpointPostgres}})
-	mappings.Destinations[0].FutureTables.TargetSchema = "raw_{schema}"
-	mappings.Destinations[0].FutureTables.TargetTable = "tbl_{table}"
-	mappings.Destinations[0].FutureTables.FutureColumns.TargetColumn = "dst_{column}"
+	mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointPostgres}})
+	mappings.Destinations[0].FutureTables.TargetSchema = "raw_{{ .Schema }}"
+	mappings.Destinations[0].FutureTables.TargetTable = "tbl_{{ .Table }}"
+	mappings.Destinations[0].FutureTables.FutureColumns.TargetColumn = "dst_{{ .Column }}"
 	projector := testProjector(t, mappings)
 	project := func(namespace, table string) connector.Batch {
 		batch, _, err := projector.ProjectBatch(connector.Batch{
@@ -182,6 +292,33 @@ func TestFutureTemplatesKeepSchemaAndTableComponentsDistinct(t *testing.T) {
 	}
 	if first.Schema.Namespace == second.Schema.Namespace && first.Schema.Name == second.Schema.Name {
 		t.Fatal("a.b_c and a_b.c collapsed onto one future target")
+	}
+}
+
+func TestCompiledFutureTemplatesMatchProjectionGolden(t *testing.T) {
+	t.Parallel()
+	mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointPostgres}})
+	mappings.Destinations[0].FutureTables.TargetSchema = "pre-{{ .Schema }}-post"
+	mappings.Destinations[0].FutureTables.TargetTable = "raw.{{ .Table }}.v1"
+	mappings.Destinations[0].FutureTables.FutureColumns.TargetColumn = "[{{ .Column }}]"
+	projector := testProjector(t, mappings)
+
+	resolved, err := projector.resolve(connector.Schema{
+		Namespace: " Mixed {literal} 日本語 ",
+		Name:      "Table.Bytes",
+		Columns:   []connector.Column{{Name: " Column {x} ", Type: "text"}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resolved.targetSchema, "pre- Mixed {literal} 日本語 -post"; got != want {
+		t.Fatalf("target schema = %q, want %q", got, want)
+	}
+	if got, want := resolved.targetTable, "raw.Table.Bytes.v1"; got != want {
+		t.Fatalf("target table = %q, want %q", got, want)
+	}
+	if got, want := resolved.columns[0].target, "[ Column {x} ]"; got != want {
+		t.Fatalf("target column = %q, want %q", got, want)
 	}
 }
 
@@ -371,9 +508,9 @@ func TestProjectionMatchesCaseAndWhitespaceDistinctSourceIdentifiersExactly(t *t
 	mappings := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{
 		Destination: "sink", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude},
 		Tables: []flow.TableMapping{
-			{SourceSchema: "Exact Schema", SourceTable: "Events", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: "upper_events", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
-			{SourceSchema: "Exact Schema", SourceTable: "events", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: "lower_events", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
-			{SourceSchema: "Exact Schema", SourceTable: " ", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: " ", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
+			{SourceSchema: "Exact Schema", SourceTable: "Events", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: "upper_events", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
+			{SourceSchema: "Exact Schema", SourceTable: "events", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: "lower_events", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
+			{SourceSchema: "Exact Schema", SourceTable: " ", Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: " ", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
 		},
 	}}}
 	projector := testProjector(t, mappings)
@@ -405,8 +542,8 @@ func TestProjectionMatchesCaseAndWhitespaceDistinctSourceIdentifiersExactly(t *t
 
 func testProjector(t *testing.T, mappings flow.TableMappings) *Projector {
 	t.Helper()
-	destination := connector.Spec{Name: "sink", Type: connector.EndpointPostgres}
-	if err := mappings.Validate([]connector.Spec{destination}); err != nil {
+	destination := connector.RuntimeSpec{Name: "sink", Type: connector.EndpointPostgres}
+	if err := mappings.Validate([]connector.RuntimeSpec{destination}); err != nil {
 		t.Fatalf("validate mappings: %v", err)
 	}
 	projector, err := New(mappings, "sink")
@@ -419,12 +556,14 @@ func testProjector(t *testing.T, mappings flow.TableMappings) *Projector {
 func upsertMappings() flow.TableMappings {
 	return flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{
 		Destination:  "sink",
-		FutureTables: flow.FutureTableMapping{Action: flow.MappingActionInclude, TargetSchema: "{schema}", TargetTable: "{table}", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{column}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
+		FutureTables: flow.FutureTableMapping{Action: flow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}},
 		Tables: []flow.TableMapping{{
 			SourceSchema: "public", SourceTable: "widgets", Action: flow.MappingActionInclude, TargetSchema: "analytics", TargetTable: "events",
-			FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "dst_{column}"},
+			FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "dst_{{ .Column }}"},
 			Columns:       []flow.ColumnMapping{{SourceColumn: "id", Action: flow.MappingActionInclude, TargetColumn: "event_id"}, {SourceColumn: "secret", Action: flow.MappingActionExclude}},
 			Write:         flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}, WatermarkColumn: "updated_at"},
+		}, {
+			SourceSchema: "analytics", SourceTable: "events", Action: flow.MappingActionExclude,
 		}},
 	}}}
 }

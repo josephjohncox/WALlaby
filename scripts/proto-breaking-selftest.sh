@@ -15,6 +15,12 @@ proto/wallaby/v1/ddl.proto:91:7:Previously present message "MarkDDLAppliedReques
 proto/wallaby/v1/ddl.proto:4:99:Previously present message "MarkDDLAppliedResponse" was deleted from file.
 proto/wallaby/v1/ddl.proto:812:3:Previously present RPC "MarkDDLApplied" on service "DDLService" was deleted.
 proto/wallaby/v1/types.proto:19:1:Previously present enum value "12" on enum "EndpointType" was deleted.
+proto/wallaby/v1/types.proto:20:1:Previously present enum "LegacyEndpoint" was deleted from file.
+proto/wallaby/v1/types.proto:21:1:Previously present field "2" with name "type" on message "Endpoint" was deleted.
+proto/wallaby/v1/types.proto:22:1:Previously present message "Endpoint.OptionsEntry" was deleted from file.
+proto/wallaby/v1/types.proto:640:1:Previously present field "6" with name "schema_registry_subject" on message "FlowConfig" was deleted.
+proto/wallaby/v1/types.proto:640:1:Previously present field "7" with name "schema_registry_proto_types_subject" on message "FlowConfig" was deleted.
+proto/wallaby/v1/types.proto:640:1:Previously present field "8" with name "schema_registry_subject_mode" on message "FlowConfig" was deleted.
 OUTPUT
 		exit 100
 		;;
@@ -130,7 +136,18 @@ FAKE
 chmod +x "$fake_buf"
 
 allowlist=$tmpdir/allowlist
-cp "$script_dir/proto-breaking.allowlist" "$allowlist"
+cat >"$allowlist" <<'EOF'
+proto/wallaby/v1/types.proto: enum EndpointType.12 deleted
+proto/wallaby/v1/types.proto: enum LegacyEndpoint deleted
+proto/wallaby/v1/types.proto: field Endpoint.type#2 deleted
+proto/wallaby/v1/types.proto: field FlowConfig.schema_registry_subject#6 deleted
+proto/wallaby/v1/types.proto: field FlowConfig.schema_registry_proto_types_subject#7 deleted
+proto/wallaby/v1/types.proto: field FlowConfig.schema_registry_subject_mode#8 deleted
+proto/wallaby/v1/types.proto: message Endpoint.OptionsEntry deleted
+proto/wallaby/v1/ddl.proto: message MarkDDLAppliedRequest deleted
+proto/wallaby/v1/ddl.proto: message MarkDDLAppliedResponse deleted
+proto/wallaby/v1/ddl.proto: rpc DDLService.MarkDDLApplied deleted
+EOF
 empty_allowlist=$tmpdir/empty-allowlist
 : >"$empty_allowlist"
 edge_allowlist=$tmpdir/edge-allowlist

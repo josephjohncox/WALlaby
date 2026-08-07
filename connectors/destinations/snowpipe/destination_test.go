@@ -65,7 +65,7 @@ func TestCopyOptionsClause(t *testing.T) {
 }
 
 func TestMappedSchemaAndTableDotsRemainLiteral(t *testing.T) {
-	destination := &Destination{spec: connector.Spec{Options: map[string]string{"schema": "legacy", "table": "legacy"}}}
+	destination := &Destination{spec: connector.RuntimeSpec{Options: map[string]string{"schema": "legacy", "table": "legacy"}}}
 	batch := connector.Batch{Schema: connector.Schema{Namespace: "sch.ma"}, Records: []connector.Record{{Table: "ta.ble"}}}
 	if got := destination.targetTable(batch.Schema, batch.Records[0]); got != `"sch.ma"."ta.ble"` {
 		t.Fatalf("target=%s", got)
@@ -262,7 +262,7 @@ func TestApplyDDLExecutesTranslatedStatement(t *testing.T) {
 		t.Fatal(err)
 	}
 	mock.ExpectExec(`ALTER TABLE "ANALYTICS"\."EVENTS" ADD COLUMN "STATUS" STRING NOT NULL`).WillReturnResult(sqlmock.NewResult(0, 1))
-	destination := &Destination{db: db, spec: connector.Spec{Type: connector.EndpointSnowpipe}}
+	destination := &Destination{db: db, spec: connector.RuntimeSpec{Type: connector.EndpointSnowpipe}}
 	if err := destination.ApplyDDL(context.Background(), connector.Schema{Namespace: "ANALYTICS", Name: "EVENTS"}, connector.Record{Operation: connector.OpDDL, DDLPlan: plan}); err != nil {
 		t.Fatal(err)
 	}

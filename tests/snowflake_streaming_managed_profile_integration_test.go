@@ -32,7 +32,7 @@ import (
 // refusals into positive recovery evidence on one reviewed SHA.
 
 type snowflakeStreamingManagedFixture struct {
-	spec    connector.Spec
+	spec    connector.RuntimeSpec
 	version string
 }
 
@@ -87,7 +87,7 @@ func newSnowflakeStreamingManagedFixture(t *testing.T) *snowflakeStreamingManage
 		t.Fatal(err)
 	}
 	created := "2026-01-01T00:00:00.000000000+00:00"
-	spec := connector.Spec{Name: "snowflake-streaming", Type: connector.EndpointSnowflake, Options: map[string]string{
+	spec := connector.RuntimeSpec{Name: "snowflake-streaming", Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": dsn, "flow_id": flowID, "managed_profile": connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
 		"destination_revision_id": revision, "batch_mode": "target", "batch_resolution": "none",
 		"meta_table_enabled": "false", "disable_transactions": "false", "session_keep_alive": "false",

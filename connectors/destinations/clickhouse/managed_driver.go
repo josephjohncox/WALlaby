@@ -105,7 +105,7 @@ type managedTableDefinition struct {
 	columnKinds  map[string]string
 }
 
-func (d *Destination) openManaged(ctx context.Context, dsn string, spec connector.Spec) error {
+func (d *Destination) openManaged(ctx context.Context, dsn string, spec connector.RuntimeSpec) error {
 	cfg, err := managedConfigFromSpec(spec)
 	if err != nil {
 		return err
@@ -328,8 +328,31 @@ func configureManagedTLS(options *chclient.Options, specOptions map[string]strin
 	return nil
 }
 
-func managedConfigFromSpec(spec connector.Spec) (managedConfig, error) {
+// ValidateManagedProfileOptions rejects every option outside the exact
+// PostgreSQL-to-ClickHouse append profile before connector side effects.
+func ValidateManagedProfileOptions(options map[string]string) error {
+	allowed := map[string]struct{}{
+		"dsn": {}, "flow_id": {}, "managed_profile": {}, "destination_revision_id": {}, "type_mappings": {},
+		"batch_mode": {}, "batch_resolution": {}, "meta_table_enabled": {}, "async_insert": {}, "wait_for_async_insert": {},
+		"insecure": {}, "tls_ca_file": {}, "tls_server_name": {}, "tls_cert_file": {}, "tls_key_file": {}, "managed_replica_tls_server_name": {},
+		"managed_deployment": {}, "managed_database": {}, "managed_changelog_table": {}, "managed_receipts_table": {}, "managed_final_view": {},
+		"managed_keeper_path_prefix": {}, "managed_keeper_address": {}, "managed_replica_dsn": {}, "managed_replica_names": {}, "insert_quorum": {},
+		"managed_max_active_parts": {}, "managed_max_transaction_rows": {}, "managed_max_transaction_bytes": {}, "managed_max_transaction_fragments": {},
+		"managed_max_rows_per_batch": {}, "managed_max_batch_bytes": {},
+	}
+	for option := range options {
+		if _, ok := allowed[option]; !ok {
+			return fmt.Errorf("managed ClickHouse profile does not allow option %s", option)
+		}
+	}
+	return nil
+}
+
+func managedConfigFromSpec(spec connector.RuntimeSpec) (managedConfig, error) {
 	options := spec.Options
+	if err := ValidateManagedProfileOptions(options); err != nil {
+		return managedConfig{}, err
+	}
 	cfg := managedConfig{
 		database:         strings.TrimSpace(options["managed_database"]),
 		changelogTable:   strings.TrimSpace(options["managed_changelog_table"]),

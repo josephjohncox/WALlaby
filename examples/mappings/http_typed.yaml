@@ -1,0 +1,14 @@
+version: 2
+destinations:
+  - destination: webhook_typed
+    future_tables:
+      action: include
+      target_schema: "web_{{ .Schema }}_archive"
+      target_table: "event_{{ .Table }}_v1"
+      future_columns:
+        action: include
+        target_column: "field_{{ .Column }}_raw"
+      write:
+        mode: append
+        key_columns: []
+    tables: []

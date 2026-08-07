@@ -31,7 +31,7 @@ func TestRunnerDDLCommitReceiptCrashBoundariesRapid(t *testing.T) {
 		runner := Runner{
 			FlowID: "flow-ddl-property",
 			Destinations: []DestinationConfig{{
-				Spec: connector.Spec{Name: "destination"},
+				Spec: connector.RuntimeSpec{Name: "destination"},
 				Dest: destination,
 			}},
 			RequireDDLExecution: true,
@@ -87,7 +87,7 @@ type modelDDLReconcileDestination struct {
 	writes          int
 }
 
-func (*modelDDLReconcileDestination) Open(context.Context, connector.Spec) error { return nil }
+func (*modelDDLReconcileDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
 func (d *modelDDLReconcileDestination) Write(context.Context, connector.Batch) error {
 	d.writes++
 	return nil

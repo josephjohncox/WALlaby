@@ -49,7 +49,7 @@ func TestS3ReplayConvergenceAndConflict(t *testing.T) {
 
 	prefix := fmt.Sprintf("wallaby-replay-%d", time.Now().UnixNano())
 	destination := &s3dest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "s3-replay",
 		Type: connector.EndpointS3,
 		Options: map[string]string{
@@ -202,7 +202,7 @@ func TestS3PartitionedReplayRepairsMissingObject(t *testing.T) {
 
 	prefix := fmt.Sprintf("wallaby-partition-replay-%d", time.Now().UnixNano())
 	destination := &s3dest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{
+	if err := destination.Open(ctx, connector.RuntimeSpec{
 		Name: "s3-partition-replay",
 		Type: connector.EndpointS3,
 		Options: map[string]string{

@@ -51,7 +51,7 @@ func TestManagedSourceOpenRejectsMutationBeforeNetwork(t *testing.T) {
 						options[key] = value
 					}
 					options[option] = "true"
-					err := (&Source{}).Open(context.Background(), connector.Spec{Type: connector.EndpointPostgres, Options: options})
+					err := (&Source{}).Open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointPostgres, Options: options})
 					if err == nil || !strings.Contains(err.Error(), option+"=false") {
 						t.Fatalf("error=%v, want local %s mutation rejection", err, option)
 					}

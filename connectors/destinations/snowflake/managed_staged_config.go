@@ -60,7 +60,7 @@ func stagedProfileAllowedOptions() map[string]struct{} {
 	return map[string]struct{}{
 		"dsn": {}, "flow_id": {}, "managed_profile": {}, "destination_revision_id": {},
 		"batch_mode": {}, "batch_resolution": {}, "meta_table_enabled": {},
-		"disable_transactions": {}, "session_keep_alive": {}, "type_mappings": {}, "type_mappings_file": {},
+		"disable_transactions": {}, "session_keep_alive": {},
 		"managed_account": {}, "managed_database": {}, "managed_schema": {}, "managed_stage": {},
 		"managed_table": {}, "managed_receipts_table": {}, "managed_file_format": {},
 		"managed_pipe": {}, "managed_auto_ingest": {},
@@ -74,11 +74,6 @@ func stagedProfileAllowedOptions() map[string]struct{} {
 		"managed_statement_timeout_seconds": {}, "managed_load_verify_attempts": {},
 		"managed_load_verify_interval_ms": {}, "managed_cleanup_max_objects": {},
 		"managed_cleanup_retention_seconds": {},
-		// Known generic options remain listed so the tailored rejection below can
-		// explain the incompatible mode.
-		"schema": {}, "table": {}, "staging_schema": {}, "staging_table": {}, "staging_suffix": {},
-		"warehouse": {}, "warehouse_size": {}, "warehouse_auto_suspend": {}, "warehouse_auto_resume": {},
-		"meta_schema": {}, "meta_table": {}, "meta_pk_prefix": {},
 	}
 }
 
@@ -99,12 +94,12 @@ func ValidateManagedStagedProfileOptions(options map[string]string) error {
 
 // ValidateManagedStagedProfileSpec performs the complete side-effect-free
 // portion of staged COPY admission.
-func ValidateManagedStagedProfileSpec(spec connector.Spec) error {
+func ValidateManagedStagedProfileSpec(spec connector.RuntimeSpec) error {
 	_, err := stagedConfigFromSpec(strings.TrimSpace(spec.Options["dsn"]), spec)
 	return err
 }
 
-func stagedConfigFromSpec(dsn string, spec connector.Spec) (stagedConfig, error) {
+func stagedConfigFromSpec(dsn string, spec connector.RuntimeSpec) (stagedConfig, error) {
 	const profileName = connector.ManagedProfilePostgresToSnowflakeStagedAppendV1
 	options := spec.Options
 	if strings.TrimSpace(options["managed_profile"]) != profileName {
@@ -238,7 +233,7 @@ func stagedConfigFromSpec(dsn string, spec connector.Spec) (stagedConfig, error)
 			return stagedConfig{}, fmt.Errorf("managed staged Snowflake schema contract rejects generated column %q", column.Name)
 		}
 	}
-	if strings.TrimSpace(options["type_mappings"]) != "" || strings.TrimSpace(options["type_mappings_file"]) != "" {
+	if strings.TrimSpace(options["type_mappings"]) != "" {
 		return stagedConfig{}, errors.New("managed staged Snowflake profile rejects type mapping overrides until each mapping has real-service recovery evidence")
 	}
 	cfg.typeMappings = defaultSnowflakeTypeMappings()

@@ -81,8 +81,8 @@ DROP TABLE IF EXISTS public.wallaby_clickhouse_managed_e2e_source`)
 
 	flowID := "clickhouse-managed-e2e-" + suffix
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
-	placeholderDestination := connector.Spec{Name: "clickhouse-managed-e2e", Type: connector.EndpointClickHouse}
-	created, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres}, Destinations: []connector.Spec{placeholderDestination}, Config: flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.NewTableMappings([]connector.Spec{placeholderDestination})}})
+	placeholderDestination := connector.RuntimeSpec{Name: "clickhouse-managed-e2e", Type: connector.EndpointClickHouse}
+	created, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(placeholderDestination), Config: flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{placeholderDestination})}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ DROP TABLE IF EXISTS public.wallaby_clickhouse_managed_e2e_source`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	created.Source = connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
+	created.Source = testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "slot": slotName, "publication": publication,
 		"ensure_publication": "false", "sync_publication": "false", "create_slot": "false", "ensure_state": "false",
 		"managed_profile": connector.ManagedProfilePostgresToClickHouseAppendV1, "bootstrap": "never", "streaming_transactions": "true",
@@ -110,7 +110,7 @@ DROP TABLE IF EXISTS public.wallaby_clickhouse_managed_e2e_source`)
 		"max_transaction_records": "100000", "max_transaction_bytes": "134217728", "max_transaction_fragments": "128",
 		"source_system_identifier": sourceSystemID, "source_lineage_id": sourceSystemID + ":" + publication + ":v1",
 		"publication_revision": publicationRevision,
-	}}
+	}})
 	destinationRevisionID := "clickhouse-managed-e2e-" + suffix
 	defer func() {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM destination_revisions WHERE destination_revision_id=$1", destinationRevisionID)
@@ -120,7 +120,7 @@ DROP TABLE IF EXISTS public.wallaby_clickhouse_managed_e2e_source`)
 	destinationSpec.Options = cloneStringMap(fixture.spec.Options)
 	destinationSpec.Options["destination_revision_id"] = destinationRevisionID
 	destinationSpec.Options["managed_max_rows_per_batch"] = "1"
-	created.Destinations = []connector.Spec{destinationSpec}
+	created.Destinations = testFlowDestinations(destinationSpec)
 
 	started, control, err := engine.PlanStart(ctx, flowID, false)
 	if err != nil {

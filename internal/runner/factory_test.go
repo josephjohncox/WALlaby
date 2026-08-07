@@ -16,12 +16,12 @@ func TestFactoryConstructionConsumesAuthoritativeDestinationRegistry(t *testing.
 	factory := Factory{}
 	for _, registration := range DestinationRegistrations() {
 		if registration.New == nil {
-			if _, err := factory.destination(connector.Spec{Type: registration.Type}); err == nil {
+			if _, err := factory.destination(connector.RuntimeSpec{Type: registration.Type}); err == nil {
 				t.Fatalf("placeholder %s unexpectedly constructed", registration.Type)
 			}
 			continue
 		}
-		got, err := factory.destination(connector.Spec{Type: registration.Type})
+		got, err := factory.destination(connector.RuntimeSpec{Type: registration.Type})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -71,7 +71,7 @@ func TestDestinationRegistryPlaceholderContracts(t *testing.T) {
 		if registration.New != nil {
 			continue
 		}
-		capabilities, err := registration.ResolveCapabilities(nil, connector.Spec{Type: registration.Type})
+		capabilities, err := registration.ResolveCapabilities(nil, connector.RuntimeSpec{Type: registration.Type})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -110,7 +110,7 @@ func TestConfigurationControlledCapabilityProfilesAreExactAndExhaustive(t *testi
 			if _, ok := declared[profile.ID]; !ok {
 				t.Fatalf("%s registry profile %q is not classifier-declared", registration.Type, profile.ID)
 			}
-			spec := connector.Spec{Name: string(registration.Type), Type: registration.Type, Options: profile.Options}
+			spec := connector.RuntimeSpec{Name: string(registration.Type), Type: registration.Type, Options: profile.Options}
 			classified, err := configured.ClassifyCapabilityProfile(spec)
 			if err != nil {
 				t.Fatalf("%s/%s classifier: %v", registration.Type, profile.ID, err)
@@ -135,7 +135,7 @@ func TestConfigurationControlledCapabilityProfilesAreExactAndExhaustive(t *testi
 	}
 }
 
-func assertPreIOPolicyMatrix(t *testing.T, destination connector.Destination, spec connector.Spec, capabilities connector.Capabilities) {
+func assertPreIOPolicyMatrix(t *testing.T, destination connector.Destination, spec connector.RuntimeSpec, capabilities connector.Capabilities) {
 	t.Helper()
 	config := stream.DestinationConfig{Spec: spec, Dest: destination}
 	policies := []connector.TableWritePolicy{
@@ -175,13 +175,13 @@ func TestFactoryRejectsRegisteredCapabilityOracleDrift(t *testing.T) {
 	original := destinationRegistry[registrationIndex].Profiles[0].Capabilities
 	destinationRegistry[registrationIndex].Profiles[0].Capabilities.Delivery.Lossy = true
 	t.Cleanup(func() { destinationRegistry[registrationIndex].Profiles[0].Capabilities = original })
-	if _, err := (Factory{}).destination(connector.Spec{Type: connector.EndpointKafka}); err == nil {
+	if _, err := (Factory{}).destination(connector.RuntimeSpec{Type: connector.EndpointKafka}); err == nil {
 		t.Fatal("factory accepted connector capabilities that differ from the registered full oracle")
 	}
 }
 
 func TestConfiguredCapabilityProfilesRejectUnknownValuesBeforeIO(t *testing.T) {
-	tests := []connector.Spec{
+	tests := []connector.RuntimeSpec{
 		{Name: "kafka-invalid-transactional-bool", Type: connector.EndpointKafka, Options: map[string]string{"transactional_producer": "sometimes"}},
 		{Name: "kafka-invalid-lossy-bool", Type: connector.EndpointKafka, Options: map[string]string{"allow_oversize_skip": "1"}},
 		{Name: "kafka-missing-transaction-id", Type: connector.EndpointKafka, Options: map[string]string{"transactional_producer": "true"}},
@@ -216,7 +216,7 @@ func TestDestinationRegistryRejectsUnclaimedPoliciesBeforeWrite(t *testing.T) {
 			continue
 		}
 		destination := registration.New()
-		spec := connector.Spec{Name: string(registration.Type), Type: registration.Type}
+		spec := connector.RuntimeSpec{Name: string(registration.Type), Type: registration.Type}
 		capabilities, err := registration.ResolveCapabilities(destination, spec)
 		if err != nil {
 			t.Fatal(err)

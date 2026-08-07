@@ -42,7 +42,7 @@ const (
 
 // IsPostgresToSnowflakeSQLV1Spec reports whether spec selects the exact named
 // Snowflake SQL profile whose configured capabilities advertise explicit-key upsert.
-func IsPostgresToSnowflakeSQLV1Spec(spec Spec) bool {
+func IsPostgresToSnowflakeSQLV1Spec(spec RuntimeSpec) bool {
 	return spec.Type == EndpointSnowflake && strings.TrimSpace(spec.Options["managed_profile"]) == ManagedProfilePostgresToSnowflakeSQLV1
 }
 

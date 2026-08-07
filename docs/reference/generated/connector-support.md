@@ -28,8 +28,6 @@
 | `duckdb` | experimental | yes | yes | no | no | yes | no | no | yes | no | no |
 | `ducklake` | experimental | yes | yes | no | no | yes | no | no | yes | no | no |
 | `iceberg` | experimental | yes | yes | no | no | no | yes | yes | no | no | no |
-| `proto` | placeholder | no | no | no | no | no | no | no | no | no | no |
-| `parquet` | placeholder | no | no | no | no | no | no | no | no | no | no |
 
 Snowpipe is append-only staged delivery: PUT, optional COPY, and metadata-receipt errors are returned unchanged; target tables change only through configured COPY or external pipe ingestion.
 

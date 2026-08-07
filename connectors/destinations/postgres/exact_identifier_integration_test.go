@@ -54,7 +54,7 @@ CREATE TRIGGER a_reject_copy BEFORE INSERT ON %s FOR EACH ROW EXECUTE FUNCTION %
 		_, _ = pool.Exec(context.Background(), fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, pgx.Identifier{schemaName}.Sanitize()))
 	}()
 	destination := &Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "exact-postgres", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "batch_mode": "target", "meta_table_enabled": "false"}}); err != nil {
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "exact-postgres", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "batch_mode": "target", "meta_table_enabled": "false"}}); err != nil {
 		t.Fatal(err)
 	}
 	defer destination.Close(context.Background())
@@ -179,7 +179,7 @@ CREATE TABLE %s.%s ("ID" bigint,"id" text," id " boolean)`, blankSchema, blankSc
 	}()
 
 	destination := &Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "exact-postgres", Type: connector.EndpointPostgres, Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "exact-postgres", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "batch_mode": "target", "meta_table_enabled": "false",
 	}}); err != nil {
 		t.Fatal(err)

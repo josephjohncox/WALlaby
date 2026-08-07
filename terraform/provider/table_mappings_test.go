@@ -21,11 +21,11 @@ import (
 )
 
 func appendMappingProto(destination string) *wallabypb.TableMappings {
-	return &wallabypb.TableMappings{Version: 1, Destinations: []*wallabypb.DestinationTableMappings{{
+	return &wallabypb.TableMappings{Version: 2, Destinations: []*wallabypb.DestinationTableMappings{{
 		Destination: destination,
 		FutureTables: &wallabypb.FutureTableMapping{
-			Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetSchema: "{schema}", TargetTable: "{table}",
-			FutureColumns: &wallabypb.FutureColumnMapping{Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetColumn: "{column}"},
+			Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}",
+			FutureColumns: &wallabypb.FutureColumnMapping{Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetColumn: "{{ .Column }}"},
 			Write:         &wallabypb.TableWritePolicy{Mode: wallabypb.TableWriteMode_TABLE_WRITE_MODE_APPEND},
 		},
 	}}}
@@ -36,7 +36,7 @@ func completeMappingProto() *wallabypb.TableMappings {
 	mapping.Destinations[0].Tables = []*wallabypb.TableMapping{
 		{
 			SourceSchema: "sales", SourceTable: "orders", Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetSchema: "analytics", TargetTable: "facts",
-			FutureColumns: &wallabypb.FutureColumnMapping{Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetColumn: "new_{column}"},
+			FutureColumns: &wallabypb.FutureColumnMapping{Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetColumn: "new_{{ .Column }}"},
 			Columns: []*wallabypb.ColumnMapping{
 				{SourceColumn: "id", Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetColumn: "order_id"},
 				{SourceColumn: "tenant_id", Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetColumn: "tenant"},
@@ -45,6 +45,7 @@ func completeMappingProto() *wallabypb.TableMappings {
 			Write: &wallabypb.TableWritePolicy{Mode: wallabypb.TableWriteMode_TABLE_WRITE_MODE_UPSERT, KeyColumns: []string{"tenant_id", "id"}, WatermarkColumn: "updated_at"},
 		},
 		{SourceSchema: "sales", SourceTable: "discarded", Action: wallabypb.MappingAction_MAPPING_ACTION_EXCLUDE},
+		{SourceSchema: "analytics", SourceTable: "facts", Action: wallabypb.MappingAction_MAPPING_ACTION_EXCLUDE},
 	}
 	mapping.Destinations = append(mapping.Destinations, appendMappingProto("archive").Destinations[0])
 	return mapping
@@ -70,14 +71,13 @@ func testAppendMappings(destination string) types.Object { // used by resource_f
 func testCompleteMappingModel() flowResourceModel {
 	return flowResourceModel{
 		ID: types.StringValue("flow-1"), Name: types.StringValue("mapped"), WireFormat: types.StringValue("arrow"), Parallelism: types.Int64Value(3), State: types.StringValue("running"), StartImmediately: types.BoolValue(true),
-		Source: endpointModel{Name: types.StringValue("source"), Type: types.StringValue("postgres"), Options: types.MapNull(types.StringType)},
+		Source: endpointFromProto(&wallabypb.Endpoint{Name: "source", Config: &wallabypb.Endpoint_PostgresSource{PostgresSource: &wallabypb.PostgresSourceConfig{}}}),
 		Destinations: []endpointModel{
-			{Name: types.StringValue("target"), Type: types.StringValue("postgres"), Options: types.MapNull(types.StringType)},
-			{Name: types.StringValue("archive"), Type: types.StringValue("s3"), Options: types.MapNull(types.StringType)},
+			endpointFromProto(&wallabypb.Endpoint{Name: "target", Config: &wallabypb.Endpoint_PostgresDestination{PostgresDestination: &wallabypb.PostgresDestinationConfig{}}}),
+			endpointFromProto(&wallabypb.Endpoint{Name: "archive", Config: &wallabypb.Endpoint_S3{S3: &wallabypb.S3DestinationConfig{}}}),
 		},
 		Config: &flowConfigModel{
 			AckPolicy: types.StringValue("primary"), PrimaryDestination: types.StringValue("target"), FailureMode: types.StringValue("hold_slot"), GiveUpPolicy: types.StringValue("never"),
-			SchemaRegistrySubject: types.StringValue("orders-value"), SchemaRegistryProtoTypesSubject: types.StringValue("wallaby-types"), SchemaRegistrySubjectMode: types.StringValue("record"),
 			DDL: &flowDDLConfigModel{Gate: types.BoolValue(true), AutoApprove: types.BoolValue(false), AutoApply: types.BoolValue(true)}, TableMappings: testObjectFromProto(completeMappingProto()),
 		},
 	}
@@ -163,7 +163,7 @@ func TestTableMappingsModelProtoStateRoundTripPreservesEveryFieldAndOrder(t *tes
 		t.Fatalf("destination order changed: %+v", got)
 	}
 	mapping := wire.Config.TableMappings.Destinations[0]
-	if len(mapping.Tables) != 2 || mapping.Tables[0].SourceTable != "orders" || mapping.Tables[1].SourceTable != "discarded" {
+	if len(mapping.Tables) != 3 || mapping.Tables[0].SourceTable != "orders" || mapping.Tables[1].SourceTable != "discarded" || mapping.Tables[2].SourceSchema != "analytics" || mapping.Tables[2].SourceTable != "facts" {
 		t.Fatalf("table order changed: %+v", mapping.Tables)
 	}
 	if got := mapping.Tables[0].Write.KeyColumns; !reflect.DeepEqual(got, []string{"tenant_id", "id"}) {
@@ -210,7 +210,7 @@ func TestTerraformMappingStatePreservesQuotedWhitespacePostgresIdentifiers(t *te
 	validationMapping.Destinations[0].Tables = []*wallabypb.TableMapping{{
 		SourceSchema: " ", SourceTable: " ", Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE,
 		TargetSchema: " ", TargetTable: " ",
-		FutureColumns: &wallabypb.FutureColumnMapping{Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetColumn: "{column}"},
+		FutureColumns: &wallabypb.FutureColumnMapping{Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetColumn: "{{ .Column }}"},
 		Columns:       []*wallabypb.ColumnMapping{{SourceColumn: " ", Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetColumn: " "}},
 		Write:         &wallabypb.TableWritePolicy{Mode: wallabypb.TableWriteMode_TABLE_WRITE_MODE_APPEND},
 	}}
@@ -223,14 +223,14 @@ func TestTerraformMappingStatePreservesQuotedWhitespacePostgresIdentifiers(t *te
 }
 
 func TestCanonicalMappingStateUsesKnownEmptyCollectionsAfterWireRoundTrip(t *testing.T) {
-	emptyRoot := mappingObject(t, &wallabypb.TableMappings{Version: 1})
+	emptyRoot := mappingObject(t, &wallabypb.TableMappings{Version: 2})
 	emptyDestinations := objectField(t, emptyRoot, "destinations").(types.List)
 	if emptyDestinations.IsNull() || emptyDestinations.IsUnknown() || len(emptyDestinations.Elements()) != 0 {
 		t.Fatalf("empty destinations state=%v", emptyDestinations)
 	}
 	mapping := appendMappingProto("target")
 	mapping.Destinations[0].Tables = []*wallabypb.TableMapping{
-		{SourceSchema: "public", SourceTable: "events", Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetSchema: "public", TargetTable: "events", FutureColumns: &wallabypb.FutureColumnMapping{Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetColumn: "{column}"}, Write: &wallabypb.TableWritePolicy{Mode: wallabypb.TableWriteMode_TABLE_WRITE_MODE_APPEND}},
+		{SourceSchema: "public", SourceTable: "events", Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetSchema: "public", TargetTable: "events", FutureColumns: &wallabypb.FutureColumnMapping{Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetColumn: "{{ .Column }}"}, Write: &wallabypb.TableWritePolicy{Mode: wallabypb.TableWriteMode_TABLE_WRITE_MODE_APPEND}},
 		{SourceSchema: "public", SourceTable: "ignored", Action: wallabypb.MappingAction_MAPPING_ACTION_EXCLUDE},
 	}
 	encoded, err := proto.Marshal(mapping)
@@ -322,7 +322,7 @@ func TestRequiredMappingCollectionsRejectOmission(t *testing.T) {
 func TestExplicitEmptyCollectionsRemainStableAcrossFrameworkApplyAndRefresh(t *testing.T) {
 	ctx := context.Background()
 	model := testCompleteMappingModel()
-	model.Destinations = []endpointModel{{Name: types.StringValue("archive"), Type: types.StringValue("s3"), Options: types.MapNull(types.StringType)}}
+	model.Destinations = []endpointModel{endpointFromProto(&wallabypb.Endpoint{Name: "archive", Config: &wallabypb.Endpoint_S3{S3: &wallabypb.S3DestinationConfig{}}})}
 	config := *model.Config
 	config.AckPolicy = types.StringValue("all")
 	config.PrimaryDestination = types.StringNull()
@@ -458,7 +458,7 @@ func TestTerraformAppendWatermarkIsMetadata(t *testing.T) {
 	mapping := appendMappingProto("archive")
 	mapping.Destinations[0].FutureTables.Write.WatermarkColumn = "observed_at"
 	model := testCompleteMappingModel()
-	model.Destinations = []endpointModel{{Name: types.StringValue("archive"), Type: types.StringValue("s3"), Options: types.MapNull(types.StringType)}}
+	model.Destinations = []endpointModel{endpointFromProto(&wallabypb.Endpoint{Name: "archive", Config: &wallabypb.Endpoint_S3{S3: &wallabypb.S3DestinationConfig{}}})}
 	model.Config.TableMappings = mappingObject(t, mapping)
 	if diagnostics := validateTerraformTableMappings(context.Background(), model); diagnostics.HasError() {
 		t.Fatalf("append watermark metadata rejected: %v", diagnostics)
@@ -478,7 +478,7 @@ func TestPresentButMeaninglessNestedObjectsFailClosed(t *testing.T) {
 			mapping.Destinations[0].Tables = []*wallabypb.TableMapping{{SourceSchema: "public", SourceTable: "ignored", Action: wallabypb.MappingAction_MAPPING_ACTION_EXCLUDE, Write: &wallabypb.TableWritePolicy{}}}
 		}, "cannot contain"},
 		{"included table has empty write message", func(mapping *wallabypb.TableMappings) {
-			mapping.Destinations[0].Tables = []*wallabypb.TableMapping{{SourceSchema: "public", SourceTable: "events", Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetSchema: "public", TargetTable: "events", FutureColumns: &wallabypb.FutureColumnMapping{Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetColumn: "{column}"}, Write: &wallabypb.TableWritePolicy{}}}
+			mapping.Destinations[0].Tables = []*wallabypb.TableMapping{{SourceSchema: "public", SourceTable: "events", Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetSchema: "public", TargetTable: "events", FutureColumns: &wallabypb.FutureColumnMapping{Action: wallabypb.MappingAction_MAPPING_ACTION_INCLUDE, TargetColumn: "{{ .Column }}"}, Write: &wallabypb.TableWritePolicy{}}}
 		}, "write mode"},
 	}
 	for _, test := range tests {
@@ -597,6 +597,7 @@ func TestMappingAndConfigChangesUseControlledReconfigureWhileOrdinaryUpdatesRema
 	*planned.Config = *prior.Config
 	changedMapping := proto.Clone(completeMappingProto()).(*wallabypb.TableMappings)
 	changedMapping.Destinations[0].Tables[0].TargetTable = "facts_v2"
+	changedMapping.Destinations[0].Tables[2].SourceTable = "facts_v2"
 	planned.Config.TableMappings = mappingObject(t, changedMapping)
 	client := &flowRPCFake{}
 	instance := &flowResource{client: &Client{Flow: client}}
@@ -643,7 +644,7 @@ func TestMappingAndConfigChangesUseControlledReconfigureWhileOrdinaryUpdatesRema
 	}
 
 	identityChange := prior
-	identityChange.Source.Options = types.MapValueMust(types.StringType, map[string]attr.Value{"dsn": types.StringValue("postgres://changed")})
+	identityChange.Source = endpointFromProto(&wallabypb.Endpoint{Name: "source", Config: &wallabypb.Endpoint_PostgresSource{PostgresSource: &wallabypb.PostgresSourceConfig{Connection: &wallabypb.PostgresConnectionConfig{Dsn: "postgres://changed"}}}})
 	identityClient := &flowRPCFake{}
 	identityInstance := &flowResource{client: &Client{Flow: identityClient}}
 	identityResponse := resource.UpdateResponse{State: stateForModel(t, prior)}
@@ -791,8 +792,8 @@ func TestFlowResourceSchemaExposesDurableMappingsWithoutReplacementOrFilePath(t 
 		t.Fatalf("config schema=%T %+v", response.Schema.Attributes["config"], config)
 	}
 	for _, name := range []string{"schema_registry_subject", "schema_registry_proto_types_subject", "schema_registry_subject_mode"} {
-		if _, ok := config.Attributes[name]; !ok {
-			t.Fatalf("missing config attribute %q", name)
+		if _, ok := config.Attributes[name]; ok {
+			t.Fatalf("obsolete flow-level schema registry attribute %q remains", name)
 		}
 	}
 	mappings, ok := config.Attributes["table_mappings"].(schema.SingleNestedAttribute)

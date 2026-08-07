@@ -11,9 +11,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/controlstore"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 const (
@@ -32,13 +35,20 @@ const minimumLifecycleLockConnections int32 = 4
 // Advisory locks use a separate pool because each lock must remain pinned to one
 // session while its callback uses the control pool.
 type PostgresEngine struct {
-	pool         *pgxpool.Pool
-	lockPool     *pgxpool.Pool
-	ownsPool     bool
-	ownsLockPool bool
+	pool              *pgxpool.Pool
+	lockPool          *pgxpool.Pool
+	connectorRegistry *connector.Registry
+	ownsPool          bool
+	ownsLockPool      bool
 }
 
 func NewPostgresEngine(ctx context.Context, dsn string) (*PostgresEngine, error) {
+	return NewPostgresEngineWithRegistry(ctx, dsn, connector.DefaultRegistry)
+}
+
+// NewPostgresEngineWithRegistry constructs PostgreSQL workflow persistence
+// using the same custom connector registry as the API and worker runtime.
+func NewPostgresEngineWithRegistry(ctx context.Context, dsn string, registry *connector.Registry) (*PostgresEngine, error) {
 	if dsn == "" {
 		return nil, errors.New("postgres DSN is required")
 	}
@@ -55,7 +65,7 @@ func NewPostgresEngine(ctx context.Context, dsn string) (*PostgresEngine, error)
 		pool.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
-	engine, err := NewPostgresEngineWithPool(ctx, pool)
+	engine, err := NewPostgresEngineWithPoolAndRegistry(ctx, pool, registry)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -67,6 +77,12 @@ func NewPostgresEngine(ctx context.Context, dsn string) (*PostgresEngine, error)
 // NewPostgresEngineWithPool borrows the shared control PostgreSQL pool and
 // owns a separate pool for session-scoped lifecycle advisory locks.
 func NewPostgresEngineWithPool(ctx context.Context, pool *pgxpool.Pool) (*PostgresEngine, error) {
+	return NewPostgresEngineWithPoolAndRegistry(ctx, pool, connector.DefaultRegistry)
+}
+
+// NewPostgresEngineWithPoolAndRegistry borrows a control pool and uses the
+// injected registry for every persisted endpoint hydration path.
+func NewPostgresEngineWithPoolAndRegistry(ctx context.Context, pool *pgxpool.Pool, registry *connector.Registry) (*PostgresEngine, error) {
 	if pool == nil {
 		return nil, errors.New("postgres control pool is required")
 	}
@@ -87,7 +103,10 @@ func NewPostgresEngineWithPool(ctx context.Context, pool *pgxpool.Pool) (*Postgr
 		lockPool.Close()
 		return nil, fmt.Errorf("ping lifecycle lock pool: %w", err)
 	}
-	return &PostgresEngine{pool: pool, lockPool: lockPool, ownsLockPool: true}, nil
+	if registry == nil {
+		registry = connector.NewRegistry()
+	}
+	return &PostgresEngine{pool: pool, lockPool: lockPool, connectorRegistry: registry, ownsLockPool: true}, nil
 }
 
 func (p *PostgresEngine) Close() {
@@ -139,7 +158,7 @@ func (p *PostgresEngine) WithFlowLock(ctx context.Context, flowID string, try bo
 }
 
 func (p *PostgresEngine) Create(ctx context.Context, f flow.Flow) (flow.Flow, error) {
-	if err := flow.ValidateDefinition(f); err != nil {
+	if err := flow.ValidateDefinitionWithRegistry(f, p.connectorRegistry); err != nil {
 		return flow.Flow{}, err
 	}
 	if f.ID == "" {
@@ -154,7 +173,7 @@ func (p *PostgresEngine) Create(ctx context.Context, f flow.Flow) (flow.Flow, er
 	if f.Parallelism <= 0 {
 		f.Parallelism = 1
 	}
-	sourceJSON, destJSON, configJSON, err := marshalFlowFields(f)
+	sourceJSON, destJSON, configJSON, err := marshalFlowFieldsWithRegistry(f, p.connectorRegistry)
 	if err != nil {
 		return flow.Flow{}, err
 	}
@@ -182,7 +201,7 @@ func (p *PostgresEngine) Create(ctx context.Context, f flow.Flow) (flow.Flow, er
 }
 
 func (p *PostgresEngine) Update(ctx context.Context, f flow.Flow) (flow.Flow, error) {
-	if err := flow.ValidateDefinition(f); err != nil {
+	if err := flow.ValidateDefinitionWithRegistry(f, p.connectorRegistry); err != nil {
 		return flow.Flow{}, err
 	}
 	if f.ID == "" {
@@ -191,7 +210,7 @@ func (p *PostgresEngine) Update(ctx context.Context, f flow.Flow) (flow.Flow, er
 	if f.Parallelism <= 0 {
 		f.Parallelism = 1
 	}
-	sourceJSON, destJSON, configJSON, err := marshalFlowFields(f)
+	sourceJSON, destJSON, configJSON, err := marshalFlowFieldsWithRegistry(f, p.connectorRegistry)
 	if err != nil {
 		return flow.Flow{}, err
 	}
@@ -202,30 +221,42 @@ func (p *PostgresEngine) Update(ctx context.Context, f flow.Flow) (flow.Flow, er
 	defer func() { _ = tx.Rollback(ctx) }()
 	var incarnationID uuid.UUID
 	var state string
-	var persistedDestinationsJSON []byte
-	var persistedMappingsJSON []byte
-	var incarnationIdentityChanged bool
+	var persistedSourceJSON, persistedDestinationsJSON, persistedMappingsJSON []byte
+	var persistedWireFormat *string
 	if err := tx.QueryRow(ctx, `
-SELECT incarnation_id,state,destinations,config->'table_mappings',
-       source IS DISTINCT FROM $2::jsonb OR destinations IS DISTINCT FROM $3::jsonb OR wire_format IS DISTINCT FROM $4
-FROM flows WHERE id=$1 FOR UPDATE`, f.ID, sourceJSON, destJSON, emptyToNull(string(f.WireFormat))).Scan(&incarnationID, &state, &persistedDestinationsJSON, &persistedMappingsJSON, &incarnationIdentityChanged); err != nil {
+SELECT incarnation_id,state,source,destinations,wire_format,config->'table_mappings'
+FROM flows WHERE id=$1 FOR UPDATE`, f.ID).Scan(&incarnationID, &state, &persistedSourceJSON, &persistedDestinationsJSON, &persistedWireFormat, &persistedMappingsJSON); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return flow.Flow{}, ErrNotFound
 		}
 		return flow.Flow{}, err
 	}
-	var persistedDestinations []connector.Spec
+	persistedSource, err := unmarshalPersistedEndpointWithRegistry(persistedSourceJSON, endpointcodec.RoleSource, p.connectorRegistry)
+	if err != nil {
+		return flow.Flow{}, fmt.Errorf("persisted flow has incompatible source: %w", err)
+	}
+	persistedDestinations, err := unmarshalPersistedEndpointsWithRegistry(persistedDestinationsJSON, p.connectorRegistry)
+	if err != nil {
+		return flow.Flow{}, fmt.Errorf("persisted flow has incompatible destinations: %w", err)
+	}
 	var persistedMappings flow.TableMappings
 	if len(persistedMappingsJSON) == 0 || string(persistedMappingsJSON) == "null" {
 		return flow.Flow{}, errors.New("persisted flow has incompatible or missing table mappings")
 	}
-	if err := json.Unmarshal(persistedDestinationsJSON, &persistedDestinations); err != nil {
-		return flow.Flow{}, errors.New("persisted flow has incompatible destinations")
-	}
-	if err := json.Unmarshal(persistedMappingsJSON, &persistedMappings); err != nil || persistedMappings.Validate(persistedDestinations) != nil {
+	persisted := flow.Flow{Source: persistedSource, Destinations: persistedDestinations, Config: flow.Config{TableMappings: persistedMappings}}
+	persistedRuntimeDestinations, decodeErr := persisted.DecodeDestinations(p.connectorRegistry)
+	if err := json.Unmarshal(persistedMappingsJSON, &persistedMappings); err != nil || decodeErr != nil || persistedMappings.Validate(persistedRuntimeDestinations) != nil {
 		return flow.Flow{}, errors.New("persisted flow has incompatible or missing table mappings")
 	}
-	identityChanged := incarnationIdentityChanged || !persistedMappings.Equal(f.Config.TableMappings)
+	persisted.Config.TableMappings = persistedMappings
+	if persistedWireFormat != nil {
+		persisted.WireFormat = connector.WireFormat(*persistedWireFormat)
+	}
+	identityEqual, err := flow.ExecutionIdentityEqual(persisted, f)
+	if err != nil {
+		return flow.Flow{}, err
+	}
+	identityChanged := !identityEqual
 	if identityChanged {
 		if state == string(flow.StateRunning) || state == string(flow.StateStopping) {
 			return flow.Flow{}, fmt.Errorf("%w: source, destination, wire format, or table mapping identity cannot change while flow is %s", ErrInvalidState, state)
@@ -239,11 +270,11 @@ FROM flows WHERE id=$1 FOR UPDATE`, f.ID, sourceJSON, destJSON, emptyToNull(stri
 		}
 		incarnationID = newIncarnationID
 	}
-	updated, err := scanFlow(tx.QueryRow(ctx, `UPDATE flows SET name=$2, source=$3, destinations=$4, wire_format=$5,
+	updated, err := scanFlowWithRegistry(tx.QueryRow(ctx, `UPDATE flows SET name=$2, source=$3, destinations=$4, wire_format=$5,
 		parallelism=$6, config=$7, incarnation_id=$8,
 		lifecycle_generation=CASE WHEN incarnation_id IS DISTINCT FROM $8 THEN 0 ELSE lifecycle_generation END,
 		updated_at=now() WHERE id=$1
-		RETURNING id,name,source,destinations,state,wire_format,parallelism,config`, f.ID, f.Name, sourceJSON, destJSON, emptyToNull(string(f.WireFormat)), f.Parallelism, configJSON, incarnationID))
+		RETURNING id,name,source,destinations,state,wire_format,parallelism,config`, f.ID, f.Name, sourceJSON, destJSON, emptyToNull(string(f.WireFormat)), f.Parallelism, configJSON, incarnationID), p.connectorRegistry)
 	if err != nil {
 		return flow.Flow{}, err
 	}
@@ -253,14 +284,77 @@ FROM flows WHERE id=$1 FOR UPDATE`, f.ID, sourceJSON, destJSON, emptyToNull(stri
 	return updated, nil
 }
 
-func marshalFlowFields(f flow.Flow) ([]byte, []byte, []byte, error) {
-	source, err := json.Marshal(f.Source)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("marshal source: %w", err)
+var persistedEndpointJSON = protojson.MarshalOptions{UseProtoNames: true}
+
+func marshalPersistedEndpoint(endpoint *wallabypb.Endpoint) ([]byte, error) {
+	return persistedEndpointJSON.Marshal(endpoint)
+}
+
+func marshalPersistedEndpoints(endpoints []*wallabypb.Endpoint) ([]byte, error) {
+	items := make([]json.RawMessage, 0, len(endpoints))
+	for index, endpoint := range endpoints {
+		encoded, err := marshalPersistedEndpoint(endpoint)
+		if err != nil {
+			return nil, fmt.Errorf("destination %d: %w", index, err)
+		}
+		items = append(items, json.RawMessage(encoded))
 	}
-	dest, err := json.Marshal(f.Destinations)
+	return json.Marshal(items)
+}
+
+func unmarshalPersistedEndpointWithRegistry(data []byte, role endpointcodec.Role, registry *connector.Registry) (*wallabypb.Endpoint, error) {
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal(data, &shape); err != nil {
+		return nil, err
+	}
+	if _, legacyType := shape["type"]; legacyType {
+		return nil, errors.New("legacy endpoint type/options JSON is not supported; recreate the flow with a typed endpoint")
+	}
+	if _, legacyOptions := shape["options"]; legacyOptions {
+		return nil, errors.New("legacy endpoint type/options JSON is not supported; recreate the flow with a typed endpoint")
+	}
+	endpoint := &wallabypb.Endpoint{}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(data, endpoint); err != nil {
+		return nil, fmt.Errorf("decode typed endpoint; recreate the flow if it predates typed endpoints: %w", err)
+	}
+	if _, err := endpointcodec.DecodeWithRegistry(endpoint, role, registry); err != nil {
+		return nil, err
+	}
+	return endpoint, nil
+}
+
+func unmarshalPersistedEndpointsWithRegistry(data []byte, registry *connector.Registry) ([]*wallabypb.Endpoint, error) {
+	var items []json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		return nil, fmt.Errorf("decode typed endpoint list; recreate the flow if it predates typed endpoints: %w", err)
+	}
+	result := make([]*wallabypb.Endpoint, 0, len(items))
+	for index, item := range items {
+		endpoint, err := unmarshalPersistedEndpointWithRegistry(item, endpointcodec.RoleDestination, registry)
+		if err != nil {
+			return nil, fmt.Errorf("destination %d: %w", index, err)
+		}
+		result = append(result, endpoint)
+	}
+	return result, nil
+}
+
+func marshalFlowFieldsWithRegistry(f flow.Flow, registry *connector.Registry) ([]byte, []byte, []byte, error) {
+	if _, err := endpointcodec.DecodeWithRegistry(f.Source, endpointcodec.RoleSource, registry); err != nil {
+		return nil, nil, nil, fmt.Errorf("validate typed source registration: %w", err)
+	}
+	source, err := marshalPersistedEndpoint(f.Source)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("marshal destinations: %w", err)
+		return nil, nil, nil, fmt.Errorf("marshal typed source: %w", err)
+	}
+	for index, endpoint := range f.Destinations {
+		if _, decodeErr := endpointcodec.DecodeWithRegistry(endpoint, endpointcodec.RoleDestination, registry); decodeErr != nil {
+			return nil, nil, nil, fmt.Errorf("validate typed destination %d registration: %w", index, decodeErr)
+		}
+	}
+	dest, err := marshalPersistedEndpoints(f.Destinations)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("marshal typed destinations: %w", err)
 	}
 	config, err := json.Marshal(f.Config)
 	if err != nil {
@@ -278,7 +372,7 @@ func (p *PostgresEngine) PlanStart(ctx context.Context, flowID string, resume bo
 		return flow.Flow{}, LifecycleControl{}, fmt.Errorf("begin start flow: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	current, control, err := getFlowAndControlForUpdate(ctx, tx, flowID)
+	current, control, err := getFlowAndControlForUpdate(ctx, tx, flowID, p.connectorRegistry)
 	if err != nil {
 		return flow.Flow{}, control, err
 	}
@@ -297,7 +391,7 @@ func (p *PostgresEngine) PlanStart(ctx context.Context, flowID string, resume bo
 	row := tx.QueryRow(ctx, `UPDATE flows SET state='running', lifecycle_target='running', lifecycle_generation=$2,
 		dispatch_pending=TRUE, updated_at=now() WHERE id=$1
 		RETURNING id,name,source,destinations,state,wire_format,parallelism,config`, flowID, control.Generation)
-	updated, err := scanFlow(row)
+	updated, err := scanFlowWithRegistry(row, p.connectorRegistry)
 	if err != nil {
 		return flow.Flow{}, control, err
 	}
@@ -338,7 +432,7 @@ func (p *PostgresEngine) RequestPause(ctx context.Context, flowID string) (flow.
 		return flow.Flow{}, LifecycleControl{}, fmt.Errorf("begin pause request: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	current, control, err := getFlowAndControlForUpdate(ctx, tx, flowID)
+	current, control, err := getFlowAndControlForUpdate(ctx, tx, flowID, p.connectorRegistry)
 	if err != nil {
 		return flow.Flow{}, control, err
 	}
@@ -368,7 +462,7 @@ func (p *PostgresEngine) RequestStop(ctx context.Context, flowID string) (flow.F
 		return flow.Flow{}, LifecycleControl{}, fmt.Errorf("begin stop request: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	current, control, err := getFlowAndControlForUpdate(ctx, tx, flowID)
+	current, control, err := getFlowAndControlForUpdate(ctx, tx, flowID, p.connectorRegistry)
 	if err != nil {
 		return flow.Flow{}, control, err
 	}
@@ -380,7 +474,7 @@ func (p *PostgresEngine) RequestStop(ctx context.Context, flowID string) (flow.F
 	}
 	row := tx.QueryRow(ctx, `UPDATE flows SET state='stopping', lifecycle_target='stopped', dispatch_pending=FALSE, updated_at=now() WHERE id=$1
 		RETURNING id,name,source,destinations,state,wire_format,parallelism,config`, flowID)
-	updated, err := scanFlow(row)
+	updated, err := scanFlowWithRegistry(row, p.connectorRegistry)
 	if err != nil {
 		return flow.Flow{}, control, err
 	}
@@ -408,7 +502,7 @@ func (p *PostgresEngine) completeQuiescent(ctx context.Context, flowID string, g
 		return flow.Flow{}, fmt.Errorf("begin lifecycle completion: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	current, control, err := getFlowAndControlForUpdate(ctx, tx, flowID)
+	current, control, err := getFlowAndControlForUpdate(ctx, tx, flowID, p.connectorRegistry)
 	if err != nil {
 		return flow.Flow{}, err
 	}
@@ -426,7 +520,7 @@ func (p *PostgresEngine) completeQuiescent(ctx context.Context, flowID string, g
 		return flow.Flow{}, fmt.Errorf("%w: %d active executions prevent completion", ErrInvalidState, active)
 	}
 	row := tx.QueryRow(ctx, `UPDATE flows SET state=$2, updated_at=now() WHERE id=$1 RETURNING id,name,source,destinations,state,wire_format,parallelism,config`, flowID, string(to))
-	updated, err := scanFlow(row)
+	updated, err := scanFlowWithRegistry(row, p.connectorRegistry)
 	if err != nil {
 		return flow.Flow{}, err
 	}
@@ -464,7 +558,7 @@ func (p *PostgresEngine) Fail(ctx context.Context, flowID string) (flow.Flow, er
 		return flow.Flow{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	current, _, err := getFlowAndControlForUpdate(ctx, tx, flowID)
+	current, _, err := getFlowAndControlForUpdate(ctx, tx, flowID, p.connectorRegistry)
 	if err != nil {
 		return flow.Flow{}, err
 	}
@@ -472,7 +566,7 @@ func (p *PostgresEngine) Fail(ctx context.Context, flowID string) (flow.Flow, er
 		return flow.Flow{}, fmt.Errorf("%w: stopped flow is terminal", ErrInvalidState)
 	}
 	row := tx.QueryRow(ctx, `UPDATE flows SET state='failed', lifecycle_target='failed', dispatch_pending=FALSE, updated_at=now() WHERE id=$1 RETURNING id,name,source,destinations,state,wire_format,parallelism,config`, flowID)
-	updated, err := scanFlow(row)
+	updated, err := scanFlowWithRegistry(row, p.connectorRegistry)
 	if err != nil {
 		return flow.Flow{}, err
 	}
@@ -491,7 +585,7 @@ func (p *PostgresEngine) Delete(ctx context.Context, flowID string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	current, control, err := getFlowAndControlForUpdate(ctx, tx, flowID)
+	current, control, err := getFlowAndControlForUpdate(ctx, tx, flowID, p.connectorRegistry)
 	if err != nil {
 		return err
 	}
@@ -510,7 +604,7 @@ func (p *PostgresEngine) Delete(ctx context.Context, flowID string) error {
 }
 
 func (p *PostgresEngine) Get(ctx context.Context, id string) (flow.Flow, error) {
-	return scanFlow(p.pool.QueryRow(ctx, "SELECT id,name,source,destinations,state,wire_format,parallelism,config FROM flows WHERE id=$1", id))
+	return scanFlowWithRegistry(p.pool.QueryRow(ctx, "SELECT id,name,source,destinations,state,wire_format,parallelism,config FROM flows WHERE id=$1", id), p.connectorRegistry)
 }
 func (p *PostgresEngine) List(ctx context.Context) ([]flow.Flow, error) {
 	rows, err := p.pool.Query(ctx, "SELECT id,name,source,destinations,state,wire_format,parallelism,config FROM flows ORDER BY created_at")
@@ -520,7 +614,7 @@ func (p *PostgresEngine) List(ctx context.Context) ([]flow.Flow, error) {
 	defer rows.Close()
 	out := []flow.Flow{}
 	for rows.Next() {
-		f, e := scanFlow(rows)
+		f, e := scanFlowWithRegistry(rows, p.connectorRegistry)
 		if e != nil {
 			return nil, e
 		}
@@ -803,7 +897,7 @@ func (p *PostgresEngine) ReconcileTerminatedExecutions(ctx context.Context, flow
 	}
 	return nil
 }
-func getFlowAndControlForUpdate(ctx context.Context, tx pgx.Tx, id string) (flow.Flow, LifecycleControl, error) {
+func getFlowAndControlForUpdate(ctx context.Context, tx pgx.Tx, id string, registry *connector.Registry) (flow.Flow, LifecycleControl, error) {
 	row := tx.QueryRow(ctx, `SELECT id,name,source,destinations,state,wire_format,parallelism,config,lifecycle_target,lifecycle_generation,dispatch_pending FROM flows WHERE id=$1 FOR UPDATE`, id)
 	var f flow.Flow
 	var c LifecycleControl
@@ -816,7 +910,7 @@ func getFlowAndControlForUpdate(ctx context.Context, tx pgx.Tx, id string) (flow
 	} else if err != nil {
 		return f, c, fmt.Errorf("scan flow control: %w", err)
 	}
-	if err := decodeFlow(&f, source, dest, config, state, wire, par); err != nil {
+	if err := decodeFlowWithRegistry(&f, source, dest, config, state, wire, par, registry); err != nil {
 		return f, c, err
 	}
 	c.FlowID, c.State, c.Target = f.ID, f.State, LifecycleTarget(target)
@@ -831,7 +925,7 @@ SELECT id,incarnation_id,$2,$3,$4 FROM flows WHERE id=$1`, id, emptyToNull(from)
 	}
 	return nil
 }
-func scanFlow(row pgx.Row) (flow.Flow, error) {
+func scanFlowWithRegistry(row pgx.Row, registry *connector.Registry) (flow.Flow, error) {
 	var f flow.Flow
 	var source, dest, config []byte
 	var state string
@@ -842,18 +936,22 @@ func scanFlow(row pgx.Row) (flow.Flow, error) {
 	} else if err != nil {
 		return f, fmt.Errorf("scan flow: %w", err)
 	}
-	if err := decodeFlow(&f, source, dest, config, state, wire, par); err != nil {
+	if err := decodeFlowWithRegistry(&f, source, dest, config, state, wire, par, registry); err != nil {
 		return f, err
 	}
 	return f, nil
 }
-func decodeFlow(f *flow.Flow, source, dest, config []byte, state string, wire *string, par int) error {
-	if err := json.Unmarshal(source, &f.Source); err != nil {
-		return fmt.Errorf("unmarshal source: %w", err)
+func decodeFlowWithRegistry(f *flow.Flow, source, dest, config []byte, state string, wire *string, par int, registry *connector.Registry) error {
+	decodedSource, err := unmarshalPersistedEndpointWithRegistry(source, endpointcodec.RoleSource, registry)
+	if err != nil {
+		return fmt.Errorf("unmarshal typed source: %w", err)
 	}
-	if err := json.Unmarshal(dest, &f.Destinations); err != nil {
-		return fmt.Errorf("unmarshal destinations: %w", err)
+	decodedDestinations, err := unmarshalPersistedEndpointsWithRegistry(dest, registry)
+	if err != nil {
+		return fmt.Errorf("unmarshal typed destinations: %w", err)
 	}
+	f.Source = decodedSource
+	f.Destinations = decodedDestinations
 	if len(config) > 0 {
 		if err := json.Unmarshal(config, &f.Config); err != nil {
 			return fmt.Errorf("unmarshal config: %w", err)
@@ -862,7 +960,11 @@ func decodeFlow(f *flow.Flow, source, dest, config []byte, state string, wire *s
 	if f.Config.TableMappings.Version != flow.TableMappingsVersion {
 		return fmt.Errorf("persisted flow has incompatible or missing table mappings version; expected %d", flow.TableMappingsVersion)
 	}
-	if err := f.Config.TableMappings.Validate(f.Destinations); err != nil {
+	runtimeDestinations, err := f.DecodeDestinations(registry)
+	if err != nil {
+		return fmt.Errorf("persisted flow has incompatible destinations: %w", err)
+	}
+	if err := f.Config.TableMappings.Validate(runtimeDestinations); err != nil {
 		return fmt.Errorf("persisted flow has incompatible table mappings: %w", err)
 	}
 	f.State = flow.State(state)

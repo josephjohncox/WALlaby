@@ -27,7 +27,7 @@ type messageStore interface {
 
 // Destination writes change events into a Postgres-backed stream.
 type Destination struct {
-	spec              connector.Spec
+	spec              connector.RuntimeSpec
 	store             messageStore
 	stream            string
 	codec             wire.Codec
@@ -36,7 +36,11 @@ type Destination struct {
 	protoTypesSubject string
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
+	registryCfg, err := schemaregistry.ConfigFromOptions(spec.Options)
+	if err != nil {
+		return err
+	}
 	d.spec = spec
 	dsn := spec.Options[optDSN]
 	if dsn == "" {
@@ -62,24 +66,39 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.codec = codec
 	d.registrySubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistrySubject])
 	d.protoTypesSubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistryProtoTypes])
-	if d.codec.Name() == connector.WireFormatAvro || d.codec.Name() == connector.WireFormatProto {
-		registryCfg := schemaregistry.ConfigFromOptions(spec.Options)
-		registry, err := schemaregistry.NewRegistry(ctx, registryCfg)
-		if err != nil && !errors.Is(err, schemaregistry.ErrRegistryDisabled) {
-			return err
-		}
-		if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
-			registry = nil
-		}
-		d.registry = registry
-	}
 
 	store, err := pgstream.NewStore(ctx, dsn)
 	if err != nil {
+		if store != nil {
+			store.Close()
+		}
 		return err
 	}
-	d.store = store
 
+	var registry schemaregistry.Registry
+	if d.codec.Name() == connector.WireFormatAvro || d.codec.Name() == connector.WireFormatProto {
+		registry, err = schemaregistry.NewRegistry(ctx, registryCfg)
+		if err != nil && !errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+			var cleanupErr error
+			if registry != nil {
+				cleanupErr = registry.Close()
+			}
+			store.Close()
+			return errors.Join(err, cleanupErr)
+		}
+		if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+			if registry != nil {
+				if cleanupErr := registry.Close(); cleanupErr != nil {
+					store.Close()
+					return cleanupErr
+				}
+			}
+			registry = nil
+		}
+	}
+
+	d.store = store
+	d.registry = registry
 	return nil
 }
 

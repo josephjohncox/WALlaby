@@ -13,6 +13,7 @@ import (
 	grpcdest "github.com/josephjohncox/wallaby/connectors/destinations/grpc"
 	"github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
@@ -71,7 +72,7 @@ func TestGRPCDestinationModes(t *testing.T) {
 		recorder.mu.Unlock()
 
 		dest := &grpcdest.Destination{}
-		spec := connector.Spec{
+		spec := connector.RuntimeSpec{
 			Name: "grpc-wire",
 			Type: connector.EndpointGRPC,
 			Options: map[string]string{
@@ -117,13 +118,14 @@ func TestGRPCDestinationModes(t *testing.T) {
 		recorder.mu.Unlock()
 
 		dest := &grpcdest.Destination{}
-		spec := connector.Spec{
+		spec := connector.RuntimeSpec{
 			Name: "grpc-wire-registry",
 			Type: connector.EndpointGRPC,
 			Options: map[string]string{
-				"endpoint":        target,
-				"format":          "avro",
-				"schema_registry": "local",
+				"endpoint":                               target,
+				"format":                                 "avro",
+				"schema_registry":                        "local",
+				schemaregistry.OptRegistryLocalDirectory: t.TempDir(),
 			},
 		}
 		if err := dest.Open(ctx, spec); err != nil {
@@ -191,7 +193,7 @@ func TestGRPCDestinationModes(t *testing.T) {
 		recorder.mu.Unlock()
 
 		dest := &grpcdest.Destination{}
-		spec := connector.Spec{
+		spec := connector.RuntimeSpec{
 			Name: "grpc-record",
 			Type: connector.EndpointGRPC,
 			Options: map[string]string{
@@ -239,7 +241,7 @@ func TestGRPCDestinationModes(t *testing.T) {
 		recorder.mu.Unlock()
 
 		dest := &grpcdest.Destination{}
-		spec := connector.Spec{
+		spec := connector.RuntimeSpec{
 			Name: "grpc-wal",
 			Type: connector.EndpointGRPC,
 			Options: map[string]string{

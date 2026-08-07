@@ -51,11 +51,10 @@ func NewRDSIAMTokenProvider(ctx context.Context, dsn string, options map[string]
 	if options == nil || !parseBoolOption(options[iamOptEnabled], false) {
 		return nil, nil //nolint:nilnil // IAM disabled by config
 	}
-	connCfg, err := pgx.ParseConfig(dsn)
-	if err != nil {
+	if _, err := pgx.ParseConfig(dsn); err != nil {
 		return nil, fmt.Errorf("parse postgres dsn: %w", err)
 	}
-	iam, err := rdsIAMConfigFromOptions(options, connCfg.Host)
+	iam, err := rdsIAMConfigFromOptions(options)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +172,7 @@ func (p *RDSIAMTokenProvider) Token(ctx context.Context, host string, port uint1
 	return signedURL, nil
 }
 
-func rdsIAMConfigFromOptions(options map[string]string, host string) (rdsIAMConfig, error) {
+func rdsIAMConfigFromOptions(options map[string]string) (rdsIAMConfig, error) {
 	cfg := rdsIAMConfig{}
 	if options == nil || !parseBoolOption(options[iamOptEnabled], false) {
 		return cfg, nil
@@ -187,32 +186,12 @@ func rdsIAMConfigFromOptions(options map[string]string, host string) (rdsIAMConf
 	cfg.EndpointOverride = strings.TrimSpace(options[iamOptEndpoint])
 
 	if cfg.Region == "" {
-		cfg.Region = inferAWSRegionFromHost(host)
-	}
-	if cfg.Region == "" {
 		return cfg, errors.New("aws_region is required when aws_rds_iam is enabled")
 	}
 	if cfg.RoleARN != "" && cfg.RoleSessionName == "" {
-		cfg.RoleSessionName = "wallaby-rds-iam"
+		return cfg, errors.New("aws_role_session_name is required when aws_role_arn is configured")
 	}
 	return cfg, nil
-}
-
-func inferAWSRegionFromHost(host string) string {
-	if host == "" {
-		return ""
-	}
-	host = strings.TrimSpace(host)
-	host = strings.TrimPrefix(host, "https://")
-	host = strings.TrimPrefix(host, "http://")
-	host = strings.Split(host, ":")[0]
-	parts := strings.Split(host, ".")
-	for i := 1; i < len(parts); i++ {
-		if parts[i] == "rds" && i > 0 {
-			return parts[i-1]
-		}
-	}
-	return ""
 }
 
 func parseBoolOption(raw string, fallback bool) bool {
