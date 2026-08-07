@@ -1072,8 +1072,19 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 		t.Fatalf("wallaby-admin flow validate: %v\n%s", err, output)
 	}
 	type validateEndpoint struct {
-		Name    string            `json:"name" yaml:"name"`
-		Options map[string]string `json:"options" yaml:"options"`
+		Name           string `json:"name" yaml:"name"`
+		PostgresSource struct {
+			Connection struct {
+				DSN    string `json:"dsn" yaml:"dsn"`
+				RDSIAM struct {
+					RoleExternalID string `json:"role_external_id" yaml:"role_external_id"`
+				} `json:"rds_iam" yaml:"rds_iam"`
+			} `json:"connection" yaml:"connection"`
+		} `json:"postgres_source" yaml:"postgres_source"`
+		HTTP struct {
+			URL     string            `json:"url" yaml:"url"`
+			Headers map[string]string `json:"headers" yaml:"headers"`
+		} `json:"http" yaml:"http"`
 	}
 	type validateResponse struct {
 		Valid            bool               `json:"valid" yaml:"valid"`
@@ -1087,7 +1098,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 		if !response.Valid || response.Name != "cli-flow-list-get-delete-wait" || response.Source.Name == "" || response.DestinationCount != 1 || len(response.Destinations) != 1 {
 			t.Fatalf("incomplete %s validation output: %s", format, payload)
 		}
-		if response.Source.Options["dsn"] != "[REDACTED]" || response.Source.Options["headers"] != "[REDACTED]" || response.Source.Options["webhook_url"] != "https://hooks.slack.com/[REDACTED]" || response.Destinations[0].Options["dsn"] != "[REDACTED]" || response.Destinations[0].Options["grpc_authorization_header"] != "[REDACTED]" || response.Destinations[0].Options["api_endpoint"] != "https://api.github.com/[REDACTED]" || response.Destinations[0].Options["plain_url"] != "https://plain.example:8443" || response.Destinations[0].Options["stream"] != "orders" || bytes.Contains(payload, []byte("source-header-secret")) || bytes.Contains(payload, []byte("destination-header-secret")) || bytes.Contains(payload, []byte("integration-slack-secret")) || bytes.Contains(payload, []byte("integration-github-secret")) || bytes.Contains(payload, []byte("integration-signed-secret")) || bytes.Contains(payload, []byte(testPostgresAppDSN(t))) {
+		if response.Source.PostgresSource.Connection.DSN != "[REDACTED]" || response.Source.PostgresSource.Connection.RDSIAM.RoleExternalID != "[REDACTED]" || response.Destinations[0].HTTP.URL != "https://api.github.com/[REDACTED]" || response.Destinations[0].HTTP.Headers["authorization"] != "[REDACTED]" || bytes.Contains(payload, []byte("source-external-secret")) || bytes.Contains(payload, []byte("destination-header-secret")) || bytes.Contains(payload, []byte("integration-github-secret")) || bytes.Contains(payload, []byte("integration-signed-secret")) || bytes.Contains(payload, []byte(testPostgresAppDSN(t))) {
 			t.Fatalf("%s validation leaked secrets or hid topology: %s", format, payload)
 		}
 	}

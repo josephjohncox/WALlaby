@@ -32,7 +32,6 @@ func TestFactoryRejectsModeIncompatiblePostgresSelection(t *testing.T) {
 	t.Parallel()
 	factory := Factory{}
 	for _, spec := range []connector.RuntimeSpec{
-		{Type: connector.EndpointPostgres, Options: map[string]string{"mode": connector.SourceModeCDC, "tables": "public.backfill"}},
 		{Type: connector.EndpointPostgres, Options: map[string]string{"mode": connector.SourceModeBackfill, "publication_tables": "public.cdc"}},
 		{Type: connector.EndpointPostgres, Options: map[string]string{"mode": connector.SourceModeBackfill, "sync_publication": "false"}},
 	} {
@@ -40,8 +39,8 @@ func TestFactoryRejectsModeIncompatiblePostgresSelection(t *testing.T) {
 			t.Fatalf("mode-incompatible source accepted: %v", spec.Options)
 		}
 	}
-	if _, err := factory.Source(connector.RuntimeSpec{Type: connector.EndpointPostgres, Options: map[string]string{"mode": connector.SourceModeCDC, "publication_tables": "public.cdc"}}); err != nil {
-		t.Fatalf("valid CDC selection rejected: %v", err)
+	if _, err := factory.Source(connector.RuntimeSpec{Type: connector.EndpointPostgres, Options: map[string]string{"mode": connector.SourceModeCDC, "publication_tables": "public.cdc", "bootstrap": "required", "tables": "public.snapshot"}}); err != nil {
+		t.Fatalf("valid CDC/bootstrap selection rejected: %v", err)
 	}
 	if _, err := factory.Source(connector.RuntimeSpec{Type: connector.EndpointPostgres, Options: map[string]string{"mode": connector.SourceModeBackfill, "tables": "public.backfill"}}); err != nil {
 		t.Fatalf("valid backfill selection rejected: %v", err)

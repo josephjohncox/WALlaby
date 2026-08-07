@@ -213,6 +213,7 @@ func TestPostgresSourceModeSeparatesCDCAndBackfillSelection(t *testing.T) {
 	cdcConfig := postgresSourceConfigWithMode(t, 1)
 	cdcConfig.PublicationTables = []string{"public.cdc"}
 	cdcConfig.PublicationSchemas = []string{"public"}
+	cdcConfig.Bootstrap = wallabypb.BootstrapMode_BOOTSTRAP_MODE_REQUIRED
 	cdcConfig.BootstrapTables = []string{`"Mixed Schema"."Odd, Table"`}
 	cdcConfig.BootstrapSchemas = []string{`" bootstrap "`}
 	cdc, err := endpointcodec.Decode(&wallabypb.Endpoint{Config: &wallabypb.Endpoint_PostgresSource{PostgresSource: cdcConfig}}, endpointcodec.RoleSource)
@@ -241,10 +242,12 @@ func TestPostgresSourceModeSeparatesCDCAndBackfillSelection(t *testing.T) {
 	}
 	invalidCDC := postgresSourceConfigWithMode(t, 1)
 	invalidCDC.BackfillTables = []string{"public.bad"}
+	invalidBootstrap := postgresSourceConfigWithMode(t, 1)
+	invalidBootstrap.BootstrapTables = []string{"public.bad"}
 	invalidBackfill := postgresSourceConfigWithMode(t, 2)
 	invalidBackfill.PublicationTables = []string{"public.bad"}
 	invalidBackfill.BootstrapTables = []string{"public.also_bad"}
-	for _, invalid := range []*wallabypb.PostgresSourceConfig{invalidCDC, invalidBackfill, {}} {
+	for _, invalid := range []*wallabypb.PostgresSourceConfig{invalidCDC, invalidBootstrap, invalidBackfill, {}} {
 		if _, err := endpointcodec.Decode(&wallabypb.Endpoint{Config: &wallabypb.Endpoint_PostgresSource{PostgresSource: invalid}}, endpointcodec.RoleSource); err == nil {
 			t.Fatalf("incompatible/unspecified source config accepted: %v", invalid)
 		}

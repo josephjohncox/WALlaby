@@ -56,18 +56,10 @@ func (f Factory) source(spec connector.RuntimeSpec, hook replication.SchemaHook)
 	if err != nil {
 		return nil, err
 	}
-	if spec.Type == connector.EndpointPostgres {
-		if mode == connector.SourceModeCDC {
-			for _, key := range []string{"tables", "schemas"} {
-				if spec.Options[key] != "" {
-					return nil, fmt.Errorf("postgres CDC source rejects backfill option %s; use publication_%s", key, key)
-				}
-			}
-		} else {
-			for _, key := range []string{"publication_tables", "publication_schemas", "sync_publication", "sync_publication_mode"} {
-				if spec.Options[key] != "" {
-					return nil, fmt.Errorf("postgres backfill source rejects CDC publication option %s", key)
-				}
+	if spec.Type == connector.EndpointPostgres && mode == connector.SourceModeBackfill {
+		for _, key := range []string{"publication_tables", "publication_schemas", "sync_publication", "sync_publication_mode"} {
+			if spec.Options[key] != "" {
+				return nil, fmt.Errorf("postgres backfill source rejects CDC publication option %s", key)
 			}
 		}
 	}

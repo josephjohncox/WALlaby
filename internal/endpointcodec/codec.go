@@ -410,6 +410,9 @@ func encodePostgresSource(out map[string]string, cfg *wallabypb.PostgresSourceCo
 	if cfg.GetMode() == wallabypb.PostgresSourceMode_POSTGRES_SOURCE_MODE_BACKFILL && (len(cfg.GetPublicationTables()) != 0 || len(cfg.GetPublicationSchemas()) != 0 || len(cfg.GetBootstrapTables()) != 0 || len(cfg.GetBootstrapSchemas()) != 0 || cfg.SyncPublication != nil || cfg.GetSyncPublicationMode() != wallabypb.SyncPublicationMode_SYNC_PUBLICATION_MODE_UNSPECIFIED) {
 		return errors.New("postgres_source BACKFILL mode rejects CDC publication and bootstrap selection fields")
 	}
+	if cfg.GetMode() == wallabypb.PostgresSourceMode_POSTGRES_SOURCE_MODE_CDC && (len(cfg.GetBootstrapTables()) != 0 || len(cfg.GetBootstrapSchemas()) != 0) && cfg.GetBootstrap() != wallabypb.BootstrapMode_BOOTSTRAP_MODE_AUTO && cfg.GetBootstrap() != wallabypb.BootstrapMode_BOOTSTRAP_MODE_REQUIRED {
+		return errors.New("postgres_source bootstrap selection requires bootstrap AUTO or REQUIRED")
+	}
 	if err := encodePGConnection(out, cfg.GetConnection()); err != nil {
 		return err
 	}
@@ -1218,6 +1221,9 @@ func decodePostgresSource(v map[string]string) (*wallabypb.PostgresSourceConfig,
 	}
 	if cfg.Mode == wallabypb.PostgresSourceMode_POSTGRES_SOURCE_MODE_BACKFILL && (len(cfg.PublicationTables) != 0 || len(cfg.PublicationSchemas) != 0 || len(cfg.BootstrapTables) != 0 || len(cfg.BootstrapSchemas) != 0 || cfg.SyncPublication != nil || cfg.SyncPublicationMode != wallabypb.SyncPublicationMode_SYNC_PUBLICATION_MODE_UNSPECIFIED) {
 		return nil, errors.New("postgres source mode=backfill rejects CDC publication and bootstrap options")
+	}
+	if cfg.Mode == wallabypb.PostgresSourceMode_POSTGRES_SOURCE_MODE_CDC && (len(cfg.BootstrapTables) != 0 || len(cfg.BootstrapSchemas) != 0) && cfg.Bootstrap != wallabypb.BootstrapMode_BOOTSTRAP_MODE_AUTO && cfg.Bootstrap != wallabypb.BootstrapMode_BOOTSTRAP_MODE_REQUIRED {
+		return nil, errors.New("postgres source bootstrap selection requires bootstrap AUTO or REQUIRED")
 	}
 	return cfg, nil
 }
