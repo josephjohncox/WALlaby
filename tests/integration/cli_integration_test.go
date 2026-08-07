@@ -479,10 +479,19 @@ func TestCLIIntegrationFlowPlan(t *testing.T) {
 			Name   string `json:"name"`
 			State  string `json:"state"`
 			Source struct {
-				Options map[string]string `json:"options"`
+				PostgresSource struct {
+					Connection struct {
+						DSN string `json:"dsn"`
+					} `json:"connection"`
+				} `json:"postgres_source"`
 			} `json:"source"`
 			Destinations []struct {
-				Options map[string]string `json:"options"`
+				PGStream struct {
+					Connection struct {
+						DSN string `json:"dsn"`
+					} `json:"connection"`
+					Stream string `json:"stream"`
+				} `json:"pgstream"`
 			} `json:"destinations"`
 		} `json:"desired"`
 		ChangeCount int  `json:"change_count"`
@@ -497,7 +506,7 @@ func TestCLIIntegrationFlowPlan(t *testing.T) {
 	if resp.Desired.Name != "cli-flow-plan" {
 		t.Fatalf("expected desired.name cli-flow-plan, got %s", resp.Desired.Name)
 	}
-	if resp.Desired.Source.Options["dsn"] != "[REDACTED]" || len(resp.Desired.Destinations) != 1 || resp.Desired.Destinations[0].Options["dsn"] != "[REDACTED]" || resp.Desired.Destinations[0].Options["stream"] != "orders" || bytes.Contains(output, []byte(testPostgresAppDSN(t))) {
+	if resp.Desired.Source.PostgresSource.Connection.DSN != "[REDACTED]" || len(resp.Desired.Destinations) != 1 || resp.Desired.Destinations[0].PGStream.Connection.DSN != "[REDACTED]" || resp.Desired.Destinations[0].PGStream.Stream != "orders" || bytes.Contains(output, []byte(testPostgresAppDSN(t))) {
 		t.Fatalf("flow plan did not redact secrets while preserving topology: %s", output)
 	}
 	if resp.Compared {
@@ -826,7 +835,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
 	gate, approve, apply := false, true, false
-	configPath := writeFlowConfig(t, flowConfigPayload{Name: "cli-flow-list-get-delete-wait", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}, AckPolicy: stream.AckPolicyPrimary, PrimaryDestination: "dest", FailureMode: stream.FailureModeHoldSlot, GiveUpPolicy: stream.GiveUpPolicyNever, DDL: internalflow.DDLPolicy{Gate: &gate, AutoApprove: &approve, AutoApply: &apply}}, WireFormat: "json", Parallelism: 1, Source: endpointConfigPayload{Name: "src", Type: "postgres", Options: map[string]string{"dsn": testPostgresAppDSN(t), "aws_rds_iam": "true", "aws_role_external_id": "source-external-secret"}}, Destinations: []endpointConfigPayload{{Name: "dest", Type: "http", Options: map[string]string{"url": "https://api.github.com/hooks/integration-github-secret?signature=integration-signed-secret", "headers": "Authorization:Bearer destination-header-secret", "payload_mode": "record_json"}}}})
+	configPath := writeFlowConfig(t, flowConfigPayload{Name: "cli-flow-list-get-delete-wait", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}, AckPolicy: stream.AckPolicyPrimary, PrimaryDestination: "dest", FailureMode: stream.FailureModeHoldSlot, GiveUpPolicy: stream.GiveUpPolicyNever, DDL: internalflow.DDLPolicy{Gate: &gate, AutoApprove: &approve, AutoApply: &apply}}, WireFormat: "json", Parallelism: 1, Source: endpointConfigPayload{Name: "src", Type: "postgres", Options: map[string]string{"dsn": testPostgresAppDSN(t), "aws_rds_iam": "true", "aws_region": "us-east-1", "aws_role_external_id": "source-external-secret"}}, Destinations: []endpointConfigPayload{{Name: "dest", Type: "http", Options: map[string]string{"url": "https://api.github.com/hooks/integration-github-secret?signature=integration-signed-secret", "headers": "Authorization:Bearer destination-header-secret", "payload_mode": "record_json"}}}})
 
 	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "--file", configPath, "--json")
 	if err != nil {
@@ -1146,14 +1155,21 @@ func TestCLIIntegrationFlowDryRunCheck(t *testing.T) {
 		ID     string `json:"id"`
 		Name   string `json:"name"`
 		Source struct {
-			Name    string            `json:"name"`
-			Type    string            `json:"type"`
-			Options map[string]string `json:"options"`
+			Name           string `json:"name"`
+			PostgresSource struct {
+				Connection struct {
+					DSN string `json:"dsn"`
+				} `json:"connection"`
+			} `json:"postgres_source"`
 		} `json:"source"`
 		Destinations []struct {
-			Name    string            `json:"name"`
-			Type    string            `json:"type"`
-			Options map[string]string `json:"options"`
+			Name     string `json:"name"`
+			PGStream struct {
+				Connection struct {
+					DSN string `json:"dsn"`
+				} `json:"connection"`
+				Stream string `json:"stream"`
+			} `json:"pgstream"`
 		} `json:"destinations"`
 	}
 	if err := json.Unmarshal(output, &dryRunResp); err != nil {
@@ -1162,13 +1178,13 @@ func TestCLIIntegrationFlowDryRunCheck(t *testing.T) {
 	if dryRunResp.Name != "cli-flow-dry-run-check" {
 		t.Fatalf("expected dry-run name cli-flow-dry-run-check, got %q", dryRunResp.Name)
 	}
-	if dryRunResp.Source.Name == "" || dryRunResp.Source.Type == "" {
+	if dryRunResp.Source.Name == "" || dryRunResp.Source.PostgresSource.Connection.DSN == "" {
 		t.Fatalf("expected source in dry-run output: %s", output)
 	}
 	if len(dryRunResp.Destinations) != 1 {
 		t.Fatalf("expected 1 destination in dry-run output, got %d", len(dryRunResp.Destinations))
 	}
-	if dryRunResp.Source.Options["dsn"] != "[REDACTED]" || dryRunResp.Destinations[0].Options["dsn"] != "[REDACTED]" || dryRunResp.Destinations[0].Options["stream"] != "orders" || bytes.Contains(output, []byte(testPostgresAppDSN(t))) {
+	if dryRunResp.Source.PostgresSource.Connection.DSN != "[REDACTED]" || dryRunResp.Destinations[0].PGStream.Connection.DSN != "[REDACTED]" || dryRunResp.Destinations[0].PGStream.Stream != "orders" || bytes.Contains(output, []byte(testPostgresAppDSN(t))) {
 		t.Fatalf("dry-run detail did not redact secrets while preserving topology: %s", output)
 	}
 

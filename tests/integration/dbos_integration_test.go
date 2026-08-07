@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/orchestrator"
@@ -337,7 +338,11 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 	suffix := time.Now().UnixNano()
 	flowID := fmt.Sprintf("flow-retry-%d", suffix)
 
-	engine, err := workflow.NewPostgresEngine(ctx, dsn)
+	customRegistry := connector.NewRegistry()
+	if err := customRegistry.RegisterSource("bogus", func() connector.Source { return &pgsource.Source{} }); err != nil {
+		t.Fatalf("register retry source: %v", err)
+	}
+	engine, err := workflow.NewPostgresEngineWithRegistry(ctx, dsn, customRegistry)
 	if err != nil {
 		t.Fatalf("create engine: %v", err)
 	}
@@ -382,7 +387,7 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 		MaxRetries:    1,
 		MaxRetriesSet: true,
 		DefaultWire:   connector.WireFormatJSON,
-	}, engine, checkpointStore, runner.Factory{})
+	}, engine, checkpointStore, runner.Factory{ConnectorRegistry: customRegistry})
 	if err != nil {
 		t.Fatalf("create dbos orchestrator: %v", err)
 	}
@@ -404,7 +409,7 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 		var errMsg sql.NullString
 		err := pool.QueryRow(ctx, `SELECT status, recovery_attempts, error
 FROM dbos.workflow_status
-WHERE created_at >= $1 AND error ILIKE '%unsupported source type%'
+WHERE created_at >= $1 AND error ILIKE '%postgres dsn is required%'
 ORDER BY created_at DESC
 LIMIT 1`, startedAt).Scan(&status, &attempts, &errMsg)
 		if err != nil {
@@ -415,7 +420,7 @@ LIMIT 1`, startedAt).Scan(&status, &attempts, &errMsg)
 		}
 		if status == "ERROR" || status == "MAX_RECOVERY_ATTEMPTS_EXCEEDED" {
 			if attempts >= 1 {
-				if errMsg.Valid && !strings.Contains(errMsg.String, "unsupported source type") {
+				if errMsg.Valid && !strings.Contains(errMsg.String, "postgres dsn is required") {
 					t.Fatalf("unexpected error: %s", errMsg.String)
 				}
 				return true, nil

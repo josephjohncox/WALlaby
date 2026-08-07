@@ -213,8 +213,8 @@ func TestPostgresSourceModeSeparatesCDCAndBackfillSelection(t *testing.T) {
 	cdcConfig := postgresSourceConfigWithMode(t, 1)
 	cdcConfig.PublicationTables = []string{"public.cdc"}
 	cdcConfig.PublicationSchemas = []string{"public"}
-	cdcConfig.BootstrapTables = []string{"public.snapshot"}
-	cdcConfig.BootstrapSchemas = []string{"bootstrap"}
+	cdcConfig.BootstrapTables = []string{`"Mixed Schema"."Odd, Table"`}
+	cdcConfig.BootstrapSchemas = []string{`" bootstrap "`}
 	cdc, err := endpointcodec.Decode(&wallabypb.Endpoint{Config: &wallabypb.Endpoint_PostgresSource{PostgresSource: cdcConfig}}, endpointcodec.RoleSource)
 	if err != nil {
 		t.Fatal(err)

@@ -426,8 +426,12 @@ func encodePostgresSource(out map[string]string, cfg *wallabypb.PostgresSourceCo
 	putBool(out, "emit_empty", cfg.EmitEmpty)
 	putBool(out, "ensure_publication", cfg.EnsurePublication)
 	putBool(out, "validate_replication", cfg.ValidateReplication)
-	putCSV(out, "publication_tables", cfg.GetPublicationTables())
-	putCSV(out, "publication_schemas", cfg.GetPublicationSchemas())
+	if err := putPostgresIdentifierList(out, "publication_tables", cfg.GetPublicationTables()); err != nil {
+		return err
+	}
+	if err := putPostgresIdentifierList(out, "publication_schemas", cfg.GetPublicationSchemas()); err != nil {
+		return err
+	}
 	putBool(out, "sync_publication", cfg.SyncPublication)
 	putEnum(out, "sync_publication_mode", syncPublicationMode(cfg.GetSyncPublicationMode()))
 	putBool(out, "resolve_types", cfg.ResolveTypes)
@@ -457,11 +461,19 @@ func encodePostgresSource(out map[string]string, cfg *wallabypb.PostgresSourceCo
 		return err
 	}
 	if cfg.GetMode() == wallabypb.PostgresSourceMode_POSTGRES_SOURCE_MODE_BACKFILL {
-		putCSV(out, "tables", cfg.GetBackfillTables())
-		putCSV(out, "schemas", cfg.GetBackfillSchemas())
+		if err := putPostgresIdentifierList(out, "tables", cfg.GetBackfillTables()); err != nil {
+			return err
+		}
+		if err := putPostgresIdentifierList(out, "schemas", cfg.GetBackfillSchemas()); err != nil {
+			return err
+		}
 	} else {
-		putCSV(out, "tables", cfg.GetBootstrapTables())
-		putCSV(out, "schemas", cfg.GetBootstrapSchemas())
+		if err := putPostgresIdentifierList(out, "tables", cfg.GetBootstrapTables()); err != nil {
+			return err
+		}
+		if err := putPostgresIdentifierList(out, "schemas", cfg.GetBootstrapSchemas()); err != nil {
+			return err
+		}
 	}
 	put(out, "partition_column", cfg.GetPartitionColumn())
 	putU32(out, "partition_count", cfg.PartitionCount)
@@ -1080,11 +1092,11 @@ func decodePostgresSource(v map[string]string) (*wallabypb.PostgresSourceConfig,
 	if cfg.ValidateReplication, err = takeBool(v, "validate_replication"); err != nil {
 		return nil, err
 	}
-	cfg.PublicationTables, err = takeCSV(v, "publication_tables")
+	cfg.PublicationTables, err = takePostgresIdentifierList(v, "publication_tables")
 	if err != nil {
 		return nil, err
 	}
-	cfg.PublicationSchemas, err = takeCSV(v, "publication_schemas")
+	cfg.PublicationSchemas, err = takePostgresIdentifierList(v, "publication_schemas")
 	if err != nil {
 		return nil, err
 	}
@@ -1162,11 +1174,11 @@ func decodePostgresSource(v map[string]string) (*wallabypb.PostgresSourceConfig,
 	if err != nil {
 		return nil, err
 	}
-	tables, err := takeCSV(v, "tables")
+	tables, err := takePostgresIdentifierList(v, "tables")
 	if err != nil {
 		return nil, err
 	}
-	schemas, err := takeCSV(v, "schemas")
+	schemas, err := takePostgresIdentifierList(v, "schemas")
 	if err != nil {
 		return nil, err
 	}
@@ -2064,6 +2076,27 @@ func putCSV(out map[string]string, key string, values []string) {
 	w.Flush()
 	out[key] = strings.TrimSuffix(b.String(), "\n")
 }
+
+// putPostgresIdentifierList serializes already-quoted PostgreSQL identifiers.
+// CSV escaping is not valid here because double quotes are PostgreSQL syntax,
+// not CSV field delimiters. Each repeated value must be one complete identifier
+// token; commas inside quoted identifiers remain data.
+func putPostgresIdentifierList(out map[string]string, key string, values []string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	for _, value := range values {
+		tokens, err := splitPostgresIdentifierList(value)
+		if err != nil {
+			return fmt.Errorf("%s: %w", key, err)
+		}
+		if len(tokens) != 1 || tokens[0] != value {
+			return fmt.Errorf("%s value %q must be one canonical PostgreSQL identifier", key, value)
+		}
+	}
+	out[key] = strings.Join(values, ",")
+	return nil
+}
 func putDuration(out map[string]string, key string, value *durationpb.Duration) error {
 	if value == nil {
 		return nil
@@ -2237,6 +2270,59 @@ func takeCSV(v map[string]string, key string) ([]string, error) {
 		return nil, fmt.Errorf("%s must use canonical CSV syntax", key)
 	}
 	return append([]string(nil), record...), nil
+}
+
+func takePostgresIdentifierList(v map[string]string, key string) ([]string, error) {
+	raw, ok := v[key]
+	delete(v, key)
+	if !ok || raw == "" {
+		return nil, nil
+	}
+	tokens, err := splitPostgresIdentifierList(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", key, err)
+	}
+	if strings.Join(tokens, ",") != raw {
+		return nil, fmt.Errorf("%s must use canonical PostgreSQL identifier-list syntax", key)
+	}
+	return tokens, nil
+}
+
+func splitPostgresIdentifierList(raw string) ([]string, error) {
+	if strings.IndexByte(raw, 0) >= 0 {
+		return nil, errors.New("PostgreSQL identifier list contains NUL")
+	}
+	tokens := make([]string, 0, 1)
+	start := 0
+	quoted := false
+	for index := 0; index < len(raw); index++ {
+		switch raw[index] {
+		case '"':
+			if quoted && index+1 < len(raw) && raw[index+1] == '"' {
+				index++
+				continue
+			}
+			quoted = !quoted
+		case ',':
+			if !quoted {
+				token := strings.TrimSpace(raw[start:index])
+				if token == "" {
+					return nil, errors.New("PostgreSQL identifier list contains an empty element")
+				}
+				tokens = append(tokens, token)
+				start = index + 1
+			}
+		}
+	}
+	if quoted {
+		return nil, errors.New("PostgreSQL identifier list contains an unterminated quote")
+	}
+	token := strings.TrimSpace(raw[start:])
+	if token == "" {
+		return nil, errors.New("PostgreSQL identifier list contains an empty element")
+	}
+	tokens = append(tokens, token)
+	return tokens, nil
 }
 func takeKeyValues(v map[string]string, key string, httpHeaders bool) (map[string]string, error) {
 	raw, ok := v[key]
