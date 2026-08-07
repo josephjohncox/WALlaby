@@ -213,12 +213,21 @@ func TestPostgresSourceModeSeparatesCDCAndBackfillSelection(t *testing.T) {
 	cdcConfig := postgresSourceConfigWithMode(t, 1)
 	cdcConfig.PublicationTables = []string{"public.cdc"}
 	cdcConfig.PublicationSchemas = []string{"public"}
+	cdcConfig.BootstrapTables = []string{"public.snapshot"}
+	cdcConfig.BootstrapSchemas = []string{"bootstrap"}
 	cdc, err := endpointcodec.Decode(&wallabypb.Endpoint{Config: &wallabypb.Endpoint_PostgresSource{PostgresSource: cdcConfig}}, endpointcodec.RoleSource)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cdc.Options["mode"] != connector.SourceModeCDC || cdc.Options["publication_tables"] == "" || cdc.Options["tables"] != "" || cdc.Options["schemas"] != "" {
+	if cdc.Options["mode"] != connector.SourceModeCDC || cdc.Options["publication_tables"] == "" || cdc.Options["tables"] == "" || cdc.Options["schemas"] == "" {
 		t.Fatalf("CDC runtime options=%v", cdc.Options)
+	}
+	cdcRoundTrip, err := endpointcodec.Encode(cdc, endpointcodec.RoleSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(cdcRoundTrip.GetPostgresSource(), cdcConfig) {
+		t.Fatalf("CDC bootstrap selection did not round-trip\ngot:  %v\nwant: %v", cdcRoundTrip.GetPostgresSource(), cdcConfig)
 	}
 	backfillConfig := postgresSourceConfigWithMode(t, 2)
 	backfillConfig.BackfillTables = []string{"public.snapshot"}
@@ -234,6 +243,7 @@ func TestPostgresSourceModeSeparatesCDCAndBackfillSelection(t *testing.T) {
 	invalidCDC.BackfillTables = []string{"public.bad"}
 	invalidBackfill := postgresSourceConfigWithMode(t, 2)
 	invalidBackfill.PublicationTables = []string{"public.bad"}
+	invalidBackfill.BootstrapTables = []string{"public.also_bad"}
 	for _, invalid := range []*wallabypb.PostgresSourceConfig{invalidCDC, invalidBackfill, {}} {
 		if _, err := endpointcodec.Decode(&wallabypb.Endpoint{Config: &wallabypb.Endpoint_PostgresSource{PostgresSource: invalid}}, endpointcodec.RoleSource); err == nil {
 			t.Fatalf("incompatible/unspecified source config accepted: %v", invalid)

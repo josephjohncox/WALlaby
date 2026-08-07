@@ -407,8 +407,8 @@ func encodePostgresSource(out map[string]string, cfg *wallabypb.PostgresSourceCo
 	if cfg.GetMode() == wallabypb.PostgresSourceMode_POSTGRES_SOURCE_MODE_CDC && (len(cfg.GetBackfillTables()) != 0 || len(cfg.GetBackfillSchemas()) != 0) {
 		return errors.New("postgres_source CDC mode rejects backfill_tables and backfill_schemas")
 	}
-	if cfg.GetMode() == wallabypb.PostgresSourceMode_POSTGRES_SOURCE_MODE_BACKFILL && (len(cfg.GetPublicationTables()) != 0 || len(cfg.GetPublicationSchemas()) != 0 || cfg.SyncPublication != nil || cfg.GetSyncPublicationMode() != wallabypb.SyncPublicationMode_SYNC_PUBLICATION_MODE_UNSPECIFIED) {
-		return errors.New("postgres_source BACKFILL mode rejects CDC publication selection and synchronization fields")
+	if cfg.GetMode() == wallabypb.PostgresSourceMode_POSTGRES_SOURCE_MODE_BACKFILL && (len(cfg.GetPublicationTables()) != 0 || len(cfg.GetPublicationSchemas()) != 0 || len(cfg.GetBootstrapTables()) != 0 || len(cfg.GetBootstrapSchemas()) != 0 || cfg.SyncPublication != nil || cfg.GetSyncPublicationMode() != wallabypb.SyncPublicationMode_SYNC_PUBLICATION_MODE_UNSPECIFIED) {
+		return errors.New("postgres_source BACKFILL mode rejects CDC publication and bootstrap selection fields")
 	}
 	if err := encodePGConnection(out, cfg.GetConnection()); err != nil {
 		return err
@@ -459,6 +459,9 @@ func encodePostgresSource(out map[string]string, cfg *wallabypb.PostgresSourceCo
 	if cfg.GetMode() == wallabypb.PostgresSourceMode_POSTGRES_SOURCE_MODE_BACKFILL {
 		putCSV(out, "tables", cfg.GetBackfillTables())
 		putCSV(out, "schemas", cfg.GetBackfillSchemas())
+	} else {
+		putCSV(out, "tables", cfg.GetBootstrapTables())
+		putCSV(out, "schemas", cfg.GetBootstrapSchemas())
 	}
 	put(out, "partition_column", cfg.GetPartitionColumn())
 	putU32(out, "partition_count", cfg.PartitionCount)
@@ -1159,13 +1162,20 @@ func decodePostgresSource(v map[string]string) (*wallabypb.PostgresSourceConfig,
 	if err != nil {
 		return nil, err
 	}
-	cfg.BackfillTables, err = takeCSV(v, "tables")
+	tables, err := takeCSV(v, "tables")
 	if err != nil {
 		return nil, err
 	}
-	cfg.BackfillSchemas, err = takeCSV(v, "schemas")
+	schemas, err := takeCSV(v, "schemas")
 	if err != nil {
 		return nil, err
+	}
+	if cfg.Mode == wallabypb.PostgresSourceMode_POSTGRES_SOURCE_MODE_BACKFILL {
+		cfg.BackfillTables = tables
+		cfg.BackfillSchemas = schemas
+	} else {
+		cfg.BootstrapTables = tables
+		cfg.BootstrapSchemas = schemas
 	}
 	cfg.PartitionColumn = take(v, "partition_column")
 	cfg.PartitionCount, err = takeU32(v, "partition_count")
@@ -1194,8 +1204,8 @@ func decodePostgresSource(v map[string]string) (*wallabypb.PostgresSourceConfig,
 	if cfg.Mode == wallabypb.PostgresSourceMode_POSTGRES_SOURCE_MODE_CDC && (len(cfg.BackfillTables) != 0 || len(cfg.BackfillSchemas) != 0) {
 		return nil, errors.New("postgres source mode=cdc rejects backfill tables and schemas")
 	}
-	if cfg.Mode == wallabypb.PostgresSourceMode_POSTGRES_SOURCE_MODE_BACKFILL && (len(cfg.PublicationTables) != 0 || len(cfg.PublicationSchemas) != 0 || cfg.SyncPublication != nil || cfg.SyncPublicationMode != wallabypb.SyncPublicationMode_SYNC_PUBLICATION_MODE_UNSPECIFIED) {
-		return nil, errors.New("postgres source mode=backfill rejects CDC publication options")
+	if cfg.Mode == wallabypb.PostgresSourceMode_POSTGRES_SOURCE_MODE_BACKFILL && (len(cfg.PublicationTables) != 0 || len(cfg.PublicationSchemas) != 0 || len(cfg.BootstrapTables) != 0 || len(cfg.BootstrapSchemas) != 0 || cfg.SyncPublication != nil || cfg.SyncPublicationMode != wallabypb.SyncPublicationMode_SYNC_PUBLICATION_MODE_UNSPECIFIED) {
+		return nil, errors.New("postgres source mode=backfill rejects CDC publication and bootstrap options")
 	}
 	return cfg, nil
 }

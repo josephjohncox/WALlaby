@@ -436,8 +436,8 @@ func TestMigration005RejectsLegacyRunningRowsAndCurrentRuntimeRejectsStableLegac
 	store := &PostgresEngine{pool: stablePool, lockPool: lockPool}
 	defer lockPool.Close()
 	for _, legacyFlowID := range []string{"created", "paused", "failed"} {
-		if _, err := store.Get(ctx, legacyFlowID); err == nil || !strings.Contains(err.Error(), "incompatible or missing table mappings") {
-			t.Fatalf("current runtime legacy flow %s error=%v", legacyFlowID, err)
+		if _, err := store.Get(ctx, legacyFlowID); err == nil || !strings.Contains(err.Error(), "endpoint config branch is required") {
+			t.Fatalf("current runtime legacy flow %s error=%v, want typed endpoint rejection", legacyFlowID, err)
 		}
 	}
 }

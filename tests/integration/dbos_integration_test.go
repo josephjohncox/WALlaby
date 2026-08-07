@@ -95,7 +95,6 @@ func TestDBOSIntegrationBackfill(t *testing.T) {
 			"batch_size":          "200",
 			"snapshot_workers":    "1",
 			"snapshot_consistent": "false",
-			"flow_id":             flowID,
 			"resolve_types":       "true",
 		},
 	}
@@ -490,7 +489,6 @@ func TestDBOSIntegrationAdminRecovery(t *testing.T) {
 			"batch_size":          "200",
 			"snapshot_workers":    "1",
 			"snapshot_consistent": "false",
-			"flow_id":             flowID,
 			"resolve_types":       "true",
 		},
 	}

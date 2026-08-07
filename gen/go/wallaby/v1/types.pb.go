@@ -2353,6 +2353,8 @@ type PostgresSourceConfig struct {
 	Mode                    PostgresSourceMode        `protobuf:"varint,46,opt,name=mode,proto3,enum=wallaby.v1.PostgresSourceMode" json:"mode,omitempty"`
 	DeliveryRetention       *durationpb.Duration      `protobuf:"bytes,47,opt,name=delivery_retention,json=deliveryRetention,proto3" json:"delivery_retention,omitempty"`
 	DeliveryPruneInterval   *durationpb.Duration      `protobuf:"bytes,48,opt,name=delivery_prune_interval,json=deliveryPruneInterval,proto3" json:"delivery_prune_interval,omitempty"`
+	BootstrapTables         []string                  `protobuf:"bytes,49,rep,name=bootstrap_tables,json=bootstrapTables,proto3" json:"bootstrap_tables,omitempty"`
+	BootstrapSchemas        []string                  `protobuf:"bytes,50,rep,name=bootstrap_schemas,json=bootstrapSchemas,proto3" json:"bootstrap_schemas,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -2719,6 +2721,20 @@ func (x *PostgresSourceConfig) GetDeliveryRetention() *durationpb.Duration {
 func (x *PostgresSourceConfig) GetDeliveryPruneInterval() *durationpb.Duration {
 	if x != nil {
 		return x.DeliveryPruneInterval
+	}
+	return nil
+}
+
+func (x *PostgresSourceConfig) GetBootstrapTables() []string {
+	if x != nil {
+		return x.BootstrapTables
+	}
+	return nil
+}
+
+func (x *PostgresSourceConfig) GetBootstrapSchemas() []string {
+	if x != nil {
+		return x.BootstrapSchemas
 	}
 	return nil
 }
@@ -5982,7 +5998,7 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\bpostgres\x18\x03 \x01(\v2\x1d.wallaby.v1.PostgresDSNConfigH\x00R\bpostgres\x12\x16\n" +
 	"\x06schema\x18\x04 \x01(\tR\x06schema\x12\x14\n" +
 	"\x05table\x18\x05 \x01(\tR\x05tableB\t\n" +
-	"\abackend\"\xf2\x16\n" +
+	"\abackend\"\xca\x17\n" +
 	"\x14PostgresSourceConfig\x12D\n" +
 	"\n" +
 	"connection\x18\x01 \x01(\v2$.wallaby.v1.PostgresConnectionConfigR\n" +
@@ -6041,7 +6057,9 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\x06format\x18- \x01(\x0e2\x16.wallaby.v1.WireFormatR\x06format\x122\n" +
 	"\x04mode\x18. \x01(\x0e2\x1e.wallaby.v1.PostgresSourceModeR\x04mode\x12H\n" +
 	"\x12delivery_retention\x18/ \x01(\v2\x19.google.protobuf.DurationR\x11deliveryRetention\x12Q\n" +
-	"\x17delivery_prune_interval\x180 \x01(\v2\x19.google.protobuf.DurationR\x15deliveryPruneIntervalB\r\n" +
+	"\x17delivery_prune_interval\x180 \x01(\v2\x19.google.protobuf.DurationR\x15deliveryPruneInterval\x12)\n" +
+	"\x10bootstrap_tables\x181 \x03(\tR\x0fbootstrapTables\x12+\n" +
+	"\x11bootstrap_schemas\x182 \x03(\tR\x10bootstrapSchemasB\r\n" +
 	"\v_batch_sizeB\x0e\n" +
 	"\f_create_slotB\r\n" +
 	"\v_emit_emptyB\x15\n" +

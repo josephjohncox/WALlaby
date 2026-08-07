@@ -323,6 +323,8 @@ message PostgresSourceConfig {
   PostgresSourceMode mode = 46;
   google.protobuf.Duration delivery_retention = 47;
   google.protobuf.Duration delivery_prune_interval = 48;
+  repeated string bootstrap_tables = 49;
+  repeated string bootstrap_schemas = 50;
 }
 
 message PostgresDestinationConfig {

@@ -152,7 +152,6 @@ func TestPostgresToPostgresE2E(t *testing.T) {
 		Options: map[string]string{
 			"dsn":                dstDSN,
 			"meta_table_enabled": "true",
-			"flow_id":            flowID,
 			"synchronous_commit": "off",
 		},
 	}
