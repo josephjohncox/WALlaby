@@ -358,12 +358,13 @@ func TestKafkaDestinationSchemaRegistryHeaders(t *testing.T) {
 		Name: "kafka-test-registry",
 		Type: connector.EndpointKafka,
 		Options: map[string]string{
-			"brokers":                      brokersRaw,
-			"topic":                        topic,
-			"format":                       "avro",
-			"acks":                         "all",
-			"schema_registry":              "local",
-			"schema_registry_subject_mode": "topic",
+			"brokers":                         brokersRaw,
+			"topic":                           topic,
+			"format":                          "avro",
+			"acks":                            "all",
+			"schema_registry":                 "local",
+			"schema_registry_local_directory": t.TempDir(),
+			"schema_registry_subject_mode":    "topic",
 		},
 	}
 	if err := dest.Open(ctx, spec); err != nil {

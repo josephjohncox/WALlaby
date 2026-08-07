@@ -18,7 +18,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/orchestrator"
@@ -338,11 +337,7 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 	suffix := time.Now().UnixNano()
 	flowID := fmt.Sprintf("flow-retry-%d", suffix)
 
-	customRegistry := connector.NewRegistry()
-	if err := customRegistry.RegisterSource("bogus", func() connector.Source { return &pgsource.Source{} }); err != nil {
-		t.Fatalf("register retry source: %v", err)
-	}
-	engine, err := workflow.NewPostgresEngineWithRegistry(ctx, dsn, customRegistry)
+	engine, err := workflow.NewPostgresEngine(ctx, dsn)
 	if err != nil {
 		t.Fatalf("create engine: %v", err)
 	}
@@ -353,7 +348,10 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 
 	badSource := connector.RuntimeSpec{
 		Name: "bad-source",
-		Type: connector.EndpointType("bogus"),
+		Type: connector.EndpointPostgres,
+		Options: map[string]string{
+			"mode": connector.SourceModeCDC,
+		},
 	}
 	destSpec := connector.RuntimeSpec{
 		Name: "stream",
@@ -387,7 +385,7 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 		MaxRetries:    1,
 		MaxRetriesSet: true,
 		DefaultWire:   connector.WireFormatJSON,
-	}, engine, checkpointStore, runner.Factory{ConnectorRegistry: customRegistry})
+	}, engine, checkpointStore, runner.Factory{})
 	if err != nil {
 		t.Fatalf("create dbos orchestrator: %v", err)
 	}

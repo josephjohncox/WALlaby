@@ -835,7 +835,7 @@ func TestCLIIntegrationFlowListGetDeleteWaitValidate(t *testing.T) {
 	waitForTCP(t, listener.Addr().String(), 2*time.Second)
 
 	gate, approve, apply := false, true, false
-	configPath := writeFlowConfig(t, flowConfigPayload{Name: "cli-flow-list-get-delete-wait", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}, AckPolicy: stream.AckPolicyPrimary, PrimaryDestination: "dest", FailureMode: stream.FailureModeHoldSlot, GiveUpPolicy: stream.GiveUpPolicyNever, DDL: internalflow.DDLPolicy{Gate: &gate, AutoApprove: &approve, AutoApply: &apply}}, WireFormat: "json", Parallelism: 1, Source: endpointConfigPayload{Name: "src", Type: "postgres", Options: map[string]string{"dsn": testPostgresAppDSN(t), "aws_rds_iam": "true", "aws_region": "us-east-1", "aws_role_external_id": "source-external-secret"}}, Destinations: []endpointConfigPayload{{Name: "dest", Type: "http", Options: map[string]string{"url": "https://api.github.com/hooks/integration-github-secret?signature=integration-signed-secret", "headers": "Authorization:Bearer destination-header-secret", "payload_mode": "record_json"}}}})
+	configPath := writeFlowConfig(t, flowConfigPayload{Name: "cli-flow-list-get-delete-wait", Config: internalflow.Config{TableMappings: internalflow.TableMappings{Version: internalflow.TableMappingsVersion, Destinations: []internalflow.DestinationTableMappings{{Destination: "dest", FutureTables: internalflow.FutureTableMapping{Action: internalflow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: internalflow.FutureColumnMapping{Action: internalflow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: internalflow.TableWritePolicy{Mode: internalflow.TableWriteModeAppend}}}}}, AckPolicy: stream.AckPolicyPrimary, PrimaryDestination: "dest", FailureMode: stream.FailureModeHoldSlot, GiveUpPolicy: stream.GiveUpPolicyNever, DDL: internalflow.DDLPolicy{Gate: &gate, AutoApprove: &approve, AutoApply: &apply}}, WireFormat: "json", Parallelism: 1, Source: endpointConfigPayload{Name: "src", Type: "postgres", Options: map[string]string{"dsn": testPostgresAppDSN(t), "aws_rds_iam": "true", "aws_region": "us-east-1", "aws_role_external_id": "source-external-secret"}}, Destinations: []endpointConfigPayload{{Name: "dest", Type: "http", Options: map[string]string{"url": "https://api.github.com/hooks/integration-github-secret?signature=integration-signed-secret", "headers": "authorization:Bearer destination-header-secret", "payload_mode": "record_json"}}}})
 
 	output, err := runWallabyAdmin(ctx, listener.Addr().String(), "flow", "create", "--file", configPath, "--json")
 	if err != nil {
@@ -1218,8 +1218,8 @@ func TestCLIIntegrationFlowDryRunCheck(t *testing.T) {
 	if checkResp.Name != "cli-flow-dry-run-check" {
 		t.Fatalf("expected checked name cli-flow-dry-run-check, got %q", checkResp.Name)
 	}
-	if checkResp.SourceType != "postgres" {
-		t.Fatalf("expected source_type postgres, got %q", checkResp.SourceType)
+	if checkResp.SourceType != "postgres_source" {
+		t.Fatalf("expected source_type postgres_source, got %q", checkResp.SourceType)
 	}
 	if checkResp.DestinationCount != 1 {
 		t.Fatalf("expected destination_count 1, got %d", checkResp.DestinationCount)

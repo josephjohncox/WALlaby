@@ -45,11 +45,12 @@ func TestPGStreamSchemaRegistryMetadata(t *testing.T) {
 		Name: "pgstream-registry",
 		Type: connector.EndpointPGStream,
 		Options: map[string]string{
-			"dsn":                     dbDSN,
-			"stream":                  "orders",
-			"format":                  "avro",
-			"schema_registry":         "local",
-			"schema_registry_subject": "public.orders",
+			"dsn":                             dbDSN,
+			"stream":                          "orders",
+			"format":                          "avro",
+			"schema_registry":                 "local",
+			"schema_registry_local_directory": t.TempDir(),
+			"schema_registry_subject":         "public.orders",
 		},
 	}
 	if err := dest.Open(ctx, spec); err != nil {

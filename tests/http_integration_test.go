@@ -122,12 +122,13 @@ func TestHTTPDestinationSchemaRegistryHeaders(t *testing.T) {
 		Name: "http-registry",
 		Type: connector.EndpointHTTP,
 		Options: map[string]string{
-			"url":                strings.TrimRight(baseURL, "/") + "/capture",
-			"payload_mode":       "wire",
-			"format":             "avro",
-			"schema_registry":    "local",
-			"timeout":            "3s",
-			"transaction_header": "X-Wallaby-Transaction-Id",
+			"url":                             strings.TrimRight(baseURL, "/") + "/capture",
+			"payload_mode":                    "wire",
+			"format":                          "avro",
+			"schema_registry":                 "local",
+			"schema_registry_local_directory": t.TempDir(),
+			"timeout":                         "3s",
+			"transaction_header":              "X-Wallaby-Transaction-Id",
 		},
 	}
 	if err := dest.Open(ctx, spec); err != nil {
