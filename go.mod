@@ -18,7 +18,7 @@ require (
 	github.com/bufbuild/buf v1.63.0
 	github.com/dbos-inc/dbos-transact-golang v1.0.0
 	github.com/duckdb/duckdb-go/v2 v2.5.4
-	github.com/go-playground/validator/v10 v10.30.1
+	github.com/go-playground/validator/v10 v10.30.3
 	github.com/golangci/golangci-lint/v2 v2.8.0
 	github.com/google/uuid v1.6.0
 	github.com/goreleaser/goreleaser/v2 v2.13.2
@@ -280,7 +280,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/fzipp/gocyclo v0.6.0 // indirect
-	github.com/gabriel-vasile/mimetype v1.4.12 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
 	github.com/ghostiam/protogetter v0.3.18 // indirect
 	github.com/github/smimesign v0.2.0 // indirect
 	github.com/go-chi/chi/v5 v5.2.4 // indirect
