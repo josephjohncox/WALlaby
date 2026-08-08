@@ -4,19 +4,6 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/josephjohncox/wallaby/connectors/destinations/clickhouse"
-	"github.com/josephjohncox/wallaby/connectors/destinations/duckdb"
-	"github.com/josephjohncox/wallaby/connectors/destinations/ducklake"
-	grpcdest "github.com/josephjohncox/wallaby/connectors/destinations/grpc"
-	httpdest "github.com/josephjohncox/wallaby/connectors/destinations/http"
-	icebergdest "github.com/josephjohncox/wallaby/connectors/destinations/iceberg"
-	"github.com/josephjohncox/wallaby/connectors/destinations/kafka"
-	"github.com/josephjohncox/wallaby/connectors/destinations/pgstream"
-	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
-	"github.com/josephjohncox/wallaby/connectors/destinations/redpanda"
-	"github.com/josephjohncox/wallaby/connectors/destinations/s3"
-	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
-	"github.com/josephjohncox/wallaby/connectors/destinations/snowpipe"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/bootstrap"
@@ -35,9 +22,10 @@ type Factory struct {
 	ManagedControl    *pgxpool.Pool
 	ManagedAuthority  authority.Store
 	BootstrapHooks    bootstrap.Hooks
+	ConnectorRegistry *connector.Registry
 }
 
-func (f Factory) Source(spec connector.Spec) (connector.Source, error) {
+func (f Factory) Source(spec connector.RuntimeSpec) (connector.Source, error) {
 	return f.source(spec, f.SchemaHook)
 }
 
@@ -49,16 +37,31 @@ func (f Factory) SourceForFlow(fdef flow.Flow) (connector.Source, error) {
 			hook = candidate
 		}
 	}
-	return f.source(fdef.Source, hook)
+	registry := f.ConnectorRegistry
+	if registry == nil {
+		registry = connector.DefaultRegistry
+	}
+	spec, err := fdef.DecodeSource(registry)
+	if err != nil {
+		return nil, err
+	}
+	return f.source(spec, hook)
 }
 
-func (f Factory) source(spec connector.Spec, hook replication.SchemaHook) (connector.Source, error) {
+func (f Factory) source(spec connector.RuntimeSpec, hook replication.SchemaHook) (connector.Source, error) {
 	mode, err := connector.NormalizeSourceMode("")
 	if spec.Options != nil {
 		mode, err = connector.NormalizeSourceMode(spec.Options["mode"])
 	}
 	if err != nil {
 		return nil, err
+	}
+	if spec.Type == connector.EndpointPostgres && mode == connector.SourceModeBackfill {
+		for _, key := range []string{"publication_tables", "publication_schemas", "sync_publication", "sync_publication_mode"} {
+			if spec.Options[key] != "" {
+				return nil, fmt.Errorf("postgres backfill source rejects CDC publication option %s", key)
+			}
+		}
 	}
 
 	switch spec.Type {
@@ -73,11 +76,15 @@ func (f Factory) source(spec connector.Spec, hook replication.SchemaHook) (conne
 		}
 		return source, nil
 	default:
-		return nil, fmt.Errorf("unsupported source type: %s", spec.Type)
+		registry := f.ConnectorRegistry
+		if registry == nil {
+			registry = connector.DefaultRegistry
+		}
+		return registry.NewSource(spec.Type)
 	}
 }
 
-func (f Factory) Destinations(specs []connector.Spec) ([]stream.DestinationConfig, error) {
+func (f Factory) Destinations(specs []connector.RuntimeSpec) ([]stream.DestinationConfig, error) {
 	items := make([]stream.DestinationConfig, 0, len(specs))
 	for _, spec := range specs {
 		dest, err := f.destination(spec)
@@ -89,41 +96,37 @@ func (f Factory) Destinations(specs []connector.Spec) ([]stream.DestinationConfi
 	return items, nil
 }
 
-// DestinationsForFlow builds destinations, applying flow-level defaults.
+// DestinationsForFlow builds destinations from detached runtime adapters.
 func (f Factory) DestinationsForFlow(fdef flow.Flow) ([]stream.DestinationConfig, error) {
-	specs := flow.ApplyRegistryDefaults(fdef.Destinations, fdef.Config)
+	registry := f.ConnectorRegistry
+	if registry == nil {
+		registry = connector.DefaultRegistry
+	}
+	specs, err := fdef.DecodeDestinations(registry)
+	if err != nil {
+		return nil, err
+	}
 	return f.Destinations(specs)
 }
 
-func (f Factory) destination(spec connector.Spec) (connector.Destination, error) {
-	switch spec.Type {
-	case connector.EndpointKafka:
-		return &kafka.Destination{}, nil
-	case connector.EndpointS3:
-		return &s3.Destination{}, nil
-	case connector.EndpointHTTP:
-		return &httpdest.Destination{}, nil
-	case connector.EndpointGRPC:
-		return &grpcdest.Destination{}, nil
-	case connector.EndpointPGStream:
-		return &pgstream.Destination{}, nil
-	case connector.EndpointSnowflake:
-		return &snowflake.Destination{}, nil
-	case connector.EndpointSnowpipe:
-		return &snowpipe.Destination{}, nil
-	case connector.EndpointDuckDB:
-		return &duckdb.Destination{}, nil
-	case connector.EndpointDuckLake:
-		return &ducklake.Destination{}, nil
-	case connector.EndpointClickHouse:
-		return &clickhouse.Destination{}, nil
-	case connector.EndpointIceberg:
-		return &icebergdest.Destination{}, nil
-	case connector.EndpointPostgres:
-		return &pgdest.Destination{}, nil
-	case connector.EndpointRedpanda:
-		return &redpanda.Destination{}, nil
-	default:
+func (f Factory) destination(spec connector.RuntimeSpec) (connector.Destination, error) {
+	registration, ok := destinationRegistration(spec.Type)
+	if !ok {
+		registry := f.ConnectorRegistry
+		if registry == nil {
+			registry = connector.DefaultRegistry
+		}
+		return registry.NewDestination(spec.Type)
+	}
+	if registration.New == nil {
 		return nil, fmt.Errorf("unsupported destination type: %s", spec.Type)
 	}
+	destination := registration.New()
+	if destination == nil {
+		return nil, fmt.Errorf("destination constructor returned nil: %s", spec.Type)
+	}
+	if _, err := registration.ResolveCapabilities(destination, spec); err != nil {
+		return nil, fmt.Errorf("destination %s capability profile: %w", spec.Type, err)
+	}
+	return destination, nil
 }

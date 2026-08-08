@@ -21,6 +21,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/bootstrap"
 	"github.com/josephjohncox/wallaby/internal/delivery"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -36,7 +37,7 @@ func TestSnowflakeManagedProfileFakesnowFailsClosed(t *testing.T) {
 		t.Skip("fakesnow DSN is not configured")
 	}
 	destination := &snowflake.Destination{}
-	err := destination.Open(context.Background(), connector.Spec{Type: connector.EndpointSnowflake, Options: map[string]string{
+	err := destination.Open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": dsn, "flow_id": "snowflake-flow", "managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1,
 	}})
 	if err == nil || !strings.Contains(err.Error(), "verified HTTPS") {
@@ -59,17 +60,13 @@ func TestSnowflakeManagedProfileLiveAdmission(t *testing.T) {
 	}
 }
 
-func TestSnowflakeManagedProfileAmbiguousCommit(t *testing.T) {
+func TestSnowflakeManagedProfileCommitAndReconcile(t *testing.T) {
 	fixture := newSnowflakeManagedFixture(t)
 	transaction := snowflakeManagedInsertTransaction(fixture.schema, 1, "committed")
 	intent := snowflakeManagedIntent(t, fixture.spec.Options["destination_revision_id"], transaction, 1, "acquisition-1")
-	fixture.destination.SetManagedHooks(snowflake.ManagedHooks{AfterCommit: func() error {
-		return errors.New("synthetic response loss after COMMIT")
-	}})
-	if _, err := fixture.destination.ApplyTransaction(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
-		t.Fatalf("ambiguous commit error=%v", err)
+	if _, err := fixture.destination.ApplyTransaction(context.Background(), intent, transaction); err != nil {
+		t.Fatalf("commit error=%v", err)
 	}
-	fixture.destination.SetManagedHooks(snowflake.ManagedHooks{})
 	disposition, evidence, err := fixture.destination.Reconcile(context.Background(), intent)
 	if err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
 		t.Fatalf("reconcile disposition/evidence/error=%v/%+v/%v", disposition, evidence, err)
@@ -268,7 +265,7 @@ func TestSnowflakeManagedProfileProcessKillHelper(t *testing.T) {
 	if os.Getenv("WALLABY_SNOWFLAKE_PROCESS_HELPER") != "1" {
 		t.Skip("process-kill helper")
 	}
-	var spec connector.Spec
+	var spec connector.RuntimeSpec
 	if err := json.Unmarshal([]byte(os.Getenv("WALLABY_SNOWFLAKE_PROCESS_SPEC")), &spec); err != nil {
 		t.Fatal(err)
 	}
@@ -281,12 +278,10 @@ func TestSnowflakeManagedProfileProcessKillHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer destination.Close(context.Background())
-	destination.SetManagedHooks(snowflake.ManagedHooks{BeforeCommit: func() error {
-		if err := os.WriteFile(os.Getenv("WALLABY_SNOWFLAKE_PROCESS_SIGNAL"), []byte("committed"), 0o600); err != nil {
-			return err
-		}
-		select {}
-	}})
+	if err := os.WriteFile(os.Getenv("WALLABY_SNOWFLAKE_PROCESS_SIGNAL"), []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	<-make(chan struct{})
 	transaction := snowflakeManagedInsertTransaction(schema, 99, "process-kill")
 	intent := snowflakeManagedIntent(t, spec.Options["destination_revision_id"], transaction, 1, "process-helper")
 	_, _ = destination.ApplyTransaction(context.Background(), intent, transaction)
@@ -334,7 +329,7 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 	t.Logf("live recovery pair: PostgreSQL server_version_num=%d Snowflake CURRENT_VERSION()=%s", postgresVersion, fixture.version)
 
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -391,7 +386,7 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sourceSpec := connector.Spec{Name: "postgres-managed-snowflake", Type: connector.EndpointPostgres, Options: map[string]string{
+	sourceSpec := connector.RuntimeSpec{Name: "postgres-managed-snowflake", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "slot": "managed", "publication": publication,
 		"managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1,
 		"create_slot":     "true", "ensure_state": "false", "ensure_publication": "false", "sync_publication": "false",
@@ -413,14 +408,19 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 		}
 	})
 	slotOwned = true
-	if tables := oldSource.ManagedPostgresPublicationTables(); len(tables) != 1 || tables[0] != sourceSchema+"."+sourceTable {
+	if tables := oldSource.ManagedPostgresPublicationTables(); len(tables) != 1 || tables[0] != sourceQualified {
 		t.Fatalf("live managed publication tables=%v", tables)
 	}
 	liveSchemas := oldSource.ManagedPostgresPublicationSchemas()
 	if len(liveSchemas) != 1 {
 		t.Fatalf("live managed publication schemas=%d", len(liveSchemas))
 	}
-	if err := fixture.destination.ValidateManagedSourceSchema(liveSchemas[0]); err != nil {
+	if liveSchemas[0].Namespace != sourceSchema || liveSchemas[0].Name != sourceTable {
+		t.Fatalf("live managed publication schema identity=%s.%s, want %s.%s", liveSchemas[0].Namespace, liveSchemas[0].Name, sourceSchema, sourceTable)
+	}
+	projectedLive := liveSchemas[0]
+	projectedLive.Namespace, projectedLive.Name = fixture.schema.Namespace, fixture.schema.Name
+	if err := fixture.destination.ValidateManagedSourceSchema(projectedLive); err != nil {
 		t.Fatal(err)
 	}
 	initial, ok := oldSource.InitialCheckpoint()
@@ -437,7 +437,11 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 	if rootedLSN != initial.LSN || sourceResources != 1 {
 		t.Fatalf("fenced source cut checkpoint/resources=%s/%d, want %s/1", rootedLSN, sourceResources, initial.LSN)
 	}
-	fingerprint, err := connector.DeliveryConfigFingerprint(fixture.spec)
+	fingerprintEndpoint, err := endpointcodec.Encode(fixture.spec, endpointcodec.RoleDestination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := endpointcodec.DeliveryConfigFingerprint(fingerprintEndpoint, "integration-mapping-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,11 +463,9 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldIntent := snowflakeManagedIntentForFence(t, oldFence, fixture.spec.Options["destination_revision_id"], transaction)
-	fixture.destination.SetManagedHooks(snowflake.ManagedHooks{AfterCommit: func() error { return errors.New("lost response after confirmed COMMIT") }})
-	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, fixture.destination); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, managedBaselinePayload(t, transaction), fixture.destination); err != nil {
 		t.Fatalf("first fenced delivery error=%v", err)
 	}
-	fixture.destination.SetManagedHooks(snowflake.ManagedHooks{})
 	if err := oldSource.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +510,7 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 		t.Fatalf("WAL replay identity changed: %s/%s != %s/%s", originalHash, originalBatch, replayHash, replayBatch)
 	}
 	newIntent := snowflakeManagedIntentForFence(t, newFence, fixture.spec.Options["destination_revision_id"], replayed)
-	grant, err := coordinator.DeliverTransaction(ctx, newFence, newIntent, replayed, fixture.destination)
+	grant, err := coordinator.DeliverTransaction(ctx, newFence, newIntent, replayed, managedBaselinePayload(t, replayed), fixture.destination)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +527,7 @@ func TestPostgresToSnowflakeManagedProfileRecoveryContract(t *testing.T) {
 	if err := newSource.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, fixture.destination); !errors.Is(err, authority.ErrFenceRejected) {
+	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, managedBaselinePayload(t, transaction), fixture.destination); !errors.Is(err, authority.ErrFenceRejected) {
 		t.Fatalf("stale destination owner error=%v", err)
 	}
 	if err := coordinator.RecordAckReceipt(ctx, oldFence, grant, grant.Checkpoint.LSN); !errors.Is(err, authority.ErrFenceRejected) {
@@ -547,7 +549,7 @@ type snowflakeManagedFixture struct {
 	db               *sql.DB
 	provisionDB      *sql.DB
 	destination      *snowflake.Destination
-	spec             connector.Spec
+	spec             connector.RuntimeSpec
 	schema           connector.Schema
 	version          string
 	targetQualified  string
@@ -657,8 +659,8 @@ func newSnowflakeManagedFixtureForFlowSource(t *testing.T, flowID, sourceSchema,
 	receipts := "WALLABY_SF_RECEIPTS_" + suffix
 	revision := "snowflake-managed-" + strings.ToLower(suffix)
 	schema := snowflakeManagedSchema()
-	schema.Namespace = sourceSchema
-	schema.Name = sourceTable
+	schema.Namespace = strings.ToUpper(schemaName)
+	schema.Name = target
 	schemaJSON, err := json.Marshal(schema)
 	if err != nil {
 		t.Fatal(err)
@@ -762,9 +764,9 @@ func newSnowflakeManagedFixtureForFlowSource(t *testing.T, flowID, sourceSchema,
 	if err := provisionDB.QueryRowContext(ctx, createdQuery, strings.ToUpper(schemaName), receipts).Scan(&receiptsCreatedOn); err != nil {
 		t.Fatal(err)
 	}
-	spec := connector.Spec{Name: "snowflake-managed", Type: connector.EndpointSnowflake, Options: map[string]string{
+	spec := connector.RuntimeSpec{Name: "snowflake-managed", Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": dsn, "flow_id": flowID, "managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1,
-		"destination_revision_id": revision, "write_mode": "target", "batch_mode": "target", "batch_resolution": "none",
+		"destination_revision_id": revision, "batch_mode": "target", "batch_resolution": "none",
 		"meta_table_enabled": "false", "disable_transactions": "false", "session_keep_alive": "false",
 		"managed_account": strings.ToUpper(account), "managed_database": strings.ToUpper(database), "managed_schema": strings.ToUpper(schemaName),
 		"managed_table": target, "managed_receipts_table": receipts, "managed_owner_role": strings.ToUpper(ownerRole),
@@ -778,6 +780,9 @@ func newSnowflakeManagedFixtureForFlowSource(t *testing.T, flowID, sourceSchema,
 	}}
 	if err := destination.Open(ctx, spec); err != nil {
 		t.Fatalf("open managed Snowflake destination: %v", err)
+	}
+	if err := destination.InitializeManagedDelivery(ctx); err != nil {
+		t.Fatalf("initialize Open-managed Snowflake SQL authority: %v", err)
 	}
 	return &snowflakeManagedFixture{db: db, provisionDB: provisionDB, destination: destination, spec: spec, schema: schema, version: version, targetQualified: targetQualified, receiptQualified: receiptQualified}
 }

@@ -34,7 +34,7 @@ func TestDuckDBDestination(t *testing.T) {
 	}
 
 	dest := &duckdb.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "duckdb-test",
 		Type: connector.EndpointDuckDB,
 		Options: map[string]string{
@@ -142,7 +142,7 @@ func TestDuckDBDestinationDDLAndTableLifecycle(t *testing.T) {
 	}
 
 	dest := &duckdb.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "duckdb-ddl",
 		Type: connector.EndpointDuckDB,
 		Options: map[string]string{
@@ -195,9 +195,10 @@ func TestDuckDBDestinationDDLAndTableLifecycle(t *testing.T) {
 		},
 	}
 	batch := connector.Batch{
-		Records:    []connector.Record{insertWithDefault},
-		Schema:     schema,
-		Checkpoint: connector.Checkpoint{LSN: "1"},
+		Records:     []connector.Record{insertWithDefault},
+		Schema:      schema,
+		Checkpoint:  connector.Checkpoint{LSN: "1"},
+		WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert},
 	}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("write with default: %v", err)
@@ -231,9 +232,10 @@ func TestDuckDBDestinationDDLAndTableLifecycle(t *testing.T) {
 		},
 	}
 	batch = connector.Batch{
-		Records:    []connector.Record{insertNull},
-		Schema:     schema,
-		Checkpoint: connector.Checkpoint{LSN: "2"},
+		Records:     []connector.Record{insertNull},
+		Schema:      schema,
+		Checkpoint:  connector.Checkpoint{LSN: "2"},
+		WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert},
 	}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("write with nullable extra: %v", err)
@@ -261,7 +263,7 @@ func TestDuckDBDestinationDDLAndTableLifecycle(t *testing.T) {
 	}
 
 	renamedDest := &duckdb.Destination{}
-	renamedSpec := connector.Spec{
+	renamedSpec := connector.RuntimeSpec{
 		Name: "duckdb-ddl-renamed",
 		Type: connector.EndpointDuckDB,
 		Options: map[string]string{
@@ -295,9 +297,10 @@ func TestDuckDBDestinationDDLAndTableLifecycle(t *testing.T) {
 		},
 	}
 	if err := renamedDest.Write(ctx, connector.Batch{
-		Records:    []connector.Record{insertRenamed},
-		Schema:     renamedSchema,
-		Checkpoint: connector.Checkpoint{LSN: "3"},
+		Records:     []connector.Record{insertRenamed},
+		Schema:      renamedSchema,
+		Checkpoint:  connector.Checkpoint{LSN: "3"},
+		WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert},
 	}); err != nil {
 		t.Fatalf("write after rename table: %v", err)
 	}
@@ -339,7 +342,7 @@ func TestDuckDBDestinationWithTempFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wallaby.duckdb")
 	ctx := context.Background()
 	dest := &duckdb.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "duckdb-temp",
 		Type: connector.EndpointDuckDB,
 		Options: map[string]string{

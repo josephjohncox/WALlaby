@@ -3,7 +3,6 @@ package connector
 import (
 	"errors"
 	"fmt"
-	"strings"
 )
 
 // ErrInvalidBatch identifies a connector batch that cannot be interpreted
@@ -28,10 +27,10 @@ func ValidateBatch(batch Batch) error {
 		}
 	}
 
-	schemaName := strings.TrimSpace(batch.Schema.Name)
+	schemaName := batch.Schema.Name
 	if control && schemaName == "" {
 		for index, record := range batch.Records {
-			if strings.TrimSpace(record.Table) != "" || record.SchemaVersion != 0 {
+			if record.Table != "" || record.SchemaVersion != 0 {
 				return fmt.Errorf("%w: table-scoped control record %d requires a batch schema", ErrInvalidBatch, index)
 			}
 		}
@@ -42,7 +41,7 @@ func ValidateBatch(batch Batch) error {
 	}
 
 	for index, record := range batch.Records {
-		if strings.TrimSpace(record.Table) == "" {
+		if record.Table == "" {
 			return fmt.Errorf("%w: record %d table is required", ErrInvalidBatch, index)
 		}
 		if !recordTableMatchesSchema(record.Table, batch.Schema) {
@@ -70,15 +69,10 @@ func ValidateBatch(batch Batch) error {
 }
 
 func recordTableMatchesSchema(table string, schema Schema) bool {
-	table = strings.TrimSpace(table)
 	if table == schema.Name {
 		return true
 	}
-	separator := strings.LastIndex(table, ".")
-	if separator <= 0 || separator == len(table)-1 {
-		return false
-	}
-	return table[separator+1:] == schema.Name && table[:separator] == schema.Namespace
+	return schema.Namespace != "" && table == schema.Namespace+"."+schema.Name
 }
 
 func isBatchControlRecord(record Record) bool {

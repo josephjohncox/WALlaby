@@ -18,7 +18,6 @@ const (
 	optTables               = "tables"
 	optSchemas              = "schemas"
 	optSnapshotWorkers      = "snapshot_workers"
-	optParallelTables       = "parallel_tables"
 	optPartitionColumn      = "partition_column"
 	optPartitionCount       = "partition_count"
 	optSnapshotConsistent   = "snapshot_consistent"
@@ -31,7 +30,7 @@ const (
 
 // BackfillSource reads existing table data in bulk.
 type BackfillSource struct {
-	spec           connector.Spec
+	spec           connector.RuntimeSpec
 	pool           *pgxpool.Pool
 	tables         []string
 	batchSize      int
@@ -51,7 +50,7 @@ type BackfillSource struct {
 	primaryKeys    map[string][]string
 }
 
-func (b *BackfillSource) Open(ctx context.Context, spec connector.Spec) error {
+func (b *BackfillSource) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	b.spec = spec
 
 	dsn := spec.Options[optDSN]
@@ -78,14 +77,12 @@ func (b *BackfillSource) Open(ctx context.Context, spec connector.Spec) error {
 	if b.workers <= 0 {
 		b.workers = 1
 	}
-	if b.workers == 1 {
-		if alt := parseInt(spec.Options[optParallelTables], 0); alt > 0 {
-			b.workers = alt
+	if rawPartitionColumn := spec.Options[optPartitionColumn]; rawPartitionColumn != "" {
+		partitionColumn, err := ParseCatalogColumnName(rawPartitionColumn)
+		if err != nil {
+			return fmt.Errorf("parse partition_column: %w", err)
 		}
-	}
-	b.partitionCol = strings.TrimSpace(spec.Options[optPartitionColumn])
-	if strings.Contains(b.partitionCol, ".") {
-		return errors.New("partition_column must be a bare column name")
+		b.partitionCol = partitionColumn
 	}
 	b.partitionCount = parseInt(spec.Options[optPartitionCount], 1)
 	if b.partitionCount < 1 {
@@ -116,7 +113,10 @@ func (b *BackfillSource) Open(ctx context.Context, spec connector.Spec) error {
 
 	tables := parseCSV(spec.Options[optTables])
 	if len(tables) == 0 {
-		schemas := parseCSV(spec.Options[optSchemas])
+		schemas, err := parseIdentifierCSV(spec.Options[optSchemas])
+		if err != nil {
+			return fmt.Errorf("parse schemas: %w", err)
+		}
 		if len(schemas) == 0 {
 			schemas = []string{"public"}
 		}
@@ -219,7 +219,6 @@ func (b *BackfillSource) Capabilities() connector.Capabilities {
 		Evidence: connector.ContractEvidence{
 			SchemaEvolution: true,
 		},
-		SupportsDDL:           false,
 		SupportsSchemaChanges: false,
 		SupportsStreaming:     false,
 		SupportsBulkLoad:      true,
@@ -347,15 +346,18 @@ func normalizeGeneratedValue(value any) string {
 }
 
 func splitTable(value string) (string, string, error) {
-	parts := strings.Split(value, ".")
-	if len(parts) == 1 {
+	parts, err := parseIdentifierText(value)
+	if err != nil {
+		return "", "", err
+	}
+	switch len(parts) {
+	case 1:
 		return "public", parts[0], nil
-	}
-	if len(parts) == 2 {
+	case 2:
 		return parts[0], parts[1], nil
+	default:
+		return "", "", fmt.Errorf("invalid table name %q", value)
 	}
-	err := fmt.Errorf("invalid table name %q", value)
-	return "", "", err
 }
 
 type backfillTask struct {
@@ -706,7 +708,7 @@ func (b *BackfillSource) endSnapshot(ctx context.Context) {
 	b.snapshotName = ""
 }
 
-func snapshotFlowID(spec connector.Spec) string {
+func snapshotFlowID(spec connector.RuntimeSpec) string {
 	if spec.Options != nil {
 		if value := spec.Options[optFlowID]; value != "" {
 			return value

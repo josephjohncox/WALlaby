@@ -27,7 +27,7 @@ func BenchmarkStreamHarness(b *testing.B) {
 			b.Run(label, func(b *testing.B) {
 				dests := make([]DestinationConfig, 0, parallelism)
 				for i := 0; i < parallelism; i++ {
-					spec := connector.Spec{
+					spec := connector.RuntimeSpec{
 						Name: fmt.Sprintf("dest-%d", i),
 						Type: connector.EndpointClickHouse,
 						Options: map[string]string{

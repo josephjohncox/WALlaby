@@ -33,10 +33,15 @@ const icebergIdentityDocPrefix = "wallaby.identity="
 // Canonical envelope fields have no source identity and key on their frozen
 // name; those fields are never renamed.
 func stableFieldIdentity(field artifactlog.CanonicalField) string {
-	relation := strings.TrimSpace(field.Metadata["source_relation_id"])
-	column := strings.TrimSpace(field.Metadata["source_column_id"])
-	if relation != "" && column != "" {
-		return "src:" + relation + ":" + column
+	lineage := strings.TrimSpace(field.SourceLineageID)
+	if synthetic := strings.TrimSpace(field.SyntheticIdentity); synthetic != "" {
+		if source := strings.TrimSpace(field.SyntheticSourceRelation); source != "" {
+			return "synthetic:" + lineage + ":" + source + ":" + synthetic
+		}
+		return "envelope:" + synthetic
+	}
+	if lineage != "" && field.SourceRelationID != 0 && field.SourceColumnID > 0 {
+		return fmt.Sprintf("src:%s:%d:%d", lineage, field.SourceRelationID, field.SourceColumnID)
 	}
 	return "name:" + field.Name
 }
@@ -81,15 +86,41 @@ func isNestedType(dataType iceberggo.Type) bool {
 	}
 }
 
-// fieldIdentity resolves the stable identity of a catalog field. A field that
-// Wallaby created or evolved carries the identity doc; a pre-existing field
-// without one falls back to its name, which is unambiguous when no rename is in
-// flight.
-func fieldIdentity(field iceberggo.NestedField) string {
-	if identity, ok := identityFromDoc(field.Doc); ok {
-		return identity
+// requiredFieldIdentity accepts only identities explicitly persisted by
+// Wallaby. Name fallback cannot prove whether an existing catalog field is a
+// dropped source column, a manual addition, or a renamed field.
+func requiredFieldIdentity(field iceberggo.NestedField) (string, error) {
+	identity, ok := identityFromDoc(field.Doc)
+	if !ok || strings.TrimSpace(identity) == "" {
+		return "", fmt.Errorf("%w: catalog field %q is missing a Wallaby identity doc", connector.ErrDeliveryConflict, field.Name)
 	}
-	return "name:" + field.Name
+	valid := false
+	switch {
+	case strings.HasPrefix(identity, "src:"):
+		parts := strings.Split(identity, ":")
+		if len(parts) >= 4 {
+			relation, relationErr := strconv.ParseUint(parts[len(parts)-2], 10, 32)
+			column, columnErr := strconv.ParseInt(parts[len(parts)-1], 10, 32)
+			valid = strings.TrimSpace(strings.Join(parts[1:len(parts)-2], ":")) != "" && relationErr == nil && relation > 0 && columnErr == nil && column > 0
+		}
+	case strings.HasPrefix(identity, "synthetic:"):
+		parts := strings.Split(identity, ":")
+		valid = len(parts) >= 4
+		for _, part := range parts[1:] {
+			if strings.TrimSpace(part) == "" {
+				valid = false
+				break
+			}
+		}
+	case strings.HasPrefix(identity, "envelope:"):
+		valid = strings.TrimSpace(strings.TrimPrefix(identity, "envelope:")) != ""
+	case strings.HasPrefix(identity, "name:"):
+		valid = strings.TrimSpace(strings.TrimPrefix(identity, "name:")) != ""
+	}
+	if !valid {
+		return "", fmt.Errorf("%w: catalog field %q has malformed Wallaby identity doc", connector.ErrDeliveryConflict, field.Name)
+	}
+	return identity, nil
 }
 
 type renameOp struct {
@@ -108,7 +139,10 @@ func evolutionPlan(current, desired *iceberggo.Schema) ([]iceberggo.NestedField,
 	for index := 0; index < current.NumFields(); index++ {
 		field := current.Field(index)
 		currentByName[field.Name] = field
-		identity := fieldIdentity(field)
+		identity, err := requiredFieldIdentity(field)
+		if err != nil {
+			return nil, nil, err
+		}
 		if _, clash := currentByIdentity[identity]; clash {
 			return nil, nil, fmt.Errorf("%w: catalog field identity %q is not unique", connector.ErrDeliveryConflict, identity)
 		}
@@ -118,9 +152,14 @@ func evolutionPlan(current, desired *iceberggo.Schema) ([]iceberggo.NestedField,
 	var adds []iceberggo.NestedField
 	var renames []renameOp
 	claimedRenameTargets := make(map[string]struct{})
+	desiredIdentities := make(map[string]struct{}, desired.NumFields())
 	for index := 0; index < desired.NumFields(); index++ {
 		want := desired.Field(index)
-		identity := fieldIdentity(want)
+		identity, err := requiredFieldIdentity(want)
+		if err != nil {
+			return nil, nil, err
+		}
+		desiredIdentities[identity] = struct{}{}
 		if existing, ok := currentByIdentity[identity]; ok {
 			if !existing.Type.Equals(want.Type) {
 				return nil, nil, fmt.Errorf("%w: field identity %q type changed from %s to %s (unsupported)", connector.ErrDeliveryConflict, identity, existing.Type, want.Type)
@@ -147,6 +186,11 @@ func evolutionPlan(current, desired *iceberggo.Schema) ([]iceberggo.NestedField,
 		add.Required = false
 		adds = append(adds, add)
 	}
+	for identity, existing := range currentByIdentity {
+		if _, present := desiredIdentities[identity]; !present {
+			return nil, nil, fmt.Errorf("%w: existing Iceberg field %q with identity %q is absent from the complete canonical schema; column drops and manual fields are not admitted", connector.ErrDeliveryConflict, existing.Name, identity)
+		}
+	}
 	sort.Slice(renames, func(i, j int) bool { return renames[i].from < renames[j].from })
 	sort.Slice(adds, func(i, j int) bool { return adds[i].Name < adds[j].Name })
 	return adds, renames, nil
@@ -160,10 +204,15 @@ func evolutionPlan(current, desired *iceberggo.Schema) ([]iceberggo.NestedField,
 func buildFieldMapping(current, desired *iceberggo.Schema) (map[string]int, error) {
 	currentByIdentity := make(map[string]iceberggo.NestedField, current.NumFields())
 	currentByName := make(map[string]iceberggo.NestedField, current.NumFields())
+	currentIdentityByName := make(map[string]string, current.NumFields())
 	for index := 0; index < current.NumFields(); index++ {
 		field := current.Field(index)
 		currentByName[field.Name] = field
-		identity := fieldIdentity(field)
+		identity, err := requiredFieldIdentity(field)
+		if err != nil {
+			return nil, err
+		}
+		currentIdentityByName[field.Name] = identity
 		if _, clash := currentByIdentity[identity]; clash {
 			return nil, fmt.Errorf("%w: catalog field identity %q is not unique", connector.ErrDeliveryConflict, identity)
 		}
@@ -172,17 +221,23 @@ func buildFieldMapping(current, desired *iceberggo.Schema) (map[string]int, erro
 
 	mapping := make(map[string]int, desired.NumFields())
 	claimedIDs := make(map[int]string, desired.NumFields())
+	desiredIdentities := make(map[string]struct{}, desired.NumFields())
 	for index := 0; index < desired.NumFields(); index++ {
 		want := desired.Field(index)
 		if isNestedType(want.Type) {
 			return nil, fmt.Errorf("iceberg field %q has nested type %s; the canonical projection must be flat", want.Name, want.Type)
 		}
-		identity := fieldIdentity(want)
+		identity, err := requiredFieldIdentity(want)
+		if err != nil {
+			return nil, err
+		}
+		desiredIdentities[identity] = struct{}{}
 		field, ok := currentByIdentity[identity]
 		if !ok {
-			if field, ok = currentByName[want.Name]; !ok {
-				return nil, fmt.Errorf("stable field identity %q (%s) is missing from the catalog schema; evolve the table first", identity, want.Name)
+			if existing, nameExists := currentByName[want.Name]; nameExists {
+				return nil, fmt.Errorf("%w: catalog field %q stable identity %q differs from canonical identity %q", connector.ErrDeliveryConflict, want.Name, currentIdentityByName[existing.Name], identity)
 			}
+			return nil, fmt.Errorf("stable field identity %q (%s) is missing from the catalog schema; evolve the table first", identity, want.Name)
 		}
 		if field.Name != want.Name {
 			return nil, fmt.Errorf("%w: field identity %q maps to catalog name %q but canonical name is %q; apply the rename first", connector.ErrDeliveryConflict, identity, field.Name, want.Name)
@@ -198,6 +253,11 @@ func buildFieldMapping(current, desired *iceberggo.Schema) (map[string]int, erro
 		}
 		claimedIDs[field.ID] = want.Name
 		mapping[want.Name] = field.ID
+	}
+	for identity, existing := range currentByIdentity {
+		if _, present := desiredIdentities[identity]; !present {
+			return nil, fmt.Errorf("%w: existing Iceberg field %q with identity %q is absent from the complete canonical schema", connector.ErrDeliveryConflict, existing.Name, identity)
+		}
 	}
 	return mapping, nil
 }

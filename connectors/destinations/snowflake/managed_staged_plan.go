@@ -264,7 +264,7 @@ func newStagedCopyPlan(cfg stagedConfig) (stagedCopyPlan, error) {
 
 func buildStagedChangelogRow(cfg stagedConfig, intent connector.DeliveryIntent, transaction connector.SourceTransaction, fragment connector.TransactionFragment, keyColumns []string, recordOrdinal uint64, record connector.Record) (stagedChangelogRow, int64, error) {
 	schema := fragment.Batch.Schema
-	table := strings.TrimSpace(record.Table)
+	table := record.Table
 	if table == "" {
 		table = schema.Name
 	}

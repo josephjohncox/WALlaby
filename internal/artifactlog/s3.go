@@ -27,21 +27,23 @@ var (
 
 // ObjectEvidence identifies one immutable object version exactly.
 type ObjectEvidence struct {
-	Bucket         string
-	Key            string
-	VersionID      string
-	ChecksumSHA256 string
-	Length         int64
-	EncryptionMode string
-	ObjectLock     string
+	Bucket             string
+	Key                string
+	VersionID          string
+	ChecksumSHA256     string
+	Length             int64
+	EncryptionMode     string
+	ObjectLock         string
+	ProjectionID       string
+	MappingFingerprint string
 }
 
 // ObjectStore supplies immutable upload and exact-version reconciliation. List
 // operations may discover evidence but never become publication authority.
 type ObjectStore interface {
 	Bucket() string
-	PutImmutable(context.Context, string, []byte, string) (ObjectEvidence, error)
-	ReconcileVersion(context.Context, string, string, int64) (ObjectEvidence, error)
+	PutImmutable(context.Context, string, []byte, string, string, string) (ObjectEvidence, error)
+	ReconcileVersion(context.Context, string, string, int64, string, string) (ObjectEvidence, error)
 	HeadVersion(context.Context, ObjectEvidence) (ObjectEvidence, error)
 	DeleteVersion(context.Context, ObjectEvidence) error
 }
@@ -101,7 +103,7 @@ func immutableVersionID(versionID string) bool {
 	return versionID != "" && versionID != "null"
 }
 
-func (s *S3Store) PutImmutable(ctx context.Context, key string, body []byte, expectedDigest string) (ObjectEvidence, error) {
+func (s *S3Store) PutImmutable(ctx context.Context, key string, body []byte, expectedDigest, projectionID, mappingFingerprint string) (ObjectEvidence, error) {
 	digest := sha256.Sum256(body)
 	actualDigest := hex.EncodeToString(digest[:])
 	if actualDigest != expectedDigest {
@@ -117,7 +119,7 @@ func (s *S3Store) PutImmutable(ctx context.Context, key string, body []byte, exp
 		IfNoneMatch:    aws.String("*"),
 		Metadata: map[string]string{
 			"wallaby-encoded-sha256": expectedDigest,
-			"wallaby-projection":     ProjectionID,
+			"wallaby-projection":     projectionID, "wallaby-mapping-fingerprint": mappingFingerprint,
 		},
 	})
 	if err != nil {
@@ -132,7 +134,7 @@ func (s *S3Store) PutImmutable(ctx context.Context, key string, body []byte, exp
 		Key:            key,
 		VersionID:      versionID,
 		ChecksumSHA256: expectedDigest,
-		Length:         int64(len(body)),
+		Length:         int64(len(body)), ProjectionID: projectionID, MappingFingerprint: mappingFingerprint,
 	}
 	if output.ServerSideEncryption != "" {
 		evidence.EncryptionMode = string(output.ServerSideEncryption)
@@ -140,7 +142,7 @@ func (s *S3Store) PutImmutable(ctx context.Context, key string, body []byte, exp
 	return evidence, nil
 }
 
-func (s *S3Store) ReconcileVersion(ctx context.Context, key, expectedDigest string, expectedLength int64) (ObjectEvidence, error) {
+func (s *S3Store) ReconcileVersion(ctx context.Context, key, expectedDigest string, expectedLength int64, projectionID, mappingFingerprint string) (ObjectEvidence, error) {
 	const maxVersions = 1024
 	var matches []ObjectEvidence
 	var keyMarker, versionMarker *string
@@ -168,7 +170,7 @@ func (s *S3Store) ReconcileVersion(ctx context.Context, key, expectedDigest stri
 				Key:            key,
 				VersionID:      aws.ToString(version.VersionId),
 				ChecksumSHA256: expectedDigest,
-				Length:         expectedLength,
+				Length:         expectedLength, ProjectionID: projectionID, MappingFingerprint: mappingFingerprint,
 			}
 			if observed, err := s.HeadVersion(ctx, evidence); err == nil {
 				matches = append(matches, observed)
@@ -211,7 +213,7 @@ func (s *S3Store) HeadVersion(ctx context.Context, evidence ObjectEvidence) (Obj
 		return ObjectEvidence{}, fmt.Errorf("%w: invalid expected SHA-256: %w", ErrObjectConflict, decodeErr)
 	}
 	expectedChecksum := base64.StdEncoding.EncodeToString(digestBytes)
-	if actualDigest != evidence.ChecksumSHA256 || aws.ToString(output.ChecksumSHA256) != expectedChecksum || output.Metadata["wallaby-projection"] != ProjectionID || aws.ToInt64(output.ContentLength) != evidence.Length {
+	if actualDigest != evidence.ChecksumSHA256 || aws.ToString(output.ChecksumSHA256) != expectedChecksum || output.Metadata["wallaby-projection"] != evidence.ProjectionID || output.Metadata["wallaby-mapping-fingerprint"] != evidence.MappingFingerprint || aws.ToInt64(output.ContentLength) != evidence.Length {
 		return ObjectEvidence{}, fmt.Errorf("%w: exact version checksum, projection, or length differs", ErrObjectConflict)
 	}
 	observed := evidence

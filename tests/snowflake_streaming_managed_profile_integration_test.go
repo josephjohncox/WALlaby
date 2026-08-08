@@ -27,22 +27,19 @@ import (
 // below therefore asserts the fail-closed refusal against a real Snowflake
 // account rather than proving delivery from local continuation/offset tokens.
 // The gates skip closed without WALLABY_TEST_SNOWFLAKE_MANAGED=1 and real
-// credentials, and fakesnow is explicitly rejected. They are the executable
+// credentials. They are the executable
 // promotion barrier: promotion requires linking a transport and turning these
 // refusals into positive recovery evidence on one reviewed SHA.
 
 type snowflakeStreamingManagedFixture struct {
-	spec    connector.Spec
+	spec    connector.RuntimeSpec
 	version string
 }
 
 func newSnowflakeStreamingManagedFixture(t *testing.T) *snowflakeStreamingManagedFixture {
 	t.Helper()
 	if os.Getenv("WALLABY_TEST_SNOWFLAKE_MANAGED") != "1" {
-		t.Skip("set WALLABY_TEST_SNOWFLAKE_MANAGED=1 with a real Snowflake account; fakesnow is not promotion evidence")
-	}
-	if usingFakesnow() {
-		t.Skip("managed streaming Snowflake profile requires a real Snowpipe Streaming append transport and recovery evidence")
+		t.Skip("set WALLABY_TEST_SNOWFLAKE_MANAGED=1 with a real Snowflake account")
 	}
 	dsn := strings.TrimSpace(os.Getenv("WALLABY_TEST_SNOWFLAKE_DSN"))
 	expectedVersion := strings.TrimSpace(os.Getenv("WALLABY_TEST_SNOWFLAKE_VERSION"))
@@ -90,9 +87,9 @@ func newSnowflakeStreamingManagedFixture(t *testing.T) *snowflakeStreamingManage
 		t.Fatal(err)
 	}
 	created := "2026-01-01T00:00:00.000000000+00:00"
-	spec := connector.Spec{Name: "snowflake-streaming", Type: connector.EndpointSnowflake, Options: map[string]string{
+	spec := connector.RuntimeSpec{Name: "snowflake-streaming", Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": dsn, "flow_id": flowID, "managed_profile": connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
-		"destination_revision_id": revision, "write_mode": "streaming_append", "batch_mode": "target", "batch_resolution": "none",
+		"destination_revision_id": revision, "batch_mode": "target", "batch_resolution": "none",
 		"meta_table_enabled": "false", "disable_transactions": "false", "session_keep_alive": "false",
 		"managed_streaming_transport": "snowpipe-streaming-highperf-rest",
 		"managed_account":             strings.ToUpper(account), "managed_database": database, "managed_schema": schemaName,
@@ -239,23 +236,4 @@ func TestSnowflakeStreamingManagedProfileCleanup(t *testing.T) {
 
 func TestSnowflakeStreamingManagedProfileSecretRedaction(t *testing.T) {
 	assertStreamingFailsClosed(t, "secret redaction")
-}
-
-// TestSnowflakeStreamingManagedProfileFakesnowFailsClosed proves fakesnow can
-// never admit the streaming profile.
-func TestSnowflakeStreamingManagedProfileFakesnowFailsClosed(t *testing.T) {
-	if !usingFakesnow() || !allowFakesnowSnowflake() {
-		t.Skip("fakesnow compatibility gate is opt-in")
-	}
-	dsn, _, ok := snowflakeTestDSN(t)
-	if !ok {
-		t.Skip("fakesnow DSN is not configured")
-	}
-	destination := &snowflake.Destination{}
-	err := destination.Open(context.Background(), connector.Spec{Type: connector.EndpointSnowflake, Options: map[string]string{
-		"dsn": dsn, "flow_id": "snowflake-streaming-flow", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
-	}})
-	if err == nil {
-		t.Fatal("fakesnow streaming admission must fail closed")
-	}
 }

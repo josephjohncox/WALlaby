@@ -19,7 +19,7 @@ func benchmarkStream(b *testing.B, destCount, batchSize int) {
 
 	dests := make([]DestinationConfig, 0, destCount)
 	for i := 0; i < destCount; i++ {
-		spec := connector.Spec{
+		spec := connector.RuntimeSpec{
 			Name: "dest",
 			Type: connector.EndpointClickHouse,
 			Options: map[string]string{
@@ -49,7 +49,7 @@ type benchDestination struct {
 	count int64
 }
 
-func (d *benchDestination) Open(context.Context, connector.Spec) error { return nil }
+func (d *benchDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
 
 func (d *benchDestination) Write(_ context.Context, batch connector.Batch) error {
 	atomic.AddInt64(&d.count, int64(len(batch.Records)))
@@ -66,7 +66,7 @@ func (d *benchDestination) Close(context.Context) error { return nil }
 
 func (d *benchDestination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		SupportsDDL:           true,
+		Delivery:              connector.DeliverySemantics{ExecutesDDL: true},
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      true,

@@ -55,17 +55,35 @@ type ManagedBootstrapResult struct {
 	CheckpointValid bool
 }
 
+// ManagedBootstrapProjector is the typed logical-projection contract used by
+// snapshot planning and delivery. Source query schemas remain source-shaped;
+// destination schemas and batches are projected explicitly through this seam.
+type ManagedBootstrapProjector interface {
+	Fingerprint() string
+	IncludeBootstrapRelation(namespace, table string) (bool, error)
+	ProjectBootstrapSchema(Schema) (Schema, TableWritePolicy, bool, error)
+	ProjectBootstrapBatch(Batch) (Batch, bool, error)
+}
+
+// BootstrapTable is one projected destination table in the immutable snapshot
+// manifest, including its per-table write contract.
+type BootstrapTable struct {
+	Schema         Schema
+	WritePolicy    TableWritePolicy
+	SourcePosition string
+}
+
 // ManagedBootstrapSource owns the source-specific exported-snapshot protocol.
 // The destination is already open when this method is called.
 type ManagedBootstrapSource interface {
-	PrepareManagedBootstrap(context.Context, RunFence, Spec, string, ManagedBootstrapDestination) (ManagedBootstrapResult, error)
+	PrepareManagedBootstrap(context.Context, RunFence, RuntimeSpec, string, ManagedBootstrapProjector, ManagedBootstrapDestination) (ManagedBootstrapResult, error)
 }
 
 // ManagedSourceResourceCleaner retires source resources owned by a managed
 // flow after its stopping generation has quiesced. Implementations must never
 // drop adopted resources and must prove external absence before returning.
 type ManagedSourceResourceCleaner interface {
-	CleanupManagedResources(context.Context, CleanupFence, Spec) error
+	CleanupManagedResources(context.Context, CleanupFence, RuntimeSpec) error
 }
 
 // ManagedBootstrapDestination stages one immutable snapshot generation and
@@ -74,11 +92,11 @@ type ManagedSourceResourceCleaner interface {
 // current RunFence in PostgreSQL.
 type ManagedBootstrapDestination interface {
 	ManagedDestination
-	PrepareBootstrap(context.Context, BootstrapIntent, []Schema) error
+	PrepareBootstrap(context.Context, BootstrapIntent, []BootstrapTable) error
 	ApplyBootstrap(context.Context, BootstrapIntent, DeliveryIntent, Batch) (DeliveryEvidence, error)
 	ReconcileBootstrap(context.Context, BootstrapIntent, DeliveryIntent) (DeliveryDisposition, DeliveryEvidence, error)
-	PublishBootstrap(context.Context, BootstrapIntent, []Schema) (DeliveryEvidence, error)
-	AbandonBootstrap(context.Context, BootstrapIntent, []Schema) error
+	PublishBootstrap(context.Context, BootstrapIntent, []BootstrapTable) (DeliveryEvidence, error)
+	AbandonBootstrap(context.Context, BootstrapIntent, []BootstrapTable) error
 }
 
 // ManagedBootstrapPublicationReconciler is an optional recovery extension. It

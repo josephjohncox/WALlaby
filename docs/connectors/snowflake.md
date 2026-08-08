@@ -19,9 +19,9 @@ The profile admits only this configuration:
 
 - PostgreSQL 16 with `server_encoding=UTF8` and `integer_datetimes=on`;
 - one source relation and one destination;
-- `ack_policy=all`, `streaming_transactions=true`, and `bootstrap=never`;
+- `config.ack_policy=all`, `streaming_transactions=true`, and `bootstrap=BOOTSTRAP_MODE_NEVER`;
 - `slot=managed` and `create_slot=true` for a new flow;
-- `toast_fetch=off`;
+- `toast_fetch=TOAST_FETCH_MODE_OFF`;
 - one publication that contains the source relation and publishes insert, update, and delete;
 - no publication row filter, column list, partition, `FOR ALL TABLES`, truncate, or non-default replica identity;
 - an immediate, valid PostgreSQL primary key with immutable values;
@@ -44,25 +44,29 @@ No reviewed account cloud, region, edition, account type, or Snowflake version i
 
 ## Source cut
 
-Set the source slot to the literal value `managed`:
+Set the source slot to the literal value `managed` in the typed source branch. Use exact protobuf enums and native booleans and integers:
 
 ```json
 {
-  "managed_profile": "postgresql-to-snowflake-sql-v1",
-  "bootstrap": "never",
-  "slot": "managed",
-  "create_slot": "true",
-  "ensure_state": "false",
-  "ensure_publication": "false",
-  "sync_publication": "false",
-  "streaming_transactions": "true",
-  "toast_fetch": "off",
-  "source_system_identifier": "<pg_control_system.system_identifier>",
-  "source_lineage_id": "<stable-lineage-id>",
-  "publication_revision": "<publication-fingerprint>",
-  "max_transaction_records": "1000",
-  "max_transaction_bytes": "8388608",
-  "max_transaction_fragments": "128"
+  "name": "postgres-snowflake-source",
+  "postgres_source": {
+    "mode": "POSTGRES_SOURCE_MODE_CDC",
+    "managed_profile": "MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_SQL_V1",
+    "bootstrap": "BOOTSTRAP_MODE_NEVER",
+    "slot": "managed",
+    "create_slot": true,
+    "ensure_state": false,
+    "ensure_publication": false,
+    "sync_publication": false,
+    "streaming_transactions": true,
+    "toast_fetch": "TOAST_FETCH_MODE_OFF",
+    "source_system_identifier": "<pg_control_system.system_identifier>",
+    "source_lineage_id": "<stable-lineage-id>",
+    "publication_revision": "<publication-fingerprint>",
+    "max_transaction_records": 1000,
+    "max_transaction_bytes": 8388608,
+    "max_transaction_fragments": 128
+  }
 }
 ```
 
@@ -95,7 +99,7 @@ SQL v1 admits only the type cell below. Generic Snowflake mappings do not widen 
 
 JSON, JSONB, arrays, extension types, unbounded numeric, floating-point types, money, date, time, UUID, and character modifiers fail admission. This restriction avoids unproved or lossy coercions, including `PARSE_JSON` conversion of large PostgreSQL JSON numbers to Snowflake `DOUBLE`.
 
-Both `type_mappings` and `type_mappings_file` are rejected.
+The managed branch rejects `type_mappings`; built-in endpoint configuration has no file-backed mapping branch.
 
 ## Provision Snowflake objects
 
@@ -189,46 +193,35 @@ The DSN must use key-pair JWT. Keep the private key in a mounted secret rather t
 ```json
 {
   "name": "analytics-snowflake-sql",
-  "type": "snowflake",
-  "options": {
+  "snowflake_postgres_sql": {
     "dsn": "wallaby@ACCOUNT/DB/WALLABY?warehouse=WALLABY_WH&role=WALLABY_EXECUTION&authenticator=SNOWFLAKE_JWT&privateKeyFile=/run/secrets/snowflake-key.p8&ocspFailOpen=false&READ_LATEST_WRITES=true&TIMEZONE=UTC",
-    "flow_id": "widgets-to-snowflake",
-    "managed_profile": "postgresql-to-snowflake-sql-v1",
     "destination_revision_id": "snowflake-widgets-v1",
-    "write_mode": "target",
-    "batch_mode": "target",
-    "batch_resolution": "none",
-    "meta_table_enabled": "false",
-    "disable_transactions": "false",
-    "session_keep_alive": "false",
-    "managed_account": "ACCOUNT",
-    "managed_database": "DB",
-    "managed_schema": "WALLABY",
-    "managed_table": "WIDGETS_V1",
-    "managed_receipts_table": "WALLABY_RECEIPTS_V1",
-    "managed_owner_role": "WALLABY_OWNER",
-    "managed_execution_role": "WALLABY_EXECUTION",
+    "account": "ACCOUNT",
+    "database": "DB",
+    "schema": "WALLABY",
+    "table": "WIDGETS_V1",
+    "receipts_table": "WALLABY_RECEIPTS_V1",
+    "owner_role": "WALLABY_OWNER",
+    "execution_role": "WALLABY_EXECUTION",
     "managed_warehouse": "WALLABY_WH",
-    "managed_snowflake_version": "<reviewed CURRENT_VERSION()>",
-    "managed_target_created_on": "<target CREATED_ON>",
-    "managed_receipts_created_on": "<receipt CREATED_ON>",
-    "managed_source_schema": "public",
-    "managed_source_table": "widgets",
-    "managed_schema_contract": "<connector.Schema JSON>",
-    "managed_schema_contract_hash": "<schema-contract-sha256>",
-    "managed_max_transaction_rows": "1000",
-    "managed_max_transaction_bytes": "8388608",
-    "managed_max_transaction_fragments": "128",
-    "managed_max_open_conns": "4",
-    "managed_statement_timeout_seconds": "120",
-    "managed_hybrid_table_lock_timeout_seconds": "60"
+    "snowflake_version": "<reviewed CURRENT_VERSION()>",
+    "target_created_on": "<target CREATED_ON>",
+    "receipts_created_on": "<receipt CREATED_ON>",
+    "max_transaction_rows": 1000,
+    "max_transaction_bytes": 8388608,
+    "max_transaction_fragments": 128,
+    "max_open_connections": 4,
+    "statement_timeout_seconds": 120,
+    "hybrid_table_lock_timeout_seconds": 60
   }
 }
 ```
 
-Compute the schema hash with `snowflake.ManagedSchemaContractHash`. Every source column must set `nullability_known=true` and `generated_known=true`. Primary-key columns must also set `primary_key=true`; composite keys require one-based `primary_key_ordinal` values.
+The runtime derives the flow binding and projected schema contract from the typed flow and destination-scoped table mapping. They are not free-form endpoint fields. Every source column in that derived contract must have known nullability and generation status; primary-key columns must cover the complete ordered source key.
 
-`flow_id` must equal the WALlaby flow ID. Its SHA-256 digest is part of both ownership comments, and existing receipts must belong to the same flow incarnation. A destination revision must change when the flow binding, profile version, account, database, schema, target, receipt table, owner role, execution role, warehouse, service version, object creation identity, schema contract, session timeout, or transaction bound changes.
+For this exact profile, `flow mappings generate` requires catalog scope to resolve to one relation with a complete ordered source primary key. It emits one exact upsert mapping with that full key and excludes future tables. Append overrides, watermarks, multiple or keyless relations, and partial, reordered, or extra match-column overrides fail before output. Generic Snowflake generation remains append-only.
+
+The runtime flow binding is the WALlaby flow ID. Its SHA-256 digest is part of both ownership comments, and existing receipts must belong to the same flow incarnation. A destination revision must change when the flow binding, profile version, account, database, schema, target, receipt table, owner role, execution role, warehouse, service version, object creation identity, schema contract, session timeout, or transaction bound changes. Managed `UpdateFlow` and `ReconfigureFlow` are both rejected, including name and parallelism changes. Stop the old flow, create/validate/start a replacement with a new flow ID and revision, cut over, and delete the old flow only when safe. Every Terraform update fails; Terraform does not perform this lifecycle.
 
 ## Session contract
 
@@ -334,7 +327,7 @@ The profile admits, in one dedicated schema owned by a distinct object-owner rol
 - a **JSON file format** (execution role granted `USAGE`);
 - a **standard append changelog table** with the exact wallaby column contract (execution role granted `SELECT, INSERT`); a hybrid target is rejected;
 - a **hybrid receipt table** with an enforced primary key on `(RECEIPT_KIND, FLOW_INCARNATION_ID, DESTINATION_REVISION_ID, LOGICAL_BATCH_ID)` and a unique `EXTERNAL_ID` (execution role granted `SELECT, INSERT`); and
-- optionally, when `managed_auto_ingest=true`, one owned **pipe** with `AUTO_INGEST=TRUE`.
+- optionally, when typed `auto_ingest=true`, one owned **pipe** with `AUTO_INGEST=TRUE`.
 
 > **Upgrade note.** Inlining the parsing options changes the deterministic COPY plan hash, and therefore the stage path, manifest hash, and external ID of every batch. Drain and acknowledge in-flight batches before upgrading, or assign a new destination revision. An un-acknowledged batch carried across the upgrade is reported as a receipt-identity conflict and requires operator action rather than silently double-loading.
 
@@ -367,7 +360,7 @@ Deterministic PUT/GET/COPY/load-history/receipt recovery — including bounded p
 
 ### Fail-closed admission
 
-There is no officially supported Go SDK or high-performance REST client for Snowpipe Streaming: the `database/sql` gosnowflake driver speaks the query API, not the channel append protocol. Proving delivery from a build with no append transport would mean trusting local continuation/offset tokens — token theater. WALlaby refuses that. `ManagedStreamingTransportAvailable()` is a compile-time constant that is **false** until a reviewed high-performance append transport is linked, and both runner admission and destination `Open` **fail closed** with `ErrManagedStreamingTransportUnavailable` before any network side effect. The full admission contract (DSN, JWT, session parameters, identifiers, schema contract, limits, and the `managed_streaming_transport` declaration) is still validated first, so a misconfiguration produces its own precise error rather than the blanket refusal. Flipping the constant is a promotion action that must ship a concrete append transport and pass the same-SHA live recovery matrix.
+There is no officially supported Go SDK or high-performance REST client for Snowpipe Streaming: the `database/sql` gosnowflake driver speaks the query API, not the channel append protocol. Proving delivery from a build with no append transport would mean trusting local continuation/offset tokens — token theater. WALlaby refuses that. `ManagedStreamingTransportAvailable()` is a compile-time constant that is **false** until a reviewed high-performance append transport is linked, and both runner admission and destination `Open` **fail closed** with `ErrManagedStreamingTransportUnavailable` before any network side effect. The full admission contract (DSN, JWT, session parameters, identifiers, schema contract, limits, and the typed `transport` declaration) is still validated first, so a misconfiguration produces its own precise error rather than the blanket refusal. Flipping the constant is a promotion action that must ship a concrete append transport and pass the same-SHA live recovery matrix.
 
 ### Delivery protocol (exercised against the in-memory fake)
 
@@ -384,7 +377,7 @@ Because the durable receipt plus SQL-observed completeness are the joint proof, 
 
 ### Provisioned objects
 
-The profile admits, in one dedicated schema owned by a distinct object-owner role: an append changelog **target table** with the exact wallaby column contract (including `ROW_HASH` and `OFFSET_TOKEN`), a **pipe** the channel appends through, an owned **receipt table**, and an owned **channel-state table** that persists the channel/pipe revision and token evidence. It requires key-pair JWT over verified HTTPS with OCSP fail-closed, DSN session parameters `READ_LATEST_WRITES=true` and `TIMEZONE=UTC`, an inline-secret-free DSN, `toast_fetch=off`, and rejects generated columns, generic metadata/staging options, type-mapping overrides, DDL, arbitrary start LSNs, and multiple sinks.
+The profile admits, in one dedicated schema owned by a distinct object-owner role: an append changelog **target table** with the exact wallaby column contract (including `ROW_HASH` and `OFFSET_TOKEN`), a **pipe** the channel appends through, an owned **receipt table**, and an owned **channel-state table** that persists the channel/pipe revision and token evidence. It requires key-pair JWT over verified HTTPS with OCSP fail-closed, DSN session parameters `READ_LATEST_WRITES=true` and `TIMEZONE=UTC`, an inline-secret-free DSN, `toast_fetch=TOAST_FETCH_MODE_OFF`, and rejects generated columns, generic metadata/staging options, type-mapping overrides, DDL, arbitrary start LSNs, and multiple sinks.
 
 ### Cleanup and retention
 

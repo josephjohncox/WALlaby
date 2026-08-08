@@ -2,6 +2,7 @@ package stream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/replication"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
@@ -33,8 +35,10 @@ var (
 
 // DestinationConfig binds a destination to its spec.
 type DestinationConfig struct {
-	Spec connector.Spec
-	Dest connector.Destination
+	Spec               connector.RuntimeSpec
+	Dest               connector.Destination
+	Projector          Projector
+	MappingFingerprint string
 }
 
 // StagingResolver is implemented by destinations that can resolve staging tables.
@@ -50,7 +54,7 @@ type StagingResolverFor interface {
 // Runner streams data from a source to destinations.
 type Runner struct {
 	Source              connector.Source
-	SourceSpec          connector.Spec
+	SourceSpec          connector.RuntimeSpec
 	Destinations        []DestinationConfig
 	Checkpoints         connector.CheckpointStore
 	CheckpointOutbox    connector.CheckpointOutboxStore
@@ -72,6 +76,7 @@ type Runner struct {
 	TraceSink           TraceSink
 	RunFence            *connector.RunFence
 	DeliveryCoordinator ManagedDeliveryCoordinator
+	SchemaBaselines     connector.ManagedSchemaBaselineStore
 	ArtifactLog         ManagedArtifactLog
 }
 
@@ -105,8 +110,8 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		return errors.New("ack_policy=materialized requires managed PostgreSQL transactional execution")
 	}
 	if r.managed() {
-		if r.RunFence == nil || r.DeliveryCoordinator == nil {
-			return errors.New("managed execution requires a run fence and delivery coordinator")
+		if r.RunFence == nil || r.DeliveryCoordinator == nil || r.SchemaBaselines == nil {
+			return errors.New("managed execution requires a run fence, delivery coordinator, and PostgreSQL-authoritative schema baselines")
 		}
 		if r.effectiveAckPolicy() != AckPolicyAll && r.effectiveAckPolicy() != AckPolicyMaterialized {
 			return errors.New("managed PostgreSQL execution requires ack_policy=all or materialized")
@@ -124,16 +129,8 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			if r.ArtifactLog == nil {
 				return errors.New("materialized acknowledgement requires the PostgreSQL-authoritative artifact log")
 			}
-		} else {
-			if _, ok := r.Destinations[0].Dest.(connector.ManagedTransactionDestination); !ok {
-				return errors.New("managed execution requires a full-transaction reconcilable destination driver")
-			}
-			if _, ok := r.DeliveryCoordinator.(ManagedTransactionDeliveryCoordinator); !ok {
-				return errors.New("managed execution requires a full-transaction delivery coordinator extension")
-			}
-		}
-		if _, ok := r.DeliveryCoordinator.(ManagedSourceFeedbackCoordinator); !ok {
-			return errors.New("managed execution requires an observed source-feedback coordinator extension")
+		} else if _, ok := r.Destinations[0].Dest.(connector.ManagedTransactionDestination); !ok {
+			return errors.New("managed execution requires a full-transaction reconcilable destination driver")
 		}
 		if _, ok := r.Checkpoints.(checkpoint.FencedStore); !ok {
 			return errors.New("managed execution requires a generation-fenced PostgreSQL checkpoint store")
@@ -206,6 +203,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 
 	var restoredCheckpoint *connector.Checkpoint
 	var restoredArtifactGrant *connector.AckGrant
+	var loadedBaselines []connector.Schema
 	ackRestoredCheckpoint := false
 	explicitStartLSN := ""
 	if r.SourceSpec.Options != nil {
@@ -256,6 +254,15 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				return fmt.Errorf("open destination %s: %w", destination.Spec.Name, err)
 			}
 			openedDestinations = append(openedDestinations, destination.Dest)
+			if r.managed() && r.effectiveAckPolicy() != AckPolicyMaterialized {
+				driver, ok := destination.Dest.(connector.ManagedTransactionDestination)
+				if !ok {
+					return fmt.Errorf("destination %s lacks managed full-transaction initialization", destination.Spec.Name)
+				}
+				if err := driver.InitializeManagedDelivery(ctx); err != nil {
+					return fmt.Errorf("initialize managed destination %s: %w", destination.Spec.Name, err)
+				}
+			}
 		}
 		return nil
 	}
@@ -276,9 +283,16 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			bootstrapMode = "auto"
 		}
 	}
-	if r.managed() && bootstrapMode != "never" {
+	if r.managed() && r.effectiveAckPolicy() != AckPolicyMaterialized {
 		if err := openDestinations(); err != nil {
 			return err
+		}
+	}
+	if r.managed() && bootstrapMode != "never" {
+		if r.effectiveAckPolicy() == AckPolicyMaterialized {
+			if err := openDestinations(); err != nil {
+				return err
+			}
 		}
 		bootstrapSource, ok := r.Source.(connector.ManagedBootstrapSource)
 		if !ok {
@@ -289,7 +303,11 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			return errors.New("managed bootstrap destination contract is missing")
 		}
 		destinationRevisionID := strings.TrimSpace(r.Destinations[0].Spec.Options["destination_revision_id"])
-		bootstrapResult, err := bootstrapSource.PrepareManagedBootstrap(ctx, *r.RunFence, r.SourceSpec, destinationRevisionID, bootstrapDestination)
+		bootstrapProjector, ok := r.Destinations[0].Projector.(connector.ManagedBootstrapProjector)
+		if !ok || strings.TrimSpace(bootstrapProjector.Fingerprint()) == "" {
+			return errors.New("managed bootstrap requires a typed projection bound to a durable mapping fingerprint")
+		}
+		bootstrapResult, err := bootstrapSource.PrepareManagedBootstrap(ctx, *r.RunFence, r.SourceSpec, destinationRevisionID, bootstrapProjector, bootstrapDestination)
 		if err != nil {
 			return fmt.Errorf("prepare managed bootstrap: %w", err)
 		}
@@ -325,10 +343,19 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		if !allowSnowflakeSourceCut {
 			r.SourceSpec.Options["create_slot"] = "false"
 		}
-		if restoredCheckpoint != nil && restoredCheckpoint.Metadata != nil {
-			if baselines := restoredCheckpoint.Metadata[connector.ManagedSchemaBaselinesMetadataKey]; baselines != "" {
-				r.SourceSpec.Options[connector.ManagedSchemaBaselinesMetadataKey] = baselines
+		baselines, err := r.SchemaBaselines.Load(ctx, *r.RunFence, strings.TrimSpace(r.SourceSpec.Options["source_lineage_id"]))
+		if err != nil {
+			return fmt.Errorf("load managed schema baselines: %w", err)
+		}
+		loadedBaselines = baselines
+		if len(baselines) > 0 {
+			encoded, err := json.Marshal(baselines)
+			if err != nil {
+				return fmt.Errorf("encode managed schema baselines for source: %w", err)
 			}
+			r.SourceSpec.Options[connector.ManagedSchemaBaselinesOptionKey] = string(encoded)
+		} else {
+			delete(r.SourceSpec.Options, connector.ManagedSchemaBaselinesOptionKey)
 		}
 	}
 
@@ -346,6 +373,10 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	defer func() { _ = r.Source.Close(ctx) }()
 
 	if r.managed() {
+		startupBaselines, err := connector.NewManagedSchemaBaselinePayload(r.SourceSpec.Options["source_lineage_id"], loadedBaselines)
+		if err != nil {
+			return fmt.Errorf("build managed startup schema-baseline payload: %w", err)
+		}
 		if restoredCheckpoint == nil {
 			initialSource, ok := r.Source.(connector.InitialCheckpointSource)
 			if !ok {
@@ -359,7 +390,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				restoredCheckpoint = &initial
 				ackRestoredCheckpoint = true
 			} else {
-				grant, err := r.DeliveryCoordinator.AuthorizeAck(ctx, *r.RunFence, initial)
+				grant, err := r.DeliveryCoordinator.AuthorizeAck(ctx, *r.RunFence, initial, startupBaselines)
 				if err != nil {
 					return fmt.Errorf("persist managed initial checkpoint: %w", err)
 				}
@@ -382,7 +413,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 						CommitLSN:       restoredCheckpoint.LSN,
 						EndLSN:          restoredCheckpoint.LSN,
 						Checkpoint:      *restoredCheckpoint,
-					})
+					}, startupBaselines)
 					if err != nil {
 						return fmt.Errorf("materialize managed startup checkpoint: %w", err)
 					}
@@ -400,7 +431,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		}
 	}
 
-	if r.effectiveAckPolicy() != AckPolicyMaterialized {
+	if !r.managed() && r.effectiveAckPolicy() != AckPolicyMaterialized {
 		if err := openDestinations(); err != nil {
 			return err
 		}
@@ -426,7 +457,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			if err := validateManagedClickHouseVersionPair(sourceVersion.ManagedPostgresMajor(), destinationVersion.ManagedClickHouseVersion()); err != nil {
 				return err
 			}
-		case connector.ManagedProfilePostgresToSnowflakeSQLV1, connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
+		case connector.ManagedProfilePostgresToSnowflakeSQLV1, connector.ManagedProfilePostgresToSnowflakeStagedAppendV1, connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
 			snowflakeProfileName := strings.TrimSpace(r.SourceSpec.Options["managed_profile"])
 			sourceVersion, sourceOK := r.Source.(connector.ManagedPostgresVersionProvider)
 			sourcePublication, publicationOK := r.Source.(connector.ManagedPostgresPublicationProvider)
@@ -456,14 +487,33 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			if len(publicationSchemas) != 1 {
 				return fmt.Errorf("managed profile %s requires one live PostgreSQL publication schema, got %d", snowflakeProfileName, len(publicationSchemas))
 			}
-			if err := destinationSchema.ValidateManagedSourceSchema(publicationSchemas[0]); err != nil {
+			projector, ok := r.Destinations[0].Projector.(connector.ManagedBootstrapProjector)
+			if !ok {
+				return errors.New("managed Snowflake requires a typed destination projector")
+			}
+			projected, policy, included, err := projector.ProjectBootstrapSchema(publicationSchemas[0])
+			if err != nil {
+				return fmt.Errorf("project live managed Snowflake source schema: %w", err)
+			}
+			expectedMode := connector.ResolvedWriteAppend
+			if snowflakeProfileName == connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+				expectedMode = connector.ResolvedWriteUpsert
+			}
+			if !included || policy.Mode != expectedMode || policy.WatermarkColumn != "" {
+				return fmt.Errorf("managed Snowflake profile %s live source projection must be included %s without watermark", snowflakeProfileName, expectedMode)
+			}
+			validatedSchema := projected
+			if snowflakeProfileName != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
+				validatedSchema = publicationSchemas[0]
+			}
+			if err := destinationSchema.ValidateManagedSourceSchema(validatedSchema); err != nil {
 				return err
 			}
 			if err := destinationScope.ValidateManagedFlowScope(ctx, r.RunFence.FlowID, r.RunFence.FlowIncarnationID.String()); err != nil {
 				return err
 			}
 		}
-		return r.runManaged(ctx, restoredCheckpoint)
+		return r.runManaged(ctx)
 	}
 
 	var secondaryQueues []*secondaryQueue
@@ -492,6 +542,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 
 	emptyReads := 0
 	readFailures := 0
+	var positionlessPrimaryFragments []connector.Batch
 	for {
 		select {
 		case <-ctx.Done():
@@ -568,30 +619,37 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			return validationErr
 		}
 		readFailures = 0
-		if len(batch.Records) > 0 && !shouldPersistCheckpoint(batch.Checkpoint) {
+		_, durablePositionErr := connector.CheckpointPositionID(batch.Checkpoint)
+		hasDurablePosition := durablePositionErr == nil
+		positionlessPostgres := r.SourceSpec.Type == connector.EndpointPostgres && strings.TrimSpace(batch.Checkpoint.LSN) == "" && !isControlCheckpoint(batch.Checkpoint) && batch.Checkpoint.Metadata["mode"] != connector.SourceModeBackfill
+		if len(batch.Records) > 0 && (!hasDurablePosition || positionlessPostgres) {
 			if r.SourceSpec.Type != connector.EndpointPostgres {
 				span.End()
 				return errors.New("source emitted records without a durable checkpoint")
 			}
-			if ackPolicy == AckPolicyPrimary {
-				span.End()
-				return errors.New("primary acknowledgement cannot durably queue a positionless PostgreSQL transaction fragment")
-			}
 			// PostgreSQL compatibility reads may split one committed transaction
 			// into table-scoped fragments. Deliver intermediate fragments but do
 			// not checkpoint or acknowledge until the final fragment carries the
-			// transaction-end LSN. A crash may replay an intermediate fragment;
-			// the legacy path remains at-least-once.
-			if err := r.writeWithRetry(batchCtx, batch, r.Destinations); err != nil {
+			// transaction-end LSN. Primary acknowledgement writes the primary now
+			// and retains source batches in memory so all secondary fragments enter
+			// the authoritative outbox with the final checkpoint.
+			targets := r.Destinations
+			if ackPolicy == AckPolicyPrimary {
+				targets = []DestinationConfig{primary}
+			}
+			if err := r.writeWithRetry(batchCtx, batch, targets); err != nil {
 				span.RecordError(err)
 				span.End()
 				return err
+			}
+			if ackPolicy == AckPolicyPrimary {
+				positionlessPrimaryFragments = append(positionlessPrimaryFragments, batch)
 			}
 			r.Meters.RecordBatch(ctx, r.FlowID, int64(len(batch.Records)), float64(time.Since(batchStart).Milliseconds()))
 			span.End()
 			continue
 		}
-		if len(batch.Records) == 0 && !shouldPersistCheckpoint(batch.Checkpoint) {
+		if len(batch.Records) == 0 && !hasDurablePosition {
 			// Sources may emit an empty heartbeat before they have a durable
 			// position. It carries no data and must not be traced, persisted, or
 			// acknowledged as a checkpoint. Empty batches with a source position
@@ -634,7 +692,13 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			emitControlCheckpoint := isControlCheckpoint(batch.Checkpoint)
 			var err error
 			if ackPolicy == AckPolicyPrimary {
-				err = r.ackPrimaryAndOutbox(batchCtx, outbox, batch, nil, tracePosition, emitControlCheckpoint)
+				outboxBatches := primaryAckOutboxBatches(batch, positionlessPrimaryFragments, tracePosition)
+				err = r.ackPrimaryAndOutbox(batchCtx, outbox, batch, positionlessPrimaryFragments, secondary, tracePosition, emitControlCheckpoint)
+				if err == nil {
+					positionlessPrimaryFragments = nil
+					enqueuePrimaryAckBatches(secondaryQueues, outboxBatches)
+					_, err = r.drainSecondaryQueues(batchCtx, secondaryQueues)
+				}
 			} else {
 				err = r.ackAndCheckpoint(batchCtx, batch.Checkpoint, tracePosition, emitControlCheckpoint)
 			}
@@ -666,17 +730,14 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 			}
 			r.Meters.RecordDestinationWrite(ctx, r.FlowID, float64(time.Since(writeStart).Milliseconds()))
 			r.emitCheckpointTrace(batchCtx, "deliver", batch.Checkpoint, tracePosition, spec.ActionDeliver, nil)
-			if err := r.ackPrimaryAndOutbox(batchCtx, outbox, batch, secondary, tracePosition, false); err != nil {
+			outboxBatches := primaryAckOutboxBatches(batch, positionlessPrimaryFragments, tracePosition)
+			if err := r.ackPrimaryAndOutbox(batchCtx, outbox, batch, positionlessPrimaryFragments, secondary, tracePosition, false); err != nil {
 				span.RecordError(err)
 				span.End()
 				return err
 			}
-			if len(secondaryQueues) > 0 {
-				pending := newPendingBatch(batch, ddlRecords, len(secondaryQueues), tracePosition)
-				for _, queue := range secondaryQueues {
-					queue.pending = append(queue.pending, pending)
-				}
-			}
+			positionlessPrimaryFragments = nil
+			enqueuePrimaryAckBatches(secondaryQueues, outboxBatches)
 			if _, err := r.drainSecondaryQueues(batchCtx, secondaryQueues); err != nil {
 				span.RecordError(err)
 				span.End()
@@ -751,7 +812,10 @@ func validateManagedClickHouseVersionPair(sourceMajor int, clickHouseVersion str
 }
 
 func validateManagedSnowflakePublicationRelation(profileName string, publicationTables []string, sourceSchema, sourceTable string) error {
-	expectedRelation := strings.TrimSpace(sourceSchema) + "." + strings.TrimSpace(sourceTable)
+	if sourceSchema == "" || sourceTable == "" || strings.ContainsRune(sourceSchema, '\x00') || strings.ContainsRune(sourceTable, '\x00') {
+		return fmt.Errorf("managed profile %s requires exact nonempty NUL-free source identifiers", profileName)
+	}
+	expectedRelation := pgx.Identifier{sourceSchema, sourceTable}.Sanitize()
 	if len(publicationTables) != 1 || publicationTables[0] != expectedRelation {
 		return fmt.Errorf("managed profile %s requires live PostgreSQL publication relation [%s], got %v", profileName, expectedRelation, publicationTables)
 	}
@@ -804,25 +868,17 @@ func (r *Runner) openSource(ctx context.Context) error {
 	}
 }
 
-func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint) error {
+func (r *Runner) runManaged(ctx context.Context) error {
 	source := r.Source.(connector.TransactionalSource)
 	fence := *r.RunFence
 	materialized := r.effectiveAckPolicy() == AckPolicyMaterialized
 	var destination DestinationConfig
 	var driver connector.ManagedTransactionDestination
-	var coordinator ManagedTransactionDeliveryCoordinator
+	coordinator := r.DeliveryCoordinator
 	if !materialized {
 		destination = r.Destinations[0]
 		driver = destination.Dest.(connector.ManagedTransactionDestination)
-		coordinator = r.DeliveryCoordinator.(ManagedTransactionDeliveryCoordinator)
 	}
-	managedMetadata := map[string]string{}
-	if restored != nil {
-		for key, value := range restored.Metadata {
-			managedMetadata[key] = value
-		}
-	}
-
 	for {
 		if materialized {
 			// Durable backlog is restored before source open and rechecked before
@@ -844,9 +900,30 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 		if err := transaction.Validate(); err != nil {
 			return fmt.Errorf("validate managed source transaction: %w", err)
 		}
-		transaction.Checkpoint.Metadata, err = connector.MergeManagedSchemaBaselines(managedMetadata, transaction)
+		sourceSchemas := connector.SourceTransactionSchemas(transaction)
+		baselinePayload, err := connector.NewManagedSchemaBaselinePayload(transaction.SourceLineageID, sourceSchemas)
 		if err != nil {
-			return fmt.Errorf("merge managed schema baselines: %w", err)
+			return fmt.Errorf("build managed transaction schema-baseline payload: %w", err)
+		}
+		// Materialized Iceberg projection is performed exactly once inside the
+		// projection-bound canonical v2 artifact runtime. SQL managed delivery uses
+		// the ordinary data projector. Staged COPY and Streaming REST encode the raw
+		// source transaction into a changelog, so only their append policy and
+		// structured DDL are projected here; data images must not be mapped twice.
+		if !materialized && destination.Projector != nil {
+			profile := strings.TrimSpace(destination.Spec.Options["managed_profile"])
+			var projected connector.SourceTransaction
+			var projectErr error
+			switch profile {
+			case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1, connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
+				projected, _, projectErr = projectManagedRawAppendTransaction(destination.Projector, transaction)
+			default:
+				projected, _, projectErr = destination.Projector.ProjectTransaction(transaction)
+			}
+			if projectErr != nil {
+				return fmt.Errorf("project managed destination %s: %w", destination.Spec.Name, projectErr)
+			}
+			transaction = projected
 		}
 		expectedLineage := strings.TrimSpace(r.SourceSpec.Options["source_lineage_id"])
 		if transaction.SourceLineageID == "" || transaction.SourceLineageID != expectedLineage {
@@ -863,7 +940,7 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 		r.emitCheckpointTrace(ctx, "read", transaction.Checkpoint, positionID, readAction, nil)
 
 		if materialized {
-			grant, err := r.ArtifactLog.Append(ctx, fence, transaction)
+			grant, err := r.ArtifactLog.Append(ctx, fence, transaction, baselinePayload)
 			if err != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
@@ -872,20 +949,17 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 			}
 			r.emitCheckpointTrace(ctx, "deliver", grant.Checkpoint, grant.PositionID, spec.ActionDeliver, nil)
 			r.emitCheckpointTrace(ctx, "checkpoint", grant.Checkpoint, grant.PositionID, spec.ActionPersistCheckpoint, nil)
-			// Append has committed the immutable roots, delivery rows, quota,
-			// checkpoint, and ACK intent. Source feedback is strictly later.
 			if err := r.ackManagedGrant(ctx, grant); err != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
 				return fmt.Errorf("ack materialized source transaction: %w", err)
 			}
-			managedMetadata = grant.Checkpoint.Metadata
 			continue
 		}
 
 		if len(transaction.Fragments) == 0 {
-			grant, err := r.DeliveryCoordinator.AuthorizeAck(ctx, fence, transaction.Checkpoint)
+			grant, err := r.DeliveryCoordinator.AuthorizeAck(ctx, fence, transaction.Checkpoint, baselinePayload)
 			if err != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
@@ -900,7 +974,6 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 				}
 				return fmt.Errorf("ack empty managed source transaction: %w", err)
 			}
-			managedMetadata = grant.Checkpoint.Metadata
 			continue
 		}
 		contentHash, logicalBatchID, err := connector.SourceTransactionIdentity(transaction)
@@ -923,7 +996,7 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 			PositionID:            positionID,
 			ContentHash:           contentHash,
 		}
-		grant, err := coordinator.DeliverTransaction(ctx, fence, intent, transaction, driver)
+		grant, err := coordinator.DeliverTransaction(ctx, fence, intent, transaction, baselinePayload, driver)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -938,20 +1011,60 @@ func (r *Runner) runManaged(ctx context.Context, restored *connector.Checkpoint)
 			}
 			return fmt.Errorf("ack managed source transaction: %w", err)
 		}
-		managedMetadata = grant.Checkpoint.Metadata
 	}
 }
 
 func (r *Runner) ackManagedGrant(ctx context.Context, grant connector.AckGrant) error {
 	fence := *r.RunFence
 	source := r.Source.(connector.FlushEvidenceSource)
-	coordinator := r.DeliveryCoordinator.(ManagedSourceFeedbackCoordinator)
-	if err := coordinator.CommitSourceFeedback(ctx, fence, grant, source); err != nil {
+	if err := r.DeliveryCoordinator.CommitSourceFeedback(ctx, fence, grant, source); err != nil {
 		return fmt.Errorf("commit managed source feedback: %w", err)
 	}
 	r.emitCheckpointTrace(ctx, "source_flush", grant.Checkpoint, grant.PositionID, spec.ActionAck, nil)
 	r.emitCheckpointTrace(ctx, "ack", grant.Checkpoint, grant.PositionID, spec.ActionAck, nil)
 	return nil
+}
+
+func projectManagedRawAppendTransaction(projector Projector, transaction connector.SourceTransaction) (connector.SourceTransaction, ProjectionDecision, error) {
+	bootstrapProjector, ok := projector.(connector.ManagedBootstrapProjector)
+	if !ok {
+		return connector.SourceTransaction{}, ProjectionFiltered, errors.New("managed raw append profile requires a typed table projector")
+	}
+	out := transaction
+	out.Fragments = make([]connector.TransactionFragment, 0, len(transaction.Fragments))
+	for _, fragment := range transaction.Fragments {
+		batch := fragment.Batch
+		if batchContainsDDL(batch) {
+			projected, decision, err := projector.ProjectBatch(batch)
+			if err != nil {
+				return connector.SourceTransaction{}, ProjectionFiltered, fmt.Errorf("project structured DDL fragment %d: %w", fragment.Ordinal, err)
+			}
+			if decision == ProjectionFiltered {
+				continue
+			}
+			batch = projected
+		} else {
+			_, policy, included, err := bootstrapProjector.ProjectBootstrapSchema(batch.Schema)
+			if err != nil {
+				return connector.SourceTransaction{}, ProjectionFiltered, fmt.Errorf("resolve raw append fragment %d mapping: %w", fragment.Ordinal, err)
+			}
+			if !included {
+				return connector.SourceTransaction{}, ProjectionFiltered, fmt.Errorf("raw append fragment %d source relation is not included by its mandatory mapping", fragment.Ordinal)
+			}
+			if policy.Mode != connector.ResolvedWriteAppend || policy.WatermarkColumn != "" || len(policy.KeyColumns) != 0 {
+				return connector.SourceTransaction{}, ProjectionFiltered, fmt.Errorf("raw append fragment %d requires append policy without keys or watermark", fragment.Ordinal)
+			}
+			batch.WritePolicy = policy
+		}
+		out.Fragments = append(out.Fragments, connector.TransactionFragment{Ordinal: uint64(len(out.Fragments)), Batch: batch})
+	}
+	if len(out.Fragments) == 0 {
+		return out, ProjectionFiltered, nil
+	}
+	if err := out.Validate(); err != nil {
+		return connector.SourceTransaction{}, ProjectionFiltered, fmt.Errorf("validate managed raw append transaction after DDL policy mapping: %w", err)
+	}
+	return out, ProjectionIncluded, nil
 }
 
 func sourceTransactionContainsDDL(transaction connector.SourceTransaction) bool {
@@ -971,15 +1084,44 @@ func checkpointPositionsEqual(left, right string) bool {
 	return err == nil && cmp == 0
 }
 
-func (r *Runner) ackPrimaryAndOutbox(ctx context.Context, outbox connector.OutboxStore, batch connector.Batch, secondary []DestinationConfig, tracePosition string, emitControlCheckpoint bool) error {
-	entries := make([]connector.OutboxEntry, 0, len(secondary))
-	for _, destination := range secondary {
-		entries = append(entries, connector.OutboxEntry{
-			FlowID:      r.FlowID,
-			Destination: destination.Spec.Name,
-			PositionID:  tracePosition,
-			Batch:       batch,
-		})
+type primaryAckOutboxBatch struct {
+	batch      connector.Batch
+	positionID string
+}
+
+func primaryAckOutboxBatches(final connector.Batch, preceding []connector.Batch, tracePosition string) []primaryAckOutboxBatch {
+	items := make([]primaryAckOutboxBatch, 0, len(preceding)+1)
+	for index, fragment := range preceding {
+		fragment.Checkpoint = final.Checkpoint
+		items = append(items, primaryAckOutboxBatch{batch: fragment, positionID: fmt.Sprintf("%s/fragment/%06d", tracePosition, index)})
+	}
+	if len(final.Records) > 0 {
+		items = append(items, primaryAckOutboxBatch{batch: final, positionID: tracePosition})
+	}
+	return items
+}
+
+func enqueuePrimaryAckBatches(queues []*secondaryQueue, items []primaryAckOutboxBatch) {
+	for _, item := range items {
+		pending := newPendingBatch(item.batch, ddlRecordsInBatch(item.batch), len(queues), item.positionID)
+		for _, queue := range queues {
+			queue.pending = append(queue.pending, pending)
+		}
+	}
+}
+
+func (r *Runner) ackPrimaryAndOutbox(ctx context.Context, outbox connector.OutboxStore, batch connector.Batch, preceding []connector.Batch, secondary []DestinationConfig, tracePosition string, emitControlCheckpoint bool) error {
+	batches := primaryAckOutboxBatches(batch, preceding, tracePosition)
+	entries := make([]connector.OutboxEntry, 0, len(secondary)*len(batches))
+	createdAt := time.Now().UTC()
+	for _, item := range batches {
+		for _, destination := range secondary {
+			entries = append(entries, connector.OutboxEntry{
+				FlowID: r.FlowID, Destination: destination.Spec.Name, PositionID: item.positionID,
+				ProjectionFingerprint: destination.MappingFingerprint, Batch: item.batch, CreatedAt: createdAt,
+			})
+		}
+		createdAt = createdAt.Add(time.Nanosecond)
 	}
 	if err := outbox.PersistCheckpointAndOutbox(ctx, r.FlowID, batch.Checkpoint, entries); err != nil {
 		r.emitCheckpointTrace(ctx, "checkpoint_error", batch.Checkpoint, tracePosition, spec.ActionCheckpointFail, err)
@@ -1120,6 +1262,9 @@ func (r *Runner) partitionDestinations() (DestinationConfig, []DestinationConfig
 }
 
 func (r *Runner) writeWithRetry(ctx context.Context, batch connector.Batch, dests []DestinationConfig) error {
+	if err := r.completeVacuousDDLPositions(ctx, batch); err != nil {
+		return err
+	}
 	remaining := append([]DestinationConfig(nil), dests...)
 	attempts := 0
 	for {
@@ -1169,11 +1314,15 @@ func (r *Runner) restoreSecondaryQueues(ctx context.Context, outbox connector.Ou
 		if err != nil {
 			return nil, fmt.Errorf("validate restored outbox entry for %s: %w", entry.Destination, err)
 		}
-		if entry.FlowID != r.FlowID || entry.PositionID != positionID {
+		positionMatches := entry.PositionID == positionID || strings.HasPrefix(entry.PositionID, positionID+"/fragment/")
+		if entry.FlowID != r.FlowID || !positionMatches {
 			return nil, fmt.Errorf("invalid restored outbox identity flow=%q destination=%q position=%q batch_position=%q", entry.FlowID, entry.Destination, entry.PositionID, positionID)
 		}
 		if entry.BatchHash == "" {
 			return nil, fmt.Errorf("restored outbox entry for %s at %s has no durable batch hash", entry.Destination, entry.PositionID)
+		}
+		if entry.ProjectionFingerprint == "" || entry.ProjectionFingerprint != queue.dest.MappingFingerprint {
+			return nil, fmt.Errorf("restored outbox entry for %s at %s has projection fingerprint %q, configured %q", entry.Destination, entry.PositionID, entry.ProjectionFingerprint, queue.dest.MappingFingerprint)
 		}
 		pending := groups[entry.PositionID]
 		if pending == nil {
@@ -1529,9 +1678,32 @@ func ddlGatedMetric() metric.Int64Counter {
 	return ddlGatedCounter
 }
 
-func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, batch connector.Batch) error {
-	if !r.RequireDDLExecution || !connector.ResolveDestinationCapabilities(dest.Dest, dest.Spec).ExecutesDDL() {
-		return r.writeDestinationLocked(ctx, dest, batch)
+func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, sourceBatch connector.Batch) error {
+	batch := sourceBatch
+	if dest.Projector != nil {
+		projected, decision, err := dest.Projector.ProjectBatch(sourceBatch)
+		if err != nil {
+			return fmt.Errorf("project destination %s: %w", dest.Spec.Name, err)
+		}
+		if decision == ProjectionFiltered {
+			return nil
+		}
+		batch = projected
+	}
+	if err := ValidateDestinationTablePolicy(dest, batch.WritePolicy); err != nil {
+		return err
+	}
+	expectedDestinations := map[string][]string{}
+	capabilities, err := connector.ResolveDestinationCapabilities(dest.Dest, dest.Spec)
+	if err != nil {
+		return fmt.Errorf("destination %s capability profile: %w", dest.Spec.Name, err)
+	}
+	if !r.RequireDDLExecution || !capabilities.ExecutesDDL() {
+		return r.writeDestinationLocked(ctx, dest, batch, expectedDestinations)
+	}
+	expectedDestinations, err = r.ddlExecutionDestinations(sourceBatch)
+	if err != nil {
+		return err
 	}
 	if r.DDLExecutions == nil {
 		return errors.New("automatic DDL execution requires durable execution receipt storage")
@@ -1540,13 +1712,13 @@ func (r *Runner) writeDestination(ctx context.Context, dest DestinationConfig, b
 		return err
 	}
 	if !batchContainsDDL(batch) {
-		return r.writeDestinationLocked(ctx, dest, batch)
+		return r.writeDestinationLocked(ctx, dest, batch, expectedDestinations)
 	}
 	return r.DDLExecutions.WithDDLExecutionLock(
 		ctx,
 		r.FlowID,
 		dest.Spec.Name,
-		func() error { return r.writeDestinationLocked(ctx, dest, batch) },
+		func() error { return r.writeDestinationLocked(ctx, dest, batch, expectedDestinations) },
 	)
 }
 
@@ -1559,15 +1731,18 @@ func batchContainsDDL(batch connector.Batch) bool {
 	return false
 }
 
-func (r *Runner) writeDestinationLocked(ctx context.Context, dest DestinationConfig, batch connector.Batch) error {
+func (r *Runner) writeDestinationLocked(ctx context.Context, dest DestinationConfig, batch connector.Batch, expectedDestinations map[string][]string) error {
 	type ddlExecution struct {
 		position string
 		ddl      string
 	}
 	var executedDDL []ddlExecution
-	expectedDestinations := r.ddlExecutionDestinations()
 	if len(batch.Records) > 0 {
-		if r.RequireDDLExecution && connector.ResolveDestinationCapabilities(dest.Dest, dest.Spec).ExecutesDDL() {
+		capabilities, err := connector.ResolveDestinationCapabilities(dest.Dest, dest.Spec)
+		if err != nil {
+			return fmt.Errorf("destination %s capability profile: %w", dest.Spec.Name, err)
+		}
+		if r.RequireDDLExecution && capabilities.ExecutesDDL() {
 			if err := validateDDLRecordPositions(batch); err != nil {
 				return err
 			}
@@ -1579,7 +1754,11 @@ func (r *Runner) writeDestinationLocked(ctx context.Context, dest DestinationCon
 					continue
 				}
 				position := ddlRecordPosition(record, batch.Checkpoint)
-				state, err := r.DDLExecutions.PrepareDDLExecution(ctx, r.FlowID, position, dest.Spec.Name, expectedDestinations)
+				expected, ok := expectedDestinations[position]
+				if !ok {
+					return fmt.Errorf("DDL source position %s has no projected destination manifest", position)
+				}
+				state, err := r.DDLExecutions.PrepareDDLExecution(ctx, r.FlowID, position, dest.Spec.Name, expected)
 				if err != nil {
 					return fmt.Errorf("prepare ddl execution destination %s: %w", dest.Spec.Name, err)
 				}
@@ -1636,13 +1815,17 @@ func (r *Runner) writeDestinationLocked(ctx context.Context, dest DestinationCon
 		return fmt.Errorf("write destination %s: %w", dest.Spec.Name, err)
 	}
 	for _, execution := range executedDDL {
+		expected, ok := expectedDestinations[execution.position]
+		if !ok {
+			return fmt.Errorf("DDL source position %s has no projected destination manifest", execution.position)
+		}
 		if err := r.DDLExecutions.RecordDDLExecution(
 			ctx,
 			r.FlowID,
 			execution.position,
 			execution.ddl,
 			dest.Spec.Name,
-			expectedDestinations,
+			expected,
 		); err != nil {
 			return fmt.Errorf("persist ddl receipt destination %s: %w", dest.Spec.Name, err)
 		}
@@ -1689,24 +1872,75 @@ func ddlRecordPosition(record connector.Record, checkpoint connector.Checkpoint)
 	return checkpoint.LSN
 }
 
-func (r *Runner) ddlExecutionDestinations() []string {
-	seen := make(map[string]struct{}, len(r.Destinations))
-	destinations := make([]string, 0, len(r.Destinations))
+func (r *Runner) completeVacuousDDLPositions(ctx context.Context, sourceBatch connector.Batch) error {
+	if !r.RequireDDLExecution || len(ddlRecordsInBatch(sourceBatch)) == 0 {
+		return nil
+	}
+	if r.DDLExecutions == nil {
+		return errors.New("automatic DDL execution requires durable execution receipt storage")
+	}
+	manifests, err := r.ddlExecutionDestinations(sourceBatch)
+	if err != nil {
+		return err
+	}
+	for _, record := range ddlRecordsInBatch(sourceBatch) {
+		position := ddlRecordPosition(record, sourceBatch.Checkpoint)
+		if len(manifests[position]) != 0 {
+			continue
+		}
+		ddlText := record.DDL
+		if ddlText == "" {
+			ddlText = string(record.DDLPlan)
+		}
+		if err := r.DDLExecutions.RecordVacuousDDLExecution(ctx, r.FlowID, position, ddlText); err != nil {
+			return fmt.Errorf("complete vacuous DDL position %s: %w", position, err)
+		}
+	}
+	return nil
+}
+
+func (r *Runner) ddlExecutionDestinations(sourceBatch connector.Batch) (map[string][]string, error) {
+	destinations := make(map[string][]string)
+	seen := make(map[string]map[string]struct{})
 	for _, destination := range r.Destinations {
 		if destination.Dest == nil || destination.Spec.Name == "" {
 			continue
 		}
-		capabilities := connector.ResolveDestinationCapabilities(destination.Dest, destination.Spec)
+		capabilities, err := connector.ResolveDestinationCapabilities(destination.Dest, destination.Spec)
+		if err != nil {
+			return nil, fmt.Errorf("destination %s capability profile: %w", destination.Spec.Name, err)
+		}
 		if !capabilities.ExecutesDDL() {
 			continue
 		}
-		if _, ok := seen[destination.Spec.Name]; ok {
-			continue
+		projected := sourceBatch
+		if destination.Projector != nil {
+			var decision ProjectionDecision
+			var err error
+			projected, decision, err = destination.Projector.ProjectBatch(sourceBatch)
+			if err != nil {
+				return nil, fmt.Errorf("project DDL receipt destination %s: %w", destination.Spec.Name, err)
+			}
+			if decision == ProjectionFiltered {
+				continue
+			}
 		}
-		seen[destination.Spec.Name] = struct{}{}
-		destinations = append(destinations, destination.Spec.Name)
+		for _, record := range ddlRecordsInBatch(projected) {
+			position := ddlRecordPosition(record, projected.Checkpoint)
+			if strings.TrimSpace(position) == "" {
+				return nil, fmt.Errorf("projected DDL destination %s has no durable source position", destination.Spec.Name)
+			}
+			if seen[position] == nil {
+				seen[position] = make(map[string]struct{})
+			}
+			if _, duplicate := seen[position][destination.Spec.Name]; duplicate {
+				continue
+			}
+			seen[position][destination.Spec.Name] = struct{}{}
+			destinations[position] = append(destinations[position], destination.Spec.Name)
+		}
 	}
-	return destinations
+	return destinations, nil
 }
 
 func (r *Runner) emitTrace(ctx context.Context, kind, lsn, destination string, specAction spec.Action, err error) {

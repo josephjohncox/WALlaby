@@ -68,6 +68,9 @@ func TestDBOSIntegrationBackfill(t *testing.T) {
 		t.Fatalf("create table: %v", err)
 	}
 
+	if err := pgstream.ApplyMigrations(ctx, pool); err != nil {
+		t.Fatalf("migrate stream store: %v", err)
+	}
 	store, err := pgstream.NewStore(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open stream store: %v", err)
@@ -82,7 +85,7 @@ func TestDBOSIntegrationBackfill(t *testing.T) {
 		t.Fatalf("seed source rows: %v", err)
 	}
 
-	sourceSpec := connector.Spec{
+	sourceSpec := connector.RuntimeSpec{
 		Name: "dbos-source",
 		Type: connector.EndpointPostgres,
 		Options: map[string]string{
@@ -92,12 +95,11 @@ func TestDBOSIntegrationBackfill(t *testing.T) {
 			"batch_size":          "200",
 			"snapshot_workers":    "1",
 			"snapshot_consistent": "false",
-			"flow_id":             flowID,
 			"resolve_types":       "true",
 		},
 	}
 
-	destSpec := connector.Spec{
+	destSpec := connector.RuntimeSpec{
 		Name: "dbos-stream",
 		Type: connector.EndpointPGStream,
 		Options: map[string]string{
@@ -117,12 +119,9 @@ func TestDBOSIntegrationBackfill(t *testing.T) {
 	}()
 
 	created, err := engine.Create(ctx, flow.Flow{
-		ID:           flowID,
-		Name:         "dbos-test",
-		Source:       sourceSpec,
-		Destinations: []connector.Spec{destSpec},
-		State:        flow.StateCreated,
-		Parallelism:  1,
+		ID:   flowID,
+		Name: "dbos-test", Source: testFlowSource(sourceSpec), Destinations: testFlowDestinations(destSpec), State: flow.StateCreated, Parallelism: 1,
+		Config: flow.Config{DDL: disabledDDLPolicy(), TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{destSpec})},
 	})
 	if err != nil {
 		t.Fatalf("create flow: %v", err)
@@ -217,8 +216,11 @@ func TestDBOSIntegrationStreaming(t *testing.T) {
 	if _, err := pool.Exec(ctx, createTable); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
+	if err := pgstream.ApplyMigrations(ctx, pool); err != nil {
+		t.Fatalf("migrate stream store: %v", err)
+	}
 
-	sourceSpec := connector.Spec{
+	sourceSpec := connector.RuntimeSpec{
 		Name: "dbos-source",
 		Type: connector.EndpointPostgres,
 		Options: map[string]string{
@@ -235,7 +237,7 @@ func TestDBOSIntegrationStreaming(t *testing.T) {
 		},
 	}
 
-	destSpec := connector.Spec{
+	destSpec := connector.RuntimeSpec{
 		Name: "dbos-stream",
 		Type: connector.EndpointPGStream,
 		Options: map[string]string{
@@ -255,12 +257,9 @@ func TestDBOSIntegrationStreaming(t *testing.T) {
 	}()
 
 	created, err := engine.Create(ctx, flow.Flow{
-		ID:           flowID,
-		Name:         "dbos-test-stream",
-		Source:       sourceSpec,
-		Destinations: []connector.Spec{destSpec},
-		State:        flow.StateCreated,
-		Parallelism:  1,
+		ID:   flowID,
+		Name: "dbos-test-stream", Source: testFlowSource(sourceSpec), Destinations: testFlowDestinations(destSpec), State: flow.StateCreated, Parallelism: 1,
+		Config: flow.Config{DDL: disabledDDLPolicy(), TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{destSpec})},
 	})
 	if err != nil {
 		t.Fatalf("create flow: %v", err)
@@ -347,11 +346,14 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 		_ = engine.Delete(context.Background(), flowID)
 	}()
 
-	badSource := connector.Spec{
+	badSource := connector.RuntimeSpec{
 		Name: "bad-source",
-		Type: connector.EndpointType("bogus"),
+		Type: connector.EndpointPostgres,
+		Options: map[string]string{
+			"mode": connector.SourceModeCDC,
+		},
 	}
-	destSpec := connector.Spec{
+	destSpec := connector.RuntimeSpec{
 		Name: "stream",
 		Type: connector.EndpointPGStream,
 		Options: map[string]string{
@@ -362,12 +364,9 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 	}
 
 	created, err := engine.Create(ctx, flow.Flow{
-		ID:           flowID,
-		Name:         "dbos-retry",
-		Source:       badSource,
-		Destinations: []connector.Spec{destSpec},
-		State:        flow.StateCreated,
-		Parallelism:  1,
+		ID:   flowID,
+		Name: "dbos-retry", Source: testFlowSource(badSource), Destinations: testFlowDestinations(destSpec), State: flow.StateCreated, Parallelism: 1,
+		Config: flow.Config{DDL: disabledDDLPolicy(), TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{destSpec})},
 	})
 	if err != nil {
 		t.Fatalf("create flow: %v", err)
@@ -408,7 +407,7 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 		var errMsg sql.NullString
 		err := pool.QueryRow(ctx, `SELECT status, recovery_attempts, error
 FROM dbos.workflow_status
-WHERE created_at >= $1 AND error ILIKE '%unsupported source type%'
+WHERE created_at >= $1 AND error ILIKE '%postgres dsn is required%'
 ORDER BY created_at DESC
 LIMIT 1`, startedAt).Scan(&status, &attempts, &errMsg)
 		if err != nil {
@@ -419,7 +418,7 @@ LIMIT 1`, startedAt).Scan(&status, &attempts, &errMsg)
 		}
 		if status == "ERROR" || status == "MAX_RECOVERY_ATTEMPTS_EXCEEDED" {
 			if attempts >= 1 {
-				if errMsg.Valid && !strings.Contains(errMsg.String, "unsupported source type") {
+				if errMsg.Valid && !strings.Contains(errMsg.String, "postgres dsn is required") {
 					t.Fatalf("unexpected error: %s", errMsg.String)
 				}
 				return true, nil
@@ -473,6 +472,9 @@ func TestDBOSIntegrationAdminRecovery(t *testing.T) {
 	if _, err := pool.Exec(ctx, createTable); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
+	if err := pgstream.ApplyMigrations(ctx, pool); err != nil {
+		t.Fatalf("migrate stream store: %v", err)
+	}
 	if _, err := pool.Exec(ctx,
 		fmt.Sprintf(`INSERT INTO %s.%s (id, payload, updated_at) VALUES ($1, $2::jsonb, $3)`, schema, table),
 		1, `{"status":"dbos"}`, time.Now().UTC(),
@@ -480,7 +482,7 @@ func TestDBOSIntegrationAdminRecovery(t *testing.T) {
 		t.Fatalf("seed source rows: %v", err)
 	}
 
-	sourceSpec := connector.Spec{
+	sourceSpec := connector.RuntimeSpec{
 		Name: "dbos-source",
 		Type: connector.EndpointPostgres,
 		Options: map[string]string{
@@ -490,12 +492,11 @@ func TestDBOSIntegrationAdminRecovery(t *testing.T) {
 			"batch_size":          "200",
 			"snapshot_workers":    "1",
 			"snapshot_consistent": "false",
-			"flow_id":             flowID,
 			"resolve_types":       "true",
 		},
 	}
 
-	destSpec := connector.Spec{
+	destSpec := connector.RuntimeSpec{
 		Name: "dbos-stream",
 		Type: connector.EndpointPGStream,
 		Options: map[string]string{
@@ -515,12 +516,9 @@ func TestDBOSIntegrationAdminRecovery(t *testing.T) {
 	}()
 
 	created, err := engine.Create(ctx, flow.Flow{
-		ID:           flowID,
-		Name:         "dbos-recovery",
-		Source:       sourceSpec,
-		Destinations: []connector.Spec{destSpec},
-		State:        flow.StateCreated,
-		Parallelism:  1,
+		ID:   flowID,
+		Name: "dbos-recovery", Source: testFlowSource(sourceSpec), Destinations: testFlowDestinations(destSpec), State: flow.StateCreated, Parallelism: 1,
+		Config: flow.Config{DDL: disabledDDLPolicy(), TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{destSpec})},
 	})
 	if err != nil {
 		t.Fatalf("create flow: %v", err)
@@ -846,4 +844,9 @@ LIMIT 5`)
 		}
 		rows.Close()
 	}
+}
+
+func disabledDDLPolicy() flow.DDLPolicy {
+	autoApply := false
+	return flow.DDLPolicy{AutoApply: &autoApply}
 }

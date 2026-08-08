@@ -12,12 +12,12 @@ import (
 func TestTransformBatchForDestination_ExtensionMappingsPerDestination(t *testing.T) {
 	tests := []struct {
 		name string
-		spec connector.Spec
+		spec connector.RuntimeSpec
 		want map[string]string
 	}{
 		{
 			name: "snowflake",
-			spec: connector.Spec{Name: "sf", Type: connector.EndpointSnowflake},
+			spec: connector.RuntimeSpec{Name: "sf", Type: connector.EndpointSnowflake},
 			want: map[string]string{
 				"shape":     "STRING",
 				"props":     "OBJECT",
@@ -28,7 +28,7 @@ func TestTransformBatchForDestination_ExtensionMappingsPerDestination(t *testing
 		},
 		{
 			name: "clickhouse",
-			spec: connector.Spec{Name: "ch", Type: connector.EndpointClickHouse},
+			spec: connector.RuntimeSpec{Name: "ch", Type: connector.EndpointClickHouse},
 			want: map[string]string{
 				"shape":     "String",
 				"props":     "String",
@@ -39,7 +39,7 @@ func TestTransformBatchForDestination_ExtensionMappingsPerDestination(t *testing
 		},
 		{
 			name: "duckdb",
-			spec: connector.Spec{Name: "duck", Type: connector.EndpointDuckDB},
+			spec: connector.RuntimeSpec{Name: "duck", Type: connector.EndpointDuckDB},
 			want: map[string]string{
 				"shape":     "VARCHAR",
 				"props":     "JSON",

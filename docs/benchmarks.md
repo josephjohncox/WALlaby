@@ -90,16 +90,7 @@ DDL churn is available as a separate scenario (adds/drops a column and changes a
 PROFILE=small TARGETS=postgres just bench-ddl
 ```
 
-### Mutation/Target Write Matrix
-
-For destinations with multiple write modes (e.g., ClickHouse mutations vs append), run the DDL scenario
-with the destination-specific write mode toggles:
-
-```bash
-# ClickHouse: compare append vs mutation-based target writes
-BENCH_CLICKHOUSE_WRITE_MODE=append PROFILE=small TARGETS=clickhouse just bench-ddl
-BENCH_CLICKHOUSE_WRITE_MODE=target PROFILE=small TARGETS=clickhouse just bench-ddl
-```
+The benchmark uses the same current write contracts as production: PostgreSQL is projected as explicit-key upsert on `id`, while ClickHouse and Kafka/Redpanda are projected as append-only changelogs. There is no runtime write-mode override.
 
 ## Environment Overrides
 
@@ -109,7 +100,6 @@ You can override connection settings via env vars:
 - `BENCH_CLICKHOUSE_DSN` (default: `clickhouse://bench:bench@localhost:9000/bench`)
 - `BENCH_KAFKA_BROKERS` (default: `localhost:9092`)
 - `BENCH_PG_SYNC_COMMIT` (default: `off`) — set to `on` to mirror production durability
-- `BENCH_CLICKHOUSE_WRITE_MODE` (default: `append`) — use `target` to benchmark mutation-based upserts
 - `RESET_VOLUMES` (default: `1`, set to `0` to preserve Docker volumes)
 
 Example:

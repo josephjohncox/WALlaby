@@ -22,7 +22,7 @@ func newPostgresRegistry(ctx context.Context, dsn string) (*postgresRegistry, er
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres registry: %w", err)
 	}
-	if err := runMigrations(ctx, pool); err != nil {
+	if err := verifyPreparedSchema(ctx, pool); err != nil {
 		pool.Close()
 		return nil, err
 	}
@@ -109,10 +109,13 @@ func normalizeReferences(refs []Reference) []Reference {
 	}
 	clone := append([]Reference(nil), refs...)
 	sort.Slice(clone, func(i, j int) bool {
-		if clone[i].Subject == clone[j].Subject {
+		if clone[i].Subject != clone[j].Subject {
+			return clone[i].Subject < clone[j].Subject
+		}
+		if clone[i].Name != clone[j].Name {
 			return clone[i].Name < clone[j].Name
 		}
-		return clone[i].Subject < clone[j].Subject
+		return clone[i].Version < clone[j].Version
 	})
 	return clone
 }

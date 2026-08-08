@@ -11,11 +11,8 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-// StreamingHooks exposes deterministic fault boundaries around the ambiguous
-// open/append/receipt transitions of the streaming append profile. Production
-// callers leave every hook nil; the live recovery matrix injects response loss
-// and credential refresh.
-type StreamingHooks struct {
+// streamingHooks exposes deterministic fault boundaries to same-package protocol tests.
+type streamingHooks struct {
 	AfterOpen     func() error
 	AfterAppend   func() error
 	BeforeReceipt func() error
@@ -32,11 +29,11 @@ type streamDriver struct {
 	proto              streamProtocol
 	cfg                streamConfig
 	catalogFingerprint string
-	hooks              StreamingHooks
+	hooks              streamingHooks
 	sleep              func(context.Context, time.Duration) error
 }
 
-func newStreamDriver(proto streamProtocol, cfg streamConfig, catalogFingerprint string, hooks StreamingHooks) *streamDriver {
+func newStreamDriver(proto streamProtocol, cfg streamConfig, catalogFingerprint string, hooks streamingHooks) *streamDriver {
 	return &streamDriver{proto: proto, cfg: cfg, catalogFingerprint: catalogFingerprint, hooks: hooks}
 }
 

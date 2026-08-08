@@ -12,10 +12,8 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-// StagedHooks exposes deterministic fault boundaries around the ambiguous
-// PUT/COPY/receipt transitions of the staged COPY profile. Production callers
-// leave every hook nil; the live recovery matrix injects response loss.
-type StagedHooks struct {
+// stagedHooks exposes deterministic fault boundaries to same-package protocol tests.
+type stagedHooks struct {
 	AfterPut      func() error
 	AfterCopy     func() error
 	BeforeReceipt func() error
@@ -29,11 +27,11 @@ type stagedDriver struct {
 	proto              stageProtocol
 	cfg                stagedConfig
 	catalogFingerprint string
-	hooks              StagedHooks
+	hooks              stagedHooks
 	sleep              func(context.Context, time.Duration) error
 }
 
-func newStagedDriver(proto stageProtocol, cfg stagedConfig, catalogFingerprint string, hooks StagedHooks) *stagedDriver {
+func newStagedDriver(proto stageProtocol, cfg stagedConfig, catalogFingerprint string, hooks stagedHooks) *stagedDriver {
 	return &stagedDriver{proto: proto, cfg: cfg, catalogFingerprint: catalogFingerprint, hooks: hooks}
 }
 

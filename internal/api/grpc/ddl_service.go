@@ -89,16 +89,6 @@ func (s *DDLService) RejectDDL(ctx context.Context, req *wallabypb.RejectDDLRequ
 	return &wallabypb.RejectDDLResponse{Event: ddlEventToProto(event)}, nil
 }
 
-func (s *DDLService) MarkDDLApplied(_ context.Context, req *wallabypb.MarkDDLAppliedRequest) (*wallabypb.MarkDDLAppliedResponse, error) {
-	if req == nil || req.Id == 0 {
-		return nil, status.Error(codes.InvalidArgument, "id is required")
-	}
-	return nil, status.Error(
-		codes.FailedPrecondition,
-		"applied status requires durable destination execution receipts",
-	)
-}
-
 func ddlEventToProto(event registry.DDLEvent) *wallabypb.DDLEvent {
 	var planJSON string
 	if len(event.Plan.Changes) > 0 {

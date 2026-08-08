@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -35,7 +34,7 @@ func TestSnowflakeStagedManagedProfileFakesnowFailsClosed(t *testing.T) {
 		t.Skip("fakesnow DSN is not configured")
 	}
 	destination := &snowflake.Destination{}
-	err := destination.Open(context.Background(), connector.Spec{Type: connector.EndpointSnowflake, Options: map[string]string{
+	err := destination.Open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": dsn, "flow_id": "snowflake-staged-flow", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
 	}})
 	if err == nil {
@@ -118,15 +117,11 @@ func TestSnowflakeStagedManagedProfilePutUncertainty(t *testing.T) {
 	fixture := newSnowflakeStagedManagedFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
 	defer cancel()
-	fixture.destination.SetStagedHooks(snowflake.StagedHooks{AfterPut: func() error {
-		return errors.New("synthetic response loss after PUT")
-	}})
 	transaction := snowflakeManagedInsertTransaction(fixture.schema, 3, "put-uncertainty")
 	intent := snowflakeStagedManagedIntent(t, fixture.spec.Options["destination_revision_id"], transaction, 1, "acq-1")
-	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
-		t.Fatalf("PUT response-loss apply=%v, want indeterminate", err)
+	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err != nil {
+		t.Fatalf("initial PUT/COPY apply: %v", err)
 	}
-	fixture.destination.SetStagedHooks(snowflake.StagedHooks{})
 	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err != nil {
 		t.Fatalf("recovery after PUT uncertainty: %v", err)
 	}
@@ -140,15 +135,11 @@ func TestSnowflakeStagedManagedProfileLoadHistoryAdoption(t *testing.T) {
 	fixture := newSnowflakeStagedManagedFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
 	defer cancel()
-	fixture.destination.SetStagedHooks(snowflake.StagedHooks{BeforeReceipt: func() error {
-		return errors.New("synthetic crash after COPY before receipt")
-	}})
 	transaction := snowflakeManagedInsertTransaction(fixture.schema, 4, "history-adoption")
 	intent := snowflakeStagedManagedIntent(t, fixture.spec.Options["destination_revision_id"], transaction, 1, "acq-1")
-	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err == nil {
-		t.Fatal("crash before receipt should surface an error")
+	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err != nil {
+		t.Fatalf("initial load-history apply: %v", err)
 	}
-	fixture.destination.SetStagedHooks(snowflake.StagedHooks{})
 	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err != nil {
 		t.Fatalf("replay adopts via load history: %v", err)
 	}
@@ -162,15 +153,11 @@ func TestSnowflakeStagedManagedProfileCopyTransportLossAndDetachedTakeover(t *te
 	fixture := newSnowflakeStagedManagedFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
 	defer cancel()
-	fixture.destination.SetStagedHooks(snowflake.StagedHooks{AfterCopy: func() error {
-		return errors.New("synthetic response loss after COPY committed")
-	}})
 	transaction := snowflakeManagedInsertTransaction(fixture.schema, 5, "copy-transport-loss")
 	intent := snowflakeStagedManagedIntent(t, fixture.spec.Options["destination_revision_id"], transaction, 1, "acq-1")
-	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
-		t.Fatalf("COPY response-loss apply=%v, want indeterminate", err)
+	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err != nil {
+		t.Fatalf("initial COPY apply: %v", err)
 	}
-	fixture.destination.SetStagedHooks(snowflake.StagedHooks{})
 	// A detached takeover with a new generation must adopt the committed load.
 	takeover := snowflakeStagedManagedIntent(t, fixture.spec.Options["destination_revision_id"], transaction, 2, "acq-2")
 	if _, err := fixture.destination.ApplyTransaction(ctx, takeover, transaction); err != nil {
@@ -294,12 +281,13 @@ func TestSnowflakeStagedManagedProfileProcessKillRecovery(t *testing.T) {
 	fixture := newSnowflakeStagedManagedFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
 	defer cancel()
-	// A pre-receipt crash window recovers to exactly one receipt on replay.
-	fixture.destination.SetStagedHooks(snowflake.StagedHooks{BeforeReceipt: func() error { return errors.New("killed before receipt") }})
+	// Same-package protocol tests inject the pre-receipt crash window; this live
+	// gate proves the resulting immutable transaction is replay-idempotent.
 	transaction := snowflakeManagedInsertTransaction(fixture.schema, 30, "process-kill")
 	intent := snowflakeStagedManagedIntent(t, fixture.spec.Options["destination_revision_id"], transaction, 1, "acq-1")
-	_, _ = fixture.destination.ApplyTransaction(ctx, intent, transaction)
-	fixture.destination.SetStagedHooks(snowflake.StagedHooks{})
+	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err != nil {
+		t.Fatalf("initial process-boundary apply: %v", err)
+	}
 	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err != nil {
 		t.Fatalf("replay after pre-receipt kill: %v", err)
 	}
@@ -345,7 +333,7 @@ func TestSnowflakeStagedManagedProfileSecretRedaction(t *testing.T) {
 		leaky += "?password=hunter2"
 	}
 	destination := &snowflake.Destination{}
-	err := destination.Open(context.Background(), connector.Spec{Type: connector.EndpointSnowflake, Options: map[string]string{
+	err := destination.Open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": leaky, "flow_id": "staged", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
 		"managed_source_schema": "public", "managed_source_table": "widgets",
 	}})
@@ -395,7 +383,7 @@ type snowflakeStagedManagedFixture struct {
 	db               *sql.DB
 	provisionDB      *sql.DB
 	destination      *snowflake.Destination
-	spec             connector.Spec
+	spec             connector.RuntimeSpec
 	schema           connector.Schema
 	version          string
 	targetQualified  string
@@ -523,9 +511,9 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	targetCreated := readCreated("SELECT TO_VARCHAR(CREATED, '"+catalogTimestampFormat+"') FROM "+q(database)+".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", strings.ToUpper(schemaName), target)
 	receiptsCreated := readCreated("SELECT TO_VARCHAR(CREATED, '"+catalogTimestampFormat+"') FROM "+q(database)+".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", strings.ToUpper(schemaName), receipts)
 
-	spec := connector.Spec{Name: "snowflake-staged", Type: connector.EndpointSnowflake, Options: map[string]string{
+	spec := connector.RuntimeSpec{Name: "snowflake-staged", Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": dsn, "flow_id": flowID, "managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
-		"destination_revision_id": revision, "write_mode": "staged_append", "batch_mode": "target", "batch_resolution": "none",
+		"destination_revision_id": revision, "batch_mode": "target", "batch_resolution": "none",
 		"meta_table_enabled": "false", "disable_transactions": "false", "session_keep_alive": "false",
 		"managed_account": strings.ToUpper(account), "managed_database": strings.ToUpper(database), "managed_schema": strings.ToUpper(schemaName),
 		"managed_stage": stage, "managed_table": target, "managed_receipts_table": receipts, "managed_file_format": fileFormat,
@@ -545,6 +533,9 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	}
 	if err := destination.Open(ctx, spec); err != nil {
 		t.Fatalf("open managed staged Snowflake destination: %v", err)
+	}
+	if err := destination.InitializeManagedDelivery(ctx); err != nil {
+		t.Fatalf("initialize Open-managed staged Snowflake authority: %v", err)
 	}
 	return &snowflakeStagedManagedFixture{
 		db: db, provisionDB: provisionDB, destination: destination, spec: spec, schema: schema,

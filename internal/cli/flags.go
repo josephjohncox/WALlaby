@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,11 +14,12 @@ import (
 
 // ViperConfig defines command-level viper bootstrap settings.
 type ViperConfig struct {
-	EnvPrefix        string
-	ConfigEnvVar     string
-	ConfigName       string
-	ConfigType       string
-	ConfigSearchPath []string
+	EnvPrefix           string
+	ConfigEnvVar        string
+	ConfigName          string
+	ConfigType          string
+	ConfigSearchPath    []string
+	StrictRuntimeConfig bool
 }
 
 // InitViperFromCommand initializes viper with env/cmd precedence for a cobra command.
@@ -41,7 +43,20 @@ func InitViperFromCommand(cmd *cobra.Command, cfg ViperConfig) error {
 	viper.SetEnvPrefix(cfg.EnvPrefix)
 	viper.AutomaticEnv()
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-
+	if cfg.StrictRuntimeConfig {
+		if configPath == "" && cfg.ConfigEnvVar != "" {
+			configPath = strings.TrimSpace(os.Getenv(cfg.ConfigEnvVar))
+		}
+		if configPath == "" {
+			configPath = findRuntimeConfigFile(cfg.ConfigName, cfg.ConfigSearchPath)
+		}
+		if configPath != "" && configFlags.Lookup("config") != nil {
+			if err := configFlags.Set("config", configPath); err != nil {
+				return fmt.Errorf("select config file: %w", err)
+			}
+		}
+		return nil
+	}
 	configPathConfigured := false
 	if configPath != "" {
 		viper.SetConfigFile(configPath)
@@ -77,6 +92,26 @@ func InitViperFromCommand(cmd *cobra.Command, cfg ViperConfig) error {
 		}
 	}
 	return nil
+}
+
+func findRuntimeConfigFile(name string, searchPaths []string) string {
+	if strings.TrimSpace(name) == "" {
+		return ""
+	}
+	paths := append([]string{"."}, searchPaths...)
+	for _, directory := range paths {
+		directory = strings.TrimSpace(directory)
+		if directory == "" {
+			continue
+		}
+		for _, extension := range []string{".yaml", ".yml"} {
+			candidate := filepath.Join(directory, name+extension)
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate
+			}
+		}
+	}
+	return ""
 }
 
 func ResolveStringFlag(cmd *cobra.Command, key string) string {

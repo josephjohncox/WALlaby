@@ -26,11 +26,15 @@ func safeMetaCapacity(base, extra int) int {
 }
 
 const (
+	CapabilityProfileBase    connector.CapabilityProfileID = "base"
+	CapabilityProfileManaged connector.CapabilityProfileID = connector.ManagedProfilePostgresToClickHouseAppendV1
+)
+
+const (
 	optDSN             = "dsn"
 	optDatabase        = "database"
 	optSchema          = "schema"
 	optTable           = "table"
-	optWriteMode       = "write_mode"
 	optBatchMode       = "batch_mode"
 	optBatchResolution = "batch_resolution"
 	optStagingSchema   = "staging_schema"
@@ -38,7 +42,6 @@ const (
 	optStagingSuffix   = "staging_suffix"
 	optMetaTable       = "meta_table"
 	optMetaSchema      = "meta_schema"
-	optMetaDatabase    = "meta_database"
 	optMetaEnabled     = "meta_table_enabled"
 	optMetaPKPrefix    = "meta_pk_prefix"
 	optMetaEngine      = "meta_engine"
@@ -60,36 +63,42 @@ const (
 )
 
 // Destination writes change events into ClickHouse tables.
-type Destination struct {
-	spec                connector.Spec
-	db                  *sql.DB
-	managedConn         chdriver.Conn
-	managedReplicaConn  chdriver.Conn
-	managedOptions      *chclient.Options
-	managedProfile      string
-	managedConfig       managedConfig
-	managedVersion      string
-	managedRecoveryOnly bool
-	managedHooks        ManagedHooks
-	writeMode           string
-	batchMode           string
-	batchResolve        string
-	stagingSchema       string
-	stagingTableName    string
-	stagingSuffix       string
-	metaEnabled         bool
-	metaSchema          string
-	metaTable           string
-	metaPKPrefix        string
-	flowID              string
-	metaColumns         map[string]struct{}
-	metaEngine          string
-	metaOrderBy         string
-	stagingTables       map[string]tableInfo
-	stagingResolved     bool
+type ddlExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+type Destination struct {
+	spec                           connector.RuntimeSpec
+	db                             *sql.DB
+	ddlExecutor                    ddlExecutor
+	managedConn                    chdriver.Conn
+	managedReplicaConn             chdriver.Conn
+	managedOptions                 *chclient.Options
+	managedProfile                 string
+	managedConfig                  managedConfig
+	managedVersion                 string
+	managedRecoveryOnly            bool
+	managedInitializeAuthorityHook func(context.Context, chdriver.Conn, string, bool) error
+	managedOpenEndpointHook        func(context.Context, *chclient.Options, connector.ManagedProfileContract, string) (chdriver.Conn, string, error)
+	managedValidateTargetHook      func(context.Context, chdriver.Conn, string, bool) error
+	batchMode                      string
+	batchResolve                   string
+	stagingSchema                  string
+	stagingTableName               string
+	stagingSuffix                  string
+	metaEnabled                    bool
+	metaSchema                     string
+	metaTable                      string
+	metaPKPrefix                   string
+	flowID                         string
+	metaColumns                    map[string]struct{}
+	metaEngine                     string
+	metaOrderBy                    string
+	stagingTables                  map[string]tableInfo
+	stagingResolved                bool
+}
+
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	d.spec = spec
 	d.managedProfile = strings.TrimSpace(spec.Options["managed_profile"])
 	dsn := spec.Options[optDSN]
@@ -113,10 +122,6 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	}
 	d.db = db
 
-	d.writeMode = strings.ToLower(spec.Options[optWriteMode])
-	if d.writeMode == "" {
-		d.writeMode = writeModeTarget
-	}
 	d.batchMode = strings.ToLower(spec.Options[optBatchMode])
 	if d.batchMode == "" {
 		d.batchMode = batchModeTarget
@@ -134,9 +139,6 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 
 	d.metaEnabled = parseBool(spec.Options[optMetaEnabled], true)
 	d.metaSchema = strings.TrimSpace(spec.Options[optMetaSchema])
-	if d.metaSchema == "" {
-		d.metaSchema = strings.TrimSpace(spec.Options[optMetaDatabase])
-	}
 	if d.metaSchema == "" {
 		d.metaSchema = defaultMetaSchema
 	}
@@ -180,9 +182,9 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		return nil
 	}
 
-	mode := d.writeMode
-	if mode == "" {
-		mode = writeModeTarget
+	mode := writeModeAppend
+	if batch.WritePolicy.Mode != connector.ResolvedWriteAppend {
+		return errors.New("clickhouse destination supports append table writes only")
 	}
 
 	for _, record := range batch.Records {
@@ -251,12 +253,11 @@ func (d *Destination) ResolveStagingFor(ctx context.Context, schemas []connector
 
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		Support: connector.SupportExperimental,
+		Support:     connector.SupportExperimental,
+		TableWrites: connector.TableWriteSemantics{Append: true},
 		Delivery: connector.DeliverySemantics{
-			Declared:    true,
 			ExecutesDDL: true,
 		},
-		SupportsDDL:           true,
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      true,
@@ -271,11 +272,52 @@ func (d *Destination) Capabilities() connector.Capabilities {
 	}
 }
 
+// CapabilityProfileIDs returns the complete closed ClickHouse capability profile set.
+func (*Destination) CapabilityProfileIDs() []connector.CapabilityProfileID {
+	return []connector.CapabilityProfileID{CapabilityProfileBase, CapabilityProfileManaged}
+}
+
+// ClassifyCapabilityProfile validates the exact managed ClickHouse profile.
+func (*Destination) ClassifyCapabilityProfile(spec connector.RuntimeSpec) (connector.CapabilityProfileID, error) {
+	profile := strings.TrimSpace(spec.Options["managed_profile"])
+	switch profile {
+	case "":
+		return CapabilityProfileBase, nil
+	case connector.ManagedProfilePostgresToClickHouseAppendV1:
+		return CapabilityProfileManaged, nil
+	default:
+		return "", fmt.Errorf("unsupported ClickHouse managed profile %q", profile)
+	}
+}
+
+// CapabilitiesFor removes generic DDL execution from the exact managed append
+// profile, whose ApplyDDL path records barriers and rejects target mutation.
+func (d *Destination) CapabilitiesFor(spec connector.RuntimeSpec) (connector.Capabilities, error) {
+	profile, err := d.ClassifyCapabilityProfile(spec)
+	if err != nil {
+		return connector.Capabilities{}, err
+	}
+	capabilities := d.Capabilities()
+	switch profile {
+	case CapabilityProfileBase:
+		return capabilities, nil
+	case CapabilityProfileManaged:
+		capabilities.Delivery.ExecutesDDL = false
+		return capabilities, nil
+	default:
+		return connector.Capabilities{}, fmt.Errorf("unsupported ClickHouse capability profile %q", profile)
+	}
+}
+
 func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, record connector.Record) error {
 	if d.managedProfile != "" {
 		return errors.New("managed ClickHouse append profile records structured schema barriers and never executes target DDL")
 	}
-	if d.db == nil {
+	executor := d.ddlExecutor
+	if executor == nil {
+		executor = d.db
+	}
+	if executor == nil {
 		return errors.New("clickhouse destination not initialized")
 	}
 	statements, err := ddl.TranslateRecordDDL(schema, record, ddl.DialectConfigFor(ddl.DialectClickHouse), d.TypeMappings(), d.spec.Options)
@@ -286,7 +328,7 @@ func (d *Destination) ApplyDDL(ctx context.Context, schema connector.Schema, rec
 		if strings.TrimSpace(stmt) == "" {
 			continue
 		}
-		if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+		if _, err := executor.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("apply ddl: %w", err)
 		}
 	}
@@ -398,9 +440,6 @@ func (d *Destination) trackStaging(schema connector.Schema, record connector.Rec
 
 func (d *Destination) targetTable(schema connector.Schema, record connector.Record) string {
 	targetSchema, table := d.targetParts(schema, record.Table)
-	if strings.Contains(table, ".") {
-		return quoteQualified(table)
-	}
 	if targetSchema == "" {
 		return quoteIdent(table, '`')
 	}
@@ -496,21 +535,7 @@ func (d *Destination) resolveStagingTable(ctx context.Context, info tableInfo) e
 }
 
 func (d *Destination) targetParts(schema connector.Schema, table string) (string, string) {
-	targetSchema := strings.TrimSpace(d.spec.Options[optDatabase])
-	if targetSchema == "" {
-		targetSchema = strings.TrimSpace(d.spec.Options[optSchema])
-	}
-	targetTable := strings.TrimSpace(d.spec.Options[optTable])
-	if targetTable == "" {
-		targetTable = table
-	}
-	if strings.Contains(targetTable, ".") {
-		parts := strings.SplitN(targetTable, ".", 2)
-		if len(parts) == 2 {
-			targetSchema = parts[0]
-			targetTable = parts[1]
-		}
-	}
+	targetSchema, targetTable := schema.Namespace, table
 	if targetSchema == "" {
 		targetSchema = schema.Namespace
 	}

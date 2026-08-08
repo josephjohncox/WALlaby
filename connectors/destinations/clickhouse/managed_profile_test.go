@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"syscall"
@@ -25,6 +26,23 @@ type managedReceiptTestQueryer struct {
 func (q *managedReceiptTestQueryer) QueryRow(context.Context, string, ...any) chdriver.Row {
 	q.calls++
 	return q.row
+}
+
+type managedRecoveryTestConn struct {
+	chdriver.Conn
+	row        managedReceiptTestRow
+	calls      int
+	closeCalls int
+}
+
+func (c *managedRecoveryTestConn) Close() error {
+	c.closeCalls++
+	return nil
+}
+
+func (c *managedRecoveryTestConn) QueryRow(context.Context, string, ...any) chdriver.Row {
+	c.calls++
+	return c.row
 }
 
 type managedReceiptTestRow struct {
@@ -488,6 +506,122 @@ func TestManagedRecoveryOnlyAdmissionAllowsOneHealthyReplicaAndFencesWrites(t *t
 	}
 }
 
+func TestManagedOpenThenInitializeAdmitsOneActuallyFailedEndpointForRecovery(t *testing.T) {
+	transaction := managedTestTransaction()
+	intent := managedTestIntent(t, transaction)
+	primary := &managedRecoveryTestConn{row: managedReceiptTestRow{contentHash: intent.ContentHash, externalID: managedDeliveryExternalID(intent)}}
+	destination := &Destination{
+		managedOpenEndpointHook: func(_ context.Context, _ *chclient.Options, _ connector.ManagedProfileContract, endpoint string) (chdriver.Conn, string, error) {
+			if endpoint == "primary" {
+				return primary, "25.12.1.649", nil
+			}
+			return nil, "", fmt.Errorf("%w: replica dial refused", errManagedEndpointUnavailable)
+		},
+		managedValidateTargetHook: func(_ context.Context, conn chdriver.Conn, replica string, recoveryOnly bool) error {
+			if conn != primary || replica != "replica-1" || !recoveryOnly {
+				return errors.New("wrong recovery survivor validation")
+			}
+			return nil
+		},
+		managedInitializeAuthorityHook: func(_ context.Context, conn chdriver.Conn, replica string, recoveryOnly bool) error {
+			if conn != primary || replica != "replica-1" || !recoveryOnly {
+				return errors.New("wrong initialized recovery authority")
+			}
+			return nil
+		},
+	}
+	spec := connector.RuntimeSpec{Options: map[string]string{
+		"dsn": "clickhouse://replica-1:9440/default?secure=true", "managed_profile": connector.ManagedProfilePostgresToClickHouseAppendV1,
+		"managed_database": "wallaby", "managed_changelog_table": "cdc_log", "managed_receipts_table": "delivery_receipts",
+		"managed_final_view": "cdc_log_final", "managed_deployment": "self-managed-keeper", "managed_keeper_path_prefix": "/clickhouse/tables/01", "managed_keeper_address": "127.0.0.1:9181",
+		"managed_replica_dsn": "clickhouse://replica-2:9440/default?secure=true", "managed_replica_names": "replica-1,replica-2", "insert_quorum": "2",
+		"batch_mode": "target", "batch_resolution": "none", "meta_table_enabled": "false", "async_insert": "false", "wait_for_async_insert": "true",
+	}}
+	if err := destination.Open(context.Background(), spec); err != nil {
+		t.Fatalf("Open(): %v", err)
+	}
+	if !destination.managedRecoveryOnly || destination.managedConn != primary || destination.managedReplicaConn != nil {
+		t.Fatalf("recovery handles primary=%v replica=%v recovery=%t", destination.managedConn, destination.managedReplicaConn, destination.managedRecoveryOnly)
+	}
+	if err := destination.InitializeManagedDelivery(context.Background()); err != nil {
+		t.Fatalf("InitializeManagedDelivery(): %v", err)
+	}
+	disposition, _, err := destination.Reconcile(context.Background(), intent)
+	if err != nil || disposition != connector.DeliveryApplied {
+		t.Fatalf("reconcile existing receipt disposition=%v err=%v", disposition, err)
+	}
+	if _, err := destination.PrepareTransaction(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("recovery-only new write error=%v", err)
+	}
+}
+
+func TestManagedRecoveryOnlyInitializationAdoptsReceiptAndFencesNewWrites(t *testing.T) {
+	t.Parallel()
+	transaction := managedTestTransaction()
+	intent := managedTestIntent(t, transaction)
+	conn := &managedRecoveryTestConn{row: managedReceiptTestRow{contentHash: intent.ContentHash, externalID: managedDeliveryExternalID(intent)}}
+	validationCalls := 0
+	destination := &Destination{
+		managedProfile:      connector.ManagedProfilePostgresToClickHouseAppendV1,
+		managedVersion:      "25.12.1.649",
+		managedRecoveryOnly: true,
+		managedReplicaConn:  conn,
+		managedConfig:       managedConfig{replicaNames: []string{"replica-primary", "replica-secondary"}, database: "wallaby", receiptsTable: "receipts"},
+		managedInitializeAuthorityHook: func(_ context.Context, got chdriver.Conn, replica string, recoveryOnly bool) error {
+			validationCalls++
+			if got != conn || replica != "replica-secondary" || !recoveryOnly {
+				return errors.New("recovery-only initialization validated the wrong authority")
+			}
+			return nil
+		},
+	}
+	if err := destination.InitializeManagedDelivery(context.Background()); err != nil {
+		t.Fatalf("InitializeManagedDelivery(): %v", err)
+	}
+	if validationCalls != 1 {
+		t.Fatalf("survivor authority validations=%d, want one", validationCalls)
+	}
+	disposition, evidence, err := destination.Reconcile(context.Background(), intent)
+	if err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
+		t.Fatalf("receipt adoption=(%v,%+v,%v), want applied existing receipt", disposition, evidence, err)
+	}
+	adopted, err := destination.ApplyTransaction(context.Background(), intent, transaction)
+	if err != nil || adopted.ContentHash != intent.ContentHash {
+		t.Fatalf("recovery-only ApplyTransaction receipt adoption=(%+v,%v)", adopted, err)
+	}
+	if _, err := destination.PrepareTransaction(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("recovery-only new write error=%v, want fenced ErrDeliveryIndeterminate", err)
+	}
+}
+
+func TestManagedNormalInitializationRemainsStrictlyTwoEndpoint(t *testing.T) {
+	t.Parallel()
+	primary := &managedRecoveryTestConn{}
+	replica := &managedRecoveryTestConn{}
+	validations := 0
+	destination := &Destination{
+		managedProfile:     connector.ManagedProfilePostgresToClickHouseAppendV1,
+		managedVersion:     "25.12.1.649",
+		managedConn:        primary,
+		managedReplicaConn: replica,
+		managedConfig:      managedConfig{replicaNames: []string{"replica-primary", "replica-secondary"}},
+		managedInitializeAuthorityHook: func(context.Context, chdriver.Conn, string, bool) error {
+			validations++
+			return nil
+		},
+	}
+	if err := destination.InitializeManagedDelivery(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if validations != 2 {
+		t.Fatalf("normal authority validations=%d, want both endpoints", validations)
+	}
+	destination.managedReplicaConn = nil
+	if err := destination.InitializeManagedDelivery(context.Background()); err == nil || !strings.Contains(err.Error(), "both endpoints") {
+		t.Fatalf("one-endpoint normal initialization error=%v, want strict rejection", err)
+	}
+}
+
 func TestManagedFinalViewAdmissionRejectsFiltersAndTransforms(t *testing.T) {
 	t.Parallel()
 	const valid = "CREATE VIEW wallaby.cdc_log_final AS SELECT * FROM wallaby.cdc_log FINAL"
@@ -520,10 +654,10 @@ func TestManagedTLSRequiresVerifiedNativeTransport(t *testing.T) {
 
 func TestManagedConfigRejectsUnsafeProtocolOptionsBeforeNetwork(t *testing.T) {
 	t.Parallel()
-	base := connector.Spec{Options: map[string]string{
+	base := connector.RuntimeSpec{Options: map[string]string{
 		"managed_database": "wallaby", "managed_changelog_table": "cdc_log", "managed_receipts_table": "delivery_receipts",
 		"managed_final_view": "cdc_log_final", "managed_deployment": "self-managed-keeper", "managed_keeper_path_prefix": "/clickhouse/tables/01", "managed_keeper_address": "127.0.0.1:9181", "managed_replica_dsn": "clickhouse://replica-2:9440/default?secure=true", "managed_replica_names": "replica-1,replica-2", "insert_quorum": "2",
-		"write_mode": "managed_append", "batch_mode": "target", "batch_resolution": "none", "meta_table_enabled": "false",
+		"batch_mode": "target", "batch_resolution": "none", "meta_table_enabled": "false",
 		"async_insert": "false", "wait_for_async_insert": "true",
 	}}
 	cfg, err := managedConfigFromSpec(base)
@@ -535,6 +669,9 @@ func TestManagedConfigRejectsUnsafeProtocolOptionsBeforeNetwork(t *testing.T) {
 	}
 	for _, test := range []struct{ key, value, want string }{
 		{key: "managed_changelog_table", value: "other.cdc_log", want: "unqualified"},
+		{key: "staging_schema", value: "ignored", want: "does not allow option staging_schema"},
+		{key: "meta_schema", value: "ignored", want: "does not allow option meta_schema"},
+		{key: "managed_typo", value: "ignored", want: "does not allow option managed_typo"},
 		{key: "insert_quorum", value: "1", want: "between 2 and 2"},
 		{key: "managed_max_rows_per_batch", value: "100001", want: "between 1 and 100000"},
 		{key: "managed_replica_names", value: "replica-1", want: "exactly two"},
@@ -547,7 +684,7 @@ func TestManagedConfigRejectsUnsafeProtocolOptionsBeforeNetwork(t *testing.T) {
 			options[key] = value
 		}
 		options[test.key] = test.value
-		if _, err := managedConfigFromSpec(connector.Spec{Options: options}); err == nil || !strings.Contains(err.Error(), test.want) {
+		if _, err := managedConfigFromSpec(connector.RuntimeSpec{Options: options}); err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Fatalf("%s error=%v, want %q", test.key, err, test.want)
 		}
 	}

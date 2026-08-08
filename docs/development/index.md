@@ -17,6 +17,12 @@ Integration tests require PostgreSQL logical replication and, for some suites, d
 
 Run `just generate` after editing Protobuf definitions. Run `just docs-generate` after changing Protobuf comments, public symbols under `pkg/`, or package comments. CI checks both generated trees for drift.
 
+### Intentional Protobuf breaks
+
+`just proto-breaking` remains strict against the selected base revision. Buf diagnostics are normalized to symbol identities and must exactly equal `scripts/proto-breaking.allowlist`. The allowlist contains only the Task 15 removal of `MarkDDLAppliedRequest`, `MarkDDLAppliedResponse`, and `DDLService.MarkDDLApplied`; line-number drift is ignored, but any added, missing, renamed, malformed, duplicated, or obsolete entry fails CI. A successful Buf result also fails while the allowlist remains nonempty.
+
+These APIs were intentionally removed rather than preserved through compatibility messages, RPC aliases, adapters, or runtime shims. Delete an allowlist entry when the comparison base no longer contains that symbol. Do not add a new entry merely to make CI pass: any further wire break requires its own explicit review and policy decision.
+
 ## Documentation preview
 
 Install uv, Go, and Buf, then run:

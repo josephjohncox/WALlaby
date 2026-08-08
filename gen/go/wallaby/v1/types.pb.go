@@ -9,6 +9,7 @@ package wallabypb
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -82,105 +83,6 @@ func (FlowState) EnumDescriptor() ([]byte, []int) {
 	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{0}
 }
 
-type EndpointType int32
-
-const (
-	EndpointType_ENDPOINT_TYPE_UNSPECIFIED EndpointType = 0
-	EndpointType_ENDPOINT_TYPE_POSTGRES    EndpointType = 1
-	EndpointType_ENDPOINT_TYPE_SNOWFLAKE   EndpointType = 2
-	EndpointType_ENDPOINT_TYPE_S3          EndpointType = 3
-	EndpointType_ENDPOINT_TYPE_KAFKA       EndpointType = 4
-	EndpointType_ENDPOINT_TYPE_HTTP        EndpointType = 5
-	EndpointType_ENDPOINT_TYPE_GRPC        EndpointType = 6
-	EndpointType_ENDPOINT_TYPE_PROTO       EndpointType = 7
-	EndpointType_ENDPOINT_TYPE_PGSTREAM    EndpointType = 8
-	EndpointType_ENDPOINT_TYPE_SNOWPIPE    EndpointType = 9
-	EndpointType_ENDPOINT_TYPE_PARQUET     EndpointType = 10
-	EndpointType_ENDPOINT_TYPE_DUCKDB      EndpointType = 11
-	// Deprecated. Use ENDPOINT_TYPE_REDPANDA.
-	//
-	// Deprecated: Marked as deprecated in wallaby/v1/types.proto.
-	EndpointType_ENDPOINT_TYPE_BUFSTREAM  EndpointType = 12
-	EndpointType_ENDPOINT_TYPE_CLICKHOUSE EndpointType = 13
-	EndpointType_ENDPOINT_TYPE_DUCKLAKE   EndpointType = 14
-	// Iceberg is an asynchronous consumer of the canonical artifact log,
-	// including AWS S3 Tables exposed read-only through external catalogs such
-	// as Snowflake. It is never a direct current-state/upsert destination.
-	EndpointType_ENDPOINT_TYPE_ICEBERG EndpointType = 15
-	// Redpanda is Kafka API-compatible. Redpanda Iceberg topics require an
-	// enterprise license. Configure Iceberg in Redpanda, not WALlaby.
-	EndpointType_ENDPOINT_TYPE_REDPANDA EndpointType = 16
-)
-
-// Enum value maps for EndpointType.
-var (
-	EndpointType_name = map[int32]string{
-		0:  "ENDPOINT_TYPE_UNSPECIFIED",
-		1:  "ENDPOINT_TYPE_POSTGRES",
-		2:  "ENDPOINT_TYPE_SNOWFLAKE",
-		3:  "ENDPOINT_TYPE_S3",
-		4:  "ENDPOINT_TYPE_KAFKA",
-		5:  "ENDPOINT_TYPE_HTTP",
-		6:  "ENDPOINT_TYPE_GRPC",
-		7:  "ENDPOINT_TYPE_PROTO",
-		8:  "ENDPOINT_TYPE_PGSTREAM",
-		9:  "ENDPOINT_TYPE_SNOWPIPE",
-		10: "ENDPOINT_TYPE_PARQUET",
-		11: "ENDPOINT_TYPE_DUCKDB",
-		12: "ENDPOINT_TYPE_BUFSTREAM",
-		13: "ENDPOINT_TYPE_CLICKHOUSE",
-		14: "ENDPOINT_TYPE_DUCKLAKE",
-		15: "ENDPOINT_TYPE_ICEBERG",
-		16: "ENDPOINT_TYPE_REDPANDA",
-	}
-	EndpointType_value = map[string]int32{
-		"ENDPOINT_TYPE_UNSPECIFIED": 0,
-		"ENDPOINT_TYPE_POSTGRES":    1,
-		"ENDPOINT_TYPE_SNOWFLAKE":   2,
-		"ENDPOINT_TYPE_S3":          3,
-		"ENDPOINT_TYPE_KAFKA":       4,
-		"ENDPOINT_TYPE_HTTP":        5,
-		"ENDPOINT_TYPE_GRPC":        6,
-		"ENDPOINT_TYPE_PROTO":       7,
-		"ENDPOINT_TYPE_PGSTREAM":    8,
-		"ENDPOINT_TYPE_SNOWPIPE":    9,
-		"ENDPOINT_TYPE_PARQUET":     10,
-		"ENDPOINT_TYPE_DUCKDB":      11,
-		"ENDPOINT_TYPE_BUFSTREAM":   12,
-		"ENDPOINT_TYPE_CLICKHOUSE":  13,
-		"ENDPOINT_TYPE_DUCKLAKE":    14,
-		"ENDPOINT_TYPE_ICEBERG":     15,
-		"ENDPOINT_TYPE_REDPANDA":    16,
-	}
-)
-
-func (x EndpointType) Enum() *EndpointType {
-	p := new(EndpointType)
-	*p = x
-	return p
-}
-
-func (x EndpointType) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (EndpointType) Descriptor() protoreflect.EnumDescriptor {
-	return file_wallaby_v1_types_proto_enumTypes[1].Descriptor()
-}
-
-func (EndpointType) Type() protoreflect.EnumType {
-	return &file_wallaby_v1_types_proto_enumTypes[1]
-}
-
-func (x EndpointType) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use EndpointType.Descriptor instead.
-func (EndpointType) EnumDescriptor() ([]byte, []int) {
-	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{1}
-}
-
 type WireFormat int32
 
 const (
@@ -223,11 +125,11 @@ func (x WireFormat) String() string {
 }
 
 func (WireFormat) Descriptor() protoreflect.EnumDescriptor {
-	return file_wallaby_v1_types_proto_enumTypes[2].Descriptor()
+	return file_wallaby_v1_types_proto_enumTypes[1].Descriptor()
 }
 
 func (WireFormat) Type() protoreflect.EnumType {
-	return &file_wallaby_v1_types_proto_enumTypes[2]
+	return &file_wallaby_v1_types_proto_enumTypes[1]
 }
 
 func (x WireFormat) Number() protoreflect.EnumNumber {
@@ -236,7 +138,7 @@ func (x WireFormat) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use WireFormat.Descriptor instead.
 func (WireFormat) EnumDescriptor() ([]byte, []int) {
-	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{2}
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{1}
 }
 
 type AckPolicy int32
@@ -280,11 +182,11 @@ func (x AckPolicy) String() string {
 }
 
 func (AckPolicy) Descriptor() protoreflect.EnumDescriptor {
-	return file_wallaby_v1_types_proto_enumTypes[3].Descriptor()
+	return file_wallaby_v1_types_proto_enumTypes[2].Descriptor()
 }
 
 func (AckPolicy) Type() protoreflect.EnumType {
-	return &file_wallaby_v1_types_proto_enumTypes[3]
+	return &file_wallaby_v1_types_proto_enumTypes[2]
 }
 
 func (x AckPolicy) Number() protoreflect.EnumNumber {
@@ -293,7 +195,7 @@ func (x AckPolicy) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use AckPolicy.Descriptor instead.
 func (AckPolicy) EnumDescriptor() ([]byte, []int) {
-	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{3}
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{2}
 }
 
 type FailureMode int32
@@ -329,11 +231,11 @@ func (x FailureMode) String() string {
 }
 
 func (FailureMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_wallaby_v1_types_proto_enumTypes[4].Descriptor()
+	return file_wallaby_v1_types_proto_enumTypes[3].Descriptor()
 }
 
 func (FailureMode) Type() protoreflect.EnumType {
-	return &file_wallaby_v1_types_proto_enumTypes[4]
+	return &file_wallaby_v1_types_proto_enumTypes[3]
 }
 
 func (x FailureMode) Number() protoreflect.EnumNumber {
@@ -342,7 +244,7 @@ func (x FailureMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use FailureMode.Descriptor instead.
 func (FailureMode) EnumDescriptor() ([]byte, []int) {
-	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{4}
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{3}
 }
 
 type GiveUpPolicy int32
@@ -378,11 +280,11 @@ func (x GiveUpPolicy) String() string {
 }
 
 func (GiveUpPolicy) Descriptor() protoreflect.EnumDescriptor {
-	return file_wallaby_v1_types_proto_enumTypes[5].Descriptor()
+	return file_wallaby_v1_types_proto_enumTypes[4].Descriptor()
 }
 
 func (GiveUpPolicy) Type() protoreflect.EnumType {
-	return &file_wallaby_v1_types_proto_enumTypes[5]
+	return &file_wallaby_v1_types_proto_enumTypes[4]
 }
 
 func (x GiveUpPolicy) Number() protoreflect.EnumNumber {
@@ -391,21 +293,4900 @@ func (x GiveUpPolicy) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use GiveUpPolicy.Descriptor instead.
 func (GiveUpPolicy) EnumDescriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{4}
+}
+
+type Compression int32
+
+const (
+	Compression_COMPRESSION_UNSPECIFIED Compression = 0
+	Compression_COMPRESSION_NONE        Compression = 1
+	Compression_COMPRESSION_GZIP        Compression = 2
+	Compression_COMPRESSION_SNAPPY      Compression = 3
+	Compression_COMPRESSION_LZ4         Compression = 4
+	Compression_COMPRESSION_ZSTD        Compression = 5
+)
+
+// Enum value maps for Compression.
+var (
+	Compression_name = map[int32]string{
+		0: "COMPRESSION_UNSPECIFIED",
+		1: "COMPRESSION_NONE",
+		2: "COMPRESSION_GZIP",
+		3: "COMPRESSION_SNAPPY",
+		4: "COMPRESSION_LZ4",
+		5: "COMPRESSION_ZSTD",
+	}
+	Compression_value = map[string]int32{
+		"COMPRESSION_UNSPECIFIED": 0,
+		"COMPRESSION_NONE":        1,
+		"COMPRESSION_GZIP":        2,
+		"COMPRESSION_SNAPPY":      3,
+		"COMPRESSION_LZ4":         4,
+		"COMPRESSION_ZSTD":        5,
+	}
+)
+
+func (x Compression) Enum() *Compression {
+	p := new(Compression)
+	*p = x
+	return p
+}
+
+func (x Compression) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Compression) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallaby_v1_types_proto_enumTypes[5].Descriptor()
+}
+
+func (Compression) Type() protoreflect.EnumType {
+	return &file_wallaby_v1_types_proto_enumTypes[5]
+}
+
+func (x Compression) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Compression.Descriptor instead.
+func (Compression) EnumDescriptor() ([]byte, []int) {
 	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{5}
 }
 
-type Endpoint struct {
+type PayloadMode int32
+
+const (
+	PayloadMode_PAYLOAD_MODE_UNSPECIFIED PayloadMode = 0
+	PayloadMode_PAYLOAD_MODE_WIRE        PayloadMode = 1
+	PayloadMode_PAYLOAD_MODE_RECORD_JSON PayloadMode = 2
+	PayloadMode_PAYLOAD_MODE_WAL         PayloadMode = 3
+)
+
+// Enum value maps for PayloadMode.
+var (
+	PayloadMode_name = map[int32]string{
+		0: "PAYLOAD_MODE_UNSPECIFIED",
+		1: "PAYLOAD_MODE_WIRE",
+		2: "PAYLOAD_MODE_RECORD_JSON",
+		3: "PAYLOAD_MODE_WAL",
+	}
+	PayloadMode_value = map[string]int32{
+		"PAYLOAD_MODE_UNSPECIFIED": 0,
+		"PAYLOAD_MODE_WIRE":        1,
+		"PAYLOAD_MODE_RECORD_JSON": 2,
+		"PAYLOAD_MODE_WAL":         3,
+	}
+)
+
+func (x PayloadMode) Enum() *PayloadMode {
+	p := new(PayloadMode)
+	*p = x
+	return p
+}
+
+func (x PayloadMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PayloadMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallaby_v1_types_proto_enumTypes[6].Descriptor()
+}
+
+func (PayloadMode) Type() protoreflect.EnumType {
+	return &file_wallaby_v1_types_proto_enumTypes[6]
+}
+
+func (x PayloadMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PayloadMode.Descriptor instead.
+func (PayloadMode) EnumDescriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{6}
+}
+
+type KafkaAcks int32
+
+const (
+	KafkaAcks_KAFKA_ACKS_UNSPECIFIED KafkaAcks = 0
+	KafkaAcks_KAFKA_ACKS_NONE        KafkaAcks = 1
+	KafkaAcks_KAFKA_ACKS_LEADER      KafkaAcks = 2
+	KafkaAcks_KAFKA_ACKS_ALL         KafkaAcks = 3
+)
+
+// Enum value maps for KafkaAcks.
+var (
+	KafkaAcks_name = map[int32]string{
+		0: "KAFKA_ACKS_UNSPECIFIED",
+		1: "KAFKA_ACKS_NONE",
+		2: "KAFKA_ACKS_LEADER",
+		3: "KAFKA_ACKS_ALL",
+	}
+	KafkaAcks_value = map[string]int32{
+		"KAFKA_ACKS_UNSPECIFIED": 0,
+		"KAFKA_ACKS_NONE":        1,
+		"KAFKA_ACKS_LEADER":      2,
+		"KAFKA_ACKS_ALL":         3,
+	}
+)
+
+func (x KafkaAcks) Enum() *KafkaAcks {
+	p := new(KafkaAcks)
+	*p = x
+	return p
+}
+
+func (x KafkaAcks) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (KafkaAcks) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallaby_v1_types_proto_enumTypes[7].Descriptor()
+}
+
+func (KafkaAcks) Type() protoreflect.EnumType {
+	return &file_wallaby_v1_types_proto_enumTypes[7]
+}
+
+func (x KafkaAcks) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use KafkaAcks.Descriptor instead.
+func (KafkaAcks) EnumDescriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{7}
+}
+
+type KafkaMessageMode int32
+
+const (
+	KafkaMessageMode_KAFKA_MESSAGE_MODE_UNSPECIFIED KafkaMessageMode = 0
+	KafkaMessageMode_KAFKA_MESSAGE_MODE_BATCH       KafkaMessageMode = 1
+	KafkaMessageMode_KAFKA_MESSAGE_MODE_RECORD      KafkaMessageMode = 2
+)
+
+// Enum value maps for KafkaMessageMode.
+var (
+	KafkaMessageMode_name = map[int32]string{
+		0: "KAFKA_MESSAGE_MODE_UNSPECIFIED",
+		1: "KAFKA_MESSAGE_MODE_BATCH",
+		2: "KAFKA_MESSAGE_MODE_RECORD",
+	}
+	KafkaMessageMode_value = map[string]int32{
+		"KAFKA_MESSAGE_MODE_UNSPECIFIED": 0,
+		"KAFKA_MESSAGE_MODE_BATCH":       1,
+		"KAFKA_MESSAGE_MODE_RECORD":      2,
+	}
+)
+
+func (x KafkaMessageMode) Enum() *KafkaMessageMode {
+	p := new(KafkaMessageMode)
+	*p = x
+	return p
+}
+
+func (x KafkaMessageMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (KafkaMessageMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallaby_v1_types_proto_enumTypes[8].Descriptor()
+}
+
+func (KafkaMessageMode) Type() protoreflect.EnumType {
+	return &file_wallaby_v1_types_proto_enumTypes[8]
+}
+
+func (x KafkaMessageMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use KafkaMessageMode.Descriptor instead.
+func (KafkaMessageMode) EnumDescriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{8}
+}
+
+type KafkaKeyMode int32
+
+const (
+	KafkaKeyMode_KAFKA_KEY_MODE_UNSPECIFIED KafkaKeyMode = 0
+	KafkaKeyMode_KAFKA_KEY_MODE_HASH        KafkaKeyMode = 1
+	KafkaKeyMode_KAFKA_KEY_MODE_RAW         KafkaKeyMode = 2
+)
+
+// Enum value maps for KafkaKeyMode.
+var (
+	KafkaKeyMode_name = map[int32]string{
+		0: "KAFKA_KEY_MODE_UNSPECIFIED",
+		1: "KAFKA_KEY_MODE_HASH",
+		2: "KAFKA_KEY_MODE_RAW",
+	}
+	KafkaKeyMode_value = map[string]int32{
+		"KAFKA_KEY_MODE_UNSPECIFIED": 0,
+		"KAFKA_KEY_MODE_HASH":        1,
+		"KAFKA_KEY_MODE_RAW":         2,
+	}
+)
+
+func (x KafkaKeyMode) Enum() *KafkaKeyMode {
+	p := new(KafkaKeyMode)
+	*p = x
+	return p
+}
+
+func (x KafkaKeyMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (KafkaKeyMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallaby_v1_types_proto_enumTypes[9].Descriptor()
+}
+
+func (KafkaKeyMode) Type() protoreflect.EnumType {
+	return &file_wallaby_v1_types_proto_enumTypes[9]
+}
+
+func (x KafkaKeyMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use KafkaKeyMode.Descriptor instead.
+func (KafkaKeyMode) EnumDescriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{9}
+}
+
+type BatchMode int32
+
+const (
+	BatchMode_BATCH_MODE_UNSPECIFIED BatchMode = 0
+	BatchMode_BATCH_MODE_STAGING     BatchMode = 1
+	BatchMode_BATCH_MODE_TARGET      BatchMode = 2
+)
+
+// Enum value maps for BatchMode.
+var (
+	BatchMode_name = map[int32]string{
+		0: "BATCH_MODE_UNSPECIFIED",
+		1: "BATCH_MODE_STAGING",
+		2: "BATCH_MODE_TARGET",
+	}
+	BatchMode_value = map[string]int32{
+		"BATCH_MODE_UNSPECIFIED": 0,
+		"BATCH_MODE_STAGING":     1,
+		"BATCH_MODE_TARGET":      2,
+	}
+)
+
+func (x BatchMode) Enum() *BatchMode {
+	p := new(BatchMode)
+	*p = x
+	return p
+}
+
+func (x BatchMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (BatchMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallaby_v1_types_proto_enumTypes[10].Descriptor()
+}
+
+func (BatchMode) Type() protoreflect.EnumType {
+	return &file_wallaby_v1_types_proto_enumTypes[10]
+}
+
+func (x BatchMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use BatchMode.Descriptor instead.
+func (BatchMode) EnumDescriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{10}
+}
+
+type BatchResolution int32
+
+const (
+	BatchResolution_BATCH_RESOLUTION_UNSPECIFIED BatchResolution = 0
+	BatchResolution_BATCH_RESOLUTION_NONE        BatchResolution = 1
+	BatchResolution_BATCH_RESOLUTION_APPEND      BatchResolution = 2
+	BatchResolution_BATCH_RESOLUTION_REPLACE     BatchResolution = 3
+)
+
+// Enum value maps for BatchResolution.
+var (
+	BatchResolution_name = map[int32]string{
+		0: "BATCH_RESOLUTION_UNSPECIFIED",
+		1: "BATCH_RESOLUTION_NONE",
+		2: "BATCH_RESOLUTION_APPEND",
+		3: "BATCH_RESOLUTION_REPLACE",
+	}
+	BatchResolution_value = map[string]int32{
+		"BATCH_RESOLUTION_UNSPECIFIED": 0,
+		"BATCH_RESOLUTION_NONE":        1,
+		"BATCH_RESOLUTION_APPEND":      2,
+		"BATCH_RESOLUTION_REPLACE":     3,
+	}
+)
+
+func (x BatchResolution) Enum() *BatchResolution {
+	p := new(BatchResolution)
+	*p = x
+	return p
+}
+
+func (x BatchResolution) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (BatchResolution) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallaby_v1_types_proto_enumTypes[11].Descriptor()
+}
+
+func (BatchResolution) Type() protoreflect.EnumType {
+	return &file_wallaby_v1_types_proto_enumTypes[11]
+}
+
+func (x BatchResolution) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use BatchResolution.Descriptor instead.
+func (BatchResolution) EnumDescriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{11}
+}
+
+type SyncPublicationMode int32
+
+const (
+	SyncPublicationMode_SYNC_PUBLICATION_MODE_UNSPECIFIED SyncPublicationMode = 0
+	SyncPublicationMode_SYNC_PUBLICATION_MODE_ADD         SyncPublicationMode = 1
+	SyncPublicationMode_SYNC_PUBLICATION_MODE_SYNC        SyncPublicationMode = 2
+)
+
+// Enum value maps for SyncPublicationMode.
+var (
+	SyncPublicationMode_name = map[int32]string{
+		0: "SYNC_PUBLICATION_MODE_UNSPECIFIED",
+		1: "SYNC_PUBLICATION_MODE_ADD",
+		2: "SYNC_PUBLICATION_MODE_SYNC",
+	}
+	SyncPublicationMode_value = map[string]int32{
+		"SYNC_PUBLICATION_MODE_UNSPECIFIED": 0,
+		"SYNC_PUBLICATION_MODE_ADD":         1,
+		"SYNC_PUBLICATION_MODE_SYNC":        2,
+	}
+)
+
+func (x SyncPublicationMode) Enum() *SyncPublicationMode {
+	p := new(SyncPublicationMode)
+	*p = x
+	return p
+}
+
+func (x SyncPublicationMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SyncPublicationMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallaby_v1_types_proto_enumTypes[12].Descriptor()
+}
+
+func (SyncPublicationMode) Type() protoreflect.EnumType {
+	return &file_wallaby_v1_types_proto_enumTypes[12]
+}
+
+func (x SyncPublicationMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SyncPublicationMode.Descriptor instead.
+func (SyncPublicationMode) EnumDescriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{12}
+}
+
+type PostgresSourceMode int32
+
+const (
+	PostgresSourceMode_POSTGRES_SOURCE_MODE_UNSPECIFIED PostgresSourceMode = 0
+	PostgresSourceMode_POSTGRES_SOURCE_MODE_CDC         PostgresSourceMode = 1
+	PostgresSourceMode_POSTGRES_SOURCE_MODE_BACKFILL    PostgresSourceMode = 2
+)
+
+// Enum value maps for PostgresSourceMode.
+var (
+	PostgresSourceMode_name = map[int32]string{
+		0: "POSTGRES_SOURCE_MODE_UNSPECIFIED",
+		1: "POSTGRES_SOURCE_MODE_CDC",
+		2: "POSTGRES_SOURCE_MODE_BACKFILL",
+	}
+	PostgresSourceMode_value = map[string]int32{
+		"POSTGRES_SOURCE_MODE_UNSPECIFIED": 0,
+		"POSTGRES_SOURCE_MODE_CDC":         1,
+		"POSTGRES_SOURCE_MODE_BACKFILL":    2,
+	}
+)
+
+func (x PostgresSourceMode) Enum() *PostgresSourceMode {
+	p := new(PostgresSourceMode)
+	*p = x
+	return p
+}
+
+func (x PostgresSourceMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PostgresSourceMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallaby_v1_types_proto_enumTypes[13].Descriptor()
+}
+
+func (PostgresSourceMode) Type() protoreflect.EnumType {
+	return &file_wallaby_v1_types_proto_enumTypes[13]
+}
+
+func (x PostgresSourceMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PostgresSourceMode.Descriptor instead.
+func (PostgresSourceMode) EnumDescriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{13}
+}
+
+type ToastFetchMode int32
+
+const (
+	ToastFetchMode_TOAST_FETCH_MODE_UNSPECIFIED ToastFetchMode = 0
+	ToastFetchMode_TOAST_FETCH_MODE_OFF         ToastFetchMode = 1
+	ToastFetchMode_TOAST_FETCH_MODE_SOURCE      ToastFetchMode = 2
+	ToastFetchMode_TOAST_FETCH_MODE_CACHE       ToastFetchMode = 3
+	ToastFetchMode_TOAST_FETCH_MODE_FULL        ToastFetchMode = 4
+)
+
+// Enum value maps for ToastFetchMode.
+var (
+	ToastFetchMode_name = map[int32]string{
+		0: "TOAST_FETCH_MODE_UNSPECIFIED",
+		1: "TOAST_FETCH_MODE_OFF",
+		2: "TOAST_FETCH_MODE_SOURCE",
+		3: "TOAST_FETCH_MODE_CACHE",
+		4: "TOAST_FETCH_MODE_FULL",
+	}
+	ToastFetchMode_value = map[string]int32{
+		"TOAST_FETCH_MODE_UNSPECIFIED": 0,
+		"TOAST_FETCH_MODE_OFF":         1,
+		"TOAST_FETCH_MODE_SOURCE":      2,
+		"TOAST_FETCH_MODE_CACHE":       3,
+		"TOAST_FETCH_MODE_FULL":        4,
+	}
+)
+
+func (x ToastFetchMode) Enum() *ToastFetchMode {
+	p := new(ToastFetchMode)
+	*p = x
+	return p
+}
+
+func (x ToastFetchMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ToastFetchMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallaby_v1_types_proto_enumTypes[14].Descriptor()
+}
+
+func (ToastFetchMode) Type() protoreflect.EnumType {
+	return &file_wallaby_v1_types_proto_enumTypes[14]
+}
+
+func (x ToastFetchMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ToastFetchMode.Descriptor instead.
+func (ToastFetchMode) EnumDescriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{14}
+}
+
+type BootstrapMode int32
+
+const (
+	BootstrapMode_BOOTSTRAP_MODE_UNSPECIFIED BootstrapMode = 0
+	BootstrapMode_BOOTSTRAP_MODE_NEVER       BootstrapMode = 1
+	BootstrapMode_BOOTSTRAP_MODE_AUTO        BootstrapMode = 2
+	BootstrapMode_BOOTSTRAP_MODE_REQUIRED    BootstrapMode = 3
+)
+
+// Enum value maps for BootstrapMode.
+var (
+	BootstrapMode_name = map[int32]string{
+		0: "BOOTSTRAP_MODE_UNSPECIFIED",
+		1: "BOOTSTRAP_MODE_NEVER",
+		2: "BOOTSTRAP_MODE_AUTO",
+		3: "BOOTSTRAP_MODE_REQUIRED",
+	}
+	BootstrapMode_value = map[string]int32{
+		"BOOTSTRAP_MODE_UNSPECIFIED": 0,
+		"BOOTSTRAP_MODE_NEVER":       1,
+		"BOOTSTRAP_MODE_AUTO":        2,
+		"BOOTSTRAP_MODE_REQUIRED":    3,
+	}
+)
+
+func (x BootstrapMode) Enum() *BootstrapMode {
+	p := new(BootstrapMode)
+	*p = x
+	return p
+}
+
+func (x BootstrapMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (BootstrapMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallaby_v1_types_proto_enumTypes[15].Descriptor()
+}
+
+func (BootstrapMode) Type() protoreflect.EnumType {
+	return &file_wallaby_v1_types_proto_enumTypes[15]
+}
+
+func (x BootstrapMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use BootstrapMode.Descriptor instead.
+func (BootstrapMode) EnumDescriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{15}
+}
+
+type ManagedProfile int32
+
+const (
+	ManagedProfile_MANAGED_PROFILE_UNSPECIFIED                          ManagedProfile = 0
+	ManagedProfile_MANAGED_PROFILE_POSTGRES_TO_POSTGRES_V1              ManagedProfile = 1
+	ManagedProfile_MANAGED_PROFILE_POSTGRES_TO_CLICKHOUSE_APPEND_V1     ManagedProfile = 2
+	ManagedProfile_MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_SQL_V1       ManagedProfile = 3
+	ManagedProfile_MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_STAGED_V1    ManagedProfile = 4
+	ManagedProfile_MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_STREAMING_V1 ManagedProfile = 5
+)
+
+// Enum value maps for ManagedProfile.
+var (
+	ManagedProfile_name = map[int32]string{
+		0: "MANAGED_PROFILE_UNSPECIFIED",
+		1: "MANAGED_PROFILE_POSTGRES_TO_POSTGRES_V1",
+		2: "MANAGED_PROFILE_POSTGRES_TO_CLICKHOUSE_APPEND_V1",
+		3: "MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_SQL_V1",
+		4: "MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_STAGED_V1",
+		5: "MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_STREAMING_V1",
+	}
+	ManagedProfile_value = map[string]int32{
+		"MANAGED_PROFILE_UNSPECIFIED":                          0,
+		"MANAGED_PROFILE_POSTGRES_TO_POSTGRES_V1":              1,
+		"MANAGED_PROFILE_POSTGRES_TO_CLICKHOUSE_APPEND_V1":     2,
+		"MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_SQL_V1":       3,
+		"MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_STAGED_V1":    4,
+		"MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_STREAMING_V1": 5,
+	}
+)
+
+func (x ManagedProfile) Enum() *ManagedProfile {
+	p := new(ManagedProfile)
+	*p = x
+	return p
+}
+
+func (x ManagedProfile) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ManagedProfile) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallaby_v1_types_proto_enumTypes[16].Descriptor()
+}
+
+func (ManagedProfile) Type() protoreflect.EnumType {
+	return &file_wallaby_v1_types_proto_enumTypes[16]
+}
+
+func (x ManagedProfile) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ManagedProfile.Descriptor instead.
+func (ManagedProfile) EnumDescriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{16}
+}
+
+type IcebergCatalogProfile int32
+
+const (
+	IcebergCatalogProfile_ICEBERG_CATALOG_PROFILE_UNSPECIFIED IcebergCatalogProfile = 0
+	IcebergCatalogProfile_ICEBERG_CATALOG_PROFILE_REST        IcebergCatalogProfile = 1
+	IcebergCatalogProfile_ICEBERG_CATALOG_PROFILE_S3_TABLES   IcebergCatalogProfile = 2
+)
+
+// Enum value maps for IcebergCatalogProfile.
+var (
+	IcebergCatalogProfile_name = map[int32]string{
+		0: "ICEBERG_CATALOG_PROFILE_UNSPECIFIED",
+		1: "ICEBERG_CATALOG_PROFILE_REST",
+		2: "ICEBERG_CATALOG_PROFILE_S3_TABLES",
+	}
+	IcebergCatalogProfile_value = map[string]int32{
+		"ICEBERG_CATALOG_PROFILE_UNSPECIFIED": 0,
+		"ICEBERG_CATALOG_PROFILE_REST":        1,
+		"ICEBERG_CATALOG_PROFILE_S3_TABLES":   2,
+	}
+)
+
+func (x IcebergCatalogProfile) Enum() *IcebergCatalogProfile {
+	p := new(IcebergCatalogProfile)
+	*p = x
+	return p
+}
+
+func (x IcebergCatalogProfile) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (IcebergCatalogProfile) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallaby_v1_types_proto_enumTypes[17].Descriptor()
+}
+
+func (IcebergCatalogProfile) Type() protoreflect.EnumType {
+	return &file_wallaby_v1_types_proto_enumTypes[17]
+}
+
+func (x IcebergCatalogProfile) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use IcebergCatalogProfile.Descriptor instead.
+func (IcebergCatalogProfile) EnumDescriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{17}
+}
+
+type RDSIAMConfig struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Region          string                 `protobuf:"bytes,1,opt,name=region,proto3" json:"region,omitempty"`
+	Profile         string                 `protobuf:"bytes,2,opt,name=profile,proto3" json:"profile,omitempty"`
+	RoleArn         string                 `protobuf:"bytes,3,opt,name=role_arn,json=roleArn,proto3" json:"role_arn,omitempty"`
+	RoleSessionName string                 `protobuf:"bytes,4,opt,name=role_session_name,json=roleSessionName,proto3" json:"role_session_name,omitempty"`
+	RoleExternalId  string                 `protobuf:"bytes,5,opt,name=role_external_id,json=roleExternalId,proto3" json:"role_external_id,omitempty"`
+	Endpoint        string                 `protobuf:"bytes,6,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *RDSIAMConfig) Reset() {
+	*x = RDSIAMConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RDSIAMConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RDSIAMConfig) ProtoMessage() {}
+
+func (x *RDSIAMConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RDSIAMConfig.ProtoReflect.Descriptor instead.
+func (*RDSIAMConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *RDSIAMConfig) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *RDSIAMConfig) GetProfile() string {
+	if x != nil {
+		return x.Profile
+	}
+	return ""
+}
+
+func (x *RDSIAMConfig) GetRoleArn() string {
+	if x != nil {
+		return x.RoleArn
+	}
+	return ""
+}
+
+func (x *RDSIAMConfig) GetRoleSessionName() string {
+	if x != nil {
+		return x.RoleSessionName
+	}
+	return ""
+}
+
+func (x *RDSIAMConfig) GetRoleExternalId() string {
+	if x != nil {
+		return x.RoleExternalId
+	}
+	return ""
+}
+
+func (x *RDSIAMConfig) GetEndpoint() string {
+	if x != nil {
+		return x.Endpoint
+	}
+	return ""
+}
+
+type PostgresConnectionConfig struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Dsn                string                 `protobuf:"bytes,1,opt,name=dsn,proto3" json:"dsn,omitempty"`
+	PoolMaxConnections *uint32                `protobuf:"varint,2,opt,name=pool_max_connections,json=poolMaxConnections,proto3,oneof" json:"pool_max_connections,omitempty"`
+	RdsIam             *RDSIAMConfig          `protobuf:"bytes,3,opt,name=rds_iam,json=rdsIam,proto3" json:"rds_iam,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *PostgresConnectionConfig) Reset() {
+	*x = PostgresConnectionConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PostgresConnectionConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PostgresConnectionConfig) ProtoMessage() {}
+
+func (x *PostgresConnectionConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PostgresConnectionConfig.ProtoReflect.Descriptor instead.
+func (*PostgresConnectionConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *PostgresConnectionConfig) GetDsn() string {
+	if x != nil {
+		return x.Dsn
+	}
+	return ""
+}
+
+func (x *PostgresConnectionConfig) GetPoolMaxConnections() uint32 {
+	if x != nil && x.PoolMaxConnections != nil {
+		return *x.PoolMaxConnections
+	}
+	return 0
+}
+
+func (x *PostgresConnectionConfig) GetRdsIam() *RDSIAMConfig {
+	if x != nil {
+		return x.RdsIam
+	}
+	return nil
+}
+
+// PostgresDSNConfig is intentionally narrow for components whose runtime
+// contract accepts only a DSN and ignores connection-pool and IAM options.
+type PostgresDSNConfig struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Type          EndpointType           `protobuf:"varint,2,opt,name=type,proto3,enum=wallaby.v1.EndpointType" json:"type,omitempty"`
-	Options       map[string]string      `protobuf:"bytes,3,rep,name=options,proto3" json:"options,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Dsn           string                 `protobuf:"bytes,1,opt,name=dsn,proto3" json:"dsn,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PostgresDSNConfig) Reset() {
+	*x = PostgresDSNConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PostgresDSNConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PostgresDSNConfig) ProtoMessage() {}
+
+func (x *PostgresDSNConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PostgresDSNConfig.ProtoReflect.Descriptor instead.
+func (*PostgresDSNConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *PostgresDSNConfig) GetDsn() string {
+	if x != nil {
+		return x.Dsn
+	}
+	return ""
+}
+
+type RetryConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MaxRetries    *uint32                `protobuf:"varint,1,opt,name=max_retries,json=maxRetries,proto3,oneof" json:"max_retries,omitempty"`
+	BackoffBase   *durationpb.Duration   `protobuf:"bytes,2,opt,name=backoff_base,json=backoffBase,proto3" json:"backoff_base,omitempty"`
+	BackoffMax    *durationpb.Duration   `protobuf:"bytes,3,opt,name=backoff_max,json=backoffMax,proto3" json:"backoff_max,omitempty"`
+	BackoffFactor *float64               `protobuf:"fixed64,4,opt,name=backoff_factor,json=backoffFactor,proto3,oneof" json:"backoff_factor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RetryConfig) Reset() {
+	*x = RetryConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RetryConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RetryConfig) ProtoMessage() {}
+
+func (x *RetryConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RetryConfig.ProtoReflect.Descriptor instead.
+func (*RetryConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *RetryConfig) GetMaxRetries() uint32 {
+	if x != nil && x.MaxRetries != nil {
+		return *x.MaxRetries
+	}
+	return 0
+}
+
+func (x *RetryConfig) GetBackoffBase() *durationpb.Duration {
+	if x != nil {
+		return x.BackoffBase
+	}
+	return nil
+}
+
+func (x *RetryConfig) GetBackoffMax() *durationpb.Duration {
+	if x != nil {
+		return x.BackoffMax
+	}
+	return nil
+}
+
+func (x *RetryConfig) GetBackoffFactor() float64 {
+	if x != nil && x.BackoffFactor != nil {
+		return *x.BackoffFactor
+	}
+	return 0
+}
+
+type GRPCTLSConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Insecure      *bool                  `protobuf:"varint,1,opt,name=insecure,proto3,oneof" json:"insecure,omitempty"`
+	CaFile        string                 `protobuf:"bytes,2,opt,name=ca_file,json=caFile,proto3" json:"ca_file,omitempty"`
+	ServerName    string                 `protobuf:"bytes,3,opt,name=server_name,json=serverName,proto3" json:"server_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GRPCTLSConfig) Reset() {
+	*x = GRPCTLSConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GRPCTLSConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GRPCTLSConfig) ProtoMessage() {}
+
+func (x *GRPCTLSConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GRPCTLSConfig.ProtoReflect.Descriptor instead.
+func (*GRPCTLSConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *GRPCTLSConfig) GetInsecure() bool {
+	if x != nil && x.Insecure != nil {
+		return *x.Insecure
+	}
+	return false
+}
+
+func (x *GRPCTLSConfig) GetCaFile() string {
+	if x != nil {
+		return x.CaFile
+	}
+	return ""
+}
+
+func (x *GRPCTLSConfig) GetServerName() string {
+	if x != nil {
+		return x.ServerName
+	}
+	return ""
+}
+
+type ClickHouseTLSConfig struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Insecure          *bool                  `protobuf:"varint,1,opt,name=insecure,proto3,oneof" json:"insecure,omitempty"`
+	CaFile            string                 `protobuf:"bytes,2,opt,name=ca_file,json=caFile,proto3" json:"ca_file,omitempty"`
+	ServerName        string                 `protobuf:"bytes,3,opt,name=server_name,json=serverName,proto3" json:"server_name,omitempty"`
+	CertificateFile   string                 `protobuf:"bytes,4,opt,name=certificate_file,json=certificateFile,proto3" json:"certificate_file,omitempty"`
+	PrivateKeyFile    string                 `protobuf:"bytes,5,opt,name=private_key_file,json=privateKeyFile,proto3" json:"private_key_file,omitempty"`
+	ReplicaServerName string                 `protobuf:"bytes,6,opt,name=replica_server_name,json=replicaServerName,proto3" json:"replica_server_name,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *ClickHouseTLSConfig) Reset() {
+	*x = ClickHouseTLSConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClickHouseTLSConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClickHouseTLSConfig) ProtoMessage() {}
+
+func (x *ClickHouseTLSConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClickHouseTLSConfig.ProtoReflect.Descriptor instead.
+func (*ClickHouseTLSConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ClickHouseTLSConfig) GetInsecure() bool {
+	if x != nil && x.Insecure != nil {
+		return *x.Insecure
+	}
+	return false
+}
+
+func (x *ClickHouseTLSConfig) GetCaFile() string {
+	if x != nil {
+		return x.CaFile
+	}
+	return ""
+}
+
+func (x *ClickHouseTLSConfig) GetServerName() string {
+	if x != nil {
+		return x.ServerName
+	}
+	return ""
+}
+
+func (x *ClickHouseTLSConfig) GetCertificateFile() string {
+	if x != nil {
+		return x.CertificateFile
+	}
+	return ""
+}
+
+func (x *ClickHouseTLSConfig) GetPrivateKeyFile() string {
+	if x != nil {
+		return x.PrivateKeyFile
+	}
+	return ""
+}
+
+func (x *ClickHouseTLSConfig) GetReplicaServerName() string {
+	if x != nil {
+		return x.ReplicaServerName
+	}
+	return ""
+}
+
+type StagingConfig struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	BatchMode       BatchMode              `protobuf:"varint,1,opt,name=batch_mode,json=batchMode,proto3,enum=wallaby.v1.BatchMode" json:"batch_mode,omitempty"`
+	BatchResolution BatchResolution        `protobuf:"varint,2,opt,name=batch_resolution,json=batchResolution,proto3,enum=wallaby.v1.BatchResolution" json:"batch_resolution,omitempty"`
+	Schema          string                 `protobuf:"bytes,3,opt,name=schema,proto3" json:"schema,omitempty"`
+	Table           string                 `protobuf:"bytes,4,opt,name=table,proto3" json:"table,omitempty"`
+	Suffix          string                 `protobuf:"bytes,5,opt,name=suffix,proto3" json:"suffix,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *StagingConfig) Reset() {
+	*x = StagingConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StagingConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StagingConfig) ProtoMessage() {}
+
+func (x *StagingConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StagingConfig.ProtoReflect.Descriptor instead.
+func (*StagingConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *StagingConfig) GetBatchMode() BatchMode {
+	if x != nil {
+		return x.BatchMode
+	}
+	return BatchMode_BATCH_MODE_UNSPECIFIED
+}
+
+func (x *StagingConfig) GetBatchResolution() BatchResolution {
+	if x != nil {
+		return x.BatchResolution
+	}
+	return BatchResolution_BATCH_RESOLUTION_UNSPECIFIED
+}
+
+func (x *StagingConfig) GetSchema() string {
+	if x != nil {
+		return x.Schema
+	}
+	return ""
+}
+
+func (x *StagingConfig) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
+}
+
+func (x *StagingConfig) GetSuffix() string {
+	if x != nil {
+		return x.Suffix
+	}
+	return ""
+}
+
+type MetadataConfig struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Enabled          *bool                  `protobuf:"varint,1,opt,name=enabled,proto3,oneof" json:"enabled,omitempty"`
+	Schema           string                 `protobuf:"bytes,2,opt,name=schema,proto3" json:"schema,omitempty"`
+	Table            string                 `protobuf:"bytes,3,opt,name=table,proto3" json:"table,omitempty"`
+	PrimaryKeyPrefix string                 `protobuf:"bytes,4,opt,name=primary_key_prefix,json=primaryKeyPrefix,proto3" json:"primary_key_prefix,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *MetadataConfig) Reset() {
+	*x = MetadataConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MetadataConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MetadataConfig) ProtoMessage() {}
+
+func (x *MetadataConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MetadataConfig.ProtoReflect.Descriptor instead.
+func (*MetadataConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *MetadataConfig) GetEnabled() bool {
+	if x != nil && x.Enabled != nil {
+		return *x.Enabled
+	}
+	return false
+}
+
+func (x *MetadataConfig) GetSchema() string {
+	if x != nil {
+		return x.Schema
+	}
+	return ""
+}
+
+func (x *MetadataConfig) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
+}
+
+func (x *MetadataConfig) GetPrimaryKeyPrefix() string {
+	if x != nil {
+		return x.PrimaryKeyPrefix
+	}
+	return ""
+}
+
+type ClickHouseMetadataConfig struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Enabled          *bool                  `protobuf:"varint,1,opt,name=enabled,proto3,oneof" json:"enabled,omitempty"`
+	Schema           string                 `protobuf:"bytes,2,opt,name=schema,proto3" json:"schema,omitempty"`
+	Table            string                 `protobuf:"bytes,3,opt,name=table,proto3" json:"table,omitempty"`
+	PrimaryKeyPrefix string                 `protobuf:"bytes,4,opt,name=primary_key_prefix,json=primaryKeyPrefix,proto3" json:"primary_key_prefix,omitempty"`
+	Engine           string                 `protobuf:"bytes,5,opt,name=engine,proto3" json:"engine,omitempty"`
+	OrderBy          string                 `protobuf:"bytes,6,opt,name=order_by,json=orderBy,proto3" json:"order_by,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ClickHouseMetadataConfig) Reset() {
+	*x = ClickHouseMetadataConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClickHouseMetadataConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClickHouseMetadataConfig) ProtoMessage() {}
+
+func (x *ClickHouseMetadataConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClickHouseMetadataConfig.ProtoReflect.Descriptor instead.
+func (*ClickHouseMetadataConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ClickHouseMetadataConfig) GetEnabled() bool {
+	if x != nil && x.Enabled != nil {
+		return *x.Enabled
+	}
+	return false
+}
+
+func (x *ClickHouseMetadataConfig) GetSchema() string {
+	if x != nil {
+		return x.Schema
+	}
+	return ""
+}
+
+func (x *ClickHouseMetadataConfig) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
+}
+
+func (x *ClickHouseMetadataConfig) GetPrimaryKeyPrefix() string {
+	if x != nil {
+		return x.PrimaryKeyPrefix
+	}
+	return ""
+}
+
+func (x *ClickHouseMetadataConfig) GetEngine() string {
+	if x != nil {
+		return x.Engine
+	}
+	return ""
+}
+
+func (x *ClickHouseMetadataConfig) GetOrderBy() string {
+	if x != nil {
+		return x.OrderBy
+	}
+	return ""
+}
+
+type WarehouseConfig struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Name               string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Size               string                 `protobuf:"bytes,2,opt,name=size,proto3" json:"size,omitempty"`
+	AutoSuspendSeconds *uint32                `protobuf:"varint,3,opt,name=auto_suspend_seconds,json=autoSuspendSeconds,proto3,oneof" json:"auto_suspend_seconds,omitempty"`
+	AutoResume         *bool                  `protobuf:"varint,4,opt,name=auto_resume,json=autoResume,proto3,oneof" json:"auto_resume,omitempty"`
+	SessionKeepAlive   *bool                  `protobuf:"varint,5,opt,name=session_keep_alive,json=sessionKeepAlive,proto3,oneof" json:"session_keep_alive,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *WarehouseConfig) Reset() {
+	*x = WarehouseConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WarehouseConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WarehouseConfig) ProtoMessage() {}
+
+func (x *WarehouseConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WarehouseConfig.ProtoReflect.Descriptor instead.
+func (*WarehouseConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *WarehouseConfig) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *WarehouseConfig) GetSize() string {
+	if x != nil {
+		return x.Size
+	}
+	return ""
+}
+
+func (x *WarehouseConfig) GetAutoSuspendSeconds() uint32 {
+	if x != nil && x.AutoSuspendSeconds != nil {
+		return *x.AutoSuspendSeconds
+	}
+	return 0
+}
+
+func (x *WarehouseConfig) GetAutoResume() bool {
+	if x != nil && x.AutoResume != nil {
+		return *x.AutoResume
+	}
+	return false
+}
+
+func (x *WarehouseConfig) GetSessionKeepAlive() bool {
+	if x != nil && x.SessionKeepAlive != nil {
+		return *x.SessionKeepAlive
+	}
+	return false
+}
+
+type TypeMappingsConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Mappings      map[string]string      `protobuf:"bytes,1,rep,name=mappings,proto3" json:"mappings,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TypeMappingsConfig) Reset() {
+	*x = TypeMappingsConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TypeMappingsConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TypeMappingsConfig) ProtoMessage() {}
+
+func (x *TypeMappingsConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TypeMappingsConfig.ProtoReflect.Descriptor instead.
+func (*TypeMappingsConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *TypeMappingsConfig) GetMappings() map[string]string {
+	if x != nil {
+		return x.Mappings
+	}
+	return nil
+}
+
+type ConfluentSchemaRegistryConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Url           string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	Username      string                 `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
+	Password      string                 `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"`
+	Token         string                 `protobuf:"bytes,4,opt,name=token,proto3" json:"token,omitempty"`
+	Timeout       *durationpb.Duration   `protobuf:"bytes,5,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConfluentSchemaRegistryConfig) Reset() {
+	*x = ConfluentSchemaRegistryConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfluentSchemaRegistryConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfluentSchemaRegistryConfig) ProtoMessage() {}
+
+func (x *ConfluentSchemaRegistryConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfluentSchemaRegistryConfig.ProtoReflect.Descriptor instead.
+func (*ConfluentSchemaRegistryConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ConfluentSchemaRegistryConfig) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *ConfluentSchemaRegistryConfig) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *ConfluentSchemaRegistryConfig) GetPassword() string {
+	if x != nil {
+		return x.Password
+	}
+	return ""
+}
+
+func (x *ConfluentSchemaRegistryConfig) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *ConfluentSchemaRegistryConfig) GetTimeout() *durationpb.Duration {
+	if x != nil {
+		return x.Timeout
+	}
+	return nil
+}
+
+type ApicurioSchemaRegistryConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Url           string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	Username      string                 `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
+	Password      string                 `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"`
+	Token         string                 `protobuf:"bytes,4,opt,name=token,proto3" json:"token,omitempty"`
+	Timeout       *durationpb.Duration   `protobuf:"bytes,5,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	Compatibility *bool                  `protobuf:"varint,6,opt,name=compatibility,proto3,oneof" json:"compatibility,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApicurioSchemaRegistryConfig) Reset() {
+	*x = ApicurioSchemaRegistryConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApicurioSchemaRegistryConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApicurioSchemaRegistryConfig) ProtoMessage() {}
+
+func (x *ApicurioSchemaRegistryConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApicurioSchemaRegistryConfig.ProtoReflect.Descriptor instead.
+func (*ApicurioSchemaRegistryConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ApicurioSchemaRegistryConfig) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *ApicurioSchemaRegistryConfig) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *ApicurioSchemaRegistryConfig) GetPassword() string {
+	if x != nil {
+		return x.Password
+	}
+	return ""
+}
+
+func (x *ApicurioSchemaRegistryConfig) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *ApicurioSchemaRegistryConfig) GetTimeout() *durationpb.Duration {
+	if x != nil {
+		return x.Timeout
+	}
+	return nil
+}
+
+func (x *ApicurioSchemaRegistryConfig) GetCompatibility() bool {
+	if x != nil && x.Compatibility != nil {
+		return *x.Compatibility
+	}
+	return false
+}
+
+type GlueSchemaRegistryConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Region        string                 `protobuf:"bytes,1,opt,name=region,proto3" json:"region,omitempty"`
+	Endpoint      string                 `protobuf:"bytes,2,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	Profile       string                 `protobuf:"bytes,3,opt,name=profile,proto3" json:"profile,omitempty"`
+	RoleArn       string                 `protobuf:"bytes,4,opt,name=role_arn,json=roleArn,proto3" json:"role_arn,omitempty"`
+	Registry      string                 `protobuf:"bytes,5,opt,name=registry,proto3" json:"registry,omitempty"`
+	Schema        string                 `protobuf:"bytes,6,opt,name=schema,proto3" json:"schema,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GlueSchemaRegistryConfig) Reset() {
+	*x = GlueSchemaRegistryConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GlueSchemaRegistryConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GlueSchemaRegistryConfig) ProtoMessage() {}
+
+func (x *GlueSchemaRegistryConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GlueSchemaRegistryConfig.ProtoReflect.Descriptor instead.
+func (*GlueSchemaRegistryConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *GlueSchemaRegistryConfig) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *GlueSchemaRegistryConfig) GetEndpoint() string {
+	if x != nil {
+		return x.Endpoint
+	}
+	return ""
+}
+
+func (x *GlueSchemaRegistryConfig) GetProfile() string {
+	if x != nil {
+		return x.Profile
+	}
+	return ""
+}
+
+func (x *GlueSchemaRegistryConfig) GetRoleArn() string {
+	if x != nil {
+		return x.RoleArn
+	}
+	return ""
+}
+
+func (x *GlueSchemaRegistryConfig) GetRegistry() string {
+	if x != nil {
+		return x.Registry
+	}
+	return ""
+}
+
+func (x *GlueSchemaRegistryConfig) GetSchema() string {
+	if x != nil {
+		return x.Schema
+	}
+	return ""
+}
+
+type PostgresSchemaRegistryConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Connection    *PostgresDSNConfig     `protobuf:"bytes,1,opt,name=connection,proto3" json:"connection,omitempty"`
+	Timeout       *durationpb.Duration   `protobuf:"bytes,2,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PostgresSchemaRegistryConfig) Reset() {
+	*x = PostgresSchemaRegistryConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PostgresSchemaRegistryConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PostgresSchemaRegistryConfig) ProtoMessage() {}
+
+func (x *PostgresSchemaRegistryConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PostgresSchemaRegistryConfig.ProtoReflect.Descriptor instead.
+func (*PostgresSchemaRegistryConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *PostgresSchemaRegistryConfig) GetConnection() *PostgresDSNConfig {
+	if x != nil {
+		return x.Connection
+	}
+	return nil
+}
+
+func (x *PostgresSchemaRegistryConfig) GetTimeout() *durationpb.Duration {
+	if x != nil {
+		return x.Timeout
+	}
+	return nil
+}
+
+type LocalSchemaRegistryConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Directory     string                 `protobuf:"bytes,1,opt,name=directory,proto3" json:"directory,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LocalSchemaRegistryConfig) Reset() {
+	*x = LocalSchemaRegistryConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LocalSchemaRegistryConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LocalSchemaRegistryConfig) ProtoMessage() {}
+
+func (x *LocalSchemaRegistryConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LocalSchemaRegistryConfig.ProtoReflect.Descriptor instead.
+func (*LocalSchemaRegistryConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *LocalSchemaRegistryConfig) GetDirectory() string {
+	if x != nil {
+		return x.Directory
+	}
+	return ""
+}
+
+type SchemaRegistryConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Backend:
+	//
+	//	*SchemaRegistryConfig_Confluent
+	//	*SchemaRegistryConfig_Apicurio
+	//	*SchemaRegistryConfig_Glue
+	//	*SchemaRegistryConfig_Postgres
+	//	*SchemaRegistryConfig_Local
+	Backend       isSchemaRegistryConfig_Backend `protobuf_oneof:"backend"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SchemaRegistryConfig) Reset() {
+	*x = SchemaRegistryConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SchemaRegistryConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SchemaRegistryConfig) ProtoMessage() {}
+
+func (x *SchemaRegistryConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SchemaRegistryConfig.ProtoReflect.Descriptor instead.
+func (*SchemaRegistryConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *SchemaRegistryConfig) GetBackend() isSchemaRegistryConfig_Backend {
+	if x != nil {
+		return x.Backend
+	}
+	return nil
+}
+
+func (x *SchemaRegistryConfig) GetConfluent() *ConfluentSchemaRegistryConfig {
+	if x != nil {
+		if x, ok := x.Backend.(*SchemaRegistryConfig_Confluent); ok {
+			return x.Confluent
+		}
+	}
+	return nil
+}
+
+func (x *SchemaRegistryConfig) GetApicurio() *ApicurioSchemaRegistryConfig {
+	if x != nil {
+		if x, ok := x.Backend.(*SchemaRegistryConfig_Apicurio); ok {
+			return x.Apicurio
+		}
+	}
+	return nil
+}
+
+func (x *SchemaRegistryConfig) GetGlue() *GlueSchemaRegistryConfig {
+	if x != nil {
+		if x, ok := x.Backend.(*SchemaRegistryConfig_Glue); ok {
+			return x.Glue
+		}
+	}
+	return nil
+}
+
+func (x *SchemaRegistryConfig) GetPostgres() *PostgresSchemaRegistryConfig {
+	if x != nil {
+		if x, ok := x.Backend.(*SchemaRegistryConfig_Postgres); ok {
+			return x.Postgres
+		}
+	}
+	return nil
+}
+
+func (x *SchemaRegistryConfig) GetLocal() *LocalSchemaRegistryConfig {
+	if x != nil {
+		if x, ok := x.Backend.(*SchemaRegistryConfig_Local); ok {
+			return x.Local
+		}
+	}
+	return nil
+}
+
+type isSchemaRegistryConfig_Backend interface {
+	isSchemaRegistryConfig_Backend()
+}
+
+type SchemaRegistryConfig_Confluent struct {
+	Confluent *ConfluentSchemaRegistryConfig `protobuf:"bytes,1,opt,name=confluent,proto3,oneof"`
+}
+
+type SchemaRegistryConfig_Apicurio struct {
+	Apicurio *ApicurioSchemaRegistryConfig `protobuf:"bytes,2,opt,name=apicurio,proto3,oneof"`
+}
+
+type SchemaRegistryConfig_Glue struct {
+	Glue *GlueSchemaRegistryConfig `protobuf:"bytes,3,opt,name=glue,proto3,oneof"`
+}
+
+type SchemaRegistryConfig_Postgres struct {
+	Postgres *PostgresSchemaRegistryConfig `protobuf:"bytes,4,opt,name=postgres,proto3,oneof"`
+}
+
+type SchemaRegistryConfig_Local struct {
+	Local *LocalSchemaRegistryConfig `protobuf:"bytes,5,opt,name=local,proto3,oneof"`
+}
+
+func (*SchemaRegistryConfig_Confluent) isSchemaRegistryConfig_Backend() {}
+
+func (*SchemaRegistryConfig_Apicurio) isSchemaRegistryConfig_Backend() {}
+
+func (*SchemaRegistryConfig_Glue) isSchemaRegistryConfig_Backend() {}
+
+func (*SchemaRegistryConfig_Postgres) isSchemaRegistryConfig_Backend() {}
+
+func (*SchemaRegistryConfig_Local) isSchemaRegistryConfig_Backend() {}
+
+type SnapshotStateConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Backend:
+	//
+	//	*SnapshotStateConfig_Disabled
+	//	*SnapshotStateConfig_FilePath
+	//	*SnapshotStateConfig_Postgres
+	Backend       isSnapshotStateConfig_Backend `protobuf_oneof:"backend"`
+	Schema        string                        `protobuf:"bytes,4,opt,name=schema,proto3" json:"schema,omitempty"`
+	Table         string                        `protobuf:"bytes,5,opt,name=table,proto3" json:"table,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SnapshotStateConfig) Reset() {
+	*x = SnapshotStateConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotStateConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotStateConfig) ProtoMessage() {}
+
+func (x *SnapshotStateConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotStateConfig.ProtoReflect.Descriptor instead.
+func (*SnapshotStateConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *SnapshotStateConfig) GetBackend() isSnapshotStateConfig_Backend {
+	if x != nil {
+		return x.Backend
+	}
+	return nil
+}
+
+func (x *SnapshotStateConfig) GetDisabled() bool {
+	if x != nil {
+		if x, ok := x.Backend.(*SnapshotStateConfig_Disabled); ok {
+			return x.Disabled
+		}
+	}
+	return false
+}
+
+func (x *SnapshotStateConfig) GetFilePath() string {
+	if x != nil {
+		if x, ok := x.Backend.(*SnapshotStateConfig_FilePath); ok {
+			return x.FilePath
+		}
+	}
+	return ""
+}
+
+func (x *SnapshotStateConfig) GetPostgres() *PostgresDSNConfig {
+	if x != nil {
+		if x, ok := x.Backend.(*SnapshotStateConfig_Postgres); ok {
+			return x.Postgres
+		}
+	}
+	return nil
+}
+
+func (x *SnapshotStateConfig) GetSchema() string {
+	if x != nil {
+		return x.Schema
+	}
+	return ""
+}
+
+func (x *SnapshotStateConfig) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
+}
+
+type isSnapshotStateConfig_Backend interface {
+	isSnapshotStateConfig_Backend()
+}
+
+type SnapshotStateConfig_Disabled struct {
+	Disabled bool `protobuf:"varint,1,opt,name=disabled,proto3,oneof"`
+}
+
+type SnapshotStateConfig_FilePath struct {
+	FilePath string `protobuf:"bytes,2,opt,name=file_path,json=filePath,proto3,oneof"`
+}
+
+type SnapshotStateConfig_Postgres struct {
+	Postgres *PostgresDSNConfig `protobuf:"bytes,3,opt,name=postgres,proto3,oneof"`
+}
+
+func (*SnapshotStateConfig_Disabled) isSnapshotStateConfig_Backend() {}
+
+func (*SnapshotStateConfig_FilePath) isSnapshotStateConfig_Backend() {}
+
+func (*SnapshotStateConfig_Postgres) isSnapshotStateConfig_Backend() {}
+
+type PostgresSourceConfig struct {
+	state                   protoimpl.MessageState    `protogen:"open.v1"`
+	Connection              *PostgresConnectionConfig `protobuf:"bytes,1,opt,name=connection,proto3" json:"connection,omitempty"`
+	Slot                    string                    `protobuf:"bytes,2,opt,name=slot,proto3" json:"slot,omitempty"`
+	Publication             string                    `protobuf:"bytes,3,opt,name=publication,proto3" json:"publication,omitempty"`
+	BatchSize               *uint32                   `protobuf:"varint,4,opt,name=batch_size,json=batchSize,proto3,oneof" json:"batch_size,omitempty"`
+	BatchTimeout            *durationpb.Duration      `protobuf:"bytes,5,opt,name=batch_timeout,json=batchTimeout,proto3" json:"batch_timeout,omitempty"`
+	StatusInterval          *durationpb.Duration      `protobuf:"bytes,6,opt,name=status_interval,json=statusInterval,proto3" json:"status_interval,omitempty"`
+	CreateSlot              *bool                     `protobuf:"varint,7,opt,name=create_slot,json=createSlot,proto3,oneof" json:"create_slot,omitempty"`
+	EmitEmpty               *bool                     `protobuf:"varint,8,opt,name=emit_empty,json=emitEmpty,proto3,oneof" json:"emit_empty,omitempty"`
+	EnsurePublication       *bool                     `protobuf:"varint,9,opt,name=ensure_publication,json=ensurePublication,proto3,oneof" json:"ensure_publication,omitempty"`
+	ValidateReplication     *bool                     `protobuf:"varint,10,opt,name=validate_replication,json=validateReplication,proto3,oneof" json:"validate_replication,omitempty"`
+	PublicationTables       []string                  `protobuf:"bytes,11,rep,name=publication_tables,json=publicationTables,proto3" json:"publication_tables,omitempty"`
+	PublicationSchemas      []string                  `protobuf:"bytes,12,rep,name=publication_schemas,json=publicationSchemas,proto3" json:"publication_schemas,omitempty"`
+	SyncPublication         *bool                     `protobuf:"varint,13,opt,name=sync_publication,json=syncPublication,proto3,oneof" json:"sync_publication,omitempty"`
+	SyncPublicationMode     SyncPublicationMode       `protobuf:"varint,14,opt,name=sync_publication_mode,json=syncPublicationMode,proto3,enum=wallaby.v1.SyncPublicationMode" json:"sync_publication_mode,omitempty"`
+	ResolveTypes            *bool                     `protobuf:"varint,15,opt,name=resolve_types,json=resolveTypes,proto3,oneof" json:"resolve_types,omitempty"`
+	EnsureState             *bool                     `protobuf:"varint,16,opt,name=ensure_state,json=ensureState,proto3,oneof" json:"ensure_state,omitempty"`
+	StateSchema             string                    `protobuf:"bytes,17,opt,name=state_schema,json=stateSchema,proto3" json:"state_schema,omitempty"`
+	StateTable              string                    `protobuf:"bytes,18,opt,name=state_table,json=stateTable,proto3" json:"state_table,omitempty"`
+	CaptureDdl              *bool                     `protobuf:"varint,19,opt,name=capture_ddl,json=captureDdl,proto3,oneof" json:"capture_ddl,omitempty"`
+	DdlTriggerSchema        string                    `protobuf:"bytes,20,opt,name=ddl_trigger_schema,json=ddlTriggerSchema,proto3" json:"ddl_trigger_schema,omitempty"`
+	DdlTriggerName          string                    `protobuf:"bytes,21,opt,name=ddl_trigger_name,json=ddlTriggerName,proto3" json:"ddl_trigger_name,omitempty"`
+	DdlMessagePrefix        string                    `protobuf:"bytes,22,opt,name=ddl_message_prefix,json=ddlMessagePrefix,proto3" json:"ddl_message_prefix,omitempty"`
+	ToastFetch              ToastFetchMode            `protobuf:"varint,23,opt,name=toast_fetch,json=toastFetch,proto3,enum=wallaby.v1.ToastFetchMode" json:"toast_fetch,omitempty"`
+	ToastCacheSize          *uint32                   `protobuf:"varint,24,opt,name=toast_cache_size,json=toastCacheSize,proto3,oneof" json:"toast_cache_size,omitempty"`
+	Managed                 *bool                     `protobuf:"varint,25,opt,name=managed,proto3,oneof" json:"managed,omitempty"`
+	ManagedProfile          ManagedProfile            `protobuf:"varint,26,opt,name=managed_profile,json=managedProfile,proto3,enum=wallaby.v1.ManagedProfile" json:"managed_profile,omitempty"`
+	MaxTransactionRecords   *uint64                   `protobuf:"varint,27,opt,name=max_transaction_records,json=maxTransactionRecords,proto3,oneof" json:"max_transaction_records,omitempty"`
+	MaxTransactionBytes     *uint64                   `protobuf:"varint,28,opt,name=max_transaction_bytes,json=maxTransactionBytes,proto3,oneof" json:"max_transaction_bytes,omitempty"`
+	MaxTransactionFragments *uint32                   `protobuf:"varint,29,opt,name=max_transaction_fragments,json=maxTransactionFragments,proto3,oneof" json:"max_transaction_fragments,omitempty"`
+	StreamingTransactions   *bool                     `protobuf:"varint,30,opt,name=streaming_transactions,json=streamingTransactions,proto3,oneof" json:"streaming_transactions,omitempty"`
+	SourceSystemIdentifier  string                    `protobuf:"bytes,31,opt,name=source_system_identifier,json=sourceSystemIdentifier,proto3" json:"source_system_identifier,omitempty"`
+	SourceLineageId         string                    `protobuf:"bytes,32,opt,name=source_lineage_id,json=sourceLineageId,proto3" json:"source_lineage_id,omitempty"`
+	PublicationRevision     string                    `protobuf:"bytes,33,opt,name=publication_revision,json=publicationRevision,proto3" json:"publication_revision,omitempty"`
+	Bootstrap               BootstrapMode             `protobuf:"varint,34,opt,name=bootstrap,proto3,enum=wallaby.v1.BootstrapMode" json:"bootstrap,omitempty"`
+	BootstrapRestartLimit   *uint32                   `protobuf:"varint,35,opt,name=bootstrap_restart_limit,json=bootstrapRestartLimit,proto3,oneof" json:"bootstrap_restart_limit,omitempty"`
+	SnapshotMaxTables       *uint32                   `protobuf:"varint,36,opt,name=snapshot_max_tables,json=snapshotMaxTables,proto3,oneof" json:"snapshot_max_tables,omitempty"`
+	SnapshotWorkers         *uint32                   `protobuf:"varint,37,opt,name=snapshot_workers,json=snapshotWorkers,proto3,oneof" json:"snapshot_workers,omitempty"`
+	SnapshotClaimLease      *durationpb.Duration      `protobuf:"bytes,38,opt,name=snapshot_claim_lease,json=snapshotClaimLease,proto3" json:"snapshot_claim_lease,omitempty"`
+	BackfillTables          []string                  `protobuf:"bytes,39,rep,name=backfill_tables,json=backfillTables,proto3" json:"backfill_tables,omitempty"`
+	BackfillSchemas         []string                  `protobuf:"bytes,40,rep,name=backfill_schemas,json=backfillSchemas,proto3" json:"backfill_schemas,omitempty"`
+	PartitionColumn         string                    `protobuf:"bytes,41,opt,name=partition_column,json=partitionColumn,proto3" json:"partition_column,omitempty"`
+	PartitionCount          *uint32                   `protobuf:"varint,42,opt,name=partition_count,json=partitionCount,proto3,oneof" json:"partition_count,omitempty"`
+	SnapshotConsistent      *bool                     `protobuf:"varint,43,opt,name=snapshot_consistent,json=snapshotConsistent,proto3,oneof" json:"snapshot_consistent,omitempty"`
+	SnapshotState           *SnapshotStateConfig      `protobuf:"bytes,44,opt,name=snapshot_state,json=snapshotState,proto3" json:"snapshot_state,omitempty"`
+	Format                  WireFormat                `protobuf:"varint,45,opt,name=format,proto3,enum=wallaby.v1.WireFormat" json:"format,omitempty"`
+	Mode                    PostgresSourceMode        `protobuf:"varint,46,opt,name=mode,proto3,enum=wallaby.v1.PostgresSourceMode" json:"mode,omitempty"`
+	DeliveryRetention       *durationpb.Duration      `protobuf:"bytes,47,opt,name=delivery_retention,json=deliveryRetention,proto3" json:"delivery_retention,omitempty"`
+	DeliveryPruneInterval   *durationpb.Duration      `protobuf:"bytes,48,opt,name=delivery_prune_interval,json=deliveryPruneInterval,proto3" json:"delivery_prune_interval,omitempty"`
+	BootstrapTables         []string                  `protobuf:"bytes,49,rep,name=bootstrap_tables,json=bootstrapTables,proto3" json:"bootstrap_tables,omitempty"`
+	BootstrapSchemas        []string                  `protobuf:"bytes,50,rep,name=bootstrap_schemas,json=bootstrapSchemas,proto3" json:"bootstrap_schemas,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
+}
+
+func (x *PostgresSourceConfig) Reset() {
+	*x = PostgresSourceConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PostgresSourceConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PostgresSourceConfig) ProtoMessage() {}
+
+func (x *PostgresSourceConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PostgresSourceConfig.ProtoReflect.Descriptor instead.
+func (*PostgresSourceConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *PostgresSourceConfig) GetConnection() *PostgresConnectionConfig {
+	if x != nil {
+		return x.Connection
+	}
+	return nil
+}
+
+func (x *PostgresSourceConfig) GetSlot() string {
+	if x != nil {
+		return x.Slot
+	}
+	return ""
+}
+
+func (x *PostgresSourceConfig) GetPublication() string {
+	if x != nil {
+		return x.Publication
+	}
+	return ""
+}
+
+func (x *PostgresSourceConfig) GetBatchSize() uint32 {
+	if x != nil && x.BatchSize != nil {
+		return *x.BatchSize
+	}
+	return 0
+}
+
+func (x *PostgresSourceConfig) GetBatchTimeout() *durationpb.Duration {
+	if x != nil {
+		return x.BatchTimeout
+	}
+	return nil
+}
+
+func (x *PostgresSourceConfig) GetStatusInterval() *durationpb.Duration {
+	if x != nil {
+		return x.StatusInterval
+	}
+	return nil
+}
+
+func (x *PostgresSourceConfig) GetCreateSlot() bool {
+	if x != nil && x.CreateSlot != nil {
+		return *x.CreateSlot
+	}
+	return false
+}
+
+func (x *PostgresSourceConfig) GetEmitEmpty() bool {
+	if x != nil && x.EmitEmpty != nil {
+		return *x.EmitEmpty
+	}
+	return false
+}
+
+func (x *PostgresSourceConfig) GetEnsurePublication() bool {
+	if x != nil && x.EnsurePublication != nil {
+		return *x.EnsurePublication
+	}
+	return false
+}
+
+func (x *PostgresSourceConfig) GetValidateReplication() bool {
+	if x != nil && x.ValidateReplication != nil {
+		return *x.ValidateReplication
+	}
+	return false
+}
+
+func (x *PostgresSourceConfig) GetPublicationTables() []string {
+	if x != nil {
+		return x.PublicationTables
+	}
+	return nil
+}
+
+func (x *PostgresSourceConfig) GetPublicationSchemas() []string {
+	if x != nil {
+		return x.PublicationSchemas
+	}
+	return nil
+}
+
+func (x *PostgresSourceConfig) GetSyncPublication() bool {
+	if x != nil && x.SyncPublication != nil {
+		return *x.SyncPublication
+	}
+	return false
+}
+
+func (x *PostgresSourceConfig) GetSyncPublicationMode() SyncPublicationMode {
+	if x != nil {
+		return x.SyncPublicationMode
+	}
+	return SyncPublicationMode_SYNC_PUBLICATION_MODE_UNSPECIFIED
+}
+
+func (x *PostgresSourceConfig) GetResolveTypes() bool {
+	if x != nil && x.ResolveTypes != nil {
+		return *x.ResolveTypes
+	}
+	return false
+}
+
+func (x *PostgresSourceConfig) GetEnsureState() bool {
+	if x != nil && x.EnsureState != nil {
+		return *x.EnsureState
+	}
+	return false
+}
+
+func (x *PostgresSourceConfig) GetStateSchema() string {
+	if x != nil {
+		return x.StateSchema
+	}
+	return ""
+}
+
+func (x *PostgresSourceConfig) GetStateTable() string {
+	if x != nil {
+		return x.StateTable
+	}
+	return ""
+}
+
+func (x *PostgresSourceConfig) GetCaptureDdl() bool {
+	if x != nil && x.CaptureDdl != nil {
+		return *x.CaptureDdl
+	}
+	return false
+}
+
+func (x *PostgresSourceConfig) GetDdlTriggerSchema() string {
+	if x != nil {
+		return x.DdlTriggerSchema
+	}
+	return ""
+}
+
+func (x *PostgresSourceConfig) GetDdlTriggerName() string {
+	if x != nil {
+		return x.DdlTriggerName
+	}
+	return ""
+}
+
+func (x *PostgresSourceConfig) GetDdlMessagePrefix() string {
+	if x != nil {
+		return x.DdlMessagePrefix
+	}
+	return ""
+}
+
+func (x *PostgresSourceConfig) GetToastFetch() ToastFetchMode {
+	if x != nil {
+		return x.ToastFetch
+	}
+	return ToastFetchMode_TOAST_FETCH_MODE_UNSPECIFIED
+}
+
+func (x *PostgresSourceConfig) GetToastCacheSize() uint32 {
+	if x != nil && x.ToastCacheSize != nil {
+		return *x.ToastCacheSize
+	}
+	return 0
+}
+
+func (x *PostgresSourceConfig) GetManaged() bool {
+	if x != nil && x.Managed != nil {
+		return *x.Managed
+	}
+	return false
+}
+
+func (x *PostgresSourceConfig) GetManagedProfile() ManagedProfile {
+	if x != nil {
+		return x.ManagedProfile
+	}
+	return ManagedProfile_MANAGED_PROFILE_UNSPECIFIED
+}
+
+func (x *PostgresSourceConfig) GetMaxTransactionRecords() uint64 {
+	if x != nil && x.MaxTransactionRecords != nil {
+		return *x.MaxTransactionRecords
+	}
+	return 0
+}
+
+func (x *PostgresSourceConfig) GetMaxTransactionBytes() uint64 {
+	if x != nil && x.MaxTransactionBytes != nil {
+		return *x.MaxTransactionBytes
+	}
+	return 0
+}
+
+func (x *PostgresSourceConfig) GetMaxTransactionFragments() uint32 {
+	if x != nil && x.MaxTransactionFragments != nil {
+		return *x.MaxTransactionFragments
+	}
+	return 0
+}
+
+func (x *PostgresSourceConfig) GetStreamingTransactions() bool {
+	if x != nil && x.StreamingTransactions != nil {
+		return *x.StreamingTransactions
+	}
+	return false
+}
+
+func (x *PostgresSourceConfig) GetSourceSystemIdentifier() string {
+	if x != nil {
+		return x.SourceSystemIdentifier
+	}
+	return ""
+}
+
+func (x *PostgresSourceConfig) GetSourceLineageId() string {
+	if x != nil {
+		return x.SourceLineageId
+	}
+	return ""
+}
+
+func (x *PostgresSourceConfig) GetPublicationRevision() string {
+	if x != nil {
+		return x.PublicationRevision
+	}
+	return ""
+}
+
+func (x *PostgresSourceConfig) GetBootstrap() BootstrapMode {
+	if x != nil {
+		return x.Bootstrap
+	}
+	return BootstrapMode_BOOTSTRAP_MODE_UNSPECIFIED
+}
+
+func (x *PostgresSourceConfig) GetBootstrapRestartLimit() uint32 {
+	if x != nil && x.BootstrapRestartLimit != nil {
+		return *x.BootstrapRestartLimit
+	}
+	return 0
+}
+
+func (x *PostgresSourceConfig) GetSnapshotMaxTables() uint32 {
+	if x != nil && x.SnapshotMaxTables != nil {
+		return *x.SnapshotMaxTables
+	}
+	return 0
+}
+
+func (x *PostgresSourceConfig) GetSnapshotWorkers() uint32 {
+	if x != nil && x.SnapshotWorkers != nil {
+		return *x.SnapshotWorkers
+	}
+	return 0
+}
+
+func (x *PostgresSourceConfig) GetSnapshotClaimLease() *durationpb.Duration {
+	if x != nil {
+		return x.SnapshotClaimLease
+	}
+	return nil
+}
+
+func (x *PostgresSourceConfig) GetBackfillTables() []string {
+	if x != nil {
+		return x.BackfillTables
+	}
+	return nil
+}
+
+func (x *PostgresSourceConfig) GetBackfillSchemas() []string {
+	if x != nil {
+		return x.BackfillSchemas
+	}
+	return nil
+}
+
+func (x *PostgresSourceConfig) GetPartitionColumn() string {
+	if x != nil {
+		return x.PartitionColumn
+	}
+	return ""
+}
+
+func (x *PostgresSourceConfig) GetPartitionCount() uint32 {
+	if x != nil && x.PartitionCount != nil {
+		return *x.PartitionCount
+	}
+	return 0
+}
+
+func (x *PostgresSourceConfig) GetSnapshotConsistent() bool {
+	if x != nil && x.SnapshotConsistent != nil {
+		return *x.SnapshotConsistent
+	}
+	return false
+}
+
+func (x *PostgresSourceConfig) GetSnapshotState() *SnapshotStateConfig {
+	if x != nil {
+		return x.SnapshotState
+	}
+	return nil
+}
+
+func (x *PostgresSourceConfig) GetFormat() WireFormat {
+	if x != nil {
+		return x.Format
+	}
+	return WireFormat_WIRE_FORMAT_UNSPECIFIED
+}
+
+func (x *PostgresSourceConfig) GetMode() PostgresSourceMode {
+	if x != nil {
+		return x.Mode
+	}
+	return PostgresSourceMode_POSTGRES_SOURCE_MODE_UNSPECIFIED
+}
+
+func (x *PostgresSourceConfig) GetDeliveryRetention() *durationpb.Duration {
+	if x != nil {
+		return x.DeliveryRetention
+	}
+	return nil
+}
+
+func (x *PostgresSourceConfig) GetDeliveryPruneInterval() *durationpb.Duration {
+	if x != nil {
+		return x.DeliveryPruneInterval
+	}
+	return nil
+}
+
+func (x *PostgresSourceConfig) GetBootstrapTables() []string {
+	if x != nil {
+		return x.BootstrapTables
+	}
+	return nil
+}
+
+func (x *PostgresSourceConfig) GetBootstrapSchemas() []string {
+	if x != nil {
+		return x.BootstrapSchemas
+	}
+	return nil
+}
+
+type PostgresDestinationConfig struct {
+	state                 protoimpl.MessageState    `protogen:"open.v1"`
+	Connection            *PostgresConnectionConfig `protobuf:"bytes,1,opt,name=connection,proto3" json:"connection,omitempty"`
+	Staging               *StagingConfig            `protobuf:"bytes,2,opt,name=staging,proto3" json:"staging,omitempty"`
+	Metadata              *MetadataConfig           `protobuf:"bytes,3,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	SynchronousCommit     string                    `protobuf:"bytes,4,opt,name=synchronous_commit,json=synchronousCommit,proto3" json:"synchronous_commit,omitempty"`
+	TypeMappings          *TypeMappingsConfig       `protobuf:"bytes,5,opt,name=type_mappings,json=typeMappings,proto3" json:"type_mappings,omitempty"`
+	ManagedProfile        ManagedProfile            `protobuf:"varint,6,opt,name=managed_profile,json=managedProfile,proto3,enum=wallaby.v1.ManagedProfile" json:"managed_profile,omitempty"`
+	DestinationRevisionId string                    `protobuf:"bytes,7,opt,name=destination_revision_id,json=destinationRevisionId,proto3" json:"destination_revision_id,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *PostgresDestinationConfig) Reset() {
+	*x = PostgresDestinationConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PostgresDestinationConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PostgresDestinationConfig) ProtoMessage() {}
+
+func (x *PostgresDestinationConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PostgresDestinationConfig.ProtoReflect.Descriptor instead.
+func (*PostgresDestinationConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *PostgresDestinationConfig) GetConnection() *PostgresConnectionConfig {
+	if x != nil {
+		return x.Connection
+	}
+	return nil
+}
+
+func (x *PostgresDestinationConfig) GetStaging() *StagingConfig {
+	if x != nil {
+		return x.Staging
+	}
+	return nil
+}
+
+func (x *PostgresDestinationConfig) GetMetadata() *MetadataConfig {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *PostgresDestinationConfig) GetSynchronousCommit() string {
+	if x != nil {
+		return x.SynchronousCommit
+	}
+	return ""
+}
+
+func (x *PostgresDestinationConfig) GetTypeMappings() *TypeMappingsConfig {
+	if x != nil {
+		return x.TypeMappings
+	}
+	return nil
+}
+
+func (x *PostgresDestinationConfig) GetManagedProfile() ManagedProfile {
+	if x != nil {
+		return x.ManagedProfile
+	}
+	return ManagedProfile_MANAGED_PROFILE_UNSPECIFIED
+}
+
+func (x *PostgresDestinationConfig) GetDestinationRevisionId() string {
+	if x != nil {
+		return x.DestinationRevisionId
+	}
+	return ""
+}
+
+type PGStreamDestinationConfig struct {
+	state                           protoimpl.MessageState `protogen:"open.v1"`
+	Connection                      *PostgresDSNConfig     `protobuf:"bytes,1,opt,name=connection,proto3" json:"connection,omitempty"`
+	Stream                          string                 `protobuf:"bytes,2,opt,name=stream,proto3" json:"stream,omitempty"`
+	Format                          WireFormat             `protobuf:"varint,3,opt,name=format,proto3,enum=wallaby.v1.WireFormat" json:"format,omitempty"`
+	TypeMappings                    *TypeMappingsConfig    `protobuf:"bytes,4,opt,name=type_mappings,json=typeMappings,proto3" json:"type_mappings,omitempty"`
+	SchemaRegistry                  *SchemaRegistryConfig  `protobuf:"bytes,5,opt,name=schema_registry,json=schemaRegistry,proto3" json:"schema_registry,omitempty"`
+	SchemaRegistrySubject           string                 `protobuf:"bytes,6,opt,name=schema_registry_subject,json=schemaRegistrySubject,proto3" json:"schema_registry_subject,omitempty"`
+	SchemaRegistryProtoTypesSubject string                 `protobuf:"bytes,7,opt,name=schema_registry_proto_types_subject,json=schemaRegistryProtoTypesSubject,proto3" json:"schema_registry_proto_types_subject,omitempty"`
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
+}
+
+func (x *PGStreamDestinationConfig) Reset() {
+	*x = PGStreamDestinationConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PGStreamDestinationConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PGStreamDestinationConfig) ProtoMessage() {}
+
+func (x *PGStreamDestinationConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PGStreamDestinationConfig.ProtoReflect.Descriptor instead.
+func (*PGStreamDestinationConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *PGStreamDestinationConfig) GetConnection() *PostgresDSNConfig {
+	if x != nil {
+		return x.Connection
+	}
+	return nil
+}
+
+func (x *PGStreamDestinationConfig) GetStream() string {
+	if x != nil {
+		return x.Stream
+	}
+	return ""
+}
+
+func (x *PGStreamDestinationConfig) GetFormat() WireFormat {
+	if x != nil {
+		return x.Format
+	}
+	return WireFormat_WIRE_FORMAT_UNSPECIFIED
+}
+
+func (x *PGStreamDestinationConfig) GetTypeMappings() *TypeMappingsConfig {
+	if x != nil {
+		return x.TypeMappings
+	}
+	return nil
+}
+
+func (x *PGStreamDestinationConfig) GetSchemaRegistry() *SchemaRegistryConfig {
+	if x != nil {
+		return x.SchemaRegistry
+	}
+	return nil
+}
+
+func (x *PGStreamDestinationConfig) GetSchemaRegistrySubject() string {
+	if x != nil {
+		return x.SchemaRegistrySubject
+	}
+	return ""
+}
+
+func (x *PGStreamDestinationConfig) GetSchemaRegistryProtoTypesSubject() string {
+	if x != nil {
+		return x.SchemaRegistryProtoTypesSubject
+	}
+	return ""
+}
+
+type KafkaDestinationConfig struct {
+	state                           protoimpl.MessageState `protogen:"open.v1"`
+	Brokers                         []string               `protobuf:"bytes,1,rep,name=brokers,proto3" json:"brokers,omitempty"`
+	Topic                           string                 `protobuf:"bytes,2,opt,name=topic,proto3" json:"topic,omitempty"`
+	Format                          WireFormat             `protobuf:"varint,3,opt,name=format,proto3,enum=wallaby.v1.WireFormat" json:"format,omitempty"`
+	Compression                     Compression            `protobuf:"varint,4,opt,name=compression,proto3,enum=wallaby.v1.Compression" json:"compression,omitempty"`
+	Acks                            KafkaAcks              `protobuf:"varint,5,opt,name=acks,proto3,enum=wallaby.v1.KafkaAcks" json:"acks,omitempty"`
+	MaxMessageBytes                 *uint32                `protobuf:"varint,6,opt,name=max_message_bytes,json=maxMessageBytes,proto3,oneof" json:"max_message_bytes,omitempty"`
+	MaxBatchBytes                   *uint32                `protobuf:"varint,7,opt,name=max_batch_bytes,json=maxBatchBytes,proto3,oneof" json:"max_batch_bytes,omitempty"`
+	MaxRecordBytes                  *uint32                `protobuf:"varint,8,opt,name=max_record_bytes,json=maxRecordBytes,proto3,oneof" json:"max_record_bytes,omitempty"`
+	TransactionalProducer           *bool                  `protobuf:"varint,9,opt,name=transactional_producer,json=transactionalProducer,proto3,oneof" json:"transactional_producer,omitempty"`
+	AllowOversizeSkip               *bool                  `protobuf:"varint,10,opt,name=allow_oversize_skip,json=allowOversizeSkip,proto3,oneof" json:"allow_oversize_skip,omitempty"`
+	MessageMode                     KafkaMessageMode       `protobuf:"varint,11,opt,name=message_mode,json=messageMode,proto3,enum=wallaby.v1.KafkaMessageMode" json:"message_mode,omitempty"`
+	KeyMode                         KafkaKeyMode           `protobuf:"varint,12,opt,name=key_mode,json=keyMode,proto3,enum=wallaby.v1.KafkaKeyMode" json:"key_mode,omitempty"`
+	TransactionalId                 string                 `protobuf:"bytes,13,opt,name=transactional_id,json=transactionalId,proto3" json:"transactional_id,omitempty"`
+	TransactionTimeout              *durationpb.Duration   `protobuf:"bytes,14,opt,name=transaction_timeout,json=transactionTimeout,proto3" json:"transaction_timeout,omitempty"`
+	TransactionHeader               string                 `protobuf:"bytes,15,opt,name=transaction_header,json=transactionHeader,proto3" json:"transaction_header,omitempty"`
+	SchemaRegistry                  *SchemaRegistryConfig  `protobuf:"bytes,16,opt,name=schema_registry,json=schemaRegistry,proto3" json:"schema_registry,omitempty"`
+	TypeMappings                    *TypeMappingsConfig    `protobuf:"bytes,17,opt,name=type_mappings,json=typeMappings,proto3" json:"type_mappings,omitempty"`
+	SchemaRegistrySubject           string                 `protobuf:"bytes,18,opt,name=schema_registry_subject,json=schemaRegistrySubject,proto3" json:"schema_registry_subject,omitempty"`
+	SchemaRegistryProtoTypesSubject string                 `protobuf:"bytes,19,opt,name=schema_registry_proto_types_subject,json=schemaRegistryProtoTypesSubject,proto3" json:"schema_registry_proto_types_subject,omitempty"`
+	SchemaRegistrySubjectMode       string                 `protobuf:"bytes,20,opt,name=schema_registry_subject_mode,json=schemaRegistrySubjectMode,proto3" json:"schema_registry_subject_mode,omitempty"`
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
+}
+
+func (x *KafkaDestinationConfig) Reset() {
+	*x = KafkaDestinationConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *KafkaDestinationConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*KafkaDestinationConfig) ProtoMessage() {}
+
+func (x *KafkaDestinationConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use KafkaDestinationConfig.ProtoReflect.Descriptor instead.
+func (*KafkaDestinationConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *KafkaDestinationConfig) GetBrokers() []string {
+	if x != nil {
+		return x.Brokers
+	}
+	return nil
+}
+
+func (x *KafkaDestinationConfig) GetTopic() string {
+	if x != nil {
+		return x.Topic
+	}
+	return ""
+}
+
+func (x *KafkaDestinationConfig) GetFormat() WireFormat {
+	if x != nil {
+		return x.Format
+	}
+	return WireFormat_WIRE_FORMAT_UNSPECIFIED
+}
+
+func (x *KafkaDestinationConfig) GetCompression() Compression {
+	if x != nil {
+		return x.Compression
+	}
+	return Compression_COMPRESSION_UNSPECIFIED
+}
+
+func (x *KafkaDestinationConfig) GetAcks() KafkaAcks {
+	if x != nil {
+		return x.Acks
+	}
+	return KafkaAcks_KAFKA_ACKS_UNSPECIFIED
+}
+
+func (x *KafkaDestinationConfig) GetMaxMessageBytes() uint32 {
+	if x != nil && x.MaxMessageBytes != nil {
+		return *x.MaxMessageBytes
+	}
+	return 0
+}
+
+func (x *KafkaDestinationConfig) GetMaxBatchBytes() uint32 {
+	if x != nil && x.MaxBatchBytes != nil {
+		return *x.MaxBatchBytes
+	}
+	return 0
+}
+
+func (x *KafkaDestinationConfig) GetMaxRecordBytes() uint32 {
+	if x != nil && x.MaxRecordBytes != nil {
+		return *x.MaxRecordBytes
+	}
+	return 0
+}
+
+func (x *KafkaDestinationConfig) GetTransactionalProducer() bool {
+	if x != nil && x.TransactionalProducer != nil {
+		return *x.TransactionalProducer
+	}
+	return false
+}
+
+func (x *KafkaDestinationConfig) GetAllowOversizeSkip() bool {
+	if x != nil && x.AllowOversizeSkip != nil {
+		return *x.AllowOversizeSkip
+	}
+	return false
+}
+
+func (x *KafkaDestinationConfig) GetMessageMode() KafkaMessageMode {
+	if x != nil {
+		return x.MessageMode
+	}
+	return KafkaMessageMode_KAFKA_MESSAGE_MODE_UNSPECIFIED
+}
+
+func (x *KafkaDestinationConfig) GetKeyMode() KafkaKeyMode {
+	if x != nil {
+		return x.KeyMode
+	}
+	return KafkaKeyMode_KAFKA_KEY_MODE_UNSPECIFIED
+}
+
+func (x *KafkaDestinationConfig) GetTransactionalId() string {
+	if x != nil {
+		return x.TransactionalId
+	}
+	return ""
+}
+
+func (x *KafkaDestinationConfig) GetTransactionTimeout() *durationpb.Duration {
+	if x != nil {
+		return x.TransactionTimeout
+	}
+	return nil
+}
+
+func (x *KafkaDestinationConfig) GetTransactionHeader() string {
+	if x != nil {
+		return x.TransactionHeader
+	}
+	return ""
+}
+
+func (x *KafkaDestinationConfig) GetSchemaRegistry() *SchemaRegistryConfig {
+	if x != nil {
+		return x.SchemaRegistry
+	}
+	return nil
+}
+
+func (x *KafkaDestinationConfig) GetTypeMappings() *TypeMappingsConfig {
+	if x != nil {
+		return x.TypeMappings
+	}
+	return nil
+}
+
+func (x *KafkaDestinationConfig) GetSchemaRegistrySubject() string {
+	if x != nil {
+		return x.SchemaRegistrySubject
+	}
+	return ""
+}
+
+func (x *KafkaDestinationConfig) GetSchemaRegistryProtoTypesSubject() string {
+	if x != nil {
+		return x.SchemaRegistryProtoTypesSubject
+	}
+	return ""
+}
+
+func (x *KafkaDestinationConfig) GetSchemaRegistrySubjectMode() string {
+	if x != nil {
+		return x.SchemaRegistrySubjectMode
+	}
+	return ""
+}
+
+type RedpandaDestinationConfig struct {
+	state         protoimpl.MessageState  `protogen:"open.v1"`
+	Kafka         *KafkaDestinationConfig `protobuf:"bytes,1,opt,name=kafka,proto3" json:"kafka,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RedpandaDestinationConfig) Reset() {
+	*x = RedpandaDestinationConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RedpandaDestinationConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RedpandaDestinationConfig) ProtoMessage() {}
+
+func (x *RedpandaDestinationConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RedpandaDestinationConfig.ProtoReflect.Descriptor instead.
+func (*RedpandaDestinationConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *RedpandaDestinationConfig) GetKafka() *KafkaDestinationConfig {
+	if x != nil {
+		return x.Kafka
+	}
+	return nil
+}
+
+type S3DestinationConfig struct {
+	state                           protoimpl.MessageState `protogen:"open.v1"`
+	Bucket                          string                 `protobuf:"bytes,1,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	Prefix                          string                 `protobuf:"bytes,2,opt,name=prefix,proto3" json:"prefix,omitempty"`
+	Region                          string                 `protobuf:"bytes,3,opt,name=region,proto3" json:"region,omitempty"`
+	Format                          WireFormat             `protobuf:"varint,4,opt,name=format,proto3,enum=wallaby.v1.WireFormat" json:"format,omitempty"`
+	Compression                     Compression            `protobuf:"varint,5,opt,name=compression,proto3,enum=wallaby.v1.Compression" json:"compression,omitempty"`
+	PartitionBy                     []string               `protobuf:"bytes,6,rep,name=partition_by,json=partitionBy,proto3" json:"partition_by,omitempty"`
+	Endpoint                        string                 `protobuf:"bytes,7,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	AccessKey                       string                 `protobuf:"bytes,8,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"`
+	SecretKey                       string                 `protobuf:"bytes,9,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"`
+	SessionToken                    string                 `protobuf:"bytes,10,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
+	ForcePathStyle                  *bool                  `protobuf:"varint,11,opt,name=force_path_style,json=forcePathStyle,proto3,oneof" json:"force_path_style,omitempty"`
+	UseFips                         *bool                  `protobuf:"varint,12,opt,name=use_fips,json=useFips,proto3,oneof" json:"use_fips,omitempty"`
+	UseDualstack                    *bool                  `protobuf:"varint,13,opt,name=use_dualstack,json=useDualstack,proto3,oneof" json:"use_dualstack,omitempty"`
+	TypeMappings                    *TypeMappingsConfig    `protobuf:"bytes,14,opt,name=type_mappings,json=typeMappings,proto3" json:"type_mappings,omitempty"`
+	SchemaRegistry                  *SchemaRegistryConfig  `protobuf:"bytes,15,opt,name=schema_registry,json=schemaRegistry,proto3" json:"schema_registry,omitempty"`
+	SchemaRegistrySubject           string                 `protobuf:"bytes,16,opt,name=schema_registry_subject,json=schemaRegistrySubject,proto3" json:"schema_registry_subject,omitempty"`
+	SchemaRegistryProtoTypesSubject string                 `protobuf:"bytes,17,opt,name=schema_registry_proto_types_subject,json=schemaRegistryProtoTypesSubject,proto3" json:"schema_registry_proto_types_subject,omitempty"`
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
+}
+
+func (x *S3DestinationConfig) Reset() {
+	*x = S3DestinationConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *S3DestinationConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*S3DestinationConfig) ProtoMessage() {}
+
+func (x *S3DestinationConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use S3DestinationConfig.ProtoReflect.Descriptor instead.
+func (*S3DestinationConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *S3DestinationConfig) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *S3DestinationConfig) GetPrefix() string {
+	if x != nil {
+		return x.Prefix
+	}
+	return ""
+}
+
+func (x *S3DestinationConfig) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *S3DestinationConfig) GetFormat() WireFormat {
+	if x != nil {
+		return x.Format
+	}
+	return WireFormat_WIRE_FORMAT_UNSPECIFIED
+}
+
+func (x *S3DestinationConfig) GetCompression() Compression {
+	if x != nil {
+		return x.Compression
+	}
+	return Compression_COMPRESSION_UNSPECIFIED
+}
+
+func (x *S3DestinationConfig) GetPartitionBy() []string {
+	if x != nil {
+		return x.PartitionBy
+	}
+	return nil
+}
+
+func (x *S3DestinationConfig) GetEndpoint() string {
+	if x != nil {
+		return x.Endpoint
+	}
+	return ""
+}
+
+func (x *S3DestinationConfig) GetAccessKey() string {
+	if x != nil {
+		return x.AccessKey
+	}
+	return ""
+}
+
+func (x *S3DestinationConfig) GetSecretKey() string {
+	if x != nil {
+		return x.SecretKey
+	}
+	return ""
+}
+
+func (x *S3DestinationConfig) GetSessionToken() string {
+	if x != nil {
+		return x.SessionToken
+	}
+	return ""
+}
+
+func (x *S3DestinationConfig) GetForcePathStyle() bool {
+	if x != nil && x.ForcePathStyle != nil {
+		return *x.ForcePathStyle
+	}
+	return false
+}
+
+func (x *S3DestinationConfig) GetUseFips() bool {
+	if x != nil && x.UseFips != nil {
+		return *x.UseFips
+	}
+	return false
+}
+
+func (x *S3DestinationConfig) GetUseDualstack() bool {
+	if x != nil && x.UseDualstack != nil {
+		return *x.UseDualstack
+	}
+	return false
+}
+
+func (x *S3DestinationConfig) GetTypeMappings() *TypeMappingsConfig {
+	if x != nil {
+		return x.TypeMappings
+	}
+	return nil
+}
+
+func (x *S3DestinationConfig) GetSchemaRegistry() *SchemaRegistryConfig {
+	if x != nil {
+		return x.SchemaRegistry
+	}
+	return nil
+}
+
+func (x *S3DestinationConfig) GetSchemaRegistrySubject() string {
+	if x != nil {
+		return x.SchemaRegistrySubject
+	}
+	return ""
+}
+
+func (x *S3DestinationConfig) GetSchemaRegistryProtoTypesSubject() string {
+	if x != nil {
+		return x.SchemaRegistryProtoTypesSubject
+	}
+	return ""
+}
+
+type HTTPDestinationConfig struct {
+	state                           protoimpl.MessageState `protogen:"open.v1"`
+	Url                             string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	Method                          string                 `protobuf:"bytes,2,opt,name=method,proto3" json:"method,omitempty"`
+	Format                          WireFormat             `protobuf:"varint,3,opt,name=format,proto3,enum=wallaby.v1.WireFormat" json:"format,omitempty"`
+	PayloadMode                     PayloadMode            `protobuf:"varint,4,opt,name=payload_mode,json=payloadMode,proto3,enum=wallaby.v1.PayloadMode" json:"payload_mode,omitempty"`
+	Timeout                         *durationpb.Duration   `protobuf:"bytes,5,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	Headers                         map[string]string      `protobuf:"bytes,6,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Retry                           *RetryConfig           `protobuf:"bytes,7,opt,name=retry,proto3" json:"retry,omitempty"`
+	IdempotencyHeader               string                 `protobuf:"bytes,8,opt,name=idempotency_header,json=idempotencyHeader,proto3" json:"idempotency_header,omitempty"`
+	DedupeWindow                    *durationpb.Duration   `protobuf:"bytes,9,opt,name=dedupe_window,json=dedupeWindow,proto3" json:"dedupe_window,omitempty"`
+	TransactionHeader               string                 `protobuf:"bytes,10,opt,name=transaction_header,json=transactionHeader,proto3" json:"transaction_header,omitempty"`
+	SchemaRegistry                  *SchemaRegistryConfig  `protobuf:"bytes,11,opt,name=schema_registry,json=schemaRegistry,proto3" json:"schema_registry,omitempty"`
+	TypeMappings                    *TypeMappingsConfig    `protobuf:"bytes,12,opt,name=type_mappings,json=typeMappings,proto3" json:"type_mappings,omitempty"`
+	SchemaRegistrySubject           string                 `protobuf:"bytes,13,opt,name=schema_registry_subject,json=schemaRegistrySubject,proto3" json:"schema_registry_subject,omitempty"`
+	SchemaRegistryProtoTypesSubject string                 `protobuf:"bytes,14,opt,name=schema_registry_proto_types_subject,json=schemaRegistryProtoTypesSubject,proto3" json:"schema_registry_proto_types_subject,omitempty"`
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
+}
+
+func (x *HTTPDestinationConfig) Reset() {
+	*x = HTTPDestinationConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HTTPDestinationConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HTTPDestinationConfig) ProtoMessage() {}
+
+func (x *HTTPDestinationConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HTTPDestinationConfig.ProtoReflect.Descriptor instead.
+func (*HTTPDestinationConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *HTTPDestinationConfig) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *HTTPDestinationConfig) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+func (x *HTTPDestinationConfig) GetFormat() WireFormat {
+	if x != nil {
+		return x.Format
+	}
+	return WireFormat_WIRE_FORMAT_UNSPECIFIED
+}
+
+func (x *HTTPDestinationConfig) GetPayloadMode() PayloadMode {
+	if x != nil {
+		return x.PayloadMode
+	}
+	return PayloadMode_PAYLOAD_MODE_UNSPECIFIED
+}
+
+func (x *HTTPDestinationConfig) GetTimeout() *durationpb.Duration {
+	if x != nil {
+		return x.Timeout
+	}
+	return nil
+}
+
+func (x *HTTPDestinationConfig) GetHeaders() map[string]string {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
+}
+
+func (x *HTTPDestinationConfig) GetRetry() *RetryConfig {
+	if x != nil {
+		return x.Retry
+	}
+	return nil
+}
+
+func (x *HTTPDestinationConfig) GetIdempotencyHeader() string {
+	if x != nil {
+		return x.IdempotencyHeader
+	}
+	return ""
+}
+
+func (x *HTTPDestinationConfig) GetDedupeWindow() *durationpb.Duration {
+	if x != nil {
+		return x.DedupeWindow
+	}
+	return nil
+}
+
+func (x *HTTPDestinationConfig) GetTransactionHeader() string {
+	if x != nil {
+		return x.TransactionHeader
+	}
+	return ""
+}
+
+func (x *HTTPDestinationConfig) GetSchemaRegistry() *SchemaRegistryConfig {
+	if x != nil {
+		return x.SchemaRegistry
+	}
+	return nil
+}
+
+func (x *HTTPDestinationConfig) GetTypeMappings() *TypeMappingsConfig {
+	if x != nil {
+		return x.TypeMappings
+	}
+	return nil
+}
+
+func (x *HTTPDestinationConfig) GetSchemaRegistrySubject() string {
+	if x != nil {
+		return x.SchemaRegistrySubject
+	}
+	return ""
+}
+
+func (x *HTTPDestinationConfig) GetSchemaRegistryProtoTypesSubject() string {
+	if x != nil {
+		return x.SchemaRegistryProtoTypesSubject
+	}
+	return ""
+}
+
+type GRPCDestinationConfig struct {
+	state                           protoimpl.MessageState `protogen:"open.v1"`
+	Endpoint                        string                 `protobuf:"bytes,1,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	Tls                             *GRPCTLSConfig         `protobuf:"bytes,2,opt,name=tls,proto3" json:"tls,omitempty"`
+	Timeout                         *durationpb.Duration   `protobuf:"bytes,3,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	Format                          WireFormat             `protobuf:"varint,4,opt,name=format,proto3,enum=wallaby.v1.WireFormat" json:"format,omitempty"`
+	PayloadMode                     PayloadMode            `protobuf:"varint,5,opt,name=payload_mode,json=payloadMode,proto3,enum=wallaby.v1.PayloadMode" json:"payload_mode,omitempty"`
+	Metadata                        map[string]string      `protobuf:"bytes,6,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Retry                           *RetryConfig           `protobuf:"bytes,7,opt,name=retry,proto3" json:"retry,omitempty"`
+	SchemaRegistry                  *SchemaRegistryConfig  `protobuf:"bytes,8,opt,name=schema_registry,json=schemaRegistry,proto3" json:"schema_registry,omitempty"`
+	TypeMappings                    *TypeMappingsConfig    `protobuf:"bytes,9,opt,name=type_mappings,json=typeMappings,proto3" json:"type_mappings,omitempty"`
+	SchemaRegistrySubject           string                 `protobuf:"bytes,10,opt,name=schema_registry_subject,json=schemaRegistrySubject,proto3" json:"schema_registry_subject,omitempty"`
+	SchemaRegistryProtoTypesSubject string                 `protobuf:"bytes,11,opt,name=schema_registry_proto_types_subject,json=schemaRegistryProtoTypesSubject,proto3" json:"schema_registry_proto_types_subject,omitempty"`
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
+}
+
+func (x *GRPCDestinationConfig) Reset() {
+	*x = GRPCDestinationConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GRPCDestinationConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GRPCDestinationConfig) ProtoMessage() {}
+
+func (x *GRPCDestinationConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GRPCDestinationConfig.ProtoReflect.Descriptor instead.
+func (*GRPCDestinationConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *GRPCDestinationConfig) GetEndpoint() string {
+	if x != nil {
+		return x.Endpoint
+	}
+	return ""
+}
+
+func (x *GRPCDestinationConfig) GetTls() *GRPCTLSConfig {
+	if x != nil {
+		return x.Tls
+	}
+	return nil
+}
+
+func (x *GRPCDestinationConfig) GetTimeout() *durationpb.Duration {
+	if x != nil {
+		return x.Timeout
+	}
+	return nil
+}
+
+func (x *GRPCDestinationConfig) GetFormat() WireFormat {
+	if x != nil {
+		return x.Format
+	}
+	return WireFormat_WIRE_FORMAT_UNSPECIFIED
+}
+
+func (x *GRPCDestinationConfig) GetPayloadMode() PayloadMode {
+	if x != nil {
+		return x.PayloadMode
+	}
+	return PayloadMode_PAYLOAD_MODE_UNSPECIFIED
+}
+
+func (x *GRPCDestinationConfig) GetMetadata() map[string]string {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *GRPCDestinationConfig) GetRetry() *RetryConfig {
+	if x != nil {
+		return x.Retry
+	}
+	return nil
+}
+
+func (x *GRPCDestinationConfig) GetSchemaRegistry() *SchemaRegistryConfig {
+	if x != nil {
+		return x.SchemaRegistry
+	}
+	return nil
+}
+
+func (x *GRPCDestinationConfig) GetTypeMappings() *TypeMappingsConfig {
+	if x != nil {
+		return x.TypeMappings
+	}
+	return nil
+}
+
+func (x *GRPCDestinationConfig) GetSchemaRegistrySubject() string {
+	if x != nil {
+		return x.SchemaRegistrySubject
+	}
+	return ""
+}
+
+func (x *GRPCDestinationConfig) GetSchemaRegistryProtoTypesSubject() string {
+	if x != nil {
+		return x.SchemaRegistryProtoTypesSubject
+	}
+	return ""
+}
+
+type SnowflakeDestinationConfig struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	Dsn                   string                 `protobuf:"bytes,1,opt,name=dsn,proto3" json:"dsn,omitempty"`
+	DisableTransactions   *bool                  `protobuf:"varint,2,opt,name=disable_transactions,json=disableTransactions,proto3,oneof" json:"disable_transactions,omitempty"`
+	Warehouse             *WarehouseConfig       `protobuf:"bytes,3,opt,name=warehouse,proto3" json:"warehouse,omitempty"`
+	Staging               *StagingConfig         `protobuf:"bytes,4,opt,name=staging,proto3" json:"staging,omitempty"`
+	Metadata              *MetadataConfig        `protobuf:"bytes,5,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	TypeMappings          *TypeMappingsConfig    `protobuf:"bytes,6,opt,name=type_mappings,json=typeMappings,proto3" json:"type_mappings,omitempty"`
+	SchemaRegistry        *SchemaRegistryConfig  `protobuf:"bytes,7,opt,name=schema_registry,json=schemaRegistry,proto3" json:"schema_registry,omitempty"`
+	SchemaRegistrySubject string                 `protobuf:"bytes,8,opt,name=schema_registry_subject,json=schemaRegistrySubject,proto3" json:"schema_registry_subject,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *SnowflakeDestinationConfig) Reset() {
+	*x = SnowflakeDestinationConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnowflakeDestinationConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnowflakeDestinationConfig) ProtoMessage() {}
+
+func (x *SnowflakeDestinationConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnowflakeDestinationConfig.ProtoReflect.Descriptor instead.
+func (*SnowflakeDestinationConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *SnowflakeDestinationConfig) GetDsn() string {
+	if x != nil {
+		return x.Dsn
+	}
+	return ""
+}
+
+func (x *SnowflakeDestinationConfig) GetDisableTransactions() bool {
+	if x != nil && x.DisableTransactions != nil {
+		return *x.DisableTransactions
+	}
+	return false
+}
+
+func (x *SnowflakeDestinationConfig) GetWarehouse() *WarehouseConfig {
+	if x != nil {
+		return x.Warehouse
+	}
+	return nil
+}
+
+func (x *SnowflakeDestinationConfig) GetStaging() *StagingConfig {
+	if x != nil {
+		return x.Staging
+	}
+	return nil
+}
+
+func (x *SnowflakeDestinationConfig) GetMetadata() *MetadataConfig {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *SnowflakeDestinationConfig) GetTypeMappings() *TypeMappingsConfig {
+	if x != nil {
+		return x.TypeMappings
+	}
+	return nil
+}
+
+func (x *SnowflakeDestinationConfig) GetSchemaRegistry() *SchemaRegistryConfig {
+	if x != nil {
+		return x.SchemaRegistry
+	}
+	return nil
+}
+
+func (x *SnowflakeDestinationConfig) GetSchemaRegistrySubject() string {
+	if x != nil {
+		return x.SchemaRegistrySubject
+	}
+	return ""
+}
+
+type SnowflakePostgresSQLConfig struct {
+	state                         protoimpl.MessageState `protogen:"open.v1"`
+	Dsn                           string                 `protobuf:"bytes,1,opt,name=dsn,proto3" json:"dsn,omitempty"`
+	DestinationRevisionId         string                 `protobuf:"bytes,5,opt,name=destination_revision_id,json=destinationRevisionId,proto3" json:"destination_revision_id,omitempty"`
+	Account                       string                 `protobuf:"bytes,7,opt,name=account,proto3" json:"account,omitempty"`
+	Database                      string                 `protobuf:"bytes,8,opt,name=database,proto3" json:"database,omitempty"`
+	Schema                        string                 `protobuf:"bytes,9,opt,name=schema,proto3" json:"schema,omitempty"`
+	Table                         string                 `protobuf:"bytes,10,opt,name=table,proto3" json:"table,omitempty"`
+	ReceiptsTable                 string                 `protobuf:"bytes,11,opt,name=receipts_table,json=receiptsTable,proto3" json:"receipts_table,omitempty"`
+	OwnerRole                     string                 `protobuf:"bytes,12,opt,name=owner_role,json=ownerRole,proto3" json:"owner_role,omitempty"`
+	ExecutionRole                 string                 `protobuf:"bytes,13,opt,name=execution_role,json=executionRole,proto3" json:"execution_role,omitempty"`
+	ManagedWarehouse              string                 `protobuf:"bytes,14,opt,name=managed_warehouse,json=managedWarehouse,proto3" json:"managed_warehouse,omitempty"`
+	SnowflakeVersion              string                 `protobuf:"bytes,15,opt,name=snowflake_version,json=snowflakeVersion,proto3" json:"snowflake_version,omitempty"`
+	TargetCreatedOn               string                 `protobuf:"bytes,16,opt,name=target_created_on,json=targetCreatedOn,proto3" json:"target_created_on,omitempty"`
+	ReceiptsCreatedOn             string                 `protobuf:"bytes,17,opt,name=receipts_created_on,json=receiptsCreatedOn,proto3" json:"receipts_created_on,omitempty"`
+	MaxTransactionRows            *uint32                `protobuf:"varint,18,opt,name=max_transaction_rows,json=maxTransactionRows,proto3,oneof" json:"max_transaction_rows,omitempty"`
+	MaxTransactionBytes           *uint64                `protobuf:"varint,19,opt,name=max_transaction_bytes,json=maxTransactionBytes,proto3,oneof" json:"max_transaction_bytes,omitempty"`
+	MaxTransactionFragments       *uint32                `protobuf:"varint,20,opt,name=max_transaction_fragments,json=maxTransactionFragments,proto3,oneof" json:"max_transaction_fragments,omitempty"`
+	MaxOpenConnections            *uint32                `protobuf:"varint,21,opt,name=max_open_connections,json=maxOpenConnections,proto3,oneof" json:"max_open_connections,omitempty"`
+	StatementTimeoutSeconds       *uint32                `protobuf:"varint,22,opt,name=statement_timeout_seconds,json=statementTimeoutSeconds,proto3,oneof" json:"statement_timeout_seconds,omitempty"`
+	HybridTableLockTimeoutSeconds *uint32                `protobuf:"varint,23,opt,name=hybrid_table_lock_timeout_seconds,json=hybridTableLockTimeoutSeconds,proto3,oneof" json:"hybrid_table_lock_timeout_seconds,omitempty"`
+	unknownFields                 protoimpl.UnknownFields
+	sizeCache                     protoimpl.SizeCache
+}
+
+func (x *SnowflakePostgresSQLConfig) Reset() {
+	*x = SnowflakePostgresSQLConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnowflakePostgresSQLConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnowflakePostgresSQLConfig) ProtoMessage() {}
+
+func (x *SnowflakePostgresSQLConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnowflakePostgresSQLConfig.ProtoReflect.Descriptor instead.
+func (*SnowflakePostgresSQLConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *SnowflakePostgresSQLConfig) GetDsn() string {
+	if x != nil {
+		return x.Dsn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresSQLConfig) GetDestinationRevisionId() string {
+	if x != nil {
+		return x.DestinationRevisionId
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresSQLConfig) GetAccount() string {
+	if x != nil {
+		return x.Account
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresSQLConfig) GetDatabase() string {
+	if x != nil {
+		return x.Database
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresSQLConfig) GetSchema() string {
+	if x != nil {
+		return x.Schema
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresSQLConfig) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresSQLConfig) GetReceiptsTable() string {
+	if x != nil {
+		return x.ReceiptsTable
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresSQLConfig) GetOwnerRole() string {
+	if x != nil {
+		return x.OwnerRole
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresSQLConfig) GetExecutionRole() string {
+	if x != nil {
+		return x.ExecutionRole
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresSQLConfig) GetManagedWarehouse() string {
+	if x != nil {
+		return x.ManagedWarehouse
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresSQLConfig) GetSnowflakeVersion() string {
+	if x != nil {
+		return x.SnowflakeVersion
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresSQLConfig) GetTargetCreatedOn() string {
+	if x != nil {
+		return x.TargetCreatedOn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresSQLConfig) GetReceiptsCreatedOn() string {
+	if x != nil {
+		return x.ReceiptsCreatedOn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresSQLConfig) GetMaxTransactionRows() uint32 {
+	if x != nil && x.MaxTransactionRows != nil {
+		return *x.MaxTransactionRows
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresSQLConfig) GetMaxTransactionBytes() uint64 {
+	if x != nil && x.MaxTransactionBytes != nil {
+		return *x.MaxTransactionBytes
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresSQLConfig) GetMaxTransactionFragments() uint32 {
+	if x != nil && x.MaxTransactionFragments != nil {
+		return *x.MaxTransactionFragments
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresSQLConfig) GetMaxOpenConnections() uint32 {
+	if x != nil && x.MaxOpenConnections != nil {
+		return *x.MaxOpenConnections
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresSQLConfig) GetStatementTimeoutSeconds() uint32 {
+	if x != nil && x.StatementTimeoutSeconds != nil {
+		return *x.StatementTimeoutSeconds
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresSQLConfig) GetHybridTableLockTimeoutSeconds() uint32 {
+	if x != nil && x.HybridTableLockTimeoutSeconds != nil {
+		return *x.HybridTableLockTimeoutSeconds
+	}
+	return 0
+}
+
+type SnowflakePostgresStagedConfig struct {
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	Dsn                      string                 `protobuf:"bytes,1,opt,name=dsn,proto3" json:"dsn,omitempty"`
+	Stage                    string                 `protobuf:"bytes,2,opt,name=stage,proto3" json:"stage,omitempty"`
+	FileFormat               string                 `protobuf:"bytes,4,opt,name=file_format,json=fileFormat,proto3" json:"file_format,omitempty"`
+	AutoIngest               *bool                  `protobuf:"varint,11,opt,name=auto_ingest,json=autoIngest,proto3,oneof" json:"auto_ingest,omitempty"`
+	DestinationRevisionId    string                 `protobuf:"bytes,13,opt,name=destination_revision_id,json=destinationRevisionId,proto3" json:"destination_revision_id,omitempty"`
+	Account                  string                 `protobuf:"bytes,15,opt,name=account,proto3" json:"account,omitempty"`
+	Database                 string                 `protobuf:"bytes,16,opt,name=database,proto3" json:"database,omitempty"`
+	Schema                   string                 `protobuf:"bytes,17,opt,name=schema,proto3" json:"schema,omitempty"`
+	Table                    string                 `protobuf:"bytes,18,opt,name=table,proto3" json:"table,omitempty"`
+	ReceiptsTable            string                 `protobuf:"bytes,19,opt,name=receipts_table,json=receiptsTable,proto3" json:"receipts_table,omitempty"`
+	Pipe                     string                 `protobuf:"bytes,20,opt,name=pipe,proto3" json:"pipe,omitempty"`
+	OwnerRole                string                 `protobuf:"bytes,21,opt,name=owner_role,json=ownerRole,proto3" json:"owner_role,omitempty"`
+	ExecutionRole            string                 `protobuf:"bytes,22,opt,name=execution_role,json=executionRole,proto3" json:"execution_role,omitempty"`
+	ManagedWarehouse         string                 `protobuf:"bytes,23,opt,name=managed_warehouse,json=managedWarehouse,proto3" json:"managed_warehouse,omitempty"`
+	SnowflakeVersion         string                 `protobuf:"bytes,24,opt,name=snowflake_version,json=snowflakeVersion,proto3" json:"snowflake_version,omitempty"`
+	StageCreatedOn           string                 `protobuf:"bytes,25,opt,name=stage_created_on,json=stageCreatedOn,proto3" json:"stage_created_on,omitempty"`
+	TargetCreatedOn          string                 `protobuf:"bytes,26,opt,name=target_created_on,json=targetCreatedOn,proto3" json:"target_created_on,omitempty"`
+	ReceiptsCreatedOn        string                 `protobuf:"bytes,27,opt,name=receipts_created_on,json=receiptsCreatedOn,proto3" json:"receipts_created_on,omitempty"`
+	FileFormatCreatedOn      string                 `protobuf:"bytes,28,opt,name=file_format_created_on,json=fileFormatCreatedOn,proto3" json:"file_format_created_on,omitempty"`
+	PipeCreatedOn            string                 `protobuf:"bytes,29,opt,name=pipe_created_on,json=pipeCreatedOn,proto3" json:"pipe_created_on,omitempty"`
+	MaxTransactionRows       *uint32                `protobuf:"varint,30,opt,name=max_transaction_rows,json=maxTransactionRows,proto3,oneof" json:"max_transaction_rows,omitempty"`
+	MaxTransactionBytes      *uint64                `protobuf:"varint,31,opt,name=max_transaction_bytes,json=maxTransactionBytes,proto3,oneof" json:"max_transaction_bytes,omitempty"`
+	MaxTransactionFragments  *uint32                `protobuf:"varint,32,opt,name=max_transaction_fragments,json=maxTransactionFragments,proto3,oneof" json:"max_transaction_fragments,omitempty"`
+	MaxOpenConnections       *uint32                `protobuf:"varint,33,opt,name=max_open_connections,json=maxOpenConnections,proto3,oneof" json:"max_open_connections,omitempty"`
+	StatementTimeoutSeconds  *uint32                `protobuf:"varint,34,opt,name=statement_timeout_seconds,json=statementTimeoutSeconds,proto3,oneof" json:"statement_timeout_seconds,omitempty"`
+	LoadVerifyAttempts       *uint32                `protobuf:"varint,35,opt,name=load_verify_attempts,json=loadVerifyAttempts,proto3,oneof" json:"load_verify_attempts,omitempty"`
+	LoadVerifyIntervalMillis *uint32                `protobuf:"varint,36,opt,name=load_verify_interval_millis,json=loadVerifyIntervalMillis,proto3,oneof" json:"load_verify_interval_millis,omitempty"`
+	CleanupMaxObjects        *uint32                `protobuf:"varint,37,opt,name=cleanup_max_objects,json=cleanupMaxObjects,proto3,oneof" json:"cleanup_max_objects,omitempty"`
+	CleanupRetentionSeconds  *uint32                `protobuf:"varint,38,opt,name=cleanup_retention_seconds,json=cleanupRetentionSeconds,proto3,oneof" json:"cleanup_retention_seconds,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
+}
+
+func (x *SnowflakePostgresStagedConfig) Reset() {
+	*x = SnowflakePostgresStagedConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnowflakePostgresStagedConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnowflakePostgresStagedConfig) ProtoMessage() {}
+
+func (x *SnowflakePostgresStagedConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnowflakePostgresStagedConfig.ProtoReflect.Descriptor instead.
+func (*SnowflakePostgresStagedConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *SnowflakePostgresStagedConfig) GetDsn() string {
+	if x != nil {
+		return x.Dsn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetStage() string {
+	if x != nil {
+		return x.Stage
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetFileFormat() string {
+	if x != nil {
+		return x.FileFormat
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetAutoIngest() bool {
+	if x != nil && x.AutoIngest != nil {
+		return *x.AutoIngest
+	}
+	return false
+}
+
+func (x *SnowflakePostgresStagedConfig) GetDestinationRevisionId() string {
+	if x != nil {
+		return x.DestinationRevisionId
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetAccount() string {
+	if x != nil {
+		return x.Account
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetDatabase() string {
+	if x != nil {
+		return x.Database
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetSchema() string {
+	if x != nil {
+		return x.Schema
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetReceiptsTable() string {
+	if x != nil {
+		return x.ReceiptsTable
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetPipe() string {
+	if x != nil {
+		return x.Pipe
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetOwnerRole() string {
+	if x != nil {
+		return x.OwnerRole
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetExecutionRole() string {
+	if x != nil {
+		return x.ExecutionRole
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetManagedWarehouse() string {
+	if x != nil {
+		return x.ManagedWarehouse
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetSnowflakeVersion() string {
+	if x != nil {
+		return x.SnowflakeVersion
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetStageCreatedOn() string {
+	if x != nil {
+		return x.StageCreatedOn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetTargetCreatedOn() string {
+	if x != nil {
+		return x.TargetCreatedOn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetReceiptsCreatedOn() string {
+	if x != nil {
+		return x.ReceiptsCreatedOn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetFileFormatCreatedOn() string {
+	if x != nil {
+		return x.FileFormatCreatedOn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetPipeCreatedOn() string {
+	if x != nil {
+		return x.PipeCreatedOn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetMaxTransactionRows() uint32 {
+	if x != nil && x.MaxTransactionRows != nil {
+		return *x.MaxTransactionRows
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStagedConfig) GetMaxTransactionBytes() uint64 {
+	if x != nil && x.MaxTransactionBytes != nil {
+		return *x.MaxTransactionBytes
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStagedConfig) GetMaxTransactionFragments() uint32 {
+	if x != nil && x.MaxTransactionFragments != nil {
+		return *x.MaxTransactionFragments
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStagedConfig) GetMaxOpenConnections() uint32 {
+	if x != nil && x.MaxOpenConnections != nil {
+		return *x.MaxOpenConnections
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStagedConfig) GetStatementTimeoutSeconds() uint32 {
+	if x != nil && x.StatementTimeoutSeconds != nil {
+		return *x.StatementTimeoutSeconds
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStagedConfig) GetLoadVerifyAttempts() uint32 {
+	if x != nil && x.LoadVerifyAttempts != nil {
+		return *x.LoadVerifyAttempts
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStagedConfig) GetLoadVerifyIntervalMillis() uint32 {
+	if x != nil && x.LoadVerifyIntervalMillis != nil {
+		return *x.LoadVerifyIntervalMillis
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStagedConfig) GetCleanupMaxObjects() uint32 {
+	if x != nil && x.CleanupMaxObjects != nil {
+		return *x.CleanupMaxObjects
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStagedConfig) GetCleanupRetentionSeconds() uint32 {
+	if x != nil && x.CleanupRetentionSeconds != nil {
+		return *x.CleanupRetentionSeconds
+	}
+	return 0
+}
+
+type SnowflakePostgresStreamingConfig struct {
+	state                   protoimpl.MessageState `protogen:"open.v1"`
+	Dsn                     string                 `protobuf:"bytes,1,opt,name=dsn,proto3" json:"dsn,omitempty"`
+	DestinationRevisionId   string                 `protobuf:"bytes,2,opt,name=destination_revision_id,json=destinationRevisionId,proto3" json:"destination_revision_id,omitempty"`
+	Transport               string                 `protobuf:"bytes,4,opt,name=transport,proto3" json:"transport,omitempty"`
+	Account                 string                 `protobuf:"bytes,5,opt,name=account,proto3" json:"account,omitempty"`
+	Database                string                 `protobuf:"bytes,6,opt,name=database,proto3" json:"database,omitempty"`
+	Schema                  string                 `protobuf:"bytes,7,opt,name=schema,proto3" json:"schema,omitempty"`
+	Pipe                    string                 `protobuf:"bytes,8,opt,name=pipe,proto3" json:"pipe,omitempty"`
+	Table                   string                 `protobuf:"bytes,9,opt,name=table,proto3" json:"table,omitempty"`
+	ReceiptsTable           string                 `protobuf:"bytes,10,opt,name=receipts_table,json=receiptsTable,proto3" json:"receipts_table,omitempty"`
+	ChannelStateTable       string                 `protobuf:"bytes,11,opt,name=channel_state_table,json=channelStateTable,proto3" json:"channel_state_table,omitempty"`
+	OwnerRole               string                 `protobuf:"bytes,12,opt,name=owner_role,json=ownerRole,proto3" json:"owner_role,omitempty"`
+	ExecutionRole           string                 `protobuf:"bytes,13,opt,name=execution_role,json=executionRole,proto3" json:"execution_role,omitempty"`
+	ManagedWarehouse        string                 `protobuf:"bytes,14,opt,name=managed_warehouse,json=managedWarehouse,proto3" json:"managed_warehouse,omitempty"`
+	SnowflakeVersion        string                 `protobuf:"bytes,15,opt,name=snowflake_version,json=snowflakeVersion,proto3" json:"snowflake_version,omitempty"`
+	PipeCreatedOn           string                 `protobuf:"bytes,16,opt,name=pipe_created_on,json=pipeCreatedOn,proto3" json:"pipe_created_on,omitempty"`
+	TargetCreatedOn         string                 `protobuf:"bytes,17,opt,name=target_created_on,json=targetCreatedOn,proto3" json:"target_created_on,omitempty"`
+	ReceiptsCreatedOn       string                 `protobuf:"bytes,18,opt,name=receipts_created_on,json=receiptsCreatedOn,proto3" json:"receipts_created_on,omitempty"`
+	ChannelStateCreatedOn   string                 `protobuf:"bytes,19,opt,name=channel_state_created_on,json=channelStateCreatedOn,proto3" json:"channel_state_created_on,omitempty"`
+	MaxTransactionRows      *uint32                `protobuf:"varint,20,opt,name=max_transaction_rows,json=maxTransactionRows,proto3,oneof" json:"max_transaction_rows,omitempty"`
+	MaxTransactionBytes     *uint64                `protobuf:"varint,21,opt,name=max_transaction_bytes,json=maxTransactionBytes,proto3,oneof" json:"max_transaction_bytes,omitempty"`
+	MaxTransactionFragments *uint32                `protobuf:"varint,22,opt,name=max_transaction_fragments,json=maxTransactionFragments,proto3,oneof" json:"max_transaction_fragments,omitempty"`
+	MaxRowBytes             *uint64                `protobuf:"varint,23,opt,name=max_row_bytes,json=maxRowBytes,proto3,oneof" json:"max_row_bytes,omitempty"`
+	MaxOpenConnections      *uint32                `protobuf:"varint,24,opt,name=max_open_connections,json=maxOpenConnections,proto3,oneof" json:"max_open_connections,omitempty"`
+	StatementTimeoutSeconds *uint32                `protobuf:"varint,25,opt,name=statement_timeout_seconds,json=statementTimeoutSeconds,proto3,oneof" json:"statement_timeout_seconds,omitempty"`
+	ObserveAttempts         *uint32                `protobuf:"varint,26,opt,name=observe_attempts,json=observeAttempts,proto3,oneof" json:"observe_attempts,omitempty"`
+	ObserveIntervalMillis   *uint32                `protobuf:"varint,27,opt,name=observe_interval_millis,json=observeIntervalMillis,proto3,oneof" json:"observe_interval_millis,omitempty"`
+	AppendAttempts          *uint32                `protobuf:"varint,28,opt,name=append_attempts,json=appendAttempts,proto3,oneof" json:"append_attempts,omitempty"`
+	AppendBackoffMillis     *uint32                `protobuf:"varint,29,opt,name=append_backoff_millis,json=appendBackoffMillis,proto3,oneof" json:"append_backoff_millis,omitempty"`
+	CleanupMaxObjects       *uint32                `protobuf:"varint,30,opt,name=cleanup_max_objects,json=cleanupMaxObjects,proto3,oneof" json:"cleanup_max_objects,omitempty"`
+	CleanupRetentionSeconds *uint32                `protobuf:"varint,31,opt,name=cleanup_retention_seconds,json=cleanupRetentionSeconds,proto3,oneof" json:"cleanup_retention_seconds,omitempty"`
+	ChannelNamePrefix       string                 `protobuf:"bytes,32,opt,name=channel_name_prefix,json=channelNamePrefix,proto3" json:"channel_name_prefix,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
+}
+
+func (x *SnowflakePostgresStreamingConfig) Reset() {
+	*x = SnowflakePostgresStreamingConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnowflakePostgresStreamingConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnowflakePostgresStreamingConfig) ProtoMessage() {}
+
+func (x *SnowflakePostgresStreamingConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnowflakePostgresStreamingConfig.ProtoReflect.Descriptor instead.
+func (*SnowflakePostgresStreamingConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetDsn() string {
+	if x != nil {
+		return x.Dsn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetDestinationRevisionId() string {
+	if x != nil {
+		return x.DestinationRevisionId
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetTransport() string {
+	if x != nil {
+		return x.Transport
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetAccount() string {
+	if x != nil {
+		return x.Account
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetDatabase() string {
+	if x != nil {
+		return x.Database
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetSchema() string {
+	if x != nil {
+		return x.Schema
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetPipe() string {
+	if x != nil {
+		return x.Pipe
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetReceiptsTable() string {
+	if x != nil {
+		return x.ReceiptsTable
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetChannelStateTable() string {
+	if x != nil {
+		return x.ChannelStateTable
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetOwnerRole() string {
+	if x != nil {
+		return x.OwnerRole
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetExecutionRole() string {
+	if x != nil {
+		return x.ExecutionRole
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetManagedWarehouse() string {
+	if x != nil {
+		return x.ManagedWarehouse
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetSnowflakeVersion() string {
+	if x != nil {
+		return x.SnowflakeVersion
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetPipeCreatedOn() string {
+	if x != nil {
+		return x.PipeCreatedOn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetTargetCreatedOn() string {
+	if x != nil {
+		return x.TargetCreatedOn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetReceiptsCreatedOn() string {
+	if x != nil {
+		return x.ReceiptsCreatedOn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetChannelStateCreatedOn() string {
+	if x != nil {
+		return x.ChannelStateCreatedOn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetMaxTransactionRows() uint32 {
+	if x != nil && x.MaxTransactionRows != nil {
+		return *x.MaxTransactionRows
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetMaxTransactionBytes() uint64 {
+	if x != nil && x.MaxTransactionBytes != nil {
+		return *x.MaxTransactionBytes
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetMaxTransactionFragments() uint32 {
+	if x != nil && x.MaxTransactionFragments != nil {
+		return *x.MaxTransactionFragments
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetMaxRowBytes() uint64 {
+	if x != nil && x.MaxRowBytes != nil {
+		return *x.MaxRowBytes
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetMaxOpenConnections() uint32 {
+	if x != nil && x.MaxOpenConnections != nil {
+		return *x.MaxOpenConnections
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetStatementTimeoutSeconds() uint32 {
+	if x != nil && x.StatementTimeoutSeconds != nil {
+		return *x.StatementTimeoutSeconds
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetObserveAttempts() uint32 {
+	if x != nil && x.ObserveAttempts != nil {
+		return *x.ObserveAttempts
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetObserveIntervalMillis() uint32 {
+	if x != nil && x.ObserveIntervalMillis != nil {
+		return *x.ObserveIntervalMillis
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetAppendAttempts() uint32 {
+	if x != nil && x.AppendAttempts != nil {
+		return *x.AppendAttempts
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetAppendBackoffMillis() uint32 {
+	if x != nil && x.AppendBackoffMillis != nil {
+		return *x.AppendBackoffMillis
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetCleanupMaxObjects() uint32 {
+	if x != nil && x.CleanupMaxObjects != nil {
+		return *x.CleanupMaxObjects
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetCleanupRetentionSeconds() uint32 {
+	if x != nil && x.CleanupRetentionSeconds != nil {
+		return *x.CleanupRetentionSeconds
+	}
+	return 0
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetChannelNamePrefix() string {
+	if x != nil {
+		return x.ChannelNamePrefix
+	}
+	return ""
+}
+
+type SnowpipeDestinationConfig struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	Dsn                   string                 `protobuf:"bytes,1,opt,name=dsn,proto3" json:"dsn,omitempty"`
+	Stage                 string                 `protobuf:"bytes,2,opt,name=stage,proto3" json:"stage,omitempty"`
+	StagePath             string                 `protobuf:"bytes,3,opt,name=stage_path,json=stagePath,proto3" json:"stage_path,omitempty"`
+	Format                WireFormat             `protobuf:"varint,4,opt,name=format,proto3,enum=wallaby.v1.WireFormat" json:"format,omitempty"`
+	FileFormat            string                 `protobuf:"bytes,5,opt,name=file_format,json=fileFormat,proto3" json:"file_format,omitempty"`
+	Warehouse             *WarehouseConfig       `protobuf:"bytes,6,opt,name=warehouse,proto3" json:"warehouse,omitempty"`
+	CopyOnWrite           *bool                  `protobuf:"varint,7,opt,name=copy_on_write,json=copyOnWrite,proto3,oneof" json:"copy_on_write,omitempty"`
+	CopyPattern           string                 `protobuf:"bytes,8,opt,name=copy_pattern,json=copyPattern,proto3" json:"copy_pattern,omitempty"`
+	CopyOnError           string                 `protobuf:"bytes,9,opt,name=copy_on_error,json=copyOnError,proto3" json:"copy_on_error,omitempty"`
+	CopyPurge             *bool                  `protobuf:"varint,10,opt,name=copy_purge,json=copyPurge,proto3,oneof" json:"copy_purge,omitempty"`
+	CopyMatchByColumnName string                 `protobuf:"bytes,11,opt,name=copy_match_by_column_name,json=copyMatchByColumnName,proto3" json:"copy_match_by_column_name,omitempty"`
+	AutoIngest            *bool                  `protobuf:"varint,12,opt,name=auto_ingest,json=autoIngest,proto3,oneof" json:"auto_ingest,omitempty"`
+	Metadata              *MetadataConfig        `protobuf:"bytes,13,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	TypeMappings          *TypeMappingsConfig    `protobuf:"bytes,14,opt,name=type_mappings,json=typeMappings,proto3" json:"type_mappings,omitempty"`
+	SchemaRegistry        *SchemaRegistryConfig  `protobuf:"bytes,15,opt,name=schema_registry,json=schemaRegistry,proto3" json:"schema_registry,omitempty"`
+	SchemaRegistrySubject string                 `protobuf:"bytes,16,opt,name=schema_registry_subject,json=schemaRegistrySubject,proto3" json:"schema_registry_subject,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *SnowpipeDestinationConfig) Reset() {
+	*x = SnowpipeDestinationConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnowpipeDestinationConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnowpipeDestinationConfig) ProtoMessage() {}
+
+func (x *SnowpipeDestinationConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnowpipeDestinationConfig.ProtoReflect.Descriptor instead.
+func (*SnowpipeDestinationConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *SnowpipeDestinationConfig) GetDsn() string {
+	if x != nil {
+		return x.Dsn
+	}
+	return ""
+}
+
+func (x *SnowpipeDestinationConfig) GetStage() string {
+	if x != nil {
+		return x.Stage
+	}
+	return ""
+}
+
+func (x *SnowpipeDestinationConfig) GetStagePath() string {
+	if x != nil {
+		return x.StagePath
+	}
+	return ""
+}
+
+func (x *SnowpipeDestinationConfig) GetFormat() WireFormat {
+	if x != nil {
+		return x.Format
+	}
+	return WireFormat_WIRE_FORMAT_UNSPECIFIED
+}
+
+func (x *SnowpipeDestinationConfig) GetFileFormat() string {
+	if x != nil {
+		return x.FileFormat
+	}
+	return ""
+}
+
+func (x *SnowpipeDestinationConfig) GetWarehouse() *WarehouseConfig {
+	if x != nil {
+		return x.Warehouse
+	}
+	return nil
+}
+
+func (x *SnowpipeDestinationConfig) GetCopyOnWrite() bool {
+	if x != nil && x.CopyOnWrite != nil {
+		return *x.CopyOnWrite
+	}
+	return false
+}
+
+func (x *SnowpipeDestinationConfig) GetCopyPattern() string {
+	if x != nil {
+		return x.CopyPattern
+	}
+	return ""
+}
+
+func (x *SnowpipeDestinationConfig) GetCopyOnError() string {
+	if x != nil {
+		return x.CopyOnError
+	}
+	return ""
+}
+
+func (x *SnowpipeDestinationConfig) GetCopyPurge() bool {
+	if x != nil && x.CopyPurge != nil {
+		return *x.CopyPurge
+	}
+	return false
+}
+
+func (x *SnowpipeDestinationConfig) GetCopyMatchByColumnName() string {
+	if x != nil {
+		return x.CopyMatchByColumnName
+	}
+	return ""
+}
+
+func (x *SnowpipeDestinationConfig) GetAutoIngest() bool {
+	if x != nil && x.AutoIngest != nil {
+		return *x.AutoIngest
+	}
+	return false
+}
+
+func (x *SnowpipeDestinationConfig) GetMetadata() *MetadataConfig {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *SnowpipeDestinationConfig) GetTypeMappings() *TypeMappingsConfig {
+	if x != nil {
+		return x.TypeMappings
+	}
+	return nil
+}
+
+func (x *SnowpipeDestinationConfig) GetSchemaRegistry() *SchemaRegistryConfig {
+	if x != nil {
+		return x.SchemaRegistry
+	}
+	return nil
+}
+
+func (x *SnowpipeDestinationConfig) GetSchemaRegistrySubject() string {
+	if x != nil {
+		return x.SchemaRegistrySubject
+	}
+	return ""
+}
+
+type ClickHouseDestinationConfig struct {
+	state         protoimpl.MessageState    `protogen:"open.v1"`
+	Dsn           string                    `protobuf:"bytes,1,opt,name=dsn,proto3" json:"dsn,omitempty"`
+	Staging       *StagingConfig            `protobuf:"bytes,2,opt,name=staging,proto3" json:"staging,omitempty"`
+	Metadata      *ClickHouseMetadataConfig `protobuf:"bytes,3,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	TypeMappings  *TypeMappingsConfig       `protobuf:"bytes,4,opt,name=type_mappings,json=typeMappings,proto3" json:"type_mappings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClickHouseDestinationConfig) Reset() {
+	*x = ClickHouseDestinationConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClickHouseDestinationConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClickHouseDestinationConfig) ProtoMessage() {}
+
+func (x *ClickHouseDestinationConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClickHouseDestinationConfig.ProtoReflect.Descriptor instead.
+func (*ClickHouseDestinationConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *ClickHouseDestinationConfig) GetDsn() string {
+	if x != nil {
+		return x.Dsn
+	}
+	return ""
+}
+
+func (x *ClickHouseDestinationConfig) GetStaging() *StagingConfig {
+	if x != nil {
+		return x.Staging
+	}
+	return nil
+}
+
+func (x *ClickHouseDestinationConfig) GetMetadata() *ClickHouseMetadataConfig {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *ClickHouseDestinationConfig) GetTypeMappings() *TypeMappingsConfig {
+	if x != nil {
+		return x.TypeMappings
+	}
+	return nil
+}
+
+type ClickHousePostgresAppendConfig struct {
+	state                   protoimpl.MessageState `protogen:"open.v1"`
+	Dsn                     string                 `protobuf:"bytes,1,opt,name=dsn,proto3" json:"dsn,omitempty"`
+	Tls                     *ClickHouseTLSConfig   `protobuf:"bytes,4,opt,name=tls,proto3" json:"tls,omitempty"`
+	DestinationRevisionId   string                 `protobuf:"bytes,6,opt,name=destination_revision_id,json=destinationRevisionId,proto3" json:"destination_revision_id,omitempty"`
+	TypeMappings            *TypeMappingsConfig    `protobuf:"bytes,7,opt,name=type_mappings,json=typeMappings,proto3" json:"type_mappings,omitempty"`
+	Database                string                 `protobuf:"bytes,8,opt,name=database,proto3" json:"database,omitempty"`
+	ChangelogTable          string                 `protobuf:"bytes,9,opt,name=changelog_table,json=changelogTable,proto3" json:"changelog_table,omitempty"`
+	ReceiptsTable           string                 `protobuf:"bytes,10,opt,name=receipts_table,json=receiptsTable,proto3" json:"receipts_table,omitempty"`
+	FinalView               string                 `protobuf:"bytes,11,opt,name=final_view,json=finalView,proto3" json:"final_view,omitempty"`
+	KeeperPathPrefix        string                 `protobuf:"bytes,12,opt,name=keeper_path_prefix,json=keeperPathPrefix,proto3" json:"keeper_path_prefix,omitempty"`
+	KeeperAddress           string                 `protobuf:"bytes,13,opt,name=keeper_address,json=keeperAddress,proto3" json:"keeper_address,omitempty"`
+	ReplicaDsn              string                 `protobuf:"bytes,14,opt,name=replica_dsn,json=replicaDsn,proto3" json:"replica_dsn,omitempty"`
+	ReplicaNames            []string               `protobuf:"bytes,15,rep,name=replica_names,json=replicaNames,proto3" json:"replica_names,omitempty"`
+	InsertQuorum            *uint32                `protobuf:"varint,16,opt,name=insert_quorum,json=insertQuorum,proto3,oneof" json:"insert_quorum,omitempty"`
+	MaxActiveParts          *uint32                `protobuf:"varint,17,opt,name=max_active_parts,json=maxActiveParts,proto3,oneof" json:"max_active_parts,omitempty"`
+	MaxTransactionRows      *uint32                `protobuf:"varint,18,opt,name=max_transaction_rows,json=maxTransactionRows,proto3,oneof" json:"max_transaction_rows,omitempty"`
+	MaxTransactionBytes     *uint64                `protobuf:"varint,19,opt,name=max_transaction_bytes,json=maxTransactionBytes,proto3,oneof" json:"max_transaction_bytes,omitempty"`
+	MaxTransactionFragments *uint32                `protobuf:"varint,20,opt,name=max_transaction_fragments,json=maxTransactionFragments,proto3,oneof" json:"max_transaction_fragments,omitempty"`
+	MaxRowsPerBatch         *uint32                `protobuf:"varint,21,opt,name=max_rows_per_batch,json=maxRowsPerBatch,proto3,oneof" json:"max_rows_per_batch,omitempty"`
+	MaxBatchBytes           *uint64                `protobuf:"varint,22,opt,name=max_batch_bytes,json=maxBatchBytes,proto3,oneof" json:"max_batch_bytes,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
+}
+
+func (x *ClickHousePostgresAppendConfig) Reset() {
+	*x = ClickHousePostgresAppendConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClickHousePostgresAppendConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClickHousePostgresAppendConfig) ProtoMessage() {}
+
+func (x *ClickHousePostgresAppendConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClickHousePostgresAppendConfig.ProtoReflect.Descriptor instead.
+func (*ClickHousePostgresAppendConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *ClickHousePostgresAppendConfig) GetDsn() string {
+	if x != nil {
+		return x.Dsn
+	}
+	return ""
+}
+
+func (x *ClickHousePostgresAppendConfig) GetTls() *ClickHouseTLSConfig {
+	if x != nil {
+		return x.Tls
+	}
+	return nil
+}
+
+func (x *ClickHousePostgresAppendConfig) GetDestinationRevisionId() string {
+	if x != nil {
+		return x.DestinationRevisionId
+	}
+	return ""
+}
+
+func (x *ClickHousePostgresAppendConfig) GetTypeMappings() *TypeMappingsConfig {
+	if x != nil {
+		return x.TypeMappings
+	}
+	return nil
+}
+
+func (x *ClickHousePostgresAppendConfig) GetDatabase() string {
+	if x != nil {
+		return x.Database
+	}
+	return ""
+}
+
+func (x *ClickHousePostgresAppendConfig) GetChangelogTable() string {
+	if x != nil {
+		return x.ChangelogTable
+	}
+	return ""
+}
+
+func (x *ClickHousePostgresAppendConfig) GetReceiptsTable() string {
+	if x != nil {
+		return x.ReceiptsTable
+	}
+	return ""
+}
+
+func (x *ClickHousePostgresAppendConfig) GetFinalView() string {
+	if x != nil {
+		return x.FinalView
+	}
+	return ""
+}
+
+func (x *ClickHousePostgresAppendConfig) GetKeeperPathPrefix() string {
+	if x != nil {
+		return x.KeeperPathPrefix
+	}
+	return ""
+}
+
+func (x *ClickHousePostgresAppendConfig) GetKeeperAddress() string {
+	if x != nil {
+		return x.KeeperAddress
+	}
+	return ""
+}
+
+func (x *ClickHousePostgresAppendConfig) GetReplicaDsn() string {
+	if x != nil {
+		return x.ReplicaDsn
+	}
+	return ""
+}
+
+func (x *ClickHousePostgresAppendConfig) GetReplicaNames() []string {
+	if x != nil {
+		return x.ReplicaNames
+	}
+	return nil
+}
+
+func (x *ClickHousePostgresAppendConfig) GetInsertQuorum() uint32 {
+	if x != nil && x.InsertQuorum != nil {
+		return *x.InsertQuorum
+	}
+	return 0
+}
+
+func (x *ClickHousePostgresAppendConfig) GetMaxActiveParts() uint32 {
+	if x != nil && x.MaxActiveParts != nil {
+		return *x.MaxActiveParts
+	}
+	return 0
+}
+
+func (x *ClickHousePostgresAppendConfig) GetMaxTransactionRows() uint32 {
+	if x != nil && x.MaxTransactionRows != nil {
+		return *x.MaxTransactionRows
+	}
+	return 0
+}
+
+func (x *ClickHousePostgresAppendConfig) GetMaxTransactionBytes() uint64 {
+	if x != nil && x.MaxTransactionBytes != nil {
+		return *x.MaxTransactionBytes
+	}
+	return 0
+}
+
+func (x *ClickHousePostgresAppendConfig) GetMaxTransactionFragments() uint32 {
+	if x != nil && x.MaxTransactionFragments != nil {
+		return *x.MaxTransactionFragments
+	}
+	return 0
+}
+
+func (x *ClickHousePostgresAppendConfig) GetMaxRowsPerBatch() uint32 {
+	if x != nil && x.MaxRowsPerBatch != nil {
+		return *x.MaxRowsPerBatch
+	}
+	return 0
+}
+
+func (x *ClickHousePostgresAppendConfig) GetMaxBatchBytes() uint64 {
+	if x != nil && x.MaxBatchBytes != nil {
+		return *x.MaxBatchBytes
+	}
+	return 0
+}
+
+type DuckDBDestinationConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Dsn           string                 `protobuf:"bytes,1,opt,name=dsn,proto3" json:"dsn,omitempty"`
+	Staging       *StagingConfig         `protobuf:"bytes,2,opt,name=staging,proto3" json:"staging,omitempty"`
+	Metadata      *MetadataConfig        `protobuf:"bytes,3,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	TypeMappings  *TypeMappingsConfig    `protobuf:"bytes,4,opt,name=type_mappings,json=typeMappings,proto3" json:"type_mappings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DuckDBDestinationConfig) Reset() {
+	*x = DuckDBDestinationConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DuckDBDestinationConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DuckDBDestinationConfig) ProtoMessage() {}
+
+func (x *DuckDBDestinationConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DuckDBDestinationConfig.ProtoReflect.Descriptor instead.
+func (*DuckDBDestinationConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *DuckDBDestinationConfig) GetDsn() string {
+	if x != nil {
+		return x.Dsn
+	}
+	return ""
+}
+
+func (x *DuckDBDestinationConfig) GetStaging() *StagingConfig {
+	if x != nil {
+		return x.Staging
+	}
+	return nil
+}
+
+func (x *DuckDBDestinationConfig) GetMetadata() *MetadataConfig {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *DuckDBDestinationConfig) GetTypeMappings() *TypeMappingsConfig {
+	if x != nil {
+		return x.TypeMappings
+	}
+	return nil
+}
+
+type DuckLakeDestinationConfig struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Dsn               string                 `protobuf:"bytes,1,opt,name=dsn,proto3" json:"dsn,omitempty"`
+	Catalog           string                 `protobuf:"bytes,2,opt,name=catalog,proto3" json:"catalog,omitempty"`
+	CatalogName       string                 `protobuf:"bytes,3,opt,name=catalog_name,json=catalogName,proto3" json:"catalog_name,omitempty"`
+	DataPath          string                 `protobuf:"bytes,4,opt,name=data_path,json=dataPath,proto3" json:"data_path,omitempty"`
+	OverrideDataPath  *bool                  `protobuf:"varint,5,opt,name=override_data_path,json=overrideDataPath,proto3,oneof" json:"override_data_path,omitempty"`
+	InstallExtensions *bool                  `protobuf:"varint,6,opt,name=install_extensions,json=installExtensions,proto3,oneof" json:"install_extensions,omitempty"`
+	Staging           *StagingConfig         `protobuf:"bytes,7,opt,name=staging,proto3" json:"staging,omitempty"`
+	Metadata          *MetadataConfig        `protobuf:"bytes,8,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	TypeMappings      *TypeMappingsConfig    `protobuf:"bytes,9,opt,name=type_mappings,json=typeMappings,proto3" json:"type_mappings,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *DuckLakeDestinationConfig) Reset() {
+	*x = DuckLakeDestinationConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DuckLakeDestinationConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DuckLakeDestinationConfig) ProtoMessage() {}
+
+func (x *DuckLakeDestinationConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DuckLakeDestinationConfig.ProtoReflect.Descriptor instead.
+func (*DuckLakeDestinationConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *DuckLakeDestinationConfig) GetDsn() string {
+	if x != nil {
+		return x.Dsn
+	}
+	return ""
+}
+
+func (x *DuckLakeDestinationConfig) GetCatalog() string {
+	if x != nil {
+		return x.Catalog
+	}
+	return ""
+}
+
+func (x *DuckLakeDestinationConfig) GetCatalogName() string {
+	if x != nil {
+		return x.CatalogName
+	}
+	return ""
+}
+
+func (x *DuckLakeDestinationConfig) GetDataPath() string {
+	if x != nil {
+		return x.DataPath
+	}
+	return ""
+}
+
+func (x *DuckLakeDestinationConfig) GetOverrideDataPath() bool {
+	if x != nil && x.OverrideDataPath != nil {
+		return *x.OverrideDataPath
+	}
+	return false
+}
+
+func (x *DuckLakeDestinationConfig) GetInstallExtensions() bool {
+	if x != nil && x.InstallExtensions != nil {
+		return *x.InstallExtensions
+	}
+	return false
+}
+
+func (x *DuckLakeDestinationConfig) GetStaging() *StagingConfig {
+	if x != nil {
+		return x.Staging
+	}
+	return nil
+}
+
+func (x *DuckLakeDestinationConfig) GetMetadata() *MetadataConfig {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *DuckLakeDestinationConfig) GetTypeMappings() *TypeMappingsConfig {
+	if x != nil {
+		return x.TypeMappings
+	}
+	return nil
+}
+
+type IcebergDestinationConfig struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	CatalogProfile        IcebergCatalogProfile  `protobuf:"varint,1,opt,name=catalog_profile,json=catalogProfile,proto3,enum=wallaby.v1.IcebergCatalogProfile" json:"catalog_profile,omitempty"`
+	ControlTable          string                 `protobuf:"bytes,2,opt,name=control_table,json=controlTable,proto3" json:"control_table,omitempty"`
+	DestinationRevisionId string                 `protobuf:"bytes,3,opt,name=destination_revision_id,json=destinationRevisionId,proto3" json:"destination_revision_id,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *IcebergDestinationConfig) Reset() {
+	*x = IcebergDestinationConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IcebergDestinationConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IcebergDestinationConfig) ProtoMessage() {}
+
+func (x *IcebergDestinationConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IcebergDestinationConfig.ProtoReflect.Descriptor instead.
+func (*IcebergDestinationConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *IcebergDestinationConfig) GetCatalogProfile() IcebergCatalogProfile {
+	if x != nil {
+		return x.CatalogProfile
+	}
+	return IcebergCatalogProfile_ICEBERG_CATALOG_PROFILE_UNSPECIFIED
+}
+
+func (x *IcebergDestinationConfig) GetControlTable() string {
+	if x != nil {
+		return x.ControlTable
+	}
+	return ""
+}
+
+func (x *IcebergDestinationConfig) GetDestinationRevisionId() string {
+	if x != nil {
+		return x.DestinationRevisionId
+	}
+	return ""
+}
+
+type CustomEndpointConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ConnectorType string                 `protobuf:"bytes,1,opt,name=connector_type,json=connectorType,proto3" json:"connector_type,omitempty"`
+	Options       map[string]string      `protobuf:"bytes,2,rep,name=options,proto3" json:"options,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CustomEndpointConfig) Reset() {
+	*x = CustomEndpointConfig{}
+	mi := &file_wallaby_v1_types_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CustomEndpointConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CustomEndpointConfig) ProtoMessage() {}
+
+func (x *CustomEndpointConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_types_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CustomEndpointConfig.ProtoReflect.Descriptor instead.
+func (*CustomEndpointConfig) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *CustomEndpointConfig) GetConnectorType() string {
+	if x != nil {
+		return x.ConnectorType
+	}
+	return ""
+}
+
+func (x *CustomEndpointConfig) GetOptions() map[string]string {
+	if x != nil {
+		return x.Options
+	}
+	return nil
+}
+
+type Endpoint struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Types that are valid to be assigned to Config:
+	//
+	//	*Endpoint_PostgresSource
+	//	*Endpoint_PostgresDestination
+	//	*Endpoint_Pgstream
+	//	*Endpoint_Kafka
+	//	*Endpoint_Redpanda
+	//	*Endpoint_S3
+	//	*Endpoint_Http
+	//	*Endpoint_Grpc
+	//	*Endpoint_Snowflake
+	//	*Endpoint_SnowflakePostgresSql
+	//	*Endpoint_SnowflakePostgresStaged
+	//	*Endpoint_SnowflakePostgresStreaming
+	//	*Endpoint_Snowpipe
+	//	*Endpoint_Clickhouse
+	//	*Endpoint_ClickhousePostgresAppend
+	//	*Endpoint_Duckdb
+	//	*Endpoint_Ducklake
+	//	*Endpoint_Iceberg
+	//	*Endpoint_Custom
+	Config        isEndpoint_Config `protobuf_oneof:"config"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Endpoint) Reset() {
 	*x = Endpoint{}
-	mi := &file_wallaby_v1_types_proto_msgTypes[0]
+	mi := &file_wallaby_v1_types_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -417,7 +5198,7 @@ func (x *Endpoint) String() string {
 func (*Endpoint) ProtoMessage() {}
 
 func (x *Endpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_types_proto_msgTypes[0]
+	mi := &file_wallaby_v1_types_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -430,7 +5211,7 @@ func (x *Endpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Endpoint.ProtoReflect.Descriptor instead.
 func (*Endpoint) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{0}
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *Endpoint) GetName() string {
@@ -440,38 +5221,318 @@ func (x *Endpoint) GetName() string {
 	return ""
 }
 
-func (x *Endpoint) GetType() EndpointType {
+func (x *Endpoint) GetConfig() isEndpoint_Config {
 	if x != nil {
-		return x.Type
-	}
-	return EndpointType_ENDPOINT_TYPE_UNSPECIFIED
-}
-
-func (x *Endpoint) GetOptions() map[string]string {
-	if x != nil {
-		return x.Options
+		return x.Config
 	}
 	return nil
 }
 
+func (x *Endpoint) GetPostgresSource() *PostgresSourceConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_PostgresSource); ok {
+			return x.PostgresSource
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetPostgresDestination() *PostgresDestinationConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_PostgresDestination); ok {
+			return x.PostgresDestination
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetPgstream() *PGStreamDestinationConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_Pgstream); ok {
+			return x.Pgstream
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetKafka() *KafkaDestinationConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_Kafka); ok {
+			return x.Kafka
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetRedpanda() *RedpandaDestinationConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_Redpanda); ok {
+			return x.Redpanda
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetS3() *S3DestinationConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_S3); ok {
+			return x.S3
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetHttp() *HTTPDestinationConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_Http); ok {
+			return x.Http
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetGrpc() *GRPCDestinationConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_Grpc); ok {
+			return x.Grpc
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetSnowflake() *SnowflakeDestinationConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_Snowflake); ok {
+			return x.Snowflake
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetSnowflakePostgresSql() *SnowflakePostgresSQLConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_SnowflakePostgresSql); ok {
+			return x.SnowflakePostgresSql
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetSnowflakePostgresStaged() *SnowflakePostgresStagedConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_SnowflakePostgresStaged); ok {
+			return x.SnowflakePostgresStaged
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetSnowflakePostgresStreaming() *SnowflakePostgresStreamingConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_SnowflakePostgresStreaming); ok {
+			return x.SnowflakePostgresStreaming
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetSnowpipe() *SnowpipeDestinationConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_Snowpipe); ok {
+			return x.Snowpipe
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetClickhouse() *ClickHouseDestinationConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_Clickhouse); ok {
+			return x.Clickhouse
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetClickhousePostgresAppend() *ClickHousePostgresAppendConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_ClickhousePostgresAppend); ok {
+			return x.ClickhousePostgresAppend
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetDuckdb() *DuckDBDestinationConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_Duckdb); ok {
+			return x.Duckdb
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetDucklake() *DuckLakeDestinationConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_Ducklake); ok {
+			return x.Ducklake
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetIceberg() *IcebergDestinationConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_Iceberg); ok {
+			return x.Iceberg
+		}
+	}
+	return nil
+}
+
+func (x *Endpoint) GetCustom() *CustomEndpointConfig {
+	if x != nil {
+		if x, ok := x.Config.(*Endpoint_Custom); ok {
+			return x.Custom
+		}
+	}
+	return nil
+}
+
+type isEndpoint_Config interface {
+	isEndpoint_Config()
+}
+
+type Endpoint_PostgresSource struct {
+	PostgresSource *PostgresSourceConfig `protobuf:"bytes,10,opt,name=postgres_source,json=postgresSource,proto3,oneof"`
+}
+
+type Endpoint_PostgresDestination struct {
+	PostgresDestination *PostgresDestinationConfig `protobuf:"bytes,11,opt,name=postgres_destination,json=postgresDestination,proto3,oneof"`
+}
+
+type Endpoint_Pgstream struct {
+	Pgstream *PGStreamDestinationConfig `protobuf:"bytes,12,opt,name=pgstream,proto3,oneof"`
+}
+
+type Endpoint_Kafka struct {
+	Kafka *KafkaDestinationConfig `protobuf:"bytes,13,opt,name=kafka,proto3,oneof"`
+}
+
+type Endpoint_Redpanda struct {
+	Redpanda *RedpandaDestinationConfig `protobuf:"bytes,14,opt,name=redpanda,proto3,oneof"`
+}
+
+type Endpoint_S3 struct {
+	S3 *S3DestinationConfig `protobuf:"bytes,15,opt,name=s3,proto3,oneof"`
+}
+
+type Endpoint_Http struct {
+	Http *HTTPDestinationConfig `protobuf:"bytes,16,opt,name=http,proto3,oneof"`
+}
+
+type Endpoint_Grpc struct {
+	Grpc *GRPCDestinationConfig `protobuf:"bytes,17,opt,name=grpc,proto3,oneof"`
+}
+
+type Endpoint_Snowflake struct {
+	Snowflake *SnowflakeDestinationConfig `protobuf:"bytes,18,opt,name=snowflake,proto3,oneof"`
+}
+
+type Endpoint_SnowflakePostgresSql struct {
+	SnowflakePostgresSql *SnowflakePostgresSQLConfig `protobuf:"bytes,19,opt,name=snowflake_postgres_sql,json=snowflakePostgresSql,proto3,oneof"`
+}
+
+type Endpoint_SnowflakePostgresStaged struct {
+	SnowflakePostgresStaged *SnowflakePostgresStagedConfig `protobuf:"bytes,20,opt,name=snowflake_postgres_staged,json=snowflakePostgresStaged,proto3,oneof"`
+}
+
+type Endpoint_SnowflakePostgresStreaming struct {
+	SnowflakePostgresStreaming *SnowflakePostgresStreamingConfig `protobuf:"bytes,21,opt,name=snowflake_postgres_streaming,json=snowflakePostgresStreaming,proto3,oneof"`
+}
+
+type Endpoint_Snowpipe struct {
+	Snowpipe *SnowpipeDestinationConfig `protobuf:"bytes,22,opt,name=snowpipe,proto3,oneof"`
+}
+
+type Endpoint_Clickhouse struct {
+	Clickhouse *ClickHouseDestinationConfig `protobuf:"bytes,23,opt,name=clickhouse,proto3,oneof"`
+}
+
+type Endpoint_ClickhousePostgresAppend struct {
+	ClickhousePostgresAppend *ClickHousePostgresAppendConfig `protobuf:"bytes,24,opt,name=clickhouse_postgres_append,json=clickhousePostgresAppend,proto3,oneof"`
+}
+
+type Endpoint_Duckdb struct {
+	Duckdb *DuckDBDestinationConfig `protobuf:"bytes,25,opt,name=duckdb,proto3,oneof"`
+}
+
+type Endpoint_Ducklake struct {
+	Ducklake *DuckLakeDestinationConfig `protobuf:"bytes,26,opt,name=ducklake,proto3,oneof"`
+}
+
+type Endpoint_Iceberg struct {
+	Iceberg *IcebergDestinationConfig `protobuf:"bytes,27,opt,name=iceberg,proto3,oneof"`
+}
+
+type Endpoint_Custom struct {
+	Custom *CustomEndpointConfig `protobuf:"bytes,28,opt,name=custom,proto3,oneof"`
+}
+
+func (*Endpoint_PostgresSource) isEndpoint_Config() {}
+
+func (*Endpoint_PostgresDestination) isEndpoint_Config() {}
+
+func (*Endpoint_Pgstream) isEndpoint_Config() {}
+
+func (*Endpoint_Kafka) isEndpoint_Config() {}
+
+func (*Endpoint_Redpanda) isEndpoint_Config() {}
+
+func (*Endpoint_S3) isEndpoint_Config() {}
+
+func (*Endpoint_Http) isEndpoint_Config() {}
+
+func (*Endpoint_Grpc) isEndpoint_Config() {}
+
+func (*Endpoint_Snowflake) isEndpoint_Config() {}
+
+func (*Endpoint_SnowflakePostgresSql) isEndpoint_Config() {}
+
+func (*Endpoint_SnowflakePostgresStaged) isEndpoint_Config() {}
+
+func (*Endpoint_SnowflakePostgresStreaming) isEndpoint_Config() {}
+
+func (*Endpoint_Snowpipe) isEndpoint_Config() {}
+
+func (*Endpoint_Clickhouse) isEndpoint_Config() {}
+
+func (*Endpoint_ClickhousePostgresAppend) isEndpoint_Config() {}
+
+func (*Endpoint_Duckdb) isEndpoint_Config() {}
+
+func (*Endpoint_Ducklake) isEndpoint_Config() {}
+
+func (*Endpoint_Iceberg) isEndpoint_Config() {}
+
+func (*Endpoint_Custom) isEndpoint_Config() {}
+
 type FlowConfig struct {
-	state                           protoimpl.MessageState `protogen:"open.v1"`
-	AckPolicy                       AckPolicy              `protobuf:"varint,1,opt,name=ack_policy,json=ackPolicy,proto3,enum=wallaby.v1.AckPolicy" json:"ack_policy,omitempty"`
-	PrimaryDestination              string                 `protobuf:"bytes,2,opt,name=primary_destination,json=primaryDestination,proto3" json:"primary_destination,omitempty"`
-	FailureMode                     FailureMode            `protobuf:"varint,3,opt,name=failure_mode,json=failureMode,proto3,enum=wallaby.v1.FailureMode" json:"failure_mode,omitempty"`
-	GiveUpPolicy                    GiveUpPolicy           `protobuf:"varint,4,opt,name=give_up_policy,json=giveUpPolicy,proto3,enum=wallaby.v1.GiveUpPolicy" json:"give_up_policy,omitempty"`
-	Ddl                             *DDLPolicy             `protobuf:"bytes,5,opt,name=ddl,proto3" json:"ddl,omitempty"`
-	SchemaRegistrySubject           string                 `protobuf:"bytes,6,opt,name=schema_registry_subject,json=schemaRegistrySubject,proto3" json:"schema_registry_subject,omitempty"`
-	SchemaRegistryProtoTypesSubject string                 `protobuf:"bytes,7,opt,name=schema_registry_proto_types_subject,json=schemaRegistryProtoTypesSubject,proto3" json:"schema_registry_proto_types_subject,omitempty"`
-	SchemaRegistrySubjectMode       string                 `protobuf:"bytes,8,opt,name=schema_registry_subject_mode,json=schemaRegistrySubjectMode,proto3" json:"schema_registry_subject_mode,omitempty"`
-	Materialization                 *MaterializationPolicy `protobuf:"bytes,9,opt,name=materialization,proto3" json:"materialization,omitempty"`
-	unknownFields                   protoimpl.UnknownFields
-	sizeCache                       protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	AckPolicy          AckPolicy              `protobuf:"varint,1,opt,name=ack_policy,json=ackPolicy,proto3,enum=wallaby.v1.AckPolicy" json:"ack_policy,omitempty"`
+	PrimaryDestination string                 `protobuf:"bytes,2,opt,name=primary_destination,json=primaryDestination,proto3" json:"primary_destination,omitempty"`
+	FailureMode        FailureMode            `protobuf:"varint,3,opt,name=failure_mode,json=failureMode,proto3,enum=wallaby.v1.FailureMode" json:"failure_mode,omitempty"`
+	GiveUpPolicy       GiveUpPolicy           `protobuf:"varint,4,opt,name=give_up_policy,json=giveUpPolicy,proto3,enum=wallaby.v1.GiveUpPolicy" json:"give_up_policy,omitempty"`
+	Ddl                *DDLPolicy             `protobuf:"bytes,5,opt,name=ddl,proto3" json:"ddl,omitempty"`
+	Materialization    *MaterializationPolicy `protobuf:"bytes,9,opt,name=materialization,proto3" json:"materialization,omitempty"`
+	TableMappings      *TableMappings         `protobuf:"bytes,10,opt,name=table_mappings,json=tableMappings,proto3" json:"table_mappings,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *FlowConfig) Reset() {
 	*x = FlowConfig{}
-	mi := &file_wallaby_v1_types_proto_msgTypes[1]
+	mi := &file_wallaby_v1_types_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -483,7 +5544,7 @@ func (x *FlowConfig) String() string {
 func (*FlowConfig) ProtoMessage() {}
 
 func (x *FlowConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_types_proto_msgTypes[1]
+	mi := &file_wallaby_v1_types_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -496,7 +5557,7 @@ func (x *FlowConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FlowConfig.ProtoReflect.Descriptor instead.
 func (*FlowConfig) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{1}
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *FlowConfig) GetAckPolicy() AckPolicy {
@@ -534,27 +5595,6 @@ func (x *FlowConfig) GetDdl() *DDLPolicy {
 	return nil
 }
 
-func (x *FlowConfig) GetSchemaRegistrySubject() string {
-	if x != nil {
-		return x.SchemaRegistrySubject
-	}
-	return ""
-}
-
-func (x *FlowConfig) GetSchemaRegistryProtoTypesSubject() string {
-	if x != nil {
-		return x.SchemaRegistryProtoTypesSubject
-	}
-	return ""
-}
-
-func (x *FlowConfig) GetSchemaRegistrySubjectMode() string {
-	if x != nil {
-		return x.SchemaRegistrySubjectMode
-	}
-	return ""
-}
-
 func (x *FlowConfig) GetMaterialization() *MaterializationPolicy {
 	if x != nil {
 		return x.Materialization
@@ -562,9 +5602,17 @@ func (x *FlowConfig) GetMaterialization() *MaterializationPolicy {
 	return nil
 }
 
+func (x *FlowConfig) GetTableMappings() *TableMappings {
+	if x != nil {
+		return x.TableMappings
+	}
+	return nil
+}
+
 type MaterializationPolicy struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The first admitted projection is exactly canonical_cdc_parquet_v1.
+	// Mapped materialized flows require exactly canonical_cdc_parquet_v2.
+	// canonical_cdc_parquet_v1 is frozen for historical encoder verification only.
 	ProjectionId  string `protobuf:"bytes,1,opt,name=projection_id,json=projectionId,proto3" json:"projection_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -572,7 +5620,7 @@ type MaterializationPolicy struct {
 
 func (x *MaterializationPolicy) Reset() {
 	*x = MaterializationPolicy{}
-	mi := &file_wallaby_v1_types_proto_msgTypes[2]
+	mi := &file_wallaby_v1_types_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -584,7 +5632,7 @@ func (x *MaterializationPolicy) String() string {
 func (*MaterializationPolicy) ProtoMessage() {}
 
 func (x *MaterializationPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_types_proto_msgTypes[2]
+	mi := &file_wallaby_v1_types_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -597,7 +5645,7 @@ func (x *MaterializationPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MaterializationPolicy.ProtoReflect.Descriptor instead.
 func (*MaterializationPolicy) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{2}
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *MaterializationPolicy) GetProjectionId() string {
@@ -618,7 +5666,7 @@ type DDLPolicy struct {
 
 func (x *DDLPolicy) Reset() {
 	*x = DDLPolicy{}
-	mi := &file_wallaby_v1_types_proto_msgTypes[3]
+	mi := &file_wallaby_v1_types_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -630,7 +5678,7 @@ func (x *DDLPolicy) String() string {
 func (*DDLPolicy) ProtoMessage() {}
 
 func (x *DDLPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_types_proto_msgTypes[3]
+	mi := &file_wallaby_v1_types_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -643,7 +5691,7 @@ func (x *DDLPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DDLPolicy.ProtoReflect.Descriptor instead.
 func (*DDLPolicy) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{3}
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *DDLPolicy) GetGate() bool {
@@ -683,7 +5731,7 @@ type Flow struct {
 
 func (x *Flow) Reset() {
 	*x = Flow{}
-	mi := &file_wallaby_v1_types_proto_msgTypes[4]
+	mi := &file_wallaby_v1_types_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -695,7 +5743,7 @@ func (x *Flow) String() string {
 func (*Flow) ProtoMessage() {}
 
 func (x *Flow) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_types_proto_msgTypes[4]
+	mi := &file_wallaby_v1_types_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -708,7 +5756,7 @@ func (x *Flow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Flow.ProtoReflect.Descriptor instead.
 func (*Flow) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{4}
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *Flow) GetId() string {
@@ -778,7 +5826,7 @@ type Checkpoint struct {
 
 func (x *Checkpoint) Reset() {
 	*x = Checkpoint{}
-	mi := &file_wallaby_v1_types_proto_msgTypes[5]
+	mi := &file_wallaby_v1_types_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -790,7 +5838,7 @@ func (x *Checkpoint) String() string {
 func (*Checkpoint) ProtoMessage() {}
 
 func (x *Checkpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_types_proto_msgTypes[5]
+	mi := &file_wallaby_v1_types_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -803,7 +5851,7 @@ func (x *Checkpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Checkpoint.ProtoReflect.Descriptor instead.
 func (*Checkpoint) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{5}
+	return file_wallaby_v1_types_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *Checkpoint) GetLsn() string {
@@ -832,14 +5880,559 @@ var File_wallaby_v1_types_proto protoreflect.FileDescriptor
 const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\n" +
 	"\x16wallaby/v1/types.proto\x12\n" +
-	"wallaby.v1\"\xc5\x01\n" +
-	"\bEndpoint\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12,\n" +
-	"\x04type\x18\x02 \x01(\x0e2\x18.wallaby.v1.EndpointTypeR\x04type\x12;\n" +
-	"\aoptions\x18\x03 \x03(\v2!.wallaby.v1.Endpoint.OptionsEntryR\aoptions\x1a:\n" +
+	"wallaby.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1ewallaby/v1/table_mapping.proto\"\xcd\x01\n" +
+	"\fRDSIAMConfig\x12\x16\n" +
+	"\x06region\x18\x01 \x01(\tR\x06region\x12\x18\n" +
+	"\aprofile\x18\x02 \x01(\tR\aprofile\x12\x19\n" +
+	"\brole_arn\x18\x03 \x01(\tR\aroleArn\x12*\n" +
+	"\x11role_session_name\x18\x04 \x01(\tR\x0froleSessionName\x12(\n" +
+	"\x10role_external_id\x18\x05 \x01(\tR\x0eroleExternalId\x12\x1a\n" +
+	"\bendpoint\x18\x06 \x01(\tR\bendpoint\"\xaf\x01\n" +
+	"\x18PostgresConnectionConfig\x12\x10\n" +
+	"\x03dsn\x18\x01 \x01(\tR\x03dsn\x125\n" +
+	"\x14pool_max_connections\x18\x02 \x01(\rH\x00R\x12poolMaxConnections\x88\x01\x01\x121\n" +
+	"\ards_iam\x18\x03 \x01(\v2\x18.wallaby.v1.RDSIAMConfigR\x06rdsIamB\x17\n" +
+	"\x15_pool_max_connections\"%\n" +
+	"\x11PostgresDSNConfig\x12\x10\n" +
+	"\x03dsn\x18\x01 \x01(\tR\x03dsn\"\xfc\x01\n" +
+	"\vRetryConfig\x12$\n" +
+	"\vmax_retries\x18\x01 \x01(\rH\x00R\n" +
+	"maxRetries\x88\x01\x01\x12<\n" +
+	"\fbackoff_base\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\vbackoffBase\x12:\n" +
+	"\vbackoff_max\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\n" +
+	"backoffMax\x12*\n" +
+	"\x0ebackoff_factor\x18\x04 \x01(\x01H\x01R\rbackoffFactor\x88\x01\x01B\x0e\n" +
+	"\f_max_retriesB\x11\n" +
+	"\x0f_backoff_factor\"w\n" +
+	"\rGRPCTLSConfig\x12\x1f\n" +
+	"\binsecure\x18\x01 \x01(\bH\x00R\binsecure\x88\x01\x01\x12\x17\n" +
+	"\aca_file\x18\x02 \x01(\tR\x06caFile\x12\x1f\n" +
+	"\vserver_name\x18\x03 \x01(\tR\n" +
+	"serverNameB\v\n" +
+	"\t_insecure\"\x82\x02\n" +
+	"\x13ClickHouseTLSConfig\x12\x1f\n" +
+	"\binsecure\x18\x01 \x01(\bH\x00R\binsecure\x88\x01\x01\x12\x17\n" +
+	"\aca_file\x18\x02 \x01(\tR\x06caFile\x12\x1f\n" +
+	"\vserver_name\x18\x03 \x01(\tR\n" +
+	"serverName\x12)\n" +
+	"\x10certificate_file\x18\x04 \x01(\tR\x0fcertificateFile\x12(\n" +
+	"\x10private_key_file\x18\x05 \x01(\tR\x0eprivateKeyFile\x12.\n" +
+	"\x13replica_server_name\x18\x06 \x01(\tR\x11replicaServerNameB\v\n" +
+	"\t_insecure\"\xd3\x01\n" +
+	"\rStagingConfig\x124\n" +
+	"\n" +
+	"batch_mode\x18\x01 \x01(\x0e2\x15.wallaby.v1.BatchModeR\tbatchMode\x12F\n" +
+	"\x10batch_resolution\x18\x02 \x01(\x0e2\x1b.wallaby.v1.BatchResolutionR\x0fbatchResolution\x12\x16\n" +
+	"\x06schema\x18\x03 \x01(\tR\x06schema\x12\x14\n" +
+	"\x05table\x18\x04 \x01(\tR\x05table\x12\x16\n" +
+	"\x06suffix\x18\x05 \x01(\tR\x06suffix\"\x97\x01\n" +
+	"\x0eMetadataConfig\x12\x1d\n" +
+	"\aenabled\x18\x01 \x01(\bH\x00R\aenabled\x88\x01\x01\x12\x16\n" +
+	"\x06schema\x18\x02 \x01(\tR\x06schema\x12\x14\n" +
+	"\x05table\x18\x03 \x01(\tR\x05table\x12,\n" +
+	"\x12primary_key_prefix\x18\x04 \x01(\tR\x10primaryKeyPrefixB\n" +
+	"\n" +
+	"\b_enabled\"\xd4\x01\n" +
+	"\x18ClickHouseMetadataConfig\x12\x1d\n" +
+	"\aenabled\x18\x01 \x01(\bH\x00R\aenabled\x88\x01\x01\x12\x16\n" +
+	"\x06schema\x18\x02 \x01(\tR\x06schema\x12\x14\n" +
+	"\x05table\x18\x03 \x01(\tR\x05table\x12,\n" +
+	"\x12primary_key_prefix\x18\x04 \x01(\tR\x10primaryKeyPrefix\x12\x16\n" +
+	"\x06engine\x18\x05 \x01(\tR\x06engine\x12\x19\n" +
+	"\border_by\x18\x06 \x01(\tR\aorderByB\n" +
+	"\n" +
+	"\b_enabled\"\x89\x02\n" +
+	"\x0fWarehouseConfig\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04size\x18\x02 \x01(\tR\x04size\x125\n" +
+	"\x14auto_suspend_seconds\x18\x03 \x01(\rH\x00R\x12autoSuspendSeconds\x88\x01\x01\x12$\n" +
+	"\vauto_resume\x18\x04 \x01(\bH\x01R\n" +
+	"autoResume\x88\x01\x01\x121\n" +
+	"\x12session_keep_alive\x18\x05 \x01(\bH\x02R\x10sessionKeepAlive\x88\x01\x01B\x17\n" +
+	"\x15_auto_suspend_secondsB\x0e\n" +
+	"\f_auto_resumeB\x15\n" +
+	"\x13_session_keep_alive\"\x9b\x01\n" +
+	"\x12TypeMappingsConfig\x12H\n" +
+	"\bmappings\x18\x01 \x03(\v2,.wallaby.v1.TypeMappingsConfig.MappingsEntryR\bmappings\x1a;\n" +
+	"\rMappingsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb4\x01\n" +
+	"\x1dConfluentSchemaRegistryConfig\x12\x10\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x12\x1a\n" +
+	"\busername\x18\x02 \x01(\tR\busername\x12\x1a\n" +
+	"\bpassword\x18\x03 \x01(\tR\bpassword\x12\x14\n" +
+	"\x05token\x18\x04 \x01(\tR\x05token\x123\n" +
+	"\atimeout\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\atimeout\"\xf0\x01\n" +
+	"\x1cApicurioSchemaRegistryConfig\x12\x10\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x12\x1a\n" +
+	"\busername\x18\x02 \x01(\tR\busername\x12\x1a\n" +
+	"\bpassword\x18\x03 \x01(\tR\bpassword\x12\x14\n" +
+	"\x05token\x18\x04 \x01(\tR\x05token\x123\n" +
+	"\atimeout\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\atimeout\x12)\n" +
+	"\rcompatibility\x18\x06 \x01(\bH\x00R\rcompatibility\x88\x01\x01B\x10\n" +
+	"\x0e_compatibility\"\xb7\x01\n" +
+	"\x18GlueSchemaRegistryConfig\x12\x16\n" +
+	"\x06region\x18\x01 \x01(\tR\x06region\x12\x1a\n" +
+	"\bendpoint\x18\x02 \x01(\tR\bendpoint\x12\x18\n" +
+	"\aprofile\x18\x03 \x01(\tR\aprofile\x12\x19\n" +
+	"\brole_arn\x18\x04 \x01(\tR\aroleArn\x12\x1a\n" +
+	"\bregistry\x18\x05 \x01(\tR\bregistry\x12\x16\n" +
+	"\x06schema\x18\x06 \x01(\tR\x06schema\"\x92\x01\n" +
+	"\x1cPostgresSchemaRegistryConfig\x12=\n" +
+	"\n" +
+	"connection\x18\x01 \x01(\v2\x1d.wallaby.v1.PostgresDSNConfigR\n" +
+	"connection\x123\n" +
+	"\atimeout\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\atimeout\"9\n" +
+	"\x19LocalSchemaRegistryConfig\x12\x1c\n" +
+	"\tdirectory\x18\x01 \x01(\tR\tdirectory\"\xf7\x02\n" +
+	"\x14SchemaRegistryConfig\x12I\n" +
+	"\tconfluent\x18\x01 \x01(\v2).wallaby.v1.ConfluentSchemaRegistryConfigH\x00R\tconfluent\x12F\n" +
+	"\bapicurio\x18\x02 \x01(\v2(.wallaby.v1.ApicurioSchemaRegistryConfigH\x00R\bapicurio\x12:\n" +
+	"\x04glue\x18\x03 \x01(\v2$.wallaby.v1.GlueSchemaRegistryConfigH\x00R\x04glue\x12F\n" +
+	"\bpostgres\x18\x04 \x01(\v2(.wallaby.v1.PostgresSchemaRegistryConfigH\x00R\bpostgres\x12=\n" +
+	"\x05local\x18\x05 \x01(\v2%.wallaby.v1.LocalSchemaRegistryConfigH\x00R\x05localB\t\n" +
+	"\abackend\"\xc8\x01\n" +
+	"\x13SnapshotStateConfig\x12\x1c\n" +
+	"\bdisabled\x18\x01 \x01(\bH\x00R\bdisabled\x12\x1d\n" +
+	"\tfile_path\x18\x02 \x01(\tH\x00R\bfilePath\x12;\n" +
+	"\bpostgres\x18\x03 \x01(\v2\x1d.wallaby.v1.PostgresDSNConfigH\x00R\bpostgres\x12\x16\n" +
+	"\x06schema\x18\x04 \x01(\tR\x06schema\x12\x14\n" +
+	"\x05table\x18\x05 \x01(\tR\x05tableB\t\n" +
+	"\abackend\"\xca\x17\n" +
+	"\x14PostgresSourceConfig\x12D\n" +
+	"\n" +
+	"connection\x18\x01 \x01(\v2$.wallaby.v1.PostgresConnectionConfigR\n" +
+	"connection\x12\x12\n" +
+	"\x04slot\x18\x02 \x01(\tR\x04slot\x12 \n" +
+	"\vpublication\x18\x03 \x01(\tR\vpublication\x12\"\n" +
+	"\n" +
+	"batch_size\x18\x04 \x01(\rH\x00R\tbatchSize\x88\x01\x01\x12>\n" +
+	"\rbatch_timeout\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\fbatchTimeout\x12B\n" +
+	"\x0fstatus_interval\x18\x06 \x01(\v2\x19.google.protobuf.DurationR\x0estatusInterval\x12$\n" +
+	"\vcreate_slot\x18\a \x01(\bH\x01R\n" +
+	"createSlot\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"emit_empty\x18\b \x01(\bH\x02R\temitEmpty\x88\x01\x01\x122\n" +
+	"\x12ensure_publication\x18\t \x01(\bH\x03R\x11ensurePublication\x88\x01\x01\x126\n" +
+	"\x14validate_replication\x18\n" +
+	" \x01(\bH\x04R\x13validateReplication\x88\x01\x01\x12-\n" +
+	"\x12publication_tables\x18\v \x03(\tR\x11publicationTables\x12/\n" +
+	"\x13publication_schemas\x18\f \x03(\tR\x12publicationSchemas\x12.\n" +
+	"\x10sync_publication\x18\r \x01(\bH\x05R\x0fsyncPublication\x88\x01\x01\x12S\n" +
+	"\x15sync_publication_mode\x18\x0e \x01(\x0e2\x1f.wallaby.v1.SyncPublicationModeR\x13syncPublicationMode\x12(\n" +
+	"\rresolve_types\x18\x0f \x01(\bH\x06R\fresolveTypes\x88\x01\x01\x12&\n" +
+	"\fensure_state\x18\x10 \x01(\bH\aR\vensureState\x88\x01\x01\x12!\n" +
+	"\fstate_schema\x18\x11 \x01(\tR\vstateSchema\x12\x1f\n" +
+	"\vstate_table\x18\x12 \x01(\tR\n" +
+	"stateTable\x12$\n" +
+	"\vcapture_ddl\x18\x13 \x01(\bH\bR\n" +
+	"captureDdl\x88\x01\x01\x12,\n" +
+	"\x12ddl_trigger_schema\x18\x14 \x01(\tR\x10ddlTriggerSchema\x12(\n" +
+	"\x10ddl_trigger_name\x18\x15 \x01(\tR\x0eddlTriggerName\x12,\n" +
+	"\x12ddl_message_prefix\x18\x16 \x01(\tR\x10ddlMessagePrefix\x12;\n" +
+	"\vtoast_fetch\x18\x17 \x01(\x0e2\x1a.wallaby.v1.ToastFetchModeR\n" +
+	"toastFetch\x12-\n" +
+	"\x10toast_cache_size\x18\x18 \x01(\rH\tR\x0etoastCacheSize\x88\x01\x01\x12\x1d\n" +
+	"\amanaged\x18\x19 \x01(\bH\n" +
+	"R\amanaged\x88\x01\x01\x12C\n" +
+	"\x0fmanaged_profile\x18\x1a \x01(\x0e2\x1a.wallaby.v1.ManagedProfileR\x0emanagedProfile\x12;\n" +
+	"\x17max_transaction_records\x18\x1b \x01(\x04H\vR\x15maxTransactionRecords\x88\x01\x01\x127\n" +
+	"\x15max_transaction_bytes\x18\x1c \x01(\x04H\fR\x13maxTransactionBytes\x88\x01\x01\x12?\n" +
+	"\x19max_transaction_fragments\x18\x1d \x01(\rH\rR\x17maxTransactionFragments\x88\x01\x01\x12:\n" +
+	"\x16streaming_transactions\x18\x1e \x01(\bH\x0eR\x15streamingTransactions\x88\x01\x01\x128\n" +
+	"\x18source_system_identifier\x18\x1f \x01(\tR\x16sourceSystemIdentifier\x12*\n" +
+	"\x11source_lineage_id\x18  \x01(\tR\x0fsourceLineageId\x121\n" +
+	"\x14publication_revision\x18! \x01(\tR\x13publicationRevision\x127\n" +
+	"\tbootstrap\x18\" \x01(\x0e2\x19.wallaby.v1.BootstrapModeR\tbootstrap\x12;\n" +
+	"\x17bootstrap_restart_limit\x18# \x01(\rH\x0fR\x15bootstrapRestartLimit\x88\x01\x01\x123\n" +
+	"\x13snapshot_max_tables\x18$ \x01(\rH\x10R\x11snapshotMaxTables\x88\x01\x01\x12.\n" +
+	"\x10snapshot_workers\x18% \x01(\rH\x11R\x0fsnapshotWorkers\x88\x01\x01\x12K\n" +
+	"\x14snapshot_claim_lease\x18& \x01(\v2\x19.google.protobuf.DurationR\x12snapshotClaimLease\x12'\n" +
+	"\x0fbackfill_tables\x18' \x03(\tR\x0ebackfillTables\x12)\n" +
+	"\x10backfill_schemas\x18( \x03(\tR\x0fbackfillSchemas\x12)\n" +
+	"\x10partition_column\x18) \x01(\tR\x0fpartitionColumn\x12,\n" +
+	"\x0fpartition_count\x18* \x01(\rH\x12R\x0epartitionCount\x88\x01\x01\x124\n" +
+	"\x13snapshot_consistent\x18+ \x01(\bH\x13R\x12snapshotConsistent\x88\x01\x01\x12F\n" +
+	"\x0esnapshot_state\x18, \x01(\v2\x1f.wallaby.v1.SnapshotStateConfigR\rsnapshotState\x12.\n" +
+	"\x06format\x18- \x01(\x0e2\x16.wallaby.v1.WireFormatR\x06format\x122\n" +
+	"\x04mode\x18. \x01(\x0e2\x1e.wallaby.v1.PostgresSourceModeR\x04mode\x12H\n" +
+	"\x12delivery_retention\x18/ \x01(\v2\x19.google.protobuf.DurationR\x11deliveryRetention\x12Q\n" +
+	"\x17delivery_prune_interval\x180 \x01(\v2\x19.google.protobuf.DurationR\x15deliveryPruneInterval\x12)\n" +
+	"\x10bootstrap_tables\x181 \x03(\tR\x0fbootstrapTables\x12+\n" +
+	"\x11bootstrap_schemas\x182 \x03(\tR\x10bootstrapSchemasB\r\n" +
+	"\v_batch_sizeB\x0e\n" +
+	"\f_create_slotB\r\n" +
+	"\v_emit_emptyB\x15\n" +
+	"\x13_ensure_publicationB\x17\n" +
+	"\x15_validate_replicationB\x13\n" +
+	"\x11_sync_publicationB\x10\n" +
+	"\x0e_resolve_typesB\x0f\n" +
+	"\r_ensure_stateB\x0e\n" +
+	"\f_capture_ddlB\x13\n" +
+	"\x11_toast_cache_sizeB\n" +
+	"\n" +
+	"\b_managedB\x1a\n" +
+	"\x18_max_transaction_recordsB\x18\n" +
+	"\x16_max_transaction_bytesB\x1c\n" +
+	"\x1a_max_transaction_fragmentsB\x19\n" +
+	"\x17_streaming_transactionsB\x1a\n" +
+	"\x18_bootstrap_restart_limitB\x16\n" +
+	"\x14_snapshot_max_tablesB\x13\n" +
+	"\x11_snapshot_workersB\x12\n" +
+	"\x10_partition_countB\x16\n" +
+	"\x14_snapshot_consistent\"\xbf\x03\n" +
+	"\x19PostgresDestinationConfig\x12D\n" +
+	"\n" +
+	"connection\x18\x01 \x01(\v2$.wallaby.v1.PostgresConnectionConfigR\n" +
+	"connection\x123\n" +
+	"\astaging\x18\x02 \x01(\v2\x19.wallaby.v1.StagingConfigR\astaging\x126\n" +
+	"\bmetadata\x18\x03 \x01(\v2\x1a.wallaby.v1.MetadataConfigR\bmetadata\x12-\n" +
+	"\x12synchronous_commit\x18\x04 \x01(\tR\x11synchronousCommit\x12C\n" +
+	"\rtype_mappings\x18\x05 \x01(\v2\x1e.wallaby.v1.TypeMappingsConfigR\ftypeMappings\x12C\n" +
+	"\x0fmanaged_profile\x18\x06 \x01(\x0e2\x1a.wallaby.v1.ManagedProfileR\x0emanagedProfile\x126\n" +
+	"\x17destination_revision_id\x18\a \x01(\tR\x15destinationRevisionId\"\xb8\x03\n" +
+	"\x19PGStreamDestinationConfig\x12=\n" +
+	"\n" +
+	"connection\x18\x01 \x01(\v2\x1d.wallaby.v1.PostgresDSNConfigR\n" +
+	"connection\x12\x16\n" +
+	"\x06stream\x18\x02 \x01(\tR\x06stream\x12.\n" +
+	"\x06format\x18\x03 \x01(\x0e2\x16.wallaby.v1.WireFormatR\x06format\x12C\n" +
+	"\rtype_mappings\x18\x04 \x01(\v2\x1e.wallaby.v1.TypeMappingsConfigR\ftypeMappings\x12I\n" +
+	"\x0fschema_registry\x18\x05 \x01(\v2 .wallaby.v1.SchemaRegistryConfigR\x0eschemaRegistry\x126\n" +
+	"\x17schema_registry_subject\x18\x06 \x01(\tR\x15schemaRegistrySubject\x12L\n" +
+	"#schema_registry_proto_types_subject\x18\a \x01(\tR\x1fschemaRegistryProtoTypesSubject\"\xc1\t\n" +
+	"\x16KafkaDestinationConfig\x12\x18\n" +
+	"\abrokers\x18\x01 \x03(\tR\abrokers\x12\x14\n" +
+	"\x05topic\x18\x02 \x01(\tR\x05topic\x12.\n" +
+	"\x06format\x18\x03 \x01(\x0e2\x16.wallaby.v1.WireFormatR\x06format\x129\n" +
+	"\vcompression\x18\x04 \x01(\x0e2\x17.wallaby.v1.CompressionR\vcompression\x12)\n" +
+	"\x04acks\x18\x05 \x01(\x0e2\x15.wallaby.v1.KafkaAcksR\x04acks\x12/\n" +
+	"\x11max_message_bytes\x18\x06 \x01(\rH\x00R\x0fmaxMessageBytes\x88\x01\x01\x12+\n" +
+	"\x0fmax_batch_bytes\x18\a \x01(\rH\x01R\rmaxBatchBytes\x88\x01\x01\x12-\n" +
+	"\x10max_record_bytes\x18\b \x01(\rH\x02R\x0emaxRecordBytes\x88\x01\x01\x12:\n" +
+	"\x16transactional_producer\x18\t \x01(\bH\x03R\x15transactionalProducer\x88\x01\x01\x123\n" +
+	"\x13allow_oversize_skip\x18\n" +
+	" \x01(\bH\x04R\x11allowOversizeSkip\x88\x01\x01\x12?\n" +
+	"\fmessage_mode\x18\v \x01(\x0e2\x1c.wallaby.v1.KafkaMessageModeR\vmessageMode\x123\n" +
+	"\bkey_mode\x18\f \x01(\x0e2\x18.wallaby.v1.KafkaKeyModeR\akeyMode\x12)\n" +
+	"\x10transactional_id\x18\r \x01(\tR\x0ftransactionalId\x12J\n" +
+	"\x13transaction_timeout\x18\x0e \x01(\v2\x19.google.protobuf.DurationR\x12transactionTimeout\x12-\n" +
+	"\x12transaction_header\x18\x0f \x01(\tR\x11transactionHeader\x12I\n" +
+	"\x0fschema_registry\x18\x10 \x01(\v2 .wallaby.v1.SchemaRegistryConfigR\x0eschemaRegistry\x12C\n" +
+	"\rtype_mappings\x18\x11 \x01(\v2\x1e.wallaby.v1.TypeMappingsConfigR\ftypeMappings\x126\n" +
+	"\x17schema_registry_subject\x18\x12 \x01(\tR\x15schemaRegistrySubject\x12L\n" +
+	"#schema_registry_proto_types_subject\x18\x13 \x01(\tR\x1fschemaRegistryProtoTypesSubject\x12?\n" +
+	"\x1cschema_registry_subject_mode\x18\x14 \x01(\tR\x19schemaRegistrySubjectModeB\x14\n" +
+	"\x12_max_message_bytesB\x12\n" +
+	"\x10_max_batch_bytesB\x13\n" +
+	"\x11_max_record_bytesB\x19\n" +
+	"\x17_transactional_producerB\x16\n" +
+	"\x14_allow_oversize_skip\"U\n" +
+	"\x19RedpandaDestinationConfig\x128\n" +
+	"\x05kafka\x18\x01 \x01(\v2\".wallaby.v1.KafkaDestinationConfigR\x05kafka\"\xad\x06\n" +
+	"\x13S3DestinationConfig\x12\x16\n" +
+	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x16\n" +
+	"\x06prefix\x18\x02 \x01(\tR\x06prefix\x12\x16\n" +
+	"\x06region\x18\x03 \x01(\tR\x06region\x12.\n" +
+	"\x06format\x18\x04 \x01(\x0e2\x16.wallaby.v1.WireFormatR\x06format\x129\n" +
+	"\vcompression\x18\x05 \x01(\x0e2\x17.wallaby.v1.CompressionR\vcompression\x12!\n" +
+	"\fpartition_by\x18\x06 \x03(\tR\vpartitionBy\x12\x1a\n" +
+	"\bendpoint\x18\a \x01(\tR\bendpoint\x12\x1d\n" +
+	"\n" +
+	"access_key\x18\b \x01(\tR\taccessKey\x12\x1d\n" +
+	"\n" +
+	"secret_key\x18\t \x01(\tR\tsecretKey\x12#\n" +
+	"\rsession_token\x18\n" +
+	" \x01(\tR\fsessionToken\x12-\n" +
+	"\x10force_path_style\x18\v \x01(\bH\x00R\x0eforcePathStyle\x88\x01\x01\x12\x1e\n" +
+	"\buse_fips\x18\f \x01(\bH\x01R\auseFips\x88\x01\x01\x12(\n" +
+	"\ruse_dualstack\x18\r \x01(\bH\x02R\fuseDualstack\x88\x01\x01\x12C\n" +
+	"\rtype_mappings\x18\x0e \x01(\v2\x1e.wallaby.v1.TypeMappingsConfigR\ftypeMappings\x12I\n" +
+	"\x0fschema_registry\x18\x0f \x01(\v2 .wallaby.v1.SchemaRegistryConfigR\x0eschemaRegistry\x126\n" +
+	"\x17schema_registry_subject\x18\x10 \x01(\tR\x15schemaRegistrySubject\x12L\n" +
+	"#schema_registry_proto_types_subject\x18\x11 \x01(\tR\x1fschemaRegistryProtoTypesSubjectB\x13\n" +
+	"\x11_force_path_styleB\v\n" +
+	"\t_use_fipsB\x10\n" +
+	"\x0e_use_dualstack\"\xcb\x06\n" +
+	"\x15HTTPDestinationConfig\x12\x10\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x12\x16\n" +
+	"\x06method\x18\x02 \x01(\tR\x06method\x12.\n" +
+	"\x06format\x18\x03 \x01(\x0e2\x16.wallaby.v1.WireFormatR\x06format\x12:\n" +
+	"\fpayload_mode\x18\x04 \x01(\x0e2\x17.wallaby.v1.PayloadModeR\vpayloadMode\x123\n" +
+	"\atimeout\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\atimeout\x12H\n" +
+	"\aheaders\x18\x06 \x03(\v2..wallaby.v1.HTTPDestinationConfig.HeadersEntryR\aheaders\x12-\n" +
+	"\x05retry\x18\a \x01(\v2\x17.wallaby.v1.RetryConfigR\x05retry\x12-\n" +
+	"\x12idempotency_header\x18\b \x01(\tR\x11idempotencyHeader\x12>\n" +
+	"\rdedupe_window\x18\t \x01(\v2\x19.google.protobuf.DurationR\fdedupeWindow\x12-\n" +
+	"\x12transaction_header\x18\n" +
+	" \x01(\tR\x11transactionHeader\x12I\n" +
+	"\x0fschema_registry\x18\v \x01(\v2 .wallaby.v1.SchemaRegistryConfigR\x0eschemaRegistry\x12C\n" +
+	"\rtype_mappings\x18\f \x01(\v2\x1e.wallaby.v1.TypeMappingsConfigR\ftypeMappings\x126\n" +
+	"\x17schema_registry_subject\x18\r \x01(\tR\x15schemaRegistrySubject\x12L\n" +
+	"#schema_registry_proto_types_subject\x18\x0e \x01(\tR\x1fschemaRegistryProtoTypesSubject\x1a:\n" +
+	"\fHeadersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd0\x05\n" +
+	"\x15GRPCDestinationConfig\x12\x1a\n" +
+	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12+\n" +
+	"\x03tls\x18\x02 \x01(\v2\x19.wallaby.v1.GRPCTLSConfigR\x03tls\x123\n" +
+	"\atimeout\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\atimeout\x12.\n" +
+	"\x06format\x18\x04 \x01(\x0e2\x16.wallaby.v1.WireFormatR\x06format\x12:\n" +
+	"\fpayload_mode\x18\x05 \x01(\x0e2\x17.wallaby.v1.PayloadModeR\vpayloadMode\x12K\n" +
+	"\bmetadata\x18\x06 \x03(\v2/.wallaby.v1.GRPCDestinationConfig.MetadataEntryR\bmetadata\x12-\n" +
+	"\x05retry\x18\a \x01(\v2\x17.wallaby.v1.RetryConfigR\x05retry\x12I\n" +
+	"\x0fschema_registry\x18\b \x01(\v2 .wallaby.v1.SchemaRegistryConfigR\x0eschemaRegistry\x12C\n" +
+	"\rtype_mappings\x18\t \x01(\v2\x1e.wallaby.v1.TypeMappingsConfigR\ftypeMappings\x126\n" +
+	"\x17schema_registry_subject\x18\n" +
+	" \x01(\tR\x15schemaRegistrySubject\x12L\n" +
+	"#schema_registry_proto_types_subject\x18\v \x01(\tR\x1fschemaRegistryProtoTypesSubject\x1a;\n" +
+	"\rMetadataEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xef\x03\n" +
+	"\x1aSnowflakeDestinationConfig\x12\x10\n" +
+	"\x03dsn\x18\x01 \x01(\tR\x03dsn\x126\n" +
+	"\x14disable_transactions\x18\x02 \x01(\bH\x00R\x13disableTransactions\x88\x01\x01\x129\n" +
+	"\twarehouse\x18\x03 \x01(\v2\x1b.wallaby.v1.WarehouseConfigR\twarehouse\x123\n" +
+	"\astaging\x18\x04 \x01(\v2\x19.wallaby.v1.StagingConfigR\astaging\x126\n" +
+	"\bmetadata\x18\x05 \x01(\v2\x1a.wallaby.v1.MetadataConfigR\bmetadata\x12C\n" +
+	"\rtype_mappings\x18\x06 \x01(\v2\x1e.wallaby.v1.TypeMappingsConfigR\ftypeMappings\x12I\n" +
+	"\x0fschema_registry\x18\a \x01(\v2 .wallaby.v1.SchemaRegistryConfigR\x0eschemaRegistry\x126\n" +
+	"\x17schema_registry_subject\x18\b \x01(\tR\x15schemaRegistrySubjectB\x17\n" +
+	"\x15_disable_transactions\"\xd8\b\n" +
+	"\x1aSnowflakePostgresSQLConfig\x12\x10\n" +
+	"\x03dsn\x18\x01 \x01(\tR\x03dsn\x126\n" +
+	"\x17destination_revision_id\x18\x05 \x01(\tR\x15destinationRevisionId\x12\x18\n" +
+	"\aaccount\x18\a \x01(\tR\aaccount\x12\x1a\n" +
+	"\bdatabase\x18\b \x01(\tR\bdatabase\x12\x16\n" +
+	"\x06schema\x18\t \x01(\tR\x06schema\x12\x14\n" +
+	"\x05table\x18\n" +
+	" \x01(\tR\x05table\x12%\n" +
+	"\x0ereceipts_table\x18\v \x01(\tR\rreceiptsTable\x12\x1d\n" +
+	"\n" +
+	"owner_role\x18\f \x01(\tR\townerRole\x12%\n" +
+	"\x0eexecution_role\x18\r \x01(\tR\rexecutionRole\x12+\n" +
+	"\x11managed_warehouse\x18\x0e \x01(\tR\x10managedWarehouse\x12+\n" +
+	"\x11snowflake_version\x18\x0f \x01(\tR\x10snowflakeVersion\x12*\n" +
+	"\x11target_created_on\x18\x10 \x01(\tR\x0ftargetCreatedOn\x12.\n" +
+	"\x13receipts_created_on\x18\x11 \x01(\tR\x11receiptsCreatedOn\x125\n" +
+	"\x14max_transaction_rows\x18\x12 \x01(\rH\x00R\x12maxTransactionRows\x88\x01\x01\x127\n" +
+	"\x15max_transaction_bytes\x18\x13 \x01(\x04H\x01R\x13maxTransactionBytes\x88\x01\x01\x12?\n" +
+	"\x19max_transaction_fragments\x18\x14 \x01(\rH\x02R\x17maxTransactionFragments\x88\x01\x01\x125\n" +
+	"\x14max_open_connections\x18\x15 \x01(\rH\x03R\x12maxOpenConnections\x88\x01\x01\x12?\n" +
+	"\x19statement_timeout_seconds\x18\x16 \x01(\rH\x04R\x17statementTimeoutSeconds\x88\x01\x01\x12M\n" +
+	"!hybrid_table_lock_timeout_seconds\x18\x17 \x01(\rH\x05R\x1dhybridTableLockTimeoutSeconds\x88\x01\x01B\x17\n" +
+	"\x15_max_transaction_rowsB\x18\n" +
+	"\x16_max_transaction_bytesB\x1c\n" +
+	"\x1a_max_transaction_fragmentsB\x17\n" +
+	"\x15_max_open_connectionsB\x1c\n" +
+	"\x1a_statement_timeout_secondsB$\n" +
+	"\"_hybrid_table_lock_timeout_secondsJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x06\x10\aR\twarehouseR\astagingR\bmetadataR\rtype_mappings\"\xc2\r\n" +
+	"\x1dSnowflakePostgresStagedConfig\x12\x10\n" +
+	"\x03dsn\x18\x01 \x01(\tR\x03dsn\x12\x14\n" +
+	"\x05stage\x18\x02 \x01(\tR\x05stage\x12\x1f\n" +
+	"\vfile_format\x18\x04 \x01(\tR\n" +
+	"fileFormat\x12$\n" +
+	"\vauto_ingest\x18\v \x01(\bH\x00R\n" +
+	"autoIngest\x88\x01\x01\x126\n" +
+	"\x17destination_revision_id\x18\r \x01(\tR\x15destinationRevisionId\x12\x18\n" +
+	"\aaccount\x18\x0f \x01(\tR\aaccount\x12\x1a\n" +
+	"\bdatabase\x18\x10 \x01(\tR\bdatabase\x12\x16\n" +
+	"\x06schema\x18\x11 \x01(\tR\x06schema\x12\x14\n" +
+	"\x05table\x18\x12 \x01(\tR\x05table\x12%\n" +
+	"\x0ereceipts_table\x18\x13 \x01(\tR\rreceiptsTable\x12\x12\n" +
+	"\x04pipe\x18\x14 \x01(\tR\x04pipe\x12\x1d\n" +
+	"\n" +
+	"owner_role\x18\x15 \x01(\tR\townerRole\x12%\n" +
+	"\x0eexecution_role\x18\x16 \x01(\tR\rexecutionRole\x12+\n" +
+	"\x11managed_warehouse\x18\x17 \x01(\tR\x10managedWarehouse\x12+\n" +
+	"\x11snowflake_version\x18\x18 \x01(\tR\x10snowflakeVersion\x12(\n" +
+	"\x10stage_created_on\x18\x19 \x01(\tR\x0estageCreatedOn\x12*\n" +
+	"\x11target_created_on\x18\x1a \x01(\tR\x0ftargetCreatedOn\x12.\n" +
+	"\x13receipts_created_on\x18\x1b \x01(\tR\x11receiptsCreatedOn\x123\n" +
+	"\x16file_format_created_on\x18\x1c \x01(\tR\x13fileFormatCreatedOn\x12&\n" +
+	"\x0fpipe_created_on\x18\x1d \x01(\tR\rpipeCreatedOn\x125\n" +
+	"\x14max_transaction_rows\x18\x1e \x01(\rH\x01R\x12maxTransactionRows\x88\x01\x01\x127\n" +
+	"\x15max_transaction_bytes\x18\x1f \x01(\x04H\x02R\x13maxTransactionBytes\x88\x01\x01\x12?\n" +
+	"\x19max_transaction_fragments\x18  \x01(\rH\x03R\x17maxTransactionFragments\x88\x01\x01\x125\n" +
+	"\x14max_open_connections\x18! \x01(\rH\x04R\x12maxOpenConnections\x88\x01\x01\x12?\n" +
+	"\x19statement_timeout_seconds\x18\" \x01(\rH\x05R\x17statementTimeoutSeconds\x88\x01\x01\x125\n" +
+	"\x14load_verify_attempts\x18# \x01(\rH\x06R\x12loadVerifyAttempts\x88\x01\x01\x12B\n" +
+	"\x1bload_verify_interval_millis\x18$ \x01(\rH\aR\x18loadVerifyIntervalMillis\x88\x01\x01\x123\n" +
+	"\x13cleanup_max_objects\x18% \x01(\rH\bR\x11cleanupMaxObjects\x88\x01\x01\x12?\n" +
+	"\x19cleanup_retention_seconds\x18& \x01(\rH\tR\x17cleanupRetentionSeconds\x88\x01\x01B\x0e\n" +
+	"\f_auto_ingestB\x17\n" +
+	"\x15_max_transaction_rowsB\x18\n" +
+	"\x16_max_transaction_bytesB\x1c\n" +
+	"\x1a_max_transaction_fragmentsB\x17\n" +
+	"\x15_max_open_connectionsB\x1c\n" +
+	"\x1a_statement_timeout_secondsB\x17\n" +
+	"\x15_load_verify_attemptsB\x1e\n" +
+	"\x1c_load_verify_interval_millisB\x16\n" +
+	"\x14_cleanup_max_objectsB\x1c\n" +
+	"\x1a_cleanup_retention_secondsJ\x04\b\x03\x10\x04J\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
+	"J\x04\b\n" +
+	"\x10\vJ\x04\b\f\x10\rJ\x04\b\x0e\x10\x0fR\n" +
+	"stage_pathR\twarehouseR\rcopy_on_writeR\fcopy_patternR\rcopy_on_errorR\n" +
+	"copy_purgeR\x19copy_match_by_column_nameR\bmetadataR\rtype_mappings\"\xc6\r\n" +
+	" SnowflakePostgresStreamingConfig\x12\x10\n" +
+	"\x03dsn\x18\x01 \x01(\tR\x03dsn\x126\n" +
+	"\x17destination_revision_id\x18\x02 \x01(\tR\x15destinationRevisionId\x12\x1c\n" +
+	"\ttransport\x18\x04 \x01(\tR\ttransport\x12\x18\n" +
+	"\aaccount\x18\x05 \x01(\tR\aaccount\x12\x1a\n" +
+	"\bdatabase\x18\x06 \x01(\tR\bdatabase\x12\x16\n" +
+	"\x06schema\x18\a \x01(\tR\x06schema\x12\x12\n" +
+	"\x04pipe\x18\b \x01(\tR\x04pipe\x12\x14\n" +
+	"\x05table\x18\t \x01(\tR\x05table\x12%\n" +
+	"\x0ereceipts_table\x18\n" +
+	" \x01(\tR\rreceiptsTable\x12.\n" +
+	"\x13channel_state_table\x18\v \x01(\tR\x11channelStateTable\x12\x1d\n" +
+	"\n" +
+	"owner_role\x18\f \x01(\tR\townerRole\x12%\n" +
+	"\x0eexecution_role\x18\r \x01(\tR\rexecutionRole\x12+\n" +
+	"\x11managed_warehouse\x18\x0e \x01(\tR\x10managedWarehouse\x12+\n" +
+	"\x11snowflake_version\x18\x0f \x01(\tR\x10snowflakeVersion\x12&\n" +
+	"\x0fpipe_created_on\x18\x10 \x01(\tR\rpipeCreatedOn\x12*\n" +
+	"\x11target_created_on\x18\x11 \x01(\tR\x0ftargetCreatedOn\x12.\n" +
+	"\x13receipts_created_on\x18\x12 \x01(\tR\x11receiptsCreatedOn\x127\n" +
+	"\x18channel_state_created_on\x18\x13 \x01(\tR\x15channelStateCreatedOn\x125\n" +
+	"\x14max_transaction_rows\x18\x14 \x01(\rH\x00R\x12maxTransactionRows\x88\x01\x01\x127\n" +
+	"\x15max_transaction_bytes\x18\x15 \x01(\x04H\x01R\x13maxTransactionBytes\x88\x01\x01\x12?\n" +
+	"\x19max_transaction_fragments\x18\x16 \x01(\rH\x02R\x17maxTransactionFragments\x88\x01\x01\x12'\n" +
+	"\rmax_row_bytes\x18\x17 \x01(\x04H\x03R\vmaxRowBytes\x88\x01\x01\x125\n" +
+	"\x14max_open_connections\x18\x18 \x01(\rH\x04R\x12maxOpenConnections\x88\x01\x01\x12?\n" +
+	"\x19statement_timeout_seconds\x18\x19 \x01(\rH\x05R\x17statementTimeoutSeconds\x88\x01\x01\x12.\n" +
+	"\x10observe_attempts\x18\x1a \x01(\rH\x06R\x0fobserveAttempts\x88\x01\x01\x12;\n" +
+	"\x17observe_interval_millis\x18\x1b \x01(\rH\aR\x15observeIntervalMillis\x88\x01\x01\x12,\n" +
+	"\x0fappend_attempts\x18\x1c \x01(\rH\bR\x0eappendAttempts\x88\x01\x01\x127\n" +
+	"\x15append_backoff_millis\x18\x1d \x01(\rH\tR\x13appendBackoffMillis\x88\x01\x01\x123\n" +
+	"\x13cleanup_max_objects\x18\x1e \x01(\rH\n" +
+	"R\x11cleanupMaxObjects\x88\x01\x01\x12?\n" +
+	"\x19cleanup_retention_seconds\x18\x1f \x01(\rH\vR\x17cleanupRetentionSeconds\x88\x01\x01\x12.\n" +
+	"\x13channel_name_prefix\x18  \x01(\tR\x11channelNamePrefixB\x17\n" +
+	"\x15_max_transaction_rowsB\x18\n" +
+	"\x16_max_transaction_bytesB\x1c\n" +
+	"\x1a_max_transaction_fragmentsB\x10\n" +
+	"\x0e_max_row_bytesB\x17\n" +
+	"\x15_max_open_connectionsB\x1c\n" +
+	"\x1a_statement_timeout_secondsB\x13\n" +
+	"\x11_observe_attemptsB\x1a\n" +
+	"\x18_observe_interval_millisB\x12\n" +
+	"\x10_append_attemptsB\x18\n" +
+	"\x16_append_backoff_millisB\x16\n" +
+	"\x14_cleanup_max_objectsB\x1c\n" +
+	"\x1a_cleanup_retention_secondsJ\x04\b\x03\x10\x04R\rtype_mappings\"\x93\x06\n" +
+	"\x19SnowpipeDestinationConfig\x12\x10\n" +
+	"\x03dsn\x18\x01 \x01(\tR\x03dsn\x12\x14\n" +
+	"\x05stage\x18\x02 \x01(\tR\x05stage\x12\x1d\n" +
+	"\n" +
+	"stage_path\x18\x03 \x01(\tR\tstagePath\x12.\n" +
+	"\x06format\x18\x04 \x01(\x0e2\x16.wallaby.v1.WireFormatR\x06format\x12\x1f\n" +
+	"\vfile_format\x18\x05 \x01(\tR\n" +
+	"fileFormat\x129\n" +
+	"\twarehouse\x18\x06 \x01(\v2\x1b.wallaby.v1.WarehouseConfigR\twarehouse\x12'\n" +
+	"\rcopy_on_write\x18\a \x01(\bH\x00R\vcopyOnWrite\x88\x01\x01\x12!\n" +
+	"\fcopy_pattern\x18\b \x01(\tR\vcopyPattern\x12\"\n" +
+	"\rcopy_on_error\x18\t \x01(\tR\vcopyOnError\x12\"\n" +
+	"\n" +
+	"copy_purge\x18\n" +
+	" \x01(\bH\x01R\tcopyPurge\x88\x01\x01\x128\n" +
+	"\x19copy_match_by_column_name\x18\v \x01(\tR\x15copyMatchByColumnName\x12$\n" +
+	"\vauto_ingest\x18\f \x01(\bH\x02R\n" +
+	"autoIngest\x88\x01\x01\x126\n" +
+	"\bmetadata\x18\r \x01(\v2\x1a.wallaby.v1.MetadataConfigR\bmetadata\x12C\n" +
+	"\rtype_mappings\x18\x0e \x01(\v2\x1e.wallaby.v1.TypeMappingsConfigR\ftypeMappings\x12I\n" +
+	"\x0fschema_registry\x18\x0f \x01(\v2 .wallaby.v1.SchemaRegistryConfigR\x0eschemaRegistry\x126\n" +
+	"\x17schema_registry_subject\x18\x10 \x01(\tR\x15schemaRegistrySubjectB\x10\n" +
+	"\x0e_copy_on_writeB\r\n" +
+	"\v_copy_purgeB\x0e\n" +
+	"\f_auto_ingest\"\xeb\x01\n" +
+	"\x1bClickHouseDestinationConfig\x12\x10\n" +
+	"\x03dsn\x18\x01 \x01(\tR\x03dsn\x123\n" +
+	"\astaging\x18\x02 \x01(\v2\x19.wallaby.v1.StagingConfigR\astaging\x12@\n" +
+	"\bmetadata\x18\x03 \x01(\v2$.wallaby.v1.ClickHouseMetadataConfigR\bmetadata\x12C\n" +
+	"\rtype_mappings\x18\x04 \x01(\v2\x1e.wallaby.v1.TypeMappingsConfigR\ftypeMappings\"\xd2\b\n" +
+	"\x1eClickHousePostgresAppendConfig\x12\x10\n" +
+	"\x03dsn\x18\x01 \x01(\tR\x03dsn\x121\n" +
+	"\x03tls\x18\x04 \x01(\v2\x1f.wallaby.v1.ClickHouseTLSConfigR\x03tls\x126\n" +
+	"\x17destination_revision_id\x18\x06 \x01(\tR\x15destinationRevisionId\x12C\n" +
+	"\rtype_mappings\x18\a \x01(\v2\x1e.wallaby.v1.TypeMappingsConfigR\ftypeMappings\x12\x1a\n" +
+	"\bdatabase\x18\b \x01(\tR\bdatabase\x12'\n" +
+	"\x0fchangelog_table\x18\t \x01(\tR\x0echangelogTable\x12%\n" +
+	"\x0ereceipts_table\x18\n" +
+	" \x01(\tR\rreceiptsTable\x12\x1d\n" +
+	"\n" +
+	"final_view\x18\v \x01(\tR\tfinalView\x12,\n" +
+	"\x12keeper_path_prefix\x18\f \x01(\tR\x10keeperPathPrefix\x12%\n" +
+	"\x0ekeeper_address\x18\r \x01(\tR\rkeeperAddress\x12\x1f\n" +
+	"\vreplica_dsn\x18\x0e \x01(\tR\n" +
+	"replicaDsn\x12#\n" +
+	"\rreplica_names\x18\x0f \x03(\tR\freplicaNames\x12(\n" +
+	"\rinsert_quorum\x18\x10 \x01(\rH\x00R\finsertQuorum\x88\x01\x01\x12-\n" +
+	"\x10max_active_parts\x18\x11 \x01(\rH\x01R\x0emaxActiveParts\x88\x01\x01\x125\n" +
+	"\x14max_transaction_rows\x18\x12 \x01(\rH\x02R\x12maxTransactionRows\x88\x01\x01\x127\n" +
+	"\x15max_transaction_bytes\x18\x13 \x01(\x04H\x03R\x13maxTransactionBytes\x88\x01\x01\x12?\n" +
+	"\x19max_transaction_fragments\x18\x14 \x01(\rH\x04R\x17maxTransactionFragments\x88\x01\x01\x120\n" +
+	"\x12max_rows_per_batch\x18\x15 \x01(\rH\x05R\x0fmaxRowsPerBatch\x88\x01\x01\x12+\n" +
+	"\x0fmax_batch_bytes\x18\x16 \x01(\x04H\x06R\rmaxBatchBytes\x88\x01\x01B\x10\n" +
+	"\x0e_insert_quorumB\x13\n" +
+	"\x11_max_active_partsB\x17\n" +
+	"\x15_max_transaction_rowsB\x18\n" +
+	"\x16_max_transaction_bytesB\x1c\n" +
+	"\x1a_max_transaction_fragmentsB\x15\n" +
+	"\x13_max_rows_per_batchB\x12\n" +
+	"\x10_max_batch_bytesJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x05\x10\x06R\astagingR\bmetadataR\x17replica_tls_server_name\"\xdd\x01\n" +
+	"\x17DuckDBDestinationConfig\x12\x10\n" +
+	"\x03dsn\x18\x01 \x01(\tR\x03dsn\x123\n" +
+	"\astaging\x18\x02 \x01(\v2\x19.wallaby.v1.StagingConfigR\astaging\x126\n" +
+	"\bmetadata\x18\x03 \x01(\v2\x1a.wallaby.v1.MetadataConfigR\bmetadata\x12C\n" +
+	"\rtype_mappings\x18\x04 \x01(\v2\x1e.wallaby.v1.TypeMappingsConfigR\ftypeMappings\"\xce\x03\n" +
+	"\x19DuckLakeDestinationConfig\x12\x10\n" +
+	"\x03dsn\x18\x01 \x01(\tR\x03dsn\x12\x18\n" +
+	"\acatalog\x18\x02 \x01(\tR\acatalog\x12!\n" +
+	"\fcatalog_name\x18\x03 \x01(\tR\vcatalogName\x12\x1b\n" +
+	"\tdata_path\x18\x04 \x01(\tR\bdataPath\x121\n" +
+	"\x12override_data_path\x18\x05 \x01(\bH\x00R\x10overrideDataPath\x88\x01\x01\x122\n" +
+	"\x12install_extensions\x18\x06 \x01(\bH\x01R\x11installExtensions\x88\x01\x01\x123\n" +
+	"\astaging\x18\a \x01(\v2\x19.wallaby.v1.StagingConfigR\astaging\x126\n" +
+	"\bmetadata\x18\b \x01(\v2\x1a.wallaby.v1.MetadataConfigR\bmetadata\x12C\n" +
+	"\rtype_mappings\x18\t \x01(\v2\x1e.wallaby.v1.TypeMappingsConfigR\ftypeMappingsB\x15\n" +
+	"\x13_override_data_pathB\x15\n" +
+	"\x13_install_extensions\"\xc3\x01\n" +
+	"\x18IcebergDestinationConfig\x12J\n" +
+	"\x0fcatalog_profile\x18\x01 \x01(\x0e2!.wallaby.v1.IcebergCatalogProfileR\x0ecatalogProfile\x12#\n" +
+	"\rcontrol_table\x18\x02 \x01(\tR\fcontrolTable\x126\n" +
+	"\x17destination_revision_id\x18\x03 \x01(\tR\x15destinationRevisionId\"\xc2\x01\n" +
+	"\x14CustomEndpointConfig\x12%\n" +
+	"\x0econnector_type\x18\x01 \x01(\tR\rconnectorType\x12G\n" +
+	"\aoptions\x18\x02 \x03(\v2-.wallaby.v1.CustomEndpointConfig.OptionsEntryR\aoptions\x1a:\n" +
 	"\fOptionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xac\x04\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd8\v\n" +
+	"\bEndpoint\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12K\n" +
+	"\x0fpostgres_source\x18\n" +
+	" \x01(\v2 .wallaby.v1.PostgresSourceConfigH\x00R\x0epostgresSource\x12Z\n" +
+	"\x14postgres_destination\x18\v \x01(\v2%.wallaby.v1.PostgresDestinationConfigH\x00R\x13postgresDestination\x12C\n" +
+	"\bpgstream\x18\f \x01(\v2%.wallaby.v1.PGStreamDestinationConfigH\x00R\bpgstream\x12:\n" +
+	"\x05kafka\x18\r \x01(\v2\".wallaby.v1.KafkaDestinationConfigH\x00R\x05kafka\x12C\n" +
+	"\bredpanda\x18\x0e \x01(\v2%.wallaby.v1.RedpandaDestinationConfigH\x00R\bredpanda\x121\n" +
+	"\x02s3\x18\x0f \x01(\v2\x1f.wallaby.v1.S3DestinationConfigH\x00R\x02s3\x127\n" +
+	"\x04http\x18\x10 \x01(\v2!.wallaby.v1.HTTPDestinationConfigH\x00R\x04http\x127\n" +
+	"\x04grpc\x18\x11 \x01(\v2!.wallaby.v1.GRPCDestinationConfigH\x00R\x04grpc\x12F\n" +
+	"\tsnowflake\x18\x12 \x01(\v2&.wallaby.v1.SnowflakeDestinationConfigH\x00R\tsnowflake\x12^\n" +
+	"\x16snowflake_postgres_sql\x18\x13 \x01(\v2&.wallaby.v1.SnowflakePostgresSQLConfigH\x00R\x14snowflakePostgresSql\x12g\n" +
+	"\x19snowflake_postgres_staged\x18\x14 \x01(\v2).wallaby.v1.SnowflakePostgresStagedConfigH\x00R\x17snowflakePostgresStaged\x12p\n" +
+	"\x1csnowflake_postgres_streaming\x18\x15 \x01(\v2,.wallaby.v1.SnowflakePostgresStreamingConfigH\x00R\x1asnowflakePostgresStreaming\x12C\n" +
+	"\bsnowpipe\x18\x16 \x01(\v2%.wallaby.v1.SnowpipeDestinationConfigH\x00R\bsnowpipe\x12I\n" +
+	"\n" +
+	"clickhouse\x18\x17 \x01(\v2'.wallaby.v1.ClickHouseDestinationConfigH\x00R\n" +
+	"clickhouse\x12j\n" +
+	"\x1aclickhouse_postgres_append\x18\x18 \x01(\v2*.wallaby.v1.ClickHousePostgresAppendConfigH\x00R\x18clickhousePostgresAppend\x12=\n" +
+	"\x06duckdb\x18\x19 \x01(\v2#.wallaby.v1.DuckDBDestinationConfigH\x00R\x06duckdb\x12C\n" +
+	"\bducklake\x18\x1a \x01(\v2%.wallaby.v1.DuckLakeDestinationConfigH\x00R\bducklake\x12@\n" +
+	"\aiceberg\x18\x1b \x01(\v2$.wallaby.v1.IcebergDestinationConfigH\x00R\aiceberg\x12:\n" +
+	"\x06custom\x18\x1c \x01(\v2 .wallaby.v1.CustomEndpointConfigH\x00R\x06customB\b\n" +
+	"\x06configJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\x04typeR\aoptions\"\x95\x04\n" +
 	"\n" +
 	"FlowConfig\x124\n" +
 	"\n" +
@@ -847,11 +6440,10 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\x13primary_destination\x18\x02 \x01(\tR\x12primaryDestination\x12:\n" +
 	"\ffailure_mode\x18\x03 \x01(\x0e2\x17.wallaby.v1.FailureModeR\vfailureMode\x12>\n" +
 	"\x0egive_up_policy\x18\x04 \x01(\x0e2\x18.wallaby.v1.GiveUpPolicyR\fgiveUpPolicy\x12'\n" +
-	"\x03ddl\x18\x05 \x01(\v2\x15.wallaby.v1.DDLPolicyR\x03ddl\x126\n" +
-	"\x17schema_registry_subject\x18\x06 \x01(\tR\x15schemaRegistrySubject\x12L\n" +
-	"#schema_registry_proto_types_subject\x18\a \x01(\tR\x1fschemaRegistryProtoTypesSubject\x12?\n" +
-	"\x1cschema_registry_subject_mode\x18\b \x01(\tR\x19schemaRegistrySubjectMode\x12K\n" +
-	"\x0fmaterialization\x18\t \x01(\v2!.wallaby.v1.MaterializationPolicyR\x0fmaterialization\"<\n" +
+	"\x03ddl\x18\x05 \x01(\v2\x15.wallaby.v1.DDLPolicyR\x03ddl\x12K\n" +
+	"\x0fmaterialization\x18\t \x01(\v2!.wallaby.v1.MaterializationPolicyR\x0fmaterialization\x12@\n" +
+	"\x0etable_mappings\x18\n" +
+	" \x01(\v2\x19.wallaby.v1.TableMappingsR\rtableMappingsJ\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\b\x10\tR\x17schema_registry_subjectR#schema_registry_proto_types_subjectR\x1cschema_registry_subject_mode\"<\n" +
 	"\x15MaterializationPolicy\x12#\n" +
 	"\rprojection_id\x18\x01 \x01(\tR\fprojectionId\"\x99\x01\n" +
 	"\tDDLPolicy\x12\x17\n" +
@@ -887,26 +6479,7 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\x11FLOW_STATE_PAUSED\x10\x03\x12\x17\n" +
 	"\x13FLOW_STATE_STOPPING\x10\x04\x12\x15\n" +
 	"\x11FLOW_STATE_FAILED\x10\x05\x12\x16\n" +
-	"\x12FLOW_STATE_STOPPED\x10\x06*\xdd\x03\n" +
-	"\fEndpointType\x12\x1d\n" +
-	"\x19ENDPOINT_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
-	"\x16ENDPOINT_TYPE_POSTGRES\x10\x01\x12\x1b\n" +
-	"\x17ENDPOINT_TYPE_SNOWFLAKE\x10\x02\x12\x14\n" +
-	"\x10ENDPOINT_TYPE_S3\x10\x03\x12\x17\n" +
-	"\x13ENDPOINT_TYPE_KAFKA\x10\x04\x12\x16\n" +
-	"\x12ENDPOINT_TYPE_HTTP\x10\x05\x12\x16\n" +
-	"\x12ENDPOINT_TYPE_GRPC\x10\x06\x12\x17\n" +
-	"\x13ENDPOINT_TYPE_PROTO\x10\a\x12\x1a\n" +
-	"\x16ENDPOINT_TYPE_PGSTREAM\x10\b\x12\x1a\n" +
-	"\x16ENDPOINT_TYPE_SNOWPIPE\x10\t\x12\x19\n" +
-	"\x15ENDPOINT_TYPE_PARQUET\x10\n" +
-	"\x12\x18\n" +
-	"\x14ENDPOINT_TYPE_DUCKDB\x10\v\x12\x1f\n" +
-	"\x17ENDPOINT_TYPE_BUFSTREAM\x10\f\x1a\x02\b\x01\x12\x1c\n" +
-	"\x18ENDPOINT_TYPE_CLICKHOUSE\x10\r\x12\x1a\n" +
-	"\x16ENDPOINT_TYPE_DUCKLAKE\x10\x0e\x12\x19\n" +
-	"\x15ENDPOINT_TYPE_ICEBERG\x10\x0f\x12\x1a\n" +
-	"\x16ENDPOINT_TYPE_REDPANDA\x10\x10*\x9c\x01\n" +
+	"\x12FLOW_STATE_STOPPED\x10\x06*\x9c\x01\n" +
 	"\n" +
 	"WireFormat\x12\x1b\n" +
 	"\x17WIRE_FORMAT_UNSPECIFIED\x10\x00\x12\x15\n" +
@@ -927,7 +6500,71 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\fGiveUpPolicy\x12\x1e\n" +
 	"\x1aGIVE_UP_POLICY_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14GIVE_UP_POLICY_NEVER\x10\x01\x12&\n" +
-	"\"GIVE_UP_POLICY_ON_RETRY_EXHAUSTION\x10\x02B>Z<github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabypbb\x06proto3"
+	"\"GIVE_UP_POLICY_ON_RETRY_EXHAUSTION\x10\x02*\x99\x01\n" +
+	"\vCompression\x12\x1b\n" +
+	"\x17COMPRESSION_UNSPECIFIED\x10\x00\x12\x14\n" +
+	"\x10COMPRESSION_NONE\x10\x01\x12\x14\n" +
+	"\x10COMPRESSION_GZIP\x10\x02\x12\x16\n" +
+	"\x12COMPRESSION_SNAPPY\x10\x03\x12\x13\n" +
+	"\x0fCOMPRESSION_LZ4\x10\x04\x12\x14\n" +
+	"\x10COMPRESSION_ZSTD\x10\x05*v\n" +
+	"\vPayloadMode\x12\x1c\n" +
+	"\x18PAYLOAD_MODE_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11PAYLOAD_MODE_WIRE\x10\x01\x12\x1c\n" +
+	"\x18PAYLOAD_MODE_RECORD_JSON\x10\x02\x12\x14\n" +
+	"\x10PAYLOAD_MODE_WAL\x10\x03*g\n" +
+	"\tKafkaAcks\x12\x1a\n" +
+	"\x16KAFKA_ACKS_UNSPECIFIED\x10\x00\x12\x13\n" +
+	"\x0fKAFKA_ACKS_NONE\x10\x01\x12\x15\n" +
+	"\x11KAFKA_ACKS_LEADER\x10\x02\x12\x12\n" +
+	"\x0eKAFKA_ACKS_ALL\x10\x03*s\n" +
+	"\x10KafkaMessageMode\x12\"\n" +
+	"\x1eKAFKA_MESSAGE_MODE_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18KAFKA_MESSAGE_MODE_BATCH\x10\x01\x12\x1d\n" +
+	"\x19KAFKA_MESSAGE_MODE_RECORD\x10\x02*_\n" +
+	"\fKafkaKeyMode\x12\x1e\n" +
+	"\x1aKAFKA_KEY_MODE_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13KAFKA_KEY_MODE_HASH\x10\x01\x12\x16\n" +
+	"\x12KAFKA_KEY_MODE_RAW\x10\x02*V\n" +
+	"\tBatchMode\x12\x1a\n" +
+	"\x16BATCH_MODE_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12BATCH_MODE_STAGING\x10\x01\x12\x15\n" +
+	"\x11BATCH_MODE_TARGET\x10\x02*\x89\x01\n" +
+	"\x0fBatchResolution\x12 \n" +
+	"\x1cBATCH_RESOLUTION_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15BATCH_RESOLUTION_NONE\x10\x01\x12\x1b\n" +
+	"\x17BATCH_RESOLUTION_APPEND\x10\x02\x12\x1c\n" +
+	"\x18BATCH_RESOLUTION_REPLACE\x10\x03*{\n" +
+	"\x13SyncPublicationMode\x12%\n" +
+	"!SYNC_PUBLICATION_MODE_UNSPECIFIED\x10\x00\x12\x1d\n" +
+	"\x19SYNC_PUBLICATION_MODE_ADD\x10\x01\x12\x1e\n" +
+	"\x1aSYNC_PUBLICATION_MODE_SYNC\x10\x02*{\n" +
+	"\x12PostgresSourceMode\x12$\n" +
+	" POSTGRES_SOURCE_MODE_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18POSTGRES_SOURCE_MODE_CDC\x10\x01\x12!\n" +
+	"\x1dPOSTGRES_SOURCE_MODE_BACKFILL\x10\x02*\xa0\x01\n" +
+	"\x0eToastFetchMode\x12 \n" +
+	"\x1cTOAST_FETCH_MODE_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14TOAST_FETCH_MODE_OFF\x10\x01\x12\x1b\n" +
+	"\x17TOAST_FETCH_MODE_SOURCE\x10\x02\x12\x1a\n" +
+	"\x16TOAST_FETCH_MODE_CACHE\x10\x03\x12\x19\n" +
+	"\x15TOAST_FETCH_MODE_FULL\x10\x04*\x7f\n" +
+	"\rBootstrapMode\x12\x1e\n" +
+	"\x1aBOOTSTRAP_MODE_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14BOOTSTRAP_MODE_NEVER\x10\x01\x12\x17\n" +
+	"\x13BOOTSTRAP_MODE_AUTO\x10\x02\x12\x1b\n" +
+	"\x17BOOTSTRAP_MODE_REQUIRED\x10\x03*\xb9\x02\n" +
+	"\x0eManagedProfile\x12\x1f\n" +
+	"\x1bMANAGED_PROFILE_UNSPECIFIED\x10\x00\x12+\n" +
+	"'MANAGED_PROFILE_POSTGRES_TO_POSTGRES_V1\x10\x01\x124\n" +
+	"0MANAGED_PROFILE_POSTGRES_TO_CLICKHOUSE_APPEND_V1\x10\x02\x122\n" +
+	".MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_SQL_V1\x10\x03\x125\n" +
+	"1MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_STAGED_V1\x10\x04\x128\n" +
+	"4MANAGED_PROFILE_POSTGRESQL_TO_SNOWFLAKE_STREAMING_V1\x10\x05*\x89\x01\n" +
+	"\x15IcebergCatalogProfile\x12'\n" +
+	"#ICEBERG_CATALOG_PROFILE_UNSPECIFIED\x10\x00\x12 \n" +
+	"\x1cICEBERG_CATALOG_PROFILE_REST\x10\x01\x12%\n" +
+	"!ICEBERG_CATALOG_PROFILE_S3_TABLES\x10\x02B>Z<github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabypbb\x06proto3"
 
 var (
 	file_wallaby_v1_types_proto_rawDescOnce sync.Once
@@ -941,43 +6578,205 @@ func file_wallaby_v1_types_proto_rawDescGZIP() []byte {
 	return file_wallaby_v1_types_proto_rawDescData
 }
 
-var file_wallaby_v1_types_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_wallaby_v1_types_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_wallaby_v1_types_proto_enumTypes = make([]protoimpl.EnumInfo, 18)
+var file_wallaby_v1_types_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
 var file_wallaby_v1_types_proto_goTypes = []any{
-	(FlowState)(0),                // 0: wallaby.v1.FlowState
-	(EndpointType)(0),             // 1: wallaby.v1.EndpointType
-	(WireFormat)(0),               // 2: wallaby.v1.WireFormat
-	(AckPolicy)(0),                // 3: wallaby.v1.AckPolicy
-	(FailureMode)(0),              // 4: wallaby.v1.FailureMode
-	(GiveUpPolicy)(0),             // 5: wallaby.v1.GiveUpPolicy
-	(*Endpoint)(nil),              // 6: wallaby.v1.Endpoint
-	(*FlowConfig)(nil),            // 7: wallaby.v1.FlowConfig
-	(*MaterializationPolicy)(nil), // 8: wallaby.v1.MaterializationPolicy
-	(*DDLPolicy)(nil),             // 9: wallaby.v1.DDLPolicy
-	(*Flow)(nil),                  // 10: wallaby.v1.Flow
-	(*Checkpoint)(nil),            // 11: wallaby.v1.Checkpoint
-	nil,                           // 12: wallaby.v1.Endpoint.OptionsEntry
-	nil,                           // 13: wallaby.v1.Checkpoint.MetadataEntry
+	(FlowState)(0),                           // 0: wallaby.v1.FlowState
+	(WireFormat)(0),                          // 1: wallaby.v1.WireFormat
+	(AckPolicy)(0),                           // 2: wallaby.v1.AckPolicy
+	(FailureMode)(0),                         // 3: wallaby.v1.FailureMode
+	(GiveUpPolicy)(0),                        // 4: wallaby.v1.GiveUpPolicy
+	(Compression)(0),                         // 5: wallaby.v1.Compression
+	(PayloadMode)(0),                         // 6: wallaby.v1.PayloadMode
+	(KafkaAcks)(0),                           // 7: wallaby.v1.KafkaAcks
+	(KafkaMessageMode)(0),                    // 8: wallaby.v1.KafkaMessageMode
+	(KafkaKeyMode)(0),                        // 9: wallaby.v1.KafkaKeyMode
+	(BatchMode)(0),                           // 10: wallaby.v1.BatchMode
+	(BatchResolution)(0),                     // 11: wallaby.v1.BatchResolution
+	(SyncPublicationMode)(0),                 // 12: wallaby.v1.SyncPublicationMode
+	(PostgresSourceMode)(0),                  // 13: wallaby.v1.PostgresSourceMode
+	(ToastFetchMode)(0),                      // 14: wallaby.v1.ToastFetchMode
+	(BootstrapMode)(0),                       // 15: wallaby.v1.BootstrapMode
+	(ManagedProfile)(0),                      // 16: wallaby.v1.ManagedProfile
+	(IcebergCatalogProfile)(0),               // 17: wallaby.v1.IcebergCatalogProfile
+	(*RDSIAMConfig)(nil),                     // 18: wallaby.v1.RDSIAMConfig
+	(*PostgresConnectionConfig)(nil),         // 19: wallaby.v1.PostgresConnectionConfig
+	(*PostgresDSNConfig)(nil),                // 20: wallaby.v1.PostgresDSNConfig
+	(*RetryConfig)(nil),                      // 21: wallaby.v1.RetryConfig
+	(*GRPCTLSConfig)(nil),                    // 22: wallaby.v1.GRPCTLSConfig
+	(*ClickHouseTLSConfig)(nil),              // 23: wallaby.v1.ClickHouseTLSConfig
+	(*StagingConfig)(nil),                    // 24: wallaby.v1.StagingConfig
+	(*MetadataConfig)(nil),                   // 25: wallaby.v1.MetadataConfig
+	(*ClickHouseMetadataConfig)(nil),         // 26: wallaby.v1.ClickHouseMetadataConfig
+	(*WarehouseConfig)(nil),                  // 27: wallaby.v1.WarehouseConfig
+	(*TypeMappingsConfig)(nil),               // 28: wallaby.v1.TypeMappingsConfig
+	(*ConfluentSchemaRegistryConfig)(nil),    // 29: wallaby.v1.ConfluentSchemaRegistryConfig
+	(*ApicurioSchemaRegistryConfig)(nil),     // 30: wallaby.v1.ApicurioSchemaRegistryConfig
+	(*GlueSchemaRegistryConfig)(nil),         // 31: wallaby.v1.GlueSchemaRegistryConfig
+	(*PostgresSchemaRegistryConfig)(nil),     // 32: wallaby.v1.PostgresSchemaRegistryConfig
+	(*LocalSchemaRegistryConfig)(nil),        // 33: wallaby.v1.LocalSchemaRegistryConfig
+	(*SchemaRegistryConfig)(nil),             // 34: wallaby.v1.SchemaRegistryConfig
+	(*SnapshotStateConfig)(nil),              // 35: wallaby.v1.SnapshotStateConfig
+	(*PostgresSourceConfig)(nil),             // 36: wallaby.v1.PostgresSourceConfig
+	(*PostgresDestinationConfig)(nil),        // 37: wallaby.v1.PostgresDestinationConfig
+	(*PGStreamDestinationConfig)(nil),        // 38: wallaby.v1.PGStreamDestinationConfig
+	(*KafkaDestinationConfig)(nil),           // 39: wallaby.v1.KafkaDestinationConfig
+	(*RedpandaDestinationConfig)(nil),        // 40: wallaby.v1.RedpandaDestinationConfig
+	(*S3DestinationConfig)(nil),              // 41: wallaby.v1.S3DestinationConfig
+	(*HTTPDestinationConfig)(nil),            // 42: wallaby.v1.HTTPDestinationConfig
+	(*GRPCDestinationConfig)(nil),            // 43: wallaby.v1.GRPCDestinationConfig
+	(*SnowflakeDestinationConfig)(nil),       // 44: wallaby.v1.SnowflakeDestinationConfig
+	(*SnowflakePostgresSQLConfig)(nil),       // 45: wallaby.v1.SnowflakePostgresSQLConfig
+	(*SnowflakePostgresStagedConfig)(nil),    // 46: wallaby.v1.SnowflakePostgresStagedConfig
+	(*SnowflakePostgresStreamingConfig)(nil), // 47: wallaby.v1.SnowflakePostgresStreamingConfig
+	(*SnowpipeDestinationConfig)(nil),        // 48: wallaby.v1.SnowpipeDestinationConfig
+	(*ClickHouseDestinationConfig)(nil),      // 49: wallaby.v1.ClickHouseDestinationConfig
+	(*ClickHousePostgresAppendConfig)(nil),   // 50: wallaby.v1.ClickHousePostgresAppendConfig
+	(*DuckDBDestinationConfig)(nil),          // 51: wallaby.v1.DuckDBDestinationConfig
+	(*DuckLakeDestinationConfig)(nil),        // 52: wallaby.v1.DuckLakeDestinationConfig
+	(*IcebergDestinationConfig)(nil),         // 53: wallaby.v1.IcebergDestinationConfig
+	(*CustomEndpointConfig)(nil),             // 54: wallaby.v1.CustomEndpointConfig
+	(*Endpoint)(nil),                         // 55: wallaby.v1.Endpoint
+	(*FlowConfig)(nil),                       // 56: wallaby.v1.FlowConfig
+	(*MaterializationPolicy)(nil),            // 57: wallaby.v1.MaterializationPolicy
+	(*DDLPolicy)(nil),                        // 58: wallaby.v1.DDLPolicy
+	(*Flow)(nil),                             // 59: wallaby.v1.Flow
+	(*Checkpoint)(nil),                       // 60: wallaby.v1.Checkpoint
+	nil,                                      // 61: wallaby.v1.TypeMappingsConfig.MappingsEntry
+	nil,                                      // 62: wallaby.v1.HTTPDestinationConfig.HeadersEntry
+	nil,                                      // 63: wallaby.v1.GRPCDestinationConfig.MetadataEntry
+	nil,                                      // 64: wallaby.v1.CustomEndpointConfig.OptionsEntry
+	nil,                                      // 65: wallaby.v1.Checkpoint.MetadataEntry
+	(*durationpb.Duration)(nil),              // 66: google.protobuf.Duration
+	(*TableMappings)(nil),                    // 67: wallaby.v1.TableMappings
 }
 var file_wallaby_v1_types_proto_depIdxs = []int32{
-	1,  // 0: wallaby.v1.Endpoint.type:type_name -> wallaby.v1.EndpointType
-	12, // 1: wallaby.v1.Endpoint.options:type_name -> wallaby.v1.Endpoint.OptionsEntry
-	3,  // 2: wallaby.v1.FlowConfig.ack_policy:type_name -> wallaby.v1.AckPolicy
-	4,  // 3: wallaby.v1.FlowConfig.failure_mode:type_name -> wallaby.v1.FailureMode
-	5,  // 4: wallaby.v1.FlowConfig.give_up_policy:type_name -> wallaby.v1.GiveUpPolicy
-	9,  // 5: wallaby.v1.FlowConfig.ddl:type_name -> wallaby.v1.DDLPolicy
-	8,  // 6: wallaby.v1.FlowConfig.materialization:type_name -> wallaby.v1.MaterializationPolicy
-	6,  // 7: wallaby.v1.Flow.source:type_name -> wallaby.v1.Endpoint
-	6,  // 8: wallaby.v1.Flow.destinations:type_name -> wallaby.v1.Endpoint
-	0,  // 9: wallaby.v1.Flow.state:type_name -> wallaby.v1.FlowState
-	2,  // 10: wallaby.v1.Flow.wire_format:type_name -> wallaby.v1.WireFormat
-	7,  // 11: wallaby.v1.Flow.config:type_name -> wallaby.v1.FlowConfig
-	13, // 12: wallaby.v1.Checkpoint.metadata:type_name -> wallaby.v1.Checkpoint.MetadataEntry
-	13, // [13:13] is the sub-list for method output_type
-	13, // [13:13] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	18,  // 0: wallaby.v1.PostgresConnectionConfig.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
+	66,  // 1: wallaby.v1.RetryConfig.backoff_base:type_name -> google.protobuf.Duration
+	66,  // 2: wallaby.v1.RetryConfig.backoff_max:type_name -> google.protobuf.Duration
+	10,  // 3: wallaby.v1.StagingConfig.batch_mode:type_name -> wallaby.v1.BatchMode
+	11,  // 4: wallaby.v1.StagingConfig.batch_resolution:type_name -> wallaby.v1.BatchResolution
+	61,  // 5: wallaby.v1.TypeMappingsConfig.mappings:type_name -> wallaby.v1.TypeMappingsConfig.MappingsEntry
+	66,  // 6: wallaby.v1.ConfluentSchemaRegistryConfig.timeout:type_name -> google.protobuf.Duration
+	66,  // 7: wallaby.v1.ApicurioSchemaRegistryConfig.timeout:type_name -> google.protobuf.Duration
+	20,  // 8: wallaby.v1.PostgresSchemaRegistryConfig.connection:type_name -> wallaby.v1.PostgresDSNConfig
+	66,  // 9: wallaby.v1.PostgresSchemaRegistryConfig.timeout:type_name -> google.protobuf.Duration
+	29,  // 10: wallaby.v1.SchemaRegistryConfig.confluent:type_name -> wallaby.v1.ConfluentSchemaRegistryConfig
+	30,  // 11: wallaby.v1.SchemaRegistryConfig.apicurio:type_name -> wallaby.v1.ApicurioSchemaRegistryConfig
+	31,  // 12: wallaby.v1.SchemaRegistryConfig.glue:type_name -> wallaby.v1.GlueSchemaRegistryConfig
+	32,  // 13: wallaby.v1.SchemaRegistryConfig.postgres:type_name -> wallaby.v1.PostgresSchemaRegistryConfig
+	33,  // 14: wallaby.v1.SchemaRegistryConfig.local:type_name -> wallaby.v1.LocalSchemaRegistryConfig
+	20,  // 15: wallaby.v1.SnapshotStateConfig.postgres:type_name -> wallaby.v1.PostgresDSNConfig
+	19,  // 16: wallaby.v1.PostgresSourceConfig.connection:type_name -> wallaby.v1.PostgresConnectionConfig
+	66,  // 17: wallaby.v1.PostgresSourceConfig.batch_timeout:type_name -> google.protobuf.Duration
+	66,  // 18: wallaby.v1.PostgresSourceConfig.status_interval:type_name -> google.protobuf.Duration
+	12,  // 19: wallaby.v1.PostgresSourceConfig.sync_publication_mode:type_name -> wallaby.v1.SyncPublicationMode
+	14,  // 20: wallaby.v1.PostgresSourceConfig.toast_fetch:type_name -> wallaby.v1.ToastFetchMode
+	16,  // 21: wallaby.v1.PostgresSourceConfig.managed_profile:type_name -> wallaby.v1.ManagedProfile
+	15,  // 22: wallaby.v1.PostgresSourceConfig.bootstrap:type_name -> wallaby.v1.BootstrapMode
+	66,  // 23: wallaby.v1.PostgresSourceConfig.snapshot_claim_lease:type_name -> google.protobuf.Duration
+	35,  // 24: wallaby.v1.PostgresSourceConfig.snapshot_state:type_name -> wallaby.v1.SnapshotStateConfig
+	1,   // 25: wallaby.v1.PostgresSourceConfig.format:type_name -> wallaby.v1.WireFormat
+	13,  // 26: wallaby.v1.PostgresSourceConfig.mode:type_name -> wallaby.v1.PostgresSourceMode
+	66,  // 27: wallaby.v1.PostgresSourceConfig.delivery_retention:type_name -> google.protobuf.Duration
+	66,  // 28: wallaby.v1.PostgresSourceConfig.delivery_prune_interval:type_name -> google.protobuf.Duration
+	19,  // 29: wallaby.v1.PostgresDestinationConfig.connection:type_name -> wallaby.v1.PostgresConnectionConfig
+	24,  // 30: wallaby.v1.PostgresDestinationConfig.staging:type_name -> wallaby.v1.StagingConfig
+	25,  // 31: wallaby.v1.PostgresDestinationConfig.metadata:type_name -> wallaby.v1.MetadataConfig
+	28,  // 32: wallaby.v1.PostgresDestinationConfig.type_mappings:type_name -> wallaby.v1.TypeMappingsConfig
+	16,  // 33: wallaby.v1.PostgresDestinationConfig.managed_profile:type_name -> wallaby.v1.ManagedProfile
+	20,  // 34: wallaby.v1.PGStreamDestinationConfig.connection:type_name -> wallaby.v1.PostgresDSNConfig
+	1,   // 35: wallaby.v1.PGStreamDestinationConfig.format:type_name -> wallaby.v1.WireFormat
+	28,  // 36: wallaby.v1.PGStreamDestinationConfig.type_mappings:type_name -> wallaby.v1.TypeMappingsConfig
+	34,  // 37: wallaby.v1.PGStreamDestinationConfig.schema_registry:type_name -> wallaby.v1.SchemaRegistryConfig
+	1,   // 38: wallaby.v1.KafkaDestinationConfig.format:type_name -> wallaby.v1.WireFormat
+	5,   // 39: wallaby.v1.KafkaDestinationConfig.compression:type_name -> wallaby.v1.Compression
+	7,   // 40: wallaby.v1.KafkaDestinationConfig.acks:type_name -> wallaby.v1.KafkaAcks
+	8,   // 41: wallaby.v1.KafkaDestinationConfig.message_mode:type_name -> wallaby.v1.KafkaMessageMode
+	9,   // 42: wallaby.v1.KafkaDestinationConfig.key_mode:type_name -> wallaby.v1.KafkaKeyMode
+	66,  // 43: wallaby.v1.KafkaDestinationConfig.transaction_timeout:type_name -> google.protobuf.Duration
+	34,  // 44: wallaby.v1.KafkaDestinationConfig.schema_registry:type_name -> wallaby.v1.SchemaRegistryConfig
+	28,  // 45: wallaby.v1.KafkaDestinationConfig.type_mappings:type_name -> wallaby.v1.TypeMappingsConfig
+	39,  // 46: wallaby.v1.RedpandaDestinationConfig.kafka:type_name -> wallaby.v1.KafkaDestinationConfig
+	1,   // 47: wallaby.v1.S3DestinationConfig.format:type_name -> wallaby.v1.WireFormat
+	5,   // 48: wallaby.v1.S3DestinationConfig.compression:type_name -> wallaby.v1.Compression
+	28,  // 49: wallaby.v1.S3DestinationConfig.type_mappings:type_name -> wallaby.v1.TypeMappingsConfig
+	34,  // 50: wallaby.v1.S3DestinationConfig.schema_registry:type_name -> wallaby.v1.SchemaRegistryConfig
+	1,   // 51: wallaby.v1.HTTPDestinationConfig.format:type_name -> wallaby.v1.WireFormat
+	6,   // 52: wallaby.v1.HTTPDestinationConfig.payload_mode:type_name -> wallaby.v1.PayloadMode
+	66,  // 53: wallaby.v1.HTTPDestinationConfig.timeout:type_name -> google.protobuf.Duration
+	62,  // 54: wallaby.v1.HTTPDestinationConfig.headers:type_name -> wallaby.v1.HTTPDestinationConfig.HeadersEntry
+	21,  // 55: wallaby.v1.HTTPDestinationConfig.retry:type_name -> wallaby.v1.RetryConfig
+	66,  // 56: wallaby.v1.HTTPDestinationConfig.dedupe_window:type_name -> google.protobuf.Duration
+	34,  // 57: wallaby.v1.HTTPDestinationConfig.schema_registry:type_name -> wallaby.v1.SchemaRegistryConfig
+	28,  // 58: wallaby.v1.HTTPDestinationConfig.type_mappings:type_name -> wallaby.v1.TypeMappingsConfig
+	22,  // 59: wallaby.v1.GRPCDestinationConfig.tls:type_name -> wallaby.v1.GRPCTLSConfig
+	66,  // 60: wallaby.v1.GRPCDestinationConfig.timeout:type_name -> google.protobuf.Duration
+	1,   // 61: wallaby.v1.GRPCDestinationConfig.format:type_name -> wallaby.v1.WireFormat
+	6,   // 62: wallaby.v1.GRPCDestinationConfig.payload_mode:type_name -> wallaby.v1.PayloadMode
+	63,  // 63: wallaby.v1.GRPCDestinationConfig.metadata:type_name -> wallaby.v1.GRPCDestinationConfig.MetadataEntry
+	21,  // 64: wallaby.v1.GRPCDestinationConfig.retry:type_name -> wallaby.v1.RetryConfig
+	34,  // 65: wallaby.v1.GRPCDestinationConfig.schema_registry:type_name -> wallaby.v1.SchemaRegistryConfig
+	28,  // 66: wallaby.v1.GRPCDestinationConfig.type_mappings:type_name -> wallaby.v1.TypeMappingsConfig
+	27,  // 67: wallaby.v1.SnowflakeDestinationConfig.warehouse:type_name -> wallaby.v1.WarehouseConfig
+	24,  // 68: wallaby.v1.SnowflakeDestinationConfig.staging:type_name -> wallaby.v1.StagingConfig
+	25,  // 69: wallaby.v1.SnowflakeDestinationConfig.metadata:type_name -> wallaby.v1.MetadataConfig
+	28,  // 70: wallaby.v1.SnowflakeDestinationConfig.type_mappings:type_name -> wallaby.v1.TypeMappingsConfig
+	34,  // 71: wallaby.v1.SnowflakeDestinationConfig.schema_registry:type_name -> wallaby.v1.SchemaRegistryConfig
+	1,   // 72: wallaby.v1.SnowpipeDestinationConfig.format:type_name -> wallaby.v1.WireFormat
+	27,  // 73: wallaby.v1.SnowpipeDestinationConfig.warehouse:type_name -> wallaby.v1.WarehouseConfig
+	25,  // 74: wallaby.v1.SnowpipeDestinationConfig.metadata:type_name -> wallaby.v1.MetadataConfig
+	28,  // 75: wallaby.v1.SnowpipeDestinationConfig.type_mappings:type_name -> wallaby.v1.TypeMappingsConfig
+	34,  // 76: wallaby.v1.SnowpipeDestinationConfig.schema_registry:type_name -> wallaby.v1.SchemaRegistryConfig
+	24,  // 77: wallaby.v1.ClickHouseDestinationConfig.staging:type_name -> wallaby.v1.StagingConfig
+	26,  // 78: wallaby.v1.ClickHouseDestinationConfig.metadata:type_name -> wallaby.v1.ClickHouseMetadataConfig
+	28,  // 79: wallaby.v1.ClickHouseDestinationConfig.type_mappings:type_name -> wallaby.v1.TypeMappingsConfig
+	23,  // 80: wallaby.v1.ClickHousePostgresAppendConfig.tls:type_name -> wallaby.v1.ClickHouseTLSConfig
+	28,  // 81: wallaby.v1.ClickHousePostgresAppendConfig.type_mappings:type_name -> wallaby.v1.TypeMappingsConfig
+	24,  // 82: wallaby.v1.DuckDBDestinationConfig.staging:type_name -> wallaby.v1.StagingConfig
+	25,  // 83: wallaby.v1.DuckDBDestinationConfig.metadata:type_name -> wallaby.v1.MetadataConfig
+	28,  // 84: wallaby.v1.DuckDBDestinationConfig.type_mappings:type_name -> wallaby.v1.TypeMappingsConfig
+	24,  // 85: wallaby.v1.DuckLakeDestinationConfig.staging:type_name -> wallaby.v1.StagingConfig
+	25,  // 86: wallaby.v1.DuckLakeDestinationConfig.metadata:type_name -> wallaby.v1.MetadataConfig
+	28,  // 87: wallaby.v1.DuckLakeDestinationConfig.type_mappings:type_name -> wallaby.v1.TypeMappingsConfig
+	17,  // 88: wallaby.v1.IcebergDestinationConfig.catalog_profile:type_name -> wallaby.v1.IcebergCatalogProfile
+	64,  // 89: wallaby.v1.CustomEndpointConfig.options:type_name -> wallaby.v1.CustomEndpointConfig.OptionsEntry
+	36,  // 90: wallaby.v1.Endpoint.postgres_source:type_name -> wallaby.v1.PostgresSourceConfig
+	37,  // 91: wallaby.v1.Endpoint.postgres_destination:type_name -> wallaby.v1.PostgresDestinationConfig
+	38,  // 92: wallaby.v1.Endpoint.pgstream:type_name -> wallaby.v1.PGStreamDestinationConfig
+	39,  // 93: wallaby.v1.Endpoint.kafka:type_name -> wallaby.v1.KafkaDestinationConfig
+	40,  // 94: wallaby.v1.Endpoint.redpanda:type_name -> wallaby.v1.RedpandaDestinationConfig
+	41,  // 95: wallaby.v1.Endpoint.s3:type_name -> wallaby.v1.S3DestinationConfig
+	42,  // 96: wallaby.v1.Endpoint.http:type_name -> wallaby.v1.HTTPDestinationConfig
+	43,  // 97: wallaby.v1.Endpoint.grpc:type_name -> wallaby.v1.GRPCDestinationConfig
+	44,  // 98: wallaby.v1.Endpoint.snowflake:type_name -> wallaby.v1.SnowflakeDestinationConfig
+	45,  // 99: wallaby.v1.Endpoint.snowflake_postgres_sql:type_name -> wallaby.v1.SnowflakePostgresSQLConfig
+	46,  // 100: wallaby.v1.Endpoint.snowflake_postgres_staged:type_name -> wallaby.v1.SnowflakePostgresStagedConfig
+	47,  // 101: wallaby.v1.Endpoint.snowflake_postgres_streaming:type_name -> wallaby.v1.SnowflakePostgresStreamingConfig
+	48,  // 102: wallaby.v1.Endpoint.snowpipe:type_name -> wallaby.v1.SnowpipeDestinationConfig
+	49,  // 103: wallaby.v1.Endpoint.clickhouse:type_name -> wallaby.v1.ClickHouseDestinationConfig
+	50,  // 104: wallaby.v1.Endpoint.clickhouse_postgres_append:type_name -> wallaby.v1.ClickHousePostgresAppendConfig
+	51,  // 105: wallaby.v1.Endpoint.duckdb:type_name -> wallaby.v1.DuckDBDestinationConfig
+	52,  // 106: wallaby.v1.Endpoint.ducklake:type_name -> wallaby.v1.DuckLakeDestinationConfig
+	53,  // 107: wallaby.v1.Endpoint.iceberg:type_name -> wallaby.v1.IcebergDestinationConfig
+	54,  // 108: wallaby.v1.Endpoint.custom:type_name -> wallaby.v1.CustomEndpointConfig
+	2,   // 109: wallaby.v1.FlowConfig.ack_policy:type_name -> wallaby.v1.AckPolicy
+	3,   // 110: wallaby.v1.FlowConfig.failure_mode:type_name -> wallaby.v1.FailureMode
+	4,   // 111: wallaby.v1.FlowConfig.give_up_policy:type_name -> wallaby.v1.GiveUpPolicy
+	58,  // 112: wallaby.v1.FlowConfig.ddl:type_name -> wallaby.v1.DDLPolicy
+	57,  // 113: wallaby.v1.FlowConfig.materialization:type_name -> wallaby.v1.MaterializationPolicy
+	67,  // 114: wallaby.v1.FlowConfig.table_mappings:type_name -> wallaby.v1.TableMappings
+	55,  // 115: wallaby.v1.Flow.source:type_name -> wallaby.v1.Endpoint
+	55,  // 116: wallaby.v1.Flow.destinations:type_name -> wallaby.v1.Endpoint
+	0,   // 117: wallaby.v1.Flow.state:type_name -> wallaby.v1.FlowState
+	1,   // 118: wallaby.v1.Flow.wire_format:type_name -> wallaby.v1.WireFormat
+	56,  // 119: wallaby.v1.Flow.config:type_name -> wallaby.v1.FlowConfig
+	65,  // 120: wallaby.v1.Checkpoint.metadata:type_name -> wallaby.v1.Checkpoint.MetadataEntry
+	121, // [121:121] is the sub-list for method output_type
+	121, // [121:121] is the sub-list for method input_type
+	121, // [121:121] is the sub-list for extension type_name
+	121, // [121:121] is the sub-list for extension extendee
+	0,   // [0:121] is the sub-list for field type_name
 }
 
 func init() { file_wallaby_v1_types_proto_init() }
@@ -985,14 +6784,66 @@ func file_wallaby_v1_types_proto_init() {
 	if File_wallaby_v1_types_proto != nil {
 		return
 	}
+	file_wallaby_v1_table_mapping_proto_init()
+	file_wallaby_v1_types_proto_msgTypes[1].OneofWrappers = []any{}
 	file_wallaby_v1_types_proto_msgTypes[3].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[4].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[5].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[7].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[8].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[9].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[12].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[16].OneofWrappers = []any{
+		(*SchemaRegistryConfig_Confluent)(nil),
+		(*SchemaRegistryConfig_Apicurio)(nil),
+		(*SchemaRegistryConfig_Glue)(nil),
+		(*SchemaRegistryConfig_Postgres)(nil),
+		(*SchemaRegistryConfig_Local)(nil),
+	}
+	file_wallaby_v1_types_proto_msgTypes[17].OneofWrappers = []any{
+		(*SnapshotStateConfig_Disabled)(nil),
+		(*SnapshotStateConfig_FilePath)(nil),
+		(*SnapshotStateConfig_Postgres)(nil),
+	}
+	file_wallaby_v1_types_proto_msgTypes[18].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[21].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[23].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[26].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[27].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[28].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[29].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[30].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[32].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[34].OneofWrappers = []any{}
+	file_wallaby_v1_types_proto_msgTypes[37].OneofWrappers = []any{
+		(*Endpoint_PostgresSource)(nil),
+		(*Endpoint_PostgresDestination)(nil),
+		(*Endpoint_Pgstream)(nil),
+		(*Endpoint_Kafka)(nil),
+		(*Endpoint_Redpanda)(nil),
+		(*Endpoint_S3)(nil),
+		(*Endpoint_Http)(nil),
+		(*Endpoint_Grpc)(nil),
+		(*Endpoint_Snowflake)(nil),
+		(*Endpoint_SnowflakePostgresSql)(nil),
+		(*Endpoint_SnowflakePostgresStaged)(nil),
+		(*Endpoint_SnowflakePostgresStreaming)(nil),
+		(*Endpoint_Snowpipe)(nil),
+		(*Endpoint_Clickhouse)(nil),
+		(*Endpoint_ClickhousePostgresAppend)(nil),
+		(*Endpoint_Duckdb)(nil),
+		(*Endpoint_Ducklake)(nil),
+		(*Endpoint_Iceberg)(nil),
+		(*Endpoint_Custom)(nil),
+	}
+	file_wallaby_v1_types_proto_msgTypes[40].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wallaby_v1_types_proto_rawDesc), len(file_wallaby_v1_types_proto_rawDesc)),
-			NumEnums:      6,
-			NumMessages:   8,
+			NumEnums:      18,
+			NumMessages:   48,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -1,6 +1,7 @@
 package snowflake
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -321,6 +322,29 @@ func fakeCountRows(content []byte) int {
 
 // stagedTestConfig returns an internally consistent stagedConfig backed by the
 // shared managed test schema.
+func TestStagedFakeTransportReceivesRawRenameSubsetImages(t *testing.T) {
+	t.Parallel()
+	cfg := stagedTestConfig(t)
+	cfg.schemaContract.Columns = append(cfg.schemaContract.Columns, connector.Column{Name: "secret", Type: "text", Nullable: true, TypeMetadata: map[string]string{"nullability_known": "true", "generated_known": "true"}})
+	cfg.schemaContractHash = mustManagedSchemaHash(t, cfg.schemaContract)
+	transaction := managedTestTransaction(cfg.schemaContract)
+	transaction.Fragments[0].Batch.WritePolicy = connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend, ProjectionFingerprint: "rename-subset-v1"}
+	transaction.Fragments[0].Batch.Records[0].After["secret"] = "raw-only"
+	intent := stagedTestIntent(t, cfg, transaction)
+	proto := newFakeStageProtocol()
+	if _, err := newStagedTestDriver(cfg, proto).apply(context.Background(), intent, transaction); err != nil {
+		t.Fatal(err)
+	}
+	if len(proto.objects) != 1 {
+		t.Fatalf("staged fake objects=%d, want 1", len(proto.objects))
+	}
+	for _, object := range proto.objects {
+		if !bytes.Contains(object.content, []byte(`"secret":"raw-only"`)) || !bytes.Contains(object.content, []byte(`"SOURCE_TABLE":"widgets"`)) || bytes.Contains(object.content, []byte(`"EVENT_ID"`)) {
+			t.Fatalf("staged fake transport received double-mapped payload: %s", object.content)
+		}
+	}
+}
+
 func stagedTestConfig(t testing.TB) stagedConfig {
 	t.Helper()
 	schema := managedTestSchema()
@@ -362,7 +386,7 @@ func stagedTestIntent(t *testing.T, cfg stagedConfig, transaction connector.Sour
 }
 
 func newStagedTestDriver(cfg stagedConfig, proto stageProtocol) *stagedDriver {
-	driver := newStagedDriver(proto, cfg, "catalog-fingerprint", StagedHooks{})
+	driver := newStagedDriver(proto, cfg, "catalog-fingerprint", stagedHooks{})
 	driver.sleep = func(context.Context, time.Duration) error { return nil }
 	return driver
 }

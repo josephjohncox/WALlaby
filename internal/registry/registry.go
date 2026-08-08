@@ -44,6 +44,7 @@ type Store interface {
 type DDLExecutionStore interface {
 	Store
 	PrepareDDLExecution(ctx context.Context, flowID, lsn, destination string, expectedDestinations []string) (connector.DDLExecutionState, error)
+	RecordVacuousDDLExecution(ctx context.Context, flowID, lsn, ddl string) error
 	RecordDDLExecution(ctx context.Context, flowID, lsn, ddl, destination string, expectedDestinations []string) error
 }
 
@@ -107,7 +108,7 @@ func NewPostgresStoreWithPool(ctx context.Context, pool *pgxpool.Pool) (*Postgre
 	if pool == nil {
 		return nil, errors.New("postgres control pool is required")
 	}
-	if err := runMigrations(ctx, pool); err != nil {
+	if err := ApplyMigrations(ctx, pool); err != nil {
 		return nil, err
 	}
 	return &PostgresStore{pool: pool, lockPool: pool}, nil
@@ -127,6 +128,21 @@ func (p *PostgresStore) Close() {
 }
 
 func (p *PostgresStore) RegisterSchema(ctx context.Context, schema connector.Schema) error {
+	return p.registerSchema(ctx, "", schema)
+}
+
+// RegisterSchemaForFlow persists a replication baseline in one exact flow
+// scope. Catalog-only snapshots use RegisterSchema and therefore cannot be
+// restored by an unrelated flow that happens to publish the same relation
+// name.
+func (p *PostgresStore) RegisterSchemaForFlow(ctx context.Context, flowID string, schema connector.Schema) error {
+	if strings.TrimSpace(flowID) == "" {
+		return errors.New("flow-scoped schema registration requires flow_id")
+	}
+	return p.registerSchema(ctx, flowID, schema)
+}
+
+func (p *PostgresStore) registerSchema(ctx context.Context, flowID string, schema connector.Schema) error {
 	payload, err := json.Marshal(schema)
 	if err != nil {
 		return fmt.Errorf("marshal schema: %w", err)
@@ -134,15 +150,18 @@ func (p *PostgresStore) RegisterSchema(ctx context.Context, schema connector.Sch
 	fence, fenced := runFenceFromContext(ctx)
 	if !fenced {
 		_, err = p.pool.Exec(ctx,
-			`INSERT INTO schema_versions (namespace, name, version, schema_json)
-			 VALUES ($1, $2, $3, $4)
-			 ON CONFLICT (namespace, name, version) DO NOTHING`,
-			schema.Namespace, schema.Name, schema.Version, payload,
+			`INSERT INTO public.schema_versions (flow_id, namespace, name, version, schema_json)
+			 VALUES ($1, $2, $3, $4, $5)
+			 ON CONFLICT (flow_id, namespace, name, version) DO NOTHING`,
+			flowID, schema.Namespace, schema.Name, schema.Version, payload,
 		)
 		if err != nil {
 			return fmt.Errorf("insert schema: %w", err)
 		}
 		return nil
+	}
+	if flowID != fence.FlowID {
+		return fmt.Errorf("%w: schema flow %q does not match run fence flow %q", authority.ErrFenceRejected, flowID, fence.FlowID)
 	}
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -153,23 +172,23 @@ func (p *PostgresStore) RegisterSchema(ctx context.Context, schema connector.Sch
 		return err
 	}
 	tag, err := tx.Exec(ctx, `
-INSERT INTO schema_versions (
-  namespace,name,version,schema_json,flow_incarnation_id,generation,acquisition_id,lease_epoch,authority_origin
-) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'fenced')
-ON CONFLICT(namespace,name,version) DO NOTHING`, schema.Namespace, schema.Name, schema.Version, payload, fence.FlowIncarnationID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch)
+INSERT INTO public.schema_versions (
+  flow_id,namespace,name,version,schema_json,flow_incarnation_id,generation,acquisition_id,lease_epoch,authority_origin
+) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'fenced')
+ON CONFLICT(flow_id,namespace,name,version) DO NOTHING`, flowID, schema.Namespace, schema.Name, schema.Version, payload, fence.FlowIncarnationID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch)
 	if err != nil {
 		return fmt.Errorf("insert fenced schema: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		var identical bool
 		if err := tx.QueryRow(ctx, `
-SELECT schema_json=$4::jsonb
+SELECT schema_json=$5::jsonb
    AND authority_origin='fenced'
-   AND flow_incarnation_id=$5
+   AND flow_incarnation_id=$6
    AND generation>0 AND acquisition_id IS NOT NULL AND lease_epoch>0
-FROM schema_versions
-WHERE namespace=$1 AND name=$2 AND version=$3
-FOR UPDATE`, schema.Namespace, schema.Name, schema.Version, payload, fence.FlowIncarnationID).Scan(&identical); err != nil {
+FROM ONLY public.schema_versions
+WHERE flow_id=$1 AND namespace=$2 AND name=$3 AND version=$4
+FOR UPDATE`, flowID, schema.Namespace, schema.Name, schema.Version, payload, fence.FlowIncarnationID).Scan(&identical); err != nil {
 			return fmt.Errorf("inspect fenced schema registration conflict: %w", err)
 		}
 		if !identical {
@@ -288,8 +307,8 @@ func (p *PostgresStore) RecordCatalogChange(
 	var latestSchema connector.Schema
 	err = tx.QueryRow(ctx,
 		`SELECT version, schema_json
-		 FROM schema_versions
-		 WHERE namespace = $1 AND name = $2
+		 FROM ONLY public.schema_versions
+		 WHERE flow_id = '' AND namespace = $1 AND name = $2
 		 ORDER BY version DESC
 		 LIMIT 1`,
 		schemaSnapshot.Namespace, schemaSnapshot.Name,
@@ -312,8 +331,8 @@ func (p *PostgresStore) RecordCatalogChange(
 		return 0, fmt.Errorf("marshal catalog schema: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO schema_versions (namespace, name, version, schema_json)
-		 VALUES ($1, $2, $3, $4)`,
+		`INSERT INTO public.schema_versions (flow_id, namespace, name, version, schema_json)
+		 VALUES ('', $1, $2, $3, $4)`,
 		schemaSnapshot.Namespace, schemaSnapshot.Name, schemaSnapshot.Version, schemaJSON,
 	); err != nil {
 		return 0, fmt.Errorf("insert catalog schema: %w", err)
@@ -659,6 +678,66 @@ ON CONFLICT(event_id,destination,acquisition_id,lease_epoch) DO NOTHING`
 	return state, nil
 }
 
+// RecordVacuousDDLExecution durably completes an approved DDL position whose
+// immutable projected execution manifest is empty. No synthetic destination or
+// receipt is created.
+func (p *PostgresStore) RecordVacuousDDLExecution(ctx context.Context, flowID, lsn, ddl string) error {
+	if strings.TrimSpace(lsn) == "" {
+		return errors.New("vacuous DDL execution position is required")
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin vacuous DDL completion: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	fence, fenced := runFenceFromContext(ctx)
+	if fenced {
+		if flowID != fence.FlowID {
+			return fmt.Errorf("%w: DDL flow differs from run fence", authority.ErrFenceRejected)
+		}
+		if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
+			return err
+		}
+	}
+	query := `SELECT id, flow_id, ddl, plan_json, lsn, status, created_at, applied_at FROM ddl_events WHERE lsn=$1`
+	args := []any{lsn}
+	if flowID != "" {
+		query += fmt.Sprintf(" AND flow_id=$%d", len(args)+1)
+		args = append(args, flowID)
+	}
+	if fenced {
+		query += fmt.Sprintf(" AND flow_incarnation_id=$%d", len(args)+1)
+		args = append(args, fence.FlowIncarnationID)
+	}
+	query += " ORDER BY id DESC LIMIT 1 FOR UPDATE"
+	event, err := scanDDLEvent(tx.QueryRow(ctx, query, args...))
+	if err != nil {
+		return err
+	}
+	if event.Status != StatusApproved && event.Status != StatusApplied {
+		return &connector.DDLGateError{FlowID: flowID, LSN: lsn, DDL: event.DDL, Status: event.Status, EventID: event.ID}
+	}
+	if strings.TrimSpace(ddl) != "" && strings.TrimSpace(event.DDL) != "" && ddl != event.DDL {
+		return fmt.Errorf("%w: vacuous DDL content differs from registered event", connector.ErrDeliveryConflict)
+	}
+	empty := []string{}
+	manifestHash := fmt.Sprintf("%x", sha256.Sum256(nil))
+	var storedDestinations []string
+	var storedHash string
+	if err := tx.QueryRow(ctx, `INSERT INTO ddl_execution_manifests(event_id,destinations,manifest_hash)
+VALUES($1,$2,$3) ON CONFLICT(event_id) DO UPDATE SET manifest_hash=ddl_execution_manifests.manifest_hash
+RETURNING destinations,manifest_hash`, event.ID, empty, manifestHash).Scan(&storedDestinations, &storedHash); err != nil {
+		return fmt.Errorf("prepare vacuous DDL manifest: %w", err)
+	}
+	if storedHash != manifestHash || len(storedDestinations) != 0 {
+		return ErrExecutionManifestChanged
+	}
+	if _, err := tx.Exec(ctx, `UPDATE ddl_events SET status=$2,applied_at=COALESCE(applied_at,clock_timestamp()) WHERE id=$1`, event.ID, StatusApplied); err != nil {
+		return fmt.Errorf("mark vacuous DDL applied: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
 // RecordDDLExecution stores one destination receipt and marks the DDL event
 // applied only when every destination in the immutable execution manifest has
 // a receipt. Receipt insertion and the applied transition share one transaction.
@@ -864,11 +943,69 @@ type Hook struct {
 	RunFence     *connector.RunFence
 }
 
+// LatestSchema returns the most recent catalog-only schema snapshot. Logical
+// replication hooks use LatestSchemaForFlow and cannot read this scope.
+func (p *PostgresStore) LatestSchema(ctx context.Context, namespace, name string) (connector.Schema, bool, error) {
+	return p.latestSchema(ctx, "", namespace, name)
+}
+
+// LatestSchemaForFlow returns the most recent baseline for one exact flow.
+func (p *PostgresStore) LatestSchemaForFlow(ctx context.Context, flowID, namespace, name string) (connector.Schema, bool, error) {
+	if strings.TrimSpace(flowID) == "" {
+		return connector.Schema{}, false, errors.New("flow-scoped schema lookup requires flow_id")
+	}
+	return p.latestSchema(ctx, flowID, namespace, name)
+}
+
+func (p *PostgresStore) latestSchema(ctx context.Context, flowID, namespace, name string) (connector.Schema, bool, error) {
+	var baseline connector.Schema
+	err := p.pool.QueryRow(ctx, `SELECT schema_json FROM ONLY public.schema_versions WHERE flow_id=$1 AND namespace=$2 AND name=$3 ORDER BY version DESC LIMIT 1`, flowID, namespace, name).Scan(&baseline)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return connector.Schema{}, false, nil
+	}
+	if err != nil {
+		return connector.Schema{}, false, fmt.Errorf("read latest schema baseline: %w", err)
+	}
+	return baseline, true, nil
+}
+
+// SchemaBaseline exposes the durable flow-scoped registry baseline to logical
+// replication relation diffing before a new schema version is registered.
+func (h *Hook) SchemaBaseline(ctx context.Context, namespace, name string) (connector.Schema, bool, error) {
+	flowID := h.flowID(ctx)
+	if flowID == "" {
+		return connector.Schema{}, false, nil
+	}
+	store, ok := h.Store.(interface {
+		LatestSchemaForFlow(context.Context, string, string, string) (connector.Schema, bool, error)
+	})
+	if !ok {
+		if flowID == "" {
+			return connector.Schema{}, false, nil
+		}
+		return connector.Schema{}, false, errors.New("flow-scoped registry hook requires a flow-scoped schema store")
+	}
+	return store.LatestSchemaForFlow(h.fencedContext(ctx), flowID, namespace, name)
+}
+
 func (h *Hook) OnSchema(ctx context.Context, schema connector.Schema) error {
 	if h.Store == nil {
 		return nil
 	}
-	return h.Store.RegisterSchema(h.fencedContext(ctx), schema)
+	flowID := h.flowID(ctx)
+	if flowID == "" {
+		return h.Store.RegisterSchema(h.fencedContext(ctx), schema)
+	}
+	store, ok := h.Store.(interface {
+		RegisterSchemaForFlow(context.Context, string, connector.Schema) error
+	})
+	if !ok {
+		if flowID == "" {
+			return h.Store.RegisterSchema(h.fencedContext(ctx), schema)
+		}
+		return errors.New("flow-scoped registry hook requires a flow-scoped schema store")
+	}
+	return store.RegisterSchemaForFlow(h.fencedContext(ctx), flowID, schema)
 }
 
 func (h *Hook) OnSchemaChange(ctx context.Context, plan schema.Plan) error {
@@ -879,17 +1016,96 @@ func (h *Hook) OnSchemaChangeAtLSN(ctx context.Context, plan schema.Plan, lsn pg
 	return h.onSchemaChange(ctx, plan, lsn.String())
 }
 
+// ResolveSchemaChangeAtLSN returns the durable plan that must be emitted for an
+// exact WAL position. An approved event remains replayable until its complete
+// execution manifest is receipted and the event becomes applied. This closes
+// the crash window where the schema registry already contains the new shape
+// but destination DDL and the source checkpoint have not committed.
+func (h *Hook) ResolveSchemaChangeAtLSN(ctx context.Context, observed schema.Plan, lsn pglogrepl.LSN) (schema.Plan, error) {
+	if h.Store == nil {
+		return observed, nil
+	}
+	ctx = h.fencedContext(ctx)
+	flowID := h.flowID(ctx)
+	lsnString := lsn.String()
+
+	var existing DDLEvent
+	var err error
+	if h.RunFence != nil {
+		postgresStore, ok := h.Store.(*PostgresStore)
+		if !ok {
+			return schema.Plan{}, errors.New("fenced registry hook requires the PostgreSQL store")
+		}
+		existing, err = postgresStore.getDDLByRunFenceLSN(ctx, *h.RunFence, lsnString)
+	} else {
+		existing, err = h.Store.GetDDLByLSN(ctx, flowID, lsnString)
+	}
+	if errors.Is(err, ErrNotFound) {
+		return observed, nil
+	}
+	if err != nil {
+		return schema.Plan{}, fmt.Errorf("load structured DDL plan at LSN %s: %w", lsnString, err)
+	}
+	if observed.HasChanges() && !plansEqual(existing.Plan, observed) {
+		return schema.Plan{}, fmt.Errorf("%w: structured DDL plan at LSN %s differs from its durable registry event", connector.ErrDeliveryConflict, lsnString)
+	}
+
+	switch existing.Status {
+	case StatusApplied:
+		return schema.Plan{}, nil
+	case StatusApproved:
+		return existing.Plan, nil
+	default:
+		if h.GateApproval {
+			planJSON, _ := json.Marshal(existing.Plan)
+			return schema.Plan{}, &connector.DDLGateError{
+				FlowID:   flowID,
+				LSN:      lsnString,
+				Status:   existing.Status,
+				EventID:  existing.ID,
+				PlanJSON: string(planJSON),
+			}
+		}
+		return existing.Plan, nil
+	}
+}
+
 func (h *Hook) onSchemaChange(ctx context.Context, plan schema.Plan, lsn string) error {
 	if h.Store == nil {
 		return nil
 	}
 	ctx = h.fencedContext(ctx)
 	flowID := h.flowID(ctx)
+	if lsn != "" {
+		var existing DDLEvent
+		var err error
+		if h.RunFence != nil {
+			postgresStore, ok := h.Store.(*PostgresStore)
+			if !ok {
+				return errors.New("fenced registry hook requires the PostgreSQL store")
+			}
+			existing, err = postgresStore.getDDLByRunFenceLSN(ctx, *h.RunFence, lsn)
+		} else {
+			existing, err = h.Store.GetDDLByLSN(ctx, flowID, lsn)
+		}
+		if err == nil {
+			if !plansEqual(existing.Plan, plan) {
+				return fmt.Errorf("%w: structured DDL plan at LSN %s differs from its durable registry event", connector.ErrDeliveryConflict, lsn)
+			}
+			switch existing.Status {
+			case StatusApproved, StatusApplied:
+				return nil
+			default:
+				if h.GateApproval {
+					planJSON, _ := json.Marshal(plan)
+					return &connector.DDLGateError{FlowID: flowID, LSN: lsn, Status: existing.Status, EventID: existing.ID, PlanJSON: string(planJSON)}
+				}
+				return nil
+			}
+		}
+	}
 	status := StatusPending
 	if h.AutoApprove {
-		status = StatusApproved
-	}
-	if h.AutoApply {
 		status = StatusApproved
 	}
 	id, err := h.Store.RecordDDL(ctx, flowID, "", plan, lsn, status)
@@ -964,9 +1180,6 @@ func (h *Hook) OnDDL(ctx context.Context, ddl string, lsn pglogrepl.LSN) error {
 	if h.AutoApprove {
 		status = StatusApproved
 	}
-	if h.AutoApply {
-		status = StatusApproved
-	}
 	id, err := h.Store.RecordDDL(ctx, flowID, ddl, schema.Plan{}, lsnStr, status)
 	if err != nil {
 		return err
@@ -994,6 +1207,12 @@ func (h *Hook) flowID(ctx context.Context) string {
 		return id
 	}
 	return ""
+}
+
+func plansEqual(left, right schema.Plan) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && string(leftJSON) == string(rightJSON)
 }
 
 func ddlOrNull(ddl string) interface{} {
@@ -1036,6 +1255,19 @@ func PrepareDDLExecution(
 	return state, nil
 }
 
+// RecordVacuousDDLExecution persists an empty immutable destination manifest
+// and advances the approved registry event without fabricating a receipt.
+func RecordVacuousDDLExecution(ctx context.Context, store Store, flowID, lsn, ddl string) error {
+	receipts, ok := store.(DDLExecutionStore)
+	if !ok {
+		return ErrExecutionReceiptRequired
+	}
+	if err := receipts.RecordVacuousDDLExecution(ctx, flowID, lsn, ddl); err != nil {
+		return fmt.Errorf("record vacuous DDL execution: %w", err)
+	}
+	return nil
+}
+
 // RecordDDLExecution persists one destination receipt and advances the registry
 // only after the complete immutable destination manifest has receipts.
 func RecordDDLExecution(
@@ -1052,12 +1284,6 @@ func RecordDDLExecution(
 		return fmt.Errorf("record DDL execution receipt: %w", err)
 	}
 	return nil
-}
-
-// MarkDDLAppliedByLSN is retained as a fail-closed compatibility shim. Applied
-// transitions require destination execution receipts.
-func MarkDDLAppliedByLSN(context.Context, Store, string, string) error {
-	return ErrExecutionReceiptRequired
 }
 
 var (

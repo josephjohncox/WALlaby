@@ -59,8 +59,8 @@ type stagedConfig struct {
 func stagedProfileAllowedOptions() map[string]struct{} {
 	return map[string]struct{}{
 		"dsn": {}, "flow_id": {}, "managed_profile": {}, "destination_revision_id": {},
-		"write_mode": {}, "batch_mode": {}, "batch_resolution": {}, "meta_table_enabled": {},
-		"disable_transactions": {}, "session_keep_alive": {}, "type_mappings": {}, "type_mappings_file": {},
+		"batch_mode": {}, "batch_resolution": {}, "meta_table_enabled": {},
+		"disable_transactions": {}, "session_keep_alive": {},
 		"managed_account": {}, "managed_database": {}, "managed_schema": {}, "managed_stage": {},
 		"managed_table": {}, "managed_receipts_table": {}, "managed_file_format": {},
 		"managed_pipe": {}, "managed_auto_ingest": {},
@@ -74,17 +74,15 @@ func stagedProfileAllowedOptions() map[string]struct{} {
 		"managed_statement_timeout_seconds": {}, "managed_load_verify_attempts": {},
 		"managed_load_verify_interval_ms": {}, "managed_cleanup_max_objects": {},
 		"managed_cleanup_retention_seconds": {},
-		// Known generic options remain listed so the tailored rejection below can
-		// explain the incompatible mode.
-		"schema": {}, "table": {}, "staging_schema": {}, "staging_table": {}, "staging_suffix": {},
-		"warehouse": {}, "warehouse_size": {}, "warehouse_auto_suspend": {}, "warehouse_auto_resume": {},
-		"meta_schema": {}, "meta_table": {}, "meta_pk_prefix": {},
 	}
 }
 
 // ValidateManagedStagedProfileOptions rejects options outside the constrained
 // staged COPY profile before connector side effects occur.
 func ValidateManagedStagedProfileOptions(options map[string]string) error {
+	if _, exists := options["write_mode"]; exists {
+		return errors.New("managed Snowflake write_mode is obsolete; managed_profile and the mandatory table mapping select the protocol")
+	}
 	allowed := stagedProfileAllowedOptions()
 	for option := range options {
 		if _, ok := allowed[option]; !ok {
@@ -96,12 +94,12 @@ func ValidateManagedStagedProfileOptions(options map[string]string) error {
 
 // ValidateManagedStagedProfileSpec performs the complete side-effect-free
 // portion of staged COPY admission.
-func ValidateManagedStagedProfileSpec(spec connector.Spec) error {
+func ValidateManagedStagedProfileSpec(spec connector.RuntimeSpec) error {
 	_, err := stagedConfigFromSpec(strings.TrimSpace(spec.Options["dsn"]), spec)
 	return err
 }
 
-func stagedConfigFromSpec(dsn string, spec connector.Spec) (stagedConfig, error) {
+func stagedConfigFromSpec(dsn string, spec connector.RuntimeSpec) (stagedConfig, error) {
 	const profileName = connector.ManagedProfilePostgresToSnowflakeStagedAppendV1
 	options := spec.Options
 	if strings.TrimSpace(options["managed_profile"]) != profileName {
@@ -142,7 +140,7 @@ func stagedConfigFromSpec(dsn string, spec connector.Spec) (stagedConfig, error)
 		stageCreatedOn: strings.TrimSpace(options["managed_stage_created_on"]), targetCreatedOn: strings.TrimSpace(options["managed_target_created_on"]),
 		receiptsCreatedOn: strings.TrimSpace(options["managed_receipts_created_on"]), fileFormatCreatedOn: strings.TrimSpace(options["managed_file_format_created_on"]),
 		pipeCreatedOn: strings.TrimSpace(options["managed_pipe_created_on"]),
-		sourceSchema:  strings.TrimSpace(options["managed_source_schema"]), sourceTable: strings.TrimSpace(options["managed_source_table"]),
+		sourceSchema:  options["managed_source_schema"], sourceTable: options["managed_source_table"],
 		schemaContractHash:  strings.TrimSpace(options["managed_schema_contract_hash"]),
 		destinationRevision: strings.TrimSpace(options["destination_revision_id"]),
 	}
@@ -154,8 +152,9 @@ func stagedConfigFromSpec(dsn string, spec connector.Spec) (stagedConfig, error)
 		return stagedConfig{}, err
 	}
 	if cfg.flowID == "" || cfg.account == "" || cfg.snowflakeVersion == "" || cfg.sourceSchema == "" || cfg.sourceTable == "" ||
+		strings.ContainsRune(cfg.sourceSchema, '\x00') || strings.ContainsRune(cfg.sourceTable, '\x00') ||
 		cfg.destinationRevision == "" || cfg.stageCreatedOn == "" || cfg.targetCreatedOn == "" || cfg.receiptsCreatedOn == "" || cfg.fileFormatCreatedOn == "" {
-		return stagedConfig{}, errors.New("managed staged Snowflake flow, account, version, object creation identities, source relation, and destination revision are required")
+		return stagedConfig{}, errors.New("managed staged Snowflake flow, account, version, object creation identities, exact nonempty NUL-free source relation, and destination revision are required")
 	}
 	if len(cfg.flowID) > 1024 || strings.TrimSpace(cfg.flowID) != cfg.flowID || strings.ContainsAny(cfg.flowID, "\r\n\x00") {
 		return stagedConfig{}, errors.New("managed staged Snowflake flow_id must be a bounded single-line exact value")
@@ -234,7 +233,7 @@ func stagedConfigFromSpec(dsn string, spec connector.Spec) (stagedConfig, error)
 			return stagedConfig{}, fmt.Errorf("managed staged Snowflake schema contract rejects generated column %q", column.Name)
 		}
 	}
-	if strings.TrimSpace(options["type_mappings"]) != "" || strings.TrimSpace(options["type_mappings_file"]) != "" {
+	if strings.TrimSpace(options["type_mappings"]) != "" {
 		return stagedConfig{}, errors.New("managed staged Snowflake profile rejects type mapping overrides until each mapping has real-service recovery evidence")
 	}
 	cfg.typeMappings = defaultSnowflakeTypeMappings()
@@ -275,8 +274,8 @@ func stagedConfigFromSpec(dsn string, spec connector.Spec) (stagedConfig, error)
 	}
 	cfg.cleanupRetention = time.Duration(retentionSeconds) * time.Second
 	cfg.validateEveryConnection = true
-	if strings.ToLower(strings.TrimSpace(options["write_mode"])) != "staged_append" || strings.ToLower(strings.TrimSpace(options["batch_mode"])) != "target" || strings.ToLower(strings.TrimSpace(options["batch_resolution"])) != "none" {
-		return stagedConfig{}, errors.New("managed staged Snowflake profile requires write_mode=staged_append, batch_mode=target, and batch_resolution=none")
+	if strings.ToLower(strings.TrimSpace(options["batch_mode"])) != "target" || strings.ToLower(strings.TrimSpace(options["batch_resolution"])) != "none" {
+		return stagedConfig{}, errors.New("managed staged Snowflake profile requires batch_mode=target and batch_resolution=none")
 	}
 	metaEnabled, err := parseManagedSnowflakeBoolOption(options, "meta_table_enabled", true)
 	if err != nil {

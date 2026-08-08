@@ -145,8 +145,8 @@ func TestDecodeBackfillCursorRejectsMalformedEnvelope(t *testing.T) {
 func TestBackfillCursorColumnsUsesPrimaryKeyTieBreakers(t *testing.T) {
 	t.Parallel()
 
-	got := backfillCursorColumns("tenant_id", []string{"account_id", "TENANT_ID", "event_id"})
-	want := []string{"tenant_id", "account_id", "event_id"}
+	got := backfillCursorColumns("tenant_id", []string{"account_id", "TENANT_ID", "tenant_id", "event_id"})
+	want := []string{"tenant_id", "account_id", "TENANT_ID", "event_id"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("columns=%v, want %v", got, want)
 	}

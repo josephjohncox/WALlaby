@@ -28,14 +28,15 @@ import (
 )
 
 const (
-	SummaryFlowID            = "wallaby.flow-id"
-	SummaryLogicalBatchID    = "wallaby.logical-batch-id"
-	SummaryManifestSHA256    = "wallaby.manifest-sha256"
-	SummaryProjectionID      = "wallaby.projection-id"
-	SummarySchemaFingerprint = "wallaby.schema-fingerprint"
-	SummaryCommitID          = "wallaby.commit-id"
-	SummaryPublicationID     = "wallaby.publication-id"
-	SummaryProjectionGroupID = "wallaby.projection-group-id"
+	SummaryFlowID             = "wallaby.flow-id"
+	SummaryLogicalBatchID     = "wallaby.logical-batch-id"
+	SummaryManifestSHA256     = "wallaby.manifest-sha256"
+	SummaryProjectionID       = "wallaby.projection-id"
+	SummaryMappingFingerprint = "wallaby.mapping-fingerprint"
+	SummarySchemaFingerprint  = "wallaby.schema-fingerprint"
+	SummaryCommitID           = "wallaby.commit-id"
+	SummaryPublicationID      = "wallaby.publication-id"
+	SummaryProjectionGroupID  = "wallaby.projection-group-id"
 	// SummaryFieldMapping records the deterministic canonical-to-catalog
 	// field-ID mapping fingerprint as immutable commit metadata. It is audit
 	// evidence only and is not part of snapshot identity matching.
@@ -113,16 +114,8 @@ type catalogBackend interface {
 	Append(context.Context, catalogTable, *iceberggo.Schema, []arrow.RecordBatch, map[string]string) (catalogSnapshot, error)
 }
 
-// CommitterHooks exposes deterministic catalog failure boundaries.
-type CommitterHooks struct {
+type committerHooks struct {
 	Reach func(context.Context, string) error
-}
-
-// CommitterOption configures optional committer behavior.
-type CommitterOption func(*Committer)
-
-func WithCommitterHooks(hooks CommitterHooks) CommitterOption {
-	return func(committer *Committer) { committer.hooks = hooks }
 }
 
 // Committer is the append-only changelog deep module. It verifies exact
@@ -132,21 +125,17 @@ type Committer struct {
 	objects CanonicalObjectReader
 	catalog catalogBackend
 	config  Config
-	hooks   CommitterHooks
+	hooks   committerHooks
 }
 
-func NewCommitter(objects CanonicalObjectReader, catalog catalogBackend, config Config, options ...CommitterOption) (*Committer, error) {
+func NewCommitter(objects CanonicalObjectReader, catalog catalogBackend, config Config) (*Committer, error) {
 	if objects == nil || catalog == nil {
 		return nil, errors.New("iceberg committer requires canonical objects and a catalog backend")
 	}
 	if config.MaxCommitRetries < 1 || config.RequestTimeout <= 0 || config.ReconciliationHorizon <= 0 {
 		return nil, errors.New("iceberg committer retry, timeout, and reconciliation settings must be positive")
 	}
-	committer := &Committer{objects: objects, catalog: catalog, config: config}
-	for _, option := range options {
-		option(committer)
-	}
-	return committer, nil
+	return &Committer{objects: objects, catalog: catalog, config: config}, nil
 }
 
 func (c *Committer) reach(ctx context.Context, boundary string) error {
@@ -263,7 +252,7 @@ func (c *Committer) commitGroup(ctx context.Context, request artifactlog.CommitR
 	return "", fmt.Errorf("%w: projection group %s exceeded %d retries", ErrCatalogConflict, group.id, c.config.MaxCommitRetries)
 }
 
-func (c *Committer) Reconcile(ctx context.Context, request artifactlog.ReconcileRequest) (result artifactlog.ReconcileResult, retErr error) {
+func (c *Committer) Reconcile(ctx context.Context, request artifactlog.CommitRequest) (result artifactlog.ReconcileResult, retErr error) {
 	ctx, finish := telemetry.StartIcebergConsumerSpan(ctx, "reconcile", request.FlowID, request.LogicalBatchID, request.CommitID)
 	defer func() { finish(retErr) }()
 	if err := validateRequest(request); err != nil {
@@ -307,16 +296,32 @@ func (c *Committer) Reconcile(ctx context.Context, request artifactlog.Reconcile
 	return artifactlog.ReconcileResult{Disposition: artifactlog.CommitApplied, Commit: commitEvidence}, nil
 }
 
+func validateMaterializedProjectionIdentity(projectionID, mappingFingerprint string) error {
+	if projectionID != artifactlog.ProjectionIDV2 {
+		return fmt.Errorf("%w: Iceberg requires projection_id %s", connector.ErrDeliveryConflict, artifactlog.ProjectionIDV2)
+	}
+	if len(mappingFingerprint) != 64 || mappingFingerprint != strings.ToLower(mappingFingerprint) {
+		return fmt.Errorf("%w: Iceberg mapping_fingerprint must be lowercase 64-hex", connector.ErrDeliveryConflict)
+	}
+	if _, err := hex.DecodeString(mappingFingerprint); err != nil {
+		return fmt.Errorf("%w: Iceberg mapping_fingerprint must be lowercase 64-hex", connector.ErrDeliveryConflict)
+	}
+	return nil
+}
+
 func validateRequest(request artifactlog.CommitRequest) error {
 	for name, value := range map[string]string{
 		"flow_id": request.FlowID, "consumer_revision_id": request.ConsumerRevisionID,
 		"position_id": request.PositionID, "checkpoint_lsn": request.CheckpointLSN,
-		"logical_batch_id": request.LogicalBatchID, "projection_id": request.ProjectionID,
+		"logical_batch_id": request.LogicalBatchID, "projection_id": request.ProjectionID, "mapping_fingerprint": request.MappingFingerprint,
 		"manifest_sha256": request.ManifestSHA256, "commit_id": request.CommitID,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("iceberg commit request %s is required", name)
 		}
+	}
+	if err := validateMaterializedProjectionIdentity(request.ProjectionID, request.MappingFingerprint); err != nil {
+		return err
 	}
 	if request.FlowIncarnationID == [16]byte{} || request.PublicationID == [16]byte{} || request.PublicationSequence <= 0 {
 		return errors.New("iceberg commit request incarnation, publication, and positive sequence are required")
@@ -353,7 +358,7 @@ func validatePartitionSpec(state catalogTable) error {
 func snapshotSummary(request artifactlog.CommitRequest, groupID, schemaFingerprint string) map[string]string {
 	return map[string]string{
 		SummaryFlowID: request.FlowID, SummaryLogicalBatchID: request.LogicalBatchID,
-		SummaryManifestSHA256: request.ManifestSHA256, SummaryProjectionID: request.ProjectionID,
+		SummaryManifestSHA256: request.ManifestSHA256, SummaryProjectionID: request.ProjectionID, SummaryMappingFingerprint: request.MappingFingerprint,
 		SummarySchemaFingerprint: schemaFingerprint, SummaryCommitID: request.CommitID,
 		SummaryPublicationID: request.PublicationID.String(), SummaryProjectionGroupID: groupID,
 	}

@@ -110,7 +110,9 @@ message ListReplicationSlotsRequest {
   string flow_id = 1;
   string dsn = 2;
   string slot = 3;
-  map<string, string> options = 4;
+  reserved 4;
+  reserved "options";
+  RDSIAMConfig rds_iam = 5;
 }
 
 message ReplicationSlotInfo {
@@ -136,7 +138,9 @@ message GetReplicationSlotRequest {
   string flow_id = 1;
   string dsn = 2;
   string slot = 3;
-  map<string, string> options = 4;
+  reserved 4;
+  reserved "options";
+  RDSIAMConfig rds_iam = 5;
 }
 
 message GetReplicationSlotResponse {
@@ -148,7 +152,9 @@ message DropReplicationSlotRequest {
   string dsn = 2;
   string slot = 3;
   bool if_exists = 4;
-  map<string, string> options = 5;
+  reserved 5;
+  reserved "options";
+  RDSIAMConfig rds_iam = 6;
 }
 
 message DropReplicationSlotResponse {
@@ -162,7 +168,9 @@ message ListPublicationTablesRequest {
   string flow_id = 1;
   string dsn = 2;
   string publication = 3;
-  map<string, string> options = 4;
+  reserved 4;
+  reserved "options";
+  RDSIAMConfig rds_iam = 5;
 }
 
 message ListPublicationTablesResponse {
@@ -176,7 +184,9 @@ message AddPublicationTablesRequest {
   string dsn = 2;
   string publication = 3;
   repeated string tables = 4;
-  map<string, string> options = 5;
+  reserved 5;
+  reserved "options";
+  RDSIAMConfig rds_iam = 6;
 }
 
 message DropPublicationTablesRequest {
@@ -184,7 +194,9 @@ message DropPublicationTablesRequest {
   string dsn = 2;
   string publication = 3;
   repeated string tables = 4;
-  map<string, string> options = 5;
+  reserved 5;
+  reserved "options";
+  RDSIAMConfig rds_iam = 6;
 }
 
 message PublicationTablesMutationResponse {
@@ -198,7 +210,9 @@ message SyncPublicationTablesRequest {
   string publication = 3;
   repeated string tables = 4;
   string mode = 5;
-  map<string, string> options = 6;
+  reserved 6;
+  reserved "options";
+  RDSIAMConfig rds_iam = 7;
 }
 
 message SyncPublicationTablesResponse {
@@ -214,7 +228,9 @@ message ScrapePublicationTablesRequest {
   string publication = 3;
   repeated string schemas = 4;
   bool apply = 5;
-  map<string, string> options = 6;
+  reserved 6;
+  reserved "options";
+  RDSIAMConfig rds_iam = 7;
 }
 
 message ScrapePublicationTablesResponse {

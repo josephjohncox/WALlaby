@@ -515,7 +515,50 @@ func TestPostgresStreamTransactionLimitIncludesRelationMetadata(t *testing.T) {
 	}
 }
 
-func TestPostgresStreamRestartDiffsFirstRelationFromDurableCheckpointBaseline(t *testing.T) {
+type testSchemaBaselineHook struct{ calls int }
+
+func (*testSchemaBaselineHook) OnSchema(context.Context, connector.Schema) error          { return nil }
+func (*testSchemaBaselineHook) OnSchemaChange(context.Context, internalschema.Plan) error { return nil }
+func (*testSchemaBaselineHook) OnDDL(context.Context, string, pglogrepl.LSN) error        { return nil }
+func (h *testSchemaBaselineHook) SchemaBaseline(context.Context, string, string) (connector.Schema, bool, error) {
+	h.calls++
+	return connector.Schema{Namespace: "public", Name: "widgets", Version: 99, Columns: []connector.Column{{Name: "hostile", Type: "text"}}}, true, nil
+}
+
+type durablePlanResolverHook struct {
+	resolved internalschema.Plan
+	observed internalschema.Plan
+	lsn      pglogrepl.LSN
+}
+
+func (*durablePlanResolverHook) OnSchema(context.Context, connector.Schema) error { return nil }
+func (*durablePlanResolverHook) OnSchemaChange(context.Context, internalschema.Plan) error {
+	return nil
+}
+func (*durablePlanResolverHook) OnDDL(context.Context, string, pglogrepl.LSN) error {
+	return nil
+}
+func (h *durablePlanResolverHook) ResolveSchemaChangeAtLSN(_ context.Context, observed internalschema.Plan, lsn pglogrepl.LSN) (internalschema.Plan, error) {
+	h.observed = observed
+	h.lsn = lsn
+	return h.resolved, nil
+}
+
+func TestManagedPostgresStreamNeverFallsBackToGlobalSchemaBaseline(t *testing.T) {
+	hook := &testSchemaBaselineHook{}
+	stream := NewPostgresStream("", WithSchemaHook(hook), WithSchemaBaselines(nil))
+	if err := stream.handleRelationMessage(context.Background(), pglogrepl.XLogData{WALStart: 0x40}, &pglogrepl.RelationMessage{
+		RelationID: 11, Namespace: "public", RelationName: "widgets",
+		Columns: []*pglogrepl.RelationMessageColumn{{Name: "id", DataType: 20, Flags: 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if hook.calls != 0 || stream.schemas[11].Version != 1 {
+		t.Fatalf("managed decoder global baseline calls=%d schema=%+v", hook.calls, stream.schemas[11])
+	}
+}
+
+func TestPostgresStreamRestartDiffsFirstRelationFromFencedAuthorityBaseline(t *testing.T) {
 	baseline := connector.Schema{
 		Namespace: "public", Name: "widgets", Version: 7,
 		Columns: []connector.Column{{Name: "id", Type: "int8", Nullable: true}},
@@ -539,6 +582,86 @@ func TestPostgresStreamRestartDiffsFirstRelationFromDurableCheckpointBaseline(t 
 	event := stream.transaction.relationEvents[0]
 	if event.schema.Version != 8 || len(event.plan.Changes) != 1 || event.plan.Changes[0].Type != internalschema.ChangeAddColumn || event.plan.Changes[0].Column != "note" {
 		t.Fatalf("restart relation event=%+v, want version 8 add note", event)
+	}
+}
+
+func TestPostgresStreamRestartMatchesBaselinesByExactIdentifierBytes(t *testing.T) {
+	baselines := []connector.Schema{
+		{Namespace: "public", Name: "Events", Version: 7, Columns: []connector.Column{{Name: "id", Type: "int8", Nullable: true}}},
+		{Namespace: "public", Name: "events", Version: 8, Columns: []connector.Column{{Name: "id", Type: "int8", Nullable: true}}},
+		{Namespace: "public", Name: " events ", Version: 9, Columns: []connector.Column{{Name: "id", Type: "int8", Nullable: true}}},
+	}
+	stream := NewPostgresStream("", WithSchemaBaselines(baselines), WithEmitPlanDDL(true))
+	stream.transaction = &pendingTransaction{xid: 42}
+	stream.streamMessageXID = 42
+	messages := []*pglogrepl.RelationMessage{
+		{RelationID: 11, Namespace: "public", RelationName: "Events", Columns: []*pglogrepl.RelationMessageColumn{{Name: "id", DataType: 20, Flags: 1}, {Name: "note", DataType: 25}}},
+		{RelationID: 12, Namespace: "public", RelationName: "events", Columns: []*pglogrepl.RelationMessageColumn{{Name: "id", DataType: 20, Flags: 1}}},
+		{RelationID: 13, Namespace: "public", RelationName: " events ", Columns: []*pglogrepl.RelationMessageColumn{{Name: "id", DataType: 20, Flags: 1}}},
+	}
+	for _, message := range messages {
+		if err := stream.handleRelationMessage(context.Background(), pglogrepl.XLogData{WALStart: 0x40}, message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(stream.transaction.relationEvents) != 3 || len(stream.transaction.changes) != 1 {
+		t.Fatalf("exact identifier relation observations/DDL changes=%d/%d, want three observations and one DDL", len(stream.transaction.relationEvents), len(stream.transaction.changes))
+	}
+	observedVersions := make(map[string]int64, len(stream.transaction.relationEvents))
+	for _, event := range stream.transaction.relationEvents {
+		observedVersions[event.schema.Name] = event.schema.Version
+		if event.schema.Name == "Events" {
+			if event.schema.Namespace != "public" || len(event.plan.Changes) != 1 || event.plan.Changes[0].Column != "note" {
+				t.Fatalf("exact identifier restart event=%+v, want public.Events add note", event)
+			}
+		} else if event.plan.HasChanges() {
+			t.Fatalf("unchanged exact relation %q emitted DDL: %+v", event.schema.Name, event.plan)
+		}
+	}
+	if observedVersions["events"] != 8 || observedVersions[" events "] != 9 {
+		t.Fatalf("unchanged case/whitespace baseline versions were not retained: %v", observedVersions)
+	}
+}
+
+func TestPostgresStreamReplaysApprovedDurablePlanWhenObservedDiffIsEmpty(t *testing.T) {
+	baseline := connector.Schema{
+		Namespace: "public",
+		Name:      "events",
+		Version:   2,
+		Columns: []connector.Column{
+			{Name: "id", Type: "int8", Nullable: true},
+			{Name: "extra", Type: "text", Nullable: true},
+		},
+	}
+	durablePlan := internalschema.Plan{Changes: []internalschema.Change{{
+		Type: internalschema.ChangeAddColumn, Namespace: "public", Table: "events", Column: "extra", ToType: "text",
+	}}}
+	hook := &durablePlanResolverHook{resolved: durablePlan}
+	stream := NewPostgresStream("", WithSchemaBaselines([]connector.Schema{baseline}), WithSchemaHook(hook), WithEmitPlanDDL(true))
+	stream.transaction = &pendingTransaction{xid: 42}
+	stream.streamMessageXID = 42
+	lsn := pglogrepl.LSN(0x80)
+	relation := &pglogrepl.RelationMessage{
+		RelationID: 77, Namespace: "public", RelationName: "events",
+		Columns: []*pglogrepl.RelationMessageColumn{
+			{Name: "id", DataType: 20, Flags: 1},
+			{Name: "extra", DataType: 25},
+		},
+	}
+	if err := stream.handleRelationMessage(context.Background(), pglogrepl.XLogData{WALStart: lsn}, relation); err != nil {
+		t.Fatal(err)
+	}
+	if hook.observed.HasChanges() {
+		t.Fatalf("observed diff=%+v, want empty against already-new durable schema", hook.observed)
+	}
+	if hook.lsn != lsn {
+		t.Fatalf("resolved LSN=%s, want %s", hook.lsn, lsn)
+	}
+	if len(stream.transaction.relationEvents) != 1 || !stream.transaction.relationEvents[0].plan.HasChanges() {
+		t.Fatalf("relation events=%+v, want replayed durable plan", stream.transaction.relationEvents)
+	}
+	if len(stream.transaction.changes) != 1 || stream.transaction.changes[0].Record == nil || stream.transaction.changes[0].Record.Operation != connector.OpDDL {
+		t.Fatalf("transaction changes=%+v, want one structured DDL record", stream.transaction.changes)
 	}
 }
 

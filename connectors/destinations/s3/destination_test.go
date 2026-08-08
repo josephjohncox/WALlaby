@@ -15,17 +15,32 @@ import (
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 	"github.com/josephjohncox/wallaby/pkg/wire"
 	"pgregory.net/rapid"
 )
+
+func TestOpenRejectsRegistryOptionsBeforeAWSConfiguration(t *testing.T) {
+	for key, value := range map[string]string{
+		schemaregistry.OptRegistryTimeout:        "soon",
+		schemaregistry.OptRegistryApicurioCompat: "yes",
+	} {
+		t.Run(key, func(t *testing.T) {
+			err := (&Destination{}).Open(context.Background(), connector.RuntimeSpec{Options: map[string]string{key: value}})
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("Open() error = %v", err)
+			}
+			if strings.Contains(err.Error(), "bucket is required") {
+				t.Fatalf("registry config was not parsed first: %v", err)
+			}
+		})
+	}
+}
 
 func TestCapabilitiesDoNotOverstateRestartReplaySafety(t *testing.T) {
 	t.Parallel()
 
 	capabilities := (&Destination{}).Capabilities()
-	if !capabilities.Delivery.Declared {
-		t.Fatalf("S3 delivery semantics are undeclared: %+v", capabilities.Delivery)
-	}
 	if capabilities.Delivery.IdempotentReplay || capabilities.Delivery.ReplaySafe || capabilities.Delivery.TransactionalBatch {
 		t.Fatalf("S3 overstates batch-boundary or transactional replay safety: %+v", capabilities.Delivery)
 	}
@@ -267,7 +282,7 @@ func testDestination(t testing.TB, client objectClient, format, partitionBy stri
 		t.Fatalf("NewCodec(%q) error = %v", format, err)
 	}
 	return &Destination{
-		spec: connector.Spec{
+		spec: connector.RuntimeSpec{
 			Name:    "archive",
 			Options: map[string]string{"flow_id": "flow/orders"},
 		},

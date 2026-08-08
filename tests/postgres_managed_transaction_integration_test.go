@@ -43,9 +43,9 @@ CREATE TABLE audit.wallaby_managed_events (id bigint PRIMARY KEY,widget_id bigin
 	}()
 
 	destination := &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "managed-full-transaction", Type: connector.EndpointPostgres, Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "managed-full-transaction", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1,
-		"write_mode": "target", "batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
+		"batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +98,9 @@ CREATE TABLE audit.wallaby_managed_events (id bigint PRIMARY KEY,widget_id bigin
 				}}},
 			},
 		},
+	}
+	for index := range transaction.Fragments {
+		transaction.Fragments[index].Batch.WritePolicy = connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}}
 	}
 	contentHash, err := connector.SourceTransactionContentHash(transaction)
 	if err != nil {
@@ -178,7 +181,7 @@ func TestPostgresManagedTransactionCommitBeforeReceiptReconciles(t *testing.T) {
 	}
 	flowID := fmt.Sprintf("transaction-reconcile-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -198,9 +201,9 @@ func TestPostgresManagedTransactionCommitBeforeReceiptReconciles(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DROP TABLE IF EXISTS public.wallaby_transaction_commit_reconcile`)
 	}()
 	target := &pgdest.Destination{}
-	if err := target.Open(ctx, connector.Spec{Name: "transaction-reconcile", Type: connector.EndpointPostgres, Options: map[string]string{
+	if err := target.Open(ctx, connector.RuntimeSpec{Name: "transaction-reconcile", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1,
-		"write_mode": "target", "batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
+		"batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +218,7 @@ func TestPostgresManagedTransactionCommitBeforeReceiptReconciles(t *testing.T) {
 		BeginLSN: "0/700", CommitLSN: "0/780", EndLSN: "0/788", Checkpoint: connector.Checkpoint{LSN: "0/788"},
 		Fragments: []connector.TransactionFragment{{
 			Ordinal: 0,
-			Batch: connector.Batch{
+			Batch: connector.Batch{WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}},
 				Schema: managedTransactionSchema("public", table, connector.Column{Name: "value", Type: "text"}),
 				Records: []connector.Record{{
 					Table: table, Operation: connector.OpInsert, SchemaVersion: 1,
@@ -226,7 +229,7 @@ func TestPostgresManagedTransactionCommitBeforeReceiptReconciles(t *testing.T) {
 	}
 	oldIntent := transactionIntentForFence(t, oldFence, revisionID, transaction)
 	driver := &commitBeforeReceiptTransactionDriver{ManagedTransactionDestination: target}
-	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, driver); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, managedBaselinePayload(t, transaction), driver); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("commit-before-receipt error=%v, want ErrDeliveryIndeterminate", err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE producer_leases SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE incarnation_id=$1`, oldFence.FlowIncarnationID); err != nil {
@@ -238,7 +241,7 @@ func TestPostgresManagedTransactionCommitBeforeReceiptReconciles(t *testing.T) {
 	}
 	driver.rejectValidation = true
 	newIntent := transactionIntentForFence(t, newFence, revisionID, transaction)
-	grant, err := coordinator.DeliverTransaction(ctx, newFence, newIntent, transaction, driver)
+	grant, err := coordinator.DeliverTransaction(ctx, newFence, newIntent, transaction, managedBaselinePayload(t, transaction), driver)
 	if err != nil {
 		t.Fatalf("reconcile committed transaction before target revalidation: %v", err)
 	}
@@ -284,7 +287,7 @@ func TestPostgresManagedOverlappingTakeoverAdoptsConcurrentCommit(t *testing.T) 
 	}
 	flowID := fmt.Sprintf("transaction-overlap-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -316,9 +319,9 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.wallaby_transaction_overlap_block()`)
 		_, _ = pool.Exec(context.Background(), `DROP TABLE IF EXISTS public.wallaby_transaction_overlap; DROP FUNCTION IF EXISTS public.wallaby_transaction_overlap_block()`)
 	}()
 	target := &pgdest.Destination{}
-	if err := target.Open(ctx, connector.Spec{Name: "transaction-overlap", Type: connector.EndpointPostgres, Options: map[string]string{
+	if err := target.Open(ctx, connector.RuntimeSpec{Name: "transaction-overlap", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1,
-		"write_mode": "target", "batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
+		"batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +333,7 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.wallaby_transaction_overlap_block()`)
 	transaction := connector.SourceTransaction{
 		SourceLineageID: "transaction-overlap-lineage", TransactionID: 903,
 		BeginLSN: "0/800", CommitLSN: "0/880", EndLSN: "0/888", Checkpoint: connector.Checkpoint{LSN: "0/888"},
-		Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: connector.Batch{
+		Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: connector.Batch{WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}},
 			Schema: managedTransactionSchema("public", "wallaby_transaction_overlap", connector.Column{Name: "value", Type: "text"}),
 			Records: []connector.Record{{
 				Table: "wallaby_transaction_overlap", Operation: connector.OpInsert, SchemaVersion: 1,
@@ -350,7 +353,7 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.wallaby_transaction_overlap_block()`)
 	oldIntent := transactionIntentForFence(t, oldFence, revisionID, transaction)
 	oldResult := make(chan error, 1)
 	go func() {
-		_, deliverErr := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, target)
+		_, deliverErr := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, managedBaselinePayload(t, transaction), target)
 		oldResult <- deliverErr
 	}()
 	waitForAdvisoryWaiters(t, ctx, pool, blocker.Conn().PgConn().PID(), 1)
@@ -364,7 +367,7 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.wallaby_transaction_overlap_block()`)
 	newIntent := transactionIntentForFence(t, newFence, revisionID, transaction)
 	newResult := make(chan error, 1)
 	go func() {
-		_, deliverErr := coordinator.DeliverTransaction(ctx, newFence, newIntent, transaction, target)
+		_, deliverErr := coordinator.DeliverTransaction(ctx, newFence, newIntent, transaction, managedBaselinePayload(t, transaction), target)
 		newResult <- deliverErr
 	}()
 	waitForAdvisoryWaiters(t, ctx, pool, blocker.Conn().PgConn().PID(), 2)
@@ -377,7 +380,7 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.wallaby_transaction_overlap_block()`)
 	if err := <-newResult; !errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("new overlapping owner error=%v, want indeterminate receipt collision", err)
 	}
-	grant, err := coordinator.DeliverTransaction(ctx, newFence, newIntent, transaction, target)
+	grant, err := coordinator.DeliverTransaction(ctx, newFence, newIntent, transaction, managedBaselinePayload(t, transaction), target)
 	if err != nil {
 		t.Fatalf("adopt concurrently committed marker: %v", err)
 	}

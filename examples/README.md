@@ -1,6 +1,6 @@
 # Examples
 
-These examples are intended to stay current with the API surface and connector options. If you change gRPC messages, connector option keys, or flow lifecycle behavior, update the files in this folder in the same PR.
+These examples are intended to stay current with the API surface and connector options. Every flow has complete destination-scoped table mappings and an explicit write policy. `TestShippedFlowExamplesStrictLoadValidateAndUseCurrentMappings` exhaustively manifests every JSON/YAML file in `examples/flows` and also covers `examples/quickstart/postgres-to-postgres.json`; each is strictly loaded and validated through the production admin loader and protobuf conversion path with current mapping/destination checks. The gRPC example gate extracts the quoted JSON heredoc from `examples/grpc/create_flow.sh`, strictly decodes it as `CreateFlowRequest`, and runs production protobuf conversion and flow validation without executing the shell or contacting services. Connector and table-mapping tests also load the typed examples below through the production option parsers, type-mapping loader, mapping validator, and compiled projector. If you change gRPC messages, connector option keys, mappings, or lifecycle behavior, update the files in this folder in the same PR.
 
 ## Quick Start (API Server)
 
@@ -50,14 +50,15 @@ export WALLABY_DDL_AUTO_APPROVE="false"
 export WALLABY_DDL_AUTO_APPLY="false"
 ```
 
-Use the DDLService to list and approve/reject DDL events (see `examples/grpc/ddl_approve.sh`).
-Or use the CLI admin tool:
+Use the DDLService to list and approve/reject DDL events (see `examples/grpc/ddl_approve.sh`), or inspect and approve them with the supported CLI commands:
 
 ```bash
 ./bin/wallaby-admin ddl list --status pending
+./bin/wallaby-admin ddl show --id 1
 ./bin/wallaby-admin ddl approve --id 1
-./bin/wallaby-admin ddl apply --id 1
 ```
+
+Approval records the control-plane decision. The running flow's data plane applies approved DDL when automatic DDL execution is enabled; there is no separate administrative apply subcommand.
 
 ## Terraform Provider
 
@@ -70,7 +71,9 @@ See `examples/terraform/flow.tf` for a minimal provider + flow resource definiti
 - `examples/flows/postgres_to_s3_parquet.json`
 - `examples/flows/postgres_to_http.json`
 - `examples/flows/postgres_to_http_toast_full.json`
+- `examples/flows/postgres_to_http_typed.yaml` — advanced strict-authoring example covering record-JSON HTTP delivery, nested retry/timing objects, native header and type-mapping maps, and inline version 2 table mappings. The `_typed` suffix distinguishes this exhaustive option example; all current flow examples use typed endpoint branches.
 - `examples/flows/postgres_to_grpc.json`
+- `examples/flows/postgres_to_grpc_typed.json` — advanced strict-authoring example covering record-JSON gRPC delivery, nested TLS/retry objects, native metadata and type-mapping maps, and component-local Go templates. The `_typed` suffix distinguishes exhaustive option coverage, not a second endpoint format.
 - `examples/flows/postgres_to_pgstream.json`
 - `examples/flows/postgres_to_snowflake.json`
 - `examples/flows/postgres_to_snowpipe.json`
@@ -79,20 +82,25 @@ See `examples/terraform/flow.tf` for a minimal provider + flow resource definiti
 - `examples/flows/postgres_to_clickhouse.json`
 - `examples/flows/postgres_to_redpanda.json`
 
+Supporting executable configuration:
+
+- `examples/mappings/http_typed.yaml` — version 2 HTTP destination projection using append writes and component-local schema, table, and column Go templates.
+
+The shipped-example tests mutate in-memory copies to prove unknown flow and protobuf fields, malformed typed options and type maps, mapping version 1, wrong mapping destinations, legacy or foreign template fields, and other invalid contracts are rejected without checking malformed examples into the repository.
+
 ## Snowpipe Auto-Ingest (Upload Only)
 
-Use the Snowpipe destination with external stage notifications. Set `auto_ingest=true` to skip COPY and only upload files:
+Use the Snowpipe destination with real external-stage notifications. Set `auto_ingest=true` to skip COPY and only upload files. Upload failures are returned unchanged, and target tables change only through configured COPY or external pipe ingestion:
 
 ```json
 {
   "name": "snowpipe-out",
-  "type": "snowpipe",
-  "options": {
+  "snowpipe": {
     "dsn": "user:pass@account/db/schema?role=SYSADMIN",
     "stage": "@my_external_stage",
-    "format": "parquet",
-    "auto_ingest": "true",
-    "copy_on_write": "false"
+    "format": "WIRE_FORMAT_PARQUET",
+    "auto_ingest": true,
+    "copy_on_write": false
   }
 }
 ```

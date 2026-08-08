@@ -63,29 +63,32 @@ func TestCanonicalArtifactPublicationFailureBoundaries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := publisher.Publish(deps.ctx, fence, transaction); err == nil {
+			if _, err := publisher.Publish(deps.ctx, fence, transaction, managedBaselinePayload(t, transaction)); err == nil {
 				t.Fatalf("boundary %s did not interrupt publication", boundary)
 			}
-			var publications, acknowledgements int
+			var publications, acknowledgements, baselines int
 			if err := deps.pool.QueryRow(deps.ctx, `SELECT count(*) FROM artifact_publications WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&publications); err != nil {
 				t.Fatal(err)
 			}
 			if err := deps.pool.QueryRow(deps.ctx, `SELECT count(*) FROM source_ack_intents WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&acknowledgements); err != nil {
 				t.Fatal(err)
 			}
+			if err := deps.pool.QueryRow(deps.ctx, `SELECT count(*) FROM managed_schema_baselines WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&baselines); err != nil {
+				t.Fatal(err)
+			}
 			if boundary == "after_publication_commit" {
-				if publications != 1 || acknowledgements != 1 {
-					t.Fatalf("ambiguous committed boundary roots/acks=%d/%d, want 1/1", publications, acknowledgements)
+				if publications != 1 || acknowledgements != 1 || baselines != 1 {
+					t.Fatalf("ambiguous committed boundary roots/acks/baselines=%d/%d/%d, want new/new/new 1/1/1", publications, acknowledgements, baselines)
 				}
-			} else if publications != 0 || acknowledgements != 0 {
-				t.Fatalf("pre-commit boundary %s roots/acks=%d/%d, want 0/0", boundary, publications, acknowledgements)
+			} else if publications != 0 || acknowledgements != 0 || baselines != 0 {
+				t.Fatalf("pre-commit boundary %s roots/acks/baselines=%d/%d/%d, want old/old/old 0/0/0", boundary, publications, acknowledgements, baselines)
 			}
 
 			recovered, err := artifactlog.NewPublisher(deps.ctx, deps.pool, deps.objects, config)
 			if err != nil {
 				t.Fatal(err)
 			}
-			publication, err := recovered.Publish(deps.ctx, fence, transaction)
+			publication, err := recovered.Publish(deps.ctx, fence, transaction, managedBaselinePayload(t, transaction))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -97,6 +100,11 @@ func TestCanonicalArtifactPublicationFailureBoundaries(t *testing.T) {
 			}
 			if publications != 1 {
 				t.Fatalf("recovered publication count=%d, want 1", publications)
+			}
+			swappedBaseline := managedBaselinePayload(t, transaction)
+			swappedBaseline.Schemas[0].QuotedIdentifiers = map[string]bool{"events": true}
+			if _, err := recovered.Publish(deps.ctx, fence, transaction, swappedBaseline); !errors.Is(err, connector.ErrDeliveryConflict) {
+				t.Fatalf("artifact retry swapped baseline error=%v, want conflict", err)
 			}
 		})
 	}
@@ -119,7 +127,7 @@ func TestCanonicalArtifactBarrierOnlyDelivery(t *testing.T) {
 	record.Operation = connector.OpDDL
 	record.After = nil
 	record.DDL = "ALTER TABLE public.artifact_events ADD COLUMN note text"
-	publication, err := publisher.Publish(deps.ctx, fence, transaction)
+	publication, err := publisher.Publish(deps.ctx, fence, transaction, managedBaselinePayload(t, transaction))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,14 +139,14 @@ func TestCanonicalArtifactBarrierOnlyDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	consumed, err := consumer.ConsumeNext(deps.ctx, fence, "destination-v1", "public.artifact_events")
+	consumed, err := consumer.ConsumeNext(deps.ctx, fence, "destination-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !consumed || catalog.objectCount != 0 || catalog.barrierCount != 1 {
 		t.Fatalf("barrier delivery consumed/objects/barriers=%t/%d/%d", consumed, catalog.objectCount, catalog.barrierCount)
 	}
-	replayed, err := publisher.Publish(deps.ctx, fence, transaction)
+	replayed, err := publisher.Publish(deps.ctx, fence, transaction, managedBaselinePayload(t, transaction))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +185,8 @@ func TestCanonicalArtifactStalePublisherCannotCommit(t *testing.T) {
 	}
 	publishErr := make(chan error, 1)
 	go func() {
-		_, err := publisher.Publish(deps.ctx, oldFence, artifactSourceTransaction())
+		transaction := artifactSourceTransaction()
+		_, err := publisher.Publish(deps.ctx, oldFence, transaction, managedBaselinePayload(t, transaction))
 		publishErr <- err
 	}()
 	<-reached
@@ -206,7 +215,8 @@ func TestCanonicalArtifactStalePublisherCannotCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := clean.Publish(deps.ctx, newFence, artifactSourceTransaction()); err != nil {
+	cleanTransaction := artifactSourceTransaction()
+	if _, err := clean.Publish(deps.ctx, newFence, cleanTransaction, managedBaselinePayload(t, cleanTransaction)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -224,7 +234,8 @@ func TestCanonicalArtifactBackpressureAndRootedRetention(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := publisher.Publish(deps.ctx, fence, artifactSourceTransaction()); err != nil {
+		transaction := artifactSourceTransaction()
+		if _, err := publisher.Publish(deps.ctx, fence, transaction, managedBaselinePayload(t, transaction)); err != nil {
 			t.Fatal(err)
 		}
 		if err := publisher.Recover(deps.ctx, fence); err != nil {
@@ -254,7 +265,8 @@ func TestCanonicalArtifactBackpressureAndRootedRetention(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := publisher.Publish(deps.ctx, fence, artifactSourceTransaction()); err != nil {
+		transaction := artifactSourceTransaction()
+		if _, err := publisher.Publish(deps.ctx, fence, transaction, managedBaselinePayload(t, transaction)); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := deps.pool.Exec(deps.ctx, `UPDATE artifact_deliveries SET created_at=clock_timestamp()-interval '2 hours' WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID); err != nil {
@@ -282,7 +294,8 @@ func TestCanonicalArtifactBackpressureAndRootedRetention(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := publisher.Publish(deps.ctx, fence, artifactSourceTransaction()); !errors.Is(err, artifactlog.ErrBackpressure) {
+		transaction := artifactSourceTransaction()
+		if _, err := publisher.Publish(deps.ctx, fence, transaction, managedBaselinePayload(t, transaction)); !errors.Is(err, artifactlog.ErrBackpressure) {
 			t.Fatalf("byte watermark error=%v, want backpressure", err)
 		}
 		var publications, acknowledgements int
@@ -307,7 +320,8 @@ func TestCanonicalArtifactBackpressureAndRootedRetention(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		first, err := publisher.Publish(deps.ctx, fence, artifactTransactionAt(100, "0/C0", "0/C8", "0/D0", "first"))
+		firstTransaction := artifactTransactionAt(100, "0/C0", "0/C8", "0/D0", "first")
+		first, err := publisher.Publish(deps.ctx, fence, firstTransaction, managedBaselinePayload(t, firstTransaction))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -317,7 +331,8 @@ func TestCanonicalArtifactBackpressureAndRootedRetention(t *testing.T) {
 		if err := consumeArtifactPublication(deps.ctx, deps.pool, fence, "destination-v1"); err != nil {
 			t.Fatal(err)
 		}
-		second, err := publisher.Publish(deps.ctx, fence, artifactTransactionAt(101, "0/D1", "0/D8", "0/E0", "second"))
+		secondTransaction := artifactTransactionAt(101, "0/D1", "0/D8", "0/E0", "second")
+		second, err := publisher.Publish(deps.ctx, fence, secondTransaction, managedBaselinePayload(t, secondTransaction))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -427,7 +442,8 @@ func TestCanonicalArtifactGCDoesNotClaimActiveUpload(t *testing.T) {
 	}
 	publishResult := make(chan error, 1)
 	go func() {
-		_, err := publisher.Publish(deps.ctx, fence, artifactSourceTransaction())
+		transaction := artifactSourceTransaction()
+		_, err := publisher.Publish(deps.ctx, fence, transaction, managedBaselinePayload(t, transaction))
 		publishResult <- err
 	}()
 	<-objects.started
@@ -476,7 +492,8 @@ func TestCanonicalArtifactGCTakeoverDoesNotOrphanInFlightPut(t *testing.T) {
 	}
 	oldResult := make(chan error, 1)
 	go func() {
-		_, err := oldPublisher.Publish(deps.ctx, oldFence, artifactSourceTransaction())
+		transaction := artifactSourceTransaction()
+		_, err := oldPublisher.Publish(deps.ctx, oldFence, transaction, managedBaselinePayload(t, transaction))
 		oldResult <- err
 	}()
 	<-objects.started
@@ -514,7 +531,8 @@ WHERE incarnation_id=$1`, oldFence.FlowIncarnationID); err != nil {
 	if err != nil {
 		t.Fatal(err)
 	}
-	publication, err := newPublisher.Publish(deps.ctx, newFence, artifactSourceTransaction())
+	newTransaction := artifactSourceTransaction()
+	publication, err := newPublisher.Publish(deps.ctx, newFence, newTransaction, managedBaselinePayload(t, newTransaction))
 	if err != nil {
 		t.Fatalf("takeover publisher did not reconcile stale PUT: %v", err)
 	}
@@ -559,7 +577,8 @@ func TestCanonicalArtifactPublisherGCClaimRevalidation(t *testing.T) {
 	}
 	publishErr := make(chan error, 1)
 	go func() {
-		_, err := publisher.Publish(deps.ctx, fence, artifactSourceTransaction())
+		transaction := artifactSourceTransaction()
+		_, err := publisher.Publish(deps.ctx, fence, transaction, managedBaselinePayload(t, transaction))
 		publishErr <- err
 	}()
 	<-reached
@@ -591,7 +610,8 @@ func TestCanonicalArtifactPublisherGCClaimRevalidation(t *testing.T) {
 	if publications != 0 || acknowledgements != 0 {
 		t.Fatalf("publisher/GC race changed roots/acks=%d/%d", publications, acknowledgements)
 	}
-	replayed, err := publisher.Publish(deps.ctx, fence, artifactSourceTransaction())
+	replayTransaction := artifactSourceTransaction()
+	replayed, err := publisher.Publish(deps.ctx, fence, replayTransaction, managedBaselinePayload(t, replayTransaction))
 	if err != nil {
 		t.Fatalf("replay after GC sweep: %v", err)
 	}
@@ -629,7 +649,8 @@ func TestCanonicalArtifactOrphanMarkSweepCrashRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := publisher.Publish(deps.ctx, fence, artifactSourceTransaction()); err == nil {
+			transaction := artifactSourceTransaction()
+			if _, err := publisher.Publish(deps.ctx, fence, transaction, managedBaselinePayload(t, transaction)); err == nil {
 				t.Fatal("publication unexpectedly committed")
 			}
 			if _, err := deps.pool.Exec(deps.ctx, `UPDATE artifact_objects SET updated_at=clock_timestamp()-interval '2 hours' WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID); err != nil {
@@ -681,7 +702,8 @@ func TestCanonicalArtifactOrphanMarkSweepCrashRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			publication, err := retryPublisher.Publish(deps.ctx, fence, artifactSourceTransaction())
+			retryTransaction := artifactSourceTransaction()
+			publication, err := retryPublisher.Publish(deps.ctx, fence, retryTransaction, managedBaselinePayload(t, retryTransaction))
 			if err != nil {
 				t.Fatalf("republish swept source transaction: %v", err)
 			}
@@ -715,7 +737,8 @@ func TestCanonicalArtifactConsumerReceiptBoundaryRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := publisher.Publish(deps.ctx, fence, artifactSourceTransaction()); err != nil {
+	transaction := artifactSourceTransaction()
+	if _, err := publisher.Publish(deps.ctx, fence, transaction, managedBaselinePayload(t, transaction)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -736,7 +759,7 @@ func TestCanonicalArtifactConsumerReceiptBoundaryRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := consumer.ConsumeNext(deps.ctx, fence, "destination-v1", "public.events"); err == nil {
+	if _, err := consumer.ConsumeNext(deps.ctx, fence, "destination-v1"); err == nil {
 		t.Fatal("consumer did not surface the injected loss after receipt")
 	}
 	// The receipt and checkpoint are already durable because finalize committed
@@ -747,7 +770,7 @@ func TestCanonicalArtifactConsumerReceiptBoundaryRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	consumed, err := recovered.ConsumeNext(deps.ctx, fence, "destination-v1", "public.events")
+	consumed, err := recovered.ConsumeNext(deps.ctx, fence, "destination-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -772,7 +795,8 @@ func TestCanonicalArtifactConsumerReconcileBoundaryRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := publisher.Publish(deps.ctx, fence, artifactSourceTransaction()); err != nil {
+	transaction := artifactSourceTransaction()
+	if _, err := publisher.Publish(deps.ctx, fence, transaction, managedBaselinePayload(t, transaction)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -781,7 +805,7 @@ func TestCanonicalArtifactConsumerReconcileBoundaryRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := commitConsumer.ConsumeNext(deps.ctx, fence, "destination-v1", "public.events"); err == nil {
+	if _, err := commitConsumer.ConsumeNext(deps.ctx, fence, "destination-v1"); err == nil {
 		t.Fatal("consumer did not surface the injected loss after catalog commit")
 	}
 	assertArtifactConsumerReceiptCount(t, deps, fence, "destination-v1", 0)
@@ -792,7 +816,7 @@ func TestCanonicalArtifactConsumerReconcileBoundaryRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reconcileConsumer.ConsumeNext(deps.ctx, fence, "destination-v1", "public.events"); err == nil {
+	if _, err := reconcileConsumer.ConsumeNext(deps.ctx, fence, "destination-v1"); err == nil {
 		t.Fatal("consumer did not surface the injected loss after catalog reconcile")
 	}
 	assertArtifactConsumerReceiptCount(t, deps, fence, "destination-v1", 0)
@@ -802,7 +826,7 @@ func TestCanonicalArtifactConsumerReconcileBoundaryRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	consumed, err := recovered.ConsumeNext(deps.ctx, fence, "destination-v1", "public.events")
+	consumed, err := recovered.ConsumeNext(deps.ctx, fence, "destination-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -812,7 +836,7 @@ func TestCanonicalArtifactConsumerReconcileBoundaryRecovery(t *testing.T) {
 	assertArtifactConsumerReceiptCount(t, deps, fence, "destination-v1", 1)
 
 	// Idempotent re-run leaves the single receipt intact.
-	if consumedAgain, err := recovered.ConsumeNext(deps.ctx, fence, "destination-v1", "public.events"); err != nil || consumedAgain {
+	if consumedAgain, err := recovered.ConsumeNext(deps.ctx, fence, "destination-v1"); err != nil || consumedAgain {
 		t.Fatalf("redundant consume changed state consumed=%t err=%v", consumedAgain, err)
 	}
 	assertArtifactConsumerReceiptCount(t, deps, fence, "destination-v1", 1)
@@ -878,7 +902,7 @@ func TestCanonicalArtifactRandomizedCrashCycles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cycle %d: %v", i, err)
 		}
-		if _, err := publisher.Publish(deps.ctx, fence, txn); err == nil {
+		if _, err := publisher.Publish(deps.ctx, fence, txn, managedBaselinePayload(t, txn)); err == nil {
 			t.Fatalf("cycle %d boundary %s did not interrupt publication", i, boundary)
 		}
 
@@ -886,11 +910,11 @@ func TestCanonicalArtifactRandomizedCrashCycles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cycle %d recovery publisher: %v", i, err)
 		}
-		if _, err := recovered.Publish(deps.ctx, fence, txn); err != nil {
+		if _, err := recovered.Publish(deps.ctx, fence, txn, managedBaselinePayload(t, txn)); err != nil {
 			t.Fatalf("cycle %d recovery publish (boundary %s): %v", i, boundary, err)
 		}
 		// Republishing the identical position must remain idempotent.
-		if _, err := recovered.Publish(deps.ctx, fence, txn); err != nil {
+		if _, err := recovered.Publish(deps.ctx, fence, txn, managedBaselinePayload(t, txn)); err != nil {
 			t.Fatalf("cycle %d idempotent republish (boundary %s): %v", i, boundary, err)
 		}
 
@@ -972,14 +996,14 @@ type blockingPutStore struct {
 	once    sync.Once
 }
 
-func (s *blockingPutStore) PutImmutable(ctx context.Context, key string, body []byte, digest string) (artifactlog.ObjectEvidence, error) {
+func (s *blockingPutStore) PutImmutable(ctx context.Context, key string, body []byte, digest, projectionID, mappingFingerprint string) (artifactlog.ObjectEvidence, error) {
 	s.once.Do(func() { close(s.started) })
 	select {
 	case <-ctx.Done():
 		return artifactlog.ObjectEvidence{}, ctx.Err()
 	case <-s.release:
 	}
-	return s.ObjectStore.PutImmutable(ctx, key, body, digest)
+	return s.ObjectStore.PutImmutable(ctx, key, body, digest, projectionID, mappingFingerprint)
 }
 
 type artifactIntegrationDeps struct {
@@ -1060,7 +1084,7 @@ func (d *artifactIntegrationDeps) newFence(t *testing.T, suffix string) authorit
 	t.Helper()
 	flowID := fmt.Sprintf("artifact-%s-%d", suffix, time.Now().UnixNano())
 	t.Cleanup(func() { cleanupAuthorityTest(context.Background(), d.pool, flowID) })
-	if _, err := d.engine.Create(d.ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := d.engine.Create(d.ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := d.engine.PlanStart(d.ctx, flowID, false)
@@ -1101,7 +1125,7 @@ LIMIT 1`, fence.FlowIncarnationID, consumerRevisionID).Scan(&publicationID); err
 	if err != nil {
 		return err
 	}
-	consumed, err := consumer.ConsumeNext(ctx, fence, consumerRevisionID, "public.events")
+	consumed, err := consumer.ConsumeNext(ctx, fence, consumerRevisionID)
 	if err != nil {
 		return err
 	}

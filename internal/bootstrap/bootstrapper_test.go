@@ -1,9 +1,13 @@
 package bootstrap
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/josephjohncox/wallaby/internal/authority"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 func TestGenerationSlotNameSeparatesIncarnationsAndGenerations(t *testing.T) {
@@ -18,6 +22,70 @@ func TestGenerationSlotNameSeparatesIncarnationsAndGenerations(t *testing.T) {
 	}
 	if len(first) > 63 {
 		t.Fatalf("slot name length=%d exceeds PostgreSQL identifier limit", len(first))
+	}
+}
+
+func TestDeliverTaskBatchRequiresFrozenManifestAndExactSchema(t *testing.T) {
+	bootstrapper := &Bootstrapper{}
+	sourceSchema := connector.Schema{Name: "accounts", Namespace: "public", Columns: []connector.Column{{Name: "id", Type: "int8"}, {Name: "secret", Type: "text"}}}
+	destinationSchema := connector.Schema{Name: "customers", Namespace: "warehouse", Columns: []connector.Column{{Name: "customer_id", Type: "int8"}}}
+	policy := connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"customer_id"}, ProjectionFingerprint: "mapping-v1"}
+	task := SnapshotTask{
+		RelationID: 1,
+		TaskID:     "full",
+		Namespace:  "public",
+		Table:      "accounts",
+		Schema:     sourceSchema,
+		KeyColumns: []string{"id"},
+		Delivery: SnapshotDeliveryContract{
+			Version: SnapshotDeliveryContractV1, Schema: destinationSchema, WritePolicy: policy, ProjectionFingerprint: "mapping-v1",
+		},
+	}
+	err := bootstrapper.DeliverTaskBatch(context.Background(), authority.ClaimFence{}, ExportedSnapshot{}, task, 1, nil, true, "destination", connector.Batch{Schema: destinationSchema, WritePolicy: policy}, nil)
+	if err == nil || !strings.Contains(err.Error(), "frozen manifest identity") {
+		t.Fatalf("unfrozen delivery error=%v", err)
+	}
+	frozen := ExportedSnapshot{SourceLineageID: "lineage", PublicationRevision: "publication-v1", ManifestHash: "manifest-v1"}
+	missingContract := task
+	missingContract.Delivery = SnapshotDeliveryContract{}
+	err = bootstrapper.DeliverTaskBatch(context.Background(), authority.ClaimFence{}, frozen, missingContract, 1, nil, true, "destination", connector.Batch{Schema: destinationSchema, WritePolicy: policy}, nil)
+	if err == nil || !strings.Contains(err.Error(), "explicit frozen destination contract") {
+		t.Fatalf("missing destination contract error=%v", err)
+	}
+	err = bootstrapper.DeliverTaskBatch(context.Background(), authority.ClaimFence{}, frozen, task, 1, nil, true, "destination", connector.Batch{Schema: sourceSchema, WritePolicy: policy}, nil)
+	if err == nil || !strings.Contains(err.Error(), "frozen destination schema or write policy") {
+		t.Fatalf("source-shaped delivery error=%v", err)
+	}
+}
+
+func TestSnapshotTaskAndDestinationContractPreserveWhitespaceOnlyIdentifiers(t *testing.T) {
+	task := SnapshotTask{
+		RelationID: 1, TaskID: "full", Namespace: " ", Table: " ",
+		Schema:     connector.Schema{Namespace: " ", Name: " ", Columns: []connector.Column{{Name: "id", Type: "bigint"}}},
+		KeyColumns: []string{"id"},
+		Delivery: SnapshotDeliveryContract{
+			Version:               SnapshotDeliveryContractV1,
+			Schema:                connector.Schema{Namespace: "  ", Name: " ", Columns: []connector.Column{{Name: "mapped_id", Type: "bigint"}}},
+			ProjectionFingerprint: "mapping-v1",
+			WritePolicy:           connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend, ProjectionFingerprint: "mapping-v1"},
+		},
+	}
+	if _, err := SnapshotManifestHash([]SnapshotTask{task}); err != nil {
+		t.Fatalf("whitespace-only PostgreSQL identifiers rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*SnapshotTask){
+		"empty source namespace":  func(task *SnapshotTask) { task.Namespace = "" },
+		"NUL source table":        func(task *SnapshotTask) { task.Table = "bad\x00table" },
+		"empty destination table": func(task *SnapshotTask) { task.Delivery.Schema.Name = "" },
+		"NUL destination schema":  func(task *SnapshotTask) { task.Delivery.Schema.Namespace = "bad\x00schema" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := task
+			mutate(&invalid)
+			if _, err := SnapshotManifestHash([]SnapshotTask{invalid}); err == nil {
+				t.Fatal("invalid identifier admitted")
+			}
+		})
 	}
 }
 

@@ -109,7 +109,7 @@ func (r *pgTypeResolver) ResolveTypeInfo(ctx context.Context, oid uint32) (repli
 }
 
 func (r *pgTypeResolver) ResolveColumnIdentity(ctx context.Context, relationID uint32, column string) (int16, bool, error) {
-	if relationID == 0 || strings.TrimSpace(column) == "" {
+	if relationID == 0 || column == "" || strings.IndexByte(column, 0) >= 0 {
 		return 0, false, nil
 	}
 	var identity int16

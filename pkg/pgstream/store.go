@@ -52,7 +52,7 @@ func NewStore(ctx context.Context, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 
-	if err := runMigrations(ctx, pool); err != nil {
+	if err := verifyPreparedSchema(ctx, pool); err != nil {
 		pool.Close()
 		return nil, err
 	}

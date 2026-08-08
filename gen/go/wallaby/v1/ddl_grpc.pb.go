@@ -23,7 +23,6 @@ const (
 	DDLService_ListDDL_FullMethodName        = "/wallaby.v1.DDLService/ListDDL"
 	DDLService_ApproveDDL_FullMethodName     = "/wallaby.v1.DDLService/ApproveDDL"
 	DDLService_RejectDDL_FullMethodName      = "/wallaby.v1.DDLService/RejectDDL"
-	DDLService_MarkDDLApplied_FullMethodName = "/wallaby.v1.DDLService/MarkDDLApplied"
 )
 
 // DDLServiceClient is the client API for DDLService service.
@@ -37,9 +36,6 @@ type DDLServiceClient interface {
 	ListDDL(ctx context.Context, in *ListDDLRequest, opts ...grpc.CallOption) (*ListDDLResponse, error)
 	ApproveDDL(ctx context.Context, in *ApproveDDLRequest, opts ...grpc.CallOption) (*ApproveDDLResponse, error)
 	RejectDDL(ctx context.Context, in *RejectDDLRequest, opts ...grpc.CallOption) (*RejectDDLResponse, error)
-	// Deprecated: Do not use.
-	// Deprecated: administrative applied transitions are rejected.
-	MarkDDLApplied(ctx context.Context, in *MarkDDLAppliedRequest, opts ...grpc.CallOption) (*MarkDDLAppliedResponse, error)
 }
 
 type dDLServiceClient struct {
@@ -90,17 +86,6 @@ func (c *dDLServiceClient) RejectDDL(ctx context.Context, in *RejectDDLRequest, 
 	return out, nil
 }
 
-// Deprecated: Do not use.
-func (c *dDLServiceClient) MarkDDLApplied(ctx context.Context, in *MarkDDLAppliedRequest, opts ...grpc.CallOption) (*MarkDDLAppliedResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(MarkDDLAppliedResponse)
-	err := c.cc.Invoke(ctx, DDLService_MarkDDLApplied_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // DDLServiceServer is the server API for DDLService service.
 // All implementations must embed UnimplementedDDLServiceServer
 // for forward compatibility.
@@ -112,9 +97,6 @@ type DDLServiceServer interface {
 	ListDDL(context.Context, *ListDDLRequest) (*ListDDLResponse, error)
 	ApproveDDL(context.Context, *ApproveDDLRequest) (*ApproveDDLResponse, error)
 	RejectDDL(context.Context, *RejectDDLRequest) (*RejectDDLResponse, error)
-	// Deprecated: Do not use.
-	// Deprecated: administrative applied transitions are rejected.
-	MarkDDLApplied(context.Context, *MarkDDLAppliedRequest) (*MarkDDLAppliedResponse, error)
 	mustEmbedUnimplementedDDLServiceServer()
 }
 
@@ -136,9 +118,6 @@ func (UnimplementedDDLServiceServer) ApproveDDL(context.Context, *ApproveDDLRequ
 }
 func (UnimplementedDDLServiceServer) RejectDDL(context.Context, *RejectDDLRequest) (*RejectDDLResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RejectDDL not implemented")
-}
-func (UnimplementedDDLServiceServer) MarkDDLApplied(context.Context, *MarkDDLAppliedRequest) (*MarkDDLAppliedResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method MarkDDLApplied not implemented")
 }
 func (UnimplementedDDLServiceServer) mustEmbedUnimplementedDDLServiceServer() {}
 func (UnimplementedDDLServiceServer) testEmbeddedByValue()                    {}
@@ -233,24 +212,6 @@ func _DDLService_RejectDDL_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
-func _DDLService_MarkDDLApplied_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(MarkDDLAppliedRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(DDLServiceServer).MarkDDLApplied(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: DDLService_MarkDDLApplied_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DDLServiceServer).MarkDDLApplied(ctx, req.(*MarkDDLAppliedRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 // DDLService_ServiceDesc is the grpc.ServiceDesc for DDLService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -273,10 +234,6 @@ var DDLService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RejectDDL",
 			Handler:    _DDLService_RejectDDL_Handler,
-		},
-		{
-			MethodName: "MarkDDLApplied",
-			Handler:    _DDLService_MarkDDLApplied_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

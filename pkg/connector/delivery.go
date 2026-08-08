@@ -22,24 +22,18 @@ var (
 	ErrDeliveryRetryExhausted = errors.New("delivery retry budget exhausted")
 )
 
-// DeliveryConfigFingerprint returns a deterministic identity for the behavior
-// of one destination revision. The revision ID itself is excluded so callers
-// can compare two independently named revisions with identical configuration.
-func DeliveryConfigFingerprint(spec Spec) (string, error) {
-	options := make(map[string]string, len(spec.Options))
-	for key, value := range spec.Options {
-		if key == "destination_revision_id" {
-			continue
-		}
-		options[key] = value
+// BindProjectionFingerprint binds a deployment-effective destination identity
+// to the immutable logical projection revision.
+func BindProjectionFingerprint(destinationFingerprint, projectionFingerprint string) (string, error) {
+	if strings.TrimSpace(destinationFingerprint) == "" || strings.TrimSpace(projectionFingerprint) == "" {
+		return "", errors.New("destination and projection fingerprints are required")
 	}
 	payload, err := json.Marshal(struct {
-		Name    string            `json:"name"`
-		Type    EndpointType      `json:"type"`
-		Options map[string]string `json:"options"`
-	}{Name: spec.Name, Type: spec.Type, Options: options})
+		Destination string `json:"destination_fingerprint"`
+		Projection  string `json:"projection_fingerprint"`
+	}{destinationFingerprint, projectionFingerprint})
 	if err != nil {
-		return "", fmt.Errorf("encode delivery config fingerprint: %w", err)
+		return "", err
 	}
 	digest := sha256.Sum256(payload)
 	return hex.EncodeToString(digest[:]), nil
@@ -68,12 +62,20 @@ func (i DeliveryIntent) Validate() error {
 		"source_lineage_id":       i.SourceLineageID,
 		"acquisition_id":          i.AcquisitionID,
 		"destination_revision_id": i.DestinationRevisionID,
+		"logical_batch_id":        i.LogicalBatchID,
 		"position_id":             i.PositionID,
 		"content_hash":            i.ContentHash,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("delivery intent %s is required", name)
 		}
+	}
+	expectedLogicalBatchID, err := DeliveryLogicalBatchID(i.SourceLineageID, i.PositionID, i.ContentHash)
+	if err != nil {
+		return fmt.Errorf("validate delivery intent logical_batch_id: %w", err)
+	}
+	if i.LogicalBatchID != strings.TrimSpace(i.LogicalBatchID) || strings.HasPrefix(i.LogicalBatchID, "legacy:") || i.LogicalBatchID != expectedLogicalBatchID {
+		return fmt.Errorf("%w: delivery intent logical_batch_id must equal the canonical source-lineage/position/content identity", ErrDeliveryConflict)
 	}
 	if i.Generation <= 0 {
 		return errors.New("delivery intent generation must be positive")
@@ -117,12 +119,15 @@ type ManagedDestination interface {
 }
 
 // ManagedTransactionDestination is the full-transaction extension used by
-// named managed profiles. Validation runs immediately before a new control-plane
-// attempt is prepared, but never blocks adoption of an already committed target
-// marker. Transactional targets commit all fragments with the marker; append-only
-// targets insert ordered, replay-convergent fragments and write the marker last.
+// managed execution. Initialization establishes and verifies destination receipt
+// authority before bootstrap or CDC I/O. Validation runs immediately before a
+// new control-plane attempt is prepared, but never blocks adoption of an already
+// committed target marker. Transactional targets commit all fragments with the
+// marker; append-only targets insert ordered, replay-convergent fragments and
+// write the marker last.
 type ManagedTransactionDestination interface {
 	ManagedDestination
+	InitializeManagedDelivery(context.Context) error
 	ValidateTransaction(context.Context, SourceTransaction) error
 	ApplyTransaction(context.Context, DeliveryIntent, SourceTransaction) (DeliveryEvidence, error)
 }

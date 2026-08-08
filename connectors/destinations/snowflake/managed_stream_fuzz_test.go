@@ -49,7 +49,7 @@ func FuzzStreamChannelName(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, incarnation string) {
 		cfg := streamConfig{channelNamePrefix: "wallaby_stream"}
-		intent := connector.DeliveryIntent{FlowIncarnationID: incarnation, DestinationRevisionID: "rev"}
+		intent := connector.DeliveryIntent{FlowIncarnationID: incarnation, DestinationRevisionID: "rev", LogicalBatchID: "scope-validation"}
 		first := streamChannelName(cfg, intent)
 		second := streamChannelName(cfg, intent)
 		if first != second {
@@ -123,7 +123,7 @@ func TestStreamAppendOnlyProvenMissingProperty(t *testing.T) {
 				proto.seedCommittedRow(hash, 1)
 			}
 		}
-		driver := newStreamDriver(proto, cfg, "catalog-fingerprint", StreamingHooks{})
+		driver := newStreamDriver(proto, cfg, "catalog-fingerprint", streamingHooks{})
 		driver.sleep = noStreamSleep
 		if _, err := driver.apply(context.Background(), intent, transaction); err != nil {
 			rt.Fatalf("apply: %v", err)

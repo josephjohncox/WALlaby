@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -25,12 +26,24 @@ type ArtifactLogFactory func(context.Context, flow.Flow, []stream.DestinationCon
 // asynchronous catalog consumers; non-Iceberg materialized flows retain the
 // canonical-publication-only behavior.
 func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, icebergCfg config.IcebergConfig) ArtifactLogFactory {
-	return func(ctx context.Context, _ flow.Flow, destinations []stream.DestinationConfig) (stream.ManagedArtifactLog, error) {
+	return func(ctx context.Context, f flow.Flow, destinations []stream.DestinationConfig) (stream.ManagedArtifactLog, error) {
 		if pool == nil {
 			return nil, errors.New("artifact publication requires the shared PostgreSQL control pool")
 		}
 		if strings.TrimSpace(cfg.Bucket) == "" {
 			return nil, errors.New("artifact publication requires artifacts.bucket or WALLABY_ARTIFACT_BUCKET")
+		}
+		var icebergDefaults icebergdest.Config
+		for _, destination := range destinations {
+			if destination.Spec.Type != connector.EndpointIceberg {
+				continue
+			}
+			var err error
+			icebergDefaults, err = icebergDestinationConfig(icebergCfg)
+			if err != nil {
+				return nil, fmt.Errorf("configure Iceberg deployment defaults: %w", err)
+			}
+			break
 		}
 		objects, err := artifactlog.NewS3Store(ctx, artifactlog.S3Config{
 			Bucket: cfg.Bucket, Region: cfg.Region, Endpoint: cfg.Endpoint,
@@ -42,17 +55,27 @@ func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, iceber
 		}
 		catalogConsumers := make([]artifactlog.CatalogConsumerConfig, 0, 1)
 		effectiveFingerprint := ""
+		var projector stream.Projector
+		mappingFingerprint := ""
 		for _, destination := range destinations {
 			if destination.Spec.Type != connector.EndpointIceberg {
 				continue
 			}
-			parsed, err := icebergdest.ParseSpec(destination.Spec, icebergDestinationConfig(icebergCfg))
+			parsed, err := icebergdest.ParseSpec(destination.Spec, icebergDefaults)
 			if err != nil {
 				return nil, fmt.Errorf("configure Iceberg artifact consumer: %w", err)
 			}
 			if effectiveFingerprint != "" {
 				return nil, errors.New("artifact publication supports exactly one Iceberg destination revision")
 			}
+			if f.Config.Materialization.ProjectionID != artifactlog.ProjectionIDV2 {
+				return nil, errors.New("iceberg materialization requires canonical_cdc_parquet_v2")
+			}
+			if destination.Projector == nil || destination.MappingFingerprint == "" || destination.Projector.Fingerprint() != destination.MappingFingerprint {
+				return nil, errors.New("iceberg artifact factory requires the sole immutable destination projector and mapping fingerprint")
+			}
+			projector = destination.Projector
+			mappingFingerprint = destination.MappingFingerprint
 			effectiveFingerprint, err = icebergdest.ConfigFingerprint(parsed)
 			if err != nil {
 				return nil, fmt.Errorf("fingerprint effective Iceberg artifact consumer: %w", err)
@@ -75,25 +98,34 @@ func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, iceber
 		}
 		return artifactlog.NewRuntime(ctx, pool, objects, artifactlog.RuntimeConfig{
 			Stream: artifactlog.StreamConfig{
+				ProjectionID: f.Config.Materialization.ProjectionID, MappingFingerprint: mappingFingerprint,
 				HardRetainedBytes:        int64(cfg.HardRetainedBytes),
 				BacklogCountHigh:         int64(cfg.BacklogBatchHigh),
 				BacklogBytesHigh:         int64(cfg.BacklogBytesHigh),
 				BacklogAgeHigh:           cfg.BacklogAgeHigh,
 				BackpressurePollInterval: cfg.BackpressurePollInterval,
 			},
-			OrphanGrace:            cfg.OrphanGrace,
-			Retention:              cfg.Retention,
-			GCInterval:             cfg.GCInterval,
-			Consumers:              catalogConsumers,
+			OrphanGrace: cfg.OrphanGrace,
+			Retention:   cfg.Retention,
+			GCInterval:  cfg.GCInterval,
+			Consumers:   catalogConsumers, Projector: projector,
 			DestinationFingerprint: effectiveFingerprint,
 		})
 	}
 }
 
-func icebergDestinationConfig(cfg config.IcebergConfig) icebergdest.Config {
+func icebergDestinationConfig(cfg config.IcebergConfig) (icebergdest.Config, error) {
+	minSnapshots, err := checkedInt32Config("s3_tables_min_snapshots_to_keep", cfg.S3TablesMinSnapshotsToKeep)
+	if err != nil {
+		return icebergdest.Config{}, err
+	}
+	maxSnapshotAgeHours, err := checkedInt32Config("s3_tables_max_snapshot_age_hours", cfg.S3TablesMaxSnapshotAgeHours)
+	if err != nil {
+		return icebergdest.Config{}, err
+	}
 	return icebergdest.Config{
 		Profile: cfg.Profile, URI: cfg.URI, Warehouse: cfg.Warehouse, Prefix: cfg.Prefix,
-		TargetNamespace: cfg.Namespace, TablePrefix: cfg.TablePrefix, ControlTable: cfg.ControlTable,
+		ControlTable:     cfg.ControlTable,
 		MaxCommitRetries: cfg.MaxCommitRetries, RequestTimeout: cfg.RequestTimeout,
 		ReconciliationHorizon: cfg.ReconciliationHorizon,
 		OAuthToken:            cfg.OAuthToken, OAuthCredential: cfg.OAuthCredential,
@@ -105,7 +137,15 @@ func icebergDestinationConfig(cfg config.IcebergConfig) icebergdest.Config {
 		ClientCertFile: cfg.ClientCertFile, ClientKeyFile: cfg.ClientKeyFile,
 		ServerName: cfg.ServerName, S3TablesTableBucketARN: cfg.S3TablesTableBucketARN,
 		S3TablesConfigureMaintenance: cfg.S3TablesConfigureMaintenance,
-		S3TablesMinSnapshotsToKeep:   int32(cfg.S3TablesMinSnapshotsToKeep),  // #nosec G115 -- validated positive bounded operational setting.
-		S3TablesMaxSnapshotAgeHours:  int32(cfg.S3TablesMaxSnapshotAgeHours), // #nosec G115 -- validated positive bounded operational setting.
+		S3TablesMinSnapshotsToKeep:   minSnapshots,
+		S3TablesMaxSnapshotAgeHours:  maxSnapshotAgeHours,
+	}, nil
+}
+
+func checkedInt32Config(name string, value int) (int32, error) {
+	parsed, err := strconv.ParseInt(strconv.Itoa(value), 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("%s value %d exceeds int32 bounds: %w", name, value, err)
 	}
+	return int32(parsed), nil // #nosec G115 -- ParseInt with bitSize 32 guarantees the representable range.
 }

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -195,7 +194,7 @@ func newStreamAppendPlan(cfg streamConfig, intent connector.DeliveryIntent) stre
 
 func buildStreamChangelogRow(cfg streamConfig, intent connector.DeliveryIntent, transaction connector.SourceTransaction, fragment connector.TransactionFragment, keyColumns []string, offsetToken string, appendOrdinal, recordOrdinal uint64, record connector.Record) (streamChangelogRow, int64, error) {
 	schema := fragment.Batch.Schema
-	table := strings.TrimSpace(record.Table)
+	table := record.Table
 	if table == "" {
 		table = schema.Name
 	}

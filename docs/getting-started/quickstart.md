@@ -93,7 +93,7 @@ The loop stops after 30 seconds and prints the server log when startup fails.
 
 ## 4. Validate and create the flow
 
-The checked-in flow definition scopes the publication to `public.orders`. It also asks WALlaby to create the publication and replication slot when they do not exist.
+The checked-in flow definition scopes the publication to `public.orders` and contains the mandatory mapping for `orders-postgres`. Its exact table rule maps `public.orders` to `public.orders`, includes future columns by name, and uses explicit-key upsert with the complete source primary key `[id]`. It also asks WALlaby to create the publication and replication slot when they do not exist.
 
 ```bash
 ./bin/wallaby-admin flow validate \
@@ -135,7 +135,27 @@ The local runtime does not launch workers for you. Start one process for this fl
 export WALLABY_WORKER_PID=$!
 ```
 
-The worker registers against the flow's current lifecycle generation. A worker from an older generation cannot continue after pause, resume, or stop.
+The worker registers against the flow's current lifecycle generation. A worker from an older generation cannot continue after pause, resume, or stop. Wait for the configured slot before writing so the tutorial cannot race initial source setup:
+
+```bash
+attempt=0
+slot_ready=false
+while [ "$attempt" -lt 30 ]; do
+  slot_count=$(docker compose -f examples/quickstart/docker-compose.yml exec -T postgres \
+    psql -U wallaby -d source -Atc \
+    "SELECT count(*) FROM pg_replication_slots WHERE slot_name = 'wallaby_quickstart_slot'")
+  if [ "$slot_count" = "1" ]; then
+    slot_ready=true
+    break
+  fi
+  attempt=$((attempt + 1))
+  sleep 1
+done
+if [ "$slot_ready" != true ]; then
+  tail -80 /tmp/wallaby-worker.log
+  exit 1
+fi
+```
 
 ## 6. Write and verify a row
 

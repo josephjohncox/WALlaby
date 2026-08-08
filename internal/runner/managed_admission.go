@@ -18,7 +18,7 @@ import (
 	"github.com/snowflakedb/gosnowflake"
 )
 
-func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec connector.Spec, destinations []stream.DestinationConfig, cfg StreamRunnerConfig) error {
+func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec connector.RuntimeSpec, destinations []stream.DestinationConfig, cfg StreamRunnerConfig, ddlPolicy flow.DDLPolicyDefaults) error {
 	profileName := strings.TrimSpace(sourceSpec.Options["managed_profile"])
 	switch profileName {
 	case "", connector.ManagedProfilePostgresToPostgresV1, connector.ManagedProfilePostgresToClickHouseAppendV1,
@@ -115,13 +115,13 @@ func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec c
 		if cfg.ArtifactLog == nil {
 			return errors.New("ack_policy=materialized requires a configured PostgreSQL-authoritative artifact log")
 		}
-		if f.Config.Materialization.ProjectionID != "canonical_cdc_parquet_v1" {
-			return fmt.Errorf("ack_policy=materialized requires materialization.projection_id=canonical_cdc_parquet_v1; got %q", f.Config.Materialization.ProjectionID)
+		if f.Config.Materialization.ProjectionID != "canonical_cdc_parquet_v2" {
+			return fmt.Errorf("ack_policy=materialized Iceberg requires materialization.projection_id=canonical_cdc_parquet_v2; got %q", f.Config.Materialization.ProjectionID)
 		}
 	default:
 		return errors.New("managed PostgreSQL profile currently requires ack_policy=all or the explicit materialized artifact contract")
 	}
-	if f.Config.DDL.AutoApply != nil && *f.Config.DDL.AutoApply {
+	if ddlPolicy.AutoApply {
 		return errors.New("managed PostgreSQL profile rejects automatic raw-SQL DDL; structured receipt-backed DDL is not yet admitted")
 	}
 	if cfg.ResolveStaging {
@@ -165,15 +165,12 @@ func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec c
 	}
 }
 
-func validateManagedPostgresDestinationAdmission(sourceSpec connector.Spec, destination stream.DestinationConfig, bootstrapMode, profileName string) error {
+func validateManagedPostgresDestinationAdmission(sourceSpec connector.RuntimeSpec, destination stream.DestinationConfig, bootstrapMode, profileName string) error {
 	if destination.Spec.Type == connector.EndpointClickHouse {
 		return errors.New("generic ClickHouse mutation delivery is experimental; use the exact append-only managed profile")
 	}
 	if destination.Spec.Type != connector.EndpointPostgres {
 		return fmt.Errorf("managed destination type %q is not admitted by the PostgreSQL profile", destination.Spec.Type)
-	}
-	if mode := strings.ToLower(strings.TrimSpace(destination.Spec.Options["write_mode"])); mode != "" && mode != "target" {
-		return fmt.Errorf("managed PostgreSQL destination rejects write_mode=%q", mode)
 	}
 	if mode := strings.ToLower(strings.TrimSpace(destination.Spec.Options["batch_mode"])); mode != "" && mode != "target" {
 		return fmt.Errorf("managed PostgreSQL destination rejects batch_mode=%q", mode)
@@ -200,7 +197,7 @@ func validateManagedPostgresDestinationAdmission(sourceSpec connector.Spec, dest
 	return nil
 }
 
-func validateManagedClickHouseAdmission(sourceSpec connector.Spec, destination stream.DestinationConfig, bootstrapMode string) error {
+func validateManagedClickHouseAdmission(sourceSpec connector.RuntimeSpec, destination stream.DestinationConfig, bootstrapMode string) error {
 	const profileName = connector.ManagedProfilePostgresToClickHouseAppendV1
 	if destination.Spec.Type != connector.EndpointClickHouse {
 		return fmt.Errorf("%s requires a ClickHouse destination", profileName)
@@ -241,9 +238,6 @@ func validateManagedClickHouseAdmission(sourceSpec connector.Spec, destination s
 	}
 	if strings.Join(dsnOptions.Addr, ",") == strings.Join(replicaDSNOptions.Addr, ",") {
 		return fmt.Errorf("%s requires distinct primary and replica endpoints", profileName)
-	}
-	if mode := strings.ToLower(strings.TrimSpace(options["write_mode"])); mode != "managed_append" {
-		return fmt.Errorf("%s requires write_mode=managed_append; got %q", profileName, mode)
 	}
 	if mode := strings.ToLower(strings.TrimSpace(options["batch_mode"])); mode != "target" {
 		return fmt.Errorf("%s requires batch_mode=target; got %q", profileName, mode)
@@ -324,7 +318,7 @@ func validateManagedClickHouseAdmission(sourceSpec connector.Spec, destination s
 	return nil
 }
 
-func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.Spec, destination stream.DestinationConfig, bootstrapMode string) error {
+func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.RuntimeSpec, destination stream.DestinationConfig, bootstrapMode string) error {
 	const profileName = connector.ManagedProfilePostgresToSnowflakeSQLV1
 	if strings.TrimSpace(destination.Spec.Options["flow_id"]) != flowID {
 		return fmt.Errorf("%s destination flow_id %q does not match flow %q", profileName, destination.Spec.Options["flow_id"], flowID)
@@ -357,7 +351,7 @@ func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.Spec,
 		return fmt.Errorf("%s: %w", profileName, err)
 	}
 	for key, want := range map[string]string{
-		"write_mode": "target", "batch_mode": "target", "batch_resolution": "none",
+		"batch_mode": "target", "batch_resolution": "none",
 	} {
 		if got := strings.ToLower(strings.TrimSpace(options[key])); got != want {
 			return fmt.Errorf("%s requires %s=%s; got %q", profileName, key, want, got)
@@ -372,7 +366,7 @@ func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.Spec,
 	if parseEnabledOption(options["session_keep_alive"], false) {
 		return fmt.Errorf("%s requires session_keep_alive=false", profileName)
 	}
-	if strings.TrimSpace(options["type_mappings"]) != "" || strings.TrimSpace(options["type_mappings_file"]) != "" {
+	if strings.TrimSpace(options["type_mappings"]) != "" {
 		return fmt.Errorf("%s rejects type mapping overrides until each mapping has real-service evidence", profileName)
 	}
 	for _, key := range []string{
@@ -452,7 +446,12 @@ func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.Spec,
 	if options["managed_owner_role"] == options["managed_execution_role"] {
 		return fmt.Errorf("%s execution role must not own target objects", profileName)
 	}
-	for _, key := range []string{"managed_source_schema", "managed_source_table", "managed_schema_contract", "managed_snowflake_version", "managed_target_created_on", "managed_receipts_created_on"} {
+	for _, key := range []string{"managed_source_schema", "managed_source_table"} {
+		if options[key] == "" || strings.ContainsRune(options[key], '\x00') {
+			return fmt.Errorf("%s requires exact nonempty NUL-free %s", profileName, key)
+		}
+	}
+	for _, key := range []string{"managed_schema_contract", "managed_snowflake_version", "managed_target_created_on", "managed_receipts_created_on"} {
 		if strings.TrimSpace(options[key]) == "" {
 			return fmt.Errorf("%s requires %s", profileName, key)
 		}
@@ -461,8 +460,8 @@ func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.Spec,
 	if err := json.Unmarshal([]byte(options["managed_schema_contract"]), &schemaContract); err != nil {
 		return fmt.Errorf("%s managed_schema_contract is invalid JSON: %w", profileName, err)
 	}
-	if schemaContract.Name != options["managed_source_table"] || schemaContract.Namespace != options["managed_source_schema"] || len(schemaContract.Columns) == 0 {
-		return fmt.Errorf("%s managed_schema_contract must exactly identify the configured non-empty source schema", profileName)
+	if schemaContract.Name != options["managed_table"] || schemaContract.Namespace != options["managed_schema"] || len(schemaContract.Columns) == 0 {
+		return fmt.Errorf("%s managed_schema_contract must exactly identify the projected non-empty target schema", profileName)
 	}
 	if !isLowerHexDigest(options["managed_schema_contract_hash"]) {
 		return fmt.Errorf("%s managed_schema_contract_hash must be 64 lowercase hexadecimal characters", profileName)
@@ -527,7 +526,7 @@ func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.Spec,
 	return nil
 }
 
-func validateManagedSnowflakeStagedAppendAdmission(flowID string, sourceSpec connector.Spec, destination stream.DestinationConfig, bootstrapMode string) error {
+func validateManagedSnowflakeStagedAppendAdmission(flowID string, sourceSpec connector.RuntimeSpec, destination stream.DestinationConfig, bootstrapMode string) error {
 	const profileName = connector.ManagedProfilePostgresToSnowflakeStagedAppendV1
 	if strings.TrimSpace(destination.Spec.Options["flow_id"]) != flowID {
 		return fmt.Errorf("%s destination flow_id %q does not match flow %q", profileName, destination.Spec.Options["flow_id"], flowID)
@@ -560,7 +559,7 @@ func validateManagedSnowflakeStagedAppendAdmission(flowID string, sourceSpec con
 		return fmt.Errorf("%s: %w", profileName, err)
 	}
 	for key, want := range map[string]string{
-		"write_mode": "staged_append", "batch_mode": "target", "batch_resolution": "none",
+		"batch_mode": "target", "batch_resolution": "none",
 	} {
 		if got := strings.ToLower(strings.TrimSpace(options[key])); got != want {
 			return fmt.Errorf("%s requires %s=%s; got %q", profileName, key, want, got)
@@ -575,7 +574,7 @@ func validateManagedSnowflakeStagedAppendAdmission(flowID string, sourceSpec con
 	if parseEnabledOption(options["session_keep_alive"], false) {
 		return fmt.Errorf("%s requires session_keep_alive=false", profileName)
 	}
-	if strings.TrimSpace(options["type_mappings"]) != "" || strings.TrimSpace(options["type_mappings_file"]) != "" {
+	if strings.TrimSpace(options["type_mappings"]) != "" {
 		return fmt.Errorf("%s rejects type mapping overrides until each mapping has real-service evidence", profileName)
 	}
 	for _, key := range []string{
@@ -654,7 +653,10 @@ func validateManagedSnowflakeStagedAppendAdmission(flowID string, sourceSpec con
 	if options["managed_owner_role"] == options["managed_execution_role"] {
 		return fmt.Errorf("%s execution role must not own target objects", profileName)
 	}
-	requiredCreated := []string{"managed_source_schema", "managed_source_table", "managed_schema_contract", "managed_snowflake_version", "managed_stage_created_on", "managed_target_created_on", "managed_receipts_created_on", "managed_file_format_created_on"}
+	if options["managed_source_schema"] == "" || options["managed_source_table"] == "" || strings.ContainsRune(options["managed_source_schema"], '\x00') || strings.ContainsRune(options["managed_source_table"], '\x00') {
+		return fmt.Errorf("%s requires exact nonempty NUL-free managed source identifiers", profileName)
+	}
+	requiredCreated := []string{"managed_schema_contract", "managed_snowflake_version", "managed_stage_created_on", "managed_target_created_on", "managed_receipts_created_on", "managed_file_format_created_on"}
 	if parseEnabledOption(options["managed_auto_ingest"], false) {
 		requiredCreated = append(requiredCreated, "managed_pipe_created_on")
 	}
@@ -726,7 +728,7 @@ func validateManagedSnowflakeStagedAppendAdmission(flowID string, sourceSpec con
 	return nil
 }
 
-func validateManagedSnowflakeStreamingAppendAdmission(flowID string, sourceSpec connector.Spec, destination stream.DestinationConfig, bootstrapMode string) error {
+func validateManagedSnowflakeStreamingAppendAdmission(flowID string, sourceSpec connector.RuntimeSpec, destination stream.DestinationConfig, bootstrapMode string) error {
 	const profileName = connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1
 	if strings.TrimSpace(destination.Spec.Options["flow_id"]) != flowID {
 		return fmt.Errorf("%s destination flow_id %q does not match flow %q", profileName, destination.Spec.Options["flow_id"], flowID)
@@ -759,7 +761,7 @@ func validateManagedSnowflakeStreamingAppendAdmission(flowID string, sourceSpec 
 		return fmt.Errorf("%s: %w", profileName, err)
 	}
 	for key, want := range map[string]string{
-		"write_mode": "streaming_append", "batch_mode": "target", "batch_resolution": "none",
+		"batch_mode": "target", "batch_resolution": "none",
 	} {
 		if got := strings.ToLower(strings.TrimSpace(options[key])); got != want {
 			return fmt.Errorf("%s requires %s=%s; got %q", profileName, key, want, got)
@@ -774,7 +776,7 @@ func validateManagedSnowflakeStreamingAppendAdmission(flowID string, sourceSpec 
 	if parseEnabledOption(options["session_keep_alive"], false) {
 		return fmt.Errorf("%s requires session_keep_alive=false", profileName)
 	}
-	if strings.TrimSpace(options["type_mappings"]) != "" || strings.TrimSpace(options["type_mappings_file"]) != "" {
+	if strings.TrimSpace(options["type_mappings"]) != "" {
 		return fmt.Errorf("%s rejects type mapping overrides until each mapping has real-service evidence", profileName)
 	}
 	for _, key := range []string{
@@ -852,7 +854,10 @@ func validateManagedSnowflakeStreamingAppendAdmission(flowID string, sourceSpec 
 	if options["managed_owner_role"] == options["managed_execution_role"] {
 		return fmt.Errorf("%s execution role must not own target objects", profileName)
 	}
-	for _, key := range []string{"managed_source_schema", "managed_source_table", "managed_schema_contract", "managed_snowflake_version", "managed_pipe_created_on", "managed_target_created_on", "managed_receipts_created_on", "managed_channel_state_created_on"} {
+	if options["managed_source_schema"] == "" || options["managed_source_table"] == "" || strings.ContainsRune(options["managed_source_schema"], '\x00') || strings.ContainsRune(options["managed_source_table"], '\x00') {
+		return fmt.Errorf("%s requires exact nonempty NUL-free managed source identifiers", profileName)
+	}
+	for _, key := range []string{"managed_schema_contract", "managed_snowflake_version", "managed_pipe_created_on", "managed_target_created_on", "managed_receipts_created_on", "managed_channel_state_created_on"} {
 		if strings.TrimSpace(options[key]) == "" {
 			return fmt.Errorf("%s requires %s", profileName, key)
 		}

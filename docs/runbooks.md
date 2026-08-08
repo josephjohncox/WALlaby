@@ -6,7 +6,7 @@ Start with the observed symptom. Prove the cause before changing lifecycle state
 | --- | --- | --- |
 | Flow stays `running` after pause | `wallaby-admin flow get --flow-id <id>` and worker logs | Wait for active execution leases to finish; do not start a competing worker. |
 | Flow stays `stopping` | Dispatcher status and execution leases | Let reconciliation finish cancellation; do not report the flow as stopped. |
-| Pending DDL event | `wallaby-admin ddl list --status pending` | Approve and apply the event, then resume after the flow reaches `paused`. |
+| Pending DDL event | `wallaby-admin ddl list --status pending` | Approve the event, wait for `paused`, then resume or start the flow as appropriate; the running data plane applies it and records destination receipts. |
 | Source WAL grows | `pg_replication_slots` restart LSN and active state | Identify the owning flow and worker before dropping anything. |
 | Kubernetes Job disappeared | Flow control state and authoritative Job annotations | Let the control plane reconcile; do not create a replacement Job manually. |
 | Primary-ack secondary is behind | Checkpoint outbox and destination logs | Restore destination availability; restart drains the outbox before new reads. |
@@ -44,7 +44,7 @@ spec:
             severity: warning
           annotations:
             summary: "WALlaby DDL gate triggered"
-            description: "A flow encountered a DDL approval gate. Check pending DDL events and approve/apply."
+            description: "A flow encountered a DDL approval gate. Check and approve pending DDL events, then resume or start the flow as appropriate."
 ```
 
 ### Log-to-alert example
@@ -113,11 +113,12 @@ DBOS may retry an individual workflow according to its configured retry policy w
 If a flow has pending DDL and is running or paused:
 
 1. List pending DDL events.
-2. Approve and apply the event.
+2. Approve the event.
 3. Wait for the flow to reach `paused` if quiescence is still in progress.
-4. Resume the flow.
+4. Resume the paused flow, or start it if it is in a startable state.
+5. Verify that the running data plane applied the DDL and recorded the expected destination receipts.
 
-See the DDL gating section above.
+There is no administrative apply command. See the DDL gating section above.
 
 ## Validate source and destination data
 

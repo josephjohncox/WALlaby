@@ -50,7 +50,7 @@ func BenchmarkClickHouseBatchSizes(b *testing.B) {
 		}
 
 		dest := &clickhouse.Destination{}
-		spec := connector.Spec{
+		spec := connector.RuntimeSpec{
 			Name: "clickhouse-batch",
 			Type: connector.EndpointClickHouse,
 			Options: map[string]string{
@@ -100,7 +100,7 @@ func BenchmarkDuckDBBatchSizes(b *testing.B) {
 		}
 
 		dest := &duckdb.Destination{}
-		spec := connector.Spec{
+		spec := connector.RuntimeSpec{
 			Name: "duckdb-batch",
 			Type: connector.EndpointDuckDB,
 			Options: map[string]string{
@@ -158,7 +158,7 @@ func BenchmarkSnowflakeBatchSizes(b *testing.B) {
 		}
 
 		dest := &snowflake.Destination{}
-		spec := connector.Spec{
+		spec := connector.RuntimeSpec{
 			Name: "snowflake-batch",
 			Type: connector.EndpointSnowflake,
 			Options: map[string]string{

@@ -33,7 +33,7 @@ func TestPostgresDestinationDDLAndMutations(t *testing.T) {
 	fullTable := fmt.Sprintf(`public."%s"`, tableName)
 
 	dest := &pgdest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "dest",
 		Type: connector.EndpointPostgres,
 		Options: map[string]string{
@@ -81,7 +81,7 @@ func TestPostgresDestinationDDLAndMutations(t *testing.T) {
 		Key:       recordKey(t, map[string]any{"id": 1}),
 		After:     map[string]any{"id": 1, "name": "beta"},
 	}
-	if err := dest.Write(ctx, connector.Batch{Schema: schemaDef, Records: []connector.Record{insert, update}}); err != nil {
+	if err := dest.Write(ctx, connector.Batch{Schema: schemaDef, Records: []connector.Record{insert, update}, WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}}}); err != nil {
 		t.Fatalf("write batch: %v", err)
 	}
 
@@ -131,7 +131,7 @@ func TestPostgresDestinationDDLAndMutations(t *testing.T) {
 			"extra":        "v2",
 		},
 	}
-	if err := dest.Write(ctx, connector.Batch{Schema: schemaDef, Records: []connector.Record{insertAfter}}); err != nil {
+	if err := dest.Write(ctx, connector.Batch{Schema: schemaDef, Records: []connector.Record{insertAfter}, WritePolicy: testUpsertPolicy("id")}); err != nil {
 		t.Fatalf("write insert after ddl: %v", err)
 	}
 
@@ -153,7 +153,7 @@ func TestPostgresDestinationDDLAndMutations(t *testing.T) {
 		Operation: connector.OpDelete,
 		Key:       recordKey(t, map[string]any{"id": 2}),
 	}
-	if err := dest.Write(ctx, connector.Batch{Schema: schemaDef, Records: []connector.Record{deleteRec1, deleteRec2}}); err != nil {
+	if err := dest.Write(ctx, connector.Batch{Schema: schemaDef, Records: []connector.Record{deleteRec1, deleteRec2}, WritePolicy: testUpsertPolicy("id")}); err != nil {
 		t.Fatalf("write delete: %v", err)
 	}
 
@@ -185,7 +185,7 @@ func TestPostgresDestinationPlanDDL(t *testing.T) {
 	fullTable := fmt.Sprintf(`public."%s"`, tableName)
 
 	dest := &pgdest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "plan-dest",
 		Type: connector.EndpointPostgres,
 		Options: map[string]string{
@@ -220,8 +220,7 @@ func TestPostgresDestinationPlanDDL(t *testing.T) {
 	}()
 
 	if err := dest.Write(ctx, connector.Batch{
-		Schema:     schemaDef,
-		Checkpoint: connector.Checkpoint{LSN: "1"},
+		Schema: schemaDef, Checkpoint: connector.Checkpoint{LSN: "1"}, WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}},
 		Records: []connector.Record{{
 			Table:     tableName,
 			Operation: connector.OpInsert,
@@ -270,8 +269,7 @@ func TestPostgresDestinationPlanDDL(t *testing.T) {
 		Type: "text",
 	})
 	if err := dest.Write(ctx, connector.Batch{
-		Schema:     schemaDef,
-		Checkpoint: connector.Checkpoint{LSN: "2"},
+		Schema: schemaDef, Checkpoint: connector.Checkpoint{LSN: "2"}, WritePolicy: testUpsertPolicy("id"),
 		Records: []connector.Record{{
 			Table:     tableName,
 			Operation: connector.OpInsert,
@@ -336,8 +334,7 @@ func TestPostgresDestinationPlanDDL(t *testing.T) {
 		{Name: "title", Type: "varchar(64)"},
 	}
 	if err := dest.Write(ctx, connector.Batch{
-		Schema:     schemaDef,
-		Checkpoint: connector.Checkpoint{LSN: "3"},
+		Schema: schemaDef, Checkpoint: connector.Checkpoint{LSN: "3"}, WritePolicy: testUpsertPolicy("id"),
 		Records: []connector.Record{{
 			Table:     tableName,
 			Operation: connector.OpInsert,
@@ -423,7 +420,7 @@ func TestPostgresManagedDriverMarkerReconciles(t *testing.T) {
 	}()
 
 	destination := &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "managed", Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "managed", Options: map[string]string{
 		"dsn": dsn, "schema": "public", "write_mode": "target", "meta_table_enabled": "false",
 	}}); err != nil {
 		t.Fatal(err)
@@ -431,9 +428,7 @@ func TestPostgresManagedDriverMarkerReconciles(t *testing.T) {
 	defer destination.Close(ctx)
 
 	batch := connector.Batch{
-		Schema:     connector.Schema{Namespace: "public", Name: tableName, Version: 1, Columns: []connector.Column{{Name: "id", Type: "bigint"}, {Name: "value", Type: "text"}}},
-		Records:    []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "applied"}}},
-		Checkpoint: connector.Checkpoint{LSN: "0/80"},
+		Schema: testManagedUpsertSchema(tableName), Records: []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "applied"}}}, Checkpoint: connector.Checkpoint{LSN: "0/80"}, WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}},
 	}
 	intent := managedIntent(t, batch, fmt.Sprintf("commit-before-receipt-%d", time.Now().UnixNano()))
 	evidence, err := destination.Apply(ctx, intent, batch)
@@ -454,7 +449,7 @@ func TestPostgresManagedDriverMarkerReconciles(t *testing.T) {
 		t.Fatal(err)
 	}
 	destination = &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "managed", Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "managed", Options: map[string]string{
 		"dsn": dsn, "schema": "public", "write_mode": "target", "meta_table_enabled": "false",
 	}}); err != nil {
 		t.Fatal(err)
@@ -492,7 +487,7 @@ func TestPostgresTargetReplayConvergesIncludingMetadata(t *testing.T) {
 	defer func() { _, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS public.wallaby_meta_replay_test") }()
 
 	destination := &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "managed", Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "managed", Options: map[string]string{
 		"dsn": dsn, "schema": "public", "write_mode": "target", "flow_id": flowID,
 	}}); err != nil {
 		t.Fatal(err)
@@ -500,9 +495,7 @@ func TestPostgresTargetReplayConvergesIncludingMetadata(t *testing.T) {
 	defer destination.Close(ctx)
 
 	batch := connector.Batch{
-		Schema:     connector.Schema{Namespace: "public", Name: tableName, Version: 1, Columns: []connector.Column{{Name: "id", Type: "bigint"}, {Name: "value", Type: "text"}}},
-		Records:    []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "once"}}},
-		Checkpoint: connector.Checkpoint{LSN: "0/90"},
+		Schema: testManagedUpsertSchema(tableName), Records: []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "once"}}}, Checkpoint: connector.Checkpoint{LSN: "0/90"}, WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}},
 	}
 	intent := managedIntent(t, batch, fmt.Sprintf("metadata-replay-%d", time.Now().UnixNano()))
 	if _, err := destination.Apply(ctx, intent, batch); err != nil {
@@ -542,7 +535,7 @@ func TestPostgresTargetPreservesSameKeyOperationOrderIntegration(t *testing.T) {
 	}()
 
 	destination := &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "managed", Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "managed", Options: map[string]string{
 		"dsn": dsn, "schema": "public", "write_mode": "target", "meta_table_enabled": "false",
 	}}); err != nil {
 		t.Fatal(err)
@@ -550,12 +543,12 @@ func TestPostgresTargetPreservesSameKeyOperationOrderIntegration(t *testing.T) {
 	defer destination.Close(ctx)
 	key := recordKey(t, map[string]any{"id": 1})
 	batch := connector.Batch{
-		Schema: connector.Schema{Namespace: "public", Name: tableName, Version: 1, Columns: []connector.Column{{Name: "id", Type: "bigint"}, {Name: "value", Type: "text"}}},
+		Schema: testManagedUpsertSchema(tableName),
 		Records: []connector.Record{
 			{Table: tableName, Operation: connector.OpDelete, Key: key},
 			{Table: tableName, Operation: connector.OpInsert, Key: key, After: map[string]any{"id": 1, "value": "new"}},
 		},
-		Checkpoint: connector.Checkpoint{LSN: "0/A0"},
+		Checkpoint: connector.Checkpoint{LSN: "0/A0"}, WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}},
 	}
 	if _, err := destination.Apply(ctx, managedIntent(t, batch, fmt.Sprintf("same-key-order-%d", time.Now().UnixNano())), batch); err != nil {
 		t.Fatal(err)
@@ -569,9 +562,18 @@ func TestPostgresTargetPreservesSameKeyOperationOrderIntegration(t *testing.T) {
 	}
 }
 
+func testManagedUpsertSchema(table string) connector.Schema {
+	return connector.Schema{Namespace: "public", Name: table, Version: 1, Columns: []connector.Column{{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"source_relation_id": "42", "source_column_id": "1", "primary_key": "true", "primary_key_ordinal": "1", "replica_identity": "true"}}, {Name: "value", Type: "text", TypeMetadata: map[string]string{"source_relation_id": "42", "source_column_id": "2"}}}}
+}
+
 func managedIntent(t *testing.T, batch connector.Batch, suffix string) connector.DeliveryIntent {
 	t.Helper()
 	hash, err := connector.BatchContentHash(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	positionID := "position-" + suffix
+	logicalBatchID, err := connector.DeliveryLogicalBatchID("source-lineage-1", positionID, hash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,9 +583,8 @@ func managedIntent(t *testing.T, batch connector.Batch, suffix string) connector
 		Generation:            1,
 		AcquisitionID:         "acquisition-1",
 		LeaseEpoch:            1,
-		DestinationRevisionID: "postgres-target-1",
-		SourceLineageID:       "source-lineage-1",
-		PositionID:            "position-" + suffix,
-		ContentHash:           hash,
+		DestinationRevisionID: "postgres-target-1", SourceLineageID: "source-lineage-1", LogicalBatchID: logicalBatchID,
+		PositionID:  positionID,
+		ContentHash: hash,
 	}
 }

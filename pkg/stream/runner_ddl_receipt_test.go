@@ -9,15 +9,17 @@ import (
 )
 
 type testDDLReceiptStore struct {
-	mu           sync.Mutex
-	lockMu       sync.Mutex
-	locks        map[string]*sync.Mutex
-	beforeLock   func(flowID, destination string)
-	attempts     map[string]struct{}
-	receipts     map[string]struct{}
-	onPrepare    func(flowID, lsn, destination string, expected []string) (connector.DDLExecutionState, error)
-	beforeRecord func(flowID, lsn, ddl, destination string, expected []string) error
-	onRecord     func(flowID, lsn, ddl, destination string, expected []string) error
+	mu            sync.Mutex
+	lockMu        sync.Mutex
+	locks         map[string]*sync.Mutex
+	beforeLock    func(flowID, destination string)
+	attempts      map[string]struct{}
+	receipts      map[string]struct{}
+	beforePrepare func(flowID, lsn, destination string, expected []string) error
+	onPrepare     func(flowID, lsn, destination string, expected []string) (connector.DDLExecutionState, error)
+	beforeRecord  func(flowID, lsn, ddl, destination string, expected []string) error
+	onRecord      func(flowID, lsn, ddl, destination string, expected []string) error
+	vacuous       map[string]string
 }
 
 func (s *testDDLReceiptStore) WithDDLExecutionLock(_ context.Context, flowID, destination string, fn func() error) error {
@@ -41,6 +43,11 @@ func (s *testDDLReceiptStore) WithDDLExecutionLock(_ context.Context, flowID, de
 }
 
 func (s *testDDLReceiptStore) PrepareDDLExecution(_ context.Context, flowID, lsn, destination string, expected []string) (connector.DDLExecutionState, error) {
+	if s.beforePrepare != nil {
+		if err := s.beforePrepare(flowID, lsn, destination, expected); err != nil {
+			return 0, err
+		}
+	}
 	if s.onPrepare != nil {
 		return s.onPrepare(flowID, lsn, destination, expected)
 	}
@@ -58,6 +65,20 @@ func (s *testDDLReceiptStore) PrepareDDLExecution(_ context.Context, flowID, lsn
 	}
 	s.attempts[key] = struct{}{}
 	return connector.DDLExecutionNew, nil
+}
+
+func (s *testDDLReceiptStore) RecordVacuousDDLExecution(_ context.Context, flowID, lsn, ddl string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.vacuous == nil {
+		s.vacuous = make(map[string]string)
+	}
+	key := flowID + "\x00" + lsn
+	if prior, ok := s.vacuous[key]; ok && prior != ddl {
+		return connector.ErrDeliveryConflict
+	}
+	s.vacuous[key] = ddl
+	return nil
 }
 
 func (s *testDDLReceiptStore) RecordDDLExecution(

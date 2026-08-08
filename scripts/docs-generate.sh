@@ -16,7 +16,9 @@ rm -rf "$generated"
 mkdir -p "$generated/go"
 buf generate proto --template buf.gen.docs.yaml --include-imports --output "$output_root"
 grpc_doc="$generated/grpc.md"
-sed 's|(#google-protobuf-Timestamp)|(https://protobuf.dev/reference/protobuf/google.protobuf/#timestamp)|g' \
+sed \
+	-e 's|(#google-protobuf-Timestamp)|(https://protobuf.dev/reference/protobuf/google.protobuf/#timestamp)|g' \
+	-e 's|(#google-protobuf-Duration)|(https://protobuf.dev/reference/protobuf/google.protobuf/#duration)|g' \
 	"$grpc_doc" >"${grpc_doc}.tmp"
 mv "${grpc_doc}.tmp" "$grpc_doc"
 

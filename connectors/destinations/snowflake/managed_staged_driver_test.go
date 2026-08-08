@@ -7,6 +7,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/snowflakedb/gosnowflake"
 )
 
 func stagedFixture(t *testing.T) (stagedConfig, connector.DeliveryIntent, connector.SourceTransaction) {
@@ -122,10 +123,18 @@ func TestValidateStagedObjectReferenceIsOneSharedAllowlist(t *testing.T) {
 	if err := validateStagedObjectReference(stageRef, path); err != nil {
 		t.Fatalf("rejected the production stage reference and path: %v", err)
 	}
+	if err := validateStagedObjectReference(`"DB$1"."SCHEMA$2"."STAGE$3"`, path); err != nil {
+		t.Fatalf("rejected admitted dollar identifiers: %v", err)
+	}
 	for name, test := range map[string]struct{ stageRef, path string }{
 		"unquoted stage":     {stageRef: "WALLABY_DB.WALLABY_SCHEMA.WALLABY_STAGE", path: path},
 		"two part stage":     {stageRef: `"WALLABY_DB"."WALLABY_STAGE"`, path: path},
 		"stage injection":    {stageRef: `"A"."B"."C"; DROP TABLE X`, path: path},
+		"quoted injection":   {stageRef: `"A"."B"."C$"";DROP TABLE X"`, path: path},
+		"comment injection":  {stageRef: `"A"."B"."C$1"--`, path: path},
+		"leading dollar":     {stageRef: `"$A"."B"."C"`, path: path},
+		"leading digit":      {stageRef: `"1A"."B"."C"`, path: path},
+		"embedded space":     {stageRef: `"A"."B B"."C"`, path: path},
 		"path traversal":     {stageRef: stageRef, path: "a/../../etc/passwd"},
 		"path whitespace":    {stageRef: stageRef, path: "a b/c.ndjson"},
 		"path quote":         {stageRef: stageRef, path: `a'/c.ndjson`},
@@ -145,6 +154,67 @@ func TestValidateStagedObjectReferenceIsOneSharedAllowlist(t *testing.T) {
 	}
 	if _, err := protocol.GetObject(context.Background(), "bad", path, 1); err == nil {
 		t.Fatal("GetObject accepted an unvalidated stage reference")
+	}
+}
+
+func TestStagedDollarIdentifiersOpenInitializeAndObjectProtocol(t *testing.T) {
+	t.Parallel()
+	dsn := managedSnowflakeTestDSN(t, func(config *gosnowflake.Config) {
+		config.Database = "DB$1"
+		config.Schema = "SCHEMA$2"
+	})
+	_, options := stagedValidOptions(t)
+	options["dsn"] = dsn
+	options["managed_database"] = "DB$1"
+	options["managed_schema"] = "SCHEMA$2"
+	options["managed_stage"] = "STAGE$3"
+	options["managed_table"] = "TABLE$4"
+	options["managed_receipts_table"] = "RECEIPTS$5"
+	options["managed_file_format"] = "FORMAT$6"
+	cfg, err := stagedConfigFromSpec(dsn, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options})
+	if err != nil {
+		t.Fatalf("Open admission rejected dollar identifiers: %v", err)
+	}
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	destination := &Destination{
+		db: db, managedProfile: connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
+		stagedConfig: cfg, stagedCatalogFingerprint: "catalog-fingerprint",
+	}
+	if err := destination.InitializeManagedDelivery(context.Background()); err != nil {
+		t.Fatalf("Initialize after admitted Open state: %v", err)
+	}
+	transaction := managedTestTransaction(cfg.schemaContract)
+	intent := stagedTestIntent(t, cfg, transaction)
+	plan := stagedPlanFor(t, cfg, intent, transaction)
+	stageRef := `"DB$1"."SCHEMA$2"."STAGE$3"`
+	if plan.copyPlan.stageRef != stageRef {
+		t.Fatalf("planned stage reference=%q, want %q", plan.copyPlan.stageRef, stageRef)
+	}
+	protocol := newSQLStageProtocol(db)
+	mock.ExpectQuery("LIST @").WillReturnRows(sqlmock.NewRows([]string{"name", "size", "md5", "last_modified"}).
+		AddRow("stage/"+plan.identity.relativePath, len(plan.fileBytes), plan.fileMD5, "now"))
+	if stat, err := protocol.StatObject(context.Background(), stageRef, plan.identity.relativePath); err != nil || !stat.present {
+		t.Fatalf("LIST dollar stage stat=%+v err=%v", stat, err)
+	}
+	mock.ExpectExec("GET @").WillReturnResult(sqlmock.NewResult(0, 1))
+	if _, err := protocol.GetObject(context.Background(), stageRef, plan.identity.relativePath, len(plan.fileBytes)); err != nil {
+		t.Fatalf("GET dollar stage: %v", err)
+	}
+	mock.ExpectQuery("LIST @").WillReturnRows(sqlmock.NewRows([]string{"name", "size", "md5", "last_modified"}))
+	mock.ExpectExec("PUT file:///").WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := protocol.PutObject(context.Background(), stageRef, plan.identity.relativePath, plan.fileBytes, plan.fileMD5); err != nil {
+		t.Fatalf("PUT dollar stage: %v", err)
+	}
+	mock.ExpectQuery("COPY INTO").WillReturnRows(sqlmock.NewRows([]string{"status", "rows_loaded", "errors_seen", "first_error"}).AddRow("LOADED", plan.rowCount, 0, ""))
+	if result, err := protocol.Copy(context.Background(), plan.copyPlan); err != nil || !result.present || result.rowsLoaded != plan.rowCount {
+		t.Fatalf("COPY dollar stage result=%+v err=%v", result, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -327,7 +397,7 @@ func TestStagedDriverCrashBetweenCopyAndReceiptConverges(t *testing.T) {
 	t.Parallel()
 	cfg, intent, transaction := stagedFixture(t)
 	proto := newFakeStageProtocol()
-	crashing := newStagedDriver(proto, cfg, "catalog-fingerprint", StagedHooks{BeforeReceipt: func() error {
+	crashing := newStagedDriver(proto, cfg, "catalog-fingerprint", stagedHooks{BeforeReceipt: func() error {
 		return errors.New("process killed before receipt insert")
 	}})
 	if _, err := crashing.apply(context.Background(), intent, transaction); err == nil {

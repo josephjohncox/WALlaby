@@ -1,6 +1,6 @@
 # Configuration
 
-WALlaby commands read YAML plus environment variables. A value from the selected configuration file takes precedence over its environment variable. Defaults apply last.
+WALlaby server and worker commands read strict YAML or JSON plus environment variables. A value from the selected configuration file takes precedence over its environment variable. The file is decoded before environment values are parsed, so a malformed lower-precedence environment value is ignored only when that exact file field is present. Defaults apply last.
 
 ## Server configuration
 
@@ -19,6 +19,31 @@ api:
 ```
 
 Do not commit credentials. Supply the DSN through an environment variable or a secret-mounted configuration file.
+
+## Current configuration-file schema
+
+Configuration files use only the lowercase underscore names below. YAML and JSON are decoded strictly: unknown, duplicate, misspelled, hyphenated, or wrong-typed keys fail with their complete path; multiple YAML documents and trailing JSON documents also fail. Durations are strings such as `30s`, integer fields are YAML/JSON integers, and booleans are YAML/JSON booleans. `profiling.enabled` is the profiling switch and `profiling.listen` is the profiling address.
+
+| Section | Current keys |
+| --- | --- |
+| root | `environment` |
+| `api` | `grpc_listen`, `grpc_reflection` |
+| `postgres` | `dsn` |
+| `workflow` | `store` |
+| `telemetry` | `service_name`, `otlp_endpoint`, `otlp_insecure`, `otlp_protocol`, `metrics_endpoint`, `metrics_insecure`, `metrics_protocol`, `traces_endpoint`, `traces_insecure`, `traces_protocol`, `metrics_exporter`, `traces_exporter`, `metrics_interval` |
+| `trace` | `path` |
+| `profiling` | `enabled`, `listen` |
+| `dbos` | `enabled`, `app_name`, `schedule`, `queue`, `max_empty_reads`, `max_retries` |
+| `kubernetes` | `enabled`, `kubeconfig_path`, `context`, `api_server`, `bearer_token`, `ca_file`, `ca_data`, `client_cert_file`, `client_key_file`, `insecure_skip_tls`, `namespace`, `job_image`, `job_image_pull_policy`, `job_service_account`, `job_automount_service_account_token`, `job_name_prefix`, `job_ttl_seconds`, `job_backoff_limit`, `job_max_empty_reads`, `job_labels`, `job_annotations`, `job_command`, `job_args`, `job_env`, `job_env_from` |
+| `wire` | `format`, `enforce` |
+| `ddl` | `catalog_enabled`, `catalog_interval`, `catalog_schemas`, `auto_approve`, `gate`, `auto_apply` |
+| `checkpoints` | `backend`, `dsn`, `path` |
+| `artifacts` | `bucket`, `region`, `endpoint`, `access_key`, `secret_key`, `session_token`, `force_path_style`, `hard_retained_bytes`, `backlog_batch_high`, `backlog_bytes_high`, `backlog_age_high`, `backpressure_poll_interval`, `orphan_grace`, `retention`, `gc_interval` |
+| `iceberg` | `profile`, `uri`, `warehouse`, `prefix`, `control_table`, `region`, `signing_name`, `expected_aws_role_arn`, `sigv4`, `allow_http`, `oauth_token`, `oauth_credential`, `oauth_scope`, `oauth_uri`, `ca_file`, `ca_data`, `client_cert_file`, `client_key_file`, `server_name`, `s3_endpoint`, `s3_region`, `max_commit_retries`, `request_timeout`, `reconciliation_horizon`, `s3tables_table_bucket_arn`, `s3tables_configure_maintenance`, `s3tables_min_snapshots_to_keep`, `s3tables_max_snapshot_age_hours` |
+
+The server environment uses the documented `WALLABY_*` forms (`WALLABY_ENV`, `WALLABY_GRPC_*`, `WALLABY_POSTGRES_DSN`, `WALLABY_WORKFLOW_STORE`, `WALLABY_OTEL_*`, `WALLABY_TRACE_PATH`, `WALLABY_PPROF_*`, `WALLABY_DBOS_*`, `WALLABY_K8S_*`, `WALLABY_WIRE_*`, `WALLABY_DDL_*`, `WALLABY_CHECKPOINT_*`, `WALLABY_ARTIFACT_*`, and `WALLABY_ICEBERG_*`). Worker deployments use the corresponding documented `WALLABY_WORKER_*` forms. Standard OpenTelemetry variables (`OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_*`, `OTEL_METRICS_EXPORTER`, and `OTEL_TRACES_EXPORTER`) remain current. A selected file overrides environment values; environment values override ordinary defaults. Undocumented environment variables do not configure WALlaby.
+
+Worker command flags also retain their normalized `WALLABY_WORKER_*` bindings, including `WALLABY_WORKER_FLOW_ID`, `WALLABY_WORKER_GENERATION`, `WALLABY_WORKER_EXECUTION_BACKEND`, and `WALLABY_WORKER_MAX_EMPTY_READS`. An explicit command-line flag overrides its environment binding. Strict runtime-file mode disables Viper file decoding and legacy key aliases; it does not disable current flag environment bindings.
 
 ## Workflow stores
 
@@ -40,7 +65,7 @@ export WALLABY_CHECKPOINT_PATH="$HOME/.wallaby/checkpoints.db"
 
 ## Canonical artifact publication
 
-`ack_policy=materialized` requires an ordinary versioned S3 bucket and the PostgreSQL workflow/checkpoint store. The flow carries only `materialization.projection_id=canonical_cdc_parquet_v1`; credentials and operational limits stay in worker deployment configuration.
+`ack_policy=materialized` requires an ordinary versioned S3 bucket and the PostgreSQL workflow/checkpoint store. Current mapped Iceberg flows carry `materialization.projection_id=canonical_cdc_parquet_v2`; the durable destination mapping supplies logical target identity, while credentials and operational limits stay in worker deployment configuration. The v1 encoder remains frozen for historical artifacts.
 
 ```yaml
 artifacts:
@@ -72,8 +97,6 @@ iceberg:
   uri: https://catalog.example.com
   warehouse: warehouse
   prefix: ""
-  namespace: analytics
-  table_prefix: cdc_
   control_table: __wallaby_control
   request_timeout: 30s
   max_commit_retries: 4
@@ -87,7 +110,7 @@ iceberg:
 
 Use the `WALLABY_ICEBERG_*` or `WALLABY_WORKER_ICEBERG_*` environment forms for deployment secrets. S3 Tables sets `profile: s3tables` and also uses `region`, `s3tables_table_bucket_arn`, `s3tables_configure_maintenance`, `s3tables_min_snapshots_to_keep`, and `s3tables_max_snapshot_age_hours`. Local S3-compatible REST catalogs may use deployment `s3_endpoint` and `s3_region`. AWS authentication uses the default SDK chain, including IRSA and assumed roles.
 
-Catalog identity is deployment-bound. A persisted flow may select `catalog_profile`, namespace, table prefix, control table, and `destination_revision_id`; catalog URI, warehouse, REST prefix, region, table-bucket ARN, expected AWS role ARN, S3 endpoint/region, behavior controls, and every unknown or secret option are rejected before storage. OAuth, mTLS, ambient AWS, and static AWS credentials therefore cannot be redirected by a flow definition. The S3 Tables profile requires `iceberg.expected_aws_role_arn`; startup calls STS and fails before catalog recovery unless the active caller is that role. For the complete S3 Tables configuration and read-only Snowflake catalog link, see [Query WALlaby Iceberg tables from Snowflake](../guides/s3-tables-snowflake.md).
+Catalog identity is deployment-bound. A persisted flow may select only `catalog_profile`, `control_table`, and `destination_revision_id`; logical namespace and table identity come from its mandatory mapping. Catalog URI, warehouse, REST prefix, region, table-bucket ARN, expected AWS role ARN, S3 endpoint/region, behavior controls, and every unknown or secret option are rejected before storage. OAuth, mTLS, ambient AWS, and static AWS credentials therefore cannot be redirected by a flow definition. The S3 Tables profile requires `iceberg.expected_aws_role_arn`; startup calls STS and fails before catalog recovery unless the active caller is that role. For the complete S3 Tables configuration and read-only Snowflake catalog link, see [Query WALlaby Iceberg tables from Snowflake](../guides/s3-tables-snowflake.md).
 
 ### Artifact schema upgrade
 
@@ -103,19 +126,19 @@ The coordinator intentionally serializes migrations with an advisory lock and do
 
 ## Managed Snowflake SQL
 
-`postgresql-to-snowflake-sql-v1` stores its account, object names and creation identities, owner and execution roles, revision, schema contract, session contract, transaction bounds, and configured Snowflake runtime pin in destination options. Mount the key-pair private key as a secret and reference it from the DSN; do not store key material in the flow document. PostgreSQL remains authoritative for generations, attempts, checkpoints, delivery receipts, and source acknowledgements.
+The typed `snowflake_postgres_sql` branch stores its account, object names and creation identities, owner and execution roles, destination revision, session contract, transaction bounds, and configured Snowflake runtime pin. The flow ID and projected schema contract are derived from the typed flow and table mapping, not authored as endpoint fields. Mount the key-pair private key as a secret and reference it from `dsn`; do not store key material in the flow document. PostgreSQL remains authoritative for generations, attempts, checkpoints, delivery receipts, and source acknowledgements.
 
-Changing the flow binding, target or receipt table, account, schema, role, warehouse, service-version pin, object creation identity, timeout, bound, or schema contract requires a new destination revision. Provision a new object pair and update `flow_id`, `destination_revision_id`, the schema contract and hash, creation identities, and ownership comments together. Do not reuse a destination revision for different configuration.
+Changing the flow binding, target or receipt table, account, schema, role, warehouse, service-version pin, object creation identity, timeout, bound, or schema contract requires a new destination revision. Managed `UpdateFlow` and `ReconfigureFlow` are rejected for every change. Stop the old flow, create/validate/start a replacement with a new flow ID, cut over, and delete the old flow only when safe. Provision a new object pair and update `destination_revision_id`, creation identities, ownership comments, and the destination-scoped table mapping together. Do not reuse a destination revision for different configuration. Every Terraform managed update fails; Terraform does not perform this lifecycle.
 
-See [Snowflake destination](../connectors/snowflake.md) for the exact options, table DDL, and opt-in real-service gate.
+See [Snowflake destination](../connectors/snowflake.md) for the exact typed fields, table DDL, and opt-in real-service gate.
 
 ## Managed Snowflake staged COPY
 
-`postgresql-to-snowflake-staged-append-v1` adds `managed_stage`, `managed_file_format`, and their creation identities (`managed_stage_created_on`, `managed_file_format_created_on`) to the managed Snowflake options, uses `write_mode=staged_append`, and writes into a standard append changelog table plus a hybrid receipt table. Optional `managed_auto_ingest=true` requires `managed_pipe` and `managed_pipe_created_on`. Load verification is bounded by `managed_load_verify_attempts` and `managed_load_verify_interval_ms`; bounded stage cleanup is bounded by `managed_cleanup_max_objects` and `managed_cleanup_retention_seconds`. The DSN must set `READ_LATEST_WRITES=true` and `TIMEZONE=UTC`, carry no inline secret, and use key-pair JWT over verified HTTPS with OCSP fail-closed. Changing any object, identity, bound, or schema contract requires a new destination revision. PostgreSQL remains authoritative for generations, attempts, checkpoints, delivery receipts, and source acknowledgements; the profile never claims exactly-once.
+The typed `snowflake_postgres_staged` branch names `stage`, `file_format`, and their creation identities (`stage_created_on`, `file_format_created_on`), and writes into the `table` append changelog plus `receipts_table`. The branch and mandatory one-table append mapping select the protocol. Optional native boolean `auto_ingest: true` requires `pipe` and `pipe_created_on`. Load verification uses integer `load_verify_attempts` and `load_verify_interval_millis`; bounded stage cleanup uses integer `cleanup_max_objects` and `cleanup_retention_seconds`. The DSN must set `READ_LATEST_WRITES=true` and `TIMEZONE=UTC`, carry no inline secret, and use key-pair JWT over verified HTTPS with OCSP fail-closed. Changing any object, identity, bound, or schema contract requires a new destination revision. PostgreSQL remains authoritative for generations, attempts, checkpoints, delivery receipts, and source acknowledgements; the profile never claims exactly-once.
 
 ## Managed Snowflake Snowpipe Streaming REST append
 
-`postgresql-to-snowflake-streaming-rest-append-v1` uses `write_mode=streaming_append` and adds `managed_pipe`, `managed_table`, `managed_receipts_table`, `managed_channel_state_table`, an optional `managed_channel_name_prefix`, their creation identities (`managed_pipe_created_on`, `managed_target_created_on`, `managed_receipts_created_on`, `managed_channel_state_created_on`), and a mandatory `managed_streaming_transport` naming the reviewed high-performance append transport. Append retries are bounded by `managed_append_attempts` and `managed_append_backoff_ms`; SQL-observed completeness polling is bounded by `managed_observe_attempts` and `managed_observe_interval_ms`; per-row size is bounded by `managed_max_row_bytes`; bounded channel-state cleanup uses `managed_cleanup_max_objects` and `managed_cleanup_retention_seconds`. The DSN must set `READ_LATEST_WRITES=true` and `TIMEZONE=UTC`, carry no inline secret, and use key-pair JWT over verified HTTPS with OCSP fail-closed; the source must set `toast_fetch=off`. Because no reviewed high-performance append transport is linked, admission **fails closed** with a transport-unavailable error rather than proving delivery from local continuation/offset tokens. Continuation, request, and committed-offset tokens are persisted as evidence but are never sufficient deduplication proof; deterministic `ROW_HASH` identity plus SQL-observed completeness plus a durable receipt gate every PostgreSQL adoption. Changing any object, identity, bound, or schema contract requires a new destination revision. PostgreSQL remains authoritative for generations, attempts, checkpoints, delivery receipts, and source acknowledgements; the profile never claims exactly-once.
+The typed `snowflake_postgres_streaming` branch names `pipe`, `table`, `receipts_table`, `channel_state_table`, optional `channel_name_prefix`, their corresponding creation-identity fields, and mandatory `transport`. The branch and mandatory one-table append mapping select the protocol. Append retries use integer `append_attempts` and `append_backoff_millis`; SQL-observed completeness polling uses `observe_attempts` and `observe_interval_millis`; `max_row_bytes` bounds each row; channel-state cleanup uses `cleanup_max_objects` and `cleanup_retention_seconds`. The DSN must set `READ_LATEST_WRITES=true` and `TIMEZONE=UTC`, carry no inline secret, and use key-pair JWT over verified HTTPS with OCSP fail-closed; the source must set `toast_fetch: "TOAST_FETCH_MODE_OFF"`. Because no reviewed high-performance append transport is linked, admission **fails closed** with a transport-unavailable error rather than proving delivery from local continuation/offset tokens. Continuation, request, and committed-offset tokens are persisted as evidence but are never sufficient deduplication proof; deterministic `ROW_HASH` identity plus SQL-observed completeness plus a durable receipt gate every PostgreSQL adoption. Changing any object, identity, bound, or schema contract requires a new destination revision. PostgreSQL remains authoritative for generations, attempts, checkpoints, delivery receipts, and source acknowledgements; the profile never claims exactly-once.
 
 ## Command-specific files
 

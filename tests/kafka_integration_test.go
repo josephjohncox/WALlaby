@@ -50,7 +50,7 @@ func TestKafkaDestinationJSON(t *testing.T) {
 	}
 
 	dest := &kafkadest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "kafka-test",
 		Type: connector.EndpointKafka,
 		Options: map[string]string{
@@ -173,7 +173,7 @@ func TestKafkaDestinationWireFormats(t *testing.T) {
 			}
 
 			dest := &kafkadest.Destination{}
-			spec := connector.Spec{
+			spec := connector.RuntimeSpec{
 				Name: "kafka-test-" + tc.name,
 				Type: connector.EndpointKafka,
 				Options: map[string]string{
@@ -242,7 +242,7 @@ func TestKafkaDestinationRecordModeHeaders(t *testing.T) {
 	}
 
 	dest := &kafkadest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "kafka-test-record",
 		Type: connector.EndpointKafka,
 		Options: map[string]string{
@@ -354,16 +354,17 @@ func TestKafkaDestinationSchemaRegistryHeaders(t *testing.T) {
 	}
 
 	dest := &kafkadest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "kafka-test-registry",
 		Type: connector.EndpointKafka,
 		Options: map[string]string{
-			"brokers":                      brokersRaw,
-			"topic":                        topic,
-			"format":                       "avro",
-			"acks":                         "all",
-			"schema_registry":              "local",
-			"schema_registry_subject_mode": "topic",
+			"brokers":                         brokersRaw,
+			"topic":                           topic,
+			"format":                          "avro",
+			"acks":                            "all",
+			"schema_registry":                 "local",
+			"schema_registry_local_directory": t.TempDir(),
+			"schema_registry_subject_mode":    "topic",
 		},
 	}
 	if err := dest.Open(ctx, spec); err != nil {

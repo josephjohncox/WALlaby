@@ -1,6 +1,7 @@
 package snowflake
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -34,11 +35,12 @@ type fakeCommittedRow struct {
 // throttling, lost responses, and rejected rows. It proves protocol logic only
 // and is never promotion evidence.
 type fakeStreamProtocol struct {
-	mu           sync.Mutex
-	channels     map[string]*fakeStreamChannel
-	committed    map[string]*fakeCommittedRow
-	channelState map[string]managedStreamChannelState
-	receipts     map[string]managedStreamReceipt
+	mu               sync.Mutex
+	channels         map[string]*fakeStreamChannel
+	committed        map[string]*fakeCommittedRow
+	channelState     map[string]managedStreamChannelState
+	receipts         map[string]managedStreamReceipt
+	appendedPayloads [][]byte
 
 	// Fault knobs.
 	openFailsOnce                error // OpenChannel fails once without opening.
@@ -112,6 +114,9 @@ func (f *fakeStreamProtocol) AppendRows(_ context.Context, req streamAppendReque
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.appendCalls++
+	for _, row := range req.rows {
+		f.appendedPayloads = append(f.appendedPayloads, append([]byte(nil), row.payload...))
+	}
 	channel, present := f.channels[req.channelName]
 	if !present {
 		return streamAppendResult{}, errStreamChannelInvalidated
@@ -302,6 +307,27 @@ func streamTestConfig(t testing.TB) streamConfig {
 	}
 }
 
+func TestStreamingFakeTransportReceivesRawRenameSubsetImages(t *testing.T) {
+	t.Parallel()
+	cfg := streamTestConfig(t)
+	cfg.schemaContract.Columns = append(cfg.schemaContract.Columns, connector.Column{Name: "secret", Type: "text", Nullable: true, TypeMetadata: map[string]string{"nullability_known": "true", "generated_known": "true"}})
+	cfg.schemaContractHash = mustManagedSchemaHash(t, cfg.schemaContract)
+	transaction := managedTestTransaction(cfg.schemaContract)
+	transaction.Fragments[0].Batch.WritePolicy = connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend, ProjectionFingerprint: "rename-subset-v1"}
+	transaction.Fragments[0].Batch.Records[0].After["secret"] = "raw-only"
+	intent := streamTestIntent(t, cfg, transaction)
+	proto := newFakeStreamProtocol()
+	if _, err := newStreamTestDriver(cfg, proto).apply(context.Background(), intent, transaction); err != nil {
+		t.Fatal(err)
+	}
+	if len(proto.appendedPayloads) == 0 {
+		t.Fatal("streaming fake transport received no append payloads")
+	}
+	if !bytes.Contains(proto.appendedPayloads[0], []byte(`"secret":"raw-only"`)) || !bytes.Contains(proto.appendedPayloads[0], []byte(`"SOURCE_TABLE":"widgets"`)) || bytes.Contains(proto.appendedPayloads[0], []byte(`"EVENT_ID"`)) {
+		t.Fatalf("streaming fake transport received double-mapped payload: %s", proto.appendedPayloads[0])
+	}
+}
+
 func streamTestIntent(t *testing.T, cfg streamConfig, transaction connector.SourceTransaction) connector.DeliveryIntent {
 	t.Helper()
 	contentHash, logicalBatchID, err := connector.SourceTransactionIdentity(transaction)
@@ -322,7 +348,7 @@ func streamTestIntent(t *testing.T, cfg streamConfig, transaction connector.Sour
 }
 
 func newStreamTestDriver(cfg streamConfig, proto streamProtocol) *streamDriver {
-	driver := newStreamDriver(proto, cfg, "catalog-fingerprint", StreamingHooks{})
+	driver := newStreamDriver(proto, cfg, "catalog-fingerprint", streamingHooks{})
 	driver.sleep = func(context.Context, time.Duration) error { return nil }
 	return driver
 }

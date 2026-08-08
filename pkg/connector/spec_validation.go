@@ -7,14 +7,13 @@ import (
 )
 
 var persistedIcebergOptions = map[string]struct{}{
-	"catalog_profile": {}, "namespace": {}, "table_prefix": {},
-	"control_table": {}, "destination_revision_id": {},
+	"catalog_profile": {}, "control_table": {}, "destination_revision_id": {},
 }
 
 // ValidatePersistedSpec rejects endpoint options that cannot safely become
 // durable flow state. Deployment-only credentials and behavior controls must
 // never be smuggled through a connector's arbitrary option map.
-func ValidatePersistedSpec(spec Spec) error {
+func ValidatePersistedSpec(spec RuntimeSpec) error {
 	if spec.Type != EndpointIceberg {
 		return nil
 	}

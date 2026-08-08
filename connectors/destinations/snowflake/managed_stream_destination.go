@@ -10,16 +10,7 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-// SetStreamingHooks installs deterministic response-loss and credential-refresh
-// fault injection for the streaming append profile. Production callers leave
-// every hook nil.
-func (d *Destination) SetStreamingHooks(hooks StreamingHooks) {
-	d.streamHooksMu.Lock()
-	d.streamHooks = hooks
-	d.streamHooksMu.Unlock()
-}
-
-func (d *Destination) streamHooksSnapshot() StreamingHooks {
+func (d *Destination) streamHooksSnapshot() streamingHooks {
 	d.streamHooksMu.RLock()
 	defer d.streamHooksMu.RUnlock()
 	return d.streamHooks
@@ -33,7 +24,7 @@ func (d *Destination) streamHooksSnapshot() StreamingHooks {
 // network side effect. The deterministic recovery protocol is proven separately
 // against the in-memory protocol fake and is promotion evidence only once a
 // reviewed transport is linked and its live matrix passes.
-func (d *Destination) openManagedStreaming(ctx context.Context, dsn string, spec connector.Spec) (resultErr error) {
+func (d *Destination) openManagedStreaming(ctx context.Context, dsn string, spec connector.RuntimeSpec) (resultErr error) {
 	_, endAdmission := telemetry.StartSnowflakeManagedSpan(ctx, "admission", "", "", 0, 0)
 	defer func() { endAdmission(resultErr) }()
 	cfg, err := streamConfigFromSpec(dsn, spec)
@@ -98,7 +89,7 @@ func (d *Destination) CleanupManagedStreaming(ctx context.Context, flowIncarnati
 	if d.db == nil || d.managedProfile != connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 {
 		return 0, streamingNotInitializedError()
 	}
-	if err := d.validateStreamingSnowflakeReceiptScope(ctx, connector.DeliveryIntent{FlowIncarnationID: flowIncarnationID}); err != nil {
+	if err := d.validateStreamingSnowflakeReceiptScope(ctx, connector.DeliveryIntent{FlowIncarnationID: flowIncarnationID, LogicalBatchID: "scope-validation"}); err != nil {
 		return 0, err
 	}
 	return d.newStreamDriver().cleanup(ctx, flowIncarnationID)

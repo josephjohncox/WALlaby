@@ -2,17 +2,20 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 type flowResource struct {
@@ -31,12 +34,6 @@ type flowResourceModel struct {
 	Config           *flowConfigModel `tfsdk:"config"`
 }
 
-type endpointModel struct {
-	Name    types.String `tfsdk:"name"`
-	Type    types.String `tfsdk:"type"`
-	Options types.Map    `tfsdk:"options"`
-}
-
 type flowConfigModel struct {
 	AckPolicy          types.String                    `tfsdk:"ack_policy"`
 	PrimaryDestination types.String                    `tfsdk:"primary_destination"`
@@ -44,6 +41,7 @@ type flowConfigModel struct {
 	GiveUpPolicy       types.String                    `tfsdk:"give_up_policy"`
 	DDL                *flowDDLConfigModel             `tfsdk:"ddl"`
 	Materialization    *flowMaterializationPolicyModel `tfsdk:"materialization"`
+	TableMappings      types.Object                    `tfsdk:"table_mappings"`
 }
 
 type flowMaterializationPolicyModel struct {
@@ -70,14 +68,8 @@ func (r *flowResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			"id": schema.StringAttribute{
 				Computed: true,
 			},
-			"name": schema.StringAttribute{
-				Optional:      true,
-				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
-			},
-			"wire_format": schema.StringAttribute{
-				Optional:      true,
-				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
-			},
+			"name":        schema.StringAttribute{Optional: true},
+			"wire_format": schema.StringAttribute{Optional: true},
 			"parallelism": schema.Int64Attribute{
 				Optional: true,
 			},
@@ -86,41 +78,21 @@ func (r *flowResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 			"start_immediately": schema.BoolAttribute{
 				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
 			},
 			"source": schema.SingleNestedAttribute{
-				Required: true,
-				Attributes: map[string]schema.Attribute{
-					"name": schema.StringAttribute{
-						Optional: true,
-					},
-					"type": schema.StringAttribute{
-						Required: true,
-					},
-					"options": schema.MapAttribute{
-						Optional:    true,
-						ElementType: types.StringType,
-					},
-				},
+				Required:   true,
+				Attributes: endpointSchemaAttributes(),
 			},
 			"destinations": schema.ListNestedAttribute{
 				Required: true,
 				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"name": schema.StringAttribute{
-							Optional: true,
-						},
-						"type": schema.StringAttribute{
-							Required: true,
-						},
-						"options": schema.MapAttribute{
-							Optional:    true,
-							ElementType: types.StringType,
-						},
-					},
+					Attributes: endpointSchemaAttributes(),
 				},
 			},
 			"config": schema.SingleNestedAttribute{
-				Optional: true,
+				Required: true,
 				Attributes: map[string]schema.Attribute{
 					"ack_policy": schema.StringAttribute{
 						Optional: true,
@@ -131,9 +103,8 @@ func (r *flowResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 					"failure_mode": schema.StringAttribute{
 						Optional: true,
 					},
-					"give_up_policy": schema.StringAttribute{
-						Optional: true,
-					},
+					"give_up_policy": schema.StringAttribute{Optional: true},
+					"table_mappings": tableMappingsSchema(),
 					"ddl": schema.SingleNestedAttribute{
 						Optional: true,
 						Attributes: map[string]schema.Attribute{
@@ -160,7 +131,14 @@ func (r *flowResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 	}
 }
 
+func (r *flowResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
 func (r *flowResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	if !req.Config.Raw.IsFullyKnown() {
+		return
+	}
 	var model flowResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &model)...)
 	if resp.Diagnostics.HasError() {
@@ -171,25 +149,18 @@ func (r *flowResource) ValidateConfig(ctx context.Context, req resource.Validate
 
 func validateFlowResourceModel(ctx context.Context, model flowResourceModel) diag.Diagnostics {
 	var diagnostics diag.Diagnostics
-	for index, destination := range model.Destinations {
-		if destination.Type.IsUnknown() || destination.Type.IsNull() || !strings.EqualFold(strings.TrimSpace(destination.Type.ValueString()), "iceberg") {
-			continue
-		}
-		if destination.Options.IsNull() {
-			diagnostics.AddError("Invalid Iceberg destination", fmt.Sprintf("destination %d requires destination_revision_id", index))
-			continue
-		}
-		if destination.Options.IsUnknown() {
-			continue
-		}
-		options := map[string]string{}
-		var optionDiagnostics diag.Diagnostics
-		optionDiagnostics.Append(destination.Options.ElementsAs(ctx, &options, false)...)
-		diagnostics.Append(optionDiagnostics...)
-		if !optionDiagnostics.HasError() {
-			if err := connector.ValidatePersistedSpec(connector.Spec{Type: connector.EndpointIceberg, Options: options}); err != nil {
-				diagnostics.AddError("Invalid Iceberg destination", err.Error())
+	diagnostics.Append(validateTerraformTableMappings(ctx, model)...)
+	source, sourceDiagnostics := endpointModelToProto(ctx, model.Source, true)
+	diagnostics.Append(sourceDiagnostics...)
+	destinations := make([]*wallabypb.Endpoint, 0, len(model.Destinations))
+	for _, destination := range model.Destinations {
+		converted, destinationDiagnostics := endpointModelToProto(ctx, destination, false)
+		diagnostics.Append(destinationDiagnostics...)
+		if converted != nil {
+			if iceberg := converted.GetIceberg(); iceberg != nil && strings.TrimSpace(iceberg.GetDestinationRevisionId()) == "" {
+				diagnostics.AddError("Invalid Iceberg destination", "iceberg.destination_revision_id is required")
 			}
+			destinations = append(destinations, converted)
 		}
 	}
 	if model.Config == nil {
@@ -198,26 +169,12 @@ func validateFlowResourceModel(ctx context.Context, model flowResourceModel) dia
 	config := model.Config
 	ackPolicy := "all"
 	if !config.AckPolicy.IsNull() && !config.AckPolicy.IsUnknown() && strings.TrimSpace(config.AckPolicy.ValueString()) != "" {
-		ackPolicy = strings.ToLower(strings.TrimSpace(config.AckPolicy.ValueString()))
+		ackPolicy = strings.TrimSpace(config.AckPolicy.ValueString())
 	}
 	switch ackPolicy {
 	case "all", "primary", "materialized":
 	default:
 		diagnostics.AddError("Invalid acknowledgement policy", "ack_policy must be one of all, primary, or materialized")
-	}
-	if !config.FailureMode.IsNull() && !config.FailureMode.IsUnknown() {
-		switch strings.ToLower(strings.TrimSpace(config.FailureMode.ValueString())) {
-		case "", "hold_slot", "drop_slot":
-		default:
-			diagnostics.AddError("Invalid failure mode", "failure_mode must be hold_slot or drop_slot")
-		}
-	}
-	if !config.GiveUpPolicy.IsNull() && !config.GiveUpPolicy.IsUnknown() {
-		switch strings.ToLower(strings.TrimSpace(config.GiveUpPolicy.ValueString())) {
-		case "", "never", "on_retry_exhaustion":
-		default:
-			diagnostics.AddError("Invalid give-up policy", "give_up_policy must be never or on_retry_exhaustion")
-		}
 	}
 	if ackPolicy != "materialized" {
 		if config.Materialization != nil {
@@ -225,45 +182,14 @@ func validateFlowResourceModel(ctx context.Context, model flowResourceModel) dia
 		}
 		return diagnostics
 	}
-	if config.Materialization == nil || config.Materialization.ProjectionID.IsNull() {
-		diagnostics.AddError("Missing materialization policy", "ack_policy=materialized requires materialization.projection_id=canonical_cdc_parquet_v1")
-		return diagnostics
+	if config.Materialization == nil || config.Materialization.ProjectionID.IsNull() || (!config.Materialization.ProjectionID.IsUnknown() && config.Materialization.ProjectionID.ValueString() != "canonical_cdc_parquet_v2") {
+		diagnostics.AddError("Invalid materialization policy", "ack_policy=materialized requires materialization.projection_id=canonical_cdc_parquet_v2")
 	}
-	if !config.Materialization.ProjectionID.IsUnknown() && strings.TrimSpace(config.Materialization.ProjectionID.ValueString()) != "canonical_cdc_parquet_v1" {
-		diagnostics.AddError("Invalid materialization projection", "ack_policy=materialized requires materialization.projection_id=canonical_cdc_parquet_v1")
+	if sourceConfig := source.GetPostgresSource(); sourceConfig == nil || sourceConfig.Managed == nil || !sourceConfig.GetManaged() || sourceConfig.GetManagedProfile() != wallabypb.ManagedProfile_MANAGED_PROFILE_UNSPECIFIED || sourceConfig.GetBootstrap() != wallabypb.BootstrapMode_BOOTSTRAP_MODE_NEVER {
+		diagnostics.AddError("Invalid materialized source", "ack_policy=materialized requires postgres_source with managed=true, no managed_profile, and bootstrap=BOOTSTRAP_MODE_NEVER")
 	}
-	if !config.PrimaryDestination.IsNull() && !config.PrimaryDestination.IsUnknown() && strings.TrimSpace(config.PrimaryDestination.ValueString()) != "" {
-		diagnostics.AddError("Invalid primary destination", "primary_destination is not valid with ack_policy=materialized")
-	}
-	if !model.Source.Type.IsUnknown() && !model.Source.Type.IsNull() && !strings.EqualFold(strings.TrimSpace(model.Source.Type.ValueString()), "postgres") {
-		diagnostics.AddError("Invalid materialized source", "ack_policy=materialized requires a PostgreSQL source")
-	}
-	if !model.Source.Options.IsNull() && !model.Source.Options.IsUnknown() {
-		options := map[string]string{}
-		diagnostics.Append(model.Source.Options.ElementsAs(ctx, &options, false)...)
-		if !diagnostics.HasError() {
-			switch strings.ToLower(strings.TrimSpace(options["managed"])) {
-			case "1", "true", "yes", "on":
-			default:
-				diagnostics.AddError("Invalid materialized source", "ack_policy=materialized requires managed PostgreSQL transactional execution")
-			}
-			if strings.TrimSpace(options["managed_profile"]) != "" {
-				diagnostics.AddError("Invalid materialized profile", "ack_policy=materialized is not admitted by named managed profiles")
-			}
-			if !strings.EqualFold(strings.TrimSpace(options["bootstrap"]), "never") {
-				diagnostics.AddError("Invalid materialized bootstrap", "ack_policy=materialized currently requires source.options.bootstrap=never")
-			}
-		}
-	} else if !model.Source.Options.IsUnknown() {
-		diagnostics.AddError("Invalid materialized source", "ack_policy=materialized requires source.options.managed=true")
-	}
-	if len(model.Destinations) != 1 {
-		diagnostics.AddError("Invalid materialized destinations", "ack_policy=materialized requires exactly one Iceberg destination revision")
-		return diagnostics
-	}
-	destination := model.Destinations[0]
-	if !destination.Type.IsUnknown() && !destination.Type.IsNull() && !strings.EqualFold(strings.TrimSpace(destination.Type.ValueString()), "iceberg") {
-		diagnostics.AddError("Invalid materialized destination", "ack_policy=materialized requires an Iceberg destination")
+	if len(destinations) != 1 || destinations[0].GetIceberg() == nil {
+		diagnostics.AddError("Invalid materialized destination", "ack_policy=materialized requires exactly one iceberg destination")
 	}
 	return diagnostics
 }
@@ -286,102 +212,103 @@ func (r *flowResource) Create(ctx context.Context, req resource.CreateRequest, r
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	flow, diags := flowModelToProto(ctx, plan)
-	resp.Diagnostics.Append(diags...)
+	flow, conversionDiagnostics := flowModelToProto(ctx, plan)
+	resp.Diagnostics.Append(conversionDiagnostics...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	result, err := r.client.Flow.CreateFlow(ctx, &wallabypb.CreateFlowRequest{
-		Flow:             flow,
-		StartImmediately: plan.StartImmediately.ValueBool(),
-	})
+	result, err := r.client.Flow.CreateFlow(ctx, &wallabypb.CreateFlowRequest{Flow: flow, StartImmediately: plan.StartImmediately.ValueBool()})
 	if err != nil {
 		resp.Diagnostics.AddError("Create flow failed", err.Error())
 		return
 	}
-
-	state := flowResourceModel{
-		ID:               types.StringValue(result.Id),
-		Name:             types.StringValue(result.Name),
-		WireFormat:       types.StringValue(wireFormatToString(result.WireFormat)),
-		Parallelism:      types.Int64Value(int64(result.Parallelism)),
-		State:            types.StringValue(flowStateToString(result.State)),
-		StartImmediately: plan.StartImmediately,
-		Source:           endpointFromProto(result.Source),
-		Destinations:     endpointsFromProto(result.Destinations),
-		Config:           flowConfigModelFromProto(result.Config),
+	state, stateDiagnostics := flowResourceModelFromProto(ctx, result, plan.StartImmediately)
+	resp.Diagnostics.Append(stateDiagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
 
 func (r *flowResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var state flowResourceModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	var id types.String
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("id"), &id)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	if state.ID.IsNull() || state.ID.ValueString() == "" {
+	if id.IsNull() || id.ValueString() == "" {
 		resp.State.RemoveResource(ctx)
 		return
 	}
-
-	result, err := r.client.Flow.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: state.ID.ValueString()})
+	result, err := r.client.Flow.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: id.ValueString()})
 	if err != nil {
-		resp.State.RemoveResource(ctx)
+		if status.Code(err) == codes.NotFound {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+		resp.Diagnostics.AddError("Read flow failed", err.Error())
 		return
 	}
-
-	newState := flowResourceModel{
-		ID:               types.StringValue(result.Id),
-		Name:             types.StringValue(result.Name),
-		WireFormat:       types.StringValue(wireFormatToString(result.WireFormat)),
-		Parallelism:      types.Int64Value(int64(result.Parallelism)),
-		State:            types.StringValue(flowStateToString(result.State)),
-		StartImmediately: state.StartImmediately,
-		Source:           endpointFromProto(result.Source),
-		Destinations:     endpointsFromProto(result.Destinations),
-		Config:           flowConfigModelFromProto(result.Config),
+	var startImmediately types.Bool
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("start_immediately"), &startImmediately)...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, newState)...)
+	state, stateDiagnostics := flowResourceModelFromProto(ctx, result, startImmediately)
+	resp.Diagnostics.Append(stateDiagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
 
 func (r *flowResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan flowResourceModel
+	var plan, prior flowResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	flow, diags := flowModelToProto(ctx, plan)
-	resp.Diagnostics.Append(diags...)
+	planned, plannedDiagnostics := flowModelToProto(ctx, plan)
+	resp.Diagnostics.Append(plannedDiagnostics...)
+	priorWire, priorDiagnostics := flowModelToProto(ctx, prior)
+	resp.Diagnostics.Append(priorDiagnostics...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	result, err := r.client.Flow.UpdateFlow(ctx, &wallabypb.UpdateFlowRequest{Flow: flow})
+	var result *wallabypb.Flow
+	var err error
+	if flowRequiresReconfigure(priorWire, planned) {
+		pause, resume := true, true
+		result, err = r.client.Flow.ReconfigureFlow(ctx, &wallabypb.ReconfigureFlowRequest{Flow: planned, PauseFirst: &pause, ResumeAfter: &resume})
+	} else {
+		result, err = r.client.Flow.UpdateFlow(ctx, &wallabypb.UpdateFlowRequest{Flow: planned})
+	}
 	if err != nil {
 		resp.Diagnostics.AddError("Update flow failed", err.Error())
 		return
 	}
-
-	state := flowResourceModel{
-		ID:               types.StringValue(result.Id),
-		Name:             types.StringValue(result.Name),
-		WireFormat:       types.StringValue(wireFormatToString(result.WireFormat)),
-		Parallelism:      types.Int64Value(int64(result.Parallelism)),
-		State:            types.StringValue(flowStateToString(result.State)),
-		StartImmediately: plan.StartImmediately,
-		Source:           endpointFromProto(result.Source),
-		Destinations:     endpointsFromProto(result.Destinations),
-		Config:           flowConfigModelFromProto(result.Config),
+	state, stateDiagnostics := flowResourceModelFromProto(ctx, result, plan.StartImmediately)
+	resp.Diagnostics.Append(stateDiagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
+}
+
+func flowRequiresReconfigure(prior, planned *wallabypb.Flow) bool {
+	if prior == nil || planned == nil {
+		return true
+	}
+	if prior.WireFormat != planned.WireFormat || !proto.Equal(prior.Config, planned.Config) || !proto.Equal(prior.Source, planned.Source) || len(prior.Destinations) != len(planned.Destinations) {
+		return true
+	}
+	for index := range prior.Destinations {
+		if !proto.Equal(prior.Destinations[index], planned.Destinations[index]) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *flowResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -390,19 +317,38 @@ func (r *flowResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
 	if state.ID.IsNull() || state.ID.ValueString() == "" {
+		resp.State.RemoveResource(ctx)
 		return
 	}
-
-	_, _ = r.client.Flow.DeleteFlow(ctx, &wallabypb.DeleteFlowRequest{FlowId: state.ID.ValueString()})
+	_, err := r.client.Flow.DeleteFlow(ctx, &wallabypb.DeleteFlowRequest{FlowId: state.ID.ValueString()})
+	if err != nil && status.Code(err) != codes.NotFound {
+		resp.Diagnostics.AddError("Delete flow failed", err.Error())
+		return
+	}
 	resp.State.RemoveResource(ctx)
 }
 
 func flowModelToProto(ctx context.Context, model flowResourceModel) (*wallabypb.Flow, diag.Diagnostics) {
 	var diags diag.Diagnostics
+	for _, field := range []struct {
+		name    string
+		unknown bool
+	}{
+		{name: "name", unknown: model.Name.IsUnknown()},
+		{name: "wire_format", unknown: model.WireFormat.IsUnknown()},
+		{name: "parallelism", unknown: model.Parallelism.IsUnknown()},
+		{name: "start_immediately", unknown: model.StartImmediately.IsUnknown()},
+	} {
+		if field.unknown {
+			diags.AddError("Unknown flow value", field.name+" must be known before apply")
+		}
+	}
+	if diags.HasError() {
+		return nil, diags
+	}
 
-	source, diag := endpointModelToProto(ctx, model.Source)
+	source, diag := endpointModelToProto(ctx, model.Source, true)
 	diags.Append(diag...)
 	if diags.HasError() {
 		return nil, diags
@@ -410,7 +356,7 @@ func flowModelToProto(ctx context.Context, model flowResourceModel) (*wallabypb.
 
 	dests := make([]*wallabypb.Endpoint, 0, len(model.Destinations))
 	for _, dest := range model.Destinations {
-		endpoint, diag := endpointModelToProto(ctx, dest)
+		endpoint, diag := endpointModelToProto(ctx, dest, false)
 		diags.Append(diag...)
 		if diag.HasError() {
 			return nil, diags
@@ -418,152 +364,135 @@ func flowModelToProto(ctx context.Context, model flowResourceModel) (*wallabypb.
 		dests = append(dests, endpoint)
 	}
 
-	return &wallabypb.Flow{
-		Id:           model.ID.ValueString(),
-		Name:         model.Name.ValueString(),
-		WireFormat:   wireFormatFromString(model.WireFormat.ValueString()),
-		Parallelism:  int32(model.Parallelism.ValueInt64()),
-		Source:       source,
-		Destinations: dests,
-		Config:       flowConfigModelToProto(model.Config),
-	}, diags
+	config, configDiagnostics := flowConfigModelToProto(ctx, model.Config, dests)
+	diags.Append(configDiagnostics...)
+	if diags.HasError() {
+		return nil, diags
+	}
+	return &wallabypb.Flow{Id: model.ID.ValueString(), Name: model.Name.ValueString(), WireFormat: wireFormatFromString(model.WireFormat.ValueString()), Parallelism: int32(model.Parallelism.ValueInt64()), Source: source, Destinations: dests, Config: config}, diags
 }
 
-func endpointModelToProto(ctx context.Context, model endpointModel) (*wallabypb.Endpoint, diag.Diagnostics) {
-	var diags diag.Diagnostics
-	options := map[string]string{}
-	if !model.Options.IsNull() {
-		diags.Append(model.Options.ElementsAs(ctx, &options, false)...)
-		if diags.HasError() {
-			return nil, diags
-		}
-	}
-
-	return &wallabypb.Endpoint{
-		Name:    model.Name.ValueString(),
-		Type:    endpointTypeFromString(model.Type.ValueString()),
-		Options: options,
-	}, diags
-}
-
-func endpointsFromProto(items []*wallabypb.Endpoint) []endpointModel {
-	out := make([]endpointModel, 0, len(items))
-	for _, item := range items {
-		out = append(out, endpointFromProto(item))
-	}
-	return out
-}
-
-func endpointFromProto(item *wallabypb.Endpoint) endpointModel {
-	if item == nil {
-		return endpointModel{}
-	}
-	options := map[string]string{}
-	for key, value := range item.Options {
-		options[key] = value
-	}
-	optionsValue, _ := types.MapValueFrom(context.Background(), types.StringType, options)
-	return endpointModel{
-		Name:    types.StringValue(item.Name),
-		Type:    types.StringValue(endpointTypeToString(item.Type)),
-		Options: optionsValue,
-	}
-}
-
-func flowConfigModelToProto(model *flowConfigModel) *wallabypb.FlowConfig {
+func flowConfigModelToProto(ctx context.Context, model *flowConfigModel, destinations []*wallabypb.Endpoint) (*wallabypb.FlowConfig, diag.Diagnostics) {
+	var diagnostics diag.Diagnostics
 	if model == nil {
-		return nil
+		diagnostics.AddError("Missing flow config", "config with table_mappings is required")
+		return nil, diagnostics
 	}
 	cfg := &wallabypb.FlowConfig{}
-	has := false
-
-	if !model.AckPolicy.IsNull() && !model.AckPolicy.IsUnknown() {
-		value := strings.TrimSpace(model.AckPolicy.ValueString())
-		if value != "" {
-			cfg.AckPolicy = ackPolicyFromString(value)
-			has = true
+	for _, field := range []struct {
+		name    string
+		unknown bool
+	}{
+		{name: "config.ack_policy", unknown: model.AckPolicy.IsUnknown()},
+		{name: "config.primary_destination", unknown: model.PrimaryDestination.IsUnknown()},
+		{name: "config.failure_mode", unknown: model.FailureMode.IsUnknown()},
+		{name: "config.give_up_policy", unknown: model.GiveUpPolicy.IsUnknown()},
+	} {
+		if field.unknown {
+			diagnostics.AddError("Unknown flow config value", field.name+" must be known before apply")
 		}
+	}
+	if !model.AckPolicy.IsNull() && !model.AckPolicy.IsUnknown() {
+		cfg.AckPolicy = ackPolicyFromString(strings.TrimSpace(model.AckPolicy.ValueString()))
 	}
 	if !model.PrimaryDestination.IsNull() && !model.PrimaryDestination.IsUnknown() {
-		value := strings.TrimSpace(model.PrimaryDestination.ValueString())
-		if value != "" {
-			cfg.PrimaryDestination = value
-			has = true
-		}
+		cfg.PrimaryDestination = strings.TrimSpace(model.PrimaryDestination.ValueString())
 	}
 	if !model.FailureMode.IsNull() && !model.FailureMode.IsUnknown() {
-		value := strings.TrimSpace(model.FailureMode.ValueString())
-		if value != "" {
-			cfg.FailureMode = failureModeFromString(value)
-			has = true
-		}
+		cfg.FailureMode = failureModeFromString(strings.TrimSpace(model.FailureMode.ValueString()))
 	}
 	if !model.GiveUpPolicy.IsNull() && !model.GiveUpPolicy.IsUnknown() {
-		value := strings.TrimSpace(model.GiveUpPolicy.ValueString())
-		if value != "" {
-			cfg.GiveUpPolicy = giveUpPolicyFromString(value)
-			has = true
-		}
+		cfg.GiveUpPolicy = giveUpPolicyFromString(strings.TrimSpace(model.GiveUpPolicy.ValueString()))
 	}
 	if model.DDL != nil {
-		ddl := ddlPolicyModelToProto(model.DDL)
-		if ddl != nil {
-			cfg.Ddl = ddl
-			has = true
+		for _, field := range []struct {
+			name    string
+			unknown bool
+		}{
+			{name: "config.ddl.gate", unknown: model.DDL.Gate.IsUnknown()},
+			{name: "config.ddl.auto_approve", unknown: model.DDL.AutoApprove.IsUnknown()},
+			{name: "config.ddl.auto_apply", unknown: model.DDL.AutoApply.IsUnknown()},
+		} {
+			if field.unknown {
+				diagnostics.AddError("Unknown DDL policy value", field.name+" must be known before apply")
+			}
 		}
 	}
-	if model.Materialization != nil && !model.Materialization.ProjectionID.IsNull() && !model.Materialization.ProjectionID.IsUnknown() {
-		projectionID := strings.TrimSpace(model.Materialization.ProjectionID.ValueString())
-		if projectionID != "" {
-			cfg.Materialization = &wallabypb.MaterializationPolicy{ProjectionId: projectionID}
-			has = true
+	cfg.Ddl = ddlPolicyModelToProto(model.DDL)
+	if model.Materialization != nil {
+		if model.Materialization.ProjectionID.IsUnknown() {
+			diagnostics.AddError("Unknown materialization projection", "materialization.projection_id must be known before apply")
+		} else if !model.Materialization.ProjectionID.IsNull() {
+			cfg.Materialization = &wallabypb.MaterializationPolicy{ProjectionId: strings.TrimSpace(model.Materialization.ProjectionID.ValueString())}
 		}
 	}
-	if !has {
-		return nil
+	mappings, deferred, mappingDiagnostics := tableMappingsModelToInternal(ctx, model.TableMappings, false)
+	diagnostics.Append(mappingDiagnostics...)
+	if deferred {
+		diagnostics.AddError("Unknown table mappings", "all table mapping fields must be known before apply")
 	}
-	return cfg
+	if !mappingDiagnostics.HasError() && !deferred {
+		specs := make([]connector.RuntimeSpec, 0, len(destinations))
+		for _, destination := range destinations {
+			if destination != nil {
+				spec, err := endpointcodec.Decode(destination, endpointcodec.RoleDestination)
+				if err != nil {
+					diagnostics.AddError("Invalid typed destination", err.Error())
+					continue
+				}
+				specs = append(specs, spec)
+			}
+		}
+		if err := mappings.Validate(specs); err != nil {
+			diagnostics.AddError("Invalid table mappings", err.Error())
+		} else {
+			cfg.TableMappings = tableMappingsInternalToProto(mappings)
+		}
+	}
+	if diagnostics.HasError() {
+		return nil, diagnostics
+	}
+	return cfg, diagnostics
 }
 
-func flowConfigModelFromProto(pb *wallabypb.FlowConfig) *flowConfigModel {
+func flowConfigModelFromProto(ctx context.Context, pb *wallabypb.FlowConfig) (*flowConfigModel, diag.Diagnostics) {
 	if pb == nil {
-		return nil
+		return nil, nil
 	}
-	model := &flowConfigModel{
-		AckPolicy:          types.StringNull(),
-		PrimaryDestination: types.StringNull(),
-		FailureMode:        types.StringNull(),
-		GiveUpPolicy:       types.StringNull(),
-	}
-	has := false
+	mappings, mappingDiagnostics := tableMappingsModelFromProto(ctx, pb.TableMappings)
+	model := &flowConfigModel{AckPolicy: types.StringNull(), PrimaryDestination: types.StringNull(), FailureMode: types.StringNull(), GiveUpPolicy: types.StringNull(), TableMappings: mappings}
 	if pb.AckPolicy != wallabypb.AckPolicy_ACK_POLICY_UNSPECIFIED {
 		model.AckPolicy = types.StringValue(ackPolicyToString(pb.AckPolicy))
-		has = true
 	}
 	if pb.PrimaryDestination != "" {
 		model.PrimaryDestination = types.StringValue(pb.PrimaryDestination)
-		has = true
 	}
 	if pb.FailureMode != wallabypb.FailureMode_FAILURE_MODE_UNSPECIFIED {
 		model.FailureMode = types.StringValue(failureModeToString(pb.FailureMode))
-		has = true
 	}
 	if pb.GiveUpPolicy != wallabypb.GiveUpPolicy_GIVE_UP_POLICY_UNSPECIFIED {
 		model.GiveUpPolicy = types.StringValue(giveUpPolicyToString(pb.GiveUpPolicy))
-		has = true
 	}
-	if ddl := ddlPolicyModelFromProto(pb.Ddl); ddl != nil {
-		model.DDL = ddl
-		has = true
+	model.DDL = ddlPolicyModelFromProto(pb.Ddl)
+	if pb.Materialization != nil {
+		model.Materialization = &flowMaterializationPolicyModel{ProjectionID: nullableString(pb.Materialization.ProjectionId)}
 	}
-	if pb.Materialization != nil && pb.Materialization.ProjectionId != "" {
-		model.Materialization = &flowMaterializationPolicyModel{ProjectionID: types.StringValue(pb.Materialization.ProjectionId)}
-		has = true
+	return model, mappingDiagnostics
+}
+
+func flowResourceModelFromProto(ctx context.Context, pb *wallabypb.Flow, startImmediately types.Bool) (flowResourceModel, diag.Diagnostics) {
+	var diagnostics diag.Diagnostics
+	if pb == nil {
+		diagnostics.AddError("Invalid flow response", "flow response is null")
+		return flowResourceModel{}, diagnostics
 	}
-	if !has {
-		return nil
+	config, configDiagnostics := flowConfigModelFromProto(ctx, pb.Config)
+	diagnostics.Append(configDiagnostics...)
+	model := flowResourceModel{ID: types.StringValue(pb.Id), Name: types.StringValue(pb.Name), WireFormat: types.StringValue(wireFormatToString(pb.WireFormat)), Parallelism: types.Int64Value(int64(pb.Parallelism)), State: types.StringValue(flowStateToString(pb.State)), StartImmediately: startImmediately, Source: endpointFromProto(pb.Source), Destinations: endpointsFromProto(pb.Destinations), Config: config}
+	if !diagnostics.HasError() {
+		diagnostics.Append(validateFlowResourceModel(ctx, model)...)
 	}
-	return model
+	return model, diagnostics
 }
 
 func ddlPolicyModelToProto(model *flowDDLConfigModel) *wallabypb.DDLPolicy {
@@ -619,41 +548,6 @@ func ddlPolicyModelFromProto(pb *wallabypb.DDLPolicy) *flowDDLConfigModel {
 		return nil
 	}
 	return model
-}
-
-func endpointTypeFromString(value string) wallabypb.EndpointType {
-	switch strings.ToLower(value) {
-	case "postgres":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES
-	case "snowflake":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_SNOWFLAKE
-	case "s3":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_S3
-	case "kafka":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_KAFKA
-	case "http":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_HTTP
-	case "grpc":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_GRPC
-	case "proto":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_PROTO
-	case "pgstream":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_PGSTREAM
-	case "snowpipe":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_SNOWPIPE
-	case "parquet":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_PARQUET
-	case "duckdb":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_DUCKDB
-	case "redpanda":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA
-	case "clickhouse":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE
-	case "iceberg":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_ICEBERG
-	default:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_UNSPECIFIED
-	}
 }
 
 func ackPolicyFromString(value string) wallabypb.AckPolicy {
@@ -755,41 +649,6 @@ func wireFormatToString(value wallabypb.WireFormat) string {
 		return "avro"
 	case wallabypb.WireFormat_WIRE_FORMAT_JSON:
 		return "json"
-	default:
-		return ""
-	}
-}
-
-func endpointTypeToString(value wallabypb.EndpointType) string {
-	switch value {
-	case wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES:
-		return "postgres"
-	case wallabypb.EndpointType_ENDPOINT_TYPE_SNOWFLAKE:
-		return "snowflake"
-	case wallabypb.EndpointType_ENDPOINT_TYPE_S3:
-		return "s3"
-	case wallabypb.EndpointType_ENDPOINT_TYPE_KAFKA:
-		return "kafka"
-	case wallabypb.EndpointType_ENDPOINT_TYPE_HTTP:
-		return "http"
-	case wallabypb.EndpointType_ENDPOINT_TYPE_GRPC:
-		return "grpc"
-	case wallabypb.EndpointType_ENDPOINT_TYPE_PROTO:
-		return "proto"
-	case wallabypb.EndpointType_ENDPOINT_TYPE_PGSTREAM:
-		return "pgstream"
-	case wallabypb.EndpointType_ENDPOINT_TYPE_SNOWPIPE:
-		return "snowpipe"
-	case wallabypb.EndpointType_ENDPOINT_TYPE_PARQUET:
-		return "parquet"
-	case wallabypb.EndpointType_ENDPOINT_TYPE_DUCKDB:
-		return "duckdb"
-	case wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA:
-		return "redpanda"
-	case wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE:
-		return "clickhouse"
-	case wallabypb.EndpointType_ENDPOINT_TYPE_ICEBERG:
-		return "iceberg"
 	default:
 		return ""
 	}

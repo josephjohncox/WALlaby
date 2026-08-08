@@ -14,7 +14,12 @@ import (
 func TestDeliverTaskBatchRejectsInvalidAuthorityBeforeDestinationIO(t *testing.T) {
 	t.Parallel()
 	bootstrapID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	task := bootstrap.SnapshotTask{RelationID: 42, TaskID: "range-0", Namespace: "public", Table: "events"}
+	schema := connector.Schema{Namespace: "public", Name: "events", Version: 1, Columns: []connector.Column{{Name: "id", Type: "bigint"}}}
+	policy := connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend, ProjectionFingerprint: "projection-v1"}
+	task := bootstrap.SnapshotTask{
+		RelationID: 42, TaskID: "range-0", Namespace: "public", Table: "events", Schema: schema, KeyColumns: []string{"id"},
+		Delivery: bootstrap.SnapshotDeliveryContract{Version: bootstrap.SnapshotDeliveryContractV1, Schema: schema, WritePolicy: policy, ProjectionFingerprint: "projection-v1"},
+	}
 	claim := authority.ClaimFence{
 		RunFence: authority.RunFence{
 			FlowID: "flow", FlowIncarnationID: uuid.MustParse("22222222-2222-2222-2222-222222222222"),
@@ -22,9 +27,9 @@ func TestDeliverTaskBatchRejectsInvalidAuthorityBeforeDestinationIO(t *testing.T
 		},
 		Kind: authority.ClaimSnapshot, WorkID: task.WorkID(bootstrapID), ClaimEpoch: 1,
 	}
-	snapshot := bootstrap.ExportedSnapshot{BootstrapID: bootstrapID, BootstrapGeneration: 1, SourceLineageID: "source/publication-v1", ManifestHash: "manifest"}
+	snapshot := bootstrap.ExportedSnapshot{BootstrapID: bootstrapID, BootstrapGeneration: 1, SourceLineageID: "source/publication-v1", PublicationRevision: "publication-v1", ManifestHash: "manifest"}
 	batch := connector.Batch{
-		Schema:  connector.Schema{Namespace: "public", Name: "events", Version: 1},
+		Schema: schema, WritePolicy: policy,
 		Records: []connector.Record{{Table: "events", Operation: connector.OpInsert, SchemaVersion: 1}},
 	}
 
@@ -65,8 +70,8 @@ func TestImportSnapshotRejectsMissingSessionBeforeDatabaseAccess(t *testing.T) {
 
 type recordingBootstrapDestination struct{ externalCalls int }
 
-func (*recordingBootstrapDestination) Open(context.Context, connector.Spec) error   { return nil }
-func (*recordingBootstrapDestination) Write(context.Context, connector.Batch) error { return nil }
+func (*recordingBootstrapDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
+func (*recordingBootstrapDestination) Write(context.Context, connector.Batch) error      { return nil }
 func (*recordingBootstrapDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
 	return nil
 }
@@ -83,7 +88,7 @@ func (d *recordingBootstrapDestination) Reconcile(context.Context, connector.Del
 	d.externalCalls++
 	return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, nil
 }
-func (d *recordingBootstrapDestination) PrepareBootstrap(context.Context, connector.BootstrapIntent, []connector.Schema) error {
+func (d *recordingBootstrapDestination) PrepareBootstrap(context.Context, connector.BootstrapIntent, []connector.BootstrapTable) error {
 	d.externalCalls++
 	return nil
 }
@@ -95,11 +100,11 @@ func (d *recordingBootstrapDestination) ReconcileBootstrap(context.Context, conn
 	d.externalCalls++
 	return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, nil
 }
-func (d *recordingBootstrapDestination) PublishBootstrap(context.Context, connector.BootstrapIntent, []connector.Schema) (connector.DeliveryEvidence, error) {
+func (d *recordingBootstrapDestination) PublishBootstrap(context.Context, connector.BootstrapIntent, []connector.BootstrapTable) (connector.DeliveryEvidence, error) {
 	d.externalCalls++
 	return connector.DeliveryEvidence{}, nil
 }
-func (d *recordingBootstrapDestination) AbandonBootstrap(context.Context, connector.BootstrapIntent, []connector.Schema) error {
+func (d *recordingBootstrapDestination) AbandonBootstrap(context.Context, connector.BootstrapIntent, []connector.BootstrapTable) error {
 	d.externalCalls++
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/cli"
+	"github.com/josephjohncox/wallaby/internal/endpointcodec"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/runner"
 	"github.com/josephjohncox/wallaby/pkg/certify"
@@ -30,7 +32,9 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gopkg.in/yaml.v3"
@@ -167,6 +171,7 @@ func newAdminCommand() *cobra.Command {
 	addLeaf(flowCommand, "plan", "preview flow plan", addFlowPlanFlags, flowPlan)
 	addLeaf(flowCommand, "dry-run", "dry-run flow update", addFlowDryRunFlags, flowDryRun)
 	addLeaf(flowCommand, "validate", "validate flow definition", addFlowValidateFlags, flowValidate)
+	addFlowMappingsCommand(flowCommand)
 	command.AddCommand(flowCommand)
 
 	command.InitDefaultCompletionCmd()
@@ -197,8 +202,51 @@ func initAdminConfig(cmd *cobra.Command) error {
 	})
 }
 
+type adminEndpointFailure struct {
+	Endpoint, Phase, Classification string
+	Status                          codes.Code
+}
+
+func (e *adminEndpointFailure) Error() string {
+	if e.Status != codes.OK {
+		return fmt.Sprintf("admin endpoint %q %s failed (class=%s, grpc_status=%s)", e.Endpoint, e.Phase, e.Classification, e.Status)
+	}
+	return fmt.Sprintf("admin endpoint %q %s failed (class=%s)", e.Endpoint, e.Phase, e.Classification)
+}
+func classifyAdminRPCError(err error) (*adminEndpointFailure, bool) {
+	var bounded *adminEndpointFailure
+	if errors.As(err, &bounded) {
+		return bounded, true
+	}
+	if grpcStatus, ok := status.FromError(err); ok {
+		return &adminEndpointFailure{Phase: "rpc", Classification: "grpc_status", Status: grpcStatus.Code()}, true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &adminEndpointFailure{Phase: "rpc", Classification: "deadline_exceeded", Status: codes.DeadlineExceeded}, true
+	}
+	if errors.Is(err, context.Canceled) {
+		return &adminEndpointFailure{Phase: "rpc", Classification: "canceled", Status: codes.Canceled}, true
+	}
+	return nil, false
+}
 func runWithConfig(cmd *cobra.Command, fn func(*cobra.Command, []string) error, args []string) error {
-	return fn(cmd, args)
+	err := fn(cmd, args)
+	if err == nil {
+		return nil
+	}
+	bounded, ok := classifyAdminRPCError(err)
+	if !ok {
+		return err
+	}
+	if bounded.Endpoint != "" {
+		return bounded
+	}
+	endpoint, resolveErr := stringFlag(cmd, "endpoint")
+	if resolveErr != nil {
+		return &adminEndpointFailure{Endpoint: redactedEndpointOption, Phase: "rpc", Classification: "endpoint_resolution_failed"}
+	}
+	bounded.Endpoint = sanitizeAdministrativeEndpoint(*endpoint)
+	return bounded
 }
 
 func addAdminConnectionFlags(cmd *cobra.Command, defaultEndpoint string) {
@@ -482,8 +530,8 @@ func addFlowWaitFlags(cmd *cobra.Command) {
 }
 
 func addFlowValidateFlags(cmd *cobra.Command) {
-	cmd.Flags().String("file", "", "flow config JSON file")
-	addJSONOutputFlags(cmd, false)
+	cmd.Flags().String("file", "", "flow config JSON or YAML file")
+	addJSONOutputFlags(cmd, true)
 }
 
 func addFlowDryRunFlags(cmd *cobra.Command) {
@@ -493,7 +541,8 @@ func addFlowDryRunFlags(cmd *cobra.Command) {
 
 func addFlowPlanFlags(cmd *cobra.Command) {
 	addAdminConnectionFlags(cmd, "")
-	cmd.Flags().String("file", "", "flow config JSON file")
+	cmd.Flags().String("file", "", "flow config JSON or YAML file")
+	cmd.Flags().String("flow-id", "", "persisted flow ID for an ID-less authoring file")
 	addJSONOutputFlags(cmd, false)
 }
 
@@ -504,6 +553,17 @@ func addFlowCheckFlags(cmd *cobra.Command) {
 }
 
 func stringFlag(cmd *cobra.Command, name string) (*string, error) {
+	flags := cmd.Flags()
+	if flags.Lookup(name) == nil {
+		inheritedFlags := cmd.InheritedFlags()
+		if flags.Lookup(name) == nil {
+			if persistent := cmd.PersistentFlags().Lookup(name); persistent != nil {
+				flags.AddFlag(persistent)
+			} else if inherited := inheritedFlags.Lookup(name); inherited != nil {
+				flags.AddFlag(inherited)
+			}
+		}
+	}
 	v, err := cli.ResolveStringFlagValue(cmd, name)
 	if err != nil {
 		return nil, fmt.Errorf("read --%s: %w", name, err)
@@ -707,16 +767,17 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 	var flow *wallabypb.Flow
 
 	if *endpoint != "" {
+		renderedEndpoint := sanitizeAdministrativeEndpoint(*endpoint)
 		client, closeConn, err := flowClient(*endpoint, *insecureConn)
 		if err != nil {
 			result.AdminReachable = false
-			result.Endpoint = *endpoint
+			result.Endpoint = renderedEndpoint
 			result.EndpointError = err.Error()
 			if *flowID != "" {
-				return fmt.Errorf("admin endpoint check: %w", err)
+				return err
 			}
 		} else {
-			result.Endpoint = *endpoint
+			result.Endpoint = renderedEndpoint
 			result.AdminReachable = true
 			defer func() { _ = closeConn() }()
 			if *flowID != "" {
@@ -740,14 +801,9 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 	}
 
 	if *configPath != "" {
-		fsys := afero.NewOsFs()
-		payload, err := afero.ReadFile(fsys, *configPath)
+		cfg, err := loadFlowConfigFile(*configPath)
 		if err != nil {
-			return fmt.Errorf("read flow config: %w", err)
-		}
-		var cfg flowConfig
-		if err := json.Unmarshal(payload, &cfg); err != nil {
-			return fmt.Errorf("parse flow config: %w", err)
+			return err
 		}
 		if _, err := flowConfigToProto(cfg); err != nil {
 			return fmt.Errorf("flow config: %w", err)
@@ -792,7 +848,15 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 		if !isSource && flow == nil && idx == 0 {
 			isSource = true
 		}
-		record := checkEndpointResult(item.Name, endpointTypeFromProto(item.Type), isSource, item.Options, *checkConnectivity, *connectTimeout)
+		role := endpointcodec.RoleDestination
+		if isSource {
+			role = endpointcodec.RoleSource
+		}
+		spec, err := endpointcodec.Decode(item, role)
+		if err != nil {
+			return fmt.Errorf("decode endpoint %q: %w", item.GetName(), err)
+		}
+		record := checkEndpointResult(spec.Name, spec.Type, isSource, spec.Options, *checkConnectivity, *connectTimeout)
 		if record.Source {
 			result.Source = record
 		} else {
@@ -846,7 +910,7 @@ func checkEndpointResult(name string, endpointType connector.EndpointType, isSou
 	start := time.Now()
 	if err := checkEndpointConnectivity(endpointType, options, checkTimeout); err != nil {
 		result.Reachable = false
-		result.Error = err.Error()
+		result.Error = fmt.Sprintf("%s connectivity check failed", endpointType)
 		return result
 	}
 	result.Reachable = true
@@ -891,23 +955,40 @@ func checkEndpointConnectivity(endpointType connector.EndpointType, options map[
 		return nil
 
 	case connector.EndpointHTTP:
-		target := firstOption(options, []string{"url", "endpoint", "target", "server"}, "")
+		target := strings.TrimSpace(optionValue(options, "url"))
 		if target == "" {
 			return errors.New("url is required for connectivity check")
 		}
 		return checkHTTPConnectivity(target, timeout)
-
-	case connector.EndpointGRPC, connector.EndpointS3, connector.EndpointSnowflake, connector.EndpointSnowpipe, connector.EndpointParquet, connector.EndpointDuckLake, connector.EndpointDuckDB, connector.EndpointClickHouse, connector.EndpointProto:
+	case connector.EndpointGRPC:
+		target := strings.TrimSpace(optionValue(options, "endpoint"))
+		if target == "" {
+			return errors.New("endpoint is required for gRPC connectivity check")
+		}
+		return checkNetworkConnectivity(target, timeout)
+	case connector.EndpointS3:
+		target := strings.TrimSpace(optionValue(options, "endpoint"))
+		if target == "" {
+			return errors.New("endpoint is required for S3 connectivity check")
+		}
+		return checkNetworkConnectivity(target, timeout)
+	case connector.EndpointSnowflake, connector.EndpointSnowpipe, connector.EndpointDuckLake, connector.EndpointDuckDB, connector.EndpointClickHouse:
+		target := strings.TrimSpace(optionValue(options, "dsn"))
+		if target == "" {
+			return fmt.Errorf("dsn is required for %s connectivity check", endpointType)
+		}
+		return checkNetworkConnectivity(target, timeout)
+	default:
+		// Custom connectors own their free-form option vocabulary. These keys are
+		// connectivity hints only and never aliases for a built-in typed branch.
 		target := firstOption(options, []string{"url", "endpoint", "target", "address", "addr", "host", "dsn"}, "")
 		if target == "" {
-			return fmt.Errorf("connectivity target is required for endpoint type %q", endpointType)
+			return fmt.Errorf("connectivity check unsupported for endpoint type %q", endpointType)
 		}
 		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
 			return checkHTTPConnectivity(target, timeout)
 		}
 		return checkNetworkConnectivity(target, timeout)
-	default:
-		return fmt.Errorf("connectivity check unsupported for endpoint type %q", endpointType)
 	}
 }
 
@@ -1148,10 +1229,10 @@ func slotList(cmd *cobra.Command, _ []string) error {
 
 		if slotName == "" {
 			resp, err := flowSvc.ListReplicationSlots(ctx, &wallabypb.ListReplicationSlotsRequest{
-				FlowId:  cfg.flow.Id,
-				Dsn:     cfg.dsn,
-				Slot:    slotName,
-				Options: cfg.options,
+				FlowId: cfg.flow.Id,
+				Dsn:    cfg.dsn,
+				Slot:   slotName,
+				RdsIam: rdsIAMFromOptions(cfg.options),
 			})
 			if err != nil {
 				return fmt.Errorf("list replication slots: %w", err)
@@ -1161,10 +1242,10 @@ func slotList(cmd *cobra.Command, _ []string) error {
 			}
 		} else {
 			resp, err := flowSvc.GetReplicationSlot(ctx, &wallabypb.GetReplicationSlotRequest{
-				FlowId:  cfg.flow.Id,
-				Dsn:     cfg.dsn,
-				Slot:    slotName,
-				Options: cfg.options,
+				FlowId: cfg.flow.Id,
+				Dsn:    cfg.dsn,
+				Slot:   slotName,
+				RdsIam: rdsIAMFromOptions(cfg.options),
 			})
 			if err != nil {
 				return fmt.Errorf("get replication slot: %w", err)
@@ -1297,10 +1378,10 @@ func slotShow(cmd *cobra.Command, _ []string) error {
 		}
 		defer func() { _ = closeConn() }()
 		resp, err := flowSvc.GetReplicationSlot(ctx, &wallabypb.GetReplicationSlotRequest{
-			FlowId:  cfg.flow.Id,
-			Dsn:     cfg.dsn,
-			Slot:    cfg.slot,
-			Options: cfg.options,
+			FlowId: cfg.flow.Id,
+			Dsn:    cfg.dsn,
+			Slot:   cfg.slot,
+			RdsIam: rdsIAMFromOptions(cfg.options),
 		})
 		if err != nil {
 			return fmt.Errorf("get replication slot: %w", err)
@@ -1745,17 +1826,23 @@ func ddlReject(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func ddlClient(endpoint string, insecureConn bool) (wallabypb.DDLServiceClient, func() error, error) {
+func adminGRPCConnection(endpoint string, insecureConn bool) (*grpc.ClientConn, error) {
 	if endpoint == "" {
-		return nil, nil, errors.New("endpoint is required")
+		return nil, errors.New("endpoint is required")
 	}
 	if !insecureConn {
-		return nil, nil, errors.New("secure grpc is not configured")
+		return nil, errors.New("secure grpc is not configured")
 	}
-
 	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return nil, nil, fmt.Errorf("connect: %w", err)
+		return nil, &adminEndpointFailure{Endpoint: sanitizeAdministrativeEndpoint(endpoint), Phase: "connect", Classification: "target_rejected"}
+	}
+	return conn, nil
+}
+func ddlClient(endpoint string, insecureConn bool) (wallabypb.DDLServiceClient, func() error, error) {
+	conn, err := adminGRPCConnection(endpoint, insecureConn)
+	if err != nil {
+		return nil, nil, err
 	}
 	return wallabypb.NewDDLServiceClient(conn), conn.Close, nil
 }
@@ -1983,16 +2070,24 @@ func runCertify(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return fmt.Errorf("get flow: %w", err)
 		}
-		sourceOptions = copyStringMap(resp.Source.Options)
+		sourceSpec, err := endpointcodec.Decode(resp.GetSource(), endpointcodec.RoleSource)
+		if err != nil {
+			return fmt.Errorf("decode source endpoint: %w", err)
+		}
+		sourceOptions = copyStringMap(sourceSpec.Options)
 		if *sourceDSN == "" {
-			*sourceDSN = strings.TrimSpace(resp.Source.Options["dsn"])
+			*sourceDSN = strings.TrimSpace(sourceSpec.Options["dsn"])
 		}
 
-		destSpec, err := selectDestination(resp.Destinations, *destName)
+		destEndpoint, err := selectDestination(resp.Destinations, *destName)
 		if err != nil {
 			return err
 		}
-		if destSpec.Type != wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES {
+		destSpec, err := endpointcodec.Decode(destEndpoint, endpointcodec.RoleDestination)
+		if err != nil {
+			return fmt.Errorf("decode destination endpoint: %w", err)
+		}
+		if destSpec.Type != connector.EndpointPostgres {
 			return fmt.Errorf("destination %q is not postgres", destSpec.Name)
 		}
 		destOptions = copyStringMap(destSpec.Options)
@@ -2114,21 +2209,14 @@ func flowCreate(cmd *cobra.Command, _ []string) error {
 		return errors.New("--file is required")
 	}
 
-	payload, err := readFile(*path)
+	cfg, err := loadFlowConfigFile(*path)
 	if err != nil {
-		return fmt.Errorf("read flow file: %w", err)
+		return err
 	}
-
-	var cfg flowConfig
-	if err := json.Unmarshal(payload, &cfg); err != nil {
-		return fmt.Errorf("parse flow json: %w", err)
-	}
-
 	pbFlow, err := flowConfigToProto(cfg)
 	if err != nil {
 		return fmt.Errorf("flow config: %w", err)
 	}
-
 	client, closeConn, err := flowClient(*endpoint, *insecureConn)
 	if err != nil {
 		return err
@@ -2208,14 +2296,9 @@ func flowUpdate(cmd *cobra.Command, _ []string) error {
 		return errors.New("--file is required")
 	}
 
-	payload, err := readFile(*path)
+	cfg, err := loadFlowConfigFile(*path)
 	if err != nil {
-		return fmt.Errorf("read flow file: %w", err)
-	}
-
-	var cfg flowConfig
-	if err := json.Unmarshal(payload, &cfg); err != nil {
-		return fmt.Errorf("parse flow json: %w", err)
+		return err
 	}
 	if *flowID != "" {
 		cfg.ID = *flowID
@@ -2316,19 +2399,12 @@ func flowReconfigure(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-
 	if *path == "" {
 		return errors.New("--file is required")
 	}
-
-	payload, err := readFile(*path)
+	cfg, err := loadFlowConfigFile(*path)
 	if err != nil {
-		return fmt.Errorf("read flow file: %w", err)
-	}
-
-	var cfg flowConfig
-	if err := json.Unmarshal(payload, &cfg); err != nil {
-		return fmt.Errorf("parse flow json: %w", err)
+		return err
 	}
 	if *flowID != "" {
 		cfg.ID = *flowID
@@ -2763,16 +2839,9 @@ func flowCleanup(cmd *cobra.Command, _ []string) error {
 }
 
 func streamClient(endpoint string, insecureConn bool) (wallabypb.StreamServiceClient, func() error, error) {
-	if endpoint == "" {
-		return nil, nil, errors.New("endpoint is required")
-	}
-	if !insecureConn {
-		return nil, nil, errors.New("secure grpc is not configured")
-	}
-
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := adminGRPCConnection(endpoint, insecureConn)
 	if err != nil {
-		return nil, nil, fmt.Errorf("connect: %w", err)
+		return nil, nil, err
 	}
 	return wallabypb.NewStreamServiceClient(conn), conn.Close, nil
 }
@@ -3028,7 +3097,7 @@ func publicationList(cmd *cobra.Command, _ []string) error {
 			FlowId:      cfg.flow.Id,
 			Dsn:         cfg.dsn,
 			Publication: cfg.publication,
-			Options:     cfg.options,
+			RdsIam:      rdsIAMFromOptions(cfg.options),
 		})
 		if err != nil {
 			return fmt.Errorf("list publication tables: %w", err)
@@ -3436,11 +3505,11 @@ func publicationScrape(cmd *cobra.Command, _ []string) error {
 
 		currentSet := make(map[string]struct{}, len(current))
 		for _, table := range current {
-			currentSet[strings.ToLower(table)] = struct{}{}
+			currentSet[table] = struct{}{}
 		}
 		missing = make([]string, 0)
 		for _, table := range discoveredTables {
-			if _, ok := currentSet[strings.ToLower(table)]; !ok {
+			if _, ok := currentSet[table]; !ok {
 				missing = append(missing, table)
 			}
 		}
@@ -3526,7 +3595,7 @@ func flowResolveStaging(cmd *cobra.Command, _ []string) error {
 	}
 
 	factory := runner.Factory{}
-	destinations, err := factory.Destinations(model.Destinations)
+	destinations, err := factory.DestinationsForFlow(model)
 	if err != nil {
 		return fmt.Errorf("build destinations: %w", err)
 	}
@@ -3739,11 +3808,11 @@ func flowGet(cmd *cobra.Command, _ []string) error {
 	fmt.Printf("Flow: %s\n", output.ID)
 	fmt.Printf("  Name:    %s\n", output.Name)
 	fmt.Printf("  State:   %s\n", output.State)
-	fmt.Printf("  Source:  %s (%s)\n", output.Source.Name, output.Source.Type)
+	fmt.Printf("  Source:  %s (%s)\n", output.Source.name(), output.Source.branchLabel())
 	fmt.Printf("  Wire:    %s\n", output.WireFormat)
 	fmt.Printf("  Destinations: %d\n", len(output.Destinations))
 	for _, dest := range output.Destinations {
-		fmt.Printf("  - %s (%s)\n", dest.Name, dest.Type)
+		fmt.Printf("  - %s (%s)\n", dest.name(), dest.branchLabel())
 	}
 	return nil
 }
@@ -3915,6 +3984,10 @@ func flowValidate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	yamlOutput, err := boolFlag(cmd, "yaml")
+	if err != nil {
+		return err
+	}
 	prettyOutput, err := boolFlag(cmd, "pretty")
 	if err != nil {
 		return err
@@ -3922,41 +3995,31 @@ func flowValidate(cmd *cobra.Command, _ []string) error {
 	if *path == "" {
 		return errors.New("--file is required")
 	}
-
-	payload, err := readFile(*path)
+	cfg, err := loadFlowConfigFile(*path)
 	if err != nil {
-		return fmt.Errorf("read flow file: %w", err)
-	}
-
-	var cfg flowConfig
-	if err := json.Unmarshal(payload, &cfg); err != nil {
-		return fmt.Errorf("parse flow json: %w", err)
+		return err
 	}
 	if cfg.Name == "" {
 		return errors.New("flow name is required")
 	}
-	if cfg.Source.Type == "" {
-		return errors.New("source.type is required")
+	if cfg.Source.endpoint == nil {
+		return errors.New("source endpoint is required")
 	}
 	if len(cfg.Destinations) == 0 {
 		return errors.New("at least one destination is required")
 	}
-
-	_, err = flowConfigToProto(cfg)
+	pbFlow, err := flowConfigToProto(cfg)
 	if err != nil {
 		return fmt.Errorf("validate flow config: %w", err)
 	}
-
 	if *prettyOutput {
 		*jsonOutput = true
 	}
-	out := flowValidateOutput{
-		Valid:            true,
-		ID:               cfg.ID,
-		Name:             cfg.Name,
-		Source:           cfg.Source,
-		DestinationCount: len(cfg.Destinations),
+	if *jsonOutput && *yamlOutput {
+		return errors.New("use either --json or --yaml")
 	}
+	detail := flowDetailFromProto(pbFlow)
+	out := flowValidateOutput{Valid: true, ID: cfg.ID, Name: cfg.Name, Source: detail.Source, Destinations: detail.Destinations, DestinationCount: len(detail.Destinations)}
 	if *jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		if *prettyOutput {
@@ -3967,8 +4030,19 @@ func flowValidate(cmd *cobra.Command, _ []string) error {
 		}
 		return nil
 	}
-
-	fmt.Printf("Flow config is valid: %s (%s -> %d destination)\n", out.Name, out.Source.Type, out.DestinationCount)
+	if *yamlOutput {
+		payload, err := yaml.Marshal(out)
+		if err != nil {
+			return fmt.Errorf("encode yaml: %w", err)
+		}
+		_, err = os.Stdout.Write(payload)
+		return err
+	}
+	fmt.Printf("Flow config is valid: %s (%s -> %d destination)\n", out.Name, out.Source.branchLabel(), out.DestinationCount)
+	fmt.Printf("  Source: %s (%s)\n", out.Source.name(), out.Source.branchLabel())
+	for _, destination := range out.Destinations {
+		fmt.Printf("  Destination: %s (%s)\n", destination.name(), destination.branchLabel())
+	}
 	return nil
 }
 
@@ -3988,15 +4062,9 @@ func flowDryRun(cmd *cobra.Command, _ []string) error {
 	if *path == "" {
 		return errors.New("--file is required")
 	}
-
-	payload, err := readFile(*path)
+	cfg, err := loadFlowConfigFile(*path)
 	if err != nil {
-		return fmt.Errorf("read flow file: %w", err)
-	}
-
-	var cfg flowConfig
-	if err := json.Unmarshal(payload, &cfg); err != nil {
-		return fmt.Errorf("parse flow json: %w", err)
+		return err
 	}
 
 	pbFlow, err := flowConfigToProto(cfg)
@@ -4020,9 +4088,9 @@ func flowDryRun(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Printf("Flow dry-run: %s -> %s (%s destination)\n", out.Name, out.State, out.WireFormat)
-	fmt.Printf("Source: %s (%s)\n", out.Source.Name, out.Source.Type)
+	fmt.Printf("Source: %s (%s)\n", out.Source.name(), out.Source.branchLabel())
 	for _, dest := range out.Destinations {
-		fmt.Printf("Destination: %s (%s)\n", dest.Name, dest.Type)
+		fmt.Printf("Destination: %s (%s)\n", dest.name(), dest.branchLabel())
 	}
 	return nil
 }
@@ -4048,31 +4116,31 @@ func flowPlan(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	flowIDOverride, err := stringFlag(cmd, "flow-id")
+	if err != nil {
+		return err
+	}
 	if *path == "" {
 		return errors.New("--file is required")
 	}
-
-	payload, err := readFile(*path)
+	cfg, err := loadFlowConfigFile(*path)
 	if err != nil {
-		return fmt.Errorf("read flow file: %w", err)
+		return err
 	}
-	var cfg flowConfig
-	if err := json.Unmarshal(payload, &cfg); err != nil {
-		return fmt.Errorf("parse flow json: %w", err)
-	}
-
 	pbFlow, err := flowConfigToProto(cfg)
 	if err != nil {
 		return fmt.Errorf("flow config: %w", err)
 	}
-	plan := flowPlanOutput{
-		FlowID:      pbFlow.Id,
-		FlowName:    pbFlow.Name,
-		Desired:     flowDetailFromProto(pbFlow),
-		Compared:    false,
-		ChangeCount: 0,
+	lookupFlowID, err := resolveFlowPlanID(pbFlow.Id, *flowIDOverride)
+	if err != nil {
+		return err
 	}
+	desiredDefinition := flowDetailForComparisonFromProto(pbFlow)
+	plan := flowPlanOutput{FlowID: lookupFlowID, FlowName: pbFlow.Name, Desired: redactFlowDetail(desiredDefinition), Compared: false, ChangeCount: 0}
 	if *endpoint != "" {
+		if lookupFlowID == "" {
+			return errors.New("flow plan with --endpoint requires file id or --flow-id")
+		}
 		client, closeConn, err := flowClient(*endpoint, *insecureConn)
 		if err != nil {
 			return err
@@ -4082,15 +4150,13 @@ func flowPlan(cmd *cobra.Command, _ []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := client.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: pbFlow.Id})
+		resp, err := client.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: lookupFlowID})
 		if err == nil && resp != nil {
-			current := flowDetailFromProto(resp)
-			plan.Current = &current
+			currentDefinition := flowDetailForComparisonFromProto(resp)
+			currentOutput := redactFlowDetail(currentDefinition)
+			plan.Current = &currentOutput
 			plan.Compared = true
-			plan.Changes = append(plan.Changes, flowPlanDiff("name", current.Name, plan.Desired.Name)...)
-			plan.Changes = append(plan.Changes, flowPlanDiff("wire_format", current.WireFormat, plan.Desired.WireFormat)...)
-			plan.Changes = append(plan.Changes, flowPlanDiffInt("state_raw", int(current.StateRaw), int(plan.Desired.StateRaw))...)
-			plan.Changes = append(plan.Changes, compareFlowEndpointList("destinations", current.Destinations, plan.Desired.Destinations)...)
+			plan.Changes = compareFlowDefinitions(currentDefinition, desiredDefinition)
 			plan.ChangeCount = len(plan.Changes)
 		} else if err != nil {
 			return fmt.Errorf("load flow for plan: %w", err)
@@ -4128,6 +4194,18 @@ func flowPlan(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+func resolveFlowPlanID(fileID, override string) (string, error) {
+	fileID = strings.TrimSpace(fileID)
+	override = strings.TrimSpace(override)
+	if fileID != "" && override != "" && fileID != override {
+		return "", fmt.Errorf("--flow-id %q conflicts with flow file id %q", override, fileID)
+	}
+	if override != "" {
+		return override, nil
+	}
+	return fileID, nil
+}
+
 func flowPlanDiff(field, before, after string) []flowPlanChange {
 	if before == after {
 		return nil
@@ -4142,7 +4220,29 @@ func flowPlanDiffInt(field string, before, after int) []flowPlanChange {
 	return []flowPlanChange{{Path: field, Before: fmt.Sprintf("%d", before), After: fmt.Sprintf("%d", after)}}
 }
 
-func compareFlowEndpointList(field string, before, after []flowEndpointInfoDetail) []flowPlanChange {
+func compareFlowDefinitions(before, after flowDetail) []flowPlanChange {
+	changes := make([]flowPlanChange, 0, 6)
+	changes = append(changes, flowPlanDiff("name", before.Name, after.Name)...)
+	changes = append(changes, flowPlanDiff("wire_format", before.WireFormat, after.WireFormat)...)
+	changes = append(changes, compareFlowEndpoint("source", before.Source, after.Source)...)
+	changes = append(changes, compareFlowEndpointList("destinations", before.Destinations, after.Destinations)...)
+	changes = append(changes, flowPlanDiffInt("parallelism", int(before.Parallelism), int(after.Parallelism))...)
+	changes = append(changes, compareFlowConfig(before.Config, after.Config)...)
+	return changes
+}
+
+func compareFlowConfig(before, after flowConfigInfo) []flowPlanChange {
+	var changes []flowPlanChange
+	if before.TableMappings == nil || after.TableMappings == nil {
+		changes = compareJSONValue("config.table_mappings", before.TableMappings, after.TableMappings)
+	} else if !before.TableMappings.Equal(*after.TableMappings) {
+		changes = compareJSONValue("config.table_mappings", before.TableMappings, after.TableMappings)
+	}
+	before.TableMappings = nil
+	after.TableMappings = nil
+	return append(changes, compareJSONValue("config", before, after)...)
+}
+func compareJSONValue(field string, before, after any) []flowPlanChange {
 	beforeEncoded, err := json.Marshal(before)
 	if err != nil {
 		return []flowPlanChange{{Path: field, Before: "(invalid)", After: "(invalid)"}}
@@ -4154,13 +4254,43 @@ func compareFlowEndpointList(field string, before, after []flowEndpointInfoDetai
 	if string(beforeEncoded) == string(afterEncoded) {
 		return nil
 	}
-	return []flowPlanChange{
-		{
-			Path:   field,
-			Before: string(beforeEncoded),
-			After:  string(afterEncoded),
-		},
+	return []flowPlanChange{{Path: field, Before: string(beforeEncoded), After: string(afterEncoded)}}
+}
+
+func compareFlowEndpoint(field string, before, after flowEndpointInfoDetail) []flowPlanChange {
+	if before.equal(after) {
+		return nil
 	}
+	beforeSafe, beforeErr := json.Marshal(redactFlowEndpoint(before))
+	afterSafe, afterErr := json.Marshal(redactFlowEndpoint(after))
+	if beforeErr != nil || afterErr != nil {
+		return []flowPlanChange{{Path: field, Before: "(invalid)", After: "(invalid)"}}
+	}
+	return []flowPlanChange{{Path: field, Before: string(beforeSafe), After: string(afterSafe)}}
+}
+
+func compareFlowEndpointList(field string, before, after []flowEndpointInfoDetail) []flowPlanChange {
+	if flowEndpointListsEqual(before, after) {
+		return nil
+	}
+	beforeSafe, beforeErr := json.Marshal(redactFlowEndpoints(before))
+	afterSafe, afterErr := json.Marshal(redactFlowEndpoints(after))
+	if beforeErr != nil || afterErr != nil {
+		return []flowPlanChange{{Path: field, Before: "(invalid)", After: "(invalid)"}}
+	}
+	return []flowPlanChange{{Path: field, Before: string(beforeSafe), After: string(afterSafe)}}
+}
+
+func flowEndpointListsEqual(before, after []flowEndpointInfoDetail) bool {
+	if len(before) != len(after) {
+		return false
+	}
+	for index := range before {
+		if !before[index].equal(after[index]) {
+			return false
+		}
+	}
+	return true
 }
 
 func flowCheck(cmd *cobra.Command, _ []string) error {
@@ -4188,26 +4318,22 @@ func flowCheck(cmd *cobra.Command, _ []string) error {
 		return errors.New("--file is required")
 	}
 
-	payload, err := readFile(*path)
+	cfg, err := loadFlowConfigFile(*path)
 	if err != nil {
-		return fmt.Errorf("read flow file: %w", err)
-	}
-
-	var cfg flowConfig
-	if err := json.Unmarshal(payload, &cfg); err != nil {
-		return fmt.Errorf("parse flow json: %w", err)
+		return err
 	}
 	if cfg.Name == "" {
 		return errors.New("flow name is required")
 	}
-	if cfg.Source.Type == "" {
-		return errors.New("source.type is required")
+	if cfg.Source.endpoint == nil {
+		return errors.New("source endpoint is required")
 	}
 	if len(cfg.Destinations) == 0 {
 		return errors.New("at least one destination is required")
 	}
 
-	if _, err := flowConfigToProto(cfg); err != nil {
+	pbFlow, err := flowConfigToProto(cfg)
+	if err != nil {
 		return fmt.Errorf("validate flow config: %w", err)
 	}
 
@@ -4224,14 +4350,14 @@ func flowCheck(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return fmt.Errorf("flow endpoint check: %w", err)
 		}
-		endpointMsg = *endpoint
+		endpointMsg = sanitizeAdministrativeEndpoint(*endpoint)
 	}
 
 	out := map[string]any{
 		"valid":              true,
 		"name":               cfg.Name,
 		"flow_id":            cfg.ID,
-		"source_type":        cfg.Source.Type,
+		"source_type":        flowEndpointInfoFromProto(pbFlow.GetSource()).Type,
 		"destination_count":  len(cfg.Destinations),
 		"endpoint_checked":   *endpoint != "",
 		"endpoint_reachable": true,
@@ -4281,6 +4407,10 @@ func flowSummaryFromProto(pbFlow *wallabypb.Flow) flowSummary {
 }
 
 func flowDetailFromProto(pbFlow *wallabypb.Flow) flowDetail {
+	return redactFlowDetail(flowDetailForComparisonFromProto(pbFlow))
+}
+
+func flowDetailForComparisonFromProto(pbFlow *wallabypb.Flow) flowDetail {
 	if pbFlow == nil {
 		return flowDetail{}
 	}
@@ -4296,14 +4426,13 @@ func flowDetailFromProto(pbFlow *wallabypb.Flow) flowDetail {
 	}
 	if pbFlow.Config != nil {
 		item.Config = flowConfigInfo{
-			AckPolicy:                       ackPolicyName(pbFlow.Config.AckPolicy),
-			Materialization:                 flowMaterializationInfoFromProto(pbFlow.Config.Materialization),
-			PrimaryDestination:              pbFlow.Config.PrimaryDestination,
-			FailureMode:                     failureModeName(pbFlow.Config.FailureMode),
-			GiveUpPolicy:                    giveUpPolicyName(pbFlow.Config.GiveUpPolicy),
-			SchemaRegistrySubject:           pbFlow.Config.SchemaRegistrySubject,
-			SchemaRegistryProtoTypesSubject: pbFlow.Config.SchemaRegistryProtoTypesSubject,
-			SchemaRegistrySubjectMode:       pbFlow.Config.SchemaRegistrySubjectMode,
+			AckPolicy:          ackPolicyName(pbFlow.Config.AckPolicy),
+			DDL:                flowDDLFromProto(pbFlow.Config.Ddl),
+			TableMappings:      mappingsFromProto(pbFlow.Config.TableMappings),
+			Materialization:    flowMaterializationInfoFromProto(pbFlow.Config.Materialization),
+			PrimaryDestination: pbFlow.Config.PrimaryDestination,
+			FailureMode:        failureModeName(pbFlow.Config.FailureMode),
+			GiveUpPolicy:       giveUpPolicyName(pbFlow.Config.GiveUpPolicy),
 		}
 	}
 	for _, dest := range pbFlow.Destinations {
@@ -4313,26 +4442,226 @@ func flowDetailFromProto(pbFlow *wallabypb.Flow) flowDetail {
 }
 
 func flowEndpointInfoFromProto(endpoint *wallabypb.Endpoint) flowEndpointInfo {
-	if endpoint == nil {
-		return flowEndpointInfo{}
+	detail := flowEndpointInfoDetailFromProto(endpoint)
+	return flowEndpointInfo{Name: detail.name(), Type: detail.branchLabel()}
+}
+
+const redactedEndpointOption = "[REDACTED]"
+
+func redactFlowDetail(detail flowDetail) flowDetail {
+	detail.Source = redactFlowEndpoint(detail.Source)
+	detail.Destinations = redactFlowEndpoints(detail.Destinations)
+	return detail
+}
+func redactFlowEndpoints(endpoints []flowEndpointInfoDetail) []flowEndpointInfoDetail {
+	if endpoints == nil {
+		return nil
 	}
-	return flowEndpointInfo{
-		Name:    endpoint.Name,
-		Type:    strings.TrimPrefix(strings.ToLower(endpoint.Type.String()), "endpoint_type_"),
-		TypeRaw: int32(endpoint.Type),
+	out := make([]flowEndpointInfoDetail, len(endpoints))
+	for i, endpoint := range endpoints {
+		out[i] = redactFlowEndpoint(endpoint)
 	}
+	return out
+}
+
+type endpointOptionValueClass uint8
+
+const (
+	endpointOptionOrdinary endpointOptionValueClass = iota
+	endpointOptionSensitive
+	endpointOptionURL
+	endpointOptionNetwork
+)
+
+func redactFlowEndpoint(endpoint flowEndpointInfoDetail) flowEndpointInfoDetail {
+	endpoint.endpoint = redactEndpointProto(endpoint.endpoint)
+	return endpoint
+}
+func normalizedEndpointOptionKey(key string) string {
+	return strings.NewReplacer("_", "", "-", "", ".", "", " ", "").Replace(strings.ToLower(key))
+}
+func hasEndpointOptionSuffix(normalized string, suffixes ...string) bool {
+	for _, suffix := range suffixes {
+		if normalized == suffix || strings.HasSuffix(normalized, suffix) {
+			return true
+		}
+	}
+	return false
+}
+func classifyEndpointOptionKey(key string) endpointOptionValueClass {
+	normalized := normalizedEndpointOptionKey(key)
+	if normalized == "header" || normalized == "headers" || normalized == "catalog" || ((strings.Contains(normalized, "http") || strings.Contains(normalized, "grpc")) && strings.Contains(normalized, "auth") && strings.Contains(normalized, "header")) {
+		return endpointOptionSensitive
+	}
+	for _, marker := range []string{"password", "passwd", "secret", "credential", "privatekey", "accesskey", "apikey", "authorization", "bearer", "connectionstring", "dsn", "clientkey", "sslkey", "signingkey", "encryptionkey"} {
+		if strings.Contains(normalized, marker) {
+			return endpointOptionSensitive
+		}
+	}
+	if hasEndpointOptionSuffix(normalized, "keyfile", "passwordfile", "tokenfile", "secretfile", "credentialfile", "credentialsfile", "cafile", "certfile", "certificatefile", "mappingfile", "mappingsfile") {
+		return endpointOptionSensitive
+	}
+	if strings.Contains(normalized, "token") && !strings.Contains(normalized, "endpoint") && !strings.Contains(normalized, "url") && !strings.Contains(normalized, "uri") && !strings.Contains(normalized, "method") {
+		return endpointOptionSensitive
+	}
+	if strings.Contains(normalized, "sasl") && strings.Contains(normalized, "jaas") {
+		return endpointOptionSensitive
+	}
+	if strings.Contains(normalized, "webhook") || normalized == "datapath" || hasEndpointOptionSuffix(normalized, "url", "urls", "uri", "uris") {
+		return endpointOptionURL
+	}
+	if strings.Contains(normalized, "endpoint") || hasEndpointOptionSuffix(normalized, "address", "addresses", "broker", "brokers", "host", "hosts", "hostname", "hostnames", "server", "servers", "servername", "servernames", "bootstrapserver", "bootstrapservers") {
+		return endpointOptionNetwork
+	}
+	return endpointOptionOrdinary
+}
+func sensitiveEndpointOptionKey(key string) bool {
+	return classifyEndpointOptionKey(key) == endpointOptionSensitive
+}
+func sanitizeAdministrativeEndpoint(value string) string {
+	if strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || (r >= 0x7f && r <= 0x9f) }) >= 0 {
+		return redactedEndpointOption
+	}
+	candidate := strings.TrimSpace(value)
+	if candidate == "" {
+		return redactedEndpointOption
+	}
+	if strings.Contains(candidate, "://") {
+		parsed, err := url.Parse(candidate)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Opaque != "" || strings.Contains(parsed.Host, "%") {
+			return redactedEndpointOption
+		}
+		hostname := parsed.Hostname()
+		if hostname == "" || strings.Contains(hostname, "%") || !safeDiagnosticHost(hostname) {
+			return redactedEndpointOption
+		}
+		port := parsed.Port()
+		if port != "" {
+			number, err := strconv.Atoi(port)
+			if err != nil || number < 1 || number > 65535 {
+				return redactedEndpointOption
+			}
+		}
+		renderedHost := hostname
+		if net.ParseIP(hostname) != nil && strings.Contains(hostname, ":") {
+			renderedHost = "[" + hostname + "]"
+		}
+		if port != "" {
+			renderedHost = net.JoinHostPort(hostname, port)
+		}
+		if parsed.Host != renderedHost {
+			return redactedEndpointOption
+		}
+		return parsed.Scheme + "://" + renderedHost
+	}
+	if strings.Contains(candidate, "%") {
+		return redactedEndpointOption
+	}
+	if safeDiagnosticHostPort(candidate) {
+		return candidate
+	}
+	return redactedEndpointOption
+}
+func sanitizeEndpointURL(value string) string {
+	candidate := strings.TrimSpace(value)
+	if strings.HasPrefix(strings.ToLower(candidate), "jdbc:") {
+		candidate = candidate[len("jdbc:"):]
+	}
+	parsed, err := url.Parse(candidate)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Opaque != "" {
+		return redactedEndpointOption
+	}
+	base := parsed.Scheme + "://" + parsed.Host
+	if parsed.User != nil || parsed.Path != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return base + "/" + redactedEndpointOption
+	}
+	return base
+}
+func sanitizeEndpointNetworkValue(value string) string {
+	parts := strings.Split(value, ",")
+	if len(parts) == 0 {
+		return redactedEndpointOption
+	}
+	sanitized := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return redactedEndpointOption
+		}
+		if strings.Contains(part, "://") || strings.HasPrefix(strings.ToLower(part), "jdbc:") {
+			safe := sanitizeEndpointURL(part)
+			if safe == redactedEndpointOption {
+				return redactedEndpointOption
+			}
+			sanitized = append(sanitized, safe)
+			continue
+		}
+		if !safeDiagnosticHostPort(part) {
+			return redactedEndpointOption
+		}
+		sanitized = append(sanitized, part)
+	}
+	return strings.Join(sanitized, ",")
+}
+func safeDiagnosticHostPort(value string) bool {
+	if value == "" || strings.ContainsAny(value, "@/?#\\") || strings.IndexFunc(value, func(r rune) bool { return r < 0x21 || r == 0x7f }) >= 0 {
+		return false
+	}
+	if net.ParseIP(value) != nil {
+		return true
+	}
+	if host, port, err := net.SplitHostPort(value); err == nil {
+		number, err := strconv.Atoi(port)
+		return err == nil && number > 0 && number <= 65535 && safeDiagnosticHost(host)
+	}
+	if strings.Contains(value, ":") {
+		return false
+	}
+	return safeDiagnosticHost(value)
+}
+func safeDiagnosticHost(host string) bool {
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func endpointURLHasSecrets(value string) bool {
+	candidate := strings.TrimSpace(value)
+	if strings.HasPrefix(strings.ToLower(candidate), "jdbc:") {
+		candidate = candidate[len("jdbc:"):]
+	}
+	parsed, err := url.Parse(candidate)
+	if err != nil {
+		return false
+	}
+	if parsed.User != nil && parsed.User.String() != "" {
+		return true
+	}
+	for key := range parsed.Query() {
+		normalized := normalizedEndpointOptionKey(key)
+		if normalized == "sig" || strings.Contains(normalized, "signature") || strings.Contains(normalized, "signed") || sensitiveEndpointOptionKey(key) {
+			return true
+		}
+	}
+	return false
 }
 
 func flowEndpointInfoDetailFromProto(endpoint *wallabypb.Endpoint) flowEndpointInfoDetail {
-	if endpoint == nil {
-		return flowEndpointInfoDetail{}
-	}
-	return flowEndpointInfoDetail{
-		Name:    endpoint.Name,
-		Type:    strings.TrimPrefix(strings.ToLower(endpoint.Type.String()), "endpoint_type_"),
-		TypeRaw: int32(endpoint.Type),
-		Options: endpoint.Options,
-	}
+	return flowEndpointInfoDetail{endpoint: endpointcodec.Clone(endpoint)}
 }
 
 func wireFormatName(format wallabypb.WireFormat) string {
@@ -4462,38 +4791,71 @@ type flowDetail struct {
 }
 
 type flowEndpointInfo struct {
-	Name    string `json:"name"`
-	Type    string `json:"type"`
-	TypeRaw int32  `json:"type_raw"`
+	Name string `json:"name"`
+	Type string `json:"type"`
 }
 
 type flowEndpointInfoDetail struct {
-	Name    string            `json:"name"`
-	Type    string            `json:"type"`
-	TypeRaw int32             `json:"type_raw"`
-	Options map[string]string `json:"options,omitempty"`
+	endpoint *wallabypb.Endpoint
+}
+
+func (endpoint flowEndpointInfoDetail) name() string {
+	if endpoint.endpoint == nil {
+		return ""
+	}
+	return endpoint.endpoint.GetName()
+}
+
+func (endpoint flowEndpointInfoDetail) branchLabel() string {
+	if endpoint.endpoint == nil || endpoint.endpoint.GetConfig() == nil {
+		return "invalid"
+	}
+	message := endpoint.endpoint.ProtoReflect()
+	field := message.WhichOneof(message.Descriptor().Oneofs().ByName("config"))
+	if field == nil {
+		return "invalid"
+	}
+	return string(field.Name())
+}
+
+func (endpoint flowEndpointInfoDetail) equal(other flowEndpointInfoDetail) bool {
+	return proto.Equal(endpoint.endpoint, other.endpoint)
+}
+
+func (endpoint flowEndpointInfoDetail) MarshalJSON() ([]byte, error) {
+	return endpointConfig(endpoint).MarshalJSON()
+}
+
+func (endpoint flowEndpointInfoDetail) MarshalYAML() (any, error) {
+	return endpointConfig(endpoint).MarshalYAML()
 }
 
 type flowConfigInfo struct {
-	AckPolicy                       string                  `json:"ack_policy,omitempty"`
-	Materialization                 flowMaterializationInfo `json:"materialization,omitempty"`
-	PrimaryDestination              string                  `json:"primary_destination,omitempty"`
-	FailureMode                     string                  `json:"failure_mode,omitempty"`
-	GiveUpPolicy                    string                  `json:"give_up_policy,omitempty"`
-	SchemaRegistrySubject           string                  `json:"schema_registry_subject,omitempty"`
-	SchemaRegistryProtoTypesSubject string                  `json:"schema_registry_proto_types_subject,omitempty"`
-	SchemaRegistrySubjectMode       string                  `json:"schema_registry_subject_mode,omitempty"`
+	AckPolicy          string                   `json:"ack_policy,omitempty"`
+	DDL                *flowDDLConfig           `json:"ddl,omitempty"`
+	TableMappings      *flow.TableMappings      `json:"table_mappings,omitempty"`
+	Materialization    *flowMaterializationInfo `json:"materialization,omitempty"`
+	PrimaryDestination string                   `json:"primary_destination,omitempty"`
+	FailureMode        string                   `json:"failure_mode,omitempty"`
+	GiveUpPolicy       string                   `json:"give_up_policy,omitempty"`
 }
 
 type flowMaterializationInfo struct {
-	ProjectionID string `json:"projection_id,omitempty"`
+	ProjectionID string `json:"projection_id,omitempty" yaml:"projection_id,omitempty"`
 }
 
-func flowMaterializationInfoFromProto(policy *wallabypb.MaterializationPolicy) flowMaterializationInfo {
+func flowDDLFromProto(policy *wallabypb.DDLPolicy) *flowDDLConfig {
 	if policy == nil {
-		return flowMaterializationInfo{}
+		return nil
 	}
-	return flowMaterializationInfo{ProjectionID: policy.ProjectionId}
+	return &flowDDLConfig{Gate: policy.Gate, AutoApprove: policy.AutoApprove, AutoApply: policy.AutoApply}
+}
+
+func flowMaterializationInfoFromProto(policy *wallabypb.MaterializationPolicy) *flowMaterializationInfo {
+	if policy == nil {
+		return nil
+	}
+	return &flowMaterializationInfo{ProjectionID: policy.ProjectionId}
 }
 
 type flowDeleteOutput struct {
@@ -4596,11 +4958,12 @@ type slotConfig struct {
 }
 
 type flowValidateOutput struct {
-	Valid            bool           `json:"valid"`
-	ID               string         `json:"id"`
-	Name             string         `json:"name"`
-	Source           endpointConfig `json:"source"`
-	DestinationCount int            `json:"destination_count"`
+	Valid            bool                     `json:"valid" yaml:"valid"`
+	ID               string                   `json:"id" yaml:"id"`
+	Name             string                   `json:"name" yaml:"name"`
+	Source           flowEndpointInfoDetail   `json:"source" yaml:"source"`
+	Destinations     []flowEndpointInfoDetail `json:"destinations" yaml:"destinations"`
+	DestinationCount int                      `json:"destination_count" yaml:"destination_count"`
 }
 
 func rejectFlowBoundResourceMutationOverrides(flowID, dsn, physicalName string, options map[string]string) error {
@@ -4633,13 +4996,17 @@ func resolvePublicationConfig(ctx context.Context, endpoint string, insecureConn
 		return cfg, fmt.Errorf("load flow: %w", err)
 	}
 	cfg.flow = flowResp
+	source, err := endpointcodec.Decode(flowResp.GetSource(), endpointcodec.RoleSource)
+	if err != nil {
+		return cfg, fmt.Errorf("decode flow source: %w", err)
+	}
 	if cfg.dsn == "" {
-		cfg.dsn = flowResp.Source.Options["dsn"]
+		cfg.dsn = source.Options["dsn"]
 	}
 	if cfg.publication == "" {
-		cfg.publication = flowResp.Source.Options["publication"]
+		cfg.publication = source.Options["publication"]
 	}
-	cfg.options = mergeOptionMaps(flowResp.Source.Options, cfg.options)
+	cfg.options = mergeOptionMaps(source.Options, cfg.options)
 	if cfg.dsn == "" || cfg.publication == "" {
 		return cfg, errors.New("source dsn/publication not found on flow")
 	}
@@ -4671,16 +5038,20 @@ func resolveSlotConfig(ctx context.Context, endpoint string, insecureConn bool, 
 	if flowResp.Source == nil {
 		return cfg, errors.New("flow has no source")
 	}
-	if flowResp.Source.Type != wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES {
+	source, err := endpointcodec.Decode(flowResp.Source, endpointcodec.RoleSource)
+	if err != nil {
+		return cfg, fmt.Errorf("decode flow source: %w", err)
+	}
+	if source.Type != connector.EndpointPostgres {
 		return cfg, errors.New("flow source is not postgres")
 	}
-	cfg.options = mergeOptionMaps(flowResp.Source.Options, cfg.options)
+	cfg.options = mergeOptionMaps(source.Options, cfg.options)
 	if cfg.dsn == "" {
-		cfg.dsn = flowResp.Source.Options["dsn"]
+		cfg.dsn = source.Options["dsn"]
 	}
 	cfg.flow = flowResp
 	if cfg.slot == "" {
-		cfg.slot = flowResp.Source.Options["slot"]
+		cfg.slot = source.Options["slot"]
 	}
 	if cfg.dsn == "" {
 		return cfg, errors.New("source dsn not found on flow")
@@ -4741,16 +5112,20 @@ func resolveDesiredTables(ctx context.Context, cfg publicationConfig, options ma
 		return postgres.ScrapeTables(ctx, cfg.dsn, list, options)
 	}
 	if cfg.flow != nil {
-		if value := cfg.flow.Source.Options["publication_tables"]; value != "" {
+		source, err := endpointcodec.Decode(cfg.flow.GetSource(), endpointcodec.RoleSource)
+		if err != nil {
+			return nil, fmt.Errorf("decode flow source: %w", err)
+		}
+		if value := source.Options["publication_tables"]; value != "" {
 			return parseCSVValue(value), nil
 		}
-		if value := cfg.flow.Source.Options["tables"]; value != "" {
+		if value := source.Options["tables"]; value != "" {
 			return parseCSVValue(value), nil
 		}
-		if value := cfg.flow.Source.Options["publication_schemas"]; value != "" {
+		if value := source.Options["publication_schemas"]; value != "" {
 			return postgres.ScrapeTables(ctx, cfg.dsn, parseCSVValue(value), options)
 		}
-		if value := cfg.flow.Source.Options["schemas"]; value != "" {
+		if value := source.Options["schemas"]; value != "" {
 			return postgres.ScrapeTables(ctx, cfg.dsn, parseCSVValue(value), options)
 		}
 	}
@@ -4768,19 +5143,21 @@ func resolveFlowTables(ctx context.Context, model flow.Flow, tables, schemas str
 		}
 		return scrapeFlowTables(ctx, model, schemaList)
 	}
-	if model.Source.Options != nil {
-		if value := model.Source.Options["tables"]; value != "" {
-			return parseCSVValue(value), nil
-		}
-		if value := model.Source.Options["schemas"]; value != "" {
-			return scrapeFlowTables(ctx, model, parseCSVValue(value))
-		}
-		if value := model.Source.Options["publication_tables"]; value != "" {
-			return parseCSVValue(value), nil
-		}
-		if value := model.Source.Options["publication_schemas"]; value != "" {
-			return scrapeFlowTables(ctx, model, parseCSVValue(value))
-		}
+	source, err := model.DecodeSource(connector.DefaultRegistry)
+	if err != nil {
+		return nil, err
+	}
+	if value := source.Options["tables"]; value != "" {
+		return parseCSVValue(value), nil
+	}
+	if value := source.Options["schemas"]; value != "" {
+		return scrapeFlowTables(ctx, model, parseCSVValue(value))
+	}
+	if value := source.Options["publication_tables"]; value != "" {
+		return parseCSVValue(value), nil
+	}
+	if value := source.Options["publication_schemas"]; value != "" {
+		return scrapeFlowTables(ctx, model, parseCSVValue(value))
 	}
 	return nil, errors.New("no tables or schemas specified")
 }
@@ -4789,14 +5166,15 @@ func scrapeFlowTables(ctx context.Context, model flow.Flow, schemas []string) ([
 	if len(schemas) == 0 {
 		return nil, errors.New("no schemas provided")
 	}
-	if model.Source.Options == nil {
-		return nil, errors.New("source options missing dsn")
+	source, err := model.DecodeSource(connector.DefaultRegistry)
+	if err != nil {
+		return nil, err
 	}
-	dsn := model.Source.Options["dsn"]
+	dsn := source.Options["dsn"]
 	if dsn == "" {
 		return nil, errors.New("source dsn missing")
 	}
-	return postgres.ScrapeTables(ctx, dsn, schemas, model.Source.Options)
+	return postgres.ScrapeTables(ctx, dsn, schemas, source.Options)
 }
 
 type awsIAMFlags struct {
@@ -4818,6 +5196,20 @@ func addAWSIAMFlags(cmd *cobra.Command) {
 	fs.String("aws-role-session-name", "", "AWS role session name for RDS IAM")
 	fs.String("aws-role-external-id", "", "AWS role external id for RDS IAM")
 	fs.String("aws-endpoint", "", "AWS endpoint override for RDS IAM")
+}
+
+func rdsIAMFromOptions(options map[string]string) *wallabypb.RDSIAMConfig {
+	if !strings.EqualFold(strings.TrimSpace(options["aws_rds_iam"]), "true") {
+		return nil
+	}
+	return &wallabypb.RDSIAMConfig{
+		Region:          strings.TrimSpace(options["aws_region"]),
+		Profile:         strings.TrimSpace(options["aws_profile"]),
+		RoleArn:         strings.TrimSpace(options["aws_role_arn"]),
+		RoleSessionName: strings.TrimSpace(options["aws_role_session_name"]),
+		RoleExternalId:  strings.TrimSpace(options["aws_role_external_id"]),
+		Endpoint:        strings.TrimSpace(options["aws_endpoint"]),
+	}
 }
 
 func (f *awsIAMFlags) options() map[string]string {
@@ -4894,38 +5286,43 @@ func runBackfill(ctx context.Context, flowPB *wallabypb.Flow, tables []string, w
 	if err != nil {
 		return err
 	}
-	if model.Source.Options == nil {
-		model.Source.Options = map[string]string{}
+	sourceSpec, err := model.DecodeSource(connector.DefaultRegistry)
+	if err != nil {
+		return err
 	}
-	model.Source.Options["mode"] = connector.SourceModeBackfill
-	model.Source.Options["tables"] = strings.Join(tables, ",")
+	sourceSpec.Options["mode"] = connector.SourceModeBackfill
+	delete(sourceSpec.Options, "publication_tables")
+	delete(sourceSpec.Options, "publication_schemas")
+	delete(sourceSpec.Options, "sync_publication")
+	delete(sourceSpec.Options, "sync_publication_mode")
+	sourceSpec.Options["tables"] = strings.Join(tables, ",")
 	if workers > 0 {
-		model.Source.Options["snapshot_workers"] = fmt.Sprintf("%d", workers)
+		sourceSpec.Options["snapshot_workers"] = fmt.Sprintf("%d", workers)
 	}
 	if partitionColumn != "" {
-		model.Source.Options["partition_column"] = partitionColumn
+		sourceSpec.Options["partition_column"] = partitionColumn
 	}
 	if partitionCount > 0 {
-		model.Source.Options["partition_count"] = fmt.Sprintf("%d", partitionCount)
+		sourceSpec.Options["partition_count"] = fmt.Sprintf("%d", partitionCount)
 	}
 	if snapshotStateBackend != "" {
-		model.Source.Options["snapshot_state_backend"] = snapshotStateBackend
+		sourceSpec.Options["snapshot_state_backend"] = snapshotStateBackend
 	}
 	if snapshotStatePath != "" {
-		model.Source.Options["snapshot_state_path"] = snapshotStatePath
+		sourceSpec.Options["snapshot_state_path"] = snapshotStatePath
 	}
 
 	factory := runner.Factory{}
-	source, err := factory.SourceForFlow(model)
+	source, err := factory.Source(sourceSpec)
 	if err != nil {
 		return err
 	}
-	destinations, err := factory.Destinations(model.Destinations)
+	destinations, err := factory.DestinationsForFlow(model)
 	if err != nil {
 		return err
 	}
 
-	streamRunner, err := runner.NewStreamRunner(model, source, destinations, runner.StreamRunnerConfig{})
+	streamRunner, err := runner.NewStreamRunner(model, source, destinations, runner.StreamRunnerConfig{SourceSpecOverride: &sourceSpec})
 	if err != nil {
 		return err
 	}
@@ -4933,16 +5330,9 @@ func runBackfill(ctx context.Context, flowPB *wallabypb.Flow, tables []string, w
 }
 
 func flowClient(endpoint string, insecureConn bool) (wallabypb.FlowServiceClient, func() error, error) {
-	if endpoint == "" {
-		return nil, nil, errors.New("endpoint is required")
-	}
-	if !insecureConn {
-		return nil, nil, errors.New("secure grpc is not configured")
-	}
-
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := adminGRPCConnection(endpoint, insecureConn)
 	if err != nil {
-		return nil, nil, fmt.Errorf("connect: %w", err)
+		return nil, nil, err
 	}
 	return wallabypb.NewFlowServiceClient(conn), conn.Close, nil
 }
@@ -4951,24 +5341,22 @@ func flowFromProto(pb *wallabypb.Flow) (flow.Flow, error) {
 	if pb == nil {
 		return flow.Flow{}, errors.New("flow is required")
 	}
-	source, err := endpointFromProto(pb.Source)
-	if err != nil {
+	if _, err := endpointcodec.Decode(pb.Source, endpointcodec.RoleSource); err != nil {
 		return flow.Flow{}, err
 	}
 
-	destinations := make([]connector.Spec, 0, len(pb.Destinations))
+	destinations := make([]*wallabypb.Endpoint, 0, len(pb.Destinations))
 	for _, dest := range pb.Destinations {
-		spec, err := endpointFromProto(dest)
-		if err != nil {
+		if _, err := endpointcodec.Decode(dest, endpointcodec.RoleDestination); err != nil {
 			return flow.Flow{}, err
 		}
-		destinations = append(destinations, spec)
+		destinations = append(destinations, endpointcodec.Clone(dest))
 	}
 
 	return flow.Flow{
 		ID:           pb.Id,
 		Name:         pb.Name,
-		Source:       source,
+		Source:       endpointcodec.Clone(pb.Source),
 		Destinations: destinations,
 		WireFormat:   wireFormatFromProto(pb.WireFormat),
 		Parallelism:  int(pb.Parallelism),
@@ -4985,6 +5373,12 @@ func flowConfigFromProto(cfg *wallabypb.FlowConfig) flow.Config {
 		PrimaryDestination: cfg.PrimaryDestination,
 		FailureMode:        failureModeFromProto(cfg.FailureMode),
 		GiveUpPolicy:       giveUpPolicyFromProto(cfg.GiveUpPolicy),
+	}
+	if cfg.Ddl != nil {
+		result.DDL = flow.DDLPolicy{Gate: cfg.Ddl.Gate, AutoApprove: cfg.Ddl.AutoApprove, AutoApply: cfg.Ddl.AutoApply}
+	}
+	if mappings := mappingsFromProto(cfg.TableMappings); mappings != nil {
+		result.TableMappings = *mappings
 	}
 	if cfg.Materialization != nil {
 		result.Materialization.ProjectionID = cfg.Materialization.ProjectionId
@@ -5022,55 +5416,6 @@ func giveUpPolicyFromProto(policy wallabypb.GiveUpPolicy) stream.GiveUpPolicy {
 		return stream.GiveUpPolicyNever
 	case wallabypb.GiveUpPolicy_GIVE_UP_POLICY_ON_RETRY_EXHAUSTION:
 		return stream.GiveUpPolicyOnRetryExhaustion
-	default:
-		return ""
-	}
-}
-
-func endpointFromProto(endpoint *wallabypb.Endpoint) (connector.Spec, error) {
-	if endpoint == nil {
-		return connector.Spec{}, errors.New("endpoint is required")
-	}
-	if endpoint.Type == wallabypb.EndpointType_ENDPOINT_TYPE_UNSPECIFIED {
-		return connector.Spec{}, errors.New("endpoint type is required")
-	}
-	return connector.Spec{
-		Name:    endpoint.Name,
-		Type:    endpointTypeFromProto(endpoint.Type),
-		Options: endpoint.Options,
-	}, nil
-}
-
-func endpointTypeFromProto(t wallabypb.EndpointType) connector.EndpointType {
-	switch t {
-	case wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES:
-		return connector.EndpointPostgres
-	case wallabypb.EndpointType_ENDPOINT_TYPE_SNOWFLAKE:
-		return connector.EndpointSnowflake
-	case wallabypb.EndpointType_ENDPOINT_TYPE_S3:
-		return connector.EndpointS3
-	case wallabypb.EndpointType_ENDPOINT_TYPE_KAFKA:
-		return connector.EndpointKafka
-	case wallabypb.EndpointType_ENDPOINT_TYPE_HTTP:
-		return connector.EndpointHTTP
-	case wallabypb.EndpointType_ENDPOINT_TYPE_GRPC:
-		return connector.EndpointGRPC
-	case wallabypb.EndpointType_ENDPOINT_TYPE_PROTO:
-		return connector.EndpointProto
-	case wallabypb.EndpointType_ENDPOINT_TYPE_PGSTREAM:
-		return connector.EndpointPGStream
-	case wallabypb.EndpointType_ENDPOINT_TYPE_SNOWPIPE:
-		return connector.EndpointSnowpipe
-	case wallabypb.EndpointType_ENDPOINT_TYPE_PARQUET:
-		return connector.EndpointParquet
-	case wallabypb.EndpointType_ENDPOINT_TYPE_DUCKDB:
-		return connector.EndpointDuckDB
-	case wallabypb.EndpointType_ENDPOINT_TYPE_DUCKLAKE:
-		return connector.EndpointDuckLake
-	case wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA:
-		return connector.EndpointRedpanda
-	case wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE:
-		return connector.EndpointClickHouse
 	default:
 		return ""
 	}
@@ -5183,55 +5528,62 @@ func selectDestination(destinations []*wallabypb.Endpoint, name string) (*wallab
 }
 
 type flowConfig struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	WireFormat   string            `json:"wire_format"`
-	Parallelism  int32             `json:"parallelism"`
-	Config       flowRuntimeConfig `json:"config,omitempty"`
-	Source       endpointConfig    `json:"source"`
-	Destinations []endpointConfig  `json:"destinations"`
-}
-
-type endpointConfig struct {
-	Name    string            `json:"name"`
-	Type    string            `json:"type"`
-	Options map[string]string `json:"options"`
+	ID           string            `json:"id" yaml:"id"`
+	Name         string            `json:"name" yaml:"name"`
+	WireFormat   string            `json:"wire_format" yaml:"wire_format"`
+	Parallelism  int32             `json:"parallelism" yaml:"parallelism"`
+	Config       flowRuntimeConfig `json:"config,omitempty" yaml:"config,omitempty"`
+	Source       endpointConfig    `json:"source" yaml:"source"`
+	Destinations []endpointConfig  `json:"destinations" yaml:"destinations"`
 }
 
 type flowRuntimeConfig struct {
-	AckPolicy                       string                  `json:"ack_policy"`
-	Materialization                 flowMaterializationInfo `json:"materialization,omitempty"`
-	PrimaryDestination              string                  `json:"primary_destination"`
-	FailureMode                     string                  `json:"failure_mode"`
-	GiveUpPolicy                    string                  `json:"give_up_policy"`
-	SchemaRegistrySubject           string                  `json:"schema_registry_subject,omitempty"`
-	SchemaRegistryProtoTypesSubject string                  `json:"schema_registry_proto_types_subject,omitempty"`
-	SchemaRegistrySubjectMode       string                  `json:"schema_registry_subject_mode,omitempty"`
+	AckPolicy          string                   `json:"ack_policy" yaml:"ack_policy"`
+	Materialization    *flowMaterializationInfo `json:"materialization,omitempty" yaml:"materialization,omitempty"`
+	PrimaryDestination string                   `json:"primary_destination" yaml:"primary_destination"`
+	FailureMode        string                   `json:"failure_mode" yaml:"failure_mode"`
+	GiveUpPolicy       string                   `json:"give_up_policy" yaml:"give_up_policy"`
+	DDL                *flowDDLConfig           `json:"ddl,omitempty" yaml:"ddl,omitempty"`
+	TableMappings      *flow.TableMappings      `json:"table_mappings,omitempty" yaml:"table_mappings,omitempty"`
+	TableMappingsFile  string                   `json:"table_mappings_file,omitempty" yaml:"table_mappings_file,omitempty"`
+}
+
+type flowDDLConfig struct {
+	Gate        *bool `json:"gate,omitempty" yaml:"gate,omitempty"`
+	AutoApprove *bool `json:"auto_approve,omitempty" yaml:"auto_approve,omitempty"`
+	AutoApply   *bool `json:"auto_apply,omitempty" yaml:"auto_apply,omitempty"`
 }
 
 func flowConfigToProto(cfg flowConfig) (*wallabypb.Flow, error) {
-	source, err := endpointConfigToProto(cfg.Source)
+	if cfg.Config.TableMappingsFile != "" {
+		return nil, errors.New("config.table_mappings_file must be expanded locally before protobuf conversion")
+	}
+	source, err := cfg.Source.toProto(endpointcodec.RoleSource)
 	if err != nil {
 		return nil, err
 	}
 	destinations := make([]*wallabypb.Endpoint, 0, len(cfg.Destinations))
 	for _, dest := range cfg.Destinations {
-		pb, err := endpointConfigToProto(dest)
+		pb, err := dest.toProto(endpointcodec.RoleDestination)
 		if err != nil {
 			return nil, err
 		}
 		destinations = append(destinations, pb)
 	}
 
-	return &wallabypb.Flow{
-		Id:           cfg.ID,
-		Name:         cfg.Name,
-		Source:       source,
-		Destinations: destinations,
-		WireFormat:   wireFormatToProto(cfg.WireFormat),
-		Parallelism:  cfg.Parallelism,
-		Config:       flowRuntimeConfigToProto(cfg.Config),
-	}, nil
+	pb := &wallabypb.Flow{
+		Id: cfg.ID, Name: cfg.Name, Source: source, Destinations: destinations,
+		WireFormat: wireFormatToProto(cfg.WireFormat), Parallelism: cfg.Parallelism,
+		Config: flowRuntimeConfigToProto(cfg.Config),
+	}
+	model, err := flowFromProto(pb)
+	if err != nil {
+		return nil, err
+	}
+	if err := flow.ValidateDefinition(model); err != nil {
+		return nil, err
+	}
+	return pb, nil
 }
 
 func flowRuntimeConfigToProto(cfg flowRuntimeConfig) *wallabypb.FlowConfig {
@@ -5239,65 +5591,17 @@ func flowRuntimeConfigToProto(cfg flowRuntimeConfig) *wallabypb.FlowConfig {
 		return nil
 	}
 	pb := &wallabypb.FlowConfig{
-		AckPolicy:                       ackPolicyStringToProto(cfg.AckPolicy),
-		PrimaryDestination:              cfg.PrimaryDestination,
-		FailureMode:                     failureModeStringToProto(cfg.FailureMode),
-		GiveUpPolicy:                    giveUpPolicyStringToProto(cfg.GiveUpPolicy),
-		SchemaRegistrySubject:           cfg.SchemaRegistrySubject,
-		SchemaRegistryProtoTypesSubject: cfg.SchemaRegistryProtoTypesSubject,
-		SchemaRegistrySubjectMode:       cfg.SchemaRegistrySubjectMode,
+		AckPolicy: ackPolicyStringToProto(cfg.AckPolicy), PrimaryDestination: cfg.PrimaryDestination,
+		FailureMode: failureModeStringToProto(cfg.FailureMode), GiveUpPolicy: giveUpPolicyStringToProto(cfg.GiveUpPolicy),
+		TableMappings: mappingsToProto(cfg.TableMappings),
 	}
-	if cfg.Materialization.ProjectionID != "" {
+	if cfg.DDL != nil {
+		pb.Ddl = &wallabypb.DDLPolicy{Gate: cfg.DDL.Gate, AutoApprove: cfg.DDL.AutoApprove, AutoApply: cfg.DDL.AutoApply}
+	}
+	if cfg.Materialization != nil && cfg.Materialization.ProjectionID != "" {
 		pb.Materialization = &wallabypb.MaterializationPolicy{ProjectionId: cfg.Materialization.ProjectionID}
 	}
 	return pb
-}
-
-func endpointConfigToProto(cfg endpointConfig) (*wallabypb.Endpoint, error) {
-	endpointType := endpointTypeToProto(cfg.Type)
-	if endpointType == wallabypb.EndpointType_ENDPOINT_TYPE_UNSPECIFIED {
-		return nil, fmt.Errorf("endpoint type %q is unsupported", cfg.Type)
-	}
-	return &wallabypb.Endpoint{
-		Name:    cfg.Name,
-		Type:    endpointType,
-		Options: cfg.Options,
-	}, nil
-}
-
-func endpointTypeToProto(value string) wallabypb.EndpointType {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "postgres":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_POSTGRES
-	case "snowflake":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_SNOWFLAKE
-	case "s3":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_S3
-	case "kafka":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_KAFKA
-	case "http":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_HTTP
-	case "grpc":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_GRPC
-	case "proto":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_PROTO
-	case "pgstream":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_PGSTREAM
-	case "snowpipe":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_SNOWPIPE
-	case "parquet":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_PARQUET
-	case "duckdb":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_DUCKDB
-	case "ducklake":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_DUCKLAKE
-	case "redpanda":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_REDPANDA
-	case "clickhouse":
-		return wallabypb.EndpointType_ENDPOINT_TYPE_CLICKHOUSE
-	default:
-		return wallabypb.EndpointType_ENDPOINT_TYPE_UNSPECIFIED
-	}
 }
 
 func ackPolicyStringToProto(value string) wallabypb.AckPolicy {

@@ -57,16 +57,13 @@ func runManagedBootstrapBoundaryRecovery(t *testing.T, boundary string) {
 	destinationRevisionID := "boundary-postgres-" + flowID
 	flowDef := flow.Flow{
 		ID: flowID,
-		Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
+		Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
 			"dsn": dsn, "managed": "true", "bootstrap": "required", "ensure_publication": "true", "ensure_state": "true",
 			"tables": "public." + sourceTable, "snapshot_workers": "1", "batch_size": "100", "batch_timeout": "20ms", "status_interval": "20ms",
 			"source_system_identifier": systemID, "source_lineage_id": "boundary-lineage-v1", "publication_revision": "bootstrap-pending",
-		}},
-		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
-			"dsn": dsn, "schema": targetSchema, "write_mode": "target", "batch_mode": "target",
-			"destination_revision_id": destinationRevisionID, "synchronous_commit": "on", "meta_table_enabled": "false",
-		}}},
-		Config: flow.Config{AckPolicy: stream.AckPolicyAll},
+		}}),
+		Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "batch_mode": "target", "destination_revision_id": destinationRevisionID, "synchronous_commit": "on", "meta_table_enabled": "false"}}),
+		Config:       flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "target", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: sourceTable, Action: flow.MappingActionInclude, TargetSchema: targetSchema, TargetTable: sourceTable, FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}}}}},
 	}
 	if _, err := engine.Create(ctx, flowDef); err != nil {
 		t.Fatal(err)
@@ -121,10 +118,10 @@ func runManagedBootstrapBoundaryRecovery(t *testing.T, boundary string) {
 	firstErr := make(chan error, 1)
 	go func() {
 		firstErr <- (&runner.FlowRunner{
-			Engine: engine, Checkpoints: checkpoints, ExpectedGeneration: control.Generation,
+			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), ExpectedGeneration: control.Generation,
 			ExecutionBackend: "integration", ExecutionID: "boundary-first-" + boundary,
-			Authority: authorityStore, Deliveries: coordinator,
-		}).Run(ctx, flowDef, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore, BootstrapHooks: hooks}, []stream.DestinationConfig{{Spec: flowDef.Destinations[0], Dest: &pgdest.Destination{}}})
+			Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
+		}).Run(ctx, flowDef, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore, BootstrapHooks: hooks}, []stream.DestinationConfig{{Spec: testFlowRuntimeDestinations(flowDef.Destinations)[0], Dest: &pgdest.Destination{}}})
 	}()
 	select {
 	case <-cutReady:
@@ -175,10 +172,10 @@ func runManagedBootstrapBoundaryRecovery(t *testing.T, boundary string) {
 	}
 	go func() {
 		replacementErr <- (&runner.FlowRunner{
-			Engine: engine, Checkpoints: checkpoints, ExpectedGeneration: control.Generation,
+			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), ExpectedGeneration: control.Generation,
 			ExecutionBackend: "integration", ExecutionID: "boundary-replacement-" + boundary,
-			Authority: authorityStore, Deliveries: coordinator,
-		}).Run(replacementCtx, flowDef, replacementSource, []stream.DestinationConfig{{Spec: flowDef.Destinations[0], Dest: &pgdest.Destination{}}})
+			Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
+		}).Run(replacementCtx, flowDef, replacementSource, []stream.DestinationConfig{{Spec: testFlowRuntimeDestinations(flowDef.Destinations)[0], Dest: &pgdest.Destination{}}})
 	}()
 	if boundary == "snapshot_batch" {
 		select {
@@ -254,6 +251,9 @@ WHERE receipt.bootstrap_id=$1::uuid
   AND receipt.position_id LIKE 'bootstrap/'||$1||'/%'
   AND receipt.content_hash=attempt.content_hash
   AND receipt.content_hash=evidence.content_hash
+  AND receipt.logical_batch_id=attempt.logical_batch_id
+  AND receipt.logical_batch_id=evidence.logical_batch_id
+  AND receipt.logical_batch_id LIKE 'logical-batch:%'
   AND receipt.durable_cursor #>> '{keys,0,name}'='id'
   AND receipt.durable_cursor #>> '{keys,0,value}'='1'`, bootstrapID).Scan(&snapshotAudit); err != nil {
 		t.Fatal(err)

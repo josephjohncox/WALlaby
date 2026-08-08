@@ -71,10 +71,9 @@ WHERE flow_incarnation_id=$1 AND bootstrap_id=$5 AND state IN ('ready','cleanup_
 	return snapshot, phase, nil
 }
 
-// LoadSchemas reconstructs the frozen destination manifest for cleanup or
-// publication reconciliation after exporter loss. Schema rows are immutable
-// once any delivery receipt exists.
-func (b *Bootstrapper) LoadSchemas(ctx context.Context, fence authority.RunFence, snapshot ExportedSnapshot) ([]connector.Schema, error) {
+// LoadDeliveryContracts reconstructs the frozen mapped destination manifest
+// for cleanup or publication reconciliation after exporter loss.
+func (b *Bootstrapper) LoadDeliveryContracts(ctx context.Context, fence authority.RunFence, snapshot ExportedSnapshot) ([]connector.BootstrapTable, error) {
 	tx, err := b.control.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -91,35 +90,62 @@ func (b *Bootstrapper) LoadSchemas(ctx context.Context, fence authority.RunFence
 		return nil, err
 	}
 	rows, err := tx.Query(ctx, `
-SELECT schema_json FROM source_bootstrap_tasks
+SELECT relation_id,task_id,table_schema,table_name,schema_json,key_columns,
+       destination_schema_json,write_policy_json,projection_fingerprint,projection_version
+FROM source_bootstrap_tasks
 WHERE bootstrap_id=$1
 ORDER BY relation_id,task_id`, snapshot.BootstrapID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var schemas []connector.Schema
+	var tables []connector.BootstrapTable
+	var tasks []SnapshotTask
 	for rows.Next() {
-		var encoded []byte
-		if err := rows.Scan(&encoded); err != nil {
+		var task SnapshotTask
+		var sourceSchemaJSON, keysJSON, destinationSchemaJSON, policyJSON []byte
+		var fingerprint string
+		var version int
+		if err := rows.Scan(&task.RelationID, &task.TaskID, &task.Namespace, &task.Table, &sourceSchemaJSON, &keysJSON, &destinationSchemaJSON, &policyJSON, &fingerprint, &version); err != nil {
 			return nil, err
 		}
-		var schema connector.Schema
-		if err := json.Unmarshal(encoded, &schema); err != nil {
-			return nil, fmt.Errorf("decode persisted bootstrap schema: %w", err)
+		if err := json.Unmarshal(sourceSchemaJSON, &task.Schema); err != nil {
+			return nil, fmt.Errorf("decode persisted bootstrap source schema: %w", err)
 		}
-		schemas = append(schemas, schema)
+		if err := json.Unmarshal(keysJSON, &task.KeyColumns); err != nil {
+			return nil, fmt.Errorf("decode persisted bootstrap source keys: %w", err)
+		}
+		if err := json.Unmarshal(destinationSchemaJSON, &task.Delivery.Schema); err != nil {
+			return nil, fmt.Errorf("decode persisted bootstrap destination schema: %w", err)
+		}
+		if err := json.Unmarshal(policyJSON, &task.Delivery.WritePolicy); err != nil {
+			return nil, fmt.Errorf("decode persisted bootstrap destination write policy: %w", err)
+		}
+		task.Delivery.Version = version
+		task.Delivery.ProjectionFingerprint = fingerprint
+		if err := task.Delivery.Validate(); err != nil {
+			return nil, fmt.Errorf("persisted bootstrap task lacks a current destination contract: %w", err)
+		}
+		tasks = append(tasks, task)
+		tables = append(tables, connector.BootstrapTable{Schema: task.Delivery.Schema, WritePolicy: task.Delivery.WritePolicy, SourcePosition: snapshot.ConsistentLSN.String()})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if len(schemas) == 0 {
-		return nil, errors.New("persisted bootstrap manifest has no schemas")
+	if len(tables) == 0 {
+		return nil, errors.New("persisted bootstrap manifest has no destination contracts")
+	}
+	manifestHash, err := SnapshotManifestHash(tasks)
+	if err != nil {
+		return nil, err
+	}
+	if manifestHash != snapshot.ManifestHash {
+		return nil, fmt.Errorf("%w: persisted bootstrap source or destination contract differs from the manifest hash", connector.ErrDeliveryConflict)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return schemas, nil
+	return tables, nil
 }
 
 // TaskProgress returns the last receipt-backed cursor and ordinal. It never

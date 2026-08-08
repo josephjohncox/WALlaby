@@ -8,7 +8,6 @@ type SupportLevel string
 const (
 	SupportMaintained   SupportLevel = "maintained"
 	SupportExperimental SupportLevel = "experimental"
-	SupportDeprecated   SupportLevel = "deprecated"
 	SupportPlaceholder  SupportLevel = "placeholder"
 )
 
@@ -27,10 +26,7 @@ func (e ContractEvidence) Complete() bool {
 }
 
 // DeliverySemantics describes the guarantees a configured destination provides.
-// Declared distinguishes an explicit contract from the zero value used by legacy
-// third-party adapters.
 type DeliverySemantics struct {
-	Declared           bool
 	TransactionalBatch bool
 	IdempotentReplay   bool
 	ReplaySafe         bool
@@ -38,19 +34,70 @@ type DeliverySemantics struct {
 	Lossy              bool
 }
 
-// ConfiguredDestinationCapabilities allows an adapter to refine guarantees that
-// depend on options such as append mode or a lossy oversize policy.
-type ConfiguredDestinationCapabilities interface {
-	CapabilitiesFor(spec Spec) Capabilities
+// TableWriteSemantics declares which projected logical table policies a
+// destination can execute.
+type TableWriteSemantics struct {
+	Append         bool
+	Upsert         bool
+	ExplicitKey    bool
+	WatermarkGuard bool
 }
 
-// ResolveDestinationCapabilities returns the guarantees for one configured
-// destination, falling back to its static declaration.
-func ResolveDestinationCapabilities(destination Destination, spec Spec) Capabilities {
-	if configured, ok := destination.(ConfiguredDestinationCapabilities); ok {
-		return configured.CapabilitiesFor(spec)
+// SupportsTablePolicy reports whether the destination can execute policy.
+func (c Capabilities) SupportsTablePolicy(policy TableWritePolicy) error {
+	w := c.TableWrites
+	switch policy.Mode {
+	case ResolvedWriteAppend:
+		if !w.Append {
+			return fmt.Errorf("destination does not support append table writes")
+		}
+	case ResolvedWriteUpsert:
+		if !w.Upsert || !w.ExplicitKey {
+			return fmt.Errorf("destination does not support explicit-key upsert table writes")
+		}
+	default:
+		return fmt.Errorf("unsupported table write mode %q", policy.Mode)
 	}
-	return destination.Capabilities()
+	if policy.Mode == ResolvedWriteUpsert && policy.WatermarkColumn != "" && !w.WatermarkGuard {
+		return fmt.Errorf("destination does not support watermark-guarded table writes")
+	}
+	return nil
+}
+
+// CapabilityProfileID identifies one closed configuration-sensitive capability cell.
+type CapabilityProfileID string
+
+// ConfiguredDestinationCapabilities classifies every capability-affecting
+// configuration into a closed, typed profile before returning its guarantees.
+type ConfiguredDestinationCapabilities interface {
+	CapabilityProfileIDs() []CapabilityProfileID
+	ClassifyCapabilityProfile(spec RuntimeSpec) (CapabilityProfileID, error)
+	CapabilitiesFor(spec RuntimeSpec) (Capabilities, error)
+}
+
+// ResolveDestinationCapabilities returns the guarantees for one validated
+// configured destination, falling back to its static declaration. A classifier
+// result that is not in the connector's declared closed profile set fails.
+func ResolveDestinationCapabilities(destination Destination, spec RuntimeSpec) (Capabilities, error) {
+	configured, ok := destination.(ConfiguredDestinationCapabilities)
+	if !ok {
+		return destination.Capabilities(), nil
+	}
+	profileID, err := configured.ClassifyCapabilityProfile(spec)
+	if err != nil {
+		return Capabilities{}, err
+	}
+	declared := false
+	for _, candidate := range configured.CapabilityProfileIDs() {
+		if candidate == profileID {
+			declared = true
+			break
+		}
+	}
+	if !declared {
+		return Capabilities{}, fmt.Errorf("destination capability classifier returned undeclared profile %q", profileID)
+	}
+	return configured.CapabilitiesFor(spec)
 }
 
 // ValidateSupport rejects unsupported levels and maintained classifications
@@ -61,7 +108,7 @@ func (c Capabilities) ValidateSupport() error {
 		if !c.Evidence.Complete() {
 			return fmt.Errorf("maintained connector lacks restart, replay, schema-evolution, or integration evidence")
 		}
-	case SupportExperimental, SupportDeprecated, SupportPlaceholder:
+	case SupportExperimental, SupportPlaceholder:
 		return nil
 	default:
 		return fmt.Errorf("connector support level is not declared")
@@ -70,10 +117,6 @@ func (c Capabilities) ValidateSupport() error {
 }
 
 // ExecutesDDL reports whether ApplyDDL performs a downstream schema mutation.
-// Undeclared legacy adapters retain the historical SupportsDDL behavior.
 func (c Capabilities) ExecutesDDL() bool {
-	if c.Delivery.Declared {
-		return c.Delivery.ExecutesDDL
-	}
-	return c.SupportsDDL
+	return c.Delivery.ExecutesDDL
 }

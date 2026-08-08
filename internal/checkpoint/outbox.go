@@ -5,6 +5,7 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -56,11 +57,15 @@ func encodeOutboxEntries(flowID string, checkpoint connector.Checkpoint, entries
 		if entry.Destination == "" {
 			return nil, fmt.Errorf("outbox destination is required")
 		}
+		if entry.ProjectionFingerprint == "" {
+			return nil, fmt.Errorf("outbox destination %s projection fingerprint is required", entry.Destination)
+		}
 		batchID, err := connector.CheckpointPositionID(entry.Batch.Checkpoint)
 		if err != nil {
 			return nil, fmt.Errorf("outbox destination %s: %w", entry.Destination, err)
 		}
-		if entry.PositionID != checkpointID || batchID != checkpointID {
+		positionMatches := entry.PositionID == checkpointID || strings.HasPrefix(entry.PositionID, checkpointID+"/fragment/")
+		if !positionMatches || batchID != checkpointID {
 			return nil, fmt.Errorf("%w: outbox destination %s position=%q checkpoint=%q batch=%q", connector.ErrCheckpointPosition, entry.Destination, entry.PositionID, checkpointID, batchID)
 		}
 		identity := entry.Destination + "\x00" + entry.PositionID

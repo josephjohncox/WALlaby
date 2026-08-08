@@ -4,7 +4,7 @@ Status: **supported configuration preview; experimental service evidence**.
 
 The PostgreSQL-to-canonical-Parquet-to-Iceberg configuration surface is versioned and tested. Promotion to maintained support remains blocked on same-commit AWS S3 Tables and commercial Snowflake readback evidence. See [Query WALlaby Iceberg tables from Snowflake](../guides/s3-tables-snowflake.md) for the documented S3 Tables configuration preview.
 
-The Iceberg endpoint consumes `canonical_cdc_parquet_v1` publications after PostgreSQL commits them. It is not a direct destination. PostgreSQL owns delivery attempts, receipts, consumer checkpoints, quotas, and garbage-collection roots. The catalog owns Iceberg metadata. Ordinary versioned S3 retains canonical recovery objects.
+The Iceberg endpoint consumes explicitly projection-bound `canonical_cdc_parquet_v2` publications after PostgreSQL commits them. The byte-frozen `canonical_cdc_parquet_v1` encoder remains available only for its historical protocol contract and is not admitted for mapped Iceberg flows. It is not a direct destination. PostgreSQL owns delivery attempts, receipts, consumer checkpoints, quotas, and garbage-collection roots. The catalog owns Iceberg metadata. Ordinary versioned S3 retains canonical recovery objects.
 
 ## Data model
 
@@ -27,46 +27,64 @@ A retry adopts a snapshot only when every identity property matches. A reused ba
 
 The Iceberg catalog owns table field IDs. A real Apache Iceberg REST catalog replaces caller-supplied IDs with fresh sequential table field IDs on create and assigns new IDs to columns added by evolution. Wallaby never requires a catalog to preserve its hash-derived canonical field IDs.
 
-Wallaby always rewrites `canonical_cdc_parquet_v1` objects. It first verifies the exact S3 `VersionId`, SHA-256, length, canonical schema fingerprint, row count, logical batch ID, source relation, operation, and record ordinals. It then loads, creates, or evolves the target table and builds an authoritative canonical-field-to-Iceberg-field mapping from the schema the catalog returns. The mapping is keyed on stable source identity (PostgreSQL relation and column identity), which survives supported renames; it validates names, types, requiredness, and nested paths, and fails closed on collisions. The rewritten data files carry the catalog-assigned `PARQUET:field_id` values and the target table's partition specification, so downstream readers resolve every column by the catalog's own field IDs.
+Wallaby always rewrites already-mapped `canonical_cdc_parquet_v2` objects without applying a second logical table or column mapping. It first verifies the exact S3 `VersionId`, SHA-256, length, canonical schema fingerprint, row count, logical batch ID, source relation, operation, and record ordinals. It then loads, creates, or evolves the target table and builds an authoritative canonical-field-to-Iceberg-field mapping from the schema the catalog returns. The mapping is keyed on stable source identity (PostgreSQL relation and column identity), which survives supported renames; it validates names, types, requiredness, and nested paths, and fails closed on collisions. The rewritten data files carry the catalog-assigned `PARQUET:field_id` values and the target table's partition specification, so downstream readers resolve every column by the catalog's own field IDs.
 
 Stable identity is persisted in each Iceberg field's doc as immutable commit metadata. A bounded SHA-256 mapping digest is recorded as audit evidence in the snapshot summary. A retry rebuilds and validates the authoritative mapping from the catalog instead of inferring renames by name; the audit digest does not independently authorize snapshot adoption.
 
-Wallaby creates missing tables as unpartitioned Iceberg v2 tables and evolves existing tables additively; a new canonical column is added as a nullable Iceberg column and a supported rename is applied by stable identity. Existing partitioned tables are accepted only when every partition source field still resolves in the current table schema. Incompatible type changes and ambiguous renames fail closed. Schema evolution and data append are separate catalog commits. Recovery reloads the catalog-owned schema and reconciles the append by exact snapshot summary; consumers may briefly observe the evolved schema before the new data snapshot.
+Wallaby creates missing tables as unpartitioned Iceberg v2 tables and evolves existing tables additively; a new canonical column is added as a nullable Iceberg column and a supported rename is applied by stable identity. Existing partitioned tables are accepted only when every partition source field still resolves in the current table schema. Incompatible type changes, missing or malformed Wallaby identity docs, mapped column drops, and manually added catalog fields fail closed. The complete desired canonical field set must account for every existing catalog field; system and control fields are retained only when explicitly present in that desired contract. Schema evolution and data append are separate catalog commits. Recovery reloads the catalog-owned schema and reconciles the append by exact snapshot summary; consumers may briefly observe the evolved schema before the new data snapshot.
 
 ## Flow configuration
 
-Use a managed PostgreSQL CDC source with `bootstrap=never` and disabled source-resource mutation options. Initial snapshot publication through the canonical artifact log is not implemented.
+Use a managed PostgreSQL CDC source with `bootstrap=BOOTSTRAP_MODE_NEVER` and disabled source-resource mutation fields. Initial snapshot publication through the canonical artifact log is not implemented.
 
 ```yaml
 source:
-  type: postgres
-  options:
-    managed: "true"
-    bootstrap: "never"
-    create_slot: "false"
-    ensure_state: "false"
-    ensure_publication: "false"
-    sync_publication: "false"
+  name: source
+  postgres_source:
+    mode: POSTGRES_SOURCE_MODE_CDC
+    managed: true
+    bootstrap: BOOTSTRAP_MODE_NEVER
+    create_slot: false
+    ensure_state: false
+    ensure_publication: false
+    sync_publication: false
     source_system_identifier: system-1
     source_lineage_id: lineage-1
     publication_revision: revision-1
 
 destinations:
   - name: lake
-    type: iceberg
-    options:
+    iceberg:
       destination_revision_id: iceberg-append-v1
-      catalog_profile: rest
-      namespace: analytics
-      table_prefix: cdc_
+      catalog_profile: ICEBERG_CATALOG_PROFILE_REST
+      control_table: __wallaby_control
 
 config:
+  table_mappings:
+    version: 2
+    destinations:
+      - destination: lake
+        future_tables:
+          action: exclude
+        tables:
+          - source_schema: public
+            source_table: events
+            action: include
+            target_schema: analytics
+            target_table: cdc_events
+            future_columns:
+              action: include
+              target_column: "{{ .Column }}"
+            columns: []
+            write:
+              mode: append
+              key_columns: []
   ack_policy: materialized
   materialization:
-    projection_id: canonical_cdc_parquet_v1
+    projection_id: canonical_cdc_parquet_v2
 ```
 
-The flow endpoint selects only catalog profile, target mapping, and immutable destination revision identity. Deployment configuration owns URI, warehouse, REST prefix, region, S3 Tables bucket ARN, S3 FileIO endpoint/region, and behavior controls. Persisting any deployment-owned, unknown, or secret option is rejected before storage. Supply OAuth tokens, OAuth credentials, client certificates, CA data, and AWS credentials only through deployment configuration or environment variables.
+The typed `iceberg` endpoint fields select only catalog profile, control table, and immutable destination revision identity. Logical table and column targets exist only in durable destination-scoped table mappings; endpoint-level logical target overrides are rejected. Deployment configuration owns URI, warehouse, REST prefix, region, S3 Tables bucket ARN, S3 FileIO endpoint/region, and behavior controls. Persisting any deployment-owned, unknown, or secret field is rejected before storage. Supply OAuth tokens, OAuth credentials, client certificates, CA data, and AWS credentials only through deployment configuration or environment variables.
 
 ## REST client
 

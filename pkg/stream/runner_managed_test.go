@@ -2,12 +2,15 @@ package stream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -37,12 +40,28 @@ func TestManagedClickHouseProfileRejectsUnprovenVersionPair(t *testing.T) {
 
 func TestManagedSnowflakePublicationRequiresExactlyTheAdmittedRelation(t *testing.T) {
 	t.Parallel()
-	if err := validateManagedSnowflakePublicationRelation(connector.ManagedProfilePostgresToSnowflakeSQLV1, []string{"public.widgets"}, "public", "widgets"); err != nil {
+	if err := validateManagedSnowflakePublicationRelation(connector.ManagedProfilePostgresToSnowflakeSQLV1, []string{`"public"."widgets"`}, "public", "widgets"); err != nil {
 		t.Fatal(err)
 	}
-	for _, tables := range [][]string{nil, {"public.widgets", "public.audit"}, {"other.widgets"}} {
+	for _, tables := range [][]string{nil, {`"public"."widgets"`, `"public"."audit"`}, {`"other"."widgets"`}} {
 		if err := validateManagedSnowflakePublicationRelation(connector.ManagedProfilePostgresToSnowflakeStagedAppendV1, tables, "public", "widgets"); err == nil {
 			t.Fatalf("publication tables %v were admitted", tables)
+		}
+	}
+}
+
+func TestManagedSnowflakePublicationPreservesExactWhitespaceIdentifiers(t *testing.T) {
+	t.Parallel()
+	for _, relation := range []struct{ schema, table string }{{" ", " "}, {" leading", "trailing "}, {" both ", " all "}} {
+		expected := pgx.Identifier{relation.schema, relation.table}.Sanitize()
+		if err := validateManagedSnowflakePublicationRelation(connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1, []string{expected}, relation.schema, relation.table); err != nil {
+			t.Fatalf("exact publication relation %q rejected: %v", expected, err)
+		}
+		trimmed := pgx.Identifier{strings.TrimSpace(relation.schema), strings.TrimSpace(relation.table)}.Sanitize()
+		if trimmed != expected {
+			if err := validateManagedSnowflakePublicationRelation(connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1, []string{trimmed}, relation.schema, relation.table); err == nil {
+				t.Fatalf("trimmed publication relation %q admitted for %q", trimmed, expected)
+			}
 		}
 	}
 }
@@ -60,7 +79,7 @@ func TestManagedSnowflakeProfileRequiresPostgres16AndExactRuntimePin(t *testing.
 	}
 }
 
-func TestManagedRestoreValidatesAckIntentBeforeFeedbackOrDestinationOpen(t *testing.T) {
+func TestManagedRestoreInitializesDestinationBeforeAckValidationOrFeedback(t *testing.T) {
 	t.Parallel()
 	events := []string{}
 	source := &managedTestSource{events: &events, initial: connector.Checkpoint{LSN: "0/10"}}
@@ -74,8 +93,9 @@ func TestManagedRestoreValidatesAckIntentBeforeFeedbackOrDestinationOpen(t *test
 	if source.acks != 0 {
 		t.Fatalf("source ACK calls=%d, want zero before intent validation", source.acks)
 	}
-	if containsEvent(events, "destination.open") {
-		t.Fatalf("destination opened before restored feedback validation: %v", events)
+	wantPrefix := []string{"destination.open", "destination.initialize", "source.open", "coordinator.validate"}
+	if len(events) < len(wantPrefix) || !reflect.DeepEqual(events[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("managed restore events=%v, want destination authority before source and ACK validation: %v", events, wantPrefix)
 	}
 }
 
@@ -84,15 +104,139 @@ func TestManagedRestoreSeedsSourceWithDeliveredSchemaBaselines(t *testing.T) {
 	events := []string{}
 	source := &managedTestSource{events: &events, initial: connector.Checkpoint{LSN: "0/10"}}
 	coordinator := &managedTestCoordinator{events: &events}
-	const baseline = `[{"Name":"widgets","Namespace":"public","Version":4,"Columns":[{"Name":"id","Type":"bigint"}]}]`
-	runner := managedTestRunner(source, &managedTestDestination{events: &events}, coordinator, managedTestCheckpointStore{checkpoint: connector.Checkpoint{
-		LSN: "0/10", Metadata: map[string]string{connector.ManagedSchemaBaselinesMetadataKey: baseline},
-	}})
+	loaded := []connector.Schema{{Name: "widgets", Namespace: "public", Version: 4, Columns: []connector.Column{{Name: "id", Type: "bigint"}}}}
+	baselineBytes, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := string(baselineBytes)
+	runner := managedTestRunner(source, &managedTestDestination{events: &events}, coordinator, managedTestCheckpointStore{checkpoint: connector.Checkpoint{LSN: "0/10"}})
+	runner.SchemaBaselines = &managedTestSchemaBaselines{load: loaded}
 	if err := runner.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := source.openSpec.Options[connector.ManagedSchemaBaselinesMetadataKey]; got != baseline {
+	if got := source.openSpec.Options[connector.ManagedSchemaBaselinesOptionKey]; got != baseline {
 		t.Fatalf("source schema baseline option=%q, want %q", got, baseline)
+	}
+}
+
+func TestManagedSnowflakeAppendProfilesMapPolicyWithoutDoubleMappingRawData(t *testing.T) {
+	t.Parallel()
+	projector := rawAppendRenameProjector{}
+	schema := connector.Schema{Namespace: "public", Name: "widgets", Version: 1, Columns: []connector.Column{
+		{Name: "id", Type: "int8"}, {Name: "payload", Type: "text"}, {Name: "secret", Type: "text"},
+	}}
+	transaction := connector.SourceTransaction{
+		SourceLineageID: "source/publication-v1", TransactionID: 7,
+		BeginLSN: "0/10", CommitLSN: "0/20", EndLSN: "0/20", Checkpoint: connector.Checkpoint{LSN: "0/20"},
+		Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: connector.Batch{
+			Schema:  schema,
+			Records: []connector.Record{{Table: "widgets", Operation: connector.OpInsert, After: map[string]any{"id": int64(1), "payload": "visible", "secret": "raw-only"}}},
+		}}},
+	}
+	for _, profile := range []string{
+		connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
+		connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
+	} {
+		t.Run(profile, func(t *testing.T) {
+			projected, decision, err := projectManagedRawAppendTransaction(projector, transaction)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision != ProjectionIncluded || len(projected.Fragments) != 1 {
+				t.Fatalf("raw append projection decision/fragments=%v/%d", decision, len(projected.Fragments))
+			}
+			batch := projected.Fragments[0].Batch
+			if batch.Schema.Namespace != "public" || batch.Schema.Name != "widgets" || len(batch.Schema.Columns) != 3 {
+				t.Fatalf("raw schema was double-mapped: %+v", batch.Schema)
+			}
+			after := batch.Records[0].After
+			if after["id"] != int64(1) || after["secret"] != "raw-only" || after["EVENT_ID"] != nil || after["PAYLOAD"] != nil {
+				t.Fatalf("raw changelog image was renamed/subset before planner encoding: %+v", after)
+			}
+			if batch.WritePolicy.Mode != connector.ResolvedWriteAppend || batch.WritePolicy.ProjectionFingerprint != projector.Fingerprint() {
+				t.Fatalf("append policy was not mapping-bound: %+v", batch.WritePolicy)
+			}
+		})
+	}
+}
+
+type rawAppendRenameProjector struct{}
+
+func (rawAppendRenameProjector) Fingerprint() string { return "rename-subset-v1" }
+func (rawAppendRenameProjector) IncludeBootstrapRelation(namespace, table string) (bool, error) {
+	return namespace == "public" && table == "widgets", nil
+}
+func (rawAppendRenameProjector) ProjectBootstrapSchema(connector.Schema) (connector.Schema, connector.TableWritePolicy, bool, error) {
+	return connector.Schema{Namespace: "PUBLIC", Name: "WALLABY_CHANGELOG", Columns: []connector.Column{{Name: "EVENT_ID", Type: "int8"}, {Name: "PAYLOAD", Type: "text"}}}, connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend, ProjectionFingerprint: "rename-subset-v1"}, true, nil
+}
+func (p rawAppendRenameProjector) ProjectBootstrapBatch(batch connector.Batch) (connector.Batch, bool, error) {
+	projected, decision, err := p.ProjectBatch(batch)
+	return projected, decision == ProjectionIncluded, err
+}
+func (rawAppendRenameProjector) ProjectBatch(batch connector.Batch) (connector.Batch, ProjectionDecision, error) {
+	batch.Schema.Namespace, batch.Schema.Name = "PUBLIC", "WALLABY_CHANGELOG"
+	batch.WritePolicy = connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend, ProjectionFingerprint: "rename-subset-v1"}
+	for index := range batch.Records {
+		batch.Records[index].Table = "WALLABY_CHANGELOG"
+	}
+	return batch, ProjectionIncluded, nil
+}
+func (rawAppendRenameProjector) ProjectTransaction(transaction connector.SourceTransaction) (connector.SourceTransaction, ProjectionDecision, error) {
+	out := transaction
+	out.Fragments[0].Batch.Schema = connector.Schema{Namespace: "PUBLIC", Name: "WALLABY_CHANGELOG", Columns: []connector.Column{{Name: "EVENT_ID", Type: "int8"}}}
+	out.Fragments[0].Batch.Records[0].After = map[string]any{"EVENT_ID": int64(1)}
+	return out, ProjectionIncluded, nil
+}
+
+func TestManagedSnowflakeAppendProfilesProjectStructuredDDLPolicyOnce(t *testing.T) {
+	t.Parallel()
+	transaction := connector.SourceTransaction{
+		SourceLineageID: "source/publication-v1", TransactionID: 8,
+		BeginLSN: "0/30", CommitLSN: "0/40", EndLSN: "0/40", Checkpoint: connector.Checkpoint{LSN: "0/40"},
+		Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: connector.Batch{
+			Schema:  connector.Schema{Namespace: "public", Name: "widgets", Version: 2, Columns: []connector.Column{{Name: "id", Type: "int8"}}},
+			Records: []connector.Record{{Table: "widgets", Operation: connector.OpDDL, DDLPlan: json.RawMessage(`{"Changes":[{"Type":"add_column","Namespace":"public","Table":"widgets","Column":"added","ToType":"text"}]}`)}},
+		}}},
+	}
+	projected, decision, err := projectManagedRawAppendTransaction(rawAppendRenameProjector{}, transaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision != ProjectionIncluded || projected.Fragments[0].Batch.Schema.Name != "WALLABY_CHANGELOG" || projected.Fragments[0].Batch.Records[0].Table != "WALLABY_CHANGELOG" {
+		t.Fatalf("structured DDL mapping was not applied exactly once: %+v", projected)
+	}
+	if projected.Fragments[0].Batch.WritePolicy.ProjectionFingerprint != "rename-subset-v1" {
+		t.Fatalf("structured DDL policy is not mapping-bound: %+v", projected.Fragments[0].Batch.WritePolicy)
+	}
+}
+
+type filteringManagedProjector struct{}
+
+func (filteringManagedProjector) Fingerprint() string { return "filter-v1" }
+func (filteringManagedProjector) ProjectBatch(batch connector.Batch) (connector.Batch, ProjectionDecision, error) {
+	return connector.Batch{Checkpoint: batch.Checkpoint}, ProjectionFiltered, nil
+}
+func (filteringManagedProjector) ProjectTransaction(transaction connector.SourceTransaction) (connector.SourceTransaction, ProjectionDecision, error) {
+	transaction.Fragments = nil
+	return transaction, ProjectionFiltered, nil
+}
+
+func TestManagedFilteredProjectionAuthorizesAckWithoutDeliveryAttempt(t *testing.T) {
+	events := []string{}
+	source := &managedTestSource{events: &events, transactions: []connector.SourceTransaction{{
+		SourceLineageID: "lineage-1", TransactionID: 9, BeginLSN: "0/10", CommitLSN: "0/20", EndLSN: "0/20", Checkpoint: connector.Checkpoint{LSN: "0/20"},
+		Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: connector.Batch{Schema: connector.Schema{Name: "secret", Namespace: "private", Columns: []connector.Column{{Name: "id", Type: "int8"}}}, Records: []connector.Record{{Table: "secret", Operation: connector.OpInsert, After: map[string]any{"id": int64(1)}}}}}},
+	}}}
+	coordinator := &managedTestCoordinator{events: &events}
+	runner := managedTestRunner(source, &managedTestDestination{events: &events}, coordinator, managedTestCheckpointStore{checkpoint: connector.Checkpoint{LSN: "0/10"}})
+	runner.Destinations[0].Projector = filteringManagedProjector{}
+	runner.Destinations[0].MappingFingerprint = "filter-v1"
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !containsEvent(events, "coordinator.authorize") || source.acks != 2 {
+		t.Fatalf("events=%v acks=%d, want restore and filtered ACK without delivery", events, source.acks)
 	}
 }
 
@@ -120,6 +264,25 @@ func TestManagedCancellationDominatesSourceFeedbackTransportError(t *testing.T) 
 	}
 }
 
+func TestManagedDestinationInitializationFailsBeforeAllSourceIO(t *testing.T) {
+	t.Parallel()
+	for _, bootstrapMode := range []string{"never", "required"} {
+		t.Run(bootstrapMode, func(t *testing.T) {
+			events := []string{}
+			initializeErr := errors.New("receipt authority missing")
+			source := &managedTestSource{events: &events}
+			runner := managedTestRunner(source, &managedTestDestination{events: &events, initializeErr: initializeErr}, &managedTestCoordinator{events: &events}, managedTestCheckpointStore{err: connector.ErrCheckpointNotFound})
+			runner.SourceSpec.Options["bootstrap"] = bootstrapMode
+			if err := runner.Run(context.Background()); !errors.Is(err, initializeErr) {
+				t.Fatalf("Run() error=%v, want initialization failure", err)
+			}
+			if !reflect.DeepEqual(events, []string{"destination.open", "destination.initialize", "destination.close"}) {
+				t.Fatalf("managed initialization failure performed source I/O for bootstrap=%s: %v", bootstrapMode, events)
+			}
+		})
+	}
+}
+
 func TestManagedBootstrapPublishesBeforeCDCSourceOpen(t *testing.T) {
 	t.Parallel()
 	events := []string{}
@@ -137,7 +300,7 @@ func TestManagedBootstrapPublishesBeforeCDCSourceOpen(t *testing.T) {
 	if err := runner.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := []string{"destination.open", "source.bootstrap", "source.open", "coordinator.validate", "source.ack", "coordinator.receipt"}
+	wantPrefix := []string{"destination.open", "destination.initialize", "source.bootstrap", "source.open", "coordinator.validate", "source.ack", "coordinator.receipt"}
 	if len(events) < len(wantPrefix) || !reflect.DeepEqual(events[:len(wantPrefix)], wantPrefix) {
 		t.Fatalf("managed bootstrap startup events=%v, want prefix %v", events, wantPrefix)
 	}
@@ -171,7 +334,7 @@ func TestManagedMaterializedRestoresBackpressureBeforeBootstrapWork(t *testing.T
 	}
 }
 
-func TestManagedNewSlotPersistsInitialCutBeforeDestinationOpen(t *testing.T) {
+func TestManagedBootstrapNeverInitializesDestinationBeforeSourceAndInitialCut(t *testing.T) {
 	t.Parallel()
 	events := []string{}
 	source := &managedTestSource{events: &events, initial: connector.Checkpoint{LSN: "0/20"}}
@@ -181,7 +344,7 @@ func TestManagedNewSlotPersistsInitialCutBeforeDestinationOpen(t *testing.T) {
 	if err := runner.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := []string{"source.open", "coordinator.authorize", "coordinator.validate", "source.ack", "coordinator.receipt", "destination.open"}
+	wantPrefix := []string{"destination.open", "destination.initialize", "source.open", "coordinator.authorize", "coordinator.validate", "source.ack", "coordinator.receipt", "source.read-transaction"}
 	if len(events) < len(wantPrefix) || !reflect.DeepEqual(events[:len(wantPrefix)], wantPrefix) {
 		t.Fatalf("managed startup events=%v, want prefix %v", events, wantPrefix)
 	}
@@ -290,11 +453,30 @@ func (l *managedTestArtifactLog) WaitForReadAdmission(context.Context, connector
 	return nil
 }
 
-func (l *managedTestArtifactLog) Append(_ context.Context, _ connector.RunFence, transaction connector.SourceTransaction) (connector.AckGrant, error) {
+func (l *managedTestArtifactLog) Append(_ context.Context, _ connector.RunFence, transaction connector.SourceTransaction, _ connector.ManagedSchemaBaselinePayload) (connector.AckGrant, error) {
 	l.appends++
 	*l.events = append(*l.events, "artifact.append")
 	positionID, err := connector.CheckpointPositionID(transaction.Checkpoint)
 	return connector.AckGrant{Checkpoint: transaction.Checkpoint, PositionID: positionID}, err
+}
+
+type managedBootstrapTestProjector struct{}
+
+func (managedBootstrapTestProjector) Fingerprint() string { return "managed-bootstrap-test-v1" }
+func (managedBootstrapTestProjector) IncludeBootstrapRelation(string, string) (bool, error) {
+	return true, nil
+}
+func (managedBootstrapTestProjector) ProjectBatch(batch connector.Batch) (connector.Batch, ProjectionDecision, error) {
+	return batch, ProjectionIncluded, nil
+}
+func (managedBootstrapTestProjector) ProjectTransaction(transaction connector.SourceTransaction) (connector.SourceTransaction, ProjectionDecision, error) {
+	return transaction, ProjectionIncluded, nil
+}
+func (managedBootstrapTestProjector) ProjectBootstrapSchema(schema connector.Schema) (connector.Schema, connector.TableWritePolicy, bool, error) {
+	return schema, connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend}, true, nil
+}
+func (managedBootstrapTestProjector) ProjectBootstrapBatch(batch connector.Batch) (connector.Batch, bool, error) {
+	return batch, true, nil
 }
 
 func managedTestRunner(source connector.Source, destination connector.Destination, coordinator ManagedDeliveryCoordinator, checkpoints connector.CheckpointStore) Runner {
@@ -304,34 +486,43 @@ func managedTestRunner(source connector.Source, destination connector.Destinatio
 	}
 	return Runner{
 		Source: source,
-		SourceSpec: connector.Spec{Options: map[string]string{
+		SourceSpec: connector.RuntimeSpec{Options: map[string]string{
 			"managed": "true", "bootstrap": "never", "source_lineage_id": "lineage-1",
 		}},
-		Destinations:        []DestinationConfig{{Dest: destination, Spec: connector.Spec{Options: map[string]string{"destination_revision_id": "destination-1"}}}},
+		Destinations:        []DestinationConfig{{Dest: destination, Spec: connector.RuntimeSpec{Options: map[string]string{"destination_revision_id": "destination-1"}}, Projector: managedBootstrapTestProjector{}, MappingFingerprint: "managed-bootstrap-test-v1"}},
 		Checkpoints:         checkpoints,
 		FlowID:              fence.FlowID,
 		AckPolicy:           AckPolicyAll,
 		RunFence:            &fence,
 		DeliveryCoordinator: coordinator,
+		SchemaBaselines:     &managedTestSchemaBaselines{},
 	}
+}
+
+type managedTestSchemaBaselines struct {
+	load []connector.Schema
+}
+
+func (s *managedTestSchemaBaselines) Load(context.Context, connector.RunFence, string) ([]connector.Schema, error) {
+	return append([]connector.Schema(nil), s.load...), nil
 }
 
 type managedTestSource struct {
 	events          *[]string
 	initial         connector.Checkpoint
 	bootstrapResult connector.ManagedBootstrapResult
-	openSpec        connector.Spec
+	openSpec        connector.RuntimeSpec
 	acks            int
 	transactions    []connector.SourceTransaction
 	transactionRead int
 }
 
-func (s *managedTestSource) Open(_ context.Context, spec connector.Spec) error {
+func (s *managedTestSource) Open(_ context.Context, spec connector.RuntimeSpec) error {
 	s.openSpec = spec
 	*s.events = append(*s.events, "source.open")
 	return nil
 }
-func (s *managedTestSource) PrepareManagedBootstrap(context.Context, connector.RunFence, connector.Spec, string, connector.ManagedBootstrapDestination) (connector.ManagedBootstrapResult, error) {
+func (s *managedTestSource) PrepareManagedBootstrap(context.Context, connector.RunFence, connector.RuntimeSpec, string, connector.ManagedBootstrapProjector, connector.ManagedBootstrapDestination) (connector.ManagedBootstrapResult, error) {
 	*s.events = append(*s.events, "source.bootstrap")
 	return s.bootstrapResult, nil
 }
@@ -339,6 +530,7 @@ func (s *managedTestSource) Read(context.Context) (connector.Batch, error) {
 	return connector.Batch{}, io.EOF
 }
 func (s *managedTestSource) ReadTransaction(context.Context) (connector.SourceTransaction, error) {
+	*s.events = append(*s.events, "source.read-transaction")
 	if s.transactionRead >= len(s.transactions) {
 		return connector.SourceTransaction{}, io.EOF
 	}
@@ -368,9 +560,12 @@ func (*managedTestSource) Capabilities() connector.Capabilities {
 	return connector.Capabilities{Support: connector.SupportExperimental, SupportsStreaming: true}
 }
 
-type managedTestDestination struct{ events *[]string }
+type managedTestDestination struct {
+	events        *[]string
+	initializeErr error
+}
 
-func (d *managedTestDestination) Open(context.Context, connector.Spec) error {
+func (d *managedTestDestination) Open(context.Context, connector.RuntimeSpec) error {
 	*d.events = append(*d.events, "destination.open")
 	return nil
 }
@@ -380,7 +575,7 @@ func (*managedTestDestination) ApplyDDL(context.Context, connector.Schema, conne
 }
 func (*managedTestDestination) TypeMappings() map[string]string { return nil }
 func (*managedTestDestination) Capabilities() connector.Capabilities {
-	return connector.Capabilities{Support: connector.SupportExperimental, Delivery: connector.DeliverySemantics{Declared: true, TransactionalBatch: true, IdempotentReplay: true, ReplaySafe: true}}
+	return connector.Capabilities{Support: connector.SupportExperimental, Delivery: connector.DeliverySemantics{TransactionalBatch: true, IdempotentReplay: true, ReplaySafe: true}}
 }
 func (d *managedTestDestination) Close(context.Context) error {
 	*d.events = append(*d.events, "destination.close")
@@ -388,6 +583,10 @@ func (d *managedTestDestination) Close(context.Context) error {
 }
 func (*managedTestDestination) Apply(context.Context, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
 	return connector.DeliveryEvidence{}, nil
+}
+func (d *managedTestDestination) InitializeManagedDelivery(context.Context) error {
+	*d.events = append(*d.events, "destination.initialize")
+	return d.initializeErr
 }
 func (*managedTestDestination) ValidateTransaction(context.Context, connector.SourceTransaction) error {
 	return nil
@@ -398,7 +597,7 @@ func (*managedTestDestination) ApplyTransaction(context.Context, connector.Deliv
 func (*managedTestDestination) Reconcile(context.Context, connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
 	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
 }
-func (*managedTestDestination) PrepareBootstrap(context.Context, connector.BootstrapIntent, []connector.Schema) error {
+func (*managedTestDestination) PrepareBootstrap(context.Context, connector.BootstrapIntent, []connector.BootstrapTable) error {
 	return nil
 }
 func (*managedTestDestination) ApplyBootstrap(context.Context, connector.BootstrapIntent, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
@@ -407,13 +606,13 @@ func (*managedTestDestination) ApplyBootstrap(context.Context, connector.Bootstr
 func (*managedTestDestination) ReconcileBootstrap(context.Context, connector.BootstrapIntent, connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
 	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
 }
-func (*managedTestDestination) PublishBootstrap(context.Context, connector.BootstrapIntent, []connector.Schema) (connector.DeliveryEvidence, error) {
+func (*managedTestDestination) PublishBootstrap(context.Context, connector.BootstrapIntent, []connector.BootstrapTable) (connector.DeliveryEvidence, error) {
 	return connector.DeliveryEvidence{}, nil
 }
 func (*managedTestDestination) ReconcileBootstrapPublication(context.Context, connector.BootstrapIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
 	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
 }
-func (*managedTestDestination) AbandonBootstrap(context.Context, connector.BootstrapIntent, []connector.Schema) error {
+func (*managedTestDestination) AbandonBootstrap(context.Context, connector.BootstrapIntent, []connector.BootstrapTable) error {
 	return nil
 }
 
@@ -423,15 +622,12 @@ type managedTestCoordinator struct {
 	commitFeedback func() error
 }
 
-func (c *managedTestCoordinator) AuthorizeAck(_ context.Context, _ connector.RunFence, checkpoint connector.Checkpoint) (connector.AckGrant, error) {
+func (c *managedTestCoordinator) AuthorizeAck(_ context.Context, _ connector.RunFence, checkpoint connector.Checkpoint, _ connector.ManagedSchemaBaselinePayload) (connector.AckGrant, error) {
 	*c.events = append(*c.events, "coordinator.authorize")
 	position, err := connector.CheckpointPositionID(checkpoint)
 	return connector.AckGrant{Checkpoint: checkpoint, PositionID: position}, err
 }
-func (*managedTestCoordinator) Deliver(context.Context, connector.RunFence, connector.DeliveryIntent, connector.Batch, connector.ManagedDestination) (connector.AckGrant, error) {
-	return connector.AckGrant{}, errors.New("unexpected delivery")
-}
-func (*managedTestCoordinator) DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedTransactionDestination) (connector.AckGrant, error) {
+func (*managedTestCoordinator) DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedSchemaBaselinePayload, connector.ManagedTransactionDestination) (connector.AckGrant, error) {
 	return connector.AckGrant{}, errors.New("unexpected transaction delivery")
 }
 func (c *managedTestCoordinator) ValidateAckGrant(context.Context, connector.RunFence, connector.AckGrant) error {

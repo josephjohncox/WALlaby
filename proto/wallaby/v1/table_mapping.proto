@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package wallaby.v1;
+
+option go_package = "github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabypb";
+
+enum MappingAction {
+  MAPPING_ACTION_UNSPECIFIED = 0;
+  MAPPING_ACTION_INCLUDE = 1;
+  MAPPING_ACTION_EXCLUDE = 2;
+}
+
+enum TableWriteMode {
+  TABLE_WRITE_MODE_UNSPECIFIED = 0;
+  TABLE_WRITE_MODE_APPEND = 1;
+  TABLE_WRITE_MODE_UPSERT = 2;
+}
+
+message TableMappings {
+  // Version 2 is required. Version 1 and legacy placeholder syntax are unsupported.
+  uint32 version = 1;
+  repeated DestinationTableMappings destinations = 2;
+}
+
+message DestinationTableMappings {
+  string destination = 1;
+  FutureTableMapping future_tables = 2;
+  repeated TableMapping tables = 3;
+}
+
+message FutureTableMapping {
+  MappingAction action = 1;
+  // When action is INCLUDE, version 2 requires one restricted Go text/template
+  // field action: {{ .Schema }}. When action is EXCLUDE, this must be empty.
+  string target_schema = 2;
+  // When action is INCLUDE, version 2 requires one restricted Go text/template
+  // field action: {{ .Table }}. When action is EXCLUDE, this must be empty.
+  string target_table = 3;
+  FutureColumnMapping future_columns = 4;
+  TableWritePolicy write = 5;
+}
+
+message TableMapping {
+  string source_schema = 1;
+  string source_table = 2;
+  MappingAction action = 3;
+  string target_schema = 4;
+  string target_table = 5;
+  FutureColumnMapping future_columns = 6;
+  repeated ColumnMapping columns = 7;
+  TableWritePolicy write = 8;
+}
+
+message FutureColumnMapping {
+  MappingAction action = 1;
+  // When action is INCLUDE, version 2 requires one restricted Go text/template
+  // field action: {{ .Column }}. When action is EXCLUDE, this must be empty.
+  // Only typed Schema, Table, and Column data is injected. Functions, pipelines,
+  // variables, conditions, loops, and template inclusion are unsupported.
+  string target_column = 2;
+}
+
+message ColumnMapping {
+  string source_column = 1;
+  MappingAction action = 2;
+  string target_column = 3;
+}
+
+message TableWritePolicy {
+  TableWriteMode mode = 1;
+  repeated string key_columns = 2;
+  string watermark_column = 3;
+}

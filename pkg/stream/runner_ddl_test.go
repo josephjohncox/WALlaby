@@ -12,6 +12,97 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+type ddlFilterProjector struct{ include bool }
+
+func (p ddlFilterProjector) Fingerprint() string { return "ddl-filter" }
+func (p ddlFilterProjector) ProjectBatch(batch connector.Batch) (connector.Batch, ProjectionDecision, error) {
+	if !p.include {
+		return connector.Batch{Checkpoint: batch.Checkpoint}, ProjectionFiltered, nil
+	}
+	return batch, ProjectionIncluded, nil
+}
+func (p ddlFilterProjector) ProjectTransaction(transaction connector.SourceTransaction) (connector.SourceTransaction, ProjectionDecision, error) {
+	return transaction, ProjectionIncluded, nil
+}
+
+func TestDDLReceiptDestinationsUseProjectedDDL(t *testing.T) {
+	batch := connector.Batch{Schema: connector.Schema{Name: "widgets", Namespace: "public"}, Checkpoint: connector.Checkpoint{LSN: "0/10"}, Records: []connector.Record{{Table: "widgets", Operation: connector.OpDDL, SourcePosition: "0/10", DDL: "ALTER TABLE widgets ADD COLUMN note text"}}}
+	runner := Runner{Destinations: []DestinationConfig{
+		{Spec: connector.RuntimeSpec{Name: "included"}, Dest: &recordingDest{log: &eventLog{}}, Projector: ddlFilterProjector{include: true}},
+		{Spec: connector.RuntimeSpec{Name: "filtered"}, Dest: &recordingDest{log: &eventLog{}}, Projector: ddlFilterProjector{}},
+	}}
+	got, err := runner.ddlExecutionDestinations(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got["0/10"]) != 1 || got["0/10"][0] != "included" {
+		t.Fatalf("destinations=%v, want only projected DDL destination", got)
+	}
+}
+
+type ddlPositionProjector struct{ position string }
+
+func (p ddlPositionProjector) Fingerprint() string { return "ddl-position-" + p.position }
+func (p ddlPositionProjector) ProjectBatch(batch connector.Batch) (connector.Batch, ProjectionDecision, error) {
+	out := batch
+	out.Records = nil
+	for _, record := range batch.Records {
+		if record.SourcePosition == p.position {
+			out.Records = append(out.Records, record)
+		}
+	}
+	if len(out.Records) == 0 {
+		return out, ProjectionFiltered, nil
+	}
+	return out, ProjectionIncluded, nil
+}
+func (p ddlPositionProjector) ProjectTransaction(transaction connector.SourceTransaction) (connector.SourceTransaction, ProjectionDecision, error) {
+	return transaction, ProjectionIncluded, nil
+}
+
+func TestDDLReceiptManifestsArePerSourcePosition(t *testing.T) {
+	batch := connector.Batch{Schema: connector.Schema{Name: "widgets", Namespace: "public"}, Checkpoint: connector.Checkpoint{LSN: "0/20"}, Records: []connector.Record{
+		{Table: "widgets", Operation: connector.OpDDL, SourcePosition: "0/10", DDL: "A"},
+		{Table: "widgets", Operation: connector.OpDDL, SourcePosition: "0/20", DDL: "B"},
+	}}
+	assertExpected := func(_ string, position, destination string, expected []string) error {
+		if len(expected) != 1 || expected[0] != destination {
+			return errors.New("cross-position destination leaked into DDL manifest at " + position)
+		}
+		return nil
+	}
+	receipts := &testDDLReceiptStore{beforePrepare: assertExpected, onRecord: func(flowID, position, _ string, destination string, expected []string) error {
+		return assertExpected(flowID, position, destination, expected)
+	}}
+	runner := Runner{FlowID: "crossed-ddl", RequireDDLExecution: true, DDLExecutions: receipts, Destinations: []DestinationConfig{
+		{Spec: connector.RuntimeSpec{Name: "A"}, Dest: &ddlPolicyDestination{}, Projector: ddlPositionProjector{position: "0/10"}},
+		{Spec: connector.RuntimeSpec{Name: "B"}, Dest: &ddlPolicyDestination{}, Projector: ddlPositionProjector{position: "0/20"}},
+	}}
+	for _, destination := range runner.Destinations {
+		if err := runner.writeDestination(context.Background(), destination, batch); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestRunnerDurablyCompletesDDLFilteredFromAllDestinations(t *testing.T) {
+	receipts := &testDDLReceiptStore{}
+	batch := connector.Batch{Schema: connector.Schema{Name: "widgets", Namespace: "public"}, Checkpoint: connector.Checkpoint{LSN: "0/18"}, Records: []connector.Record{{Table: "widgets", Operation: connector.OpDDL, SourcePosition: "0/18", DDL: "ALTER TABLE widgets ADD COLUMN hidden text"}}}
+	runner := Runner{FlowID: "filtered-all", RequireDDLExecution: true, DDLExecutions: receipts, Destinations: []DestinationConfig{
+		{Spec: connector.RuntimeSpec{Name: "A"}, Dest: &recordingDest{log: &eventLog{}}, Projector: ddlFilterProjector{}},
+		{Spec: connector.RuntimeSpec{Name: "B"}, Dest: &recordingDest{log: &eventLog{}}, Projector: ddlFilterProjector{}},
+	}}
+	if err := runner.writeWithRetry(context.Background(), batch, runner.Destinations); err != nil {
+		t.Fatal(err)
+	}
+	if receipts.vacuous["filtered-all\x000/18"] == "" {
+		t.Fatal("filtered-all DDL was not durably completed")
+	}
+	if len(receipts.attempts) != 0 || len(receipts.receipts) != 0 {
+		t.Fatalf("vacuous completion created destination attempts/receipts")
+	}
+}
+
 func TestRunnerDDLReceiptPreventsReapplicationAfterReplay(t *testing.T) {
 	t.Parallel()
 
@@ -20,7 +111,7 @@ func TestRunnerDDLReceiptPreventsReapplicationAfterReplay(t *testing.T) {
 	runner := Runner{
 		FlowID: "flow-ddl-replay",
 		Destinations: []DestinationConfig{{
-			Spec: connector.Spec{Name: "dest"},
+			Spec: connector.RuntimeSpec{Name: "dest"},
 			Dest: destination,
 		}},
 		RequireDDLExecution: true,
@@ -67,7 +158,7 @@ func TestRunnerSerializesConcurrentDDLAttemptThroughReceipt(t *testing.T) {
 	runner := Runner{
 		FlowID: "flow-ddl-concurrent",
 		Destinations: []DestinationConfig{{
-			Spec: connector.Spec{Name: "dest"},
+			Spec: connector.RuntimeSpec{Name: "dest"},
 			Dest: destination,
 		}},
 		RequireDDLExecution: true,
@@ -122,7 +213,7 @@ func TestRunnerReconcilesCommitBeforeReceiptOnReplay(t *testing.T) {
 	runner := Runner{
 		FlowID: "flow-ddl-crash-window",
 		Destinations: []DestinationConfig{{
-			Spec: connector.Spec{Name: "dest"},
+			Spec: connector.RuntimeSpec{Name: "dest"},
 			Dest: destination,
 		}},
 		RequireDDLExecution: true,
@@ -166,7 +257,7 @@ func TestRunnerUsesPerRecordPositionsForDDLReceipts(t *testing.T) {
 	runner := Runner{
 		FlowID: "flow-ddl-multi-position",
 		Destinations: []DestinationConfig{{
-			Spec: connector.Spec{Name: "dest"},
+			Spec: connector.RuntimeSpec{Name: "dest"},
 			Dest: destination,
 		}},
 		RequireDDLExecution: true,
@@ -221,7 +312,7 @@ func TestRunnerRejectsDuplicateDDLSourcePositionsBeforeExecution(t *testing.T) {
 	runner := Runner{
 		FlowID: "flow-ddl-duplicate-position",
 		Destinations: []DestinationConfig{{
-			Spec: connector.Spec{Name: "dest"},
+			Spec: connector.RuntimeSpec{Name: "dest"},
 			Dest: destination,
 		}},
 		RequireDDLExecution: true,
@@ -261,7 +352,7 @@ func TestRunnerValidatesDDLManifestBeforeDestinationExecution(t *testing.T) {
 	runner := Runner{
 		FlowID: "flow-ddl-manifest",
 		Destinations: []DestinationConfig{{
-			Spec: connector.Spec{Name: "dest"},
+			Spec: connector.RuntimeSpec{Name: "dest"},
 			Dest: destination,
 		}},
 		RequireDDLExecution: true,
@@ -286,7 +377,7 @@ func TestRunnerSkipsDDLExecutionWhenPolicyDisabled(t *testing.T) {
 
 	destination := &ddlPolicyDestination{}
 	runner := Runner{Destinations: []DestinationConfig{{
-		Spec: connector.Spec{Name: "dest"},
+		Spec: connector.RuntimeSpec{Name: "dest"},
 		Dest: destination,
 	}}}
 	batch := connector.Batch{
@@ -362,7 +453,7 @@ func TestRunnerMarksDDLApplied(t *testing.T) {
 			}}
 			dest := &benchDestination{}
 			runner := Runner{
-				Destinations:        []DestinationConfig{{Spec: connector.Spec{Name: "dest"}, Dest: dest}},
+				Destinations:        []DestinationConfig{{Spec: connector.RuntimeSpec{Name: "dest"}, Dest: dest}},
 				RequireDDLExecution: true,
 				DDLExecutions:       receipts,
 			}
@@ -386,7 +477,7 @@ type blockingDDLPolicyDestination struct {
 	writes          atomic.Int32
 }
 
-func (*blockingDDLPolicyDestination) Open(context.Context, connector.Spec) error { return nil }
+func (*blockingDDLPolicyDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
 func (d *blockingDDLPolicyDestination) Write(context.Context, connector.Batch) error {
 	d.writes.Add(1)
 	return nil
@@ -404,10 +495,7 @@ func (d *blockingDDLPolicyDestination) ReconcileDDL(context.Context, connector.S
 func (*blockingDDLPolicyDestination) TypeMappings() map[string]string { return nil }
 func (*blockingDDLPolicyDestination) Close(context.Context) error     { return nil }
 func (*blockingDDLPolicyDestination) Capabilities() connector.Capabilities {
-	return connector.Capabilities{
-		Delivery:    connector.DeliverySemantics{Declared: true, ExecutesDDL: true},
-		SupportsDDL: true,
-	}
+	return connector.Capabilities{Delivery: connector.DeliverySemantics{ExecutesDDL: true}}
 }
 
 type ddlPolicyDestination struct {
@@ -418,7 +506,7 @@ type ddlPolicyDestination struct {
 	reconcileErr    error
 }
 
-func (*ddlPolicyDestination) Open(context.Context, connector.Spec) error { return nil }
+func (*ddlPolicyDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
 func (d *ddlPolicyDestination) Write(context.Context, connector.Batch) error {
 	d.writes++
 	return nil
@@ -434,8 +522,5 @@ func (d *ddlPolicyDestination) ReconcileDDL(context.Context, connector.Schema, c
 func (*ddlPolicyDestination) TypeMappings() map[string]string { return nil }
 func (*ddlPolicyDestination) Close(context.Context) error     { return nil }
 func (*ddlPolicyDestination) Capabilities() connector.Capabilities {
-	return connector.Capabilities{
-		Delivery:    connector.DeliverySemantics{Declared: true, ExecutesDDL: true},
-		SupportsDDL: true,
-	}
+	return connector.Capabilities{Delivery: connector.DeliverySemantics{ExecutesDDL: true}}
 }

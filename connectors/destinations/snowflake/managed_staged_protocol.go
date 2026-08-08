@@ -195,7 +195,7 @@ func (p *sqlStageProtocol) StatObject(ctx context.Context, stageRef, relativePat
 var (
 	// stagedQualifiedObjectPattern is the exact shape produced by
 	// managedSnowflakeStagedQualified for validated unquoted uppercase identifiers.
-	stagedQualifiedObjectPattern = regexp.MustCompile(`^"[A-Z0-9_]+"\."[A-Z0-9_]+"\."[A-Z0-9_]+"$`)
+	stagedQualifiedObjectPattern = regexp.MustCompile(`^"[A-Z_][A-Z0-9_$]*"\."[A-Z_][A-Z0-9_$]*"\."[A-Z_][A-Z0-9_$]*"$`)
 	// stagedRelativePathPattern is the exact shape produced by
 	// newManagedStagedIdentity: hashed, character-restricted path segments only.
 	stagedRelativePathPattern = regexp.MustCompile(`^[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*$`)

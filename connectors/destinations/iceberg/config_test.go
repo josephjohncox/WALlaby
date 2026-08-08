@@ -13,7 +13,7 @@ func TestConfigFingerprintPinsEffectiveCatalogWithoutCredentialValues(t *testing
 
 	base := Config{
 		Profile: CatalogProfileS3Tables, URI: "https://glue.us-east-1.amazonaws.com/iceberg", Warehouse: "123456789012:s3tablescatalog/example",
-		TargetNamespace: "wallaby", TablePrefix: "cdc_", ControlTable: "__wallaby_control", Region: "us-east-1", SigningName: "glue",
+		ControlTable: "__wallaby_control", Region: "us-east-1", SigningName: "glue",
 		ExpectedAWSRoleARN: "arn:aws:iam::123456789012:role/wallaby", SigV4: true,
 		S3TablesTableBucketARN: "arn:aws:s3tables:us-east-1:123456789012:bucket/example", MaxCommitRetries: 4,
 	}
@@ -63,10 +63,8 @@ func TestConfigFingerprintPinsEffectiveCatalogWithoutCredentialValues(t *testing
 func TestDestinationMarkerAcceptsDeploymentOwnedS3TablesConfiguration(t *testing.T) {
 	t.Parallel()
 
-	spec := connector.Spec{Type: connector.EndpointIceberg, Options: map[string]string{
-		"catalog_profile":         CatalogProfileS3Tables,
-		"destination_revision_id": "iceberg-s3tables-v1",
-		"namespace":               "wallaby",
+	spec := connector.RuntimeSpec{Type: connector.EndpointIceberg, Options: map[string]string{
+		"catalog_profile": CatalogProfileS3Tables, "destination_revision_id": "iceberg-s3tables-v1",
 	}}
 	if err := (&Destination{}).Open(context.Background(), spec); err != nil {
 		t.Fatalf("marker open rejected deployment-owned S3 Tables configuration: %v", err)
@@ -80,7 +78,7 @@ func TestParseSpecRejectsFlowOwnedCatalogEndpoints(t *testing.T) {
 	for _, key := range []string{"uri", "warehouse", "prefix", "region", "s3tables_table_bucket_arn", "s3_endpoint", "s3_region"} {
 		t.Run(key, func(t *testing.T) {
 			t.Parallel()
-			_, err := ParseSpec(connector.Spec{Type: connector.EndpointIceberg, Options: map[string]string{
+			_, err := ParseSpec(connector.RuntimeSpec{Type: connector.EndpointIceberg, Options: map[string]string{
 				"destination_revision_id": "iceberg-v1", key: "flow-owned-value",
 			}}, defaults)
 			if err == nil || !strings.Contains(err.Error(), "unsupported persisted Iceberg option") {
@@ -93,7 +91,7 @@ func TestParseSpecRejectsFlowOwnedCatalogEndpoints(t *testing.T) {
 func TestValidateFlowSpecRejectsFixedTableCollapse(t *testing.T) {
 	t.Parallel()
 
-	err := ValidateFlowSpec(connector.Spec{Type: connector.EndpointIceberg, Options: map[string]string{
+	err := ValidateFlowSpec(connector.RuntimeSpec{Type: connector.EndpointIceberg, Options: map[string]string{
 		"destination_revision_id": "iceberg-v1",
 		"table":                   "all_changes",
 	}})
@@ -111,7 +109,7 @@ func TestParseSpecRejectsPersistedCatalogSecrets(t *testing.T) {
 	} {
 		t.Run(key, func(t *testing.T) {
 			t.Parallel()
-			_, err := ParseSpec(connector.Spec{Type: connector.EndpointIceberg, Options: map[string]string{
+			_, err := ParseSpec(connector.RuntimeSpec{Type: connector.EndpointIceberg, Options: map[string]string{
 				"destination_revision_id": "iceberg-v1",
 				key:                       "secret",
 			}}, Config{URI: "https://catalog.example/iceberg", Warehouse: "warehouse"})
@@ -125,7 +123,7 @@ func TestParseSpecRejectsPersistedCatalogSecrets(t *testing.T) {
 func TestParseSpecRejectsNonGlueS3TablesCatalogEndpoint(t *testing.T) {
 	t.Parallel()
 
-	_, err := ParseSpec(connector.Spec{Type: connector.EndpointIceberg, Options: map[string]string{
+	_, err := ParseSpec(connector.RuntimeSpec{Type: connector.EndpointIceberg, Options: map[string]string{
 		"destination_revision_id": "iceberg-s3tables-v1",
 	}}, Config{
 		Profile: CatalogProfileS3Tables, URI: "https://attacker.example/iceberg",
@@ -145,9 +143,8 @@ func TestParseSpecUsesDeploymentS3TablesIdentity(t *testing.T) {
 		Region: "us-east-1", ExpectedAWSRoleARN: "arn:aws:iam::123456789012:role/wallaby",
 		S3TablesTableBucketARN: "arn:aws:s3tables:us-east-1:123456789012:bucket/example",
 	}
-	cfg, err := ParseSpec(connector.Spec{Type: connector.EndpointIceberg, Options: map[string]string{
+	cfg, err := ParseSpec(connector.RuntimeSpec{Type: connector.EndpointIceberg, Options: map[string]string{
 		"destination_revision_id": "iceberg-s3tables-v1",
-		"namespace":               "wallaby",
 	}}, defaults)
 	if err != nil {
 		t.Fatal(err)

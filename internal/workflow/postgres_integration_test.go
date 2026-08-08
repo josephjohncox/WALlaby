@@ -12,9 +12,197 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/controlstore"
 	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/pkg/connector"
+	"google.golang.org/protobuf/proto"
 )
+
+func TestPostgresCustomEndpointsCreateGetUpdateListAndRestartWithInjectedRegistry(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+	registry := connector.NewRegistry()
+	if err := registry.RegisterSource("postgres-store-test-source", func() connector.Source { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.RegisterDestination("postgres-store-test-destination", func() connector.Destination { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store, err := NewPostgresEngineWithRegistry(ctx, dsn, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowID := fmt.Sprintf("custom-registry-%d", time.Now().UnixNano())
+	destinationSpec := connector.RuntimeSpec{Name: "custom-destination", Type: "postgres-store-test-destination", Options: map[string]string{"destination": " exact "}}
+	destination := &wallabypb.Endpoint{Name: destinationSpec.Name, Config: &wallabypb.Endpoint_Custom{Custom: &wallabypb.CustomEndpointConfig{ConnectorType: string(destinationSpec.Type), Options: destinationSpec.Options}}}
+	source := &wallabypb.Endpoint{Name: "custom-source", Config: &wallabypb.Endpoint_Custom{Custom: &wallabypb.CustomEndpointConfig{ConnectorType: "postgres-store-test-source", Options: map[string]string{"source": " exact "}}}}
+	definition := flow.Flow{
+		ID:           flowID,
+		Name:         "custom-before",
+		Source:       source,
+		Destinations: []*wallabypb.Endpoint{destination},
+		Config:       flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{destinationSpec})},
+	}
+	created, err := store.Create(ctx, definition)
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if !proto.Equal(created.Source, definition.Source) {
+		store.Close()
+		t.Fatalf("created source=%v", created.Source)
+	}
+	loaded, err := store.Get(ctx, flowID)
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	loaded.Name = "custom-after"
+	if _, err := store.Update(ctx, loaded); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	listed, err := store.List(ctx)
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range listed {
+		found = found || item.ID == flowID
+	}
+	if !found {
+		store.Close()
+		t.Fatal("custom flow missing from List")
+	}
+	store.Close()
+
+	restarted, err := NewPostgresEngineWithRegistry(ctx, dsn, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	defer func() { _, _ = restarted.pool.Exec(context.Background(), "DELETE FROM flows WHERE id=$1", flowID) }()
+	afterRestart, err := restarted.Get(ctx, flowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRestart.Name != "custom-after" || !proto.Equal(afterRestart.Source, definition.Source) || afterRestart.Destinations[0].GetCustom().GetConnectorType() != string(destinationSpec.Type) || afterRestart.Source.GetCustom().GetOptions()["source"] != " exact " || afterRestart.Destinations[0].GetCustom().GetOptions()["destination"] != " exact " {
+		t.Fatalf("restarted custom flow=%#v", afterRestart)
+	}
+}
+
+func TestPostgresTableMappingChangeRotatesIncarnation(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	store, err := NewPostgresEngine(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	flowID := fmt.Sprintf("mapping-incarnation-%d", time.Now().UnixNano())
+	defer func() { _, _ = store.pool.Exec(context.Background(), "DELETE FROM flows WHERE id=$1", flowID) }()
+	created, err := store.Create(ctx, mappedTestFlow(flow.Flow{ID: flowID}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first string
+	if err := store.pool.QueryRow(ctx, "SELECT incarnation_id::text FROM flows WHERE id=$1", flowID).Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	created.Config.TableMappings.Destinations[0].Tables = []flow.TableMapping{}
+	created.Config.TableMappings.Destinations[0].FutureTables.Write.KeyColumns = []string{}
+	created, err = store.Update(ctx, created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var canonical string
+	if err := store.pool.QueryRow(ctx, "SELECT incarnation_id::text FROM flows WHERE id=$1", flowID).Scan(&canonical); err != nil {
+		t.Fatal(err)
+	}
+	if first != canonical {
+		t.Fatal("nil/empty canonical mapping change rotated postgres flow incarnation")
+	}
+	created.Config.TableMappings.Destinations[0].FutureTables.TargetTable = "mapped_{{ .Table }}"
+	if _, err := store.Update(ctx, created); err != nil {
+		t.Fatal(err)
+	}
+	var second string
+	if err := store.pool.QueryRow(ctx, "SELECT incarnation_id::text FROM flows WHERE id=$1", flowID).Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("table mapping change did not rotate postgres flow incarnation")
+	}
+	created, err = store.Get(ctx, flowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.WireFormat = "json"
+	if _, err := store.Update(ctx, created); err != nil {
+		t.Fatal(err)
+	}
+	var third string
+	if err := store.pool.QueryRow(ctx, "SELECT incarnation_id::text FROM flows WHERE id=$1", flowID).Scan(&third); err != nil {
+		t.Fatal(err)
+	}
+	if third == second {
+		t.Fatal("wire-format change did not rotate postgres flow incarnation")
+	}
+	if _, err := store.Start(ctx, flowID); err != nil {
+		t.Fatal(err)
+	}
+	created, err = store.Get(ctx, flowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.WireFormat = "proto"
+	if _, err := store.Update(ctx, created); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("running wire-format update error=%v, want ErrInvalidState", err)
+	}
+}
+
+func TestPostgresUpdateRejectsLegacyMissingMappingRow(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	store, err := NewPostgresEngine(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	flowID := fmt.Sprintf("legacy-mapping-update-%d", time.Now().UnixNano())
+	defer func() { _, _ = store.pool.Exec(context.Background(), "DELETE FROM flows WHERE id=$1", flowID) }()
+	typed := mappedTestFlow(flow.Flow{ID: flowID})
+	sourceJSON, err := marshalPersistedEndpoint(typed.Source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destinationsJSON, err := marshalPersistedEndpoints(typed.Destinations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `INSERT INTO flows(id,name,source,destinations,state,parallelism,config,lifecycle_target)
+VALUES($1,$1,$2::jsonb,$3::jsonb,'created',1,'{"TableMappings":{"Version":1}}'::jsonb,'created')`, flowID, sourceJSON, destinationsJSON); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Update(ctx, mappedTestFlow(flow.Flow{ID: flowID}))
+	if err == nil || !strings.Contains(err.Error(), "incompatible or missing table mappings") {
+		t.Fatalf("Update() legacy row error=%v", err)
+	}
+}
 
 func TestPostgresLifecycleGenerationAndQuiescentCompletion(t *testing.T) {
 	dsn := os.Getenv("TEST_PG_DSN")
@@ -31,7 +219,7 @@ func TestPostgresLifecycleGenerationAndQuiescentCompletion(t *testing.T) {
 
 	flowID := fmt.Sprintf("lifecycle-fencing-%d", time.Now().UnixNano())
 	defer func() { _, _ = store.pool.Exec(context.Background(), "DELETE FROM flows WHERE id=$1", flowID) }()
-	if _, err := store.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := store.Create(ctx, mappedTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	started, control, err := store.PlanStart(ctx, flowID, false)
@@ -94,7 +282,7 @@ func TestPostgresExactTerminalReconciliationRequiresExpiredLease(t *testing.T) {
 	defer store.Close()
 	flowID := fmt.Sprintf("exact-terminal-%d", time.Now().UnixNano())
 	defer func() { _, _ = store.pool.Exec(context.Background(), "DELETE FROM flows WHERE id=$1", flowID) }()
-	if _, err := store.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := store.Create(ctx, mappedTestFlow(flow.Flow{ID: flowID})); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := store.PlanStart(ctx, flowID, false)
@@ -149,7 +337,7 @@ func TestPostgresFlowLocksUseDedicatedPoolWithSingleNormalConnection(t *testing.
 		_, _ = store.pool.Exec(context.Background(), "DELETE FROM flows WHERE id = ANY($1)", flowIDs)
 	}()
 	for _, flowID := range flowIDs {
-		if _, err := store.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+		if _, err := store.Create(ctx, mappedTestFlow(flow.Flow{ID: flowID})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -195,7 +383,7 @@ func TestPostgresFlowLocksUseDedicatedPoolWithSingleNormalConnection(t *testing.
 	}
 }
 
-func TestMigration005RejectsLegacyRunningRowsAndMigratesStableRows(t *testing.T) {
+func TestMigration005RejectsLegacyRunningRowsAndCurrentRuntimeRejectsStableLegacyRows(t *testing.T) {
 	dsn := os.Getenv("TEST_PG_DSN")
 	if dsn == "" {
 		t.Skip("TEST_PG_DSN not set")
@@ -256,17 +444,10 @@ func TestMigration005RejectsLegacyRunningRowsAndMigratesStableRows(t *testing.T)
 	}
 	store := &PostgresEngine{pool: stablePool, lockPool: lockPool}
 	defer lockPool.Close()
-	_, createdControl, err := store.PlanStart(ctx, "created", false)
-	if err != nil || createdControl.Generation != 1 {
-		t.Fatalf("migrated created PlanStart control=%+v err=%v", createdControl, err)
-	}
-	_, pausedControl, err := store.PlanStart(ctx, "paused", true)
-	if err != nil || pausedControl.Generation != 1 {
-		t.Fatalf("migrated paused Resume control=%+v err=%v", pausedControl, err)
-	}
-	failedControl, err := store.Control(ctx, "failed")
-	if err != nil || failedControl.Generation != 0 || failedControl.Target != TargetFailed {
-		t.Fatalf("migrated failed control=%+v err=%v", failedControl, err)
+	for _, legacyFlowID := range []string{"created", "paused", "failed"} {
+		if _, err := store.Get(ctx, legacyFlowID); err == nil || !strings.Contains(err.Error(), "endpoint config branch is required") {
+			t.Fatalf("current runtime legacy flow %s error=%v, want typed endpoint rejection", legacyFlowID, err)
+		}
 	}
 }
 

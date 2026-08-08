@@ -25,17 +25,19 @@ const (
 );`
 	sqliteInitIndex  = `CREATE INDEX IF NOT EXISTS checkpoints_updated_at_idx ON checkpoints (updated_at);`
 	sqliteInitOutbox = `CREATE TABLE IF NOT EXISTS checkpoint_outbox (
+  replay_order INTEGER PRIMARY KEY AUTOINCREMENT,
   flow_id TEXT NOT NULL,
   destination_id TEXT NOT NULL,
   position_id TEXT NOT NULL,
   batch_hash TEXT NOT NULL,
+  projection_fingerprint TEXT NOT NULL,
   codec TEXT NOT NULL,
   batch_json BLOB NOT NULL,
   created_at TEXT NOT NULL,
-  PRIMARY KEY (flow_id, destination_id, position_id)
+  UNIQUE (flow_id, destination_id, position_id)
 );`
-	sqliteInitOutboxIndex = `CREATE INDEX IF NOT EXISTS checkpoint_outbox_flow_created_idx
-  ON checkpoint_outbox (flow_id, created_at, destination_id);`
+	sqliteInitOutboxIndex = `CREATE INDEX IF NOT EXISTS checkpoint_outbox_flow_replay_idx
+  ON checkpoint_outbox (flow_id, replay_order);`
 )
 
 // SQLiteStore persists checkpoints in a single-file SQLite database.
@@ -79,12 +81,77 @@ func NewSQLiteStore(ctx context.Context, dsn string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("create checkpoint outbox table: %w", err)
 	}
+	if err := ensureSQLiteOutboxProjectionSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if _, err := db.ExecContext(ctx, sqliteInitOutboxIndex); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("create checkpoint outbox index: %w", err)
 	}
 
 	return &SQLiteStore{db: db}, nil
+}
+
+func ensureSQLiteOutboxProjectionSchema(ctx context.Context, db *sql.DB) (returnErr error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(checkpoint_outbox)")
+	if err != nil {
+		return fmt.Errorf("inspect checkpoint outbox schema: %w", err)
+	}
+	foundProjection := false
+	foundReplayOrder := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &defaultValue, &pk); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "projection_fingerprint" {
+			foundProjection = true
+		}
+		if name == "replay_order" {
+			foundReplayOrder = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if foundProjection && foundReplayOrder {
+		return nil
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM checkpoint_outbox").Scan(&count); err != nil {
+		return err
+	}
+	if count != 0 {
+		return errors.New("checkpoint_outbox contains legacy rows without authoritative projection fingerprints and replay order; reconcile or remove them before upgrade")
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			returnErr = errors.Join(returnErr, fmt.Errorf("rollback checkpoint outbox schema migration: %w", rollbackErr))
+		}
+	}()
+	if _, err := tx.ExecContext(ctx, "DROP TABLE checkpoint_outbox"); err != nil {
+		return fmt.Errorf("drop empty legacy outbox: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, sqliteInitOutbox); err != nil {
+		return fmt.Errorf("recreate ordered checkpoint outbox: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit checkpoint outbox schema migration: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 func (s *SQLiteStore) Close() error {
@@ -101,7 +168,7 @@ func (s *SQLiteStore) Get(ctx context.Context, flowID string) (connector.Checkpo
 	var updatedAt string
 	if err := row.Scan(&lsn, &metadataJSON, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return connector.Checkpoint{}, ErrNotFound
+			return connector.Checkpoint{}, connector.ErrCheckpointNotFound
 		}
 		return connector.Checkpoint{}, fmt.Errorf("get checkpoint: %w", err)
 	}
@@ -235,9 +302,9 @@ func (s *SQLiteStore) PersistCheckpointAndOutbox(ctx context.Context, flowID str
 				return fmt.Errorf("read outbox batch identity: %w", err)
 			}
 			result, err := conn.ExecContext(ctx,
-				`INSERT INTO checkpoint_outbox (flow_id, destination_id, position_id, batch_hash, codec, batch_json, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(flow_id, destination_id, position_id) DO NOTHING`,
-				flowID, item.entry.Destination, item.entry.PositionID, item.batchHash, outboxCodecGobV1, item.batchData, item.entry.CreatedAt.Format(time.RFC3339Nano))
+				`INSERT INTO checkpoint_outbox (flow_id, destination_id, position_id, batch_hash, projection_fingerprint, codec, batch_json, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(flow_id, destination_id, position_id) DO NOTHING`,
+				flowID, item.entry.Destination, item.entry.PositionID, item.batchHash, item.entry.ProjectionFingerprint, outboxCodecGobV1, item.batchData, item.entry.CreatedAt.Format(time.RFC3339Nano))
 			if err != nil {
 				return fmt.Errorf("insert outbox entry for %s: %w", item.entry.Destination, err)
 			}
@@ -246,13 +313,13 @@ func (s *SQLiteStore) PersistCheckpointAndOutbox(ctx context.Context, flowID str
 				return fmt.Errorf("inspect outbox insert for %s: %w", item.entry.Destination, err)
 			}
 			if rows == 0 {
-				var existingHash string
+				var existingHash, existingProjection string
 				if err := conn.QueryRowContext(ctx,
-					"SELECT batch_hash FROM checkpoint_outbox WHERE flow_id=? AND destination_id=? AND position_id=?",
-					flowID, item.entry.Destination, item.entry.PositionID).Scan(&existingHash); err != nil {
+					"SELECT batch_hash, projection_fingerprint FROM checkpoint_outbox WHERE flow_id=? AND destination_id=? AND position_id=?",
+					flowID, item.entry.Destination, item.entry.PositionID).Scan(&existingHash, &existingProjection); err != nil {
 					return fmt.Errorf("read existing outbox entry for %s: %w", item.entry.Destination, err)
 				}
-				if existingHash != item.batchHash {
+				if existingHash != item.batchHash || existingProjection != item.entry.ProjectionFingerprint {
 					return fmt.Errorf("%w: flow=%s destination=%s position=%s", connector.ErrOutboxConflict, flowID, item.entry.Destination, item.entry.PositionID)
 				}
 			}
@@ -263,24 +330,25 @@ func (s *SQLiteStore) PersistCheckpointAndOutbox(ctx context.Context, flowID str
 
 func (s *SQLiteStore) ListOutbox(ctx context.Context, flowID string) ([]connector.OutboxEntry, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT destination_id, position_id, batch_hash, codec, batch_json, created_at FROM checkpoint_outbox
-		 WHERE flow_id=? ORDER BY created_at, destination_id`, flowID)
+		`SELECT destination_id, position_id, batch_hash, projection_fingerprint, replay_order, codec, batch_json, created_at FROM checkpoint_outbox
+		 WHERE flow_id=? ORDER BY replay_order`, flowID)
 	if err != nil {
 		return nil, fmt.Errorf("list checkpoint outbox: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	entries := make([]connector.OutboxEntry, 0)
 	for rows.Next() {
-		var destination, position, batchHash, codec, createdAt string
+		var destination, position, batchHash, projectionFingerprint, codec, createdAt string
+		var replayOrder int64
 		var batchJSON []byte
-		if err := rows.Scan(&destination, &position, &batchHash, &codec, &batchJSON, &createdAt); err != nil {
+		if err := rows.Scan(&destination, &position, &batchHash, &projectionFingerprint, &replayOrder, &codec, &batchJSON, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan checkpoint outbox: %w", err)
 		}
 		batch, err := decodeOutboxBatch(codec, batchJSON)
 		if err != nil {
 			return nil, err
 		}
-		entry := connector.OutboxEntry{FlowID: flowID, Destination: destination, PositionID: position, BatchHash: batchHash, Batch: batch}
+		entry := connector.OutboxEntry{FlowID: flowID, Destination: destination, PositionID: position, BatchHash: batchHash, ProjectionFingerprint: projectionFingerprint, ReplayOrder: replayOrder, Batch: batch}
 		entry.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 		entries = append(entries, entry)
 	}

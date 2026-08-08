@@ -67,6 +67,7 @@ it_kind_cluster := env_var_or_default("IT_KIND_CLUSTER", "")
 it_kind_node_image := env_var_or_default("IT_KIND_NODE_IMAGE", "")
 it_service_ready_timeout_seconds := env_var_or_default("IT_SERVICE_READY_TIMEOUT_SECONDS", "240")
 it_run_filter := env_var_or_default("IT_RUN_FILTER", "")
+it_skip_filter := env_var_or_default("IT_SKIP_FILTER", "")
 it_count := env_var_or_default("IT_COUNT", "")
 it_package_parallelism := env_var_or_default("IT_PACKAGE_PARALLELISM", "1")
 it_expected_harness_participants := env_var_or_default("IT_EXPECTED_HARNESS_PARTICIPANTS", it_package_parallelism)
@@ -93,15 +94,17 @@ fmt-check:
 
 # Run golangci-lint.
 lint:
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" GOLANGCI_LINT_CACHE="{{ golangci_lint_cache }}" {{ golangci_lint }} run ./...
+    GOFLAGS="-buildvcs=false" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" GOLANGCI_LINT_CACHE="{{ golangci_lint_cache }}" {{ golangci_lint }} run ./...
 
-# Run staticcheck at the repository-pinned version.
+# Run staticcheck at the repository-pinned version. Tooling does not need VCS
+# build metadata, and disabling it keeps this gate deterministic in worktrees.
 staticcheck:
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run honnef.co/go/tools/cmd/staticcheck@{{ staticcheck_version }} ./...
+    GOFLAGS="-buildvcs=false" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run honnef.co/go/tools/cmd/staticcheck@{{ staticcheck_version }} ./...
 
-# Scan reachable Go code for known vulnerabilities.
+# Scan reachable Go code for known vulnerabilities. Tool binaries do not need
+# VCS build metadata and must run identically in the primary tree and worktrees.
 vulncheck:
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run golang.org/x/vuln/cmd/govulncheck@{{ govulncheck_version }} ./...
+    GOFLAGS="-buildvcs=false" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run golang.org/x/vuln/cmd/govulncheck@{{ govulncheck_version }} ./...
 
 lint-full: lint staticcheck vulncheck proto-lint proto-breaking
 
@@ -125,9 +128,13 @@ test-rapid:
 test-integration:
     mkdir -p "$(dirname '{{ integration_worker_binary }}')"
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} build -o "{{ integration_worker_binary }}" ./cmd/wallaby-worker
-    WALLABY_WORKER_BINARY="${WALLABY_WORKER_BINARY:-{{ integration_worker_binary }}}" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" GO="{{ go }}" GO_TEST_TIMEOUT="{{ go_test_timeout }}" GO_TEST_VERBOSE="{{ go_test_verbose }}" GO_TEST_VERBOSE_FLAG="{{ go_test_verbose_flag }}" IT_KIND="{{ it_kind }}" IT_KEEP="{{ it_keep }}" IT_KIND_CLUSTER="{{ it_kind_cluster }}" IT_KIND_NODE_IMAGE="{{ it_kind_node_image }}" IT_SERVICE_READY_TIMEOUT_SECONDS="{{ it_service_ready_timeout_seconds }}" IT_RUN_FILTER="{{ it_run_filter }}" IT_COUNT="{{ it_count }}" IT_PACKAGE_PARALLELISM="{{ it_package_parallelism }}" IT_EXPECTED_HARNESS_PARTICIPANTS="{{ it_expected_harness_participants }}" INTEGRATION_PACKAGE="{{ integration_package }}" ./scripts/test-integration.sh
+    WALLABY_WORKER_BINARY="${WALLABY_WORKER_BINARY:-{{ integration_worker_binary }}}" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" GO="{{ go }}" GO_TEST_TIMEOUT="{{ go_test_timeout }}" GO_TEST_VERBOSE="{{ go_test_verbose }}" GO_TEST_VERBOSE_FLAG="{{ go_test_verbose_flag }}" IT_KIND="{{ it_kind }}" IT_KEEP="{{ it_keep }}" IT_KIND_CLUSTER="{{ it_kind_cluster }}" IT_KIND_NODE_IMAGE="{{ it_kind_node_image }}" IT_SERVICE_READY_TIMEOUT_SECONDS="{{ it_service_ready_timeout_seconds }}" IT_RUN_FILTER="{{ it_run_filter }}" IT_SKIP_FILTER="{{ it_skip_filter }}" IT_COUNT="{{ it_count }}" IT_PACKAGE_PARALLELISM="{{ it_package_parallelism }}" IT_EXPECTED_HARNESS_PARTICIPANTS="{{ it_expected_harness_participants }}" INTEGRATION_PACKAGE="{{ integration_package }}" ./scripts/test-integration.sh
 
-test-integration-ci: test-integration
+# Broad integration excludes managed ClickHouse/Keeper fault cells. Those run
+# immediately afterward through test-clickhouse-managed-profile with strict
+# required-test/no-skip accounting and an isolated harness identity.
+test-integration-ci:
+    IT_SKIP_FILTER='^(TestClickHouseManagedProfile|TestPostgresToClickHouseManagedProfile)' just test-integration
 
 # Durable-core unit and contract gate. Real-service evidence runs separately.
 test-durable-pr:
@@ -207,6 +214,7 @@ test-checkpoint2-postgres-profile:
     test -n "${TEST_PG_DSN:-}" || { echo 'TEST_PG_DSN is required' >&2; exit 2; }
     mkdir -p "$(dirname '{{ integration_worker_binary }}')"
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} build -o "{{ integration_worker_binary }}" ./cmd/wallaby-worker
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./scripts/apply-control-migrations.go
     results=$(mktemp)
     trap 'rm -f "${results}"' EXIT
     required=
@@ -217,7 +225,7 @@ test-checkpoint2-postgres-profile:
     required+=',TestPostgresManagedProfileDestinationSchemaEvolution'
     required+=',TestPostgresManagedProfileDDLTargetMapping'
     required+=',TestPostgresManagedProfileDDLCommitReconciliation'
-    required+=',TestPostgresManagedProfileUpgradeMigrations'
+    required+=',TestPostgresManagedTargetRejectsLegacyReceiptSchemaWithoutMutation'
     required+=',TestPostgresManagedFullTransactionPreservesFragmentsAndMarker'
     required+=',TestPostgresManagedTransactionCommitBeforeReceiptReconciles'
     required+=',TestPostgresManagedOverlappingTakeoverAdoptsConcurrentCommit'
@@ -229,14 +237,17 @@ test-checkpoint2-postgres-profile:
     required+=',TestPostgresManagedProfileSourceSchemaEvolutionAfterRestart'
     required+=',TestWallabyWorkerProcessKillRecovery'
     required+=',TestPostgresManagedProfilePoolExhaustion'
-    required+=',TestPostgresManagedTargetReceiptRollingCompatibility'
+    required+=',TestManagedReceiptReconcilesLogicalAndPositionIdentities'
     required+=',TestPostgresManagedProfileMetrics'
-    required+=',TestControlStoreLegacyLedgerImportDoesNotReplaySQL'
+    required+=',TestFencedSchemaRegistrationScopesCatalogAndFlowProvenance'
+    required+=',TestPostgresToPostgresE2E'
+    required+=',TestControlStoreMigrationLedgerDoesNotReplaySQL'
+    required+=',TestDeliveryManifestAuthorityTamperCurrentPGMajor'
     filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
     set +e
     WALLABY_WORKER_BINARY="{{ integration_worker_binary }}" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" \
       {{ go }} test -p 1 -count=1 -json \
-      ./tests ./internal/runner ./internal/replication ./connectors/destinations/postgres ./internal/telemetry ./internal/controlstore \
+      ./tests ./tests/integration ./internal/runner ./internal/replication ./connectors/destinations/postgres ./internal/telemetry ./internal/controlstore ./internal/controlplane \
       -run "${filter}" >"${results}"
     test_rc=$?
     set -e
@@ -244,6 +255,13 @@ test-checkpoint2-postgres-profile:
     test "${test_rc}" -eq 0
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./scripts/verify-go-test-json.go \
       -results "${results}" -required "${required}"
+    ./scripts/checkpoint2-accounting-selftest.sh --profile postgresql-to-postgresql-v1 --results "${results}"
+
+# Verify that every checkpoint-2 required name resolves to exactly one listed test.
+# The live checkpoint recipe separately proves that every listed test ran and did
+# not skip through verify-go-test-json.
+test-checkpoint2-accounting-selftest:
+    ./scripts/checkpoint2-accounting-selftest.sh
 
 # Checkpoint-3 exact PostgreSQL 16 + ClickHouse/Keeper 25.12.1.649 append profile. The harness
 # provisions both processes and verified native TLS. Required-test validation
@@ -257,13 +275,14 @@ test-clickhouse-managed-profile:
         if [[ "${IT_KEEP:-0}" != "1" ]] && command -v kind >/dev/null 2>&1; then
             kind delete cluster --name "${harness_cluster}" || true
         fi
+        rm -f "${telemetry_results:-}"
         return "$status"
     }
     trap cleanup EXIT
     required=
     required+='TestClickHouseManagedProfileVersionMatrix'
     required+=',TestClickHouseManagedProfileAdmission'
-    required+=',TestClickHouseManagedProfileCommitBeforeReceipt'
+    required+=',TestClickHouseManagedProfileCommitAndReconcile'
     required+=',TestClickHouseManagedProfileSecondaryEndpointWriteFailover'
     required+=',TestClickHouseManagedProfileSurvivorOnlyPrimaryStorageLossRecovery'
     required+=',TestClickHouseManagedProfileDedupWindowEviction'
@@ -278,8 +297,14 @@ test-clickhouse-managed-profile:
     required+=',TestClickHouseManagedProfileBackpressure'
     filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
     WALLABY_TEST_CLICKHOUSE_DESTRUCTIVE_STORAGE_LOSS=1 IT_KIND_CLUSTER="${harness_cluster}" IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' just test-integration
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 \
-      ./internal/telemetry -run '^TestClickHouseManagedProfileTelemetry$'
+    telemetry_results=$(mktemp)
+    telemetry_required='TestClickHouseManagedProfileTelemetry'
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 -json \
+      ./internal/telemetry -run "^(${telemetry_required})$" >"${telemetry_results}"
+    cat "${telemetry_results}"
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./scripts/verify-go-test-json.go \
+      -results "${telemetry_results}" -required "${telemetry_required}"
+    rm -f "${telemetry_results}"
 
 # Local/emulated Iceberg REST live gate. The ordinary package conformance tests
 # use httptest and always run in test-durable-pr; this recipe targets a real REST
@@ -347,13 +372,12 @@ test-snowflake-managed-profile:
     required+=',TestSnowflakeManagedProfileReviewedDeploymentCell'
     required+=',TestSnowflakeManagedProfileRoleIsolation'
     required+=',TestSnowflakeManagedProfileTaskIsolation'
-    required+=',TestSnowflakeManagedProfileAmbiguousCommit'
-    required+=',TestSnowflakeManagedProfileCommitTransportLossAndDetachedTakeover'
+    required+=',TestSnowflakeManagedProfileCommitAndReconcile'
+    required+=',TestSnowflakeManagedProfileCommitAndDetachedTakeover'
     required+=',TestSnowflakeManagedProfileOrderedFragmentsAndTypes'
     required+=',TestSnowflakeManagedProfileSchemaReconciliation'
     required+=',TestSnowflakeManagedProfileProcessKillRecovery'
     required+=',TestSnowflakeManagedProfileWorkerSIGKILLRecovery'
-    required+=',TestSnowflakeManagedProfileNetworkFaultMatrix'
     required+=',TestSnowflakeManagedProfileCancellationAndPoolSafety'
     required+=',TestSnowflakeManagedProfileBoundedLoadAndBackpressure'
     required+=',TestSnowflakeManagedProfileSecretRedaction'
@@ -488,19 +512,19 @@ check-integration-core: test-integration
 check-integration-full: test-integration test-e2e
 
 avro-shim-generate:
-    cd third_party/hamba-avro-shim && {{ go }} run ./cmd/shimgen
+    cd third_party/hamba-avro-shim && GOFLAGS="-buildvcs=false" {{ go }} run ./cmd/shimgen
 
 avro-shim-check:
     #!/usr/bin/env bash
     set -euo pipefail
     cd third_party/hamba-avro-shim
-    {{ go }} test ./...
-    {{ go }} mod tidy -diff
-    {{ go }} mod verify
-    {{ go }} run ./cmd/shimgen -check
+    GOFLAGS="-buildvcs=false" {{ go }} test ./...
+    GOFLAGS="-buildvcs=false" {{ go }} mod tidy -diff
+    GOFLAGS="-buildvcs=false" {{ go }} mod verify
+    GOFLAGS="-buildvcs=false" {{ go }} run ./cmd/shimgen -check
     cd ../..
     template="$(printf '%s' '{''{range .Imports}''}{''{println .}''}{''{end}''}{''{range .TestImports}''}{''{println .}''}{''{end}''}{''{range .XTestImports}''}{''{println .}''}{''{end}''}')"
-    imports="$({{ go }} list -f "${template}" ./... | sort -u | grep '^github.com/hamba/avro/v2' || true)"
+    imports="$(GOFLAGS="-buildvcs=false" {{ go }} list -f "${template}" ./... | sort -u | grep '^github.com/hamba/avro/v2' || true)"
     unexpected="$(printf '%s\n' "${imports}" | grep -Ev '^github.com/hamba/avro/v2(/ocf)?$' || true)"
     if [[ -n "${unexpected}" ]]; then
       printf 'unsupported hamba Avro subpackage import(s):\n%s\n' "${unexpected}" >&2
@@ -520,17 +544,20 @@ generate-check: generate avro-shim-check
 proto-lint:
     {{ buf }} lint
 
-proto-breaking:
+proto-breaking: proto-breaking-selftest
     ./scripts/proto-breaking.sh "{{ buf }}"
 
+proto-breaking-selftest:
+    ./scripts/proto-breaking-selftest.sh
+
 proto-tools:
-    GOBIN="{{ gobin }}" {{ go }} install google.golang.org/protobuf/cmd/protoc-gen-go@{{ protoc_gen_go_version }}
-    GOBIN="{{ gobin }}" {{ go }} install google.golang.org/grpc/cmd/protoc-gen-go-grpc@{{ protoc_gen_go_grpc_version }}
+    GOFLAGS="-buildvcs=false" GOBIN="{{ gobin }}" {{ go }} install google.golang.org/protobuf/cmd/protoc-gen-go@{{ protoc_gen_go_version }}
+    GOFLAGS="-buildvcs=false" GOBIN="{{ gobin }}" {{ go }} install google.golang.org/grpc/cmd/protoc-gen-go-grpc@{{ protoc_gen_go_grpc_version }}
 
 docs-tools:
     @command -v {{ uv }} >/dev/null 2>&1 || { echo "uv {{ uv_version }} is required: https://docs.astral.sh/uv/" >&2; exit 1; }
-    GOBIN="{{ gobin }}" {{ go }} install github.com/princjef/gomarkdoc/cmd/gomarkdoc@{{ gomarkdoc_version }}
-    GOBIN="{{ gobin }}" {{ go }} install github.com/pseudomuto/protoc-gen-doc/cmd/protoc-gen-doc@{{ protoc_gen_doc_version }}
+    GOFLAGS="-buildvcs=false" GOBIN="{{ gobin }}" {{ go }} install github.com/princjef/gomarkdoc/cmd/gomarkdoc@{{ gomarkdoc_version }}
+    GOFLAGS="-buildvcs=false" GOBIN="{{ gobin }}" {{ go }} install github.com/pseudomuto/protoc-gen-doc/cmd/protoc-gen-doc@{{ protoc_gen_doc_version }}
     {{ uv }} sync --frozen
 
 docs-generate: docs-tools

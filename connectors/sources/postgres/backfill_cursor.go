@@ -29,7 +29,7 @@ func backfillCursorColumns(partitionColumn string, primaryKey []string) []string
 	}
 	columns := []string{partitionColumn}
 	for _, column := range primaryKey {
-		if !strings.EqualFold(strings.TrimSpace(column), strings.TrimSpace(partitionColumn)) {
+		if column != partitionColumn {
 			columns = append(columns, column)
 		}
 	}

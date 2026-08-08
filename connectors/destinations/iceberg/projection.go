@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,15 +53,19 @@ func (p *projectionPlan) release() {
 }
 
 type canonicalSchemaDocument struct {
-	ProjectionID string                       `json:"projection_id"`
-	Namespace    string                       `json:"namespace"`
-	Table        string                       `json:"table"`
-	Fields       []artifactlog.CanonicalField `json:"fields"`
+	ProjectionID       string                       `json:"projection_id"`
+	MappingFingerprint string                       `json:"mapping_fingerprint"`
+	SourceLineageID    string                       `json:"source_lineage_id"`
+	Namespace          string                       `json:"namespace"`
+	Table              string                       `json:"table"`
+	QuotedNamespace    bool                         `json:"quoted_namespace,omitempty"`
+	QuotedTable        bool                         `json:"quoted_table,omitempty"`
+	Fields             []artifactlog.CanonicalField `json:"fields"`
 }
 
 func buildProjection(ctx context.Context, request artifactlog.CommitRequest, objects CanonicalObjectReader, cfg Config) (*projectionPlan, error) {
-	if request.ProjectionID != artifactlog.ProjectionID {
-		return nil, fmt.Errorf("unsupported canonical projection %q", request.ProjectionID)
+	if err := validateMaterializedProjectionIdentity(request.ProjectionID, request.MappingFingerprint); err != nil {
+		return nil, err
 	}
 	if objects == nil {
 		return nil, errors.New("canonical object reader is required")
@@ -156,16 +161,31 @@ func (p *projectedObject) release() {
 }
 
 func projectObject(ctx context.Context, request artifactlog.CommitRequest, object artifactlog.RootedArtifact, objects CanonicalObjectReader) (*projectedObject, error) {
-	schemaDigest := sha256.Sum256(object.SchemaJSON)
+	var document canonicalSchemaDocument
+	decoder := json.NewDecoder(bytes.NewReader(object.SchemaJSON))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&document); err != nil {
+		return nil, fmt.Errorf("decode canonical schema %s: %w", object.SchemaID, err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("decode canonical schema %s: trailing JSON", object.SchemaID)
+	}
+	canonicalSchemaJSON, err := json.Marshal(document)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize schema %s: %w", object.SchemaID, err)
+	}
+	schemaDigest := sha256.Sum256(canonicalSchemaJSON)
 	if hex.EncodeToString(schemaDigest[:]) != object.SchemaID {
 		return nil, fmt.Errorf("%w: canonical schema checksum differs for %s", connector.ErrDeliveryConflict, object.ArtifactID)
 	}
-	var document canonicalSchemaDocument
-	if err := json.Unmarshal(object.SchemaJSON, &document); err != nil {
-		return nil, fmt.Errorf("decode canonical schema %s: %w", object.SchemaID, err)
-	}
-	if document.ProjectionID != request.ProjectionID || document.Namespace != object.Namespace || document.Table != object.Table {
+	if document.ProjectionID != request.ProjectionID || document.MappingFingerprint != request.MappingFingerprint || strings.TrimSpace(document.SourceLineageID) == "" || document.Namespace != object.Namespace || document.Table != object.Table {
 		return nil, fmt.Errorf("%w: canonical schema identity differs for %s", connector.ErrDeliveryConflict, object.ArtifactID)
+	}
+	for _, field := range document.Fields {
+		if (field.SourceRelationID != 0 || field.SyntheticSourceRelation != "") && field.SourceLineageID != document.SourceLineageID {
+			return nil, fmt.Errorf("%w: canonical field %q lineage differs from schema lineage", connector.ErrDeliveryConflict, field.Name)
+		}
 	}
 	body, err := objects.ReadVersion(ctx, object.Evidence)
 	if err != nil {

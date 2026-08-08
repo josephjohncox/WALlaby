@@ -30,6 +30,8 @@ import (
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/internal/ddl"
+	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/internal/tablemap"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 	"github.com/spf13/cobra"
@@ -117,7 +119,7 @@ type metricsDestination struct {
 	rowSizes map[string]int64
 }
 
-func (m *metricsDestination) Open(ctx context.Context, spec connector.Spec) error {
+func (m *metricsDestination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	return m.inner.Open(ctx, spec)
 }
 
@@ -689,6 +691,13 @@ func setupClickHouseSink(ctx context.Context, dsn string, specs []tableSpec) err
 				return fmt.Errorf("create clickhouse table: %w", err)
 			}
 		}
+		metadataDDL := fmt.Sprintf(
+			"ALTER TABLE bench.%s ADD COLUMN IF NOT EXISTS `%s` String, ADD COLUMN IF NOT EXISTS `%s` Bool, ADD COLUMN IF NOT EXISTS `%s` String",
+			tableName(spec.Name), connector.AppendOperationColumn, connector.AppendDeletedColumn, connector.AppendSourcePositionColumn,
+		)
+		if _, err := db.ExecContext(ctx, metadataDDL); err != nil {
+			return fmt.Errorf("add clickhouse append metadata columns: %w", err)
+		}
 	}
 	return nil
 }
@@ -784,7 +793,7 @@ func runTarget(ctx context.Context, target string, prof profile, scenario string
 		}
 	}
 
-	sourceSpec := connector.Spec{
+	sourceSpec := connector.RuntimeSpec{
 		Name: "bench-source",
 		Type: connector.EndpointPostgres,
 		Options: map[string]string{
@@ -827,11 +836,17 @@ func runTarget(ctx context.Context, target string, prof profile, scenario string
 
 	stats := &benchStats{}
 	metricsDest := &metricsDestination{inner: dest, stats: stats, rowSizes: rowSizes}
+	projector, err := benchmarkProjector(target, destSpec, specs)
+	if err != nil {
+		return benchResult{}, err
+	}
 
 	runner := &stream.Runner{
-		Source:        &pgsource.Source{},
-		SourceSpec:    sourceSpec,
-		Destinations:  []stream.DestinationConfig{{Spec: destSpec, Dest: metricsDest}},
+		Source:     &pgsource.Source{},
+		SourceSpec: sourceSpec,
+		Destinations: []stream.DestinationConfig{{
+			Spec: destSpec, Dest: metricsDest, Projector: projector, MappingFingerprint: projector.Fingerprint(),
+		}},
 		Checkpoints:   checkpointStore,
 		FlowID:        fmt.Sprintf("bench-%s-%s-%s", target, prof.Name, scenario),
 		MaxEmptyReads: prof.EmptyReads,
@@ -865,18 +880,14 @@ func runTarget(ctx context.Context, target string, prof profile, scenario string
 	return result, nil
 }
 
-func buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix string) (connector.Spec, connector.Destination, error) {
+func buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix string) (connector.RuntimeSpec, connector.Destination, error) {
 	pgSyncCommit := strings.TrimSpace(os.Getenv("BENCH_PG_SYNC_COMMIT"))
 	if pgSyncCommit == "" {
 		pgSyncCommit = "off"
 	}
-	chWriteMode := strings.TrimSpace(os.Getenv("BENCH_CLICKHOUSE_WRITE_MODE"))
-	if chWriteMode == "" {
-		chWriteMode = "append"
-	}
 	switch target {
 	case "kafka":
-		spec := connector.Spec{
+		spec := connector.RuntimeSpec{
 			Name: "bench-kafka",
 			Type: connector.EndpointKafka,
 			Options: map[string]string{
@@ -888,33 +899,68 @@ func buildDestination(target, pgDSN, ckDSN, kafkaBrokers, topicSuffix string) (c
 		}
 		return spec, &kafka.Destination{}, nil
 	case "postgres":
-		spec := connector.Spec{
+		spec := connector.RuntimeSpec{
 			Name: "bench-postgres",
 			Type: connector.EndpointPostgres,
 			Options: map[string]string{
 				"dsn":                pgDSN,
-				"schema":             "bench_sink",
-				"write_mode":         "target",
 				"meta_table_enabled": "false",
 				"synchronous_commit": pgSyncCommit,
 			},
 		}
 		return spec, &pgdest.Destination{}, nil
 	case "clickhouse":
-		spec := connector.Spec{
+		spec := connector.RuntimeSpec{
 			Name: "bench-clickhouse",
 			Type: connector.EndpointClickHouse,
 			Options: map[string]string{
 				"dsn":                ckDSN,
-				"database":           "bench",
-				"write_mode":         chWriteMode,
 				"meta_table_enabled": "false",
 			},
 		}
 		return spec, &clickhouse.Destination{}, nil
 	default:
-		return connector.Spec{}, nil, fmt.Errorf("unsupported target %q", target)
+		return connector.RuntimeSpec{}, nil, fmt.Errorf("unsupported target %q", target)
 	}
+}
+
+func benchmarkProjector(target string, destination connector.RuntimeSpec, specs []tableSpec) (*tablemap.Projector, error) {
+	targetNamespace := "bench_src"
+	write := flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}
+	switch target {
+	case "postgres":
+		targetNamespace = "bench_sink"
+		write = flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}
+	case "clickhouse":
+		targetNamespace = "bench"
+	case "kafka":
+	default:
+		return nil, fmt.Errorf("unsupported benchmark mapping target %q", target)
+	}
+	tables := make([]flow.TableMapping, 0, len(specs))
+	for _, spec := range specs {
+		tables = append(tables, flow.TableMapping{
+			SourceSchema: schemaName(spec.Name), SourceTable: tableName(spec.Name),
+			Action: flow.MappingActionInclude, TargetSchema: targetNamespace, TargetTable: tableName(spec.Name),
+			FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"},
+			Write:         write,
+		})
+	}
+	mappings := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{
+		Destination: destination.Name,
+		FutureTables: flow.FutureTableMapping{
+			Action: flow.MappingActionExclude,
+		},
+		Tables: tables,
+	}}}
+	if err := mappings.Validate([]connector.RuntimeSpec{destination}); err != nil {
+		return nil, fmt.Errorf("validate benchmark table mappings: %w", err)
+	}
+	projector, err := tablemap.New(mappings, destination.Name)
+	if err != nil {
+		return nil, fmt.Errorf("build benchmark table projector: %w", err)
+	}
+	return projector, nil
 }
 
 func buildTableStates(specs []tableSpec, initialRows int) []*tableState {

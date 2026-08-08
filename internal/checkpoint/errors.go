@@ -1,13 +1,6 @@
 package checkpoint
 
-import (
-	"errors"
-
-	"github.com/josephjohncox/wallaby/pkg/connector"
-)
-
-// ErrNotFound is retained for compatibility with callers of internal/checkpoint.
-var ErrNotFound = connector.ErrCheckpointNotFound
+import "errors"
 
 // ErrManagedProducerActive prevents an administrative checkpoint override from
 // racing a live or dispatched producer.

@@ -7,7 +7,7 @@ WALlaby has two ClickHouse contracts. Do not treat them as equivalent.
 | `postgresql-to-clickhouse-append-v1` | maintained | Durable, append-only PostgreSQL CDC on the exact admitted profile below |
 | Generic `clickhouse` modes | experimental | Mutation-based target tables, staging, and other legacy configurations |
 
-Maintained status applies only to the named profile. Selecting `type: clickhouse` does not promote a generic ClickHouse configuration.
+Maintained status applies only to the `clickhouse_postgres_append` typed branch. Selecting the generic `clickhouse` branch does not promote a generic ClickHouse configuration.
 
 ## Maintained profile boundary
 
@@ -18,7 +18,7 @@ Maintained status applies only to the named profile. Selecting `type: clickhouse
 - one self-managed ClickHouse destination backed by ClickHouse Keeper 25.12.1.649;
 - exactly two healthy ClickHouse replicas with stable, explicitly admitted names;
 - native protocol connections with verified TLS;
-- `ack=all`;
+- `config.ack_policy=all`;
 - one destination sink;
 - at-least-once delivery;
 - immutable append-only changelog and completion-receipt tables.
@@ -134,46 +134,39 @@ CREATE VIEW wallaby.wallaby_cdc_log_final AS
 SELECT * FROM wallaby.wallaby_cdc_log FINAL;
 ```
 
-Create the same tables on the second server with replica name `clickhouse-2`; keep the Keeper paths identical. Do not change these definitions in place. Provision new named objects and change `destination_revision_id` when the destination contract changes.
+Create the same tables on the second server with replica name `clickhouse-2`; keep the Keeper paths identical. Do not change these definitions in place. Provision new named objects and change `destination_revision_id` when the destination contract changes. Managed `UpdateFlow` and `ReconfigureFlow` are both rejected, including name and parallelism changes. Stop the old flow, create/validate/start a replacement with a new flow ID and revision, cut over, and delete the old flow only when safe. Every Terraform update fails; Terraform does not perform this lifecycle.
 
 ## Destination configuration
 
 ```json
 {
   "name": "analytics-clickhouse",
-  "type": "clickhouse",
-  "options": {
+  "clickhouse_postgres_append": {
     "dsn": "clickhouse://wallaby:secret@clickhouse:9440/wallaby?secure=true",
-    "managed_profile": "postgresql-to-clickhouse-append-v1",
     "destination_revision_id": "clickhouse-production-v1",
-    "write_mode": "managed_append",
-    "batch_mode": "target",
-    "batch_resolution": "none",
-    "meta_table_enabled": "false",
-    "managed_deployment": "self-managed-keeper",
-    "managed_database": "wallaby",
-    "managed_changelog_table": "wallaby_cdc_log",
-    "managed_receipts_table": "wallaby_delivery_receipts",
-    "managed_final_view": "wallaby_cdc_log_final",
-    "managed_keeper_path_prefix": "/clickhouse/tables/01",
-    "managed_keeper_address": "keeper:9181",
-    "managed_replica_dsn": "clickhouse://wallaby:secret@clickhouse-2:9440/wallaby?secure=true",
-    "managed_replica_names": "clickhouse-1,clickhouse-2",
-    "insert_quorum": "2",
-    "async_insert": "false",
-    "wait_for_async_insert": "true",
-    "managed_max_active_parts": "180",
-    "managed_max_transaction_rows": "100000",
-    "managed_max_transaction_bytes": "134217728",
-    "managed_max_transaction_fragments": "128",
-    "managed_max_rows_per_batch": "10000",
-    "managed_max_batch_bytes": "16777216",
-    "tls_ca_file": "/etc/wallaby/tls/clickhouse-ca.pem"
+    "database": "wallaby",
+    "changelog_table": "wallaby_cdc_log",
+    "receipts_table": "wallaby_delivery_receipts",
+    "final_view": "wallaby_cdc_log_final",
+    "keeper_path_prefix": "/clickhouse/tables/01",
+    "keeper_address": "keeper:9181",
+    "replica_dsn": "clickhouse://wallaby:secret@clickhouse-2:9440/wallaby?secure=true",
+    "replica_names": ["clickhouse-1", "clickhouse-2"],
+    "insert_quorum": 2,
+    "max_active_parts": 180,
+    "max_transaction_rows": 100000,
+    "max_transaction_bytes": 134217728,
+    "max_transaction_fragments": 128,
+    "max_rows_per_batch": 10000,
+    "max_batch_bytes": 16777216,
+    "tls": {
+      "ca_file": "/etc/wallaby/tls/clickhouse-ca.pem"
+    }
   }
 }
 ```
 
-The flow must also use `ack=all` and exactly one sink. Managed admission requires `insert_quorum=2`, so every fragment and its completion receipt reach both admitted replicas before source acknowledgement. It rejects staging, metadata mutations, asynchronous inserts, a different insert quorum, or generic batch delivery.
+The flow must also use `config.ack_policy=all` and exactly one sink. Managed admission requires `insert_quorum=2`, so every fragment and its completion receipt reach both admitted replicas before source acknowledgement. It rejects staging, metadata mutations, asynchronous inserts, a different insert quorum, or generic batch delivery.
 
 ### TLS
 
@@ -182,22 +175,24 @@ Set `secure=true` in the native DSN and provide a trusted CA. WALlaby enforces c
 ```json
 {
   "dsn": "clickhouse://wallaby:secret@clickhouse.example:9440/wallaby?secure=true",
-  "tls_ca_file": "/etc/wallaby/tls/clickhouse-ca.pem",
-  "tls_server_name": "clickhouse.example"
+  "tls": {
+    "ca_file": "/etc/wallaby/tls/clickhouse-ca.pem",
+    "server_name": "clickhouse.example"
+  }
 }
 ```
 
-`managed_replica_dsn` is a second verified native TLS endpoint. The order of `managed_replica_names` is significant: the first name must be reported by `dsn`, and the second by `managed_replica_dsn`. If the second certificate needs a different hostname override, set `managed_replica_tls_server_name`.
+`replica_dsn` is a second verified native TLS endpoint. The order of `replica_names` is significant: the first name must be reported by `dsn`, and the second by `replica_dsn`. If the second certificate needs a different hostname override, set `tls.replica_server_name`.
 
-For mutual TLS, set both `tls_cert_file` and `tls_key_file`. `skip_verify` is rejected.
+For mutual TLS, set both `tls.certificate_file` and `tls.private_key_file`. Certificate verification cannot be disabled.
 
 ## Resource and failure behavior
 
-Admission checks transaction-wide fragment, row, and encoded-byte bounds before delivery. Planning also bounds every insert by rows and bytes. Before any write, WALlaby enforces `active_parts + planned_inserts <= managed_max_active_parts`. ClickHouse's own `parts_to_delay_insert`, `parts_to_throw_insert`, and `max_parts_in_total` settings remain the final server-side guardrails.
+Admission checks transaction-wide fragment, row, and encoded-byte bounds before delivery. Planning also bounds every insert by rows and bytes. Before any write, WALlaby enforces `active_parts + planned_inserts <= max_active_parts`. ClickHouse's own `parts_to_delay_insert`, `parts_to_throw_insert`, and `max_parts_in_total` settings remain the final server-side guardrails.
 
 Keeper loss makes replicated tables read-only. WALlaby does not acknowledge during that interval. After Keeper returns and both managed replicas report writable, reconciliation resumes from the completion receipt.
 
-If the primary client endpoint has a transport failure while both ClickHouse replicas remain healthy, WALlaby retries the immutable fragment or receipt through `managed_replica_dsn` with the same deduplication token; `insert_quorum=2` still requires both server-side replicas. Reconciliation reads both admitted endpoints so a matching receipt or immutable conflict on either replica dominates an absent peer.
+If the primary client endpoint has a transport failure while both ClickHouse replicas remain healthy, WALlaby retries the immutable fragment or receipt through the typed `replica_dsn` with the same deduplication token; `insert_quorum=2` still requires both server-side replicas. Reconciliation reads both admitted endpoints so a matching receipt or immutable conflict on either replica dominates an absent peer.
 
 After primary process and storage loss, startup may admit the intact second replica in **recovery-only** mode when its TLS identity, table/view definitions, Keeper path, registered two-replica identity, and local health still satisfy the profile. Recovery-only mode can adopt an already replicated completion receipt but rejects every new transaction with a recoverable indeterminate result. Restore a healthy two-replica topology and reopen the destination before writes resume. WALlaby does not lower quorum or acknowledge a one-replica write.
 

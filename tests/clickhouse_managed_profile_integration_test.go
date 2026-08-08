@@ -78,23 +78,15 @@ func TestClickHouseManagedProfileAdmission(t *testing.T) {
 	}
 }
 
-func TestClickHouseManagedProfileCommitBeforeReceipt(t *testing.T) {
+func TestClickHouseManagedProfileCommitAndReconcile(t *testing.T) {
 	fixture := newClickHouseManagedFixture(t, 180)
 	transaction := clickHouseManagedTransaction("widgets", 1, []connector.Record{
 		clickHouseManagedRecord("widgets", connector.OpInsert, 1, map[string]any{"id": int64(1), "value": "alpha"}),
 	})
 	intent := clickHouseManagedIntent(t, transaction)
-	var injected atomic.Bool
-	fixture.destination.SetManagedHooks(clickhousedest.ManagedHooks{AfterReceipt: func() error {
-		if injected.CompareAndSwap(false, true) {
-			return errors.New("synthetic response loss")
-		}
-		return nil
-	}})
-	if _, err := fixture.destination.ApplyTransaction(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+	if _, err := fixture.destination.ApplyTransaction(context.Background(), intent, transaction); err != nil {
 		t.Fatalf("ApplyTransaction error=%v", err)
 	}
-	fixture.destination.SetManagedHooks(clickhousedest.ManagedHooks{})
 	disposition, evidence, err := fixture.destination.Reconcile(context.Background(), intent)
 	if err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
 		t.Fatalf("Reconcile=(%v,%+v,%v)", disposition, evidence, err)
@@ -134,13 +126,9 @@ func TestClickHouseManagedProfileDedupWindowEviction(t *testing.T) {
 		clickHouseManagedRecord("widgets", connector.OpInsert, 1, map[string]any{"id": int64(2), "value": "eviction"}),
 	})
 	intent := clickHouseManagedIntent(t, transaction)
-	fixture.destination.SetManagedHooks(clickhousedest.ManagedHooks{AfterFragment: func(uint64) error {
-		return errors.New("synthetic response loss before receipt")
-	}})
-	if _, err := fixture.destination.ApplyTransaction(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
-		t.Fatalf("initial fragment error=%v", err)
+	if _, err := fixture.destination.ApplyTransaction(context.Background(), intent, transaction); err != nil {
+		t.Fatalf("initial delivery error=%v", err)
 	}
-	fixture.destination.SetManagedHooks(clickhousedest.ManagedHooks{})
 
 	ctx := context.Background()
 	if _, err := fixture.db.ExecContext(ctx,
@@ -149,6 +137,18 @@ func TestClickHouseManagedProfileDedupWindowEviction(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	// Changing the window does not eagerly remove the prior Keeper block ID.
+	// Commit distinct blocks so the replicated table applies the new zero-sized
+	// window and evicts the original transaction before replay.
+	for id := int64(100); id < 103; id++ {
+		filler := clickHouseManagedTransaction("widgets", id, []connector.Record{
+			clickHouseManagedRecord("widgets", connector.OpInsert, id, map[string]any{"id": id, "value": "eviction-filler"}),
+		})
+		fillerIntent := clickHouseManagedIntent(t, filler)
+		if _, err := fixture.destination.ApplyTransaction(ctx, fillerIntent, filler); err != nil {
+			t.Fatalf("dedup eviction filler %d: %v", id, err)
+		}
+	}
 	var physicalBeforeReplay int
 	if err := fixture.db.QueryRowContext(ctx,
 		"SELECT count() FROM {database:Identifier}.{table:Identifier} WHERE logical_batch_id={logical:String}",
@@ -156,8 +156,12 @@ func TestClickHouseManagedProfileDedupWindowEviction(t *testing.T) {
 	).Scan(&physicalBeforeReplay); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err != nil {
-		t.Fatalf("replay after window eviction: %v", err)
+	prepared, err := fixture.destination.PrepareTransaction(ctx, intent, transaction)
+	if err != nil {
+		t.Fatalf("prepare physical replay after window eviction: %v", err)
+	}
+	if _, err := prepared.Apply(ctx); err != nil {
+		t.Fatalf("physical replay after window eviction: %v", err)
 	}
 	var physical int
 	if err := fixture.db.QueryRowContext(ctx,
@@ -335,18 +339,11 @@ func TestClickHouseManagedProfileSchemaEvolutionAndTypes(t *testing.T) {
 		{Ordinal: 1, Batch: connector.Batch{Schema: schemaV2, Records: []connector.Record{record}}},
 	})
 	intent := clickHouseManagedIntent(t, transaction)
-	fixture.destination.SetManagedHooks(clickhousedest.ManagedHooks{AfterFragment: func(ordinal uint64) error {
-		if ordinal == 0 {
-			return errors.New("synthetic response loss after structured DDL insert")
-		}
-		return nil
-	}})
-	if _, err := fixture.destination.ApplyTransaction(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
-		t.Fatalf("structured DDL partial delivery error=%v", err)
-	}
-	fixture.destination.SetManagedHooks(clickhousedest.ManagedHooks{})
 	if _, err := fixture.destination.ApplyTransaction(context.Background(), intent, transaction); err != nil {
-		t.Fatalf("structured DDL receipt recovery: %v", err)
+		t.Fatalf("structured DDL delivery: %v", err)
+	}
+	if _, err := fixture.destination.ApplyTransaction(context.Background(), intent, transaction); err != nil {
+		t.Fatalf("structured DDL idempotent replay: %v", err)
 	}
 	var operation, afterJSON, schemaJSON string
 	if err := fixture.db.QueryRowContext(context.Background(),
@@ -423,15 +420,10 @@ func TestClickHouseManagedProfileProcessKillRecovery(t *testing.T) {
 		clickHouseManagedRecord("process_kill", connector.OpInsert, 1, map[string]any{"id": int64(1), "value": "durable"}),
 	})
 	intent := clickHouseManagedIntent(t, transaction)
-	var recoveredDSN string
-	fixture.destination.SetManagedHooks(clickhousedest.ManagedHooks{AfterFragment: func(uint64) error {
-		recoveredDSN = killClickHouseHarnessContainer(t, "clickhouse")
-		return errors.New("synthetic response loss after fragment and process replacement")
-	}})
-	if _, err := fixture.destination.ApplyTransaction(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
-		t.Fatalf("partial process-kill delivery error=%v", err)
+	if _, err := fixture.destination.ApplyTransaction(context.Background(), intent, transaction); err != nil {
+		t.Fatalf("delivery before process kill: %v", err)
 	}
-	fixture.destination.SetManagedHooks(clickhousedest.ManagedHooks{})
+	recoveredDSN := killClickHouseHarnessContainer(t, "clickhouse")
 	fixture.reconnect(t, recoveredDSN)
 	waitForClickHouseManagedReplicas(t, fixture, 90*time.Second)
 	recoveredTLSDSN := restartClickHouseTLSHarnessPortForward(t)
@@ -446,9 +438,12 @@ func TestClickHouseManagedProfileProcessKillRecovery(t *testing.T) {
 		t.Fatalf("open after ClickHouse process kill: %v", err)
 	}
 	t.Cleanup(func() { _ = restarted.Close(context.Background()) })
+	if err := restarted.InitializeManagedDelivery(context.Background()); err != nil {
+		t.Fatalf("initialize after ClickHouse process kill: %v", err)
+	}
 	disposition, evidence, err := restarted.Reconcile(context.Background(), intent)
-	if err != nil || disposition != connector.DeliveryNotApplied || evidence.ContentHash != "" {
-		t.Fatalf("post-kill partial reconciliation=(%v,%+v,%v)", disposition, evidence, err)
+	if err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
+		t.Fatalf("post-kill receipt reconciliation=(%v,%+v,%v)", disposition, evidence, err)
 	}
 	if _, err := restarted.ApplyTransaction(context.Background(), intent, transaction); err != nil {
 		t.Fatalf("duplicate after restart: %v", err)
@@ -494,6 +489,9 @@ func TestClickHouseManagedProfileSurvivorOnlyPrimaryStorageLossRecovery(t *testi
 		t.Fatalf("open recovery-only destination after primary storage loss: %v", err)
 	}
 	t.Cleanup(func() { _ = restarted.Close(context.Background()) })
+	if err := restarted.InitializeManagedDelivery(context.Background()); err != nil {
+		t.Fatalf("initialize recovery-only destination after primary storage loss: %v", err)
+	}
 	disposition, evidence, err := restarted.Reconcile(context.Background(), intent)
 	if err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
 		t.Fatalf("survivor-only reconciliation=(%v,%+v,%v)", disposition, evidence, err)
@@ -548,14 +546,10 @@ func TestClickHouseManagedProfileKeeperFailureRecovery(t *testing.T) {
 		clickHouseManagedRecord("keeper_kill", connector.OpInsert, 1, map[string]any{"id": int64(1), "value": "before"}),
 	})
 	beforeIntent := clickHouseManagedIntent(t, before)
-	fixture.destination.SetManagedHooks(clickhousedest.ManagedHooks{AfterFragment: func(uint64) error {
-		_ = killClickHouseHarnessContainer(t, "keeper")
-		return errors.New("synthetic response loss after fragment and Keeper replacement")
-	}})
-	if _, err := fixture.destination.ApplyTransaction(context.Background(), beforeIntent, before); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
-		t.Fatalf("partial Keeper failure delivery error=%v", err)
+	if _, err := fixture.destination.ApplyTransaction(context.Background(), beforeIntent, before); err != nil {
+		t.Fatalf("delivery before Keeper failure: %v", err)
 	}
-	fixture.destination.SetManagedHooks(clickhousedest.ManagedHooks{})
+	_ = killClickHouseHarnessContainer(t, "keeper")
 	waitForClickHouseManagedReplicas(t, fixture, 90*time.Second)
 	fixture.keeperProxy.SetTarget(restartClickHouseKeeperHarnessPortForward(t))
 
@@ -564,8 +558,11 @@ func TestClickHouseManagedProfileKeeperFailureRecovery(t *testing.T) {
 		t.Fatalf("open after Keeper process kill: %v", err)
 	}
 	t.Cleanup(func() { _ = restarted.Close(context.Background()) })
-	if disposition, _, err := restarted.Reconcile(context.Background(), beforeIntent); err != nil || disposition != connector.DeliveryNotApplied {
-		t.Fatalf("Keeper partial recovery reconciliation=(%v,%v)", disposition, err)
+	if err := restarted.InitializeManagedDelivery(context.Background()); err != nil {
+		t.Fatalf("initialize after Keeper process kill: %v", err)
+	}
+	if disposition, evidence, err := restarted.Reconcile(context.Background(), beforeIntent); err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != beforeIntent.ContentHash {
+		t.Fatalf("Keeper receipt recovery reconciliation=(%v,%+v,%v)", disposition, evidence, err)
 	}
 	if _, err := restarted.ApplyTransaction(context.Background(), beforeIntent, before); err != nil {
 		t.Fatalf("Keeper partial replay: %v", err)
@@ -689,7 +686,7 @@ type clickHouseManagedFixture struct {
 	keeperProxy     *keeperProbeProxy
 	tlsProxy        *keeperProbeProxy
 	replicaTLSProxy *keeperProbeProxy
-	spec            connector.Spec
+	spec            connector.RuntimeSpec
 	database        string
 	changelogTable  string
 	receiptsTable   string
@@ -803,9 +800,9 @@ parts_to_delay_insert=100,parts_to_throw_insert=200,max_parts_in_total=1000`, da
 			_, _ = fixture.db.ExecContext(context.Background(), "DROP TABLE IF EXISTS {database:Identifier}.{table:Identifier} SYNC", chclient.Named("database", database), chclient.Named("table", table))
 		}
 	})
-	fixture.spec = connector.Spec{Name: "clickhouse-managed", Type: connector.EndpointClickHouse, Options: map[string]string{
+	fixture.spec = connector.RuntimeSpec{Name: "clickhouse-managed", Type: connector.EndpointClickHouse, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToClickHouseAppendV1,
-		"destination_revision_id": "clickhouse-managed-v1", "write_mode": "managed_append", "batch_mode": "target", "batch_resolution": "none",
+		"destination_revision_id": "clickhouse-managed-v1", "batch_mode": "target", "batch_resolution": "none",
 		"meta_table_enabled": "false", "managed_database": database, "managed_changelog_table": fixture.changelogTable,
 		"managed_receipts_table": fixture.receiptsTable, "managed_final_view": fixture.finalView,
 		"managed_deployment": "self-managed-keeper", "managed_keeper_path_prefix": "/clickhouse/tables/01",

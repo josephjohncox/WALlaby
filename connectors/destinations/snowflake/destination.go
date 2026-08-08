@@ -28,6 +28,13 @@ func safeMetaCapacity(base, extra int) int {
 }
 
 const (
+	CapabilityProfileBase             connector.CapabilityProfileID = "base"
+	CapabilityProfileManagedSQL       connector.CapabilityProfileID = connector.ManagedProfilePostgresToSnowflakeSQLV1
+	CapabilityProfileManagedStaged    connector.CapabilityProfileID = connector.ManagedProfilePostgresToSnowflakeStagedAppendV1
+	CapabilityProfileManagedStreaming connector.CapabilityProfileID = connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1
+)
+
+const (
 	optDSN               = "dsn"
 	optSchema            = "schema"
 	optTable             = "table"
@@ -37,7 +44,6 @@ const (
 	optWarehouseSuspend  = "warehouse_auto_suspend"
 	optWarehouseResume   = "warehouse_auto_resume"
 	optSessionKeepAlive  = "session_keep_alive"
-	optWriteMode         = "write_mode"
 	optBatchMode         = "batch_mode"
 	optBatchResolution   = "batch_resolution"
 	optStagingSchema     = "staging_schema"
@@ -62,26 +68,31 @@ const (
 	defaultAutoSuspend   = 60
 )
 
+type destinationFactories struct {
+	openDB      func(string, string) (*sql.DB, error)
+	newRegistry func(context.Context, schemaregistry.Config) (schemaregistry.Registry, error)
+}
+
 // Destination writes change events into Snowflake tables.
 type Destination struct {
-	spec                     connector.Spec
+	closeMu                  sync.Mutex
+	spec                     connector.RuntimeSpec
 	db                       *sql.DB
 	managedProfile           string
 	managedConfig            managedConfig
 	managedHooksMu           sync.RWMutex
-	managedHooks             ManagedHooks
+	managedHooks             managedHooks
 	managedScopeMu           sync.Mutex
 	managedFlowIncarnation   string
 	stagedConfig             stagedConfig
 	stagedCatalogFingerprint string
 	stagedHooksMu            sync.RWMutex
-	stagedHooks              StagedHooks
+	stagedHooks              stagedHooks
 	streamConfig             streamConfig
 	streamCatalogFingerprint string
 	streamHooksMu            sync.RWMutex
-	streamHooks              StreamingHooks
+	streamHooks              streamingHooks
 	disableTx                bool
-	writeMode                string
 	batchMode                string
 	batchResolve             string
 	stagingSchema            string
@@ -104,7 +115,15 @@ type Destination struct {
 	sessionKeepAlive         *bool
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
+	return d.open(ctx, spec, destinationFactories{openDB: sql.Open, newRegistry: schemaregistry.NewRegistry})
+}
+
+func (d *Destination) open(ctx context.Context, spec connector.RuntimeSpec, factories destinationFactories) (err error) {
+	registryCfg, err := schemaregistry.ConfigFromOptions(spec.Options)
+	if err != nil {
+		return err
+	}
 	d.spec = spec
 	d.managedProfile = strings.TrimSpace(spec.Options["managed_profile"])
 	dsn := spec.Options[optDSN]
@@ -124,21 +143,33 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		}
 	}
 
-	db, err := sql.Open("snowflake", dsn)
+	db, err := factories.openDB("snowflake", dsn)
 	if err != nil {
+		if db != nil {
+			return errors.Join(fmt.Errorf("open snowflake: %w", err), db.Close())
+		}
 		return fmt.Errorf("open snowflake: %w", err)
 	}
+	var registry schemaregistry.Registry
+	defer func() {
+		if err == nil {
+			return
+		}
+		var registryErr, dbErr error
+		if registry != nil {
+			registryErr = registry.Close()
+		}
+		dbErr = db.Close()
+		d.registry = nil
+		d.db = nil
+		err = errors.Join(err, registryErr, dbErr)
+	}()
 	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
 		return fmt.Errorf("ping snowflake: %w", err)
 	}
 	d.db = db
 	d.disableTx = parseBool(spec.Options[optDisableTx], false)
 
-	d.writeMode = strings.ToLower(spec.Options[optWriteMode])
-	if d.writeMode == "" {
-		d.writeMode = writeModeTarget
-	}
 	d.batchMode = strings.ToLower(spec.Options[optBatchMode])
 	if d.batchMode == "" {
 		d.batchMode = batchModeTarget
@@ -172,13 +203,17 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.stagingTables = map[string]tableInfo{}
 	d.registrySubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistrySubject])
 
-	registryCfg := schemaregistry.ConfigFromOptions(spec.Options)
-	registry, err := schemaregistry.NewRegistry(ctx, registryCfg)
+	registry, err = factories.newRegistry(ctx, registryCfg)
 	if err != nil && !errors.Is(err, schemaregistry.ErrRegistryDisabled) {
-		_ = d.db.Close()
 		return err
 	}
 	if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+		if registry != nil {
+			if cleanupErr := registry.Close(); cleanupErr != nil {
+				registry = nil
+				return cleanupErr
+			}
+		}
 		registry = nil
 	}
 	d.registry = registry
@@ -207,7 +242,6 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	}
 
 	if err := d.configureSession(ctx); err != nil {
-		_ = d.db.Close()
 		return err
 	}
 
@@ -303,9 +337,9 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		return nil
 	}
 
-	mode := d.writeMode
-	if mode == "" {
-		mode = writeModeTarget
+	mode := writeModeAppend
+	if batch.WritePolicy.Mode != connector.ResolvedWriteAppend {
+		return fmt.Errorf("snowflake destination supports append table writes only")
 	}
 	meta, err := d.ensureSchema(ctx, batch.Schema)
 	if err != nil {
@@ -362,32 +396,32 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 }
 
 func (d *Destination) Close(ctx context.Context) error {
-	if d.managedProfile != "" {
-		if d.db == nil {
-			return nil
-		}
-		err := d.db.Close()
-		d.db = nil
+	d.closeMu.Lock()
+	db := d.db
+	registry := d.registry
+	managed := d.managedProfile != ""
+
+	var finalizeErr error
+	if !managed && db != nil {
+		finalizeErr = d.finalizeStaging(ctx)
+	}
+	d.db = nil
+	d.registry = nil
+	if managed {
 		d.managedScopeMu.Lock()
 		d.managedFlowIncarnation = ""
 		d.managedScopeMu.Unlock()
-		return err
 	}
-	if d.db != nil {
-		if err := d.finalizeStaging(ctx); err != nil {
-			_ = d.db.Close()
-			return err
-		}
-		if err := d.db.Close(); err != nil {
-			return err
-		}
+	d.closeMu.Unlock()
+
+	var dbErr, registryErr error
+	if db != nil {
+		dbErr = db.Close()
 	}
-	if d.registry != nil {
-		if err := d.registry.Close(); err != nil {
-			return err
-		}
+	if registry != nil {
+		registryErr = registry.Close()
 	}
-	return nil
+	return errors.Join(finalizeErr, dbErr, registryErr)
 }
 
 // ResolveStaging applies staged backfill data into target tables.
@@ -415,12 +449,11 @@ func (d *Destination) ResolveStagingFor(ctx context.Context, schemas []connector
 
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		Support: connector.SupportExperimental,
+		Support:     connector.SupportExperimental,
+		TableWrites: connector.TableWriteSemantics{Append: true},
 		Delivery: connector.DeliverySemantics{
-			Declared:    true,
 			ExecutesDDL: true,
 		},
-		SupportsDDL:           true,
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      true,
@@ -435,24 +468,58 @@ func (d *Destination) Capabilities() connector.Capabilities {
 	}
 }
 
-// CapabilitiesFor scopes durable transaction/reconciliation claims to the
-// exact named profile. Generic Snowflake and all Snowpipe modes stay experimental
-// without replay-safe capability claims.
-func (d *Destination) CapabilitiesFor(spec connector.Spec) connector.Capabilities {
-	capabilities := d.Capabilities()
-	switch strings.TrimSpace(spec.Options["managed_profile"]) {
+// CapabilityProfileIDs returns the complete closed Snowflake capability profile set.
+func (*Destination) CapabilityProfileIDs() []connector.CapabilityProfileID {
+	return []connector.CapabilityProfileID{
+		CapabilityProfileBase,
+		CapabilityProfileManagedSQL,
+		CapabilityProfileManagedStaged,
+		CapabilityProfileManagedStreaming,
+	}
+}
+
+// ClassifyCapabilityProfile validates the exact configured Snowflake profile.
+func (*Destination) ClassifyCapabilityProfile(spec connector.RuntimeSpec) (connector.CapabilityProfileID, error) {
+	profile := strings.TrimSpace(spec.Options["managed_profile"])
+	switch profile {
+	case "":
+		return CapabilityProfileBase, nil
 	case connector.ManagedProfilePostgresToSnowflakeSQLV1:
+		return CapabilityProfileManagedSQL, nil
+	case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
+		return CapabilityProfileManagedStaged, nil
+	case connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
+		return CapabilityProfileManagedStreaming, nil
+	default:
+		return "", fmt.Errorf("unsupported Snowflake managed profile %q", profile)
+	}
+}
+
+// CapabilitiesFor scopes table-write and durable delivery claims to the exact
+// configured profile. The SQL profile is explicit-key upsert; staged COPY and
+// Streaming REST profiles remain append-only.
+func (d *Destination) CapabilitiesFor(spec connector.RuntimeSpec) (connector.Capabilities, error) {
+	profile, err := d.ClassifyCapabilityProfile(spec)
+	if err != nil {
+		return connector.Capabilities{}, err
+	}
+	capabilities := d.Capabilities()
+	switch profile {
+	case CapabilityProfileBase:
+		return capabilities, nil
+	case CapabilityProfileManagedSQL:
+		capabilities.TableWrites = connector.TableWriteSemantics{Upsert: true, ExplicitKey: true}
 		capabilities.Delivery.TransactionalBatch = true
 		capabilities.Delivery.IdempotentReplay = true
 		capabilities.Delivery.ReplaySafe = true
 		capabilities.Delivery.ExecutesDDL = false
-		return capabilities
-	case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
-		return d.capabilitiesForStaged(capabilities)
-	case connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
-		return d.capabilitiesForStreaming(capabilities)
+		return capabilities, nil
+	case CapabilityProfileManagedStaged:
+		return d.capabilitiesForStaged(capabilities), nil
+	case CapabilityProfileManagedStreaming:
+		return d.capabilitiesForStreaming(capabilities), nil
 	default:
-		return capabilities
+		return connector.Capabilities{}, fmt.Errorf("unsupported Snowflake capability profile %q", profile)
 	}
 }
 
@@ -620,9 +687,6 @@ func (d *Destination) trackStaging(schema connector.Schema, record connector.Rec
 
 func (d *Destination) targetTable(schema connector.Schema, record connector.Record) string {
 	targetSchema, table := d.targetParts(schema, record.Table)
-	if strings.Contains(table, ".") {
-		return quoteQualified(table, '"')
-	}
 	if targetSchema == "" {
 		return quoteIdent(table, '"')
 	}
@@ -717,18 +781,7 @@ func (d *Destination) resolveStagingTable(ctx context.Context, info tableInfo) e
 }
 
 func (d *Destination) targetParts(schema connector.Schema, table string) (string, string) {
-	targetSchema := strings.TrimSpace(d.spec.Options[optSchema])
-	targetTable := strings.TrimSpace(d.spec.Options[optTable])
-	if targetTable == "" {
-		targetTable = table
-	}
-	if strings.Contains(targetTable, ".") {
-		parts := strings.SplitN(targetTable, ".", 2)
-		if len(parts) == 2 {
-			targetSchema = parts[0]
-			targetTable = parts[1]
-		}
-	}
+	targetSchema, targetTable := schema.Namespace, table
 	if targetSchema == "" {
 		targetSchema = schema.Namespace
 	}

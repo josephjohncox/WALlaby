@@ -95,8 +95,8 @@ type streamConfig struct {
 func streamProfileAllowedOptions() map[string]struct{} {
 	return map[string]struct{}{
 		"dsn": {}, "flow_id": {}, "managed_profile": {}, "destination_revision_id": {},
-		"write_mode": {}, "batch_mode": {}, "batch_resolution": {}, "meta_table_enabled": {},
-		"disable_transactions": {}, "session_keep_alive": {}, "type_mappings": {}, "type_mappings_file": {},
+		"batch_mode": {}, "batch_resolution": {}, "meta_table_enabled": {},
+		"disable_transactions": {}, "session_keep_alive": {},
 		"managed_account": {}, "managed_database": {}, "managed_schema": {}, "managed_pipe": {},
 		"managed_table": {}, "managed_receipts_table": {}, "managed_channel_state_table": {},
 		"managed_channel_name_prefix": {},
@@ -111,11 +111,6 @@ func streamProfileAllowedOptions() map[string]struct{} {
 		"managed_observe_interval_ms": {}, "managed_append_attempts": {}, "managed_append_backoff_ms": {},
 		"managed_cleanup_max_objects": {}, "managed_cleanup_retention_seconds": {},
 		"managed_streaming_transport": {},
-		// Known generic options remain listed so the tailored rejection below can
-		// explain the incompatible mode.
-		"schema": {}, "table": {}, "staging_schema": {}, "staging_table": {}, "staging_suffix": {},
-		"warehouse": {}, "warehouse_size": {}, "warehouse_auto_suspend": {}, "warehouse_auto_resume": {},
-		"meta_schema": {}, "meta_table": {}, "meta_pk_prefix": {},
 	}
 }
 
@@ -128,6 +123,9 @@ const streamRequiredTransport = "snowpipe-streaming-highperf-rest"
 // ValidateManagedStreamingProfileOptions rejects options outside the constrained
 // streaming append profile before connector side effects occur.
 func ValidateManagedStreamingProfileOptions(options map[string]string) error {
+	if _, exists := options["write_mode"]; exists {
+		return errors.New("managed Snowflake write_mode is obsolete; managed_profile and the mandatory table mapping select the protocol")
+	}
 	allowed := streamProfileAllowedOptions()
 	for option := range options {
 		if _, ok := allowed[option]; !ok {
@@ -139,12 +137,12 @@ func ValidateManagedStreamingProfileOptions(options map[string]string) error {
 
 // ValidateManagedStreamingProfileSpec performs the complete side-effect-free
 // portion of streaming append admission.
-func ValidateManagedStreamingProfileSpec(spec connector.Spec) error {
+func ValidateManagedStreamingProfileSpec(spec connector.RuntimeSpec) error {
 	_, err := streamConfigFromSpec(strings.TrimSpace(spec.Options["dsn"]), spec)
 	return err
 }
 
-func streamConfigFromSpec(dsn string, spec connector.Spec) (streamConfig, error) {
+func streamConfigFromSpec(dsn string, spec connector.RuntimeSpec) (streamConfig, error) {
 	const profileName = connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1
 	options := spec.Options
 	if strings.TrimSpace(options["managed_profile"]) != profileName {
@@ -195,7 +193,7 @@ func streamConfigFromSpec(dsn string, spec connector.Spec) (streamConfig, error)
 		warehouse: strings.TrimSpace(options["managed_warehouse"]), snowflakeVersion: strings.TrimSpace(options["managed_snowflake_version"]),
 		pipeCreatedOn: strings.TrimSpace(options["managed_pipe_created_on"]), targetCreatedOn: strings.TrimSpace(options["managed_target_created_on"]),
 		receiptsCreatedOn: strings.TrimSpace(options["managed_receipts_created_on"]), channelStateCreatedOn: strings.TrimSpace(options["managed_channel_state_created_on"]),
-		sourceSchema: strings.TrimSpace(options["managed_source_schema"]), sourceTable: strings.TrimSpace(options["managed_source_table"]),
+		sourceSchema: options["managed_source_schema"], sourceTable: options["managed_source_table"],
 		schemaContractHash:  strings.TrimSpace(options["managed_schema_contract_hash"]),
 		destinationRevision: strings.TrimSpace(options["destination_revision_id"]),
 	}
@@ -203,8 +201,9 @@ func streamConfigFromSpec(dsn string, spec connector.Spec) (streamConfig, error)
 		return streamConfig{}, err
 	}
 	if cfg.flowID == "" || cfg.account == "" || cfg.snowflakeVersion == "" || cfg.sourceSchema == "" || cfg.sourceTable == "" ||
+		strings.ContainsRune(cfg.sourceSchema, '\x00') || strings.ContainsRune(cfg.sourceTable, '\x00') ||
 		cfg.destinationRevision == "" || cfg.pipeCreatedOn == "" || cfg.targetCreatedOn == "" || cfg.receiptsCreatedOn == "" || cfg.channelStateCreatedOn == "" {
-		return streamConfig{}, errors.New("managed streaming Snowflake flow, account, version, object creation identities, source relation, and destination revision are required")
+		return streamConfig{}, errors.New("managed streaming Snowflake flow, account, version, object creation identities, exact nonempty NUL-free source relation, and destination revision are required")
 	}
 	if len(cfg.flowID) > 1024 || strings.TrimSpace(cfg.flowID) != cfg.flowID || strings.ContainsAny(cfg.flowID, "\r\n\x00") {
 		return streamConfig{}, errors.New("managed streaming Snowflake flow_id must be a bounded single-line exact value")
@@ -275,7 +274,7 @@ func streamConfigFromSpec(dsn string, spec connector.Spec) (streamConfig, error)
 			return streamConfig{}, fmt.Errorf("managed streaming Snowflake schema contract rejects generated column %q", column.Name)
 		}
 	}
-	if strings.TrimSpace(options["type_mappings"]) != "" || strings.TrimSpace(options["type_mappings_file"]) != "" {
+	if strings.TrimSpace(options["type_mappings"]) != "" {
 		return streamConfig{}, errors.New("managed streaming Snowflake profile rejects type mapping overrides until each mapping has real-service recovery evidence")
 	}
 	cfg.typeMappings = defaultSnowflakeTypeMappings()
@@ -327,8 +326,8 @@ func streamConfigFromSpec(dsn string, spec connector.Spec) (streamConfig, error)
 	}
 	cfg.cleanupRetention = time.Duration(retentionSeconds) * time.Second
 	cfg.validateEveryConnection = true
-	if strings.ToLower(strings.TrimSpace(options["write_mode"])) != "streaming_append" || strings.ToLower(strings.TrimSpace(options["batch_mode"])) != "target" || strings.ToLower(strings.TrimSpace(options["batch_resolution"])) != "none" {
-		return streamConfig{}, errors.New("managed streaming Snowflake profile requires write_mode=streaming_append, batch_mode=target, and batch_resolution=none")
+	if strings.ToLower(strings.TrimSpace(options["batch_mode"])) != "target" || strings.ToLower(strings.TrimSpace(options["batch_resolution"])) != "none" {
+		return streamConfig{}, errors.New("managed streaming Snowflake profile requires batch_mode=target and batch_resolution=none")
 	}
 	metaEnabled, err := parseManagedSnowflakeBoolOption(options, "meta_table_enabled", true)
 	if err != nil {

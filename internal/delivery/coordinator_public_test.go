@@ -11,40 +11,42 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-func TestDeliverRejectsUntrustedInputBeforeDestinationIO(t *testing.T) {
+func TestDeliverTransactionRejectsUntrustedInputBeforeDestinationIO(t *testing.T) {
 	t.Parallel()
-	fence, batch, intent := deliveryFixture(t)
+	fence, transaction, intent := transactionFixture(t)
 	coordinator := &delivery.Coordinator{}
 
 	tests := []struct {
 		name string
-		edit func(*connector.DeliveryIntent, *connector.Batch)
+		edit func(*connector.DeliveryIntent, *connector.SourceTransaction)
 		want error
 	}{
 		{
 			name: "stale fence",
-			edit: func(intent *connector.DeliveryIntent, _ *connector.Batch) { intent.LeaseEpoch++ },
+			edit: func(intent *connector.DeliveryIntent, _ *connector.SourceTransaction) { intent.LeaseEpoch++ },
 			want: authority.ErrFenceRejected,
 		},
 		{
 			name: "changed content",
-			edit: func(intent *connector.DeliveryIntent, _ *connector.Batch) { intent.ContentHash = "changed" },
+			edit: func(intent *connector.DeliveryIntent, _ *connector.SourceTransaction) { intent.ContentHash = "changed" },
 			want: connector.ErrDeliveryConflict,
 		},
 		{
 			name: "changed position",
-			edit: func(intent *connector.DeliveryIntent, _ *connector.Batch) { intent.PositionID = "checkpoint:changed" },
+			edit: func(intent *connector.DeliveryIntent, _ *connector.SourceTransaction) {
+				intent.PositionID = "checkpoint:changed"
+			},
 			want: connector.ErrDeliveryConflict,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			candidateIntent := intent
-			candidateBatch := batch
-			test.edit(&candidateIntent, &candidateBatch)
+			candidateTransaction := transaction
+			test.edit(&candidateIntent, &candidateTransaction)
 			destination := &recordingManagedDestination{}
-			if _, err := coordinator.Deliver(context.Background(), fence, candidateIntent, candidateBatch, destination); !errors.Is(err, test.want) {
-				t.Fatalf("Deliver() error=%v, want %v", err, test.want)
+			if _, err := coordinator.DeliverTransaction(context.Background(), fence, candidateIntent, candidateTransaction, connector.ManagedSchemaBaselinePayload{}, destination); !errors.Is(err, test.want) {
+				t.Fatalf("DeliverTransaction() error=%v, want %v", err, test.want)
 			}
 			if destination.externalCalls != 0 {
 				t.Fatalf("destination calls=%d, want zero before input is trusted", destination.externalCalls)
@@ -55,33 +57,11 @@ func TestDeliverRejectsUntrustedInputBeforeDestinationIO(t *testing.T) {
 
 func TestDeliverTransactionRejectsIdentityMismatchBeforeDestinationIO(t *testing.T) {
 	t.Parallel()
-	fence, batch, intent := deliveryFixture(t)
-	transaction := connector.SourceTransaction{
-		SourceLineageID: intent.SourceLineageID,
-		TransactionID:   1,
-		BeginLSN:        "0/10",
-		CommitLSN:       "0/18",
-		EndLSN:          batch.Checkpoint.LSN,
-		Checkpoint:      batch.Checkpoint,
-		Fragments: []connector.TransactionFragment{{
-			Ordinal: 0,
-			Batch:   connector.Batch{Schema: batch.Schema, Records: batch.Records},
-		}},
-	}
-	contentHash, logicalBatchID, err := connector.SourceTransactionIdentity(transaction)
-	if err != nil {
-		t.Fatal(err)
-	}
-	intent.ContentHash = contentHash
-	intent.LogicalBatchID = logicalBatchID
-	intent.PositionID, err = connector.CheckpointPositionID(transaction.Checkpoint)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fence, transaction, intent := transactionFixture(t)
 	intent.LogicalBatchID = "logical-batch:changed"
 
 	destination := &recordingManagedDestination{}
-	if _, err := (&delivery.Coordinator{}).DeliverTransaction(context.Background(), fence, intent, transaction, destination); !errors.Is(err, connector.ErrDeliveryConflict) {
+	if _, err := (&delivery.Coordinator{}).DeliverTransaction(context.Background(), fence, intent, transaction, connector.ManagedSchemaBaselinePayload{}, destination); !errors.Is(err, connector.ErrDeliveryConflict) {
 		t.Fatalf("DeliverTransaction() error=%v, want delivery conflict", err)
 	}
 	if destination.externalCalls != 0 {
@@ -89,7 +69,7 @@ func TestDeliverTransactionRejectsIdentityMismatchBeforeDestinationIO(t *testing
 	}
 }
 
-func deliveryFixture(t *testing.T) (authority.RunFence, connector.Batch, connector.DeliveryIntent) {
+func transactionFixture(t *testing.T) (authority.RunFence, connector.SourceTransaction, connector.DeliveryIntent) {
 	t.Helper()
 	fence := authority.RunFence{
 		FlowID:            "flow",
@@ -103,25 +83,30 @@ func deliveryFixture(t *testing.T) (authority.RunFence, connector.Batch, connect
 		Records:    []connector.Record{{Table: "events", Operation: connector.OpInsert, SchemaVersion: 1, After: map[string]any{"id": int64(1)}}},
 		Checkpoint: connector.Checkpoint{LSN: "0/20"},
 	}
-	contentHash, err := connector.BatchContentHash(batch)
+	transaction := connector.SourceTransaction{
+		SourceLineageID: "source/publication-v1", TransactionID: 1,
+		BeginLSN: "0/10", CommitLSN: "0/18", EndLSN: batch.Checkpoint.LSN, Checkpoint: batch.Checkpoint,
+		Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: connector.Batch{Schema: batch.Schema, Records: batch.Records}}},
+	}
+	contentHash, logicalBatchID, err := connector.SourceTransactionIdentity(transaction)
 	if err != nil {
 		t.Fatal(err)
 	}
-	positionID, err := connector.CheckpointPositionID(batch.Checkpoint)
+	positionID, err := connector.CheckpointPositionID(transaction.Checkpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fence, batch, connector.DeliveryIntent{
+	return fence, transaction, connector.DeliveryIntent{
 		FlowID: fence.FlowID, FlowIncarnationID: fence.FlowIncarnationID.String(), SourceLineageID: "source/publication-v1",
 		Generation: fence.Generation, AcquisitionID: fence.AcquisitionID.String(), LeaseEpoch: fence.LeaseEpoch,
-		DestinationRevisionID: "destination-v1", PositionID: positionID, ContentHash: contentHash,
+		DestinationRevisionID: "destination-v1", LogicalBatchID: logicalBatchID, PositionID: positionID, ContentHash: contentHash,
 	}
 }
 
 type recordingManagedDestination struct{ externalCalls int }
 
-func (*recordingManagedDestination) Open(context.Context, connector.Spec) error   { return nil }
-func (*recordingManagedDestination) Write(context.Context, connector.Batch) error { return nil }
+func (*recordingManagedDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
+func (*recordingManagedDestination) Write(context.Context, connector.Batch) error      { return nil }
 func (*recordingManagedDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
 	return nil
 }
@@ -130,6 +115,7 @@ func (*recordingManagedDestination) Close(context.Context) error     { return ni
 func (*recordingManagedDestination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{}
 }
+func (*recordingManagedDestination) InitializeManagedDelivery(context.Context) error { return nil }
 func (d *recordingManagedDestination) Apply(context.Context, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
 	d.externalCalls++
 	return connector.DeliveryEvidence{}, nil

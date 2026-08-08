@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-var canonicalTimeType = reflect.TypeOf(time.Time{})
+var (
+	canonicalTimeType  = reflect.TypeOf(time.Time{})
+	canonicalBatchType = reflect.TypeOf(Batch{})
+)
 
 type canonicalValueEncoder struct {
 	buffer bytes.Buffer
@@ -32,10 +35,22 @@ type canonicalMapEntry struct {
 
 // BatchContentHash returns a deterministic, type-sensitive SHA-256 identity for
 // a logical connector batch. Map iteration order and checkpoint observation
-// timestamps do not affect the result. The encoding is the compatibility format
-// historically used by the durable checkpoint outbox.
+// timestamps do not affect the result. A projected batch also excludes replay-
+// variable source observations while retaining its resolved write policy.
 func BatchContentHash(batch Batch) (string, error) {
 	batch.Checkpoint.Timestamp = time.Time{}
+	if !batch.WritePolicy.IsZero() {
+		batch.Schema.Version = 0
+		batch.Records = append([]Record(nil), batch.Records...)
+		for index := range batch.Records {
+			batch.Records[index].SchemaVersion = 0
+			batch.Records[index].Timestamp = time.Time{}
+		}
+		batch.Checkpoint.Metadata = nil
+		if len(batch.WritePolicy.KeyColumns) == 0 {
+			batch.WritePolicy.KeyColumns = nil
+		}
+	}
 	encoder := canonicalValueEncoder{seen: make(map[canonicalVisit]bool)}
 	encoder.buffer.Grow(canonicalHashBufferSize(batch))
 	if err := encoder.encode(reflect.ValueOf(batch)); err != nil {
@@ -175,8 +190,15 @@ func (e *canonicalValueEncoder) encode(value reflect.Value) error {
 			}
 		}
 	case reflect.Struct:
-		e.writeString(strconv.Itoa(value.NumField()))
-		for index := 0; index < value.NumField(); index++ {
+		fieldCount := value.NumField()
+		// canonical_cdc_parquet_v1 is a frozen protocol. Its zero-policy batch
+		// encoding predates resolved write policies and must remain byte-for-byte
+		// stable; projected batches include the fifth field below.
+		if value.Type() == canonicalBatchType && value.Interface().(Batch).WritePolicy.IsZero() {
+			fieldCount--
+		}
+		e.writeString(strconv.Itoa(fieldCount))
+		for index := 0; index < fieldCount; index++ {
 			e.writeString(value.Type().Field(index).Name)
 			if err := e.encode(value.Field(index)); err != nil {
 				return err

@@ -28,8 +28,8 @@ type SourceTransaction struct {
 }
 
 // Validate rejects incomplete or reordered committed transactions before they
-// can become durable delivery identities. Fragment ordinals are contiguous so
-// table, schema, DDL, and control barriers cannot be collapsed or reordered.
+// can become durable delivery identities. Fragment ordinals are contiguous;
+// projections must renumber surviving fragments rather than admitting gaps.
 func (t SourceTransaction) Validate() error {
 	if strings.TrimSpace(t.SourceLineageID) == "" {
 		return errors.New("source transaction lineage is required")
@@ -65,6 +65,7 @@ func (t SourceTransaction) Validate() error {
 		if fragment.Ordinal != expectedOrdinal {
 			return fmt.Errorf("source transaction fragment ordinal %d at index %d is not contiguous", fragment.Ordinal, index)
 		}
+		expectedOrdinal++
 		if fragment.Batch.Checkpoint.LSN != "" || len(fragment.Batch.Checkpoint.Metadata) != 0 {
 			return fmt.Errorf("source transaction fragment %d carries an independent checkpoint", index)
 		}
@@ -74,7 +75,6 @@ func (t SourceTransaction) Validate() error {
 		if err := ValidateBatch(fragment.Batch); err != nil {
 			return fmt.Errorf("validate source transaction fragment %d: %w", index, err)
 		}
-		expectedOrdinal++
 	}
 	return nil
 }
@@ -144,6 +144,16 @@ func SourceTransactionContentHash(transaction SourceTransaction) (string, error)
 // hashing the same transaction twice at that seam. Process-local schema
 // counters, observation timestamps, and checkpoint recovery metadata do not
 // participate in the identity of an otherwise identical WAL replay.
+func DeliveryLogicalBatchID(sourceLineageID, positionID, contentHash string) (string, error) {
+	for name, value := range map[string]string{"source_lineage_id": sourceLineageID, "position_id": positionID, "content_hash": contentHash} {
+		if strings.TrimSpace(value) == "" {
+			return "", fmt.Errorf("logical batch %s is required", name)
+		}
+	}
+	digest := sha256.Sum256([]byte(sourceLineageID + "\x00" + positionID + "\x00" + contentHash))
+	return "logical-batch:" + hex.EncodeToString(digest[:]), nil
+}
+
 func SourceTransactionIdentity(transaction SourceTransaction) (string, string, error) {
 	contentHash, err := SourceTransactionContentHash(transaction)
 	if err != nil {
@@ -153,8 +163,11 @@ func SourceTransactionIdentity(transaction SourceTransaction) (string, string, e
 	if err != nil {
 		return "", "", err
 	}
-	digest := sha256.Sum256([]byte(transaction.SourceLineageID + "\x00" + position + "\x00" + contentHash))
-	return contentHash, "logical-batch:" + hex.EncodeToString(digest[:]), nil
+	logicalBatchID, err := DeliveryLogicalBatchID(transaction.SourceLineageID, position, contentHash)
+	if err != nil {
+		return "", "", err
+	}
+	return contentHash, logicalBatchID, nil
 }
 
 // SourceTransactionLogicalBatchID identifies one source commit independently
@@ -164,53 +177,91 @@ func SourceTransactionLogicalBatchID(transaction SourceTransaction) (string, err
 	return logicalBatchID, err
 }
 
-// ManagedSchemaBaselinesMetadataKey stores the last delivered source schema
-// set on the authoritative checkpoint. The baseline lets a restarted pgoutput
-// decoder diff the first Relation message against the schema that actually
-// reached the destination, rather than an empty process-local cache.
-const ManagedSchemaBaselinesMetadataKey = "managed_postgres_schema_baselines_v1"
-
-// MergeManagedSchemaBaselines returns a copied checkpoint metadata map with
-// every schema observed in transaction merged into a stable, sorted encoding.
-func MergeManagedSchemaBaselines(metadata map[string]string, transaction SourceTransaction) (map[string]string, error) {
-	baselines, err := DecodeManagedSchemaBaselines(metadata[ManagedSchemaBaselinesMetadataKey])
-	if err != nil {
-		return nil, err
-	}
-	// Avoid adding attacker-influenced slice lengths for a capacity hint: the
-	// addition can overflow even though map growth itself is safe.
-	byTable := make(map[string]Schema)
-	for _, schema := range baselines {
-		byTable[managedSchemaBaselineKey(schema.Namespace, schema.Name)] = schema
-	}
-	for _, fragment := range transaction.Fragments {
-		schema := fragment.Batch.Schema
-		if strings.TrimSpace(schema.Name) == "" {
-			continue
-		}
-		byTable[managedSchemaBaselineKey(schema.Namespace, schema.Name)] = schema
-	}
-	baselines = baselines[:0]
-	for _, schema := range byTable {
-		baselines = append(baselines, schema)
-	}
-	sort.Slice(baselines, func(i, j int) bool {
-		return managedSchemaBaselineKey(baselines[i].Namespace, baselines[i].Name) < managedSchemaBaselineKey(baselines[j].Namespace, baselines[j].Name)
-	})
-	encoded, err := json.Marshal(baselines)
-	if err != nil {
-		return nil, fmt.Errorf("marshal managed schema baselines: %w", err)
-	}
-	result := make(map[string]string, len(metadata))
-	for key, value := range metadata {
-		result[key] = value
-	}
-	result[ManagedSchemaBaselinesMetadataKey] = string(encoded)
-	return result, nil
+// ManagedSchemaBaselinePayload is the exact source-schema state advanced with
+// one authoritative checkpoint. Its canonical encoding and fingerprint are
+// bound into delivery/publication manifests before external I/O.
+type ManagedSchemaBaselinePayload struct {
+	SourceLineageID string   `json:"source_lineage_id"`
+	Schemas         []Schema `json:"schemas"`
 }
 
-// DecodeManagedSchemaBaselines validates a checkpoint baseline encoding.
-func DecodeManagedSchemaBaselines(raw string) ([]Schema, error) {
+// NewManagedSchemaBaselinePayload canonicalizes one transaction's source
+// schemas. Duplicate relation identities collapse to the greatest observed
+// schema version and relation order is deterministic.
+func NewManagedSchemaBaselinePayload(sourceLineageID string, schemas []Schema) (ManagedSchemaBaselinePayload, error) {
+	if strings.TrimSpace(sourceLineageID) == "" {
+		return ManagedSchemaBaselinePayload{}, errors.New("managed schema-baseline source lineage is required")
+	}
+	byRelation := make(map[string]Schema, len(schemas))
+	for _, schema := range schemas {
+		if err := validateManagedSchemaBaselineIdentity(schema.Namespace, schema.Name); err != nil {
+			return ManagedSchemaBaselinePayload{}, err
+		}
+		key := ManagedSchemaBaselineKey(schema.Namespace, schema.Name)
+		if previous, exists := byRelation[key]; !exists || schema.Version >= previous.Version {
+			byRelation[key] = schema
+		}
+	}
+	keys := make([]string, 0, len(byRelation))
+	for key := range byRelation {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	payload := ManagedSchemaBaselinePayload{SourceLineageID: sourceLineageID, Schemas: make([]Schema, 0, len(keys))}
+	for _, key := range keys {
+		schema := byRelation[key]
+		// pgoutput relation versions are process-local decoder counters and cannot
+		// participate in a retry-stable durable schema identity.
+		schema.Version = 0
+		payload.Schemas = append(payload.Schemas, schema)
+	}
+	return payload, nil
+}
+
+// Canonical returns the immutable JSON payload and lowercase SHA-256 identity.
+func (p ManagedSchemaBaselinePayload) Canonical() ([]byte, string, error) {
+	canonical, err := NewManagedSchemaBaselinePayload(p.SourceLineageID, p.Schemas)
+	if err != nil {
+		return nil, "", err
+	}
+	encoded, err := json.Marshal(canonical)
+	if err != nil {
+		return nil, "", fmt.Errorf("encode managed schema-baseline payload: %w", err)
+	}
+	digest := sha256.Sum256(encoded)
+	return encoded, hex.EncodeToString(digest[:]), nil
+}
+
+// SourceTransactionSchemas extracts exact source relation schemas before any
+// destination projection filters or renames them.
+func SourceTransactionSchemas(transaction SourceTransaction) []Schema {
+	schemas := make([]Schema, 0, len(transaction.Fragments))
+	for _, fragment := range transaction.Fragments {
+		if fragment.Batch.Schema.Name != "" {
+			schemas = append(schemas, fragment.Batch.Schema)
+		}
+	}
+	payload, err := NewManagedSchemaBaselinePayload(transaction.SourceLineageID, schemas)
+	if err != nil {
+		return nil
+	}
+	return payload.Schemas
+}
+
+// ManagedSchemaBaselineStore is the PostgreSQL-authoritative managed decoder
+// baseline read contract. Advancement is available only through the internal
+// transaction-scoped upsert helper owned by checkpoint finalizers.
+type ManagedSchemaBaselineStore interface {
+	Load(context.Context, RunFence, string) ([]Schema, error)
+}
+
+// ManagedSchemaBaselinesOptionKey carries a fence-validated baseline snapshot
+// from the runner into the in-process PostgreSQL decoder. It is never stored in
+// checkpoint metadata and is not an authority source.
+const ManagedSchemaBaselinesOptionKey = "managed_postgres_schema_baselines_v1"
+
+// DecodeManagedSchemaBaselineOption validates the runner-to-decoder snapshot.
+func DecodeManagedSchemaBaselineOption(raw string) ([]Schema, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
 	}
@@ -220,20 +271,37 @@ func DecodeManagedSchemaBaselines(raw string) ([]Schema, error) {
 	}
 	seen := make(map[string]struct{}, len(baselines))
 	for _, schema := range baselines {
-		if strings.TrimSpace(schema.Name) == "" {
-			return nil, errors.New("managed schema baseline table name is required")
+		if err := validateManagedSchemaBaselineIdentity(schema.Namespace, schema.Name); err != nil {
+			return nil, err
 		}
-		key := managedSchemaBaselineKey(schema.Namespace, schema.Name)
+		key := ManagedSchemaBaselineKey(schema.Namespace, schema.Name)
 		if _, exists := seen[key]; exists {
-			return nil, fmt.Errorf("duplicate managed schema baseline %s", key)
+			return nil, fmt.Errorf("duplicate managed schema baseline %q.%q", schema.Namespace, schema.Name)
 		}
 		seen[key] = struct{}{}
 	}
 	return baselines, nil
 }
 
-func managedSchemaBaselineKey(namespace, name string) string {
-	return strings.ToLower(strings.TrimSpace(namespace)) + "\x00" + strings.ToLower(strings.TrimSpace(name))
+// ManagedSchemaBaselineKey encodes an exact PostgreSQL relation identity for
+// in-memory indexing. PostgreSQL identifiers cannot contain NUL, so the NUL
+// delimiter is unambiguous and preserves every identifier byte, including
+// case and leading or trailing spaces.
+func ManagedSchemaBaselineKey(namespace, name string) string {
+	return namespace + "\x00" + name
+}
+
+func validateManagedSchemaBaselineIdentity(namespace, name string) error {
+	if namespace == "" {
+		return errors.New("managed schema baseline namespace is required")
+	}
+	if name == "" {
+		return errors.New("managed schema baseline table name is required")
+	}
+	if strings.IndexByte(namespace, 0) >= 0 || strings.IndexByte(name, 0) >= 0 {
+		return errors.New("managed schema baseline identifiers cannot contain NUL")
+	}
+	return nil
 }
 
 // TransactionFragment is a deterministic, ordered table/schema fragment of a

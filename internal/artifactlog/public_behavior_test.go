@@ -75,11 +75,11 @@ func TestEncoderRejectsInvalidSourceTransactionThroughPublicAPI(t *testing.T) {
 type recordingObjectStore struct{ calls int }
 
 func (*recordingObjectStore) Bucket() string { return "bucket" }
-func (s *recordingObjectStore) PutImmutable(context.Context, string, []byte, string) (artifactlog.ObjectEvidence, error) {
+func (s *recordingObjectStore) PutImmutable(context.Context, string, []byte, string, string, string) (artifactlog.ObjectEvidence, error) {
 	s.calls++
 	return artifactlog.ObjectEvidence{}, nil
 }
-func (s *recordingObjectStore) ReconcileVersion(context.Context, string, string, int64) (artifactlog.ObjectEvidence, error) {
+func (s *recordingObjectStore) ReconcileVersion(context.Context, string, string, int64, string, string) (artifactlog.ObjectEvidence, error) {
 	s.calls++
 	return artifactlog.ObjectEvidence{}, nil
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,7 +47,7 @@ func TestPostgresDestinationRevisionIsImmutable(t *testing.T) {
 	}
 	flowID := fmt.Sprintf("destination-revision-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -89,7 +90,16 @@ func TestPostgresAckOnlyCheckpointHasIntentAndReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	coordinator, err := delivery.NewCoordinator(ctx, pool)
+	failBeforeAckCommit := true
+	coordinator, err := delivery.NewCoordinator(ctx, pool, delivery.WithCoordinatorHooks(delivery.CoordinatorHooks{
+		BeforeAuthorizeAckCommit: func(context.Context, authority.RunFence, connector.ManagedSchemaBaselinePayload) error {
+			if failBeforeAckCommit {
+				failBeforeAckCommit = false
+				return errors.New("crash before ack authorization commit")
+			}
+			return nil
+		},
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +109,7 @@ func TestPostgresAckOnlyCheckpointHasIntentAndReceipt(t *testing.T) {
 	}
 	flowID := fmt.Sprintf("ack-only-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -110,7 +120,24 @@ func TestPostgresAckOnlyCheckpointHasIntentAndReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/A0"})
+	baseline, err := connector.NewManagedSchemaBaselinePayload("delivery-test-lineage", []connector.Schema{{Namespace: "public", Name: "filtered_events", Version: 2, Columns: []connector.Column{{Name: "id", Type: "bigint"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/A0"}, baseline); err == nil || !strings.Contains(err.Error(), "crash before ack authorization commit") {
+		t.Fatalf("injected authorization crash error=%v", err)
+	}
+	var crashCheckpoints, crashBaselines int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM authoritative_checkpoints WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&crashCheckpoints); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM managed_schema_baselines WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&crashBaselines); err != nil {
+		t.Fatal(err)
+	}
+	if crashCheckpoints != 0 || crashBaselines != 0 {
+		t.Fatalf("crash boundary checkpoint/baseline=%d/%d, want old/old", crashCheckpoints, crashBaselines)
+	}
+	grant, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/A0"}, baseline)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,8 +151,15 @@ func TestPostgresAckOnlyCheckpointHasIntentAndReceipt(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM source_ack_receipts WHERE flow_incarnation_id=$1", fence.FlowIncarnationID).Scan(&receipts); err != nil {
 		t.Fatal(err)
 	}
-	if intents != 1 || receipts != 1 {
-		t.Fatalf("ack-only intents=%d receipts=%d, want 1/1", intents, receipts)
+	var committedCheckpoint, committedBaseline int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM authoritative_checkpoints WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&committedCheckpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM managed_schema_baselines WHERE flow_incarnation_id=$1 AND source_relation='filtered_events'`, fence.FlowIncarnationID).Scan(&committedBaseline); err != nil {
+		t.Fatal(err)
+	}
+	if intents != 1 || receipts != 1 || committedCheckpoint != 1 || committedBaseline != 1 {
+		t.Fatalf("ack-only intents/receipts/checkpoint/baseline=%d/%d/%d/%d, want 1/1/1/1", intents, receipts, committedCheckpoint, committedBaseline)
 	}
 }
 
@@ -156,7 +190,7 @@ func TestCoordinatorRecoverAbsentManifestFailsClosedWithoutPoisoningDeliver(t *t
 	}
 	flowID := fmt.Sprintf("recover-absent-manifest-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -167,12 +201,11 @@ func TestCoordinatorRecoverAbsentManifestFailsClosedWithoutPoisoningDeliver(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	batch := connector.Batch{
-		Schema:     connector.Schema{Namespace: "public", Name: "events", Version: 1},
-		Records:    []connector.Record{{Table: "events", Operation: connector.OpInsert, SchemaVersion: 1, After: map[string]any{"id": int64(1)}}},
-		Checkpoint: connector.Checkpoint{LSN: "0/A8", Metadata: map[string]string{"payload": "legitimate"}, Timestamp: time.Unix(1_700_000_000, 0).UTC()},
-	}
-	intent := deliveryIntentForFence(t, fence, batch)
+	batch := connector.Batch{Schema: testManagedUpsertSchema("events"), Records: []connector.Record{{Table: "events", Operation: connector.OpInsert, SchemaVersion: 1, After: map[string]any{"id": int64(1)}}}, WritePolicy: testUpsertPolicy("id")}
+	transaction := managedDeliveryTransaction(batch)
+	transaction.Checkpoint = connector.Checkpoint{LSN: "0/A8", Metadata: map[string]string{"payload": "legitimate"}, Timestamp: time.Unix(1_700_000_000, 0).UTC()}
+	transaction.EndLSN = transaction.Checkpoint.LSN
+	intent := deliveryIntentForFence(t, fence, transaction)
 	intent.DestinationRevisionID = fmt.Sprintf("recover-absent-revision-%d", time.Now().UnixNano())
 	defer func() {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM destination_revisions WHERE destination_revision_id=$1", intent.DestinationRevisionID)
@@ -180,9 +213,10 @@ func TestCoordinatorRecoverAbsentManifestFailsClosedWithoutPoisoningDeliver(t *t
 	if err := coordinator.RegisterDestinationRevision(ctx, fence, intent.DestinationRevisionID, "scripted", "recover-absent-v1"); err != nil {
 		t.Fatal(err)
 	}
-	poison := connector.Checkpoint{LSN: batch.Checkpoint.LSN, Metadata: map[string]string{"payload": "poison"}, Timestamp: time.Unix(1_900_000_000, 0).UTC()}
-	driver := &metadataRecoveryDestination{}
-	if _, err := coordinator.Recover(ctx, fence, intent, poison, driver); !errors.Is(err, connector.ErrDeliveryConflict) {
+	poison := connector.Checkpoint{LSN: transaction.Checkpoint.LSN, Metadata: map[string]string{"payload": "poison"}, Timestamp: time.Unix(1_900_000_000, 0).UTC()}
+	driver := &timestampReplayDestination{failFirstApply: true}
+	baselines := managedBaselinePayload(t, transaction)
+	if _, err := coordinator.Recover(ctx, fence, intent, poison, baselines, driver); !errors.Is(err, connector.ErrDeliveryConflict) {
 		t.Fatalf("Recover without manifest error=%v, want ErrDeliveryConflict", err)
 	}
 	var manifests, attempts, receipts, checkpoints, ackIntents int
@@ -198,12 +232,8 @@ SELECT
 	if manifests != 0 || attempts != 0 || receipts != 0 || checkpoints != 0 || ackIntents != 0 {
 		t.Fatalf("failed Recover persisted manifests/attempts/receipts/checkpoints/ACKs=%d/%d/%d/%d/%d, want all zero", manifests, attempts, receipts, checkpoints, ackIntents)
 	}
-	grant, err := coordinator.Deliver(ctx, fence, intent, batch, driver)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if grant.Checkpoint.Metadata["payload"] != "legitimate" || !grant.Checkpoint.Timestamp.Equal(batch.Checkpoint.Timestamp) {
-		t.Fatalf("Deliver grant checkpoint=%+v, want legitimate payload %+v", grant.Checkpoint, batch.Checkpoint)
+	if _, err := coordinator.DeliverTransaction(ctx, fence, intent, transaction, baselines, driver); !errors.Is(err, errTimestampReplayFirstApply) {
+		t.Fatalf("first delivery error=%v, want injected pre-receipt failure", err)
 	}
 	var metadataJSON []byte
 	var storedTimestamp time.Time
@@ -217,11 +247,20 @@ WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`,
 	if err := json.Unmarshal(metadataJSON, &metadata); err != nil {
 		t.Fatal(err)
 	}
-	if metadata["payload"] != "legitimate" || !storedTimestamp.Equal(batch.Checkpoint.Timestamp) {
-		t.Fatalf("persisted manifest metadata/timestamp=%v/%s, want legitimate payload %v/%s", metadata, storedTimestamp, batch.Checkpoint.Metadata, batch.Checkpoint.Timestamp)
+	if metadata["payload"] != "legitimate" || !storedTimestamp.Equal(transaction.Checkpoint.Timestamp) {
+		t.Fatalf("persisted manifest metadata/timestamp=%v/%s, want legitimate payload %v/%s", metadata, storedTimestamp, transaction.Checkpoint.Metadata, transaction.Checkpoint.Timestamp)
 	}
-	if driver.reconcileCalls != 0 {
-		t.Fatalf("absent-manifest Recover called destination reconciliation %d times, want 0", driver.reconcileCalls)
+	replayed := transaction
+	replayed.Checkpoint.Timestamp = transaction.Checkpoint.Timestamp.Add(2 * time.Hour)
+	replayedGrant, err := coordinator.DeliverTransaction(ctx, fence, intent, replayed, baselines, driver)
+	if err != nil {
+		t.Fatalf("replay with a different observation timestamp conflicted: %v", err)
+	}
+	if !replayedGrant.Checkpoint.Timestamp.Equal(transaction.Checkpoint.Timestamp) {
+		t.Fatalf("replayed grant timestamp=%s, want first immutable manifest timestamp=%s", replayedGrant.Checkpoint.Timestamp, transaction.Checkpoint.Timestamp)
+	}
+	if driver.reconcileCalls != 1 {
+		t.Fatalf("timestamp replay reconciliation calls=%d, want one not-applied reconciliation", driver.reconcileCalls)
 	}
 }
 
@@ -251,14 +290,23 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer checkpointStore.Close()
-	coordinator, err := delivery.NewCoordinator(ctx, pool)
+	crashBeforeFinalize := false
+	coordinator, err := delivery.NewCoordinator(ctx, pool, delivery.WithCoordinatorHooks(delivery.CoordinatorHooks{
+		BeforeFinalizeCommit: func(context.Context, authority.RunFence, connector.DeliveryIntent) error {
+			if crashBeforeFinalize {
+				crashBeforeFinalize = false
+				return errors.New("crash before delivery finalization commit")
+			}
+			return nil
+		},
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	flowID := fmt.Sprintf("delivery-recovery-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -278,28 +326,27 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS public.wallaby_delivery_recovery_test")
 	}()
 	target := &pgdest.Destination{}
-	if err := target.Open(ctx, connector.Spec{Name: "managed-postgres", Options: map[string]string{
-		"dsn": dsn, "schema": "public", "write_mode": "target", "meta_table_enabled": "false",
+	if err := target.Open(ctx, connector.RuntimeSpec{Name: "managed-postgres", Options: map[string]string{
+		"dsn": dsn, "schema": "public", "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "synchronous_commit": "on", "meta_table_enabled": "false",
 	}}); err != nil {
 		t.Fatal(err)
 	}
 	defer target.Close(ctx)
 
-	batch := connector.Batch{
-		Schema:     connector.Schema{Namespace: "public", Name: tableName, Version: 1, Columns: []connector.Column{{Name: "id", Type: "bigint"}, {Name: "value", Type: "text"}}},
-		Records:    []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "committed"}}},
-		Checkpoint: connector.Checkpoint{LSN: "0/B0", Metadata: map[string]string{"prepared": "before-target-commit"}, Timestamp: time.Unix(1_700_000_000, 0).UTC()},
-	}
-	oldIntent := deliveryIntentForFence(t, oldFence, batch)
+	batch := connector.Batch{Schema: testManagedUpsertSchema(tableName), Records: []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "committed"}}}, WritePolicy: testUpsertPolicy("id")}
+	transaction := managedDeliveryTransaction(batch)
+	transaction.Checkpoint.Metadata = map[string]string{"prepared": "before-target-commit"}
+	transaction.Checkpoint.Timestamp = time.Unix(1_700_000_000, 0).UTC()
+	oldIntent := deliveryIntentForFence(t, oldFence, transaction)
 	defer func() {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM destination_revisions WHERE destination_revision_id=$1", oldIntent.DestinationRevisionID)
 	}()
 	if err := coordinator.RegisterDestinationRevision(ctx, oldFence, oldIntent.DestinationRevisionID, "managed-postgres", "delivery-test-v1"); err != nil {
 		t.Fatal(err)
 	}
-	failing := &commitThenFailDriver{ManagedDestination: target, fail: true}
-	if _, err := coordinator.Deliver(ctx, oldFence, oldIntent, batch, failing); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
-		t.Fatalf("first Deliver error=%v, want indeterminate external commit", err)
+	failing := &commitThenFailDriver{ManagedTransactionDestination: target, fail: true}
+	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, managedBaselinePayload(t, transaction), failing); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("first DeliverTransaction error=%v, want indeterminate external commit", err)
 	}
 
 	var attempts, receipts, ackIntents, checkpoints int
@@ -318,6 +365,21 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 	if attempts != 1 || receipts != 0 || ackIntents != 0 || checkpoints != 0 {
 		t.Fatalf("after ambiguous commit attempts=%d receipts=%d ackIntents=%d checkpoints=%d, want 1/0/0/0", attempts, receipts, ackIntents, checkpoints)
 	}
+	swappedBaseline := managedBaselinePayload(t, transaction)
+	swappedBaseline.Schemas[0].QuotedIdentifiers = map[string]bool{"value": true}
+	if _, err := coordinator.DeliverTransaction(ctx, oldFence, oldIntent, transaction, swappedBaseline, target); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("delivery retry swapped baseline error=%v, want conflict", err)
+	}
+	conflictingBatch := batch
+	conflictingBatch.Records = []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": 1, "value": "conflicting"}}}
+	conflictingTransaction := managedDeliveryTransaction(conflictingBatch)
+	conflictingIntent := deliveryIntentForFence(t, oldFence, conflictingTransaction)
+	if _, err := coordinator.DeliverTransaction(ctx, oldFence, conflictingIntent, conflictingTransaction, managedBaselinePayload(t, conflictingTransaction), target); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("retry identity conflict error=%v, want ErrDeliveryConflict", err)
+	}
+	if _, err := coordinator.Recover(ctx, oldFence, conflictingIntent, conflictingTransaction.Checkpoint, managedBaselinePayload(t, conflictingTransaction), target); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("recovery identity conflict error=%v, want ErrDeliveryConflict", err)
+	}
 
 	if _, err := pool.Exec(ctx, `UPDATE producer_leases SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE incarnation_id=$1`, oldFence.FlowIncarnationID); err != nil {
 		t.Fatal(err)
@@ -326,36 +388,16 @@ func TestPostgresCommitBeforeReceiptReconciles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	newIntent := deliveryIntentForFence(t, newFence, batch)
-	alteredReplayCheckpoint := connector.Checkpoint{
-		LSN: "0/B0", Metadata: map[string]string{"caller": "must-not-be-trusted"},
-		Timestamp: time.Unix(1_900_000_000, 0).UTC(),
-	}
-	// Simulate a pre-migration ambiguous attempt. With no authoritative
-	// checkpoint, replay metadata cannot safely reconstruct the missing payload.
-	if _, err := pool.Exec(ctx, `
-UPDATE delivery_manifests SET checkpoint_metadata=NULL,checkpoint_timestamp=NULL
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`, newFence.FlowIncarnationID, newIntent.DestinationRevisionID, newIntent.PositionID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := coordinator.Recover(ctx, newFence, newIntent, alteredReplayCheckpoint, target); !errors.Is(err, connector.ErrDeliveryConflict) {
-		t.Fatalf("legacy manifest replay error=%v, want fail-closed DeliveryConflict", err)
-	}
-	preparedMetadata, err := json.Marshal(batch.Checkpoint.Metadata)
+	newIntent := deliveryIntentForFence(t, newFence, transaction)
+	alteredReplayCheckpoint := transaction.Checkpoint
+	alteredReplayCheckpoint.Metadata = map[string]string{"caller": "must-not-be-trusted"}
+	alteredReplayCheckpoint.Timestamp = time.Unix(1_900_000_000, 0).UTC()
+	grant, err := coordinator.Recover(ctx, newFence, newIntent, alteredReplayCheckpoint, managedBaselinePayload(t, transaction), target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `
-UPDATE delivery_manifests SET checkpoint_metadata=$4,checkpoint_timestamp=$5
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`, newFence.FlowIncarnationID, newIntent.DestinationRevisionID, newIntent.PositionID, preparedMetadata, batch.Checkpoint.Timestamp); err != nil {
-		t.Fatal(err)
-	}
-	grant, err := coordinator.Recover(ctx, newFence, newIntent, alteredReplayCheckpoint, target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if grant.Checkpoint.LSN != "0/B0" || grant.Checkpoint.Metadata["prepared"] != "before-target-commit" || !grant.Checkpoint.Timestamp.Equal(batch.Checkpoint.Timestamp) {
-		t.Fatalf("AckGrant checkpoint=%+v, want immutable prepared payload %+v", grant.Checkpoint, batch.Checkpoint)
+	if grant.Checkpoint.LSN != "0/B0" || grant.Checkpoint.Metadata["prepared"] != "before-target-commit" || !grant.Checkpoint.Timestamp.Equal(transaction.Checkpoint.Timestamp) {
+		t.Fatalf("AckGrant checkpoint=%+v, want immutable prepared payload %+v", grant.Checkpoint, transaction.Checkpoint)
 	}
 	if err := coordinator.RecordAckReceipt(ctx, newFence, grant, "0/B0"); err != nil {
 		t.Fatal(err)
@@ -382,6 +424,48 @@ WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`,
 	}
 	if receipts != 1 || ackIntents != 1 || checkpoints != 1 {
 		t.Fatalf("after reconciliation receipts=%d ackIntents=%d checkpoints=%d, want 1/1/1", receipts, ackIntents, checkpoints)
+	}
+
+	secondBatch := batch
+	secondBatch.Schema.Version = 2
+	secondBatch.Schema.QuotedIdentifiers = map[string]bool{"value": true}
+	secondBatch.Records = []connector.Record{{Table: tableName, Operation: connector.OpInsert, Key: recordKey(t, map[string]any{"id": 2}), After: map[string]any{"id": 2, "value": "atomic"}}}
+	secondTransaction := connector.SourceTransaction{
+		SourceLineageID: transaction.SourceLineageID, TransactionID: 2,
+		BeginLSN: "0/B1", CommitLSN: "0/B8", EndLSN: "0/C0",
+		Fragments: []connector.TransactionFragment{{Ordinal: 0, Batch: secondBatch}}, Checkpoint: connector.Checkpoint{LSN: "0/C0"},
+	}
+	secondIntent := deliveryIntentForFence(t, newFence, secondTransaction)
+	secondBaselines := managedBaselinePayload(t, secondTransaction)
+	crashBeforeFinalize = true
+	if _, err := coordinator.DeliverTransaction(ctx, newFence, secondIntent, secondTransaction, secondBaselines, target); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("delivery finalization crash error=%v, want indeterminate", err)
+	}
+	var crashCheckpoint, crashBaselineFingerprint string
+	var oldBaselineFingerprint string
+	if err := pool.QueryRow(ctx, `SELECT schema_fingerprint FROM managed_schema_baselines WHERE flow_incarnation_id=$1 AND source_relation=$2`, newFence.FlowIncarnationID, tableName).Scan(&oldBaselineFingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT lsn FROM authoritative_checkpoints WHERE flow_incarnation_id=$1`, newFence.FlowIncarnationID).Scan(&crashCheckpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT schema_fingerprint FROM managed_schema_baselines WHERE flow_incarnation_id=$1 AND source_relation=$2`, newFence.FlowIncarnationID, tableName).Scan(&crashBaselineFingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if crashCheckpoint != "0/B0" || crashBaselineFingerprint != oldBaselineFingerprint {
+		t.Fatalf("delivery crash checkpoint/baseline=%s/%s, want old/old 0/B0/%s", crashCheckpoint, crashBaselineFingerprint, oldBaselineFingerprint)
+	}
+	if _, err := coordinator.DeliverTransaction(ctx, newFence, secondIntent, secondTransaction, secondBaselines, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT lsn FROM authoritative_checkpoints WHERE flow_incarnation_id=$1`, newFence.FlowIncarnationID).Scan(&crashCheckpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT schema_fingerprint FROM managed_schema_baselines WHERE flow_incarnation_id=$1 AND source_relation=$2`, newFence.FlowIncarnationID, tableName).Scan(&crashBaselineFingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if crashCheckpoint != "0/C0" || crashBaselineFingerprint == oldBaselineFingerprint {
+		t.Fatalf("delivery retry checkpoint/baseline=%s/%s, want new/new with changed baseline", crashCheckpoint, crashBaselineFingerprint)
 	}
 }
 
@@ -417,7 +501,7 @@ func TestCoordinatorRecoverReturnsPostgresAuthoritativeCheckpointMetadata(t *tes
 	defer checkpointStore.Close()
 	flowID := fmt.Sprintf("delivery-authoritative-metadata-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -428,12 +512,8 @@ func TestCoordinatorRecoverReturnsPostgresAuthoritativeCheckpointMetadata(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	batch := connector.Batch{
-		Schema:     connector.Schema{Namespace: "public", Name: "events", Version: 1},
-		Records:    []connector.Record{{Table: "events", Operation: connector.OpInsert, SchemaVersion: 1, After: map[string]any{"id": int64(1)}}},
-		Checkpoint: connector.Checkpoint{LSN: "0/C0", Metadata: map[string]string{"authority": "postgres"}, Timestamp: time.Unix(1_700_000_000, 0).UTC()},
-	}
-	intent := deliveryIntentForFence(t, fence, batch)
+	metadataBatchA := metadataTransaction("0/C0", 1, "postgres", time.Unix(1_700_000_000, 0).UTC())
+	intent := deliveryTransactionIntentForFence(t, fence, "metadata-revision-placeholder", metadataBatchA)
 	intent.DestinationRevisionID = fmt.Sprintf("metadata-revision-%d", time.Now().UnixNano())
 	defer func() {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM destination_revisions WHERE destination_revision_id=$1", intent.DestinationRevisionID)
@@ -442,28 +522,29 @@ func TestCoordinatorRecoverReturnsPostgresAuthoritativeCheckpointMetadata(t *tes
 		t.Fatal(err)
 	}
 	driver := &metadataRecoveryDestination{}
-	grantA, err := coordinator.Deliver(ctx, fence, intent, batch, driver)
+	baselineA := managedBaselinePayload(t, metadataBatchA)
+	grantA, err := coordinator.DeliverTransaction(ctx, fence, intent, metadataBatchA, baselineA, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
-	alteredEqual := batch.Checkpoint
+	alteredEqual := metadataBatchA.Checkpoint
 	alteredEqual.Metadata = map[string]string{"authority": "caller-equal"}
 	alteredEqual.Timestamp = time.Unix(1_900_000_000, 0).UTC()
-	equalGrant, err := coordinator.AuthorizeAck(ctx, fence, alteredEqual)
+	equalGrant, err := coordinator.AuthorizeAck(ctx, fence, alteredEqual, baselineA)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if equalGrant.Checkpoint.Metadata["authority"] != "postgres" || !equalGrant.Checkpoint.Timestamp.Equal(grantA.Checkpoint.Timestamp) {
 		t.Fatalf("equal-LSN AuthorizeAck=%+v, want preserved PostgreSQL payload %+v", equalGrant, grantA)
 	}
-	immediateRecover, err := coordinator.Recover(ctx, fence, intent, alteredEqual, driver)
+	immediateRecover, err := coordinator.Recover(ctx, fence, intent, alteredEqual, baselineA, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if immediateRecover.PositionID != intent.PositionID || immediateRecover.Checkpoint.Metadata["authority"] != "postgres" || !immediateRecover.Checkpoint.Timestamp.Equal(grantA.Checkpoint.Timestamp) {
 		t.Fatalf("immediate Recover replay=%+v, want authoritative A grant %+v", immediateRecover, grantA)
 	}
-	immediate, err := coordinator.Deliver(ctx, fence, intent, batch, driver)
+	immediate, err := coordinator.DeliverTransaction(ctx, fence, intent, metadataBatchA, baselineA, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,16 +552,14 @@ func TestCoordinatorRecoverReturnsPostgresAuthoritativeCheckpointMetadata(t *tes
 		t.Fatalf("immediate Deliver replay=%+v, want authoritative A grant %+v", immediate, grantA)
 	}
 
-	batchB := batch
-	batchB.Records = []connector.Record{{Table: "events", Operation: connector.OpInsert, SchemaVersion: 1, After: map[string]any{"id": int64(2)}}}
-	batchB.Checkpoint = connector.Checkpoint{LSN: "0/D0", Metadata: map[string]string{"authority": "postgres-b"}, Timestamp: time.Unix(1_710_000_000, 0).UTC()}
-	intentB := deliveryIntentForFence(t, fence, batchB)
-	intentB.DestinationRevisionID = intent.DestinationRevisionID
-	grantB, err := coordinator.Deliver(ctx, fence, intentB, batchB, driver)
+	metadataBatchB := metadataTransaction("0/D0", 2, "postgres-b", time.Unix(1_710_000_000, 0).UTC())
+	intentB := deliveryTransactionIntentForFence(t, fence, intent.DestinationRevisionID, metadataBatchB)
+	baselineB := managedBaselinePayload(t, metadataBatchB)
+	grantB, err := coordinator.DeliverTransaction(ctx, fence, intentB, metadataBatchB, baselineB, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fencedAlteredB := batchB.Checkpoint
+	fencedAlteredB := metadataBatchB.Checkpoint
 	fencedAlteredB.Metadata = map[string]string{"authority": "fenced-caller-equal"}
 	fencedAlteredB.Timestamp = time.Unix(1_950_000_000, 0).UTC()
 	if err := checkpointStore.PutFenced(ctx, fence, fencedAlteredB); err != nil {
@@ -493,21 +572,21 @@ func TestCoordinatorRecoverReturnsPostgresAuthoritativeCheckpointMetadata(t *tes
 	if storedB.Metadata["authority"] != "postgres-b" || !storedB.Timestamp.Equal(grantB.Checkpoint.Timestamp) {
 		t.Fatalf("equal-LSN PutFenced stored=%+v, want preserved PostgreSQL payload %+v", storedB, grantB.Checkpoint)
 	}
-	callerCheckpoint := batch.Checkpoint
+	callerCheckpoint := metadataBatchA.Checkpoint
 	callerCheckpoint.Metadata = map[string]string{"authority": "caller-a"}
 	callerCheckpoint.Timestamp = time.Unix(1_800_000_000, 0).UTC()
-	recovered, err := coordinator.Recover(ctx, fence, intent, callerCheckpoint, driver)
+	recovered, err := coordinator.Recover(ctx, fence, intent, callerCheckpoint, baselineA, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recovered.PositionID != intentB.PositionID || recovered.Checkpoint.LSN != batchB.Checkpoint.LSN || recovered.Checkpoint.Metadata["authority"] != "postgres-b" || !recovered.Checkpoint.Timestamp.Equal(grantB.Checkpoint.Timestamp) {
+	if recovered.PositionID != intentB.PositionID || recovered.Checkpoint.LSN != metadataBatchB.Checkpoint.LSN || recovered.Checkpoint.Metadata["authority"] != "postgres-b" || !recovered.Checkpoint.Timestamp.Equal(grantB.Checkpoint.Timestamp) {
 		t.Fatalf("Recover(A after B)=%+v, want current PostgreSQL grant B %+v", recovered, grantB)
 	}
-	delivered, err := coordinator.Deliver(ctx, fence, intent, batch, driver)
+	delivered, err := coordinator.DeliverTransaction(ctx, fence, intent, metadataBatchA, baselineA, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if delivered.PositionID != intentB.PositionID || delivered.Checkpoint.LSN != batchB.Checkpoint.LSN || delivered.Checkpoint.Metadata["authority"] != "postgres-b" || !delivered.Checkpoint.Timestamp.Equal(grantB.Checkpoint.Timestamp) {
+	if delivered.PositionID != intentB.PositionID || delivered.Checkpoint.LSN != metadataBatchB.Checkpoint.LSN || delivered.Checkpoint.Metadata["authority"] != "postgres-b" || !delivered.Checkpoint.Timestamp.Equal(grantB.Checkpoint.Timestamp) {
 		t.Fatalf("Deliver(A after B)=%+v, want current PostgreSQL grant B %+v", delivered, grantB)
 	}
 	if err := coordinator.ValidateAckGrant(ctx, fence, recovered); err != nil {
@@ -516,11 +595,12 @@ func TestCoordinatorRecoverReturnsPostgresAuthoritativeCheckpointMetadata(t *tes
 
 	transactionA := metadataTransaction("0/E0", 11, "postgres-tx-a", time.Unix(1_720_000_000, 0).UTC())
 	transactionIntentA := deliveryTransactionIntentForFence(t, fence, intent.DestinationRevisionID, transactionA)
-	grantTransactionA, err := coordinator.DeliverTransaction(ctx, fence, transactionIntentA, transactionA, driver)
+	baselineTransactionA := managedBaselinePayload(t, transactionA)
+	grantTransactionA, err := coordinator.DeliverTransaction(ctx, fence, transactionIntentA, transactionA, baselineTransactionA, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
-	immediateTransaction, err := coordinator.DeliverTransaction(ctx, fence, transactionIntentA, transactionA, driver)
+	immediateTransaction, err := coordinator.DeliverTransaction(ctx, fence, transactionIntentA, transactionA, baselineTransactionA, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,14 +609,15 @@ func TestCoordinatorRecoverReturnsPostgresAuthoritativeCheckpointMetadata(t *tes
 	}
 	transactionB := metadataTransaction("0/F0", 12, "postgres-tx-b", time.Unix(1_730_000_000, 0).UTC())
 	transactionIntentB := deliveryTransactionIntentForFence(t, fence, intent.DestinationRevisionID, transactionB)
-	grantTransactionB, err := coordinator.DeliverTransaction(ctx, fence, transactionIntentB, transactionB, driver)
+	baselineTransactionB := managedBaselinePayload(t, transactionB)
+	grantTransactionB, err := coordinator.DeliverTransaction(ctx, fence, transactionIntentB, transactionB, baselineTransactionB, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
 	alteredTransactionA := transactionA
 	alteredTransactionA.Checkpoint.Metadata = map[string]string{"authority": "caller-tx-a"}
 	alteredTransactionA.Checkpoint.Timestamp = time.Unix(1_990_000_000, 0).UTC()
-	replayedTransaction, err := coordinator.DeliverTransaction(ctx, fence, transactionIntentA, alteredTransactionA, driver)
+	replayedTransaction, err := coordinator.DeliverTransaction(ctx, fence, transactionIntentA, alteredTransactionA, baselineTransactionA, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,29 +638,27 @@ func TestCoordinatorRecoverReturnsPostgresAuthoritativeCheckpointMetadata(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	newIntentA := deliveryIntentForFence(t, newFence, batch)
-	newIntentA.DestinationRevisionID = intent.DestinationRevisionID
-	newIntentB := deliveryIntentForFence(t, newFence, batchB)
-	newIntentB.DestinationRevisionID = intent.DestinationRevisionID
+	newIntentA := deliveryTransactionIntentForFence(t, newFence, intent.DestinationRevisionID, metadataBatchA)
+	newIntentB := deliveryTransactionIntentForFence(t, newFence, intent.DestinationRevisionID, metadataBatchB)
 	newTransactionIntentA := deliveryTransactionIntentForFence(t, newFence, intent.DestinationRevisionID, transactionA)
 	newTransactionIntentB := deliveryTransactionIntentForFence(t, newFence, intent.DestinationRevisionID, transactionB)
-	newFenceRecover, err := coordinator.Recover(ctx, newFence, newIntentA, callerCheckpoint, driver)
+	newFenceRecover, err := coordinator.Recover(ctx, newFence, newIntentA, callerCheckpoint, baselineA, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newFenceDeliver, err := coordinator.Deliver(ctx, newFence, newIntentA, batch, driver)
+	newFenceDeliver, err := coordinator.DeliverTransaction(ctx, newFence, newIntentA, metadataBatchA, baselineA, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newFenceImmediate, err := coordinator.Deliver(ctx, newFence, newIntentB, batchB, driver)
+	newFenceImmediate, err := coordinator.DeliverTransaction(ctx, newFence, newIntentB, metadataBatchB, baselineB, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newFenceTransaction, err := coordinator.DeliverTransaction(ctx, newFence, newTransactionIntentA, alteredTransactionA, driver)
+	newFenceTransaction, err := coordinator.DeliverTransaction(ctx, newFence, newTransactionIntentA, alteredTransactionA, baselineTransactionA, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newFenceTransactionImmediate, err := coordinator.DeliverTransaction(ctx, newFence, newTransactionIntentB, transactionB, driver)
+	newFenceTransactionImmediate, err := coordinator.DeliverTransaction(ctx, newFence, newTransactionIntentB, transactionB, baselineTransactionB, driver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -638,7 +717,7 @@ WHERE checkpoint.flow_incarnation_id=$1 AND intent.position_id=$2`, newFence.Flo
 	if err := checkpointStore.PutFenced(ctx, newFence, checkpointWithoutIntent); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := coordinator.Recover(ctx, newFence, newIntentA, callerCheckpoint, driver); !errors.Is(err, connector.ErrDeliveryConflict) {
+	if _, err := coordinator.Recover(ctx, newFence, newIntentA, callerCheckpoint, baselineA, driver); !errors.Is(err, connector.ErrDeliveryConflict) {
 		t.Fatalf("replay after checkpoint-only advancement error=%v, want DeliveryConflict", err)
 	}
 	if err := coordinator.ValidateAckGrant(ctx, newFence, grantTransactionB); err == nil {
@@ -653,8 +732,8 @@ type metadataRecoveryDestination struct {
 	reconcileCalls int
 }
 
-func (*metadataRecoveryDestination) Open(context.Context, connector.Spec) error   { return nil }
-func (*metadataRecoveryDestination) Write(context.Context, connector.Batch) error { return nil }
+func (*metadataRecoveryDestination) Open(context.Context, connector.RuntimeSpec) error { return nil }
+func (*metadataRecoveryDestination) Write(context.Context, connector.Batch) error      { return nil }
 func (*metadataRecoveryDestination) ApplyDDL(context.Context, connector.Schema, connector.Record) error {
 	return nil
 }
@@ -663,6 +742,7 @@ func (*metadataRecoveryDestination) Close(context.Context) error     { return ni
 func (*metadataRecoveryDestination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{}
 }
+func (*metadataRecoveryDestination) InitializeManagedDelivery(context.Context) error { return nil }
 func (*metadataRecoveryDestination) Apply(_ context.Context, intent connector.DeliveryIntent, _ connector.Batch) (connector.DeliveryEvidence, error) {
 	return connector.DeliveryEvidence{ExternalID: "scripted:" + intent.PositionID, ContentHash: intent.ContentHash}, nil
 }
@@ -675,6 +755,26 @@ func (*metadataRecoveryDestination) ValidateTransaction(context.Context, connect
 }
 func (*metadataRecoveryDestination) ApplyTransaction(_ context.Context, intent connector.DeliveryIntent, _ connector.SourceTransaction) (connector.DeliveryEvidence, error) {
 	return connector.DeliveryEvidence{ExternalID: "scripted-transaction:" + intent.PositionID, ContentHash: intent.ContentHash}, nil
+}
+
+var errTimestampReplayFirstApply = errors.New("injected failure after manifest preparation")
+
+type timestampReplayDestination struct {
+	metadataRecoveryDestination
+	failFirstApply bool
+}
+
+func (d *timestampReplayDestination) ApplyTransaction(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (connector.DeliveryEvidence, error) {
+	if d.failFirstApply {
+		d.failFirstApply = false
+		return connector.DeliveryEvidence{}, errTimestampReplayFirstApply
+	}
+	return d.metadataRecoveryDestination.ApplyTransaction(ctx, intent, transaction)
+}
+
+func (d *timestampReplayDestination) Reconcile(context.Context, connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
+	d.reconcileCalls++
+	return connector.DeliveryNotApplied, connector.DeliveryEvidence{}, nil
 }
 
 func metadataTransaction(lsn string, xid uint32, authorityMetadata string, timestamp time.Time) connector.SourceTransaction {
@@ -712,12 +812,12 @@ func deliveryTransactionIntentForFence(t *testing.T, fence authority.RunFence, r
 }
 
 type commitThenFailDriver struct {
-	connector.ManagedDestination
+	connector.ManagedTransactionDestination
 	fail bool
 }
 
-func (d *commitThenFailDriver) Apply(ctx context.Context, intent connector.DeliveryIntent, batch connector.Batch) (connector.DeliveryEvidence, error) {
-	evidence, err := d.ManagedDestination.Apply(ctx, intent, batch)
+func (d *commitThenFailDriver) ApplyTransaction(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (connector.DeliveryEvidence, error) {
+	evidence, err := d.ManagedTransactionDestination.ApplyTransaction(ctx, intent, transaction)
 	if err != nil {
 		return evidence, err
 	}
@@ -728,13 +828,29 @@ func (d *commitThenFailDriver) Apply(ctx context.Context, intent connector.Deliv
 	return evidence, nil
 }
 
-func deliveryIntentForFence(t *testing.T, fence authority.RunFence, batch connector.Batch) connector.DeliveryIntent {
+func managedDeliveryTransaction(batch connector.Batch) connector.SourceTransaction {
+	return connector.SourceTransaction{
+		SourceLineageID: "source-lineage-1",
+		TransactionID:   1,
+		BeginLSN:        "0/A0",
+		CommitLSN:       "0/A8",
+		EndLSN:          "0/B0",
+		Fragments:       []connector.TransactionFragment{{Ordinal: 0, Batch: batch}},
+		Checkpoint:      connector.Checkpoint{LSN: "0/B0"},
+	}
+}
+
+func deliveryIntentForFence(t *testing.T, fence authority.RunFence, transaction connector.SourceTransaction) connector.DeliveryIntent {
 	t.Helper()
-	contentHash, err := connector.BatchContentHash(batch)
+	contentHash, err := connector.SourceTransactionContentHash(transaction)
 	if err != nil {
 		t.Fatal(err)
 	}
-	positionID, err := connector.CheckpointPositionID(batch.Checkpoint)
+	positionID, err := connector.CheckpointPositionID(transaction.Checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logicalBatchID, err := connector.DeliveryLogicalBatchID("source-lineage-1", positionID, contentHash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -744,9 +860,8 @@ func deliveryIntentForFence(t *testing.T, fence authority.RunFence, batch connec
 		Generation:            fence.Generation,
 		AcquisitionID:         fence.AcquisitionID.String(),
 		LeaseEpoch:            fence.LeaseEpoch,
-		DestinationRevisionID: "postgres-managed-v1",
-		SourceLineageID:       "source-lineage-1",
-		PositionID:            positionID,
-		ContentHash:           contentHash,
+		DestinationRevisionID: "postgres-managed-v1", SourceLineageID: "source-lineage-1", LogicalBatchID: logicalBatchID,
+		PositionID:  positionID,
+		ContentHash: contentHash,
 	}
 }

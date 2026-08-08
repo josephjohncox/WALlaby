@@ -129,6 +129,31 @@ func TestNormalizePostgresRecord_IntegerBool(t *testing.T) {
 	}
 }
 
+func TestNormalizeKeyForSchemaPreservesExactColumnIdentity(t *testing.T) {
+	t.Parallel()
+	schema := Schema{Columns: []Column{
+		{Name: "ID", Type: "int8"},
+		{Name: "id", Type: "bool"},
+		{Name: " id ", Type: "numeric"},
+	}}
+	normalized, err := NormalizeKeyForSchema(schema, map[string]any{"ID": "7", "id": "f", " id ": "1.25", "Id": "unchanged"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := normalized["ID"].(int64); !ok || value != 7 {
+		t.Fatalf("exact ID normalization=%T(%v)", normalized["ID"], normalized["ID"])
+	}
+	if value, ok := normalized["id"].(bool); !ok || value {
+		t.Fatalf("exact id normalization=%T(%v)", normalized["id"], normalized["id"])
+	}
+	if normalized[" id "] == "1.25" {
+		t.Fatalf("whitespace column was not normalized by its exact schema identity: %T(%v)", normalized[" id "], normalized[" id "])
+	}
+	if normalized["Id"] != "unchanged" {
+		t.Fatalf("unmatched case variant was folded: %T(%v)", normalized["Id"], normalized["Id"])
+	}
+}
+
 func TestNormalizeKeyForSchema(t *testing.T) {
 	schema := Schema{
 		Name:      "widgets",

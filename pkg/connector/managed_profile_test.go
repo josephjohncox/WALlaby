@@ -47,6 +47,23 @@ func TestClickHouseManagedAppendProfilePromotionContract(t *testing.T) {
 	}
 }
 
+func TestSnowflakeSQLProfileSpecIdentityIsExact(t *testing.T) {
+	t.Parallel()
+	valid := RuntimeSpec{Type: EndpointSnowflake, Options: map[string]string{"managed_profile": ManagedProfilePostgresToSnowflakeSQLV1}}
+	if !IsPostgresToSnowflakeSQLV1Spec(valid) {
+		t.Fatal("exact Snowflake SQL profile was not recognized")
+	}
+	valid.Type = EndpointPostgres
+	if IsPostgresToSnowflakeSQLV1Spec(valid) {
+		t.Fatal("profile name on the wrong endpoint was admitted")
+	}
+	valid.Type = EndpointSnowflake
+	valid.Options["managed_profile"] = "postgresql-to-snowflake-sql-v2"
+	if IsPostgresToSnowflakeSQLV1Spec(valid) {
+		t.Fatal("unknown Snowflake profile was admitted")
+	}
+}
+
 func TestSnowflakeSQLManagedProfileRemainsExperimentalWithoutLiveRecoveryEvidence(t *testing.T) {
 	t.Parallel()
 	profile := PostgresToSnowflakeSQLV1Profile()

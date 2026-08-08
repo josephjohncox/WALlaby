@@ -26,9 +26,6 @@ func safeMetaCapacity(base, extra int) int {
 
 const (
 	optDSN             = "dsn"
-	optSchema          = "schema"
-	optTable           = "table"
-	optWriteMode       = "write_mode"
 	optBatchMode       = "batch_mode"
 	optBatchResolution = "batch_resolution"
 	optStagingSchema   = "staging_schema"
@@ -55,9 +52,8 @@ const (
 
 // Destination writes change events into DuckDB tables.
 type Destination struct {
-	spec             connector.Spec
+	spec             connector.RuntimeSpec
 	db               *sql.DB
-	writeMode        string
 	batchMode        string
 	batchResolve     string
 	stagingSchema    string
@@ -73,7 +69,7 @@ type Destination struct {
 	stagingResolved  bool
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
 	d.spec = spec
 	dsn := spec.Options[optDSN]
 	if dsn == "" {
@@ -90,10 +86,6 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	}
 	d.db = db
 
-	d.writeMode = strings.ToLower(spec.Options[optWriteMode])
-	if d.writeMode == "" {
-		d.writeMode = writeModeTarget
-	}
 	d.batchMode = strings.ToLower(spec.Options[optBatchMode])
 	if d.batchMode == "" {
 		d.batchMode = batchModeTarget
@@ -143,9 +135,11 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		return nil
 	}
 
-	mode := d.writeMode
-	if mode == "" {
+	mode := writeModeAppend
+	if batch.WritePolicy.Mode == connector.ResolvedWriteUpsert {
 		mode = writeModeTarget
+	} else if batch.WritePolicy.Mode != connector.ResolvedWriteAppend {
+		return fmt.Errorf("duckdb destination requires a resolved append or upsert policy")
 	}
 
 	tx, err := d.db.BeginTx(ctx, nil)
@@ -210,13 +204,12 @@ func (d *Destination) ResolveStagingFor(ctx context.Context, schemas []connector
 
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		Support: connector.SupportExperimental,
+		Support:     connector.SupportExperimental,
+		TableWrites: connector.TableWriteSemantics{Append: true},
 		Delivery: connector.DeliverySemantics{
-			Declared:           true,
 			TransactionalBatch: true,
 			ExecutesDDL:        true,
 		},
-		SupportsDDL:           true,
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      true,
@@ -355,9 +348,6 @@ func (d *Destination) trackStaging(schema connector.Schema, record connector.Rec
 
 func (d *Destination) targetTable(schema connector.Schema, record connector.Record) string {
 	targetSchema, table := d.targetParts(schema, record.Table)
-	if strings.Contains(table, ".") {
-		return quoteQualified(table, '"')
-	}
 	if targetSchema == "" {
 		return quoteIdent(table, '"')
 	}
@@ -453,18 +443,7 @@ func (d *Destination) resolveStagingTable(ctx context.Context, info tableInfo) e
 }
 
 func (d *Destination) targetParts(schema connector.Schema, table string) (string, string) {
-	targetSchema := strings.TrimSpace(d.spec.Options[optSchema])
-	targetTable := strings.TrimSpace(d.spec.Options[optTable])
-	if targetTable == "" {
-		targetTable = table
-	}
-	if strings.Contains(targetTable, ".") {
-		parts := strings.SplitN(targetTable, ".", 2)
-		if len(parts) == 2 {
-			targetSchema = parts[0]
-			targetTable = parts[1]
-		}
-	}
+	targetSchema, targetTable := schema.Namespace, table
 	if targetSchema == "" {
 		targetSchema = schema.Namespace
 	}

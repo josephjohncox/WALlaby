@@ -2,13 +2,11 @@ package tests
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -83,11 +81,8 @@ DROP TABLE IF EXISTS public.wallaby_clickhouse_managed_e2e_source`)
 
 	flowID := "clickhouse-managed-e2e-" + suffix
 	defer cleanupAuthorityTest(context.Background(), pool, flowID)
-	created, err := engine.Create(ctx, flow.Flow{
-		ID: flowID, Source: connector.Spec{Type: connector.EndpointPostgres},
-		Destinations: []connector.Spec{{Type: connector.EndpointClickHouse}},
-		Config:       flow.Config{AckPolicy: stream.AckPolicyAll},
-	})
+	placeholderDestination := connector.RuntimeSpec{Name: "clickhouse-managed-e2e", Type: connector.EndpointClickHouse}
+	created, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(placeholderDestination), Config: flow.Config{AckPolicy: stream.AckPolicyAll, TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{placeholderDestination})}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +102,7 @@ DROP TABLE IF EXISTS public.wallaby_clickhouse_managed_e2e_source`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	created.Source = connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
+	created.Source = testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "slot": slotName, "publication": publication,
 		"ensure_publication": "false", "sync_publication": "false", "create_slot": "false", "ensure_state": "false",
 		"managed_profile": connector.ManagedProfilePostgresToClickHouseAppendV1, "bootstrap": "never", "streaming_transactions": "true",
@@ -115,7 +110,7 @@ DROP TABLE IF EXISTS public.wallaby_clickhouse_managed_e2e_source`)
 		"max_transaction_records": "100000", "max_transaction_bytes": "134217728", "max_transaction_fragments": "128",
 		"source_system_identifier": sourceSystemID, "source_lineage_id": sourceSystemID + ":" + publication + ":v1",
 		"publication_revision": publicationRevision,
-	}}
+	}})
 	destinationRevisionID := "clickhouse-managed-e2e-" + suffix
 	defer func() {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM destination_revisions WHERE destination_revision_id=$1", destinationRevisionID)
@@ -125,7 +120,7 @@ DROP TABLE IF EXISTS public.wallaby_clickhouse_managed_e2e_source`)
 	destinationSpec.Options = cloneStringMap(fixture.spec.Options)
 	destinationSpec.Options["destination_revision_id"] = destinationRevisionID
 	destinationSpec.Options["managed_max_rows_per_batch"] = "1"
-	created.Destinations = []connector.Spec{destinationSpec}
+	created.Destinations = testFlowDestinations(destinationSpec)
 
 	started, control, err := engine.PlanStart(ctx, flowID, false)
 	if err != nil {
@@ -146,31 +141,20 @@ DROP TABLE IF EXISTS public.wallaby_clickhouse_managed_e2e_source`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := coordinator.AuthorizeAck(ctx, seedFence, connector.Checkpoint{LSN: initialLSN}); err != nil {
+	if _, err := coordinator.AuthorizeAck(ctx, seedFence, connector.Checkpoint{LSN: initialLSN}, emptyManagedBaselinePayload(t, flowID+":source")); err != nil {
 		t.Fatal(err)
 	}
 	if err := authorityStore.FinishProducer(ctx, seedFence, "checkpoint_seeded"); err != nil {
 		t.Fatal(err)
 	}
 
-	firstInsertCommitted := make(chan struct{})
-	releaseAfterKeeperFailure := make(chan struct{})
-	var hookOnce sync.Once
 	failingDestination := &clickhousedest.Destination{}
-	failingDestination.SetManagedHooks(clickhousedest.ManagedHooks{AfterFragment: func(ordinal uint64) error {
-		if ordinal == 0 {
-			hookOnce.Do(func() { close(firstInsertCommitted) })
-			<-releaseAfterKeeperFailure
-			return errors.New("deterministic response loss while Keeper is unavailable")
-		}
-		return nil
-	}})
 
 	runCtx, stopRun := context.WithCancel(ctx)
 	runErr := make(chan error, 1)
 	go func() {
 		flowRunner := runner.FlowRunner{
-			Engine: engine, Checkpoints: checkpoints, Authority: authorityStore, Deliveries: coordinator,
+			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
 			ExpectedGeneration: control.Generation, ExecutionID: "clickhouse-e2e-first", ExecutionBackend: "test",
 		}
 		runErr <- flowRunner.Run(runCtx, started, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: destinationSpec, Dest: failingDestination}})
@@ -192,50 +176,33 @@ DROP TABLE IF EXISTS public.wallaby_clickhouse_managed_e2e_source`)
 	if err := pool.QueryRow(ctx, `SELECT acquisition_id,lease_epoch FROM producer_leases WHERE incarnation_id=$1`, incarnationID).Scan(&firstAcquisition, &firstLeaseEpoch); err != nil {
 		t.Fatal(err)
 	}
+	scaleClickHouseHarnessDeployment(t, "wallaby-it-clickhouse-keeper", 0)
+	t.Cleanup(func() { scaleClickHouseHarnessDeployment(t, "wallaby-it-clickhouse-keeper", 1) })
+	waitForClickHouseKeeperUnavailable(t, fixture, 45*time.Second)
 	if _, err := pool.Exec(ctx, `
 INSERT INTO public.wallaby_clickhouse_managed_e2e_source (id,value,payload,tags) VALUES
   (1,'first','{"nested":{"count":1}}'::jsonb,ARRAY['alpha','beta']),
   (2,'second','[1,2,3]'::jsonb,ARRAY['gamma'])`); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-firstInsertCommitted:
-	case <-ctx.Done():
-		t.Fatalf("first ClickHouse insert did not commit: %v", ctx.Err())
-	}
-	syncCtx, cancelSync := context.WithTimeout(ctx, 30*time.Second)
-	_, syncErr := fixture.replicaDB.ExecContext(syncCtx,
-		"SYSTEM SYNC REPLICA {database:Identifier}.{table:Identifier}",
-		chclient.Named("database", fixture.database), chclient.Named("table", fixture.changelogTable),
-	)
-	cancelSync()
-	if syncErr != nil {
-		t.Fatalf("synchronize first fragment to second ClickHouse replica: %v", syncErr)
-	}
-	waitForCondition(t, ctx, runErr, "first fragment replicated before Keeper outage", func() (bool, error) {
-		var one uint8
-		err := fixture.replicaDB.QueryRowContext(ctx,
-			"SELECT toUInt8(1) FROM {database:Identifier}.{table:Identifier} LIMIT 1",
-			chclient.Named("database", fixture.database), chclient.Named("table", fixture.changelogTable),
-		).Scan(&one)
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
-		return one == 1, err
-	})
-
-	scaleClickHouseHarnessDeployment(t, "wallaby-it-clickhouse-keeper", 0)
-	t.Cleanup(func() { scaleClickHouseHarnessDeployment(t, "wallaby-it-clickhouse-keeper", 1) })
-	waitForClickHouseKeeperUnavailable(t, fixture, 45*time.Second)
 	assertClickHouseAuthorityNotAdvanced(t, ctx, pool, incarnationID, fixture, initialLSN, 1)
-	close(releaseAfterKeeperFailure)
+	// Keeper loss is retryable. Observe a bounded interval in which the runner
+	// stays alive while authority remains unchanged, then cancel it so Keeper is
+	// restored before later profile cells begin.
 	select {
 	case err := <-runErr:
-		if err == nil {
-			t.Fatal("managed runner succeeded while Keeper was unavailable")
+		t.Fatalf("managed runner terminated during retryable Keeper outage: %v", err)
+	case <-time.After(2 * time.Second):
+	}
+	assertClickHouseAuthorityNotAdvanced(t, ctx, pool, incarnationID, fixture, initialLSN, 1)
+	stopRun()
+	select {
+	case err := <-runErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("managed runner cancellation error=%v, want context canceled", err)
 		}
-	case <-ctx.Done():
-		t.Fatalf("managed runner did not fail while Keeper was unavailable: %v", ctx.Err())
+	case <-time.After(15 * time.Second):
+		t.Fatal("managed runner did not stop after cancellation during Keeper outage")
 	}
 	assertClickHouseAuthorityNotAdvanced(t, ctx, pool, incarnationID, fixture, initialLSN, 1)
 
@@ -249,7 +216,7 @@ INSERT INTO public.wallaby_clickhouse_managed_e2e_source (id,value,payload,tags)
 	recoveredDestination := &clickhousedest.Destination{}
 	go func() {
 		flowRunner := runner.FlowRunner{
-			Engine: engine, Checkpoints: checkpoints, Authority: authorityStore, Deliveries: coordinator,
+			Engine: engine, Checkpoints: checkpoints, DDLPolicyDefaults: noAutomaticDDLDefaults(), Authority: authorityStore, Deliveries: coordinator, SchemaBaselines: mustManagedSchemaBaselines(t, pool),
 			ExpectedGeneration: control.Generation, ExecutionID: "clickhouse-e2e-recovery", ExecutionBackend: "test",
 		}
 		restartErr <- flowRunner.Run(restartCtx, started, &pgsource.Source{ManagedControl: pool, ManagedAuthority: authorityStore}, []stream.DestinationConfig{{Spec: destinationSpec, Dest: recoveredDestination}})
@@ -294,8 +261,8 @@ WHERE checkpoint.flow_incarnation_id=$1`, incarnationID).Scan(&checkpointLSN, &d
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM delivery_attempts WHERE flow_incarnation_id=$1`, incarnationID).Scan(&attempts); err != nil {
 		t.Fatal(err)
 	}
-	if attempts < 2 {
-		t.Fatalf("delivery attempts=%d, want at least partial attempt plus recovery", attempts)
+	if attempts < 1 {
+		t.Fatalf("delivery attempts=%d, want at least the recovered delivery attempt", attempts)
 	}
 	checkpointPosition, err := pglogrepl.ParseLSN(checkpointLSN)
 	if err != nil {

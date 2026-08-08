@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/bootstrap"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
@@ -18,6 +20,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/orchestrator"
 	"github.com/josephjohncox/wallaby/internal/runner"
+	"github.com/josephjohncox/wallaby/internal/schemabaseline"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -33,6 +36,21 @@ func TestDBOSManagedBootstrapProductionWiring(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+	admin, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open DBOS database administrator: %v", err)
+	}
+	defer admin.Close()
+	database := fmt.Sprintf("wallaby_dbos_managed_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{database}.Sanitize()); err != nil {
+		t.Fatalf("create standalone DBOS database: %v", err)
+	}
+	defer dropDatabase(t, admin, database)
+	dsn, err = dsnWithDatabase(dsn, database)
+	if err != nil {
+		t.Fatalf("build standalone DBOS DSN: %v", err)
+	}
+
 	control, err := controlstore.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open control store: %v", err)
@@ -41,6 +59,13 @@ func TestDBOSManagedBootstrapProductionWiring(t *testing.T) {
 	pool := control.Pool()
 	if err := controlplane.ApplyMigrations(ctx, pool); err != nil {
 		t.Fatalf("apply control migrations: %v", err)
+	}
+	var receiptAuthorityPreexists bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('wallaby_meta.__delivery_receipts') IS NOT NULL`).Scan(&receiptAuthorityPreexists); err != nil {
+		t.Fatal(err)
+	}
+	if receiptAuthorityPreexists {
+		t.Fatal("standalone managed DBOS database unexpectedly had destination receipts before Runner initialization")
 	}
 	var walLevel string
 	if err := pool.QueryRow(ctx, "SHOW wal_level").Scan(&walLevel); err != nil {
@@ -102,6 +127,10 @@ func TestDBOSManagedBootstrapProductionWiring(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create delivery coordinator: %v", err)
 	}
+	schemaBaselines, err := schemabaseline.NewStore(pool)
+	if err != nil {
+		t.Fatalf("create managed schema-baseline store: %v", err)
+	}
 	var publicationCrash atomic.Bool
 	factory := runner.Factory{
 		ManagedControl: pool, ManagedAuthority: authorityStore,
@@ -112,20 +141,9 @@ func TestDBOSManagedBootstrapProductionWiring(t *testing.T) {
 			return nil
 		}},
 	}
-	created, err := engine.Create(ctx, flow.Flow{
-		ID: flowID, Name: "dbos-managed-bootstrap", State: flow.StateCreated, Parallelism: 2,
-		Source: connector.Spec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{
-			"dsn": dsn, "managed": "true", "bootstrap": "required", "slot": slot,
-			"publication": publication, "publication_tables": sourceSchema + ".events",
-			"ensure_publication": "true", "source_system_identifier": sourceSystemIdentifier,
-			"source_lineage_id": "dbos-live-lineage", "publication_revision": "dbos-live-publication-v1",
-			"batch_size": "100", "batch_timeout": "100ms",
-		}},
-		Destinations: []connector.Spec{{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{
-			"dsn": dsn, "managed": "true", "batch_mode": "target", "schema": targetSchema,
-			"destination_revision_id": "dbos-live-target-v1", "synchronous_commit": "on",
-		}}},
-	})
+	destinationSpec := connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "meta_table_enabled": "false", "destination_revision_id": "dbos-live-target-v1", "synchronous_commit": "on"}}
+	mappings := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: destinationSpec.Name, FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: sourceSchema, SourceTable: "events", Action: flow.MappingActionInclude, TargetSchema: targetSchema, TargetTable: "events", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Columns: []flow.ColumnMapping{{SourceColumn: "id", Action: flow.MappingActionInclude, TargetColumn: "id"}, {SourceColumn: "payload", Action: flow.MappingActionInclude, TargetColumn: "payload"}}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}}}}
+	created, err := engine.Create(ctx, flow.Flow{ID: flowID, Name: "dbos-managed-bootstrap", State: flow.StateCreated, Parallelism: 2, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres, Options: map[string]string{"dsn": dsn, "managed": "true", "bootstrap": "required", "slot": slot, "publication": publication, "publication_tables": sourceSchema + ".events", "ensure_publication": "true", "source_system_identifier": sourceSystemIdentifier, "source_lineage_id": "dbos-live-lineage", "publication_revision": "dbos-live-publication-v1", "batch_size": "100", "batch_timeout": "100ms"}}), Destinations: testFlowDestinations(destinationSpec), Config: flow.Config{DDL: disabledDDLPolicy(), TableMappings: mappings}})
 	if err != nil {
 		t.Fatalf("create managed flow: %v", err)
 	}
@@ -135,7 +153,7 @@ func TestDBOSManagedBootstrapProductionWiring(t *testing.T) {
 
 	orch, err := orchestrator.NewDBOSOrchestrator(ctx, orchestrator.Config{
 		AppName: appName, DatabaseURL: dsn, Queue: "wallaby", MaxEmptyReads: 5,
-		DefaultWire: connector.WireFormatJSON, Authority: authorityStore, Deliveries: deliveries,
+		DefaultWire: connector.WireFormatJSON, Authority: authorityStore, Deliveries: deliveries, SchemaBaselines: schemaBaselines,
 	}, engine, checkpoints, factory)
 	if err != nil {
 		t.Fatalf("create DBOS orchestrator: %v", err)
@@ -260,6 +278,13 @@ WHERE manifest.flow_incarnation_id=(SELECT incarnation_id FROM flows WHERE id=$1
 	}
 	if bootstrapCount != 1 || acquisitions < 2 {
 		t.Fatalf("DBOS recovery bootstrap_generations=%d acquisitions=%d, want 1/at-least-2", bootstrapCount, acquisitions)
+	}
+	var receiptAuthorityExists bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('wallaby_meta.__delivery_receipts') IS NOT NULL`).Scan(&receiptAuthorityExists); err != nil {
+		t.Fatal(err)
+	}
+	if !receiptAuthorityExists {
+		t.Fatal("Runner did not initialize managed destination receipt authority before bootstrap")
 	}
 
 	var owned int

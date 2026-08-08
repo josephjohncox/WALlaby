@@ -1,0 +1,219 @@
+package tablemap
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/internal/schema"
+	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/stream"
+)
+
+func TestProjectStructuredDDLRenamesAndFiltersColumns(t *testing.T) {
+	t.Parallel()
+	projector := testProjector(t, upsertMappings())
+	plan := schema.Plan{Changes: []schema.Change{
+		{Type: schema.ChangeAddColumn, Namespace: "public", Table: "widgets", Column: "extra", ToType: "text"},
+		{Type: schema.ChangeDropColumn, Namespace: "public", Table: "widgets", Column: "secret"},
+		{Type: schema.ChangeRenameColumn, Namespace: "public", Table: "widgets", Column: "id", ToColumn: "customer_id"},
+	}}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := connector.Batch{
+		Schema:     connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"replica_identity": "true"}}, {Name: "updated_at", Type: "text", TypeMetadata: map[string]string{"replica_identity": "true"}}}},
+		Records:    []connector.Record{{Table: "widgets", Operation: connector.OpDDL, DDL: "ALTER TABLE widgets ...", DDLPlan: encoded, SourcePosition: "0/20"}},
+		Checkpoint: connector.Checkpoint{LSN: "0/20"},
+	}
+	got, decision, err := projector.ProjectBatch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision != stream.ProjectionIncluded || len(got.Records) != 1 || got.Records[0].DDL != "" {
+		t.Fatalf("projected DDL decision/record=%v/%+v", decision, got.Records)
+	}
+	var mapped schema.Plan
+	if err := json.Unmarshal(got.Records[0].DDLPlan, &mapped); err != nil {
+		t.Fatal(err)
+	}
+	if len(mapped.Changes) != 2 {
+		t.Fatalf("mapped changes=%+v, want excluded secret change removed", mapped.Changes)
+	}
+	if mapped.Changes[0].Namespace != "analytics" || mapped.Changes[0].Table != "events" || mapped.Changes[0].Column != "dst_extra" {
+		t.Fatalf("mapped add=%+v", mapped.Changes[0])
+	}
+	if mapped.Changes[1].Column != "event_id" || mapped.Changes[1].ToColumn != "dst_customer_id" {
+		t.Fatalf("mapped rename=%+v", mapped.Changes[1])
+	}
+}
+
+func TestDDLAdmissionRejectsExactFutureColumnCollisions(t *testing.T) {
+	t.Parallel()
+	destination := connector.RuntimeSpec{Name: "sink", Type: connector.EndpointPostgres}
+	admitAndProject := func(target string, change schema.Change) error {
+		mappings := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{
+			Destination:  "sink",
+			FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude},
+			Tables: []flow.TableMapping{{
+				SourceSchema: "public", SourceTable: "widgets", Action: flow.MappingActionInclude,
+				TargetSchema: "public", TargetTable: "widgets",
+				FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"},
+				Columns:       []flow.ColumnMapping{{SourceColumn: "legacy", Action: flow.MappingActionInclude, TargetColumn: target}},
+				Write:         flow.TableWritePolicy{Mode: flow.TableWriteModeAppend},
+			}},
+		}}}
+		if err := mappings.Validate([]connector.RuntimeSpec{destination}); err != nil {
+			return err
+		}
+		projector, err := New(mappings, destination.Name)
+		if err != nil {
+			return err
+		}
+		plan, err := json.Marshal(schema.Plan{Changes: []schema.Change{change}})
+		if err != nil {
+			return err
+		}
+		_, _, err = projector.ProjectBatch(connector.Batch{
+			Schema:  connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "legacy", Type: "text"}}},
+			Records: []connector.Record{{Table: "widgets", Operation: connector.OpDDL, DDLPlan: plan}},
+		})
+		return err
+	}
+	for _, test := range []struct {
+		name   string
+		target string
+		change schema.Change
+	}{
+		{name: "add", target: "added", change: schema.Change{Type: schema.ChangeAddColumn, Namespace: "public", Table: "widgets", Column: "added", ToType: "text"}},
+		{name: "rename", target: "renamed", change: schema.Change{Type: schema.ChangeRenameColumn, Namespace: "public", Table: "widgets", Column: "legacy", ToColumn: "renamed"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := admitAndProject(test.target, test.change)
+			if err == nil || !strings.Contains(err.Error(), "collides with future mapping") {
+				t.Fatalf("DDL admission error = %v, want exact/future collision", err)
+			}
+		})
+	}
+}
+
+func TestProjectRenameAcceptsWhitespaceOnlyTargetAndRejectsNUL(t *testing.T) {
+	mappings := upsertMappings()
+	mappings.Destinations[0].Tables[0].Columns = append(mappings.Destinations[0].Tables[0].Columns,
+		flow.ColumnMapping{SourceColumn: "renamed", Action: flow.MappingActionInclude, TargetColumn: " "})
+	projector := testProjector(t, mappings)
+	project := func(toColumn string) error {
+		plan, err := json.Marshal(schema.Plan{Changes: []schema.Change{{Type: schema.ChangeRenameColumn, Namespace: "public", Table: "widgets", Column: "id", ToColumn: toColumn}}})
+		if err != nil {
+			return err
+		}
+		got, _, err := projector.ProjectBatch(connector.Batch{
+			Schema: connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{
+				{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"replica_identity": "true"}},
+				{Name: "updated_at", Type: "text", TypeMetadata: map[string]string{"replica_identity": "true"}},
+			}},
+			Records: []connector.Record{{Table: "widgets", Operation: connector.OpDDL, DDLPlan: plan, SourcePosition: "0/10"}}, Checkpoint: connector.Checkpoint{LSN: "0/10"},
+		})
+		if err != nil {
+			return err
+		}
+		var projected schema.Plan
+		if err := json.Unmarshal(got.Records[0].DDLPlan, &projected); err != nil {
+			return err
+		}
+		if projected.Changes[0].ToColumn != " " {
+			t.Fatalf("projected rename target=%q, want one space", projected.Changes[0].ToColumn)
+		}
+		return nil
+	}
+	if err := project("renamed"); err != nil {
+		t.Fatalf("whitespace-only rename target rejected: %v", err)
+	}
+	if err := project("bad\x00name"); err == nil {
+		t.Fatal("NUL rename target admitted")
+	}
+}
+
+func TestProjectTablelessStructuredDDLByPlanRelation(t *testing.T) {
+	projector := testProjector(t, upsertMappings())
+	first, _ := json.Marshal(schema.Plan{Changes: []schema.Change{{Type: schema.ChangeAddColumn, Namespace: "public", Table: "widgets", Column: "extra", ToType: "text"}}})
+	second, _ := json.Marshal(schema.Plan{Changes: []schema.Change{{Type: schema.ChangeAddColumn, Namespace: "other", Table: "new_table", Column: "note", ToType: "text"}}})
+	batch := connector.Batch{Checkpoint: connector.Checkpoint{LSN: "0/20"}, Records: []connector.Record{
+		{Operation: connector.OpDDL, DDLPlan: first, SourcePosition: "0/10"},
+		{Operation: connector.OpDDL, DDLPlan: second, SourcePosition: "0/20"},
+	}}
+	got, decision, err := projector.ProjectBatch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision != stream.ProjectionIncluded || len(got.Records) != 2 {
+		t.Fatalf("decision/records=%v/%d", decision, len(got.Records))
+	}
+	if err := connector.ValidateBatch(got); err != nil {
+		t.Fatalf("projected tableless batch is invalid: %v", err)
+	}
+	var firstMapped, secondMapped schema.Plan
+	_ = json.Unmarshal(got.Records[0].DDLPlan, &firstMapped)
+	_ = json.Unmarshal(got.Records[1].DDLPlan, &secondMapped)
+	if firstMapped.Changes[0].Namespace != "analytics" || firstMapped.Changes[0].Table != "events" {
+		t.Fatalf("first mapping=%+v", firstMapped)
+	}
+	if secondMapped.Changes[0].Namespace != "other" || secondMapped.Changes[0].Table != "new_table" {
+		t.Fatalf("second mapping=%+v", secondMapped)
+	}
+}
+
+func TestProjectTablelessDDLRejectsAmbiguity(t *testing.T) {
+	projector := testProjector(t, upsertMappings())
+	multi, _ := json.Marshal(schema.Plan{Changes: []schema.Change{
+		{Type: schema.ChangeAddColumn, Namespace: "public", Table: "widgets", Column: "a"},
+		{Type: schema.ChangeAddColumn, Namespace: "public", Table: "other", Column: "b"},
+	}})
+	for name, record := range map[string]connector.Record{
+		"raw":            {Operation: connector.OpDDL, DDL: "ALTER TABLE widgets ADD COLUMN a text"},
+		"multi_relation": {Operation: connector.OpDDL, DDLPlan: multi},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := projector.ProjectBatch(connector.Batch{Records: []connector.Record{record}, Checkpoint: connector.Checkpoint{LSN: "0/10"}})
+			if err == nil {
+				t.Fatal("ambiguous tableless DDL was admitted")
+			}
+		})
+	}
+}
+
+func TestAppendProjectionRemovesSourcePrimaryKeyDDL(t *testing.T) {
+	mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "sink", Type: connector.EndpointKafka}})
+	projector := testProjector(t, mappings)
+	plan, _ := json.Marshal(schema.Plan{Changes: []schema.Change{
+		{Type: schema.ChangeCreateTable, Namespace: "public", Table: "events", PrimaryKeys: []string{"id"}},
+		{Type: schema.ChangeAlterPrimaryKey, Namespace: "public", Table: "events", PrimaryKeys: []string{"id"}},
+	}})
+	batch := connector.Batch{Schema: connector.Schema{Namespace: "public", Name: "events", Columns: []connector.Column{{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"primary_key": "true"}}}}, Checkpoint: connector.Checkpoint{LSN: "0/20"}, Records: []connector.Record{{Table: "events", Operation: connector.OpDDL, DDLPlan: plan, SourcePosition: "0/20"}}}
+	got, _, err := projector.ProjectBatch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var projected schema.Plan
+	if err := json.Unmarshal(got.Records[0].DDLPlan, &projected); err != nil {
+		t.Fatal(err)
+	}
+	if len(projected.Changes) != 1 || len(projected.Changes[0].PrimaryKeys) != 0 {
+		t.Fatalf("append DDL retained source uniqueness: %+v", projected)
+	}
+}
+
+func TestProjectDDLRejectsRawSQLForNonidentityProjection(t *testing.T) {
+	t.Parallel()
+	projector := testProjector(t, upsertMappings())
+	batch := connector.Batch{
+		Schema:     connector.Schema{Namespace: "public", Name: "widgets", Columns: []connector.Column{{Name: "id", Type: "bigint", TypeMetadata: map[string]string{"replica_identity": "true"}}, {Name: "updated_at", Type: "text", TypeMetadata: map[string]string{"replica_identity": "true"}}}},
+		Records:    []connector.Record{{Table: "widgets", Operation: connector.OpDDL, DDL: "ALTER TABLE widgets ADD COLUMN extra text", SourcePosition: "0/20"}},
+		Checkpoint: connector.Checkpoint{LSN: "0/20"},
+	}
+	if _, _, err := projector.ProjectBatch(batch); err == nil || !strings.Contains(err.Error(), "raw SQL DDL") {
+		t.Fatalf("raw DDL error=%v", err)
+	}
+}

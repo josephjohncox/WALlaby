@@ -50,7 +50,7 @@ func (s *CheckpointService) PutCheckpoint(ctx context.Context, req *wallabypb.Pu
 	if external, ok := s.store.(checkpoint.ExternalStore); ok {
 		err = external.PutExternal(ctx, req.FlowId, cp)
 	} else {
-		// SQLite and explicit unmanaged stores retain their compatibility path.
+		// SQLite and explicit unmanaged stores retain direct checkpoint writes.
 		err = s.store.Put(ctx, req.FlowId, cp)
 	}
 	if err != nil {
@@ -99,7 +99,7 @@ func unixMillisToTime(ms int64) time.Time {
 
 func mapCheckpointError(err error) error {
 	switch {
-	case errors.Is(err, checkpoint.ErrNotFound):
+	case errors.Is(err, connector.ErrCheckpointNotFound):
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, checkpoint.ErrManagedProducerActive):
 		return status.Error(codes.FailedPrecondition, err.Error())

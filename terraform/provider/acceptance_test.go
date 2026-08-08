@@ -53,33 +53,55 @@ resource "wallaby_flow" "acc" {
   wire_format       = "arrow"
   start_immediately = true
 
-  source {
+  source = {
     name = "pg-source"
-    type = "postgres"
-    options = {
-      dsn             = "%s"
+    postgres_source = {
+      mode = "POSTGRES_SOURCE_MODE_CDC"
+      connection = {
+        dsn = "%s"
+      }
       slot            = "wallaby_acc_slot"
       publication     = "wallaby_acc_pub"
-      batch_size      = "100"
+      batch_size      = 100
       batch_timeout   = "1s"
       status_interval = "10s"
-      create_slot     = "true"
-      format          = "arrow"
+      create_slot     = true
+      format          = "WIRE_FORMAT_ARROW"
     }
   }
 
   destinations = [
     {
       name = "kafka-out"
-      type = "kafka"
-      options = {
-        brokers = "%s"
+      kafka = {
+        brokers = ["%s"]
         topic   = "%s"
-        format  = "arrow"
-        acks    = "all"
+        format  = "WIRE_FORMAT_ARROW"
+        acks    = "KAFKA_ACKS_ALL"
       }
     }
   ]
+
+  config = {
+    ack_policy = "all"
+    table_mappings = {
+      version = 2
+      destinations = [{
+        destination = "kafka-out"
+        future_tables = {
+          action = "include"
+          target_schema = "{{ .Schema }}"
+          target_table = "{{ .Table }}"
+          future_columns = {
+            action = "include"
+            target_column = "{{ .Column }}"
+          }
+          write = { mode = "append", key_columns = [] }
+        }
+        tables = []
+      }]
+    }
+  }
 }
 `, endpoint, insecure, dsn, brokers, topic)
 
@@ -90,6 +112,23 @@ resource "wallaby_flow" "acc" {
 		Steps: []resource.TestStep{
 			{
 				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("wallaby_flow.acc", "source.postgres_source.mode", "POSTGRES_SOURCE_MODE_CDC"),
+					resource.TestCheckResourceAttr("wallaby_flow.acc", "destinations.0.kafka.acks", "KAFKA_ACKS_ALL"),
+				),
+			},
+			{
+				Config:       config,
+				RefreshState: true,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("wallaby_flow.acc", "source.postgres_source.mode", "POSTGRES_SOURCE_MODE_CDC"),
+				),
+			},
+			{
+				ResourceName:            "wallaby_flow.acc",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"start_immediately"},
 			},
 		},
 	})

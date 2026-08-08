@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -14,21 +16,112 @@ import (
 	"github.com/snowflakedb/gosnowflake"
 )
 
+func TestManagedSnowflakeApplyDDLRejectsBeforeExecutor(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	destination := &Destination{db: db, managedProfile: connector.ManagedProfilePostgresToSnowflakeSQLV1}
+	err = destination.ApplyDDL(context.Background(), connector.Schema{Namespace: "mapped", Name: "events"}, connector.Record{Operation: connector.OpDDL, DDL: "ALTER TABLE mapped.events ADD COLUMN status text"})
+	if err == nil || !strings.Contains(err.Error(), "managed Snowflake SQL profile rejects DDL") {
+		t.Fatalf("ApplyDDL error=%v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("managed DDL invoked executor: %v", err)
+	}
+}
+
 func TestManagedSnowflakeCapabilitiesAreScopedToTheNamedProfile(t *testing.T) {
 	t.Parallel()
 	destination := &Destination{}
-	generic := destination.CapabilitiesFor(connector.Spec{Type: connector.EndpointSnowflake})
+	generic, err := destination.CapabilitiesFor(connector.RuntimeSpec{Type: connector.EndpointSnowflake})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if generic.Delivery.TransactionalBatch || generic.Delivery.IdempotentReplay || generic.Delivery.ReplaySafe {
 		t.Fatalf("generic Snowflake mode inherited managed guarantees: %+v", generic.Delivery)
 	}
-	managed := destination.CapabilitiesFor(connector.Spec{Type: connector.EndpointSnowflake, Options: map[string]string{
+	managed, err := destination.CapabilitiesFor(connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: map[string]string{
 		"managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1,
 	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !managed.Delivery.TransactionalBatch || !managed.Delivery.IdempotentReplay || !managed.Delivery.ReplaySafe || managed.Delivery.ExecutesDDL {
 		t.Fatalf("named Snowflake profile capabilities=%+v", managed.Delivery)
 	}
+	if !managed.TableWrites.Upsert || !managed.TableWrites.ExplicitKey || managed.TableWrites.Append || managed.TableWrites.WatermarkGuard {
+		t.Fatalf("named Snowflake profile table writes=%+v", managed.TableWrites)
+	}
 	if managed.Support != connector.SupportExperimental {
 		t.Fatalf("unproven managed Snowflake support=%s", managed.Support)
+	}
+	for _, profile := range []string{
+		connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
+		connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
+	} {
+		capabilities, err := destination.CapabilitiesFor(connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: map[string]string{"managed_profile": profile}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !capabilities.TableWrites.Append || capabilities.TableWrites.Upsert || capabilities.TableWrites.ExplicitKey || capabilities.TableWrites.WatermarkGuard {
+			t.Fatalf("managed append profile %s table writes=%+v", profile, capabilities.TableWrites)
+		}
+		if capabilities.Delivery.TransactionalBatch || !capabilities.Delivery.IdempotentReplay || !capabilities.Delivery.ReplaySafe || capabilities.Delivery.ExecutesDDL {
+			t.Fatalf("managed append profile %s delivery=%+v", profile, capabilities.Delivery)
+		}
+	}
+	wantProfiles := []connector.CapabilityProfileID{
+		CapabilityProfileBase,
+		CapabilityProfileManagedSQL,
+		CapabilityProfileManagedStaged,
+		CapabilityProfileManagedStreaming,
+	}
+	if got := destination.CapabilityProfileIDs(); !reflect.DeepEqual(got, wantProfiles) {
+		t.Fatalf("Snowflake capability profiles=%v, want closed set %v", got, wantProfiles)
+	}
+	if _, err := destination.ClassifyCapabilityProfile(connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: map[string]string{"managed_profile": "unknown"}}); err == nil {
+		t.Fatal("unknown Snowflake profile was admitted outside the closed registry")
+	}
+}
+
+func TestManagedSnowflakeOpenStateInitializesEveryProfileAuthority(t *testing.T) {
+	t.Parallel()
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, test := range []struct {
+		name        string
+		destination *Destination
+		wantErr     error
+	}{
+		{name: "SQL", destination: &Destination{
+			db: db, managedProfile: connector.ManagedProfilePostgresToSnowflakeSQLV1,
+			managedConfig: managedConfig{destinationRevision: "sql-v1", receiptsTable: "RECEIPTS", schemaContractHash: strings.Repeat("a", 64)},
+		}},
+		{name: "staged COPY", destination: &Destination{
+			db: db, managedProfile: connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
+			stagedConfig:             stagedConfig{destinationRevision: "staged-v1", receiptsTable: "RECEIPTS", schemaContractHash: strings.Repeat("b", 64)},
+			stagedCatalogFingerprint: strings.Repeat("c", 64),
+		}},
+		{name: "Streaming REST", destination: &Destination{
+			db: db, managedProfile: connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
+			streamConfig:             streamConfig{destinationRevision: "stream-v1", receiptsTable: "RECEIPTS", channelStateTable: "CHANNELS", schemaContractHash: strings.Repeat("d", 64)},
+			streamCatalogFingerprint: strings.Repeat("e", 64),
+		}, wantErr: ErrManagedStreamingTransportUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.destination.InitializeManagedDelivery(context.Background())
+			if test.wantErr == nil && err != nil {
+				t.Fatalf("Open-established %s authority rejected: %v", test.name, err)
+			}
+			if test.wantErr != nil && !errors.Is(err, test.wantErr) {
+				t.Fatalf("Open-established %s authority error=%v, want %v", test.name, err, test.wantErr)
+			}
+		})
 	}
 }
 
@@ -133,17 +226,17 @@ func TestManagedSnowflakeCleanStartRejectsUnreceiptedTargetRows(t *testing.T) {
 func TestManagedSnowflakeConfigRequiresExactSecureRevisionAndSchemaContract(t *testing.T) {
 	t.Parallel()
 	schema := managedTestSchema()
+	schema.Namespace, schema.Name = "PUBLIC", "WIDGETS"
 	encoded, err := json.Marshal(schema)
 	if err != nil {
 		t.Fatal(err)
 	}
 	hash := mustManagedSchemaHash(t, schema)
-	spec := connector.Spec{Name: "snowflake", Type: connector.EndpointSnowflake, Options: map[string]string{
+	spec := connector.RuntimeSpec{Name: "snowflake", Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn":                                       managedSnowflakeTestDSN(t, nil),
 		"flow_id":                                   "flow-1",
 		"managed_profile":                           connector.ManagedProfilePostgresToSnowflakeSQLV1,
 		"destination_revision_id":                   "snowflake-v1",
-		"write_mode":                                "target",
 		"batch_mode":                                "target",
 		"batch_resolution":                          "none",
 		"meta_table_enabled":                        "false",
@@ -178,6 +271,22 @@ func TestManagedSnowflakeConfigRequiresExactSecureRevisionAndSchemaContract(t *t
 	if cfg.schemaContractHash != hash || cfg.destinationRevision != "snowflake-v1" || cfg.maxOpenConnections != 4 {
 		t.Fatalf("config=%+v", cfg)
 	}
+	for _, exact := range []string{" ", " leading", "trailing ", " both "} {
+		exactSpec := spec
+		exactSpec.Options = make(map[string]string, len(spec.Options))
+		for key, value := range spec.Options {
+			exactSpec.Options[key] = value
+		}
+		exactSpec.Options["managed_source_schema"] = exact
+		exactSpec.Options["managed_source_table"] = exact
+		exactConfig, err := managedConfigFromSpec(exactSpec.Options["dsn"], exactSpec)
+		if err != nil {
+			t.Fatalf("exact source identifier %q rejected: %v", exact, err)
+		}
+		if exactConfig.sourceSchema != exact || exactConfig.sourceTable != exact {
+			t.Fatalf("exact source identifier changed: schema/table=%q/%q", exactConfig.sourceSchema, exactConfig.sourceTable)
+		}
+	}
 
 	tests := []struct {
 		name  string
@@ -186,6 +295,8 @@ func TestManagedSnowflakeConfigRequiresExactSecureRevisionAndSchemaContract(t *t
 		want  string
 	}{
 		{name: "missing flow binding", key: "flow_id", value: "", want: "flow, account"},
+		{name: "empty source schema", key: "managed_source_schema", value: "", want: "NUL-free source relation"},
+		{name: "NUL source table", key: "managed_source_table", value: "bad\x00table", want: "NUL-free source relation"},
 		{name: "fakesnow HTTP", key: "dsn", value: managedSnowflakeTestDSN(t, func(cfg *gosnowflake.Config) { cfg.Protocol = "http" }), want: "verified HTTPS"},
 		{name: "OCSP fail-open", key: "dsn", value: managedSnowflakeTestDSN(t, func(cfg *gosnowflake.Config) { cfg.OCSPFailOpen = gosnowflake.OCSPFailOpenTrue }), want: "OCSP fail-closed"},
 		{name: "deprecated insecure mode", key: "dsn", value: spec.Options["dsn"] + "&insecureMode=true", want: "OCSP fail-closed"},
@@ -201,11 +312,11 @@ func TestManagedSnowflakeConfigRequiresExactSecureRevisionAndSchemaContract(t *t
 		{name: "transaction overflow", key: "managed_max_transaction_bytes", value: "8388609", want: "between 1 and 8388608"},
 		{name: "pool overflow", key: "managed_max_open_conns", value: "9", want: "between 1 and 8"},
 		{name: "invalid transaction boolean", key: "disable_transactions", value: "sometimes", want: "must be true or false"},
-		{name: "generic warehouse mutation", key: "warehouse_size", value: "XSMALL", want: "rejects generic option warehouse_size"},
+		{name: "generic warehouse mutation", key: "warehouse_size", value: "XSMALL", want: "does not allow option warehouse_size"},
 		{name: "unknown managed option", key: "managed_typo", value: "true", want: "does not allow option managed_typo"},
-		{name: "inline type mapping override", key: "type_mappings", value: `{"text":"VARIANT"}`, want: "type mapping overrides"},
-		{name: "mutable type mapping file", key: "type_mappings_file", value: "mappings.json", want: "type mapping overrides"},
-		{name: "unknown nullability", key: "managed_schema_contract", value: `{"Name":"widgets","Namespace":"public","Columns":[{"Name":"id","Type":"int8","TypeMetadata":{"primary_key":"true"}}]}`, want: "schema contract hash"},
+		{name: "inline type mapping override", key: "type_mappings", value: `{"text":"VARIANT"}`, want: "does not allow option type_mappings"},
+		{name: "removed type mapping file", key: "type_mappings_file", value: "mappings.json", want: "does not allow option type_mappings_file"},
+		{name: "unknown nullability", key: "managed_schema_contract", value: `{"Name":"WIDGETS","Namespace":"PUBLIC","Columns":[{"Name":"id","Type":"int8","TypeMetadata":{"primary_key":"true"}}]}`, want: "schema contract hash"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -25,23 +25,26 @@ WALlaby includes these adapters, but destination adapters remain experimental un
 
 ## Flow shape
 
-Every endpoint has a stable name, a type, and string-valued options:
+Every endpoint has a stable name and exactly one typed configuration branch. Native booleans, integers, lists, maps, durations, and enums are preserved:
 
 ```json
 {
   "name": "orders-postgres",
-  "type": "postgres",
-  "options": {
-    "dsn": "postgres://user:password@destination:5432/app?sslmode=require",
-    "schema": "public"
+  "postgres_destination": {
+    "connection": {
+      "dsn": "postgres://user:password@destination:5432/app?sslmode=require"
+    },
+    "synchronous_commit": "on"
   }
 }
 ```
 
-Stable destination names are required for primary acknowledgement because pending outbox rows address destinations by name.
+`custom` is the only branch with a free-form option map. Its `connector_type` must be registered for the endpoint role in both API and worker processes.
+
+Stable destination names are required for primary acknowledgement because pending outbox rows address destinations by name. Logical table and column targets and write behavior belong only to the mandatory mapping for this destination name.
 
 ## Extended adapter notes
 
-[Extended connector notes](../connectors.md) cover Kafka, Snowflake, Snowpipe, DuckLake, HTTP, and S3. Those notes supplement, rather than replace, adapter tests and the generated Go contracts.
+The [Snowpipe guide](snowpipe.md) documents its append-only staged-delivery and failure contract. [Extended connector notes](../connectors.md) cover Kafka, Snowflake, DuckLake, HTTP, and S3. Those notes supplement, rather than replace, adapter tests and the generated Go contracts.
 
 New connector and wire-format work is intentionally secondary to contract coverage for existing adapters.

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,8 +34,6 @@ const (
 	optDSN              = "dsn"
 	optStage            = "stage"
 	optStagePath        = "stage_path"
-	optSchema           = "schema"
-	optTable            = "table"
 	optFormat           = "format"
 	optFileFormat       = "file_format"
 	optWarehouse        = "warehouse"
@@ -48,25 +47,27 @@ const (
 	optCopyPurge        = "copy_purge"
 	optCopyMatch        = "copy_match_by_column_name"
 	optAutoIngest       = "auto_ingest"
-	optCompatMode       = "compat_mode"
-	optWriteMode        = "write_mode"
 	optMetaTable        = "meta_table"
 	optMetaSchema       = "meta_schema"
 	optMetaEnabled      = "meta_table_enabled"
 	optMetaPKPrefix     = "meta_pk_prefix"
 	optFlowID           = "flow_id"
 
-	writeModeAppend    = "append"
-	compatModeFakesnow = "fakesnow"
 	defaultMetaSchema  = "WALLABY_META"
 	defaultMetaTable   = "__METADATA"
 	defaultMetaPKPref  = "pk_"
 	defaultAutoSuspend = 60
 )
 
+type destinationFactories struct {
+	openDB      func(string, string) (*sql.DB, error)
+	newRegistry func(context.Context, schemaregistry.Config) (schemaregistry.Registry, error)
+}
+
 // Destination writes batches to Snowflake stages and optionally issues COPY INTO.
 type Destination struct {
-	spec             connector.Spec
+	closeMu          sync.Mutex
+	spec             connector.RuntimeSpec
 	db               *sql.DB
 	codec            wire.Codec
 	stage            string
@@ -77,9 +78,7 @@ type Destination struct {
 	copyPurge        *bool
 	copyMatch        string
 	fileFormat       string
-	writeMode        string
-	compatMode       string
-	compatNoTx       bool
+	stagedTransport  execer
 	metaEnabled      bool
 	metaSchema       string
 	metaTable        string
@@ -99,22 +98,48 @@ type execer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
+	return d.open(ctx, spec, destinationFactories{openDB: sql.Open, newRegistry: schemaregistry.NewRegistry})
+}
+
+func (d *Destination) open(ctx context.Context, spec connector.RuntimeSpec, factories destinationFactories) (err error) {
+	registryCfg, err := schemaregistry.ConfigFromOptions(spec.Options)
+	if err != nil {
+		return err
+	}
 	d.spec = spec
 	dsn := spec.Options[optDSN]
 	if dsn == "" {
 		return errors.New("snowpipe dsn is required")
 	}
 
-	db, err := sql.Open("snowflake", dsn)
+	db, err := factories.openDB("snowflake", dsn)
 	if err != nil {
+		if db != nil {
+			return errors.Join(fmt.Errorf("open snowflake: %w", err), db.Close())
+		}
 		return fmt.Errorf("open snowflake: %w", err)
 	}
+	var registry schemaregistry.Registry
+	defer func() {
+		if err == nil {
+			return
+		}
+		var registryErr, dbErr error
+		if registry != nil {
+			registryErr = registry.Close()
+		}
+		dbErr = db.Close()
+		d.registry = nil
+		d.db = nil
+		d.stagedTransport = nil
+		err = errors.Join(err, registryErr, dbErr)
+	}()
 	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
 		return fmt.Errorf("ping snowflake: %w", err)
 	}
 	d.db = db
+	d.stagedTransport = db
 
 	format := spec.Options[optFormat]
 	if format == "" {
@@ -146,24 +171,6 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 		d.copyOnWrite = false
 	}
 	d.fileFormat = strings.TrimSpace(spec.Options[optFileFormat])
-	d.writeMode = strings.ToLower(strings.TrimSpace(spec.Options[optWriteMode]))
-	if d.writeMode == "" {
-		d.writeMode = writeModeAppend
-	}
-	if d.writeMode != writeModeAppend {
-		return fmt.Errorf("snowpipe only supports append write_mode")
-	}
-
-	compatMode := strings.ToLower(strings.TrimSpace(spec.Options[optCompatMode]))
-	switch compatMode {
-	case "", "none":
-		d.compatMode = ""
-	case compatModeFakesnow:
-		d.compatMode = compatModeFakesnow
-		d.compatNoTx = true
-	default:
-		return fmt.Errorf("snowpipe compat_mode %s not supported", compatMode)
-	}
 
 	d.metaEnabled = parseBool(spec.Options[optMetaEnabled], true)
 	d.metaSchema = strings.TrimSpace(spec.Options[optMetaSchema])
@@ -182,13 +189,17 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	d.metaColumns = map[string]struct{}{}
 	d.registrySubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistrySubject])
 
-	registryCfg := schemaregistry.ConfigFromOptions(spec.Options)
-	registry, err := schemaregistry.NewRegistry(ctx, registryCfg)
+	registry, err = factories.newRegistry(ctx, registryCfg)
 	if err != nil && !errors.Is(err, schemaregistry.ErrRegistryDisabled) {
-		_ = d.db.Close()
 		return err
 	}
 	if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+		if registry != nil {
+			if cleanupErr := registry.Close(); cleanupErr != nil {
+				registry = nil
+				return cleanupErr
+			}
+		}
 		registry = nil
 	}
 	d.registry = registry
@@ -217,7 +228,6 @@ func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
 	}
 
 	if err := d.configureSession(ctx); err != nil {
-		_ = d.db.Close()
 		return err
 	}
 
@@ -295,15 +305,22 @@ func isUnsupportedSessionSetting(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "not implemented") || strings.Contains(msg, "fakesnow")
+	return strings.Contains(msg, "not implemented")
 }
 
 func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
-	if d.db == nil {
-		return errors.New("snowpipe destination not initialized")
+	transport := d.stagedTransport
+	if transport == nil {
+		if d.db == nil {
+			return errors.New("snowpipe destination not initialized")
+		}
+		transport = d.db
 	}
 	if len(batch.Records) == 0 {
 		return nil
+	}
+	if batch.WritePolicy.Mode != connector.ResolvedWriteAppend {
+		return errors.New("snowpipe destination supports append table writes only")
 	}
 	meta, err := d.ensureSchema(ctx, batch.Schema)
 	if err != nil {
@@ -335,15 +352,15 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 	stageLocation := joinStage(stage, d.stagePath)
 
 	putStmt := fmt.Sprintf("PUT file://%s %s AUTO_COMPRESS=FALSE", filePath, stageLocation)
-	if _, err := d.db.ExecContext(ctx, putStmt); err != nil {
-		return d.fallbackIfCompat(ctx, batch, meta, err, "put to stage")
+	if _, err := transport.ExecContext(ctx, putStmt); err != nil {
+		return fmt.Errorf("put to stage: %w", err)
 	}
 
 	if d.copyOnWrite {
 		// #nosec G201 -- identifiers are quoted and derived from schema/config.
 		copyStmt := fmt.Sprintf("COPY INTO %s FROM %s FILES = ('%s') %s", d.targetTable(batch.Schema, batch.Records[0]), stageLocation, fileName, d.copyOptionsClause())
-		if _, err := d.db.ExecContext(ctx, copyStmt); err != nil {
-			return d.fallbackIfCompat(ctx, batch, meta, err, "copy into")
+		if _, err := transport.ExecContext(ctx, copyStmt); err != nil {
+			return fmt.Errorf("copy into: %w", err)
 		}
 	}
 
@@ -363,66 +380,6 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 		}
 	}
 
-	return nil
-}
-
-func (d *Destination) fallbackIfCompat(ctx context.Context, batch connector.Batch, meta *schemaMeta, err error, action string) error {
-	if d.compatMode != compatModeFakesnow {
-		return fmt.Errorf("%s: %w", action, err)
-	}
-	log.Printf("snowpipe compat fallback (%s): %v", action, err)
-	return d.writeCompat(ctx, batch, meta)
-}
-
-func (d *Destination) writeCompat(ctx context.Context, batch connector.Batch, meta *schemaMeta) error {
-	if d.compatNoTx {
-		exec := execer(d.db)
-		for _, record := range batch.Records {
-			cols, vals := recordColumns(batch.Schema, record)
-			if len(cols) == 0 {
-				continue
-			}
-			target := d.targetTable(batch.Schema, record)
-			// #nosec G201 -- identifiers are quoted and derived from schema/config.
-			insertStmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols, '"'), placeholders(len(cols)))
-			if _, err := exec.ExecContext(ctx, insertStmt, vals...); err != nil {
-				return fmt.Errorf("compat insert: %w", err)
-			}
-			if d.metaEnabled {
-				if err := d.upsertMetadata(ctx, exec, batch.Schema, record, batch.Checkpoint, meta); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}
-
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin compat transaction: %w", err)
-	}
-	for _, record := range batch.Records {
-		cols, vals := recordColumns(batch.Schema, record)
-		if len(cols) == 0 {
-			continue
-		}
-		target := d.targetTable(batch.Schema, record)
-		// #nosec G201 -- identifiers are quoted and derived from schema/config.
-		insertStmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", target, quoteColumns(cols, '"'), placeholders(len(cols)))
-		if _, err := tx.ExecContext(ctx, insertStmt, vals...); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("compat insert: %w", err)
-		}
-		if d.metaEnabled {
-			if err := d.upsertMetadata(ctx, tx, batch.Schema, record, batch.Checkpoint, meta); err != nil {
-				_ = tx.Rollback()
-				return err
-			}
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit compat transaction: %w", err)
-	}
 	return nil
 }
 
@@ -450,27 +407,31 @@ func (d *Destination) TypeMappings() map[string]string {
 }
 
 func (d *Destination) Close(_ context.Context) error {
-	if d.db != nil {
-		if err := d.db.Close(); err != nil {
-			return err
-		}
+	d.closeMu.Lock()
+	db := d.db
+	registry := d.registry
+	d.db = nil
+	d.registry = nil
+	d.stagedTransport = nil
+	d.closeMu.Unlock()
+
+	var dbErr, registryErr error
+	if db != nil {
+		dbErr = db.Close()
 	}
-	if d.registry != nil {
-		if err := d.registry.Close(); err != nil {
-			return err
-		}
+	if registry != nil {
+		registryErr = registry.Close()
 	}
-	return nil
+	return errors.Join(dbErr, registryErr)
 }
 
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		Support: connector.SupportExperimental,
+		Support:     connector.SupportExperimental,
+		TableWrites: connector.TableWriteSemantics{Append: true},
 		Delivery: connector.DeliverySemantics{
-			Declared:    true,
 			ExecutesDDL: true,
 		},
-		SupportsDDL:           true,
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     false,
 		SupportsBulkLoad:      true,
@@ -525,38 +486,23 @@ func (d *Destination) resolveStage(batch connector.Batch) string {
 		return ensureStagePrefix(d.stage)
 	}
 
-	table := strings.TrimSpace(d.spec.Options[optTable])
-	schema := strings.TrimSpace(d.spec.Options[optSchema])
-	if table == "" && len(batch.Records) > 0 {
+	table := ""
+	if len(batch.Records) > 0 {
 		table = batch.Records[0].Table
 	}
+	schema := batch.Schema.Namespace
 	if table == "" {
 		return ""
 	}
-	if schema == "" {
-		schema = batch.Schema.Namespace
+	if schema != "" {
+		return ensureStagePrefix("@%" + quoteIdent(schema, '"') + "." + quoteIdent(table, '"'))
 	}
-	if schema != "" && !strings.Contains(table, ".") {
-		return ensureStagePrefix("@%" + schema + "." + table)
-	}
-	if strings.Contains(table, ".") {
-		return ensureStagePrefix("@%" + table)
-	}
-	return ensureStagePrefix("@%" + table)
+	return ensureStagePrefix("@%" + quoteIdent(table, '"'))
 }
 
 func (d *Destination) targetTable(schema connector.Schema, record connector.Record) string {
-	table := strings.TrimSpace(d.spec.Options[optTable])
-	targetSchema := strings.TrimSpace(d.spec.Options[optSchema])
-	if table == "" {
-		table = record.Table
-	}
-	if strings.Contains(table, ".") {
-		return quoteQualified(table, '"')
-	}
-	if targetSchema == "" {
-		targetSchema = schema.Namespace
-	}
+	table := record.Table
+	targetSchema := schema.Namespace
 	if targetSchema == "" {
 		return quoteIdent(table, '"')
 	}
@@ -878,23 +824,6 @@ func (d *Destination) ensureMetaColumn(ctx context.Context, column string) error
 	return nil
 }
 
-func recordColumns(schema connector.Schema, record connector.Record) ([]string, []any) {
-	if record.After == nil {
-		return []string{}, []any{}
-	}
-	cols := make([]string, 0, len(schema.Columns))
-	vals := make([]any, 0, len(schema.Columns))
-	for _, col := range schema.Columns {
-		val, ok := record.After[col.Name]
-		if !ok {
-			continue
-		}
-		cols = append(cols, col.Name)
-		vals = append(vals, val)
-	}
-	return cols, vals
-}
-
 func decodeKey(raw []byte) (map[string]any, error) {
 	if len(raw) == 0 {
 		return map[string]any{}, nil
@@ -946,18 +875,6 @@ func quoteIdent(value string, quote rune) string {
 	}
 	escaped := strings.ReplaceAll(value, string(quote), string(quote)+string(quote))
 	return string(quote) + escaped + string(quote)
-}
-
-func quoteQualified(name string, quote rune) string {
-	parts := strings.Split(name, ".")
-	if len(parts) == 1 {
-		return quoteIdent(parts[0], quote)
-	}
-	quoted := make([]string, 0, len(parts))
-	for _, part := range parts {
-		quoted = append(quoted, quoteIdent(part, quote))
-	}
-	return strings.Join(quoted, ".")
 }
 
 func parseBool(value string, fallback bool) bool {

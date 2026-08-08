@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,9 +19,515 @@ import (
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/delivery"
 	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/internal/tablemap"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
+
+func TestMappedArtifactFilteredTransactionAdvancesWithoutObjectOrCatalogAttempt(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	engine, err := workflow.NewPostgresEngine(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	pool, err := newAuthorityTestPool(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	authorityStore, err := authority.NewPostgresStore(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointStore, err := checkpoint.NewPostgresStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointStore.Close()
+	if _, err := delivery.NewCoordinator(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	flowID := "artifact-mapped-filtered-" + uuid.NewString()
+	defer cleanupAuthorityTest(context.Background(), pool, flowID)
+	authorityFlow := flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}
+	if _, err := engine.Create(ctx, authorityFlow); err != nil {
+		t.Fatal(err)
+	}
+	_, control, err := engine.PlanStart(ctx, flowID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := authorityStore.AcquireProducer(ctx, flowID, "artifact-worker", "test", control.Generation, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mappings := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "ice", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: "events", Action: flow.MappingActionExclude}}}}}
+	projector, err := tablemap.New(mappings, "ice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := artifactlog.NewRuntime(ctx, pool, memoryMappedArtifactStore{}, artifactlog.RuntimeConfig{Stream: artifactlog.StreamConfig{ProjectionID: artifactlog.ProjectionIDV2, MappingFingerprint: projector.Fingerprint(), HardRetainedBytes: 128 << 20, BacklogCountHigh: 100, BacklogBytesHigh: 128 << 20, BacklogAgeHigh: time.Hour}, Projector: projector, OrphanGrace: time.Hour, Retention: time.Hour, GCInterval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction := artifactSourceTransaction()
+	grant, err := runtime.Append(ctx, fence, transaction, managedBaselinePayload(t, transaction))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.Checkpoint.LSN != transaction.Checkpoint.LSN {
+		t.Fatalf("filtered checkpoint=%s want %s", grant.Checkpoint.LSN, transaction.Checkpoint.LSN)
+	}
+	var publications, objects, deliveries int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM artifact_publications WHERE flow_incarnation_id=$1),(SELECT count(*) FROM artifact_objects WHERE flow_incarnation_id=$1),(SELECT count(*) FROM artifact_deliveries WHERE flow_incarnation_id=$1)`, fence.FlowIncarnationID).Scan(&publications, &objects, &deliveries); err != nil {
+		t.Fatal(err)
+	}
+	if publications != 1 || objects != 0 || deliveries != 0 {
+		t.Fatalf("filtered publication/object/delivery=%d/%d/%d", publications, objects, deliveries)
+	}
+	changed := mappings.Clone()
+	changed.Destinations[0].Tables[0].SourceTable = "other_events"
+	changedProjector, err := tablemap.New(changed, "ice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatched, err := artifactlog.NewRuntime(ctx, pool, memoryMappedArtifactStore{}, artifactlog.RuntimeConfig{Stream: artifactlog.StreamConfig{ProjectionID: artifactlog.ProjectionIDV2, MappingFingerprint: changedProjector.Fingerprint(), HardRetainedBytes: 128 << 20, BacklogCountHigh: 100, BacklogBytesHigh: 128 << 20, BacklogAgeHigh: time.Hour}, Projector: changedProjector, OrphanGrace: time.Hour, Retention: time.Hour, GCInterval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mismatched.Recover(ctx, fence); err == nil || !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("recovery mapping fingerprint mismatch error=%v", err)
+	}
+}
+
+func TestMappedArtifactFilteredBaselineCheckpointCrashIsAtomic(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	engine, err := workflow.NewPostgresEngine(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	pool, err := newAuthorityTestPool(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if _, err := delivery.NewCoordinator(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	authorityStore, err := authority.NewPostgresStore(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowID := "artifact-filtered-baseline-crash-" + uuid.NewString()
+	defer cleanupAuthorityTest(context.Background(), pool, flowID)
+	destination := connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(destination), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{destination})}}); err != nil {
+		t.Fatal(err)
+	}
+	_, control, err := engine.PlanStart(ctx, flowID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := authorityStore.AcquireProducer(ctx, flowID, "artifact-filtered-crash", "test", control.Generation, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mappings := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "ice", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: "events", Action: flow.MappingActionExclude}}}}}
+	projector, err := tablemap.New(mappings, "ice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceTransaction := artifactSourceTransaction()
+	projected, _, err := projector.ProjectTransaction(sourceTransaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := managedBaselinePayload(t, sourceTransaction)
+	config := artifactlog.StreamConfig{ProjectionID: artifactlog.ProjectionIDV2, MappingFingerprint: projector.Fingerprint(), HardRetainedBytes: 128 << 20, BacklogCountHigh: 100, BacklogBytesHigh: 128 << 20, BacklogAgeHigh: time.Hour}
+	failed := false
+	publisher, err := artifactlog.NewPublisher(ctx, pool, memoryMappedArtifactStore{}, config, artifactlog.WithPublisherHooks(artifactlog.PublisherHooks{Boundary: func(_ context.Context, boundary string) error {
+		if boundary == "before_publication_commit" && !failed {
+			failed = true
+			return errors.New("crash before filtered publication commit")
+		}
+		return nil
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publisher.Publish(ctx, fence, projected, baseline); err == nil {
+		t.Fatal("filtered publication crash was not injected")
+	}
+	var checkpoints, baselines int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM authoritative_checkpoints WHERE flow_incarnation_id=$1),(SELECT count(*) FROM managed_schema_baselines WHERE flow_incarnation_id=$1)`, fence.FlowIncarnationID).Scan(&checkpoints, &baselines); err != nil {
+		t.Fatal(err)
+	}
+	if checkpoints != 0 || baselines != 0 {
+		t.Fatalf("filtered crash checkpoint/baseline=%d/%d, want old/old", checkpoints, baselines)
+	}
+	if _, err := publisher.Publish(ctx, fence, projected, baseline); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM authoritative_checkpoints WHERE flow_incarnation_id=$1),(SELECT count(*) FROM managed_schema_baselines WHERE flow_incarnation_id=$1)`, fence.FlowIncarnationID).Scan(&checkpoints, &baselines); err != nil {
+		t.Fatal(err)
+	}
+	if checkpoints != 1 || baselines != 1 {
+		t.Fatalf("filtered retry checkpoint/baseline=%d/%d, want new/new", checkpoints, baselines)
+	}
+}
+
+type metadataArtifactObject struct {
+	body     []byte
+	evidence artifactlog.ObjectEvidence
+}
+type metadataArtifactStore struct {
+	mu      sync.Mutex
+	objects map[string]metadataArtifactObject
+	puts    int
+}
+
+func (s *metadataArtifactStore) Bucket() string { return "metadata-memory" }
+func (s *metadataArtifactStore) PutImmutable(_ context.Context, key string, body []byte, checksum, projection, mapping string) (artifactlog.ObjectEvidence, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !((projection == artifactlog.ProjectionIDV2 && len(mapping) == 64) || (projection == artifactlog.ProjectionID && mapping == "")) {
+		return artifactlog.ObjectEvidence{}, errors.New("invalid upload metadata")
+	}
+	if existing, ok := s.objects[key]; ok {
+		return existing.evidence, errors.New("immutable object exists")
+	}
+	s.puts++
+	evidence := artifactlog.ObjectEvidence{Bucket: s.Bucket(), Key: key, VersionID: fmt.Sprintf("version-%d", s.puts), ChecksumSHA256: checksum, Length: int64(len(body)), ProjectionID: projection, MappingFingerprint: mapping}
+	s.objects[key] = metadataArtifactObject{body: append([]byte(nil), body...), evidence: evidence}
+	return evidence, nil
+}
+func (s *metadataArtifactStore) ReconcileVersion(_ context.Context, key, checksum string, length int64, projection, mapping string) (artifactlog.ObjectEvidence, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	object, ok := s.objects[key]
+	if !ok {
+		return artifactlog.ObjectEvidence{}, artifactlog.ErrObjectNotFound
+	}
+	if object.evidence.ChecksumSHA256 != checksum || object.evidence.Length != length || object.evidence.ProjectionID != projection || object.evidence.MappingFingerprint != mapping {
+		return artifactlog.ObjectEvidence{}, connector.ErrDeliveryConflict
+	}
+	return object.evidence, nil
+}
+func (s *metadataArtifactStore) HeadVersion(_ context.Context, evidence artifactlog.ObjectEvidence) (artifactlog.ObjectEvidence, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	object, ok := s.objects[evidence.Key]
+	if !ok {
+		return artifactlog.ObjectEvidence{}, artifactlog.ErrObjectNotFound
+	}
+	if object.evidence != evidence {
+		return artifactlog.ObjectEvidence{}, connector.ErrDeliveryConflict
+	}
+	return object.evidence, nil
+}
+func (*metadataArtifactStore) DeleteVersion(context.Context, artifactlog.ObjectEvidence) error {
+	return nil
+}
+
+type countingArtifactCommitter struct{ commits, reconciles int }
+
+func (c *countingArtifactCommitter) Commit(context.Context, artifactlog.CommitRequest) (artifactlog.CommitResult, error) {
+	c.commits++
+	return artifactlog.CommitResult{}, errors.New("unexpected catalog commit")
+}
+func (c *countingArtifactCommitter) Reconcile(context.Context, artifactlog.CommitRequest) (artifactlog.ReconcileResult, error) {
+	c.reconciles++
+	return artifactlog.ReconcileResult{}, errors.New("unexpected catalog reconcile")
+}
+
+func TestMappedArtifactCrashRetryPreservesMetadataAndPublicationIdentity(t *testing.T) {
+	for _, boundary := range []string{"after_upload_evidence", "after_object_verified"} {
+		t.Run(boundary, func(t *testing.T) {
+			dsn := os.Getenv("TEST_PG_DSN")
+			if dsn == "" {
+				t.Skip("TEST_PG_DSN is required")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			engine, err := workflow.NewPostgresEngine(ctx, dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer engine.Close()
+			pool, err := newAuthorityTestPool(ctx, dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pool.Close()
+			authorityStore, err := authority.NewPostgresStore(pool)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpointStore, err := checkpoint.NewPostgresStore(ctx, dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpointStore.Close()
+			if _, err := delivery.NewCoordinator(ctx, pool); err != nil {
+				t.Fatal(err)
+			}
+			flowID := "artifact-v2-retry-" + uuid.NewString()
+			defer cleanupAuthorityTest(context.Background(), pool, flowID)
+			authorityFlow := flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}
+			if _, err := engine.Create(ctx, authorityFlow); err != nil {
+				t.Fatal(err)
+			}
+			_, control, err := engine.PlanStart(ctx, flowID, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fence, err := authorityStore.AcquireProducer(ctx, flowID, "artifact-worker", "test", control.Generation, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "ice", Type: connector.EndpointIceberg}})
+			projector, err := tablemap.New(mappings, "ice")
+			if err != nil {
+				t.Fatal(err)
+			}
+			projected, _, err := projector.ProjectTransaction(artifactSourceTransaction())
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := &metadataArtifactStore{objects: map[string]metadataArtifactObject{}}
+			failed := false
+			publisher, err := artifactlog.NewPublisher(ctx, pool, store, artifactlog.StreamConfig{ProjectionID: artifactlog.ProjectionIDV2, MappingFingerprint: projector.Fingerprint(), HardRetainedBytes: 128 << 20, BacklogCountHigh: 100, BacklogBytesHigh: 128 << 20, BacklogAgeHigh: time.Hour, Consumers: []string{"ice-v1"}}, artifactlog.WithPublisherHooks(artifactlog.PublisherHooks{Boundary: func(_ context.Context, observed string) error {
+				if observed == boundary && !failed {
+					failed = true
+					return errors.New("injected crash")
+				}
+				return nil
+			}}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := publisher.Publish(ctx, fence, projected, managedBaselinePayload(t, projected)); err == nil || !strings.Contains(err.Error(), "injected crash") {
+				t.Fatalf("first publish error=%v", err)
+			}
+			var publicationCount int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM artifact_publications WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&publicationCount); err != nil {
+				t.Fatal(err)
+			}
+			if publicationCount != 0 {
+				t.Fatal("publication committed before retry")
+			}
+			first, err := publisher.Publish(ctx, fence, projected, managedBaselinePayload(t, projected))
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := publisher.Publish(ctx, fence, projected, managedBaselinePayload(t, projected))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if first.ID != second.ID {
+				t.Fatalf("retry publication IDs differ: %s %s", first.ID, second.ID)
+			}
+			if store.puts != 1 {
+				t.Fatalf("immutable puts=%d want 1", store.puts)
+			}
+			var storedProjection, storedMapping string
+			if err := pool.QueryRow(ctx, `SELECT projection_id,mapping_fingerprint FROM artifact_objects WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&storedProjection, &storedMapping); err != nil {
+				t.Fatal(err)
+			}
+			if storedProjection != artifactlog.ProjectionIDV2 || storedMapping != projector.Fingerprint() {
+				t.Fatalf("stored object identity=%s/%s", storedProjection, storedMapping)
+			}
+			committer := &countingArtifactCommitter{}
+			consumer, err := artifactlog.NewConsumer(pool, committer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := consumer.ConsumeNext(ctx, fence, "ice-v1"); err == nil || !strings.Contains(err.Error(), "unexpected catalog commit") {
+				t.Fatalf("prime indeterminate attempt error=%v", err)
+			}
+			if committer.commits != 1 || committer.reconciles != 0 {
+				t.Fatalf("prime catalog calls=%d/%d", committer.commits, committer.reconciles)
+			}
+			if boundary == "after_upload_evidence" {
+				if _, err := pool.Exec(ctx, `UPDATE artifact_objects SET projection_id=$2,mapping_fingerprint='' WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID, artifactlog.ProjectionID); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if _, err := pool.Exec(ctx, `UPDATE artifact_objects SET mapping_fingerprint=$2 WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID, strings.Repeat("b", 64)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := consumer.ConsumeNext(ctx, fence, "ice-v1"); err == nil || !errors.Is(err, connector.ErrDeliveryConflict) {
+				t.Fatalf("tampered object identity error=%v", err)
+			}
+			if committer.commits != 1 || committer.reconciles != 0 {
+				t.Fatalf("tampered object reached catalog reconciliation; calls=%d/%d", committer.commits, committer.reconciles)
+			}
+		})
+	}
+}
+
+func TestArtifactCatalogAttemptNotAppliedRetryAndConflictStaySingleIdentity(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	databasePool, databaseCleanup := newDeliveryMigrationDatabase(t, ctx, dsn, "artifact_attempt_recovery")
+	dsn = isolatedDatabaseDSN(t, ctx, databasePool, dsn)
+	defer databaseCleanup()
+	engine, err := workflow.NewPostgresEngine(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	pool, err := newAuthorityTestPool(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	authorityStore, err := authority.NewPostgresStore(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointStore, err := checkpoint.NewPostgresStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointStore.Close()
+	if _, err := delivery.NewCoordinator(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	flowID := "artifact-attempt-current-" + uuid.NewString()
+	defer cleanupAuthorityTest(context.Background(), pool, flowID)
+	flowDef := flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}
+	if _, err := engine.Create(ctx, flowDef); err != nil {
+		t.Fatal(err)
+	}
+	_, control, err := engine.PlanStart(ctx, flowID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := authorityStore.AcquireProducer(ctx, flowID, "artifact-worker", "test", control.Generation, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &metadataArtifactStore{objects: map[string]metadataArtifactObject{}}
+	publisher, err := artifactlog.NewPublisher(ctx, pool, store, artifactlog.StreamConfig{ProjectionID: artifactlog.ProjectionID, HardRetainedBytes: 128 << 20, BacklogCountHigh: 100, BacklogBytesHigh: 128 << 20, BacklogAgeHigh: time.Hour, Consumers: []string{"ice-current"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstTransaction := artifactSourceTransaction()
+	first, err := publisher.Publish(ctx, fence, firstTransaction, managedBaselinePayload(t, firstTransaction))
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry := &catalogAttemptTestCommitter{failCommit: true}
+	consumer, err := artifactlog.NewConsumer(pool, retry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := consumer.ConsumeNext(ctx, fence, "ice-current"); err == nil {
+		t.Fatal("catalog attempt did not fail at injected commit boundary")
+	}
+	if consumed, err := consumer.ConsumeNext(ctx, fence, "ice-current"); err != nil || !consumed {
+		t.Fatalf("not-applied recovery consumed/error=%t/%v", consumed, err)
+	}
+	var attempts, receipts int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM artifact_delivery_attempts WHERE publication_id=$1),(SELECT count(*) FROM artifact_delivery_receipts WHERE publication_id=$1)`, first.ID).Scan(&attempts, &receipts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 || receipts != 1 || retry.reconciles != 1 || retry.commits != 2 {
+		t.Fatalf("retry attempt/receipt/reconcile/commit=%d/%d/%d/%d", attempts, receipts, retry.reconciles, retry.commits)
+	}
+	secondTransaction := artifactTransactionAt(101, "0/E0", "0/E8", "0/F0", "conflict")
+	second, err := publisher.Publish(ctx, fence, secondTransaction, managedBaselinePayload(t, secondTransaction))
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := &catalogAttemptTestCommitter{}
+	crashing, err := artifactlog.NewConsumer(pool, committed, artifactlog.WithConsumerHooks(artifactlog.ConsumerHooks{Reach: func(_ context.Context, boundary string) error {
+		if boundary == "after_catalog_commit" {
+			return errors.New("injected crash after catalog commit")
+		}
+		return nil
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := crashing.ConsumeNext(ctx, fence, "ice-current"); err == nil {
+		t.Fatal("catalog commit crash boundary did not fire")
+	}
+	conflicting := &catalogAttemptTestCommitter{conflict: true}
+	recovery, err := artifactlog.NewConsumer(pool, conflicting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recovery.ConsumeNext(ctx, fence, "ice-current"); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("catalog reconciliation conflict error=%v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM artifact_delivery_attempts WHERE publication_id=$1),(SELECT count(*) FROM artifact_delivery_receipts WHERE publication_id=$1)`, second.ID).Scan(&attempts, &receipts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 || receipts != 0 {
+		t.Fatalf("conflicting attempt/receipt=%d/%d", attempts, receipts)
+	}
+}
+
+type catalogAttemptTestCommitter struct {
+	commits, reconciles  int
+	failCommit, conflict bool
+}
+
+func (c *catalogAttemptTestCommitter) Commit(_ context.Context, request artifactlog.CommitRequest) (artifactlog.CommitResult, error) {
+	c.commits++
+	if c.failCommit {
+		c.failCommit = false
+		return artifactlog.CommitResult{}, errors.New("injected catalog commit failure")
+	}
+	return catalogAttemptResult(request), nil
+}
+func (c *catalogAttemptTestCommitter) Reconcile(_ context.Context, request artifactlog.CommitRequest) (artifactlog.ReconcileResult, error) {
+	c.reconciles++
+	if c.conflict {
+		result := catalogAttemptResult(request)
+		result.ManifestSHA256 = "conflicting-manifest"
+		return artifactlog.ReconcileResult{Disposition: artifactlog.CommitApplied, Commit: result}, nil
+	}
+	return artifactlog.ReconcileResult{Disposition: artifactlog.CommitNotApplied}, nil
+}
+func catalogAttemptResult(request artifactlog.CommitRequest) artifactlog.CommitResult {
+	return artifactlog.CommitResult{SnapshotID: "snapshot-" + request.PublicationID.String(), SnapshotIDs: map[string]string{"test": "snapshot-" + request.PublicationID.String()}, ManifestSHA256: request.ManifestSHA256, CommitID: request.CommitID, LogicalBatchID: request.LogicalBatchID}
+}
+
+type memoryMappedArtifactStore struct{}
+
+func (memoryMappedArtifactStore) Bucket() string { return "memory" }
+func (memoryMappedArtifactStore) PutImmutable(context.Context, string, []byte, string, string, string) (artifactlog.ObjectEvidence, error) {
+	return artifactlog.ObjectEvidence{}, errors.New("unexpected object upload")
+}
+func (memoryMappedArtifactStore) ReconcileVersion(context.Context, string, string, int64, string, string) (artifactlog.ObjectEvidence, error) {
+	return artifactlog.ObjectEvidence{}, artifactlog.ErrObjectNotFound
+}
+func (memoryMappedArtifactStore) HeadVersion(context.Context, artifactlog.ObjectEvidence) (artifactlog.ObjectEvidence, error) {
+	return artifactlog.ObjectEvidence{}, errors.New("unexpected object head")
+}
+func (memoryMappedArtifactStore) DeleteVersion(context.Context, artifactlog.ObjectEvidence) error {
+	return errors.New("unexpected object delete")
+}
 
 func TestCanonicalArtifactS3AdmissionRequiresEnabledVersioning(t *testing.T) {
 	endpoint := os.Getenv("WALLABY_TEST_S3_ENDPOINT")
@@ -137,7 +644,7 @@ func TestCanonicalArtifactPublicationRecovery(t *testing.T) {
 	}
 	flowID := fmt.Sprintf("artifact-publication-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -161,7 +668,7 @@ func TestCanonicalArtifactPublicationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := publisher.Publish(ctx, fence, transaction); err == nil {
+	if _, err := publisher.Publish(ctx, fence, transaction, managedBaselinePayload(t, transaction)); err == nil {
 		t.Fatal("expected injected failure after durable quota reservation and before upload")
 	}
 	var reservedBefore int64
@@ -176,7 +683,7 @@ func TestCanonicalArtifactPublicationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	publication, err := publisher.Publish(ctx, fence, transaction)
+	publication, err := publisher.Publish(ctx, fence, transaction, managedBaselinePayload(t, transaction))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,12 +752,15 @@ func TestCanonicalArtifactPublicationRecovery(t *testing.T) {
 	if consumed {
 		t.Fatal("artifact consumer replayed an already receipted publication")
 	}
-	var consumerReceipts int
+	var consumerReceipts, consumerAttempts int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM artifact_delivery_attempts WHERE flow_incarnation_id=$1 AND publication_id=$2`, fence.FlowIncarnationID, publication.ID).Scan(&consumerAttempts); err != nil {
+		t.Fatal(err)
+	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM artifact_delivery_receipts WHERE flow_incarnation_id=$1 AND publication_id=$2`, fence.FlowIncarnationID, publication.ID).Scan(&consumerReceipts); err != nil {
 		t.Fatal(err)
 	}
-	if consumerReceipts != 1 {
-		t.Fatalf("artifact consumer receipts=%d, want 1", consumerReceipts)
+	if consumerAttempts != 1 || consumerReceipts != 1 {
+		t.Fatalf("artifact consumer attempts/receipts=%d/%d, want 1/1", consumerAttempts, consumerReceipts)
 	}
 	var consumerSequence int64
 	var consumerPosition, consumerCommitID string
@@ -268,7 +778,7 @@ WHERE flow_incarnation_id=$1 AND consumer_revision_id=$2`, fence.FlowIncarnation
 
 	evidence := artifactlog.ObjectEvidence{
 		Bucket: bucket, Key: artifact.ObjectKey, VersionID: versionID,
-		ChecksumSHA256: artifact.EncodedByteHash, Length: encodedLength,
+		ChecksumSHA256: artifact.EncodedByteHash, Length: encodedLength, ProjectionID: artifactlog.ProjectionID,
 	}
 	if _, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: aws.String(artifact.ObjectKey)}); err != nil {
 		t.Fatal(err)
@@ -289,7 +799,7 @@ WHERE flow_incarnation_id=$1 AND consumer_revision_id=$2`, fence.FlowIncarnation
 	if err := objects.DeleteVersion(ctx, evidence); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := publisher.Publish(ctx, fence, transaction); err == nil {
+	if _, err := publisher.Publish(ctx, fence, transaction, managedBaselinePayload(t, transaction)); err == nil {
 		t.Fatal("retry unexpectedly authorized ACK after rooted exact object version was deleted")
 	}
 }
@@ -311,7 +821,7 @@ func (c *recordingAppendCatalog) Commit(_ context.Context, request artifactlog.C
 	return c.result(request), nil
 }
 
-func (c *recordingAppendCatalog) Reconcile(_ context.Context, request artifactlog.ReconcileRequest) (artifactlog.ReconcileResult, error) {
+func (c *recordingAppendCatalog) Reconcile(_ context.Context, request artifactlog.CommitRequest) (artifactlog.ReconcileResult, error) {
 	return artifactlog.ReconcileResult{Disposition: artifactlog.CommitApplied, Commit: c.result(request)}, nil
 }
 
@@ -332,11 +842,11 @@ type failBeforePutStore struct {
 	fail bool
 }
 
-func (s *failBeforePutStore) PutImmutable(ctx context.Context, key string, body []byte, digest string) (artifactlog.ObjectEvidence, error) {
+func (s *failBeforePutStore) PutImmutable(ctx context.Context, key string, body []byte, digest, projectionID, mappingFingerprint string) (artifactlog.ObjectEvidence, error) {
 	if s.fail {
 		return artifactlog.ObjectEvidence{}, errors.New("injected crash before immutable PUT")
 	}
-	return s.ObjectStore.PutImmutable(ctx, key, body, digest)
+	return s.ObjectStore.PutImmutable(ctx, key, body, digest, projectionID, mappingFingerprint)
 }
 
 func artifactSourceTransaction() connector.SourceTransaction {

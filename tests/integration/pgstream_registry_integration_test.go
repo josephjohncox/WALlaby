@@ -30,17 +30,27 @@ func TestPGStreamSchemaRegistryMetadata(t *testing.T) {
 
 	dbName, dbDSN := createTempDatabase(t, ctx, adminPool, "wallaby_pgstream_registry")
 	defer dropDatabase(t, adminPool, dbName)
+	migrationPool, err := pgxpool.New(ctx, dbDSN)
+	if err != nil {
+		t.Fatalf("connect stream migration pool: %v", err)
+	}
+	if err := pgstream.ApplyMigrations(ctx, migrationPool); err != nil {
+		migrationPool.Close()
+		t.Fatalf("migrate stream store: %v", err)
+	}
+	migrationPool.Close()
 
 	dest := &pgstreamdest.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "pgstream-registry",
 		Type: connector.EndpointPGStream,
 		Options: map[string]string{
-			"dsn":                     dbDSN,
-			"stream":                  "orders",
-			"format":                  "avro",
-			"schema_registry":         "local",
-			"schema_registry_subject": "public.orders",
+			"dsn":                             dbDSN,
+			"stream":                          "orders",
+			"format":                          "avro",
+			"schema_registry":                 "local",
+			"schema_registry_local_directory": t.TempDir(),
+			"schema_registry_subject":         "public.orders",
 		},
 	}
 	if err := dest.Open(ctx, spec); err != nil {

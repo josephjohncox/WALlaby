@@ -57,18 +57,18 @@ examples/grpc/create_flow.sh
 
 Flow definitions can also be copied from `examples/flows/*.json`.
 
+> **Destructive typed-endpoint cutover:** built-in endpoints now use exactly one typed branch such as `postgres_source`, `http`, or `s3`; legacy untyped endpoint documents and persisted rows are rejected. There is no flow upgrader, compatibility alias, or Terraform state upgrader. Stop and recreate affected flows from typed definitions. Recreate or explicitly remove and re-import affected Terraform resources/state rather than applying an in-place schema migration.
+
 Flow fields you can set:
 
 - `wire_format` — default wire format for the flow
 - `parallelism` — max concurrent destination writes per batch (default `1`)
+- `config.table_mappings` — mandatory expanded destination-scoped selection, naming, and write contract; see [Manage flows and table mappings](guides/flows.md)
 - `config.ack_policy` — `all` (default), `primary`, or experimental `materialized`
 - `config.primary_destination` — destination name used when `ack_policy=primary`
-- `config.materialization.projection_id` — must be `canonical_cdc_parquet_v1` when `ack_policy=materialized`
+- `config.materialization.projection_id` — must be `canonical_cdc_parquet_v2` for current mapped Iceberg materialization (`canonical_cdc_parquet_v1` remains frozen for historical artifacts)
 - `config.failure_mode` — `hold_slot` (default) or `drop_slot`
 - `config.give_up_policy` — `on_retry_exhaustion` (default) or `never`
-- `config.schema_registry_subject` — default registry subject for destinations (overridden by endpoint options)
-- `config.schema_registry_proto_types_subject` — default subject for Proto dependency schemas
-- `config.schema_registry_subject_mode` — Kafka subject mode (`topic`, `table`, `topic_table`)
 
 Why fan‑out instead of multiple replication slots?
 
@@ -78,9 +78,7 @@ Why fan‑out instead of multiple replication slots?
 - `ack_policy=primary` atomically stores the checkpoint and durable per-secondary outbox entries before advancing the slot. It requires a SQLite or PostgreSQL checkpoint store, stable destination names, and idempotent writes at every destination.
 - `ack_policy=materialized` is limited to managed PostgreSQL CDC with exactly one Iceberg destination revision. It acknowledges each CDC transaction only after immutable canonical objects and the fenced PostgreSQL publication/checkpoint commit. A data-free startup cut receives an object-free canonical publication before feedback. The production worker registers the Iceberg consumer behind that authority and commits it asynchronously; catalog or Snowflake visibility does not extend the source-ACK boundary. This policy is not `all` and makes no exactly-once claim. See [Canonical artifact log](concepts/artifact-log.md) and [S3 Tables to Snowflake](guides/s3-tables-snowflake.md).
 
-To reconfigure destinations or wire format, call `UpdateFlow` with a full `Flow` payload; state is preserved.
-From the CLI, use `wallaby-admin flow update --file <path> [--pause] [--resume]` to pause, update, and resume in one step,
-or `wallaby-admin flow reconfigure --file <path> [--sync-publication]` to let the server orchestrate the pause/update/resume cycle.
+Use `wallaby-admin flow mappings generate` with an explicit table, schema, or publication scope to build deterministic mappings from the PostgreSQL catalog. The CLI preserves ordered source-PK defaults only for destinations/profiles that admit explicit-key upsert; append-only destinations generate append. Repeatable `--write-mode schema.table=append|upsert` overrides can select append or request a capability- and key-checked upsert. The exact managed Snowflake SQL profile requires one selected primary-key relation, emits the complete ordered-PK upsert with future tables excluded, and rejects append, watermark, or altered match-key overrides. Review and validate the expanded flow before create. Unmanaged identity changes use `flow reconfigure`; unmanaged name or parallelism changes may use `flow update`. Managed flows reject both RPCs for every change. Stop the old managed flow, create/validate/start a distinct flow with new flow and revision identities, cut over, and delete the old flow only when safe. Terraform cannot execute this managed cutover and every managed update fails apply while retaining state.
 Additional CLI operations:
 
 - `wallaby-admin flow list [--state created|running|paused|stopping|stopped|failed]` to inspect all flows.
@@ -138,8 +136,8 @@ Optional settings:
 
 - `WALLABY_K8S_NAMESPACE` (defaults to the in-cluster namespace)
 - `WALLABY_K8S_JOB_MAX_EMPTY_READS` (appends `--max-empty-reads` to workers)
-- `WALLABY_K8S_JOB_ARGS` / `WALLABY_K8S_JOB_COMMAND` (comma-separated list)
-- `WALLABY_K8S_JOB_LABELS` / `WALLABY_K8S_JOB_ANNOTATIONS` (`key=value` comma list)
+- `kubernetes.job_args` / `kubernetes.job_command` as native YAML string lists
+- `kubernetes.job_labels` / `kubernetes.job_annotations` as native YAML string maps
 - `WALLABY_K8S_KUBECONFIG` / `WALLABY_K8S_CONTEXT` for out-of-cluster kubeconfig usage
 - `WALLABY_K8S_API_SERVER`, `WALLABY_K8S_TOKEN`, `WALLABY_K8S_CA_FILE`, `WALLABY_K8S_CA_DATA` for explicit API config
 - `WALLABY_K8S_CLIENT_CERT`, `WALLABY_K8S_CLIENT_KEY` for mTLS auth
@@ -171,39 +169,37 @@ export WALLABY_WIRE_FORMAT="arrow"   # arrow | parquet | avro | proto | json
 export WALLABY_WIRE_ENFORCE="true"
 ```
 
-Per-flow overrides are supported via `flow.wire_format` or connector `options.format`.
+Per-flow overrides are supported via `flow.wire_format` or the typed destination branch's `format` enum field.
 
 For connector-specific caveats (Snowpipe auto-ingest, DuckLake, Kafka payloads), see `docs/connectors.md`.
 
 ## Kafka Destination
 
-Kafka destination options (connector `options`):
+Kafka typed branch fields:
 
-- `brokers` (required) — comma-separated list
+- `brokers` (required) — native string list
 - `topic` (required)
-- `format` (default `arrow`)
-- `compression` (`none`, `gzip`, `snappy`, `lz4`, `zstd`)
-- `acks` (`all` default, or `leader`, `none`)
+- `format` — `WIRE_FORMAT_*` enum
+- `compression` — `COMPRESSION_*` enum
+- `acks` — `KAFKA_ACKS_*` enum
 - `max_message_bytes` (default `900000`) — upper bound for Kafka record batches
 - `max_batch_bytes` (default = `max_message_bytes`) — size-aware split threshold for encoded batches
 - `max_record_bytes` (default = `max_message_bytes`) — hard cap for single-record payloads
-- `oversize_policy` (`error` default, or `drop`)
-- `message_mode` (`batch` default, or `record`)
-- `key_mode` (`hash` default, or `raw` to use the record key directly)
-- `transactional_id` (enable Kafka transactions per batch)
+- `allow_oversize_skip` (`false` default; `true` drops oversize payloads and declares lossy delivery)
+- `message_mode` — `KAFKA_MESSAGE_MODE_BATCH` or `KAFKA_MESSAGE_MODE_RECORD`
+- `key_mode` — `KAFKA_KEY_MODE_HASH` or `KAFKA_KEY_MODE_RAW`
+- `transactional_producer` (`false` default; `true` enables Kafka transactions per batch and requires `transactional_id`)
+- `transactional_id` (required when `transactional_producer=true`; rejected otherwise)
 - `transaction_timeout` (optional, e.g. `30s`)
 - `transaction_header` (defaults to `wallaby-transaction-id`)
-- `schema_registry` (`csr`, `apicurio`, `glue`, `postgres`, `local`, `none`)
-- `schema_registry_url` (CSR/Apicurio)
-- `schema_registry_subject` / `schema_registry_subject_mode`
-- `schema_registry_username` / `schema_registry_password` / `schema_registry_token`
-- `schema_registry_dsn` (postgres registry)
+- `schema_registry` — nested exactly-one backend (`confluent`, `apicurio`, `glue`, `postgres`, or `local`); `local.directory` is required and durable, while PostgreSQL exposes `postgres.connection.dsn` and `postgres.timeout`
+- `schema_registry_subject`, `schema_registry_proto_types_subject`, and `schema_registry_subject_mode` — destination-scoped subjects and subject mode
 
 Kafka payload details and headers are documented in `docs/connectors.md`.
 
 ## S3 Destination
 
-S3 destination options (connector `options`):
+S3 typed branch fields:
 
 - `bucket` (required)
 - `prefix` (optional)
@@ -211,9 +207,9 @@ S3 destination options (connector `options`):
 - `access_key` / `secret_key` / `session_token` (optional)
 - `force_path_style` (default `false`)
 - `use_fips` / `use_dualstack` (optional; needed for GovCloud/regulated environments)
-- `format` (default `json`)
-- `compression` (`gzip` to compress objects)
-- `partition_by` — comma-separated list of `column` or `column:day|hour|month|year`
+- `format` — exact `WIRE_FORMAT_*` enum (default `WIRE_FORMAT_JSON`)
+- `compression` — exact `COMPRESSION_*` enum (`COMPRESSION_GZIP` compresses objects)
+- `partition_by` — native string list whose entries are `column` or `column:day|hour|month|year`
 
 Set `region` to GovCloud/China regions (e.g., `us-gov-west-1`, `cn-north-1`) to use the correct AWS partition.
 
@@ -223,33 +219,33 @@ Example partitioning:
 
 ```json
 {
-  "type": "s3",
-  "options": {
+  "name": "archive",
+  "s3": {
     "bucket": "wallaby-data",
     "prefix": "cdc",
-    "format": "parquet",
-    "partition_by": "region,created_at:day"
+    "format": "WIRE_FORMAT_PARQUET",
+    "partition_by": ["region", "created_at:day"]
   }
 }
 ```
 
 ## HTTP / Webhook Destination
 
-HTTP destination options (connector `options`):
+HTTP typed branch fields:
 
 - `url` (required)
 - `method` (`POST` default)
-- `format` (default `json`)
-- `payload_mode` (`wire` default, or `record_json`/`raw`, `wal`)
+- `format` (a `WIRE_FORMAT_*` enum)
+- `payload_mode` (`PAYLOAD_MODE_WIRE`, `PAYLOAD_MODE_RECORD_JSON`, or `PAYLOAD_MODE_WAL`)
 - `timeout` (duration string, default `10s`)
-- `headers` (comma-separated `Key:Value` list)
-- `max_retries`, `backoff_base`, `backoff_max`, `backoff_factor`
+- `headers` (native string map)
+- `retry.max_retries`, `retry.backoff_base`, `retry.backoff_max`, `retry.backoff_factor`
 - `idempotency_header` (default `Idempotency-Key`)
 - `transaction_header` (default `X-Wallaby-Transaction-Id`)
 - `dedupe_window` (duration string, disables duplicates within the window)
 
-`payload_mode=record_json` (alias `raw`) sends a single-record JSON envelope (table, operation, key, before/after, etc.) and ignores `format`.
-`payload_mode=wal` sends raw pgoutput bytes (requires a Postgres logical source).
+`PAYLOAD_MODE_RECORD_JSON` sends a single-record JSON envelope (table, operation, key, before/after, etc.) and ignores `format`.
+`PAYLOAD_MODE_WAL` sends raw pgoutput bytes (requires a Postgres logical source).
 The idempotency key hashes the table, operation, per-record source position (with checkpoint fallback), key, and encoded payload. The dedupe window is process-local and records only confirmed sends: failed or cancelled requests release their reservation, while concurrent duplicates wait for the active request. Restart delivery remains at least once.
 
 ## Runbooks
@@ -258,14 +254,14 @@ For operational playbooks (DDL gating and recovery), see `docs/runbooks.md`.
 
 ## gRPC Destination
 
-gRPC destination options (connector `options`):
+gRPC typed branch fields:
 
 - `endpoint` (required, e.g. `host:port`)
 - `format` (default `json`)
-- `payload_mode` (`wire` default, or `record_json`/`raw`, `wal`)
-- `insecure` (`true` default), `tls_ca_file`, `tls_server_name`
-- `headers` (comma-separated `Key:Value` list)
-- `timeout`, `max_retries`, `backoff_base`, `backoff_max`, `backoff_factor` (durations are strings like `200ms`, `5s`)
+- `payload_mode` (`PAYLOAD_MODE_WIRE`, `PAYLOAD_MODE_RECORD_JSON`, or `PAYLOAD_MODE_WAL`)
+- `tls.insecure`, `tls.ca_file`, `tls.server_name`
+- `metadata` (native string map)
+- `timeout`, `retry.max_retries`, `retry.backoff_base`, `retry.backoff_max`, `retry.backoff_factor` (durations are strings like `200ms`, `5s`)
 - `flow_id` (optional) — forwarded in the ingest request
 - `destination` (optional) — logical destination name (defaults to the destination spec name)
 
@@ -273,32 +269,20 @@ The client calls `IngestService/IngestBatch` and sends `payload_mode` as gRPC me
 
 ## Type Mapping (Schema Translation)
 
-Destinations that materialize tables (Snowflake, Snowpipe, ClickHouse, DuckDB) apply default Postgres → destination type mappings. Override per destination with:
-
-- `type_mappings` — JSON or YAML map of `postgres_type` → `dest_type`
-- `type_mappings_file` — path to a JSON or YAML map file
-
-Example:
-
-```json
-{
-  "timestamptz": "TIMESTAMP_TZ",
-  "jsonb": "VARIANT"
-}
-```
-
-YAML example:
+Destinations that materialize tables apply default Postgres → destination type mappings. Override a built-in typed destination only with the native inline map; file-backed mappings are not part of the built-in contract.
 
 ```yaml
-timestamptz: TIMESTAMP_TZ
-jsonb: VARIANT
-ext:postgis.geometry: STRING
-ext:vector: ARRAY
+type_mappings:
+  mappings:
+    timestamptz: TIMESTAMP_TZ
+    jsonb: VARIANT
+    ext:postgis.geometry: STRING
+    ext:vector: ARRAY
 ```
 
 ## DuckLake Destination
 
-DuckLake options (connector `options`):
+DuckLake typed branch fields:
 
 - `dsn` (required) — DuckDB connection string
 - `catalog` (required) — DuckLake metadata location (e.g. `metadata.ducklake`, `postgres:...`, `sqlite:...`)
@@ -309,17 +293,18 @@ DuckLake options (connector `options`):
 
 DuckLake uses DuckDB for execution and stores data as Parquet with a separate metadata catalog.
 
-## Postgres Source Options
+## Postgres Source
 
-Key Postgres source options (connector `options`):
+Key `postgres_source` fields:
 
-- `dsn` (required)
+- `mode` (required) — `POSTGRES_SOURCE_MODE_CDC` or `POSTGRES_SOURCE_MODE_BACKFILL`
+- `connection.dsn` (required)
 - `slot` (required; created automatically when `create_slot=true`)
 - `publication` (required)
 - `create_slot` (default `true`)
 - `ensure_publication` (default `true`) — create publication if missing
-- `publication_tables` (optional) — comma-separated list for publication creation
-- `publication_schemas` (optional) — comma-separated schemas for auto-discovery
+- `publication_tables` (CDC only) — native string list for publication creation
+- `publication_schemas` (CDC only) — native string list for auto-discovery; these never infer from backfill selection
 - `validate_replication` (default `true`) — checks `wal_level`, `max_replication_slots`, `max_wal_senders`
 - `batch_size` (default `100`) — max records per batch
 - `batch_timeout` (default `1s`) — flush interval when idle
@@ -327,26 +312,22 @@ Key Postgres source options (connector `options`):
 - `emit_empty` (default `false`) — emit empty batches (useful for scheduled runs)
 - `resolve_types` (default `true`) — resolve type OIDs using `pg_type` (captures extension types)
 - `sync_publication` (default `false`) — add/drop tables at start
-- `sync_publication_mode` (`add` default, or `sync` to drop extras)
+- `sync_publication_mode` — `SYNC_PUBLICATION_MODE_ADD` or `SYNC_PUBLICATION_MODE_SYNC`
 - `ensure_state` (default `true`) — creates a durable source-state table for cleanup and auditing
 - `state_schema` (default `wallaby`)
 - `state_table` (default `source_state`)
-- `flow_id` (optional) — stable ID used in source-state records
 - `capture_ddl` (default `false`) — installs an event trigger to emit raw DDL via logical messages
 - `ddl_trigger_schema` (default `wallaby`) — schema for the DDL capture function
 - `ddl_trigger_name` (default `wallaby_ddl_capture`) — event trigger name
 - `ddl_message_prefix` (default `wallaby_ddl`) — logical message prefix to filter DDL events
-- `toast_fetch` (`off` default, or `source`, `full`, `cache`) — how to rehydrate TOASTed/unchanged columns on UPDATE
-- `toast_cache_size` (default `10000`) — LRU size used when `toast_fetch=cache`
-- `aws_rds_iam` (default `false`) — enable RDS IAM auth (IRSA/role-based)
-- `aws_region` (required when `aws_rds_iam=true` unless inferred from host)
-- `aws_profile` (optional shared config profile)
-- `aws_role_arn` / `aws_role_session_name` / `aws_role_external_id` (optional assume-role settings)
-- `aws_endpoint` (optional AWS endpoint override)
+- `toast_fetch` — `TOAST_FETCH_MODE_OFF` (default), `TOAST_FETCH_MODE_SOURCE`, `TOAST_FETCH_MODE_FULL`, or `TOAST_FETCH_MODE_CACHE`
+- `toast_cache_size` (default `10000`) — LRU size used with `TOAST_FETCH_MODE_CACHE`
+- `connection.rds_iam` — nested RDS IAM configuration (`region`, `profile`, role fields, and endpoint)
+- `delivery_retention` / `delivery_prune_interval` — optional positive durations used by managed delivery retention
 
 RDS IAM uses the AWS SDK default credential chain (IRSA, env vars, shared config, or assume-role).
 
-**TOAST rehydration**: Postgres may omit large unchanged columns on UPDATE. By default WALlaby emits partial updates plus `unchanged` fields. Use `toast_fetch=source` to reselect only those columns by primary key, `toast_fetch=full` to reselect the full row, or `toast_fetch=cache` for a best‑effort in‑memory merge.
+**TOAST rehydration**: Postgres may omit large unchanged columns on UPDATE. By default WALlaby emits partial updates plus `unchanged` fields. Use `TOAST_FETCH_MODE_SOURCE` to reselect only those columns by primary key, `TOAST_FETCH_MODE_FULL` to reselect the full row, or `TOAST_FETCH_MODE_CACHE` for a best-effort in-memory merge.
 
 ## Publication Lifecycle
 
@@ -369,11 +350,12 @@ To add tables and snapshot them:
 
 The `pgstream` destination writes events into a Postgres-backed stream with consumer groups and visibility timeouts.
 
-Destination options:
+Typed `pgstream` fields:
 
-- `dsn` (required)
+- `connection.dsn` (required)
 - `stream` (defaults to the destination name)
-- `format` (default `json`)
+- `format` (`WIRE_FORMAT_*` enum)
+- `schema_registry` (nested exactly-one backend, when the format uses a registry)
 
 Consumers can pull from the stream using the StreamService or the admin CLI:
 
@@ -387,117 +369,42 @@ Ack messages when processed:
 ./bin/wallaby-admin stream ack --stream orders --group search --ids 1,2,3
 ```
 
-## Snowflake Destination
+## Snowflake destination
 
-Write directly into Snowflake tables with row-level change application.
+Generic Snowflake is an experimental append-only mapping destination. Configure its connection with `dsn`; put logical relation names, column names, selection, and append policy in the destination-scoped mapping. The exact `postgresql-to-snowflake-sql-v1` managed profile instead admits one current-state explicit-key upsert mapping whose ordered keys equal the complete source primary key. See the [Snowflake guide](connectors/snowflake.md).
 
-Options:
+## Snowpipe destination
 
-- `dsn` (required)
-- `schema`, `table` (optional; defaults to source schema/table)
-- `write_mode` (`target` default, or `append`)
-- `batch_mode` (`target` default, or `staging` for backfill loads)
-- `batch_resolution` (`none` default, or `append` / `replace`)
-- `staging_schema`, `staging_table`, `staging_suffix` (default suffix `_staging`)
-- `meta_table_enabled` (default `true`) — create/update `meta_schema.meta_table`
-- `meta_schema` (default `WALLABY_META`)
-- `meta_table` (default `__METADATA`)
-- `meta_pk_prefix` (default `pk_`)
+Snowpipe is append-only. Configure `dsn`, `stage`, `stage_path`, file `format`, optional named `file_format`, COPY controls, and notification behavior on the endpoint. Mapping rules own logical targets and append metadata. PUT, COPY, and metadata-receipt errors are returned unchanged, and target tables change only through configured COPY or external pipe ingestion. See the [Snowpipe guide](connectors/snowpipe.md).
 
-Snowflake options are passed through the DSN. For GovCloud or private endpoints, use the appropriate account/host in the DSN; WALlaby does not rewrite hosts.
+## DuckDB and DuckLake destinations
 
-## Snowpipe Destination
+Both are append-only mapping destinations. DuckDB uses `dsn`. DuckLake additionally uses `catalog`, `catalog_name`, and `data_path`. They do not advertise upsert until dedicated mutation and recovery evidence exists.
 
-Bulk-load batches to a Snowflake stage and optionally trigger `COPY INTO`.
+## ClickHouse destination
 
-Options:
+Use the exact `postgresql-to-clickhouse-append-v1` profile for maintained append-only changelog delivery on its admitted PostgreSQL and ClickHouse/Keeper deployment. Generic ClickHouse remains experimental and append-only at the mapping boundary. See the [ClickHouse guide](connectors/clickhouse.md).
 
-- `dsn` (required)
-- `stage` (required unless using table stage via `@%schema.table`)
-- `stage_path` (optional prefix inside the stage)
-- `schema`, `table` (required if `copy_on_write=true`)
-- `format` (`parquet` default; `parquet` | `avro` | `json`)
-- `file_format` (optional Snowflake file format object name)
-- `copy_on_write` (default `true`)
-- `auto_ingest` (default `false`) — set `true` to only upload (skip COPY)
-- `meta_table_enabled` (default `true`)
+## Redpanda destination
 
-Snowpipe only supports `write_mode=append`; use metadata columns to preserve operation semantics.
+Redpanda is Kafka API-compatible; configure the nested typed `redpanda.kafka` message with the same native fields as Kafka. Its table mapping is append-only. Redpanda Iceberg topics require an enterprise license and are configured in Redpanda; WALlaby only publishes records to the topic.
 
-## DuckDB Destination
+## Append metadata
 
-Write directly into DuckDB (local file or in-memory).
-
-Options:
-
-- `dsn` (required; e.g. `./data/warehouse.duckdb`)
-- `schema`, `table` (optional; defaults to source schema/table)
-- `write_mode` (`target` default, or `append`)
-- `batch_mode` (`target` default, or `staging` for backfill loads)
-- `batch_resolution` (`none` default, or `append` / `replace`)
-- `staging_schema`, `staging_table`, `staging_suffix` (default suffix `_staging`)
-- `meta_table_enabled` (default `true`)
-
-## ClickHouse Destination
-
-Use the exact `postgresql-to-clickhouse-append-v1` profile for maintained, append-only delivery. It writes an immutable CDC changelog and a completion-receipt table for the admitted PostgreSQL 16 and two-replica ClickHouse/Keeper 25.12.1.649 deployment. See the [ClickHouse destination guide](connectors/clickhouse.md) for required DDL, options, TLS, limits, and failure semantics.
-
-Generic ClickHouse target, append, mutation, and staging modes remain experimental. Their legacy options are:
-
-- `dsn` (required)
-- `database` or `schema`, `table` (optional; defaults to source namespace/table)
-- `write_mode` (`target` default, or `append`)
-- `batch_mode` (`target` default, or `staging` for backfill loads)
-- `batch_resolution` (`none` default, or `append` / `replace`)
-- `staging_schema`, `staging_table`, `staging_suffix` (default suffix `_staging`)
-- `meta_table_enabled` (default `true`)
-- `meta_engine` (default `MergeTree`)
-- `meta_order_by` (default `flow_id, source_schema, source_table, key_json`)
-
-## Redpanda Destination
-
-Redpanda is Kafka API-compatible. Use the Kafka destination options: `brokers`, `topic`, `format`, `compression`, and `acks`.
-
-Redpanda supports [Iceberg topics](https://docs.redpanda.com/streaming/current/manage/iceberg/about-iceberg-topics/) with an enterprise license. Configure Iceberg in Redpanda. WALlaby only publishes records to the topic.
-
-## Destination Metadata + Append/Soft Delete
-
-Destinations can opt into metadata columns (synced time, soft-delete flags, watermarks) and append-only behavior:
-
-Options (on destination `options`):
-
-- `meta_enabled` (default `false`) — enable metadata columns
-- `meta_synced_at` (default `__ds_synced_at`)
-- `meta_deleted` (default `__ds_is_deleted`)
-- `meta_watermark` (default `__ds_watermark`, set `-` to disable)
-- `meta_op` (default `__ds_op`)
-- `watermark_source` (`timestamp` default, or `lsn`)
-- `soft_delete` (default `false`) — converts deletes to updates with `meta_deleted=true`
-- `append_mode` (default `false`) — converts updates/deletes to inserts and stores original op in `meta_op`
-
-Metadata columns are added to the destination schema; choose names that do not collide with source columns.
+Append mappings preserve every event and add `__wallaby_operation`, `__wallaby_deleted`, and `__wallaby_source_position`. A configured append watermark is projected metadata only. It never suppresses events or supplies row identity.
 
 ## Destination Type Mappings
 
-Destinations can override source types for downstream compatibility:
-
-Options (on destination `options`):
-
-- `type_mappings` — JSON or YAML map of source type → destination type
-- `type_mappings_file` — path to a JSON or YAML map
-
-Example:
-
-```json
-{"public.geometry": "GEOGRAPHY", "jsonb": "VARIANT"}
-```
-
-YAML example:
+Built-in typed destinations can override source types with one native inline map:
 
 ```yaml
-ext:postgis.geometry: GEOGRAPHY
-jsonb: VARIANT
+type_mappings:
+  mappings:
+    ext:postgis.geometry: GEOGRAPHY
+    jsonb: VARIANT
 ```
+
+Custom connectors retain their own free-form `custom.options` contract and may define plugin-specific path semantics.
 
 ## DDL Governance
 
@@ -532,7 +439,7 @@ Use the admin CLI to list and approve DDL events:
 ./bin/wallaby-admin ddl approve --id 1
 ```
 
-Only the data-plane runner can mark an event applied. It records a durable receipt for every DDL-executing destination and changes the event to `applied` after the complete immutable destination manifest has receipts. The administrative `ddl apply` command fails with `FailedPrecondition` when no execution receipts exist.
+Only the data-plane runner can apply an approved event and mark it applied. It records a durable receipt for every DDL-executing destination and changes the event to `applied` after the complete immutable destination manifest has receipts. Operators use `ddl list`, `ddl show`, and `ddl approve`; after approval the running data-plane workflow performs the apply. There is no separate administrative apply subcommand.
 
 When a DDL gate blocks a flow, WALlaby emits an OpenTelemetry event (`ddl.gated`)
 and a trace event (`ddl_gate`). It also increments the `wallaby.ddl.gated_total` metric.
@@ -563,37 +470,41 @@ Use `--schemas` to resolve all tables in schemas, and `--dest` to scope to a sin
 
 ## Backfill + Replay
 
-Run a backfill by switching the worker to `backfill` mode and providing tables:
+Backfill selection belongs to the stored typed source endpoint. Create a separate flow whose `postgres_source.mode` is `POSTGRES_SOURCE_MODE_BACKFILL`; workers execute that stored definition rather than overriding its mode or table scope.
 
-```bash
-./bin/wallaby-worker --flow-id "<flow-id>" --mode backfill --tables public.users,public.orders
-```
+Backfill fields on `postgres_source` are native typed values:
 
-Backfill performance options (source `options`):
-
+- `backfill_tables` and `backfill_schemas` — native string lists
 - `snapshot_workers` (default `1`) — parallel table/partition workers
-- `parallel_tables` (alias of `snapshot_workers`)
 - `partition_column` (optional) — column used to hash-partition a table
 - `partition_count` (default `1`) — number of partitions per table
 - `snapshot_consistent` (default `true`) — uses `pg_export_snapshot()` for a consistent snapshot
-- `snapshot_state_backend` (`postgres` default, or `file`, `none`)
-- `snapshot_state_schema` (default `wallaby`)
-- `snapshot_state_table` (default `snapshot_state`)
-- `snapshot_state_path` (required for `file` backend)
+- `snapshot_state.postgres.dsn` selects PostgreSQL state; alternatively select `snapshot_state.file_path` or the `snapshot_state.disabled` boolean branch
+- `snapshot_state.schema` and `snapshot_state.table` — PostgreSQL state-table identity
+
+```json
+{
+  "name": "users-backfill-source",
+  "postgres_source": {
+    "mode": "POSTGRES_SOURCE_MODE_BACKFILL",
+    "connection": {"dsn": "postgres://user:password@source/app"},
+    "backfill_tables": ["public.users"],
+    "snapshot_workers": 4,
+    "partition_column": "id",
+    "partition_count": 8,
+    "snapshot_consistent": true,
+    "snapshot_state": {
+      "postgres": {"dsn": "postgres://user:password@control/wallaby"},
+      "schema": "wallaby",
+      "table": "snapshot_state"
+    }
+  }
+}
+```
 
 Snapshot checkpoints use the partition value plus the table primary key as a composite cursor. This bounds crash replay when many rows share one partition value and preserves deterministic `NULLS LAST` ordering. Tables without a primary key fall back to an inclusive partition cursor: recovery may replay every row equal to that value, but does not omit them.
 
-Example with parallel workers and hash partitions:
-
-```bash
-./bin/wallaby-worker --flow-id "<flow-id>" --mode backfill --tables public.users --snapshot-workers 4 --partition-column id --partition-count 8
-```
-
-Replay from a specific LSN (if your replication slot retains WAL):
-
-```bash
-./bin/wallaby-worker --flow-id "<flow-id>" --start-lsn "0/16B6C50"
-```
+An arbitrary `start_lsn` is not part of the typed `postgres_source` contract. CDC resumes from the authoritative checkpoint and retained logical slot state.
 
 For Postgres stream consumers, use the admin CLI to reset deliveries:
 

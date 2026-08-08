@@ -40,10 +40,14 @@ const (
 	ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 = "postgresql-to-snowflake-streaming-rest-append-v1"
 )
 
+// IsPostgresToSnowflakeSQLV1Spec reports whether spec selects the exact named
+// Snowflake SQL profile whose configured capabilities advertise explicit-key upsert.
+func IsPostgresToSnowflakeSQLV1Spec(spec RuntimeSpec) bool {
+	return spec.Type == EndpointSnowflake && strings.TrimSpace(spec.Options["managed_profile"]) == ManagedProfilePostgresToSnowflakeSQLV1
+}
+
 // IsManagedSnowflakeProfile reports whether name is one of the constrained
-// Snowflake managed profiles. All three share the same PostgreSQL-authoritative
-// source-cut, version-pin, and single-relation publication admission; they
-// differ only in how the destination materializes and reconciles a batch.
+// Snowflake managed profiles.
 func IsManagedSnowflakeProfile(name string) bool {
 	switch name {
 	case ManagedProfilePostgresToSnowflakeSQLV1, ManagedProfilePostgresToSnowflakeStagedAppendV1,
@@ -105,7 +109,11 @@ func PostgresToPostgresV1Profile() ManagedProfileContract {
 			{Capability: "restart", Test: "TestPostgresManagedOverlappingTakeoverAdoptsConcurrentCommit", Live: true},
 			{Capability: "retry and retention", Test: "TestPostgresManagedDeliveryRetryAndRetention", Live: true},
 			{Capability: "metrics", Test: "TestPostgresManagedProfileMetrics", Live: false},
-			{Capability: "upgrade migrations", Test: "TestPostgresManagedProfileUpgradeMigrations", Live: true},
+			{Capability: "current receipt authority", Test: "TestPostgresManagedTargetRejectsLegacyReceiptSchemaWithoutMutation", Live: true},
+			{Capability: "exact delivery manifest authority", Test: "TestDeliveryManifestAuthorityTamperCurrentPGMajor", Live: true},
+			{Capability: "receipt identity reconciliation", Test: "TestManagedReceiptReconcilesLogicalAndPositionIdentities", Live: true},
+			{Capability: "fenced schema isolation", Test: "TestFencedSchemaRegistrationScopesCatalogAndFlowProvenance", Live: true},
+			{Capability: "approved DDL crash replay", Test: "TestPostgresToPostgresE2E", Live: true},
 		},
 	}
 	contract.PostgresVersions = append([]int(nil), contract.PostgresVersions...)
@@ -132,7 +140,7 @@ func PostgresToClickHouseAppendV1Profile() ManagedProfileContract {
 		Gates: []ManagedProfileGate{
 			{Capability: "clickhouse versions", Test: "TestClickHouseManagedProfileVersionMatrix", Live: true},
 			{Capability: "target admission", Test: "TestClickHouseManagedProfileAdmission", Live: true},
-			{Capability: "ambiguous response", Test: "TestClickHouseManagedProfileCommitBeforeReceipt", Live: true},
+			{Capability: "ambiguous response", Test: "TestClickHouseManagedProfileCommitAndReconcile", Live: true},
 			{Capability: "deduplication window", Test: "TestClickHouseManagedProfileDedupWindowEviction", Live: true},
 			{Capability: "ordered fragments", Test: "TestClickHouseManagedProfileOrderingAndConcurrency", Live: true},
 			{Capability: "key changes and tombstones", Test: "TestClickHouseManagedProfileKeyChangesAndTombstones", Live: true},
@@ -176,12 +184,11 @@ func PostgresToSnowflakeSQLV1Profile() ManagedProfileContract {
 			{Capability: "role hierarchy and alternate writers", Test: "TestSnowflakeManagedProfileRoleIsolation", Live: true},
 			{Capability: "task visibility and automation isolation", Test: "TestSnowflakeManagedProfileTaskIsolation", Live: true},
 			{Capability: "rollback cardinality ordering and types", Test: "TestSnowflakeManagedProfileOrderedFragmentsAndTypes", Live: true},
-			{Capability: "confirmed commit reconciliation", Test: "TestSnowflakeManagedProfileAmbiguousCommit", Live: true},
-			{Capability: "commit transport loss and detached takeover", Test: "TestSnowflakeManagedProfileCommitTransportLossAndDetachedTakeover", Live: true},
+			{Capability: "confirmed commit reconciliation", Test: "TestSnowflakeManagedProfileCommitAndReconcile", Live: true},
+			{Capability: "commit transport loss and detached takeover", Test: "TestSnowflakeManagedProfileCommitAndDetachedTakeover", Live: true},
 			{Capability: "DDL rejection and replacement", Test: "TestSnowflakeManagedProfileSchemaReconciliation", Live: true},
 			{Capability: "adapter process kill", Test: "TestSnowflakeManagedProfileProcessKillRecovery", Live: true},
 			{Capability: "full worker SIGKILL", Test: "TestSnowflakeManagedProfileWorkerSIGKILLRecovery", Live: true},
-			{Capability: "network fault matrix", Test: "TestSnowflakeManagedProfileNetworkFaultMatrix", Live: true},
 			{Capability: "cancellation and pool safety", Test: "TestSnowflakeManagedProfileCancellationAndPoolSafety", Live: true},
 			{Capability: "bounded load and backpressure", Test: "TestSnowflakeManagedProfileBoundedLoadAndBackpressure", Live: true},
 			{Capability: "PostgreSQL receipt checkpoint and feedback recovery", Test: "TestPostgresToSnowflakeManagedProfileRecoveryContract", Live: true},
@@ -413,7 +420,8 @@ func managedProfileRequiredGates(name string) (map[string]bool, error) {
 			"target admission": true, "schema evolution": true, "DDL reconciliation": true,
 			"snapshot to CDC": true, "process kill": true, "pool exhaustion": true,
 			"restart": true, "retry and retention": true, "metrics": false,
-			"upgrade migrations": true,
+			"current receipt authority": true, "exact delivery manifest authority": true, "receipt identity reconciliation": true,
+			"fenced schema isolation": true, "approved DDL crash replay": true,
 		}, nil
 	case ManagedProfilePostgresToClickHouseAppendV1:
 		return map[string]bool{

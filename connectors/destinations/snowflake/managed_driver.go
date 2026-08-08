@@ -19,35 +19,56 @@ var (
 	_ connector.ManagedSourceSchemaValidator  = (*Destination)(nil)
 )
 
-// ManagedHooks exposes deterministic rollback and ambiguous-response fault
-// boundaries around COMMIT. Production callers leave every hook nil.
-type ManagedHooks struct {
+type managedHooks struct {
 	BeforeCommit func() error
 	AfterCommit  func() error
 }
 
-// SetManagedHooks installs real-service fault injection for the constrained
-// managed profile.
-func (d *Destination) SetManagedHooks(hooks ManagedHooks) {
-	d.managedHooksMu.Lock()
-	d.managedHooks = hooks
-	d.managedHooksMu.Unlock()
-}
-
-func (d *Destination) managedHooksSnapshot() ManagedHooks {
+func (d *Destination) managedHooksSnapshot() managedHooks {
 	d.managedHooksMu.RLock()
 	defer d.managedHooksMu.RUnlock()
 	return d.managedHooks
 }
 
+// InitializeManagedDelivery verifies that Open established the exact authority
+// required by the configured managed profile before any managed source I/O.
+func (d *Destination) InitializeManagedDelivery(context.Context) error {
+	if d.db == nil {
+		return errors.New("managed Snowflake destination not initialized")
+	}
+	switch d.managedProfile {
+	case connector.ManagedProfilePostgresToSnowflakeSQLV1:
+		if strings.TrimSpace(d.managedConfig.destinationRevision) == "" || strings.TrimSpace(d.managedConfig.receiptsTable) == "" || strings.TrimSpace(d.managedConfig.schemaContractHash) == "" {
+			return errors.New("managed Snowflake SQL receipt authority is not configured")
+		}
+	case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
+		if strings.TrimSpace(d.stagedConfig.destinationRevision) == "" || strings.TrimSpace(d.stagedConfig.receiptsTable) == "" || strings.TrimSpace(d.stagedConfig.schemaContractHash) == "" || strings.TrimSpace(d.stagedCatalogFingerprint) == "" {
+			return errors.New("managed staged Snowflake receipt and catalog authority is not configured")
+		}
+	case connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
+		if !ManagedStreamingTransportAvailable() {
+			return ErrManagedStreamingTransportUnavailable
+		}
+		if strings.TrimSpace(d.streamConfig.destinationRevision) == "" || strings.TrimSpace(d.streamConfig.receiptsTable) == "" || strings.TrimSpace(d.streamConfig.channelStateTable) == "" || strings.TrimSpace(d.streamConfig.schemaContractHash) == "" || strings.TrimSpace(d.streamCatalogFingerprint) == "" {
+			return errors.New("managed streaming Snowflake receipt, channel, and catalog authority is not configured")
+		}
+	default:
+		return errors.New("managed Snowflake destination not initialized")
+	}
+	return nil
+}
+
 // Apply is intentionally unavailable because the Snowflake SQL profile can
 // authorize only a complete source transaction and its atomic target receipt.
-func (d *Destination) Apply(context.Context, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
+func (d *Destination) Apply(_ context.Context, intent connector.DeliveryIntent, _ connector.Batch) (connector.DeliveryEvidence, error) {
+	if err := intent.Validate(); err != nil {
+		return connector.DeliveryEvidence{}, err
+	}
 	return connector.DeliveryEvidence{}, errors.New("managed Snowflake SQL profile requires ApplyTransaction")
 }
 
-// ValidateManagedSourceSchema compares the live pg_catalog relation with the
-// immutable contract before the runner reads WAL.
+// ValidateManagedSourceSchema compares the projected live pg_catalog relation
+// with the immutable projected contract before the runner reads WAL.
 func (d *Destination) ValidateManagedSourceSchema(schema connector.Schema) error {
 	if d.db == nil {
 		return errors.New("managed Snowflake destination not initialized")
@@ -64,7 +85,7 @@ func (d *Destination) ValidateManagedSourceSchema(schema connector.Schema) error
 		return errors.New("managed Snowflake destination not initialized")
 	}
 	if err := validateManagedRuntimeSchema(contract, schema); err != nil {
-		return fmt.Errorf("validate live PostgreSQL schema for managed Snowflake: %w", err)
+		return fmt.Errorf("validate projected live PostgreSQL schema for managed Snowflake: %w", err)
 	}
 	expectedIdentity, err := managedIdentityColumns(contract)
 	if err != nil {
@@ -72,7 +93,7 @@ func (d *Destination) ValidateManagedSourceSchema(schema connector.Schema) error
 	}
 	actualIdentity, err := managedIdentityColumns(schema)
 	if err != nil {
-		return fmt.Errorf("validate live PostgreSQL primary key for managed Snowflake: %w", err)
+		return fmt.Errorf("validate projected live PostgreSQL primary key for managed Snowflake: %w", err)
 	}
 	if !slices.Equal(expectedIdentity, actualIdentity) {
 		return fmt.Errorf("%w: live PostgreSQL primary-key order %v differs from configured order %v", errManagedSnowflakeSchemaNotReconciled, actualIdentity, expectedIdentity)
@@ -135,7 +156,7 @@ func (d *Destination) PrepareTransaction(ctx context.Context, intent connector.D
 	if err != nil {
 		return nil, err
 	}
-	if err := d.validateManagedSnowflakeReceiptScope(ctx, conn, intent); err != nil {
+	if err := d.validateManagedSnowflakeReceiptScope(ctx, conn, intent.FlowIncarnationID); err != nil {
 		return nil, err
 	}
 	plan.catalogFingerprint = catalogFingerprint
@@ -213,7 +234,7 @@ func (p *preparedManagedSnowflakeTransaction) Apply(ctx context.Context) (_ conn
 	}
 
 	if p.plan.catalogFingerprint != "" {
-		if err := p.destination.validateManagedSnowflakeReceiptScope(ctx, tx, p.intent); err != nil {
+		if err := p.destination.validateManagedSnowflakeReceiptScope(ctx, tx, p.intent.FlowIncarnationID); err != nil {
 			return connector.DeliveryEvidence{}, err
 		}
 	}
@@ -366,7 +387,7 @@ func (d *Destination) Reconcile(ctx context.Context, intent connector.DeliveryIn
 		}
 	}
 	if d.managedConfig.validateEveryConnection {
-		if err := d.validateManagedSnowflakeReceiptScope(reconcileCtx, conn, intent); err != nil {
+		if err := d.validateManagedSnowflakeReceiptScope(reconcileCtx, conn, intent.FlowIncarnationID); err != nil {
 			endReconcile(err)
 			return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
 		}
@@ -398,7 +419,7 @@ func (d *Destination) ValidateManagedFlowScope(ctx context.Context, flowID, flow
 		if flowID != d.stagedConfig.flowID || strings.TrimSpace(flowIncarnationID) == "" {
 			return fmt.Errorf("%w: managed staged Snowflake flow scope differs from admitted configuration", connector.ErrDeliveryConflict)
 		}
-		return d.validateStagedSnowflakeReceiptScope(ctx, connector.DeliveryIntent{FlowIncarnationID: flowIncarnationID})
+		return d.validateStagedSnowflakeReceiptScope(ctx, connector.DeliveryIntent{FlowIncarnationID: flowIncarnationID, LogicalBatchID: "scope-validation"})
 	}
 	if d.db == nil || d.managedProfile != connector.ManagedProfilePostgresToSnowflakeSQLV1 {
 		return errors.New("managed Snowflake destination is not open")
@@ -411,11 +432,11 @@ func (d *Destination) ValidateManagedFlowScope(ctx context.Context, flowID, flow
 		return err
 	}
 	defer func() { _ = conn.Close() }()
-	return d.validateManagedSnowflakeReceiptScope(ctx, conn, connector.DeliveryIntent{FlowIncarnationID: flowIncarnationID})
+	return d.validateManagedSnowflakeReceiptScope(ctx, conn, flowIncarnationID)
 }
 
-func (d *Destination) validateManagedSnowflakeReceiptScope(ctx context.Context, queryer managedSnowflakeCatalogQueryer, intent connector.DeliveryIntent) error {
-	flowIncarnationID := strings.TrimSpace(intent.FlowIncarnationID)
+func (d *Destination) validateManagedSnowflakeReceiptScope(ctx context.Context, queryer managedSnowflakeCatalogQueryer, flowIncarnationID string) error {
+	flowIncarnationID = strings.TrimSpace(flowIncarnationID)
 	if flowIncarnationID == "" {
 		return errors.New("managed Snowflake flow incarnation is required")
 	}

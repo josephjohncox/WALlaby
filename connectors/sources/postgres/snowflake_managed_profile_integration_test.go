@@ -62,7 +62,7 @@ func TestSnowflakeManagedProfilePostgresSourceCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantRelation := schemaName + "." + tableName
+	wantRelation := qualified
 	if len(tables) != 1 || tables[0] != wantRelation || len(schemas) != 1 {
 		t.Fatalf("publication tables/schemas=%v/%d, want [%s]/1", tables, len(schemas), wantRelation)
 	}

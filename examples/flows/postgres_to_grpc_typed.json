@@ -1,0 +1,80 @@
+{
+  "config": {
+    "ack_policy": "all",
+    "table_mappings": {
+      "destinations": [
+        {
+          "destination": "grpc_typed",
+          "future_tables": {
+            "action": "include",
+            "future_columns": {
+              "action": "include",
+              "target_column": "{{ .Column }}"
+            },
+            "target_schema": "{{ .Schema }}",
+            "target_table": "{{ .Table }}",
+            "write": {
+              "key_columns": [],
+              "mode": "append"
+            }
+          },
+          "tables": []
+        }
+      ],
+      "version": 2
+    }
+  },
+  "destinations": [
+    {
+      "grpc": {
+        "endpoint": "localhost:9090",
+        "format": "WIRE_FORMAT_JSON",
+        "metadata": {
+          "x-routing-tags": "blue,green",
+          "x-tenant": "example"
+        },
+        "payload_mode": "PAYLOAD_MODE_RECORD_JSON",
+        "retry": {
+          "backoff_base": "0.125s",
+          "backoff_factor": 1.5,
+          "backoff_max": "4s",
+          "max_retries": 5
+        },
+        "timeout": "6s",
+        "tls": {
+          "insecure": true
+        },
+        "type_mappings": {
+          "mappings": {
+            "double precision": "number",
+            "jsonb": "object",
+            "timestamp with time zone": "string"
+          }
+        }
+      },
+      "name": "grpc_typed"
+    }
+  ],
+  "name": "postgres_to_grpc_typed",
+  "parallelism": 2,
+  "source": {
+    "name": "postgres_source",
+    "postgres_source": {
+      "mode": "POSTGRES_SOURCE_MODE_CDC",
+      "batch_size": 500,
+      "batch_timeout": "1s",
+      "connection": {
+        "dsn": "postgres://wallaby:example@localhost:5432/app?sslmode=disable"
+      },
+      "create_slot": true,
+      "format": "WIRE_FORMAT_JSON",
+      "publication": "wallaby_grpc_typed",
+      "publication_schemas": [
+        "public"
+      ],
+      "slot": "wallaby_grpc_typed",
+      "status_interval": "10s"
+    }
+  },
+  "wire_format": "json"
+}

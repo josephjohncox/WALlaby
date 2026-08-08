@@ -474,94 +474,6 @@ func (x *RejectDDLResponse) GetEvent() *DDLEvent {
 	return nil
 }
 
-type MarkDDLAppliedRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *MarkDDLAppliedRequest) Reset() {
-	*x = MarkDDLAppliedRequest{}
-	mi := &file_wallaby_v1_ddl_proto_msgTypes[9]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *MarkDDLAppliedRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*MarkDDLAppliedRequest) ProtoMessage() {}
-
-func (x *MarkDDLAppliedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_ddl_proto_msgTypes[9]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use MarkDDLAppliedRequest.ProtoReflect.Descriptor instead.
-func (*MarkDDLAppliedRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_ddl_proto_rawDescGZIP(), []int{9}
-}
-
-func (x *MarkDDLAppliedRequest) GetId() int64 {
-	if x != nil {
-		return x.Id
-	}
-	return 0
-}
-
-type MarkDDLAppliedResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Event         *DDLEvent              `protobuf:"bytes,1,opt,name=event,proto3" json:"event,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *MarkDDLAppliedResponse) Reset() {
-	*x = MarkDDLAppliedResponse{}
-	mi := &file_wallaby_v1_ddl_proto_msgTypes[10]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *MarkDDLAppliedResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*MarkDDLAppliedResponse) ProtoMessage() {}
-
-func (x *MarkDDLAppliedResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_ddl_proto_msgTypes[10]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use MarkDDLAppliedResponse.ProtoReflect.Descriptor instead.
-func (*MarkDDLAppliedResponse) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_ddl_proto_rawDescGZIP(), []int{10}
-}
-
-func (x *MarkDDLAppliedResponse) GetEvent() *DDLEvent {
-	if x != nil {
-		return x.Event
-	}
-	return nil
-}
-
 var File_wallaby_v1_ddl_proto protoreflect.FileDescriptor
 
 const file_wallaby_v1_ddl_proto_rawDesc = "" +
@@ -593,19 +505,14 @@ const file_wallaby_v1_ddl_proto_rawDesc = "" +
 	"\x10RejectDDLRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\"?\n" +
 	"\x11RejectDDLResponse\x12*\n" +
-	"\x05event\x18\x01 \x01(\v2\x14.wallaby.v1.DDLEventR\x05event\"'\n" +
-	"\x15MarkDDLAppliedRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x03R\x02id\"D\n" +
-	"\x16MarkDDLAppliedResponse\x12*\n" +
-	"\x05event\x18\x01 \x01(\v2\x14.wallaby.v1.DDLEventR\x05event2\x9e\x03\n" +
+	"\x05event\x18\x01 \x01(\v2\x14.wallaby.v1.DDLEventR\x05event2\xc0\x02\n" +
 	"\n" +
 	"DDLService\x12W\n" +
 	"\x0eListPendingDDL\x12!.wallaby.v1.ListPendingDDLRequest\x1a\".wallaby.v1.ListPendingDDLResponse\x12B\n" +
 	"\aListDDL\x12\x1a.wallaby.v1.ListDDLRequest\x1a\x1b.wallaby.v1.ListDDLResponse\x12K\n" +
 	"\n" +
 	"ApproveDDL\x12\x1d.wallaby.v1.ApproveDDLRequest\x1a\x1e.wallaby.v1.ApproveDDLResponse\x12H\n" +
-	"\tRejectDDL\x12\x1c.wallaby.v1.RejectDDLRequest\x1a\x1d.wallaby.v1.RejectDDLResponse\x12\\\n" +
-	"\x0eMarkDDLApplied\x12!.wallaby.v1.MarkDDLAppliedRequest\x1a\".wallaby.v1.MarkDDLAppliedResponse\"\x03\x88\x02\x01B>Z<github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabypbb\x06proto3"
+	"\tRejectDDL\x12\x1c.wallaby.v1.RejectDDLRequest\x1a\x1d.wallaby.v1.RejectDDLResponseB>Z<github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabypbb\x06proto3"
 
 var (
 	file_wallaby_v1_ddl_proto_rawDescOnce sync.Once
@@ -619,7 +526,7 @@ func file_wallaby_v1_ddl_proto_rawDescGZIP() []byte {
 	return file_wallaby_v1_ddl_proto_rawDescData
 }
 
-var file_wallaby_v1_ddl_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_wallaby_v1_ddl_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_wallaby_v1_ddl_proto_goTypes = []any{
 	(*DDLEvent)(nil),               // 0: wallaby.v1.DDLEvent
 	(*ListPendingDDLRequest)(nil),  // 1: wallaby.v1.ListPendingDDLRequest
@@ -630,32 +537,27 @@ var file_wallaby_v1_ddl_proto_goTypes = []any{
 	(*ApproveDDLResponse)(nil),     // 6: wallaby.v1.ApproveDDLResponse
 	(*RejectDDLRequest)(nil),       // 7: wallaby.v1.RejectDDLRequest
 	(*RejectDDLResponse)(nil),      // 8: wallaby.v1.RejectDDLResponse
-	(*MarkDDLAppliedRequest)(nil),  // 9: wallaby.v1.MarkDDLAppliedRequest
-	(*MarkDDLAppliedResponse)(nil), // 10: wallaby.v1.MarkDDLAppliedResponse
-	(*timestamppb.Timestamp)(nil),  // 11: google.protobuf.Timestamp
+	(*timestamppb.Timestamp)(nil),  // 9: google.protobuf.Timestamp
 }
 var file_wallaby_v1_ddl_proto_depIdxs = []int32{
-	11, // 0: wallaby.v1.DDLEvent.created_at:type_name -> google.protobuf.Timestamp
-	0,  // 1: wallaby.v1.ListPendingDDLResponse.events:type_name -> wallaby.v1.DDLEvent
-	0,  // 2: wallaby.v1.ListDDLResponse.events:type_name -> wallaby.v1.DDLEvent
-	0,  // 3: wallaby.v1.ApproveDDLResponse.event:type_name -> wallaby.v1.DDLEvent
-	0,  // 4: wallaby.v1.RejectDDLResponse.event:type_name -> wallaby.v1.DDLEvent
-	0,  // 5: wallaby.v1.MarkDDLAppliedResponse.event:type_name -> wallaby.v1.DDLEvent
-	1,  // 6: wallaby.v1.DDLService.ListPendingDDL:input_type -> wallaby.v1.ListPendingDDLRequest
-	3,  // 7: wallaby.v1.DDLService.ListDDL:input_type -> wallaby.v1.ListDDLRequest
-	5,  // 8: wallaby.v1.DDLService.ApproveDDL:input_type -> wallaby.v1.ApproveDDLRequest
-	7,  // 9: wallaby.v1.DDLService.RejectDDL:input_type -> wallaby.v1.RejectDDLRequest
-	9,  // 10: wallaby.v1.DDLService.MarkDDLApplied:input_type -> wallaby.v1.MarkDDLAppliedRequest
-	2,  // 11: wallaby.v1.DDLService.ListPendingDDL:output_type -> wallaby.v1.ListPendingDDLResponse
-	4,  // 12: wallaby.v1.DDLService.ListDDL:output_type -> wallaby.v1.ListDDLResponse
-	6,  // 13: wallaby.v1.DDLService.ApproveDDL:output_type -> wallaby.v1.ApproveDDLResponse
-	8,  // 14: wallaby.v1.DDLService.RejectDDL:output_type -> wallaby.v1.RejectDDLResponse
-	10, // 15: wallaby.v1.DDLService.MarkDDLApplied:output_type -> wallaby.v1.MarkDDLAppliedResponse
-	11, // [11:16] is the sub-list for method output_type
-	6,  // [6:11] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	9, // 0: wallaby.v1.DDLEvent.created_at:type_name -> google.protobuf.Timestamp
+	0, // 1: wallaby.v1.ListPendingDDLResponse.events:type_name -> wallaby.v1.DDLEvent
+	0, // 2: wallaby.v1.ListDDLResponse.events:type_name -> wallaby.v1.DDLEvent
+	0, // 3: wallaby.v1.ApproveDDLResponse.event:type_name -> wallaby.v1.DDLEvent
+	0, // 4: wallaby.v1.RejectDDLResponse.event:type_name -> wallaby.v1.DDLEvent
+	1, // 5: wallaby.v1.DDLService.ListPendingDDL:input_type -> wallaby.v1.ListPendingDDLRequest
+	3, // 6: wallaby.v1.DDLService.ListDDL:input_type -> wallaby.v1.ListDDLRequest
+	5, // 7: wallaby.v1.DDLService.ApproveDDL:input_type -> wallaby.v1.ApproveDDLRequest
+	7, // 8: wallaby.v1.DDLService.RejectDDL:input_type -> wallaby.v1.RejectDDLRequest
+	2, // 9: wallaby.v1.DDLService.ListPendingDDL:output_type -> wallaby.v1.ListPendingDDLResponse
+	4, // 10: wallaby.v1.DDLService.ListDDL:output_type -> wallaby.v1.ListDDLResponse
+	6, // 11: wallaby.v1.DDLService.ApproveDDL:output_type -> wallaby.v1.ApproveDDLResponse
+	8, // 12: wallaby.v1.DDLService.RejectDDL:output_type -> wallaby.v1.RejectDDLResponse
+	9, // [9:13] is the sub-list for method output_type
+	5, // [5:9] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_wallaby_v1_ddl_proto_init() }
@@ -669,7 +571,7 @@ func file_wallaby_v1_ddl_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wallaby_v1_ddl_proto_rawDesc), len(file_wallaby_v1_ddl_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -1,35 +1,48 @@
 package postgres
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
+	internalschema "github.com/josephjohncox/wallaby/internal/schema"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-func TestCapabilitiesForWriteMode(t *testing.T) {
-	t.Parallel()
+type recordingDDLExecer struct {
+	statements []string
+}
 
-	destination := &Destination{}
-	tests := []struct {
-		name       string
-		options    map[string]string
-		replaySafe bool
-	}{
-		{name: "default target mode", replaySafe: true},
-		{name: "explicit target mode", options: map[string]string{optWriteMode: writeModeTarget}, replaySafe: true},
-		{name: "append mode", options: map[string]string{optWriteMode: writeModeAppend}},
+func (e *recordingDDLExecer) Exec(_ context.Context, statement string, _ ...any) (pgconn.CommandTag, error) {
+	e.statements = append(e.statements, statement)
+	return pgconn.NewCommandTag("ALTER TABLE"), nil
+}
+
+func TestApplyDDLExecutesTranslatedStatement(t *testing.T) {
+	executor := &recordingDDLExecer{}
+	destination := &Destination{ddlExecutor: executor, spec: connector.RuntimeSpec{Type: connector.EndpointPostgres}}
+	plan, err := json.Marshal(internalschema.Plan{Changes: []internalschema.Change{{Type: internalschema.ChangeAddColumn, Namespace: "mapped", Table: "events", Column: "status", ToType: "text", Nullable: false}}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			capabilities := destination.CapabilitiesFor(connector.Spec{Options: tt.options})
-			if capabilities.Delivery.ReplaySafe != tt.replaySafe ||
-				capabilities.Delivery.IdempotentReplay != tt.replaySafe {
-				t.Fatalf("delivery = %+v, replay safe = %v", capabilities.Delivery, tt.replaySafe)
-			}
-			if !capabilities.Delivery.TransactionalBatch || !capabilities.Delivery.ExecutesDDL {
-				t.Fatalf("postgres delivery contract incomplete: %+v", capabilities.Delivery)
-			}
-		})
+	if err := destination.ApplyDDL(context.Background(), connector.Schema{Namespace: "mapped", Name: "events"}, connector.Record{Operation: connector.OpDDL, DDLPlan: plan}); err != nil {
+		t.Fatal(err)
+	}
+	if len(executor.statements) != 1 || executor.statements[0] != `ALTER TABLE "mapped"."events" ADD COLUMN "status" text NOT NULL` {
+		t.Fatalf("executed statements=%q", executor.statements)
+	}
+}
+
+func TestCapabilitiesDeclarePerTableWritePolicies(t *testing.T) {
+	capabilities := (&Destination{}).Capabilities()
+	if !capabilities.TableWrites.Append || !capabilities.TableWrites.Upsert || !capabilities.TableWrites.ExplicitKey || !capabilities.TableWrites.WatermarkGuard {
+		t.Fatalf("postgres table write contract incomplete: %+v", capabilities.TableWrites)
+	}
+	if capabilities.Delivery.ReplaySafe || capabilities.Delivery.IdempotentReplay {
+		t.Fatalf("mixed per-table append policy must not be globally advertised as replay safe: %+v", capabilities.Delivery)
+	}
+	if err := capabilities.SupportsTablePolicy(connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}, WatermarkColumn: "updated_at"}); err != nil {
+		t.Fatal(err)
 	}
 }

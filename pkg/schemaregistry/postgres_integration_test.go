@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestPostgresRegistryConcurrentRegistration(t *testing.T) {
@@ -20,6 +21,15 @@ func TestPostgresRegistryConcurrentRegistration(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	migrationPool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect migration pool: %v", err)
+	}
+	if err := ApplyMigrations(ctx, migrationPool); err != nil {
+		migrationPool.Close()
+		t.Fatalf("ApplyMigrations() error = %v", err)
+	}
+	migrationPool.Close()
 	registry, err := newPostgresRegistry(ctx, dsn)
 	if err != nil {
 		t.Fatalf("newPostgresRegistry() error = %v", err)

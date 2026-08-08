@@ -3,7 +3,6 @@ package tests
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -14,7 +13,7 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-func TestClickHouseMutations(t *testing.T) {
+func TestClickHouseAppendChangelog(t *testing.T) {
 	dsn := os.Getenv("WALLABY_TEST_CLICKHOUSE_DSN")
 	if dsn == "" {
 		t.Skip("WALLABY_TEST_CLICKHOUSE_DSN not set")
@@ -35,26 +34,26 @@ func TestClickHouseMutations(t *testing.T) {
 		t.Fatalf("create database: %v", err)
 	}
 
-	table := fmt.Sprintf("wallaby_mutations_%d", time.Now().UnixNano())
+	table := fmt.Sprintf("wallaby_append_%d", time.Now().UnixNano())
 	fullTable := fmt.Sprintf("%s.%s", database, table)
 	createSQL := fmt.Sprintf(`CREATE TABLE %s (
   id UInt64,
-  name String
-) ENGINE = MergeTree ORDER BY id`, fullTable)
+  name String,
+  __wallaby_operation String,
+  __wallaby_deleted Bool,
+  __wallaby_source_position String
+) ENGINE = MergeTree ORDER BY (id, __wallaby_source_position)`, fullTable)
 	if _, err := db.ExecContext(ctx, createSQL); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
 
 	dest := &clickhouse.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "clickhouse-test",
 		Type: connector.EndpointClickHouse,
 		Options: map[string]string{
 			"dsn":                dsn,
-			"database":           database,
-			"table":              table,
 			"meta_table_enabled": "false",
-			"write_mode":         "target",
 		},
 	}
 	if err := dest.Open(ctx, spec); err != nil {
@@ -68,25 +67,29 @@ func TestClickHouseMutations(t *testing.T) {
 		Columns: []connector.Column{
 			{Name: "id", Type: "UInt64"},
 			{Name: "name", Type: "String"},
+			{Name: connector.AppendOperationColumn, Type: "String"},
+			{Name: connector.AppendDeletedColumn, Type: "Bool"},
+			{Name: connector.AppendSourcePositionColumn, Type: "String"},
 		},
 	}
+	appendPolicy := connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend}
 
 	insert := connector.Record{
 		Table:     table,
 		Operation: connector.OpInsert,
 		Key:       recordKey(t, map[string]any{"id": uint64(1)}),
 		After: map[string]any{
-			"id":   uint64(1),
-			"name": "alpha",
+			"id": uint64(1), "name": "alpha",
+			connector.AppendOperationColumn: "insert", connector.AppendDeletedColumn: false, connector.AppendSourcePositionColumn: "1",
 		},
 	}
-	batch := connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "1"}}
+	batch := connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "1"}, WritePolicy: appendPolicy}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("insert write: %v", err)
 	}
 
 	var name string
-	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT name FROM %s WHERE id = 1", fullTable)).Scan(&name); err != nil {
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT name FROM %s WHERE id = 1 ORDER BY __wallaby_source_position DESC LIMIT 1", fullTable)).Scan(&name); err != nil {
 		t.Fatalf("select after insert: %v", err)
 	}
 	if name != "alpha" {
@@ -98,18 +101,15 @@ func TestClickHouseMutations(t *testing.T) {
 		Operation: connector.OpUpdate,
 		Key:       recordKey(t, map[string]any{"id": uint64(1)}),
 		After: map[string]any{
-			"id":   uint64(1),
-			"name": "beta",
+			"id": uint64(1), "name": "beta",
+			connector.AppendOperationColumn: "update", connector.AppendDeletedColumn: false, connector.AppendSourcePositionColumn: "2",
 		},
 	}
-	batch = connector.Batch{Records: []connector.Record{update}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "2"}}
+	batch = connector.Batch{Records: []connector.Record{update}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "2"}, WritePolicy: appendPolicy}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("update write: %v", err)
 	}
-	if err := waitForClickHouseMutations(ctx, db, database, table, 30*time.Second); err != nil {
-		t.Fatalf("wait for update mutation: %v", err)
-	}
-	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT name FROM %s WHERE id = 1", fullTable)).Scan(&name); err != nil {
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT name FROM %s WHERE id = 1 ORDER BY __wallaby_source_position DESC LIMIT 1", fullTable)).Scan(&name); err != nil {
 		t.Fatalf("select after update: %v", err)
 	}
 	if name != "beta" {
@@ -120,21 +120,21 @@ func TestClickHouseMutations(t *testing.T) {
 		Table:     table,
 		Operation: connector.OpDelete,
 		Key:       recordKey(t, map[string]any{"id": uint64(1)}),
+		After: map[string]any{
+			"id": uint64(1), "name": "beta",
+			connector.AppendOperationColumn: "delete", connector.AppendDeletedColumn: true, connector.AppendSourcePositionColumn: "3",
+		},
 	}
-	batch = connector.Batch{Records: []connector.Record{del}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "3"}}
+	batch = connector.Batch{Records: []connector.Record{del}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "3"}, WritePolicy: appendPolicy}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("delete write: %v", err)
 	}
-	if err := waitForClickHouseMutations(ctx, db, database, table, 30*time.Second); err != nil {
-		t.Fatalf("wait for delete mutation: %v", err)
+	var count, tombstones int
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT count(), countIf(__wallaby_deleted) FROM %s", fullTable)).Scan(&count, &tombstones); err != nil {
+		t.Fatalf("count append changelog: %v", err)
 	}
-
-	var count int
-	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT count() FROM %s", fullTable)).Scan(&count); err != nil {
-		t.Fatalf("count after delete: %v", err)
-	}
-	if count != 0 {
-		t.Fatalf("expected 0 rows after delete, got %d", count)
+	if count != 3 || tombstones != 1 {
+		t.Fatalf("append changelog rows/tombstones=%d/%d, want 3/1", count, tombstones)
 	}
 }
 
@@ -179,13 +179,11 @@ func TestClickHouseStagingAndDDL(t *testing.T) {
 	}
 
 	dest := &clickhouse.Destination{}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "clickhouse-staging",
 		Type: connector.EndpointClickHouse,
 		Options: map[string]string{
 			"dsn":                dsn,
-			"database":           database,
-			"table":              table,
 			"batch_mode":         "staging",
 			"batch_resolution":   "replace",
 			"meta_table_enabled": "false",
@@ -204,6 +202,7 @@ func TestClickHouseStagingAndDDL(t *testing.T) {
 			{Name: "name", Type: "String"},
 		},
 	}
+	appendPolicy := connector.TableWritePolicy{Mode: connector.ResolvedWriteAppend}
 
 	load := connector.Record{
 		Table:     table,
@@ -214,7 +213,7 @@ func TestClickHouseStagingAndDDL(t *testing.T) {
 			"name": "staged",
 		},
 	}
-	batch := connector.Batch{Records: []connector.Record{load}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "1"}}
+	batch := connector.Batch{Records: []connector.Record{load}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "1"}, WritePolicy: appendPolicy}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("write staging batch: %v", err)
 	}
@@ -251,7 +250,7 @@ func TestClickHouseStagingAndDDL(t *testing.T) {
 			"extra": "ok",
 		},
 	}
-	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "2"}}
+	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "2"}, WritePolicy: appendPolicy}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("insert after ddl: %v", err)
 	}
@@ -287,7 +286,7 @@ func TestClickHouseStagingAndDDL(t *testing.T) {
 			"extra":        "v2",
 		},
 	}
-	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "3"}}
+	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "3"}, WritePolicy: appendPolicy}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("insert after rename ddl: %v", err)
 	}
@@ -322,7 +321,7 @@ func TestClickHouseStagingAndDDL(t *testing.T) {
 			"extra":        "v3",
 		},
 	}
-	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "4"}}
+	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "4"}, WritePolicy: appendPolicy}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("insert after type ddl: %v", err)
 	}
@@ -355,7 +354,7 @@ func TestClickHouseStagingAndDDL(t *testing.T) {
 			"display_name": "dropped",
 		},
 	}
-	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "5"}}
+	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "5"}, WritePolicy: appendPolicy}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("insert after drop ddl: %v", err)
 	}
@@ -381,7 +380,6 @@ func TestClickHouseStagingAndDDL(t *testing.T) {
 		t.Fatalf("close destination after rename: %v", err)
 	}
 	dest = &clickhouse.Destination{}
-	spec.Options["table"] = renamedTable
 	if err := dest.Open(ctx, spec); err != nil {
 		t.Fatalf("reopen destination after rename: %v", err)
 	}
@@ -397,7 +395,7 @@ func TestClickHouseStagingAndDDL(t *testing.T) {
 			"display_name": "renamed_table",
 		},
 	}
-	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "6"}}
+	batch = connector.Batch{Records: []connector.Record{insert}, Schema: schema, Checkpoint: connector.Checkpoint{LSN: "6"}, WritePolicy: appendPolicy}
 	if err := dest.Write(ctx, batch); err != nil {
 		t.Fatalf("insert after rename table ddl: %v", err)
 	}
@@ -408,27 +406,4 @@ func TestClickHouseStagingAndDDL(t *testing.T) {
 	if renamedTableVal != "renamed_table" {
 		t.Fatalf("unexpected value after rename table ddl: %s", renamedTableVal)
 	}
-}
-
-func waitForClickHouseMutations(ctx context.Context, db *sql.DB, database, table string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		var count int
-		err := db.QueryRowContext(ctx,
-			"SELECT count() FROM system.mutations WHERE database = ? AND table = ? AND is_done = 0",
-			database, table,
-		).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("query mutations: %w", err)
-		}
-		if count == 0 {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
-	return errors.New("clickhouse mutation timeout")
 }

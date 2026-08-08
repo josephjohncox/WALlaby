@@ -12,15 +12,7 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-// SetStagedHooks installs deterministic response-loss fault injection for the
-// staged COPY profile. Production callers leave every hook nil.
-func (d *Destination) SetStagedHooks(hooks StagedHooks) {
-	d.stagedHooksMu.Lock()
-	d.stagedHooks = hooks
-	d.stagedHooksMu.Unlock()
-}
-
-func (d *Destination) stagedHooksSnapshot() StagedHooks {
+func (d *Destination) stagedHooksSnapshot() stagedHooks {
 	d.stagedHooksMu.RLock()
 	defer d.stagedHooksMu.RUnlock()
 	return d.stagedHooks
@@ -36,7 +28,7 @@ func (d *Destination) stagedSessionShim(cfg stagedConfig) managedConfig {
 	}
 }
 
-func (d *Destination) openManagedStaged(ctx context.Context, dsn string, spec connector.Spec) (resultErr error) {
+func (d *Destination) openManagedStaged(ctx context.Context, dsn string, spec connector.RuntimeSpec) (resultErr error) {
 	ctx, endAdmission := telemetry.StartSnowflakeManagedSpan(ctx, "admission", "", "", 0, 0)
 	defer func() { endAdmission(resultErr) }()
 	cfg, err := stagedConfigFromSpec(dsn, spec)
@@ -169,7 +161,7 @@ func (d *Destination) CleanupManagedStaged(ctx context.Context, flowIncarnationI
 	if d.db == nil || d.managedProfile != connector.ManagedProfilePostgresToSnowflakeStagedAppendV1 {
 		return 0, errors.New("managed staged Snowflake destination not initialized")
 	}
-	if err := d.validateStagedSnowflakeReceiptScope(ctx, connector.DeliveryIntent{FlowIncarnationID: flowIncarnationID}); err != nil {
+	if err := d.validateStagedSnowflakeReceiptScope(ctx, connector.DeliveryIntent{FlowIncarnationID: flowIncarnationID, LogicalBatchID: "scope-validation"}); err != nil {
 		return 0, err
 	}
 	return d.newStagedDriver().cleanup(ctx, flowIncarnationID)

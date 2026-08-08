@@ -27,6 +27,31 @@ func TestTranslatePostgresDDL_PreservesQuotedCase(t *testing.T) {
 	}
 }
 
+func TestTranslatePlanDDLPreservesExactWhitespaceAndCaseIdentifiers(t *testing.T) {
+	t.Parallel()
+	plan := schemadiff.Plan{Changes: []schemadiff.Change{
+		{Type: schemadiff.ChangeAddColumn, Namespace: " ", Table: " ", Column: "ID", ToType: "text"},
+		{Type: schemadiff.ChangeAddColumn, Namespace: " ", Table: " ", Column: "id", ToType: "text"},
+		{Type: schemadiff.ChangeAddColumn, Namespace: " ", Table: " ", Column: " id ", ToType: "text"},
+		{Type: schemadiff.ChangeRenameColumn, Namespace: " ", Table: " ", Column: "ID", ToColumn: " ID "},
+	}}
+	statements, err := TranslatePlanDDL(connector.Schema{Namespace: " ", Name: " "}, plan, DialectConfigFor(DialectPostgres), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statements) != 4 {
+		t.Fatalf("exact identifier statements=%v", statements)
+	}
+	for index, identifier := range []string{`"ID"`, `"id"`, `" id "`} {
+		if !strings.Contains(statements[index], `" "." "`) || !strings.Contains(statements[index], identifier) {
+			t.Fatalf("statement[%d] lost exact identifiers: %s", index, statements[index])
+		}
+	}
+	if !strings.Contains(statements[3], `"ID"`) || !strings.Contains(statements[3], `" ID "`) || !strings.Contains(statements[3], `" "." "`) {
+		t.Fatalf("rename statement lost exact identifiers: %s", statements[3])
+	}
+}
+
 func TestTranslatePostgresDDL_UnquotedFolded(t *testing.T) {
 	ddl := `CREATE TABLE FooBar (Bar INT)`
 	stmts, err := TranslatePostgresDDL(ddl, DialectConfigFor(DialectSnowflake), nil)

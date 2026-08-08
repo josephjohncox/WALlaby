@@ -1,54 +1,63 @@
-# WALlaby flow only. Provision the versioned canonical S3 bucket, S3 Tables
-# table bucket/Glue integration, IAM/Lake Formation grants, and Snowflake
-# read-only catalog link separately as documented in
-# docs/guides/s3-tables-snowflake.md.
-
-variable "postgres_dsn" {
-  type      = string
-  sensitive = true
-}
-
-resource "wallaby_flow" "postgres_to_s3tables" {
-  name              = "postgres-to-s3tables"
+resource "wallaby_flow" "postgres_to_iceberg_s3tables" {
+  name              = "postgres_to_iceberg_s3tables"
   wire_format       = "parquet"
-  start_immediately = true
+  start_immediately = false
 
   source = {
-    name = "postgres-source"
-    type = "postgres"
-    options = {
-      dsn                      = var.postgres_dsn
-      slot                     = "wallaby_s3tables"
-      publication              = "wallaby_s3tables"
-      managed                  = "true"
-      bootstrap                = "never"
-      create_slot              = "false"
-      ensure_state             = "false"
-      ensure_publication       = "false"
-      sync_publication         = "false"
-      streaming_transactions   = "true"
-      source_system_identifier = "REPLACE_WITH_PG_SYSTEM_IDENTIFIER"
-      source_lineage_id        = "REPLACE_WITH_STABLE_SOURCE_LINEAGE"
-      publication_revision     = "REPLACE_WITH_PUBLICATION_FINGERPRINT"
+    name = "pg-source-s3tables"
+    postgres_source = {
+      mode = "POSTGRES_SOURCE_MODE_CDC"
+      connection = {
+        dsn = "postgres://user:pass@localhost:5432/app?sslmode=disable"
+      }
+      slot               = "wallaby_s3tables_slot"
+      publication        = "wallaby_s3tables_pub"
+      publication_tables = ["public.events"]
+      managed            = true
+      bootstrap          = "BOOTSTRAP_MODE_NEVER"
+      format             = "WIRE_FORMAT_PARQUET"
     }
   }
 
-  destinations = [{
-    name = "s3tables-lake"
-    type = "iceberg"
-    options = {
-      catalog_profile         = "s3tables"
-      destination_revision_id = "s3tables-lake-v1"
-      namespace               = "wallaby"
-      table_prefix            = "cdc_"
-      control_table           = "__wallaby_control"
+  destinations = [
+    {
+      name = "iceberg-s3tables"
+      iceberg = {
+        catalog_profile         = "ICEBERG_CATALOG_PROFILE_S3_TABLES"
+        control_table           = "__wallaby_control"
+        destination_revision_id = "iceberg-s3tables-v1"
+      }
     }
-  }]
+  ]
 
   config = {
     ack_policy = "materialized"
+
     materialization = {
-      projection_id = "canonical_cdc_parquet_v1"
+      projection_id = "canonical_cdc_parquet_v2"
+    }
+
+    table_mappings = {
+      version = 2
+      destinations = [
+        {
+          destination = "iceberg-s3tables"
+          future_tables = {
+            action        = "include"
+            target_schema = "{{ .Schema }}"
+            target_table  = "{{ .Table }}"
+            future_columns = {
+              action        = "include"
+              target_column = "{{ .Column }}"
+            }
+            write = {
+              mode        = "append"
+              key_columns = []
+            }
+          }
+          tables = []
+        }
+      ]
     }
   }
 }

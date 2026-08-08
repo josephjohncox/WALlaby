@@ -73,6 +73,7 @@ nav:
       - Iceberg: connectors/iceberg.md
       - ClickHouse: connectors/clickhouse.md
       - Snowflake: connectors/snowflake.md
+      - Snowpipe: connectors/snowpipe.md
       - Extended connector notes: connectors.md
   - Reference:
       - Overview: reference/index.md
@@ -89,6 +90,7 @@ nav:
   - Development:
       - Contributor guide: development/index.md
       - Durable core implementation report: implementation/durable-core.md
+      - Table mappings: implementation/table-mappings.md
       - Process-failure matrix and soak: development/failure-matrix.md
       - Formal verification: specs.md
       - Benchmarks: benchmarks.md

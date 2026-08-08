@@ -17,7 +17,7 @@ import (
 	"github.com/snowflakedb/gosnowflake"
 )
 
-func (d *Destination) openManaged(ctx context.Context, dsn string, spec connector.Spec) (resultErr error) {
+func (d *Destination) openManaged(ctx context.Context, dsn string, spec connector.RuntimeSpec) (resultErr error) {
 	ctx, endAdmission := telemetry.StartSnowflakeManagedSpan(ctx, "admission", "", "", 0, 0)
 	defer func() { endAdmission(resultErr) }()
 	cfg, err := managedConfigFromSpec(dsn, spec)
@@ -100,12 +100,12 @@ func validateManagedSnowflakeCleanStartState(receiptRows int, targetHasRows bool
 
 // ValidateManagedProfileSpec performs the complete side-effect-free portion of
 // managed Snowflake admission.
-func ValidateManagedProfileSpec(spec connector.Spec) error {
+func ValidateManagedProfileSpec(spec connector.RuntimeSpec) error {
 	_, err := managedConfigFromSpec(strings.TrimSpace(spec.Options["dsn"]), spec)
 	return err
 }
 
-func managedConfigFromSpec(dsn string, spec connector.Spec) (managedConfig, error) {
+func managedConfigFromSpec(dsn string, spec connector.RuntimeSpec) (managedConfig, error) {
 	const profileName = connector.ManagedProfilePostgresToSnowflakeSQLV1
 	options := spec.Options
 	if strings.TrimSpace(options["managed_profile"]) != profileName {
@@ -142,12 +142,12 @@ func managedConfigFromSpec(dsn string, spec connector.Spec) (managedConfig, erro
 		ownerRole: strings.TrimSpace(options["managed_owner_role"]), executionRole: strings.TrimSpace(options["managed_execution_role"]),
 		warehouse: strings.TrimSpace(options["managed_warehouse"]), snowflakeVersion: strings.TrimSpace(options["managed_snowflake_version"]),
 		targetCreatedOn: strings.TrimSpace(options["managed_target_created_on"]), receiptsCreatedOn: strings.TrimSpace(options["managed_receipts_created_on"]),
-		sourceSchema: strings.TrimSpace(options["managed_source_schema"]), sourceTable: strings.TrimSpace(options["managed_source_table"]),
+		sourceSchema: options["managed_source_schema"], sourceTable: options["managed_source_table"],
 		schemaContractHash:  strings.TrimSpace(options["managed_schema_contract_hash"]),
 		destinationRevision: strings.TrimSpace(options["destination_revision_id"]),
 	}
-	if cfg.flowID == "" || cfg.account == "" || cfg.snowflakeVersion == "" || cfg.sourceSchema == "" || cfg.sourceTable == "" || cfg.destinationRevision == "" || cfg.targetCreatedOn == "" || cfg.receiptsCreatedOn == "" {
-		return managedConfig{}, errors.New("managed Snowflake flow, account, version, object creation identities, source relation, and destination revision are required")
+	if cfg.flowID == "" || cfg.account == "" || cfg.snowflakeVersion == "" || cfg.sourceSchema == "" || cfg.sourceTable == "" || strings.ContainsRune(cfg.sourceSchema, '\x00') || strings.ContainsRune(cfg.sourceTable, '\x00') || cfg.destinationRevision == "" || cfg.targetCreatedOn == "" || cfg.receiptsCreatedOn == "" {
+		return managedConfig{}, errors.New("managed Snowflake flow, account, version, object creation identities, exact nonempty NUL-free source relation, and destination revision are required")
 	}
 	if len(cfg.flowID) > 1024 || strings.TrimSpace(cfg.flowID) != cfg.flowID || strings.ContainsAny(cfg.flowID, "\r\n\x00") {
 		return managedConfig{}, errors.New("managed Snowflake flow_id must be a bounded single-line exact value")
@@ -193,9 +193,11 @@ func managedConfigFromSpec(dsn string, spec connector.Spec) (managedConfig, erro
 	if err := json.Unmarshal([]byte(options["managed_schema_contract"]), &cfg.schemaContract); err != nil {
 		return managedConfig{}, fmt.Errorf("decode managed Snowflake schema contract: %w", err)
 	}
-	if cfg.schemaContract.Namespace != cfg.sourceSchema || cfg.schemaContract.Name != cfg.sourceTable {
-		return managedConfig{}, errors.New("managed Snowflake schema contract does not identify the configured source relation")
+	if cfg.schemaContract.Namespace != cfg.schema || cfg.schemaContract.Name != cfg.table {
+		return managedConfig{}, errors.New("managed Snowflake projected schema contract does not identify the provisioned target relation")
 	}
+	// The schema contract is destination-shaped. Keep the independently
+	// persisted PostgreSQL source identity byte-exact for publication admission.
 	contractHash, err := ManagedSchemaContractHash(cfg.schemaContract)
 	if err != nil {
 		return managedConfig{}, err
@@ -214,7 +216,7 @@ func managedConfigFromSpec(dsn string, spec connector.Spec) (managedConfig, erro
 			return managedConfig{}, fmt.Errorf("managed Snowflake schema contract rejects generated column %q", column.Name)
 		}
 	}
-	if strings.TrimSpace(options["type_mappings"]) != "" || strings.TrimSpace(options["type_mappings_file"]) != "" {
+	if strings.TrimSpace(options["type_mappings"]) != "" {
 		return managedConfig{}, errors.New("managed Snowflake profile rejects type mapping overrides until each mapping has real-service recovery evidence")
 	}
 	cfg.typeMappings = defaultSnowflakeTypeMappings()
@@ -242,8 +244,8 @@ func managedConfigFromSpec(dsn string, spec connector.Spec) (managedConfig, erro
 		return managedConfig{}, err
 	}
 	cfg.validateEveryConnection = true
-	if strings.ToLower(strings.TrimSpace(options["write_mode"])) != "target" || strings.ToLower(strings.TrimSpace(options["batch_mode"])) != "target" || strings.ToLower(strings.TrimSpace(options["batch_resolution"])) != "none" {
-		return managedConfig{}, errors.New("managed Snowflake profile requires target write/batch mode and batch_resolution=none")
+	if strings.ToLower(strings.TrimSpace(options["batch_mode"])) != "target" || strings.ToLower(strings.TrimSpace(options["batch_resolution"])) != "none" {
+		return managedConfig{}, errors.New("managed Snowflake profile requires target batch mode and batch_resolution=none")
 	}
 	metaEnabled, err := parseManagedSnowflakeBoolOption(options, "meta_table_enabled", true)
 	if err != nil {
@@ -276,8 +278,8 @@ func managedConfigFromSpec(dsn string, spec connector.Spec) (managedConfig, erro
 func ValidateManagedProfileOptions(options map[string]string) error {
 	allowed := map[string]struct{}{
 		"dsn": {}, "flow_id": {}, "managed_profile": {}, "destination_revision_id": {},
-		"write_mode": {}, "batch_mode": {}, "batch_resolution": {}, "meta_table_enabled": {},
-		"disable_transactions": {}, "session_keep_alive": {}, "type_mappings": {}, "type_mappings_file": {},
+		"batch_mode": {}, "batch_resolution": {}, "meta_table_enabled": {},
+		"disable_transactions": {}, "session_keep_alive": {},
 		"managed_account": {}, "managed_database": {}, "managed_schema": {}, "managed_table": {},
 		"managed_receipts_table": {}, "managed_owner_role": {}, "managed_execution_role": {}, "managed_warehouse": {},
 		"managed_snowflake_version": {}, "managed_target_created_on": {}, "managed_receipts_created_on": {},
@@ -286,11 +288,6 @@ func ValidateManagedProfileOptions(options map[string]string) error {
 		"managed_max_transaction_rows": {}, "managed_max_transaction_bytes": {},
 		"managed_max_transaction_fragments": {}, "managed_max_open_conns": {},
 		"managed_statement_timeout_seconds": {}, "managed_hybrid_table_lock_timeout_seconds": {},
-		// Known generic options remain in the set so the tailored rejection below
-		// can explain which incompatible mode was requested.
-		"schema": {}, "table": {}, "staging_schema": {}, "staging_table": {}, "staging_suffix": {},
-		"warehouse": {}, "warehouse_size": {}, "warehouse_auto_suspend": {}, "warehouse_auto_resume": {},
-		"meta_schema": {}, "meta_table": {}, "meta_pk_prefix": {},
 	}
 	for option := range options {
 		if _, ok := allowed[option]; !ok {

@@ -104,7 +104,7 @@ func (d *Destination) loadDDLTableState(ctx context.Context, namespace, table st
 		if err := rows.Scan(&name, &typeName, &nullable, &generated); err != nil {
 			return ddlTableState{}, fmt.Errorf("scan DDL target column: %w", err)
 		}
-		state.columns[normalizeDDLName(name)] = ddlColumnState{
+		state.columns[name] = ddlColumnState{
 			typeName:  normalizePostgresDDLType(typeName),
 			nullable:  nullable,
 			generated: generated,
@@ -145,17 +145,17 @@ func reconcilePostgresDDLPlanChange(schemaDef connector.Schema, plan internalsch
 		changeNamespace, changeTable := ddlChangeTable(schemaDef, change)
 		laterNamespace, laterTable := ddlChangeTable(schemaDef, later)
 		if later.Type == internalschema.ChangeRenameColumn &&
-			strings.EqualFold(changeNamespace, laterNamespace) &&
-			strings.EqualFold(changeTable, laterTable) &&
-			strings.EqualFold(finalColumn, later.Column) {
+			changeNamespace == laterNamespace &&
+			changeTable == laterTable &&
+			finalColumn == later.Column {
 			finalColumn = later.ToColumn
 		}
 	}
-	if strings.EqualFold(finalColumn, change.Column) {
+	if finalColumn == change.Column {
 		return reconcilePostgresDDLChange(change, table)
 	}
-	_, originalExists := table.columns[normalizeDDLName(change.Column)]
-	_, finalExists := table.columns[normalizeDDLName(finalColumn)]
+	_, originalExists := table.columns[change.Column]
+	_, finalExists := table.columns[finalColumn]
 	if originalExists && finalExists {
 		return connector.DDLReconcileIndeterminate
 	}
@@ -171,8 +171,8 @@ func reconcilePostgresDDLPlanChange(schemaDef connector.Schema, plan internalsch
 }
 
 func reconcilePostgresDDLChange(change internalschema.Change, table ddlTableState) connector.DDLReconcileResult {
-	column := normalizeDDLName(change.Column)
-	toColumn := normalizeDDLName(change.ToColumn)
+	column := change.Column
+	toColumn := change.ToColumn
 	actual, columnExists := table.columns[column]
 	switch change.Type {
 	case internalschema.ChangeCreateTable:
@@ -248,23 +248,19 @@ func reconcilePostgresDDLChange(change internalschema.Change, table ddlTableStat
 }
 
 func ddlChangeTable(schemaDef connector.Schema, change internalschema.Change) (string, string) {
-	namespace := strings.TrimSpace(change.Namespace)
+	namespace := change.Namespace
 	if namespace == "" {
-		namespace = strings.TrimSpace(schemaDef.Namespace)
+		namespace = schemaDef.Namespace
 	}
-	table := strings.TrimSpace(change.Table)
+	table := change.Table
 	if table == "" {
-		table = strings.TrimSpace(schemaDef.Name)
+		table = schemaDef.Name
 	}
 	return namespace, table
 }
 
 func ddlCatalogKey(namespace, table string) string {
-	return normalizeDDLName(namespace) + "\x00" + normalizeDDLName(table)
-}
-
-func normalizeDDLName(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
+	return namespace + "\x00" + table
 }
 
 func postgresDDLTypesEquivalent(actual, expected string) bool {

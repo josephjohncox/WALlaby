@@ -35,26 +35,16 @@ var (
 // cover static contract violations (a missing FINAL view, a wrong deduplication
 // window, a bad table definition): those are operator misconfigurations that
 // must fail closed instead of silently degrading the destination.
-var errManagedReplicaLost = errors.New("managed ClickHouse replica metadata is lost")
+var (
+	errManagedReplicaLost         = errors.New("managed ClickHouse replica metadata is lost")
+	errManagedEndpointUnavailable = errors.New("managed ClickHouse endpoint is unavailable")
+)
 
 const (
 	managedDeploymentKeeper      = "self-managed-keeper"
 	managedMinDedupWindow        = uint64(1000)
 	managedMinDedupWindowSeconds = uint64(3600)
 )
-
-// ManagedHooks exposes deterministic post-commit boundaries to real-service
-// tests. Production callers leave every hook nil.
-type ManagedHooks struct {
-	AfterFragment func(fragmentOrdinal uint64) error
-	AfterReceipt  func() error
-}
-
-// SetManagedHooks installs deterministic failure injection for managed profile
-// tests. Hooks run only after ClickHouse has acknowledged the named insert.
-func (d *Destination) SetManagedHooks(hooks ManagedHooks) {
-	d.managedHooks = hooks
-}
 
 type managedConfig struct {
 	database            string
@@ -115,7 +105,7 @@ type managedTableDefinition struct {
 	columnKinds  map[string]string
 }
 
-func (d *Destination) openManaged(ctx context.Context, dsn string, spec connector.Spec) error {
+func (d *Destination) openManaged(ctx context.Context, dsn string, spec connector.RuntimeSpec) error {
 	cfg, err := managedConfigFromSpec(spec)
 	if err != nil {
 		return err
@@ -174,8 +164,12 @@ func (d *Destination) openManaged(ctx context.Context, dsn string, spec connecto
 	replicaOptions.Compression = &chclient.Compression{Method: chclient.CompressionLZ4}
 	replicaOptions.MaxOpenConns = 2
 
-	conn, version, primaryErr := openManagedEndpoint(ctx, options, profile, "primary")
-	replicaConn, replicaVersion, replicaErr := openManagedEndpoint(ctx, replicaOptions, profile, "replica")
+	openEndpoint := d.managedOpenEndpointHook
+	if openEndpoint == nil {
+		openEndpoint = openManagedEndpoint
+	}
+	conn, version, primaryErr := openEndpoint(ctx, options, profile, "primary")
+	replicaConn, replicaVersion, replicaErr := openEndpoint(ctx, replicaOptions, profile, "replica")
 	opened := false
 	defer func() {
 		if opened {
@@ -195,7 +189,7 @@ func (d *Destination) openManaged(ctx context.Context, dsn string, spec connecto
 	d.managedConfig = cfg
 	d.managedRecoveryOnly = false
 	validationErrs := []error{primaryErr, replicaErr}
-	lossObserved := primaryErr != nil || replicaErr != nil
+	lossObserved := errors.Is(primaryErr, errManagedEndpointUnavailable) || errors.Is(replicaErr, errManagedEndpointUnavailable)
 	if primaryErr == nil && replicaErr == nil {
 		d.managedVersion = version
 		if err := d.validateManagedTarget(ctx, true, 0, 0); err == nil {
@@ -214,8 +208,9 @@ func (d *Destination) openManaged(ctx context.Context, dsn string, spec connecto
 		endpointErr     error
 		version         string
 		expectedReplica string
+		primary         bool
 	}{
-		{conn: conn, endpointErr: primaryErr, version: version, expectedReplica: cfg.replicaNames[0]},
+		{conn: conn, endpointErr: primaryErr, version: version, expectedReplica: cfg.replicaNames[0], primary: true},
 		{conn: replicaConn, endpointErr: replicaErr, version: replicaVersion, expectedReplica: cfg.replicaNames[1]},
 	} {
 		if survivor.endpointErr != nil || survivor.conn == nil {
@@ -232,12 +227,29 @@ func (d *Destination) openManaged(ctx context.Context, dsn string, spec connecto
 			continue
 		}
 		d.managedVersion = survivor.version
-		if err := d.validateManagedConnectionTarget(ctx, survivor.conn, survivor.expectedReplica, true, true, true, 0, 0); err != nil {
-			validationErrs = append(validationErrs, fmt.Errorf("recovery-only replica %s admission: %w", survivor.expectedReplica, err))
+		var validationErr error
+		if d.managedValidateTargetHook != nil {
+			validationErr = d.managedValidateTargetHook(ctx, survivor.conn, survivor.expectedReplica, true)
+		} else {
+			validationErr = d.validateManagedConnectionTarget(ctx, survivor.conn, survivor.expectedReplica, true, true, true, 0, 0)
+		}
+		if validationErr != nil {
+			validationErrs = append(validationErrs, fmt.Errorf("recovery-only replica %s admission: %w", survivor.expectedReplica, validationErr))
 			continue
 		}
 		d.managedVersion = survivor.version
 		d.managedRecoveryOnly = true
+		if survivor.primary {
+			if d.managedReplicaConn != nil {
+				_ = d.managedReplicaConn.Close()
+			}
+			d.managedReplicaConn = nil
+		} else {
+			if d.managedConn != nil {
+				_ = d.managedConn.Close()
+			}
+			d.managedConn = nil
+		}
 		opened = true
 		return nil
 	}
@@ -252,17 +264,20 @@ func (d *Destination) openManaged(ctx context.Context, dsn string, spec connecto
 func openManagedEndpoint(ctx context.Context, options *chclient.Options, profile connector.ManagedProfileContract, endpoint string) (chdriver.Conn, string, error) {
 	conn, err := chclient.Open(options)
 	if err != nil {
-		return nil, "", fmt.Errorf("open managed ClickHouse %s: %w", endpoint, err)
+		return nil, "", fmt.Errorf("%w: open managed ClickHouse %s: %w", errManagedEndpointUnavailable, endpoint, err)
 	}
 	if err := conn.Ping(ctx); err != nil {
-		return conn, "", fmt.Errorf("ping managed ClickHouse %s: %w", endpoint, err)
+		_ = conn.Close()
+		return nil, "", fmt.Errorf("%w: ping managed ClickHouse %s: %w", errManagedEndpointUnavailable, endpoint, err)
 	}
 	var version string
 	if err := conn.QueryRow(ctx, "SELECT version()").Scan(&version); err != nil {
-		return conn, "", fmt.Errorf("read managed ClickHouse %s version: %w", endpoint, err)
+		_ = conn.Close()
+		return nil, "", fmt.Errorf("%w: read managed ClickHouse %s version: %w", errManagedEndpointUnavailable, endpoint, err)
 	}
 	if !profile.SupportsClickHouseVersion(version) {
-		return conn, version, fmt.Errorf("managed profile %s does not admit ClickHouse %s %s", profile.Name, endpoint, version)
+		_ = conn.Close()
+		return nil, version, fmt.Errorf("managed profile %s does not admit ClickHouse %s %s", profile.Name, endpoint, version)
 	}
 	return conn, version, nil
 }
@@ -313,8 +328,31 @@ func configureManagedTLS(options *chclient.Options, specOptions map[string]strin
 	return nil
 }
 
-func managedConfigFromSpec(spec connector.Spec) (managedConfig, error) {
+// ValidateManagedProfileOptions rejects every option outside the exact
+// PostgreSQL-to-ClickHouse append profile before connector side effects.
+func ValidateManagedProfileOptions(options map[string]string) error {
+	allowed := map[string]struct{}{
+		"dsn": {}, "flow_id": {}, "managed_profile": {}, "destination_revision_id": {}, "type_mappings": {},
+		"batch_mode": {}, "batch_resolution": {}, "meta_table_enabled": {}, "async_insert": {}, "wait_for_async_insert": {},
+		"insecure": {}, "tls_ca_file": {}, "tls_server_name": {}, "tls_cert_file": {}, "tls_key_file": {}, "managed_replica_tls_server_name": {},
+		"managed_deployment": {}, "managed_database": {}, "managed_changelog_table": {}, "managed_receipts_table": {}, "managed_final_view": {},
+		"managed_keeper_path_prefix": {}, "managed_keeper_address": {}, "managed_replica_dsn": {}, "managed_replica_names": {}, "insert_quorum": {},
+		"managed_max_active_parts": {}, "managed_max_transaction_rows": {}, "managed_max_transaction_bytes": {}, "managed_max_transaction_fragments": {},
+		"managed_max_rows_per_batch": {}, "managed_max_batch_bytes": {},
+	}
+	for option := range options {
+		if _, ok := allowed[option]; !ok {
+			return fmt.Errorf("managed ClickHouse profile does not allow option %s", option)
+		}
+	}
+	return nil
+}
+
+func managedConfigFromSpec(spec connector.RuntimeSpec) (managedConfig, error) {
 	options := spec.Options
+	if err := ValidateManagedProfileOptions(options); err != nil {
+		return managedConfig{}, err
+	}
 	cfg := managedConfig{
 		database:         strings.TrimSpace(options["managed_database"]),
 		changelogTable:   strings.TrimSpace(options["managed_changelog_table"]),
@@ -391,9 +429,6 @@ func managedConfigFromSpec(spec connector.Spec) (managedConfig, error) {
 	}
 	// #nosec G115 -- parseManagedUintOption bounds bytes at maxTransactionBytes.
 	cfg.maxBatchBytes = int64(bytes)
-	if mode := strings.ToLower(strings.TrimSpace(options["write_mode"])); mode != "managed_append" {
-		return managedConfig{}, fmt.Errorf("managed ClickHouse profile requires write_mode=managed_append; got %q", mode)
-	}
 	if mode := strings.ToLower(strings.TrimSpace(options["batch_mode"])); mode != "target" {
 		return managedConfig{}, fmt.Errorf("managed ClickHouse profile requires batch_mode=target; got %q", mode)
 	}
@@ -488,24 +523,57 @@ func (d *Destination) ManagedClickHouseVersion() string {
 	return d.managedVersion
 }
 
+// InitializeManagedDelivery re-verifies the admitted receipt authority before
+// managed source I/O. Healthy execution remains a strict two-endpoint contract;
+// recovery-only execution may use its one already validated survivor solely to
+// adopt durable receipts while PrepareTransaction continues to fence new writes.
+func (d *Destination) InitializeManagedDelivery(ctx context.Context) error {
+	if d.managedProfile != connector.ManagedProfilePostgresToClickHouseAppendV1 || strings.TrimSpace(d.managedVersion) == "" || len(d.managedConfig.replicaNames) != 2 {
+		return errors.New("managed ClickHouse destination authority not initialized")
+	}
+	validate := func(conn chdriver.Conn, replica string, recoveryOnly bool) error {
+		if d.managedInitializeAuthorityHook != nil {
+			return d.managedInitializeAuthorityHook(ctx, conn, replica, recoveryOnly)
+		}
+		return d.validateManagedConnectionTarget(ctx, conn, replica, true, recoveryOnly, recoveryOnly, 0, 0)
+	}
+	if d.managedRecoveryOnly {
+		if (d.managedConn == nil) == (d.managedReplicaConn == nil) {
+			return errors.New("managed ClickHouse recovery-only authority requires exactly one surviving endpoint")
+		}
+		if d.managedConn != nil {
+			return validate(d.managedConn, d.managedConfig.replicaNames[0], true)
+		}
+		return validate(d.managedReplicaConn, d.managedConfig.replicaNames[1], true)
+	}
+	if d.managedConn == nil || d.managedReplicaConn == nil {
+		return errors.New("managed ClickHouse destination authority requires both endpoints")
+	}
+	if d.managedInitializeAuthorityHook != nil {
+		if err := validate(d.managedConn, d.managedConfig.replicaNames[0], false); err != nil {
+			return err
+		}
+		return validate(d.managedReplicaConn, d.managedConfig.replicaNames[1], false)
+	}
+	return d.validateManagedTarget(ctx, true, 0, 0)
+}
+
 // Apply is intentionally unavailable for the full-transaction append profile.
-func (d *Destination) Apply(context.Context, connector.DeliveryIntent, connector.Batch) (connector.DeliveryEvidence, error) {
+func (d *Destination) Apply(_ context.Context, intent connector.DeliveryIntent, _ connector.Batch) (connector.DeliveryEvidence, error) {
+	if err := intent.Validate(); err != nil {
+		return connector.DeliveryEvidence{}, err
+	}
 	return connector.DeliveryEvidence{}, errors.New("managed ClickHouse append profile requires ApplyTransaction")
 }
 
 // ValidateTransaction proves the immutable envelope and dynamic target capacity
 // before the PostgreSQL coordinator persists a new external attempt.
 func (d *Destination) ValidateTransaction(ctx context.Context, transaction connector.SourceTransaction) error {
-	intent := connector.DeliveryIntent{
-		FlowID: "validation", FlowIncarnationID: "validation", SourceLineageID: transaction.SourceLineageID,
-		Generation: 1, AcquisitionID: "validation", LeaseEpoch: 1, DestinationRevisionID: "validation",
-		PositionID: transaction.Checkpoint.LSN,
-	}
 	contentHash, logicalBatchID, err := connector.SourceTransactionIdentity(transaction)
 	if err != nil {
 		return err
 	}
-	intent.ContentHash, intent.LogicalBatchID = contentHash, logicalBatchID
+	intent := connector.DeliveryIntent{FlowID: "validation", FlowIncarnationID: "validation", SourceLineageID: transaction.SourceLineageID, Generation: 1, AcquisitionID: "validation", LeaseEpoch: 1, DestinationRevisionID: "validation", LogicalBatchID: logicalBatchID, PositionID: transaction.Checkpoint.LSN, ContentHash: contentHash}
 	_, err = d.PrepareTransaction(ctx, intent, transaction)
 	return err
 }
@@ -540,19 +608,9 @@ func (p *preparedManagedTransaction) Apply(ctx context.Context) (connector.Deliv
 		if err := p.destination.insertManagedFragment(ctx, fragment); err != nil {
 			return connector.DeliveryEvidence{}, err
 		}
-		if p.destination.managedHooks.AfterFragment != nil {
-			if err := p.destination.managedHooks.AfterFragment(fragment.Ordinal); err != nil {
-				return connector.DeliveryEvidence{}, fmt.Errorf("%w: injected after ClickHouse fragment %d commit: %w", connector.ErrDeliveryIndeterminate, fragment.Ordinal, err)
-			}
-		}
 	}
 	if err := p.destination.insertManagedReceipt(ctx, p.plan.Receipt); err != nil {
 		return connector.DeliveryEvidence{}, err
-	}
-	if p.destination.managedHooks.AfterReceipt != nil {
-		if err := p.destination.managedHooks.AfterReceipt(); err != nil {
-			return connector.DeliveryEvidence{}, fmt.Errorf("%w: injected after ClickHouse receipt commit: %w", connector.ErrDeliveryIndeterminate, err)
-		}
 	}
 	return connector.DeliveryEvidence{ExternalID: p.plan.Receipt.ExternalID, ContentHash: p.intent.ContentHash}, nil
 }
@@ -562,7 +620,7 @@ func (p *preparedManagedTransaction) Apply(ctx context.Context) (connector.Deliv
 // deduplication token; replay convergence does not depend on the finite token
 // retention window because the event identity is the ReplacingMergeTree key.
 func (d *Destination) ApplyTransaction(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (connector.DeliveryEvidence, error) {
-	if d.managedConn == nil {
+	if d.managedConn == nil && d.managedReplicaConn == nil {
 		return connector.DeliveryEvidence{}, errors.New("managed ClickHouse destination not initialized")
 	}
 	disposition, evidence, err := d.Reconcile(ctx, intent)

@@ -26,7 +26,7 @@ type failingDest struct {
 	err error
 }
 
-func (d *failingDest) Open(context.Context, connector.Spec) error { return nil }
+func (d *failingDest) Open(context.Context, connector.RuntimeSpec) error { return nil }
 func (d *failingDest) Write(context.Context, connector.Batch) error {
 	if d.err == nil {
 		return errors.New("write failed")
@@ -41,7 +41,6 @@ func (d *failingDest) Close(context.Context) error     { return nil }
 func (d *failingDest) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
 		Delivery: connector.DeliverySemantics{
-			Declared:         true,
 			IdempotentReplay: true,
 			ReplaySafe:       true,
 		},
@@ -93,12 +92,12 @@ func TestRunnerPrimaryAckQueuesSecondary(t *testing.T) {
 	checkpointStore := &recordingCheckpointStore{}
 	runner := Runner{
 		Source:           source,
-		SourceSpec:       connector.Spec{Options: map[string]string{"mode": "backfill"}},
+		SourceSpec:       connector.RuntimeSpec{Options: map[string]string{"mode": "backfill"}},
 		Checkpoints:      checkpointStore,
 		CheckpointOutbox: checkpointStore,
 		Destinations: []DestinationConfig{
-			{Spec: connector.Spec{Name: "primary"}, Dest: primaryDest},
-			{Spec: connector.Spec{Name: "secondary"}, Dest: secondaryDest},
+			{Spec: connector.RuntimeSpec{Name: "primary"}, Dest: primaryDest},
+			{Spec: connector.RuntimeSpec{Name: "secondary"}, Dest: secondaryDest},
 		},
 		FlowID:             "flow-test",
 		AckPolicy:          AckPolicyPrimary,
@@ -145,9 +144,9 @@ func TestRunnerDropsSlotOnFailure(t *testing.T) {
 
 	runner := Runner{
 		Source:     source,
-		SourceSpec: connector.Spec{Options: map[string]string{"mode": "backfill"}},
+		SourceSpec: connector.RuntimeSpec{Options: map[string]string{"mode": "backfill"}},
 		Destinations: []DestinationConfig{{
-			Spec: connector.Spec{Name: "dest"},
+			Spec: connector.RuntimeSpec{Name: "dest"},
 			Dest: dest,
 		}},
 		Checkpoints:  &recordingCheckpointStore{},

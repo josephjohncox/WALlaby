@@ -71,7 +71,7 @@ func TestPostgresManagedDeliveryRetryAndRetention(t *testing.T) {
 	}
 	flowID := fmt.Sprintf("delivery-retention-%d", time.Now().UnixNano())
 	defer cleanupAuthorityTest(ctx, pool, flowID)
-	if _, err := engine.Create(ctx, flow.Flow{ID: flowID}); err != nil {
+	if _, err := engine.Create(ctx, flow.Flow{ID: flowID, Source: testFlowSource(connector.RuntimeSpec{Name: "source", Type: connector.EndpointPostgres}), Destinations: testFlowDestinations(connector.RuntimeSpec{Name: "target", Type: connector.EndpointPostgres}), Config: flow.Config{TableMappings: flow.NewTableMappings([]connector.RuntimeSpec{{Name: "target", Type: connector.EndpointPostgres}})}}); err != nil {
 		t.Fatal(err)
 	}
 	_, control, err := engine.PlanStart(ctx, flowID, false)
@@ -91,8 +91,8 @@ func TestPostgresManagedDeliveryRetryAndRetention(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DROP TABLE IF EXISTS public.wallaby_delivery_retention`)
 	}()
 	target := &pgdest.Destination{}
-	if err := target.Open(ctx, connector.Spec{Name: "retry-retention", Type: connector.EndpointPostgres, Options: map[string]string{
-		"dsn": dsn, "write_mode": "target", "batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
+	if err := target.Open(ctx, connector.RuntimeSpec{Name: "retry-retention", Type: connector.EndpointPostgres, Options: map[string]string{
+		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1, "batch_mode": "target", "meta_table_enabled": "false", "synchronous_commit": "on",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -107,29 +107,11 @@ func TestPostgresManagedDeliveryRetryAndRetention(t *testing.T) {
 
 	first := retentionTransaction(table, 3001, "0/500", 1)
 	firstIntent := transactionIntentForFence(t, fence, revisionID, first)
-	if _, err := pool.Exec(ctx, `
-INSERT INTO delivery_manifests (
-  flow_incarnation_id,destination_revision_id,source_lineage_id,position_id,
-  source_transaction_id,content_hash,checkpoint_lsn
-) VALUES ($1,$2,$3,$4,$5,$6,$7)`, fence.FlowIncarnationID, revisionID, firstIntent.SourceLineageID, firstIntent.PositionID, firstIntent.SourceLineageID+":"+first.EndLSN, firstIntent.ContentHash, first.EndLSN); err != nil {
-		t.Fatalf("checkpoint-1 control writer rejected after additive upgrade: %v", err)
-	}
 	failing := &failFirstTransactionDriver{ManagedTransactionDestination: target, fail: true}
-	if _, err := coordinator.DeliverTransaction(ctx, fence, firstIntent, first, failing); !errors.Is(err, connector.ErrDeliveryConflict) {
-		t.Fatalf("checkpoint-1 manifest without immutable payload error=%v, want ErrDeliveryConflict", err)
-	}
-	// The additive migration accepts an old writer's row, but recovery cannot
-	// reconstruct absent historical checkpoint metadata from replay input. Remove
-	// the deliberately indeterminate fixture before testing current-writer retry.
-	if _, err := pool.Exec(ctx, `
-DELETE FROM delivery_manifests
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`, fence.FlowIncarnationID, revisionID, firstIntent.PositionID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := coordinator.DeliverTransaction(ctx, fence, firstIntent, first, failing); err == nil || errors.Is(err, connector.ErrDeliveryIndeterminate) {
+	if _, err := coordinator.DeliverTransaction(ctx, fence, firstIntent, first, managedBaselinePayload(t, first), failing); err == nil || errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("first deterministic failure=%v", err)
 	}
-	grant, err := coordinator.DeliverTransaction(ctx, fence, firstIntent, first, failing)
+	grant, err := coordinator.DeliverTransaction(ctx, fence, firstIntent, first, managedBaselinePayload(t, first), failing)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,37 +127,13 @@ WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`,
 	if adoptedLogicalBatchID != firstIntent.LogicalBatchID {
 		t.Fatalf("adopted checkpoint-1 control logical batch=%q, want %q", adoptedLogicalBatchID, firstIntent.LogicalBatchID)
 	}
-	if _, err := pool.Exec(ctx, `
-UPDATE delivery_receipts SET logical_batch_id=NULL
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`, fence.FlowIncarnationID, revisionID, firstIntent.PositionID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `
-UPDATE delivery_attempts SET logical_batch_id=NULL
-WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND position_id=$3`, fence.FlowIncarnationID, revisionID, firstIntent.PositionID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := coordinator.DeliverTransaction(ctx, fence, firstIntent, first, target); err != nil {
-		t.Fatalf("adopt checkpoint-1 control receipt after upgrade: %v", err)
-	}
-	var adoptedReceiptID, adoptedAttemptID string
-	if err := pool.QueryRow(ctx, `
-SELECT receipt.logical_batch_id,attempt.logical_batch_id
-FROM delivery_receipts AS receipt
-JOIN delivery_attempts AS attempt ON attempt.attempt_id=receipt.attempt_id
-WHERE receipt.flow_incarnation_id=$1 AND receipt.destination_revision_id=$2 AND receipt.position_id=$3`, fence.FlowIncarnationID, revisionID, firstIntent.PositionID).Scan(&adoptedReceiptID, &adoptedAttemptID); err != nil {
-		t.Fatal(err)
-	}
-	if adoptedReceiptID != firstIntent.LogicalBatchID || adoptedAttemptID != firstIntent.LogicalBatchID {
-		t.Fatalf("adopted checkpoint-1 receipt/attempt=%q/%q, want %q", adoptedReceiptID, adoptedAttemptID, firstIntent.LogicalBatchID)
-	}
 
 	postCommit := retentionTransaction(table, 3058, "0/580", 20)
 	postCommitIntent := transactionIntentForFence(t, fence, revisionID, postCommit)
 	postCommitCtx, cancelPostCommit := context.WithCancel(ctx)
 	cancelAfterTargetApply = cancelPostCommit
 	failAfterTargetApply.Store(true)
-	if _, err := coordinator.DeliverTransaction(postCommitCtx, fence, postCommitIntent, postCommit, target); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+	if _, err := coordinator.DeliverTransaction(postCommitCtx, fence, postCommitIntent, postCommit, managedBaselinePayload(t, postCommit), target); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		cancelPostCommit()
 		t.Fatalf("post-target control failure=%v, want recoverable indeterminate classification", err)
 	}
@@ -187,7 +145,7 @@ WHERE receipt.flow_incarnation_id=$1 AND receipt.destination_revision_id=$2 AND 
 	if _, err := pool.Exec(ctx, `SELECT 1`); err != nil {
 		t.Fatalf("control store did not recover after canceled post-target transaction: %v", err)
 	}
-	if _, err := coordinator.DeliverTransaction(postCommitCtx, fence, postCommitIntent, postCommit, target); err == nil {
+	if _, err := coordinator.DeliverTransaction(postCommitCtx, fence, postCommitIntent, postCommit, managedBaselinePayload(t, postCommit), target); err == nil {
 		t.Fatal("canceled delivery context unexpectedly remained usable")
 	}
 	currentFlow, err := engine.Get(ctx, flowID)
@@ -197,7 +155,7 @@ WHERE receipt.flow_incarnation_id=$1 AND receipt.destination_revision_id=$2 AND 
 	if currentFlow.State != flow.StateRunning {
 		t.Fatalf("flow state after post-target control failure=%s, want running", currentFlow.State)
 	}
-	postCommitGrant, err := coordinator.DeliverTransaction(ctx, fence, postCommitIntent, postCommit, target)
+	postCommitGrant, err := coordinator.DeliverTransaction(ctx, fence, postCommitIntent, postCommit, managedBaselinePayload(t, postCommit), target)
 	if err != nil {
 		t.Fatalf("reconcile post-target control failure: %v", err)
 	}
@@ -214,7 +172,7 @@ WHERE receipt.flow_incarnation_id=$1 AND receipt.destination_revision_id=$2 AND 
 
 	second := retentionTransaction(table, 3002, "0/600", 2)
 	secondIntent := transactionIntentForFence(t, fence, revisionID, second)
-	secondGrant, err := coordinator.DeliverTransaction(ctx, fence, secondIntent, second, target)
+	secondGrant, err := coordinator.DeliverTransaction(ctx, fence, secondIntent, second, managedBaselinePayload(t, second), target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,14 +210,14 @@ WHERE receipt.flow_incarnation_id=$1 AND receipt.destination_revision_id=$2 AND 
 	third := retentionTransaction(table, 3003, "0/700", 3)
 	thirdIntent := transactionIntentForFence(t, fence, revisionID, third)
 	indeterminate := &reconciliationFailureDriver{ManagedTransactionDestination: target}
-	if _, err := coordinator.DeliverTransaction(ctx, fence, thirdIntent, third, indeterminate); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+	if _, err := coordinator.DeliverTransaction(ctx, fence, thirdIntent, third, managedBaselinePayload(t, third), indeterminate); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("prepare indeterminate attempt error=%v, want ErrDeliveryIndeterminate", err)
 	}
 	for attempt := 1; attempt <= 16; attempt++ {
 		if _, err := pool.Exec(ctx, `UPDATE delivery_attempts SET next_attempt_at=clock_timestamp() WHERE flow_incarnation_id=$1 AND logical_batch_id=$2`, fence.FlowIncarnationID, thirdIntent.LogicalBatchID); err != nil {
 			t.Fatal(err)
 		}
-		_, err := coordinator.DeliverTransaction(ctx, fence, thirdIntent, third, indeterminate)
+		_, err := coordinator.DeliverTransaction(ctx, fence, thirdIntent, third, managedBaselinePayload(t, third), indeterminate)
 		if attempt < 16 {
 			if !errors.Is(err, connector.ErrDeliveryIndeterminate) || errors.Is(err, connector.ErrDeliveryRetryExhausted) {
 				t.Fatalf("reconciliation attempt %d error=%v, want recoverable indeterminate", attempt, err)
@@ -282,7 +240,7 @@ WHERE receipt.flow_incarnation_id=$1 AND receipt.destination_revision_id=$2 AND 
 	observedPositions := make([]string, 0, 6)
 	for _, lsn := range []string{"0/800", "0/900", "0/A00", "0/B00", "0/C00"} {
 		checkpoint := connector.Checkpoint{LSN: lsn}
-		grant, err := coordinator.AuthorizeAck(ctx, fence, checkpoint)
+		grant, err := coordinator.AuthorizeAck(ctx, fence, checkpoint, emptyManagedBaselinePayload(t, "retention-lineage"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -291,11 +249,11 @@ WHERE receipt.flow_incarnation_id=$1 AND receipt.destination_revision_id=$2 AND 
 		}
 		observedPositions = append(observedPositions, grant.PositionID)
 	}
-	unobservedGrant, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/D00"})
+	unobservedGrant, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/D00"}, emptyManagedBaselinePayload(t, "retention-lineage"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	currentGrant, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/E00"})
+	currentGrant, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/E00"}, emptyManagedBaselinePayload(t, "retention-lineage"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +324,7 @@ WHERE receipt.flow_incarnation_id=$1 AND receipt.position_id=positions.position_
 	var concurrentGrant connector.AckGrant
 	concurrentDone := make(chan error, 1)
 	go func() {
-		grant, deliveryErr := coordinator.DeliverTransaction(ctx, fence, concurrentIntent, concurrent, blockingDriver)
+		grant, deliveryErr := coordinator.DeliverTransaction(ctx, fence, concurrentIntent, concurrent, managedBaselinePayload(t, concurrent), blockingDriver)
 		concurrentGrant = grant
 		concurrentDone <- deliveryErr
 	}()
@@ -417,41 +375,6 @@ SELECT
 	}
 	if concurrentManifest != 1 || concurrentReceipt != 1 || concurrentCheckpoint != concurrent.EndLSN {
 		t.Fatalf("concurrent finalization retention safety manifest/receipt/checkpoint=%d/%d/%s, want 1/1/%s", concurrentManifest, concurrentReceipt, concurrentCheckpoint, concurrent.EndLSN)
-	}
-
-	if _, err := pool.Exec(ctx, `UPDATE delivery_manifests SET logical_batch_id=NULL,created_at=clock_timestamp()-interval '2 hours' WHERE flow_incarnation_id=$1 AND position_id=$2`, fence.FlowIncarnationID, concurrentIntent.PositionID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE delivery_attempts SET logical_batch_id=NULL WHERE flow_incarnation_id=$1 AND position_id=$2`, fence.FlowIncarnationID, concurrentIntent.PositionID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE delivery_receipts SET logical_batch_id=NULL WHERE flow_incarnation_id=$1 AND position_id=$2`, fence.FlowIncarnationID, concurrentIntent.PositionID); err != nil {
-		t.Fatal(err)
-	}
-	newRoot, err := coordinator.AuthorizeAck(ctx, fence, connector.Checkpoint{LSN: "0/1100"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := coordinator.CommitSourceFeedback(ctx, fence, newRoot, &flushEvidenceTestSource{}); err != nil {
-		t.Fatal(err)
-	}
-	legacyPruned, err := coordinator.PruneTerminalDeliveryState(ctx, fence, time.Hour, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if legacyPruned < 1 {
-		t.Fatalf("unadopted checkpoint-1 terminal rows pruned=%d, want at least manifest", legacyPruned)
-	}
-	var legacyManifests, legacyAttempts, legacyReceipts int
-	if err := pool.QueryRow(ctx, `
-SELECT
-  (SELECT count(*) FROM delivery_manifests WHERE flow_incarnation_id=$1 AND position_id=$2),
-  (SELECT count(*) FROM delivery_attempts WHERE flow_incarnation_id=$1 AND position_id=$2),
-  (SELECT count(*) FROM delivery_receipts WHERE flow_incarnation_id=$1 AND position_id=$2)`, fence.FlowIncarnationID, concurrentIntent.PositionID).Scan(&legacyManifests, &legacyAttempts, &legacyReceipts); err != nil {
-		t.Fatal(err)
-	}
-	if legacyManifests != 0 || legacyAttempts != 0 || legacyReceipts != 0 {
-		t.Fatalf("unadopted checkpoint-1 terminal rows retained manifest/attempt/receipt=%d/%d/%d", legacyManifests, legacyAttempts, legacyReceipts)
 	}
 }
 
@@ -505,7 +428,7 @@ func retentionTransaction(table string, xid uint32, endLSN string, id int64) con
 		BeginLSN: "0/400", CommitLSN: endLSN, EndLSN: endLSN, Checkpoint: connector.Checkpoint{LSN: endLSN},
 		Fragments: []connector.TransactionFragment{{
 			Ordinal: 0,
-			Batch: connector.Batch{
+			Batch: connector.Batch{WritePolicy: testUpsertPolicy("id"),
 				Schema: managedTransactionSchema("public", table, connector.Column{Name: "value", Type: "text"}),
 				Records: []connector.Record{{
 					Table: table, Operation: connector.OpInsert, SchemaVersion: 1,

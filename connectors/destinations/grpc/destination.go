@@ -9,11 +9,12 @@ import (
 	"math/rand"
 	"path"
 	"sort"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
+	"github.com/josephjohncox/wallaby/internal/options"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 	"github.com/josephjohncox/wallaby/pkg/wire"
@@ -27,7 +28,6 @@ import (
 
 const (
 	optEndpoint      = "endpoint"
-	optAddress       = "address"
 	optInsecure      = "insecure"
 	optTLSCAFile     = "tls_ca_file"
 	optTLSServerName = "tls_server_name"
@@ -49,9 +49,42 @@ const (
 	payloadModeWAL        = "wal"
 )
 
+var payloadModes = map[string]string{
+	"":            payloadModeWire,
+	"wire":        payloadModeWire,
+	"record_json": payloadModeRecordJSON,
+	"wal":         payloadModeWAL,
+}
+
+type destinationConfig struct {
+	endpoint          string
+	format            string
+	payloadMode       string
+	headers           map[string]string
+	timeout           time.Duration
+	maxRetries        int
+	backoffBase       time.Duration
+	backoffMax        time.Duration
+	backoffFactor     float64
+	insecure          bool
+	tlsCAFile         string
+	tlsServerName     string
+	flowID            string
+	destination       string
+	registrySubject   string
+	protoTypesSubject string
+	registryConfig    schemaregistry.Config
+}
+
+type destinationFactories struct {
+	newClient   func(string, ...grpc.DialOption) (*grpc.ClientConn, error)
+	newRegistry func(context.Context, schemaregistry.Config) (schemaregistry.Registry, error)
+}
+
 // Destination delivers batches to a gRPC ingest endpoint.
 type Destination struct {
-	spec              connector.Spec
+	resourceMu        sync.Mutex
+	spec              connector.RuntimeSpec
 	endpoint          string
 	codec             wire.Codec
 	payloadMode       string
@@ -70,87 +103,182 @@ type Destination struct {
 	protoTypesSubject string
 }
 
-func (d *Destination) Open(ctx context.Context, spec connector.Spec) error {
-	d.spec = spec
-	endpoint := strings.TrimSpace(spec.Options[optEndpoint])
-	if endpoint == "" {
-		endpoint = strings.TrimSpace(spec.Options[optAddress])
-	}
-	if endpoint == "" {
-		return errors.New("grpc endpoint is required")
-	}
-	d.endpoint = endpoint
-	d.flowID = strings.TrimSpace(spec.Options[optFlowID])
-	d.destination = strings.TrimSpace(spec.Options[optDestination])
-	if d.destination == "" {
-		d.destination = spec.Name
+func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
+	return d.open(ctx, spec, destinationFactories{newClient: grpc.NewClient, newRegistry: schemaregistry.NewRegistry})
+}
+
+func (d *Destination) open(ctx context.Context, spec connector.RuntimeSpec, factories destinationFactories) error {
+	cfg, err := parseDestinationConfig(spec)
+	if err != nil {
+		return err
 	}
 
-	d.payloadMode = normalizePayloadMode(spec.Options[optPayloadMode])
-
-	format := strings.TrimSpace(spec.Options[optFormat])
-	if format == "" {
-		format = string(connector.WireFormatJSON)
-	}
-	if d.payloadMode == payloadModeWire {
-		codec, err := wire.NewCodec(format)
+	var codec wire.Codec
+	if cfg.payloadMode == payloadModeWire {
+		codec, err = wire.NewCodec(cfg.format)
 		if err != nil {
 			return err
 		}
-		d.codec = codec
 	}
-	d.registrySubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistrySubject])
-	d.protoTypesSubject = strings.TrimSpace(spec.Options[schemaregistry.OptRegistryProtoTypes])
-	if d.payloadMode == payloadModeWire && d.codec != nil {
-		switch d.codec.Name() {
-		case connector.WireFormatAvro, connector.WireFormatProto:
-			registryCfg := schemaregistry.ConfigFromOptions(spec.Options)
-			registry, err := schemaregistry.NewRegistry(ctx, registryCfg)
-			if err != nil && !errors.Is(err, schemaregistry.ErrRegistryDisabled) {
-				return err
-			}
-			if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
-				registry = nil
-			}
-			d.registry = registry
-		}
-	}
-
-	d.headers = parseHeaders(spec.Options[optHeaders])
-	d.timeout = parseDuration(spec.Options[optTimeout], 10*time.Second)
-	d.maxRetries = parseInt(spec.Options[optMaxRetries], 3)
-	d.backoffBase = parseDuration(spec.Options[optBackoffBase], 200*time.Millisecond)
-	d.backoffMax = parseDuration(spec.Options[optBackoffMax], 5*time.Second)
-	d.backoffFactor = parseFloat(spec.Options[optBackoffFactor], 2.0)
-
-	insecureMode := parseBool(spec.Options[optInsecure], true)
 	var creds credentials.TransportCredentials
-	if insecureMode {
+	switch {
+	case cfg.insecure:
 		creds = insecure.NewCredentials()
-	} else {
-		caFile := strings.TrimSpace(spec.Options[optTLSCAFile])
-		serverName := strings.TrimSpace(spec.Options[optTLSServerName])
-		if caFile != "" {
-			c, err := credentials.NewClientTLSFromFile(caFile, serverName)
-			if err != nil {
-				return fmt.Errorf("load tls ca: %w", err)
-			}
-			creds = c
-		} else {
-			creds = credentials.NewClientTLSFromCert(nil, serverName)
+	case cfg.tlsCAFile != "":
+		creds, err = credentials.NewClientTLSFromFile(cfg.tlsCAFile, cfg.tlsServerName)
+		if err != nil {
+			return fmt.Errorf("load tls ca: %w", err)
 		}
+	default:
+		creds = credentials.NewClientTLSFromCert(nil, cfg.tlsServerName)
 	}
 
-	conn, err := grpc.NewClient(
-		d.endpoint,
+	conn, err := factories.newClient(
+		cfg.endpoint,
 		grpc.WithTransportCredentials(creds),
-		grpc.WithConnectParams(grpc.ConnectParams{MinConnectTimeout: d.timeout}),
+		grpc.WithConnectParams(grpc.ConnectParams{MinConnectTimeout: cfg.timeout}),
 	)
 	if err != nil {
+		if conn != nil {
+			return errors.Join(fmt.Errorf("grpc dial: %w", err), conn.Close())
+		}
 		return fmt.Errorf("grpc dial: %w", err)
 	}
-	d.conn = conn
+
+	var registry schemaregistry.Registry
+	if cfg.payloadMode == payloadModeWire && codec != nil {
+		switch codec.Name() {
+		case connector.WireFormatAvro, connector.WireFormatProto:
+			registry, err = factories.newRegistry(ctx, cfg.registryConfig)
+			if err != nil && !errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+				var cleanupErr error
+				if registry != nil {
+					cleanupErr = registry.Close()
+				}
+				cleanupErr = errors.Join(cleanupErr, conn.Close())
+				return errors.Join(err, cleanupErr)
+			}
+			if errors.Is(err, schemaregistry.ErrRegistryDisabled) {
+				if registry != nil {
+					if cleanupErr := registry.Close(); cleanupErr != nil {
+						return errors.Join(cleanupErr, conn.Close())
+					}
+				}
+				registry = nil
+			}
+		}
+	}
+
+	d.resourceMu.Lock()
+	d.spec = spec
+	d.endpoint = cfg.endpoint
+	d.codec = codec
+	d.payloadMode = cfg.payloadMode
 	d.client = wallabypb.NewIngestServiceClient(conn)
+	d.conn = conn
+	d.headers = cfg.headers
+	d.timeout = cfg.timeout
+	d.maxRetries = cfg.maxRetries
+	d.backoffBase = cfg.backoffBase
+	d.backoffMax = cfg.backoffMax
+	d.backoffFactor = cfg.backoffFactor
+	d.flowID = cfg.flowID
+	d.destination = cfg.destination
+	d.registry = registry
+	d.registrySubject = cfg.registrySubject
+	d.protoTypesSubject = cfg.protoTypesSubject
+	d.resourceMu.Unlock()
+	return nil
+}
+
+func parseDestinationConfig(spec connector.RuntimeSpec) (destinationConfig, error) {
+	decoder := options.NewDecoder("grpc options", spec.Options)
+	registryConfig, registryErr := schemaregistry.ConfigFromOptions(spec.Options)
+	cfg := destinationConfig{
+		endpoint:          decoder.String(optEndpoint, ""),
+		format:            decoder.String(optFormat, string(connector.WireFormatJSON)),
+		payloadMode:       decoder.AliasedEnum(optPayloadMode, payloadModeWire, payloadModes),
+		headers:           decoder.CaseInsensitiveKeyValueList(optHeaders),
+		timeout:           decoder.Duration(optTimeout, 10*time.Second),
+		maxRetries:        decoder.Int(optMaxRetries, 3),
+		backoffBase:       decoder.Duration(optBackoffBase, 200*time.Millisecond),
+		backoffMax:        decoder.Duration(optBackoffMax, 5*time.Second),
+		backoffFactor:     decoder.Float64(optBackoffFactor, 2.0),
+		insecure:          decoder.Bool(optInsecure, true),
+		tlsCAFile:         decoder.String(optTLSCAFile, ""),
+		tlsServerName:     decoder.String(optTLSServerName, ""),
+		flowID:            decoder.String(optFlowID, ""),
+		destination:       decoder.String(optDestination, spec.Name),
+		registrySubject:   decoder.String(schemaregistry.OptRegistrySubject, ""),
+		protoTypesSubject: decoder.String(schemaregistry.OptRegistryProtoTypes, ""),
+		registryConfig:    registryConfig,
+	}
+	if err := errors.Join(decoder.Err(), registryErr); err != nil {
+		return destinationConfig{}, err
+	}
+	if cfg.maxRetries < 0 {
+		return destinationConfig{}, fmt.Errorf("grpc options.%s: must be non-negative", optMaxRetries)
+	}
+	if cfg.maxRetries == int(^uint(0)>>1) {
+		return destinationConfig{}, fmt.Errorf("grpc options.%s: exceeds the supported retry count", optMaxRetries)
+	}
+	if cfg.backoffBase <= 0 {
+		return destinationConfig{}, fmt.Errorf("grpc options.%s: must be positive", optBackoffBase)
+	}
+	// A zero maximum intentionally disables the configured cap; the runtime
+	// still saturates at the largest representable duration.
+	if cfg.backoffMax < 0 {
+		return destinationConfig{}, fmt.Errorf("grpc options.%s: must be non-negative", optBackoffMax)
+	}
+	if cfg.backoffFactor <= 0 {
+		return destinationConfig{}, fmt.Errorf("grpc options.%s: must be positive and finite", optBackoffFactor)
+	}
+	if cfg.endpoint == "" {
+		return destinationConfig{}, errors.New("grpc endpoint is required")
+	}
+	if cfg.format == "" {
+		cfg.format = string(connector.WireFormatJSON)
+	}
+	if cfg.destination == "" {
+		cfg.destination = spec.Name
+	}
+	if cfg.insecure && cfg.tlsCAFile != "" {
+		return destinationConfig{}, fmt.Errorf("grpc options.%s: cannot be set when insecure is true", optTLSCAFile)
+	}
+	if cfg.insecure && cfg.tlsServerName != "" {
+		return destinationConfig{}, fmt.Errorf("grpc options.%s: cannot be set when insecure is true", optTLSServerName)
+	}
+	if err := validateMetadata(cfg.headers); err != nil {
+		return destinationConfig{}, fmt.Errorf("grpc options.%s: %w", optHeaders, err)
+	}
+	return cfg, nil
+}
+
+func validateMetadata(headers map[string]string) error {
+	keys := make([]string, 0, len(headers))
+	for key := range headers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if strings.HasPrefix(key, "grpc-") {
+			return fmt.Errorf("metadata key %q uses the reserved grpc- prefix", key)
+		}
+		for _, char := range key {
+			if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
+				continue
+			}
+			return fmt.Errorf("metadata key %q contains an invalid character", key)
+		}
+		if strings.HasSuffix(key, "-bin") {
+			continue
+		}
+		for _, value := range []byte(headers[key]) {
+			if value < 0x20 || value > 0x7e {
+				return fmt.Errorf("metadata value for %q contains a non-ASCII character", key)
+			}
+		}
+	}
 	return nil
 }
 
@@ -214,22 +342,29 @@ func (d *Destination) ApplyDDL(_ context.Context, _ connector.Schema, _ connecto
 func (d *Destination) TypeMappings() map[string]string { return nil }
 
 func (d *Destination) Close(_ context.Context) error {
-	if d.registry != nil {
-		_ = d.registry.Close()
+	d.resourceMu.Lock()
+	registry := d.registry
+	conn := d.conn
+	d.registry = nil
+	d.conn = nil
+	d.client = nil
+	d.resourceMu.Unlock()
+
+	var registryErr, connErr error
+	if registry != nil {
+		registryErr = registry.Close()
 	}
-	if d.conn != nil {
-		return d.conn.Close()
+	if conn != nil {
+		connErr = conn.Close()
 	}
-	return nil
+	return errors.Join(registryErr, connErr)
 }
 
 func (d *Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		Support: connector.SupportExperimental,
-		Delivery: connector.DeliverySemantics{
-			Declared: true,
-		},
-		SupportsDDL:           true,
+		Support:               connector.SupportExperimental,
+		TableWrites:           connector.TableWriteSemantics{Append: true},
+		Delivery:              connector.DeliverySemantics{},
 		SupportsSchemaChanges: true,
 		SupportsStreaming:     true,
 		SupportsBulkLoad:      true,
@@ -266,19 +401,6 @@ func (d *Destination) encodePayload(batch connector.Batch, record connector.Reco
 			return nil, wallabypb.WireFormat_WIRE_FORMAT_UNSPECIFIED, err
 		}
 		return payload, wireFormatToProto(d.codec.Name()), nil
-	}
-}
-
-func normalizePayloadMode(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", payloadModeWire:
-		return payloadModeWire
-	case "record", "record_json", "raw":
-		return payloadModeRecordJSON
-	case "wal":
-		return payloadModeWAL
-	default:
-		return payloadModeWire
 	}
 }
 
@@ -363,12 +485,15 @@ func retryable(err error) bool {
 }
 
 func (d *Destination) sendWithRetry(ctx context.Context, req *wallabypb.IngestBatchRequest, payloadMode string, meta *schemaMeta) error {
-	attempts := d.maxRetries + 1
-	if attempts < 1 {
-		attempts = 1
+	attempts := d.maxRetries
+	if attempts < 0 {
+		attempts = 0
+	}
+	if attempts < int(^uint(0)>>1) {
+		attempts++
 	}
 
-	for attempt := 1; attempt <= attempts; attempt++ {
+	for attempt := 1; ; attempt++ {
 		callCtx, cancel := context.WithTimeout(ctx, d.timeout)
 		md := metadata.New(nil)
 		for k, v := range d.headers {
@@ -409,8 +534,6 @@ func (d *Destination) sendWithRetry(ctx context.Context, req *wallabypb.IngestBa
 		case <-timer.C:
 		}
 	}
-
-	return errors.New("grpc destination retries exhausted")
 }
 
 func (d *Destination) backoffDuration(attempt int) time.Duration {
@@ -419,17 +542,50 @@ func (d *Destination) backoffDuration(attempt int) time.Duration {
 		base = 200 * time.Millisecond
 	}
 	factor := d.backoffFactor
-	if factor <= 0 {
+	if math.IsNaN(factor) || math.IsInf(factor, 0) || factor <= 0 {
 		factor = 2.0
 	}
-	exp := math.Pow(factor, float64(attempt-1))
-	delay := time.Duration(float64(base) * exp)
-	if delay > d.backoffMax && d.backoffMax > 0 {
-		delay = d.backoffMax
+	limit := d.backoffMax
+	if limit <= 0 {
+		limit = time.Duration(1<<63 - 1)
+	}
+	if base > limit {
+		base = limit
+	}
+
+	exponent := 0
+	if attempt > 1 {
+		exponent = attempt - 1
+	}
+	delay := base
+	if exponent > 0 {
+		logCandidate := math.Log(float64(base)) + float64(exponent)*math.Log(factor)
+		if math.IsInf(logCandidate, 1) || logCandidate >= math.Log(float64(limit)) {
+			delay = limit
+		} else {
+			candidate := float64(base) * math.Pow(factor, float64(exponent))
+			switch {
+			case math.IsNaN(candidate), math.IsInf(candidate, 0), candidate >= float64(limit):
+				delay = limit
+			case candidate < 1:
+				delay = 1
+			default:
+				delay = time.Duration(candidate)
+			}
+		}
+	}
+	if delay >= limit {
+		return limit
+	}
+	jitterLimit := delay / 4
+	if remaining := limit - delay; jitterLimit > remaining {
+		jitterLimit = remaining
+	}
+	if jitterLimit <= 0 {
+		return delay
 	}
 	// #nosec G404 -- jitter does not require cryptographic randomness.
-	jitter := time.Duration(rand.Int63n(int64(delay/4 + 1)))
-	return delay + jitter
+	return delay + time.Duration(rand.Int63n(int64(jitterLimit)+1))
 }
 
 type schemaMeta struct {
@@ -526,72 +682,4 @@ func (d *Destination) protoReferenceSubject(subject, ref string) string {
 		name = "types"
 	}
 	return fmt.Sprintf("%s.%s", subject, name)
-}
-
-func parseHeaders(raw string) map[string]string {
-	out := map[string]string{}
-	for _, part := range strings.Split(raw, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		pieces := strings.SplitN(part, ":", 2)
-		if len(pieces) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(pieces[0])
-		val := strings.TrimSpace(pieces[1])
-		if key == "" {
-			continue
-		}
-		out[key] = val
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func parseDuration(raw string, fallback time.Duration) time.Duration {
-	if raw == "" {
-		return fallback
-	}
-	value, err := time.ParseDuration(raw)
-	if err != nil {
-		return fallback
-	}
-	return value
-}
-
-func parseInt(raw string, fallback int) int {
-	if raw == "" {
-		return fallback
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		return fallback
-	}
-	return value
-}
-
-func parseFloat(raw string, fallback float64) float64 {
-	if raw == "" {
-		return fallback
-	}
-	value, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return fallback
-	}
-	return value
-}
-
-func parseBool(raw string, fallback bool) bool {
-	if raw == "" {
-		return fallback
-	}
-	value, err := strconv.ParseBool(raw)
-	if err != nil {
-		return fallback
-	}
-	return value
 }

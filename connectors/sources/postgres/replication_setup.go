@@ -149,17 +149,25 @@ func SyncPublicationTables(ctx context.Context, dsn, publication string, tables 
 	}
 	currentSet := make(map[string]struct{}, len(current))
 	for _, table := range current {
-		currentSet[strings.ToLower(table)] = struct{}{}
+		currentSet[table] = struct{}{}
 	}
 
 	desiredSet := make(map[string]string, len(tables))
 	for _, table := range tables {
-		desiredSet[strings.ToLower(table)] = table
+		identity, err := qualifyTable(table)
+		if err != nil {
+			return nil, nil, err
+		}
+		desiredSet[identity] = table
 	}
 
 	var toAdd []string
 	for _, table := range tables {
-		if _, ok := currentSet[strings.ToLower(table)]; !ok {
+		identity, err := qualifyTable(table)
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, ok := currentSet[identity]; !ok {
 			toAdd = append(toAdd, table)
 		}
 	}
@@ -167,7 +175,7 @@ func SyncPublicationTables(ctx context.Context, dsn, publication string, tables 
 	var toDrop []string
 	if strings.ToLower(mode) == "sync" {
 		for _, table := range current {
-			if _, ok := desiredSet[strings.ToLower(table)]; !ok {
+			if _, ok := desiredSet[table]; !ok {
 				toDrop = append(toDrop, table)
 			}
 		}
@@ -356,7 +364,7 @@ func listTables(ctx context.Context, pool *pgxpool.Pool, schemas []string) ([]st
 		if err := rows.Scan(&schema, &table); err != nil {
 			return nil, fmt.Errorf("scan table: %w", err)
 		}
-		out = append(out, fmt.Sprintf("%s.%s", schema, table))
+		out = append(out, pgx.Identifier{schema, table}.Sanitize())
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate tables: %w", err)
@@ -398,7 +406,7 @@ func listPublicationTables(ctx context.Context, pool *pgxpool.Pool, name string)
 		if err := rows.Scan(&schema, &table); err != nil {
 			return nil, fmt.Errorf("scan publication table: %w", err)
 		}
-		out = append(out, fmt.Sprintf("%s.%s", schema, table))
+		out = append(out, pgx.Identifier{schema, table}.Sanitize())
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate publication tables: %w", err)
@@ -449,7 +457,10 @@ func alterPublicationTables(ctx context.Context, pool *pgxpool.Pool, name string
 }
 
 func qualifyTable(name string) (string, error) {
-	parts := strings.Split(name, ".")
+	parts, err := parseIdentifierText(name)
+	if err != nil {
+		return "", err
+	}
 	switch len(parts) {
 	case 1:
 		return pgx.Identifier{"public", parts[0]}.Sanitize(), nil

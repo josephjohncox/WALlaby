@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/authority"
+	"github.com/josephjohncox/wallaby/internal/schemabaseline"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -109,7 +110,7 @@ func NewBootstrapper(ctx context.Context, control *pgxpool.Pool, sourceDSN strin
 	if control == nil || source == nil || strings.TrimSpace(sourceDSN) == "" {
 		return nil, errors.New("control pool, source pool, and source DSN are required")
 	}
-	if err := runMigrations(ctx, control); err != nil {
+	if err := ApplyMigrations(ctx, control); err != nil {
 		return nil, err
 	}
 	return &Bootstrapper{control: control, source: source, dsn: sourceDSN, hooks: hooks}, nil
@@ -399,55 +400,6 @@ func compareSnapshot(persisted, supplied ExportedSnapshot) error {
 	return nil
 }
 
-// RecordTaskReceipt atomically records the durable cursor and final receipt for
-// one snapshot task. Completed task receipts are immutable.
-func (b *Bootstrapper) RecordTaskReceipt(ctx context.Context, fence authority.RunFence, snapshot ExportedSnapshot, relationID uint32, taskID string, cursor json.RawMessage, receiptHash string) error {
-	if relationID == 0 || strings.TrimSpace(taskID) == "" || strings.TrimSpace(receiptHash) == "" {
-		return errors.New("relation, task ID, and receipt hash are required")
-	}
-	if len(cursor) > 0 && !json.Valid(cursor) {
-		return errors.New("snapshot task cursor must be valid JSON")
-	}
-	tx, err := b.control.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
-		return err
-	}
-	persisted, phase, err := loadSnapshotForUpdate(ctx, tx, fence, snapshot.BootstrapID)
-	if err != nil {
-		return err
-	}
-	if phase != "snapshotting" {
-		return fmt.Errorf("bootstrap task receipt requires snapshotting phase, got %s", phase)
-	}
-	if err := compareSnapshot(persisted, snapshot); err != nil {
-		return err
-	}
-	tag, err := tx.Exec(ctx, `
-INSERT INTO source_bootstrap_tasks (
-  bootstrap_id,relation_id,task_id,durable_cursor,receipt_hash,status,
-  flow_incarnation_id,generation,acquisition_id,lease_epoch,authority_origin
-) VALUES ($1,$2,$3,NULLIF($4,'')::jsonb,$5,'complete',$6,$7,$8,$9,'fenced')
-ON CONFLICT (bootstrap_id,relation_id,task_id) DO UPDATE SET
-  durable_cursor=EXCLUDED.durable_cursor,
-  receipt_hash=EXCLUDED.receipt_hash,
-  status='complete',
-  updated_at=clock_timestamp()
-WHERE source_bootstrap_tasks.status <> 'complete'
-   OR (source_bootstrap_tasks.receipt_hash=EXCLUDED.receipt_hash
-       AND source_bootstrap_tasks.durable_cursor IS NOT DISTINCT FROM EXCLUDED.durable_cursor)`, snapshot.BootstrapID, relationID, taskID, string(cursor), receiptHash, fence.FlowIncarnationID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch)
-	if err != nil {
-		return fmt.Errorf("record bootstrap task receipt: %w", err)
-	}
-	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("%w: completed bootstrap task receipt conflicts", connector.ErrDeliveryConflict)
-	}
-	return tx.Commit(ctx)
-}
-
 // RecordPublication records durable destination snapshot publication. Handoff
 // is forbidden until this receipt exists.
 func (b *Bootstrapper) RecordPublication(ctx context.Context, fence authority.RunFence, snapshot ExportedSnapshot, destinationRevisionID, contentHash string, attemptID uuid.UUID) (retErr error) {
@@ -563,7 +515,7 @@ ORDER BY relation_id,task_id`, persisted.BootstrapID)
 	if err != nil {
 		return connector.Checkpoint{}, fmt.Errorf("load bootstrap handoff schemas: %w", err)
 	}
-	baselineTransaction := connector.SourceTransaction{}
+	var baselineSchemas []connector.Schema
 	for rows.Next() {
 		var encoded []byte
 		if err := rows.Scan(&encoded); err != nil {
@@ -571,30 +523,29 @@ ORDER BY relation_id,task_id`, persisted.BootstrapID)
 			return connector.Checkpoint{}, fmt.Errorf("scan bootstrap handoff schema: %w", err)
 		}
 		if len(encoded) == 0 || string(encoded) == "{}" || string(encoded) == "null" {
-			// RecordTaskReceipt is a compatibility helper for callers that do not
-			// freeze a managed schema manifest. The named profile always stores
-			// schema_json through FreezeManifest.
-			continue
+			rows.Close()
+			return connector.Checkpoint{}, errors.New("bootstrap handoff requires a frozen schema manifest for every task")
 		}
 		var schema connector.Schema
 		if err := json.Unmarshal(encoded, &schema); err != nil {
 			rows.Close()
-			return connector.Checkpoint{}, fmt.Errorf("decode bootstrap handoff schema: %w", err)
+			return connector.Checkpoint{}, fmt.Errorf("decode bootstrap handoff destination schema: %w", err)
 		}
-		baselineTransaction.Fragments = append(baselineTransaction.Fragments, connector.TransactionFragment{Batch: connector.Batch{Schema: schema}})
+		baselineSchemas = append(baselineSchemas, schema)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return connector.Checkpoint{}, fmt.Errorf("iterate bootstrap handoff schemas: %w", err)
 	}
 	rows.Close()
-	metadata := map[string]string{"bootstrap_id": persisted.BootstrapID.String()}
-	if len(baselineTransaction.Fragments) > 0 {
-		metadata, err = connector.MergeManagedSchemaBaselines(metadata, baselineTransaction)
-		if err != nil {
-			return connector.Checkpoint{}, err
-		}
+	baselinePayload, err := connector.NewManagedSchemaBaselinePayload(persisted.SourceLineageID, baselineSchemas)
+	if err != nil {
+		return connector.Checkpoint{}, fmt.Errorf("build bootstrap schema-baseline payload: %w", err)
 	}
+	if err := schemabaseline.UpsertExactTx(ctx, tx, fence, baselinePayload); err != nil {
+		return connector.Checkpoint{}, fmt.Errorf("persist bootstrap schema baselines: %w", err)
+	}
+	metadata := map[string]string{"bootstrap_id": persisted.BootstrapID.String()}
 	checkpoint = connector.Checkpoint{LSN: persisted.ConsistentLSN.String(), Metadata: metadata}
 	positionID, err := connector.CheckpointPositionID(checkpoint)
 	if err != nil {

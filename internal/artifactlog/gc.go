@@ -99,7 +99,7 @@ func (c *Collector) sweep(ctx context.Context, fence authority.RunFence, claim c
 		return false, err
 	}
 	if claim.evidence.VersionID == "" {
-		evidence, err := c.objects.ReconcileVersion(ctx, claim.evidence.Key, claim.evidence.ChecksumSHA256, claim.evidence.Length)
+		evidence, err := c.objects.ReconcileVersion(ctx, claim.evidence.Key, claim.evidence.ChecksumSHA256, claim.evidence.Length, claim.evidence.ProjectionID, claim.evidence.MappingFingerprint)
 		switch {
 		case err == nil:
 			if err := c.adoptClaimEvidence(ctx, fence, claim, evidence); err != nil {
@@ -146,7 +146,8 @@ func (c *Collector) claimOrphan(ctx context.Context, fence authority.RunFence, o
 	var versionID *string
 	err = tx.QueryRow(ctx, `
 SELECT object.artifact_id,object.bucket,object.object_key,object.version_id,
-       object.checksum_sha256,object.encoded_length,object.encryption_mode,object.object_lock_evidence
+       object.checksum_sha256,object.encoded_length,object.encryption_mode,object.object_lock_evidence,
+       object.projection_id,object.mapping_fingerprint
 FROM artifact_objects AS object
 LEFT JOIN artifact_gc_claims AS claim ON claim.artifact_id=object.artifact_id
 WHERE object.flow_incarnation_id=$1
@@ -170,7 +171,7 @@ LIMIT 1
 FOR UPDATE OF object SKIP LOCKED`, fence.FlowIncarnationID, olderThan.String()).Scan(
 		&claim.artifactID, &claim.evidence.Bucket, &claim.evidence.Key, &versionID,
 		&claim.evidence.ChecksumSHA256, &claim.evidence.Length,
-		&claim.evidence.EncryptionMode, &claim.evidence.ObjectLock,
+		&claim.evidence.EncryptionMode, &claim.evidence.ObjectLock, &claim.evidence.ProjectionID, &claim.evidence.MappingFingerprint,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return collectionClaim{}, false, nil
@@ -232,7 +233,7 @@ func (c *Collector) claimRetention(ctx context.Context, fence authority.RunFence
 	err = tx.QueryRow(ctx, `
 SELECT object.artifact_id,publication.publication_id,object.bucket,object.object_key,
        object.version_id,object.checksum_sha256,object.encoded_length,
-       object.encryption_mode,object.object_lock_evidence
+       object.encryption_mode,object.object_lock_evidence,object.projection_id,object.mapping_fingerprint
 FROM artifact_publication_objects AS root
 JOIN artifact_publications AS publication ON publication.publication_id=root.publication_id
 JOIN artifact_objects AS object ON object.artifact_id=root.artifact_id
@@ -260,7 +261,7 @@ LIMIT 1
 FOR UPDATE OF root,object SKIP LOCKED`, fence.FlowIncarnationID, retention.String()).Scan(
 		&claim.artifactID, &claim.publicationID, &claim.evidence.Bucket, &claim.evidence.Key,
 		&versionID, &claim.evidence.ChecksumSHA256, &claim.evidence.Length,
-		&claim.evidence.EncryptionMode, &claim.evidence.ObjectLock,
+		&claim.evidence.EncryptionMode, &claim.evidence.ObjectLock, &claim.evidence.ProjectionID, &claim.evidence.MappingFingerprint,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return collectionClaim{}, false, nil

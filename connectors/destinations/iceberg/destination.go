@@ -15,7 +15,7 @@ var ErrArtifactConsumerOnly = errors.New("iceberg is only available as a canonic
 // the artifact runtime and never runs through Destination.Write.
 type Destination struct{}
 
-func (*Destination) Open(_ context.Context, spec connector.Spec) error {
+func (*Destination) Open(_ context.Context, spec connector.RuntimeSpec) error {
 	return ValidateFlowSpec(spec)
 }
 
@@ -31,10 +31,11 @@ func (*Destination) CanonicalArtifactConsumer()      {}
 
 func (*Destination) Capabilities() connector.Capabilities {
 	return connector.Capabilities{
-		Support:  connector.SupportExperimental,
-		Evidence: connector.ContractEvidence{},
+		Support:     connector.SupportExperimental,
+		Evidence:    connector.ContractEvidence{},
+		TableWrites: connector.TableWriteSemantics{Append: true},
 		Delivery: connector.DeliverySemantics{
-			Declared: true, IdempotentReplay: true, ReplaySafe: true,
+			IdempotentReplay: true, ReplaySafe: true,
 		},
 		SupportsStreaming:     true,
 		SupportsSchemaChanges: true,

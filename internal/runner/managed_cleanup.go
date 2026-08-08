@@ -26,7 +26,15 @@ type ManagedSourceCleanup struct {
 // CleanupSourceResources acquires purpose-built cleanup authority only for a
 // managed flow whose stop generation has already quiesced.
 func (c ManagedSourceCleanup) CleanupSourceResources(ctx context.Context, f flow.Flow, generation int64) (retErr error) {
-	if !connector.IsManagedSourceSpec(f.Source) {
+	registry := c.Factory.ConnectorRegistry
+	if registry == nil {
+		registry = connector.DefaultRegistry
+	}
+	sourceSpec, err := f.DecodeSource(registry)
+	if err != nil {
+		return err
+	}
+	if !connector.IsManagedSourceSpec(sourceSpec) {
 		return nil
 	}
 	if c.Authority == nil {
@@ -57,7 +65,7 @@ func (c ManagedSourceCleanup) CleanupSourceResources(ctx context.Context, f flow
 			retErr = errors.Join(retErr, fmt.Errorf("finish managed cleanup authority: %w", finishErr))
 		}
 	}()
-	if err := cleaner.CleanupManagedResources(ctx, fence, f.Source); err != nil {
+	if err := cleaner.CleanupManagedResources(ctx, fence, sourceSpec); err != nil {
 		return fmt.Errorf("clean managed source resources: %w", err)
 	}
 	return nil

@@ -55,6 +55,43 @@ func TestCanonicalArtifactSeparatesLogicalAndEncodedHashes(t *testing.T) {
 	}
 }
 
+func TestArtifactNumericBounds(t *testing.T) {
+	t.Parallel()
+
+	maxRelationID := fmt.Sprintf("%d", uint64(^uint32(0)))
+	relationID, columnID, err := sourceFieldIdentifiers(connector.Column{Name: "id", TypeMetadata: map[string]string{"source_relation_id": maxRelationID, "source_column_id": "32767"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relationID != ^uint32(0) || columnID != int16(32767) {
+		t.Fatalf("source identifiers=%d/%d", relationID, columnID)
+	}
+	for _, column := range []connector.Column{
+		{Name: "relation", TypeMetadata: map[string]string{"source_relation_id": "4294967296", "source_column_id": "1"}},
+		{Name: "column", TypeMetadata: map[string]string{"source_relation_id": "1", "source_column_id": "32768"}},
+	} {
+		if _, _, err := sourceFieldIdentifiers(column); err == nil {
+			t.Fatalf("sourceFieldIdentifiers(%s) accepted an out-of-range identifier", column.Name)
+		}
+	}
+	if count, err := checkedArtifactRecordCount(3, 3); err != nil || count != 3 {
+		t.Fatalf("checkedArtifactRecordCount(3,3)=%d,%v", count, err)
+	}
+	if _, err := checkedArtifactRecordCount(4, 3); err == nil {
+		t.Fatal("checkedArtifactRecordCount accepted a count above the limit")
+	}
+
+	_, err = canonicalArtifactBatch(
+		connector.SourceTransaction{EndLSN: "0/10"},
+		"batch",
+		connector.Schema{},
+		[]ordinalRecord{{ordinal: 1 << 63, record: connector.Record{Operation: connector.OpInsert}}},
+	)
+	if err == nil || !strings.Contains(err.Error(), "exceeds signed 64-bit canonical bounds") {
+		t.Fatalf("oversized canonical ordinal error=%v", err)
+	}
+}
+
 func encodeDeterministicArtifact(t *testing.T) Artifact {
 	t.Helper()
 	transaction := connector.SourceTransaction{

@@ -57,7 +57,7 @@ func DropPublication(ctx context.Context, dsn, publication string, options map[s
 }
 
 // DeleteSourceState removes the source state row for the given flow/slot.
-func DeleteSourceState(ctx context.Context, spec connector.Spec, slot string) error {
+func DeleteSourceState(ctx context.Context, spec connector.RuntimeSpec, slot string) error {
 	if !parseBool(spec.Options[optEnsureState], true) {
 		return nil
 	}

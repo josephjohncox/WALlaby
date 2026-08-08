@@ -25,9 +25,6 @@ type Config struct {
 	URI                   string
 	Warehouse             string
 	Prefix                string
-	TargetNamespace       string
-	TablePrefix           string
-	FixedTable            string
 	ControlTable          string
 	DestinationRevisionID string
 	MaxCommitRetries      int
@@ -68,7 +65,7 @@ type Config struct {
 
 // ValidateFlowSpec validates the persisted, non-secret half of an Iceberg
 // destination through the connector-wide pre-persistence contract.
-func ValidateFlowSpec(spec connector.Spec) error {
+func ValidateFlowSpec(spec connector.RuntimeSpec) error {
 	return connector.ValidatePersistedSpec(spec)
 }
 
@@ -82,17 +79,17 @@ func catalogAuthenticationConfigured(cfg Config) bool {
 // catalog or materialization behavior does.
 func ConfigFingerprint(cfg Config) (string, error) {
 	type fingerprint struct {
-		Profile, URI, Warehouse, Prefix, TargetNamespace, TablePrefix, ControlTable string
-		Region, SigningName, ExpectedAWSRoleARN, OAuthScope, OAuthURI               string
-		S3TablesTableBucketARN, S3Endpoint, S3Region, ServerName                    string
-		MaxCommitRetries                                                            int
-		RequestTimeout, ReconciliationHorizon                                       int64
-		SigV4, AllowHTTP                                                            bool
-		OAuthToken, OAuthCredential, MTLS, S3StaticCredentials                      bool
-		S3TablesConfigureMaintenance                                                bool
-		S3TablesMinSnapshotsToKeep, S3TablesMaxSnapshotAgeHours                     int32
-		CADataHash                                                                  string
-		CAFile, ClientCertFile, ClientKeyFile                                       string
+		Profile, URI, Warehouse, Prefix, ControlTable                 string
+		Region, SigningName, ExpectedAWSRoleARN, OAuthScope, OAuthURI string
+		S3TablesTableBucketARN, S3Endpoint, S3Region, ServerName      string
+		MaxCommitRetries                                              int
+		RequestTimeout, ReconciliationHorizon                         int64
+		SigV4, AllowHTTP                                              bool
+		OAuthToken, OAuthCredential, MTLS, S3StaticCredentials        bool
+		S3TablesConfigureMaintenance                                  bool
+		S3TablesMinSnapshotsToKeep, S3TablesMaxSnapshotAgeHours       int32
+		CADataHash                                                    string
+		CAFile, ClientCertFile, ClientKeyFile                         string
 	}
 	caHash := ""
 	if cfg.CAData != "" {
@@ -102,8 +99,8 @@ func ConfigFingerprint(cfg Config) (string, error) {
 	encoded, err := json.Marshal(fingerprint{
 		Profile: strings.ToLower(strings.TrimSpace(cfg.Profile)), URI: strings.TrimSuffix(strings.TrimSpace(cfg.URI), "/"),
 		Warehouse: strings.TrimSpace(cfg.Warehouse), Prefix: strings.Trim(strings.TrimSpace(cfg.Prefix), "/"),
-		TargetNamespace: cfg.TargetNamespace, TablePrefix: cfg.TablePrefix, ControlTable: cfg.ControlTable,
-		Region: cfg.Region, SigningName: cfg.SigningName, ExpectedAWSRoleARN: cfg.ExpectedAWSRoleARN,
+		ControlTable: cfg.ControlTable,
+		Region:       cfg.Region, SigningName: cfg.SigningName, ExpectedAWSRoleARN: cfg.ExpectedAWSRoleARN,
 		OAuthScope: cfg.OAuthScope, OAuthURI: strings.TrimSuffix(strings.TrimSpace(cfg.OAuthURI), "/"),
 		S3TablesTableBucketARN: cfg.S3TablesTableBucketARN, S3Endpoint: strings.TrimSuffix(strings.TrimSpace(cfg.S3Endpoint), "/"), S3Region: cfg.S3Region, ServerName: cfg.ServerName,
 		MaxCommitRetries: cfg.MaxCommitRetries, RequestTimeout: int64(cfg.RequestTimeout), ReconciliationHorizon: int64(cfg.ReconciliationHorizon),
@@ -124,7 +121,7 @@ func ConfigFingerprint(cfg Config) (string, error) {
 // endpoint identity is deployment-bound: a flow may repeat an identical value
 // for readability, but it cannot redirect deployment OAuth, mTLS, SigV4, or S3
 // credentials to another catalog, region, warehouse, bucket, or object endpoint.
-func ParseSpec(spec connector.Spec, defaults Config) (Config, error) {
+func ParseSpec(spec connector.RuntimeSpec, defaults Config) (Config, error) {
 	if err := ValidateFlowSpec(spec); err != nil {
 		return Config{}, err
 	}
@@ -141,8 +138,6 @@ func ParseSpec(spec connector.Spec, defaults Config) (Config, error) {
 		}
 		cfg.Profile = profile
 	}
-	set("namespace", &cfg.TargetNamespace)
-	set("table_prefix", &cfg.TablePrefix)
 	set("control_table", &cfg.ControlTable)
 	set("destination_revision_id", &cfg.DestinationRevisionID)
 
@@ -170,9 +165,6 @@ func ParseSpec(spec connector.Spec, defaults Config) (Config, error) {
 	}
 	if strings.TrimSpace(cfg.DestinationRevisionID) == "" {
 		return Config{}, errors.New("iceberg destination_revision_id is required")
-	}
-	if strings.TrimSpace(cfg.FixedTable) != "" {
-		return Config{}, errors.New("iceberg fixed table mapping is not admitted; map each source relation to a distinct catalog table")
 	}
 	if cfg.Profile != CatalogProfileREST && cfg.Profile != CatalogProfileS3Tables {
 		return Config{}, fmt.Errorf("unsupported Iceberg catalog_profile %q", cfg.Profile)
@@ -211,29 +203,17 @@ func ParseSpec(spec connector.Spec, defaults Config) (Config, error) {
 	return cfg, nil
 }
 
-func (c Config) target(sourceNamespace, sourceTable string) ([]string, error) {
-	namespace := strings.TrimSpace(c.TargetNamespace)
-	tableName := strings.TrimSpace(c.FixedTable)
-	if tableName == "" {
-		tableName = c.TablePrefix + sourceTable
-		if namespace != "" && sourceNamespace != "" && namespace != sourceNamespace {
-			tableName = sourceNamespace + "__" + tableName
-		}
+func (c Config) target(mappedNamespace, mappedTable string) ([]string, error) {
+	mappedNamespace = strings.TrimSpace(mappedNamespace)
+	mappedTable = strings.TrimSpace(mappedTable)
+	if mappedNamespace == "" || mappedTable == "" {
+		return nil, errors.New("iceberg v2 mapped namespace and table are required")
 	}
-	if namespace == "" {
-		namespace = sourceNamespace
-	}
-	if namespace == "" || tableName == "" {
-		return nil, errors.New("iceberg source namespace and table must map to a non-empty target")
-	}
-	return []string{namespace, tableName}, nil
+	return []string{mappedNamespace, mappedTable}, nil
 }
 
 func (c Config) controlTarget() ([]string, error) {
-	namespace := strings.TrimSpace(c.TargetNamespace)
-	if namespace == "" {
-		namespace = "wallaby"
-	}
+	namespace := "wallaby"
 	if strings.TrimSpace(c.ControlTable) == "" {
 		return nil, errors.New("iceberg control table is required")
 	}

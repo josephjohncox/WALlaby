@@ -2,23 +2,53 @@ package postgres
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"math/big"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/josephjohncox/wallaby/internal/bootstrap"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
+
+func TestManagedSnapshotRetriesPreserveLastTransientError(t *testing.T) {
+	t.Parallel()
+	last := &pgconn.PgError{Code: "40001", Message: "last serialization failure"}
+	err := managedSnapshotRetriesExhausted("bootstrap/task", last)
+	if !errors.Is(err, last) || !strings.Contains(err.Error(), "bootstrap/task") || !strings.Contains(err.Error(), "last serialization failure") {
+		t.Fatalf("exhausted retry error did not preserve last cause: %v", err)
+	}
+}
+
+func TestManagedSnapshotRetryClassificationFailsPermanentErrorsImmediately(t *testing.T) {
+	t.Parallel()
+	undefinedTable := &pgconn.PgError{Code: "42P01", Message: "missing receipt relation"}
+	if isTransientManagedSnapshotError(fmt.Errorf("catalog lookup: %w", undefinedTable)) {
+		t.Fatal("permanent SQL/catalog error classified transient")
+	}
+	if isTransientManagedSnapshotError(errors.New("invalid managed bootstrap configuration")) {
+		t.Fatal("plain configuration error classified transient")
+	}
+	serialization := &pgconn.PgError{Code: "40001", Message: "serialization failure"}
+	if !isTransientManagedSnapshotError(fmt.Errorf("snapshot query: %w", serialization)) {
+		t.Fatal("serialization failure was not classified transient")
+	}
+}
 
 func TestManagedSnapshotCursorIsVersionedLosslessAndTypeStable(t *testing.T) {
 	t.Parallel()
 	instant := time.Date(2026, 2, 17, 12, 34, 56, 789012345, time.FixedZone("offset", -7*60*60))
 	id := uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 	task := bootstrap.SnapshotTask{
+		Namespace:  "public",
+		Table:      "cursor_types",
 		KeyColumns: []string{"big", "amount", "payload", "id", "created_at"},
-		Schema: connector.Schema{Columns: []connector.Column{
+		Schema: connector.Schema{Namespace: "public", Name: "cursor_types", Columns: []connector.Column{
 			{Name: "big", Type: "bigint"},
 			{Name: "amount", Type: "numeric(40,20)"},
 			{Name: "payload", Type: "bytea"},
@@ -26,6 +56,7 @@ func TestManagedSnapshotCursorIsVersionedLosslessAndTypeStable(t *testing.T) {
 			{Name: "created_at", Type: "timestamp with time zone"},
 		}},
 	}
+	task.Delivery = identitySnapshotDelivery(task.Schema)
 	bigint := int64(9007199254740993)
 	numeric, ok := new(big.Rat).SetString("12345678901234567890.12345678901234567890")
 	if !ok {
@@ -73,13 +104,16 @@ func TestManagedSnapshotCursorIsVersionedLosslessAndTypeStable(t *testing.T) {
 func TestManagedSnapshotCursorMixedCompositeRestartIsStable(t *testing.T) {
 	t.Parallel()
 	task := bootstrap.SnapshotTask{
+		Namespace:  "public",
+		Table:      "cursor_composite",
 		KeyColumns: []string{"tenant", "sequence", "token"},
-		Schema: connector.Schema{Columns: []connector.Column{
+		Schema: connector.Schema{Namespace: "public", Name: "cursor_composite", Columns: []connector.Column{
 			{Name: "tenant", Type: "text"},
 			{Name: "sequence", Type: "bigint"},
 			{Name: "token", Type: "bytea"},
 		}},
 	}
+	task.Delivery = identitySnapshotDelivery(task.Schema)
 	row := map[string]any{"tenant": "acme", "sequence": int64(9007199254740997), "token": []byte{0xde, 0xad}}
 	first, err := encodeManagedSnapshotCursor(task, row)
 	if err != nil {

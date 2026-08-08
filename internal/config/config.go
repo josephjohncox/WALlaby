@@ -3,207 +3,189 @@ package config
 import (
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-playground/validator/v10"
-	"github.com/spf13/viper"
 )
 
 // Config holds runtime settings for the WALlaby service.
 type Config struct {
-	Environment string
-	API         APIConfig
-	Postgres    PostgresConfig
-	Workflow    WorkflowConfig
-	Telemetry   TelemetryConfig
-	Trace       TraceConfig
-	Profiling   ProfilingConfig
-	DBOS        DBOSConfig
-	Kubernetes  KubernetesConfig
-	Wire        WireConfig
-	DDL         DDLConfig
-	Checkpoints CheckpointConfig
-	Artifacts   ArtifactConfig
-	Iceberg     IcebergConfig
+	Environment string           `json:"environment" yaml:"environment"`
+	API         APIConfig        `json:"api" yaml:"api"`
+	Postgres    PostgresConfig   `json:"postgres" yaml:"postgres"`
+	Workflow    WorkflowConfig   `json:"workflow" yaml:"workflow"`
+	Telemetry   TelemetryConfig  `json:"telemetry" yaml:"telemetry"`
+	Trace       TraceConfig      `json:"trace" yaml:"trace"`
+	Profiling   ProfilingConfig  `json:"profiling" yaml:"profiling"`
+	DBOS        DBOSConfig       `json:"dbos" yaml:"dbos"`
+	Kubernetes  KubernetesConfig `json:"kubernetes" yaml:"kubernetes"`
+	Wire        WireConfig       `json:"wire" yaml:"wire"`
+	DDL         DDLConfig        `json:"ddl" yaml:"ddl"`
+	Checkpoints CheckpointConfig `json:"checkpoints" yaml:"checkpoints"`
+	Artifacts   ArtifactConfig   `json:"artifacts" yaml:"artifacts"`
+	Iceberg     IcebergConfig    `json:"iceberg" yaml:"iceberg"`
 }
 
 type APIConfig struct {
-	GRPCListen     string
-	GRPCReflection bool
+	GRPCListen     string `json:"grpc_listen" yaml:"grpc_listen"`
+	GRPCReflection bool   `json:"grpc_reflection" yaml:"grpc_reflection"`
 }
-
 type PostgresConfig struct {
-	DSN string
+	DSN string `json:"dsn" yaml:"dsn"`
 }
 
 // WorkflowConfig selects the lifecycle metadata store. Memory is explicitly
 // development/test-only and is never an implicit production fallback.
 type WorkflowConfig struct {
-	Store string `validate:"oneof=postgres memory"`
+	Store string `json:"store" yaml:"store" validate:"oneof=postgres memory"`
 }
 
 type TelemetryConfig struct {
-	ServiceName     string
-	OTLPEndpoint    string
-	OTLPInsecure    bool
-	OTLPProtocol    string `validate:"omitempty,oneof=grpc http http/protobuf"`
-	MetricsEndpoint string
-	MetricsInsecure bool
-	MetricsProtocol string `validate:"omitempty,oneof=grpc http http/protobuf"`
-	TracesEndpoint  string
-	TracesInsecure  bool
-	TracesProtocol  string        `validate:"omitempty,oneof=grpc http http/protobuf"`
-	MetricsExporter string        `validate:"omitempty,oneof=otlp none"`
-	TracesExporter  string        `validate:"omitempty,oneof=otlp none"`
-	MetricsInterval time.Duration `validate:"gt=0"`
+	ServiceName     string        `json:"service_name" yaml:"service_name"`
+	OTLPEndpoint    string        `json:"otlp_endpoint" yaml:"otlp_endpoint"`
+	OTLPInsecure    bool          `json:"otlp_insecure" yaml:"otlp_insecure"`
+	OTLPProtocol    string        `json:"otlp_protocol" yaml:"otlp_protocol" validate:"omitempty,oneof=grpc http http/protobuf"`
+	MetricsEndpoint string        `json:"metrics_endpoint" yaml:"metrics_endpoint"`
+	MetricsInsecure bool          `json:"metrics_insecure" yaml:"metrics_insecure"`
+	MetricsProtocol string        `json:"metrics_protocol" yaml:"metrics_protocol" validate:"omitempty,oneof=grpc http http/protobuf"`
+	TracesEndpoint  string        `json:"traces_endpoint" yaml:"traces_endpoint"`
+	TracesInsecure  bool          `json:"traces_insecure" yaml:"traces_insecure"`
+	TracesProtocol  string        `json:"traces_protocol" yaml:"traces_protocol" validate:"omitempty,oneof=grpc http http/protobuf"`
+	MetricsExporter string        `json:"metrics_exporter" yaml:"metrics_exporter" validate:"omitempty,oneof=otlp none"`
+	TracesExporter  string        `json:"traces_exporter" yaml:"traces_exporter" validate:"omitempty,oneof=otlp none"`
+	MetricsInterval time.Duration `json:"metrics_interval" yaml:"metrics_interval" validate:"gt=0"`
 }
-
 type TraceConfig struct {
-	Path string
+	Path string `json:"path" yaml:"path"`
 }
-
 type ProfilingConfig struct {
-	Enabled bool
-	Listen  string
+	Enabled bool   `json:"enabled" yaml:"enabled"`
+	Listen  string `json:"listen" yaml:"listen"`
 }
 
 type DBOSConfig struct {
-	Enabled       bool
-	AppName       string
-	Schedule      string
-	Queue         string
-	MaxEmptyReads int `validate:"gte=0"`
-	MaxRetries    int `validate:"gte=0"`
-	MaxRetriesSet bool
+	Enabled       bool   `json:"enabled" yaml:"enabled"`
+	AppName       string `json:"app_name" yaml:"app_name"`
+	Schedule      string `json:"schedule" yaml:"schedule"`
+	Queue         string `json:"queue" yaml:"queue"`
+	MaxEmptyReads int    `json:"max_empty_reads" yaml:"max_empty_reads" validate:"gte=0"`
+	MaxRetries    int    `json:"max_retries" yaml:"max_retries" validate:"gte=0"`
+	MaxRetriesSet bool   `json:"-" yaml:"-"`
 }
 
 type KubernetesConfig struct {
-	Enabled                         bool
-	KubeconfigPath                  string
-	KubeContext                     string
-	APIServer                       string
-	BearerToken                     string
-	CAFile                          string
-	CAData                          string
-	ClientCertFile                  string
-	ClientKeyFile                   string
-	InsecureSkipTLS                 bool
-	Namespace                       string
-	JobImage                        string
-	JobImagePullPolicy              string
-	JobServiceAccount               string
-	JobAutomountServiceAccountToken bool
-	JobNamePrefix                   string
-	JobTTLSeconds                   int `validate:"gte=0"`
-	JobBackoffLimit                 int `validate:"gte=0"`
-	MaxEmptyReads                   int `validate:"gte=0"`
-	JobLabels                       map[string]string
-	JobAnnotations                  map[string]string
-	JobCommand                      []string
-	JobArgs                         []string
-	JobEnv                          map[string]string
-	JobEnvFrom                      []string
+	Enabled                         bool              `json:"enabled" yaml:"enabled"`
+	KubeconfigPath                  string            `json:"kubeconfig_path" yaml:"kubeconfig_path"`
+	KubeContext                     string            `json:"context" yaml:"context"`
+	APIServer                       string            `json:"api_server" yaml:"api_server"`
+	BearerToken                     string            `json:"bearer_token" yaml:"bearer_token"`
+	CAFile                          string            `json:"ca_file" yaml:"ca_file"`
+	CAData                          string            `json:"ca_data" yaml:"ca_data"`
+	ClientCertFile                  string            `json:"client_cert_file" yaml:"client_cert_file"`
+	ClientKeyFile                   string            `json:"client_key_file" yaml:"client_key_file"`
+	InsecureSkipTLS                 bool              `json:"insecure_skip_tls" yaml:"insecure_skip_tls"`
+	Namespace                       string            `json:"namespace" yaml:"namespace"`
+	JobImage                        string            `json:"job_image" yaml:"job_image"`
+	JobImagePullPolicy              string            `json:"job_image_pull_policy" yaml:"job_image_pull_policy"`
+	JobServiceAccount               string            `json:"job_service_account" yaml:"job_service_account"`
+	JobAutomountServiceAccountToken bool              `json:"job_automount_service_account_token" yaml:"job_automount_service_account_token"`
+	JobNamePrefix                   string            `json:"job_name_prefix" yaml:"job_name_prefix"`
+	JobTTLSeconds                   int               `json:"job_ttl_seconds" yaml:"job_ttl_seconds" validate:"gte=0"`
+	JobBackoffLimit                 int               `json:"job_backoff_limit" yaml:"job_backoff_limit" validate:"gte=0"`
+	MaxEmptyReads                   int               `json:"job_max_empty_reads" yaml:"job_max_empty_reads" validate:"gte=0"`
+	JobLabels                       map[string]string `json:"job_labels" yaml:"job_labels"`
+	JobAnnotations                  map[string]string `json:"job_annotations" yaml:"job_annotations"`
+	JobCommand                      []string          `json:"job_command" yaml:"job_command"`
+	JobArgs                         []string          `json:"job_args" yaml:"job_args"`
+	JobEnv                          map[string]string `json:"job_env" yaml:"job_env"`
+	JobEnvFrom                      []string          `json:"job_env_from" yaml:"job_env_from"`
 }
-
 type WireConfig struct {
-	DefaultFormat string `validate:"omitempty,oneof=arrow avro parquet proto json"`
-	Enforce       bool
+	DefaultFormat string `json:"format" yaml:"format" validate:"omitempty,oneof=arrow avro parquet proto json"`
+	Enforce       bool   `json:"enforce" yaml:"enforce"`
 }
-
 type DDLConfig struct {
-	CatalogEnabled  bool
-	CatalogInterval time.Duration
-	CatalogSchemas  []string
-	AutoApprove     bool
-	Gate            bool
-	AutoApply       bool
+	CatalogEnabled  bool          `json:"catalog_enabled" yaml:"catalog_enabled"`
+	CatalogInterval time.Duration `json:"catalog_interval" yaml:"catalog_interval"`
+	CatalogSchemas  []string      `json:"catalog_schemas" yaml:"catalog_schemas"`
+	AutoApprove     bool          `json:"auto_approve" yaml:"auto_approve"`
+	Gate            bool          `json:"gate" yaml:"gate"`
+	AutoApply       bool          `json:"auto_apply" yaml:"auto_apply"`
 }
-
 type CheckpointConfig struct {
-	Backend string `validate:"omitempty,oneof=postgres sqlite none"`
-	DSN     string
-	Path    string
+	Backend string `json:"backend" yaml:"backend" validate:"omitempty,oneof=postgres sqlite none"`
+	DSN     string `json:"dsn" yaml:"dsn"`
+	Path    string `json:"path" yaml:"path"`
 }
 
 // ArtifactConfig is deployment-level immutable-object and admission config.
 // A flow selects materialization explicitly; credentials are never persisted in
 // the flow API or PostgreSQL publication metadata.
 type ArtifactConfig struct {
-	Bucket                   string
-	Region                   string
-	Endpoint                 string
-	AccessKey                string
-	SecretKey                string
-	SessionToken             string
-	ForcePathStyle           bool
-	HardRetainedBytes        int           `validate:"omitempty,gt=0"`
-	BacklogBatchHigh         int           `validate:"omitempty,gt=0"`
-	BacklogBytesHigh         int           `validate:"omitempty,gt=0"`
-	BacklogAgeHigh           time.Duration `validate:"omitempty,gt=0"`
-	BackpressurePollInterval time.Duration `validate:"omitempty,gt=0"`
-	OrphanGrace              time.Duration `validate:"omitempty,gt=0"`
-	Retention                time.Duration `validate:"omitempty,gt=0"`
-	GCInterval               time.Duration `validate:"omitempty,gt=0"`
+	Bucket                   string        `json:"bucket" yaml:"bucket"`
+	Region                   string        `json:"region" yaml:"region"`
+	Endpoint                 string        `json:"endpoint" yaml:"endpoint"`
+	AccessKey                string        `json:"access_key" yaml:"access_key"`
+	SecretKey                string        `json:"secret_key" yaml:"secret_key"`
+	SessionToken             string        `json:"session_token" yaml:"session_token"`
+	ForcePathStyle           bool          `json:"force_path_style" yaml:"force_path_style"`
+	HardRetainedBytes        int           `json:"hard_retained_bytes" yaml:"hard_retained_bytes" validate:"omitempty,gt=0"`
+	BacklogBatchHigh         int           `json:"backlog_batch_high" yaml:"backlog_batch_high" validate:"omitempty,gt=0"`
+	BacklogBytesHigh         int           `json:"backlog_bytes_high" yaml:"backlog_bytes_high" validate:"omitempty,gt=0"`
+	BacklogAgeHigh           time.Duration `json:"backlog_age_high" yaml:"backlog_age_high" validate:"omitempty,gt=0"`
+	BackpressurePollInterval time.Duration `json:"backpressure_poll_interval" yaml:"backpressure_poll_interval" validate:"omitempty,gt=0"`
+	OrphanGrace              time.Duration `json:"orphan_grace" yaml:"orphan_grace" validate:"omitempty,gt=0"`
+	Retention                time.Duration `json:"retention" yaml:"retention" validate:"omitempty,gt=0"`
+	GCInterval               time.Duration `json:"gc_interval" yaml:"gc_interval" validate:"omitempty,gt=0"`
 }
 
 // IcebergConfig supplies deployment-level REST authentication, TLS, timeout,
 // and S3 Tables maintenance defaults. Flow options select non-secret target
 // mapping and catalog profile values.
 type IcebergConfig struct {
-	Profile                      string
-	URI                          string
-	Warehouse                    string
-	Prefix                       string
-	Namespace                    string
-	TablePrefix                  string
-	ControlTable                 string
-	Region                       string
-	SigningName                  string
-	ExpectedAWSRoleARN           string
-	SigV4                        bool
-	AllowHTTP                    bool
-	OAuthToken                   string
-	OAuthCredential              string
-	OAuthScope                   string
-	OAuthURI                     string
-	CAFile                       string
-	CAData                       string
-	ClientCertFile               string
-	ClientKeyFile                string
-	ServerName                   string
-	S3Endpoint                   string
-	S3Region                     string
-	MaxCommitRetries             int           `validate:"omitempty,gt=0,lte=32"`
-	RequestTimeout               time.Duration `validate:"omitempty,gt=0"`
-	ReconciliationHorizon        time.Duration `validate:"omitempty,gt=0"`
-	S3TablesTableBucketARN       string
-	S3TablesConfigureMaintenance bool
-	S3TablesMinSnapshotsToKeep   int `validate:"omitempty,gt=1,lte=2147483647"`
-	S3TablesMaxSnapshotAgeHours  int `validate:"omitempty,gt=0,lte=2147483647"`
+	Profile                      string        `json:"profile" yaml:"profile"`
+	URI                          string        `json:"uri" yaml:"uri"`
+	Warehouse                    string        `json:"warehouse" yaml:"warehouse"`
+	Prefix                       string        `json:"prefix" yaml:"prefix"`
+	ControlTable                 string        `json:"control_table" yaml:"control_table"`
+	Region                       string        `json:"region" yaml:"region"`
+	SigningName                  string        `json:"signing_name" yaml:"signing_name"`
+	ExpectedAWSRoleARN           string        `json:"expected_aws_role_arn" yaml:"expected_aws_role_arn"`
+	SigV4                        bool          `json:"sigv4" yaml:"sigv4"`
+	AllowHTTP                    bool          `json:"allow_http" yaml:"allow_http"`
+	OAuthToken                   string        `json:"oauth_token" yaml:"oauth_token"`
+	OAuthCredential              string        `json:"oauth_credential" yaml:"oauth_credential"`
+	OAuthScope                   string        `json:"oauth_scope" yaml:"oauth_scope"`
+	OAuthURI                     string        `json:"oauth_uri" yaml:"oauth_uri"`
+	CAFile                       string        `json:"ca_file" yaml:"ca_file"`
+	CAData                       string        `json:"ca_data" yaml:"ca_data"`
+	ClientCertFile               string        `json:"client_cert_file" yaml:"client_cert_file"`
+	ClientKeyFile                string        `json:"client_key_file" yaml:"client_key_file"`
+	ServerName                   string        `json:"server_name" yaml:"server_name"`
+	S3Endpoint                   string        `json:"s3_endpoint" yaml:"s3_endpoint"`
+	S3Region                     string        `json:"s3_region" yaml:"s3_region"`
+	MaxCommitRetries             int           `json:"max_commit_retries" yaml:"max_commit_retries" validate:"omitempty,gt=0,lte=32"`
+	RequestTimeout               time.Duration `json:"request_timeout" yaml:"request_timeout" validate:"omitempty,gt=0"`
+	ReconciliationHorizon        time.Duration `json:"reconciliation_horizon" yaml:"reconciliation_horizon" validate:"omitempty,gt=0"`
+	S3TablesTableBucketARN       string        `json:"s3tables_table_bucket_arn" yaml:"s3tables_table_bucket_arn"`
+	S3TablesConfigureMaintenance bool          `json:"s3tables_configure_maintenance" yaml:"s3tables_configure_maintenance"`
+	S3TablesMinSnapshotsToKeep   int           `json:"s3tables_min_snapshots_to_keep" yaml:"s3tables_min_snapshots_to_keep" validate:"omitempty,gt=1,lte=2147483647"`
+	S3TablesMaxSnapshotAgeHours  int           `json:"s3tables_max_snapshot_age_hours" yaml:"s3tables_max_snapshot_age_hours" validate:"omitempty,gt=0,lte=2147483647"`
 }
 
-// Load loads config from a config file when provided or active viper configfile, then falls back to environment and defaults.
-// Precedence is file > environment > default.
+// Load strictly decodes the selected runtime file, then applies environment
+// values only for absent file fields. Precedence is file > environment > default.
 func Load(configPath string) (*Config, error) {
 	cfgPath := strings.TrimSpace(configPath)
-	if cfgPath == "" {
-		cfgPath = strings.TrimSpace(viper.ConfigFileUsed())
-	}
-
-	fileCfg := viper.New()
-	if cfgPath != "" {
-		fileCfg.SetConfigFile(cfgPath)
-		if err := fileCfg.ReadInConfig(); err != nil {
-			return nil, fmt.Errorf("read config file: %w", err)
-		}
-	}
+	// Viper selects the server/worker file path, but it never decodes runtime
+	// configuration. The strict decoder below owns the current file schema.
+	fileCfg := &environmentConfig{present: make(map[string]struct{})}
 
 	cfg := &Config{
-		Environment: getenv("WALLABY_ENV", "dev"),
+		Environment: "dev",
 		API: APIConfig{
 			GRPCListen:     ":8080",
 			GRPCReflection: false,
@@ -307,158 +289,137 @@ func Load(configPath string) (*Config, error) {
 		},
 	}
 
+	if cfgPath != "" {
+		present, err := decodeStrictConfigFile(cfgPath, cfg)
+		if err != nil {
+			return nil, err
+		}
+		fileCfg.present = present
+	}
+
 	var err error
 
 	cfg.Environment = stringValue(fileCfg, []string{"environment"}, []string{"WALLABY_ENV", "WALLABY_WORKER_ENV"}, cfg.Environment)
-	cfg.API.GRPCListen = stringValue(fileCfg, []string{"api.grpc_listen", "api.grpc-listen"}, []string{"WALLABY_GRPC_LISTEN", "WALLABY_WORKER_GRPC_LISTEN"}, cfg.API.GRPCListen)
-	cfg.API.GRPCReflection, err = boolValue(fileCfg, []string{"api.grpc_reflection", "api.grpc-reflection"}, []string{"WALLABY_GRPC_REFLECTION", "WALLABY_WORKER_GRPC_REFLECTION"}, cfg.API.GRPCReflection)
+	cfg.API.GRPCListen = stringValue(fileCfg, []string{"api.grpc_listen"}, []string{"WALLABY_GRPC_LISTEN", "WALLABY_WORKER_GRPC_LISTEN"}, cfg.API.GRPCListen)
+	cfg.API.GRPCReflection, err = boolValue(fileCfg, []string{"api.grpc_reflection"}, []string{"WALLABY_GRPC_REFLECTION", "WALLABY_WORKER_GRPC_REFLECTION"}, cfg.API.GRPCReflection)
 	if err != nil {
 		return nil, err
 	}
 	cfg.Postgres.DSN = stringValue(fileCfg, []string{"postgres.dsn"}, []string{"WALLABY_POSTGRES_DSN", "WALLABY_WORKER_POSTGRES_DSN"}, cfg.Postgres.DSN)
-	cfg.Workflow.Store = stringValue(fileCfg, []string{"workflow.store", "workflow_store"}, []string{"WALLABY_WORKFLOW_STORE", "WALLABY_WORKER_WORKFLOW_STORE"}, cfg.Workflow.Store)
+	cfg.Workflow.Store = stringValue(fileCfg, []string{"workflow.store"}, []string{"WALLABY_WORKFLOW_STORE", "WALLABY_WORKER_WORKFLOW_STORE"}, cfg.Workflow.Store)
 
-	cfg.Telemetry.ServiceName = stringValue(fileCfg, []string{"telemetry.service_name", "telemetry.service-name"}, []string{"OTEL_SERVICE_NAME", "WALLABY_OTEL_SERVICE"}, cfg.Telemetry.ServiceName)
-	cfg.Telemetry.OTLPEndpoint = stringValue(fileCfg, []string{"telemetry.otlp_endpoint", "telemetry.otlp-endpoint", "telemetry.endpoint", "telemetry.otel_endpoint"}, []string{"OTEL_EXPORTER_OTLP_ENDPOINT", "WALLABY_OTEL_ENDPOINT", "WALLABY_WORKER_OTEL_ENDPOINT"}, cfg.Telemetry.OTLPEndpoint)
-	cfg.Telemetry.OTLPInsecure, err = boolValue(fileCfg, []string{"telemetry.otlp_insecure", "telemetry.otlp-insecure"}, []string{"OTEL_EXPORTER_OTLP_INSECURE", "WALLABY_OTEL_EXPORTER_OTLP_INSECURE", "WALLABY_WORKER_OTEL_EXPORTER_OTLP_INSECURE"}, cfg.Telemetry.OTLPInsecure)
+	cfg.Telemetry.ServiceName = stringValue(fileCfg, []string{"telemetry.service_name"}, []string{"OTEL_SERVICE_NAME"}, cfg.Telemetry.ServiceName)
+	cfg.Telemetry.OTLPEndpoint = stringValue(fileCfg, []string{"telemetry.otlp_endpoint"}, []string{"OTEL_EXPORTER_OTLP_ENDPOINT", "WALLABY_OTEL_ENDPOINT", "WALLABY_WORKER_OTEL_ENDPOINT"}, cfg.Telemetry.OTLPEndpoint)
+	cfg.Telemetry.OTLPInsecure, err = boolValue(fileCfg, []string{"telemetry.otlp_insecure"}, []string{"OTEL_EXPORTER_OTLP_INSECURE", "WALLABY_OTEL_EXPORTER_OTLP_INSECURE", "WALLABY_WORKER_OTEL_EXPORTER_OTLP_INSECURE"}, cfg.Telemetry.OTLPInsecure)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Telemetry.OTLPProtocol = stringValue(fileCfg, []string{"telemetry.otlp_protocol", "telemetry.otlp-protocol"}, []string{"OTEL_EXPORTER_OTLP_PROTOCOL", "WALLABY_OTEL_EXPORTER_OTLP_PROTOCOL", "WALLABY_WORKER_OTEL_EXPORTER_OTLP_PROTOCOL"}, cfg.Telemetry.OTLPProtocol)
-	cfg.Telemetry.MetricsEndpoint = stringValue(fileCfg, []string{"telemetry.metrics_endpoint", "telemetry.metrics-endpoint"}, []string{"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "WALLABY_OTEL_METRICS_ENDPOINT", "WALLABY_WORKER_OTEL_METRICS_ENDPOINT"}, cfg.Telemetry.OTLPEndpoint)
-	cfg.Telemetry.MetricsInsecure, err = boolValue(fileCfg, []string{"telemetry.metrics_insecure", "telemetry.metrics-insecure"}, []string{"WALLABY_OTEL_METRICS_INSECURE", "WALLABY_WORKER_OTEL_METRICS_INSECURE"}, cfg.Telemetry.OTLPInsecure)
+	cfg.Telemetry.OTLPProtocol = stringValue(fileCfg, []string{"telemetry.otlp_protocol"}, []string{"OTEL_EXPORTER_OTLP_PROTOCOL", "WALLABY_OTEL_EXPORTER_OTLP_PROTOCOL", "WALLABY_WORKER_OTEL_EXPORTER_OTLP_PROTOCOL"}, cfg.Telemetry.OTLPProtocol)
+	cfg.Telemetry.MetricsEndpoint = stringValue(fileCfg, []string{"telemetry.metrics_endpoint"}, []string{"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "WALLABY_OTEL_METRICS_ENDPOINT", "WALLABY_WORKER_OTEL_METRICS_ENDPOINT"}, cfg.Telemetry.OTLPEndpoint)
+	cfg.Telemetry.MetricsInsecure, err = boolValue(fileCfg, []string{"telemetry.metrics_insecure"}, []string{"WALLABY_OTEL_METRICS_INSECURE", "WALLABY_WORKER_OTEL_METRICS_INSECURE"}, cfg.Telemetry.OTLPInsecure)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Telemetry.MetricsProtocol = stringValue(fileCfg, []string{"telemetry.metrics_protocol", "telemetry.metrics-protocol"}, []string{"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "WALLABY_OTEL_METRICS_PROTOCOL", "WALLABY_WORKER_OTEL_METRICS_PROTOCOL"}, cfg.Telemetry.OTLPProtocol)
-	cfg.Telemetry.TracesEndpoint = stringValue(fileCfg, []string{"telemetry.traces_endpoint", "telemetry.traces-endpoint"}, []string{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "WALLABY_OTEL_TRACES_ENDPOINT", "WALLABY_WORKER_OTEL_TRACES_ENDPOINT"}, cfg.Telemetry.OTLPEndpoint)
-	cfg.Telemetry.TracesInsecure, err = boolValue(fileCfg, []string{"telemetry.traces_insecure", "telemetry.traces-insecure"}, []string{"WALLABY_OTEL_TRACES_INSECURE", "WALLABY_WORKER_OTEL_TRACES_INSECURE"}, cfg.Telemetry.OTLPInsecure)
+	cfg.Telemetry.MetricsProtocol = stringValue(fileCfg, []string{"telemetry.metrics_protocol"}, []string{"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "WALLABY_OTEL_METRICS_PROTOCOL", "WALLABY_WORKER_OTEL_METRICS_PROTOCOL"}, cfg.Telemetry.OTLPProtocol)
+	cfg.Telemetry.TracesEndpoint = stringValue(fileCfg, []string{"telemetry.traces_endpoint"}, []string{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "WALLABY_OTEL_TRACES_ENDPOINT", "WALLABY_WORKER_OTEL_TRACES_ENDPOINT"}, cfg.Telemetry.OTLPEndpoint)
+	cfg.Telemetry.TracesInsecure, err = boolValue(fileCfg, []string{"telemetry.traces_insecure"}, []string{"WALLABY_OTEL_TRACES_INSECURE", "WALLABY_WORKER_OTEL_TRACES_INSECURE"}, cfg.Telemetry.OTLPInsecure)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Telemetry.TracesProtocol = stringValue(fileCfg, []string{"telemetry.traces_protocol", "telemetry.traces-protocol"}, []string{"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "WALLABY_OTEL_TRACES_PROTOCOL", "WALLABY_WORKER_OTEL_TRACES_PROTOCOL"}, cfg.Telemetry.OTLPProtocol)
-	cfg.Telemetry.MetricsExporter = stringValue(fileCfg, []string{"telemetry.metrics_exporter", "telemetry.metrics-exporter"}, []string{"OTEL_METRICS_EXPORTER", "WALLABY_OTEL_METRICS_EXPORTER", "WALLABY_WORKER_OTEL_METRICS_EXPORTER"}, cfg.Telemetry.MetricsExporter)
-	cfg.Telemetry.TracesExporter = stringValue(fileCfg, []string{"telemetry.traces_exporter", "telemetry.traces-exporter"}, []string{"OTEL_TRACES_EXPORTER", "WALLABY_OTEL_TRACES_EXPORTER", "WALLABY_WORKER_OTEL_TRACES_EXPORTER"}, cfg.Telemetry.TracesExporter)
-	cfg.Telemetry.MetricsInterval, err = durationValue(fileCfg, []string{"telemetry.metrics_interval", "telemetry.metrics-interval"}, []string{"WALLABY_OTEL_METRICS_INTERVAL", "WALLABY_WORKER_OTEL_METRICS_INTERVAL"}, cfg.Telemetry.MetricsInterval)
+	cfg.Telemetry.TracesProtocol = stringValue(fileCfg, []string{"telemetry.traces_protocol"}, []string{"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "WALLABY_OTEL_TRACES_PROTOCOL", "WALLABY_WORKER_OTEL_TRACES_PROTOCOL"}, cfg.Telemetry.OTLPProtocol)
+	cfg.Telemetry.MetricsExporter = stringValue(fileCfg, []string{"telemetry.metrics_exporter"}, []string{"OTEL_METRICS_EXPORTER", "WALLABY_OTEL_METRICS_EXPORTER", "WALLABY_WORKER_OTEL_METRICS_EXPORTER"}, cfg.Telemetry.MetricsExporter)
+	cfg.Telemetry.TracesExporter = stringValue(fileCfg, []string{"telemetry.traces_exporter"}, []string{"OTEL_TRACES_EXPORTER", "WALLABY_OTEL_TRACES_EXPORTER", "WALLABY_WORKER_OTEL_TRACES_EXPORTER"}, cfg.Telemetry.TracesExporter)
+	cfg.Telemetry.MetricsInterval, err = durationValue(fileCfg, []string{"telemetry.metrics_interval"}, []string{"WALLABY_OTEL_METRICS_INTERVAL", "WALLABY_WORKER_OTEL_METRICS_INTERVAL"}, cfg.Telemetry.MetricsInterval)
 	if err != nil {
 		return nil, err
 	}
 
-	cfg.Trace.Path = stringValue(fileCfg, []string{"trace.path", "trace.file"}, []string{"WALLABY_TRACE_PATH", "WALLABY_WORKER_TRACE_PATH"}, cfg.Trace.Path)
+	cfg.Trace.Path = stringValue(fileCfg, []string{"trace.path"}, []string{"WALLABY_TRACE_PATH", "WALLABY_WORKER_TRACE_PATH"}, cfg.Trace.Path)
 
-	cfg.Profiling.Enabled, err = boolValue(fileCfg, []string{"profiling.enabled", "profiling.pprof"}, []string{"WALLABY_PPROF_ENABLED", "WALLABY_WORKER_PPROF_ENABLED"}, cfg.Profiling.Enabled)
+	cfg.Profiling.Enabled, err = boolValue(fileCfg, []string{"profiling.enabled"}, []string{"WALLABY_PPROF_ENABLED", "WALLABY_WORKER_PPROF_ENABLED"}, cfg.Profiling.Enabled)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Profiling.Listen = stringValue(fileCfg, []string{"profiling.listen", "profiling.pprof"}, []string{"WALLABY_PPROF_LISTEN", "WALLABY_WORKER_PPROF_LISTEN"}, cfg.Profiling.Listen)
+	cfg.Profiling.Listen = stringValue(fileCfg, []string{"profiling.listen"}, []string{"WALLABY_PPROF_LISTEN", "WALLABY_WORKER_PPROF_LISTEN"}, cfg.Profiling.Listen)
 
-	cfg.DBOS.Enabled, err = boolValue(fileCfg, []string{"dbos.enabled", "dbos.dispatcher_enabled"}, []string{"WALLABY_DBOS_ENABLED", "WALLABY_WORKER_DBOS_ENABLED"}, cfg.DBOS.Enabled)
+	cfg.DBOS.Enabled, err = boolValue(fileCfg, []string{"dbos.enabled"}, []string{"WALLABY_DBOS_ENABLED", "WALLABY_WORKER_DBOS_ENABLED"}, cfg.DBOS.Enabled)
 	if err != nil {
 		return nil, err
 	}
-	cfg.DBOS.AppName = stringValue(fileCfg, []string{"dbos.app_name", "dbos.app-name"}, []string{"WALLABY_DBOS_APP", "WALLABY_WORKER_DBOS_APP"}, cfg.DBOS.AppName)
-	cfg.DBOS.Schedule = stringValue(fileCfg, []string{"dbos.schedule", "dbos.cron"}, []string{"WALLABY_DBOS_SCHEDULE", "WALLABY_WORKER_DBOS_SCHEDULE"}, cfg.DBOS.Schedule)
+	cfg.DBOS.AppName = stringValue(fileCfg, []string{"dbos.app_name"}, []string{"WALLABY_DBOS_APP", "WALLABY_WORKER_DBOS_APP"}, cfg.DBOS.AppName)
+	cfg.DBOS.Schedule = stringValue(fileCfg, []string{"dbos.schedule"}, []string{"WALLABY_DBOS_SCHEDULE", "WALLABY_WORKER_DBOS_SCHEDULE"}, cfg.DBOS.Schedule)
 	cfg.DBOS.Queue = stringValue(fileCfg, []string{"dbos.queue"}, []string{"WALLABY_DBOS_QUEUE", "WALLABY_WORKER_DBOS_QUEUE"}, cfg.DBOS.Queue)
-	cfg.DBOS.MaxEmptyReads, err = intValue(fileCfg, []string{"dbos.max_empty_reads", "dbos.max-empty-reads"}, []string{"WALLABY_DBOS_MAX_EMPTY_READS", "WALLABY_WORKER_DBOS_MAX_EMPTY_READS"}, cfg.DBOS.MaxEmptyReads)
+	cfg.DBOS.MaxEmptyReads, err = intValue(fileCfg, []string{"dbos.max_empty_reads"}, []string{"WALLABY_DBOS_MAX_EMPTY_READS", "WALLABY_WORKER_DBOS_MAX_EMPTY_READS"}, cfg.DBOS.MaxEmptyReads)
 	if err != nil {
 		return nil, err
 	}
-	if maxRetries, ok, err := intValueOptional(fileCfg, []string{"dbos.max_retries", "dbos.max-retries"}, []string{"WALLABY_DBOS_MAX_RETRIES", "WALLABY_WORKER_DBOS_MAX_RETRIES"}); err != nil {
+	if maxRetries, ok, err := intValueOptional(fileCfg, []string{"dbos.max_retries"}, []string{"WALLABY_DBOS_MAX_RETRIES", "WALLABY_WORKER_DBOS_MAX_RETRIES"}); err != nil {
 		return nil, err
 	} else if ok {
 		cfg.DBOS.MaxRetries = maxRetries
 		cfg.DBOS.MaxRetriesSet = true
 	}
 
-	cfg.Kubernetes.Enabled, err = boolValue(fileCfg,
-		[]string{"kubernetes.enabled", "kubernetes.dispatcher_enabled", "k8s.enabled"},
-		[]string{"WALLABY_K8S_ENABLED", "WALLABY_WORKER_K8S_ENABLED"},
-		cfg.Kubernetes.Enabled,
-	)
+	cfg.Kubernetes.Enabled, err = boolValue(fileCfg, []string{"kubernetes.enabled"}, []string{"WALLABY_K8S_ENABLED", "WALLABY_WORKER_K8S_ENABLED"}, cfg.Kubernetes.Enabled)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Kubernetes.KubeconfigPath = stringValue(fileCfg,
-		[]string{"kubernetes.kubeconfig_path", "kubernetes.kubeconfig-path", "kubernetes.kubeconfig", "k8s.kubeconfig_path", "k8s.kubeconfig-path", "k8s.kubeconfig"},
-		[]string{"WALLABY_K8S_KUBECONFIG", "WALLABY_WORKER_K8S_KUBECONFIG", "KUBECONFIG"},
-		cfg.Kubernetes.KubeconfigPath,
-	)
-	cfg.Kubernetes.KubeContext = stringValue(fileCfg, []string{"kubernetes.context", "k8s.context"}, []string{"WALLABY_K8S_CONTEXT", "WALLABY_WORKER_K8S_CONTEXT"}, cfg.Kubernetes.KubeContext)
-	cfg.Kubernetes.APIServer = stringValue(fileCfg, []string{"kubernetes.api_server", "kubernetes.api-server", "k8s.api_server", "k8s.api-server"}, []string{"WALLABY_K8S_API_SERVER", "WALLABY_WORKER_K8S_API_SERVER"}, cfg.Kubernetes.APIServer)
-	cfg.Kubernetes.BearerToken = stringValue(fileCfg, []string{"kubernetes.token", "kubernetes.bearer_token", "kubernetes.bearer-token", "k8s.token", "k8s.bearer_token", "k8s.bearer-token"}, []string{"WALLABY_K8S_TOKEN", "WALLABY_WORKER_K8S_TOKEN"}, cfg.Kubernetes.BearerToken)
-	cfg.Kubernetes.CAFile = stringValue(fileCfg, []string{"kubernetes.ca_file", "kubernetes.ca-file", "k8s.ca_file", "k8s.ca-file"}, []string{"WALLABY_K8S_CA_FILE", "WALLABY_WORKER_K8S_CA_FILE"}, cfg.Kubernetes.CAFile)
-	cfg.Kubernetes.CAData = stringValue(fileCfg, []string{"kubernetes.ca_data", "kubernetes.ca-data", "k8s.ca_data", "k8s.ca-data"}, []string{"WALLABY_K8S_CA_DATA", "WALLABY_WORKER_K8S_CA_DATA"}, cfg.Kubernetes.CAData)
-	cfg.Kubernetes.ClientCertFile = stringValue(fileCfg, []string{"kubernetes.client_cert_file", "kubernetes.client-cert-file", "k8s.client_cert_file", "k8s.client-cert-file"}, []string{"WALLABY_K8S_CLIENT_CERT", "WALLABY_WORKER_K8S_CLIENT_CERT"}, cfg.Kubernetes.ClientCertFile)
-	cfg.Kubernetes.ClientKeyFile = stringValue(fileCfg, []string{"kubernetes.client_key_file", "kubernetes.client-key-file", "k8s.client_key_file", "k8s.client-key-file"}, []string{"WALLABY_K8S_CLIENT_KEY", "WALLABY_WORKER_K8S_CLIENT_KEY"}, cfg.Kubernetes.ClientKeyFile)
-	cfg.Kubernetes.InsecureSkipTLS, err = boolValue(fileCfg, []string{"kubernetes.insecure_skip_tls", "kubernetes.insecure-skip-tls", "k8s.insecure_skip_tls", "k8s.insecure-skip-tls"}, []string{"WALLABY_K8S_INSECURE_SKIP_TLS", "WALLABY_WORKER_K8S_INSECURE_SKIP_TLS"}, cfg.Kubernetes.InsecureSkipTLS)
+	cfg.Kubernetes.KubeconfigPath = stringValue(fileCfg, []string{"kubernetes.kubeconfig_path"}, []string{"WALLABY_K8S_KUBECONFIG", "WALLABY_WORKER_K8S_KUBECONFIG"}, cfg.Kubernetes.KubeconfigPath)
+	cfg.Kubernetes.KubeContext = stringValue(fileCfg, []string{"kubernetes.context"}, []string{"WALLABY_K8S_CONTEXT", "WALLABY_WORKER_K8S_CONTEXT"}, cfg.Kubernetes.KubeContext)
+	cfg.Kubernetes.APIServer = stringValue(fileCfg, []string{"kubernetes.api_server"}, []string{"WALLABY_K8S_API_SERVER", "WALLABY_WORKER_K8S_API_SERVER"}, cfg.Kubernetes.APIServer)
+	cfg.Kubernetes.BearerToken = stringValue(fileCfg, []string{"kubernetes.bearer_token"}, []string{"WALLABY_K8S_TOKEN", "WALLABY_WORKER_K8S_TOKEN"}, cfg.Kubernetes.BearerToken)
+	cfg.Kubernetes.CAFile = stringValue(fileCfg, []string{"kubernetes.ca_file"}, []string{"WALLABY_K8S_CA_FILE", "WALLABY_WORKER_K8S_CA_FILE"}, cfg.Kubernetes.CAFile)
+	cfg.Kubernetes.CAData = stringValue(fileCfg, []string{"kubernetes.ca_data"}, []string{"WALLABY_K8S_CA_DATA", "WALLABY_WORKER_K8S_CA_DATA"}, cfg.Kubernetes.CAData)
+	cfg.Kubernetes.ClientCertFile = stringValue(fileCfg, []string{"kubernetes.client_cert_file"}, []string{"WALLABY_K8S_CLIENT_CERT", "WALLABY_WORKER_K8S_CLIENT_CERT"}, cfg.Kubernetes.ClientCertFile)
+	cfg.Kubernetes.ClientKeyFile = stringValue(fileCfg, []string{"kubernetes.client_key_file"}, []string{"WALLABY_K8S_CLIENT_KEY", "WALLABY_WORKER_K8S_CLIENT_KEY"}, cfg.Kubernetes.ClientKeyFile)
+	cfg.Kubernetes.InsecureSkipTLS, err = boolValue(fileCfg, []string{"kubernetes.insecure_skip_tls"}, []string{"WALLABY_K8S_INSECURE_SKIP_TLS", "WALLABY_WORKER_K8S_INSECURE_SKIP_TLS"}, cfg.Kubernetes.InsecureSkipTLS)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Kubernetes.Namespace = stringValue(fileCfg, []string{"kubernetes.namespace", "k8s.namespace"}, []string{"WALLABY_K8S_NAMESPACE", "WALLABY_WORKER_K8S_NAMESPACE"}, cfg.Kubernetes.Namespace)
-	cfg.Kubernetes.JobImage = stringValue(fileCfg, []string{"kubernetes.job_image", "kubernetes.job-image", "k8s.job_image", "k8s.job-image"}, []string{"WALLABY_K8S_JOB_IMAGE", "WALLABY_WORKER_K8S_JOB_IMAGE"}, cfg.Kubernetes.JobImage)
-	cfg.Kubernetes.JobImagePullPolicy = stringValue(fileCfg, []string{"kubernetes.job_image_pull_policy", "kubernetes.job-image-pull-policy", "k8s.job_image_pull_policy", "k8s.job-image-pull-policy"}, []string{"WALLABY_K8S_JOB_IMAGE_PULL_POLICY", "WALLABY_WORKER_K8S_JOB_IMAGE_PULL_POLICY"}, cfg.Kubernetes.JobImagePullPolicy)
-	cfg.Kubernetes.JobServiceAccount = stringValue(fileCfg, []string{"kubernetes.job_service_account", "kubernetes.job-service-account", "k8s.job_service_account", "k8s.job-service-account"}, []string{"WALLABY_K8S_JOB_SERVICE_ACCOUNT", "WALLABY_WORKER_K8S_JOB_SERVICE_ACCOUNT"}, cfg.Kubernetes.JobServiceAccount)
-	cfg.Kubernetes.JobAutomountServiceAccountToken, err = boolValue(fileCfg, []string{"kubernetes.job_automount_service_account_token", "kubernetes.job-automount-service-account-token"}, []string{"WALLABY_K8S_JOB_AUTOMOUNT_SERVICE_ACCOUNT_TOKEN", "WALLABY_WORKER_K8S_JOB_AUTOMOUNT_SERVICE_ACCOUNT_TOKEN"}, cfg.Kubernetes.JobAutomountServiceAccountToken)
+	cfg.Kubernetes.Namespace = stringValue(fileCfg, []string{"kubernetes.namespace"}, []string{"WALLABY_K8S_NAMESPACE", "WALLABY_WORKER_K8S_NAMESPACE"}, cfg.Kubernetes.Namespace)
+	cfg.Kubernetes.JobImage = stringValue(fileCfg, []string{"kubernetes.job_image"}, []string{"WALLABY_K8S_JOB_IMAGE", "WALLABY_WORKER_K8S_JOB_IMAGE"}, cfg.Kubernetes.JobImage)
+	cfg.Kubernetes.JobImagePullPolicy = stringValue(fileCfg, []string{"kubernetes.job_image_pull_policy"}, []string{"WALLABY_K8S_JOB_IMAGE_PULL_POLICY", "WALLABY_WORKER_K8S_JOB_IMAGE_PULL_POLICY"}, cfg.Kubernetes.JobImagePullPolicy)
+	cfg.Kubernetes.JobServiceAccount = stringValue(fileCfg, []string{"kubernetes.job_service_account"}, []string{"WALLABY_K8S_JOB_SERVICE_ACCOUNT", "WALLABY_WORKER_K8S_JOB_SERVICE_ACCOUNT"}, cfg.Kubernetes.JobServiceAccount)
+	cfg.Kubernetes.JobAutomountServiceAccountToken, err = boolValue(fileCfg, []string{"kubernetes.job_automount_service_account_token"}, []string{"WALLABY_K8S_JOB_AUTOMOUNT_SERVICE_ACCOUNT_TOKEN", "WALLABY_WORKER_K8S_JOB_AUTOMOUNT_SERVICE_ACCOUNT_TOKEN"}, cfg.Kubernetes.JobAutomountServiceAccountToken)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Kubernetes.JobNamePrefix = stringValue(fileCfg, []string{"kubernetes.job_name_prefix", "kubernetes.job-name-prefix", "k8s.job_name_prefix", "k8s.job-name-prefix"}, []string{"WALLABY_K8S_JOB_NAME_PREFIX", "WALLABY_WORKER_K8S_JOB_NAME_PREFIX"}, cfg.Kubernetes.JobNamePrefix)
-	cfg.Kubernetes.JobTTLSeconds, err = intValue(fileCfg, []string{"kubernetes.job_ttl_seconds", "kubernetes.job-ttl-seconds", "k8s.job_ttl_seconds", "k8s.job-ttl-seconds"}, []string{"WALLABY_K8S_JOB_TTL_SECONDS", "WALLABY_WORKER_K8S_JOB_TTL_SECONDS"}, cfg.Kubernetes.JobTTLSeconds)
+	cfg.Kubernetes.JobNamePrefix = stringValue(fileCfg, []string{"kubernetes.job_name_prefix"}, []string{"WALLABY_K8S_JOB_NAME_PREFIX", "WALLABY_WORKER_K8S_JOB_NAME_PREFIX"}, cfg.Kubernetes.JobNamePrefix)
+	cfg.Kubernetes.JobTTLSeconds, err = intValue(fileCfg, []string{"kubernetes.job_ttl_seconds"}, []string{"WALLABY_K8S_JOB_TTL_SECONDS", "WALLABY_WORKER_K8S_JOB_TTL_SECONDS"}, cfg.Kubernetes.JobTTLSeconds)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Kubernetes.JobBackoffLimit, err = intValue(fileCfg, []string{"kubernetes.job_backoff_limit", "kubernetes.job-backoff-limit", "k8s.job_backoff_limit", "k8s.job-backoff-limit"}, []string{"WALLABY_K8S_JOB_BACKOFF_LIMIT", "WALLABY_WORKER_K8S_JOB_BACKOFF_LIMIT"}, cfg.Kubernetes.JobBackoffLimit)
+	cfg.Kubernetes.JobBackoffLimit, err = intValue(fileCfg, []string{"kubernetes.job_backoff_limit"}, []string{"WALLABY_K8S_JOB_BACKOFF_LIMIT", "WALLABY_WORKER_K8S_JOB_BACKOFF_LIMIT"}, cfg.Kubernetes.JobBackoffLimit)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Kubernetes.MaxEmptyReads, err = intValue(fileCfg, []string{"kubernetes.job_max_empty_reads", "kubernetes.job-max-empty-reads", "k8s.job_max_empty_reads", "k8s.job-max-empty-reads"}, []string{"WALLABY_K8S_JOB_MAX_EMPTY_READS", "WALLABY_WORKER_K8S_JOB_MAX_EMPTY_READS"}, cfg.Kubernetes.MaxEmptyReads)
+	cfg.Kubernetes.MaxEmptyReads, err = intValue(fileCfg, []string{"kubernetes.job_max_empty_reads"}, []string{"WALLABY_K8S_JOB_MAX_EMPTY_READS", "WALLABY_WORKER_K8S_JOB_MAX_EMPTY_READS"}, cfg.Kubernetes.MaxEmptyReads)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Kubernetes.JobLabels, err = mapValue(fileCfg, []string{"kubernetes.job_labels", "kubernetes.job-labels", "k8s.job_labels", "k8s.job-labels"}, []string{"WALLABY_K8S_JOB_LABELS", "WALLABY_WORKER_K8S_JOB_LABELS"})
-	if err != nil {
-		return nil, err
-	}
-	cfg.Kubernetes.JobAnnotations, err = mapValue(fileCfg, []string{"kubernetes.job_annotations", "kubernetes.job-annotations", "k8s.job_annotations", "k8s.job-annotations"}, []string{"WALLABY_K8S_JOB_ANNOTATIONS", "WALLABY_WORKER_K8S_JOB_ANNOTATIONS"})
-	if err != nil {
-		return nil, err
-	}
-	cfg.Kubernetes.JobCommand, err = stringSliceValue(fileCfg, []string{"kubernetes.job_command", "kubernetes.job-command", "k8s.job_command", "k8s.job-command"}, []string{"WALLABY_K8S_JOB_COMMAND", "WALLABY_WORKER_K8S_JOB_COMMAND"})
-	if err != nil {
-		return nil, err
-	}
-	cfg.Kubernetes.JobArgs, err = stringSliceValue(fileCfg, []string{"kubernetes.job_args", "kubernetes.job-args", "k8s.job_args", "k8s.job-args"}, []string{"WALLABY_K8S_JOB_ARGS", "WALLABY_WORKER_K8S_JOB_ARGS"})
-	if err != nil {
-		return nil, err
-	}
-	cfg.Kubernetes.JobEnv, err = mapValue(fileCfg, []string{"kubernetes.job_env", "kubernetes.job-env", "k8s.job_env", "k8s.job-env"}, []string{"WALLABY_K8S_JOB_ENV", "WALLABY_WORKER_K8S_JOB_ENV"})
-	if err != nil {
-		return nil, err
-	}
-	cfg.Kubernetes.JobEnvFrom, err = stringSliceValue(fileCfg, []string{"kubernetes.job_env_from", "kubernetes.job-env-from", "k8s.job_env_from", "k8s.job-env-from"}, []string{"WALLABY_K8S_JOB_ENV_FROM", "WALLABY_WORKER_K8S_JOB_ENV_FROM"})
+	cfg.Kubernetes.JobLabels = mapValue(fileCfg, []string{"kubernetes.job_labels"}, []string{"WALLABY_K8S_JOB_LABELS", "WALLABY_WORKER_K8S_JOB_LABELS"}, cfg.Kubernetes.JobLabels)
+	cfg.Kubernetes.JobAnnotations = mapValue(fileCfg, []string{"kubernetes.job_annotations"}, []string{"WALLABY_K8S_JOB_ANNOTATIONS", "WALLABY_WORKER_K8S_JOB_ANNOTATIONS"}, cfg.Kubernetes.JobAnnotations)
+	cfg.Kubernetes.JobCommand = stringSliceValue(fileCfg, []string{"kubernetes.job_command"}, []string{"WALLABY_K8S_JOB_COMMAND", "WALLABY_WORKER_K8S_JOB_COMMAND"}, cfg.Kubernetes.JobCommand)
+	cfg.Kubernetes.JobArgs = stringSliceValue(fileCfg, []string{"kubernetes.job_args"}, []string{"WALLABY_K8S_JOB_ARGS", "WALLABY_WORKER_K8S_JOB_ARGS"}, cfg.Kubernetes.JobArgs)
+	cfg.Kubernetes.JobEnv = mapValue(fileCfg, []string{"kubernetes.job_env"}, []string{"WALLABY_K8S_JOB_ENV", "WALLABY_WORKER_K8S_JOB_ENV"}, cfg.Kubernetes.JobEnv)
+	cfg.Kubernetes.JobEnvFrom = stringSliceValue(fileCfg, []string{"kubernetes.job_env_from"}, []string{"WALLABY_K8S_JOB_ENV_FROM", "WALLABY_WORKER_K8S_JOB_ENV_FROM"}, cfg.Kubernetes.JobEnvFrom)
+
+	cfg.Wire.DefaultFormat = stringValue(fileCfg, []string{"wire.format"}, []string{"WALLABY_WIRE_FORMAT", "WALLABY_WORKER_WIRE_FORMAT"}, cfg.Wire.DefaultFormat)
+	cfg.Wire.Enforce, err = boolValue(fileCfg, []string{"wire.enforce"}, []string{"WALLABY_WIRE_ENFORCE", "WALLABY_WORKER_WIRE_ENFORCE"}, cfg.Wire.Enforce)
 	if err != nil {
 		return nil, err
 	}
 
-	cfg.Wire.DefaultFormat = stringValue(fileCfg, []string{"wire.format", "wire.default_format", "wire.default-format"}, []string{"WALLABY_WIRE_FORMAT", "WALLABY_WORKER_WIRE_FORMAT"}, cfg.Wire.DefaultFormat)
-	cfg.Wire.Enforce, err = boolValue(fileCfg, []string{"wire.enforce", "wire.enforce_format", "wire.enforce-format"}, []string{"WALLABY_WIRE_ENFORCE", "WALLABY_WORKER_WIRE_ENFORCE"}, cfg.Wire.Enforce)
+	cfg.DDL.CatalogEnabled, err = boolValue(fileCfg, []string{"ddl.catalog_enabled"}, []string{"WALLABY_DDL_CATALOG_ENABLED", "WALLABY_WORKER_DDL_CATALOG_ENABLED"}, cfg.DDL.CatalogEnabled)
 	if err != nil {
 		return nil, err
 	}
-
-	cfg.DDL.CatalogEnabled, err = boolValue(fileCfg, []string{"ddl.catalog_enabled", "ddl.catalog-enabled"}, []string{"WALLABY_DDL_CATALOG_ENABLED", "WALLABY_WORKER_DDL_CATALOG_ENABLED"}, cfg.DDL.CatalogEnabled)
+	cfg.DDL.CatalogInterval, err = durationValue(fileCfg, []string{"ddl.catalog_interval"}, []string{"WALLABY_DDL_CATALOG_INTERVAL", "WALLABY_WORKER_DDL_CATALOG_INTERVAL"}, cfg.DDL.CatalogInterval)
 	if err != nil {
 		return nil, err
 	}
-	cfg.DDL.CatalogInterval, err = durationValue(fileCfg, []string{"ddl.catalog_interval", "ddl.catalog-interval"}, []string{"WALLABY_DDL_CATALOG_INTERVAL", "WALLABY_WORKER_DDL_CATALOG_INTERVAL"}, cfg.DDL.CatalogInterval)
-	if err != nil {
-		return nil, err
-	}
-	cfg.DDL.CatalogSchemas, err = stringSliceValue(fileCfg, []string{"ddl.catalog_schemas", "ddl.catalog-schemas"}, []string{"WALLABY_DDL_CATALOG_SCHEMAS", "WALLABY_WORKER_DDL_CATALOG_SCHEMAS"})
-	if err != nil {
-		return nil, err
-	}
-	cfg.DDL.AutoApprove, err = boolValue(fileCfg, []string{"ddl.auto_approve", "ddl.auto-approve"}, []string{"WALLABY_DDL_AUTO_APPROVE", "WALLABY_WORKER_DDL_AUTO_APPROVE"}, cfg.DDL.AutoApprove)
+	cfg.DDL.CatalogSchemas = stringSliceValue(fileCfg, []string{"ddl.catalog_schemas"}, []string{"WALLABY_DDL_CATALOG_SCHEMAS", "WALLABY_WORKER_DDL_CATALOG_SCHEMAS"}, cfg.DDL.CatalogSchemas)
+	cfg.DDL.AutoApprove, err = boolValue(fileCfg, []string{"ddl.auto_approve"}, []string{"WALLABY_DDL_AUTO_APPROVE", "WALLABY_WORKER_DDL_AUTO_APPROVE"}, cfg.DDL.AutoApprove)
 	if err != nil {
 		return nil, err
 	}
@@ -466,53 +427,53 @@ func Load(configPath string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg.DDL.AutoApply, err = boolValue(fileCfg, []string{"ddl.auto_apply", "ddl.auto-apply"}, []string{"WALLABY_DDL_AUTO_APPLY", "WALLABY_WORKER_DDL_AUTO_APPLY"}, cfg.DDL.AutoApply)
+	cfg.DDL.AutoApply, err = boolValue(fileCfg, []string{"ddl.auto_apply"}, []string{"WALLABY_DDL_AUTO_APPLY", "WALLABY_WORKER_DDL_AUTO_APPLY"}, cfg.DDL.AutoApply)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Checkpoints.Backend = stringValue(fileCfg, []string{"checkpoints.backend", "checkpoint.backend"}, []string{"WALLABY_CHECKPOINT_BACKEND", "WALLABY_WORKER_CHECKPOINT_BACKEND"}, cfg.Checkpoints.Backend)
-	cfg.Checkpoints.DSN = stringValue(fileCfg, []string{"checkpoints.dsn", "checkpoint.dsn"}, []string{"WALLABY_CHECKPOINT_DSN", "WALLABY_WORKER_CHECKPOINT_DSN"}, cfg.Checkpoints.DSN)
-	cfg.Checkpoints.Path = stringValue(fileCfg, []string{"checkpoints.path", "checkpoint.path"}, []string{"WALLABY_CHECKPOINT_PATH", "WALLABY_WORKER_CHECKPOINT_PATH"}, cfg.Checkpoints.Path)
+	cfg.Checkpoints.Backend = stringValue(fileCfg, []string{"checkpoints.backend"}, []string{"WALLABY_CHECKPOINT_BACKEND", "WALLABY_WORKER_CHECKPOINT_BACKEND"}, cfg.Checkpoints.Backend)
+	cfg.Checkpoints.DSN = stringValue(fileCfg, []string{"checkpoints.dsn"}, []string{"WALLABY_CHECKPOINT_DSN", "WALLABY_WORKER_CHECKPOINT_DSN"}, cfg.Checkpoints.DSN)
+	cfg.Checkpoints.Path = stringValue(fileCfg, []string{"checkpoints.path"}, []string{"WALLABY_CHECKPOINT_PATH", "WALLABY_WORKER_CHECKPOINT_PATH"}, cfg.Checkpoints.Path)
 
-	cfg.Artifacts.Bucket = stringValue(fileCfg, []string{"artifacts.bucket", "artifact.bucket"}, []string{"WALLABY_ARTIFACT_BUCKET", "WALLABY_WORKER_ARTIFACT_BUCKET"}, cfg.Artifacts.Bucket)
-	cfg.Artifacts.Region = stringValue(fileCfg, []string{"artifacts.region", "artifact.region"}, []string{"WALLABY_ARTIFACT_REGION", "WALLABY_WORKER_ARTIFACT_REGION"}, cfg.Artifacts.Region)
-	cfg.Artifacts.Endpoint = stringValue(fileCfg, []string{"artifacts.endpoint", "artifact.endpoint"}, []string{"WALLABY_ARTIFACT_ENDPOINT", "WALLABY_WORKER_ARTIFACT_ENDPOINT"}, cfg.Artifacts.Endpoint)
-	cfg.Artifacts.AccessKey = stringValue(fileCfg, []string{"artifacts.access_key", "artifact.access_key"}, []string{"WALLABY_ARTIFACT_ACCESS_KEY", "WALLABY_WORKER_ARTIFACT_ACCESS_KEY"}, cfg.Artifacts.AccessKey)
-	cfg.Artifacts.SecretKey = stringValue(fileCfg, []string{"artifacts.secret_key", "artifact.secret_key"}, []string{"WALLABY_ARTIFACT_SECRET_KEY", "WALLABY_WORKER_ARTIFACT_SECRET_KEY"}, cfg.Artifacts.SecretKey)
-	cfg.Artifacts.SessionToken = stringValue(fileCfg, []string{"artifacts.session_token", "artifact.session_token"}, []string{"WALLABY_ARTIFACT_SESSION_TOKEN", "WALLABY_WORKER_ARTIFACT_SESSION_TOKEN"}, cfg.Artifacts.SessionToken)
-	cfg.Artifacts.ForcePathStyle, err = boolValue(fileCfg, []string{"artifacts.force_path_style", "artifact.force_path_style"}, []string{"WALLABY_ARTIFACT_FORCE_PATH_STYLE", "WALLABY_WORKER_ARTIFACT_FORCE_PATH_STYLE"}, cfg.Artifacts.ForcePathStyle)
+	cfg.Artifacts.Bucket = stringValue(fileCfg, []string{"artifacts.bucket"}, []string{"WALLABY_ARTIFACT_BUCKET", "WALLABY_WORKER_ARTIFACT_BUCKET"}, cfg.Artifacts.Bucket)
+	cfg.Artifacts.Region = stringValue(fileCfg, []string{"artifacts.region"}, []string{"WALLABY_ARTIFACT_REGION", "WALLABY_WORKER_ARTIFACT_REGION"}, cfg.Artifacts.Region)
+	cfg.Artifacts.Endpoint = stringValue(fileCfg, []string{"artifacts.endpoint"}, []string{"WALLABY_ARTIFACT_ENDPOINT", "WALLABY_WORKER_ARTIFACT_ENDPOINT"}, cfg.Artifacts.Endpoint)
+	cfg.Artifacts.AccessKey = stringValue(fileCfg, []string{"artifacts.access_key"}, []string{"WALLABY_ARTIFACT_ACCESS_KEY", "WALLABY_WORKER_ARTIFACT_ACCESS_KEY"}, cfg.Artifacts.AccessKey)
+	cfg.Artifacts.SecretKey = stringValue(fileCfg, []string{"artifacts.secret_key"}, []string{"WALLABY_ARTIFACT_SECRET_KEY", "WALLABY_WORKER_ARTIFACT_SECRET_KEY"}, cfg.Artifacts.SecretKey)
+	cfg.Artifacts.SessionToken = stringValue(fileCfg, []string{"artifacts.session_token"}, []string{"WALLABY_ARTIFACT_SESSION_TOKEN", "WALLABY_WORKER_ARTIFACT_SESSION_TOKEN"}, cfg.Artifacts.SessionToken)
+	cfg.Artifacts.ForcePathStyle, err = boolValue(fileCfg, []string{"artifacts.force_path_style"}, []string{"WALLABY_ARTIFACT_FORCE_PATH_STYLE", "WALLABY_WORKER_ARTIFACT_FORCE_PATH_STYLE"}, cfg.Artifacts.ForcePathStyle)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Artifacts.HardRetainedBytes, err = intValue(fileCfg, []string{"artifacts.hard_retained_bytes", "artifact.hard_retained_bytes"}, []string{"WALLABY_ARTIFACT_HARD_RETAINED_BYTES", "WALLABY_WORKER_ARTIFACT_HARD_RETAINED_BYTES"}, cfg.Artifacts.HardRetainedBytes)
+	cfg.Artifacts.HardRetainedBytes, err = intValue(fileCfg, []string{"artifacts.hard_retained_bytes"}, []string{"WALLABY_ARTIFACT_HARD_RETAINED_BYTES", "WALLABY_WORKER_ARTIFACT_HARD_RETAINED_BYTES"}, cfg.Artifacts.HardRetainedBytes)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Artifacts.BacklogBatchHigh, err = intValue(fileCfg, []string{"artifacts.backlog_batch_high", "artifact.backlog_batch_high"}, []string{"WALLABY_ARTIFACT_BACKLOG_BATCH_HIGH", "WALLABY_WORKER_ARTIFACT_BACKLOG_BATCH_HIGH"}, cfg.Artifacts.BacklogBatchHigh)
+	cfg.Artifacts.BacklogBatchHigh, err = intValue(fileCfg, []string{"artifacts.backlog_batch_high"}, []string{"WALLABY_ARTIFACT_BACKLOG_BATCH_HIGH", "WALLABY_WORKER_ARTIFACT_BACKLOG_BATCH_HIGH"}, cfg.Artifacts.BacklogBatchHigh)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Artifacts.BacklogBytesHigh, err = intValue(fileCfg, []string{"artifacts.backlog_bytes_high", "artifact.backlog_bytes_high"}, []string{"WALLABY_ARTIFACT_BACKLOG_BYTES_HIGH", "WALLABY_WORKER_ARTIFACT_BACKLOG_BYTES_HIGH"}, cfg.Artifacts.BacklogBytesHigh)
+	cfg.Artifacts.BacklogBytesHigh, err = intValue(fileCfg, []string{"artifacts.backlog_bytes_high"}, []string{"WALLABY_ARTIFACT_BACKLOG_BYTES_HIGH", "WALLABY_WORKER_ARTIFACT_BACKLOG_BYTES_HIGH"}, cfg.Artifacts.BacklogBytesHigh)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Artifacts.BacklogAgeHigh, err = durationValue(fileCfg, []string{"artifacts.backlog_age_high", "artifact.backlog_age_high"}, []string{"WALLABY_ARTIFACT_BACKLOG_AGE_HIGH", "WALLABY_WORKER_ARTIFACT_BACKLOG_AGE_HIGH"}, cfg.Artifacts.BacklogAgeHigh)
+	cfg.Artifacts.BacklogAgeHigh, err = durationValue(fileCfg, []string{"artifacts.backlog_age_high"}, []string{"WALLABY_ARTIFACT_BACKLOG_AGE_HIGH", "WALLABY_WORKER_ARTIFACT_BACKLOG_AGE_HIGH"}, cfg.Artifacts.BacklogAgeHigh)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Artifacts.BackpressurePollInterval, err = durationValue(fileCfg, []string{"artifacts.backpressure_poll_interval", "artifact.backpressure_poll_interval"}, []string{"WALLABY_ARTIFACT_BACKPRESSURE_POLL_INTERVAL", "WALLABY_WORKER_ARTIFACT_BACKPRESSURE_POLL_INTERVAL"}, cfg.Artifacts.BackpressurePollInterval)
+	cfg.Artifacts.BackpressurePollInterval, err = durationValue(fileCfg, []string{"artifacts.backpressure_poll_interval"}, []string{"WALLABY_ARTIFACT_BACKPRESSURE_POLL_INTERVAL", "WALLABY_WORKER_ARTIFACT_BACKPRESSURE_POLL_INTERVAL"}, cfg.Artifacts.BackpressurePollInterval)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Artifacts.OrphanGrace, err = durationValue(fileCfg, []string{"artifacts.orphan_grace", "artifact.orphan_grace"}, []string{"WALLABY_ARTIFACT_ORPHAN_GRACE", "WALLABY_WORKER_ARTIFACT_ORPHAN_GRACE"}, cfg.Artifacts.OrphanGrace)
+	cfg.Artifacts.OrphanGrace, err = durationValue(fileCfg, []string{"artifacts.orphan_grace"}, []string{"WALLABY_ARTIFACT_ORPHAN_GRACE", "WALLABY_WORKER_ARTIFACT_ORPHAN_GRACE"}, cfg.Artifacts.OrphanGrace)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Artifacts.Retention, err = durationValue(fileCfg, []string{"artifacts.retention", "artifact.retention"}, []string{"WALLABY_ARTIFACT_RETENTION", "WALLABY_WORKER_ARTIFACT_RETENTION"}, cfg.Artifacts.Retention)
+	cfg.Artifacts.Retention, err = durationValue(fileCfg, []string{"artifacts.retention"}, []string{"WALLABY_ARTIFACT_RETENTION", "WALLABY_WORKER_ARTIFACT_RETENTION"}, cfg.Artifacts.Retention)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Artifacts.GCInterval, err = durationValue(fileCfg, []string{"artifacts.gc_interval", "artifact.gc_interval"}, []string{"WALLABY_ARTIFACT_GC_INTERVAL", "WALLABY_WORKER_ARTIFACT_GC_INTERVAL"}, cfg.Artifacts.GCInterval)
+	cfg.Artifacts.GCInterval, err = durationValue(fileCfg, []string{"artifacts.gc_interval"}, []string{"WALLABY_ARTIFACT_GC_INTERVAL", "WALLABY_WORKER_ARTIFACT_GC_INTERVAL"}, cfg.Artifacts.GCInterval)
 	if err != nil {
 		return nil, err
 	}
@@ -521,8 +482,6 @@ func Load(configPath string) (*Config, error) {
 	cfg.Iceberg.URI = stringValue(fileCfg, []string{"iceberg.uri"}, []string{"WALLABY_ICEBERG_URI", "WALLABY_WORKER_ICEBERG_URI"}, cfg.Iceberg.URI)
 	cfg.Iceberg.Warehouse = stringValue(fileCfg, []string{"iceberg.warehouse"}, []string{"WALLABY_ICEBERG_WAREHOUSE", "WALLABY_WORKER_ICEBERG_WAREHOUSE"}, cfg.Iceberg.Warehouse)
 	cfg.Iceberg.Prefix = stringValue(fileCfg, []string{"iceberg.prefix"}, []string{"WALLABY_ICEBERG_PREFIX", "WALLABY_WORKER_ICEBERG_PREFIX"}, cfg.Iceberg.Prefix)
-	cfg.Iceberg.Namespace = stringValue(fileCfg, []string{"iceberg.namespace"}, []string{"WALLABY_ICEBERG_NAMESPACE", "WALLABY_WORKER_ICEBERG_NAMESPACE"}, cfg.Iceberg.Namespace)
-	cfg.Iceberg.TablePrefix = stringValue(fileCfg, []string{"iceberg.table_prefix"}, []string{"WALLABY_ICEBERG_TABLE_PREFIX", "WALLABY_WORKER_ICEBERG_TABLE_PREFIX"}, cfg.Iceberg.TablePrefix)
 	cfg.Iceberg.ControlTable = stringValue(fileCfg, []string{"iceberg.control_table"}, []string{"WALLABY_ICEBERG_CONTROL_TABLE", "WALLABY_WORKER_ICEBERG_CONTROL_TABLE"}, cfg.Iceberg.ControlTable)
 	cfg.Iceberg.Region = stringValue(fileCfg, []string{"iceberg.region"}, []string{"WALLABY_ICEBERG_REGION", "WALLABY_WORKER_ICEBERG_REGION"}, cfg.Iceberg.Region)
 	cfg.Iceberg.SigningName = stringValue(fileCfg, []string{"iceberg.signing_name"}, []string{"WALLABY_ICEBERG_SIGNING_NAME", "WALLABY_WORKER_ICEBERG_SIGNING_NAME"}, cfg.Iceberg.SigningName)
@@ -712,7 +671,7 @@ func normalizedConfigField(namespace string) string {
 
 func normalizeKubernetesImagePullPolicy(policy string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(policy)) {
-	case "", "ifnotpresent", "if-not-present":
+	case "", "ifnotpresent":
 		return "IfNotPresent", nil
 	case "always":
 		return "Always", nil
@@ -723,342 +682,155 @@ func normalizeKubernetesImagePullPolicy(policy string) (string, error) {
 	}
 }
 
-func stringValue(fileCfg *viper.Viper, fileKeys, envKeys []string, fallback string) string {
-	if value, ok := readFileValue(fileCfg, fileKeys); ok {
-		return strings.TrimSpace(value)
+func stringValue(fileCfg *environmentConfig, fileKeys, envKeys []string, fallback string) string {
+	if fileCfg.has(fileKeys) {
+		return fallback
 	}
-	raw, ok := readEnvValue(envKeys)
+	raw, _, ok := readEnvValue(envKeys)
 	if !ok {
 		return fallback
 	}
 	return strings.TrimSpace(raw)
 }
-
-func boolValue(fileCfg *viper.Viper, fileKeys, envKeys []string, fallback bool) (bool, error) {
-	if raw, ok := readFileValue(fileCfg, fileKeys); ok {
-		value, err := parseBool(raw)
-		if err != nil {
-			return false, fmt.Errorf("invalid file value for %q: %w", strings.Join(fileKeys, ", "), err)
-		}
-		return value, nil
+func boolValue(fileCfg *environmentConfig, fileKeys, envKeys []string, fallback bool) (bool, error) {
+	if fileCfg.has(fileKeys) {
+		return fallback, nil
 	}
-	raw, ok := readEnvValue(envKeys)
+	raw, key, ok := readEnvValue(envKeys)
 	if !ok {
 		return fallback, nil
 	}
 	value, err := parseBool(raw)
 	if err != nil {
-		return false, fmt.Errorf("invalid environment value for %q: %w", strings.Join(envKeys, ", "), err)
+		return false, fmt.Errorf("invalid environment value for %s: %w", key, err)
 	}
 	return value, nil
 }
-
-func intValue(fileCfg *viper.Viper, fileKeys, envKeys []string, fallback int) (int, error) {
-	if raw, ok := readFileValue(fileCfg, fileKeys); ok {
-		value, err := parseInt(raw)
-		if err != nil {
-			return 0, fmt.Errorf("invalid file value for %q: %w", strings.Join(fileKeys, ", "), err)
-		}
-		return value, nil
+func intValue(fileCfg *environmentConfig, fileKeys, envKeys []string, fallback int) (int, error) {
+	if fileCfg.has(fileKeys) {
+		return fallback, nil
 	}
-	raw, ok := readEnvValue(envKeys)
+	raw, key, ok := readEnvValue(envKeys)
 	if !ok {
 		return fallback, nil
 	}
 	value, err := parseInt(raw)
 	if err != nil {
-		return 0, fmt.Errorf("invalid environment value for %q: %w", strings.Join(envKeys, ", "), err)
+		return 0, fmt.Errorf("invalid environment value for %s: %w", key, err)
 	}
 	return value, nil
 }
-
-func intValueOptional(fileCfg *viper.Viper, fileKeys, envKeys []string) (int, bool, error) {
-	if raw, ok := readFileValue(fileCfg, fileKeys); ok {
-		value, err := parseInt(raw)
-		if err != nil {
-			return 0, true, fmt.Errorf("invalid file value for %q: %w", strings.Join(fileKeys, ", "), err)
-		}
-		return value, true, nil
+func intValueOptional(fileCfg *environmentConfig, fileKeys, envKeys []string) (int, bool, error) {
+	if fileCfg.has(fileKeys) {
+		return 0, false, nil
 	}
-	raw, ok := readEnvValue(envKeys)
+	raw, key, ok := readEnvValue(envKeys)
 	if !ok {
 		return 0, false, nil
 	}
 	value, err := parseInt(raw)
 	if err != nil {
-		return 0, true, fmt.Errorf("invalid environment value for %q: %w", strings.Join(envKeys, ", "), err)
+		return 0, true, fmt.Errorf("invalid environment value for %s: %w", key, err)
 	}
 	return value, true, nil
 }
-
-func durationValue(fileCfg *viper.Viper, fileKeys, envKeys []string, fallback time.Duration) (time.Duration, error) {
-	if raw, ok := readFileValue(fileCfg, fileKeys); ok {
-		value, err := parseDuration(raw)
-		if err != nil {
-			return 0, fmt.Errorf("invalid file value for %q: %w", strings.Join(fileKeys, ", "), err)
-		}
-		return value, nil
+func durationValue(fileCfg *environmentConfig, fileKeys, envKeys []string, fallback time.Duration) (time.Duration, error) {
+	if fileCfg.has(fileKeys) {
+		return fallback, nil
 	}
-	raw, ok := readEnvValue(envKeys)
+	raw, key, ok := readEnvValue(envKeys)
 	if !ok {
 		return fallback, nil
 	}
 	value, err := parseDuration(raw)
 	if err != nil {
-		return 0, fmt.Errorf("invalid environment value for %q: %w", strings.Join(envKeys, ", "), err)
+		return 0, fmt.Errorf("invalid environment value for %s: %w", key, err)
 	}
 	return value, nil
 }
-
-func stringSliceValue(fileCfg *viper.Viper, fileKeys, envKeys []string) ([]string, error) {
-	if raw, ok := readFileValue(fileCfg, fileKeys); ok {
-		values, err := parseStringSlice(raw)
-		if err != nil {
-			return nil, fmt.Errorf("invalid file value for %q: %w", strings.Join(fileKeys, ", "), err)
-		}
-		if len(values) == 0 {
-			return nil, nil
-		}
-		return values, nil
+func stringSliceValue(fileCfg *environmentConfig, fileKeys, envKeys []string, fallback []string) []string {
+	if fileCfg.has(fileKeys) {
+		return fallback
 	}
-	if raw, ok := readEnvValue(envKeys); ok {
-		values := parseCSV(raw)
-		if len(values) == 0 {
-			return nil, nil
-		}
-		return values, nil
+	raw, _, ok := readEnvValue(envKeys)
+	if !ok {
+		return fallback
 	}
-	return nil, nil
+	values := parseCSV(raw)
+	if len(values) == 0 {
+		return nil
+	}
+	return values
+}
+func mapValue(fileCfg *environmentConfig, fileKeys, envKeys []string, fallback map[string]string) map[string]string {
+	if fileCfg.has(fileKeys) {
+		return fallback
+	}
+	raw, _, ok := readEnvValue(envKeys)
+	if !ok {
+		return fallback
+	}
+	values := parseKVPairs(raw)
+	if len(values) == 0 {
+		return map[string]string{}
+	}
+	return values
 }
 
-func mapValue(fileCfg *viper.Viper, fileKeys, envKeys []string) (map[string]string, error) {
-	if raw, ok := readFileValue(fileCfg, fileKeys); ok {
-		values, err := parseStringMap(raw)
-		if err != nil {
-			return nil, fmt.Errorf("invalid file value for %q: %w", strings.Join(fileKeys, ", "), err)
-		}
-		if len(values) == 0 {
-			return map[string]string{}, nil
-		}
-		return values, nil
-	}
-	if raw, ok := readEnvValue(envKeys); ok {
-		values := parseKVPairs(raw)
-		if len(values) == 0 {
-			return map[string]string{}, nil
-		}
-		return values, nil
-	}
-	return map[string]string{}, nil
-}
+type environmentConfig struct{ present map[string]struct{} }
 
-func readFileValue(fileCfg *viper.Viper, keys []string) (string, bool) {
-	if fileCfg == nil {
-		return "", false
+func (c *environmentConfig) has(paths []string) bool {
+	if c == nil {
+		return false
 	}
-	for _, key := range keys {
-		if fileCfg.IsSet(key) {
-			return strings.TrimSpace(fileCfg.GetString(key)), true
+	for _, path := range paths {
+		if _, ok := c.present[path]; ok {
+			return true
 		}
 	}
-	return "", false
+	return false
 }
-
-func readEnvValue(keys []string) (string, bool) {
+func readEnvValue(keys []string) (string, string, bool) {
 	for _, key := range keys {
 		if value, ok := os.LookupEnv(key); ok {
-			return strings.TrimSpace(value), true
+			return strings.TrimSpace(value), key, true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 func parseBool(value any) (bool, error) {
-	switch v := value.(type) {
-	case bool:
-		return v, nil
-	case string:
-		switch strings.ToLower(strings.TrimSpace(v)) {
-		case "1", "true", "t", "yes", "y", "on":
-			return true, nil
-		case "0", "false", "f", "no", "n", "off":
-			return false, nil
-		default:
-			return false, fmt.Errorf("invalid bool value: %q", v)
-		}
-	default:
+	v, ok := value.(string)
+	if !ok {
 		return false, fmt.Errorf("invalid bool type: %T", value)
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "t", "yes", "y", "on":
+		return true, nil
+	case "0", "false", "f", "no", "n", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid bool value: %q", v)
 	}
 }
 
 func parseInt(value any) (int, error) {
-	maxIntSigned := int64(^uint(0) >> 1)
-	maxIntUnsigned := ^uint(0) >> 1
-	minInt := -maxIntSigned - 1
-
-	switch v := value.(type) {
-	case int:
-		return v, nil
-	case int8:
-		return int(v), nil
-	case int16:
-		return int(v), nil
-	case int32:
-		return int(v), nil
-	case int64:
-		if v > maxIntSigned || v < minInt {
-			return 0, fmt.Errorf("integer overflow: %d", v)
-		}
-		return int(v), nil
-	case uint:
-		if v > maxIntUnsigned {
-			return 0, fmt.Errorf("integer overflow: %d", v)
-		}
-		return int(v), nil
-	case uint8:
-		return int(v), nil
-	case uint16:
-		return int(v), nil
-	case uint32:
-		if uint(v) > maxIntUnsigned {
-			return 0, fmt.Errorf("integer overflow: %d", v)
-		}
-		return int(v), nil
-	case uint64:
-		if v > uint64(maxIntUnsigned) {
-			return 0, fmt.Errorf("integer overflow: %d", v)
-		}
-		parsed, err := strconv.Atoi(strconv.FormatUint(v, 10))
-		if err != nil {
-			return 0, fmt.Errorf("integer overflow: %d", v)
-		}
-		return parsed, nil
-	case float64:
-		if math.Trunc(v) != v {
-			return 0, fmt.Errorf("integer value required, got float: %v", v)
-		}
-		if v > float64(maxIntSigned) || v < float64(minInt) {
-			return 0, fmt.Errorf("integer overflow: %v", v)
-		}
-		return int(v), nil
-	case float32:
-		if math.Trunc(float64(v)) != float64(v) {
-			return 0, fmt.Errorf("integer value required, got float: %v", v)
-		}
-		if float64(v) > float64(maxIntSigned) || float64(v) < float64(minInt) {
-			return 0, fmt.Errorf("integer overflow: %v", v)
-		}
-		return int(v), nil
-	case string:
-		parsed, err := strconv.Atoi(strings.TrimSpace(v))
-		if err != nil {
-			return 0, err
-		}
-		return parsed, nil
-	default:
+	raw, ok := value.(string)
+	if !ok {
 		return 0, fmt.Errorf("invalid int type: %T", value)
 	}
+	return strconv.Atoi(strings.TrimSpace(raw))
 }
 
 func parseDuration(value any) (time.Duration, error) {
-	switch v := value.(type) {
-	case time.Duration:
-		return v, nil
-	case string:
-		parsed, err := time.ParseDuration(strings.TrimSpace(v))
-		if err != nil {
-			return 0, err
-		}
-		return parsed, nil
-	default:
+	v, ok := value.(string)
+	if !ok {
 		return 0, fmt.Errorf("invalid duration type: %T", value)
 	}
+	return time.ParseDuration(strings.TrimSpace(v))
 }
 
-func parseStringSlice(value any) ([]string, error) {
-	switch v := value.(type) {
-	case string:
-		return parseCSV(v), nil
-	case []string:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			item = strings.TrimSpace(item)
-			if item != "" {
-				out = append(out, item)
-			}
-		}
-		return out, nil
-	case []interface{}:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			canonical := strings.TrimSpace(fmt.Sprint(item))
-			if canonical != "" {
-				out = append(out, canonical)
-			}
-		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("invalid slice type: %T", value)
-	}
-}
-
-func parseStringMap(value any) (map[string]string, error) {
-	switch v := value.(type) {
-	case map[string]string:
-		if len(v) == 0 {
-			return map[string]string{}, nil
-		}
-		out := make(map[string]string, len(v))
-		for k, val := range v {
-			k = strings.TrimSpace(k)
-			if k == "" {
-				continue
-			}
-			out[k] = strings.TrimSpace(val)
-		}
-		if len(out) == 0 {
-			return map[string]string{}, nil
-		}
-		return out, nil
-	case map[string]interface{}:
-		if len(v) == 0 {
-			return map[string]string{}, nil
-		}
-		out := make(map[string]string, len(v))
-		for k, val := range v {
-			key := strings.TrimSpace(k)
-			if key == "" {
-				continue
-			}
-			out[key] = strings.TrimSpace(fmt.Sprint(val))
-		}
-		if len(out) == 0 {
-			return map[string]string{}, nil
-		}
-		return out, nil
-	case map[interface{}]interface{}:
-		if len(v) == 0 {
-			return map[string]string{}, nil
-		}
-		out := make(map[string]string, len(v))
-		for key, val := range v {
-			k := strings.TrimSpace(fmt.Sprint(key))
-			if k == "" {
-				continue
-			}
-			out[k] = strings.TrimSpace(fmt.Sprint(val))
-		}
-		if len(out) == 0 {
-			return map[string]string{}, nil
-		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("invalid map type: %T", value)
-	}
-}
-
-func parseKVPairs(value any) map[string]string {
-	raw := fmt.Sprint(value)
+func parseKVPairs(raw string) map[string]string {
 	out := make(map[string]string)
 	parts := strings.Split(raw, ",")
 	for _, part := range parts {
@@ -1095,11 +867,4 @@ func parseCSV(value string) []string {
 		}
 	}
 	return out
-}
-
-func getenv(key string, fallback string) string {
-	if value, ok := os.LookupEnv(key); ok {
-		return value
-	}
-	return fallback
 }

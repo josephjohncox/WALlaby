@@ -23,6 +23,7 @@ type CommitRequest struct {
 	CheckpointLSN       string
 	LogicalBatchID      string
 	ProjectionID        string
+	MappingFingerprint  string
 	ManifestSHA256      string
 	CommitID            string
 	AttemptedAt         time.Time
@@ -30,14 +31,9 @@ type CommitRequest struct {
 	Barriers            []Barrier
 }
 
-// ReconcileRequest carries the same immutable identity and target plan as the
-// original commit. AttemptedAt lets a catalog prove absence only when retained
-// snapshot history spans the attempt; otherwise reconciliation is indeterminate.
-type ReconcileRequest = CommitRequest
-
-// CommitResult is catalog evidence. SnapshotID remains the compact receipt
-// value for rolling compatibility; SnapshotIDs records every table snapshot in
-// a multi-table source transaction.
+// CommitResult is exact catalog evidence. SnapshotID is the primary receipt
+// value; SnapshotIDs records every table snapshot in a multi-table source
+// transaction.
 type CommitResult struct {
 	SnapshotID     string
 	SnapshotIDs    map[string]string
@@ -67,7 +63,7 @@ type ReconcileResult struct {
 // Iceberg and S3 Tables consume the canonical artifact log.
 type ChangelogCommitter interface {
 	Commit(context.Context, CommitRequest) (CommitResult, error)
-	Reconcile(context.Context, ReconcileRequest) (ReconcileResult, error)
+	Reconcile(context.Context, CommitRequest) (ReconcileResult, error)
 }
 
 // DeterministicCommitID is stable across worker generations and retry attempts.
@@ -85,14 +81,3 @@ func DeterministicCommitID(flowIncarnationID uuid.UUID, consumerRevisionID strin
 	}
 	return "wallaby-iceberg-" + hex.EncodeToString(hash.Sum(nil))
 }
-
-// Rolling aliases keep package callers compiling while the old append-only
-// catalog scaffold transitions to the request-oriented committer seam.
-type CatalogCommit = CommitResult
-type CatalogDisposition = CommitDisposition
-
-const (
-	CatalogIndeterminate = CommitIndeterminate
-	CatalogNotApplied    = CommitNotApplied
-	CatalogApplied       = CommitApplied
-)

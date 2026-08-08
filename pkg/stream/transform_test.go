@@ -11,7 +11,7 @@ func TestTransformBatchForDestination_TypeMappings(t *testing.T) {
 		"jsonb": "VARIANT",
 		"int8":  "NUMBER",
 	}
-	spec := connector.Spec{
+	spec := connector.RuntimeSpec{
 		Name: "dest",
 		Type: connector.EndpointSnowflake,
 		Options: map[string]string{
@@ -59,7 +59,7 @@ func TestTransformBatchForDestination_ExtensionTypeMappings(t *testing.T) {
 		"ext:postgis.geometry": "GEOGRAPHY",
 		"vector":               "ARRAY",
 	}
-	spec := connector.Spec{Name: "dest", Type: connector.EndpointSnowflake}
+	spec := connector.RuntimeSpec{Name: "dest", Type: connector.EndpointSnowflake}
 
 	batch := connector.Batch{
 		Schema: connector.Schema{

@@ -61,7 +61,7 @@ func (d *fakeDispatcher) CancelThroughGeneration(_ context.Context, flowID strin
 func newCreatedMemoryFlow(t *testing.T, id string) *MemoryEngine {
 	t.Helper()
 	base := NewMemoryEngine()
-	if _, err := base.Create(context.Background(), flow.Flow{ID: id}); err != nil {
+	if _, err := base.Create(context.Background(), mappedTestFlow(flow.Flow{ID: id})); err != nil {
 		t.Fatal(err)
 	}
 	return base

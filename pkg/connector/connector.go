@@ -15,10 +15,8 @@ const (
 	EndpointKafka     EndpointType = "kafka"
 	EndpointHTTP      EndpointType = "http"
 	EndpointGRPC      EndpointType = "grpc"
-	EndpointProto     EndpointType = "proto"
 	EndpointPGStream  EndpointType = "pgstream"
 	EndpointSnowpipe  EndpointType = "snowpipe"
-	EndpointParquet   EndpointType = "parquet"
 	EndpointDuckDB    EndpointType = "duckdb"
 	EndpointDuckLake  EndpointType = "ducklake"
 	// EndpointRedpanda uses Redpanda's Kafka-compatible protocol. Redpanda
@@ -27,6 +25,18 @@ const (
 	EndpointClickHouse EndpointType = "clickhouse"
 	EndpointIceberg    EndpointType = "iceberg"
 )
+
+// IsBuiltinEndpointType reports whether endpointType is reserved by a first-party connector.
+func IsBuiltinEndpointType(endpointType EndpointType) bool {
+	switch endpointType {
+	case EndpointPostgres, EndpointSnowflake, EndpointS3, EndpointKafka, EndpointHTTP,
+		EndpointGRPC, EndpointPGStream, EndpointSnowpipe, EndpointDuckDB, EndpointDuckLake,
+		EndpointRedpanda, EndpointClickHouse, EndpointIceberg:
+		return true
+	default:
+		return false
+	}
+}
 
 // WireFormat describes the wire encoding used between connectors.
 type WireFormat string
@@ -50,8 +60,11 @@ const (
 	OpLoad   Operation = "load"
 )
 
-// Spec defines a connector instance plus implementation-specific options.
-type Spec struct {
+// RuntimeSpec is the internal runtime-adapter/plugin representation. It is
+// never a public authoring or persistence shape; public and durable flow
+// definitions use typed wallaby.v1.Endpoint messages and cross the boundary
+// through internal/endpointcodec.
+type RuntimeSpec struct {
 	Name    string
 	Type    EndpointType
 	Options map[string]string
@@ -62,7 +75,7 @@ type Capabilities struct {
 	Support               SupportLevel
 	Evidence              ContractEvidence
 	Delivery              DeliverySemantics
-	SupportsDDL           bool
+	TableWrites           TableWriteSemantics
 	SupportsSchemaChanges bool
 	SupportsStreaming     bool
 	SupportsBulkLoad      bool
@@ -122,15 +135,16 @@ type Record struct {
 
 // Batch is the unit passed between sources and destinations.
 type Batch struct {
-	Records    []Record
-	Schema     Schema
-	Checkpoint Checkpoint
-	WireFormat WireFormat
+	Records     []Record
+	Schema      Schema
+	Checkpoint  Checkpoint
+	WireFormat  WireFormat
+	WritePolicy TableWritePolicy
 }
 
 // Source reads from an upstream system.
 type Source interface {
-	Open(ctx context.Context, spec Spec) error
+	Open(ctx context.Context, spec RuntimeSpec) error
 	Read(ctx context.Context) (Batch, error)
 	Ack(ctx context.Context, checkpoint Checkpoint) error
 	Close(ctx context.Context) error
@@ -149,7 +163,7 @@ type SlotDropper interface {
 
 // Destination writes to a downstream system.
 type Destination interface {
-	Open(ctx context.Context, spec Spec) error
+	Open(ctx context.Context, spec RuntimeSpec) error
 	Write(ctx context.Context, batch Batch) error
 	ApplyDDL(ctx context.Context, schema Schema, record Record) error
 	TypeMappings() map[string]string
@@ -166,18 +180,22 @@ type CheckpointStore interface {
 }
 
 // OutboxEntry is one durable secondary-destination delivery. PositionID is
-// derived with CheckpointPositionID. BatchHash is populated by stores when
+// derived with CheckpointPositionID; PostgreSQL positionless transaction
+// fragments use a deterministic /fragment/ ordinal suffix under their final
+// commit checkpoint identity. BatchHash is populated by stores when
 // listing entries and identifies the exact, type-preserving batch contents.
 // Every destination used with primary acknowledgement must implement
 // idempotent writes because a crash after Write and before durable persistence
 // or deletion can replay a batch.
 type OutboxEntry struct {
-	FlowID      string
-	Destination string
-	PositionID  string
-	BatchHash   string
-	Batch       Batch
-	CreatedAt   time.Time
+	FlowID                string
+	Destination           string
+	PositionID            string
+	BatchHash             string
+	ProjectionFingerprint string
+	ReplayOrder           int64
+	Batch                 Batch
+	CreatedAt             time.Time
 }
 
 // OutboxStore atomically advances a flow checkpoint and records secondary

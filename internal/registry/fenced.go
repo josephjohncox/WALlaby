@@ -46,6 +46,10 @@ func (s *FencedDDLExecutionStore) PrepareDDLExecution(ctx context.Context, flowI
 	return s.store.PrepareDDLExecution(contextWithRunFence(ctx, s.fence), flowID, position, destination, expected)
 }
 
+func (s *FencedDDLExecutionStore) RecordVacuousDDLExecution(ctx context.Context, flowID, position, ddl string) error {
+	return s.store.RecordVacuousDDLExecution(contextWithRunFence(ctx, s.fence), flowID, position, ddl)
+}
+
 func (s *FencedDDLExecutionStore) RecordDDLExecution(ctx context.Context, flowID, position, ddl, destination string, expected []string) error {
 	return s.store.RecordDDLExecution(contextWithRunFence(ctx, s.fence), flowID, position, ddl, destination, expected)
 }

@@ -17,7 +17,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
 	"github.com/josephjohncox/wallaby/internal/controlplane"
+	"github.com/josephjohncox/wallaby/internal/flow"
 	internalschema "github.com/josephjohncox/wallaby/internal/schema"
+	"github.com/josephjohncox/wallaby/internal/tablemap"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
@@ -50,7 +52,7 @@ func TestPostgresManagedProfileVersionContract(t *testing.T) {
 		t.Fatal("maintained profile exposed untested mixed-major pairing")
 	}
 	destination := &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "version-admission", Type: connector.EndpointPostgres, Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "version-admission", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": profile.Name, "synchronous_commit": "on", "meta_table_enabled": "false",
 	}}); err != nil {
 		t.Fatalf("open exact named profile on PostgreSQL %d: %v", major, err)
@@ -77,18 +79,19 @@ func TestPostgresManagedProfileTargetAdmission(t *testing.T) {
 	destination := openNamedProfileDestination(t, ctx, dsn, 2)
 	defer destination.Close(ctx)
 	schema := managedProfileSchema(table, false)
+	tables := []connector.BootstrapTable{{Schema: schema, WritePolicy: connector.TableWritePolicy{Mode: connector.ResolvedWriteUpsert, KeyColumns: []string{"id"}}}}
 	intent := connector.BootstrapIntent{
 		FlowID: "target-admission", FlowIncarnationID: uuid.NewString(), SourceLineageID: "target-admission-lineage",
 		BootstrapID: uuid.NewString(), BootstrapGeneration: 1, Generation: 1,
 		AcquisitionID: uuid.NewString(), LeaseEpoch: 1, DestinationRevisionID: "target-admission-revision", ManifestHash: "target-admission-manifest",
 	}
-	if err := destination.PrepareBootstrap(ctx, intent, []connector.Schema{schema}); err == nil || !strings.Contains(err.Error(), "unique constraint") {
+	if err := destination.PrepareBootstrap(ctx, intent, tables); err == nil || !strings.Contains(err.Error(), "unique/primary-key constraint") {
 		t.Fatalf("bootstrap target without unique identity error=%v, want unique-constraint rejection", err)
 	}
 	if _, err := pool.Exec(ctx, `ALTER TABLE public.wallaby_profile_target_admission ADD CONSTRAINT wallaby_profile_target_admission_deferred UNIQUE (id) DEFERRABLE INITIALLY IMMEDIATE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := destination.PrepareBootstrap(ctx, intent, []connector.Schema{schema}); err == nil || !strings.Contains(err.Error(), "unique constraint") {
+	if err := destination.PrepareBootstrap(ctx, intent, tables); err == nil || !strings.Contains(err.Error(), "unique/primary-key constraint") {
 		t.Fatalf("bootstrap target with deferrable unique identity error=%v, want ON CONFLICT-ineligible rejection", err)
 	}
 	if _, err := pool.Exec(ctx, `
@@ -96,10 +99,10 @@ ALTER TABLE public.wallaby_profile_target_admission DROP CONSTRAINT wallaby_prof
 ALTER TABLE public.wallaby_profile_target_admission ADD CONSTRAINT wallaby_profile_target_admission_pk PRIMARY KEY (id)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := destination.PrepareBootstrap(ctx, intent, []connector.Schema{schema}); err != nil {
+	if err := destination.PrepareBootstrap(ctx, intent, tables); err != nil {
 		t.Fatalf("admit compatible target: %v", err)
 	}
-	if err := destination.AbandonBootstrap(ctx, intent, []connector.Schema{schema}); err != nil {
+	if err := destination.AbandonBootstrap(ctx, intent, tables); err != nil {
 		t.Fatalf("abandon admission stage: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `ALTER TABLE public.wallaby_profile_target_admission ALTER COLUMN value TYPE bigint USING 0`); err != nil {
@@ -116,6 +119,7 @@ ALTER TABLE public.wallaby_profile_target_admission ADD CONSTRAINT wallaby_profi
 			}}},
 		}},
 	}
+	bindTestUpsertPolicy(&transaction, "id")
 	if err := destination.ValidateTransaction(ctx, transaction); err == nil || !strings.Contains(err.Error(), "incompatible") {
 		t.Fatalf("target type mismatch error=%v, want incompatibility rejection", err)
 	}
@@ -167,6 +171,7 @@ func TestPostgresManagedProfileDestinationSchemaEvolution(t *testing.T) {
 			},
 		},
 	}
+	bindTestUpsertPolicy(&transaction, "id")
 	intent := managedProfileTransactionIntent(t, transaction, "schema-evolution")
 	if _, err := destination.ApplyTransaction(ctx, intent, transaction); err != nil {
 		t.Fatal(err)
@@ -208,6 +213,7 @@ func TestPostgresManagedProfileDestinationSchemaEvolution(t *testing.T) {
 			},
 		},
 	}
+	bindTestUpsertPolicy(&alterTransaction, "id")
 	if _, err := destination.ApplyTransaction(ctx, managedProfileTransactionIntent(t, alterTransaction, "schema-alter"), alterTransaction); err != nil {
 		t.Fatal(err)
 	}
@@ -240,6 +246,7 @@ func TestPostgresManagedProfileDestinationSchemaEvolution(t *testing.T) {
 			},
 		},
 	}
+	bindTestUpsertPolicy(&dropTransaction, "id")
 	if _, err := destination.ApplyTransaction(ctx, managedProfileTransactionIntent(t, dropTransaction, "schema-drop"), dropTransaction); err != nil {
 		t.Fatal(err)
 	}
@@ -276,9 +283,9 @@ func TestPostgresManagedProfileDDLTargetMapping(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DROP TABLE IF EXISTS public.wallaby_profile_target_mapping`)
 	}()
 	destination := &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "mapped-profile", Type: connector.EndpointPostgres, Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "mapped-profile", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1,
-		"write_mode": "target", "batch_mode": "target", "synchronous_commit": "on",
+		"batch_mode": "target", "synchronous_commit": "on",
 		"meta_table_enabled": "false", "schema": "public", "table": targetTable,
 	}}); err != nil {
 		t.Fatal(err)
@@ -303,6 +310,15 @@ func TestPostgresManagedProfileDDLTargetMapping(t *testing.T) {
 				Key: recordKey(t, map[string]any{"id": 1}), After: map[string]any{"id": int64(1), "value": "mapped", "note": "target"},
 			}}}},
 		},
+	}
+	mappings := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "mapped-profile", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: sourceTable, Action: flow.MappingActionInclude, TargetSchema: "public", TargetTable: targetTable, FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeUpsert, KeyColumns: []string{"id"}}}}}}}
+	projector, err := tablemap.New(mappings, "mapped-profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction, _, err = projector.ProjectTransaction(transaction)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if _, err := destination.ApplyTransaction(ctx, managedProfileTransactionIntent(t, transaction, "ddl-target-mapping"), transaction); err != nil {
 		t.Fatal(err)
@@ -359,6 +375,7 @@ func TestPostgresManagedProfileDDLCommitReconciliation(t *testing.T) {
 			}}},
 		}},
 	}
+	bindTestUpsertPolicy(&transaction, "id")
 	intent := managedProfileTransactionIntent(t, transaction, "ddl-reconcile")
 	driver := &commitBeforeReceiptTransactionDriver{ManagedTransactionDestination: destination}
 	evidence, err := driver.ApplyTransaction(ctx, intent, transaction)
@@ -374,7 +391,7 @@ func TestPostgresManagedProfileDDLCommitReconciliation(t *testing.T) {
 	}
 }
 
-func TestPostgresManagedProfileUpgradeMigrations(t *testing.T) {
+func TestPostgresLegacyDeliveryIdentityMigrationFailsClosed(t *testing.T) {
 	dsn := managedProfileTestDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -454,83 +471,9 @@ INSERT INTO delivery_receipts (
 		t.Fatal(err)
 	}
 
-	if err := controlplane.ApplyMigrations(ctx, pool); err != nil {
-		t.Fatal(err)
-	}
-	// The monotonic upgrade must remain idempotent after recording migration 008.
-	if err := controlplane.ApplyMigrations(ctx, pool); err != nil {
-		t.Fatalf("idempotent control-plane migration replay: %v", err)
-	}
-	var columns, indexes, triggers, preserved int
-	if err := pool.QueryRow(ctx, `
-SELECT count(*) FROM information_schema.columns
-WHERE table_schema='public' AND (
-  (table_name IN ('delivery_manifests','delivery_attempts','delivery_receipts') AND column_name='logical_batch_id')
-  OR (table_name='delivery_attempts' AND column_name IN ('reconciliation_attempts','last_reconciled_at'))
-  OR (table_name='delivery_manifests' AND column_name IN ('checkpoint_metadata','checkpoint_timestamp'))
-)`).Scan(&columns); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexname IN ('delivery_manifests_logical_batch_idx','delivery_receipts_logical_batch_idx','delivery_attempts_retry_idx','delivery_attempts_logical_batch_idx')`).Scan(&indexes); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_trigger WHERE tgname='delivery_retention_roots_require_authority_v2' AND NOT tgisinternal`).Scan(&triggers); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `
-SELECT count(*)
-FROM delivery_manifests AS manifest
-JOIN delivery_attempts AS attempt USING (flow_incarnation_id,destination_revision_id,position_id)
-JOIN delivery_receipts AS receipt USING (flow_incarnation_id,destination_revision_id,position_id)
-WHERE manifest.flow_incarnation_id=$1
-  AND manifest.logical_batch_id='legacy:upgrade-position'
-  AND attempt.logical_batch_id='legacy:upgrade-position'
-  AND receipt.logical_batch_id='legacy:upgrade-position'
-  AND attempt.reconciliation_attempts=0`, incarnationID).Scan(&preserved); err != nil {
-		t.Fatal(err)
-	}
-	if columns != 7 || indexes != 4 || triggers != 1 || preserved != 1 {
-		t.Fatalf("delivery upgrade evidence columns/indexes/triggers/preserved=%d/%d/%d/%d, want 7/4/1/1", columns, indexes, triggers, preserved)
-	}
-	var migratedDomains int
-	if err := pool.QueryRow(ctx, `
-SELECT count(DISTINCT domain) FROM wallaby_control_migrations
-WHERE domain IN ('workflow','checkpoint','registry','controlplane','delivery','bootstrap','artifactlog')`).Scan(&migratedDomains); err != nil {
-		t.Fatal(err)
-	}
-	if migratedDomains != 7 {
-		t.Fatalf("profile control-plane migration domains=%d, want 7", migratedDomains)
-	}
-	rollingIncarnation := uuid.New()
-	rollingTx, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rollingTx.Exec(ctx, `SELECT set_config('wallaby.authority_protocol','v2',true)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rollingTx.Exec(ctx, `
-INSERT INTO delivery_manifests (
-  flow_incarnation_id,destination_revision_id,source_lineage_id,position_id,
-  source_transaction_id,content_hash,checkpoint_lsn
-) VALUES ($1,'rolling-revision','rolling-lineage','rolling-position','rolling-transaction','rolling-hash','0/A00')`, rollingIncarnation); err != nil {
-		t.Fatalf("checkpoint-1 authority-v2 writer rejected during rolling upgrade: %v", err)
-	}
-	if err := rollingTx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	var nullable string
-	var rollingRows int
-	if err := pool.QueryRow(ctx, `
-SELECT is_nullable FROM information_schema.columns
-WHERE table_schema='public' AND table_name='delivery_manifests' AND column_name='logical_batch_id'`).Scan(&nullable); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM delivery_manifests WHERE flow_incarnation_id=$1 AND logical_batch_id IS NULL`, rollingIncarnation).Scan(&rollingRows); err != nil {
-		t.Fatal(err)
-	}
-	if nullable != "YES" || rollingRows != 1 {
-		t.Fatalf("rolling logical-batch compatibility nullable/rows=%s/%d, want YES/1", nullable, rollingRows)
+	err = controlplane.ApplyMigrations(ctx, pool)
+	if err == nil || !strings.Contains(err.Error(), "refuses noncanonical logical batch identities") {
+		t.Fatalf("migration error=%v", err)
 	}
 }
 
@@ -546,9 +489,9 @@ func managedProfileTestDSN(t *testing.T) string {
 func openNamedProfileDestination(t *testing.T, ctx context.Context, dsn string, poolSize int) *pgdest.Destination {
 	t.Helper()
 	destination := &pgdest.Destination{}
-	if err := destination.Open(ctx, connector.Spec{Name: "named-profile", Type: connector.EndpointPostgres, Options: map[string]string{
+	if err := destination.Open(ctx, connector.RuntimeSpec{Name: "named-profile", Type: connector.EndpointPostgres, Options: map[string]string{
 		"dsn": dsn, "managed_profile": connector.ManagedProfilePostgresToPostgresV1,
-		"write_mode": "target", "batch_mode": "target", "synchronous_commit": "on",
+		"batch_mode": "target", "synchronous_commit": "on",
 		"meta_table_enabled": "false", "pool_max_conns": strconv.Itoa(poolSize),
 	}}); err != nil {
 		t.Fatal(err)
