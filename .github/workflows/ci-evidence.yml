@@ -25,8 +25,8 @@ jobs:
       SOAK_DURATION: ${{ github.event_name == 'schedule' && '5m' || '30s' }}
     steps:
       - name: Checkout
-        # actions/checkout v5.0.1
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -36,8 +36,8 @@ jobs:
         uses: ./.github/actions/setup-just
 
       - name: Setup Go
-        # actions/setup-go v6.5.0
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        # actions/setup-go v7.0.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
@@ -69,16 +69,16 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        # actions/checkout v5.0.1
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Setup Go
-        # actions/setup-go v6.5.0
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        # actions/setup-go v7.0.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
@@ -116,8 +116,8 @@ jobs:
       RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout
-        # actions/checkout v5.0.1
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -127,8 +127,8 @@ jobs:
         uses: ./.github/actions/setup-just
 
       - name: Setup Go
-        # actions/setup-go v6.5.0
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        # actions/setup-go v7.0.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true

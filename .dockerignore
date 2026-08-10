@@ -3,6 +3,11 @@
 .github
 .idea
 .vscode
+.cache
+.pi-subagents
+.review-recovery
+site
+bench/evidence
 bin
 examples
 tests

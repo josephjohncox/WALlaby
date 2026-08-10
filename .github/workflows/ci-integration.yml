@@ -36,8 +36,8 @@ jobs:
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.cache/golangci-lint
     steps:
       - name: Checkout
-        # actions/checkout v5.0.1
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -48,8 +48,8 @@ jobs:
 
       - name: Setup Go
         id: setup-go
-        # actions/setup-go v6.5.0
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        # actions/setup-go v7.0.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: false
@@ -63,8 +63,8 @@ jobs:
 
       - name: Restore Go + tools cache
         id: cache-go-tools
-        # actions/cache v4.3.0
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        # actions/cache/restore v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             .cache/bin
@@ -76,8 +76,8 @@ jobs:
 
       - name: Restore Go build cache
         id: cache-go-build
-        # actions/cache v4.3.0
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        # actions/cache/restore v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: .cache/gocache
           key: >-
@@ -239,8 +239,8 @@ jobs:
       GOCACHE: ${{ github.workspace }}/.cache/gocache
     steps:
       - name: Checkout
-        # actions/checkout v5.0.1
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -250,8 +250,8 @@ jobs:
         uses: ./.github/actions/setup-just
 
       - name: Setup Go
-        # actions/setup-go v6.5.0
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        # actions/setup-go v7.0.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: false
@@ -309,8 +309,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        # actions/checkout v5.0.1
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -320,8 +320,8 @@ jobs:
         uses: ./.github/actions/setup-just
 
       - name: Setup Go
-        # actions/setup-go v6.5.0
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        # actions/setup-go v7.0.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: false
