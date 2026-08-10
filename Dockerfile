@@ -11,6 +11,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY third_party/hamba-avro-shim/go.mod third_party/hamba-avro-shim/go.sum ./third_party/hamba-avro-shim/
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=${CGO_ENABLED} GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/wallaby ./cmd/wallaby

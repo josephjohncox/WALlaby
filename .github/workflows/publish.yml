@@ -19,7 +19,7 @@ jobs:
       GOCACHE: ${{ github.workspace }}/.cache/gocache
     steps:
       - name: Checkout
-        # actions/checkout v5.0.1
+        # actions/checkout v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
@@ -36,7 +36,7 @@ jobs:
           git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
 
       - name: Setup Go
-        # actions/setup-go v6.5.0
+        # actions/setup-go v7.0.0
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
@@ -92,7 +92,7 @@ jobs:
       id-token: write
     steps:
       - name: Checkout
-        # actions/checkout v5.0.1
+        # actions/checkout v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
@@ -135,7 +135,7 @@ jobs:
 
       - name: Build and push image
         id: image
-        # docker/build-push-action v6.18.0
+        # docker/build-push-action v7.3.0
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
         with:
           context: .
