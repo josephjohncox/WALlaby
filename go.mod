@@ -5,8 +5,8 @@ go 1.26.6
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.43.0
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/apache/arrow-go/v18 v18.5.2-0.20260220015023-a886a5722b87
-	github.com/apache/iceberg-go v0.5.0
+	github.com/apache/arrow-go/v18 v18.6.0
+	github.com/apache/iceberg-go v0.6.0
 	github.com/aws/aws-sdk-go-v2 v1.43.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.31
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.30
@@ -413,7 +413,6 @@ require (
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
 	github.com/kisielk/errcheck v1.9.0 // indirect
 	github.com/kkHAIKE/contextcheck v1.1.6 // indirect
-	github.com/klauspost/asmfmt v1.3.2 // indirect
 	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/klauspost/pgzip v1.2.6 // indirect
@@ -442,8 +441,6 @@ require (
 	github.com/mattn/go-mastodon v0.0.13 // indirect
 	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/mgechev/revive v1.13.0 // indirect
-	github.com/minio/asm2plan9s v0.0.0-20200509001527-cdd76441f9d8 // indirect
-	github.com/minio/c2goasm v0.0.0-20190812172519-36a3d3bbc4f3 // indirect
 	github.com/minio/sha256-simd v1.0.1 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
@@ -550,9 +547,9 @@ require (
 	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
-	github.com/substrait-io/substrait v0.81.0 // indirect
-	github.com/substrait-io/substrait-go/v7 v7.4.0 // indirect
-	github.com/substrait-io/substrait-protobuf/go v0.81.0 // indirect
+	github.com/substrait-io/substrait v0.87.0 // indirect
+	github.com/substrait-io/substrait-go/v8 v8.1.0 // indirect
+	github.com/substrait-io/substrait-protobuf/go v0.85.0 // indirect
 	github.com/tetafro/godot v1.5.4 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
 	github.com/theupdateframework/go-tuf v0.7.0 // indirect
@@ -565,6 +562,7 @@ require (
 	github.com/tomnomnom/linkheader v0.0.0-20250811210735-e5fe3b51442e // indirect
 	github.com/transparency-dev/formats v0.1.1 // indirect
 	github.com/transparency-dev/merkle v0.0.2 // indirect
+	github.com/twmb/avro v1.7.2 // indirect
 	github.com/twmb/franz-go/pkg/kmsg v1.13.1 // indirect
 	github.com/twmb/murmur3 v1.1.8 // indirect
 	github.com/ulikunitz/xz v0.5.16 // indirect
