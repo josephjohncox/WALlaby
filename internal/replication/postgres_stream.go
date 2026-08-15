@@ -55,6 +55,8 @@ type PostgresStream struct {
 	feedbackBarrier              pglogrepl.LSN
 	feedbackWaiters              []*sourceFeedbackWaiter
 	streamedStarts               uint64
+	streamedSegments             uint64
+	streamedSubtransactionMsgs   uint64
 	streamedSubaborts            uint64
 	relations                    map[uint32]*pglogrepl.RelationMessage
 	schemas                      map[uint32]connector.Schema
@@ -928,13 +930,16 @@ func (p *PostgresStream) handleWal(ctx context.Context, xld pglogrepl.XLogData) 
 			}
 			transaction = &pendingTransaction{xid: msg.Xid, beginLSN: xld.WALStart}
 			p.streamTransactions[msg.Xid] = transaction
-			p.mu.Lock()
-			p.streamedStarts++
-			p.mu.Unlock()
 		} else if transaction == nil {
 			p.recordProtocolError(ctx, "stream_segment_without_first")
 			return fmt.Errorf("received continuation stream segment without first segment for xid=%d", msg.Xid)
 		}
+		p.mu.Lock()
+		p.streamedSegments++
+		if msg.FirstSegment == 1 {
+			p.streamedStarts++
+		}
+		p.mu.Unlock()
 		p.inStream = true
 		p.streamXID = msg.Xid
 		p.streamMessageXID = msg.Xid
@@ -1104,6 +1109,11 @@ func (p *PostgresStream) validateStreamXID(xid uint32) error {
 	// Abort identifies the top-level and subtransaction separately, so requiring
 	// every message to equal streamXID would reject valid savepoint traffic.
 	p.streamMessageXID = xid
+	if xid != p.streamXID {
+		p.mu.Lock()
+		p.streamedSubtransactionMsgs++
+		p.mu.Unlock()
+	}
 	return nil
 }
 

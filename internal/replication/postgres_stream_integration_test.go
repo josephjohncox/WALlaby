@@ -81,22 +81,34 @@ CREATE PUBLICATION wallaby_managed_stream_publication FOR TABLE public.wallaby_m
 	if _, err := tx.Exec(ctx, `ALTER TABLE public.wallaby_managed_stream_subabort ADD COLUMN aborted_note text`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO public.wallaby_managed_stream_subabort (id,payload,aborted_note) VALUES ($1,$2,'must-not-leak')`, int64(2), payload); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(ctx, "RELEASE SAVEPOINT wallaby_nested_subtransaction"); err != nil {
-		t.Fatal(err)
+	// Use enough savepoint-scoped changes to force PostgreSQL 14 to spill the
+	// subtransaction through protocol v2. A single large TOAST value can remain
+	// below logical-decoding memory accounting even though the parent row has
+	// already caused transaction streaming.
+	for id := int64(2); id < 66; id++ {
+		if _, err := tx.Exec(ctx, `INSERT INTO public.wallaby_managed_stream_subabort (id,payload,aborted_note) VALUES ($1,$2,'must-not-leak')`, id, payload); err != nil {
+			t.Fatal(err)
+		}
 	}
 	streamDeadline := time.Now().Add(5 * time.Second)
 	for {
-		starts, _ := managedStreamProtocolEvidence(stream)
-		if starts > 0 {
+		starts, segments, submessages, _ := managedStreamProtocolEvidence(stream)
+		// A StreamStart alone can contain only the parent row. Waiting until the
+		// decoder observes a message carrying a distinct subtransaction XID proves
+		// savepoint-scoped state crossed the replication protocol before ROLLBACK
+		// TO, so a subsequent StreamAbort is mandatory rather than scheduler-
+		// dependent evidence. PostgreSQL 14 may carry this traffic in the first
+		// segment, while later versions often emit a continuation segment.
+		if starts > 0 && submessages > 0 {
 			break
 		}
 		if time.Now().After(streamDeadline) {
-			t.Fatal("PostgreSQL did not stream the in-progress transaction under the 64kB decoding limit")
+			t.Fatalf("PostgreSQL did not stream the subtransaction under the 64kB decoding limit: starts=%d segments=%d submessages=%d", starts, segments, submessages)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := tx.Exec(ctx, "RELEASE SAVEPOINT wallaby_nested_subtransaction"); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT wallaby_subtransaction"); err != nil {
 		t.Fatal(err)
@@ -134,9 +146,9 @@ CREATE PUBLICATION wallaby_managed_stream_publication FOR TABLE public.wallaby_m
 	}
 
 committed:
-	starts, subaborts := managedStreamProtocolEvidence(stream)
-	if starts == 0 || subaborts == 0 {
-		t.Fatalf("stream protocol evidence starts/subaborts=%d/%d, want both positive", starts, subaborts)
+	starts, segments, submessages, subaborts := managedStreamProtocolEvidence(stream)
+	if starts == 0 || submessages == 0 || subaborts == 0 {
+		t.Fatalf("stream protocol evidence starts/segments/submessages/subaborts=%d/%d/%d/%d, want a start, streamed subtransaction message, and subabort", starts, segments, submessages, subaborts)
 	}
 	if strings.Join(ids, ",") != "1,3" {
 		t.Fatalf("committed streamed row IDs=%v, want parent rows [1 3] without aborted subtransaction row", ids)
@@ -148,8 +160,8 @@ committed:
 	}
 }
 
-func managedStreamProtocolEvidence(stream *PostgresStream) (starts, subaborts uint64) {
+func managedStreamProtocolEvidence(stream *PostgresStream) (starts, segments, submessages, subaborts uint64) {
 	stream.mu.Lock()
 	defer stream.mu.Unlock()
-	return stream.streamedStarts, stream.streamedSubaborts
+	return stream.streamedStarts, stream.streamedSegments, stream.streamedSubtransactionMsgs, stream.streamedSubaborts
 }
