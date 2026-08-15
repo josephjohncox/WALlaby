@@ -125,9 +125,12 @@ test:
 test-rapid:
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" GO="{{ go }}" RAPID_PACKAGES="{{ rapid_packages }}" RAPID_CHECKS="{{ rapid_checks }}" ./scripts/test-rapid.sh
 
-test-integration:
+# Build the real worker process required by process-kill/restart evidence.
+build-integration-worker:
     mkdir -p "$(dirname '{{ integration_worker_binary }}')"
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} build -o "{{ integration_worker_binary }}" ./cmd/wallaby-worker
+
+test-integration: build-integration-worker
     WALLABY_WORKER_BINARY="${WALLABY_WORKER_BINARY:-{{ integration_worker_binary }}}" GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" GO="{{ go }}" GO_TEST_TIMEOUT="{{ go_test_timeout }}" GO_TEST_VERBOSE="{{ go_test_verbose }}" GO_TEST_VERBOSE_FLAG="{{ go_test_verbose_flag }}" IT_KIND="{{ it_kind }}" IT_KEEP="{{ it_keep }}" IT_KIND_CLUSTER="{{ it_kind_cluster }}" IT_KIND_NODE_IMAGE="{{ it_kind_node_image }}" IT_SERVICE_READY_TIMEOUT_SECONDS="{{ it_service_ready_timeout_seconds }}" IT_RUN_FILTER="{{ it_run_filter }}" IT_SKIP_FILTER="{{ it_skip_filter }}" IT_COUNT="{{ it_count }}" IT_PACKAGE_PARALLELISM="{{ it_package_parallelism }}" IT_EXPECTED_HARNESS_PARTICIPANTS="{{ it_expected_harness_participants }}" INTEGRATION_PACKAGE="{{ integration_package }}" ./scripts/test-integration.sh
 
 # Broad integration excludes managed ClickHouse/Keeper fault cells. Those run
@@ -430,8 +433,8 @@ test-s3tables-snowflake-live:
 
 # Nightly increases property checks and repeats worker bootstrap/fencing plus
 # DBOS bootstrap evidence. IT_REQUIRED_TESTS makes every named test no-skip.
-test-durable-nightly:
-    RAPID_CHECKS=20000 just test-rapid
+test-durable-nightly: build-integration-worker
+    WALLABY_WORKER_BINARY="${WALLABY_WORKER_BINARY:-{{ integration_worker_binary }}}" RAPID_CHECKS=20000 just test-rapid
     FAILURE_CYCLES=1000 just test-failure-matrix
     SOAK_DURATION=5m just test-soak
     IT_COUNT=10 just test-durable-integration

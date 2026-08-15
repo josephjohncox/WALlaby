@@ -319,10 +319,14 @@ func (c *Coordinator) ValidateAckGrant(ctx context.Context, fence authority.RunF
 }
 
 // RecordAckReceipt records that the source adapter accepted an authorized ACK
-// grant. observedFlushLSN is populated only when the adapter can prove an
-// externally observed flush position; an empty value means scheduled feedback.
+// grant. The externally observed flush position must canonicalize to the exact
+// authorized checkpoint; scheduled feedback without evidence is not a receipt.
 // It never authorizes a position that lacks the corresponding ACK intent.
 func (c *Coordinator) RecordAckReceipt(ctx context.Context, fence authority.RunFence, grant AckGrant, observedFlushLSN string) error {
+	observed, err := canonicalObservedFlushLSN(grant, observedFlushLSN)
+	if err != nil {
+		return err
+	}
 	tx, err := c.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin source ack receipt: %w", err)
@@ -334,13 +338,28 @@ func (c *Coordinator) RecordAckReceipt(ctx context.Context, fence authority.RunF
 	if err := validateAckGrant(ctx, tx, fence, grant); err != nil {
 		return err
 	}
-	if err := recordAckReceipt(ctx, tx, fence, grant, observedFlushLSN); err != nil {
+	if err := recordAckReceipt(ctx, tx, fence, grant, observed); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit source ack receipt: %w", err)
 	}
 	return nil
+}
+
+func canonicalObservedFlushLSN(grant AckGrant, observedFlushLSN string) (string, error) {
+	observed, err := connector.CanonicalizeCheckpointPosition(observedFlushLSN)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize observed source flush: %w", err)
+	}
+	authorized, err := connector.CanonicalizeCheckpointPosition(grant.Checkpoint.LSN)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize authorized source flush: %w", err)
+	}
+	if observed != authorized {
+		return "", fmt.Errorf("observed source flush %s differs from authorized checkpoint %s", observed, authorized)
+	}
+	return observed, nil
 }
 
 // CommitSourceFeedback validates authority on both sides of external source
@@ -358,16 +377,9 @@ func (c *Coordinator) CommitSourceFeedback(ctx context.Context, fence authority.
 	if err != nil {
 		return fmt.Errorf("send authorized source feedback: %w", err)
 	}
-	observed, err := connector.CanonicalizeCheckpointPosition(evidence.ObservedFlushLSN)
+	observed, err := canonicalObservedFlushLSN(grant, evidence.ObservedFlushLSN)
 	if err != nil {
-		return fmt.Errorf("canonicalize observed source flush: %w", err)
-	}
-	authorized, err := connector.CanonicalizeCheckpointPosition(grant.Checkpoint.LSN)
-	if err != nil {
-		return fmt.Errorf("canonicalize authorized source flush: %w", err)
-	}
-	if observed != authorized {
-		return fmt.Errorf("observed source flush %s differs from authorized checkpoint %s", observed, authorized)
+		return err
 	}
 	if c.hooks.AfterSourceFlush != nil {
 		if err := c.hooks.AfterSourceFlush(ctx, fence, grant, observed); err != nil {
@@ -381,7 +393,7 @@ func (c *Coordinator) CommitSourceFeedback(ctx context.Context, fence authority.
 }
 
 func recordAckReceipt(ctx context.Context, tx pgx.Tx, fence authority.RunFence, grant AckGrant, observedFlushLSN string) error {
-	if _, err := tx.Exec(ctx, `
+	result, err := tx.Exec(ctx, `
 INSERT INTO source_ack_receipts (
   flow_incarnation_id,position_id,checkpoint_lsn,observed_flush_lsn,acquisition_id,lease_epoch,generation
 ) VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7)
@@ -391,8 +403,12 @@ ON CONFLICT (flow_incarnation_id,position_id) DO UPDATE SET
   lease_epoch=EXCLUDED.lease_epoch,
   generation=EXCLUDED.generation,
   recorded_at=clock_timestamp()
-WHERE source_ack_receipts.checkpoint_lsn=EXCLUDED.checkpoint_lsn`, fence.FlowIncarnationID, grant.PositionID, grant.Checkpoint.LSN, observedFlushLSN, fence.AcquisitionID, fence.LeaseEpoch, fence.Generation); err != nil {
+WHERE source_ack_receipts.checkpoint_lsn=EXCLUDED.checkpoint_lsn`, fence.FlowIncarnationID, grant.PositionID, observedFlushLSN, observedFlushLSN, fence.AcquisitionID, fence.LeaseEpoch, fence.Generation)
+	if err != nil {
 		return fmt.Errorf("record source ack receipt: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return errors.New("source ack receipt conflicts with the canonical authorized checkpoint")
 	}
 	return nil
 }

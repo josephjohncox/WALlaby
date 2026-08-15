@@ -141,8 +141,31 @@ func TestPostgresAckOnlyCheckpointHasIntentAndReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.RecordAckReceipt(ctx, fence, grant, ""); err != nil {
+	for label, observed := range map[string]string{
+		"empty": "", "malformed": "not-an-lsn", "mismatched": "0/A1",
+	} {
+		if err := coordinator.RecordAckReceipt(ctx, fence, grant, observed); err == nil {
+			t.Fatalf("%s observed flush %q was accepted", label, observed)
+		}
+	}
+	var rejectedReceipts int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM source_ack_receipts WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID).Scan(&rejectedReceipts); err != nil {
 		t.Fatal(err)
+	}
+	if rejectedReceipts != 0 {
+		t.Fatalf("invalid observed flush created %d receipt rows", rejectedReceipts)
+	}
+	equivalentGrant := grant
+	equivalentGrant.Checkpoint.LSN = "0/000000A0"
+	if err := coordinator.RecordAckReceipt(ctx, fence, equivalentGrant, "0/A0"); err != nil {
+		t.Fatal(err)
+	}
+	var checkpointLSN, observedFlush string
+	if err := pool.QueryRow(ctx, `SELECT checkpoint_lsn,observed_flush_lsn FROM source_ack_receipts WHERE flow_incarnation_id=$1 AND position_id=$2`, fence.FlowIncarnationID, grant.PositionID).Scan(&checkpointLSN, &observedFlush); err != nil {
+		t.Fatal(err)
+	}
+	if checkpointLSN != "0/A0" || observedFlush != "0/A0" {
+		t.Fatalf("persisted checkpoint/observed flush=%q/%q, want canonical 0/A0 for both", checkpointLSN, observedFlush)
 	}
 	var intents, receipts int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM source_ack_intents WHERE flow_incarnation_id=$1", fence.FlowIncarnationID).Scan(&intents); err != nil {
@@ -160,6 +183,12 @@ func TestPostgresAckOnlyCheckpointHasIntentAndReceipt(t *testing.T) {
 	}
 	if intents != 1 || receipts != 1 || committedCheckpoint != 1 || committedBaseline != 1 {
 		t.Fatalf("ack-only intents/receipts/checkpoint/baseline=%d/%d/%d/%d, want 1/1/1/1", intents, receipts, committedCheckpoint, committedBaseline)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE source_ack_receipts SET checkpoint_lsn='0/B0' WHERE flow_incarnation_id=$1 AND position_id=$2`, fence.FlowIncarnationID, grant.PositionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.RecordAckReceipt(ctx, fence, grant, "0/A0"); err == nil || !strings.Contains(err.Error(), "conflicts with the canonical") {
+		t.Fatalf("conflicting durable receipt retry error=%v", err)
 	}
 }
 
