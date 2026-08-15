@@ -5,8 +5,11 @@ artifacts, catalog conflicts, receipt reconciliation, and quota/GC. PostgreSQL i
 authoritative for every fence, attempt, receipt, checkpoint, source-feedback
 record, quota account, and GC root. S3 holds immutable, versioned artifacts.
 WALlaby never claims exactly-once: replays converge by deterministic identity
-(at-least-once with idempotent dedupe), duplicates are bounded, and gaps are
-impossible.
+(at-least-once with idempotent dedupe), and duplicates are bounded. Within the
+modeled boundary chain, completed recovery does not omit a modeled position when
+PostgreSQL authority, fencing, immutable/reconcilable side effects, and connector
+implementations satisfy their stated contracts. This is not proof that every
+external service, deployment, connector, or operator action is gap-free.
 
 Prove the cause before you change lifecycle state or delete anything.
 
@@ -18,10 +21,22 @@ durable receipt; the flow makes no forward progress on a position.
 1. Identify the position and attempt:
 
    ```sql
-   SELECT position_id, attempt_id, state, attempted_at
-   FROM artifact_delivery_attempts
-   WHERE flow_incarnation_id = $1 AND state <> 'committed'
-   ORDER BY attempted_at;
+   SELECT
+     p.position_id,
+     a.consumer_revision_id,
+     a.publication_id,
+     a.attempt_id,
+     a.commit_id,
+     a.prepared_at
+   FROM artifact_delivery_attempts AS a
+   JOIN artifact_publications AS p
+     ON p.flow_incarnation_id = a.flow_incarnation_id
+    AND p.publication_id = a.publication_id
+   LEFT JOIN artifact_delivery_receipts AS r
+     ON r.attempt_id = a.attempt_id
+   WHERE a.flow_incarnation_id = $1
+     AND r.attempt_id IS NULL
+   ORDER BY a.consumer_revision_id, p.sequence, a.prepared_at;
    ```
 
 2. Confirm the current owner holds the lease. A stalled attempt from a fenced
@@ -82,17 +97,25 @@ receipt (a crash after the side effect, before adoption).
 1. Adoption is idempotent and identity-keyed. The recovering owner reconciles the
    external evidence and adopts it into exactly one receipt, then advances the
    checkpoint and source-ACK intent atomically.
-2. Verify there is exactly one receipt per position after recovery:
+2. Verify there is at most one receipt for each exact consumer revision and
+   publication identity after recovery:
 
    ```sql
-   SELECT position_id, count(*)
+   SELECT
+     flow_incarnation_id,
+     consumer_revision_id,
+     publication_id,
+     count(*)
    FROM artifact_delivery_receipts
    WHERE flow_incarnation_id = $1
-   GROUP BY position_id HAVING count(*) > 1;
+   GROUP BY flow_incarnation_id, consumer_revision_id, publication_id
+   HAVING count(*) > 1;
    ```
 
-   This query must return no rows. A duplicate would indicate a defect — capture
-   it and escalate rather than deleting rows.
+   This query must return no rows. Different consumer revisions can legitimately
+   receipt the same source position, so position-only grouping is not a duplicate
+   test. Capture any duplicate exact identity and escalate rather than deleting
+   rows.
 
 ## Quota and GC
 

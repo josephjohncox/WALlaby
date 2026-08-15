@@ -1,10 +1,12 @@
 # Upgrading
 
 WALlaby keeps PostgreSQL authoritative for generation fences, attempts, receipts,
-checkpoints, publication, source feedback, quotas, and GC roots. Schema upgrades
-to those authoritative tables run through the centralized control-store migration
-coordinator under a single advisory lock with checksum-drift detection. This page
-is the operator how-to for applying an upgrade safely.
+checkpoints, publication, source feedback, quotas, and GC roots. The centralized
+control-store coordinator applies migration domains in a fixed order with
+checksum-drift detection. Each domain uses its own transaction and
+transaction-scoped advisory lock; the complete cross-domain upgrade is not one
+atomic database transaction. This page is the operator how-to for applying an
+upgrade safely.
 
 !!! warning "No mixed binaries, no rolling restart"
     Authority and artifact migrations are **not** designed for a rolling upgrade
@@ -17,13 +19,14 @@ is the operator how-to for applying an upgrade safely.
 - **PostgreSQL 14, 15, 16, and 17** are supported for the managed PostgreSQL
   profile. The logical decoding protocol is pinned to `pgoutput` v2 with
   `streaming` and `messages`, which all four majors support.
-- Every prior shipped schema migrates forward to the current schema for the
-  workflow, delivery, checkpoint, registry, artifact publication/consumer, and
-  connector-state domains. Migrations are additive and idempotent; a populated
-  legacy per-domain ledger is imported into the centralized control-store ledger
-  without re-running the underlying SQL.
-- Fresh installs apply the full current schema in one pass and are idempotent on
-  re-run.
+- Current migration domains are checksum-verified and idempotent when rerun from
+  a compatible recorded state. Individual migrations can strengthen nullability,
+  remove defaults, add exact constraints, or reject data that cannot prove the
+  current authority identity; they are not universally additive.
+- Incompatible legacy per-domain ledgers are rejected. They are not discovered,
+  imported, copied, or dual-written into the centralized control ledger.
+- Fresh installs apply the ordered current domains in one coordinator run. A
+  rerun validates the committed prefix and continues with unapplied migrations.
 
 ## Before you upgrade
 
@@ -49,15 +52,22 @@ is the operator how-to for applying an upgrade safely.
 Point the new binary at the control database and let it apply migrations on
 startup, or apply them explicitly. The coordinator:
 
-- takes one advisory lock for the whole migration set,
+- visits each migration domain in its fixed order;
+- starts one transaction and takes the transaction-scoped advisory lock for that
+  domain;
 - verifies the recorded SHA-256 checksum of every already-applied migration and
-  **aborts on any drift**,
-- imports legacy per-domain ledger rows (`wallaby_checkpoint_migrations`,
-  `wallaby_schema_migrations`, `wallaby_registry_migrations`) into
-  `wallaby_control_migrations` without re-executing their SQL,
-- runs any new migrations, dual-recording each, and
+  **aborts on any drift**;
+- rejects incompatible legacy per-domain ledgers rather than importing them;
+- applies new SQL and records its authoritative history atomically within that
+  domain transaction; and
 - runs `verifyManagedAuthoritySchema`, which fails closed if any required table,
   column, constraint, index, or trigger is missing.
+
+If domain N fails, transactions already committed for domains 1 through N-1 stay
+committed. Keep every WALlaby process stopped, correct the reported incompatibility
+or restore the pre-upgrade backup, then rerun the same released binary. A rerun
+verifies the committed prefix before continuing. Do not edit the ledger to skip a
+failed domain.
 
 ## The quiesced cutover (authority migrations 006/007)
 
@@ -82,6 +92,14 @@ This is the guard working as intended, not corruption. Remediate:
 
 Do not attempt to bypass the guard by editing the ledger. The check protects the
 generation-fence invariants that keep exactly-one-writer semantics intact.
+
+## Rollback limitations
+
+WALlaby does not provide down migrations. After any new-domain transaction
+commits, do not restart an older binary against that control database—even when a
+later domain failed. The general rollback procedure is to stop every WALlaby
+process and restore the complete quiesced control-database backup. Otherwise,
+repair the forward incompatibility and rerun the same new release.
 
 ## After the upgrade
 

@@ -16,7 +16,11 @@
 // external destination and object store hold immutable side effects that are
 // adopted only after fenced reconciliation. The model never claims exactly-once:
 // replays converge by deterministic identity (at-least-once with idempotent
-// dedupe), duplicates are bounded, and gaps are impossible.
+// dedupe), and duplicates are bounded. Within the modeled boundary chain and
+// its durable-authority, fencing, and reconciliation assumptions, completed
+// recovery does not omit a modeled position. This is protocol-model evidence,
+// not a claim that every production connector, service, deployment, or operator
+// action is gap-free.
 //
 // This package requires no live services and no credentials, so it can run
 // hundreds of randomized crash cycles per boundary deterministically and
