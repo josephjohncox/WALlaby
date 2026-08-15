@@ -148,7 +148,7 @@ jobs:
 
       - name: Generate SBOM (Syft)
         # anchore/sbom-action v0.20.10
-        uses: anchore/sbom-action@fbfd9c6c189226748411491745178e0c2017392d
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
         with:
           image: >-
             ${{ steps.vars.outputs.image }}@${{ steps.image.outputs.digest }}
