@@ -51,6 +51,7 @@ type Config struct {
 	Deliveries        *delivery.Coordinator
 	SchemaBaselines   connector.ManagedSchemaBaselineStore
 	Artifacts         runner.ArtifactLogFactory
+	SnowflakePolicy   connector.SnowflakeDeploymentPolicy
 }
 
 // FlowRunInput is the generation-fenced workflow input for one flow.
@@ -82,6 +83,7 @@ type DBOSOrchestrator struct {
 	deliveries        *delivery.Coordinator
 	schemaBaselines   connector.ManagedSchemaBaselineStore
 	artifacts         runner.ArtifactLogFactory
+	snowflakePolicy   connector.SnowflakeDeploymentPolicy
 }
 
 // FlowWorkflowName returns the fully qualified workflow name used by DBOS recovery.
@@ -115,6 +117,7 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Lifecy
 		return nil, err
 	}
 
+	factory.SnowflakePolicy = cfg.SnowflakePolicy
 	var queue dbos.Queue
 	if cfg.Queue != "" {
 		queue, err = dbos.RegisterQueue(dbosCtx, cfg.Queue)
@@ -144,6 +147,7 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Lifecy
 		deliveries:        cfg.Deliveries,
 		schemaBaselines:   cfg.SchemaBaselines,
 		artifacts:         cfg.Artifacts,
+		snowflakePolicy:   cfg.SnowflakePolicy,
 	}
 
 	if err := orchestrator.registerWorkflows(cfg.Schedule, cfg.AppName); err != nil {
@@ -157,12 +161,23 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Lifecy
 }
 
 // EnqueueGeneration idempotently schedules one (flow,generation).
-func (o *DBOSOrchestrator) EnqueueGeneration(_ context.Context, flowID string, generation int64) error {
+func (o *DBOSOrchestrator) EnqueueGeneration(ctx context.Context, flowID string, generation int64) error {
 	if flowID == "" || generation <= 0 {
 		return errors.New("flow id and positive generation are required")
 	}
+	if err := o.admitSnowflake(ctx, flowID); err != nil {
+		return err
+	}
 	identity := fmt.Sprintf("%sg-%d", flowWorkflowPrefix(flowID), generation)
 	return o.enqueueWorkflow(flowID, generation, identity)
+}
+
+func (o *DBOSOrchestrator) admitSnowflake(ctx context.Context, flowID string) error {
+	definition, err := o.engine.Get(ctx, flowID)
+	if err != nil {
+		return err
+	}
+	return flow.ValidateSnowflakeDeploymentPolicy(definition, o.factory.ConnectorRegistry, o.snowflakePolicy)
 }
 
 func (o *DBOSOrchestrator) enqueueWorkflow(flowID string, generation int64, identity string) error {
@@ -183,9 +198,12 @@ func (o *DBOSOrchestrator) enqueueWorkflow(flowID string, generation int64, iden
 
 // EnqueueRunOnce schedules one uniquely identified attempt against the
 // lifecycle generation captured by the caller.
-func (o *DBOSOrchestrator) EnqueueRunOnce(_ context.Context, flowID string, generation int64) error {
+func (o *DBOSOrchestrator) EnqueueRunOnce(ctx context.Context, flowID string, generation int64) error {
 	if flowID == "" || generation <= 0 {
 		return errors.New("flow id and positive generation are required")
+	}
+	if err := o.admitSnowflake(ctx, flowID); err != nil {
+		return err
 	}
 	identity := fmt.Sprintf("%sg-%d-r-%s", flowWorkflowPrefix(flowID), generation, uuid.NewString())
 	return o.enqueueWorkflow(flowID, generation, identity)
@@ -305,6 +323,9 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.Context, input FlowRunInput)
 	if err != nil {
 		return "", err
 	}
+	if err := flow.ValidateSnowflakeDeploymentPolicy(f, o.factory.ConnectorRegistry, o.snowflakePolicy); err != nil {
+		return "", err
+	}
 	control, err := o.engine.Control(ctx, input.FlowID)
 	if err != nil {
 		return "", err
@@ -347,6 +368,7 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.Context, input FlowRunInput)
 		TraceSink:         traceSink, ExecutionBackend: "dbos",
 		ExecutionID: executionID, ExpectedGeneration: input.Generation,
 		Authority: o.authority, Deliveries: o.deliveries, SchemaBaselines: o.schemaBaselines, Artifacts: o.artifacts,
+		ConnectorRegistry: o.factory.ConnectorRegistry, SnowflakePolicy: o.snowflakePolicy,
 	}
 	if err := flowRunner.Run(ctx, f, source, destinations); err != nil {
 		return "", fmt.Errorf("run flow %s generation %d: %w", f.ID, input.Generation, err)
@@ -355,34 +377,41 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.Context, input FlowRunInput)
 }
 
 func (o *DBOSOrchestrator) dispatchWorkflow(ctx dbos.Context, input dbos.ScheduledWorkflowInput) (string, error) {
-	scheduledAt := input.ScheduledTime
+	count, err := o.dispatchScheduledFlows(ctx, input.ScheduledTime, o.enqueueWorkflow)
+	return fmt.Sprintf("scheduled %d flows", count), err
+}
+
+func (o *DBOSOrchestrator) dispatchScheduledFlows(ctx context.Context, scheduledAt time.Time, enqueue func(string, int64, string) error) (int, error) {
 	flows, err := o.engine.List(ctx)
 	if err != nil {
-		return "", err
+		return 0, err
 	}
-
 	count := 0
+	var joined error
 	for _, f := range flows {
 		if f.State != flow.StateRunning {
 			continue
 		}
+		if err := flow.ValidateSnowflakeDeploymentPolicy(f, o.factory.ConnectorRegistry, o.snowflakePolicy); err != nil {
+			joined = errors.Join(joined, fmt.Errorf("admit scheduled flow %s: %w", f.ID, err))
+			continue
+		}
 		control, err := o.engine.Control(ctx, f.ID)
 		if err != nil {
-			return "", err
+			joined = errors.Join(joined, fmt.Errorf("load scheduled flow %s control: %w", f.ID, err))
+			continue
 		}
 		if control.Target != workflow.TargetRunning {
 			continue
 		}
-		// Scheduled finite runs share the lifecycle generation but need a
-		// deterministic identity per schedule occurrence.
 		identity := fmt.Sprintf("%sg-%d-s-%d", flowWorkflowPrefix(f.ID), control.Generation, scheduledAt.UnixNano())
-		if err := o.enqueueWorkflow(f.ID, control.Generation, identity); err != nil {
-			return "", err
+		if err := enqueue(f.ID, control.Generation, identity); err != nil {
+			joined = errors.Join(joined, fmt.Errorf("enqueue scheduled flow %s: %w", f.ID, err))
+			continue
 		}
 		count++
 	}
-
-	return fmt.Sprintf("scheduled %d flows", count), nil
+	return count, joined
 }
 
 func (o *DBOSOrchestrator) flowTraceSink(flowID string) (stream.TraceSink, func() error, error) {

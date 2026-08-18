@@ -69,6 +69,12 @@ func newWallabyWorkerCommand() *cobra.Command {
 	command.Flags().String("partition-column", "", "partition column for backfill hashing")
 	command.Flags().Int("partition-count", 0, "partition count per table for backfill hashing")
 	command.Flags().Bool("resolve-staging", false, "resolve destination staging tables after batch/backfill runs")
+	command.Flags().Bool("snowflake-enabled", false, "allow Snowflake-backed execution for this deployment")
+	command.Flags().String("snowflake-account", "", "deployment-owned Snowflake account identity")
+	command.Flags().String("snowflake-user", "", "deployment-owned Snowflake user identity")
+	command.Flags().String("snowflake-host", "", "deployment-owned canonical Snowflake host")
+	command.Flags().String("snowflake-private-key-file", "", "deployment-owned Snowflake RSA private key file")
+	command.Args = cobra.NoArgs
 	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
 		if err := initWallabyWorkerConfig(cmd); err != nil {
 			return fmt.Errorf("initialize wallaby worker config: %w", err)
@@ -125,6 +131,11 @@ func runWallabyWorker(cmd *cobra.Command) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	snowflakePolicy, err := resolveWorkerSnowflakePolicy(cmd, cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = snowflakePolicy.Close() }()
 
 	if cfg.Postgres.DSN == "" {
 		return errors.New("WALLABY_POSTGRES_DSN is required to run a flow worker")
@@ -264,6 +275,7 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		ManagedControl:    controlPool,
 		ManagedAuthority:  authorityStore,
 		ConnectorRegistry: connectorRegistry,
+		SnowflakePolicy:   snowflakePolicy,
 		SchemaHookForFlow: func(f flow.Flow) replication.SchemaHook {
 			policy := flow.ResolveDDLPolicy(f.Config.DDL, &defaults)
 			return &registry.Hook{
@@ -316,6 +328,7 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		Artifacts:          runner.NewArtifactLogFactory(controlPool, cfg.Artifacts, cfg.Iceberg),
 		ConnectorRegistry:  connectorRegistry,
 		SourceSpecOverride: &flowSource,
+		SnowflakePolicy:    snowflakePolicy,
 	}
 	if cfg.Trace.Path != "" {
 		tracePath := strings.ReplaceAll(cfg.Trace.Path, "{flow_id}", flowDef.ID)
@@ -336,6 +349,32 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		return fmt.Errorf("run flow: %w", err)
 	}
 	return nil
+}
+
+func resolveWorkerSnowflakePolicy(cmd *cobra.Command, cfg *config.Config) (connector.SnowflakeDeploymentPolicy, error) {
+	if cmd == nil || cfg == nil {
+		return connector.SnowflakeDeploymentPolicy{}, errors.New("worker command and config are required")
+	}
+	if flag := cmd.Flags().Lookup("snowflake-enabled"); flag != nil && flag.Changed {
+		cfg.Snowflake.Enabled = cli.ResolveBoolFlag(cmd, "snowflake-enabled")
+	}
+	for flagName, target := range map[string]*string{
+		"snowflake-account":          &cfg.Snowflake.Account,
+		"snowflake-user":             &cfg.Snowflake.User,
+		"snowflake-host":             &cfg.Snowflake.Host,
+		"snowflake-private-key-file": &cfg.Snowflake.PrivateKeyFile,
+	} {
+		if flag := cmd.Flags().Lookup(flagName); flag != nil && flag.Changed {
+			*target = cli.ResolveStringFlag(cmd, flagName)
+		}
+	}
+	if err := cfg.Snowflake.ValidateExecution(); err != nil {
+		return connector.SnowflakeDeploymentPolicy{}, err
+	}
+	return connector.NewSnowflakeDeploymentPolicy(connector.SnowflakeDeploymentConfig{
+		Enabled: cfg.Snowflake.Enabled, Account: cfg.Snowflake.Account, User: cfg.Snowflake.User,
+		Host: cfg.Snowflake.Host, PrivateKeyFile: cfg.Snowflake.PrivateKeyFile,
+	})
 }
 
 func copyStringMap(in map[string]string) map[string]string {

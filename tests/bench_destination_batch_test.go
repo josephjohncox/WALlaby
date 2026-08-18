@@ -139,7 +139,8 @@ func BenchmarkSnowflakeBatchSizes(b *testing.B) {
 	}
 
 	ctx := context.Background()
-	setupDB, err := sql.Open("snowflake", dsn)
+	policy := snowflakeDeploymentPolicyForTest(b)
+	setupDB, err := connector.OpenSnowflakeDB(dsn, policy)
 	if err != nil {
 		b.Fatalf("open snowflake: %v", err)
 	}
@@ -157,7 +158,7 @@ func BenchmarkSnowflakeBatchSizes(b *testing.B) {
 			b.Fatalf("create table: %v", err)
 		}
 
-		dest := &snowflake.Destination{}
+		dest := snowflake.NewDestination(policy)
 		spec := connector.RuntimeSpec{
 			Name: "snowflake-batch",
 			Type: connector.EndpointSnowflake,

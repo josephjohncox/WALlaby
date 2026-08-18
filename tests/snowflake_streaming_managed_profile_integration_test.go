@@ -2,7 +2,6 @@ package tests
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -50,10 +49,14 @@ func newSnowflakeStreamingManagedFixture(t *testing.T) *snowflakeStreamingManage
 			t.Fatalf("%s is required when WALLABY_TEST_SNOWFLAKE_MANAGED=1", name)
 		}
 	}
-	if _, err := gosnowflake.ParseDSN(dsn); err != nil {
+	parsed, err := gosnowflake.ParseDSN(dsn)
+	if err != nil {
 		t.Fatal(err)
 	}
-	db, err := sql.Open("snowflake", dsn)
+	if parsed.Authenticator != gosnowflake.AuthTypeJwt || parsed.PrivateKey != nil {
+		t.Fatal("managed streaming execution DSN must use JWT without inline private-key material")
+	}
+	db, err := connector.OpenSnowflakeDB(dsn, snowflakeDeploymentPolicyForTest(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +118,7 @@ func newSnowflakeStreamingManagedFixture(t *testing.T) *snowflakeStreamingManage
 func assertStreamingFailsClosed(t *testing.T, capability string) {
 	t.Helper()
 	fixture := newSnowflakeStreamingManagedFixture(t)
-	destination := &snowflake.Destination{}
+	destination := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	err := destination.Open(context.Background(), fixture.spec)
 	if err == nil {
 		_ = destination.Close(context.Background())

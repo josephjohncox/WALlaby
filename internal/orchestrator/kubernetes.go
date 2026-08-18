@@ -64,6 +64,13 @@ type KubernetesConfig struct {
 	JobArgs                         []string
 	JobEnv                          map[string]string
 	JobEnvFrom                      []string
+	SnowflakeEnabled                bool
+	SnowflakeAccount                string
+	SnowflakeUser                   string
+	SnowflakeHost                   string
+	SnowflakePrivateKeyFile         string
+	SnowflakePrivateKeySecretName   string
+	SnowflakePrivateKeySecretKey    string
 }
 
 // KubernetesDispatcher triggers flow workers as Kubernetes Jobs.
@@ -77,6 +84,17 @@ type KubernetesDispatcher struct {
 func NewKubernetesDispatcher(ctx context.Context, cfg KubernetesConfig) (*KubernetesDispatcher, error) {
 	if cfg.JobImage == "" {
 		return nil, errors.New("kubernetes job image is required")
+	}
+	if cfg.SnowflakeEnabled {
+		for name, value := range map[string]string{
+			"account": cfg.SnowflakeAccount, "user": cfg.SnowflakeUser, "host": cfg.SnowflakeHost,
+			"private key file": cfg.SnowflakePrivateKeyFile, "private key secret name": cfg.SnowflakePrivateKeySecretName,
+			"private key secret key": cfg.SnowflakePrivateKeySecretKey,
+		} {
+			if strings.TrimSpace(value) == "" {
+				return nil, fmt.Errorf("kubernetes Snowflake %s is required", name)
+			}
+		}
 	}
 
 	client, namespace, err := resolveKubeClient(cfg)
@@ -220,10 +238,30 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 	if len(command) == 0 {
 		command = []string{"/usr/local/bin/wallaby-worker"}
 	}
-	args := authoritativeWorkerArgs(k.cfg.JobArgs, flowID, generation, executionID, k.cfg.MaxEmptyReads)
+	args := authoritativeWorkerArgsWithSnowflake(k.cfg.JobArgs, flowID, generation, executionID, k.cfg.MaxEmptyReads, k.cfg.SnowflakeEnabled, k.cfg.SnowflakeAccount, k.cfg.SnowflakeUser, k.cfg.SnowflakeHost, k.cfg.SnowflakePrivateKeyFile)
 
 	env := mapToEnvVars(k.cfg.JobEnv)
 	envFrom := parseEnvFrom(k.cfg.JobEnvFrom)
+
+	container := corev1.Container{
+		Name: "worker", Image: k.cfg.JobImage, ImagePullPolicy: corev1.PullPolicy(k.cfg.JobImagePullPolicy),
+		Command: command, Args: args, Env: env, EnvFrom: envFrom,
+	}
+	var volumes []corev1.Volume
+	if k.cfg.SnowflakeEnabled {
+		const keyVolume = "snowflake-private-key"
+		const keyItemPath = "private-key.pem"
+		mode := int32(0o400)
+		volumes = []corev1.Volume{{
+			Name: keyVolume,
+			VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+				SecretName:  k.cfg.SnowflakePrivateKeySecretName,
+				Items:       []corev1.KeyToPath{{Key: k.cfg.SnowflakePrivateKeySecretKey, Path: keyItemPath, Mode: &mode}},
+				DefaultMode: &mode,
+			}},
+		}}
+		container.VolumeMounts = []corev1.VolumeMount{{Name: keyVolume, MountPath: k.cfg.SnowflakePrivateKeyFile, SubPath: keyItemPath, ReadOnly: true}}
+	}
 
 	job := &batchv1.Job{
 		TypeMeta: metav1.TypeMeta{
@@ -245,17 +283,8 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 					ServiceAccountName:           k.cfg.JobServiceAccount,
 					AutomountServiceAccountToken: boolPtr(k.cfg.JobAutomountServiceAccountToken),
 					RestartPolicy:                corev1.RestartPolicyNever,
-					Containers: []corev1.Container{
-						{
-							Name:            "worker",
-							Image:           k.cfg.JobImage,
-							ImagePullPolicy: corev1.PullPolicy(k.cfg.JobImagePullPolicy),
-							Command:         command,
-							Args:            args,
-							Env:             env,
-							EnvFrom:         envFrom,
-						},
-					},
+					Volumes:                      volumes,
+					Containers:                   []corev1.Container{container},
 				},
 			},
 		},
@@ -543,16 +572,24 @@ func mergeLabels(base, override map[string]string) map[string]string {
 	return out
 }
 
-func authoritativeWorkerArgs(args []string, flowID string, generation int64, executionID string, maxEmpty int) []string {
+func authoritativeWorkerArgsWithSnowflake(args []string, flowID string, generation int64, executionID string, maxEmpty int, snowflakeEnabled bool, account, user, host, privateKeyFile string) []string {
 	reserved := map[string]struct{}{
-		"flow-id":           {},
-		"generation":        {},
-		"execution-backend": {},
-		"execution-id":      {},
+		"flow-id":                    {},
+		"generation":                 {},
+		"execution-backend":          {},
+		"execution-id":               {},
+		"snowflake-enabled":          {},
+		"snowflake-account":          {},
+		"snowflake-user":             {},
+		"snowflake-host":             {},
+		"snowflake-private-key-file": {},
 	}
 	out := make([]string, 0, len(args)+8)
 	for index := 0; index < len(args); index++ {
 		arg := args[index]
+		if arg == "--" {
+			continue
+		}
 		name := strings.TrimPrefix(strings.SplitN(arg, "=", 2)[0], "--")
 		if _, isReserved := reserved[name]; !isReserved || !strings.HasPrefix(arg, "--") {
 			out = append(out, arg)
@@ -567,6 +604,11 @@ func authoritativeWorkerArgs(args []string, flowID string, generation int64, exe
 		"--generation", strconv.FormatInt(generation, 10),
 		"--execution-backend", kubernetesBackend,
 		"--execution-id", executionID,
+		"--snowflake-enabled="+strconv.FormatBool(snowflakeEnabled),
+		"--snowflake-account", account,
+		"--snowflake-user", user,
+		"--snowflake-host", host,
+		"--snowflake-private-key-file", privateKeyFile,
 	)
 	if maxEmpty > 0 && !hasFlag(out, "max-empty-reads") {
 		out = append(out, "--max-empty-reads", strconv.Itoa(maxEmpty))

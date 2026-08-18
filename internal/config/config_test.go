@@ -8,6 +8,65 @@ import (
 	"time"
 )
 
+func TestSnowflakeConfigDefaultEnvAndStrictFilePrecedence(t *testing.T) {
+	for _, key := range []string{"WALLABY_SNOWFLAKE_ENABLED", "WALLABY_WORKER_SNOWFLAKE_ENABLED", "WALLABY_SNOWFLAKE_ACCOUNT", "WALLABY_WORKER_SNOWFLAKE_ACCOUNT", "WALLABY_SNOWFLAKE_USER", "WALLABY_WORKER_SNOWFLAKE_USER", "WALLABY_SNOWFLAKE_HOST", "WALLABY_WORKER_SNOWFLAKE_HOST", "WALLABY_SNOWFLAKE_PRIVATE_KEY_FILE", "WALLABY_WORKER_SNOWFLAKE_PRIVATE_KEY_FILE", "WALLABY_SNOWFLAKE_PRIVATE_KEY_SECRET_NAME", "WALLABY_SNOWFLAKE_PRIVATE_KEY_SECRET_KEY"} {
+		key := key
+		old, existed := os.LookupEnv(key)
+		_ = os.Unsetenv(key)
+		t.Cleanup(func() {
+			if existed {
+				_ = os.Setenv(key, old)
+			} else {
+				_ = os.Unsetenv(key)
+			}
+		})
+	}
+	t.Setenv("WALLABY_ENV", "test")
+	t.Setenv("WALLABY_WORKFLOW_STORE", "memory")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Snowflake.Enabled || cfg.Snowflake.PrivateKeyFile != "" {
+		t.Fatalf("default Snowflake config=%+v", cfg.Snowflake)
+	}
+	cfg.Snowflake.Enabled = true
+	if err := cfg.Snowflake.ValidateExecution(); err == nil {
+		t.Fatal("enabled Snowflake execution without a deployment key was accepted")
+	}
+	cfg.Snowflake.Enabled = false
+	t.Setenv("WALLABY_SNOWFLAKE_ENABLED", "true")
+	t.Setenv("WALLABY_SNOWFLAKE_ACCOUNT", "account")
+	t.Setenv("WALLABY_SNOWFLAKE_USER", "user")
+	t.Setenv("WALLABY_SNOWFLAKE_HOST", "account.snowflakecomputing.com")
+	t.Setenv("WALLABY_SNOWFLAKE_PRIVATE_KEY_FILE", "/env/key.pem")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Snowflake.Enabled || cfg.Snowflake.Account != "account" || cfg.Snowflake.User != "user" || cfg.Snowflake.Host != "account.snowflakecomputing.com" || cfg.Snowflake.PrivateKeyFile != "/env/key.pem" {
+		t.Fatalf("environment Snowflake config=%+v", cfg.Snowflake)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("environment: test\nworkflow:\n  store: memory\nsnowflake:\n  enabled: false\n  account: file-account\n  user: file-user\n  host: file.snowflakecomputing.com\n  private_key_file: /file/key.pem\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Snowflake.Enabled || cfg.Snowflake.Account != "file-account" || cfg.Snowflake.User != "file-user" || cfg.Snowflake.Host != "file.snowflakecomputing.com" || cfg.Snowflake.PrivateKeyFile != "/file/key.pem" {
+		t.Fatalf("file precedence Snowflake config=%+v", cfg.Snowflake)
+	}
+	bad := filepath.Join(t.TempDir(), "bad.yaml")
+	if err := os.WriteFile(bad, []byte("environment: test\nworkflow:\n  store: memory\nsnowflake:\n  enabled: false\n  unknown: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(bad); err == nil || !strings.Contains(err.Error(), "snowflake.unknown") {
+		t.Fatalf("strict Snowflake config error=%v", err)
+	}
+}
+
 func TestDocumentedSemanticDefaultsRemainOrdinaryDefaults(t *testing.T) {
 	t.Setenv("WALLABY_ENV", "test")
 	t.Setenv("WALLABY_WORKFLOW_STORE", "memory")

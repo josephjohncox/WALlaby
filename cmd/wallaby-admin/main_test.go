@@ -24,6 +24,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestProtoFlowHasSnowflakeDestinationCoversEveryBuiltInBranch(t *testing.T) {
+	branches := []*wallabypb.Endpoint{
+		{Config: &wallabypb.Endpoint_Snowflake{Snowflake: &wallabypb.SnowflakeDestinationConfig{}}},
+		{Config: &wallabypb.Endpoint_Snowpipe{Snowpipe: &wallabypb.SnowpipeDestinationConfig{}}},
+		{Config: &wallabypb.Endpoint_SnowflakePostgresSql{SnowflakePostgresSql: &wallabypb.SnowflakePostgresSQLConfig{}}},
+		{Config: &wallabypb.Endpoint_SnowflakePostgresStaged{SnowflakePostgresStaged: &wallabypb.SnowflakePostgresStagedConfig{}}},
+		{Config: &wallabypb.Endpoint_SnowflakePostgresStreaming{SnowflakePostgresStreaming: &wallabypb.SnowflakePostgresStreamingConfig{}}},
+	}
+	for _, branch := range branches {
+		if !protoFlowHasSnowflakeDestination(&wallabypb.Flow{Destinations: []*wallabypb.Endpoint{branch}}) {
+			t.Fatalf("Snowflake branch %T was not classified", branch.GetConfig())
+		}
+	}
+	if protoFlowHasSnowflakeDestination(&wallabypb.Flow{Destinations: []*wallabypb.Endpoint{{Config: &wallabypb.Endpoint_PostgresDestination{PostgresDestination: &wallabypb.PostgresDestinationConfig{}}}}}) {
+		t.Fatal("PostgreSQL destination was classified as Snowflake")
+	}
+}
+
 func TestRedpandaEndpointRoundTrip(t *testing.T) {
 	t.Parallel()
 	endpoint, err := endpointcodec.Encode(connector.RuntimeSpec{Name: "redpanda", Type: connector.EndpointRedpanda}, endpointcodec.RoleDestination)

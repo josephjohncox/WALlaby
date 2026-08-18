@@ -21,6 +21,94 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type ValidateFlowRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Flow          *Flow                  `protobuf:"bytes,1,opt,name=flow,proto3" json:"flow,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ValidateFlowRequest) Reset() {
+	*x = ValidateFlowRequest{}
+	mi := &file_wallaby_v1_flow_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ValidateFlowRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ValidateFlowRequest) ProtoMessage() {}
+
+func (x *ValidateFlowRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_flow_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ValidateFlowRequest.ProtoReflect.Descriptor instead.
+func (*ValidateFlowRequest) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *ValidateFlowRequest) GetFlow() *Flow {
+	if x != nil {
+		return x.Flow
+	}
+	return nil
+}
+
+type ValidateFlowResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Admitted      bool                   `protobuf:"varint,1,opt,name=admitted,proto3" json:"admitted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ValidateFlowResponse) Reset() {
+	*x = ValidateFlowResponse{}
+	mi := &file_wallaby_v1_flow_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ValidateFlowResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ValidateFlowResponse) ProtoMessage() {}
+
+func (x *ValidateFlowResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wallaby_v1_flow_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ValidateFlowResponse.ProtoReflect.Descriptor instead.
+func (*ValidateFlowResponse) Descriptor() ([]byte, []int) {
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ValidateFlowResponse) GetAdmitted() bool {
+	if x != nil {
+		return x.Admitted
+	}
+	return false
+}
+
 type CreateFlowRequest struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Flow             *Flow                  `protobuf:"bytes,1,opt,name=flow,proto3" json:"flow,omitempty"`
@@ -31,7 +119,7 @@ type CreateFlowRequest struct {
 
 func (x *CreateFlowRequest) Reset() {
 	*x = CreateFlowRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[0]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -43,7 +131,7 @@ func (x *CreateFlowRequest) String() string {
 func (*CreateFlowRequest) ProtoMessage() {}
 
 func (x *CreateFlowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[0]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -56,7 +144,7 @@ func (x *CreateFlowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateFlowRequest.ProtoReflect.Descriptor instead.
 func (*CreateFlowRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{0}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *CreateFlowRequest) GetFlow() *Flow {
@@ -82,7 +170,7 @@ type UpdateFlowRequest struct {
 
 func (x *UpdateFlowRequest) Reset() {
 	*x = UpdateFlowRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[1]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -94,7 +182,7 @@ func (x *UpdateFlowRequest) String() string {
 func (*UpdateFlowRequest) ProtoMessage() {}
 
 func (x *UpdateFlowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[1]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -107,7 +195,7 @@ func (x *UpdateFlowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateFlowRequest.ProtoReflect.Descriptor instead.
 func (*UpdateFlowRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{1}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *UpdateFlowRequest) GetFlow() *Flow {
@@ -129,7 +217,7 @@ type ReconfigureFlowRequest struct {
 
 func (x *ReconfigureFlowRequest) Reset() {
 	*x = ReconfigureFlowRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[2]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -141,7 +229,7 @@ func (x *ReconfigureFlowRequest) String() string {
 func (*ReconfigureFlowRequest) ProtoMessage() {}
 
 func (x *ReconfigureFlowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[2]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -154,7 +242,7 @@ func (x *ReconfigureFlowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReconfigureFlowRequest.ProtoReflect.Descriptor instead.
 func (*ReconfigureFlowRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{2}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ReconfigureFlowRequest) GetFlow() *Flow {
@@ -194,7 +282,7 @@ type StartFlowRequest struct {
 
 func (x *StartFlowRequest) Reset() {
 	*x = StartFlowRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[3]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -206,7 +294,7 @@ func (x *StartFlowRequest) String() string {
 func (*StartFlowRequest) ProtoMessage() {}
 
 func (x *StartFlowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[3]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -219,7 +307,7 @@ func (x *StartFlowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartFlowRequest.ProtoReflect.Descriptor instead.
 func (*StartFlowRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{3}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *StartFlowRequest) GetFlowId() string {
@@ -238,7 +326,7 @@ type RunFlowOnceRequest struct {
 
 func (x *RunFlowOnceRequest) Reset() {
 	*x = RunFlowOnceRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[4]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -250,7 +338,7 @@ func (x *RunFlowOnceRequest) String() string {
 func (*RunFlowOnceRequest) ProtoMessage() {}
 
 func (x *RunFlowOnceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[4]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -263,7 +351,7 @@ func (x *RunFlowOnceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunFlowOnceRequest.ProtoReflect.Descriptor instead.
 func (*RunFlowOnceRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{4}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *RunFlowOnceRequest) GetFlowId() string {
@@ -282,7 +370,7 @@ type RunFlowOnceResponse struct {
 
 func (x *RunFlowOnceResponse) Reset() {
 	*x = RunFlowOnceResponse{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[5]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -294,7 +382,7 @@ func (x *RunFlowOnceResponse) String() string {
 func (*RunFlowOnceResponse) ProtoMessage() {}
 
 func (x *RunFlowOnceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[5]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -307,7 +395,7 @@ func (x *RunFlowOnceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunFlowOnceResponse.ProtoReflect.Descriptor instead.
 func (*RunFlowOnceResponse) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{5}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *RunFlowOnceResponse) GetDispatched() bool {
@@ -326,7 +414,7 @@ type PauseFlowRequest struct {
 
 func (x *PauseFlowRequest) Reset() {
 	*x = PauseFlowRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[6]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -338,7 +426,7 @@ func (x *PauseFlowRequest) String() string {
 func (*PauseFlowRequest) ProtoMessage() {}
 
 func (x *PauseFlowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[6]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -351,7 +439,7 @@ func (x *PauseFlowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseFlowRequest.ProtoReflect.Descriptor instead.
 func (*PauseFlowRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{6}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *PauseFlowRequest) GetFlowId() string {
@@ -370,7 +458,7 @@ type StopFlowRequest struct {
 
 func (x *StopFlowRequest) Reset() {
 	*x = StopFlowRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[7]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -382,7 +470,7 @@ func (x *StopFlowRequest) String() string {
 func (*StopFlowRequest) ProtoMessage() {}
 
 func (x *StopFlowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[7]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -395,7 +483,7 @@ func (x *StopFlowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopFlowRequest.ProtoReflect.Descriptor instead.
 func (*StopFlowRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{7}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *StopFlowRequest) GetFlowId() string {
@@ -414,7 +502,7 @@ type ResumeFlowRequest struct {
 
 func (x *ResumeFlowRequest) Reset() {
 	*x = ResumeFlowRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[8]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -426,7 +514,7 @@ func (x *ResumeFlowRequest) String() string {
 func (*ResumeFlowRequest) ProtoMessage() {}
 
 func (x *ResumeFlowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[8]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -439,7 +527,7 @@ func (x *ResumeFlowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeFlowRequest.ProtoReflect.Descriptor instead.
 func (*ResumeFlowRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{8}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ResumeFlowRequest) GetFlowId() string {
@@ -458,7 +546,7 @@ type GetFlowRequest struct {
 
 func (x *GetFlowRequest) Reset() {
 	*x = GetFlowRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[9]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -470,7 +558,7 @@ func (x *GetFlowRequest) String() string {
 func (*GetFlowRequest) ProtoMessage() {}
 
 func (x *GetFlowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[9]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -483,7 +571,7 @@ func (x *GetFlowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFlowRequest.ProtoReflect.Descriptor instead.
 func (*GetFlowRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{9}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetFlowRequest) GetFlowId() string {
@@ -503,7 +591,7 @@ type ListFlowsRequest struct {
 
 func (x *ListFlowsRequest) Reset() {
 	*x = ListFlowsRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[10]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -515,7 +603,7 @@ func (x *ListFlowsRequest) String() string {
 func (*ListFlowsRequest) ProtoMessage() {}
 
 func (x *ListFlowsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[10]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -528,7 +616,7 @@ func (x *ListFlowsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFlowsRequest.ProtoReflect.Descriptor instead.
 func (*ListFlowsRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{10}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ListFlowsRequest) GetPageSize() int32 {
@@ -555,7 +643,7 @@ type ListFlowsResponse struct {
 
 func (x *ListFlowsResponse) Reset() {
 	*x = ListFlowsResponse{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[11]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -567,7 +655,7 @@ func (x *ListFlowsResponse) String() string {
 func (*ListFlowsResponse) ProtoMessage() {}
 
 func (x *ListFlowsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[11]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -580,7 +668,7 @@ func (x *ListFlowsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFlowsResponse.ProtoReflect.Descriptor instead.
 func (*ListFlowsResponse) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{11}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ListFlowsResponse) GetFlows() []*Flow {
@@ -606,7 +694,7 @@ type DeleteFlowRequest struct {
 
 func (x *DeleteFlowRequest) Reset() {
 	*x = DeleteFlowRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[12]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -618,7 +706,7 @@ func (x *DeleteFlowRequest) String() string {
 func (*DeleteFlowRequest) ProtoMessage() {}
 
 func (x *DeleteFlowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[12]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -631,7 +719,7 @@ func (x *DeleteFlowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteFlowRequest.ProtoReflect.Descriptor instead.
 func (*DeleteFlowRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{12}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *DeleteFlowRequest) GetFlowId() string {
@@ -650,7 +738,7 @@ type DeleteFlowResponse struct {
 
 func (x *DeleteFlowResponse) Reset() {
 	*x = DeleteFlowResponse{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[13]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -662,7 +750,7 @@ func (x *DeleteFlowResponse) String() string {
 func (*DeleteFlowResponse) ProtoMessage() {}
 
 func (x *DeleteFlowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[13]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -675,7 +763,7 @@ func (x *DeleteFlowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteFlowResponse.ProtoReflect.Descriptor instead.
 func (*DeleteFlowResponse) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{13}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *DeleteFlowResponse) GetDeleted() bool {
@@ -697,7 +785,7 @@ type CleanupFlowRequest struct {
 
 func (x *CleanupFlowRequest) Reset() {
 	*x = CleanupFlowRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[14]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -709,7 +797,7 @@ func (x *CleanupFlowRequest) String() string {
 func (*CleanupFlowRequest) ProtoMessage() {}
 
 func (x *CleanupFlowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[14]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -722,7 +810,7 @@ func (x *CleanupFlowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CleanupFlowRequest.ProtoReflect.Descriptor instead.
 func (*CleanupFlowRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{14}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *CleanupFlowRequest) GetFlowId() string {
@@ -762,7 +850,7 @@ type CleanupFlowResponse struct {
 
 func (x *CleanupFlowResponse) Reset() {
 	*x = CleanupFlowResponse{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[15]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -774,7 +862,7 @@ func (x *CleanupFlowResponse) String() string {
 func (*CleanupFlowResponse) ProtoMessage() {}
 
 func (x *CleanupFlowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[15]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -787,7 +875,7 @@ func (x *CleanupFlowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CleanupFlowResponse.ProtoReflect.Descriptor instead.
 func (*CleanupFlowResponse) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{15}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CleanupFlowResponse) GetCleaned() bool {
@@ -809,7 +897,7 @@ type ListReplicationSlotsRequest struct {
 
 func (x *ListReplicationSlotsRequest) Reset() {
 	*x = ListReplicationSlotsRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[16]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -821,7 +909,7 @@ func (x *ListReplicationSlotsRequest) String() string {
 func (*ListReplicationSlotsRequest) ProtoMessage() {}
 
 func (x *ListReplicationSlotsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[16]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -834,7 +922,7 @@ func (x *ListReplicationSlotsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListReplicationSlotsRequest.ProtoReflect.Descriptor instead.
 func (*ListReplicationSlotsRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{16}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ListReplicationSlotsRequest) GetFlowId() string {
@@ -884,7 +972,7 @@ type ReplicationSlotInfo struct {
 
 func (x *ReplicationSlotInfo) Reset() {
 	*x = ReplicationSlotInfo{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[17]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -896,7 +984,7 @@ func (x *ReplicationSlotInfo) String() string {
 func (*ReplicationSlotInfo) ProtoMessage() {}
 
 func (x *ReplicationSlotInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[17]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -909,7 +997,7 @@ func (x *ReplicationSlotInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplicationSlotInfo.ProtoReflect.Descriptor instead.
 func (*ReplicationSlotInfo) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{17}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ReplicationSlotInfo) GetSlotName() string {
@@ -999,7 +1087,7 @@ type ListReplicationSlotsResponse struct {
 
 func (x *ListReplicationSlotsResponse) Reset() {
 	*x = ListReplicationSlotsResponse{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[18]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1011,7 +1099,7 @@ func (x *ListReplicationSlotsResponse) String() string {
 func (*ListReplicationSlotsResponse) ProtoMessage() {}
 
 func (x *ListReplicationSlotsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[18]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1024,7 +1112,7 @@ func (x *ListReplicationSlotsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListReplicationSlotsResponse.ProtoReflect.Descriptor instead.
 func (*ListReplicationSlotsResponse) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{18}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ListReplicationSlotsResponse) GetSlots() []*ReplicationSlotInfo {
@@ -1053,7 +1141,7 @@ type GetReplicationSlotRequest struct {
 
 func (x *GetReplicationSlotRequest) Reset() {
 	*x = GetReplicationSlotRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[19]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1065,7 +1153,7 @@ func (x *GetReplicationSlotRequest) String() string {
 func (*GetReplicationSlotRequest) ProtoMessage() {}
 
 func (x *GetReplicationSlotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[19]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1078,7 +1166,7 @@ func (x *GetReplicationSlotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetReplicationSlotRequest.ProtoReflect.Descriptor instead.
 func (*GetReplicationSlotRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{19}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *GetReplicationSlotRequest) GetFlowId() string {
@@ -1118,7 +1206,7 @@ type GetReplicationSlotResponse struct {
 
 func (x *GetReplicationSlotResponse) Reset() {
 	*x = GetReplicationSlotResponse{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[20]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1130,7 +1218,7 @@ func (x *GetReplicationSlotResponse) String() string {
 func (*GetReplicationSlotResponse) ProtoMessage() {}
 
 func (x *GetReplicationSlotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[20]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1143,7 +1231,7 @@ func (x *GetReplicationSlotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetReplicationSlotResponse.ProtoReflect.Descriptor instead.
 func (*GetReplicationSlotResponse) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{20}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *GetReplicationSlotResponse) GetSlot() *ReplicationSlotInfo {
@@ -1166,7 +1254,7 @@ type DropReplicationSlotRequest struct {
 
 func (x *DropReplicationSlotRequest) Reset() {
 	*x = DropReplicationSlotRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[21]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1178,7 +1266,7 @@ func (x *DropReplicationSlotRequest) String() string {
 func (*DropReplicationSlotRequest) ProtoMessage() {}
 
 func (x *DropReplicationSlotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[21]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1191,7 +1279,7 @@ func (x *DropReplicationSlotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DropReplicationSlotRequest.ProtoReflect.Descriptor instead.
 func (*DropReplicationSlotRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{21}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *DropReplicationSlotRequest) GetFlowId() string {
@@ -1241,7 +1329,7 @@ type DropReplicationSlotResponse struct {
 
 func (x *DropReplicationSlotResponse) Reset() {
 	*x = DropReplicationSlotResponse{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[22]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1253,7 +1341,7 @@ func (x *DropReplicationSlotResponse) String() string {
 func (*DropReplicationSlotResponse) ProtoMessage() {}
 
 func (x *DropReplicationSlotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[22]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1266,7 +1354,7 @@ func (x *DropReplicationSlotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DropReplicationSlotResponse.ProtoReflect.Descriptor instead.
 func (*DropReplicationSlotResponse) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{22}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *DropReplicationSlotResponse) GetSlot() string {
@@ -1309,7 +1397,7 @@ type ListPublicationTablesRequest struct {
 
 func (x *ListPublicationTablesRequest) Reset() {
 	*x = ListPublicationTablesRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[23]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1321,7 +1409,7 @@ func (x *ListPublicationTablesRequest) String() string {
 func (*ListPublicationTablesRequest) ProtoMessage() {}
 
 func (x *ListPublicationTablesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[23]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1334,7 +1422,7 @@ func (x *ListPublicationTablesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPublicationTablesRequest.ProtoReflect.Descriptor instead.
 func (*ListPublicationTablesRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{23}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ListPublicationTablesRequest) GetFlowId() string {
@@ -1376,7 +1464,7 @@ type ListPublicationTablesResponse struct {
 
 func (x *ListPublicationTablesResponse) Reset() {
 	*x = ListPublicationTablesResponse{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[24]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1388,7 +1476,7 @@ func (x *ListPublicationTablesResponse) String() string {
 func (*ListPublicationTablesResponse) ProtoMessage() {}
 
 func (x *ListPublicationTablesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[24]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1401,7 +1489,7 @@ func (x *ListPublicationTablesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPublicationTablesResponse.ProtoReflect.Descriptor instead.
 func (*ListPublicationTablesResponse) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{24}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ListPublicationTablesResponse) GetTables() []string {
@@ -1438,7 +1526,7 @@ type AddPublicationTablesRequest struct {
 
 func (x *AddPublicationTablesRequest) Reset() {
 	*x = AddPublicationTablesRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[25]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1450,7 +1538,7 @@ func (x *AddPublicationTablesRequest) String() string {
 func (*AddPublicationTablesRequest) ProtoMessage() {}
 
 func (x *AddPublicationTablesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[25]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1463,7 +1551,7 @@ func (x *AddPublicationTablesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddPublicationTablesRequest.ProtoReflect.Descriptor instead.
 func (*AddPublicationTablesRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{25}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *AddPublicationTablesRequest) GetFlowId() string {
@@ -1514,7 +1602,7 @@ type DropPublicationTablesRequest struct {
 
 func (x *DropPublicationTablesRequest) Reset() {
 	*x = DropPublicationTablesRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[26]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1526,7 +1614,7 @@ func (x *DropPublicationTablesRequest) String() string {
 func (*DropPublicationTablesRequest) ProtoMessage() {}
 
 func (x *DropPublicationTablesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[26]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1539,7 +1627,7 @@ func (x *DropPublicationTablesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DropPublicationTablesRequest.ProtoReflect.Descriptor instead.
 func (*DropPublicationTablesRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{26}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *DropPublicationTablesRequest) GetFlowId() string {
@@ -1587,7 +1675,7 @@ type PublicationTablesMutationResponse struct {
 
 func (x *PublicationTablesMutationResponse) Reset() {
 	*x = PublicationTablesMutationResponse{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[27]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1599,7 +1687,7 @@ func (x *PublicationTablesMutationResponse) String() string {
 func (*PublicationTablesMutationResponse) ProtoMessage() {}
 
 func (x *PublicationTablesMutationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[27]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1612,7 +1700,7 @@ func (x *PublicationTablesMutationResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use PublicationTablesMutationResponse.ProtoReflect.Descriptor instead.
 func (*PublicationTablesMutationResponse) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{27}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *PublicationTablesMutationResponse) GetTables() []string {
@@ -1643,7 +1731,7 @@ type SyncPublicationTablesRequest struct {
 
 func (x *SyncPublicationTablesRequest) Reset() {
 	*x = SyncPublicationTablesRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[28]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1655,7 +1743,7 @@ func (x *SyncPublicationTablesRequest) String() string {
 func (*SyncPublicationTablesRequest) ProtoMessage() {}
 
 func (x *SyncPublicationTablesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[28]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1668,7 +1756,7 @@ func (x *SyncPublicationTablesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncPublicationTablesRequest.ProtoReflect.Descriptor instead.
 func (*SyncPublicationTablesRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{28}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *SyncPublicationTablesRequest) GetFlowId() string {
@@ -1725,7 +1813,7 @@ type SyncPublicationTablesResponse struct {
 
 func (x *SyncPublicationTablesResponse) Reset() {
 	*x = SyncPublicationTablesResponse{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[29]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1737,7 +1825,7 @@ func (x *SyncPublicationTablesResponse) String() string {
 func (*SyncPublicationTablesResponse) ProtoMessage() {}
 
 func (x *SyncPublicationTablesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[29]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1750,7 +1838,7 @@ func (x *SyncPublicationTablesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncPublicationTablesResponse.ProtoReflect.Descriptor instead.
 func (*SyncPublicationTablesResponse) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{29}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *SyncPublicationTablesResponse) GetAdded() []string {
@@ -1795,7 +1883,7 @@ type ScrapePublicationTablesRequest struct {
 
 func (x *ScrapePublicationTablesRequest) Reset() {
 	*x = ScrapePublicationTablesRequest{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[30]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1807,7 +1895,7 @@ func (x *ScrapePublicationTablesRequest) String() string {
 func (*ScrapePublicationTablesRequest) ProtoMessage() {}
 
 func (x *ScrapePublicationTablesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[30]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1820,7 +1908,7 @@ func (x *ScrapePublicationTablesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScrapePublicationTablesRequest.ProtoReflect.Descriptor instead.
 func (*ScrapePublicationTablesRequest) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{30}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ScrapePublicationTablesRequest) GetFlowId() string {
@@ -1877,7 +1965,7 @@ type ScrapePublicationTablesResponse struct {
 
 func (x *ScrapePublicationTablesResponse) Reset() {
 	*x = ScrapePublicationTablesResponse{}
-	mi := &file_wallaby_v1_flow_proto_msgTypes[31]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1889,7 +1977,7 @@ func (x *ScrapePublicationTablesResponse) String() string {
 func (*ScrapePublicationTablesResponse) ProtoMessage() {}
 
 func (x *ScrapePublicationTablesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallaby_v1_flow_proto_msgTypes[31]
+	mi := &file_wallaby_v1_flow_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1902,7 +1990,7 @@ func (x *ScrapePublicationTablesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScrapePublicationTablesResponse.ProtoReflect.Descriptor instead.
 func (*ScrapePublicationTablesResponse) Descriptor() ([]byte, []int) {
-	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{31}
+	return file_wallaby_v1_flow_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ScrapePublicationTablesResponse) GetDiscoveredTables() []string {
@@ -1938,7 +2026,11 @@ var File_wallaby_v1_flow_proto protoreflect.FileDescriptor
 const file_wallaby_v1_flow_proto_rawDesc = "" +
 	"\n" +
 	"\x15wallaby/v1/flow.proto\x12\n" +
-	"wallaby.v1\x1a\x16wallaby/v1/types.proto\"f\n" +
+	"wallaby.v1\x1a\x16wallaby/v1/types.proto\";\n" +
+	"\x13ValidateFlowRequest\x12$\n" +
+	"\x04flow\x18\x01 \x01(\v2\x10.wallaby.v1.FlowR\x04flow\"2\n" +
+	"\x14ValidateFlowResponse\x12\x1a\n" +
+	"\badmitted\x18\x01 \x01(\bR\badmitted\"f\n" +
 	"\x11CreateFlowRequest\x12$\n" +
 	"\x04flow\x18\x01 \x01(\v2\x10.wallaby.v1.FlowR\x04flow\x12+\n" +
 	"\x11start_immediately\x18\x02 \x01(\bR\x10startImmediately\"9\n" +
@@ -2080,8 +2172,9 @@ const file_wallaby_v1_flow_proto_rawDesc = "" +
 	"\x11discovered_tables\x18\x01 \x03(\tR\x10discoveredTables\x12%\n" +
 	"\x0emissing_tables\x18\x02 \x03(\tR\rmissingTables\x12\x18\n" +
 	"\aapplied\x18\x03 \x01(\bR\aapplied\x12\x17\n" +
-	"\aflow_id\x18\x04 \x01(\tR\x06flowId2\xa2\r\n" +
-	"\vFlowService\x12=\n" +
+	"\aflow_id\x18\x04 \x01(\tR\x06flowId2\xf5\r\n" +
+	"\vFlowService\x12Q\n" +
+	"\fValidateFlow\x12\x1f.wallaby.v1.ValidateFlowRequest\x1a .wallaby.v1.ValidateFlowResponse\x12=\n" +
 	"\n" +
 	"CreateFlow\x12\x1d.wallaby.v1.CreateFlowRequest\x1a\x10.wallaby.v1.Flow\x12=\n" +
 	"\n" +
@@ -2119,103 +2212,108 @@ func file_wallaby_v1_flow_proto_rawDescGZIP() []byte {
 	return file_wallaby_v1_flow_proto_rawDescData
 }
 
-var file_wallaby_v1_flow_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_wallaby_v1_flow_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
 var file_wallaby_v1_flow_proto_goTypes = []any{
-	(*CreateFlowRequest)(nil),                 // 0: wallaby.v1.CreateFlowRequest
-	(*UpdateFlowRequest)(nil),                 // 1: wallaby.v1.UpdateFlowRequest
-	(*ReconfigureFlowRequest)(nil),            // 2: wallaby.v1.ReconfigureFlowRequest
-	(*StartFlowRequest)(nil),                  // 3: wallaby.v1.StartFlowRequest
-	(*RunFlowOnceRequest)(nil),                // 4: wallaby.v1.RunFlowOnceRequest
-	(*RunFlowOnceResponse)(nil),               // 5: wallaby.v1.RunFlowOnceResponse
-	(*PauseFlowRequest)(nil),                  // 6: wallaby.v1.PauseFlowRequest
-	(*StopFlowRequest)(nil),                   // 7: wallaby.v1.StopFlowRequest
-	(*ResumeFlowRequest)(nil),                 // 8: wallaby.v1.ResumeFlowRequest
-	(*GetFlowRequest)(nil),                    // 9: wallaby.v1.GetFlowRequest
-	(*ListFlowsRequest)(nil),                  // 10: wallaby.v1.ListFlowsRequest
-	(*ListFlowsResponse)(nil),                 // 11: wallaby.v1.ListFlowsResponse
-	(*DeleteFlowRequest)(nil),                 // 12: wallaby.v1.DeleteFlowRequest
-	(*DeleteFlowResponse)(nil),                // 13: wallaby.v1.DeleteFlowResponse
-	(*CleanupFlowRequest)(nil),                // 14: wallaby.v1.CleanupFlowRequest
-	(*CleanupFlowResponse)(nil),               // 15: wallaby.v1.CleanupFlowResponse
-	(*ListReplicationSlotsRequest)(nil),       // 16: wallaby.v1.ListReplicationSlotsRequest
-	(*ReplicationSlotInfo)(nil),               // 17: wallaby.v1.ReplicationSlotInfo
-	(*ListReplicationSlotsResponse)(nil),      // 18: wallaby.v1.ListReplicationSlotsResponse
-	(*GetReplicationSlotRequest)(nil),         // 19: wallaby.v1.GetReplicationSlotRequest
-	(*GetReplicationSlotResponse)(nil),        // 20: wallaby.v1.GetReplicationSlotResponse
-	(*DropReplicationSlotRequest)(nil),        // 21: wallaby.v1.DropReplicationSlotRequest
-	(*DropReplicationSlotResponse)(nil),       // 22: wallaby.v1.DropReplicationSlotResponse
-	(*ListPublicationTablesRequest)(nil),      // 23: wallaby.v1.ListPublicationTablesRequest
-	(*ListPublicationTablesResponse)(nil),     // 24: wallaby.v1.ListPublicationTablesResponse
-	(*AddPublicationTablesRequest)(nil),       // 25: wallaby.v1.AddPublicationTablesRequest
-	(*DropPublicationTablesRequest)(nil),      // 26: wallaby.v1.DropPublicationTablesRequest
-	(*PublicationTablesMutationResponse)(nil), // 27: wallaby.v1.PublicationTablesMutationResponse
-	(*SyncPublicationTablesRequest)(nil),      // 28: wallaby.v1.SyncPublicationTablesRequest
-	(*SyncPublicationTablesResponse)(nil),     // 29: wallaby.v1.SyncPublicationTablesResponse
-	(*ScrapePublicationTablesRequest)(nil),    // 30: wallaby.v1.ScrapePublicationTablesRequest
-	(*ScrapePublicationTablesResponse)(nil),   // 31: wallaby.v1.ScrapePublicationTablesResponse
-	(*Flow)(nil),                              // 32: wallaby.v1.Flow
-	(*RDSIAMConfig)(nil),                      // 33: wallaby.v1.RDSIAMConfig
+	(*ValidateFlowRequest)(nil),               // 0: wallaby.v1.ValidateFlowRequest
+	(*ValidateFlowResponse)(nil),              // 1: wallaby.v1.ValidateFlowResponse
+	(*CreateFlowRequest)(nil),                 // 2: wallaby.v1.CreateFlowRequest
+	(*UpdateFlowRequest)(nil),                 // 3: wallaby.v1.UpdateFlowRequest
+	(*ReconfigureFlowRequest)(nil),            // 4: wallaby.v1.ReconfigureFlowRequest
+	(*StartFlowRequest)(nil),                  // 5: wallaby.v1.StartFlowRequest
+	(*RunFlowOnceRequest)(nil),                // 6: wallaby.v1.RunFlowOnceRequest
+	(*RunFlowOnceResponse)(nil),               // 7: wallaby.v1.RunFlowOnceResponse
+	(*PauseFlowRequest)(nil),                  // 8: wallaby.v1.PauseFlowRequest
+	(*StopFlowRequest)(nil),                   // 9: wallaby.v1.StopFlowRequest
+	(*ResumeFlowRequest)(nil),                 // 10: wallaby.v1.ResumeFlowRequest
+	(*GetFlowRequest)(nil),                    // 11: wallaby.v1.GetFlowRequest
+	(*ListFlowsRequest)(nil),                  // 12: wallaby.v1.ListFlowsRequest
+	(*ListFlowsResponse)(nil),                 // 13: wallaby.v1.ListFlowsResponse
+	(*DeleteFlowRequest)(nil),                 // 14: wallaby.v1.DeleteFlowRequest
+	(*DeleteFlowResponse)(nil),                // 15: wallaby.v1.DeleteFlowResponse
+	(*CleanupFlowRequest)(nil),                // 16: wallaby.v1.CleanupFlowRequest
+	(*CleanupFlowResponse)(nil),               // 17: wallaby.v1.CleanupFlowResponse
+	(*ListReplicationSlotsRequest)(nil),       // 18: wallaby.v1.ListReplicationSlotsRequest
+	(*ReplicationSlotInfo)(nil),               // 19: wallaby.v1.ReplicationSlotInfo
+	(*ListReplicationSlotsResponse)(nil),      // 20: wallaby.v1.ListReplicationSlotsResponse
+	(*GetReplicationSlotRequest)(nil),         // 21: wallaby.v1.GetReplicationSlotRequest
+	(*GetReplicationSlotResponse)(nil),        // 22: wallaby.v1.GetReplicationSlotResponse
+	(*DropReplicationSlotRequest)(nil),        // 23: wallaby.v1.DropReplicationSlotRequest
+	(*DropReplicationSlotResponse)(nil),       // 24: wallaby.v1.DropReplicationSlotResponse
+	(*ListPublicationTablesRequest)(nil),      // 25: wallaby.v1.ListPublicationTablesRequest
+	(*ListPublicationTablesResponse)(nil),     // 26: wallaby.v1.ListPublicationTablesResponse
+	(*AddPublicationTablesRequest)(nil),       // 27: wallaby.v1.AddPublicationTablesRequest
+	(*DropPublicationTablesRequest)(nil),      // 28: wallaby.v1.DropPublicationTablesRequest
+	(*PublicationTablesMutationResponse)(nil), // 29: wallaby.v1.PublicationTablesMutationResponse
+	(*SyncPublicationTablesRequest)(nil),      // 30: wallaby.v1.SyncPublicationTablesRequest
+	(*SyncPublicationTablesResponse)(nil),     // 31: wallaby.v1.SyncPublicationTablesResponse
+	(*ScrapePublicationTablesRequest)(nil),    // 32: wallaby.v1.ScrapePublicationTablesRequest
+	(*ScrapePublicationTablesResponse)(nil),   // 33: wallaby.v1.ScrapePublicationTablesResponse
+	(*Flow)(nil),                              // 34: wallaby.v1.Flow
+	(*RDSIAMConfig)(nil),                      // 35: wallaby.v1.RDSIAMConfig
 }
 var file_wallaby_v1_flow_proto_depIdxs = []int32{
-	32, // 0: wallaby.v1.CreateFlowRequest.flow:type_name -> wallaby.v1.Flow
-	32, // 1: wallaby.v1.UpdateFlowRequest.flow:type_name -> wallaby.v1.Flow
-	32, // 2: wallaby.v1.ReconfigureFlowRequest.flow:type_name -> wallaby.v1.Flow
-	32, // 3: wallaby.v1.ListFlowsResponse.flows:type_name -> wallaby.v1.Flow
-	33, // 4: wallaby.v1.ListReplicationSlotsRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
-	17, // 5: wallaby.v1.ListReplicationSlotsResponse.slots:type_name -> wallaby.v1.ReplicationSlotInfo
-	33, // 6: wallaby.v1.GetReplicationSlotRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
-	17, // 7: wallaby.v1.GetReplicationSlotResponse.slot:type_name -> wallaby.v1.ReplicationSlotInfo
-	33, // 8: wallaby.v1.DropReplicationSlotRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
-	33, // 9: wallaby.v1.ListPublicationTablesRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
-	33, // 10: wallaby.v1.AddPublicationTablesRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
-	33, // 11: wallaby.v1.DropPublicationTablesRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
-	33, // 12: wallaby.v1.SyncPublicationTablesRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
-	33, // 13: wallaby.v1.ScrapePublicationTablesRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
-	0,  // 14: wallaby.v1.FlowService.CreateFlow:input_type -> wallaby.v1.CreateFlowRequest
-	1,  // 15: wallaby.v1.FlowService.UpdateFlow:input_type -> wallaby.v1.UpdateFlowRequest
-	2,  // 16: wallaby.v1.FlowService.ReconfigureFlow:input_type -> wallaby.v1.ReconfigureFlowRequest
-	3,  // 17: wallaby.v1.FlowService.StartFlow:input_type -> wallaby.v1.StartFlowRequest
-	4,  // 18: wallaby.v1.FlowService.RunFlowOnce:input_type -> wallaby.v1.RunFlowOnceRequest
-	6,  // 19: wallaby.v1.FlowService.PauseFlow:input_type -> wallaby.v1.PauseFlowRequest
-	7,  // 20: wallaby.v1.FlowService.StopFlow:input_type -> wallaby.v1.StopFlowRequest
-	8,  // 21: wallaby.v1.FlowService.ResumeFlow:input_type -> wallaby.v1.ResumeFlowRequest
-	9,  // 22: wallaby.v1.FlowService.GetFlow:input_type -> wallaby.v1.GetFlowRequest
-	10, // 23: wallaby.v1.FlowService.ListFlows:input_type -> wallaby.v1.ListFlowsRequest
-	12, // 24: wallaby.v1.FlowService.DeleteFlow:input_type -> wallaby.v1.DeleteFlowRequest
-	14, // 25: wallaby.v1.FlowService.CleanupFlow:input_type -> wallaby.v1.CleanupFlowRequest
-	16, // 26: wallaby.v1.FlowService.ListReplicationSlots:input_type -> wallaby.v1.ListReplicationSlotsRequest
-	19, // 27: wallaby.v1.FlowService.GetReplicationSlot:input_type -> wallaby.v1.GetReplicationSlotRequest
-	21, // 28: wallaby.v1.FlowService.DropReplicationSlot:input_type -> wallaby.v1.DropReplicationSlotRequest
-	23, // 29: wallaby.v1.FlowService.ListPublicationTables:input_type -> wallaby.v1.ListPublicationTablesRequest
-	25, // 30: wallaby.v1.FlowService.AddPublicationTables:input_type -> wallaby.v1.AddPublicationTablesRequest
-	26, // 31: wallaby.v1.FlowService.DropPublicationTables:input_type -> wallaby.v1.DropPublicationTablesRequest
-	28, // 32: wallaby.v1.FlowService.SyncPublicationTables:input_type -> wallaby.v1.SyncPublicationTablesRequest
-	30, // 33: wallaby.v1.FlowService.ScrapePublicationTables:input_type -> wallaby.v1.ScrapePublicationTablesRequest
-	32, // 34: wallaby.v1.FlowService.CreateFlow:output_type -> wallaby.v1.Flow
-	32, // 35: wallaby.v1.FlowService.UpdateFlow:output_type -> wallaby.v1.Flow
-	32, // 36: wallaby.v1.FlowService.ReconfigureFlow:output_type -> wallaby.v1.Flow
-	32, // 37: wallaby.v1.FlowService.StartFlow:output_type -> wallaby.v1.Flow
-	5,  // 38: wallaby.v1.FlowService.RunFlowOnce:output_type -> wallaby.v1.RunFlowOnceResponse
-	32, // 39: wallaby.v1.FlowService.PauseFlow:output_type -> wallaby.v1.Flow
-	32, // 40: wallaby.v1.FlowService.StopFlow:output_type -> wallaby.v1.Flow
-	32, // 41: wallaby.v1.FlowService.ResumeFlow:output_type -> wallaby.v1.Flow
-	32, // 42: wallaby.v1.FlowService.GetFlow:output_type -> wallaby.v1.Flow
-	11, // 43: wallaby.v1.FlowService.ListFlows:output_type -> wallaby.v1.ListFlowsResponse
-	13, // 44: wallaby.v1.FlowService.DeleteFlow:output_type -> wallaby.v1.DeleteFlowResponse
-	15, // 45: wallaby.v1.FlowService.CleanupFlow:output_type -> wallaby.v1.CleanupFlowResponse
-	18, // 46: wallaby.v1.FlowService.ListReplicationSlots:output_type -> wallaby.v1.ListReplicationSlotsResponse
-	20, // 47: wallaby.v1.FlowService.GetReplicationSlot:output_type -> wallaby.v1.GetReplicationSlotResponse
-	22, // 48: wallaby.v1.FlowService.DropReplicationSlot:output_type -> wallaby.v1.DropReplicationSlotResponse
-	24, // 49: wallaby.v1.FlowService.ListPublicationTables:output_type -> wallaby.v1.ListPublicationTablesResponse
-	27, // 50: wallaby.v1.FlowService.AddPublicationTables:output_type -> wallaby.v1.PublicationTablesMutationResponse
-	27, // 51: wallaby.v1.FlowService.DropPublicationTables:output_type -> wallaby.v1.PublicationTablesMutationResponse
-	29, // 52: wallaby.v1.FlowService.SyncPublicationTables:output_type -> wallaby.v1.SyncPublicationTablesResponse
-	31, // 53: wallaby.v1.FlowService.ScrapePublicationTables:output_type -> wallaby.v1.ScrapePublicationTablesResponse
-	34, // [34:54] is the sub-list for method output_type
-	14, // [14:34] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	34, // 0: wallaby.v1.ValidateFlowRequest.flow:type_name -> wallaby.v1.Flow
+	34, // 1: wallaby.v1.CreateFlowRequest.flow:type_name -> wallaby.v1.Flow
+	34, // 2: wallaby.v1.UpdateFlowRequest.flow:type_name -> wallaby.v1.Flow
+	34, // 3: wallaby.v1.ReconfigureFlowRequest.flow:type_name -> wallaby.v1.Flow
+	34, // 4: wallaby.v1.ListFlowsResponse.flows:type_name -> wallaby.v1.Flow
+	35, // 5: wallaby.v1.ListReplicationSlotsRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
+	19, // 6: wallaby.v1.ListReplicationSlotsResponse.slots:type_name -> wallaby.v1.ReplicationSlotInfo
+	35, // 7: wallaby.v1.GetReplicationSlotRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
+	19, // 8: wallaby.v1.GetReplicationSlotResponse.slot:type_name -> wallaby.v1.ReplicationSlotInfo
+	35, // 9: wallaby.v1.DropReplicationSlotRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
+	35, // 10: wallaby.v1.ListPublicationTablesRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
+	35, // 11: wallaby.v1.AddPublicationTablesRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
+	35, // 12: wallaby.v1.DropPublicationTablesRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
+	35, // 13: wallaby.v1.SyncPublicationTablesRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
+	35, // 14: wallaby.v1.ScrapePublicationTablesRequest.rds_iam:type_name -> wallaby.v1.RDSIAMConfig
+	0,  // 15: wallaby.v1.FlowService.ValidateFlow:input_type -> wallaby.v1.ValidateFlowRequest
+	2,  // 16: wallaby.v1.FlowService.CreateFlow:input_type -> wallaby.v1.CreateFlowRequest
+	3,  // 17: wallaby.v1.FlowService.UpdateFlow:input_type -> wallaby.v1.UpdateFlowRequest
+	4,  // 18: wallaby.v1.FlowService.ReconfigureFlow:input_type -> wallaby.v1.ReconfigureFlowRequest
+	5,  // 19: wallaby.v1.FlowService.StartFlow:input_type -> wallaby.v1.StartFlowRequest
+	6,  // 20: wallaby.v1.FlowService.RunFlowOnce:input_type -> wallaby.v1.RunFlowOnceRequest
+	8,  // 21: wallaby.v1.FlowService.PauseFlow:input_type -> wallaby.v1.PauseFlowRequest
+	9,  // 22: wallaby.v1.FlowService.StopFlow:input_type -> wallaby.v1.StopFlowRequest
+	10, // 23: wallaby.v1.FlowService.ResumeFlow:input_type -> wallaby.v1.ResumeFlowRequest
+	11, // 24: wallaby.v1.FlowService.GetFlow:input_type -> wallaby.v1.GetFlowRequest
+	12, // 25: wallaby.v1.FlowService.ListFlows:input_type -> wallaby.v1.ListFlowsRequest
+	14, // 26: wallaby.v1.FlowService.DeleteFlow:input_type -> wallaby.v1.DeleteFlowRequest
+	16, // 27: wallaby.v1.FlowService.CleanupFlow:input_type -> wallaby.v1.CleanupFlowRequest
+	18, // 28: wallaby.v1.FlowService.ListReplicationSlots:input_type -> wallaby.v1.ListReplicationSlotsRequest
+	21, // 29: wallaby.v1.FlowService.GetReplicationSlot:input_type -> wallaby.v1.GetReplicationSlotRequest
+	23, // 30: wallaby.v1.FlowService.DropReplicationSlot:input_type -> wallaby.v1.DropReplicationSlotRequest
+	25, // 31: wallaby.v1.FlowService.ListPublicationTables:input_type -> wallaby.v1.ListPublicationTablesRequest
+	27, // 32: wallaby.v1.FlowService.AddPublicationTables:input_type -> wallaby.v1.AddPublicationTablesRequest
+	28, // 33: wallaby.v1.FlowService.DropPublicationTables:input_type -> wallaby.v1.DropPublicationTablesRequest
+	30, // 34: wallaby.v1.FlowService.SyncPublicationTables:input_type -> wallaby.v1.SyncPublicationTablesRequest
+	32, // 35: wallaby.v1.FlowService.ScrapePublicationTables:input_type -> wallaby.v1.ScrapePublicationTablesRequest
+	1,  // 36: wallaby.v1.FlowService.ValidateFlow:output_type -> wallaby.v1.ValidateFlowResponse
+	34, // 37: wallaby.v1.FlowService.CreateFlow:output_type -> wallaby.v1.Flow
+	34, // 38: wallaby.v1.FlowService.UpdateFlow:output_type -> wallaby.v1.Flow
+	34, // 39: wallaby.v1.FlowService.ReconfigureFlow:output_type -> wallaby.v1.Flow
+	34, // 40: wallaby.v1.FlowService.StartFlow:output_type -> wallaby.v1.Flow
+	7,  // 41: wallaby.v1.FlowService.RunFlowOnce:output_type -> wallaby.v1.RunFlowOnceResponse
+	34, // 42: wallaby.v1.FlowService.PauseFlow:output_type -> wallaby.v1.Flow
+	34, // 43: wallaby.v1.FlowService.StopFlow:output_type -> wallaby.v1.Flow
+	34, // 44: wallaby.v1.FlowService.ResumeFlow:output_type -> wallaby.v1.Flow
+	34, // 45: wallaby.v1.FlowService.GetFlow:output_type -> wallaby.v1.Flow
+	13, // 46: wallaby.v1.FlowService.ListFlows:output_type -> wallaby.v1.ListFlowsResponse
+	15, // 47: wallaby.v1.FlowService.DeleteFlow:output_type -> wallaby.v1.DeleteFlowResponse
+	17, // 48: wallaby.v1.FlowService.CleanupFlow:output_type -> wallaby.v1.CleanupFlowResponse
+	20, // 49: wallaby.v1.FlowService.ListReplicationSlots:output_type -> wallaby.v1.ListReplicationSlotsResponse
+	22, // 50: wallaby.v1.FlowService.GetReplicationSlot:output_type -> wallaby.v1.GetReplicationSlotResponse
+	24, // 51: wallaby.v1.FlowService.DropReplicationSlot:output_type -> wallaby.v1.DropReplicationSlotResponse
+	26, // 52: wallaby.v1.FlowService.ListPublicationTables:output_type -> wallaby.v1.ListPublicationTablesResponse
+	29, // 53: wallaby.v1.FlowService.AddPublicationTables:output_type -> wallaby.v1.PublicationTablesMutationResponse
+	29, // 54: wallaby.v1.FlowService.DropPublicationTables:output_type -> wallaby.v1.PublicationTablesMutationResponse
+	31, // 55: wallaby.v1.FlowService.SyncPublicationTables:output_type -> wallaby.v1.SyncPublicationTablesResponse
+	33, // 56: wallaby.v1.FlowService.ScrapePublicationTables:output_type -> wallaby.v1.ScrapePublicationTablesResponse
+	36, // [36:57] is the sub-list for method output_type
+	15, // [15:36] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_wallaby_v1_flow_proto_init() }
@@ -2224,15 +2322,15 @@ func file_wallaby_v1_flow_proto_init() {
 		return
 	}
 	file_wallaby_v1_types_proto_init()
-	file_wallaby_v1_flow_proto_msgTypes[2].OneofWrappers = []any{}
-	file_wallaby_v1_flow_proto_msgTypes[14].OneofWrappers = []any{}
+	file_wallaby_v1_flow_proto_msgTypes[4].OneofWrappers = []any{}
+	file_wallaby_v1_flow_proto_msgTypes[16].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wallaby_v1_flow_proto_rawDesc), len(file_wallaby_v1_flow_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   32,
+			NumMessages:   34,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

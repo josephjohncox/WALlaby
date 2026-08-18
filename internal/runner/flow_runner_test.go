@@ -20,6 +20,27 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
+func TestFlowRunnerSnowflakePolicyDeniesBeforeExecutionDependencies(t *testing.T) {
+	ctx := context.Background()
+	engine := workflow.NewMemoryEngine()
+	spec := connector.RuntimeSpec{Name: "snowflake", Type: connector.EndpointSnowflake, Options: map[string]string{"dsn": "user:@account/db/schema?authenticator=snowflake_jwt&ocspFailOpen=false"}}
+	definition := mappedRunnerTestFlow(flow.Flow{
+		ID: "snowflake-denied", Source: runnerTestSource(connector.RuntimeSpec{Type: connector.EndpointPostgres}),
+		Destinations: []*wallabypb.Endpoint{runnerTestDestination(spec)}, State: flow.StateCreated,
+	})
+	if _, err := engine.Create(ctx, definition); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Start(ctx, definition.ID); err != nil {
+		t.Fatal(err)
+	}
+	runner := FlowRunner{Engine: engine}
+	err := runner.Run(ctx, definition, nil, []stream.DestinationConfig{{Spec: spec, Dest: flowRunnerDestination{}}})
+	if !errors.Is(err, connector.ErrSnowflakeExecutionDisabled) {
+		t.Fatalf("Run() error=%v", err)
+	}
+}
+
 func TestFlowRunnerPreservesExecutionSourceOverrides(t *testing.T) {
 	t.Parallel()
 

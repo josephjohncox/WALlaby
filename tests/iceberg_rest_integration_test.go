@@ -3,7 +3,6 @@ package tests
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -324,7 +323,7 @@ func TestS3TablesSnowflakeCatalogLinkedReadback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db, err := sql.Open("snowflake", snowflakeDSN)
+	db, err := connector.OpenSnowflakeDB(snowflakeDSN, snowflakeDeploymentPolicyForTest(t))
 	if err != nil {
 		t.Fatal(err)
 	}

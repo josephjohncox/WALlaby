@@ -2,11 +2,15 @@ package workflow
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
 	"testing"
 	"time"
 
+	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
 	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 type dispatchCall struct {
@@ -85,6 +89,48 @@ func TestOrchestratedEngineStartDispatchesGeneration(t *testing.T) {
 	control, _ := base.Control(ctx, "flow-1")
 	if control.DispatchPending {
 		t.Fatal("dispatch remained pending")
+	}
+}
+
+func workflowTestSnowflakePolicy(t *testing.T) connector.SnowflakeDeploymentPolicy {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("account", "user", "account.snowflakecomputing.com", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = policy.Close() })
+	return policy
+}
+
+func TestOrchestratedEngineSnowflakeReconciliationFailsClosedAfterPolicyRestart(t *testing.T) {
+	ctx := context.Background()
+	destination := connector.RuntimeSpec{Name: "snowflake", Type: connector.EndpointSnowflake, Options: map[string]string{"dsn": "user:@account/db/schema?authenticator=snowflake_jwt&ocspFailOpen=false"}}
+	definition := mappedTestFlow(flow.Flow{ID: "snowflake-reconcile", Destinations: []*wallabypb.Endpoint{workflowTestDestination(destination)}})
+	base := NewMemoryEngine()
+	if _, err := base.Create(ctx, definition); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &fakeDispatcher{err: errors.New("dispatch failed")}
+	enabled := NewOrchestratedEngineWithAdmission(base, dispatcher, nil, func(f flow.Flow) error {
+		return flow.ValidateSnowflakeDeploymentPolicy(f, connector.DefaultRegistry, workflowTestSnowflakePolicy(t))
+	})
+	if _, err := enabled.Start(ctx, definition.ID); err == nil {
+		t.Fatal("expected initial dispatch failure")
+	}
+	dispatcher.err = nil
+	disabled := NewOrchestratedEngineWithAdmission(base, dispatcher, nil, func(f flow.Flow) error {
+		return flow.ValidateSnowflakeDeploymentPolicy(f, connector.DefaultRegistry, connector.SnowflakeDeploymentPolicy{})
+	})
+	if err := disabled.ReconcileOnce(ctx); !errors.Is(err, connector.ErrSnowflakeExecutionDisabled) {
+		t.Fatalf("ReconcileOnce() error=%v", err)
+	}
+	control, _ := base.Control(ctx, definition.ID)
+	if !control.DispatchPending || len(dispatcher.enqueued) != 0 {
+		t.Fatalf("disabled reconciliation mutated dispatch: control=%+v calls=%v", control, dispatcher.enqueued)
 	}
 }
 

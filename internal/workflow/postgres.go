@@ -976,6 +976,9 @@ func decodeFlowWithRegistry(f *flow.Flow, source, dest, config []byte, state str
 	} else {
 		f.Parallelism = 1
 	}
+	if err := flow.ValidateDefinitionWithRegistry(*f, registry); err != nil {
+		return fmt.Errorf("persisted flow failed validation: %w", err)
+	}
 	return nil
 }
 func isUniqueViolation(err error) bool {

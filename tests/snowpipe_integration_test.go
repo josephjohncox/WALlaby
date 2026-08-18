@@ -27,7 +27,8 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
 	defer cancel()
-	setupDB, err := sql.Open("snowflake", dsn)
+	policy := snowflakeDeploymentPolicyForTest(t)
+	setupDB, err := connector.OpenSnowflakeDB(dsn, policy)
 	if err != nil {
 		t.Fatalf("open snowflake: %v", err)
 	}
@@ -45,7 +46,7 @@ func TestSnowpipeAutoIngestUpload(t *testing.T) {
 		}
 	}
 
-	dest := &snowpipe.Destination{}
+	dest := snowpipe.NewDestination(policy)
 	table := fmt.Sprintf("wallaby_snowpipe_%d", time.Now().UnixNano())
 	metaSchema := fmt.Sprintf("WALLABY_META_%d", time.Now().UnixNano())
 	metaTable := "__METADATA"

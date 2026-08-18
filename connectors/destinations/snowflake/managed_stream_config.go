@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -154,14 +153,17 @@ func streamConfigFromSpec(dsn string, spec connector.RuntimeSpec) (streamConfig,
 	if got := strings.TrimSpace(options["managed_streaming_transport"]); got != streamRequiredTransport {
 		return streamConfig{}, fmt.Errorf("managed streaming Snowflake profile requires managed_streaming_transport=%s; got %q", streamRequiredTransport, got)
 	}
+	if err := connector.ValidateSnowflakeDSN(dsn); err != nil {
+		return streamConfig{}, err
+	}
 	dsnConfig, err := gosnowflake.ParseDSN(dsn)
 	if err != nil {
-		return streamConfig{}, fmt.Errorf("parse managed streaming Snowflake DSN: %w", err)
+		return streamConfig{}, connector.ErrMalformedSnowflakeDSN
 	}
 	if !strings.EqualFold(dsnConfig.Protocol, "https") || managedSnowflakeDSNDisablesOCSP(dsn) || dsnConfig.DisableOCSPChecks || dsnConfig.OCSPFailOpen != gosnowflake.OCSPFailOpenFalse {
 		return streamConfig{}, errors.New("managed streaming Snowflake profile requires verified HTTPS with OCSP fail-closed")
 	}
-	if dsnConfig.Authenticator != gosnowflake.AuthTypeJwt || dsnConfig.PrivateKey == nil {
+	if dsnConfig.Authenticator != gosnowflake.AuthTypeJwt {
 		return streamConfig{}, errors.New("managed streaming Snowflake profile requires key-pair JWT authentication")
 	}
 	// READ_LATEST_WRITES is load-bearing, not cosmetic: recovery proves
@@ -379,25 +381,10 @@ func streamSourceColumnSupported(typeMappings map[string]string, column connecto
 	return managedSnowflakeColumnType(managedConfig{typeMappings: typeMappings}, column) != ""
 }
 
-// streamSnowflakeDSNRedactsSecrets confirms the DSN carries no inline password
-// or token so the admitted spec never leaks a secret through channel or observe
-// error messages. Key-pair JWT is the only admitted authenticator.
+// streamSnowflakeDSNRedactsSecrets delegates to the one persistence-safe DSN
+// validator shared by generic and every managed Snowflake-backed connector.
 func streamSnowflakeDSNRedactsSecrets(dsn string) error {
-	queryOffset := strings.IndexByte(dsn, '?')
-	if queryOffset < 0 {
-		return nil
-	}
-	values, err := url.ParseQuery(dsn[queryOffset+1:])
-	if err != nil {
-		return fmt.Errorf("parse managed streaming Snowflake DSN query: %w", err)
-	}
-	for key := range values {
-		lowered := strings.ToLower(strings.TrimSpace(key))
-		if lowered == "password" || lowered == "token" || strings.Contains(lowered, "secret") {
-			return fmt.Errorf("managed streaming Snowflake DSN must not carry inline %s", lowered)
-		}
-	}
-	return nil
+	return connector.ValidateSnowflakeDSN(dsn)
 }
 
 func managedSnowflakeStreamQualified(cfg streamConfig, object string) string {

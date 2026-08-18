@@ -44,7 +44,7 @@ func TestOpenRejectsRegistryOptionsBeforeDatabaseOrRegistryCreation(t *testing.T
 					return nil, nil
 				},
 			}
-			err := (&Destination{}).open(context.Background(), connector.RuntimeSpec{Options: map[string]string{optDSN: "unused", key: value}}, factories)
+			err := (&Destination{deploymentPolicy: snowflakeTestPolicy(t)}).open(context.Background(), connector.RuntimeSpec{Options: map[string]string{optDSN: snowflakeTestDSN(), key: value}}, factories)
 			if err == nil || !strings.Contains(err.Error(), key) {
 				t.Fatalf("open() error = %v", err)
 			}
@@ -71,8 +71,8 @@ func TestOpenRegistryFailureClosesDatabaseAndPartialRegistry(t *testing.T) {
 			return registry, registryErr
 		},
 	}
-	destination := &Destination{}
-	err = destination.open(context.Background(), connector.RuntimeSpec{Options: map[string]string{optDSN: "unused"}}, factories)
+	destination := &Destination{deploymentPolicy: snowflakeTestPolicy(t)}
+	err = destination.open(context.Background(), connector.RuntimeSpec{Options: map[string]string{optDSN: snowflakeTestDSN()}}, factories)
 	if !errors.Is(err, registryErr) || !errors.Is(err, closeErr) {
 		t.Fatalf("open() error = %v", err)
 	}

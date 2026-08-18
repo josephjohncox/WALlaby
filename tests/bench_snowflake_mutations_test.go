@@ -2,7 +2,6 @@ package tests
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
@@ -10,21 +9,18 @@ import (
 
 	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	_ "github.com/snowflakedb/gosnowflake"
 )
 
 func BenchmarkSnowflakeUpdate(b *testing.B) {
 	dsn, schema, ok := snowflakeTestDSN(b)
 	if !ok {
-		b.Skip("snowflake DSN not configured; set WALLABY_TEST_SNOWFLAKE_DSN or WALLABY_TEST_FAKESNOW_HOST/PORT")
-	}
-	if usingFakesnow() && !allowFakesnowSnowflake() {
-		b.Skip("fakesnow enabled; set WALLABY_TEST_RUN_FAKESNOW=1 to run Snowflake benchmarks")
+		b.Skip("snowflake DSN not configured; set WALLABY_TEST_SNOWFLAKE_DSN and deployment identity/key variables")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
 	defer cancel()
-	db, err := sql.Open("snowflake", dsn)
+	policy := snowflakeDeploymentPolicyForTest(b)
+	db, err := connector.OpenSnowflakeDB(dsn, policy)
 	if err != nil {
 		b.Fatalf("open snowflake: %v", err)
 	}
@@ -47,7 +43,7 @@ func BenchmarkSnowflakeUpdate(b *testing.B) {
 		}
 	}
 
-	dest := &snowflake.Destination{}
+	dest := snowflake.NewDestination(policy)
 	spec := connector.RuntimeSpec{
 		Name: "snowflake-bench",
 		Type: connector.EndpointSnowflake,
@@ -95,15 +91,13 @@ func BenchmarkSnowflakeUpdate(b *testing.B) {
 func BenchmarkSnowflakeAppend(b *testing.B) {
 	dsn, schema, ok := snowflakeTestDSN(b)
 	if !ok {
-		b.Skip("snowflake DSN not configured; set WALLABY_TEST_SNOWFLAKE_DSN or WALLABY_TEST_FAKESNOW_HOST/PORT")
-	}
-	if usingFakesnow() && !allowFakesnowSnowflake() {
-		b.Skip("fakesnow enabled; set WALLABY_TEST_RUN_FAKESNOW=1 to run Snowflake benchmarks")
+		b.Skip("snowflake DSN not configured; set WALLABY_TEST_SNOWFLAKE_DSN and deployment identity/key variables")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
 	defer cancel()
-	db, err := sql.Open("snowflake", dsn)
+	policy := snowflakeDeploymentPolicyForTest(b)
+	db, err := connector.OpenSnowflakeDB(dsn, policy)
 	if err != nil {
 		b.Fatalf("open snowflake: %v", err)
 	}
@@ -120,7 +114,7 @@ func BenchmarkSnowflakeAppend(b *testing.B) {
 		b.Fatalf("create table: %v", err)
 	}
 
-	dest := &snowflake.Destination{}
+	dest := snowflake.NewDestination(policy)
 	spec := connector.RuntimeSpec{
 		Name: "snowflake-bench-append",
 		Type: connector.EndpointSnowflake,

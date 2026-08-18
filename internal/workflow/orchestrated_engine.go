@@ -9,6 +9,7 @@ import (
 
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 // OrchestratedEngine serializes lifecycle intent, generation-aware dispatch,
@@ -24,9 +25,18 @@ type OrchestratedEngine struct {
 	dispatcher      Dispatcher
 	meters          *telemetry.Meters
 	resourceCleaner SourceResourceCleaner
+	admit           func(flow.Flow) error
 }
 
 func NewOrchestratedEngine(base LifecycleStore, dispatcher Dispatcher, meters *telemetry.Meters, cleaners ...SourceResourceCleaner) *OrchestratedEngine {
+	return NewOrchestratedEngineWithAdmission(base, dispatcher, meters, func(definition flow.Flow) error {
+		return flow.ValidateSnowflakeDeploymentPolicy(definition, nil, connector.SnowflakeDeploymentPolicy{})
+	}, cleaners...)
+}
+
+// NewOrchestratedEngineWithAdmission binds lifecycle mutation and
+// reconciliation to current deployment admission.
+func NewOrchestratedEngineWithAdmission(base LifecycleStore, dispatcher Dispatcher, meters *telemetry.Meters, admit func(flow.Flow) error, cleaners ...SourceResourceCleaner) *OrchestratedEngine {
 	if base == nil {
 		panic("workflow lifecycle store is required")
 	}
@@ -40,7 +50,7 @@ func NewOrchestratedEngine(base LifecycleStore, dispatcher Dispatcher, meters *t
 	if len(cleaners) == 1 {
 		cleaner = cleaners[0]
 	}
-	return &OrchestratedEngine{base: base, dispatcher: dispatcher, meters: meters, resourceCleaner: cleaner}
+	return &OrchestratedEngine{base: base, dispatcher: dispatcher, meters: meters, resourceCleaner: cleaner, admit: admit}
 }
 
 func (o *OrchestratedEngine) Create(ctx context.Context, f flow.Flow) (flow.Flow, error) {
@@ -70,6 +80,15 @@ func (o *OrchestratedEngine) startAndDispatch(ctx context.Context, flowID string
 	var result flow.Flow
 	acquired, err := o.base.WithFlowLock(ctx, flowID, false, func() error {
 		fromState := o.getState(ctx, flowID)
+		if o.admit != nil {
+			definition, err := o.base.Get(ctx, flowID)
+			if err != nil {
+				return err
+			}
+			if err := o.admit(definition); err != nil {
+				return err
+			}
+		}
 		updated, control, err := o.base.PlanStart(ctx, flowID, resume)
 		if err != nil {
 			return err
@@ -268,6 +287,15 @@ func (o *OrchestratedEngine) ReconcileOnce(ctx context.Context) error {
 			}
 			switch {
 			case latest.Target == TargetRunning && latest.DispatchPending:
+				if o.admit != nil {
+					definition, getErr := o.base.Get(opCtx, latest.FlowID)
+					if getErr != nil {
+						return getErr
+					}
+					if admitErr := o.admit(definition); admitErr != nil {
+						return admitErr
+					}
+				}
 				if err := o.dispatcher.EnqueueGeneration(opCtx, latest.FlowID, latest.Generation); err != nil {
 					return err
 				}

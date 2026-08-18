@@ -8,6 +8,7 @@ option go_package = "github.com/josephjohncox/wallaby/gen/go/wallaby/v1;wallabyp
 
 // FlowService stores flow definitions and controls lifecycle and PostgreSQL source resources.
 service FlowService {
+  rpc ValidateFlow(ValidateFlowRequest) returns (ValidateFlowResponse);
   rpc CreateFlow(CreateFlowRequest) returns (Flow);
   rpc UpdateFlow(UpdateFlowRequest) returns (Flow);
   rpc ReconfigureFlow(ReconfigureFlowRequest) returns (Flow);
@@ -31,6 +32,14 @@ service FlowService {
   rpc DropPublicationTables(DropPublicationTablesRequest) returns (PublicationTablesMutationResponse);
   rpc SyncPublicationTables(SyncPublicationTablesRequest) returns (SyncPublicationTablesResponse);
   rpc ScrapePublicationTables(ScrapePublicationTablesRequest) returns (ScrapePublicationTablesResponse);
+}
+
+message ValidateFlowRequest {
+  Flow flow = 1;
+}
+
+message ValidateFlowResponse {
+  bool admitted = 1;
 }
 
 message CreateFlowRequest {

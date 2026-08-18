@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -10,6 +11,18 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
 )
+
+func TestNewStreamRunnerSnowflakePolicyDeniesBeforeCheckpointAndConnectorUse(t *testing.T) {
+	spec := connector.RuntimeSpec{Name: "snowflake", Type: connector.EndpointSnowflake, Options: map[string]string{"dsn": "user:@account/db/schema?authenticator=snowflake_jwt&ocspFailOpen=false"}}
+	definition := mappedRunnerTestFlow(flow.Flow{
+		ID: "snowflake-denied", Source: runnerTestSource(connector.RuntimeSpec{Type: connector.EndpointPostgres}),
+		Destinations: []*wallabypb.Endpoint{runnerTestDestination(spec)},
+	})
+	_, err := NewStreamRunner(definition, nil, []stream.DestinationConfig{{Spec: spec, Dest: flowRunnerDestination{}}}, StreamRunnerConfig{})
+	if !errors.Is(err, connector.ErrSnowflakeExecutionDisabled) {
+		t.Fatalf("NewStreamRunner() error=%v", err)
+	}
+}
 
 func TestNewStreamRunnerPrecedence(t *testing.T) {
 	t.Parallel()

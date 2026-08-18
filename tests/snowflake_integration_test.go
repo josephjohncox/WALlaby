@@ -11,21 +11,18 @@ import (
 
 	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	_ "github.com/snowflakedb/gosnowflake"
 )
 
 func TestSnowflakeDestination(t *testing.T) {
 	dsn, schema, ok := snowflakeTestDSN(t)
 	if !ok {
-		t.Skip("snowflake DSN not configured; set WALLABY_TEST_SNOWFLAKE_DSN or WALLABY_TEST_FAKESNOW_HOST/PORT")
-	}
-	if usingFakesnow() && !allowFakesnowSnowflake() {
-		t.Skip("fakesnow enabled; set WALLABY_TEST_RUN_FAKESNOW=1 to run Snowflake integration")
+		t.Skip("snowflake DSN not configured; set WALLABY_TEST_SNOWFLAKE_DSN and deployment identity/key variables")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
 	defer cancel()
-	setupDB, err := sql.Open("snowflake", dsn)
+	policy := snowflakeDeploymentPolicyForTest(t)
+	setupDB, err := connector.OpenSnowflakeDB(dsn, policy)
 	if err != nil {
 		t.Fatalf("open snowflake: %v", err)
 	}
@@ -56,7 +53,7 @@ func TestSnowflakeDestination(t *testing.T) {
 		t.Fatalf("create table: %v", err)
 	}
 
-	dest := &snowflake.Destination{}
+	dest := snowflake.NewDestination(policy)
 	spec := connector.RuntimeSpec{
 		Name: "snowflake-test",
 		Type: connector.EndpointSnowflake,
@@ -403,7 +400,7 @@ func TestSnowflakeDestination(t *testing.T) {
 	}
 	closed = true
 
-	renamedDest := &snowflake.Destination{}
+	renamedDest := snowflake.NewDestination(policy)
 	renamedSpec := connector.RuntimeSpec{
 		Name: "snowflake-test-renamed",
 		Type: connector.EndpointSnowflake,
