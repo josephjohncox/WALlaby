@@ -60,6 +60,7 @@ var (
 		"kind node image",
 	)
 	integrationKeep                        = flag.Bool("it-keep", false, "keep test infrastructure running after tests")
+	integrationServices                    = flag.String("it-services", "all", "managed service set: all or comma-separated clickhouse,iceberg,kafka,localstack,http,fakesnow")
 	integrationExpectedHarnessParticipants = flag.Int(
 		"it-expected-harness-participants",
 		defaultExpectedHarnessParticipants,
@@ -158,6 +159,7 @@ type integrationHarnessConfig struct {
 	kindKeep      bool
 	kindCluster   string
 	kindNodeImage string
+	services      string
 	expectedPeers int
 }
 
@@ -265,6 +267,7 @@ func loadIntegrationHarnessConfig() integrationHarnessConfig {
 		kindKeep:      *integrationKeep,
 		kindCluster:   *integrationKindCluster,
 		kindNodeImage: *integrationKindNodeImage,
+		services:      strings.ToLower(strings.TrimSpace(*integrationServices)),
 		expectedPeers: peers,
 	}
 }
@@ -667,34 +670,59 @@ func (h *integrationHarness) startPostgres() error {
 }
 
 func (h *integrationHarness) startManagedDependencies(namespace string) error {
-	h.logf("ensuring managed services in namespace %s", namespace)
+	h.logf("ensuring managed services in namespace %s (selection=%s)", namespace, h.config.services)
 	if !h.hasK8sEndpoint() {
 		h.logf("no kubernetes endpoint; skipping managed services")
 		return nil
 	}
 
-	if err := h.startClickHouse(namespace); err != nil {
-		return err
+	if h.managedServiceSelected("clickhouse") {
+		if err := h.startClickHouse(namespace); err != nil {
+			return err
+		}
 	}
-	if err := h.startS3(namespace); err != nil {
-		return err
+	if h.managedServiceSelected("iceberg") {
+		if err := h.startS3(namespace); err != nil {
+			return err
+		}
+		if err := h.startIcebergREST(namespace); err != nil {
+			return err
+		}
 	}
-	if err := h.startIcebergREST(namespace); err != nil {
-		return err
+	if h.managedServiceSelected("kafka") {
+		if err := h.startKafka(namespace); err != nil {
+			return err
+		}
 	}
-	if err := h.startKafka(namespace); err != nil {
-		return err
+	if h.managedServiceSelected("localstack") {
+		if err := h.startLocalStack(namespace); err != nil {
+			return err
+		}
 	}
-	if err := h.startLocalStack(namespace); err != nil {
-		return err
+	if h.managedServiceSelected("http") {
+		if err := h.startHTTPTestService(namespace); err != nil {
+			return err
+		}
 	}
-	if err := h.startHTTPTestService(namespace); err != nil {
-		return err
-	}
-	if err := h.startFakesnow(namespace); err != nil {
-		return err
+	if h.managedServiceSelected("fakesnow") {
+		if err := h.startFakesnow(namespace); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func (h *integrationHarness) managedServiceSelected(name string) bool {
+	selection := strings.TrimSpace(h.config.services)
+	if selection == "" || selection == "all" {
+		return true
+	}
+	for _, candidate := range strings.Split(selection, ",") {
+		if strings.TrimSpace(candidate) == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *integrationHarness) startClickHouse(namespace string) error {

@@ -115,8 +115,7 @@ just test-soak                 # default SOAK_DURATION=30s
 SOAK_DURATION=5m just test-soak
 ```
 
-These run in-process and are labeled model evidence. `just test-bounded-load`
-uses provisioned local services and is the separate destination/load surface.
+These run in-process and are labeled model evidence. CI runs `just test-failure-matrix-model` in the separate required `failure-matrix-model` check; it is not inferred from the OS-process job. `just test-bounded-load` uses provisioned local services and is the separate destination/load surface.
 
 ## Nightly
 

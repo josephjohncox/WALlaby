@@ -14,6 +14,7 @@ IT_KEEP=${IT_KEEP:-0}
 IT_KIND_CLUSTER=${IT_KIND_CLUSTER:-${KIND_CLUSTER:-wallaby-test}}
 IT_KIND_NODE_IMAGE=${IT_KIND_NODE_IMAGE:-${KIND_NODE_IMAGE:-kindest/node:v1.35.0}}
 IT_SERVICE_READY_TIMEOUT_SECONDS=${IT_SERVICE_READY_TIMEOUT_SECONDS:-240}
+IT_SERVICES=${IT_SERVICES:-all}
 IT_RUN_FILTER=${IT_RUN_FILTER:-}
 IT_SKIP_FILTER=${IT_SKIP_FILTER:-}
 IT_REQUIRED_TESTS=${IT_REQUIRED_TESTS:-}
@@ -31,6 +32,7 @@ set -- "$@" "$INTEGRATION_PACKAGE" \
 	-it-keep="$IT_KEEP" \
 	-it-k8s-kind-cluster="$IT_KIND_CLUSTER" \
 	-it-k8s-kind-node-image="$IT_KIND_NODE_IMAGE" \
+	-it-services="$IT_SERVICES" \
 	-it-expected-harness-participants="$IT_EXPECTED_HARNESS_PARTICIPANTS"
 if [ -n "$IT_RUN_FILTER" ]; then
 	set -- "$@" -run "$IT_RUN_FILTER"
