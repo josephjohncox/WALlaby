@@ -338,7 +338,7 @@ test-checkpoint5-iceberg-integration:
     trap cleanup EXIT
     required='TestIcebergRESTLiveAppendProjection,TestIcebergRESTLiveSchemaEvolutionRename'
     filter="^(TestIcebergRESTLiveAppendProjection|TestIcebergRESTLiveSchemaEvolutionRename)$"
-    IT_KIND_CLUSTER="${harness_cluster}" IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' just test-integration
+    IT_KIND_CLUSTER="${harness_cluster}" IT_SERVICES=iceberg IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' just test-integration
 
 # Opt-in AWS S3 Tables gate. This creates a uniquely named experimental table,
 # configures maintenance through the S3 Tables API, appends, and reconciles it.

@@ -67,6 +67,24 @@ func TestIsCrashHelperProcess(t *testing.T) {
 	}
 }
 
+func TestManagedServiceSelectionIsolatesCheckpoint5IcebergDependencies(t *testing.T) {
+	harness := &integrationHarness{config: integrationHarnessConfig{services: "iceberg"}}
+	if !harness.managedServiceSelected("iceberg") {
+		t.Fatal("Iceberg service selection was not admitted")
+	}
+	for _, unrelated := range []string{"clickhouse", "kafka", "localstack", "http", "fakesnow"} {
+		if harness.managedServiceSelected(unrelated) {
+			t.Fatalf("Iceberg-only selection admitted unrelated service %s", unrelated)
+		}
+	}
+	all := &integrationHarness{config: integrationHarnessConfig{services: "all"}}
+	for _, service := range []string{"clickhouse", "iceberg", "kafka", "localstack", "http", "fakesnow"} {
+		if !all.managedServiceSelected(service) {
+			t.Fatalf("all selection rejected service %s", service)
+		}
+	}
+}
+
 func TestValidateLocalManagedEndpointsRejectsStaleListener(t *testing.T) {
 	t.Parallel()
 

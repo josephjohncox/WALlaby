@@ -1,10 +1,22 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
+
+type requiredGateWorkflow struct {
+	Jobs map[string]struct {
+		Env   map[string]any `yaml:"env"`
+		Steps []struct {
+			Run string `yaml:"run"`
+		} `yaml:"steps"`
+	} `yaml:"jobs"`
+}
 
 func TestRequiredCheckpoint5AndModelOnlyCIGatesStayWired(t *testing.T) {
 	read := func(path string) string {
@@ -15,31 +27,54 @@ func TestRequiredCheckpoint5AndModelOnlyCIGatesStayWired(t *testing.T) {
 		}
 		return string(data)
 	}
-	integration := read("../.github/workflows/ci-integration.yml")
-	for _, required := range []string{
-		"checkpoint5-iceberg:",
-		"name: checkpoint5-iceberg",
-		"run: just test-checkpoint5-iceberg-integration",
-	} {
-		if !strings.Contains(integration, required) {
-			t.Fatalf("CI Integration is missing required checkpoint-5 wiring %q", required)
+	parse := func(path string) requiredGateWorkflow {
+		t.Helper()
+		var workflow requiredGateWorkflow
+		if err := yaml.Unmarshal([]byte(read(path)), &workflow); err != nil {
+			t.Fatal(err)
 		}
+		return workflow
 	}
-	evidence := read("../.github/workflows/ci-evidence.yml")
-	for _, required := range []string{
-		"failure-matrix-model:",
-		"run: just test-failure-matrix-model",
-		"run: just test-failure-matrix",
-	} {
-		if !strings.Contains(evidence, required) {
-			t.Fatalf("CI Evidence is missing required model/OS-process separation %q", required)
+	hasRun := func(job struct {
+		Env   map[string]any `yaml:"env"`
+		Steps []struct {
+			Run string `yaml:"run"`
+		} `yaml:"steps"`
+	}, command string) bool {
+		for _, step := range job.Steps {
+			if strings.TrimSpace(step.Run) == command {
+				return true
+			}
+		}
+		return false
+	}
+	integration := parse("../.github/workflows/ci-integration.yml")
+	checkpoint, ok := integration.Jobs["checkpoint5-iceberg"]
+	if !ok || !hasRun(checkpoint, "just test-checkpoint5-iceberg-integration") {
+		t.Fatal("CI Integration lacks the separate checkpoint5-iceberg recipe job")
+	}
+	evidence := parse("../.github/workflows/ci-evidence.yml")
+	model, modelOK := evidence.Jobs["failure-matrix-model"]
+	process, processOK := evidence.Jobs["failure-matrix"]
+	if !modelOK || !processOK || !hasRun(model, "just test-failure-matrix-model") || hasRun(model, "just test-failure-matrix") || !hasRun(process, "just test-failure-matrix") || hasRun(process, "just test-failure-matrix-model") {
+		t.Fatal("CI Evidence does not keep model-only and OS-process recipes in distinct jobs")
+	}
+	for name, job := range map[string]struct {
+		Env   map[string]any `yaml:"env"`
+		Steps []struct {
+			Run string `yaml:"run"`
+		} `yaml:"steps"`
+	}{"failure-matrix-model": model, "failure-matrix": process} {
+		cycles := fmt.Sprint(job.Env["FAILURE_CYCLES"])
+		if !strings.Contains(cycles, "'1000'") || !strings.Contains(cycles, "'100'") || !strings.Contains(cycles, "schedule") {
+			t.Fatalf("%s does not preserve explicit 100/1000 cycle bounds: %q", name, cycles)
 		}
 	}
 	justfile := read("../justfile")
 	for _, required := range []string{
 		"test-checkpoint5-iceberg-integration:",
 		"TestIcebergRESTLiveAppendProjection,TestIcebergRESTLiveSchemaEvolutionRename",
-		"IT_REQUIRED_TESTS=\"${required}\"",
+		"IT_SERVICES=iceberg IT_REQUIRED_TESTS=\"${required}\"",
 		"test-failure-matrix-model:",
 		"-model-only -cycles {{ failure_cycles }} -seed {{ failure_seed }} -require-coverage",
 	} {

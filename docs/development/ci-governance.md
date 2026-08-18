@@ -33,7 +33,7 @@ The following are not maintained promotion requirements:
 
 - `snowflake-managed-profile-unpromoted` — commercial Snowflake credentials and a reviewed deployment cell are intentionally unavailable in ordinary CI;
 - `external-links` — scheduled external-network documentation check;
-- `deploy` — publish/deployment work runs only under the separately authorized tag workflow;
+- `deploy` — GitHub Pages deployment runs only after documentation builds on `main`, not on pull requests; tag-only artifact publication uses separate `release-verification` and `publish` jobs;
 - AWS S3 Tables and Snowflake linked-catalog live gates — credential-gated operator evidence, not ordinary branch admission.
 
 Credential-gated checks must remain explicit and fail closed when deliberately invoked, but their absence cannot be used to imply maintained support.

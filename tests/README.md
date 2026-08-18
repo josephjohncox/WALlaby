@@ -55,7 +55,7 @@ The required `checkpoint5-iceberg` CI check runs:
 just test-checkpoint5-iceberg-integration
 ```
 
-It uses the local Iceberg REST/MinIO harness and requires both append/projection/readback and schema-evolution rename tests through machine-readable `IT_REQUIRED_TESTS` accounting. Missing, skipped, malformed, or package-failed evidence cannot pass. Credential-gated AWS S3 Tables and Snowflake catalog tests are separate opt-in gates and are not ordinary branch-promotion evidence.
+It selects only the local Iceberg REST/MinIO harness services and requires both append/projection/readback and schema-evolution rename tests through machine-readable `IT_REQUIRED_TESTS` accounting. Missing, skipped, malformed, or package-failed evidence cannot pass. Credential-gated AWS S3 Tables and Snowflake catalog tests are separate opt-in gates and are not ordinary branch-promotion evidence.
 
 Run the Kubernetes dispatcher integration test using kind (no kubeconfig required):
 
