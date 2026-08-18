@@ -2,8 +2,6 @@ package snowflake
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -297,11 +295,11 @@ func TestManagedSnowflakeConfigRequiresExactSecureRevisionAndSchemaContract(t *t
 		{name: "missing flow binding", key: "flow_id", value: "", want: "flow, account"},
 		{name: "empty source schema", key: "managed_source_schema", value: "", want: "NUL-free source relation"},
 		{name: "NUL source table", key: "managed_source_table", value: "bad\x00table", want: "NUL-free source relation"},
-		{name: "fakesnow HTTP", key: "dsn", value: managedSnowflakeTestDSN(t, func(cfg *gosnowflake.Config) { cfg.Protocol = "http" }), want: "verified HTTPS"},
-		{name: "OCSP fail-open", key: "dsn", value: managedSnowflakeTestDSN(t, func(cfg *gosnowflake.Config) { cfg.OCSPFailOpen = gosnowflake.OCSPFailOpenTrue }), want: "OCSP fail-closed"},
-		{name: "deprecated insecure mode", key: "dsn", value: spec.Options["dsn"] + "&insecureMode=true", want: "OCSP fail-closed"},
-		{name: "disabled OCSP checks", key: "dsn", value: spec.Options["dsn"] + "&disableOCSPChecks=true", want: "OCSP fail-closed"},
-		{name: "password authentication", key: "dsn", value: "user:pass@account/DB/PUBLIC?warehouse=WH&role=ROLE&ocspFailOpen=false&READ_LATEST_WRITES=true&TIMEZONE=UTC", want: "key-pair JWT"},
+		{name: "fakesnow HTTP", key: "dsn", value: managedSnowflakeTestDSN(t, func(cfg *gosnowflake.Config) { cfg.Protocol = "http" }), want: "prohibited credential or connection control"},
+		{name: "OCSP fail-open", key: "dsn", value: managedSnowflakeTestDSN(t, func(cfg *gosnowflake.Config) { cfg.OCSPFailOpen = gosnowflake.OCSPFailOpenTrue }), want: "prohibited credential or connection control"},
+		{name: "deprecated insecure mode", key: "dsn", value: spec.Options["dsn"] + "&insecureMode=true", want: "prohibited credential or connection control"},
+		{name: "disabled OCSP checks", key: "dsn", value: spec.Options["dsn"] + "&disableOCSPChecks=true", want: "prohibited credential or connection control"},
+		{name: "password authentication", key: "dsn", value: "user:pass@account/DB/PUBLIC?warehouse=WH&role=ROLE&ocspFailOpen=false&READ_LATEST_WRITES=true&TIMEZONE=UTC", want: "prohibited credential"},
 		{name: "stale cross-session reads", key: "dsn", value: managedSnowflakeTestDSN(t, func(cfg *gosnowflake.Config) { delete(cfg.Params, "READ_LATEST_WRITES") }), want: "READ_LATEST_WRITES=true"},
 		{name: "non-UTC session", key: "dsn", value: managedSnowflakeTestDSN(t, func(cfg *gosnowflake.Config) { value := "local"; cfg.Params["TIMEZONE"] = &value }), want: "TIMEZONE=UTC"},
 		{name: "persistent sessions", key: "dsn", value: managedSnowflakeTestDSN(t, func(cfg *gosnowflake.Config) { value := "true"; cfg.Params["CLIENT_SESSION_KEEP_ALIVE"] = &value }), want: "CLIENT_SESSION_KEEP_ALIVE=true"},
@@ -390,15 +388,11 @@ func TestManagedSnowflakeConfigRequiresExactSecureRevisionAndSchemaContract(t *t
 
 func managedSnowflakeTestDSN(t *testing.T, mutate func(*gosnowflake.Config)) string {
 	t.Helper()
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
 	readLatestWrites := "true"
 	timezone := "UTC"
 	cfg := &gosnowflake.Config{
 		Account: "account", User: "user", Database: "DB", Schema: "PUBLIC", Warehouse: "WH", Role: "ROLE",
-		Protocol: "https", Authenticator: gosnowflake.AuthTypeJwt, PrivateKey: privateKey,
+		Protocol: "https", Authenticator: gosnowflake.AuthTypeJwt,
 		OCSPFailOpen: gosnowflake.OCSPFailOpenFalse,
 		Params:       map[string]*string{"READ_LATEST_WRITES": &readLatestWrites, "TIMEZONE": &timezone},
 	}

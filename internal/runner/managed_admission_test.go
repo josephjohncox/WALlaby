@@ -248,12 +248,26 @@ func TestManagedAdmissionAcceptsClickHouseAppendProfileOnlyWithExactContract(t *
 	}
 }
 
+func testSnowflakePolicy(t *testing.T) connector.SnowflakeDeploymentPolicy {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("account", "user", "account.snowflakecomputing.com", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = policy.Close() })
+	return policy
+}
+
 func TestManagedAdmissionAcceptsSnowflakeSQLProfileOnlyWithExactContract(t *testing.T) {
 	f := managedSnowflakeFlowForTest()
 	destinations := managedSnowflakeAdmissionDestinations(t)
 	persistedContract := destinations[0].Spec.Options["managed_schema_contract"]
 	fence := managedAdmissionFence()
-	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}}
+	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}, SnowflakePolicy: testSnowflakePolicy(t)}
 	runner, err := NewStreamRunner(f, &pgsource.Source{}, destinations, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -282,9 +296,9 @@ func TestManagedAdmissionAcceptsSnowflakeSQLProfileOnlyWithExactContract(t *test
 		{name: "generic metadata", key: "meta_table_enabled", value: "true", want: "meta_table_enabled=false"},
 		{name: "transactions disabled", key: "disable_transactions", value: "true", want: "disable_transactions=false"},
 		{name: "session kept alive", key: "session_keep_alive", value: "true", want: "session_keep_alive=false"},
-		{name: "http transport", key: "dsn", value: managedAdmissionSnowflakeDSN(t, func(cfg *gosnowflake.Config) { cfg.Protocol = "http" }), want: "verified HTTPS"},
-		{name: "OCSP fail-open", key: "dsn", value: managedAdmissionSnowflakeDSN(t, func(cfg *gosnowflake.Config) { cfg.OCSPFailOpen = gosnowflake.OCSPFailOpenTrue }), want: "OCSP fail-closed"},
-		{name: "password authentication", key: "dsn", value: "user:pass@account/DB/PUBLIC?warehouse=WH&role=ROLE&ocspFailOpen=false&READ_LATEST_WRITES=true&TIMEZONE=UTC", want: "key-pair JWT"},
+		{name: "http transport", key: "dsn", value: managedAdmissionSnowflakeDSN(t, func(cfg *gosnowflake.Config) { cfg.Protocol = "http" }), want: "prohibited credential or connection control"},
+		{name: "OCSP fail-open", key: "dsn", value: managedAdmissionSnowflakeDSN(t, func(cfg *gosnowflake.Config) { cfg.OCSPFailOpen = gosnowflake.OCSPFailOpenTrue }), want: "prohibited credential or connection control"},
+		{name: "password authentication", key: "dsn", value: "user:pass@account/DB/PUBLIC?warehouse=WH&role=ROLE&ocspFailOpen=false&READ_LATEST_WRITES=true&TIMEZONE=UTC", want: "prohibited credential"},
 		{name: "stale cross-session reads", key: "dsn", value: managedAdmissionSnowflakeDSN(t, func(cfg *gosnowflake.Config) { delete(cfg.Params, "READ_LATEST_WRITES") }), want: "READ_LATEST_WRITES=true"},
 		{name: "non-UTC session", key: "dsn", value: managedAdmissionSnowflakeDSN(t, func(cfg *gosnowflake.Config) { value := "local"; cfg.Params["TIMEZONE"] = &value }), want: "TIMEZONE=UTC"},
 		{name: "persistent DSN sessions", key: "dsn", value: managedAdmissionSnowflakeDSN(t, func(cfg *gosnowflake.Config) { value := "true"; cfg.Params["CLIENT_SESSION_KEEP_ALIVE"] = &value }), want: "CLIENT_SESSION_KEEP_ALIVE=true"},
@@ -352,7 +366,7 @@ func TestNewStreamRunnerManagedSnowflakePreservesWhitespaceOnlySourceAdmission(t
 	destinations[0].Spec.Options["managed_source_schema"] = " "
 	destinations[0].Spec.Options["managed_source_table"] = " "
 	fence := managedAdmissionFence()
-	runner, err := NewStreamRunner(f, &pgsource.Source{}, destinations, StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}})
+	runner, err := NewStreamRunner(f, &pgsource.Source{}, destinations, StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}, SnowflakePolicy: testSnowflakePolicy(t)})
 	if err != nil {
 		t.Fatalf("NewStreamRunner rejected whitespace-only exact Snowflake source admission: %v", err)
 	}
@@ -372,7 +386,7 @@ func TestNewStreamRunnerManagedSnowflakePreservesWhitespaceOnlySourceAdmission(t
 		invalidDestinations[0].Spec.Options["managed_source_schema"] = " "
 		invalidDestinations[0].Spec.Options["managed_source_table"] = " "
 		invalidDestinations[0].Spec.Options[key] = "bad\x00identifier"
-		if _, err := NewStreamRunner(f, &pgsource.Source{}, invalidDestinations, StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}}); err == nil {
+		if _, err := NewStreamRunner(f, &pgsource.Source{}, invalidDestinations, StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}, SnowflakePolicy: testSnowflakePolicy(t)}); err == nil {
 			t.Fatalf("NewStreamRunner admitted NUL-containing %s", key)
 		}
 	}
@@ -466,15 +480,11 @@ func managedAdmissionDestinations() []stream.DestinationConfig {
 
 func managedAdmissionSnowflakeDSN(t *testing.T, mutate func(*gosnowflake.Config)) string {
 	t.Helper()
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
 	readLatestWrites := "true"
 	timezone := "UTC"
 	cfg := &gosnowflake.Config{
 		Account: "account", User: "user", Database: "DB", Schema: "PUBLIC", Warehouse: "WH", Role: "ROLE",
-		Protocol: "https", Authenticator: gosnowflake.AuthTypeJwt, PrivateKey: privateKey,
+		Protocol: "https", Authenticator: gosnowflake.AuthTypeJwt,
 		OCSPFailOpen: gosnowflake.OCSPFailOpenFalse,
 		Params:       map[string]*string{"READ_LATEST_WRITES": &readLatestWrites, "TIMEZONE": &timezone},
 	}
@@ -507,7 +517,7 @@ func TestManagedSnowflakeCompositePrimaryKeyMustBeCompleteOrderedAndPreserved(t 
 		return f
 	}
 	fence := managedAdmissionFence()
-	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}}
+	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}, SnowflakePolicy: testSnowflakePolicy(t)}
 	runner, err := NewStreamRunner(newFlow([]string{"tenant_id", "event_id"}, false), &pgsource.Source{}, managedSnowflakeAdmissionDestinationsForContract(t, contract), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -553,7 +563,7 @@ func TestManagedSnowflakeCompositePrimaryKeyMustBeCompleteOrderedAndPreserved(t 
 
 func TestManagedSnowflakeMappingRejectsAppendWatermarkAndFutureDefaults(t *testing.T) {
 	fence := managedAdmissionFence()
-	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}}
+	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}, SnowflakePolicy: testSnowflakePolicy(t)}
 	for name, mutate := range map[string]func(*flow.Flow){
 		"future_include": func(f *flow.Flow) {
 			f.Config.TableMappings.Destinations[0].FutureTables = flow.FutureTableMapping{Action: flow.MappingActionInclude, TargetSchema: "{{ .Schema }}", TargetTable: "{{ .Table }}", FutureColumns: flow.FutureColumnMapping{Action: flow.MappingActionInclude, TargetColumn: "{{ .Column }}"}, Write: flow.TableWritePolicy{Mode: flow.TableWriteModeAppend}}

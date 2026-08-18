@@ -56,6 +56,7 @@ type FlowRunner struct {
 	Artifacts          ArtifactLogFactory
 	ConnectorRegistry  *connector.Registry
 	SourceSpecOverride *connector.RuntimeSpec
+	SnowflakePolicy    connector.SnowflakeDeploymentPolicy
 }
 
 func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Source, destinations []stream.DestinationConfig) (runErr error) {
@@ -83,6 +84,13 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 	}
 	if r.SourceSpecOverride != nil {
 		sourceSpec = cloneSpec(*r.SourceSpecOverride)
+	}
+	destinationSpecs := make([]connector.RuntimeSpec, len(destinations))
+	for i := range destinations {
+		destinationSpecs[i] = destinations[i].Spec
+	}
+	if err := r.SnowflakePolicy.Admit(destinationSpecs); err != nil {
+		return err
 	}
 	managed := connector.IsManagedSourceSpec(sourceSpec)
 	generation := r.ExpectedGeneration
@@ -184,6 +192,7 @@ func (r *FlowRunner) Run(ctx context.Context, f flow.Flow, source connector.Sour
 		ArtifactLog:         artifactLog,
 		ConnectorRegistry:   connectorRegistry,
 		SourceSpecOverride:  &sourceSpec,
+		SnowflakePolicy:     r.SnowflakePolicy,
 	})
 	if err != nil {
 		if runFence != nil {

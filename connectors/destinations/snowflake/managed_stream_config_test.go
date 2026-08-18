@@ -96,8 +96,8 @@ func TestStreamConfigRequiresFailClosedTransport(t *testing.T) {
 		cfg.OCSPFailOpen = gosnowflake.OCSPFailOpenTrue
 	})
 	options["dsn"] = insecure
-	if _, err := streamConfigFromSpec(insecure, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options}); err == nil || !strings.Contains(err.Error(), "OCSP fail-closed") {
-		t.Fatalf("OCSP fail-open admission error=%v, want fail-closed requirement", err)
+	if _, err := streamConfigFromSpec(insecure, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options}); err == nil || !strings.Contains(err.Error(), "prohibited credential or connection control") {
+		t.Fatalf("OCSP fail-open admission error=%v, want centralized transport rejection", err)
 	}
 }
 
@@ -117,8 +117,8 @@ func TestStreamConfigRequiresReadLatestWrites(t *testing.T) {
 // TestStreamSnowflakeDSNRedactsSecrets proves the dedicated redaction guard: an
 // admitted DSN can never carry an inline password, token, or *secret* query
 // parameter, so a channel-open, append, or observe error can never leak a
-// credential. Key-pair JWT is the only admitted authenticator, so a clean DSN
-// (no query, or only safe session parameters) is accepted.
+// credential. Key-pair JWT with verified HTTPS, fail-closed OCSP, and only the
+// reviewed identity/session allowlist is accepted.
 func TestStreamSnowflakeDSNRedactsSecrets(t *testing.T) {
 	t.Parallel()
 	rejected := map[string]string{
@@ -137,8 +137,8 @@ func TestStreamSnowflakeDSNRedactsSecrets(t *testing.T) {
 		})
 	}
 	accepted := map[string]string{
-		"no query":         "user@account/db/schema",
-		"safe params only": "user@account/db/schema?authenticator=snowflake_jwt&READ_LATEST_WRITES=true&TIMEZONE=UTC",
+		"jwt only":         "user:@account/db/schema?authenticator=snowflake_jwt&ocspFailOpen=false",
+		"safe params only": "user:@account/db/schema?authenticator=snowflake_jwt&ocspFailOpen=false&READ_LATEST_WRITES=true&TIMEZONE=UTC",
 	}
 	for name, dsn := range accepted {
 		name, dsn := name, dsn
@@ -161,7 +161,7 @@ func TestStreamTransportUnavailableFailsClosed(t *testing.T) {
 		t.Fatal("no reviewed high-performance append transport should be linked in this build")
 	}
 	dsn, options := streamValidOptions(t)
-	destination := &Destination{}
+	destination := &Destination{deploymentPolicy: snowflakeTestPolicy(t)}
 	err := destination.Open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options})
 	if !errors.Is(err, ErrManagedStreamingTransportUnavailable) {
 		t.Fatalf("streaming Open must fail closed with the transport-unavailable error, got %v", err)
@@ -176,7 +176,7 @@ func TestStreamOpenRejectsInvalidSpecBeforeTransportCheck(t *testing.T) {
 	t.Parallel()
 	_, options := streamValidOptions(t)
 	options["managed_schema_contract_hash"] = "deadbeef"
-	destination := &Destination{}
+	destination := &Destination{deploymentPolicy: snowflakeTestPolicy(t)}
 	err := destination.Open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options})
 	if err == nil || errors.Is(err, ErrManagedStreamingTransportUnavailable) {
 		t.Fatalf("invalid spec must be rejected before the transport refusal, got %v", err)

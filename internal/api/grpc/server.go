@@ -34,6 +34,12 @@ func New(engine workflow.ControlEngine, dispatcher RunOnceDispatcher, checkpoint
 // NewWithConnectorRegistry wires the same custom connector registry through
 // API validation and all runtime/persistence construction paths.
 func NewWithConnectorRegistry(engine workflow.ControlEngine, dispatcher RunOnceDispatcher, checkpoints connector.CheckpointStore, registryStore registry.Store, streamStore *pgstream.Store, enableReflection bool, meters *telemetry.Meters, connectorRegistry *connector.Registry) *Server {
+	return NewWithConnectorRegistryAndPolicy(engine, dispatcher, checkpoints, registryStore, streamStore, enableReflection, meters, connectorRegistry, connector.SnowflakeDeploymentPolicy{})
+}
+
+// NewWithConnectorRegistryAndPolicy wires custom registrations and deployment
+// Snowflake admission through the API boundary.
+func NewWithConnectorRegistryAndPolicy(engine workflow.ControlEngine, dispatcher RunOnceDispatcher, checkpoints connector.CheckpointStore, registryStore registry.Store, streamStore *pgstream.Store, enableReflection bool, meters *telemetry.Meters, connectorRegistry *connector.Registry, policy connector.SnowflakeDeploymentPolicy) *Server {
 	var opts []gogrpc.ServerOption
 	if meters != nil {
 		opts = append(opts, gogrpc.UnaryInterceptor(MetricsInterceptor(meters)))
@@ -44,7 +50,7 @@ func NewWithConnectorRegistry(engine workflow.ControlEngine, dispatcher RunOnceD
 	for _, service := range []string{"", HealthServiceStartup, HealthServiceReadiness, HealthServiceLiveness} {
 		healthServer.SetServingStatus(service, healthpb.HealthCheckResponse_SERVING)
 	}
-	wallabypb.RegisterFlowServiceServer(server, NewFlowServiceWithRegistry(engine, dispatcher, connectorRegistry))
+	wallabypb.RegisterFlowServiceServer(server, NewFlowServiceWithRegistryAndPolicy(engine, dispatcher, connectorRegistry, policy))
 	if checkpoints != nil {
 		wallabypb.RegisterCheckpointServiceServer(server, NewCheckpointService(checkpoints, meters))
 	}

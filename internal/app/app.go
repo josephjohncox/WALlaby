@@ -37,6 +37,23 @@ import (
 
 // Run wires up core services. It will grow as implementations land.
 func Run(ctx context.Context, cfg *config.Config) error {
+	if cfg == nil {
+		return errors.New("config is required")
+	}
+	if err := cfg.Snowflake.ValidateExecution(); err != nil {
+		return err
+	}
+	snowflakePolicy, err := connector.NewSnowflakeDeploymentPolicy(connector.SnowflakeDeploymentConfig{
+		Enabled: cfg.Snowflake.Enabled, Account: cfg.Snowflake.Account, User: cfg.Snowflake.User,
+		Host: cfg.Snowflake.Host, PrivateKeyFile: cfg.Snowflake.PrivateKeyFile,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = snowflakePolicy.Close() }()
+	if cfg.Snowflake.Enabled && cfg.Kubernetes.Enabled && (strings.TrimSpace(cfg.Snowflake.PrivateKeySecretName) == "" || strings.TrimSpace(cfg.Snowflake.PrivateKeySecretKey) == "") {
+		return errors.New("snowflake private_key_secret_name and private_key_secret_key are required with Kubernetes dispatch")
+	}
 	telemetryProvider, err := telemetry.NewProvider(ctx, cfg.Telemetry)
 	if err != nil {
 		return err
@@ -217,7 +234,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 	factory := runner.Factory{
 		Meters: telemetryProvider.Meters(), ManagedControl: controlPool, ManagedAuthority: authorityStore,
-		ConnectorRegistry: connectorRegistry,
+		ConnectorRegistry: connectorRegistry, SnowflakePolicy: snowflakePolicy,
 	}
 	if registryStore != nil {
 		factory.SchemaHookForFlow = func(f flow.Flow) replication.SchemaHook {
@@ -290,6 +307,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			Deliveries:        deliveryCoordinator,
 			SchemaBaselines:   schemaBaselines,
 			Artifacts:         runner.NewArtifactLogFactory(controlPool, cfg.Artifacts, cfg.Iceberg),
+			SnowflakePolicy:   snowflakePolicy,
 		}, baseEngine, checkpoints, factory)
 		if err != nil {
 			return err
@@ -325,6 +343,13 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			JobArgs:                         cfg.Kubernetes.JobArgs,
 			JobEnv:                          cfg.Kubernetes.JobEnv,
 			JobEnvFrom:                      cfg.Kubernetes.JobEnvFrom,
+			SnowflakeEnabled:                cfg.Snowflake.Enabled,
+			SnowflakeAccount:                cfg.Snowflake.Account,
+			SnowflakeUser:                   cfg.Snowflake.User,
+			SnowflakeHost:                   cfg.Snowflake.Host,
+			SnowflakePrivateKeyFile:         cfg.Snowflake.PrivateKeyFile,
+			SnowflakePrivateKeySecretName:   cfg.Snowflake.PrivateKeySecretName,
+			SnowflakePrivateKeySecretKey:    cfg.Snowflake.PrivateKeySecretKey,
 		})
 		if err != nil {
 			return err
@@ -343,7 +368,9 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	if cleanupAuthority, ok := authorityStore.(authority.CleanupStore); ok {
 		resourceCleaners = append(resourceCleaners, runner.ManagedSourceCleanup{Factory: factory, Authority: cleanupAuthority})
 	}
-	orchestratedEngine := workflow.NewOrchestratedEngine(baseEngine, lifecycleDispatcher, telemetryProvider.Meters(), resourceCleaners...)
+	orchestratedEngine := workflow.NewOrchestratedEngineWithAdmission(baseEngine, lifecycleDispatcher, telemetryProvider.Meters(), func(definition flow.Flow) error {
+		return flow.ValidateSnowflakeDeploymentPolicy(definition, connectorRegistry, snowflakePolicy)
+	}, resourceCleaners...)
 	engine = orchestratedEngine
 	// Reconciliation is started before the server accepts lifecycle requests.
 	go orchestratedEngine.RunReconciler(ctx, time.Second)
@@ -361,7 +388,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		dispatcher = kubeDispatcher
 	}
 
-	server := apigrpc.NewWithConnectorRegistry(engine, dispatcher, checkpoints, registryStore, streamStore, cfg.API.GRPCReflection, telemetryProvider.Meters(), connectorRegistry)
+	server := apigrpc.NewWithConnectorRegistryAndPolicy(engine, dispatcher, checkpoints, registryStore, streamStore, cfg.API.GRPCReflection, telemetryProvider.Meters(), connectorRegistry, snowflakePolicy)
 	addCleanup(func() {
 		_ = listener.Close()
 	})

@@ -304,7 +304,7 @@ type Projector interface {
 ```
 
 <a name="Runner"></a>
-## type [Runner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L55-L81>)
+## type [Runner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L55-L82>)
 
 Runner streams data from a source to destinations.
 
@@ -335,11 +335,12 @@ type Runner struct {
     DeliveryCoordinator ManagedDeliveryCoordinator
     SchemaBaselines     connector.ManagedSchemaBaselineStore
     ArtifactLog         ManagedArtifactLog
+    SnowflakePolicy     connector.SnowflakeDeploymentPolicy
 }
 ```
 
 <a name="Runner.ManagedProfileEnabled"></a>
-### func \(\*Runner\) [ManagedProfileEnabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L845>)
+### func \(\*Runner\) [ManagedProfileEnabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L853>)
 
 ```go
 func (r *Runner) ManagedProfileEnabled() bool
@@ -348,7 +349,7 @@ func (r *Runner) ManagedProfileEnabled() bool
 
 
 <a name="Runner.Run"></a>
-### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L85>)
+### func \(\*Runner\) [Run](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/stream/runner.go#L86>)
 
 ```go
 func (r *Runner) Run(ctx context.Context) (retErr error)

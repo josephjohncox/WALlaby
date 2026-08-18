@@ -24,15 +24,20 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [func IsManagedSnowflakeProfile\(name string\) bool](<#IsManagedSnowflakeProfile>)
 - [func IsManagedSourceSpec\(spec RuntimeSpec\) bool](<#IsManagedSourceSpec>)
 - [func IsPostgresToSnowflakeSQLV1Spec\(spec RuntimeSpec\) bool](<#IsPostgresToSnowflakeSQLV1Spec>)
+- [func IsSnowflakeEndpoint\(endpointType EndpointType\) bool](<#IsSnowflakeEndpoint>)
+- [func LoadSnowflakePrivateKey\(path string\) \(\*rsa.PrivateKey, error\)](<#LoadSnowflakePrivateKey>)
 - [func ManagedSchemaBaselineKey\(namespace, name string\) string](<#ManagedSchemaBaselineKey>)
 - [func NormalizeKeyForSchema\(schema Schema, key map\[string\]any\) \(map\[string\]any, error\)](<#NormalizeKeyForSchema>)
 - [func NormalizePostgresRecord\(schema Schema, values map\[string\]any\) error](<#NormalizePostgresRecord>)
 - [func NormalizeSourceMode\(raw string\) \(string, error\)](<#NormalizeSourceMode>)
+- [func OpenSnowflakeDB\(dsn string, policy SnowflakeDeploymentPolicy\) \(\*sql.DB, error\)](<#OpenSnowflakeDB>)
 - [func SourceTransactionContentHash\(transaction SourceTransaction\) \(string, error\)](<#SourceTransactionContentHash>)
 - [func SourceTransactionIdentity\(transaction SourceTransaction\) \(string, string, error\)](<#SourceTransactionIdentity>)
 - [func SourceTransactionLogicalBatchID\(transaction SourceTransaction\) \(string, error\)](<#SourceTransactionLogicalBatchID>)
 - [func ValidateBatch\(batch Batch\) error](<#ValidateBatch>)
+- [func ValidatePersistedSnowflakeSpec\(spec RuntimeSpec\) error](<#ValidatePersistedSnowflakeSpec>)
 - [func ValidatePersistedSpec\(spec RuntimeSpec\) error](<#ValidatePersistedSpec>)
+- [func ValidateSnowflakeDSN\(dsn string\) error](<#ValidateSnowflakeDSN>)
 - [type AckGrant](<#AckGrant>)
 - [type Batch](<#Batch>)
 - [type BootstrapIntent](<#BootstrapIntent>)
@@ -129,6 +134,13 @@ Package connector defines the stable source, destination, checkpoint, schema, an
   - [func DecodeManagedSchemaBaselineOption\(raw string\) \(\[\]Schema, error\)](<#DecodeManagedSchemaBaselineOption>)
   - [func SourceTransactionSchemas\(transaction SourceTransaction\) \[\]Schema](<#SourceTransactionSchemas>)
 - [type SlotDropper](<#SlotDropper>)
+- [type SnowflakeDeploymentConfig](<#SnowflakeDeploymentConfig>)
+- [type SnowflakeDeploymentPolicy](<#SnowflakeDeploymentPolicy>)
+  - [func NewSnowflakeDeploymentPolicy\(cfg SnowflakeDeploymentConfig\) \(SnowflakeDeploymentPolicy, error\)](<#NewSnowflakeDeploymentPolicy>)
+  - [func NewSnowflakeDeploymentPolicyWithPrivateKey\(account, user, host string, key \*rsa.PrivateKey\) \(SnowflakeDeploymentPolicy, error\)](<#NewSnowflakeDeploymentPolicyWithPrivateKey>)
+  - [func \(p SnowflakeDeploymentPolicy\) Admit\(specs \[\]RuntimeSpec\) error](<#SnowflakeDeploymentPolicy.Admit>)
+  - [func \(p SnowflakeDeploymentPolicy\) Close\(\) error](<#SnowflakeDeploymentPolicy.Close>)
+  - [func \(p SnowflakeDeploymentPolicy\) Enabled\(\) bool](<#SnowflakeDeploymentPolicy.Enabled>)
 - [type Source](<#Source>)
 - [type SourceFactory](<#SourceFactory>)
 - [type SourceFlushEvidence](<#SourceFlushEvidence>)
@@ -249,6 +261,18 @@ var (
 )
 ```
 
+<a name="ErrSnowflakeExecutionDisabled"></a>
+
+```go
+var (
+    ErrSnowflakeExecutionDisabled  = errors.New("snowflake execution is disabled by deployment policy")
+    ErrSnowflakePolicyInvalid      = errors.New("snowflake deployment policy is invalid")
+    ErrSnowflakeIdentityNotAllowed = errors.New("snowflake DSN identity is not allowed by deployment policy")
+    ErrUnsafeSnowflakeDSN          = errors.New("snowflake DSN contains prohibited credential or connection control material")
+    ErrMalformedSnowflakeDSN       = errors.New("snowflake DSN is malformed")
+)
+```
+
 <a name="DefaultRegistry"></a>DefaultRegistry is shared by the default API and worker construction paths.
 
 ```go
@@ -351,6 +375,24 @@ func IsPostgresToSnowflakeSQLV1Spec(spec RuntimeSpec) bool
 
 IsPostgresToSnowflakeSQLV1Spec reports whether spec selects the exact named Snowflake SQL profile whose configured capabilities advertise explicit\-key upsert.
 
+<a name="IsSnowflakeEndpoint"></a>
+## func [IsSnowflakeEndpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L169>)
+
+```go
+func IsSnowflakeEndpoint(endpointType EndpointType) bool
+```
+
+IsSnowflakeEndpoint identifies the five admitted execution cells: generic Snowflake, generic Snowpipe, and the three Snowflake managed profiles.
+
+<a name="LoadSnowflakePrivateKey"></a>
+## func [LoadSnowflakePrivateKey](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L360>)
+
+```go
+func LoadSnowflakePrivateKey(path string) (*rsa.PrivateKey, error)
+```
+
+LoadSnowflakePrivateKey reads a bounded, owner\-only regular file and accepts only unencrypted PKCS\#8 or PKCS\#1 RSA PEM.
+
 <a name="ManagedSchemaBaselineKey"></a>
 ## func [ManagedSchemaBaselineKey](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L290>)
 
@@ -389,6 +431,15 @@ NormalizeSourceMode normalizes and validates source modes for worker flow source
 
 It is case\-insensitive, trims whitespace, and defaults empty values to cdc.
 
+<a name="OpenSnowflakeDB"></a>
+## func [OpenSnowflakeDB](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L341>)
+
+```go
+func OpenSnowflakeDB(dsn string, policy SnowflakeDeploymentPolicy) (*sql.DB, error)
+```
+
+OpenSnowflakeDB opens gosnowflake from an in\-memory Config populated with a deployment\-owned key. It never reconstructs a credential\-bearing DSN.
+
 <a name="SourceTransactionContentHash"></a>
 ## func [SourceTransactionContentHash](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L86>)
 
@@ -425,6 +476,15 @@ func ValidateBatch(batch Batch) error
 
 ValidateBatch enforces the source\-to\-runner batch contract. Data batches describe exactly one table and one logical schema. DDL/control records may be grouped together, but never with data records. Tableless control batches are valid because PostgreSQL logical messages carry ordered DDL text and a source position without relation metadata. A zero record schema version is treated as inherited from Batch.Schema for adapters that omit the redundant field.
 
+<a name="ValidatePersistedSnowflakeSpec"></a>
+## func [ValidatePersistedSnowflakeSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L175>)
+
+```go
+func ValidatePersistedSnowflakeSpec(spec RuntimeSpec) error
+```
+
+ValidatePersistedSnowflakeSpec rejects credential\-bearing Snowflake DSNs independently of deployment admission. This is safe for offline planning.
+
 <a name="ValidatePersistedSpec"></a>
 ## func [ValidatePersistedSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/spec_validation.go#L16>)
 
@@ -433,6 +493,15 @@ func ValidatePersistedSpec(spec RuntimeSpec) error
 ```
 
 ValidatePersistedSpec rejects endpoint options that cannot safely become durable flow state. Deployment\-only credentials and behavior controls must never be smuggled through a connector's arbitrary option map.
+
+<a name="ValidateSnowflakeDSN"></a>
+## func [ValidateSnowflakeDSN](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L184>)
+
+```go
+func ValidateSnowflakeDSN(dsn string) error
+```
+
+ValidateSnowflakeDSN is the single persistence\-safe Snowflake DSN validator. Every error is static and therefore cannot disclose the DSN, key, or value.
 
 <a name="AckGrant"></a>
 ## type [AckGrant](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L102-L105>)
@@ -1624,6 +1693,77 @@ type SlotDropper interface {
     DropSlot(ctx context.Context) error
 }
 ```
+
+<a name="SnowflakeDeploymentConfig"></a>
+## type [SnowflakeDeploymentConfig](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L38-L44>)
+
+SnowflakeDeploymentConfig is runtime\-only trust configuration. The account, user, host, and key never come from a flow definition.
+
+```go
+type SnowflakeDeploymentConfig struct {
+    Enabled        bool
+    Account        string
+    User           string
+    Host           string
+    PrivateKeyFile string
+}
+```
+
+<a name="SnowflakeDeploymentPolicy"></a>
+## type [SnowflakeDeploymentPolicy](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L48-L56>)
+
+SnowflakeDeploymentPolicy is an immutable, prevalidated deployment trust boundary. Its zero value is disabled and no flow option can widen it.
+
+```go
+type SnowflakeDeploymentPolicy struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="NewSnowflakeDeploymentPolicy"></a>
+### func [NewSnowflakeDeploymentPolicy](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L60>)
+
+```go
+func NewSnowflakeDeploymentPolicy(cfg SnowflakeDeploymentConfig) (SnowflakeDeploymentPolicy, error)
+```
+
+NewSnowflakeDeploymentPolicy validates and loads deployment identity before the server or worker can persist, dispatch, or execute a Snowflake\-backed flow.
+
+<a name="NewSnowflakeDeploymentPolicyWithPrivateKey"></a>
+### func [NewSnowflakeDeploymentPolicyWithPrivateKey](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L79>)
+
+```go
+func NewSnowflakeDeploymentPolicyWithPrivateKey(account, user, host string, key *rsa.PrivateKey) (SnowflakeDeploymentPolicy, error)
+```
+
+NewSnowflakeDeploymentPolicyWithPrivateKey supports deployment secret providers that resolve key bytes before constructing runtime dependencies.
+
+<a name="SnowflakeDeploymentPolicy.Admit"></a>
+### func \(SnowflakeDeploymentPolicy\) [Admit](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L129>)
+
+```go
+func (p SnowflakeDeploymentPolicy) Admit(specs []RuntimeSpec) error
+```
+
+Admit validates every Snowflake\-backed spec before allowing execution.
+
+<a name="SnowflakeDeploymentPolicy.Close"></a>
+### func \(SnowflakeDeploymentPolicy\) [Close](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L114>)
+
+```go
+func (p SnowflakeDeploymentPolicy) Close() error
+```
+
+Close removes the process\-local, deployment\-owned client logging policy.
+
+<a name="SnowflakeDeploymentPolicy.Enabled"></a>
+### func \(SnowflakeDeploymentPolicy\) [Enabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L122>)
+
+```go
+func (p SnowflakeDeploymentPolicy) Enabled() bool
+```
+
+Enabled reports whether this prevalidated policy admits Snowflake execution.
 
 <a name="Source"></a>
 ## type [Source](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L146-L152>)

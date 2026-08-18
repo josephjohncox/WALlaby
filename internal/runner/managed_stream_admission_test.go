@@ -78,17 +78,21 @@ func managedSnowflakeStreamingAdmissionDestinations(t *testing.T) []stream.Desti
 	}}
 }
 
-func managedStreamingAdmissionFlowConfigured() (flow.Flow, StreamRunnerConfig) {
+func managedStreamingAdmissionFlowConfigured(t *testing.T) (flow.Flow, StreamRunnerConfig) {
 	f := managedAdmissionFlow()
 	setRunnerSourceOptions(&f, map[string]string{
 		"managed": "", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
 		"create_slot": "true", "slot": "managed", "streaming_transactions": "true", "toast_fetch": "off",
 		"max_transaction_records": "1000", "max_transaction_bytes": "8388608", "max_transaction_fragments": "64",
 	})
-	f.Destinations = []*wallabypb.Endpoint{runnerTestDestination(connector.RuntimeSpec{Name: "snowflake-streaming", Type: connector.EndpointSnowflake})}
+	persistedDestination := cloneSpec(managedSnowflakeStreamingAdmissionDestinations(t)[0].Spec)
+	for _, key := range []string{"flow_id", "managed_schema_contract", "managed_schema_contract_hash", "managed_source_schema", "managed_source_table"} {
+		delete(persistedDestination.Options, key)
+	}
+	f.Destinations = []*wallabypb.Endpoint{runnerTestDestination(persistedDestination)}
 	f.Config.TableMappings = managedAppendSnowflakeMappings("snowflake-streaming")
 	fence := managedAdmissionFence()
-	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}}
+	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}, SnowflakePolicy: testSnowflakePolicy(t)}
 	return f, cfg
 }
 
@@ -100,7 +104,7 @@ func TestManagedAdmissionStreamingAppendFailsClosedWithoutTransport(t *testing.T
 	if snowflakedest.ManagedStreamingTransportAvailable() {
 		t.Skip("a reviewed high-performance append transport is linked; the fail-closed contract no longer applies")
 	}
-	f, cfg := managedStreamingAdmissionFlowConfigured()
+	f, cfg := managedStreamingAdmissionFlowConfigured(t)
 	destinations := managedSnowflakeStreamingAdmissionDestinations(t)
 	assertManagedAppendPersistedAndRuntimeSpecsMatch(t, f, destinations[0])
 	_, err := NewStreamRunner(f, &pgsource.Source{}, destinations, cfg)
@@ -117,7 +121,7 @@ func TestManagedAdmissionStreamingAppendFailsClosedWithoutTransport(t *testing.T
 // rejected with its own precise message rather than the generic transport
 // refusal, so the fail-closed boundary is exact rather than a blanket denial.
 func TestManagedAdmissionStreamingAppendRejectsMisconfigBeforeTransportRefusal(t *testing.T) {
-	f, cfg := managedStreamingAdmissionFlowConfigured()
+	f, cfg := managedStreamingAdmissionFlowConfigured(t)
 	tests := []struct {
 		name  string
 		key   string
@@ -152,7 +156,7 @@ func TestManagedAdmissionStreamingAppendRejectsMisconfigBeforeTransportRefusal(t
 }
 
 func TestManagedAdmissionStreamingAppendRequiresSourceContract(t *testing.T) {
-	f, cfg := managedStreamingAdmissionFlowConfigured()
+	f, cfg := managedStreamingAdmissionFlowConfigured(t)
 	noToast := flow.Clone(f)
 	setRunnerSourceOptions(&noToast, map[string]string{"toast_fetch": ""})
 	if _, err := NewStreamRunner(noToast, &pgsource.Source{}, managedSnowflakeStreamingAdmissionDestinations(t), cfg); err == nil || !strings.Contains(err.Error(), "toast_fetch=off") {

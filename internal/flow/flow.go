@@ -116,10 +116,8 @@ func ValidateDefinitionWithRegistry(definition Flow, registry *connector.Registr
 		return fmt.Errorf("unsupported acknowledgement policy %q", ackPolicy)
 	}
 	for _, destination := range destinations {
-		if destination.Type == connector.EndpointIceberg {
-			if err := connector.ValidatePersistedSpec(destination); err != nil {
-				return fmt.Errorf("validate persisted Iceberg destination: %w", err)
-			}
+		if err := connector.ValidatePersistedSpec(destination); err != nil {
+			return fmt.Errorf("validate persisted %s destination: %w", destination.Type, err)
 		}
 		for _, option := range []string{"append_mode", "meta_enabled", "meta_synced_at", "meta_deleted", "meta_watermark", "meta_op", "watermark_source", "soft_delete"} {
 			if strings.TrimSpace(destination.Options[option]) != "" {
@@ -203,6 +201,28 @@ func ValidateDefinitionWithRegistry(definition Flow, registry *connector.Registr
 		}
 	}
 	return nil
+}
+
+// ValidateSnowflakeDeploymentPolicy applies deployment-owned execution
+// admission without persisting or consulting any flow-level override.
+func ValidateSnowflakeDeploymentPolicy(definition Flow, _ *connector.Registry, policy connector.SnowflakeDeploymentPolicy) error {
+	destinations := make([]connector.RuntimeSpec, 0, len(definition.Destinations))
+	for _, endpoint := range definition.Destinations {
+		if endpoint == nil {
+			continue
+		}
+		switch endpoint.GetConfig().(type) {
+		case *wallabypb.Endpoint_Snowflake, *wallabypb.Endpoint_Snowpipe,
+			*wallabypb.Endpoint_SnowflakePostgresSql, *wallabypb.Endpoint_SnowflakePostgresStaged,
+			*wallabypb.Endpoint_SnowflakePostgresStreaming:
+			spec, err := endpointcodec.Decode(endpoint, endpointcodec.RoleDestination)
+			if err != nil {
+				return err
+			}
+			destinations = append(destinations, spec)
+		}
+	}
+	return policy.Admit(destinations)
 }
 
 // Equal compares flow configs, including optional DDL policy fields.

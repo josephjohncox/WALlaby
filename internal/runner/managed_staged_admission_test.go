@@ -74,17 +74,21 @@ func managedSnowflakeStagedAdmissionDestinations(t *testing.T) []stream.Destinat
 	}}
 }
 
-func managedStagedAdmissionFlowConfigured() (flow.Flow, StreamRunnerConfig) {
+func managedStagedAdmissionFlowConfigured(t *testing.T) (flow.Flow, StreamRunnerConfig) {
 	f := managedAdmissionFlow()
 	setRunnerSourceOptions(&f, map[string]string{
 		"managed": "", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
 		"create_slot": "true", "slot": "managed", "streaming_transactions": "true", "toast_fetch": "off",
 		"max_transaction_records": "1000", "max_transaction_bytes": "8388608", "max_transaction_fragments": "64",
 	})
-	f.Destinations = []*wallabypb.Endpoint{runnerTestDestination(connector.RuntimeSpec{Name: "snowflake-staged", Type: connector.EndpointSnowflake})}
+	persistedDestination := cloneSpec(managedSnowflakeStagedAdmissionDestinations(t)[0].Spec)
+	for _, key := range []string{"flow_id", "managed_schema_contract", "managed_schema_contract_hash", "managed_source_schema", "managed_source_table"} {
+		delete(persistedDestination.Options, key)
+	}
+	f.Destinations = []*wallabypb.Endpoint{runnerTestDestination(persistedDestination)}
 	f.Config.TableMappings = managedAppendSnowflakeMappings("snowflake-staged")
 	fence := managedAdmissionFence()
-	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}}
+	cfg := StreamRunnerConfig{Checkpoints: managedCheckpointStore{}, RunFence: &fence, DeliveryCoordinator: &delivery.Coordinator{}, SnowflakePolicy: testSnowflakePolicy(t)}
 	return f, cfg
 }
 
@@ -118,7 +122,7 @@ func assertManagedAppendPersistedAndRuntimeSpecsMatch(t *testing.T, f flow.Flow,
 }
 
 func TestManagedAdmissionAcceptsStagedAppendProfileOnlyWithExactContract(t *testing.T) {
-	f, cfg := managedStagedAdmissionFlowConfigured()
+	f, cfg := managedStagedAdmissionFlowConfigured(t)
 	destinations := managedSnowflakeStagedAdmissionDestinations(t)
 	assertManagedAppendPersistedAndRuntimeSpecsMatch(t, f, destinations[0])
 	if _, err := NewStreamRunner(f, &pgsource.Source{}, destinations, cfg); err != nil {
@@ -154,7 +158,7 @@ func TestManagedAdmissionAcceptsStagedAppendProfileOnlyWithExactContract(t *test
 }
 
 func TestManagedAdmissionStagedAppendRequiresSourceContract(t *testing.T) {
-	f, cfg := managedStagedAdmissionFlowConfigured()
+	f, cfg := managedStagedAdmissionFlowConfigured(t)
 	wrongSlot := flow.Clone(f)
 	setRunnerSourceOptions(&wrongSlot, map[string]string{"slot": "fixed"})
 	if _, err := NewStreamRunner(wrongSlot, &pgsource.Source{}, managedSnowflakeStagedAdmissionDestinations(t), cfg); err == nil || !strings.Contains(err.Error(), "slot=managed") {
@@ -168,7 +172,7 @@ func TestManagedAdmissionStagedAppendRequiresSourceContract(t *testing.T) {
 }
 
 func TestManagedAdmissionStagedAppendRequiresPipeForAutoIngest(t *testing.T) {
-	f, cfg := managedStagedAdmissionFlowConfigured()
+	f, cfg := managedStagedAdmissionFlowConfigured(t)
 	destinations := managedSnowflakeStagedAdmissionDestinations(t)
 	destinations[0].Spec.Options["managed_auto_ingest"] = "true"
 	if _, err := NewStreamRunner(f, &pgsource.Source{}, destinations, cfg); err == nil || !strings.Contains(err.Error(), "managed_pipe") {

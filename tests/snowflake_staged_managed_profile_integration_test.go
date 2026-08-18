@@ -25,20 +25,14 @@ import (
 // fakesnow is explicitly rejected. Deterministic recovery is exercised separately
 // against the in-memory protocol fake; these gates are the promotion evidence.
 
-func TestSnowflakeStagedManagedProfileFakesnowFailsClosed(t *testing.T) {
-	if !usingFakesnow() || !allowFakesnowSnowflake() {
-		t.Skip("fakesnow compatibility gate is opt-in")
-	}
-	dsn, _, ok := snowflakeTestDSN(t)
-	if !ok {
-		t.Skip("fakesnow DSN is not configured")
-	}
-	destination := &snowflake.Destination{}
+func TestSnowflakeStagedManagedProfileRejectsFakesnowCredentialTransport(t *testing.T) {
+	destination := snowflake.NewDestination(connector.SnowflakeDeploymentPolicy{})
 	err := destination.Open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: map[string]string{
-		"dsn": dsn, "flow_id": "snowflake-staged-flow", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
+		"dsn":     "fake:snow@localhost:8000/WALLABY/PUBLIC?protocol=http&disableOCSPChecks=true",
+		"flow_id": "snowflake-staged-flow", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
 	}})
-	if err == nil {
-		t.Fatal("fakesnow staged admission must fail closed")
+	if err == nil || !strings.Contains(err.Error(), "prohibited credential or connection control") {
+		t.Fatalf("fakesnow staged admission error=%v, want centralized credential/transport rejection", err)
 	}
 }
 
@@ -61,7 +55,7 @@ func TestSnowflakeStagedManagedProfileLiveAdmission(t *testing.T) {
 	bad := fixture.spec
 	bad.Options = cloneTestOptions(fixture.spec.Options)
 	bad.Options["managed_snowflake_version"] = fixture.version + "-unproven"
-	candidate := &snowflake.Destination{}
+	candidate := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	if err := candidate.Open(context.Background(), bad); err == nil {
 		_ = candidate.Close(context.Background())
 		t.Fatal("unproven staged Snowflake version admission must fail closed")
@@ -197,7 +191,7 @@ func TestSnowflakeStagedManagedProfileRoleIsolation(t *testing.T) {
 		defer cleanupCancel()
 		_, _ = fixture.provisionDB.ExecContext(cleanupCtx, revoke)
 	})
-	candidate := &snowflake.Destination{}
+	candidate := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	err := candidate.Open(ctx, fixture.spec)
 	_ = candidate.Close(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "additional privileged role") {
@@ -223,7 +217,7 @@ func TestSnowflakeStagedManagedProfilePipeIsolation(t *testing.T) {
 	})
 	// The non-auto-ingest profile does not observe a pipe; a stray pipe is not
 	// part of the admitted catalog, so a fresh open still validates the objects.
-	candidate := &snowflake.Destination{}
+	candidate := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	if err := candidate.Open(ctx, fixture.spec); err != nil {
 		t.Logf("stray pipe present; open outcome=%v", err)
 	}
@@ -332,7 +326,7 @@ func TestSnowflakeStagedManagedProfileSecretRedaction(t *testing.T) {
 	} else {
 		leaky += "?password=hunter2"
 	}
-	destination := &snowflake.Destination{}
+	destination := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	err := destination.Open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": leaky, "flow_id": "staged", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
 		"managed_source_schema": "public", "managed_source_table": "widgets",
@@ -414,7 +408,10 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	if err != nil {
 		t.Fatal(err)
 	}
-	db, err := sql.Open("snowflake", dsn)
+	if parsed.Authenticator != gosnowflake.AuthTypeJwt || parsed.PrivateKey != nil {
+		t.Fatal("managed staged execution DSN must use JWT without inline private-key material")
+	}
+	db, err := connector.OpenSnowflakeDB(dsn, snowflakeDeploymentPolicyForTest(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +462,7 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	receiptQualified := q(database) + "." + q(schemaName) + "." + q(receipts)
 	stageQualified := q(database) + "." + q(schemaName) + "." + q(stage)
 	fileFormatQualified := q(database) + "." + q(schemaName) + "." + q(fileFormat)
-	destination := &snowflake.Destination{}
+	destination := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cleanupCancel()

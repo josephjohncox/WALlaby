@@ -27,7 +27,7 @@ func (d *Destination) openManaged(ctx context.Context, dsn string, spec connecto
 	d.managedScopeMu.Lock()
 	d.managedFlowIncarnation = ""
 	d.managedScopeMu.Unlock()
-	db, err := sql.Open("snowflake", dsn)
+	db, err := connector.OpenSnowflakeDB(dsn, d.deploymentPolicy)
 	if err != nil {
 		return fmt.Errorf("open managed Snowflake: %w", err)
 	}
@@ -114,14 +114,17 @@ func managedConfigFromSpec(dsn string, spec connector.RuntimeSpec) (managedConfi
 	if err := ValidateManagedProfileOptions(options); err != nil {
 		return managedConfig{}, err
 	}
+	if err := connector.ValidateSnowflakeDSN(dsn); err != nil {
+		return managedConfig{}, err
+	}
 	dsnConfig, err := gosnowflake.ParseDSN(dsn)
 	if err != nil {
-		return managedConfig{}, fmt.Errorf("parse managed Snowflake DSN: %w", err)
+		return managedConfig{}, connector.ErrMalformedSnowflakeDSN
 	}
 	if !strings.EqualFold(dsnConfig.Protocol, "https") || managedSnowflakeDSNDisablesOCSP(dsn) || dsnConfig.DisableOCSPChecks || dsnConfig.OCSPFailOpen != gosnowflake.OCSPFailOpenFalse {
 		return managedConfig{}, errors.New("managed Snowflake profile requires verified HTTPS with OCSP fail-closed")
 	}
-	if dsnConfig.Authenticator != gosnowflake.AuthTypeJwt || dsnConfig.PrivateKey == nil {
+	if dsnConfig.Authenticator != gosnowflake.AuthTypeJwt {
 		return managedConfig{}, errors.New("managed Snowflake profile requires key-pair JWT authentication")
 	}
 	if !managedSnowflakeSessionParameterEnabled(dsnConfig.Params, "READ_LATEST_WRITES") {

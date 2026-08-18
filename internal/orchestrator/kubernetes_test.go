@@ -166,7 +166,9 @@ func TestKubernetesDispatcherReservedOwnershipCannotBeOverridden(t *testing.T) {
 			backendMetadataKey: "worker", executionIDMetadataKey: "attacker",
 		},
 		JobArgs: []string{
-			"--flow-id=attacker", "--generation", "999", "--execution-backend=worker", "--execution-id", "attacker", "--foo=bar",
+			"--", "--flow-id=attacker", "--generation", "999", "--execution-backend=worker", "--execution-id", "attacker",
+			"--snowflake-enabled=true", "--snowflake-account=attacker", "--snowflake-user=attacker", "--snowflake-host=attacker.example",
+			"--snowflake-private-key-file=/attacker/key.pem", "--foo=bar",
 		},
 	}}
 	if err := dispatcher.EnqueueGeneration(ctx, "orders", 3); err != nil {
@@ -186,13 +188,52 @@ func TestKubernetesDispatcherReservedOwnershipCannotBeOverridden(t *testing.T) {
 		t.Fatalf("authoritative labels were overridden: %v", job.Labels)
 	}
 	args := job.Spec.Template.Spec.Containers[0].Args
-	for _, forbidden := range []string{"--flow-id=attacker", "999", "--execution-backend=worker", "attacker"} {
+	for _, forbidden := range []string{"--", "--flow-id=attacker", "999", "--execution-backend=worker", "attacker", "--snowflake-account=attacker", "--snowflake-user=attacker", "--snowflake-host=attacker.example"} {
 		if slices.Contains(args, forbidden) {
 			t.Fatalf("reserved job argument survived: %q in %v", forbidden, args)
 		}
 	}
 	if !slices.Contains(args, "--foo=bar") {
 		t.Fatalf("unrelated job arg was removed: %v", args)
+	}
+	if !slices.Contains(args, "--snowflake-enabled=false") || slices.Contains(args, "--snowflake-enabled=true") || slices.Contains(args, "--snowflake-private-key-file=/attacker/key.pem") {
+		t.Fatalf("deployment Snowflake policy was not authoritative: %v", args)
+	}
+	keyFlag := slices.Index(args, "--snowflake-private-key-file")
+	if keyFlag < 0 || keyFlag+1 >= len(args) || args[keyFlag+1] != "" {
+		t.Fatalf("disabled deployment did not pass an explicit empty key path: %v", args)
+	}
+}
+
+func TestKubernetesSnowflakeEnabledJobMountsAuthoritativeSecretKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	client := fake.NewClientset()
+	dispatcher := &KubernetesDispatcher{client: client, namespace: "default", cfg: KubernetesConfig{
+		JobImage: "wallaby:test", JobNamePrefix: "wallaby-worker", SnowflakeEnabled: true,
+		SnowflakeAccount: "account", SnowflakeUser: "user", SnowflakeHost: "account.snowflakecomputing.com",
+		SnowflakePrivateKeyFile:       "/run/secrets/wallaby/snowflake-key.pem",
+		SnowflakePrivateKeySecretName: "wallaby-snowflake", SnowflakePrivateKeySecretKey: "private-key.pem",
+	}}
+	if err := dispatcher.EnqueueGeneration(ctx, "orders", 3); err != nil {
+		t.Fatal(err)
+	}
+	job, err := client.BatchV1().Jobs("default").Get(ctx, buildGenerationJobName("wallaby-worker", "orders", 3), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := job.Spec.Template.Spec
+	if len(pod.Volumes) != 1 || pod.Volumes[0].Secret == nil || pod.Volumes[0].Secret.SecretName != "wallaby-snowflake" || len(pod.Volumes[0].Secret.Items) != 1 || pod.Volumes[0].Secret.Items[0].Key != "private-key.pem" || pod.Volumes[0].Secret.Items[0].Mode == nil || *pod.Volumes[0].Secret.Items[0].Mode != 0o400 {
+		t.Fatalf("Snowflake key volume=%+v", pod.Volumes)
+	}
+	container := pod.Containers[0]
+	if len(container.VolumeMounts) != 1 || container.VolumeMounts[0].MountPath != "/run/secrets/wallaby/snowflake-key.pem" || container.VolumeMounts[0].SubPath != "private-key.pem" || !container.VolumeMounts[0].ReadOnly {
+		t.Fatalf("Snowflake key mount=%+v", container.VolumeMounts)
+	}
+	for _, want := range []string{"--snowflake-enabled=true", "--snowflake-account", "account", "--snowflake-user", "user", "--snowflake-host", "account.snowflakecomputing.com", "--snowflake-private-key-file", "/run/secrets/wallaby/snowflake-key.pem"} {
+		if !slices.Contains(container.Args, want) {
+			t.Fatalf("missing authoritative argument %q in %v", want, container.Args)
+		}
 	}
 }
 

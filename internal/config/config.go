@@ -27,6 +27,7 @@ type Config struct {
 	Checkpoints CheckpointConfig `json:"checkpoints" yaml:"checkpoints"`
 	Artifacts   ArtifactConfig   `json:"artifacts" yaml:"artifacts"`
 	Iceberg     IcebergConfig    `json:"iceberg" yaml:"iceberg"`
+	Snowflake   SnowflakeConfig  `json:"snowflake" yaml:"snowflake"`
 }
 
 type APIConfig struct {
@@ -35,6 +36,32 @@ type APIConfig struct {
 }
 type PostgresConfig struct {
 	DSN string `json:"dsn" yaml:"dsn"`
+}
+
+// SnowflakeConfig is deployment-owned execution and key-file configuration.
+// It is never serialized into flow state.
+type SnowflakeConfig struct {
+	Enabled              bool   `json:"enabled" yaml:"enabled"`
+	Account              string `json:"account" yaml:"account"`
+	User                 string `json:"user" yaml:"user"`
+	Host                 string `json:"host" yaml:"host"`
+	PrivateKeyFile       string `json:"private_key_file" yaml:"private_key_file"`
+	PrivateKeySecretName string `json:"private_key_secret_name" yaml:"private_key_secret_name"`
+	PrivateKeySecretKey  string `json:"private_key_secret_key" yaml:"private_key_secret_key"`
+}
+
+// ValidateExecution ensures an enabled deployment has a reviewed external
+// credential source. Callers apply authoritative worker flags before invoking
+// it so a Kubernetes-supplied false value cannot be widened by stale files or
+// environment variables.
+func (c SnowflakeConfig) ValidateExecution() error {
+	if !c.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.Account) == "" || strings.TrimSpace(c.User) == "" || strings.TrimSpace(c.Host) == "" || strings.TrimSpace(c.PrivateKeyFile) == "" {
+		return errors.New("snowflake account, user, host, and private_key_file are required when snowflake.enabled=true")
+	}
+	return nil
 }
 
 // WorkflowConfig selects the lifecycle metadata store. Memory is explicitly
@@ -278,6 +305,10 @@ func Load(configPath string) (*Config, error) {
 			Retention:                7 * 24 * time.Hour,
 			GCInterval:               time.Minute,
 		},
+		Snowflake: SnowflakeConfig{
+			Enabled:             false,
+			PrivateKeySecretKey: "private-key.pem",
+		},
 		Iceberg: IcebergConfig{
 			ControlTable:                "__wallaby_control",
 			SigningName:                 "execute-api",
@@ -306,6 +337,16 @@ func Load(configPath string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Postgres.DSN = stringValue(fileCfg, []string{"postgres.dsn"}, []string{"WALLABY_POSTGRES_DSN", "WALLABY_WORKER_POSTGRES_DSN"}, cfg.Postgres.DSN)
+	cfg.Snowflake.Enabled, err = boolValue(fileCfg, []string{"snowflake.enabled"}, []string{"WALLABY_SNOWFLAKE_ENABLED", "WALLABY_WORKER_SNOWFLAKE_ENABLED"}, cfg.Snowflake.Enabled)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Snowflake.Account = stringValue(fileCfg, []string{"snowflake.account"}, []string{"WALLABY_SNOWFLAKE_ACCOUNT", "WALLABY_WORKER_SNOWFLAKE_ACCOUNT"}, cfg.Snowflake.Account)
+	cfg.Snowflake.User = stringValue(fileCfg, []string{"snowflake.user"}, []string{"WALLABY_SNOWFLAKE_USER", "WALLABY_WORKER_SNOWFLAKE_USER"}, cfg.Snowflake.User)
+	cfg.Snowflake.Host = stringValue(fileCfg, []string{"snowflake.host"}, []string{"WALLABY_SNOWFLAKE_HOST", "WALLABY_WORKER_SNOWFLAKE_HOST"}, cfg.Snowflake.Host)
+	cfg.Snowflake.PrivateKeyFile = stringValue(fileCfg, []string{"snowflake.private_key_file"}, []string{"WALLABY_SNOWFLAKE_PRIVATE_KEY_FILE", "WALLABY_WORKER_SNOWFLAKE_PRIVATE_KEY_FILE"}, cfg.Snowflake.PrivateKeyFile)
+	cfg.Snowflake.PrivateKeySecretName = stringValue(fileCfg, []string{"snowflake.private_key_secret_name"}, []string{"WALLABY_SNOWFLAKE_PRIVATE_KEY_SECRET_NAME"}, cfg.Snowflake.PrivateKeySecretName)
+	cfg.Snowflake.PrivateKeySecretKey = stringValue(fileCfg, []string{"snowflake.private_key_secret_key"}, []string{"WALLABY_SNOWFLAKE_PRIVATE_KEY_SECRET_KEY"}, cfg.Snowflake.PrivateKeySecretKey)
 	cfg.Workflow.Store = stringValue(fileCfg, []string{"workflow.store"}, []string{"WALLABY_WORKFLOW_STORE", "WALLABY_WORKER_WORKFLOW_STORE"}, cfg.Workflow.Store)
 
 	cfg.Telemetry.ServiceName = stringValue(fileCfg, []string{"telemetry.service_name"}, []string{"OTEL_SERVICE_NAME"}, cfg.Telemetry.ServiceName)

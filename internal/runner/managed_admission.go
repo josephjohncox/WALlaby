@@ -350,6 +350,10 @@ func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.Runti
 	if err := snowflakedest.ValidateManagedProfileOptions(options); err != nil {
 		return fmt.Errorf("%s: %w", profileName, err)
 	}
+	dsn := strings.TrimSpace(options["dsn"])
+	if err := connector.ValidateSnowflakeDSN(dsn); err != nil {
+		return err
+	}
 	for key, want := range map[string]string{
 		"batch_mode": "target", "batch_resolution": "none",
 	} {
@@ -378,14 +382,14 @@ func validateManagedSnowflakeAdmission(flowID string, sourceSpec connector.Runti
 		}
 	}
 
-	dsnConfig, err := gosnowflake.ParseDSN(strings.TrimSpace(options["dsn"]))
+	dsnConfig, err := gosnowflake.ParseDSN(dsn)
 	if err != nil {
-		return fmt.Errorf("%s requires a valid Snowflake DSN: %w", profileName, err)
+		return connector.ErrMalformedSnowflakeDSN
 	}
 	if !strings.EqualFold(dsnConfig.Protocol, "https") || dsnConfig.DisableOCSPChecks || dsnConfig.OCSPFailOpen != gosnowflake.OCSPFailOpenFalse {
 		return fmt.Errorf("%s requires verified HTTPS with OCSP fail-closed", profileName)
 	}
-	if dsnConfig.Authenticator != gosnowflake.AuthTypeJwt || dsnConfig.PrivateKey == nil {
+	if dsnConfig.Authenticator != gosnowflake.AuthTypeJwt {
 		return fmt.Errorf("%s requires key-pair JWT authentication", profileName)
 	}
 	readLatestWrites := false
@@ -558,6 +562,10 @@ func validateManagedSnowflakeStagedAppendAdmission(flowID string, sourceSpec con
 	if err := snowflakedest.ValidateManagedStagedProfileOptions(options); err != nil {
 		return fmt.Errorf("%s: %w", profileName, err)
 	}
+	dsn := strings.TrimSpace(options["dsn"])
+	if err := connector.ValidateSnowflakeDSN(dsn); err != nil {
+		return err
+	}
 	for key, want := range map[string]string{
 		"batch_mode": "target", "batch_resolution": "none",
 	} {
@@ -586,14 +594,14 @@ func validateManagedSnowflakeStagedAppendAdmission(flowID string, sourceSpec con
 		}
 	}
 
-	dsnConfig, err := gosnowflake.ParseDSN(strings.TrimSpace(options["dsn"]))
+	dsnConfig, err := gosnowflake.ParseDSN(dsn)
 	if err != nil {
-		return fmt.Errorf("%s requires a valid Snowflake DSN: %w", profileName, err)
+		return connector.ErrMalformedSnowflakeDSN
 	}
 	if !strings.EqualFold(dsnConfig.Protocol, "https") || dsnConfig.DisableOCSPChecks || dsnConfig.OCSPFailOpen != gosnowflake.OCSPFailOpenFalse {
 		return fmt.Errorf("%s requires verified HTTPS with OCSP fail-closed", profileName)
 	}
-	if dsnConfig.Authenticator != gosnowflake.AuthTypeJwt || dsnConfig.PrivateKey == nil {
+	if dsnConfig.Authenticator != gosnowflake.AuthTypeJwt {
 		return fmt.Errorf("%s requires key-pair JWT authentication", profileName)
 	}
 	readLatestWrites := false
@@ -760,6 +768,10 @@ func validateManagedSnowflakeStreamingAppendAdmission(flowID string, sourceSpec 
 	if err := snowflakedest.ValidateManagedStreamingProfileOptions(options); err != nil {
 		return fmt.Errorf("%s: %w", profileName, err)
 	}
+	dsn := strings.TrimSpace(options["dsn"])
+	if err := connector.ValidateSnowflakeDSN(dsn); err != nil {
+		return err
+	}
 	for key, want := range map[string]string{
 		"batch_mode": "target", "batch_resolution": "none",
 	} {
@@ -791,14 +803,14 @@ func validateManagedSnowflakeStreamingAppendAdmission(flowID string, sourceSpec 
 		return fmt.Errorf("%s requires managed_streaming_transport naming the reviewed high-performance append transport", profileName)
 	}
 
-	dsnConfig, err := gosnowflake.ParseDSN(strings.TrimSpace(options["dsn"]))
+	dsnConfig, err := gosnowflake.ParseDSN(dsn)
 	if err != nil {
-		return fmt.Errorf("%s requires a valid Snowflake DSN: %w", profileName, err)
+		return connector.ErrMalformedSnowflakeDSN
 	}
 	if !strings.EqualFold(dsnConfig.Protocol, "https") || dsnConfig.DisableOCSPChecks || dsnConfig.OCSPFailOpen != gosnowflake.OCSPFailOpenFalse {
 		return fmt.Errorf("%s requires verified HTTPS with OCSP fail-closed", profileName)
 	}
-	if dsnConfig.Authenticator != gosnowflake.AuthTypeJwt || dsnConfig.PrivateKey == nil {
+	if dsnConfig.Authenticator != gosnowflake.AuthTypeJwt {
 		return fmt.Errorf("%s requires key-pair JWT authentication", profileName)
 	}
 	readLatestWrites := false

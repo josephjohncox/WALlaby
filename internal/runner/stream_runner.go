@@ -39,6 +39,7 @@ type StreamRunnerConfig struct {
 	ArtifactLog         stream.ManagedArtifactLog
 	ConnectorRegistry   *connector.Registry
 	SourceSpecOverride  *connector.RuntimeSpec
+	SnowflakePolicy     connector.SnowflakeDeploymentPolicy
 }
 
 // NewStreamRunner constructs a stream runner without mutating the flow or
@@ -78,6 +79,13 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 		if err := flow.ValidateDefinition(f); err != nil {
 			return stream.Runner{}, fmt.Errorf("validate flow definition: %w", err)
 		}
+	}
+	specs := make([]connector.RuntimeSpec, len(destinations))
+	for i := range destinations {
+		specs[i] = destinations[i].Spec
+	}
+	if err := cfg.SnowflakePolicy.Admit(specs); err != nil {
+		return stream.Runner{}, err
 	}
 	clonedDestinations := make([]stream.DestinationConfig, len(destinations))
 	for i, destination := range destinations {
@@ -177,6 +185,7 @@ func NewStreamRunner(f flow.Flow, source connector.Source, destinations []stream
 		DeliveryCoordinator: cfg.DeliveryCoordinator,
 		SchemaBaselines:     cfg.SchemaBaselines,
 		ArtifactLog:         cfg.ArtifactLog,
+		SnowflakePolicy:     cfg.SnowflakePolicy,
 	}, nil
 }
 

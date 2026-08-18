@@ -28,7 +28,7 @@
     {
       "name": "snowflake-out",
       "snowflake": {
-        "dsn": "user:pass@account/db/schema?role=SYSADMIN"
+        "dsn": "user@account/db/schema?authenticator=snowflake_jwt&ocspFailOpen=false&role=WALLABY_EXECUTION"
       }
     }
   ],

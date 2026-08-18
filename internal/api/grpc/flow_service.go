@@ -23,6 +23,7 @@ type FlowService struct {
 	engine            workflow.ControlEngine
 	dispatcher        RunOnceDispatcher
 	connectorRegistry *connector.Registry
+	snowflakePolicy   connector.SnowflakeDeploymentPolicy
 }
 
 // RunOnceDispatcher schedules one attempt against a captured lifecycle fence.
@@ -36,10 +37,33 @@ func NewFlowService(engine workflow.ControlEngine, dispatcher RunOnceDispatcher)
 
 // NewFlowServiceWithRegistry injects the custom connector registry shared with workers.
 func NewFlowServiceWithRegistry(engine workflow.ControlEngine, dispatcher RunOnceDispatcher, registry *connector.Registry) *FlowService {
+	return NewFlowServiceWithRegistryAndPolicy(engine, dispatcher, registry, connector.SnowflakeDeploymentPolicy{})
+}
+
+// NewFlowServiceWithRegistryAndPolicy binds API admission to the current
+// deployment policy while preserving the caller's custom connector registry.
+func NewFlowServiceWithRegistryAndPolicy(engine workflow.ControlEngine, dispatcher RunOnceDispatcher, registry *connector.Registry, policy connector.SnowflakeDeploymentPolicy) *FlowService {
 	if registry == nil {
 		registry = connector.NewRegistry()
 	}
-	return &FlowService{engine: engine, dispatcher: dispatcher, connectorRegistry: registry}
+	return &FlowService{engine: engine, dispatcher: dispatcher, connectorRegistry: registry, snowflakePolicy: policy}
+}
+
+func (s *FlowService) ValidateFlow(_ context.Context, req *wallabypb.ValidateFlowRequest) (*wallabypb.ValidateFlowResponse, error) {
+	if req == nil || req.Flow == nil {
+		return nil, status.Error(codes.InvalidArgument, "flow is required")
+	}
+	model, err := flowFromProtoWithRegistry(req.Flow, s.connectorRegistry)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := flow.ValidateDefinitionWithRegistry(model, s.connectorRegistry); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := s.admitSnowflake(model); err != nil {
+		return nil, err
+	}
+	return &wallabypb.ValidateFlowResponse{Admitted: true}, nil
 }
 
 func (s *FlowService) CreateFlow(ctx context.Context, req *wallabypb.CreateFlowRequest) (*wallabypb.Flow, error) {
@@ -60,6 +84,9 @@ func (s *FlowService) CreateFlow(ctx context.Context, req *wallabypb.CreateFlowR
 	model.State = flow.StateCreated
 	if err := flow.ValidateDefinitionWithRegistry(model, s.connectorRegistry); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := s.admitSnowflake(model); err != nil {
+		return nil, err
 	}
 
 	created, err := s.engine.Create(ctx, model)
@@ -121,6 +148,9 @@ func (s *FlowService) UpdateFlow(ctx context.Context, req *wallabypb.UpdateFlowR
 	if err := flow.ValidateDefinitionWithRegistry(model, s.connectorRegistry); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	if err := s.admitSnowflake(model); err != nil {
+		return nil, err
+	}
 
 	updated, err := s.engine.Update(ctx, model)
 	if err != nil {
@@ -181,6 +211,9 @@ func (s *FlowService) ReconfigureFlow(ctx context.Context, req *wallabypb.Reconf
 	if err := flow.ValidateDefinitionWithRegistry(model, s.connectorRegistry); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	if err := s.admitSnowflake(model); err != nil {
+		return nil, err
+	}
 
 	pauseFirst := optionalBool(req.PauseFirst, true)
 	resumeAfter := optionalBool(req.ResumeAfter, true)
@@ -224,6 +257,9 @@ func (s *FlowService) StartFlow(ctx context.Context, req *wallabypb.StartFlowReq
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
 	}
+	if err := s.admitSnowflakeByID(ctx, req.FlowId); err != nil {
+		return nil, err
+	}
 	started, err := s.engine.Start(ctx, req.FlowId)
 	if err != nil {
 		return nil, mapWorkflowError(err)
@@ -236,6 +272,9 @@ func (s *FlowService) RunFlowOnce(ctx context.Context, req *wallabypb.RunFlowOnc
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
 	}
 	if err := s.requireDispatcher(); err != nil {
+		return nil, err
+	}
+	if err := s.admitSnowflakeByID(ctx, req.FlowId); err != nil {
 		return nil, err
 	}
 	control, err := s.engine.Control(ctx, req.FlowId)
@@ -276,6 +315,9 @@ func (s *FlowService) StopFlow(ctx context.Context, req *wallabypb.StopFlowReque
 func (s *FlowService) ResumeFlow(ctx context.Context, req *wallabypb.ResumeFlowRequest) (*wallabypb.Flow, error) {
 	if req == nil || req.FlowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "flow_id is required")
+	}
+	if err := s.admitSnowflakeByID(ctx, req.FlowId); err != nil {
+		return nil, err
 	}
 	resumed, err := s.engine.Resume(ctx, req.FlowId)
 	if err != nil {
@@ -408,6 +450,21 @@ func (s *FlowService) CleanupFlow(ctx context.Context, req *wallabypb.CleanupFlo
 	}
 
 	return &wallabypb.CleanupFlowResponse{Cleaned: true}, nil
+}
+
+func (s *FlowService) admitSnowflake(definition flow.Flow) error {
+	if err := flow.ValidateSnowflakeDeploymentPolicy(definition, s.connectorRegistry, s.snowflakePolicy); err != nil {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	return nil
+}
+
+func (s *FlowService) admitSnowflakeByID(ctx context.Context, flowID string) error {
+	definition, err := s.engine.Get(ctx, flowID)
+	if err != nil {
+		return mapWorkflowError(err)
+	}
+	return s.admitSnowflake(definition)
 }
 
 func (s *FlowService) requireDispatcher() error {

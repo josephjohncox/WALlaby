@@ -15,6 +15,15 @@ workflowStore: postgres
 kubernetesDispatch:
   enabled: false
 
+snowflake:
+  enabled: false
+  account: ""
+  user: ""
+  host: ""
+  privateKeyFile: /run/secrets/wallaby/snowflake-key.pem
+  privateKeySecretName: ""
+  privateKeySecretKey: private-key.pem
+
 service:
   type: ClusterIP
   port: 8080

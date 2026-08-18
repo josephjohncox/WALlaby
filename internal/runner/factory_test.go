@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,8 +13,20 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/stream"
 )
 
+func TestFactorySnowflakePolicyDeniesBeforeConstruction(t *testing.T) {
+	specs := []connector.RuntimeSpec{
+		{Type: connector.EndpointSnowflake, Options: map[string]string{"dsn": "user:@account/db/schema?authenticator=snowflake_jwt&ocspFailOpen=false"}},
+		{Type: connector.EndpointSnowpipe, Options: map[string]string{"dsn": "user:@account/db/schema?authenticator=snowflake_jwt&ocspFailOpen=false"}},
+	}
+	for _, spec := range specs {
+		if _, err := (Factory{}).Destinations([]connector.RuntimeSpec{spec}); !errors.Is(err, connector.ErrSnowflakeExecutionDisabled) {
+			t.Fatalf("destination %s error=%v", spec.Type, err)
+		}
+	}
+}
+
 func TestFactoryConstructionConsumesAuthoritativeDestinationRegistry(t *testing.T) {
-	factory := Factory{}
+	factory := Factory{SnowflakePolicy: testSnowflakePolicy(t)}
 	for _, registration := range DestinationRegistrations() {
 		if registration.New == nil {
 			if _, err := factory.destination(connector.RuntimeSpec{Type: registration.Type}); err == nil {
@@ -21,7 +34,11 @@ func TestFactoryConstructionConsumesAuthoritativeDestinationRegistry(t *testing.
 			}
 			continue
 		}
-		got, err := factory.destination(connector.RuntimeSpec{Type: registration.Type})
+		spec := connector.RuntimeSpec{Type: registration.Type}
+		if connector.IsSnowflakeEndpoint(registration.Type) {
+			spec.Options = map[string]string{"dsn": "user:@account/db/schema?authenticator=snowflake_jwt&ocspFailOpen=false"}
+		}
+		got, err := factory.destination(spec)
 		if err != nil {
 			t.Fatal(err)
 		}

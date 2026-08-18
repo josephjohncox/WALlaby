@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
+	"github.com/josephjohncox/wallaby/connectors/destinations/snowpipe"
 	pgsource "github.com/josephjohncox/wallaby/connectors/sources/postgres"
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/bootstrap"
@@ -23,6 +25,7 @@ type Factory struct {
 	ManagedAuthority  authority.Store
 	BootstrapHooks    bootstrap.Hooks
 	ConnectorRegistry *connector.Registry
+	SnowflakePolicy   connector.SnowflakeDeploymentPolicy
 }
 
 func (f Factory) Source(spec connector.RuntimeSpec) (connector.Source, error) {
@@ -85,6 +88,9 @@ func (f Factory) source(spec connector.RuntimeSpec, hook replication.SchemaHook)
 }
 
 func (f Factory) Destinations(specs []connector.RuntimeSpec) ([]stream.DestinationConfig, error) {
+	if err := f.SnowflakePolicy.Admit(specs); err != nil {
+		return nil, err
+	}
 	items := make([]stream.DestinationConfig, 0, len(specs))
 	for _, spec := range specs {
 		dest, err := f.destination(spec)
@@ -110,6 +116,9 @@ func (f Factory) DestinationsForFlow(fdef flow.Flow) ([]stream.DestinationConfig
 }
 
 func (f Factory) destination(spec connector.RuntimeSpec) (connector.Destination, error) {
+	if err := f.SnowflakePolicy.Admit([]connector.RuntimeSpec{spec}); err != nil {
+		return nil, err
+	}
 	registration, ok := destinationRegistration(spec.Type)
 	if !ok {
 		registry := f.ConnectorRegistry
@@ -121,7 +130,15 @@ func (f Factory) destination(spec connector.RuntimeSpec) (connector.Destination,
 	if registration.New == nil {
 		return nil, fmt.Errorf("unsupported destination type: %s", spec.Type)
 	}
-	destination := registration.New()
+	var destination connector.Destination
+	switch spec.Type {
+	case connector.EndpointSnowflake:
+		destination = snowflake.NewDestination(f.SnowflakePolicy)
+	case connector.EndpointSnowpipe:
+		destination = snowpipe.NewDestination(f.SnowflakePolicy)
+	default:
+		destination = registration.New()
+	}
 	if destination == nil {
 		return nil, fmt.Errorf("destination constructor returned nil: %s", spec.Type)
 	}

@@ -19,6 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	FlowService_ValidateFlow_FullMethodName            = "/wallaby.v1.FlowService/ValidateFlow"
 	FlowService_CreateFlow_FullMethodName              = "/wallaby.v1.FlowService/CreateFlow"
 	FlowService_UpdateFlow_FullMethodName              = "/wallaby.v1.FlowService/UpdateFlow"
 	FlowService_ReconfigureFlow_FullMethodName         = "/wallaby.v1.FlowService/ReconfigureFlow"
@@ -47,6 +48,7 @@ const (
 //
 // FlowService stores flow definitions and controls lifecycle and PostgreSQL source resources.
 type FlowServiceClient interface {
+	ValidateFlow(ctx context.Context, in *ValidateFlowRequest, opts ...grpc.CallOption) (*ValidateFlowResponse, error)
 	CreateFlow(ctx context.Context, in *CreateFlowRequest, opts ...grpc.CallOption) (*Flow, error)
 	UpdateFlow(ctx context.Context, in *UpdateFlowRequest, opts ...grpc.CallOption) (*Flow, error)
 	ReconfigureFlow(ctx context.Context, in *ReconfigureFlowRequest, opts ...grpc.CallOption) (*Flow, error)
@@ -78,6 +80,16 @@ type flowServiceClient struct {
 
 func NewFlowServiceClient(cc grpc.ClientConnInterface) FlowServiceClient {
 	return &flowServiceClient{cc}
+}
+
+func (c *flowServiceClient) ValidateFlow(ctx context.Context, in *ValidateFlowRequest, opts ...grpc.CallOption) (*ValidateFlowResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ValidateFlowResponse)
+	err := c.cc.Invoke(ctx, FlowService_ValidateFlow_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *flowServiceClient) CreateFlow(ctx context.Context, in *CreateFlowRequest, opts ...grpc.CallOption) (*Flow, error) {
@@ -286,6 +298,7 @@ func (c *flowServiceClient) ScrapePublicationTables(ctx context.Context, in *Scr
 //
 // FlowService stores flow definitions and controls lifecycle and PostgreSQL source resources.
 type FlowServiceServer interface {
+	ValidateFlow(context.Context, *ValidateFlowRequest) (*ValidateFlowResponse, error)
 	CreateFlow(context.Context, *CreateFlowRequest) (*Flow, error)
 	UpdateFlow(context.Context, *UpdateFlowRequest) (*Flow, error)
 	ReconfigureFlow(context.Context, *ReconfigureFlowRequest) (*Flow, error)
@@ -319,6 +332,9 @@ type FlowServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedFlowServiceServer struct{}
 
+func (UnimplementedFlowServiceServer) ValidateFlow(context.Context, *ValidateFlowRequest) (*ValidateFlowResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ValidateFlow not implemented")
+}
 func (UnimplementedFlowServiceServer) CreateFlow(context.Context, *CreateFlowRequest) (*Flow, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateFlow not implemented")
 }
@@ -398,6 +414,24 @@ func RegisterFlowServiceServer(s grpc.ServiceRegistrar, srv FlowServiceServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&FlowService_ServiceDesc, srv)
+}
+
+func _FlowService_ValidateFlow_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ValidateFlowRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FlowServiceServer).ValidateFlow(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FlowService_ValidateFlow_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FlowServiceServer).ValidateFlow(ctx, req.(*ValidateFlowRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _FlowService_CreateFlow_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -767,6 +801,10 @@ var FlowService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "wallaby.v1.FlowService",
 	HandlerType: (*FlowServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "ValidateFlow",
+			Handler:    _FlowService_ValidateFlow_Handler,
+		},
 		{
 			MethodName: "CreateFlow",
 			Handler:    _FlowService_CreateFlow_Handler,

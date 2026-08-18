@@ -187,8 +187,8 @@ func TestStagedConfigRequiresFailClosedTransport(t *testing.T) {
 		cfg.OCSPFailOpen = gosnowflake.OCSPFailOpenTrue
 	})
 	options["dsn"] = insecure
-	if _, err := stagedConfigFromSpec(insecure, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options}); err == nil || !strings.Contains(err.Error(), "OCSP fail-closed") {
-		t.Fatalf("OCSP fail-open admission error=%v, want fail-closed requirement", err)
+	if _, err := stagedConfigFromSpec(insecure, connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: options}); err == nil || !strings.Contains(err.Error(), "prohibited credential or connection control") {
+		t.Fatalf("OCSP fail-open admission error=%v, want centralized transport rejection", err)
 	}
 }
 

@@ -3367,6 +3367,9 @@ func publicationSync(cmd *cobra.Command, _ []string) error {
 	if cfg.flow == nil {
 		return errors.New("flow is required for publication sync")
 	}
+	if *snapshot && protoFlowHasSnowflakeDestination(cfg.flow) {
+		return errors.New("snowflake-backed snapshot publication changes require a deployment-admitted server-side backfill path")
+	}
 
 	desired, err := resolveDesiredTables(ctx, cfg, cfg.options, *tables, *schemas)
 	if err != nil {
@@ -3420,6 +3423,18 @@ func publicationSync(cmd *cobra.Command, _ []string) error {
 
 	fmt.Printf("Synced publication %s (added=%d removed=%d)\n", cfg.publication, len(added), len(removed))
 	return nil
+}
+
+func protoFlowHasSnowflakeDestination(definition *wallabypb.Flow) bool {
+	if definition == nil {
+		return false
+	}
+	for _, destination := range definition.Destinations {
+		if destination != nil && (destination.GetSnowflake() != nil || destination.GetSnowflakePostgresSql() != nil || destination.GetSnowflakePostgresStaged() != nil || destination.GetSnowflakePostgresStreaming() != nil || destination.GetSnowpipe() != nil) {
+			return true
+		}
+	}
+	return false
 }
 
 func publicationScrape(cmd *cobra.Command, _ []string) error {
@@ -4149,6 +4164,14 @@ func flowPlan(cmd *cobra.Command, _ []string) error {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
+		validation, err := client.ValidateFlow(ctx, &wallabypb.ValidateFlowRequest{Flow: pbFlow})
+		if err != nil {
+			return fmt.Errorf("validate deployment admission for plan: %w", err)
+		}
+		if validation == nil || !validation.Admitted {
+			return errors.New("deployment did not admit planned flow")
+		}
 
 		resp, err := client.GetFlow(ctx, &wallabypb.GetFlowRequest{FlowId: lookupFlowID})
 		if err == nil && resp != nil {

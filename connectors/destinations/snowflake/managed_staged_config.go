@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -108,14 +107,17 @@ func stagedConfigFromSpec(dsn string, spec connector.RuntimeSpec) (stagedConfig,
 	if err := ValidateManagedStagedProfileOptions(options); err != nil {
 		return stagedConfig{}, err
 	}
+	if err := connector.ValidateSnowflakeDSN(dsn); err != nil {
+		return stagedConfig{}, err
+	}
 	dsnConfig, err := gosnowflake.ParseDSN(dsn)
 	if err != nil {
-		return stagedConfig{}, fmt.Errorf("parse managed staged Snowflake DSN: %w", err)
+		return stagedConfig{}, connector.ErrMalformedSnowflakeDSN
 	}
 	if !strings.EqualFold(dsnConfig.Protocol, "https") || managedSnowflakeDSNDisablesOCSP(dsn) || dsnConfig.DisableOCSPChecks || dsnConfig.OCSPFailOpen != gosnowflake.OCSPFailOpenFalse {
 		return stagedConfig{}, errors.New("managed staged Snowflake profile requires verified HTTPS with OCSP fail-closed")
 	}
-	if dsnConfig.Authenticator != gosnowflake.AuthTypeJwt || dsnConfig.PrivateKey == nil {
+	if dsnConfig.Authenticator != gosnowflake.AuthTypeJwt {
 		return stagedConfig{}, errors.New("managed staged Snowflake profile requires key-pair JWT authentication")
 	}
 	if !managedSnowflakeSessionParameterEnabled(dsnConfig.Params, "READ_LATEST_WRITES") {
@@ -307,23 +309,8 @@ func stagedSourceColumnSupported(typeMappings map[string]string, column connecto
 	return managedSnowflakeColumnType(managedConfig{typeMappings: typeMappings}, column) != ""
 }
 
-// stagedSnowflakeDSNRedactsSecrets confirms the DSN carries no inline password
-// or token query parameter so the admitted spec never leaks a secret through a
-// stage or COPY error message. Key-pair JWT is the only admitted authenticator.
+// stagedSnowflakeDSNRedactsSecrets delegates to the one persistence-safe DSN
+// validator shared by generic and every managed Snowflake-backed connector.
 func stagedSnowflakeDSNRedactsSecrets(dsn string) error {
-	queryOffset := strings.IndexByte(dsn, '?')
-	if queryOffset < 0 {
-		return nil
-	}
-	values, err := url.ParseQuery(dsn[queryOffset+1:])
-	if err != nil {
-		return fmt.Errorf("parse managed staged Snowflake DSN query: %w", err)
-	}
-	for key := range values {
-		lowered := strings.ToLower(strings.TrimSpace(key))
-		if lowered == "password" || lowered == "token" || strings.Contains(lowered, "secret") {
-			return fmt.Errorf("managed staged Snowflake DSN must not carry inline %s", lowered)
-		}
-	}
-	return nil
+	return connector.ValidateSnowflakeDSN(dsn)
 }

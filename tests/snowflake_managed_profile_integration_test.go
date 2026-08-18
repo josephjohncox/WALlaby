@@ -28,20 +28,14 @@ import (
 	"github.com/snowflakedb/gosnowflake"
 )
 
-func TestSnowflakeManagedProfileFakesnowFailsClosed(t *testing.T) {
-	if !usingFakesnow() || !allowFakesnowSnowflake() {
-		t.Skip("fakesnow compatibility gate is opt-in")
-	}
-	dsn, _, ok := snowflakeTestDSN(t)
-	if !ok {
-		t.Skip("fakesnow DSN is not configured")
-	}
-	destination := &snowflake.Destination{}
+func TestSnowflakeManagedProfileRejectsFakesnowCredentialTransport(t *testing.T) {
+	destination := snowflake.NewDestination(connector.SnowflakeDeploymentPolicy{})
 	err := destination.Open(context.Background(), connector.RuntimeSpec{Type: connector.EndpointSnowflake, Options: map[string]string{
-		"dsn": dsn, "flow_id": "snowflake-flow", "managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1,
+		"dsn":     "fake:snow@localhost:8000/WALLABY/PUBLIC?protocol=http&disableOCSPChecks=true",
+		"flow_id": "snowflake-flow", "managed_profile": connector.ManagedProfilePostgresToSnowflakeSQLV1,
 	}})
-	if err == nil || !strings.Contains(err.Error(), "verified HTTPS") {
-		t.Fatalf("fakesnow managed admission error=%v, want verified HTTPS failure", err)
+	if err == nil || !strings.Contains(err.Error(), "prohibited credential or connection control") {
+		t.Fatalf("fakesnow managed admission error=%v, want centralized credential/transport rejection", err)
 	}
 }
 
@@ -54,7 +48,7 @@ func TestSnowflakeManagedProfileLiveAdmission(t *testing.T) {
 	bad := fixture.spec
 	bad.Options = cloneTestOptions(fixture.spec.Options)
 	bad.Options["managed_snowflake_version"] = fixture.version + "-unproven"
-	candidate := &snowflake.Destination{}
+	candidate := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	if err := candidate.Open(context.Background(), bad); err == nil || !strings.Contains(err.Error(), "exact runtime pin") {
 		t.Fatalf("unproven Snowflake version admission error=%v", err)
 	}
@@ -273,7 +267,7 @@ func TestSnowflakeManagedProfileProcessKillHelper(t *testing.T) {
 	if err := json.Unmarshal([]byte(spec.Options["managed_schema_contract"]), &schema); err != nil {
 		t.Fatal(err)
 	}
-	destination := &snowflake.Destination{}
+	destination := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	if err := destination.Open(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -598,10 +592,10 @@ func newSnowflakeManagedFixtureForFlowSource(t *testing.T, flowID, sourceSchema,
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Authenticator != gosnowflake.AuthTypeJwt || parsed.PrivateKey == nil || provisionParsed.Authenticator != gosnowflake.AuthTypeJwt || provisionParsed.PrivateKey == nil {
-		t.Fatal("managed Snowflake live gate requires key-pair JWT for execution and provisioning DSNs")
+	if parsed.Authenticator != gosnowflake.AuthTypeJwt || parsed.PrivateKey != nil || provisionParsed.Authenticator != gosnowflake.AuthTypeJwt || provisionParsed.PrivateKey == nil {
+		t.Fatal("managed Snowflake live gate requires a credential-free execution DSN plus deployment key, and a distinct key-pair JWT provisioning DSN")
 	}
-	db, err := sql.Open("snowflake", dsn)
+	db, err := connector.OpenSnowflakeDB(dsn, snowflakeDeploymentPolicyForTest(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -671,7 +665,7 @@ func newSnowflakeManagedFixtureForFlowSource(t *testing.T, flowID, sourceSchema,
 	}
 	targetQualified := quoteSnowflakeIdent(database) + "." + quoteSnowflakeIdent(schemaName) + "." + quoteSnowflakeIdent(target)
 	receiptQualified := quoteSnowflakeIdent(database) + "." + quoteSnowflakeIdent(schemaName) + "." + quoteSnowflakeIdent(receipts)
-	destination := &snowflake.Destination{}
+	destination := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	targetCreated := false
 	receiptCreated := false
 	t.Cleanup(func() {

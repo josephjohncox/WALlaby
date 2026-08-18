@@ -2,7 +2,6 @@ package snowflake
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -38,7 +37,7 @@ func (d *Destination) openManagedStaged(ctx context.Context, dsn string, spec co
 	d.managedScopeMu.Lock()
 	d.managedFlowIncarnation = ""
 	d.managedScopeMu.Unlock()
-	db, err := sql.Open("snowflake", dsn)
+	db, err := connector.OpenSnowflakeDB(dsn, d.deploymentPolicy)
 	if err != nil {
 		return fmt.Errorf("open managed staged Snowflake: %w", err)
 	}

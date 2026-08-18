@@ -78,11 +78,19 @@ type Runner struct {
 	DeliveryCoordinator ManagedDeliveryCoordinator
 	SchemaBaselines     connector.ManagedSchemaBaselineStore
 	ArtifactLog         ManagedArtifactLog
+	SnowflakePolicy     connector.SnowflakeDeploymentPolicy
 }
 
 // Run executes the streaming loop until context cancellation or error. It requires
 // a stable flow ID and durable checkpoint storage before acknowledging the source.
 func (r *Runner) Run(ctx context.Context) (retErr error) {
+	specs := make([]connector.RuntimeSpec, len(r.Destinations))
+	for i := range r.Destinations {
+		specs[i] = r.Destinations[i].Spec
+	}
+	if err := r.SnowflakePolicy.Admit(specs); err != nil {
+		return err
+	}
 	if r.Source == nil {
 		return errors.New("source is required")
 	}

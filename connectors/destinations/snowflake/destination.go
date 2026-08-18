@@ -16,7 +16,6 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/schemaregistry"
 	"github.com/josephjohncox/wallaby/pkg/wire"
-	_ "github.com/snowflakedb/gosnowflake"
 )
 
 func safeMetaCapacity(base, extra int) int {
@@ -75,6 +74,7 @@ type destinationFactories struct {
 
 // Destination writes change events into Snowflake tables.
 type Destination struct {
+	deploymentPolicy         connector.SnowflakeDeploymentPolicy
 	closeMu                  sync.Mutex
 	spec                     connector.RuntimeSpec
 	db                       *sql.DB
@@ -115,11 +115,31 @@ type Destination struct {
 	sessionKeepAlive         *bool
 }
 
+// NewDestination constructs a Snowflake destination bound to the current
+// deployment policy.
+func NewDestination(policy connector.SnowflakeDeploymentPolicy) *Destination {
+	return &Destination{deploymentPolicy: policy}
+}
+
 func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) error {
-	return d.open(ctx, spec, destinationFactories{openDB: sql.Open, newRegistry: schemaregistry.NewRegistry})
+	return d.open(ctx, spec, destinationFactories{
+		openDB: func(_, dsn string) (*sql.DB, error) {
+			return connector.OpenSnowflakeDB(dsn, d.deploymentPolicy)
+		},
+		newRegistry: schemaregistry.NewRegistry,
+	})
 }
 
 func (d *Destination) open(ctx context.Context, spec connector.RuntimeSpec, factories destinationFactories) (err error) {
+	if spec.Type == "" {
+		spec.Type = connector.EndpointSnowflake
+	}
+	if spec.Type != connector.EndpointSnowflake {
+		return errors.New("snowflake destination requires endpoint type snowflake")
+	}
+	if err := d.deploymentPolicy.Admit([]connector.RuntimeSpec{spec}); err != nil {
+		return err
+	}
 	registryCfg, err := schemaregistry.ConfigFromOptions(spec.Options)
 	if err != nil {
 		return err

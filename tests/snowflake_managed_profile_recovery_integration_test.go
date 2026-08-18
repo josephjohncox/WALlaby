@@ -92,7 +92,7 @@ func TestSnowflakeManagedProfileRoleIsolation(t *testing.T) {
 			t.Errorf("revoke alternate writer: %v", err)
 		}
 	})
-	candidate := &snowflake.Destination{}
+	candidate := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	err := candidate.Open(ctx, fixture.spec)
 	_ = candidate.Close(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "additional writer role") {
@@ -141,7 +141,7 @@ func TestSnowflakeManagedProfileTaskIsolation(t *testing.T) {
 			t.Errorf("drop isolation task: %v", err)
 		}
 	})
-	candidate := &snowflake.Destination{}
+	candidate := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	err := candidate.Open(ctx, fixture.spec)
 	_ = candidate.Close(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "tasks") {
@@ -151,7 +151,7 @@ func TestSnowflakeManagedProfileTaskIsolation(t *testing.T) {
 		t.Fatalf("drop isolation task: %v", err)
 	}
 	dropped = true
-	reopened := &snowflake.Destination{}
+	reopened := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	if err := reopened.Open(ctx, fixture.spec); err != nil {
 		t.Fatalf("reopen after dropping isolation task: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestSnowflakeManagedProfileCommitAndDetachedTakeover(t *testing.T) {
 	// A detached takeover: a brand-new destination session (as a replacement
 	// worker would open) must see the committed receipt via READ_LATEST_WRITES
 	// and report applied without re-executing the DML.
-	takeover := &snowflake.Destination{}
+	takeover := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	if err := takeover.Open(ctx, fixture.spec); err != nil {
 		t.Fatalf("open detached takeover session: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestSnowflakeManagedProfileSecretRedaction(t *testing.T) {
 	bad := fixture.spec
 	bad.Options = cloneTestOptions(fixture.spec.Options)
 	bad.Options["managed_snowflake_version"] = fixture.version + "-unproven"
-	candidate := &snowflake.Destination{}
+	candidate := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	admissionErr := candidate.Open(ctx, bad)
 	_ = candidate.Close(context.Background())
 	assertRedacted("admission", admissionErr)

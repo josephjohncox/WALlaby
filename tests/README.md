@@ -77,9 +77,7 @@ Set these environment variables to enable destination tests:
 - `WALLABY_TEST_K8S_IMAGE` (optional job image)
 - `WALLABY_TEST_CLICKHOUSE_DSN`, optional `WALLABY_TEST_CLICKHOUSE_DB`
 - `TEST_CLICKHOUSE_HTTP_PORT` (optional clickhouse HTTP port for readiness checks)
-- `WALLABY_TEST_FAKESNOW_HOST`, `WALLABY_TEST_FAKESNOW_PORT` (fakesnow Snowflake emulator)
-- `WALLABY_TEST_FORCE_FAKESNOW=1` (prefer fakesnow even if Snowflake DSN is set)
-- `WALLABY_TEST_RUN_FAKESNOW=1` (opt in to run Snowflake integration/benchmarks against fakesnow)
+- Fakesnow is not an admitted Snowflake test target: it requires password authentication over HTTP and cannot satisfy the deployment-bound JWT/verified-HTTPS policy. Deterministic tests instead construct that credential/transport shape and require rejection before network I/O.
 - `WALLABY_TEST_CLI_LOG=1` (print wallaby-admin output during CLI integration tests)
 - `WALLABY_TEST_S3_ENDPOINT`, `WALLABY_TEST_S3_BUCKET`, `WALLABY_TEST_S3_ACCESS_KEY`, `WALLABY_TEST_S3_SECRET_KEY`, optional `WALLABY_TEST_S3_REGION`
 - `WALLABY_TEST_KAFKA_BROKERS` (Kafka/Redpanda brokers)
@@ -88,6 +86,7 @@ Set these environment variables to enable destination tests:
 - `WALLABY_TEST_DUCKDB_DSN`
 - `WALLABY_TEST_DUCKLAKE=1` (enabled by default; requires ducklake extension)
 - `WALLABY_TEST_SNOWFLAKE_DSN`, optional `WALLABY_TEST_SNOWFLAKE_SCHEMA`
+- `WALLABY_TEST_SNOWFLAKE_ACCOUNT`, `WALLABY_TEST_SNOWFLAKE_USER`, `WALLABY_TEST_SNOWFLAKE_HOST`, and `WALLABY_TEST_SNOWFLAKE_PRIVATE_KEY_FILE` (deployment-bound JWT identity; the key file must be absolute and mode `0600`/`0400`)
 - `WALLABY_TEST_SNOWFLAKE_MANAGED=1` (opt in to the real-service managed Snowflake SQL recovery gate; fakesnow is rejected)
 - `WALLABY_TEST_SNOWFLAKE_PROVISION_DSN` (key-pair JWT DSN for the distinct object-owner role)
 - `WALLABY_TEST_SNOWFLAKE_VERSION`, `WALLABY_TEST_SNOWFLAKE_REGION`, `WALLABY_TEST_SNOWFLAKE_OWNER_ROLE` (reviewed live cell inputs; the gate never self-pins them)
@@ -99,11 +98,15 @@ Benchmarks (ClickHouse mutation vs append):
 go test ./tests -bench ClickHouse -run '^$'
 ```
 
-Managed Snowflake SQL recovery evidence requires a commercial AWS Snowflake account with hybrid tables and a disposable PostgreSQL 16 database. Both Snowflake DSNs must use key-pair JWT, verified HTTPS, and OCSP fail-closed. The execution DSN must also set `READ_LATEST_WRITES=true` and `TIMEZONE=UTC`. The owner and execution roles must be distinct. The gate creates and drops `public.widgets` and `wallaby_sf_managed_gate` in PostgreSQL.
+Managed Snowflake SQL recovery evidence requires a commercial AWS Snowflake account with hybrid tables and a disposable PostgreSQL 16 database. The execution DSN is credential-free and must select `snowflake_jwt`, verified HTTPS, OCSP fail-closed, `READ_LATEST_WRITES=true`, and `TIMEZONE=UTC`; its key comes only from `WALLABY_TEST_SNOWFLAKE_PRIVATE_KEY_FILE`. The separate provisioning DSN uses key-pair JWT for the owner role. The owner and execution roles must be distinct. The gate creates and drops `public.widgets` and `wallaby_sf_managed_gate` in PostgreSQL.
 
 ```bash
 WALLABY_TEST_SNOWFLAKE_MANAGED=1 \
 WALLABY_TEST_SNOWFLAKE_DSN='...' \
+WALLABY_TEST_SNOWFLAKE_ACCOUNT='<account>' \
+WALLABY_TEST_SNOWFLAKE_USER='WALLABY_SERVICE' \
+WALLABY_TEST_SNOWFLAKE_HOST='<account>.snowflakecomputing.com' \
+WALLABY_TEST_SNOWFLAKE_PRIVATE_KEY_FILE='/run/secrets/wallaby/snowflake-key.pem' \
 WALLABY_TEST_SNOWFLAKE_PROVISION_DSN='...' \
 WALLABY_TEST_SNOWFLAKE_VERSION='<reviewed version>' \
 WALLABY_TEST_SNOWFLAKE_REGION='<reviewed AWS region>' \

@@ -3,12 +3,11 @@ package tests
 import (
 	"encoding/json"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 func recordKey(t testing.TB, key map[string]any) []byte {
@@ -24,64 +23,7 @@ func recordKey(t testing.TB, key map[string]any) []byte {
 
 func snowflakeTestDSN(t testing.TB) (string, string, bool) {
 	if usingFakesnow() {
-		host := strings.TrimSpace(os.Getenv("WALLABY_TEST_FAKESNOW_HOST"))
-		portRaw := strings.TrimSpace(os.Getenv("WALLABY_TEST_FAKESNOW_PORT"))
-		if host == "" {
-			host = "localhost"
-		}
-		if portRaw == "" {
-			portRaw = "8000"
-		}
-		port, err := strconv.Atoi(portRaw)
-		if err != nil {
-			t.Fatalf("invalid WALLABY_TEST_FAKESNOW_PORT: %v", err)
-		}
-
-		account := strings.TrimSpace(os.Getenv("WALLABY_TEST_FAKESNOW_ACCOUNT"))
-		if account == "" {
-			account = "fakesnow"
-		}
-		user := strings.TrimSpace(os.Getenv("WALLABY_TEST_FAKESNOW_USER"))
-		if user == "" {
-			user = "fake"
-		}
-		password := strings.TrimSpace(os.Getenv("WALLABY_TEST_FAKESNOW_PASSWORD"))
-		if password == "" {
-			password = "snow"
-		}
-		database := strings.TrimSpace(os.Getenv("WALLABY_TEST_FAKESNOW_DATABASE"))
-		if database == "" {
-			database = "WALLABY"
-		}
-		schema := strings.TrimSpace(os.Getenv("WALLABY_TEST_FAKESNOW_SCHEMA"))
-		if schema == "" {
-			schema = "PUBLIC"
-		}
-
-		disableTelemetry := "false"
-		params := map[string]*string{
-			"CLIENT_OUT_OF_BAND_TELEMETRY_ENABLED": &disableTelemetry,
-		}
-
-		cfg := &gosnowflake.Config{
-			Account:           account,
-			User:              user,
-			Password:          password,
-			Database:          database,
-			Schema:            schema,
-			Host:              host,
-			Port:              port,
-			Protocol:          "http",
-			DisableOCSPChecks: true,
-			Params:            params,
-		}
-		cfg.MaxRetryCount = 1
-
-		dsn, err := gosnowflake.DSN(cfg)
-		if err != nil {
-			t.Fatalf("build fakesnow dsn: %v", err)
-		}
-		return dsn, schema, true
+		t.Skip("fakesnow uses password authentication and insecure HTTP; issue #75 requires deployment-bound JWT over verified HTTPS")
 	}
 
 	if dsn := strings.TrimSpace(os.Getenv("WALLABY_TEST_SNOWFLAKE_DSN")); dsn != "" {
@@ -95,15 +37,28 @@ func snowflakeTestDSN(t testing.TB) (string, string, bool) {
 	return "", "", false
 }
 
+func snowflakeDeploymentPolicyForTest(t testing.TB) connector.SnowflakeDeploymentPolicy {
+	t.Helper()
+	cfg := connector.SnowflakeDeploymentConfig{
+		Enabled:        true,
+		Account:        strings.TrimSpace(os.Getenv("WALLABY_TEST_SNOWFLAKE_ACCOUNT")),
+		User:           strings.TrimSpace(os.Getenv("WALLABY_TEST_SNOWFLAKE_USER")),
+		Host:           strings.TrimSpace(os.Getenv("WALLABY_TEST_SNOWFLAKE_HOST")),
+		PrivateKeyFile: strings.TrimSpace(os.Getenv("WALLABY_TEST_SNOWFLAKE_PRIVATE_KEY_FILE")),
+	}
+	policy, err := connector.NewSnowflakeDeploymentPolicy(cfg)
+	if err != nil {
+		t.Fatalf("load Snowflake deployment policy: %v", err)
+	}
+	t.Cleanup(func() { _ = policy.Close() })
+	return policy
+}
+
 func usingFakesnow() bool {
 	host := strings.TrimSpace(os.Getenv("WALLABY_TEST_FAKESNOW_HOST"))
 	portRaw := strings.TrimSpace(os.Getenv("WALLABY_TEST_FAKESNOW_PORT"))
 	forceFake := strings.TrimSpace(os.Getenv("WALLABY_TEST_FORCE_FAKESNOW")) == "1"
 	return host != "" || portRaw != "" || forceFake
-}
-
-func allowFakesnowSnowflake() bool {
-	return strings.TrimSpace(os.Getenv("WALLABY_TEST_RUN_FAKESNOW")) == "1"
 }
 
 func snowflakeTestTimeout() time.Duration {
