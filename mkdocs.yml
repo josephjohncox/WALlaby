@@ -92,5 +92,6 @@ nav:
       - Durable core implementation report: implementation/durable-core.md
       - Table mappings: implementation/table-mappings.md
       - Process-failure matrix and soak: development/failure-matrix.md
+      - CI check governance: development/ci-governance.md
       - Formal verification: specs.md
       - Benchmarks: benchmarks.md

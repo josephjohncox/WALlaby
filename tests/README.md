@@ -49,6 +49,14 @@ WALLABY_TEST_K8S_KUBECONFIG=/path/to/kubeconfig just test-integration
 The harness still sanitizes credential helpers (AWS/Kubeconfig) to avoid calling external tooling during tests.
 You can override the per-package test timeout with `GO_TEST_TIMEOUT` (default: 8m).
 
+The required `checkpoint5-iceberg` CI check runs:
+
+```bash
+just test-checkpoint5-iceberg-integration
+```
+
+It uses the local Iceberg REST/MinIO harness and requires both append/projection/readback and schema-evolution rename tests through machine-readable `IT_REQUIRED_TESTS` accounting. Missing, skipped, malformed, or package-failed evidence cannot pass. Credential-gated AWS S3 Tables and Snowflake catalog tests are separate opt-in gates and are not ordinary branch-promotion evidence.
+
 Run the Kubernetes dispatcher integration test using kind (no kubeconfig required):
 
 ```bash
