@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/snowflakedb/gosnowflake"
 )
@@ -27,8 +26,6 @@ var (
 	ErrUnsafeSnowflakeDSN          = errors.New("snowflake DSN contains prohibited credential or connection control material")
 	ErrMalformedSnowflakeDSN       = errors.New("snowflake DSN is malformed")
 )
-
-var snowflakeLoggerMu sync.Mutex
 
 var persistedSnowflakeDSNKeys = map[string]struct{}{
 	"account": {}, "authenticator": {}, "database": {}, "schema": {}, "warehouse": {}, "role": {}, "region": {},
@@ -88,10 +85,6 @@ func NewSnowflakeDeploymentPolicyWithPrivateKey(account, user, host string, key 
 	}
 	clientConfigPath, clientConfigDir, err := createSnowflakeClientConfig()
 	if err != nil {
-		return SnowflakeDeploymentPolicy{}, err
-	}
-	if err := disableSnowflakeDriverLogging(); err != nil {
-		_ = os.RemoveAll(clientConfigDir)
 		return SnowflakeDeploymentPolicy{}, err
 	}
 	return SnowflakeDeploymentPolicy{
@@ -354,27 +347,12 @@ func OpenSnowflakeDB(dsn string, policy SnowflakeDeploymentPolicy) (*sql.DB, err
 	if err != nil {
 		return nil, err
 	}
-	if err := disableSnowflakeDriverLogging(); err != nil {
-		return nil, err
-	}
 	cfg.PrivateKey = policy.privateKey
 	cfg.Authenticator = gosnowflake.AuthTypeJwt
 	cfg.LogQueryText = false
 	cfg.LogQueryParameters = false
 	cfg.ClientConfigFile = policy.clientConfigPath
 	return sql.OpenDB(gosnowflake.NewConnector(&gosnowflake.SnowflakeDriver{}, *cfg)), nil
-}
-
-func disableSnowflakeDriverLogging() error {
-	snowflakeLoggerMu.Lock()
-	defer snowflakeLoggerMu.Unlock()
-	safeLogger := gosnowflake.CreateDefaultLogger()
-	if err := safeLogger.SetLogLevel("OFF"); err != nil {
-		return errors.New("disable Snowflake driver logging")
-	}
-	safeLogger.SetOutput(io.Discard)
-	gosnowflake.SetLogger(&safeLogger)
-	return nil
 }
 
 // LoadSnowflakePrivateKey reads a bounded, owner-only regular file and accepts
