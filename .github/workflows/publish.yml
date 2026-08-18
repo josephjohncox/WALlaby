@@ -50,8 +50,8 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: Setup uv
-        # astral-sh/setup-uv v9.0.0
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        # astral-sh/setup-uv v10.0.0
+        uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d
         with:
           version: "0.11.29"
           enable-cache: true
@@ -117,9 +117,9 @@ jobs:
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8
 
       - name: Set up Docker Buildx
-        # docker/setup-buildx-action v3.11.1
+        # docker/setup-buildx-action v4.2.0
         uses: >-
-          docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435
+          docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
 
       - name: Login to GHCR
         # docker/login-action v3.4.0
@@ -147,8 +147,8 @@ jobs:
             ${{ steps.vars.outputs.image }}:latest
 
       - name: Generate SBOM (Syft)
-        # anchore/sbom-action v0.20.10
-        uses: anchore/sbom-action@fbfd9c6c189226748411491745178e0c2017392d
+        # anchore/sbom-action v0.24.0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
         with:
           image: >-
             ${{ steps.vars.outputs.image }}@${{ steps.image.outputs.digest }}
@@ -156,8 +156,8 @@ jobs:
           output-file: sbom.spdx.json
 
       - name: Upload SBOM artifact
-        # actions/upload-artifact v4.6.2
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        # actions/upload-artifact v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: sbom
           path: sbom.spdx.json
