@@ -58,6 +58,10 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [type ClaimKind](<#ClaimKind>)
 - [type CleanupFence](<#CleanupFence>)
   - [func \(f CleanupFence\) Validate\(\) error](<#CleanupFence.Validate>)
+- [type CleanupFenceGuard](<#CleanupFenceGuard>)
+- [type CleanupResourceIdentity](<#CleanupResourceIdentity>)
+  - [func \(i CleanupResourceIdentity\) AuthorityKey\(\) string](<#CleanupResourceIdentity.AuthorityKey>)
+  - [func \(i CleanupResourceIdentity\) Validate\(\) error](<#CleanupResourceIdentity.Validate>)
 - [type Column](<#Column>)
 - [type ConfiguredDestinationCapabilities](<#ConfiguredDestinationCapabilities>)
 - [type ContractEvidence](<#ContractEvidence>)
@@ -531,7 +535,7 @@ type Batch struct {
 ```
 
 <a name="BootstrapIntent"></a>
-## type [BootstrapIntent](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L13-L24>)
+## type [BootstrapIntent](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L15-L26>)
 
 BootstrapIntent identifies one immutable managed snapshot generation. It is independent of the public lifecycle state, which remains running while the private bootstrap phases advance.
 
@@ -551,7 +555,7 @@ type BootstrapIntent struct {
 ```
 
 <a name="BootstrapIntent.Validate"></a>
-### func \(BootstrapIntent\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L28>)
+### func \(BootstrapIntent\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L30>)
 
 ```go
 func (i BootstrapIntent) Validate() error
@@ -560,7 +564,7 @@ func (i BootstrapIntent) Validate() error
 Validate rejects incomplete bootstrap identities before any destination table or source resource can be changed.
 
 <a name="BootstrapTable"></a>
-## type [BootstrapTable](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L70-L74>)
+## type [BootstrapTable](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L72-L76>)
 
 BootstrapTable is one projected destination table in the immutable snapshot manifest, including its per\-table write contract.
 
@@ -748,6 +752,49 @@ func (f CleanupFence) Validate() error
 ```
 
 Validate rejects incomplete terminal cleanup authority.
+
+<a name="CleanupFenceGuard"></a>
+## type [CleanupFenceGuard](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L112>)
+
+CleanupFenceGuard renews the exact terminal\-cleanup capability, locks the global physical identity in the same control transaction, rejects active aliases, and holds both locks across one irreversible external operation.
+
+```go
+type CleanupFenceGuard func(context.Context, CleanupResourceIdentity, func(context.Context) error) error
+```
+
+<a name="CleanupResourceIdentity"></a>
+## type [CleanupResourceIdentity](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L86-L93>)
+
+CleanupResourceIdentity is the global source\-catalog identity protected by a guarded terminal delete. Retired historical rows are not active aliases.
+
+```go
+type CleanupResourceIdentity struct {
+    FlowIncarnationID uuid.UUID
+    ResourceID        uuid.UUID
+    SourceSystemID    string
+    DatabaseName      string
+    ResourceKind      string
+    PhysicalName      string
+}
+```
+
+<a name="CleanupResourceIdentity.AuthorityKey"></a>
+### func \(CleanupResourceIdentity\) [AuthorityKey](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L105>)
+
+```go
+func (i CleanupResourceIdentity) AuthorityKey() string
+```
+
+
+
+<a name="CleanupResourceIdentity.Validate"></a>
+### func \(CleanupResourceIdentity\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L95>)
+
+```go
+func (i CleanupResourceIdentity) Validate() error
+```
+
+
 
 <a name="Column"></a>
 ## type [Column](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L97-L105>)
@@ -1081,7 +1128,7 @@ type InitialCheckpointSource interface {
 ```
 
 <a name="ManagedBootstrapDestination"></a>
-## type [ManagedBootstrapDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L93-L100>)
+## type [ManagedBootstrapDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L126-L133>)
 
 ManagedBootstrapDestination stages one immutable snapshot generation and atomically publishes every table in its frozen manifest. External evidence is untrusted until the source bootstrap coordinator records it under the current RunFence in PostgreSQL.
 
@@ -1097,7 +1144,7 @@ type ManagedBootstrapDestination interface {
 ```
 
 <a name="ManagedBootstrapProjector"></a>
-## type [ManagedBootstrapProjector](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L61-L66>)
+## type [ManagedBootstrapProjector](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L63-L68>)
 
 ManagedBootstrapProjector is the typed logical\-projection contract used by snapshot planning and delivery. Source query schemas remain source\-shaped; destination schemas and batches are projected explicitly through this seam.
 
@@ -1111,7 +1158,7 @@ type ManagedBootstrapProjector interface {
 ```
 
 <a name="ManagedBootstrapPublicationReconciler"></a>
-## type [ManagedBootstrapPublicationReconciler](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L106-L108>)
+## type [ManagedBootstrapPublicationReconciler](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L139-L141>)
 
 ManagedBootstrapPublicationReconciler is an optional recovery extension. It preserves the original destination contract while allowing implementations with an atomic publication marker to prove a publish\-before\-control\-receipt crash without replaying publication.
 
@@ -1122,7 +1169,7 @@ type ManagedBootstrapPublicationReconciler interface {
 ```
 
 <a name="ManagedBootstrapResult"></a>
-## type [ManagedBootstrapResult](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L52-L56>)
+## type [ManagedBootstrapResult](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L54-L58>)
 
 ManagedBootstrapResult is the durable source cut installed by a managed bootstrap. SourceOptions are runtime\-only overrides derived from PostgreSQL\-authoritative resource rows; they are never written back to the public flow definition.
 
@@ -1135,7 +1182,7 @@ type ManagedBootstrapResult struct {
 ```
 
 <a name="ManagedBootstrapSource"></a>
-## type [ManagedBootstrapSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L78-L80>)
+## type [ManagedBootstrapSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L80-L82>)
 
 ManagedBootstrapSource owns the source\-specific exported\-snapshot protocol. The destination is already open when this method is called.
 
@@ -1366,13 +1413,13 @@ type ManagedSnowflakeVersionProvider interface {
 ```
 
 <a name="ManagedSourceResourceCleaner"></a>
-## type [ManagedSourceResourceCleaner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L85-L87>)
+## type [ManagedSourceResourceCleaner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L118-L120>)
 
-ManagedSourceResourceCleaner retires source resources owned by a managed flow after its stopping generation has quiesced. Implementations must never drop adopted resources and must prove external absence before returning.
+ManagedSourceResourceCleaner retires source resources owned by a managed flow after its stopping generation has quiesced. Implementations must never drop adopted resources, must renew authority before each delete, and must prove external absence before returning.
 
 ```go
 type ManagedSourceResourceCleaner interface {
-    CleanupManagedResources(context.Context, CleanupFence, RuntimeSpec) error
+    CleanupManagedResources(context.Context, CleanupFence, RuntimeSpec, CleanupFenceGuard) error
 }
 ```
 
