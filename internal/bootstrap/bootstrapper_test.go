@@ -10,6 +10,18 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+func TestCleanupOwnedResourcesRequiresGuardBeforeDatabaseAccess(t *testing.T) {
+	t.Parallel()
+	fence := authority.CleanupFence{RunFence: authority.RunFence{
+		FlowIncarnationID: uuid.New(), FlowID: "cleanup", Generation: 1,
+		AcquisitionID: uuid.New(), ExecutionID: "cleanup-execution", LeaseEpoch: 1,
+	}}
+	err := (&Bootstrapper{}).CleanupOwnedResources(context.Background(), fence, nil)
+	if err == nil || !strings.Contains(err.Error(), "requires cleanup authority guard") {
+		t.Fatalf("CleanupOwnedResources() error=%v, want mandatory guard rejection", err)
+	}
+}
+
 func TestGenerationSlotNameSeparatesIncarnationsAndGenerations(t *testing.T) {
 	firstIncarnation := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	secondIncarnation := uuid.MustParse("22222222-2222-2222-2222-222222222222")

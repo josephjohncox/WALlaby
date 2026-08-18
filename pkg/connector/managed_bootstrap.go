@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // BootstrapIntent identifies one immutable managed snapshot generation. It is
@@ -79,11 +81,42 @@ type ManagedBootstrapSource interface {
 	PrepareManagedBootstrap(context.Context, RunFence, RuntimeSpec, string, ManagedBootstrapProjector, ManagedBootstrapDestination) (ManagedBootstrapResult, error)
 }
 
+// CleanupResourceIdentity is the global source-catalog identity protected by a
+// guarded terminal delete. Retired historical rows are not active aliases.
+type CleanupResourceIdentity struct {
+	FlowIncarnationID uuid.UUID
+	ResourceID        uuid.UUID
+	SourceSystemID    string
+	DatabaseName      string
+	ResourceKind      string
+	PhysicalName      string
+}
+
+func (i CleanupResourceIdentity) Validate() error {
+	if i.FlowIncarnationID == uuid.Nil || i.ResourceID == uuid.Nil || strings.TrimSpace(i.SourceSystemID) == "" || strings.TrimSpace(i.DatabaseName) == "" || strings.TrimSpace(i.PhysicalName) == "" {
+		return errors.New("complete cleanup resource identity is required")
+	}
+	if i.ResourceKind != "slot" && i.ResourceKind != "publication" {
+		return fmt.Errorf("unsupported cleanup resource kind %q", i.ResourceKind)
+	}
+	return nil
+}
+
+func (i CleanupResourceIdentity) AuthorityKey() string {
+	return strings.Join([]string{i.SourceSystemID, i.DatabaseName, i.ResourceKind, i.PhysicalName}, "\x1f")
+}
+
+// CleanupFenceGuard renews the exact terminal-cleanup capability, locks the
+// global physical identity in the same control transaction, rejects active
+// aliases, and holds both locks across one irreversible external operation.
+type CleanupFenceGuard func(context.Context, CleanupResourceIdentity, func(context.Context) error) error
+
 // ManagedSourceResourceCleaner retires source resources owned by a managed
 // flow after its stopping generation has quiesced. Implementations must never
-// drop adopted resources and must prove external absence before returning.
+// drop adopted resources, must renew authority before each delete, and must
+// prove external absence before returning.
 type ManagedSourceResourceCleaner interface {
-	CleanupManagedResources(context.Context, CleanupFence, RuntimeSpec) error
+	CleanupManagedResources(context.Context, CleanupFence, RuntimeSpec, CleanupFenceGuard) error
 }
 
 // ManagedBootstrapDestination stages one immutable snapshot generation and

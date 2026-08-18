@@ -28,6 +28,18 @@ func (f *failingRecoveredBootstrapFinalizer) Handoff(context.Context, authority.
 	return connector.Checkpoint{}, f.handoffErr
 }
 
+func TestCleanupManagedResourcesRequiresGuardBeforeConnectorSetup(t *testing.T) {
+	t.Parallel()
+	fence := connector.CleanupFence{RunFence: connector.RunFence{
+		FlowIncarnationID: uuid.New(), FlowID: "cleanup", Generation: 1,
+		AcquisitionID: uuid.New(), ExecutionID: "cleanup-execution", LeaseEpoch: 1,
+	}}
+	err := (&Source{}).CleanupManagedResources(context.Background(), fence, connector.RuntimeSpec{}, nil)
+	if err == nil || err.Error() != "managed PostgreSQL cleanup requires cleanup authority guard" {
+		t.Fatalf("CleanupManagedResources() error=%v, want mandatory guard rejection", err)
+	}
+}
+
 func TestFinalizeRecoveredBootstrapPublicationFailuresStayRecoverable(t *testing.T) {
 	t.Parallel()
 
