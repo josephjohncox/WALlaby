@@ -63,6 +63,25 @@ export WALLABY_CHECKPOINT_BACKEND=sqlite
 export WALLABY_CHECKPOINT_PATH="$HOME/.wallaby/checkpoints.db"
 ```
 
+## Snowflake execution admission
+
+All generic Snowflake, Snowpipe, and managed Snowflake profiles are disabled unless the current server or worker deployment opts in:
+
+```yaml
+snowflake:
+  enabled: true
+  account: xy12345
+  user: WALLABY_SERVICE
+  host: xy12345.snowflakecomputing.com
+  private_key_file: /run/secrets/wallaby/snowflake-key.pem
+  private_key_secret_name: wallaby-snowflake # required with Kubernetes dispatch
+  private_key_secret_key: private-key.pem
+```
+
+The private key file must be an absolute, owner-only, regular PKCS#8 or PKCS#1 RSA PEM file with a key of at least 2048 bits and is loaded before the server or worker can mutate lifecycle state. Flow DSNs carry only the reviewed identity/session allowlist; inline credentials, unknown driver controls, custom hosts/proxies/TLS settings, logging/diagnostic controls, repeated aliases, and encoded variants are rejected. Parsed account, user, canonical host, HTTPS port, JWT authentication, and fail-closed OCSP must match the deployment policy. The equivalent server/worker variable families are `WALLABY_SNOWFLAKE_*` and `WALLABY_WORKER_SNOWFLAKE_*` for `ENABLED`, `ACCOUNT`, `USER`, `HOST`, and `PRIVATE_KEY_FILE`; Kubernetes secret-name/key settings are server-only. The Helm chart mounts the same Secret at mode `0400` into the server and dynamically dispatched Jobs. Standalone worker deployments must mount that file themselves and supply the authoritative worker environment.
+
+Disabling the gate prevents create/update/reconfigure, start/resume/run-once, lifecycle redispatch, DBOS recovery, and newly launched worker execution for existing Snowflake-backed flows. It does not revoke an already running network connection inside an unchanged process; stop or terminate those workers and roll the deployment when changing this policy. Offline CLI planning validates only structural and credential-safe syntax. Online `flow plan --endpoint ...` calls the server's policy-aware `ValidateFlow` RPC before diffing and fails when the current deployment does not admit the flow.
+
 ## Canonical artifact publication
 
 `ack_policy=materialized` requires an ordinary versioned S3 bucket and the PostgreSQL workflow/checkpoint store. Current mapped Iceberg flows carry `materialization.projection_id=canonical_cdc_parquet_v2`; the durable destination mapping supplies logical target identity, while credentials and operational limits stay in worker deployment configuration. The v1 encoder remains frozen for historical artifacts.

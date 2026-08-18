@@ -29,6 +29,15 @@ workflowStore: postgres
 kubernetesDispatch:
   enabled: false
 
+snowflake:
+  enabled: false
+  account: ""
+  user: ""
+  host: ""
+  privateKeyFile: /run/secrets/wallaby/snowflake-key.pem
+  privateKeySecretName: ""
+  privateKeySecretKey: private-key.pem
+
 podAnnotations: {}
 
 podLabels: {}
@@ -69,6 +78,8 @@ tests:
 #     value: ":8080"
 #   - name: WALLABY_WIRE_FORMAT
 #     value: "arrow"
+# Snowflake-backed execution is default-deny. Configure the typed snowflake
+# block above; the chart mounts its Secret key into server and dispatched jobs.
 env: []
 
 # envFrom:

@@ -9,6 +9,27 @@ WALlaby exposes these Snowflake modes:
 | `postgresql-to-snowflake-streaming-rest-append-v1` | experimental (fails closed) | PostgreSQL 16 CDC appended to a Snowpipe Streaming channel, adopted only on SQL-observed row completeness. Admission is refused until a reviewed high-performance append transport is linked |
 | Generic `snowflake` and `snowpipe` | experimental | Legacy direct-table and file-loading behavior |
 
+## Deployment execution policy and credentials
+
+Snowflake-backed execution is **disabled by default**. The deployment operator must set both:
+
+```yaml
+snowflake:
+  enabled: true
+  account: xy12345
+  user: WALLABY_SERVICE
+  host: xy12345.snowflakecomputing.com
+  private_key_file: /run/secrets/wallaby/snowflake-key.pem
+  private_key_secret_name: wallaby-snowflake # required for Kubernetes dispatch
+  private_key_secret_key: private-key.pem
+```
+
+The equivalent server/worker variable families are `WALLABY_SNOWFLAKE_*` and `WALLABY_WORKER_SNOWFLAKE_*` for `ENABLED`, `ACCOUNT`, `USER`, `HOST`, and `PRIVATE_KEY_FILE`; the server also accepts `WALLABY_SNOWFLAKE_PRIVATE_KEY_SECRET_NAME` and `WALLABY_SNOWFLAKE_PRIVATE_KEY_SECRET_KEY` for dispatched Jobs. This deployment policy covers generic `snowflake`, generic `snowpipe`, and all three managed profiles. Flow options cannot enable or override it. Kubernetes dispatch passes the current policy as authoritative worker arguments, including an explicit `false` when disabled, and mounts the configured Secret key at mode `0400`.
+
+Snowflake DSNs persisted in flows may contain only the reviewed account/database/schema/warehouse/role identity fields and the small managed-session allowlist. Authority passwords, unknown driver controls, custom hosts/proxies/TLS settings, logging/diagnostic controls, private keys, passcodes, tokens, OAuth/client secrets, proxy passwords, credential/secret aliases, repeated aliases, and encoded variants are rejected before persistence. The parsed account, user, canonical host, HTTPS port, JWT authenticator, and fail-closed OCSP mode must equal the deployment policy before execution. Put no PEM or base64 key material in a DSN. The runtime preloads one deployment-owned, absolute, owner-only regular PEM file (PKCS#8 or PKCS#1 RSA, at least 2048 bits) and supplies it directly to `gosnowflake.NewConnector`; it never reconstructs an inline-key DSN. WALlaby pins gosnowflake logging to `OFF` with a process-owned client configuration, ignoring `SF_CLIENT_CONFIG_FILE` and default easy-logging files so flow/query data cannot be exposed by driver logging controls.
+
+Disabling the gate blocks new persistence, lifecycle transitions, reconciliation, DBOS recovery, and newly started workers for existing Snowflake-backed flows. It does not reach into a process that already holds an open connection: stop or terminate those workers and roll the deployment when revoking execution. Offline plan/check commands prove only structural and credential-safe flow syntax. `flow plan --endpoint ...` calls the server's policy-aware `ValidateFlow` RPC before producing a diff and fails when the current deployment does not admit the flow.
+
 These are implemented modeled protocol profiles, not blanket support claims for the Snowflake adapters. SQL and staged COPY have no reviewed Snowflake service version or deployment cell with every required same-SHA live recovery gate. Local tests, PostgreSQL tests, mocks, and fakesnow cannot promote them. Streaming additionally has no linked reviewed append transport, so it fails closed before external I/O. A maintained declaration requires complete unskipped real-service evidence on the reviewed SHA; Streaming also requires the concrete reviewed transport.
 
 The SQL profile provides **at-least-once delivery with external-commit reconciliation**. It does not claim exactly-once delivery.

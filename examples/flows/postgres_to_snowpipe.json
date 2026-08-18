@@ -30,7 +30,7 @@
       "snowpipe": {
         "auto_ingest": true,
         "copy_on_write": false,
-        "dsn": "user:pass@account/db/schema?role=SYSADMIN",
+        "dsn": "user@account/db/schema?authenticator=snowflake_jwt&ocspFailOpen=false&role=WALLABY_EXECUTION",
         "format": "WIRE_FORMAT_PARQUET",
         "stage": "@my_external_stage",
         "stage_path": "wallaby/"

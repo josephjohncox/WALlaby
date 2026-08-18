@@ -145,6 +145,8 @@
     - [SyncPublicationTablesRequest](#wallaby-v1-SyncPublicationTablesRequest)
     - [SyncPublicationTablesResponse](#wallaby-v1-SyncPublicationTablesResponse)
     - [UpdateFlowRequest](#wallaby-v1-UpdateFlowRequest)
+    - [ValidateFlowRequest](#wallaby-v1-ValidateFlowRequest)
+    - [ValidateFlowResponse](#wallaby-v1-ValidateFlowResponse)
 
     - [FlowService](#wallaby-v1-FlowService)
 
@@ -2591,6 +2593,36 @@ advanced only by durable data-plane execution receipts.
 
 
 
+<a name="wallaby-v1-ValidateFlowRequest"></a>
+
+### ValidateFlowRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| flow | [Flow](#wallaby-v1-Flow) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-ValidateFlowResponse"></a>
+
+### ValidateFlowResponse
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| admitted | [bool](#bool) |  |  |
+
+
+
+
+
+
 
 
 
@@ -2604,6 +2636,7 @@ FlowService stores flow definitions and controls lifecycle and PostgreSQL source
 
 | Method Name | Request Type | Response Type | Description |
 | ----------- | ------------ | ------------- | ------------|
+| ValidateFlow | [ValidateFlowRequest](#wallaby-v1-ValidateFlowRequest) | [ValidateFlowResponse](#wallaby-v1-ValidateFlowResponse) |  |
 | CreateFlow | [CreateFlowRequest](#wallaby-v1-CreateFlowRequest) | [Flow](#wallaby-v1-Flow) |  |
 | UpdateFlow | [UpdateFlowRequest](#wallaby-v1-UpdateFlowRequest) | [Flow](#wallaby-v1-Flow) |  |
 | ReconfigureFlow | [ReconfigureFlowRequest](#wallaby-v1-ReconfigureFlowRequest) | [Flow](#wallaby-v1-Flow) |  |

@@ -42,6 +42,13 @@ spec:
 {{- if .Values.args }}
           args: {{ toYaml .Values.args | nindent 12 }}
 {{- end }}
+{{- if .Values.snowflake.enabled }}
+          volumeMounts:
+            - name: snowflake-private-key
+              mountPath: {{ .Values.snowflake.privateKeyFile | quote }}
+              subPath: private-key.pem
+              readOnly: true
+{{- end }}
           ports:
             - name: grpc
               containerPort: {{ .Values.service.port }}
@@ -103,6 +110,20 @@ spec:
               value: {{ .Values.environment | quote }}
             - name: WALLABY_WORKFLOW_STORE
               value: {{ .Values.workflowStore | quote }}
+            - name: WALLABY_SNOWFLAKE_ENABLED
+              value: {{ .Values.snowflake.enabled | quote }}
+            - name: WALLABY_SNOWFLAKE_ACCOUNT
+              value: {{ .Values.snowflake.account | quote }}
+            - name: WALLABY_SNOWFLAKE_USER
+              value: {{ .Values.snowflake.user | quote }}
+            - name: WALLABY_SNOWFLAKE_HOST
+              value: {{ .Values.snowflake.host | quote }}
+            - name: WALLABY_SNOWFLAKE_PRIVATE_KEY_FILE
+              value: {{ .Values.snowflake.privateKeyFile | quote }}
+            - name: WALLABY_SNOWFLAKE_PRIVATE_KEY_SECRET_NAME
+              value: {{ .Values.snowflake.privateKeySecretName | quote }}
+            - name: WALLABY_SNOWFLAKE_PRIVATE_KEY_SECRET_KEY
+              value: {{ .Values.snowflake.privateKeySecretKey | quote }}
 {{- if .Values.kubernetesDispatch.enabled }}
             - name: WALLABY_K8S_ENABLED
               value: "true"
@@ -126,6 +147,17 @@ spec:
 {{- with .Values.resources }}
           resources:
 {{ toYaml . | indent 12 }}
+{{- end }}
+{{- if .Values.snowflake.enabled }}
+      volumes:
+        - name: snowflake-private-key
+          secret:
+            secretName: {{ required "snowflake.privateKeySecretName is required when snowflake.enabled=true" .Values.snowflake.privateKeySecretName | quote }}
+            defaultMode: 256
+            items:
+              - key: {{ required "snowflake.privateKeySecretKey is required when snowflake.enabled=true" .Values.snowflake.privateKeySecretKey | quote }}
+                path: private-key.pem
+                mode: 256
 {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
