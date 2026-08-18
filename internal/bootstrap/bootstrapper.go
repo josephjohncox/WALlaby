@@ -35,9 +35,11 @@ type Hooks struct {
 	AfterPublicationReceipt func(context.Context, ExportedSnapshot) error
 	BeforeHandoff           func(context.Context, ExportedSnapshot) error
 	AfterHandoff            func(context.Context, ExportedSnapshot) error
-	// DropSlot injects deterministic source drop failures in crash-window
-	// tests. Production leaves it nil and uses pg_drop_replication_slot.
-	DropSlot func(context.Context, string) error
+	// DropSlot and DropPublication inject deterministic source drop failures in
+	// crash-window tests. Production leaves them nil and executes PostgreSQL
+	// drop statements directly.
+	DropSlot        func(context.Context, string) error
+	DropPublication func(context.Context, string) error
 }
 
 // ExportedSnapshot is the durable slot cut plus the diagnostic snapshot name.

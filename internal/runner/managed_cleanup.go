@@ -65,7 +65,13 @@ func (c ManagedSourceCleanup) CleanupSourceResources(ctx context.Context, f flow
 			retErr = errors.Join(retErr, fmt.Errorf("finish managed cleanup authority: %w", finishErr))
 		}
 	}()
-	if err := cleaner.CleanupManagedResources(ctx, fence, sourceSpec); err != nil {
+	guard := func(guardCtx context.Context, identity connector.CleanupResourceIdentity, operation func(context.Context) error) error {
+		if err := c.Authority.GuardCleanupFence(guardCtx, fence, lease, identity, operation); err != nil {
+			return fmt.Errorf("guard managed cleanup authority: %w", err)
+		}
+		return nil
+	}
+	if err := cleaner.CleanupManagedResources(ctx, fence, sourceSpec, guard); err != nil {
 		return fmt.Errorf("clean managed source resources: %w", err)
 	}
 	return nil

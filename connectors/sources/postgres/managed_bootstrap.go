@@ -34,9 +34,12 @@ const (
 // CleanupManagedResources retires exact owned source resources under terminal
 // lifecycle authority. It constructs a fresh source connection so cleanup is
 // recoverable by the control-plane process even when the worker was killed.
-func (s *Source) CleanupManagedResources(ctx context.Context, fence connector.CleanupFence, spec connector.RuntimeSpec) (retErr error) {
+func (s *Source) CleanupManagedResources(ctx context.Context, fence connector.CleanupFence, spec connector.RuntimeSpec, guard connector.CleanupFenceGuard) (retErr error) {
 	if err := fence.Validate(); err != nil {
 		return err
+	}
+	if guard == nil {
+		return errors.New("managed PostgreSQL cleanup requires cleanup authority guard")
 	}
 	if s.ManagedControl == nil {
 		return errors.New("managed PostgreSQL cleanup requires shared control PostgreSQL")
@@ -56,7 +59,7 @@ func (s *Source) CleanupManagedResources(ctx context.Context, fence connector.Cl
 	if err != nil {
 		return err
 	}
-	return coordinator.CleanupOwnedResources(ctx, fence)
+	return coordinator.CleanupOwnedResources(ctx, fence, guard)
 }
 
 // PrepareManagedBootstrap runs or recovers the slot-anchored snapshot before

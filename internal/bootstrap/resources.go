@@ -165,6 +165,9 @@ func (b *Bootstrapper) prepareOwnedSlot(ctx context.Context, fence authority.Run
 	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
 		return preparedResource{}, "", err
 	}
+	if err := lockSourceResourceIdentity(ctx, tx, sourceSystem, databaseName, "slot", slotName); err != nil {
+		return preparedResource{}, "", err
+	}
 	var existingName, state string
 	err = tx.QueryRow(ctx, `
 SELECT physical_name,state FROM source_resources
@@ -300,6 +303,9 @@ func (b *Bootstrapper) prepareResource(ctx context.Context, fence authority.RunF
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
+		return preparedResource{}, err
+	}
+	if err := lockSourceResourceIdentity(ctx, tx, snapshot.SourceSystem, snapshot.DatabaseName, kind, name); err != nil {
 		return preparedResource{}, err
 	}
 	if snapshot.BootstrapID != uuid.Nil {
@@ -495,7 +501,10 @@ type terminalResource struct {
 // the external side effect but before the source resource became durable. The
 // slot is always retired before the publication; adopted resources are not
 // selected and pause never calls this terminal path.
-func (b *Bootstrapper) CleanupOwnedResources(ctx context.Context, fence authority.CleanupFence) error {
+func (b *Bootstrapper) CleanupOwnedResources(ctx context.Context, fence authority.CleanupFence, guard connector.CleanupFenceGuard) error {
+	if guard == nil {
+		return errors.New("terminal source cleanup requires cleanup authority guard")
+	}
 	tx, err := b.control.Begin(ctx)
 	if err != nil {
 		return err
@@ -565,14 +574,14 @@ FOR UPDATE`, fence.FlowIncarnationID)
 		return err
 	}
 	for _, resource := range resources {
-		if err := b.cleanupOwnedResource(ctx, fence, resource); err != nil {
+		if err := b.cleanupOwnedResource(ctx, fence, resource, guard); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (b *Bootstrapper) cleanupOwnedResource(ctx context.Context, fence authority.CleanupFence, resource terminalResource) error {
+func (b *Bootstrapper) cleanupOwnedResource(ctx context.Context, fence authority.CleanupFence, resource terminalResource, guard connector.CleanupFenceGuard) error {
 	var liveSystem, liveDatabase string
 	if err := b.source.QueryRow(ctx, `SELECT system_identifier::text,current_database() FROM pg_catalog.pg_control_system()`).Scan(&liveSystem, &liveDatabase); err != nil {
 		return fmt.Errorf("verify terminal cleanup source identity: %w", err)
@@ -596,18 +605,20 @@ func (b *Bootstrapper) cleanupOwnedResource(ctx context.Context, fence authority
 
 	absent, inspectErr := b.terminalResourceAbsent(ctx, resource)
 	if inspectErr == nil && !absent {
+		// The control-plane authority lock remains held across the physical
+		// identity lock and external delete, so no replacement cleanup can be
+		// acquired while this process is inside the irreversible operation.
 		var dropErr error
-		switch resource.kind {
-		case "slot":
-			if b.hooks.DropSlot != nil {
-				dropErr = b.hooks.DropSlot(ctx, resource.name)
-			} else {
-				_, dropErr = b.source.Exec(ctx, `SELECT pg_catalog.pg_drop_replication_slot($1)`, resource.name)
-			}
-		case "publication":
-			dropErr = b.dropPublication(ctx, resource.name)
-		default:
-			return fmt.Errorf("unsupported terminal resource kind %q", resource.kind)
+		identity := connector.CleanupResourceIdentity{
+			FlowIncarnationID: fence.FlowIncarnationID, ResourceID: resource.id,
+			SourceSystemID: resource.system, DatabaseName: resource.database,
+			ResourceKind: resource.kind, PhysicalName: resource.name,
+		}
+		if err := guard(ctx, identity, func(guardCtx context.Context) error {
+			dropErr = b.dropTerminalResource(guardCtx, resource)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("guard cleanup fence while dropping %s %q: %w", resource.kind, resource.name, err)
 		}
 		absent, inspectErr = b.terminalResourceAbsent(ctx, resource)
 		if inspectErr != nil || !absent {
@@ -625,7 +636,7 @@ func (b *Bootstrapper) cleanupOwnedResource(ctx context.Context, fence authority
 	if resource.orphan {
 		return b.finalizeTerminalOrphanCreate(ctx, fence, resource)
 	}
-	return b.finalizeTerminalDrop(ctx, fence, operationID, resource)
+	return b.finalizeTerminalDrop(ctx, fence, resource)
 }
 
 func (b *Bootstrapper) prepareTerminalDrop(ctx context.Context, fence authority.CleanupFence, resource terminalResource) (uuid.UUID, error) {
@@ -713,6 +724,36 @@ SELECT database,plugin,slot_type,active FROM pg_catalog.pg_replication_slots WHE
 	}
 }
 
+func sourceResourceAuthorityKey(system, database, kind, name string) string {
+	return strings.Join([]string{system, database, kind, name}, "\x1f")
+}
+
+func lockSourceResourceIdentity(ctx context.Context, tx pgx.Tx, system, database, kind, name string) error {
+	_, err := tx.Exec(ctx, `SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1,0))`, sourceResourceAuthorityKey(system, database, kind, name))
+	if err != nil {
+		return fmt.Errorf("lock source resource identity: %w", err)
+	}
+	return nil
+}
+
+func (b *Bootstrapper) dropTerminalResource(ctx context.Context, resource terminalResource) error {
+	switch resource.kind {
+	case "slot":
+		if b.hooks.DropSlot != nil {
+			return b.hooks.DropSlot(ctx, resource.name)
+		}
+		_, err := b.source.Exec(ctx, `SELECT pg_catalog.pg_drop_replication_slot($1)`, resource.name)
+		return err
+	case "publication":
+		if b.hooks.DropPublication != nil {
+			return b.hooks.DropPublication(ctx, resource.name)
+		}
+		return b.dropPublication(ctx, resource.name)
+	default:
+		return fmt.Errorf("unsupported terminal resource kind %q", resource.kind)
+	}
+}
+
 func (b *Bootstrapper) finalizeTerminalOrphanCreate(ctx context.Context, fence authority.CleanupFence, resource terminalResource) error {
 	tx, err := b.control.Begin(ctx)
 	if err != nil {
@@ -754,7 +795,7 @@ func (b *Bootstrapper) markTerminalDropIndeterminate(ctx context.Context, fence 
 	return tx.Commit(ctx)
 }
 
-func (b *Bootstrapper) finalizeTerminalDrop(ctx context.Context, fence authority.CleanupFence, operationID uuid.UUID, resource terminalResource) error {
+func (b *Bootstrapper) finalizeTerminalDrop(ctx context.Context, fence authority.CleanupFence, resource terminalResource) error {
 	tx, err := b.control.Begin(ctx)
 	if err != nil {
 		return err
@@ -776,10 +817,10 @@ WHERE flow_incarnation_id=$1 AND resource_kind=$2 AND resource_id=$3
 	tag, err = tx.Exec(ctx, `
 UPDATE source_resource_operations
 SET status='applied',external_evidence=jsonb_build_object('resource_absent',true),completed_at=clock_timestamp()
-WHERE flow_incarnation_id=$2 AND resource_kind=$3 AND resource_id=$4
-  AND operation='drop' AND desired_revision=$5
-  AND status IN ('prepared','indeterminate')
-  AND (operation_id=$1 OR status='indeterminate')`, operationID, fence.FlowIncarnationID, resource.kind, resource.id, resource.revision)
+WHERE flow_incarnation_id=$1 AND resource_kind=$2 AND resource_id=$3
+  AND operation='drop' AND desired_revision=$4
+  AND source_system_id=$5 AND database_name=$6 AND physical_name=$7
+  AND status IN ('prepared','indeterminate')`, fence.FlowIncarnationID, resource.kind, resource.id, resource.revision, resource.system, resource.database, resource.name)
 	if err != nil {
 		return err
 	}

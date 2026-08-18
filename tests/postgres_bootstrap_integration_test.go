@@ -358,6 +358,233 @@ WHERE bootstrap_id=$1`, session.Snapshot.BootstrapID, policy.ProjectionFingerpri
 	}
 }
 
+func TestCleanupRenewalQuiescenceAndDeleteGate(t *testing.T) {
+	ctx, dsn, engine, pool, authorityStore := setupBootstrapControl(t)
+	defer engine.Close()
+	defer pool.Close()
+	flowID := fmt.Sprintf("cleanup-renewal-%d", time.Now().UnixNano())
+	defer cleanupAuthorityTest(context.Background(), pool, flowID)
+	fence := createRunningFence(t, ctx, engine, authorityStore, flowID)
+	prepareBootstrapRelation(t, ctx, pool)
+	defer cleanupBootstrapRelation(context.Background(), pool)
+	sourcePool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sourcePool.Close()
+
+	var sourceSystem, databaseName string
+	if err := pool.QueryRow(ctx, `SELECT system_identifier::text,current_database() FROM pg_catalog.pg_control_system()`).Scan(&sourceSystem, &databaseName); err != nil {
+		t.Fatal(err)
+	}
+	var relationOID uint32
+	if err := pool.QueryRow(ctx, `SELECT 'public.wallaby_bootstrap_source'::regclass::oid`).Scan(&relationOID); err != nil {
+		t.Fatal(err)
+	}
+	relations := []bootstrap.PublicationRelation{{OID: relationOID, Namespace: "public", Table: "wallaby_bootstrap_source", RelationKind: "r"}}
+	publication := fmt.Sprintf("wallaby_cleanup_renewal_%d", time.Now().UnixNano())
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `DROP PUBLICATION IF EXISTS `+pgx.Identifier{publication}.Sanitize())
+	}()
+	coordinator, err := bootstrap.NewBootstrapper(ctx, pool, dsn, sourcePool, bootstrap.Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := bootstrap.ExpectedPublicationRevision(publication, relations)
+	resource, err := coordinator.EnsurePublication(ctx, fence, bootstrap.ExportedSnapshot{SourceSystem: sourceSystem, DatabaseName: databaseName}, publication, revision, relations, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slotSession, err := coordinator.Start(ctx, fence, publication, "cleanup-renewal-manifest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	slotName := slotSession.Snapshot.SlotName
+	if err := slotSession.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `SELECT pg_catalog.pg_drop_replication_slot($1) WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_replication_slots WHERE slot_name=$1)`, slotName)
+	}()
+	// Seed an older exact indeterminate attempt. Terminal finalization must close
+	// it together with the new cleanup acquisition's prepared attempt.
+	if _, err := pool.Exec(ctx, `
+INSERT INTO source_resource_operations(
+ operation_id,flow_incarnation_id,resource_kind,resource_id,operation,desired_revision,
+ generation,acquisition_id,lease_epoch,status,source_system_id,database_name,physical_name
+) VALUES($1,$2,'publication',$3,'drop',$4,$5,$6,$7,'indeterminate',$8,$9,$10)`,
+		uuid.New(), fence.FlowIncarnationID, resource.ID, revision, fence.Generation,
+		fence.AcquisitionID, fence.LeaseEpoch, sourceSystem, databaseName, publication); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorityStore.FinishProducer(ctx, fence, "prepare terminal cleanup test"); err != nil {
+		t.Fatal(err)
+	}
+	_, stopControl, err := engine.RequestStop(ctx, flowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredExecution := "expired-execution-" + uuid.NewString()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO flow_executions(flow_id,execution_id,backend,status,started_at,generation,heartbeat_at,lease_expires_at,incarnation_id)
+VALUES($1,$2,'test','running',clock_timestamp(),$3,clock_timestamp(),clock_timestamp()-interval '1 second',$4)`,
+		flowID, expiredExecution, stopControl.Generation, fence.FlowIncarnationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authorityStore.AcquireCleanupFence(ctx, flowID, stopControl.Generation, time.Minute); !errors.Is(err, authority.ErrLeaseHeld) {
+		t.Fatalf("cleanup acquisition with expired running execution error=%v, want ErrLeaseHeld", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE flow_executions SET status='finished',finished_at=clock_timestamp() WHERE flow_id=$1 AND execution_id=$2`, flowID, expiredExecution); err != nil {
+		t.Fatal(err)
+	}
+	cleanupFence, err := authorityStore.AcquireCleanupFence(ctx, flowID, stopControl.Generation, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both renewal and transactional validation must fail closed if any running
+	// execution appears after cleanup acquisition, even when its lease expired.
+	if _, err := pool.Exec(ctx, `
+INSERT INTO flow_executions(flow_id,execution_id,backend,status,started_at,generation,heartbeat_at,lease_expires_at,incarnation_id)
+VALUES($1,$2,'test','running',clock_timestamp(),$3,clock_timestamp(),clock_timestamp()-interval '1 second',$4)`,
+		flowID, "late-execution-"+uuid.NewString(), cleanupFence.Generation, cleanupFence.FlowIncarnationID); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorityStore.RenewCleanupFence(ctx, cleanupFence, time.Minute); !errors.Is(err, authority.ErrLeaseExpired) {
+		t.Fatalf("renew with active execution error=%v, want ErrLeaseExpired", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validateErr := authority.ValidateCleanupFence(ctx, tx, cleanupFence)
+	_ = tx.Rollback(ctx)
+	if !errors.Is(validateErr, authority.ErrFenceRejected) {
+		t.Fatalf("validate with active execution error=%v, want ErrFenceRejected", validateErr)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE flow_executions SET status='finished',finished_at=clock_timestamp(),lease_expires_at=clock_timestamp() WHERE incarnation_id=$1 AND status='running'`, cleanupFence.FlowIncarnationID); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorityStore.RenewCleanupFence(ctx, cleanupFence, time.Minute); err != nil {
+		t.Fatalf("renew after quiescence: %v", err)
+	}
+
+	slotDrops, publicationDrops := 0, 0
+	ambiguousDelete := errors.New("injected delete response loss after external success")
+	var replacementFence authority.CleanupFence
+	var guardedTakeovers []<-chan error
+	probeGuardedTakeover := func(_ context.Context) error {
+		result := make(chan error, 1)
+		go func() {
+			_, err := authorityStore.AcquireCleanupFence(context.Background(), flowID, replacementFence.Generation, time.Minute)
+			result <- err
+		}()
+		select {
+		case err := <-result:
+			return fmt.Errorf("replacement acquisition completed inside guarded delete: %w", err)
+		case <-time.After(150 * time.Millisecond):
+			guardedTakeovers = append(guardedTakeovers, result)
+			return nil
+		}
+	}
+	coordinator, err = bootstrap.NewBootstrapper(ctx, pool, dsn, sourcePool, bootstrap.Hooks{DropSlot: func(dropCtx context.Context, name string) error {
+		slotDrops++
+		if err := probeGuardedTakeover(dropCtx); err != nil {
+			return err
+		}
+		if _, dropErr := sourcePool.Exec(dropCtx, `SELECT pg_catalog.pg_drop_replication_slot($1)`, name); dropErr != nil {
+			return dropErr
+		}
+		return ambiguousDelete
+	},
+		DropPublication: func(dropCtx context.Context, name string) error {
+			publicationDrops++
+			if err := probeGuardedTakeover(dropCtx); err != nil {
+				return err
+			}
+			if _, dropErr := sourcePool.Exec(dropCtx, `DROP PUBLICATION `+pgx.Identifier{name}.Sanitize()); dropErr != nil {
+				return dropErr
+			}
+			return ambiguousDelete
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.CleanupOwnedResources(ctx, cleanupFence, func(renewCtx context.Context, _ connector.CleanupResourceIdentity, _ func(context.Context) error) error {
+		if _, err := pool.Exec(renewCtx, `UPDATE producer_leases SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE incarnation_id=$1 AND acquisition_id=$2`, cleanupFence.FlowIncarnationID, cleanupFence.AcquisitionID); err != nil {
+			return err
+		}
+		var err error
+		replacementFence, err = authorityStore.AcquireCleanupFence(renewCtx, flowID, cleanupFence.Generation, time.Minute)
+		if err != nil {
+			return err
+		}
+		return authorityStore.RenewCleanupFence(renewCtx, cleanupFence, time.Minute)
+	}); !errors.Is(err, authority.ErrLeaseExpired) {
+		t.Fatalf("stale cleanup renewal error=%v, want ErrLeaseExpired", err)
+	}
+	var exists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_publication WHERE pubname=$1)`, publication).Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	var slotExists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_replication_slots WHERE slot_name=$1)`, slotName).Scan(&slotExists); err != nil {
+		t.Fatal(err)
+	}
+	if slotDrops != 0 || publicationDrops != 0 || !slotExists || !exists {
+		t.Fatalf("failed renewal slot_drops=%d publication_drops=%d slot_exists=%t publication_exists=%t", slotDrops, publicationDrops, slotExists, exists)
+	}
+
+	renewals := 0
+	if err := coordinator.CleanupOwnedResources(ctx, replacementFence, func(renewCtx context.Context, identity connector.CleanupResourceIdentity, operation func(context.Context) error) error {
+		renewals++
+		return authorityStore.GuardCleanupFence(renewCtx, replacementFence, 100*time.Millisecond, identity, operation)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if renewals != 2 || slotDrops != 1 || publicationDrops != 1 || len(guardedTakeovers) != 2 {
+		t.Fatalf("successful cleanup renewals=%d slot_drops=%d publication_drops=%d guarded_takeovers=%d, want 2/1/1/2", renewals, slotDrops, publicationDrops, len(guardedTakeovers))
+	}
+	for _, result := range guardedTakeovers {
+		select {
+		case err := <-result:
+			if !errors.Is(err, authority.ErrLeaseHeld) {
+				t.Fatalf("post-guard replacement acquisition error=%v, want ErrLeaseHeld", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("replacement acquisition remained blocked after guarded delete completed")
+		}
+	}
+	var unresolved, applied int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FILTER (WHERE status IN ('prepared','indeterminate')),
+       count(*) FILTER (WHERE status='applied' AND external_evidence->>'resource_absent'='true')
+FROM source_resource_operations
+WHERE flow_incarnation_id=$1 AND resource_kind='publication' AND resource_id=$2
+  AND operation='drop' AND desired_revision=$3 AND source_system_id=$4
+  AND database_name=$5 AND physical_name=$6`, cleanupFence.FlowIncarnationID, resource.ID, revision, sourceSystem, databaseName, publication).Scan(&unresolved, &applied); err != nil {
+		t.Fatal(err)
+	}
+	if unresolved != 0 || applied != 2 {
+		t.Fatalf("exact publication drop attempts unresolved=%d applied=%d, want 0/2", unresolved, applied)
+	}
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FILTER (WHERE status IN ('prepared','indeterminate')),
+       count(*) FILTER (WHERE status='applied' AND external_evidence->>'resource_absent'='true')
+FROM source_resource_operations
+WHERE flow_incarnation_id=$1 AND resource_kind='slot' AND physical_name=$2
+  AND operation='drop'`, cleanupFence.FlowIncarnationID, slotName).Scan(&unresolved, &applied); err != nil {
+		t.Fatal(err)
+	}
+	if unresolved != 0 || applied != 2 {
+		t.Fatalf("exact slot drop attempts unresolved=%d applied=%d, want 0/2", unresolved, applied)
+	}
+	if err := authorityStore.FinishCleanup(ctx, replacementFence, "test_cleanup_complete"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestManagedTerminalStopHardCrashSlotBeforePersist(t *testing.T) {
 	if os.Getenv("WALLABY_TEST_BOOTSTRAP_SIGKILL_HELPER") == "1" {
 		runBootstrapSIGKILLHelper(t)
@@ -426,7 +653,9 @@ func TestManagedTerminalStopHardCrashSlotBeforePersist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := terminalCoordinator.CleanupOwnedResources(ctx, cleanupFence); err != nil {
+	if err := terminalCoordinator.CleanupOwnedResources(ctx, cleanupFence, func(ctx context.Context, identity connector.CleanupResourceIdentity, operation func(context.Context) error) error {
+		return authorityStore.GuardCleanupFence(ctx, cleanupFence, time.Minute, identity, operation)
+	}); err != nil {
 		t.Fatalf("terminal cleanup did not reconcile hard-killed slot: %v", err)
 	}
 	if err := authorityStore.FinishCleanup(ctx, cleanupFence, "test_cleanup_complete"); err != nil {
@@ -556,6 +785,33 @@ WHERE flow_incarnation_id=$1 AND resource_kind='publication' AND physical_name=$
 		t.Fatalf("removed prepared publication resource rows=%d, want operation-only journal", tag.RowsAffected())
 	}
 
+	// A second flow that durably adopts the exact physical publication must
+	// prevent the first flow's operation-only orphan cleanup from deleting it.
+	adopterID := fmt.Sprintf("publication-adopter-%d", time.Now().UnixNano())
+	defer cleanupAuthorityTest(context.Background(), pool, adopterID)
+	adopterFence := createRunningFence(t, ctx, engine, authorityStore, adopterID)
+	var sourceSystem, databaseName string
+	if err := pool.QueryRow(ctx, `SELECT system_identifier::text,current_database() FROM pg_catalog.pg_control_system()`).Scan(&sourceSystem, &databaseName); err != nil {
+		t.Fatal(err)
+	}
+	var relationOID uint32
+	if err := pool.QueryRow(ctx, `SELECT 'public.wallaby_bootstrap_source'::regclass::oid`).Scan(&relationOID); err != nil {
+		t.Fatal(err)
+	}
+	relations := []bootstrap.PublicationRelation{{OID: relationOID, Namespace: "public", Table: "wallaby_bootstrap_source", RelationKind: "r"}}
+	revision := bootstrap.ExpectedPublicationRevision(publication, relations)
+	adopterCoordinator, err := bootstrap.NewBootstrapper(ctx, pool, dsn, pool, bootstrap.Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adopted, err := adopterCoordinator.EnsurePublication(ctx, adopterFence, bootstrap.ExportedSnapshot{SourceSystem: sourceSystem, DatabaseName: databaseName}, publication, revision, relations, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adopted.Owned {
+		t.Fatal("existing publication was not recorded as adopted")
+	}
+
 	if err := authorityStore.FinishProducer(ctx, fence, "hard_crash_observed"); err != nil {
 		t.Fatal(err)
 	}
@@ -571,8 +827,26 @@ WHERE flow_incarnation_id=$1 AND resource_kind='publication' AND physical_name=$
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := terminalCoordinator.CleanupOwnedResources(ctx, cleanupFence); err != nil {
-		t.Fatalf("terminal cleanup did not reconcile hard-killed publication: %v", err)
+	guard := func(ctx context.Context, identity connector.CleanupResourceIdentity, operation func(context.Context) error) error {
+		return authorityStore.GuardCleanupFence(ctx, cleanupFence, time.Minute, identity, operation)
+	}
+	if err := terminalCoordinator.CleanupOwnedResources(ctx, cleanupFence, guard); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("operation-only cleanup with adopted alias error=%v, want delivery conflict", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_publication WHERE pubname=$1)`, publication).Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		t.Fatal("operation-only cleanup deleted a publication recorded as adopted")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE source_resources SET state='retired',updated_at=clock_timestamp() WHERE flow_incarnation_id=$1 AND resource_kind='publication' AND resource_id=$2 AND ownership='adopted'`, adopterFence.FlowIncarnationID, adopted.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorityStore.FinishProducer(ctx, adopterFence, "release adopted publication test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := terminalCoordinator.CleanupOwnedResources(ctx, cleanupFence, guard); err != nil {
+		t.Fatalf("terminal cleanup did not reconcile hard-killed publication after adoption release: %v", err)
 	}
 	if err := authorityStore.FinishCleanup(ctx, cleanupFence, "test_cleanup_complete"); err != nil {
 		t.Fatal(err)
