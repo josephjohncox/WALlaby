@@ -14,17 +14,18 @@ import (
 
 // Grant is a nominal, repository-internal managed-part write capability.
 type Grant struct {
-	reservationID string
-	guard         func(context.Context, connector.ManagedPartIdentity, func(context.Context) error) error
+	reservationID          string
+	requiresReconciliation bool
+	guard                  func(context.Context, connector.ManagedPartIdentity, func(context.Context) error) error
 }
 
 // NewGrant is callable only by packages inside this repository's internal
 // import boundary. Production grants are issued by the delivery coordinator.
-func NewGrant(reservationID string, guard func(context.Context, connector.ManagedPartIdentity, func(context.Context) error) error) (*Grant, error) {
+func NewGrant(reservationID string, requiresReconciliation bool, guard func(context.Context, connector.ManagedPartIdentity, func(context.Context) error) error) (*Grant, error) {
 	if strings.TrimSpace(reservationID) == "" || guard == nil {
 		return nil, errors.New("managed part authority is incomplete")
 	}
-	return &Grant{reservationID: reservationID, guard: guard}, nil
+	return &Grant{reservationID: reservationID, requiresReconciliation: requiresReconciliation, guard: guard}, nil
 }
 
 func (g *Grant) ReservationID() string {
@@ -32,6 +33,12 @@ func (g *Grant) ReservationID() string {
 		return ""
 	}
 	return g.reservationID
+}
+
+// RequiresReconciliation reports whether this grant adopted a pre-existing
+// reservation whose external part progress must be reconciled before replay.
+func (g *Grant) RequiresReconciliation() bool {
+	return g != nil && g.requiresReconciliation
 }
 
 func (g *Grant) GuardPartWrite(ctx context.Context, part connector.ManagedPartIdentity, write func(context.Context) error) error {

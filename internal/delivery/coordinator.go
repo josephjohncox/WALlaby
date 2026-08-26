@@ -288,7 +288,7 @@ func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.Ru
 		if reservation == nil {
 			return AckGrant{}, errors.New("managed part reservation was not persisted")
 		}
-		grant, grantErr := partauthority.NewGrant(reservation.ReservationID(), reservation.GuardPartWrite)
+		grant, grantErr := partauthority.NewGrant(reservation.ReservationID(), reservation.requiresReconciliation, reservation.GuardPartWrite)
 		if grantErr != nil {
 			return AckGrant{}, fmt.Errorf("issue managed part authority: %w", grantErr)
 		}
@@ -808,16 +808,17 @@ func stringMapEqual(left, right map[string]string) bool {
 }
 
 type postgresPartReservation struct {
-	pool              *pgxpool.Pool
-	fence             authority.RunFence
-	reservationID     uuid.UUID
-	destinationID     string
-	logicalBatchID    string
-	contentHash       string
-	serverActiveParts int64
-	reservedParts     int64
-	capacity          int64
-	reservationEpoch  int64
+	pool                   *pgxpool.Pool
+	fence                  authority.RunFence
+	reservationID          uuid.UUID
+	destinationID          string
+	logicalBatchID         string
+	contentHash            string
+	serverActiveParts      int64
+	reservedParts          int64
+	capacity               int64
+	reservationEpoch       int64
+	requiresReconciliation bool
 }
 
 func (r *postgresPartReservation) ReservationID() string {
@@ -971,7 +972,7 @@ WHERE reservation_id=$1 AND reservation_state='reserved'`, reservationID, fence.
 		if err := recordManagedPartEvent(ctx, tx, reservationID, reservationEpoch, "adopted", fence, active, charged); err != nil {
 			return nil, err
 		}
-		return &postgresPartReservation{fence: fence, reservationID: reservationID, destinationID: request.DestinationRevisionID, logicalBatchID: request.LogicalBatchID, contentHash: request.ContentHash, serverActiveParts: active, reservedParts: charged, capacity: limit, reservationEpoch: reservationEpoch}, nil
+		return &postgresPartReservation{fence: fence, reservationID: reservationID, destinationID: request.DestinationRevisionID, logicalBatchID: request.LogicalBatchID, contentHash: request.ContentHash, serverActiveParts: active, reservedParts: charged, capacity: limit, reservationEpoch: reservationEpoch, requiresReconciliation: true}, nil
 	}
 	if exists && state == "completed_pending_observation" {
 		return nil, fmt.Errorf("%w: completed managed part reservation requires receipt reconciliation", connector.ErrDeliveryIndeterminate)

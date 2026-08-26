@@ -652,14 +652,22 @@ func (p *preparedManagedTransaction) Apply(ctx context.Context) (connector.Deliv
 	for _, fragment := range p.plan.Fragments {
 		part := connector.ManagedPartIdentity{Kind: "changelog", Ordinal: fragment.Ordinal, QueryID: fragment.QueryID}
 		if err := p.reservation.GuardPartWrite(ctx, part, func(writeCtx context.Context) error {
-			disposition, err := p.destination.reconcileManagedFragment(writeCtx, fragment)
-			if err != nil {
-				return err
-			}
-			if disposition == connector.DeliveryNotApplied {
-				if err := p.destination.insertManagedFragment(writeCtx, fragment); err != nil {
+			if p.reservation.RequiresReconciliation() {
+				disposition, err := p.destination.reconcileManagedFragment(writeCtx, fragment)
+				if err != nil {
 					return err
 				}
+				switch disposition {
+				case connector.DeliveryApplied:
+				case connector.DeliveryNotApplied:
+					if err := p.destination.insertManagedFragment(writeCtx, fragment); err != nil {
+						return err
+					}
+				default:
+					return fmt.Errorf("%w: fragment reconciliation is incomplete", connector.ErrDeliveryIndeterminate)
+				}
+			} else if err := p.destination.insertManagedFragment(writeCtx, fragment); err != nil {
+				return err
 			}
 			if p.destination.managedAfterPartWriteHook != nil {
 				return p.destination.managedAfterPartWriteHook(writeCtx, part)
@@ -671,17 +679,22 @@ func (p *preparedManagedTransaction) Apply(ctx context.Context) (connector.Deliv
 	}
 	receiptPart := connector.ManagedPartIdentity{Kind: "receipt", Ordinal: 0, QueryID: p.plan.Receipt.QueryID}
 	if err := p.reservation.GuardPartWrite(ctx, receiptPart, func(writeCtx context.Context) error {
-		disposition, _, err := p.destination.Reconcile(writeCtx, p.intent)
-		if err != nil {
-			return err
-		}
-		if disposition == connector.DeliveryIndeterminate {
-			return fmt.Errorf("%w: receipt endpoints disagree before guarded write", connector.ErrDeliveryIndeterminate)
-		}
-		if disposition == connector.DeliveryNotApplied {
-			if err := p.destination.insertManagedReceipt(writeCtx, p.plan.Receipt); err != nil {
+		if p.reservation.RequiresReconciliation() {
+			disposition, _, err := p.destination.Reconcile(writeCtx, p.intent)
+			if err != nil {
 				return err
 			}
+			switch disposition {
+			case connector.DeliveryApplied:
+			case connector.DeliveryNotApplied:
+				if err := p.destination.insertManagedReceipt(writeCtx, p.plan.Receipt); err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("%w: receipt endpoints disagree before guarded write", connector.ErrDeliveryIndeterminate)
+			}
+		} else if err := p.destination.insertManagedReceipt(writeCtx, p.plan.Receipt); err != nil {
+			return err
 		}
 		if p.destination.managedAfterPartWriteHook != nil {
 			return p.destination.managedAfterPartWriteHook(writeCtx, receiptPart)
