@@ -26,9 +26,9 @@ CREATE TABLE managed_part_reservations (
   reclaim_started_at TIMESTAMPTZ,
   released_at TIMESTAMPTZ,
   CONSTRAINT managed_part_reservations_manifest_fkey FOREIGN KEY (
-    flow_incarnation_id,destination_revision_id,logical_batch_id
+    flow_incarnation_id,destination_revision_id,position_id
   ) REFERENCES delivery_manifests (
-    flow_incarnation_id,destination_revision_id,logical_batch_id
+    flow_incarnation_id,destination_revision_id,position_id
   ) ON DELETE RESTRICT,
   CONSTRAINT managed_part_reservations_state_complete CHECK (
     (reservation_state='reserved' AND completed_at IS NULL AND reclaim_started_at IS NULL AND released_at IS NULL) OR
