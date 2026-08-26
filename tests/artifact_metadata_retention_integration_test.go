@@ -19,7 +19,6 @@ import (
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -478,27 +477,32 @@ WHERE checkpoint.flow_incarnation_id=$1 AND receipt.consumer_revision_id=checkpo
 			}
 		}
 
-		oldMeterProvider := otel.GetMeterProvider()
 		reader := sdkmetric.NewManualReader()
-		otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
-		restoreMetrics := telemetry.ResetDurableMetricsForTest()
-		defer func() {
-			restoreMetrics()
-			otel.SetMeterProvider(oldMeterProvider)
-		}()
+		meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+		defer func() { _ = meterProvider.Shutdown(context.Background()) }()
+		metricRecorder, err := telemetry.NewArtifactMetadataPruneRecorder(meterProvider.Meter("wallaby/durable"))
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		injected := errors.New("injected failure after first committed metadata claim")
 		claimed := make([]uuid.UUID, 0, 2)
-		metricPruner, err := artifactlog.NewMetadataPruner(pool, artifactlog.WithMetadataPrunerHooks(artifactlog.MetadataPrunerHooks{Boundary: func(_ context.Context, boundary string, publicationID uuid.UUID) error {
-			if boundary != "after_metadata_claim" {
+		metricPruner, err := artifactlog.NewMetadataPruner(
+			pool,
+			artifactlog.WithMetadataPrunerStatsRecorder(func(ctx context.Context, stats artifactlog.MetadataPruneStats) {
+				metricRecorder.Record(ctx, int64(stats.PublicationsScanned), int64(stats.PublicationsDeleted), int64(stats.PublicationsDeferred), int64(stats.RowsDeleted))
+			}),
+			artifactlog.WithMetadataPrunerHooks(artifactlog.MetadataPrunerHooks{Boundary: func(_ context.Context, boundary string, publicationID uuid.UUID) error {
+				if boundary != "after_metadata_claim" {
+					return nil
+				}
+				claimed = append(claimed, publicationID)
+				if len(claimed) == 2 {
+					return injected
+				}
 				return nil
-			}
-			claimed = append(claimed, publicationID)
-			if len(claimed) == 2 {
-				return injected
-			}
-			return nil
-		}}))
+			}}),
+		)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -36,20 +36,36 @@ func WithMetadataPrunerHooks(hooks MetadataPrunerHooks) MetadataPrunerOption {
 	return func(pruner *MetadataPruner) { pruner.hooks = hooks }
 }
 
+// WithMetadataPrunerStatsRecorder binds a scoped committed-statistics recorder.
+// Production callers normally use the default durable telemetry recorder.
+func WithMetadataPrunerStatsRecorder(recorder func(context.Context, MetadataPruneStats)) MetadataPrunerOption {
+	return func(pruner *MetadataPruner) {
+		if recorder != nil {
+			pruner.recordStats = recorder
+		}
+	}
+}
+
 // MetadataPruner durably removes terminal artifact control history. A claim is
 // deliberately independent of the publication FK: restrictive children and the
 // publication can be removed in row-bounded transactions, then the tombstone is
 // removed by a later transaction. PostgreSQL remains the sole authority.
 type MetadataPruner struct {
-	pool  *pgxpool.Pool
-	hooks MetadataPrunerHooks
+	pool        *pgxpool.Pool
+	hooks       MetadataPrunerHooks
+	recordStats func(context.Context, MetadataPruneStats)
 }
 
 func NewMetadataPruner(pool *pgxpool.Pool, options ...MetadataPrunerOption) (*MetadataPruner, error) {
 	if pool == nil {
 		return nil, errors.New("artifact metadata pruner requires PostgreSQL")
 	}
-	pruner := &MetadataPruner{pool: pool}
+	pruner := &MetadataPruner{
+		pool: pool,
+		recordStats: func(ctx context.Context, stats MetadataPruneStats) {
+			telemetry.RecordArtifactMetadataPruneStats(ctx, int64(stats.PublicationsScanned), int64(stats.PublicationsDeleted), int64(stats.PublicationsDeferred), int64(stats.RowsDeleted))
+		},
+	}
 	for _, option := range options {
 		option(pruner)
 	}
@@ -68,7 +84,7 @@ func (p *MetadataPruner) Prune(ctx context.Context, fence authority.RunFence, ho
 	defer func() {
 		// These counters describe committed work. Recording from the defer keeps
 		// earlier committed phases visible when a later claim fails.
-		telemetry.RecordArtifactMetadataPruneStats(ctx, int64(stats.PublicationsScanned), int64(stats.PublicationsDeleted), int64(stats.PublicationsDeferred), int64(stats.RowsDeleted))
+		p.recordStats(ctx, stats)
 	}()
 	if horizon <= 0 || maxPublications <= 0 {
 		return stats, errors.New("positive artifact metadata retention and publication limit are required")

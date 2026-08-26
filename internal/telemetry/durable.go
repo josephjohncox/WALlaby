@@ -44,6 +44,33 @@ type durableMetricSet struct {
 	initErr                error
 }
 
+// ArtifactMetadataPruneRecorder records metadata-retention counters against a
+// caller-owned meter. It lets isolated runtimes and tests avoid mutating the
+// process-global OpenTelemetry provider.
+type ArtifactMetadataPruneRecorder struct {
+	publications metric.Int64Counter
+	rows         metric.Int64Counter
+}
+
+// NewArtifactMetadataPruneRecorder binds metadata-retention instruments to the
+// supplied meter.
+func NewArtifactMetadataPruneRecorder(meter metric.Meter) (*ArtifactMetadataPruneRecorder, error) {
+	publications, publicationErr := meter.Int64Counter("wallaby.artifact.metadata_retention.publications")
+	rows, rowsErr := meter.Int64Counter("wallaby.artifact.metadata_retention.rows")
+	if err := errors.Join(publicationErr, rowsErr); err != nil {
+		return nil, err
+	}
+	return &ArtifactMetadataPruneRecorder{publications: publications, rows: rows}, nil
+}
+
+// Record emits committed sweep statistics.
+func (r *ArtifactMetadataPruneRecorder) Record(ctx context.Context, scanned, deleted, deferred, rows int64) {
+	if r == nil {
+		return
+	}
+	recordArtifactMetadataPruneStats(ctx, r.publications, r.rows, scanned, deleted, deferred, rows)
+}
+
 var durableMetrics = &durableMetricSet{}
 
 // ResetDurableMetricsForTest rebinds lazily initialized instruments to the
@@ -254,10 +281,21 @@ func RecordArtifactMetadataRetention(ctx context.Context, outcome string, count 
 // sweep. Callers invoke it from a defer so a later claim failure cannot erase
 // metrics for an earlier committed claim.
 func RecordArtifactMetadataPruneStats(ctx context.Context, scanned, deleted, deferred, rows int64) {
-	RecordArtifactMetadataRetention(ctx, "scanned", scanned)
-	RecordArtifactMetadataRetention(ctx, "deleted", deleted)
-	RecordArtifactMetadataRetention(ctx, "deferred", deferred)
-	RecordArtifactMetadataRows(ctx, rows)
+	if !initDurableMetrics() {
+		return
+	}
+	recordArtifactMetadataPruneStats(ctx, durableMetrics.metadataRetention, durableMetrics.metadataRows, scanned, deleted, deferred, rows)
+}
+
+func recordArtifactMetadataPruneStats(ctx context.Context, publications, rowCounter metric.Int64Counter, scanned, deleted, deferred, rows int64) {
+	for outcome, count := range map[string]int64{"scanned": scanned, "deleted": deleted, "deferred": deferred} {
+		if count > 0 {
+			publications.Add(ctx, count, metric.WithAttributes(attribute.String("outcome", outcome)))
+		}
+	}
+	if rows > 0 {
+		rowCounter.Add(ctx, rows)
+	}
 }
 
 // RecordArtifactMetadataRows records committed PostgreSQL metadata removals.
