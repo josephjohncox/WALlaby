@@ -241,6 +241,16 @@ func RecordArtifactMetadataRetention(ctx context.Context, outcome string, count 
 	durableMetrics.metadataRetention.Add(ctx, count, metric.WithAttributes(attribute.String("outcome", outcome)))
 }
 
+// RecordArtifactMetadataPruneStats records only work already committed by a
+// sweep. Callers invoke it from a defer so a later claim failure cannot erase
+// metrics for an earlier committed claim.
+func RecordArtifactMetadataPruneStats(ctx context.Context, scanned, deleted, deferred, rows int64) {
+	RecordArtifactMetadataRetention(ctx, "scanned", scanned)
+	RecordArtifactMetadataRetention(ctx, "deleted", deleted)
+	RecordArtifactMetadataRetention(ctx, "deferred", deferred)
+	RecordArtifactMetadataRows(ctx, rows)
+}
+
 // RecordArtifactMetadataRows records committed PostgreSQL metadata removals.
 func RecordArtifactMetadataRows(ctx context.Context, count int64) {
 	if count <= 0 || !initDurableMetrics() {

@@ -161,6 +161,19 @@ func (c *Consumer) ConsumeNext(ctx context.Context, fence authority.RunFence, co
 	return true, c.reach(ctx, "after_consumer_receipt")
 }
 
+func ensurePublicationNotUnderMetadataRetention(ctx context.Context, tx pgx.Tx, publicationID uuid.UUID) error {
+	var claimed bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (
+  SELECT 1 FROM artifact_metadata_prune_claims WHERE publication_id=$1
+)`, publicationID).Scan(&claimed); err != nil {
+		return err
+	}
+	if claimed {
+		return fmt.Errorf("%w: artifact publication metadata is under authoritative retention", connector.ErrDeliveryConflict)
+	}
+	return nil
+}
+
 func validateCommitResult(request CommitRequest, commit CommitResult) error {
 	if commit.SnapshotID == "" || commit.ManifestSHA256 == "" || commit.CommitID == "" || commit.LogicalBatchID == "" {
 		return errors.New("catalog commit evidence is incomplete")
@@ -209,6 +222,9 @@ FOR UPDATE OF delivery`, fence.FlowIncarnationID, consumerRevisionID).Scan(
 	}
 	if publicationProjection != result.request.ProjectionID || publicationMapping != result.request.MappingFingerprint {
 		return result, fmt.Errorf("%w: artifact publication projection identity differs from stream", connector.ErrDeliveryConflict)
+	}
+	if err := ensurePublicationNotUnderMetadataRetention(ctx, tx, result.request.PublicationID); err != nil {
+		return result, err
 	}
 
 	claimKind := authority.ClaimKind("artifact_delivery")
@@ -390,6 +406,9 @@ func (c *Consumer) prepare(ctx context.Context, fence authority.RunFence, reques
 	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
 		return uuid.Nil, time.Time{}, err
 	}
+	if err := ensurePublicationNotUnderMetadataRetention(ctx, tx, request.PublicationID); err != nil {
+		return uuid.Nil, time.Time{}, err
+	}
 	attemptID := uuid.New()
 	var preparedAt time.Time
 	if err := tx.QueryRow(ctx, `
@@ -422,6 +441,9 @@ func (c *Consumer) finalize(ctx context.Context, fence authority.RunFence, reque
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
+		return err
+	}
+	if err := ensurePublicationNotUnderMetadataRetention(ctx, tx, request.PublicationID); err != nil {
 		return err
 	}
 	receiptTag, err := tx.Exec(ctx, `

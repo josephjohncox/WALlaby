@@ -112,7 +112,7 @@ var requiredManagedColumns = map[string][]string{
 	"artifact_delivery_attempts":     {"attempt_id", "flow_incarnation_id", "consumer_revision_id", "publication_id", "generation", "acquisition_id", "lease_epoch", "prepared_at", "commit_id", "manifest_sha256", "logical_batch_id"},
 	"artifact_delivery_receipts":     {"flow_incarnation_id", "consumer_revision_id", "publication_id", "attempt_id", "snapshot_id", "content_hash", "acquisition_id", "lease_epoch", "committed_at", "commit_id", "logical_batch_id", "publication_sequence", "position_id", "checkpoint_lsn", "snapshot_ids"},
 	"artifact_consumer_checkpoints":  {"flow_incarnation_id", "consumer_revision_id", "publication_sequence", "publication_id", "position_id", "checkpoint_lsn", "commit_id", "snapshot_id", "advanced_at"},
-	"artifact_metadata_prune_claims": {"publication_id", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "claim_epoch", "artifact_ids", "schema_ids", "eligible_at", "retry_after", "claimed_at", "updated_at"},
+	"artifact_metadata_prune_claims": {"publication_id", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "claim_epoch", "artifact_ids", "schema_ids", "catalog_evidence", "eligible_at", "retry_after", "claimed_at", "updated_at"},
 }
 
 type exactManagedColumn struct {
@@ -179,6 +179,7 @@ var exactAuthorityColumns = map[string][]exactManagedColumn{
 		{name: "claim_epoch", dataType: "bigint", notNull: true},
 		{name: "artifact_ids", dataType: "jsonb", notNull: true},
 		{name: "schema_ids", dataType: "jsonb", notNull: true},
+		{name: "catalog_evidence", dataType: "jsonb", notNull: true},
 		{name: "eligible_at", dataType: "timestamp with time zone", notNull: true},
 		{name: "retry_after", dataType: "timestamp with time zone", notNull: true, defaultExpr: "clock_timestamp()"},
 		{name: "claimed_at", dataType: "timestamp with time zone", notNull: true, defaultExpr: "clock_timestamp()"},
@@ -240,6 +241,7 @@ var exactAuthorityConstraints = []exactAuthorityConstraint{
 	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_claim_epoch_check", kind: "c", definition: "CHECK (claim_epoch > 0)"},
 	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_artifact_ids_array", kind: "c", definition: "CHECK (jsonb_typeof(artifact_ids) = 'array'::text)"},
 	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_schema_ids_array", kind: "c", definition: "CHECK (jsonb_typeof(schema_ids) = 'array'::text)"},
+	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_catalog_evidence_object", kind: "c", definition: "CHECK (jsonb_typeof(catalog_evidence) = 'object'::text AND jsonb_typeof(catalog_evidence -> 'publication'::text) = 'object'::text AND jsonb_typeof(catalog_evidence -> 'consumers'::text) = 'array'::text)"},
 }
 
 // selectiveAuthorityConstraints are individually exact but belong to tables
@@ -289,6 +291,7 @@ var selectiveAuthorityIndexes = []exactAuthorityIndex{
 	{table: "artifact_deliveries", name: "artifact_deliveries_pending_idx", columns: []string{"flow_incarnation_id", "consumer_revision_id", "sequence"}, options: []int16{0, 0, 0}, predicate: "(delivered_at IS NULL)"},
 	{table: "artifact_deliveries", name: "artifact_deliveries_publication_idx", columns: []string{"publication_id", "delivered_at"}, options: []int16{0, 0}},
 	{table: "artifact_publications", name: "artifact_publications_metadata_retention_idx", columns: []string{"flow_incarnation_id", "published_at", "sequence", "publication_id"}, options: []int16{0, 0, 0, 0}},
+	{table: "artifact_gc_claims", name: "artifact_gc_claims_publication_idx", columns: []string{"publication_id"}, options: []int16{0}, predicate: "(publication_id IS NOT NULL)"},
 }
 
 type requiredManagedObject struct {
@@ -341,6 +344,7 @@ var requiredManagedConstraints = []requiredManagedObject{
 	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_claim_epoch_check"},
 	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_artifact_ids_array"},
 	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_schema_ids_array"},
+	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_catalog_evidence_object"},
 }
 
 var requiredManagedIndexes = []requiredManagedObject{
