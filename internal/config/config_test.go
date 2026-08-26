@@ -188,13 +188,15 @@ func TestLoadArtifactPublicationConfig(t *testing.T) {
 	}
 }
 
-func TestArtifactMetadataRetentionRejectsNonPositiveLimits(t *testing.T) {
+func TestArtifactMetadataRetentionRejectsInvalidLimits(t *testing.T) {
 	for _, test := range []struct {
 		name, key, value string
 	}{
 		{name: "retention zero", key: "WALLABY_ARTIFACT_METADATA_RETENTION", value: "0s"},
 		{name: "publication limit negative", key: "WALLABY_ARTIFACT_METADATA_MAX_PUBLICATIONS", value: "-1"},
 		{name: "row limit zero", key: "WALLABY_ARTIFACT_METADATA_MAX_ROWS", value: "0"},
+		{name: "row limit below atomic minimum", key: "WALLABY_ARTIFACT_METADATA_MAX_ROWS", value: "2"},
+		{name: "worker row limit below atomic minimum", key: "WALLABY_WORKER_ARTIFACT_METADATA_MAX_ROWS", value: "2"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("WALLABY_ENV", "test")
@@ -202,7 +204,7 @@ func TestArtifactMetadataRetentionRejectsNonPositiveLimits(t *testing.T) {
 			t.Setenv("WALLABY_ARTIFACT_BUCKET", "canonical")
 			t.Setenv(test.key, test.value)
 			if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "artifact") {
-				t.Fatalf("Load() error=%v, want positive metadata validation", err)
+				t.Fatalf("Load() error=%v, want metadata validation", err)
 			}
 		})
 	}

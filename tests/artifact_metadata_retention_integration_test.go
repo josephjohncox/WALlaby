@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,12 +62,14 @@ func TestArtifactMetadataRetentionBoundsConvergesAndPreservesCurrentRecovery(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	mappings := flow.TableMappings{Version: flow.TableMappingsVersion, Destinations: []flow.DestinationTableMappings{{Destination: "ice", FutureTables: flow.FutureTableMapping{Action: flow.MappingActionExclude}, Tables: []flow.TableMapping{{SourceSchema: "public", SourceTable: "events", Action: flow.MappingActionExclude}}}}}
+	mappings := flow.NewTableMappings([]connector.RuntimeSpec{{Name: "ice", Type: connector.EndpointIceberg}})
 	projector, err := tablemap.New(mappings, "ice")
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := artifactlog.NewRuntime(ctx, pool, memoryMappedArtifactStore{}, artifactlog.RuntimeConfig{
+	objects := &metadataArtifactStore{objects: map[string]metadataArtifactObject{}}
+	committer := &catalogAttemptTestCommitter{}
+	runtimeConfig := artifactlog.RuntimeConfig{
 		Stream: artifactlog.StreamConfig{
 			ProjectionID: artifactlog.ProjectionIDV2, MappingFingerprint: projector.Fingerprint(),
 			HardRetainedBytes: 128 << 20, BacklogCountHigh: 100,
@@ -74,22 +77,77 @@ func TestArtifactMetadataRetentionBoundsConvergesAndPreservesCurrentRecovery(t *
 		},
 		Projector: projector, OrphanGrace: time.Hour, Retention: time.Hour,
 		MetadataRetention: 7 * 24 * time.Hour, MetadataMaxPublications: 2,
-		MetadataMaxRows: 3, GCInterval: time.Hour,
-	})
+		MetadataMaxRows: 8, GCInterval: time.Hour,
+		Consumers:              []artifactlog.CatalogConsumerConfig{{RevisionID: "ice-retention-v1", Committer: committer}},
+		DestinationFingerprint: "retention-destination-v1",
+	}
+	runtime, err := artifactlog.NewRuntime(ctx, pool, objects, runtimeConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var currentGrant connector.AckGrant
+	var currentTransaction connector.SourceTransaction
 	for index := 0; index < 6; index++ {
 		base := 0x100 + index*0x20
 		transaction := artifactTransactionAt(uint32(1000+index), lsnForTest(base), lsnForTest(base+8), lsnForTest(base+16), "filtered")
+		currentTransaction = transaction
 		currentGrant, err = runtime.Append(ctx, fence, transaction, managedBaselinePayload(t, transaction))
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := pool.Exec(ctx, `UPDATE artifact_publications SET published_at=clock_timestamp()-interval '8 days' WHERE flow_incarnation_id=$1`, fence.FlowIncarnationID); err != nil {
+	if err := runtime.Recover(ctx, fence); err != nil {
+		t.Fatalf("deliver catalog publications before retention: %v", err)
+	}
+	var publicationsBefore, objectsBefore, rootsBefore, deliveriesBefore, attemptsBefore, receiptsBefore, schemasBefore int
+	if err := pool.QueryRow(ctx, `SELECT
+ (SELECT count(*) FROM artifact_publications WHERE flow_incarnation_id=$1),
+ (SELECT count(*) FROM artifact_objects WHERE flow_incarnation_id=$1),
+ (SELECT count(*) FROM artifact_publication_objects AS root JOIN artifact_publications AS publication ON publication.publication_id=root.publication_id WHERE publication.flow_incarnation_id=$1),
+ (SELECT count(*) FROM artifact_deliveries WHERE flow_incarnation_id=$1),
+ (SELECT count(*) FROM artifact_delivery_attempts WHERE flow_incarnation_id=$1),
+ (SELECT count(*) FROM artifact_delivery_receipts WHERE flow_incarnation_id=$1),
+ (SELECT count(DISTINCT object.schema_id) FROM artifact_objects AS object WHERE object.flow_incarnation_id=$1)`, fence.FlowIncarnationID).Scan(&publicationsBefore, &objectsBefore, &rootsBefore, &deliveriesBefore, &attemptsBefore, &receiptsBefore, &schemasBefore); err != nil {
 		t.Fatal(err)
+	}
+	if publicationsBefore != 6 || objectsBefore == 0 || rootsBefore == 0 || deliveriesBefore != 6 || attemptsBefore != 6 || receiptsBefore != 6 || schemasBefore == 0 {
+		t.Fatalf("metadata graph is vacuous: publications=%d objects=%d roots=%d deliveries=%d attempts=%d receipts=%d schemas=%d", publicationsBefore, objectsBefore, rootsBefore, deliveriesBefore, attemptsBefore, receiptsBefore, schemasBefore)
+	}
+	admissionPruner, err := artifactlog.NewMetadataPruner(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tamperedAttempt uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT attempt_id FROM artifact_delivery_receipts WHERE flow_incarnation_id=$1 ORDER BY publication_sequence LIMIT 1`, fence.FlowIncarnationID).Scan(&tamperedAttempt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE artifact_delivery_receipts SET content_hash=$2 WHERE attempt_id=$1`, tamperedAttempt, strings.Repeat("f", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admissionPruner.Prune(ctx, fence, 7*24*time.Hour, 2, 8); err == nil || !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("tampered receipt identity error=%v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE artifact_delivery_receipts AS receipt SET content_hash=attempt.manifest_sha256 FROM artifact_delivery_attempts AS attempt WHERE receipt.attempt_id=$1 AND attempt.attempt_id=receipt.attempt_id`, tamperedAttempt); err != nil {
+		t.Fatal(err)
+	}
+	blockedStats, err := admissionPruner.Prune(ctx, fence, 7*24*time.Hour, 2, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blockedStats != (artifactlog.MetadataPruneStats{}) {
+		t.Fatalf("fresh horizon/active roots did not block retention: %+v", blockedStats)
+	}
+	for _, statement := range []string{
+		`UPDATE artifact_publications SET published_at=clock_timestamp()-interval '8 days' WHERE flow_incarnation_id=$1`,
+		`UPDATE artifact_publication_objects SET release_marked_at=clock_timestamp()-interval '8 days',released_at=clock_timestamp()-interval '8 days' WHERE publication_id IN (SELECT publication_id FROM artifact_publications WHERE flow_incarnation_id=$1 AND sequence<(SELECT max(sequence) FROM artifact_publications WHERE flow_incarnation_id=$1))`,
+		`UPDATE artifact_objects SET state='deleted',updated_at=clock_timestamp()-interval '8 days' WHERE artifact_id IN (SELECT root.artifact_id FROM artifact_publication_objects AS root JOIN artifact_publications AS publication ON publication.publication_id=root.publication_id WHERE publication.flow_incarnation_id=$1 AND publication.sequence<(SELECT max(sequence) FROM artifact_publications WHERE flow_incarnation_id=$1))`,
+		`UPDATE source_ack_retention_roots SET released_at=clock_timestamp()-interval '8 days' WHERE flow_incarnation_id=$1 AND root_kind='artifact_publication' AND root_id IN (SELECT publication_id::text FROM artifact_publications WHERE flow_incarnation_id=$1 AND sequence<(SELECT max(sequence) FROM artifact_publications WHERE flow_incarnation_id=$1))`,
+		`UPDATE artifact_deliveries SET delivered_at=clock_timestamp()-interval '8 days' WHERE flow_incarnation_id=$1`,
+		`UPDATE artifact_delivery_receipts SET committed_at=clock_timestamp()-interval '8 days' WHERE flow_incarnation_id=$1`,
+	} {
+		if _, err := pool.Exec(ctx, statement, fence.FlowIncarnationID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	crashPruner, err := artifactlog.NewMetadataPruner(pool, artifactlog.WithMetadataPrunerHooks(artifactlog.MetadataPrunerHooks{Boundary: func(_ context.Context, boundary string, _ uuid.UUID) error {
 		if boundary == "after_metadata_claim" {
@@ -100,7 +158,7 @@ func TestArtifactMetadataRetentionBoundsConvergesAndPreservesCurrentRecovery(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := crashPruner.Prune(ctx, fence, 7*24*time.Hour, 2, 3); err == nil {
+	if _, err := crashPruner.Prune(ctx, fence, 7*24*time.Hour, 2, 8); err == nil {
 		t.Fatal("metadata claim crash was not injected")
 	}
 	var afterCrashPublications, afterCrashClaims int
@@ -110,17 +168,79 @@ func TestArtifactMetadataRetentionBoundsConvergesAndPreservesCurrentRecovery(t *
 	if afterCrashPublications != 6 || afterCrashClaims != 1 {
 		t.Fatalf("durable claim crash publications/claims=%d/%d, want 6/1", afterCrashPublications, afterCrashClaims)
 	}
+	partialCrash := true
+	partialPruner, err := artifactlog.NewMetadataPruner(pool, artifactlog.WithMetadataPrunerHooks(artifactlog.MetadataPrunerHooks{Boundary: func(_ context.Context, boundary string, _ uuid.UUID) error {
+		if boundary == "after_metadata_partial_phase" && partialCrash {
+			partialCrash = false
+			return errors.New("injected crash after metadata partial phase")
+		}
+		return nil
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := partialPruner.Prune(ctx, fence, 7*24*time.Hour, 2, 8); err == nil {
+		t.Fatal("metadata partial-phase crash was not injected")
+	}
+	commitCrash := true
+	rollbackPruner, err := artifactlog.NewMetadataPruner(pool, artifactlog.WithMetadataPrunerHooks(artifactlog.MetadataPrunerHooks{Boundary: func(_ context.Context, boundary string, _ uuid.UUID) error {
+		if boundary == "before_metadata_commit" && commitCrash {
+			commitCrash = false
+			return errors.New("injected crash before metadata commit")
+		}
+		return nil
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rollbackPruner.Prune(ctx, fence, 7*24*time.Hour, 2, 8); err == nil {
+		t.Fatal("metadata pre-commit crash was not injected")
+	}
+	var attemptsAfterRollback, receiptsAfterRollback int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM artifact_delivery_attempts WHERE flow_incarnation_id=$1),(SELECT count(*) FROM artifact_delivery_receipts WHERE flow_incarnation_id=$1)`, fence.FlowIncarnationID).Scan(&attemptsAfterRollback, &receiptsAfterRollback); err != nil {
+		t.Fatal(err)
+	}
+	if attemptsAfterRollback != attemptsBefore || receiptsAfterRollback != receiptsBefore {
+		t.Fatalf("rollback removed reconciliation evidence: attempts=%d/%d receipts=%d/%d", attemptsAfterRollback, attemptsBefore, receiptsAfterRollback, receiptsBefore)
+	}
 	pruner, err := artifactlog.NewMetadataPruner(pool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for sweep := 0; sweep < 12; sweep++ {
-		stats, err := pruner.Prune(ctx, fence, 7*24*time.Hour, 2, 3)
+	metadataRows := func() int {
+		t.Helper()
+		var count int
+		if err := pool.QueryRow(ctx, `SELECT
+ (SELECT count(*) FROM canonical_schemas)+
+ (SELECT count(*) FROM artifact_publications WHERE flow_incarnation_id=$1)+
+ (SELECT count(*) FROM artifact_objects WHERE flow_incarnation_id=$1)+
+ (SELECT count(*) FROM artifact_upload_attempts AS upload JOIN artifact_objects AS object ON object.artifact_id=upload.artifact_id WHERE object.flow_incarnation_id=$1)+
+ (SELECT count(*) FROM artifact_publication_objects AS root JOIN artifact_publications AS publication ON publication.publication_id=root.publication_id WHERE publication.flow_incarnation_id=$1)+
+ (SELECT count(*) FROM artifact_barriers AS barrier JOIN artifact_publications AS publication ON publication.publication_id=barrier.publication_id WHERE publication.flow_incarnation_id=$1)+
+ (SELECT count(*) FROM artifact_deliveries WHERE flow_incarnation_id=$1)+
+ (SELECT count(*) FROM artifact_delivery_attempts WHERE flow_incarnation_id=$1)+
+ (SELECT count(*) FROM artifact_delivery_receipts WHERE flow_incarnation_id=$1)+
+ (SELECT count(*) FROM artifact_quota_reservations WHERE flow_incarnation_id=$1)+
+ (SELECT count(*) FROM source_ack_retention_roots WHERE flow_incarnation_id=$1 AND root_kind='artifact_publication')+
+ (SELECT count(*) FROM artifact_metadata_prune_claims WHERE flow_incarnation_id=$1)`, fence.FlowIncarnationID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	for sweep := 0; sweep < 40; sweep++ {
+		time.Sleep(2 * time.Millisecond)
+		beforeRows := metadataRows()
+		stats, err := pruner.Prune(ctx, fence, 7*24*time.Hour, 2, 8)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if stats.PublicationsScanned > 2 || stats.RowsDeleted > 3 {
+		if stats.PublicationsScanned > 2 || stats.RowsDeleted > 8 {
 			t.Fatalf("sweep %d exceeded bounds: %+v", sweep, stats)
+		}
+		afterRows := metadataRows()
+		committedDelta := beforeRows - afterRows
+		if committedDelta > stats.RowsDeleted || stats.RowsDeleted-committedDelta > stats.PublicationsScanned {
+			t.Fatalf("sweep %d reported deletions=%d, committed delta=%d, scanned claims=%d", sweep, stats.RowsDeleted, committedDelta, stats.PublicationsScanned)
 		}
 		var publications, claims int
 		if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM artifact_publications WHERE flow_incarnation_id=$1),(SELECT count(*) FROM artifact_metadata_prune_claims WHERE flow_incarnation_id=$1)`, fence.FlowIncarnationID).Scan(&publications, &claims); err != nil {
@@ -129,12 +249,26 @@ func TestArtifactMetadataRetentionBoundsConvergesAndPreservesCurrentRecovery(t *
 		if publications == 1 && claims == 0 {
 			break
 		}
-		if sweep == 11 {
+		if sweep == 39 {
 			t.Fatalf("metadata did not converge: publications=%d claims=%d", publications, claims)
 		}
 	}
-	if _, err := runtime.RestoreCheckpoint(ctx, fence, currentGrant.Checkpoint); err != nil {
+	fresh, err := artifactlog.NewRuntime(ctx, pool, objects, runtimeConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.Recover(ctx, fence); err != nil {
+		t.Fatalf("fresh runtime recovery after pruning: %v", err)
+	}
+	if _, err := fresh.RestoreCheckpoint(ctx, fence, currentGrant.Checkpoint); err != nil {
 		t.Fatalf("current checkpoint recovery after pruning: %v", err)
+	}
+	putsBeforeReplay := objects.puts
+	if _, err := fresh.Append(ctx, fence, currentTransaction, managedBaselinePayload(t, currentTransaction)); err != nil {
+		t.Fatalf("replay current transaction after pruning: %v", err)
+	}
+	if objects.puts != putsBeforeReplay {
+		t.Fatalf("replay duplicated immutable object: puts=%d before=%d", objects.puts, putsBeforeReplay)
 	}
 }
 

@@ -1,7 +1,8 @@
 -- Metadata pruning is a durable, PostgreSQL-authoritative operation. Claims do
--- not reference artifact_publications so the publication and claim can be
--- removed in separate row-bounded transactions after all restrictive children
--- are gone. artifact_ids freezes the original root set before links are pruned.
+-- not reference artifact_publications so the final publication/evidence bundle
+-- and claim can be deleted atomically. Frozen object and schema IDs remain
+-- available after partial root/object pruning; retry_after prevents a deferred
+-- claim from monopolizing the bounded publication scan.
 CREATE TABLE artifact_metadata_prune_claims (
   publication_id UUID PRIMARY KEY,
   flow_incarnation_id UUID NOT NULL REFERENCES flow_incarnations(incarnation_id) ON DELETE RESTRICT,
@@ -10,15 +11,19 @@ CREATE TABLE artifact_metadata_prune_claims (
   lease_epoch BIGINT NOT NULL CHECK (lease_epoch > 0),
   claim_epoch BIGINT NOT NULL CHECK (claim_epoch > 0),
   artifact_ids JSONB NOT NULL,
+  schema_ids JSONB NOT NULL,
   eligible_at TIMESTAMPTZ NOT NULL,
+  retry_after TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   claimed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   CONSTRAINT artifact_metadata_prune_claims_artifact_ids_array
-    CHECK (jsonb_typeof(artifact_ids)='array')
+    CHECK (jsonb_typeof(artifact_ids)='array'),
+  CONSTRAINT artifact_metadata_prune_claims_schema_ids_array
+    CHECK (jsonb_typeof(schema_ids)='array')
 );
 
 CREATE INDEX artifact_metadata_prune_claims_flow_idx
-  ON artifact_metadata_prune_claims(flow_incarnation_id,claimed_at,publication_id);
+  ON artifact_metadata_prune_claims(flow_incarnation_id,retry_after,claimed_at,publication_id);
 CREATE INDEX artifact_publications_metadata_retention_idx
   ON artifact_publications(flow_incarnation_id,published_at,sequence,publication_id);
 CREATE INDEX artifact_gc_claims_publication_idx

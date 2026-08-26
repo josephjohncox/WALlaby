@@ -20,7 +20,7 @@ func TestRuntimeRejectsIncompleteConsumerAuthorityBeforeExternalIO(t *testing.T)
 		Retention:               time.Second,
 		MetadataRetention:       time.Second,
 		MetadataMaxPublications: 1,
-		MetadataMaxRows:         1,
+		MetadataMaxRows:         3,
 		GCInterval:              time.Second,
 		Consumers:               []artifactlog.CatalogConsumerConfig{{RevisionID: "catalog-v1"}},
 	}

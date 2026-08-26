@@ -102,6 +102,9 @@ artifacts:
   backpressure_poll_interval: 1s
   orphan_grace: 2h
   retention: 24h
+  metadata_retention: 168h
+  metadata_max_publications: 100
+  metadata_max_rows: 1000
   gc_interval: 1m
 iceberg:
   profile: rest
@@ -213,6 +216,22 @@ func TestDocumentedWorkerEnvironmentKeysRemainCurrent(t *testing.T) {
 	}
 	if cfg.Environment != "test" || cfg.Workflow.Store != "memory" || cfg.API.GRPCListen != ":7070" || !cfg.Profiling.Enabled || cfg.Artifacts.Bucket != "worker-canonical" || cfg.Iceberg.Profile != "rest" {
 		t.Fatalf("worker config=%+v", cfg)
+	}
+}
+
+func TestStrictArtifactMetadataRowMinimumInYAMLAndJSON(t *testing.T) {
+	for _, test := range []struct {
+		name, extension, body string
+	}{
+		{name: "yaml", extension: ".yaml", body: "environment: test\nworkflow:\n  store: memory\nartifacts:\n  metadata_max_rows: 2\n"},
+		{name: "json", extension: ".json", body: `{"environment":"test","workflow":{"store":"memory"},"artifacts":{"metadata_max_rows":2}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeConfigTestFile(t, "metadata-min"+test.extension, test.body)
+			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "metadata_max_rows") {
+				t.Fatalf("Load() error=%v, want metadata_max_rows minimum", err)
+			}
+		})
 	}
 }
 

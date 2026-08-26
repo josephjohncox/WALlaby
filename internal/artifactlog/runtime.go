@@ -67,8 +67,11 @@ func (r *Runtime) EffectiveDestinationFingerprint() string {
 }
 
 func NewRuntime(ctx context.Context, pool *pgxpool.Pool, objects ObjectStore, config RuntimeConfig) (*Runtime, error) {
-	if config.OrphanGrace <= 0 || config.Retention <= 0 || config.MetadataRetention <= 0 || config.MetadataMaxPublications <= 0 || config.MetadataMaxRows <= 0 || config.GCInterval <= 0 {
-		return nil, errors.New("positive artifact orphan, retention, metadata retention, metadata sweep limits, and GC intervals are required")
+	if config.OrphanGrace <= 0 || config.Retention <= 0 || config.MetadataRetention <= 0 || config.MetadataMaxPublications <= 0 || config.GCInterval <= 0 {
+		return nil, errors.New("positive artifact orphan, retention, metadata retention, publication sweep limit, and GC intervals are required")
+	}
+	if config.MetadataMaxRows < 3 {
+		return nil, errors.New("artifact metadata row sweep limit must be at least 3")
 	}
 	if config.Stream.ProjectionID == ProjectionIDV2 {
 		if config.Projector == nil {

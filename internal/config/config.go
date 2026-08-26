@@ -168,7 +168,7 @@ type ArtifactConfig struct {
 	Retention                time.Duration `json:"retention" yaml:"retention" validate:"omitempty,gt=0"`
 	MetadataRetention        time.Duration `json:"metadata_retention" yaml:"metadata_retention" validate:"omitempty,gt=0"`
 	MetadataMaxPublications  int           `json:"metadata_max_publications" yaml:"metadata_max_publications" validate:"omitempty,gt=0"`
-	MetadataMaxRows          int           `json:"metadata_max_rows" yaml:"metadata_max_rows" validate:"omitempty,gt=0"`
+	MetadataMaxRows          int           `json:"metadata_max_rows" yaml:"metadata_max_rows" validate:"omitempty,gte=3"`
 	GCInterval               time.Duration `json:"gc_interval" yaml:"gc_interval" validate:"omitempty,gt=0"`
 }
 
@@ -648,8 +648,11 @@ func validateConfig(cfg *Config) error {
 		cfg.Kubernetes.JobImagePullPolicy = jobImagePullPolicy
 	}
 
-	if strings.TrimSpace(cfg.Artifacts.Bucket) != "" && (cfg.Artifacts.MetadataRetention <= 0 || cfg.Artifacts.MetadataMaxPublications <= 0 || cfg.Artifacts.MetadataMaxRows <= 0) {
-		errs = append(errs, "artifacts metadata_retention, metadata_max_publications, and metadata_max_rows must be greater than 0 when artifact publication is configured")
+	if cfg.Artifacts.MetadataMaxRows > 0 && cfg.Artifacts.MetadataMaxRows < 3 {
+		errs = append(errs, "artifacts metadata_max_rows must be at least 3")
+	}
+	if strings.TrimSpace(cfg.Artifacts.Bucket) != "" && (cfg.Artifacts.MetadataRetention <= 0 || cfg.Artifacts.MetadataMaxPublications <= 0 || cfg.Artifacts.MetadataMaxRows < 3) {
+		errs = append(errs, "artifacts metadata_retention and metadata_max_publications must be greater than 0 and metadata_max_rows must be at least 3 when artifact publication is configured")
 	}
 	if cfg.DDL.CatalogEnabled && cfg.DDL.CatalogInterval <= 0 {
 		errs = append(errs, "ddl.catalog_interval must be greater than 0 when ddl catalog scanning is enabled")

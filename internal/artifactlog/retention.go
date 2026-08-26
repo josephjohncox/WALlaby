@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 // MetadataPruneStats reports one strictly bounded metadata sweep.
@@ -61,12 +62,22 @@ type metadataClaim struct {
 }
 
 // Prune scans and advances at most maxPublications durable claims and deletes
-// at most maxRows PostgreSQL rows. Very small row limits may defer an atomic
-// receipt/attempt/delivery evidence bundle, but never exceed the configured cap.
-func (p *MetadataPruner) Prune(ctx context.Context, fence authority.RunFence, horizon time.Duration, maxPublications, maxRows int) (MetadataPruneStats, error) {
-	var stats MetadataPruneStats
-	if horizon <= 0 || maxPublications <= 0 || maxRows <= 0 {
-		return stats, errors.New("positive artifact metadata retention, publication, and row limits are required")
+// at most maxRows PostgreSQL rows. Catalog attempt/receipt evidence remains
+// intact until the publication is deleted in the same transaction.
+func (p *MetadataPruner) Prune(ctx context.Context, fence authority.RunFence, horizon time.Duration, maxPublications, maxRows int) (stats MetadataPruneStats, resultErr error) {
+	defer func() {
+		// These counters describe committed work. Recording from the defer keeps
+		// earlier committed phases visible when a later claim fails.
+		telemetry.RecordArtifactMetadataRetention(ctx, "scanned", int64(stats.PublicationsScanned))
+		telemetry.RecordArtifactMetadataRetention(ctx, "deleted", int64(stats.PublicationsDeleted))
+		telemetry.RecordArtifactMetadataRetention(ctx, "deferred", int64(stats.PublicationsDeferred))
+		telemetry.RecordArtifactMetadataRows(ctx, int64(stats.RowsDeleted))
+	}()
+	if horizon <= 0 || maxPublications <= 0 {
+		return stats, errors.New("positive artifact metadata retention and publication limit are required")
+	}
+	if maxRows < 3 {
+		return stats, errors.New("artifact metadata row limit must be at least 3")
 	}
 	seen := make([]uuid.UUID, 0, maxPublications)
 	for stats.PublicationsScanned < maxPublications && stats.RowsDeleted < maxRows {
@@ -96,10 +107,6 @@ func (p *MetadataPruner) Prune(ctx context.Context, fence authority.RunFence, ho
 			stats.PublicationsDeferred++
 		}
 	}
-	telemetry.RecordArtifactMetadataRetention(ctx, "scanned", int64(stats.PublicationsScanned))
-	telemetry.RecordArtifactMetadataRetention(ctx, "deleted", int64(stats.PublicationsDeleted))
-	telemetry.RecordArtifactMetadataRetention(ctx, "deferred", int64(stats.PublicationsDeferred))
-	telemetry.RecordArtifactMetadataRows(ctx, int64(stats.RowsDeleted))
 	return stats, nil
 }
 
@@ -112,6 +119,42 @@ func (p *MetadataPruner) claimNext(ctx context.Context, fence authority.RunFence
 	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
 		return metadataClaim{}, false, err
 	}
+	var conflictingIdentity bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (
+ SELECT 1
+ FROM artifact_delivery_attempts AS attempt
+ JOIN artifact_publications AS publication ON publication.publication_id=attempt.publication_id
+ LEFT JOIN artifact_delivery_receipts AS receipt ON receipt.attempt_id=attempt.attempt_id
+ WHERE publication.flow_incarnation_id=$1
+   AND (attempt.flow_incarnation_id IS DISTINCT FROM publication.flow_incarnation_id
+     OR attempt.logical_batch_id IS DISTINCT FROM publication.logical_batch_id
+     OR (receipt.attempt_id IS NOT NULL AND (
+       receipt.flow_incarnation_id IS DISTINCT FROM attempt.flow_incarnation_id
+     OR receipt.consumer_revision_id IS DISTINCT FROM attempt.consumer_revision_id
+     OR receipt.publication_id IS DISTINCT FROM attempt.publication_id
+     OR receipt.content_hash IS DISTINCT FROM attempt.manifest_sha256
+     OR receipt.commit_id IS DISTINCT FROM attempt.commit_id
+     OR receipt.logical_batch_id IS DISTINCT FROM attempt.logical_batch_id
+     OR receipt.publication_sequence IS DISTINCT FROM publication.sequence
+       OR receipt.position_id IS DISTINCT FROM publication.position_id
+       OR receipt.checkpoint_lsn IS DISTINCT FROM publication.checkpoint_lsn)))
+) OR EXISTS (
+ SELECT 1
+ FROM artifact_deliveries AS delivery
+ LEFT JOIN artifact_delivery_attempts AS attempt
+   ON attempt.flow_incarnation_id=delivery.flow_incarnation_id
+  AND attempt.consumer_revision_id=delivery.consumer_revision_id
+  AND attempt.publication_id=delivery.publication_id
+ LEFT JOIN artifact_delivery_receipts AS receipt ON receipt.attempt_id=attempt.attempt_id
+ WHERE delivery.flow_incarnation_id=$1
+   AND delivery.delivered_at IS NOT NULL
+   AND (attempt.attempt_id IS NULL OR receipt.attempt_id IS NULL)
+)`, fence.FlowIncarnationID).Scan(&conflictingIdentity); err != nil {
+		return metadataClaim{}, false, err
+	}
+	if conflictingIdentity {
+		return metadataClaim{}, false, fmt.Errorf("%w: artifact catalog attempt/receipt identity mismatch", connector.ErrDeliveryConflict)
+	}
 
 	var claim metadataClaim
 	// Resume an interrupted claim first. Updating the exact fence makes takeover
@@ -119,8 +162,10 @@ func (p *MetadataPruner) claimNext(ctx context.Context, fence authority.RunFence
 	err = tx.QueryRow(ctx, `
 SELECT publication_id,claim_epoch
 FROM artifact_metadata_prune_claims
-WHERE flow_incarnation_id=$1 AND NOT (publication_id=ANY($2::uuid[]))
-ORDER BY claimed_at,publication_id
+WHERE flow_incarnation_id=$1
+  AND retry_after<=clock_timestamp()
+  AND NOT (publication_id=ANY($2::uuid[]))
+ORDER BY retry_after,claimed_at,publication_id
 LIMIT 1
 FOR UPDATE SKIP LOCKED`, fence.FlowIncarnationID, excluded).Scan(&claim.publicationID, &claim.claimEpoch)
 	if err == nil {
@@ -144,7 +189,7 @@ WHERE publication_id=$1`, claim.publicationID, fence.Generation, fence.Acquisiti
 		return metadataClaim{}, false, err
 	}
 
-	var artifactIDs []byte
+	var artifactIDs, schemaIDs []byte
 	var eligibleAt time.Time
 	err = tx.QueryRow(ctx, `
 SELECT publication.publication_id,
@@ -170,7 +215,8 @@ SELECT publication.publication_id,
            ) AS movement
          ),publication.published_at)
        ) AS eligible_at,
-       COALESCE((SELECT jsonb_agg(root.artifact_id ORDER BY root.ordinal) FROM artifact_publication_objects AS root WHERE root.publication_id=publication.publication_id),'[]'::jsonb)
+       COALESCE((SELECT jsonb_agg(root.artifact_id ORDER BY root.ordinal) FROM artifact_publication_objects AS root WHERE root.publication_id=publication.publication_id),'[]'::jsonb),
+       COALESCE((SELECT jsonb_agg(DISTINCT object.schema_id) FROM artifact_publication_objects AS root JOIN artifact_objects AS object ON object.artifact_id=root.artifact_id WHERE root.publication_id=publication.publication_id),'[]'::jsonb)
 FROM artifact_publications AS publication
 JOIN authoritative_checkpoints AS checkpoint
   ON checkpoint.flow_incarnation_id=publication.flow_incarnation_id
@@ -179,6 +225,7 @@ JOIN artifact_publications AS current_publication
  AND current_publication.publication_id::text=checkpoint.metadata->>'artifact_publication_id'
 WHERE publication.flow_incarnation_id=$1
   AND NOT (publication.publication_id=ANY($2::uuid[]))
+  AND NOT EXISTS (SELECT 1 FROM artifact_metadata_prune_claims AS existing_claim WHERE existing_claim.publication_id=publication.publication_id)
   AND current_publication.sequence>publication.sequence
   AND checkpoint.lsn<>publication.checkpoint_lsn
   AND publication.published_at < clock_timestamp()-$3::interval
@@ -220,7 +267,21 @@ WHERE publication.flow_incarnation_id=$1
   AND NOT EXISTS (
     SELECT 1 FROM artifact_delivery_attempts AS attempt
     LEFT JOIN artifact_delivery_receipts AS receipt ON receipt.attempt_id=attempt.attempt_id
-    WHERE attempt.publication_id=publication.publication_id AND receipt.attempt_id IS NULL
+    WHERE attempt.publication_id=publication.publication_id
+      AND (
+        attempt.flow_incarnation_id IS DISTINCT FROM publication.flow_incarnation_id
+        OR attempt.logical_batch_id IS DISTINCT FROM publication.logical_batch_id
+        OR receipt.attempt_id IS NULL
+        OR receipt.flow_incarnation_id IS DISTINCT FROM attempt.flow_incarnation_id
+        OR receipt.consumer_revision_id IS DISTINCT FROM attempt.consumer_revision_id
+        OR receipt.publication_id IS DISTINCT FROM attempt.publication_id
+        OR receipt.content_hash IS DISTINCT FROM attempt.manifest_sha256
+        OR receipt.commit_id IS DISTINCT FROM attempt.commit_id
+        OR receipt.logical_batch_id IS DISTINCT FROM attempt.logical_batch_id
+        OR receipt.publication_sequence IS DISTINCT FROM publication.sequence
+        OR receipt.position_id IS DISTINCT FROM publication.position_id
+        OR receipt.checkpoint_lsn IS DISTINCT FROM publication.checkpoint_lsn
+      )
   )
   AND NOT EXISTS (
     SELECT 1 FROM artifact_deliveries AS delivery
@@ -230,7 +291,20 @@ WHERE publication.flow_incarnation_id=$1
      AND attempt.publication_id=delivery.publication_id
     LEFT JOIN artifact_delivery_receipts AS receipt ON receipt.attempt_id=attempt.attempt_id
     WHERE delivery.publication_id=publication.publication_id
-      AND (attempt.attempt_id IS NULL OR receipt.attempt_id IS NULL)
+      AND (
+        attempt.attempt_id IS NULL
+        OR attempt.logical_batch_id IS DISTINCT FROM publication.logical_batch_id
+        OR receipt.attempt_id IS NULL
+        OR receipt.flow_incarnation_id IS DISTINCT FROM delivery.flow_incarnation_id
+        OR receipt.consumer_revision_id IS DISTINCT FROM delivery.consumer_revision_id
+        OR receipt.publication_id IS DISTINCT FROM delivery.publication_id
+        OR receipt.content_hash IS DISTINCT FROM attempt.manifest_sha256
+        OR receipt.commit_id IS DISTINCT FROM attempt.commit_id
+        OR receipt.logical_batch_id IS DISTINCT FROM attempt.logical_batch_id
+        OR receipt.publication_sequence IS DISTINCT FROM publication.sequence
+        OR receipt.position_id IS DISTINCT FROM publication.position_id
+        OR receipt.checkpoint_lsn IS DISTINCT FROM publication.checkpoint_lsn
+      )
   )
   AND NOT EXISTS (
     SELECT 1 FROM artifact_consumer_checkpoints AS consumer_checkpoint
@@ -275,7 +349,7 @@ WHERE publication.flow_incarnation_id=$1
   )
 ORDER BY publication.published_at,publication.sequence,publication.publication_id
 LIMIT 1
-FOR UPDATE OF publication SKIP LOCKED`, fence.FlowIncarnationID, excluded, horizon.String()).Scan(&claim.publicationID, &eligibleAt, &artifactIDs)
+FOR UPDATE OF publication SKIP LOCKED`, fence.FlowIncarnationID, excluded, horizon.String()).Scan(&claim.publicationID, &eligibleAt, &artifactIDs, &schemaIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return metadataClaim{}, false, nil
 	}
@@ -289,8 +363,8 @@ FOR UPDATE OF publication SKIP LOCKED`, fence.FlowIncarnationID, excluded, horiz
 	claim.claimEpoch = 1
 	if _, err := tx.Exec(ctx, `
 INSERT INTO artifact_metadata_prune_claims(
-  publication_id,flow_incarnation_id,generation,acquisition_id,lease_epoch,claim_epoch,artifact_ids,eligible_at
-) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8)`, claim.publicationID, fence.FlowIncarnationID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, claim.claimEpoch, artifactIDs, eligibleAt); err != nil {
+  publication_id,flow_incarnation_id,generation,acquisition_id,lease_epoch,claim_epoch,artifact_ids,schema_ids,eligible_at
+) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9)`, claim.publicationID, fence.FlowIncarnationID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, claim.claimEpoch, artifactIDs, schemaIDs, eligibleAt); err != nil {
 		return metadataClaim{}, false, err
 	}
 	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
@@ -379,21 +453,53 @@ SELECT eligible_at < clock_timestamp()-$3::interval
     WHERE checkpoint.flow_incarnation_id=$2
       AND (checkpoint.lsn=publication.checkpoint_lsn OR checkpoint.metadata->>'artifact_publication_id'=($1::uuid)::text)
   )
-  AND NOT EXISTS (SELECT 1 FROM artifact_consumer_checkpoints WHERE publication_id=$1::uuid)
-  AND NOT EXISTS (SELECT 1 FROM artifact_publication_objects WHERE publication_id=$1::uuid AND released_at IS NULL)
+  AND NOT EXISTS (
+    SELECT 1 FROM artifact_consumer_checkpoints AS checkpoint
+    WHERE checkpoint.publication_id=$1::uuid
+       OR (checkpoint.flow_incarnation_id=$2
+           AND checkpoint.publication_sequence<=publication.sequence
+           AND EXISTS (SELECT 1 FROM artifact_deliveries AS delivery WHERE delivery.publication_id=$1::uuid AND delivery.consumer_revision_id=checkpoint.consumer_revision_id))
+  )
+  AND NOT EXISTS (SELECT 1 FROM artifact_publication_objects WHERE publication_id=$1::uuid AND (released_at IS NULL OR released_at>=clock_timestamp()-$3::interval))
   AND NOT EXISTS (
     SELECT 1 FROM source_ack_retention_roots
-    WHERE flow_incarnation_id=$2 AND root_kind='artifact_publication' AND root_id=($1::uuid)::text AND released_at IS NULL
+    WHERE flow_incarnation_id=$2 AND root_kind='artifact_publication' AND root_id=($1::uuid)::text
+      AND (released_at IS NULL OR released_at>=clock_timestamp()-$3::interval)
   )
   AND NOT EXISTS (
     SELECT 1 FROM artifact_gc_claims
     WHERE publication_id=$1::uuid OR artifact_id IN (SELECT value FROM jsonb_array_elements_text(claim.artifact_ids))
   )
-  AND NOT EXISTS (SELECT 1 FROM artifact_deliveries WHERE publication_id=$1::uuid AND delivered_at IS NULL)
+  AND NOT EXISTS (SELECT 1 FROM artifact_deliveries WHERE publication_id=$1::uuid AND (delivered_at IS NULL OR delivered_at>=clock_timestamp()-$3::interval))
   AND NOT EXISTS (
     SELECT 1 FROM artifact_delivery_attempts AS attempt
     LEFT JOIN artifact_delivery_receipts AS receipt ON receipt.attempt_id=attempt.attempt_id
-    WHERE attempt.publication_id=$1::uuid AND receipt.attempt_id IS NULL
+    WHERE attempt.publication_id=$1::uuid
+      AND (
+        attempt.flow_incarnation_id IS DISTINCT FROM publication.flow_incarnation_id
+        OR attempt.logical_batch_id IS DISTINCT FROM publication.logical_batch_id
+        OR receipt.attempt_id IS NULL
+        OR receipt.flow_incarnation_id IS DISTINCT FROM attempt.flow_incarnation_id
+        OR receipt.consumer_revision_id IS DISTINCT FROM attempt.consumer_revision_id
+        OR receipt.publication_id IS DISTINCT FROM attempt.publication_id
+        OR receipt.content_hash IS DISTINCT FROM attempt.manifest_sha256
+        OR receipt.commit_id IS DISTINCT FROM attempt.commit_id
+        OR receipt.logical_batch_id IS DISTINCT FROM attempt.logical_batch_id
+        OR receipt.publication_sequence IS DISTINCT FROM publication.sequence
+        OR receipt.position_id IS DISTINCT FROM publication.position_id
+        OR receipt.checkpoint_lsn IS DISTINCT FROM publication.checkpoint_lsn
+        OR receipt.committed_at>=clock_timestamp()-$3::interval
+      )
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM artifact_deliveries AS delivery
+    LEFT JOIN artifact_delivery_attempts AS attempt
+      ON attempt.flow_incarnation_id=delivery.flow_incarnation_id
+     AND attempt.consumer_revision_id=delivery.consumer_revision_id
+     AND attempt.publication_id=delivery.publication_id
+    LEFT JOIN artifact_delivery_receipts AS receipt ON receipt.attempt_id=attempt.attempt_id
+    WHERE delivery.publication_id=$1::uuid
+      AND (attempt.attempt_id IS NULL OR receipt.attempt_id IS NULL)
   )
   AND NOT EXISTS (
     SELECT 1 FROM work_claims AS work
@@ -404,12 +510,25 @@ SELECT eligible_at < clock_timestamp()-$3::interval
       AND producer.acquisition_id=work.acquisition_id AND producer.lease_epoch=work.lease_epoch
       AND producer.lease_expires_at>clock_timestamp()
   )
+  AND NOT EXISTS (
+    SELECT 1 FROM artifact_upload_attempts AS upload
+    WHERE upload.artifact_id IN (SELECT value FROM jsonb_array_elements_text(claim.artifact_ids))
+      AND upload.attempt_state='prepared'
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM artifact_quota_reservations AS quota
+    WHERE quota.artifact_id IN (SELECT value FROM jsonb_array_elements_text(claim.artifact_ids))
+      AND quota.converted_at IS NULL AND quota.released_at IS NULL
+  )
 FROM artifact_metadata_prune_claims AS claim
 JOIN artifact_publications AS publication ON publication.publication_id=claim.publication_id
 WHERE claim.publication_id=$1::uuid`, claim.publicationID, fence.FlowIncarnationID, horizon.String()).Scan(&safe); err != nil {
 		return 0, false, false, err
 	}
 	if !safe {
+		if _, err := tx.Exec(ctx, `UPDATE artifact_metadata_prune_claims SET retry_after=clock_timestamp()+interval '1 millisecond',updated_at=clock_timestamp() WHERE publication_id=$1 AND claim_epoch=$2`, claim.publicationID, claim.claimEpoch); err != nil {
+			return 0, false, false, err
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return 0, false, false, err
 		}
@@ -417,43 +536,9 @@ WHERE claim.publication_id=$1::uuid`, claim.publicationID, fence.FlowIncarnation
 	}
 
 	remaining := budget
-	// Catalog evidence is an atomic reconciliation/conflict bundle.
-	for remaining >= 3 {
-		var attemptID uuid.UUID
-		var consumerRevisionID string
-		err := tx.QueryRow(ctx, `
-SELECT attempt.attempt_id,delivery.consumer_revision_id
-FROM artifact_deliveries AS delivery
-JOIN artifact_delivery_attempts AS attempt
-  ON attempt.flow_incarnation_id=delivery.flow_incarnation_id
- AND attempt.consumer_revision_id=delivery.consumer_revision_id
- AND attempt.publication_id=delivery.publication_id
-JOIN artifact_delivery_receipts AS receipt ON receipt.attempt_id=attempt.attempt_id
-WHERE delivery.publication_id=$1 AND delivery.delivered_at IS NOT NULL
-ORDER BY delivery.consumer_revision_id LIMIT 1
-FOR UPDATE OF delivery,attempt,receipt`, claim.publicationID).Scan(&attemptID, &consumerRevisionID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			break
-		}
-		if err != nil {
-			return 0, false, false, err
-		}
-		for _, deletion := range []struct {
-			query string
-			args  []any
-		}{
-			{`DELETE FROM artifact_delivery_receipts WHERE attempt_id=$1`, []any{attemptID}},
-			{`DELETE FROM artifact_delivery_attempts WHERE attempt_id=$1`, []any{attemptID}},
-			{`DELETE FROM artifact_deliveries WHERE publication_id=$1 AND consumer_revision_id=$2 AND delivered_at IS NOT NULL`, []any{claim.publicationID, consumerRevisionID}},
-		} {
-			tag, deleteErr := tx.Exec(ctx, deletion.query, deletion.args...)
-			if deleteErr != nil || tag.RowsAffected() != 1 {
-				return 0, false, false, fmt.Errorf("prune artifact catalog evidence: affected=%d err=%w", tag.RowsAffected(), deleteErr)
-			}
-			rows++
-			remaining--
-		}
-	}
+	// Attempt/receipt/delivery evidence is intentionally not pruned here. It is
+	// immutable reconciliation state and is deleted only in the final atomic
+	// publication bundle below.
 	for _, table := range []string{"artifact_barriers", "source_ack_retention_roots", "artifact_publication_objects"} {
 		if remaining == 0 {
 			break
@@ -478,6 +563,16 @@ FOR UPDATE OF delivery,attempt,receipt`, claim.publicationID).Scan(&attemptID, &
 		count := int(tag.RowsAffected())
 		rows += count
 		remaining -= count
+	}
+	// Remove IDs already deleted by a previous committed phase or another safe
+	// publication claim. Claim updates are not deletion-budget rows.
+	if _, err := tx.Exec(ctx, `
+UPDATE artifact_metadata_prune_claims AS claim
+SET artifact_ids=COALESCE((SELECT jsonb_agg(value ORDER BY value) FROM jsonb_array_elements_text(claim.artifact_ids) WHERE EXISTS (SELECT 1 FROM artifact_objects WHERE artifact_id=value)),'[]'::jsonb),
+    schema_ids=COALESCE((SELECT jsonb_agg(value ORDER BY value) FROM jsonb_array_elements_text(claim.schema_ids) WHERE EXISTS (SELECT 1 FROM canonical_schemas WHERE schema_id=value)),'[]'::jsonb),
+    updated_at=clock_timestamp()
+WHERE publication_id=$1`, claim.publicationID); err != nil {
+		return 0, false, false, err
 	}
 	// Remove now-unreferenced terminal object evidence in bounded chunks.
 	for remaining > 0 {
@@ -545,35 +640,83 @@ DELETE FROM artifact_objects WHERE artifact_id=$1 AND state='deleted'
 		}
 	}
 
-	if remaining > 0 {
-		tag, deleteErr := tx.Exec(ctx, `
-DELETE FROM artifact_publications AS publication
-WHERE publication.publication_id=$1::uuid
-  AND NOT EXISTS (SELECT 1 FROM artifact_publication_objects WHERE publication_id=$1::uuid)
-  AND NOT EXISTS (SELECT 1 FROM artifact_barriers WHERE publication_id=$1::uuid)
-  AND NOT EXISTS (SELECT 1 FROM artifact_deliveries WHERE publication_id=$1::uuid)
-  AND NOT EXISTS (SELECT 1 FROM artifact_delivery_attempts WHERE publication_id=$1::uuid)
-  AND NOT EXISTS (SELECT 1 FROM artifact_delivery_receipts WHERE publication_id=$1::uuid)
-  AND NOT EXISTS (SELECT 1 FROM artifact_consumer_checkpoints WHERE publication_id=$1::uuid)
-  AND NOT EXISTS (SELECT 1 FROM authoritative_checkpoints WHERE flow_incarnation_id=$2 AND (lsn=publication.checkpoint_lsn OR metadata->>'artifact_publication_id'=($1::uuid)::text))`, claim.publicationID, fence.FlowIncarnationID)
+	// Canonical schemas are global immutable rows. Delete only after every
+	// artifact reference is gone, and charge each schema row to this sweep.
+	for remaining > 0 {
+		var schemaID string
+		err := tx.QueryRow(ctx, `SELECT value FROM artifact_metadata_prune_claims AS claim,LATERAL jsonb_array_elements_text(claim.schema_ids) WHERE claim.publication_id=$1 ORDER BY value LIMIT 1`, claim.publicationID).Scan(&schemaID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			break
+		}
+		if err != nil {
+			return 0, false, false, err
+		}
+		if _, err := tx.Exec(ctx, `SELECT schema_id FROM canonical_schemas WHERE schema_id=$1 FOR UPDATE`, schemaID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, false, err
+		}
+		tag, deleteErr := tx.Exec(ctx, `DELETE FROM canonical_schemas WHERE schema_id=$1 AND NOT EXISTS (SELECT 1 FROM artifact_objects WHERE schema_id=$1)`, schemaID)
 		if deleteErr != nil {
 			return 0, false, false, deleteErr
 		}
 		if tag.RowsAffected() == 1 {
 			rows++
 			remaining--
-			publicationDeleted = true
+		}
+		if _, err := tx.Exec(ctx, `UPDATE artifact_metadata_prune_claims SET schema_ids=schema_ids-$2,updated_at=clock_timestamp() WHERE publication_id=$1`, claim.publicationID, schemaID); err != nil {
+			return 0, false, false, err
 		}
 	}
-	if publicationDeleted && remaining > 0 {
-		tag, deleteErr := tx.Exec(ctx, `DELETE FROM artifact_metadata_prune_claims WHERE publication_id=$1 AND claim_epoch=$2`, claim.publicationID, claim.claimEpoch)
-		if deleteErr != nil || tag.RowsAffected() != 1 {
-			return 0, false, false, fmt.Errorf("delete artifact metadata claim: affected=%d err=%w", tag.RowsAffected(), deleteErr)
+
+	if p.hooks.Boundary != nil {
+		if err := p.hooks.Boundary(ctx, "after_metadata_partial_phase", claim.publicationID); err != nil {
+			return 0, false, false, err
 		}
-		rows++
+	}
+
+	// The final immutable catalog evidence, publication, and claim form one
+	// atomic deletion bundle. If it cannot fit, preserve all evidence and defer.
+	var deliveries, attempts, receipts, roots, barriers int
+	if err := tx.QueryRow(ctx, `SELECT
+  (SELECT count(*) FROM artifact_deliveries WHERE publication_id=$1),
+  (SELECT count(*) FROM artifact_delivery_attempts WHERE publication_id=$1),
+  (SELECT count(*) FROM artifact_delivery_receipts WHERE publication_id=$1),
+  (SELECT count(*) FROM artifact_publication_objects WHERE publication_id=$1),
+  (SELECT count(*) FROM artifact_barriers WHERE publication_id=$1)`, claim.publicationID).Scan(&deliveries, &attempts, &receipts, &roots, &barriers); err != nil {
+		return 0, false, false, err
+	}
+	finalRows := deliveries + attempts + receipts + roots + barriers + 2 // publication + claim
+	if roots == 0 && barriers == 0 && deliveries == attempts && attempts == receipts && finalRows <= remaining {
+		for _, deletion := range []struct {
+			query string
+			args  []any
+			want  int
+		}{
+			{`DELETE FROM artifact_delivery_receipts WHERE publication_id=$1`, []any{claim.publicationID}, receipts},
+			{`DELETE FROM artifact_delivery_attempts WHERE publication_id=$1`, []any{claim.publicationID}, attempts},
+			{`DELETE FROM artifact_deliveries WHERE publication_id=$1`, []any{claim.publicationID}, deliveries},
+			{`DELETE FROM artifact_publications AS publication WHERE publication_id=$1 AND NOT EXISTS (SELECT 1 FROM artifact_consumer_checkpoints WHERE publication_id=$1) AND NOT EXISTS (SELECT 1 FROM authoritative_checkpoints WHERE flow_incarnation_id=$2 AND (lsn=publication.checkpoint_lsn OR metadata->>'artifact_publication_id'=($1::uuid)::text))`, []any{claim.publicationID, fence.FlowIncarnationID}, 1},
+			{`DELETE FROM artifact_metadata_prune_claims WHERE publication_id=$1 AND claim_epoch=$2`, []any{claim.publicationID, claim.claimEpoch}, 1},
+		} {
+			tag, deleteErr := tx.Exec(ctx, deletion.query, deletion.args...)
+			if deleteErr != nil || int(tag.RowsAffected()) != deletion.want {
+				return 0, false, false, fmt.Errorf("delete final artifact metadata bundle: affected=%d want=%d err=%w", tag.RowsAffected(), deletion.want, deleteErr)
+			}
+			rows += deletion.want
+			remaining -= deletion.want
+		}
+		publicationDeleted = true
+	} else {
+		if _, err := tx.Exec(ctx, `UPDATE artifact_metadata_prune_claims SET retry_after=clock_timestamp()+interval '1 millisecond',updated_at=clock_timestamp() WHERE publication_id=$1 AND claim_epoch=$2`, claim.publicationID, claim.claimEpoch); err != nil {
+			return 0, false, false, err
+		}
 	}
 	if rows > budget {
 		return 0, false, false, errors.New("artifact metadata row budget exceeded")
+	}
+	if p.hooks.Boundary != nil {
+		if err := p.hooks.Boundary(ctx, "before_metadata_commit", claim.publicationID); err != nil {
+			return 0, false, false, err
+		}
 	}
 	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
 		return 0, false, false, err

@@ -112,7 +112,7 @@ var requiredManagedColumns = map[string][]string{
 	"artifact_delivery_attempts":     {"attempt_id", "flow_incarnation_id", "consumer_revision_id", "publication_id", "generation", "acquisition_id", "lease_epoch", "prepared_at", "commit_id", "manifest_sha256", "logical_batch_id"},
 	"artifact_delivery_receipts":     {"flow_incarnation_id", "consumer_revision_id", "publication_id", "attempt_id", "snapshot_id", "content_hash", "acquisition_id", "lease_epoch", "committed_at", "commit_id", "logical_batch_id", "publication_sequence", "position_id", "checkpoint_lsn", "snapshot_ids"},
 	"artifact_consumer_checkpoints":  {"flow_incarnation_id", "consumer_revision_id", "publication_sequence", "publication_id", "position_id", "checkpoint_lsn", "commit_id", "snapshot_id", "advanced_at"},
-	"artifact_metadata_prune_claims": {"publication_id", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "claim_epoch", "artifact_ids", "eligible_at", "claimed_at", "updated_at"},
+	"artifact_metadata_prune_claims": {"publication_id", "flow_incarnation_id", "generation", "acquisition_id", "lease_epoch", "claim_epoch", "artifact_ids", "schema_ids", "eligible_at", "retry_after", "claimed_at", "updated_at"},
 }
 
 type exactManagedColumn struct {
@@ -170,6 +170,20 @@ var exactAuthorityColumns = map[string][]exactManagedColumn{
 		{name: "checkpoint_lsn", dataType: "text", notNull: true, defaultExpr: "''::text"},
 		{name: "snapshot_ids", dataType: "jsonb", notNull: true, defaultExpr: "'{}'::jsonb"},
 	},
+	"artifact_metadata_prune_claims": {
+		{name: "publication_id", dataType: "uuid", notNull: true},
+		{name: "flow_incarnation_id", dataType: "uuid", notNull: true},
+		{name: "generation", dataType: "bigint", notNull: true},
+		{name: "acquisition_id", dataType: "uuid", notNull: true},
+		{name: "lease_epoch", dataType: "bigint", notNull: true},
+		{name: "claim_epoch", dataType: "bigint", notNull: true},
+		{name: "artifact_ids", dataType: "jsonb", notNull: true},
+		{name: "schema_ids", dataType: "jsonb", notNull: true},
+		{name: "eligible_at", dataType: "timestamp with time zone", notNull: true},
+		{name: "retry_after", dataType: "timestamp with time zone", notNull: true, defaultExpr: "clock_timestamp()"},
+		{name: "claimed_at", dataType: "timestamp with time zone", notNull: true, defaultExpr: "clock_timestamp()"},
+		{name: "updated_at", dataType: "timestamp with time zone", notNull: true, defaultExpr: "clock_timestamp()"},
+	},
 	"artifact_consumer_checkpoints": {
 		{name: "flow_incarnation_id", dataType: "uuid", notNull: true},
 		{name: "consumer_revision_id", dataType: "text", notNull: true},
@@ -219,6 +233,13 @@ var exactAuthorityConstraints = []exactAuthorityConstraint{
 	{table: "artifact_consumer_checkpoints", name: "artifact_consumer_checkpoints_publication_sequence_check", kind: "c", definition: "CHECK (publication_sequence > 0)"},
 	{table: "artifact_consumer_checkpoints", name: "artifact_consumer_checkpoints_flow_incarnation_id_consumer__key", kind: "u", noInherit: true, columns: []string{"flow_incarnation_id", "consumer_revision_id", "publication_sequence"}, definition: "UNIQUE (flow_incarnation_id, consumer_revision_id, publication_sequence)"},
 	{table: "artifact_consumer_checkpoints", name: "artifact_consumer_checkpoints_flow_incarnation_id_consumer_key1", kind: "u", noInherit: true, columns: []string{"flow_incarnation_id", "consumer_revision_id", "publication_id"}, definition: "UNIQUE (flow_incarnation_id, consumer_revision_id, publication_id)"},
+	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_pkey", kind: "p", noInherit: true, columns: []string{"publication_id"}, definition: "PRIMARY KEY (publication_id)"},
+	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_flow_incarnation_id_fkey", kind: "f", noInherit: true, columns: []string{"flow_incarnation_id"}, definition: "FOREIGN KEY (flow_incarnation_id) REFERENCES flow_incarnations(incarnation_id) ON DELETE RESTRICT"},
+	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_generation_check", kind: "c", definition: "CHECK (generation > 0)"},
+	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_lease_epoch_check", kind: "c", definition: "CHECK (lease_epoch > 0)"},
+	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_claim_epoch_check", kind: "c", definition: "CHECK (claim_epoch > 0)"},
+	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_artifact_ids_array", kind: "c", definition: "CHECK (jsonb_typeof(artifact_ids) = 'array'::text)"},
+	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_schema_ids_array", kind: "c", definition: "CHECK (jsonb_typeof(schema_ids) = 'array'::text)"},
 }
 
 // selectiveAuthorityConstraints are individually exact but belong to tables
@@ -255,14 +276,19 @@ var exactAuthorityIndexes = []exactAuthorityIndex{
 	{table: "artifact_consumer_checkpoints", name: "artifact_consumer_checkpoints_flow_incarnation_id_consumer__key", unique: true, columns: []string{"flow_incarnation_id", "consumer_revision_id", "publication_sequence"}, options: []int16{0, 0, 0}},
 	{table: "artifact_consumer_checkpoints", name: "artifact_consumer_checkpoints_flow_incarnation_id_consumer_key1", unique: true, columns: []string{"flow_incarnation_id", "consumer_revision_id", "publication_id"}, options: []int16{0, 0, 0}},
 	{table: "artifact_delivery_attempts", name: "artifact_delivery_attempts_publication_unique", unique: true, columns: []string{"flow_incarnation_id", "consumer_revision_id", "publication_id"}, options: []int16{0, 0, 0}},
+	{table: "artifact_delivery_attempts", name: "artifact_delivery_attempts_publication_idx", columns: []string{"publication_id", "attempt_id"}, options: []int16{0, 0}},
 	{table: "artifact_delivery_attempts", name: "artifact_delivery_attempts_commit_unique", unique: true, columns: []string{"flow_incarnation_id", "consumer_revision_id", "commit_id"}, options: []int16{0, 0, 0}},
 	{table: "artifact_delivery_receipts", name: "artifact_delivery_receipts_attempt_unique", unique: true, columns: []string{"attempt_id"}, options: []int16{0}},
+	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_pkey", unique: true, primary: true, columns: []string{"publication_id"}, options: []int16{0}},
+	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_flow_idx", columns: []string{"flow_incarnation_id", "retry_after", "claimed_at", "publication_id"}, options: []int16{0, 0, 0, 0}},
 }
 
 // selectiveAuthorityIndexes are individually exact but do not claim ownership
 // of every index on their table.
 var selectiveAuthorityIndexes = []exactAuthorityIndex{
 	{table: "artifact_deliveries", name: "artifact_deliveries_pending_idx", columns: []string{"flow_incarnation_id", "consumer_revision_id", "sequence"}, options: []int16{0, 0, 0}, predicate: "(delivered_at IS NULL)"},
+	{table: "artifact_deliveries", name: "artifact_deliveries_publication_idx", columns: []string{"publication_id", "delivered_at"}, options: []int16{0, 0}},
+	{table: "artifact_publications", name: "artifact_publications_metadata_retention_idx", columns: []string{"flow_incarnation_id", "published_at", "sequence", "publication_id"}, options: []int16{0, 0, 0, 0}},
 }
 
 type requiredManagedObject struct {
@@ -310,7 +336,11 @@ var requiredManagedConstraints = []requiredManagedObject{
 	{table: "artifact_gc_claims", name: "artifact_gc_claims_publication_kind"},
 	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_pkey"},
 	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_flow_incarnation_id_fkey"},
+	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_generation_check"},
+	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_lease_epoch_check"},
+	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_claim_epoch_check"},
 	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_artifact_ids_array"},
+	{table: "artifact_metadata_prune_claims", name: "artifact_metadata_prune_claims_schema_ids_array"},
 }
 
 var requiredManagedIndexes = []requiredManagedObject{
@@ -488,7 +518,7 @@ func verifyExactAuthoritySchema(ctx context.Context, pool authorityCatalogQuerye
 	if err := verifyExactAuthorityObjectSets(ctx, pool); err != nil {
 		return err
 	}
-	for _, table := range []string{"delivery_manifests", "artifact_delivery_attempts", "artifact_delivery_receipts", "artifact_consumer_checkpoints"} {
+	for _, table := range []string{"delivery_manifests", "artifact_delivery_attempts", "artifact_delivery_receipts", "artifact_consumer_checkpoints", "artifact_metadata_prune_claims"} {
 		expectedColumns := exactAuthorityColumns[table]
 		var actualNames []string
 		if err := pool.QueryRow(ctx, `
