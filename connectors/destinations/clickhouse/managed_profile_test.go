@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"syscall"
@@ -125,6 +126,16 @@ func TestManagedWriteTransportFailureFallsBackToReplica(t *testing.T) {
 		return nil
 	}); err != nil || replicaCalls != 1 {
 		t.Fatalf("wrapped EOF failover error/calls=%v/%d, want nil/1", err, replicaCalls)
+	}
+
+	replicaCalls = 0
+	if err := executeManagedWriteWithFailover(context.Background(), true, func() error {
+		return errors.Join(context.Canceled, io.EOF)
+	}, func() error {
+		replicaCalls++
+		return nil
+	}); err != nil || replicaCalls != 1 {
+		t.Fatalf("endpoint-local cancellation/EOF failover error/calls=%v/%d, want nil/1", err, replicaCalls)
 	}
 
 	serverErr := errors.New("server rejected insert")

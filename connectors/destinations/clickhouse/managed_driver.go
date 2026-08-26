@@ -854,7 +854,7 @@ func executeManagedWriteWithFailover(ctx context.Context, replicaAvailable bool,
 }
 
 func isManagedTransportError(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if err == nil {
 		return false
 	}
 	var netErr net.Error
