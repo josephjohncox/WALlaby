@@ -325,7 +325,8 @@ func TestManagedDeliveryRetentionRunsDuringLongLivedFlow(t *testing.T) {
 
 func TestManagedIndeterminateDeliveryStaysRecoverable(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 125*time.Millisecond)
+	defer cancel()
 	engine := workflow.NewMemoryEngine()
 	f := managedAdmissionFlow()
 	if _, err := engine.Create(ctx, f); err != nil {
@@ -345,8 +346,11 @@ func TestManagedIndeterminateDeliveryStaysRecoverable(t *testing.T) {
 		Spec: managedAdmissionDestinations()[0].Spec,
 		Dest: blockingManagedDestination{},
 	}})
-	if !errors.Is(err, connector.ErrDeliveryIndeterminate) {
-		t.Fatalf("Run() error=%v, want indeterminate delivery", err)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run() error=%v, want bounded test cancellation while delivery remains indeterminate", err)
+	}
+	if deliveries.deliverCalls.Load() < 2 {
+		t.Fatalf("DeliverTransaction calls=%d, want reconciliation retries before cancellation", deliveries.deliverCalls.Load())
 	}
 	if authorityStore.failCalls != 0 {
 		t.Fatalf("FailFlow calls=%d, indeterminate outcome must be reconciled by a later owner", authorityStore.failCalls)
@@ -388,6 +392,7 @@ func (*failingRenewAuthority) ReleaseClaim(context.Context, authority.ClaimFence
 
 type blockingManagedDelivery struct {
 	deliverErr            error
+	deliverCalls          atomic.Int32
 	pruneCalls            atomic.Int32
 	registeredFingerprint string
 }
@@ -414,6 +419,7 @@ func (*blockingManagedDelivery) AuthorizeAck(_ context.Context, _ connector.RunF
 	return connector.AckGrant{Checkpoint: checkpoint, PositionID: position}, err
 }
 func (d *blockingManagedDelivery) DeliverTransaction(context.Context, connector.RunFence, connector.DeliveryIntent, connector.SourceTransaction, connector.ManagedSchemaBaselinePayload, connector.ManagedTransactionDestination) (connector.AckGrant, error) {
+	d.deliverCalls.Add(1)
 	if d.deliverErr != nil {
 		return connector.AckGrant{}, d.deliverErr
 	}
