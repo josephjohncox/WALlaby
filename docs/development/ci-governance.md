@@ -14,7 +14,7 @@ WALlaby treats required GitHub check names as a compatibility contract. Branch r
 | CI Evidence | `failure-matrix-model`, `failure-matrix`, `connector-matrix`, `benchmark-smoke` |
 | CodeQL | `Analyze (actions)`, `Analyze (go)`, `Analyze (python)`, `CodeQL` |
 
-Issue #79 tracks enforcement of this contract in repository-hosted branch rules. This page defines the intended required set; it does not claim that an administrator cannot weaken repository settings.
+The active `Main: reviewed PRs and required checks` repository ruleset enforces this contract for `main`. Repository settings remain the live authority. This page records the reviewed policy and its verification procedure.
 
 ## Non-vacuous evidence checks
 
@@ -37,6 +37,36 @@ The following are not maintained promotion requirements:
 - AWS S3 Tables and Snowflake linked-catalog live gates — credential-gated operator evidence, not ordinary branch admission.
 
 Credential-gated checks must remain explicit and fail closed when deliberately invoked, but their absence cannot be used to imply maintained support.
+
+## Review and merge policy
+
+The `main` ruleset requires a pull request and one approval. A reviewer other than the last pusher must approve the final head. A new push dismisses stale approval. The pull request must resolve all review threads.
+
+The branch must be current before merge. All required checks must pass on the exact pull-request head. The repository permits merge commits only. The ruleset blocks branch deletion and non-fast-forward updates.
+
+Repository administrators have no silent direct-push bypass. The administrator repository role can use a pull-request-only emergency bypass. Before use, the administrator must link an incident or issue and state the reason in the pull request. GitHub records the bypass and the ruleset change in the repository audit log.
+
+## Verify the live ruleset
+
+Run these commands with a token that can read repository rulesets:
+
+```bash
+gh api repos/josephjohncox/WALlaby/rulesets/11786907 \
+  --jq '{name,enforcement,conditions,bypass_actors,rules}'
+
+gh api repos/josephjohncox/WALlaby/rulesets/11786907 \
+  --jq '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context'
+```
+
+Verify these results:
+
+1. The enforcement value is `active`.
+2. The condition selects `~DEFAULT_BRANCH`.
+3. Pull requests require one approval, last-push approval, stale-review dismissal, and resolved threads.
+4. The only merge method is `merge`.
+5. Strict required checks contain every name in the table above.
+6. The administrator bypass mode is `pull_request`, not `always`.
+7. The rules include deletion and non-fast-forward protection.
 
 ## Changing the required set
 

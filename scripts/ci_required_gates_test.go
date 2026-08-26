@@ -83,9 +83,27 @@ func TestRequiredCheckpoint5AndModelOnlyCIGatesStayWired(t *testing.T) {
 		}
 	}
 	governance := read("../docs/development/ci-governance.md")
-	for _, check := range []string{"`checkpoint5-iceberg`", "`failure-matrix-model`", "`failure-matrix`"} {
+	for _, check := range []string{
+		"`build`", "`lint`", "`terraform-provider`", "`generated-artifacts`", "`spec`",
+		"`integration`", "`checkpoint5-iceberg`", "`postgres-managed-profile-14`",
+		"`postgres-managed-profile-15`", "`postgres-managed-profile-16`", "`postgres-managed-profile-17`",
+		"`failure-matrix-model`", "`failure-matrix`", "`connector-matrix`", "`benchmark-smoke`",
+		"`Analyze (actions)`", "`Analyze (go)`", "`Analyze (python)`", "`CodeQL`",
+	} {
 		if !strings.Contains(governance, check) {
 			t.Fatalf("CI governance does not name required check %s", check)
+		}
+	}
+	for _, policy := range []string{
+		"requires a pull request and one approval",
+		"reviewer other than the last pusher",
+		"permits merge commits only",
+		"pull-request-only emergency bypass",
+		"enforcement value is `active`",
+		"administrator bypass mode is `pull_request`",
+	} {
+		if !strings.Contains(governance, policy) {
+			t.Fatalf("CI governance does not preserve policy text %q", policy)
 		}
 	}
 }
