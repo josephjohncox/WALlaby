@@ -125,49 +125,6 @@ func TestArtifactMetadataRetentionMetricLabelsAreBounded(t *testing.T) {
 	}
 }
 
-func TestArtifactMetadataRetentionMetricsKeepCommittedFirstClaimWhenLaterClaimFails(t *testing.T) {
-	oldMeterProvider := otel.GetMeterProvider()
-	oldMetrics := durableMetrics
-	defer func() {
-		otel.SetMeterProvider(oldMeterProvider)
-		durableMetrics = oldMetrics
-	}()
-	reader := sdkmetric.NewManualReader()
-	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
-	durableMetrics = &durableMetricSet{}
-	ctx := context.Background()
-	// These are the committed stats retained by Prune's defer when claim one
-	// commits and claim two subsequently returns an error.
-	RecordArtifactMetadataPruneStats(ctx, 2, 1, 0, 3)
-	var metrics metricdata.ResourceMetrics
-	if err := reader.Collect(ctx, &metrics); err != nil {
-		t.Fatal(err)
-	}
-	outcomes := map[string]int64{}
-	var rows int64
-	for _, scope := range metrics.ScopeMetrics {
-		for _, measurement := range scope.Metrics {
-			sum, ok := measurement.Data.(metricdata.Sum[int64])
-			if !ok {
-				continue
-			}
-			for _, point := range sum.DataPoints {
-				switch measurement.Name {
-				case "wallaby.artifact.metadata_retention.publications":
-					if value, ok := point.Attributes.Value(attribute.Key("outcome")); ok {
-						outcomes[value.AsString()] += point.Value
-					}
-				case "wallaby.artifact.metadata_retention.rows":
-					rows += point.Value
-				}
-			}
-		}
-	}
-	if outcomes["scanned"] != 2 || outcomes["deleted"] != 1 || outcomes["deferred"] != 0 || rows != 3 {
-		t.Fatalf("committed metadata metrics outcomes=%v rows=%d", outcomes, rows)
-	}
-}
-
 func TestIcebergConsumerTelemetry(t *testing.T) {
 	oldTracerProvider := otel.GetTracerProvider()
 	oldMeterProvider := otel.GetMeterProvider()

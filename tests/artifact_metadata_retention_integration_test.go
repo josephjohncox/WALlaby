@@ -16,8 +16,13 @@ import (
 	"github.com/josephjohncox/wallaby/internal/delivery"
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/tablemap"
+	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func TestArtifactMetadataRetentionBoundsConvergesAndPreservesCurrentRecovery(t *testing.T) {
@@ -446,6 +451,100 @@ WHERE checkpoint.flow_incarnation_id=$1 AND receipt.consumer_revision_id=checkpo
 	if objects.puts != putsBeforeReplay {
 		t.Fatalf("replay duplicated immutable object: puts=%d before=%d", objects.puts, putsBeforeReplay)
 	}
+
+	t.Run("committed metrics survive a later claim failure", func(t *testing.T) {
+		// Create three fresh publications so two can become terminal while the
+		// newest remains the authoritative checkpoint root.
+		for index := 0; index < 3; index++ {
+			base := 0x500 + index*0x20
+			transaction := artifactTransactionAt(uint32(2000+index), lsnForTest(base), lsnForTest(base+8), lsnForTest(base+16), "metric-partial-failure")
+			if _, err := fresh.Append(ctx, fence, transaction, managedBaselinePayload(t, transaction)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := fresh.Recover(ctx, fence); err != nil {
+			t.Fatalf("deliver metric publications: %v", err)
+		}
+		for _, statement := range []string{
+			`UPDATE artifact_publications SET published_at=clock_timestamp()-interval '8 days' WHERE flow_incarnation_id=$1`,
+			`UPDATE artifact_publication_objects SET release_marked_at=clock_timestamp()-interval '8 days',released_at=clock_timestamp()-interval '8 days' WHERE publication_id IN (SELECT publication_id FROM artifact_publications WHERE flow_incarnation_id=$1 AND sequence<(SELECT max(sequence) FROM artifact_publications WHERE flow_incarnation_id=$1))`,
+			`UPDATE artifact_objects SET state='deleted',updated_at=clock_timestamp()-interval '8 days' WHERE artifact_id IN (SELECT root.artifact_id FROM artifact_publication_objects AS root JOIN artifact_publications AS publication ON publication.publication_id=root.publication_id WHERE publication.flow_incarnation_id=$1 AND publication.sequence<(SELECT max(sequence) FROM artifact_publications WHERE flow_incarnation_id=$1))`,
+			`UPDATE source_ack_retention_roots SET released_at=clock_timestamp()-interval '8 days' WHERE flow_incarnation_id=$1 AND root_kind='artifact_publication' AND root_id IN (SELECT publication_id::text FROM artifact_publications WHERE flow_incarnation_id=$1 AND sequence<(SELECT max(sequence) FROM artifact_publications WHERE flow_incarnation_id=$1))`,
+			`UPDATE artifact_deliveries SET delivered_at=clock_timestamp()-interval '8 days' WHERE flow_incarnation_id=$1`,
+			`UPDATE artifact_delivery_receipts SET committed_at=clock_timestamp()-interval '8 days' WHERE flow_incarnation_id=$1`,
+		} {
+			if _, err := pool.Exec(ctx, statement, fence.FlowIncarnationID); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		oldMeterProvider := otel.GetMeterProvider()
+		reader := sdkmetric.NewManualReader()
+		otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+		restoreMetrics := telemetry.ResetDurableMetricsForTest()
+		defer func() {
+			restoreMetrics()
+			otel.SetMeterProvider(oldMeterProvider)
+		}()
+
+		injected := errors.New("injected failure after first committed metadata claim")
+		claimed := make([]uuid.UUID, 0, 2)
+		metricPruner, err := artifactlog.NewMetadataPruner(pool, artifactlog.WithMetadataPrunerHooks(artifactlog.MetadataPrunerHooks{Boundary: func(_ context.Context, boundary string, publicationID uuid.UUID) error {
+			if boundary != "after_metadata_claim" {
+				return nil
+			}
+			claimed = append(claimed, publicationID)
+			if len(claimed) == 2 {
+				return injected
+			}
+			return nil
+		}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		stats, pruneErr := metricPruner.Prune(ctx, fence, 7*24*time.Hour, 2, 1000)
+		if !errors.Is(pruneErr, injected) {
+			t.Fatalf("later claim failure=%v, want injected error", pruneErr)
+		}
+		if len(claimed) != 2 || stats.PublicationsScanned != 2 || stats.PublicationsDeleted != 1 || stats.PublicationsDeferred != 0 || stats.RowsDeleted <= 0 {
+			t.Fatalf("committed first claim stats=%+v claimed=%v", stats, claimed)
+		}
+		var firstExists, secondClaimExists bool
+		if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM artifact_publications WHERE publication_id=$1),EXISTS(SELECT 1 FROM artifact_metadata_prune_claims WHERE publication_id=$2)`, claimed[0], claimed[1]).Scan(&firstExists, &secondClaimExists); err != nil {
+			t.Fatal(err)
+		}
+		if firstExists || !secondClaimExists {
+			t.Fatalf("claim commit boundary first_exists=%v second_claim_exists=%v", firstExists, secondClaimExists)
+		}
+
+		var metrics metricdata.ResourceMetrics
+		if err := reader.Collect(ctx, &metrics); err != nil {
+			t.Fatal(err)
+		}
+		outcomes := map[string]int64{}
+		var rows int64
+		for _, scope := range metrics.ScopeMetrics {
+			for _, measurement := range scope.Metrics {
+				sum, ok := measurement.Data.(metricdata.Sum[int64])
+				if !ok {
+					continue
+				}
+				for _, point := range sum.DataPoints {
+					switch measurement.Name {
+					case "wallaby.artifact.metadata_retention.publications":
+						if value, ok := point.Attributes.Value(attribute.Key("outcome")); ok {
+							outcomes[value.AsString()] += point.Value
+						}
+					case "wallaby.artifact.metadata_retention.rows":
+						rows += point.Value
+					}
+				}
+			}
+		}
+		if outcomes["scanned"] != int64(stats.PublicationsScanned) || outcomes["deleted"] != int64(stats.PublicationsDeleted) || outcomes["deferred"] != int64(stats.PublicationsDeferred) || rows != int64(stats.RowsDeleted) {
+			t.Fatalf("deferred-path metrics outcomes=%v rows=%d stats=%+v", outcomes, rows, stats)
+		}
+	})
 }
 
 func lsnForTest(value int) string {

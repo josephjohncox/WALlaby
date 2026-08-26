@@ -46,6 +46,15 @@ type durableMetricSet struct {
 
 var durableMetrics = &durableMetricSet{}
 
+// ResetDurableMetricsForTest rebinds lazily initialized instruments to the
+// current global meter provider. It must only be used by serial tests with no
+// concurrent telemetry recording; the returned function restores prior state.
+func ResetDurableMetricsForTest() func() {
+	previous := durableMetrics
+	durableMetrics = &durableMetricSet{}
+	return func() { durableMetrics = previous }
+}
+
 func initDurableMetrics() bool {
 	durableMetrics.once.Do(func() {
 		meter := otel.Meter("wallaby/durable")
