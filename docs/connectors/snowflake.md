@@ -390,24 +390,33 @@ There is no officially supported Go SDK or high-performance REST client for Snow
 
 ### Delivery protocol (exercised against the in-memory fake)
 
-A committed transaction becomes an ordered set of deterministic-identity append rows. Every row carries the full delivery identity, the operation, the key, before/after images, the sorted set of unchanged-TOAST columns, a deterministic per-batch `OFFSET_TOKEN`, an `APPEND_ORDINAL`, and a per-row `ROW_HASH`. The `ROW_HASH` — not any transport token — is the identity that SQL observation counts. Delivery proceeds as:
+A committed transaction becomes deterministic append rows. Each row carries the delivery identity, offset token, ordinal, and row hash. The row hash identifies target rows. The offset token does not prove commit.
 
-1. **Adopt** — if a durable append receipt for the logical batch already exists, return it; a receipt whose identity or row-content hash differs is a conflict.
-2. **Open channel** — open (or reopen) the deterministic per-incarnation channel and persist its exact channel/pipe revision, continuation token, and committed-offset token to an owned channel-state table.
-3. **Observe** — read, by `ROW_HASH`, which rows are already durably present for this logical batch. A row observed more than once is a duplicate-identity hazard that fails closed.
-4. **Append proven-missing** — append only the rows SQL observation proves are missing. Channel invalidation reopens, re-observes, and re-appends only the still-missing rows; auth expiry refreshes credentials; throttling backs off within a bound; a terminal response with rejected rows or an oversize row fails closed. Never blindly re-append.
-5. **Verify** — poll SQL observation until every `ROW_HASH` is present, then read the committed offset token as corroborating evidence (required when this incarnation performed the append). SQL-observed completeness is the adoption authority; the committed token alone is never sufficient.
-6. **Receipt** — insert one durable append receipt into an owned receipt table whose enforced primary key serializes concurrent generations; a duplicate key adopts the winning attempt.
+Each append also has a durable request identity. The identity binds the logical batch, channel and pipe revisions, input continuation, requested offset, manifest hash, row hash, row count, and attempt. The request journal is separate from channel state.
 
-Because the durable receipt plus SQL-observed completeness are the joint proof, `Reconcile` is read-only: an absent receipt is *not applied* so a replay converges idempotently (already-present rows are never re-appended), and only a fully matching receipt is *applied*. Complete-unreceipted recovery (rows already present from a prior incarnation, no receipt yet) appends nothing and writes the receipt on the SQL-observed completeness.
+Delivery uses these phases:
+
+1. **Adopt receipt** — return a matching durable receipt. Reject a conflicting receipt.
+2. **Reconcile request** — inspect the latest durable request before channel open or append. Adopt a committed request. Retry only a request that authoritative status proves absent. Reject unknown or divergent status.
+3. **Open channel** — compare-and-swap the exact channel revision and token evidence. Reject stale writers and token regression.
+4. **Prepare request** — insert the immutable request in `PREPARED` phase.
+5. **Mark send boundary** — compare-and-swap the request to `SENDING_UNKNOWN` before network I/O.
+6. **Append** — send the exact request once. Persist typed response evidence. A timeout, throttle, disconnect, authentication refresh, invalidation, cancellation, or process death requires request reconciliation before retry.
+7. **Verify request** — adopt `COMMITTED`, retry only `PROVEN_ABSENT`, and fail closed on `UNKNOWN` or divergence.
+8. **Verify target** — poll all row hashes for the logical batch. Reject missing, extra, duplicate, or wrong rows. Visibility lag never causes a second append.
+9. **Receipt** — insert one durable append receipt and mark the request `RECEIPTED`.
+
+An absent receipt remains *not applied*. Target rows without a matching committed request are indeterminate, not adoption evidence. The driver never synthesizes a committed offset token from local state.
 
 ### Provisioned objects
 
-The profile admits, in one dedicated schema owned by a distinct object-owner role: an append changelog **target table** with the exact wallaby column contract (including `ROW_HASH` and `OFFSET_TOKEN`), a **pipe** the channel appends through, an owned **receipt table**, and an owned **channel-state table** that persists the channel/pipe revision and token evidence. It requires key-pair JWT over verified HTTPS with OCSP fail-closed, DSN session parameters `READ_LATEST_WRITES=true` and `TIMEZONE=UTC`, an inline-secret-free DSN, `toast_fetch=TOAST_FETCH_MODE_OFF`, and rejects generated columns, generic metadata/staging options, type-mapping overrides, DDL, arbitrary start LSNs, and multiple sinks.
+The profile admits one append target table, pipe, receipt table, channel-state table, and request-journal table. The channel and request authority objects are Hybrid Tables with enforced keys. The request journal uses the current schema only. It stores immutable request identity, producer fence, phase version, and response evidence. The configured request-journal creation timestamp is part of the destination identity. Existing blind-upsert or non-enforcing control schemas are rejected rather than upgraded.
+
+The profile requires key-pair JWT over verified HTTPS with OCSP fail-closed. It requires `READ_LATEST_WRITES=true`, `TIMEZONE=UTC`, and an inline-secret-free DSN. It rejects generated columns, generic staging options, DDL, arbitrary start LSNs, and multiple sinks.
 
 ### Cleanup and retention
 
-Channel state is released by a bounded, idempotent cleanup pass keyed on durable append receipts: only fully committed, acknowledged batches older than the retention window write an idempotent release receipt and have their durable channel state removed. A batch without a durable append receipt is never released.
+Channel state is released by a bounded cleanup pass keyed on durable append receipts. One transaction writes the release receipt and deletes only the exact channel-state version. The delete also checks that no request is unresolved. Cleanup retries deletion when a release receipt exists but channel state remains. A batch without an append receipt is never released.
 
 ### Evidence gate
 
@@ -417,7 +426,9 @@ The streaming gate reuses the managed Snowflake credentials and skips closed wit
 WALLABY_TEST_SNOWFLAKE_MANAGED=1 \
 WALLABY_TEST_SNOWFLAKE_DSN='...' \
 WALLABY_TEST_SNOWFLAKE_VERSION='<reviewed version>' \
-go test ./tests/ -run 'TestSnowflakeStreamingManagedProfile|TestPostgresToSnowflakeStreamingManagedProfileRecoveryContract'
+just test-snowflake-streaming-commercial-unpromoted
 ```
 
-Deterministic channel/append/observe/receipt recovery — reopen after uncommitted rows, append-only-proven-missing, terminal-token rejection, complete-unreceipted recovery, receipt conflicts, channel invalidation, schema evolution, TOAST unchanged fields, auth expiry, throttling, oversize rejection, and bounded cleanup — is exercised against an in-memory protocol fake and property/fuzz tests. This implements the modeled protocol profile only. The genuine runtime gap is the absent reviewed high-performance append transport; without it there can be no live delivery evidence, so the profile remains experimental and **fails closed** at admission.
+Credential-free tests cover request identity, pre-send persistence, accepted-then-EOF recovery, visibility lag, proven-absence retry, send-boundary and channel CAS races, token conflict, row rejection evidence, target cardinality, receipt conflict, and atomic cleanup. The SIGKILL test runs the real stream driver in a child process. It fsyncs request, channel, row, and receipt state to a process-shared file, kills the child after actual send-claim or accepted-response persistence, and reconciles that state in a fresh process. These tests prove protocol logic only.
+
+The reviewed high-performance append transport is still absent. Commercial same-SHA delivery evidence does not exist. The profile remains experimental and **fails closed** at admission.

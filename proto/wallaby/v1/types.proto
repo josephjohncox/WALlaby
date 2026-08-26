@@ -534,6 +534,7 @@ message SnowflakePostgresStreamingConfig {
   optional uint32 cleanup_max_objects = 30;
   optional uint32 cleanup_retention_seconds = 31;
   string channel_name_prefix = 32;
+  string request_journal_created_on = 33;
 }
 
 message SnowpipeDestinationConfig {
