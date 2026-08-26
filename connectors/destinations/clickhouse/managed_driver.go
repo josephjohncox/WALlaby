@@ -780,10 +780,17 @@ func (d *Destination) insertManagedFragment(ctx context.Context, fragment manage
 	}
 	ctx, endSpan := telemetry.StartClickHouseManagedSpan(ctx, "fragment", fragment.QueryID, fragment.Rows[0].LogicalBatchID, int64(len(fragment.Rows)), fragment.EncodedBytes)
 	defer func() { endSpan(resultErr) }()
-	return executeManagedWriteWithFailover(ctx, d.managedReplicaConn != nil,
+	err := executeManagedWriteWithFailover(ctx, d.managedReplicaConn != nil,
 		func() error { return d.insertManagedFragmentOnConn(ctx, d.managedConn, fragment) },
 		func() error { return d.insertManagedFragmentOnConn(ctx, d.managedReplicaConn, fragment) },
 	)
+	if err != nil && d.managedReplicaConn != nil && ctx.Err() == nil && !errors.Is(err, connector.ErrDeliveryIndeterminate) && isManagedTransportError(err) {
+		// Some ClickHouse batch paths surface an endpoint-local EOF after the
+		// generic helper returns. Retry the same immutable query ID and
+		// deduplication token on the admitted replica before classifying the write.
+		return d.insertManagedFragmentOnConn(ctx, d.managedReplicaConn, fragment)
+	}
+	return err
 }
 
 func (d *Destination) insertManagedFragmentOnConn(ctx context.Context, conn chdriver.Conn, fragment managedFragmentPlan) error {
@@ -812,10 +819,14 @@ func (d *Destination) insertManagedReceipt(ctx context.Context, receipt managedR
 	}
 	ctx, endSpan := telemetry.StartClickHouseManagedSpan(ctx, "receipt", receipt.QueryID, receipt.LogicalBatchID, 1, encodedBytes)
 	defer func() { endSpan(resultErr) }()
-	return executeManagedWriteWithFailover(ctx, d.managedReplicaConn != nil,
+	err := executeManagedWriteWithFailover(ctx, d.managedReplicaConn != nil,
 		func() error { return d.insertManagedReceiptOnConn(ctx, d.managedConn, receipt) },
 		func() error { return d.insertManagedReceiptOnConn(ctx, d.managedReplicaConn, receipt) },
 	)
+	if err != nil && d.managedReplicaConn != nil && ctx.Err() == nil && !errors.Is(err, connector.ErrDeliveryIndeterminate) && isManagedTransportError(err) {
+		return d.insertManagedReceiptOnConn(ctx, d.managedReplicaConn, receipt)
+	}
+	return err
 }
 
 func (d *Destination) insertManagedReceiptOnConn(ctx context.Context, conn chdriver.Conn, receipt managedReceiptRow) error {
@@ -842,7 +853,11 @@ func executeManagedWriteWithFailover(ctx context.Context, replicaAvailable bool,
 	}
 	transportFailure := isManagedTransportError(primaryErr)
 	if !replicaAvailable || ctx.Err() != nil || !transportFailure {
-		return fmt.Errorf("managed ClickHouse primary write did not fail over (replica_available=%t context_error=%v transport_failure=%t error_type=%T): %w", replicaAvailable, ctx.Err(), transportFailure, primaryErr, primaryErr)
+		contextError := ""
+		if ctx.Err() != nil {
+			contextError = ctx.Err().Error()
+		}
+		return fmt.Errorf("managed ClickHouse primary write did not fail over (replica_available=%t context_error=%q transport_failure=%t): %w", replicaAvailable, contextError, transportFailure, primaryErr)
 	}
 	if replicaErr := replicaWrite(); replicaErr != nil {
 		return errors.Join(
