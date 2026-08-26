@@ -28,13 +28,16 @@ type CatalogConsumerConfig struct {
 // orphan and rooted-retention maintenance. PostgreSQL remains the only source
 // of quota, backlog, claim, and reachability state.
 type RuntimeConfig struct {
-	Stream                 StreamConfig
-	Projector              stream.Projector
-	OrphanGrace            time.Duration
-	Retention              time.Duration
-	GCInterval             time.Duration
-	Consumers              []CatalogConsumerConfig
-	DestinationFingerprint string
+	Stream                  StreamConfig
+	Projector               stream.Projector
+	OrphanGrace             time.Duration
+	Retention               time.Duration
+	MetadataRetention       time.Duration
+	MetadataMaxPublications int
+	MetadataMaxRows         int
+	GCInterval              time.Duration
+	Consumers               []CatalogConsumerConfig
+	DestinationFingerprint  string
 }
 
 type runtimeConsumer struct {
@@ -48,6 +51,7 @@ type runtimeConsumer struct {
 type Runtime struct {
 	publisher *Publisher
 	collector *Collector
+	pruner    *MetadataPruner
 	consumers []runtimeConsumer
 	config    RuntimeConfig
 	lastGC    time.Time
@@ -63,8 +67,11 @@ func (r *Runtime) EffectiveDestinationFingerprint() string {
 }
 
 func NewRuntime(ctx context.Context, pool *pgxpool.Pool, objects ObjectStore, config RuntimeConfig) (*Runtime, error) {
-	if config.OrphanGrace <= 0 || config.Retention <= 0 || config.GCInterval <= 0 {
-		return nil, errors.New("positive artifact orphan, retention, and GC intervals are required")
+	if config.OrphanGrace <= 0 || config.Retention <= 0 || config.MetadataRetention <= 0 || config.MetadataMaxPublications <= 0 || config.GCInterval <= 0 {
+		return nil, errors.New("positive artifact orphan, retention, metadata retention, publication sweep limit, and GC intervals are required")
+	}
+	if config.MetadataMaxRows < 3 {
+		return nil, errors.New("artifact metadata row sweep limit must be at least 3")
 	}
 	if config.Stream.ProjectionID == ProjectionIDV2 {
 		if config.Projector == nil {
@@ -106,7 +113,11 @@ func NewRuntime(ctx context.Context, pool *pgxpool.Pool, objects ObjectStore, co
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{publisher: publisher, collector: collector, consumers: consumers, config: config}, nil
+	pruner, err := NewMetadataPruner(pool)
+	if err != nil {
+		return nil, err
+	}
+	return &Runtime{publisher: publisher, collector: collector, pruner: pruner, consumers: consumers, config: config}, nil
 }
 
 func (r *Runtime) Recover(ctx context.Context, fence connector.RunFence) error {
@@ -217,8 +228,9 @@ func (r *Runtime) maintain(ctx context.Context, fence connector.RunFence, limit 
 			return err
 		}
 		if !orphan && !retained {
-			return nil
+			break
 		}
 	}
-	return nil
+	_, err := r.pruner.Prune(ctx, fence, r.config.MetadataRetention, r.config.MetadataMaxPublications, r.config.MetadataMaxRows)
+	return err
 }

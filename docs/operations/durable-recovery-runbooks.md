@@ -13,6 +13,12 @@ external service, deployment, connector, or operator action is gap-free.
 
 Prove the cause before you change lifecycle state or delete anything.
 
+## Deferred artifact metadata retention
+
+**Symptom.** `wallaby.artifact.metadata_retention.publications{outcome="deferred"}` continues increasing while old control rows remain.
+
+Inspect current authoritative and consumer checkpoints, unreleased `artifact_publication_objects` and `source_ack_retention_roots`, `artifact_gc_claims`, pending `artifact_deliveries`, unreceipted `artifact_delivery_attempts`, and live `artifact_delivery` work claims. Do not remove a prune claim or dependent row manually. The current producer adopts durable prune claims, revalidates the exact authority fence, and resumes row-bounded phases. Evidence required by active recovery or reconciliation remains retained regardless of age. Once pruning completes, historical barriers, object versions, commit IDs, catalog receipts, and immutable-conflict evidence for that publication are permanently unavailable; only current checkpoint replay/recovery is guaranteed.
+
 ## Stalled attempt
 
 **Symptom.** A delivery or publication attempt is prepared but never produced a

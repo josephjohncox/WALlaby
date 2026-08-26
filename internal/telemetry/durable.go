@@ -29,6 +29,8 @@ type durableMetricSet struct {
 	artifactBytes          metric.Int64Histogram
 	consumerOutcomes       metric.Int64Counter
 	gcOutcomes             metric.Int64Counter
+	metadataRetention      metric.Int64Counter
+	metadataRows           metric.Int64Counter
 	icebergOutcomes        metric.Int64Counter
 	icebergLatency         metric.Float64Histogram
 	clickHouseOutcomes     metric.Int64Counter
@@ -42,7 +44,43 @@ type durableMetricSet struct {
 	initErr                error
 }
 
+// ArtifactMetadataPruneRecorder records metadata-retention counters against a
+// caller-owned meter. It lets isolated runtimes and tests avoid mutating the
+// process-global OpenTelemetry provider.
+type ArtifactMetadataPruneRecorder struct {
+	publications metric.Int64Counter
+	rows         metric.Int64Counter
+}
+
+// NewArtifactMetadataPruneRecorder binds metadata-retention instruments to the
+// supplied meter.
+func NewArtifactMetadataPruneRecorder(meter metric.Meter) (*ArtifactMetadataPruneRecorder, error) {
+	publications, publicationErr := meter.Int64Counter("wallaby.artifact.metadata_retention.publications")
+	rows, rowsErr := meter.Int64Counter("wallaby.artifact.metadata_retention.rows")
+	if err := errors.Join(publicationErr, rowsErr); err != nil {
+		return nil, err
+	}
+	return &ArtifactMetadataPruneRecorder{publications: publications, rows: rows}, nil
+}
+
+// Record emits committed sweep statistics.
+func (r *ArtifactMetadataPruneRecorder) Record(ctx context.Context, scanned, deleted, deferred, rows int64) {
+	if r == nil {
+		return
+	}
+	recordArtifactMetadataPruneStats(ctx, r.publications, r.rows, scanned, deleted, deferred, rows)
+}
+
 var durableMetrics = &durableMetricSet{}
+
+// ResetDurableMetricsForTest rebinds lazily initialized instruments to the
+// current global meter provider. It must only be used by serial tests with no
+// concurrent telemetry recording; the returned function restores prior state.
+func ResetDurableMetricsForTest() func() {
+	previous := durableMetrics
+	durableMetrics = &durableMetricSet{}
+	return func() { durableMetrics = previous }
+}
 
 func initDurableMetrics() bool {
 	durableMetrics.once.Do(func() {
@@ -74,6 +112,10 @@ func initDurableMetrics() bool {
 		durableMetrics.consumerOutcomes, err = meter.Int64Counter("wallaby.artifact.consumer.outcomes")
 		errs = append(errs, err)
 		durableMetrics.gcOutcomes, err = meter.Int64Counter("wallaby.artifact.gc.outcomes")
+		errs = append(errs, err)
+		durableMetrics.metadataRetention, err = meter.Int64Counter("wallaby.artifact.metadata_retention.publications")
+		errs = append(errs, err)
+		durableMetrics.metadataRows, err = meter.Int64Counter("wallaby.artifact.metadata_retention.rows")
 		errs = append(errs, err)
 		durableMetrics.icebergOutcomes, err = meter.Int64Counter("wallaby.iceberg.consumer.outcomes")
 		errs = append(errs, err)
@@ -220,6 +262,48 @@ func RecordArtifactGCOutcome(ctx context.Context, outcome string) {
 		return
 	}
 	durableMetrics.gcOutcomes.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
+}
+
+// RecordArtifactMetadataRetention records only bounded outcome labels.
+func RecordArtifactMetadataRetention(ctx context.Context, outcome string, count int64) {
+	if count <= 0 || !initDurableMetrics() {
+		return
+	}
+	switch outcome {
+	case "scanned", "deleted", "deferred":
+	default:
+		outcome = "other"
+	}
+	durableMetrics.metadataRetention.Add(ctx, count, metric.WithAttributes(attribute.String("outcome", outcome)))
+}
+
+// RecordArtifactMetadataPruneStats records only work already committed by a
+// sweep. Callers invoke it from a defer so a later claim failure cannot erase
+// metrics for an earlier committed claim.
+func RecordArtifactMetadataPruneStats(ctx context.Context, scanned, deleted, deferred, rows int64) {
+	if !initDurableMetrics() {
+		return
+	}
+	recordArtifactMetadataPruneStats(ctx, durableMetrics.metadataRetention, durableMetrics.metadataRows, scanned, deleted, deferred, rows)
+}
+
+func recordArtifactMetadataPruneStats(ctx context.Context, publications, rowCounter metric.Int64Counter, scanned, deleted, deferred, rows int64) {
+	for outcome, count := range map[string]int64{"scanned": scanned, "deleted": deleted, "deferred": deferred} {
+		if count > 0 {
+			publications.Add(ctx, count, metric.WithAttributes(attribute.String("outcome", outcome)))
+		}
+	}
+	if rows > 0 {
+		rowCounter.Add(ctx, rows)
+	}
+}
+
+// RecordArtifactMetadataRows records committed PostgreSQL metadata removals.
+func RecordArtifactMetadataRows(ctx context.Context, count int64) {
+	if count <= 0 || !initDurableMetrics() {
+		return
+	}
+	durableMetrics.metadataRows.Add(ctx, count)
 }
 
 // StartIcebergConsumerSpan correlates catalog work with immutable publication

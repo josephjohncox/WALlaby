@@ -102,6 +102,9 @@ artifacts:
   backpressure_poll_interval: 1s
   orphan_grace: 2h
   retention: 24h
+  metadata_retention: 168h
+  metadata_max_publications: 100
+  metadata_max_rows: 1000
   gc_interval: 1m
 iceberg:
   profile: rest
@@ -206,13 +209,52 @@ func TestDocumentedWorkerEnvironmentKeysRemainCurrent(t *testing.T) {
 	t.Setenv("WALLABY_WORKER_GRPC_LISTEN", ":7070")
 	t.Setenv("WALLABY_WORKER_PPROF_ENABLED", "true")
 	t.Setenv("WALLABY_WORKER_ARTIFACT_BUCKET", "worker-canonical")
+	t.Setenv("WALLABY_WORKER_ARTIFACT_METADATA_RETENTION", "96h")
+	t.Setenv("WALLABY_WORKER_ARTIFACT_METADATA_MAX_PUBLICATIONS", "9")
+	t.Setenv("WALLABY_WORKER_ARTIFACT_METADATA_MAX_ROWS", "3")
 	t.Setenv("WALLABY_WORKER_ICEBERG_PROFILE", "rest")
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Environment != "test" || cfg.Workflow.Store != "memory" || cfg.API.GRPCListen != ":7070" || !cfg.Profiling.Enabled || cfg.Artifacts.Bucket != "worker-canonical" || cfg.Iceberg.Profile != "rest" {
+	if cfg.Environment != "test" || cfg.Workflow.Store != "memory" || cfg.API.GRPCListen != ":7070" || !cfg.Profiling.Enabled || cfg.Artifacts.Bucket != "worker-canonical" || cfg.Artifacts.MetadataRetention != 96*time.Hour || cfg.Artifacts.MetadataMaxPublications != 9 || cfg.Artifacts.MetadataMaxRows != 3 || cfg.Iceberg.Profile != "rest" {
 		t.Fatalf("worker config=%+v", cfg)
+	}
+}
+
+func TestStrictArtifactMetadataRowMinimumInYAMLAndJSON(t *testing.T) {
+	for _, test := range []struct {
+		name, extension, body string
+	}{
+		{name: "yaml", extension: ".yaml", body: "environment: test\nworkflow:\n  store: memory\nartifacts:\n  metadata_max_rows: 2\n"},
+		{name: "json", extension: ".json", body: `{"environment":"test","workflow":{"store":"memory"},"artifacts":{"metadata_max_rows":2}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeConfigTestFile(t, "metadata-min"+test.extension, test.body)
+			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "metadata_max_rows") {
+				t.Fatalf("Load() error=%v, want metadata_max_rows minimum", err)
+			}
+		})
+	}
+}
+
+func TestStrictArtifactMetadataNonDefaultLimitsInYAMLAndJSON(t *testing.T) {
+	for _, test := range []struct {
+		name, extension, body string
+	}{
+		{name: "yaml", extension: ".yaml", body: "environment: test\nworkflow:\n  store: memory\nartifacts:\n  metadata_retention: 72h\n  metadata_max_publications: 7\n  metadata_max_rows: 3\n"},
+		{name: "json", extension: ".json", body: `{"environment":"test","workflow":{"store":"memory"},"artifacts":{"metadata_retention":"72h","metadata_max_publications":7,"metadata_max_rows":3}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeConfigTestFile(t, "metadata-current"+test.extension, test.body)
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Artifacts.MetadataRetention != 72*time.Hour || cfg.Artifacts.MetadataMaxPublications != 7 || cfg.Artifacts.MetadataMaxRows != 3 {
+				t.Fatalf("metadata config=%+v", cfg.Artifacts)
+			}
+		})
 	}
 }
 
