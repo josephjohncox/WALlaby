@@ -3,6 +3,7 @@ package snowflake
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -104,10 +105,9 @@ func TestStreamPlanDeterminismProperty(t *testing.T) {
 	})
 }
 
-// TestStreamAppendOnlyProvenMissingProperty proves that for any subset of rows
-// already committed, apply appends exactly the complementary rows and never
-// duplicates a committed identity — the core recovery invariant.
-func TestStreamAppendOnlyProvenMissingProperty(t *testing.T) {
+// TestStreamRequestJournalProperty proves that unjournaled target state fails
+// closed, while a fresh request appends once and replay adopts its receipt.
+func TestStreamRequestJournalProperty(t *testing.T) {
 	t.Parallel()
 	cfg := streamTestConfig(t)
 	transaction := managedTestTransaction(managedTestSchema())
@@ -118,24 +118,31 @@ func TestStreamAppendOnlyProvenMissingProperty(t *testing.T) {
 	}
 	rapid.Check(t, func(rt *rapid.T) {
 		proto := newFakeStreamProtocol()
+		seeded := 0
 		for index, hash := range plan.rowHashes {
 			if rapid.Bool().Draw(rt, "committed-"+itoa(int64(index))) {
 				proto.seedCommittedRow(hash, 1)
+				seeded++
 			}
 		}
 		driver := newStreamDriver(proto, cfg, "catalog-fingerprint", streamingHooks{})
 		driver.sleep = noStreamSleep
-		if _, err := driver.apply(context.Background(), intent, transaction); err != nil {
-			rt.Fatalf("apply: %v", err)
-		}
-		for _, hash := range plan.rowHashes {
-			entry := proto.committed[hash]
-			if entry == nil || entry.count != 1 {
-				rt.Fatalf("row %s committed count!=1 after apply: %+v", hash, entry)
+		_, applyErr := driver.apply(context.Background(), intent, transaction)
+		if seeded > 0 {
+			if !errors.Is(applyErr, connector.ErrDeliveryIndeterminate) || proto.appendCalls != 0 || proto.insertCalls != 0 {
+				rt.Fatalf("unjournaled target outcome err/appends/receipts=%v/%d/%d", applyErr, proto.appendCalls, proto.insertCalls)
 			}
+			return
 		}
-		if proto.insertCalls != 1 {
-			rt.Fatalf("apply wrote %d receipts, want 1", proto.insertCalls)
+		if applyErr != nil {
+			rt.Fatalf("fresh apply: %v", applyErr)
+		}
+		appendCalls := proto.appendCalls
+		if _, err := driver.apply(context.Background(), intent, transaction); err != nil {
+			rt.Fatalf("receipt replay: %v", err)
+		}
+		if proto.appendCalls != appendCalls || proto.insertCalls != 1 {
+			rt.Fatalf("replay append/receipt=%d/%d, want %d/1", proto.appendCalls, proto.insertCalls, appendCalls)
 		}
 	})
 }

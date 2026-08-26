@@ -3,6 +3,7 @@ package snowflake
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
+
+var errStreamChannelInvalidated = errors.New("streaming Snowflake channel is invalidated")
 
 // fakeStreamChannel is one durable channel in the in-memory protocol.
 type fakeStreamChannel struct {
@@ -23,8 +26,9 @@ type fakeStreamChannel struct {
 // fakeCommittedRow tracks one durably committed row identity and the observe
 // call after which it becomes visible (to model asynchronous commit latency).
 type fakeCommittedRow struct {
-	count     int
-	visibleAt int
+	logicalBatchID string
+	count          int
+	visibleAt      int
 }
 
 // fakeStreamProtocol is a deterministic, in-memory implementation of
@@ -39,6 +43,9 @@ type fakeStreamProtocol struct {
 	channels         map[string]*fakeStreamChannel
 	committed        map[string]*fakeCommittedRow
 	channelState     map[string]managedStreamChannelState
+	requests         map[string]managedStreamRequest
+	requestByBatch   map[string]string
+	requestStatus    map[string]streamRequestDisposition
 	receipts         map[string]managedStreamReceipt
 	appendedPayloads [][]byte
 
@@ -47,10 +54,14 @@ type fakeStreamProtocol struct {
 	appendInvalidateThenReopen   bool  // First AppendRows reports a stale channel; reopen bumps the revision.
 	appendAuthExpiresOnce        bool  // First AppendRows reports an expired ingest credential.
 	appendThrottleTimes          int   // The next N AppendRows report backpressure.
+	appendUnknownOnce            error // AppendRows returns one ambiguous transport error without status.
+	appendDefinitelyAbsentOnce   bool  // AppendRows proves that one request was not accepted.
 	appendCommitsThenThrottle    bool  // AppendRows commits the rows, then reports a lost/throttled response.
 	appendRejectsRows            bool  // AppendRows returns per-row rejections.
 	insertCommitsThenDuplicate   bool  // InsertReceipt commits, then reports a duplicate (concurrent owner).
 	statusSuppressCommittedToken bool  // ChannelStatus withholds the committed offset token.
+	requestStatusUnknownTimes    int   // Authoritative request status remains unknown for N polls.
+	requestStatusDivergent       bool  // Authoritative request status returns conflicting identity.
 	commitVisibilityDelay        int   // Committed rows become visible only after this many ObserveCommittedRows calls.
 
 	// Observability counters.
@@ -59,10 +70,13 @@ type fakeStreamProtocol struct {
 
 func newFakeStreamProtocol() *fakeStreamProtocol {
 	return &fakeStreamProtocol{
-		channels:     make(map[string]*fakeStreamChannel),
-		committed:    make(map[string]*fakeCommittedRow),
-		channelState: make(map[string]managedStreamChannelState),
-		receipts:     make(map[string]managedStreamReceipt),
+		channels:       make(map[string]*fakeStreamChannel),
+		committed:      make(map[string]*fakeCommittedRow),
+		channelState:   make(map[string]managedStreamChannelState),
+		requests:       make(map[string]managedStreamRequest),
+		requestByBatch: make(map[string]string),
+		requestStatus:  make(map[string]streamRequestDisposition),
+		receipts:       make(map[string]managedStreamReceipt),
 	}
 }
 
@@ -72,6 +86,10 @@ func fakeStreamReceiptPK(r managedStreamReceipt) string {
 
 func fakeChannelStateKey(k streamChannelStateKey) string {
 	return strings.Join([]string{k.flowIncarnationID, k.destinationRevisionID, k.channelName}, "\x00")
+}
+
+func fakeRequestBatchKey(k streamRequestKey) string {
+	return strings.Join([]string{k.flowIncarnationID, k.destinationRevisionID, k.logicalBatchID}, "\x00")
 }
 
 func (f *fakeStreamProtocol) seedReceipt(r managedStreamReceipt) {
@@ -117,23 +135,38 @@ func (f *fakeStreamProtocol) AppendRows(_ context.Context, req streamAppendReque
 	for _, row := range req.rows {
 		f.appendedPayloads = append(f.appendedPayloads, append([]byte(nil), row.payload...))
 	}
+	request, requestPresent := f.requests[req.requestID]
+	if !requestPresent || request.phase != streamRequestSendingUnknown || request.channelRevision != req.channelRevision || request.inputContinuation != req.continuationToken || request.requestedOffset != req.offsetToken || request.manifestHash != req.manifestHash || request.rowsContentHash != req.rowsContentHash || request.rowCount != req.rowCount {
+		return streamAppendResult{}, fmt.Errorf("%w: append was not preceded by the exact durable SENDING_UNKNOWN request", connector.ErrDeliveryConflict)
+	}
 	channel, present := f.channels[req.channelName]
-	if !present {
+	if !present || req.channelRevision != channel.revision || req.pipeRevision != channel.pipeRevision {
+		f.requestStatus[req.requestID] = streamRequestStatusProvenAbsent
 		return streamAppendResult{}, errStreamChannelInvalidated
 	}
-	if req.channelRevision != channel.revision {
-		return streamAppendResult{}, errStreamChannelInvalidated
+	if f.appendUnknownOnce != nil {
+		err := f.appendUnknownOnce
+		f.appendUnknownOnce = nil
+		return streamAppendResult{}, err
+	}
+	if f.appendDefinitelyAbsentOnce {
+		f.appendDefinitelyAbsentOnce = false
+		f.requestStatus[req.requestID] = streamRequestStatusProvenAbsent
+		return streamAppendResult{disposition: streamAppendDefinitelyNotAccepted, requestID: req.requestID, continuationToken: channel.continuationToken, evidence: "not accepted"}, nil
 	}
 	if f.appendInvalidateThenReopen {
 		f.appendInvalidateThenReopen = false
+		f.requestStatus[req.requestID] = streamRequestStatusProvenAbsent
 		return streamAppendResult{}, errStreamChannelInvalidated
 	}
 	if f.appendAuthExpiresOnce {
 		f.appendAuthExpiresOnce = false
+		f.requestStatus[req.requestID] = streamRequestStatusProvenAbsent
 		return streamAppendResult{}, errStreamAuthExpired
 	}
 	if f.appendThrottleTimes > 0 {
 		f.appendThrottleTimes--
+		f.requestStatus[req.requestID] = streamRequestStatusProvenAbsent
 		return streamAppendResult{}, errStreamThrottled
 	}
 	if f.appendRejectsRows {
@@ -142,24 +175,25 @@ func (f *fakeStreamProtocol) AppendRows(_ context.Context, req streamAppendReque
 		for _, row := range req.rows {
 			rejections = append(rejections, streamRowRejection{rowHash: row.rowHash, ordinal: row.ordinal, reason: "invalid row"})
 		}
-		return streamAppendResult{rejections: rejections}, nil
+		f.requestStatus[req.requestID] = streamRequestStatusDivergent
+		return streamAppendResult{disposition: streamAppendAccepted, requestID: req.requestID, rejections: rejections}, nil
 	}
-	// Commit the rows: they become observable after any configured latency.
 	for _, row := range req.rows {
 		entry, ok := f.committed[row.rowHash]
 		if !ok {
-			entry = &fakeCommittedRow{visibleAt: f.observeCalls + f.commitVisibilityDelay}
+			entry = &fakeCommittedRow{logicalBatchID: request.logicalBatchID, visibleAt: f.observeCalls + f.commitVisibilityDelay}
 			f.committed[row.rowHash] = entry
 		}
 		entry.count++
 	}
 	channel.committedOffsetToken = req.offsetToken
 	channel.continuationToken = fmt.Sprintf("cont-%d-%d", channel.revision, f.appendCalls)
+	f.requestStatus[req.requestID] = streamRequestStatusCommitted
 	if f.appendCommitsThenThrottle {
 		f.appendCommitsThenThrottle = false
 		return streamAppendResult{}, errStreamThrottled
 	}
-	return streamAppendResult{continuationToken: channel.continuationToken}, nil
+	return streamAppendResult{disposition: streamAppendAccepted, requestID: req.requestID, continuationToken: channel.continuationToken, evidence: "accepted"}, nil
 }
 
 func (f *fakeStreamProtocol) ChannelStatus(_ context.Context, _ streamConfig, channelName string) (streamChannelStatus, error) {
@@ -180,14 +214,42 @@ func (f *fakeStreamProtocol) ChannelStatus(_ context.Context, _ streamConfig, ch
 	}, nil
 }
 
-func (f *fakeStreamProtocol) ObserveCommittedRows(_ context.Context, _ streamConfig, _ string, rowHashes []string) (map[string]int, error) {
+func (f *fakeStreamProtocol) RequestStatus(_ context.Context, _ streamConfig, request managedStreamRequest) (streamRequestStatusEvidence, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	status := f.requestStatus[request.requestID]
+	if f.requestStatusUnknownTimes > 0 {
+		f.requestStatusUnknownTimes--
+		status = streamRequestUnknown
+	}
+	channel := f.channels[request.channelName]
+	evidence := streamRequestStatusEvidence{
+		disposition: status, requestID: request.requestID, channelName: request.channelName,
+		channelRevision: request.channelRevision, pipeRevision: request.pipeRevision,
+		inputContinuation: request.inputContinuation, requestedOffset: request.requestedOffset,
+		manifestHash: request.manifestHash, rowsContentHash: request.rowsContentHash, rowCount: request.rowCount,
+		detail: "fake authoritative request status",
+	}
+	if f.requestStatusDivergent {
+		evidence.manifestHash = strings.Repeat("f", 64)
+		evidence.disposition = streamRequestStatusDivergent
+	}
+	if channel != nil {
+		evidence.responseContinuation = channel.continuationToken
+		if status == streamRequestStatusCommitted && !f.statusSuppressCommittedToken {
+			evidence.committedOffset = channel.committedOffsetToken
+		}
+	}
+	return evidence, nil
+}
+
+func (f *fakeStreamProtocol) ObserveCommittedRows(_ context.Context, _ streamConfig, logicalBatchID string, _ []string) (map[string]int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.observeCalls++
-	present := make(map[string]int, len(rowHashes))
-	for _, hash := range rowHashes {
-		entry, ok := f.committed[hash]
-		if !ok || f.observeCalls < entry.visibleAt {
+	present := make(map[string]int)
+	for hash, entry := range f.committed {
+		if entry.logicalBatchID != "" && entry.logicalBatchID != logicalBatchID || f.observeCalls < entry.visibleAt {
 			continue
 		}
 		if entry.count > 0 {
@@ -197,14 +259,24 @@ func (f *fakeStreamProtocol) ObserveCommittedRows(_ context.Context, _ streamCon
 	return present, nil
 }
 
-func (f *fakeStreamProtocol) UpsertChannelState(_ context.Context, _ streamConfig, state managedStreamChannelState) error {
+func (f *fakeStreamProtocol) CompareAndSwapChannelState(_ context.Context, _ streamConfig, expectedVersion int64, state managedStreamChannelState) (managedStreamChannelState, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.upsertCalls++
-	f.channelState[fakeChannelStateKey(streamChannelStateKey{
-		flowIncarnationID: state.flowIncarnationID, destinationRevisionID: state.destinationRevisionID, channelName: state.channelName,
-	})] = state
-	return nil
+	key := fakeChannelStateKey(streamChannelStateKey{flowIncarnationID: state.flowIncarnationID, destinationRevisionID: state.destinationRevisionID, channelName: state.channelName})
+	current, found := f.channelState[key]
+	if !found {
+		if expectedVersion != 0 || state.stateVersion != 1 {
+			return managedStreamChannelState{}, false, nil
+		}
+		f.channelState[key] = state
+		return state, true, nil
+	}
+	if current.stateVersion != expectedVersion || state.stateVersion != expectedVersion+1 || state.channelRevision < current.channelRevision {
+		return current, false, nil
+	}
+	f.channelState[key] = state
+	return state, true, nil
 }
 
 func (f *fakeStreamProtocol) LookupChannelState(_ context.Context, _ streamConfig, key streamChannelStateKey) (managedStreamChannelState, bool, error) {
@@ -212,6 +284,70 @@ func (f *fakeStreamProtocol) LookupChannelState(_ context.Context, _ streamConfi
 	defer f.mu.Unlock()
 	state, ok := f.channelState[fakeChannelStateKey(key)]
 	return state, ok, nil
+}
+
+func (f *fakeStreamProtocol) InsertRequest(_ context.Context, _ streamConfig, request managedStreamRequest) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, exists := f.requests[request.requestID]; exists {
+		return false, nil
+	}
+	batchKey := fakeRequestBatchKey(streamRequestKey{flowIncarnationID: request.flowIncarnationID, destinationRevisionID: request.destinationRevisionID, logicalBatchID: request.logicalBatchID})
+	if previousID := f.requestByBatch[batchKey]; previousID != "" {
+		previous := f.requests[previousID]
+		if previous.phase != streamRequestProvenAbsent && previous.phase != streamRequestReceipted {
+			return false, fmt.Errorf("%w: unresolved request already owns the logical batch", connector.ErrDeliveryConflict)
+		}
+		if request.attempt <= previous.attempt {
+			return false, fmt.Errorf("%w: request attempt did not increase", connector.ErrDeliveryConflict)
+		}
+	}
+	f.requests[request.requestID] = request
+	f.requestByBatch[batchKey] = request.requestID
+	return true, nil
+}
+
+func (f *fakeStreamProtocol) LookupRequest(_ context.Context, _ streamConfig, key streamRequestKey) (managedStreamRequest, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := f.requestByBatch[fakeRequestBatchKey(key)]
+	request, found := f.requests[id]
+	return request, found, nil
+}
+
+func (f *fakeStreamProtocol) TransitionRequest(_ context.Context, _ streamConfig, transition streamRequestTransition) (managedStreamRequest, bool, error) {
+	if !validStreamRequestTransition(transition.expectedPhase, transition.nextPhase) {
+		return managedStreamRequest{}, false, errors.New("illegal request transition")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	request, found := f.requests[transition.requestID]
+	if !found {
+		return managedStreamRequest{}, false, errors.New("request not found")
+	}
+	if request.phase != transition.expectedPhase || request.phaseVersion != transition.expectedVersion {
+		return request, false, nil
+	}
+	request.phase = transition.nextPhase
+	request.phaseVersion++
+	request.responseContinuation = transition.responseContinuation
+	request.committedOffset = transition.committedOffset
+	request.responseKind = transition.responseKind
+	request.responseEvidence = transition.responseEvidence
+	f.requests[request.requestID] = request
+	return request, true, nil
+}
+
+func (f *fakeStreamProtocol) HasUnresolvedRequests(_ context.Context, _ streamConfig, key streamChannelStateKey) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, request := range f.requests {
+		unresolved := request.phase == streamRequestPrepared || request.phase == streamRequestSendingUnknown || request.phase == streamRequestAccepted || request.phase == streamRequestCommitted
+		if request.flowIncarnationID == key.flowIncarnationID && request.destinationRevisionID == key.destinationRevisionID && request.channelName == key.channelName && unresolved {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (f *fakeStreamProtocol) LookupReceipt(_ context.Context, _ streamConfig, key streamReceiptKey) (managedStreamReceipt, bool, error) {

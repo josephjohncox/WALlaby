@@ -222,43 +222,45 @@ func streamIsLowerHex64(value string) bool {
 
 func streamDestinationManifestHash(cfg streamConfig, intent connector.DeliveryIntent, planHash, contentHash, offsetToken string) string {
 	encoded, _ := json.Marshal(struct {
-		Profile             string            `json:"profile"`
-		FlowID              string            `json:"flow_id"`
-		Account             string            `json:"account"`
-		Database            string            `json:"database"`
-		Schema              string            `json:"schema"`
-		Pipe                string            `json:"pipe"`
-		Table               string            `json:"table"`
-		ReceiptsTable       string            `json:"receipts_table"`
-		ChannelStateTable   string            `json:"channel_state_table"`
-		OwnerRole           string            `json:"owner_role"`
-		ExecutionRole       string            `json:"execution_role"`
-		Warehouse           string            `json:"warehouse"`
-		SnowflakeVersion    string            `json:"snowflake_version"`
-		PipeCreatedOn       string            `json:"pipe_created_on"`
-		TargetCreatedOn     string            `json:"target_created_on"`
-		ReceiptsCreatedOn   string            `json:"receipts_created_on"`
-		SourceSchema        string            `json:"source_schema"`
-		SourceTable         string            `json:"source_table"`
-		SchemaContractHash  string            `json:"schema_contract_hash"`
-		TypeMappings        map[string]string `json:"type_mappings"`
-		MaxTransactionRows  int               `json:"max_transaction_rows"`
-		MaxTransactionBytes int64             `json:"max_transaction_bytes"`
-		MaxFragments        int               `json:"max_fragments"`
-		DestinationRevision string            `json:"destination_revision"`
-		FlowIncarnationID   string            `json:"flow_incarnation_id"`
-		SourceLineageID     string            `json:"source_lineage_id"`
-		LogicalBatchID      string            `json:"logical_batch_id"`
-		PositionID          string            `json:"position_id"`
-		ContentHash         string            `json:"content_hash"`
-		PlanHash            string            `json:"plan_hash"`
-		OffsetToken         string            `json:"offset_token"`
+		Profile               string            `json:"profile"`
+		FlowID                string            `json:"flow_id"`
+		Account               string            `json:"account"`
+		Database              string            `json:"database"`
+		Schema                string            `json:"schema"`
+		Pipe                  string            `json:"pipe"`
+		Table                 string            `json:"table"`
+		ReceiptsTable         string            `json:"receipts_table"`
+		ChannelStateTable     string            `json:"channel_state_table"`
+		RequestJournalTable   string            `json:"request_journal_table"`
+		OwnerRole             string            `json:"owner_role"`
+		ExecutionRole         string            `json:"execution_role"`
+		Warehouse             string            `json:"warehouse"`
+		SnowflakeVersion      string            `json:"snowflake_version"`
+		PipeCreatedOn         string            `json:"pipe_created_on"`
+		TargetCreatedOn       string            `json:"target_created_on"`
+		ReceiptsCreatedOn     string            `json:"receipts_created_on"`
+		ChannelStateCreatedOn string            `json:"channel_state_created_on"`
+		SourceSchema          string            `json:"source_schema"`
+		SourceTable           string            `json:"source_table"`
+		SchemaContractHash    string            `json:"schema_contract_hash"`
+		TypeMappings          map[string]string `json:"type_mappings"`
+		MaxTransactionRows    int               `json:"max_transaction_rows"`
+		MaxTransactionBytes   int64             `json:"max_transaction_bytes"`
+		MaxFragments          int               `json:"max_fragments"`
+		DestinationRevision   string            `json:"destination_revision"`
+		FlowIncarnationID     string            `json:"flow_incarnation_id"`
+		SourceLineageID       string            `json:"source_lineage_id"`
+		LogicalBatchID        string            `json:"logical_batch_id"`
+		PositionID            string            `json:"position_id"`
+		ContentHash           string            `json:"content_hash"`
+		PlanHash              string            `json:"plan_hash"`
+		OffsetToken           string            `json:"offset_token"`
 	}{
 		Profile: cfg.profile, FlowID: cfg.flowID, Account: cfg.account, Database: cfg.database, Schema: cfg.schema,
-		Pipe: cfg.pipe, Table: cfg.table, ReceiptsTable: cfg.receiptsTable, ChannelStateTable: cfg.channelStateTable,
+		Pipe: cfg.pipe, Table: cfg.table, ReceiptsTable: cfg.receiptsTable, ChannelStateTable: cfg.channelStateTable, RequestJournalTable: cfg.channelStateTable + "_REQUESTS",
 		OwnerRole: cfg.ownerRole, ExecutionRole: cfg.executionRole, Warehouse: cfg.warehouse,
 		SnowflakeVersion: cfg.snowflakeVersion, PipeCreatedOn: cfg.pipeCreatedOn, TargetCreatedOn: cfg.targetCreatedOn,
-		ReceiptsCreatedOn: cfg.receiptsCreatedOn, SourceSchema: cfg.sourceSchema, SourceTable: cfg.sourceTable,
+		ReceiptsCreatedOn: cfg.receiptsCreatedOn, ChannelStateCreatedOn: cfg.channelStateCreatedOn, SourceSchema: cfg.sourceSchema, SourceTable: cfg.sourceTable,
 		SchemaContractHash: cfg.schemaContractHash, TypeMappings: cfg.typeMappings, MaxTransactionRows: cfg.maxTransactionRows,
 		MaxTransactionBytes: cfg.maxTransactionBytes, MaxFragments: cfg.maxFragments, DestinationRevision: intent.DestinationRevisionID,
 		FlowIncarnationID: intent.FlowIncarnationID, SourceLineageID: intent.SourceLineageID, LogicalBatchID: intent.LogicalBatchID,

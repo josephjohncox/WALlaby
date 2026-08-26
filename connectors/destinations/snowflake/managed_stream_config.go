@@ -225,12 +225,16 @@ func streamConfigFromSpec(dsn string, spec connector.RuntimeSpec) (streamConfig,
 	identifiers := map[string]string{
 		"managed_database": cfg.database, "managed_schema": cfg.schema, "managed_pipe": cfg.pipe, "managed_table": cfg.table,
 		"managed_receipts_table": cfg.receiptsTable, "managed_channel_state_table": cfg.channelStateTable,
-		"managed_owner_role": cfg.ownerRole, "managed_execution_role": cfg.executionRole, "managed_warehouse": cfg.warehouse,
+		"managed_request_journal_table": cfg.channelStateTable + "_REQUESTS",
+		"managed_owner_role":            cfg.ownerRole, "managed_execution_role": cfg.executionRole, "managed_warehouse": cfg.warehouse,
 	}
 	for name, value := range identifiers {
 		if err := validateManagedSnowflakeUnquotedIdentifier(name, value); err != nil {
 			return streamConfig{}, err
 		}
+	}
+	if ddl := managedStreamCurrentSchemaDDL(cfg); len(ddl) != 2 || ddl[0] == "" || ddl[1] == "" {
+		return streamConfig{}, errors.New("managed streaming Snowflake current control schema is incomplete")
 	}
 	if err := validateManagedStreamingChannelPrefix(cfg.channelNamePrefix); err != nil {
 		return streamConfig{}, err

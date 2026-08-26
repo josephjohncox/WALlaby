@@ -240,3 +240,21 @@ func TestSnowflakeStreamingManagedProfileCleanup(t *testing.T) {
 func TestSnowflakeStreamingManagedProfileSecretRedaction(t *testing.T) {
 	assertStreamingFailsClosed(t, "secret redaction")
 }
+
+// These same-SHA commercial gates stay negative until a reviewed transport is
+// linked. They name the exact live boundaries required before promotion.
+func TestSnowflakeStreamingManagedProfileAmbiguousRequestRecovery(t *testing.T) {
+	assertStreamingFailsClosed(t, "ambiguous request recovery")
+}
+
+func TestSnowflakeStreamingManagedProfileVisibilityLagWithoutResend(t *testing.T) {
+	assertStreamingFailsClosed(t, "visibility lag without resend")
+}
+
+func TestSnowflakeStreamingManagedProfileProvenAbsenceRetry(t *testing.T) {
+	assertStreamingFailsClosed(t, "proven absence retry")
+}
+
+func TestSnowflakeStreamingManagedProfileRequestProcessRestart(t *testing.T) {
+	assertStreamingFailsClosed(t, "request process restart")
+}

@@ -6,18 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 var (
-	// errStreamChannelInvalidated means the server rejected an append because the
-	// client sequencer / channel revision is stale (another writer reopened the
-	// channel, or the channel was dropped and recreated). The driver must reopen,
-	// re-read the committed offset, recompute proven-missing rows, and retry.
-	errStreamChannelInvalidated = errors.New("streaming Snowflake channel is invalidated")
 	// errStreamAuthExpired means the scoped ingest credential expired mid-append.
 	// The driver refreshes and retries within its bound.
 	errStreamAuthExpired = errors.New("streaming Snowflake append authentication expired")
@@ -49,10 +43,15 @@ type streamAppendRow struct {
 // streamAppendRequest is one bounded append call against an open channel.
 type streamAppendRequest struct {
 	cfg               streamConfig
+	requestID         string
 	channelName       string
 	channelRevision   int64
+	pipeRevision      string
 	continuationToken string
 	offsetToken       string
+	manifestHash      string
+	rowsContentHash   string
+	rowCount          int
 	rows              []streamAppendRow
 }
 
@@ -81,7 +80,10 @@ type streamChannelStatus struct {
 // NOT surface a committed offset token: the append is an accept, not a commit,
 // so completion is proven only by SQL observation and ChannelStatus.
 type streamAppendResult struct {
+	disposition       streamAppendDisposition
+	requestID         string
 	continuationToken string
+	evidence          string
 	rejections        []streamRowRejection
 }
 
@@ -100,6 +102,7 @@ type managedStreamChannelState struct {
 	committedOffsetToken  string
 	logicalBatchID        string
 	rowsContentHash       string
+	stateVersion          int64
 }
 
 type streamChannelStateKey struct {
@@ -133,7 +136,7 @@ type streamReceiptInsert struct {
 // reviewed high-performance append client; the SQL-backed implementation refuses
 // them fail-closed. The observation, channel-state, and receipt methods run
 // against the ordinary query API and are the adoption authority.
-type streamProtocol interface {
+type streamTransport interface {
 	// OpenChannel opens (or reopens) the deterministic named channel and returns
 	// its durable status, including the last committed offset token.
 	OpenChannel(ctx context.Context, cfg streamConfig, channelName string) (streamChannelStatus, error)
@@ -143,15 +146,26 @@ type streamProtocol interface {
 	// ChannelStatus re-reads the durable channel status (committed offset token)
 	// without appending.
 	ChannelStatus(ctx context.Context, cfg streamConfig, channelName string) (streamChannelStatus, error)
-	// ObserveCommittedRows reports, by deterministic ROW_HASH, which of the
+	// RequestStatus authoritatively reconciles one exact request identity. Unknown
+	// or divergent status never permits a resend.
+	RequestStatus(ctx context.Context, cfg streamConfig, request managedStreamRequest) (streamRequestStatusEvidence, error)
+}
+
+type streamStateStore interface {
+	// ObserveCommittedRows reports every ROW_HASH for one logical batch. The
+	// driver rejects extra, duplicate, or missing identities.
 	// supplied rows are durably present in the streaming target for this logical
 	// batch. This SQL observation — not any transport token — proves completeness.
 	ObserveCommittedRows(ctx context.Context, cfg streamConfig, logicalBatchID string, rowHashes []string) (map[string]int, error)
-	// UpsertChannelState persists the exact channel/pipe revision, continuation,
-	// and committed-token evidence for one channel.
-	UpsertChannelState(ctx context.Context, cfg streamConfig, state managedStreamChannelState) error
+	// CompareAndSwapChannelState persists monotonic channel evidence.
+	CompareAndSwapChannelState(ctx context.Context, cfg streamConfig, expectedVersion int64, state managedStreamChannelState) (managedStreamChannelState, bool, error)
 	// LookupChannelState returns the persisted channel evidence.
 	LookupChannelState(ctx context.Context, cfg streamConfig, key streamChannelStateKey) (managedStreamChannelState, bool, error)
+	// InsertRequest creates one immutable request identity before network I/O.
+	InsertRequest(ctx context.Context, cfg streamConfig, request managedStreamRequest) (bool, error)
+	LookupRequest(ctx context.Context, cfg streamConfig, key streamRequestKey) (managedStreamRequest, bool, error)
+	TransitionRequest(ctx context.Context, cfg streamConfig, transition streamRequestTransition) (managedStreamRequest, bool, error)
+	HasUnresolvedRequests(ctx context.Context, cfg streamConfig, key streamChannelStateKey) (bool, error)
 	// LookupReceipt returns the durable destination receipt for one identity.
 	LookupReceipt(ctx context.Context, cfg streamConfig, key streamReceiptKey) (managedStreamReceipt, bool, error)
 	// InsertReceipt writes the receipt atomically; a duplicate primary key is a
@@ -162,6 +176,11 @@ type streamProtocol interface {
 	ListReleasableReceipts(ctx context.Context, cfg streamConfig, flowIncarnationID string, retention time.Duration, limit int) ([]managedStreamReceipt, error)
 	// DeleteChannelState removes one persisted channel-state row during cleanup.
 	DeleteChannelState(ctx context.Context, cfg streamConfig, key streamChannelStateKey) error
+}
+
+type streamProtocol interface {
+	streamTransport
+	streamStateStore
 }
 
 // sqlStreamProtocol is the real gosnowflake-backed protocol. Its SQL-observation
@@ -190,6 +209,10 @@ func (p *sqlStreamProtocol) ChannelStatus(context.Context, streamConfig, string)
 	return streamChannelStatus{}, fmt.Errorf("%w: channel status", errStreamingTransportUnavailable)
 }
 
+func (p *sqlStreamProtocol) RequestStatus(context.Context, streamConfig, managedStreamRequest) (streamRequestStatusEvidence, error) {
+	return streamRequestStatusEvidence{}, fmt.Errorf("%w: request status", errStreamingTransportUnavailable)
+}
+
 func (p *sqlStreamProtocol) ObserveCommittedRows(ctx context.Context, cfg streamConfig, logicalBatchID string, rowHashes []string) (map[string]int, error) {
 	present := make(map[string]int, len(rowHashes))
 	if len(rowHashes) == 0 {
@@ -197,16 +220,10 @@ func (p *sqlStreamProtocol) ObserveCommittedRows(ctx context.Context, cfg stream
 	}
 	target := managedSnowflakeStreamQualified(cfg, cfg.table)
 	// #nosec G202 -- the target identifier is composed only of validated unquoted
-	// uppercase identifiers; logical batch and row hashes are bound parameters.
+	// uppercase identifiers; the logical batch is a bound parameter.
 	query := "SELECT \"ROW_HASH\", COUNT(*) FROM " + target +
-		" WHERE \"LOGICAL_BATCH_ID\" = ? AND \"ROW_HASH\" IN (" + streamPlaceholders(len(rowHashes)) + ")" +
-		" GROUP BY \"ROW_HASH\""
-	args := make([]any, 0, len(rowHashes)+1)
-	args = append(args, logicalBatchID)
-	for _, hash := range rowHashes {
-		args = append(args, hash)
-	}
-	rows, err := p.db.QueryContext(ctx, query, args...)
+		" WHERE \"LOGICAL_BATCH_ID\" = ? GROUP BY \"ROW_HASH\""
+	rows, err := p.db.QueryContext(ctx, query, logicalBatchID)
 	if err != nil {
 		return nil, fmt.Errorf("observe streaming Snowflake committed rows: %w", err)
 	}
@@ -225,14 +242,23 @@ func (p *sqlStreamProtocol) ObserveCommittedRows(ctx context.Context, cfg stream
 	return present, nil
 }
 
-func (p *sqlStreamProtocol) UpsertChannelState(ctx context.Context, cfg streamConfig, state managedStreamChannelState) error {
+func (p *sqlStreamProtocol) CompareAndSwapChannelState(ctx context.Context, cfg streamConfig, expectedVersion int64, state managedStreamChannelState) (managedStreamChannelState, bool, error) {
 	ctx, recordQueryID := managedSnowflakeQueryIDContext(ctx)
-	_, err := p.db.ExecContext(ctx, streamChannelStateMergeSQL(cfg), streamChannelStateValues(state)...)
+	values := append(streamChannelStateValues(state), expectedVersion)
+	_, err := p.db.ExecContext(ctx, streamChannelStateMergeSQL(cfg), values...)
 	recordQueryID()
 	if err != nil {
-		return fmt.Errorf("%w: upsert streaming Snowflake channel state: %w", connector.ErrDeliveryIndeterminate, err)
+		return managedStreamChannelState{}, false, fmt.Errorf("%w: compare-and-swap streaming Snowflake channel state: %w", connector.ErrDeliveryIndeterminate, err)
 	}
-	return nil
+	current, found, err := p.LookupChannelState(ctx, cfg, streamChannelStateKey{flowIncarnationID: state.flowIncarnationID, destinationRevisionID: state.destinationRevisionID, channelName: state.channelName})
+	if err != nil {
+		return managedStreamChannelState{}, false, err
+	}
+	if !found {
+		return managedStreamChannelState{}, false, fmt.Errorf("%w: channel state CAS produced no visible row", connector.ErrDeliveryIndeterminate)
+	}
+	applied := current.stateVersion == state.stateVersion && current.channelRevision == state.channelRevision && current.pipeRevision == state.pipeRevision && current.continuationToken == state.continuationToken && current.committedOffsetToken == state.committedOffsetToken
+	return current, applied, nil
 }
 
 func (p *sqlStreamProtocol) LookupChannelState(ctx context.Context, cfg streamConfig, key streamChannelStateKey) (managedStreamChannelState, bool, error) {
@@ -247,6 +273,77 @@ func (p *sqlStreamProtocol) LookupChannelState(ctx context.Context, cfg streamCo
 		return managedStreamChannelState{}, false, err
 	}
 	return state, true, nil
+}
+
+func (p *sqlStreamProtocol) InsertRequest(ctx context.Context, cfg streamConfig, request managedStreamRequest) (bool, error) {
+	if err := request.validateIdentity(); err != nil {
+		return false, err
+	}
+	ctx, recordQueryID := managedSnowflakeQueryIDContext(ctx)
+	result, err := p.db.ExecContext(ctx, streamRequestInsertSQL(cfg), streamRequestValues(request)...)
+	recordQueryID()
+	if err != nil {
+		if isStagedDuplicateKey(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("%w: insert streaming Snowflake request: %w", connector.ErrDeliveryIndeterminate, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read streaming Snowflake request cardinality: %w", err)
+	}
+	return affected == 1, nil
+}
+
+func (p *sqlStreamProtocol) LookupRequest(ctx context.Context, cfg streamConfig, key streamRequestKey) (managedStreamRequest, bool, error) {
+	ctx, recordQueryID := managedSnowflakeQueryIDContext(ctx)
+	rows, err := p.db.QueryContext(ctx, streamRequestLookupSQL(cfg), key.flowIncarnationID, key.destinationRevisionID, key.logicalBatchID)
+	recordQueryID()
+	if err != nil {
+		return managedStreamRequest{}, false, fmt.Errorf("query streaming Snowflake request: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return managedStreamRequest{}, false, err
+		}
+		return managedStreamRequest{}, false, nil
+	}
+	request, err := scanStreamRequest(rows)
+	if err != nil {
+		return managedStreamRequest{}, false, fmt.Errorf("scan streaming Snowflake request: %w", err)
+	}
+	return request, true, nil
+}
+
+func (p *sqlStreamProtocol) TransitionRequest(ctx context.Context, cfg streamConfig, transition streamRequestTransition) (managedStreamRequest, bool, error) {
+	if !validStreamRequestTransition(transition.expectedPhase, transition.nextPhase) || transition.expectedVersion <= 0 {
+		return managedStreamRequest{}, false, errors.New("illegal streaming Snowflake request transition")
+	}
+	ctx, recordQueryID := managedSnowflakeQueryIDContext(ctx)
+	result, err := p.db.ExecContext(ctx, streamRequestTransitionSQL(cfg), string(transition.nextPhase), transition.responseContinuation, transition.committedOffset, transition.responseKind, transition.responseEvidence, transition.requestID, string(transition.expectedPhase), transition.expectedVersion)
+	recordQueryID()
+	if err != nil {
+		return managedStreamRequest{}, false, fmt.Errorf("%w: transition streaming Snowflake request: %w", connector.ErrDeliveryIndeterminate, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return managedStreamRequest{}, false, err
+	}
+	row := p.db.QueryRowContext(ctx, streamRequestLookupByIDSQL(cfg), transition.requestID)
+	request, scanErr := scanStreamRequest(row)
+	if scanErr != nil {
+		return managedStreamRequest{}, false, fmt.Errorf("read transitioned streaming Snowflake request: %w", scanErr)
+	}
+	return request, affected == 1, nil
+}
+
+func (p *sqlStreamProtocol) HasUnresolvedRequests(ctx context.Context, cfg streamConfig, key streamChannelStateKey) (bool, error) {
+	var count int64
+	if err := p.db.QueryRowContext(ctx, streamRequestUnresolvedSQL(cfg), key.flowIncarnationID, key.destinationRevisionID, key.channelName).Scan(&count); err != nil {
+		return false, fmt.Errorf("query unresolved streaming Snowflake requests: %w", err)
+	}
+	return count > 0, nil
 }
 
 func (p *sqlStreamProtocol) LookupReceipt(ctx context.Context, cfg streamConfig, key streamReceiptKey) (managedStreamReceipt, bool, error) {
@@ -339,11 +436,4 @@ func (p *sqlStreamProtocol) DeleteChannelState(ctx context.Context, cfg streamCo
 		return fmt.Errorf("delete streaming Snowflake channel state: %w", err)
 	}
 	return nil
-}
-
-func streamPlaceholders(count int) string {
-	if count <= 0 {
-		return ""
-	}
-	return strings.TrimRight(strings.Repeat("?,", count), ",")
 }

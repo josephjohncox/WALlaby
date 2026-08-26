@@ -2,7 +2,13 @@ package snowflake
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -72,7 +78,7 @@ func TestStreamDriverReplayIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestStreamDriverCompleteUnreceiptedRecoveryAppendsNothing(t *testing.T) {
+func TestStreamDriverCompleteUnjournaledTargetFailsClosed(t *testing.T) {
 	cfg, transaction, intent, plan := streamTestFixture(t)
 	proto := newFakeStreamProtocol()
 	// Every row is already SQL-observed present, but no receipt exists yet.
@@ -81,31 +87,26 @@ func TestStreamDriverCompleteUnreceiptedRecoveryAppendsNothing(t *testing.T) {
 	}
 	driver := newStreamTestDriver(cfg, proto)
 
-	if _, err := driver.apply(context.Background(), intent, transaction); err != nil {
-		t.Fatalf("apply: %v", err)
+	if _, err := driver.apply(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("unjournaled target rows error=%v, want indeterminate", err)
 	}
-	if proto.appendCalls != 0 {
-		t.Fatalf("complete-unreceipted recovery appended rows: appendCalls=%d", proto.appendCalls)
-	}
-	if proto.insertCalls != 1 {
-		t.Fatalf("complete-unreceipted recovery did not adopt a receipt: insertCalls=%d", proto.insertCalls)
+	if proto.appendCalls != 0 || proto.insertCalls != 0 {
+		t.Fatalf("unjournaled target rows caused append/receipt=%d/%d", proto.appendCalls, proto.insertCalls)
 	}
 }
 
-func TestStreamDriverAppendsOnlyProvenMissingAfterPartialRecovery(t *testing.T) {
+func TestStreamDriverPartialUnjournaledTargetFailsClosed(t *testing.T) {
 	cfg, transaction, intent, plan := streamTestFixture(t)
 	proto := newFakeStreamProtocol()
 	// The first row already committed on a prior attempt.
 	proto.seedCommittedRow(plan.rowHashes[0], 1)
 	driver := newStreamTestDriver(cfg, proto)
 
-	if _, err := driver.apply(context.Background(), intent, transaction); err != nil {
-		t.Fatalf("apply: %v", err)
+	if _, err := driver.apply(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("partial unjournaled target error=%v, want indeterminate", err)
 	}
-	for _, hash := range plan.rowHashes {
-		if entry := proto.committed[hash]; entry == nil || entry.count != 1 {
-			t.Fatalf("row %s committed count!=1 after partial recovery: %+v", hash, entry)
-		}
+	if proto.appendCalls != 0 || proto.insertCalls != 0 {
+		t.Fatalf("partial unjournaled target caused append/receipt=%d/%d", proto.appendCalls, proto.insertCalls)
 	}
 }
 
@@ -190,29 +191,21 @@ func TestStreamDriverCommitThenLostResponseConvergesWithoutDuplicate(t *testing.
 	}
 }
 
-// TestStreamDriverLostResponseWithLaggingObservationFailsClosed pins the
-// promotion-relevant liveness boundary the response-loss test alone does not
-// reach. When an append durably commits but its response is lost (throttle) AND
-// SQL observation lags the commit (commitVisibilityDelay), the bounded retry
-// re-appends the still-unobserved rows, and the next SQL observation sees the
-// duplicated deterministic identity. Rather than acknowledge a silent duplicate,
-// the driver fails closed with errStreamObservationInconsistent and writes no
-// receipt. This is exactly why admission requires READ_LATEST_WRITES=true: the
-// recovery invariant depends on read-after-append observation. Without it,
-// delivery is stuck fail-closed, never silently duplicated.
-func TestStreamDriverLostResponseWithLaggingObservationFailsClosed(t *testing.T) {
+// A lost response is reconciled from the exact durable request before target
+// visibility catches up. The driver polls the committed request and never sends
+// a duplicate append.
+func TestStreamDriverLostResponseWithLaggingObservationConvergesOnce(t *testing.T) {
 	cfg, transaction, intent, _ := streamTestFixture(t)
 	proto := newFakeStreamProtocol()
 	proto.appendCommitsThenThrottle = true // durable commit, lost response
 	proto.commitVisibilityDelay = 2        // observation lags the durable commit
 	driver := newStreamTestDriver(cfg, proto)
 
-	_, err := driver.apply(context.Background(), intent, transaction)
-	if !errors.Is(err, errStreamObservationInconsistent) {
-		t.Fatalf("lagging observation after a lost response must fail closed, got %v", err)
+	if _, err := driver.apply(context.Background(), intent, transaction); err != nil {
+		t.Fatalf("lagging observation recovery: %v", err)
 	}
-	if proto.insertCalls != 0 {
-		t.Fatalf("fail-closed outcome wrote a receipt: insertCalls=%d", proto.insertCalls)
+	if proto.appendCalls != 1 || proto.insertCalls != 1 {
+		t.Fatalf("lagging observation append/receipt=%d/%d, want 1/1", proto.appendCalls, proto.insertCalls)
 	}
 }
 
@@ -225,6 +218,20 @@ func TestStreamDriverObservationInconsistentFailsClosed(t *testing.T) {
 	_, err := driver.apply(context.Background(), intent, transaction)
 	if !errors.Is(err, errStreamObservationInconsistent) {
 		t.Fatalf("duplicate identity must fail closed, got %v", err)
+	}
+}
+
+func TestStreamDriverUnexpectedTargetRequestRowFailsClosed(t *testing.T) {
+	cfg, transaction, intent, _ := streamTestFixture(t)
+	proto := newFakeStreamProtocol()
+	proto.seedCommittedRow(strings.Repeat("f", 64), 1)
+	driver := newStreamTestDriver(cfg, proto)
+	_, err := driver.apply(context.Background(), intent, transaction)
+	if !errors.Is(err, errStreamObservationInconsistent) {
+		t.Fatalf("unexpected target row error=%v, want inconsistent observation", err)
+	}
+	if proto.appendCalls != 0 || proto.insertCalls != 0 {
+		t.Fatalf("unexpected target row append/receipt=%d/%d", proto.appendCalls, proto.insertCalls)
 	}
 }
 
@@ -312,6 +319,278 @@ func TestStreamDriverReconcileMatchesReceipt(t *testing.T) {
 	}
 	if disposition != connector.DeliveryApplied || evidence.ExternalID == "" {
 		t.Fatalf("reconcile after apply disposition=%v evidence=%+v", disposition, evidence)
+	}
+}
+
+func TestStreamRequestIdentityBindsChannelOffsetAndAttempt(t *testing.T) {
+	cfg, _, _, plan := streamTestFixture(t)
+	status := streamChannelStatus{valid: true, channelName: plan.identity.channelName, channelRevision: 3, pipeRevision: "pipe-3", continuationToken: "continuation-9"}
+	first, err := newManagedStreamRequest(plan, status, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := newManagedStreamRequest(plan, status, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newManagedStreamRequest(plan, status, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.requestID != replay.requestID || first.requestID == second.requestID || first.requestedOffset != plan.identity.offsetToken || first.channelRevision != 3 || first.inputContinuation != "continuation-9" || first.destinationRevisionID != cfg.destinationRevision {
+		t.Fatalf("request identities first/replay/second=%+v/%+v/%+v", first, replay, second)
+	}
+}
+
+func TestStreamRequestAmbiguousTransportNeverResendsWithoutProof(t *testing.T) {
+	cfg, transaction, intent, _ := streamTestFixture(t)
+	proto := newFakeStreamProtocol()
+	proto.appendUnknownOnce = errors.New("connection reset after send")
+	driver := newStreamTestDriver(cfg, proto)
+	_, err := driver.apply(context.Background(), intent, transaction)
+	if !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("ambiguous append error=%v, want indeterminate", err)
+	}
+	request, found, lookupErr := proto.LookupRequest(context.Background(), cfg, streamRequestKey{flowIncarnationID: intent.FlowIncarnationID, destinationRevisionID: intent.DestinationRevisionID, logicalBatchID: intent.LogicalBatchID})
+	if lookupErr != nil || !found || request.phase != streamRequestSendingUnknown || request.responseKind != "transport_error" {
+		t.Fatalf("ambiguous request=%+v found/error=%t/%v", request, found, lookupErr)
+	}
+	if _, err := driver.apply(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("second unknown reconciliation error=%v, want indeterminate", err)
+	}
+	if proto.appendCalls != 1 || proto.insertCalls != 0 {
+		t.Fatalf("ambiguous request append/receipt=%d/%d, want 1/0", proto.appendCalls, proto.insertCalls)
+	}
+}
+
+func TestStreamRequestAmbiguityClassesNeverBlindlyResend(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "timeout", err: context.DeadlineExceeded},
+		{name: "eof", err: io.EOF},
+		{name: "disconnect", err: errors.New("connection reset")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, transaction, intent, _ := streamTestFixture(t)
+			proto := newFakeStreamProtocol()
+			proto.appendUnknownOnce = test.err
+			driver := newStreamTestDriver(cfg, proto)
+			if _, err := driver.apply(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+				t.Fatalf("first ambiguity error=%v", err)
+			}
+			if _, err := driver.apply(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+				t.Fatalf("second ambiguity error=%v", err)
+			}
+			if proto.appendCalls != 1 {
+				t.Fatalf("ambiguity reappended request: %d", proto.appendCalls)
+			}
+		})
+	}
+}
+
+func TestStreamRequestCancellationAfterPreparePersistsUnknown(t *testing.T) {
+	cfg, transaction, intent, _ := streamTestFixture(t)
+	proto := newFakeStreamProtocol()
+	ctx, cancel := context.WithCancel(context.Background())
+	driver := newStreamTestDriver(cfg, proto)
+	driver.hooks.AfterOpen = func() error { cancel(); return nil }
+	_, err := driver.apply(ctx, intent, transaction)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation error=%v, want context canceled", err)
+	}
+	request, found, lookupErr := proto.LookupRequest(context.Background(), cfg, streamRequestKey{flowIncarnationID: intent.FlowIncarnationID, destinationRevisionID: intent.DestinationRevisionID, logicalBatchID: intent.LogicalBatchID})
+	if lookupErr != nil || !found || request.phase != streamRequestSendingUnknown || proto.appendCalls != 0 {
+		t.Fatalf("canceled request=%+v found/error/appends=%t/%v/%d", request, found, lookupErr, proto.appendCalls)
+	}
+}
+
+func TestStreamRequestUnknownRestartReconcilesWithoutResend(t *testing.T) {
+	cfg, transaction, intent, _ := streamTestFixture(t)
+	proto := newFakeStreamProtocol()
+	proto.requestStatusUnknownTimes = 1
+	first := newStreamTestDriver(cfg, proto)
+	_, err := first.apply(context.Background(), intent, transaction)
+	if !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("unknown response error=%v, want indeterminate", err)
+	}
+	if proto.appendCalls != 1 || proto.insertCalls != 0 {
+		t.Fatalf("first process append/receipt=%d/%d, want 1/0", proto.appendCalls, proto.insertCalls)
+	}
+	request, found, lookupErr := proto.LookupRequest(context.Background(), cfg, streamRequestKey{flowIncarnationID: intent.FlowIncarnationID, destinationRevisionID: intent.DestinationRevisionID, logicalBatchID: intent.LogicalBatchID})
+	if lookupErr != nil || !found || request.phase != streamRequestAccepted || request.responseKind == "" {
+		t.Fatalf("durable unknown request=%+v found/error=%t/%v", request, found, lookupErr)
+	}
+	second := newStreamTestDriver(cfg, proto)
+	if _, err := second.apply(context.Background(), intent, transaction); err != nil {
+		t.Fatalf("restart reconcile: %v", err)
+	}
+	if proto.appendCalls != 1 || proto.insertCalls != 1 {
+		t.Fatalf("restart append/receipt=%d/%d, want 1/1", proto.appendCalls, proto.insertCalls)
+	}
+}
+
+func TestStreamRequestProcessRestartEvidence(t *testing.T) {
+	type snapshot struct {
+		RequestID       string `json:"request_id"`
+		ChannelRevision int64  `json:"channel_revision"`
+		Continuation    string `json:"continuation"`
+		Attempt         int    `json:"attempt"`
+		Phase           string `json:"phase"`
+	}
+	if os.Getenv("WALLABY_STREAM_REQUEST_CHILD") == "1" {
+		_, _, _, plan := streamTestFixture(t)
+		request, err := newManagedStreamRequest(plan, streamChannelStatus{valid: true, channelName: plan.identity.channelName, channelRevision: 1, pipeRevision: "pipe-rev-1", continuationToken: "cont-1"}, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(snapshot{RequestID: request.requestID, ChannelRevision: request.channelRevision, Continuation: request.inputContinuation, Attempt: request.attempt, Phase: string(streamRequestSendingUnknown)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(os.Getenv("WALLABY_STREAM_REQUEST_STATE"), encoded, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	path := t.TempDir() + "/request.json"
+	cmd := exec.Command(os.Args[0], "-test.run=^TestStreamRequestProcessRestartEvidence$")
+	cmd.Env = append(os.Environ(), "WALLABY_STREAM_REQUEST_CHILD=1", "WALLABY_STREAM_REQUEST_STATE="+path)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("request child: %v\n%s", err, output)
+	}
+	var durable snapshot
+	encoded, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(encoded, &durable); err != nil {
+		t.Fatal(err)
+	}
+	cfg, transaction, intent, plan := streamTestFixture(t)
+	request, err := newManagedStreamRequest(plan, streamChannelStatus{valid: true, channelName: plan.identity.channelName, channelRevision: durable.ChannelRevision, pipeRevision: "pipe-rev-1", continuationToken: durable.Continuation}, durable.Attempt)
+	if err != nil || request.requestID != durable.RequestID || durable.Phase != string(streamRequestSendingUnknown) {
+		t.Fatalf("durable request mismatch request/snapshot/error=%+v/%+v/%v", request, durable, err)
+	}
+	request.phase = streamRequestSendingUnknown
+	request.phaseVersion = 2
+	proto := newFakeStreamProtocol()
+	proto.channels[request.channelName] = &fakeStreamChannel{revision: request.channelRevision, pipeRevision: request.pipeRevision, continuationToken: "cont-1-committed", committedOffsetToken: request.requestedOffset}
+	proto.requests[request.requestID] = request
+	proto.requestByBatch[fakeRequestBatchKey(streamRequestKey{flowIncarnationID: request.flowIncarnationID, destinationRevisionID: request.destinationRevisionID, logicalBatchID: request.logicalBatchID})] = request.requestID
+	proto.requestStatus[request.requestID] = streamRequestStatusCommitted
+	for _, hash := range plan.rowHashes {
+		proto.committed[hash] = &fakeCommittedRow{logicalBatchID: request.logicalBatchID, count: 1}
+	}
+	if _, err := newStreamTestDriver(cfg, proto).apply(context.Background(), intent, transaction); err != nil {
+		t.Fatalf("restart adoption: %v", err)
+	}
+	if proto.appendCalls != 0 || proto.insertCalls != 1 {
+		t.Fatalf("restart append/receipt=%d/%d, want 0/1", proto.appendCalls, proto.insertCalls)
+	}
+}
+
+func TestStreamRequestDefinitelyNotAcceptedRetriesOnce(t *testing.T) {
+	cfg, transaction, intent, _ := streamTestFixture(t)
+	proto := newFakeStreamProtocol()
+	proto.appendDefinitelyAbsentOnce = true
+	if _, err := newStreamTestDriver(cfg, proto).apply(context.Background(), intent, transaction); err != nil {
+		t.Fatalf("proven-absence retry: %v", err)
+	}
+	if proto.appendCalls != 2 || proto.insertCalls != 1 || len(proto.requests) != 2 {
+		t.Fatalf("proven-absence append/receipt/requests=%d/%d/%d, want 2/1/2", proto.appendCalls, proto.insertCalls, len(proto.requests))
+	}
+}
+
+func TestStreamRequestDivergenceFailsConflictWithoutResend(t *testing.T) {
+	cfg, transaction, intent, _ := streamTestFixture(t)
+	proto := newFakeStreamProtocol()
+	proto.requestStatusDivergent = true
+	driver := newStreamTestDriver(cfg, proto)
+	_, err := driver.apply(context.Background(), intent, transaction)
+	if !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("divergent request status error=%v, want conflict", err)
+	}
+	if proto.appendCalls != 1 || proto.insertCalls != 0 {
+		t.Fatalf("divergent request append/receipt=%d/%d, want 1/0", proto.appendCalls, proto.insertCalls)
+	}
+}
+
+func TestStreamChannelStateCASRejectsStaleAndRegressedWriters(t *testing.T) {
+	cfg, _, _, plan := streamTestFixture(t)
+	proto := newFakeStreamProtocol()
+	key := streamChannelStateKey{flowIncarnationID: plan.receipt.flowIncarnationID, destinationRevisionID: plan.receipt.destinationRevisionID, channelName: plan.identity.channelName}
+	state := managedStreamChannelState{flowIncarnationID: key.flowIncarnationID, destinationRevisionID: key.destinationRevisionID, channelName: key.channelName, pipeName: cfg.pipe, pipeRevision: "pipe-1", channelRevision: 2, continuationToken: "cont-2", stateVersion: 1}
+	if _, applied, err := proto.CompareAndSwapChannelState(context.Background(), cfg, 0, state); err != nil || !applied {
+		t.Fatalf("initial CAS applied/error=%t/%v", applied, err)
+	}
+	stale := state
+	stale.stateVersion = 2
+	if _, applied, err := proto.CompareAndSwapChannelState(context.Background(), cfg, 0, stale); err != nil || applied {
+		t.Fatalf("stale CAS applied/error=%t/%v", applied, err)
+	}
+	regressed := state
+	regressed.stateVersion = 2
+	regressed.channelRevision = 1
+	if _, applied, err := proto.CompareAndSwapChannelState(context.Background(), cfg, 1, regressed); err != nil || applied {
+		t.Fatalf("regressed CAS applied/error=%t/%v", applied, err)
+	}
+}
+
+func TestStreamChannelStateCASConcurrentWritersAdmitOne(t *testing.T) {
+	cfg, _, _, plan := streamTestFixture(t)
+	proto := newFakeStreamProtocol()
+	base := managedStreamChannelState{flowIncarnationID: plan.receipt.flowIncarnationID, destinationRevisionID: plan.receipt.destinationRevisionID, channelName: plan.identity.channelName, pipeName: cfg.pipe, pipeRevision: "pipe-1", channelRevision: 1, continuationToken: "cont-1", stateVersion: 1}
+	if _, applied, err := proto.CompareAndSwapChannelState(context.Background(), cfg, 0, base); err != nil || !applied {
+		t.Fatalf("initial CAS applied/error=%t/%v", applied, err)
+	}
+	var wg sync.WaitGroup
+	results := make(chan bool, 2)
+	for index := 0; index < 2; index++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			candidate := base
+			candidate.stateVersion = 2
+			candidate.channelRevision = 2
+			candidate.continuationToken = "cont-2-" + string(rune('a'+index))
+			_, applied, _ := proto.CompareAndSwapChannelState(context.Background(), cfg, 1, candidate)
+			results <- applied
+		}(index)
+	}
+	wg.Wait()
+	close(results)
+	applied := 0
+	for result := range results {
+		if result {
+			applied++
+		}
+	}
+	if applied != 1 {
+		t.Fatalf("concurrent CAS winners=%d, want 1", applied)
+	}
+}
+
+func TestStreamDriverCleanupRefusesUnresolvedRequest(t *testing.T) {
+	cfg, transaction, intent, _ := streamTestFixture(t)
+	proto := newFakeStreamProtocol()
+	driver := newStreamTestDriver(cfg, proto)
+	if _, err := driver.apply(context.Background(), intent, transaction); err != nil {
+		t.Fatal(err)
+	}
+	proto.mu.Lock()
+	for id, request := range proto.requests {
+		request.phase = streamRequestCommitted
+		request.phaseVersion++
+		proto.requests[id] = request
+	}
+	proto.mu.Unlock()
+	if _, err := driver.cleanup(context.Background(), intent.FlowIncarnationID); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("cleanup unresolved request error=%v, want indeterminate", err)
+	}
+	if proto.deleteCalls != 0 {
+		t.Fatalf("cleanup deleted channel state with unresolved request: %d", proto.deleteCalls)
 	}
 }
 

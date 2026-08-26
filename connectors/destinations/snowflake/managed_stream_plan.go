@@ -37,6 +37,7 @@ type managedStreamReceipt struct {
 	catalogFingerprint    string
 	manifestHash          string
 	externalID            string
+	requestID             string
 	generation            int64
 	acquisitionID         string
 	leaseEpoch            int64
