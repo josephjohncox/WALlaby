@@ -690,6 +690,33 @@ func TestManagedConfigRejectsUnsafeProtocolOptionsBeforeNetwork(t *testing.T) {
 	}
 }
 
+func TestManagedPreparedTransactionRequiresPostgresPartReservation(t *testing.T) {
+	prepared := &preparedManagedTransaction{}
+	if _, err := prepared.Apply(context.Background()); err == nil || !strings.Contains(err.Error(), "requires a PostgreSQL part reservation") {
+		t.Fatalf("unreserved managed write error=%v", err)
+	}
+}
+
+func TestManagedPartReservationPlanCountsChangelogAndReceipt(t *testing.T) {
+	transaction := managedTestTransaction()
+	intent := managedTestIntent(t, transaction)
+	plan, err := planManagedTransactionWithLimits(intent, transaction, managedPlanLimits{maxFragments: 8, maxRows: 100, maxBytes: 1 << 20, maxRowsPerInsert: 1, maxBytesPerInsert: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := &preparedManagedTransaction{destination: &Destination{managedConfig: managedConfig{maxActiveParts: 8}}, intent: intent, plan: plan, serverActiveParts: 2}
+	request, err := prepared.PartReservationRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(request.Parts) != len(plan.Fragments)+1 || request.Parts[len(request.Parts)-1].Kind != "receipt" {
+		t.Fatalf("reservation parts=%+v, want %d changelog plus receipt", request.Parts, len(plan.Fragments))
+	}
+	if request.ServerActiveParts != 2 || request.Capacity != 8 {
+		t.Fatalf("reservation observation/capacity=%d/%d", request.ServerActiveParts, request.Capacity)
+	}
+}
+
 func managedTestTransaction() connector.SourceTransaction {
 	zone := time.FixedZone("EST", -5*60*60)
 	schema := connector.Schema{

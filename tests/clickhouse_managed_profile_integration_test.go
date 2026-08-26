@@ -679,8 +679,52 @@ func (p *keeperProbeProxy) forward(client net.Conn) {
 	transfers.Wait()
 }
 
+type clickHouseManagedTestDestination struct {
+	*clickhousedest.Destination
+}
+
+type clickHouseManagedTestReservation struct{ id string }
+
+func (r clickHouseManagedTestReservation) ReservationID() string { return r.id }
+func (clickHouseManagedTestReservation) MarkPartDurable(context.Context, connector.ManagedPartIdentity) error {
+	return nil
+}
+
+func (d *clickHouseManagedTestDestination) PrepareTransaction(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (connector.PreparedManagedTransaction, error) {
+	prepared, err := d.Destination.PrepareTransaction(ctx, intent, transaction)
+	if err != nil {
+		return nil, err
+	}
+	reservationPrepared, ok := prepared.(connector.ManagedPartReservationPrepared)
+	if !ok {
+		return nil, errors.New("managed ClickHouse plan does not expose its part reservation")
+	}
+	if err := reservationPrepared.BindPartReservation(clickHouseManagedTestReservation{id: "live-test-" + intent.LogicalBatchID}); err != nil {
+		return nil, err
+	}
+	return prepared, nil
+}
+
+func (d *clickHouseManagedTestDestination) ApplyTransaction(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (connector.DeliveryEvidence, error) {
+	disposition, evidence, err := d.Reconcile(ctx, intent)
+	if err != nil {
+		return connector.DeliveryEvidence{}, err
+	}
+	if disposition == connector.DeliveryApplied {
+		return evidence, nil
+	}
+	if disposition == connector.DeliveryIndeterminate {
+		return connector.DeliveryEvidence{}, connector.ErrDeliveryIndeterminate
+	}
+	prepared, err := d.PrepareTransaction(ctx, intent, transaction)
+	if err != nil {
+		return connector.DeliveryEvidence{}, err
+	}
+	return prepared.Apply(ctx)
+}
+
 type clickHouseManagedFixture struct {
-	destination     *clickhousedest.Destination
+	destination     *clickHouseManagedTestDestination
 	db              *sql.DB
 	replicaDB       *sql.DB
 	keeperProxy     *keeperProbeProxy
@@ -812,7 +856,7 @@ parts_to_delay_insert=100,parts_to_throw_insert=200,max_parts_in_total=1000`, da
 		"managed_max_rows_per_batch": fmt.Sprintf("%d", maxRowsPerInsert), "managed_max_batch_bytes": "16777216",
 		"tls_ca_file": os.Getenv("WALLABY_TEST_CLICKHOUSE_TLS_CA"),
 	}}
-	fixture.destination = &clickhousedest.Destination{}
+	fixture.destination = &clickHouseManagedTestDestination{Destination: &clickhousedest.Destination{}}
 	if err := fixture.destination.Open(ctx, fixture.spec); err != nil {
 		t.Fatalf("open managed ClickHouse destination: %v", err)
 	}

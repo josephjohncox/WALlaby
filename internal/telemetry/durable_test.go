@@ -147,6 +147,7 @@ func TestClickHouseManagedProfileTelemetry(t *testing.T) {
 	end(nil)
 	_, end = StartClickHouseManagedSpan(ctx, "flow-specific-unbounded-operation", "query-2", "logical-2", 1, 10)
 	end(context.Canceled)
+	RecordClickHousePartAdmission(ctx, 10, 4, 20, true)
 
 	spans := spanRecorder.Ended()
 	if len(spans) != 2 || spans[0].Name() != "clickhouse.managed.fragment" || spans[1].Name() != "clickhouse.managed.other" {
@@ -180,7 +181,7 @@ func TestClickHouseManagedProfileTelemetry(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"wallaby.clickhouse.managed.outcomes", "wallaby.clickhouse.managed.rows", "wallaby.clickhouse.managed.bytes", "wallaby.clickhouse.managed.duration"} {
+	for _, name := range []string{"wallaby.clickhouse.managed.outcomes", "wallaby.clickhouse.managed.rows", "wallaby.clickhouse.managed.bytes", "wallaby.clickhouse.managed.duration", "wallaby.clickhouse.managed.parts.server_active", "wallaby.clickhouse.managed.parts.reserved", "wallaby.clickhouse.managed.parts.capacity", "wallaby.clickhouse.managed.parts.rejected"} {
 		if !seen[name] {
 			t.Fatalf("missing metric %s: %v", name, seen)
 		}

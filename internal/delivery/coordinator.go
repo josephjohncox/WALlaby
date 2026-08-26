@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -49,11 +50,13 @@ type Coordinator struct {
 // CoordinatorHooks exposes deterministic crash boundaries to integration
 // tests without changing production ordering or relying on timing.
 type CoordinatorHooks struct {
-	AfterTargetApply         func(context.Context, authority.RunFence, connector.DeliveryIntent) error
-	BeforeFinalizeCommit     func(context.Context, authority.RunFence, connector.DeliveryIntent) error
-	BeforeAuthorizeAckCommit func(context.Context, authority.RunFence, connector.ManagedSchemaBaselinePayload) error
-	AfterSourceFlush         func(context.Context, authority.RunFence, AckGrant, string) error
-	AfterRetentionRootLock   func(context.Context, authority.RunFence, string) error
+	AfterTargetApply           func(context.Context, authority.RunFence, connector.DeliveryIntent) error
+	AfterPartReservationCommit func(context.Context, authority.RunFence, connector.DeliveryIntent, string) error
+	AfterPartReservationLock   func(context.Context, authority.RunFence, connector.ManagedPartReservationRequest) error
+	BeforeFinalizeCommit       func(context.Context, authority.RunFence, connector.DeliveryIntent) error
+	BeforeAuthorizeAckCommit   func(context.Context, authority.RunFence, connector.ManagedSchemaBaselinePayload) error
+	AfterSourceFlush           func(context.Context, authority.RunFence, AckGrant, string) error
+	AfterRetentionRootLock     func(context.Context, authority.RunFence, string) error
 }
 
 // CoordinatorOption configures optional coordinator behavior.
@@ -262,10 +265,36 @@ func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.Ru
 	if err != nil {
 		return AckGrant{}, fmt.Errorf("validate managed target transaction: %w", err)
 	}
+	var reservationRequest *connector.ManagedPartReservationRequest
+	var reservationPrepared connector.ManagedPartReservationPrepared
+	if candidate, ok := prepared.(connector.ManagedPartReservationPrepared); ok {
+		request, requestErr := candidate.PartReservationRequest()
+		if requestErr != nil {
+			return AckGrant{}, fmt.Errorf("validate managed part reservation: %w", requestErr)
+		}
+		if request.DestinationRevisionID != intent.DestinationRevisionID || request.LogicalBatchID != intent.LogicalBatchID || request.ContentHash != intent.ContentHash {
+			return AckGrant{}, fmt.Errorf("%w: managed part reservation differs from delivery intent", connector.ErrDeliveryConflict)
+		}
+		reservationRequest = &request
+		reservationPrepared = candidate
+	}
 
-	attemptID, err := c.prepareAttempt(ctx, fence, intent, transaction.Checkpoint, baselines)
+	attemptID, reservation, err := c.prepareAttempt(ctx, fence, intent, transaction.Checkpoint, baselines, reservationRequest)
 	if err != nil {
 		return AckGrant{}, err
+	}
+	if reservationPrepared != nil {
+		if reservation == nil {
+			return AckGrant{}, errors.New("managed part reservation was not persisted")
+		}
+		if err := reservationPrepared.BindPartReservation(reservation); err != nil {
+			return AckGrant{}, fmt.Errorf("bind managed part reservation: %w", err)
+		}
+		if c.hooks.AfterPartReservationCommit != nil {
+			if err := c.hooks.AfterPartReservationCommit(ctx, fence, intent, reservation.ReservationID()); err != nil {
+				return AckGrant{}, err
+			}
+		}
 	}
 	telemetry.RecordDeliveryOutcome(ctx, "attempt_prepared")
 	var evidence connector.DeliveryEvidence
@@ -773,27 +802,215 @@ func stringMapEqual(left, right map[string]string) bool {
 	return true
 }
 
-func (c *Coordinator) prepareAttempt(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint, baselines connector.ManagedSchemaBaselinePayload) (uuid.UUID, error) {
+type postgresPartReservation struct {
+	pool              *pgxpool.Pool
+	fence             authority.RunFence
+	reservationID     uuid.UUID
+	destinationID     string
+	logicalBatchID    string
+	contentHash       string
+	serverActiveParts int64
+	reservedParts     int64
+	capacity          int64
+}
+
+func (r *postgresPartReservation) ReservationID() string {
+	if r == nil {
+		return ""
+	}
+	return r.reservationID.String()
+}
+
+func (r *postgresPartReservation) MarkPartDurable(ctx context.Context, part connector.ManagedPartIdentity) error {
+	if r == nil || r.pool == nil || r.reservationID == uuid.Nil {
+		return errors.New("managed part reservation is not initialized")
+	}
+	if part.Kind != "changelog" && part.Kind != "receipt" || strings.TrimSpace(part.QueryID) == "" || part.Ordinal > math.MaxInt64 {
+		return errors.New("managed part identity is invalid")
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin managed part progress: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if err := authority.ValidateRunFence(ctx, tx, r.fence); err != nil {
+		return err
+	}
+	var state string
+	if err := tx.QueryRow(ctx, `
+UPDATE managed_part_reservation_parts AS part
+SET part_state='durable',durable_at=COALESCE(durable_at,clock_timestamp()),updated_at=clock_timestamp()
+FROM managed_part_reservations AS reservation
+WHERE part.reservation_id=$1
+  AND part.part_kind=$2
+  AND part.part_ordinal=$3
+  AND part.query_id=$4
+  AND part.part_state IN ('reserved','durable')
+  AND reservation.reservation_id=part.reservation_id
+  AND reservation.flow_incarnation_id=$5
+  AND reservation.destination_revision_id=$6
+  AND reservation.logical_batch_id=$7
+  AND reservation.content_hash=$8
+  AND reservation.reservation_state='reserved'
+RETURNING part.part_state`, r.reservationID, part.Kind, int64(part.Ordinal), part.QueryID, r.fence.FlowIncarnationID, r.destinationID, r.logicalBatchID, r.contentHash).Scan(&state); err != nil {
+		return fmt.Errorf("record managed part progress: %w", err)
+	}
+	if state != "durable" {
+		return errors.New("managed part progress did not become durable")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit managed part progress: %w", err)
+	}
+	return nil
+}
+
+func (c *Coordinator) reserveManagedPartsTx(ctx context.Context, tx pgx.Tx, fence authority.RunFence, request connector.ManagedPartReservationRequest) (*postgresPartReservation, error) {
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+	if request.ServerActiveParts > math.MaxInt64 || request.Capacity > math.MaxInt64 || len(request.Parts) > math.MaxInt32 {
+		return nil, errors.New("managed part reservation exceeds PostgreSQL integer bounds")
+	}
+	for _, part := range request.Parts {
+		if part.Ordinal > math.MaxInt64 {
+			return nil, errors.New("managed part ordinal exceeds PostgreSQL integer bounds")
+		}
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(pg_catalog.hashtextextended($1,0))`, "managed-part-budget\x1f"+request.DestinationRevisionID); err != nil {
+		return nil, fmt.Errorf("lock managed part budget: %w", err)
+	}
+	if c.hooks.AfterPartReservationLock != nil {
+		if err := c.hooks.AfterPartReservationLock(ctx, fence, request); err != nil {
+			return nil, err
+		}
+	}
+	var reservationID uuid.UUID
+	var contentHash, resource, state string
+	var plannedParts int
+	var capacity int64
+	err := tx.QueryRow(ctx, `
+SELECT reservation_id,content_hash,resource,planned_parts,capacity,reservation_state
+FROM managed_part_reservations
+WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND logical_batch_id=$3
+FOR UPDATE`, fence.FlowIncarnationID, request.DestinationRevisionID, request.LogicalBatchID).Scan(&reservationID, &contentHash, &resource, &plannedParts, &capacity, &state)
+	if err == nil {
+		if contentHash != request.ContentHash || resource != request.Resource || plannedParts != len(request.Parts) || capacity != int64(request.Capacity) || state != "reserved" {
+			return nil, fmt.Errorf("%w: existing managed part reservation differs", connector.ErrDeliveryConflict)
+		}
+		if err := validateReservedPartIdentities(ctx, tx, reservationID, request.Parts); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx, `
+UPDATE managed_part_reservations
+SET flow_id=$2,generation=$3,acquisition_id=$4,lease_epoch=$5,
+    server_active_parts=$6,updated_at=clock_timestamp()
+WHERE reservation_id=$1`, reservationID, fence.FlowID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, int64(request.ServerActiveParts)); err != nil {
+			return nil, fmt.Errorf("adopt managed part reservation: %w", err)
+		}
+		var totalReserved int64
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(sum(planned_parts),0) FROM managed_part_reservations WHERE destination_revision_id=$1 AND resource=$2 AND reservation_state='reserved'`, request.DestinationRevisionID, request.Resource).Scan(&totalReserved); err != nil {
+			return nil, fmt.Errorf("sum adopted managed part reservations: %w", err)
+		}
+		return &postgresPartReservation{fence: fence, reservationID: reservationID, destinationID: request.DestinationRevisionID, logicalBatchID: request.LogicalBatchID, contentHash: request.ContentHash, serverActiveParts: int64(request.ServerActiveParts), reservedParts: totalReserved, capacity: capacity}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("load managed part reservation: %w", err)
+	}
+	var boundCapacity int64
+	err = tx.QueryRow(ctx, `SELECT capacity FROM managed_part_reservations WHERE destination_revision_id=$1 AND resource=$2 ORDER BY created_at,reservation_id LIMIT 1`, request.DestinationRevisionID, request.Resource).Scan(&boundCapacity)
+	if err == nil && boundCapacity != int64(request.Capacity) {
+		return nil, fmt.Errorf("%w: destination revision part capacity changed from %d to %d", connector.ErrDeliveryConflict, boundCapacity, request.Capacity)
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("load destination revision part capacity: %w", err)
+	}
+	var reserved int64
+	if err := tx.QueryRow(ctx, `
+SELECT COALESCE(sum(planned_parts),0)
+FROM managed_part_reservations
+WHERE destination_revision_id=$1 AND resource=$2 AND reservation_state='reserved'`, request.DestinationRevisionID, request.Resource).Scan(&reserved); err != nil {
+		return nil, fmt.Errorf("sum managed part reservations: %w", err)
+	}
+	planned := int64(len(request.Parts))
+	active := int64(request.ServerActiveParts)
+	limit := int64(request.Capacity)
+	if active > limit || reserved > limit-active || planned > limit-active-reserved {
+		telemetry.RecordClickHousePartAdmission(ctx, active, reserved, limit, true)
+		return nil, fmt.Errorf("managed ClickHouse backpressure: server active parts=%d reserved parts=%d planned parts=%d capacity=%d", active, reserved, planned, limit)
+	}
+	reservationID = uuid.New()
+	if _, err := tx.Exec(ctx, `
+INSERT INTO managed_part_reservations (
+  reservation_id,flow_incarnation_id,flow_id,generation,acquisition_id,lease_epoch,
+  destination_revision_id,logical_batch_id,content_hash,resource,server_active_parts,planned_parts,capacity
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, reservationID, fence.FlowIncarnationID, fence.FlowID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, request.DestinationRevisionID, request.LogicalBatchID, request.ContentHash, request.Resource, active, planned, limit); err != nil {
+		return nil, fmt.Errorf("insert managed part reservation: %w", err)
+	}
+	for _, part := range request.Parts {
+		// #nosec G115 -- every ordinal is bounded to MaxInt64 above.
+		if _, err := tx.Exec(ctx, `
+INSERT INTO managed_part_reservation_parts (reservation_id,part_kind,part_ordinal,query_id)
+VALUES ($1,$2,$3,$4)`, reservationID, part.Kind, int64(part.Ordinal), part.QueryID); err != nil {
+			return nil, fmt.Errorf("insert managed part identity: %w", err)
+		}
+	}
+	return &postgresPartReservation{fence: fence, reservationID: reservationID, destinationID: request.DestinationRevisionID, logicalBatchID: request.LogicalBatchID, contentHash: request.ContentHash, serverActiveParts: active, reservedParts: reserved + planned, capacity: limit}, nil
+}
+
+func validateReservedPartIdentities(ctx context.Context, tx pgx.Tx, reservationID uuid.UUID, expected []connector.ManagedPartIdentity) error {
+	rows, err := tx.Query(ctx, `
+SELECT part_kind,part_ordinal,query_id
+FROM managed_part_reservation_parts
+WHERE reservation_id=$1
+ORDER BY part_kind,part_ordinal,query_id`, reservationID)
+	if err != nil {
+		return fmt.Errorf("load managed part identities: %w", err)
+	}
+	defer rows.Close()
+	actual := make(map[string]string, len(expected))
+	for rows.Next() {
+		var kind, queryID string
+		var ordinal int64
+		if err := rows.Scan(&kind, &ordinal, &queryID); err != nil {
+			return fmt.Errorf("scan managed part identity: %w", err)
+		}
+		actual[fmt.Sprintf("%s:%d", kind, ordinal)] = queryID
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate managed part identities: %w", err)
+	}
+	if len(actual) != len(expected) {
+		return fmt.Errorf("%w: managed part reservation cardinality differs", connector.ErrDeliveryConflict)
+	}
+	for _, part := range expected {
+		if actual[fmt.Sprintf("%s:%d", part.Kind, part.Ordinal)] != part.QueryID {
+			return fmt.Errorf("%w: managed part reservation identity differs", connector.ErrDeliveryConflict)
+		}
+	}
+	return nil
+}
+
+func (c *Coordinator) prepareAttempt(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint, baselines connector.ManagedSchemaBaselinePayload, reservationRequest *connector.ManagedPartReservationRequest) (uuid.UUID, connector.ManagedPartReservation, error) {
 	tx, err := c.pool.Begin(ctx)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("begin delivery attempt: %w", err)
+		return uuid.Nil, nil, fmt.Errorf("begin delivery attempt: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, nil, err
 	}
 	if err := ensureManifest(ctx, tx, fence, intent, checkpoint, baselines); err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, nil, err
 	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(pg_catalog.hashtextextended($1,0))`, strings.Join([]string{fence.FlowIncarnationID.String(), intent.DestinationRevisionID, intent.LogicalBatchID}, "\x1f")); err != nil {
-		return uuid.Nil, fmt.Errorf("lock logical batch delivery attempts: %w", err)
+		return uuid.Nil, nil, fmt.Errorf("lock logical batch delivery attempts: %w", err)
 	}
 	var priorAttempts int
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(max(attempt_number),0) FROM delivery_attempts WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND logical_batch_id=$3`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.LogicalBatchID).Scan(&priorAttempts); err != nil {
-		return uuid.Nil, fmt.Errorf("count logical batch delivery attempts: %w", err)
+		return uuid.Nil, nil, fmt.Errorf("count logical batch delivery attempts: %w", err)
 	}
 	if priorAttempts >= maxDeliveryAttempts {
-		return uuid.Nil, fmt.Errorf("managed delivery exhausted %d attempts for logical batch %s", maxDeliveryAttempts, intent.LogicalBatchID)
+		return uuid.Nil, nil, fmt.Errorf("managed delivery exhausted %d attempts for logical batch %s", maxDeliveryAttempts, intent.LogicalBatchID)
 	}
 	attemptID := uuid.New()
 	if _, err := tx.Exec(ctx, `
@@ -801,12 +1018,23 @@ INSERT INTO delivery_attempts (
   attempt_id,flow_incarnation_id,flow_id,generation,acquisition_id,lease_epoch,
   destination_revision_id,source_lineage_id,logical_batch_id,position_id,content_hash,attempt_number
 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, attemptID, fence.FlowIncarnationID, fence.FlowID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch, intent.DestinationRevisionID, intent.SourceLineageID, intent.LogicalBatchID, intent.PositionID, intent.ContentHash, priorAttempts+1); err != nil {
-		return uuid.Nil, fmt.Errorf("prepare delivery attempt: %w", err)
+		return uuid.Nil, nil, fmt.Errorf("prepare delivery attempt: %w", err)
+	}
+	var reservation *postgresPartReservation
+	if reservationRequest != nil {
+		reservation, err = c.reserveManagedPartsTx(ctx, tx, fence, *reservationRequest)
+		if err != nil {
+			return uuid.Nil, nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return uuid.Nil, fmt.Errorf("commit delivery attempt: %w", err)
+		return uuid.Nil, nil, fmt.Errorf("commit delivery attempt: %w", err)
 	}
-	return attemptID, nil
+	if reservation != nil {
+		reservation.pool = c.pool
+		telemetry.RecordClickHousePartAdmission(ctx, reservation.serverActiveParts, reservation.reservedParts, reservation.capacity, false)
+	}
+	return attemptID, reservation, nil
 }
 
 func (c *Coordinator) markAttemptTerminal(ctx context.Context, fence authority.RunFence, attemptID uuid.UUID, state, detail string) error {
@@ -941,6 +1169,9 @@ WHERE delivery_receipts.source_lineage_id=EXCLUDED.source_lineage_id
 	if err := schemabaseline.UpsertExactTx(ctx, tx, fence, baselines); err != nil {
 		return AckGrant{}, fmt.Errorf("advance delivery schema baselines: %w", err)
 	}
+	if err := releaseManagedPartReservationTx(ctx, tx, fence, intent); err != nil {
+		return AckGrant{}, err
+	}
 	if c.hooks.BeforeFinalizeCommit != nil {
 		if err := c.hooks.BeforeFinalizeCommit(ctx, fence, intent); err != nil {
 			return AckGrant{}, err
@@ -951,6 +1182,86 @@ WHERE delivery_receipts.source_lineage_id=EXCLUDED.source_lineage_id
 	}
 	telemetry.RecordDeliveryOutcome(ctx, "receipt_committed")
 	return AckGrant{Checkpoint: checkpoint, PositionID: intent.PositionID}, nil
+}
+
+func releaseManagedPartReservationTx(ctx context.Context, tx pgx.Tx, fence authority.RunFence, intent connector.DeliveryIntent) error {
+	var reservationID uuid.UUID
+	err := tx.QueryRow(ctx, `
+SELECT reservation_id
+FROM managed_part_reservations
+WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND logical_batch_id=$3
+  AND content_hash=$4 AND reservation_state='reserved'
+FOR UPDATE`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.LogicalBatchID, intent.ContentHash).Scan(&reservationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load managed part reservation for release: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE managed_part_reservation_parts
+SET part_state='released',released_at=clock_timestamp(),updated_at=clock_timestamp()
+WHERE reservation_id=$1 AND part_state IN ('reserved','durable')`, reservationID); err != nil {
+		return fmt.Errorf("release managed part identities: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `
+UPDATE managed_part_reservations
+SET reservation_state='released',released_at=clock_timestamp(),updated_at=clock_timestamp(),
+    generation=$2,acquisition_id=$3,lease_epoch=$4
+WHERE reservation_id=$1 AND reservation_state='reserved'`, reservationID, fence.Generation, fence.AcquisitionID, fence.LeaseEpoch)
+	if err != nil {
+		return fmt.Errorf("release managed part reservation: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("managed part reservation was not released")
+	}
+	return nil
+}
+
+// ReclaimManagedPartReservation releases an abandoned reservation only after a
+// current fenced owner obtains destination-specific proof that both admitted
+// endpoints contain neither fragments nor a receipt for the immutable batch.
+func (c *Coordinator) ReclaimManagedPartReservation(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, driver connector.ManagedPartReservationReconciler) error {
+	if driver == nil {
+		return errors.New("managed part reservation reconciler is required")
+	}
+	if err := intent.Validate(); err != nil {
+		return err
+	}
+	if intent.FlowIncarnationID != fence.FlowIncarnationID.String() || intent.Generation != fence.Generation || intent.AcquisitionID != fence.AcquisitionID.String() || intent.LeaseEpoch != fence.LeaseEpoch {
+		return fmt.Errorf("%w: reservation reclaim intent does not match run fence", authority.ErrFenceRejected)
+	}
+	tx, err := c.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin managed part reservation reclaim: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(pg_catalog.hashtextextended($1,0))`, "managed-part-budget\x1f"+intent.DestinationRevisionID); err != nil {
+		return fmt.Errorf("lock managed part reservation reclaim: %w", err)
+	}
+	if err := driver.ProvePartReservationAbsent(ctx, intent); err != nil {
+		return fmt.Errorf("prove managed part reservation absence: %w", err)
+	}
+	if err := authority.ValidateRunFence(ctx, tx, fence); err != nil {
+		return err
+	}
+	var receiptExists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM delivery_receipts WHERE flow_incarnation_id=$1 AND destination_revision_id=$2 AND logical_batch_id=$3)`, fence.FlowIncarnationID, intent.DestinationRevisionID, intent.LogicalBatchID).Scan(&receiptExists); err != nil {
+		return fmt.Errorf("check managed delivery receipt before reclaim: %w", err)
+	}
+	if receiptExists {
+		return errors.New("managed part reservation with a delivery receipt cannot be reclaimed as absent")
+	}
+	if err := releaseManagedPartReservationTx(ctx, tx, fence, intent); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit managed part reservation reclaim: %w", err)
+	}
+	return nil
 }
 
 // PruneTerminalDeliveryState bounds retained attempts and receipts while
@@ -1016,9 +1327,30 @@ WITH candidates AS MATERIALIZED (
         AND pending.position_id=manifest.position_id
         AND pending.attempt_state='pending'
     )
+    AND NOT EXISTS (
+      SELECT 1 FROM managed_part_reservations AS reservation
+      WHERE reservation.flow_incarnation_id=manifest.flow_incarnation_id
+        AND reservation.destination_revision_id=manifest.destination_revision_id
+        AND reservation.logical_batch_id=manifest.logical_batch_id
+        AND reservation.reservation_state='reserved'
+    )
   ORDER BY manifest.created_at,manifest.destination_revision_id,manifest.logical_batch_id
   LIMIT $4
   FOR UPDATE OF manifest
+), deleted_part_identities AS (
+  DELETE FROM managed_part_reservation_parts AS part
+  USING managed_part_reservations AS reservation,candidates
+  WHERE part.reservation_id=reservation.reservation_id
+    AND reservation.flow_incarnation_id=$1
+    AND reservation.destination_revision_id=candidates.destination_revision_id
+    AND reservation.logical_batch_id=candidates.logical_batch_id
+    AND reservation.reservation_state='released'
+), deleted_part_reservations AS (
+  DELETE FROM managed_part_reservations AS reservation USING candidates
+  WHERE reservation.flow_incarnation_id=$1
+    AND reservation.destination_revision_id=candidates.destination_revision_id
+    AND reservation.logical_batch_id=candidates.logical_batch_id
+    AND reservation.reservation_state='released'
 ), deleted_evidence AS (
   DELETE FROM delivery_attempt_evidence AS evidence
   USING delivery_attempts AS attempt,candidates

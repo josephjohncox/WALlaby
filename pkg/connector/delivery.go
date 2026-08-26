@@ -140,6 +140,81 @@ type PreparedManagedTransaction interface {
 	Apply(context.Context) (DeliveryEvidence, error)
 }
 
+const ManagedPartResourceClickHouseActivePartsV1 = "clickhouse_active_parts_v1"
+
+// ManagedPartIdentity is one immutable external part planned by a managed
+// transaction. Identity is stable across retries and endpoint failover.
+type ManagedPartIdentity struct {
+	Kind    string
+	Ordinal uint64
+	QueryID string
+}
+
+// ManagedPartReservationRequest carries a destination observation and the
+// complete immutable part plan to PostgreSQL. PostgreSQL serializes admission
+// by destination revision; destination-side observations alone never reserve
+// capacity.
+type ManagedPartReservationRequest struct {
+	Resource              string
+	DestinationRevisionID string
+	LogicalBatchID        string
+	ContentHash           string
+	ServerActiveParts     uint64
+	Capacity              uint64
+	Parts                 []ManagedPartIdentity
+}
+
+// Validate rejects incomplete, duplicated, or out-of-budget reservation plans.
+func (r ManagedPartReservationRequest) Validate() error {
+	if r.Resource != ManagedPartResourceClickHouseActivePartsV1 {
+		return errors.New("managed part reservation resource is not supported")
+	}
+	if strings.TrimSpace(r.DestinationRevisionID) == "" || strings.TrimSpace(r.LogicalBatchID) == "" || strings.TrimSpace(r.ContentHash) == "" {
+		return errors.New("managed part reservation identity is incomplete")
+	}
+	if r.Capacity == 0 || len(r.Parts) == 0 {
+		return errors.New("managed part reservation capacity and parts must be positive")
+	}
+	seen := make(map[string]struct{}, len(r.Parts))
+	for _, part := range r.Parts {
+		if part.Kind != "changelog" && part.Kind != "receipt" {
+			return fmt.Errorf("managed part reservation kind %q is invalid", part.Kind)
+		}
+		if strings.TrimSpace(part.QueryID) == "" {
+			return errors.New("managed part reservation query ID is required")
+		}
+		key := fmt.Sprintf("%s:%d:%s", part.Kind, part.Ordinal, part.QueryID)
+		if _, duplicate := seen[key]; duplicate {
+			return errors.New("managed part reservation contains duplicate part identity")
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+// ManagedPartReservation is the narrow PostgreSQL-backed capability bound to
+// one admitted plan. A destination must not perform managed part writes until
+// this capability has been supplied by the coordinator.
+type ManagedPartReservation interface {
+	ReservationID() string
+	MarkPartDurable(context.Context, ManagedPartIdentity) error
+}
+
+// ManagedPartReservationPrepared is implemented only by managed append plans
+// whose external operations consume a shared part budget.
+type ManagedPartReservationPrepared interface {
+	PreparedManagedTransaction
+	PartReservationRequest() (ManagedPartReservationRequest, error)
+	BindPartReservation(ManagedPartReservation) error
+}
+
+// ManagedPartReservationReconciler proves that neither endpoint contains any
+// fragment or receipt for an immutable logical batch before PostgreSQL releases
+// an abandoned reservation.
+type ManagedPartReservationReconciler interface {
+	ProvePartReservationAbsent(context.Context, DeliveryIntent) error
+}
+
 // ManagedTransactionPreparer is an optional deep interface implemented by
 // managed destinations that can validate and retain one bounded transaction
 // plan before PostgreSQL persists the external attempt.

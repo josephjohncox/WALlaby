@@ -188,7 +188,11 @@ For mutual TLS, set both `tls.certificate_file` and `tls.private_key_file`. Cert
 
 ## Resource and failure behavior
 
-Admission checks transaction-wide fragment, row, and encoded-byte bounds before delivery. Planning also bounds every insert by rows and bytes. Before any write, WALlaby enforces `active_parts + planned_inserts <= max_active_parts`. ClickHouse's own `parts_to_delay_insert`, `parts_to_throw_insert`, and `max_parts_in_total` settings remain the final server-side guardrails.
+Admission checks transaction-wide fragment, row, and encoded-byte bounds before delivery. Planning also bounds every insert by rows and bytes. Before any write, WALlaby observes the maximum changelog and receipt part counts reported by the admitted endpoints, then atomically reserves every planned changelog insert plus the receipt insert in PostgreSQL. Admission is serialized by destination revision and enforces `server_active_parts + outstanding_reserved_parts + planned_parts <= max_active_parts`. Concurrent workers therefore cannot both consume the same remaining capacity.
+
+A reservation is bound to the destination revision, immutable logical batch, and content hash. Its stable per-part query identities survive retries and primary-endpoint failover. PostgreSQL records fragment and receipt progress, retains reservations after indeterminate outcomes, and releases them only in the transaction that adopts the durable delivery receipt. A current fenced owner may reclaim an abandoned reservation only after both admitted endpoints prove that neither changelog rows nor a receipt exists. Direct managed ClickHouse writes without this PostgreSQL capability fail closed. ClickHouse's own `parts_to_delay_insert`, `parts_to_throw_insert`, and `max_parts_in_total` settings remain the final server-side guardrails.
+
+Metrics expose `wallaby.clickhouse.managed.parts.server_active`, `wallaby.clickhouse.managed.parts.reserved`, `wallaby.clickhouse.managed.parts.capacity`, and `wallaby.clickhouse.managed.parts.rejected`. Revision and logical-batch identities remain trace-only and are never metric labels.
 
 Keeper loss makes replicated tables read-only. WALlaby does not acknowledge during that interval. After Keeper returns and both managed replicas report writable, reconciliation resumes from the completion receipt.
 
@@ -207,6 +211,7 @@ The integration gates cover:
 - forced ClickHouse and Keeper process replacement;
 - primary client-endpoint write/reconciliation failover while quorum two remains healthy;
 - survivor-only receipt recovery after destructive primary storage loss, with new writes fenced until the primary is rebuilt;
+- barrier-driven concurrent active-part reservations and crash recovery after reservation, fragment, and receipt progress;
 - active-part and planned-part backpressure;
 - verified native TLS;
 - bounded 1k, 10k, and 100k transaction query counts;
