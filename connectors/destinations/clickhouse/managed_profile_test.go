@@ -704,7 +704,7 @@ func TestManagedPartReservationPlanCountsChangelogAndReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared := &preparedManagedTransaction{destination: &Destination{managedConfig: managedConfig{maxActiveParts: 8}}, intent: intent, plan: plan, serverActiveParts: 2}
+	prepared := &preparedManagedTransaction{destination: &Destination{managedConfig: managedConfig{maxActiveParts: 8}}, intent: intent, plan: plan}
 	request, err := prepared.PartReservationRequest()
 	if err != nil {
 		t.Fatal(err)
@@ -712,8 +712,11 @@ func TestManagedPartReservationPlanCountsChangelogAndReceipt(t *testing.T) {
 	if len(request.Parts) != len(plan.Fragments)+1 || request.Parts[len(request.Parts)-1].Kind != "receipt" {
 		t.Fatalf("reservation parts=%+v, want %d changelog plus receipt", request.Parts, len(plan.Fragments))
 	}
-	if request.ServerActiveParts != 2 || request.Capacity != 8 {
-		t.Fatalf("reservation observation/capacity=%d/%d", request.ServerActiveParts, request.Capacity)
+	if request.Capacity != 8 || request.SourceLineageID != intent.SourceLineageID || request.PositionID != intent.PositionID {
+		t.Fatalf("reservation identity/capacity=%+v", request)
+	}
+	if want, hashErr := connector.ManagedPartPlanHash(request.Parts); hashErr != nil || request.PlanHash != want {
+		t.Fatalf("reservation plan hash=%q want=%q err=%v", request.PlanHash, want, hashErr)
 	}
 }
 

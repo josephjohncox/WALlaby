@@ -218,6 +218,32 @@ func testDeliveryManifestAuthorityTamper(t *testing.T, major int) {
 	}
 }
 
+func TestManagedPartReservationAuthorityTamperFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		statement string
+		want      string
+	}{
+		{name: "extra reservation column", statement: `ALTER TABLE managed_part_reservations ADD COLUMN injected text`, want: "requires exact columns for managed_part_reservations"},
+		{name: "weakened budget index", statement: `DROP INDEX managed_part_reservations_budget_idx; CREATE INDEX managed_part_reservations_budget_idx ON managed_part_reservations(destination_revision_id,resource,reservation_state)`, want: "managed_part_reservations_budget_idx differs"},
+		{name: "dropped query identity", statement: `ALTER TABLE managed_part_reservation_parts DROP CONSTRAINT managed_part_reservation_parts_query_id_key`, want: "managed_part_reservation_parts_query_id_key"},
+		{name: "extra event index", statement: `CREATE INDEX managed_part_reservation_events_injected ON managed_part_reservation_events(event_kind)`, want: "index set for managed_part_reservation_events differs"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, pool := newControlplaneMigrationFixture(t)
+			if err := ApplyMigrations(ctx, pool); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, test.statement); err != nil {
+				t.Fatal(err)
+			}
+			if err := ApplyMigrations(ctx, pool); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("managed part authority tamper error=%v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestManagedSchemaBaselineAuthorityManifestIsCurrent(t *testing.T) {
 	if !containsString(authorityMutableTables, "managed_schema_baselines") {
 		t.Fatal("managed_schema_baselines is absent from authority tables")
@@ -259,17 +285,17 @@ func TestExactAuthorityCatalogManifestIsCurrent(t *testing.T) {
 	if !containsString(authorityMutableTables, "artifact_consumer_checkpoints") {
 		t.Fatal("artifact_consumer_checkpoints is absent from authority tables")
 	}
-	wantColumnCounts := map[string]int{"delivery_manifests": 13, "artifact_delivery_attempts": 11, "artifact_delivery_receipts": 15, "artifact_consumer_checkpoints": 9}
+	wantColumnCounts := map[string]int{"delivery_manifests": 13, "managed_part_reservations": 26, "managed_part_reservation_parts": 10, "managed_part_reservation_events": 12, "artifact_delivery_attempts": 11, "artifact_delivery_receipts": 15, "artifact_consumer_checkpoints": 9}
 	for table, want := range wantColumnCounts {
 		if got := len(exactAuthorityColumns[table]); got != want {
 			t.Fatalf("%s exact column count=%d want=%d", table, got, want)
 		}
 	}
-	if len(exactAuthorityConstraints) != 23 || len(selectiveAuthorityConstraints) != 5 {
-		t.Fatalf("authority exact/selective constraint manifest count=%d/%d want=23/5", len(exactAuthorityConstraints), len(selectiveAuthorityConstraints))
+	if len(exactAuthorityConstraints) != 58 || len(selectiveAuthorityConstraints) != 5 {
+		t.Fatalf("authority exact/selective constraint manifest count=%d/%d want=58/5", len(exactAuthorityConstraints), len(selectiveAuthorityConstraints))
 	}
-	if len(exactAuthorityIndexes) != 14 || len(selectiveAuthorityIndexes) != 1 {
-		t.Fatalf("authority exact/selective index manifest count=%d/%d want=14/1", len(exactAuthorityIndexes), len(selectiveAuthorityIndexes))
+	if len(exactAuthorityIndexes) != 21 || len(selectiveAuthorityIndexes) != 1 {
+		t.Fatalf("authority exact/selective index manifest count=%d/%d want=21/1", len(exactAuthorityIndexes), len(selectiveAuthorityIndexes))
 	}
 	constraintContracts := append(append([]exactAuthorityConstraint(nil), exactAuthorityConstraints...), selectiveAuthorityConstraints...)
 	indexContracts := append(append([]exactAuthorityIndex(nil), exactAuthorityIndexes...), selectiveAuthorityIndexes...)

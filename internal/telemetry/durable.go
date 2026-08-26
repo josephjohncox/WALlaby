@@ -35,9 +35,9 @@ type durableMetricSet struct {
 	clickHouseRows         metric.Int64Histogram
 	clickHouseBytes        metric.Int64Histogram
 	clickHouseLatency      metric.Float64Histogram
-	clickHouseServerParts  metric.Int64Histogram
-	clickHouseReserved     metric.Int64Histogram
-	clickHouseCapacity     metric.Int64Histogram
+	clickHouseServerParts  metric.Int64Gauge
+	clickHouseReserved     metric.Int64Gauge
+	clickHouseCapacity     metric.Int64Gauge
 	clickHouseRejected     metric.Int64Counter
 	snowflakeOutcomes      metric.Int64Counter
 	snowflakeRows          metric.Int64Histogram
@@ -91,11 +91,11 @@ func initDurableMetrics() bool {
 		errs = append(errs, err)
 		durableMetrics.clickHouseLatency, err = meter.Float64Histogram("wallaby.clickhouse.managed.duration", metric.WithUnit("s"))
 		errs = append(errs, err)
-		durableMetrics.clickHouseServerParts, err = meter.Int64Histogram("wallaby.clickhouse.managed.parts.server_active")
+		durableMetrics.clickHouseServerParts, err = meter.Int64Gauge("wallaby.clickhouse.managed.parts.server_active")
 		errs = append(errs, err)
-		durableMetrics.clickHouseReserved, err = meter.Int64Histogram("wallaby.clickhouse.managed.parts.reserved")
+		durableMetrics.clickHouseReserved, err = meter.Int64Gauge("wallaby.clickhouse.managed.parts.reserved")
 		errs = append(errs, err)
-		durableMetrics.clickHouseCapacity, err = meter.Int64Histogram("wallaby.clickhouse.managed.parts.capacity")
+		durableMetrics.clickHouseCapacity, err = meter.Int64Gauge("wallaby.clickhouse.managed.parts.capacity")
 		errs = append(errs, err)
 		durableMetrics.clickHouseRejected, err = meter.Int64Counter("wallaby.clickhouse.managed.parts.rejected")
 		errs = append(errs, err)
@@ -266,15 +266,26 @@ func StartIcebergConsumerSpan(ctx context.Context, operation, flowID, logicalBat
 
 // RecordClickHousePartAdmission exposes bounded capacity values without using
 // revision or logical-batch identities as metric attributes.
-func RecordClickHousePartAdmission(ctx context.Context, serverActive, reserved, capacity int64, rejected bool) {
+func RecordClickHousePartAdmission(ctx context.Context, serverActive, reserved, capacity int64, rejectionReason string) {
 	if !initDurableMetrics() {
 		return
 	}
 	durableMetrics.clickHouseServerParts.Record(ctx, serverActive)
 	durableMetrics.clickHouseReserved.Record(ctx, reserved)
 	durableMetrics.clickHouseCapacity.Record(ctx, capacity)
-	if rejected {
-		durableMetrics.clickHouseRejected.Add(ctx, 1)
+	if reason := boundedClickHouseAdmissionReason(rejectionReason); reason != "none" {
+		durableMetrics.clickHouseRejected.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
+	}
+}
+
+func boundedClickHouseAdmissionReason(reason string) string {
+	switch reason {
+	case "", "none":
+		return "none"
+	case "capacity", "observation", "quiescence", "conflict", "reclaim":
+		return reason
+	default:
+		return "other"
 	}
 }
 

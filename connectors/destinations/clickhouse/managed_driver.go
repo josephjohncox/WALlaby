@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"os"
 	"regexp"
@@ -581,11 +580,10 @@ func (d *Destination) ValidateTransaction(ctx context.Context, transaction conne
 }
 
 type preparedManagedTransaction struct {
-	destination       *Destination
-	intent            connector.DeliveryIntent
-	plan              managedTransactionPlan
-	serverActiveParts uint64
-	reservation       connector.ManagedPartReservation
+	destination *Destination
+	intent      connector.DeliveryIntent
+	plan        managedTransactionPlan
+	reservation connector.ManagedPartReservation
 }
 
 // PrepareTransaction materializes and validates one bounded plan exactly once.
@@ -601,22 +599,10 @@ func (d *Destination) PrepareTransaction(ctx context.Context, intent connector.D
 	if err != nil {
 		return nil, err
 	}
-	if err := d.validateManagedTarget(ctx, false, 0, 0); err != nil {
-		return nil, err
-	}
-	serverActiveParts, err := d.observeManagedActiveParts(ctx)
-	if err != nil {
-		return nil, err
-	}
-	// #nosec G115 -- the plan rejects more than 1024 fragments.
-	planned := uint64(len(plan.Fragments) + 1)
-	if serverActiveParts > d.managedConfig.maxActiveParts || planned > d.managedConfig.maxActiveParts-serverActiveParts {
-		boundedActive := min(serverActiveParts, uint64(math.MaxInt64))
-		// #nosec G115 -- both values are explicitly bounded to MaxInt64.
-		telemetry.RecordClickHousePartAdmission(ctx, int64(boundedActive), 0, int64(d.managedConfig.maxActiveParts), true)
-		return nil, fmt.Errorf("managed ClickHouse backpressure: server active parts=%d planned parts=%d capacity=%d", serverActiveParts, planned, d.managedConfig.maxActiveParts)
-	}
-	return &preparedManagedTransaction{destination: d, intent: intent, plan: plan, serverActiveParts: serverActiveParts}, nil
+	// Dynamic part counts are intentionally not read here. The coordinator
+	// obtains the strict two-endpoint observation only after taking the shared
+	// destination-revision budget lock.
+	return &preparedManagedTransaction{destination: d, intent: intent, plan: plan}, nil
 }
 
 func (p *preparedManagedTransaction) PartReservationRequest() (connector.ManagedPartReservationRequest, error) {
@@ -625,16 +611,26 @@ func (p *preparedManagedTransaction) PartReservationRequest() (connector.Managed
 		parts = append(parts, connector.ManagedPartIdentity{Kind: "changelog", Ordinal: fragment.Ordinal, QueryID: fragment.QueryID})
 	}
 	parts = append(parts, connector.ManagedPartIdentity{Kind: "receipt", Ordinal: 0, QueryID: p.plan.Receipt.QueryID})
+	planHash, err := connector.ManagedPartPlanHash(parts)
+	if err != nil {
+		return connector.ManagedPartReservationRequest{}, err
+	}
 	request := connector.ManagedPartReservationRequest{
 		Resource:              connector.ManagedPartResourceClickHouseActivePartsV1,
 		DestinationRevisionID: p.intent.DestinationRevisionID,
+		SourceLineageID:       p.intent.SourceLineageID,
 		LogicalBatchID:        p.intent.LogicalBatchID,
+		PositionID:            p.intent.PositionID,
 		ContentHash:           p.intent.ContentHash,
-		ServerActiveParts:     p.serverActiveParts,
+		PlanHash:              planHash,
 		Capacity:              p.destination.managedConfig.maxActiveParts,
 		Parts:                 parts,
 	}
 	return request, request.Validate()
+}
+
+func (p *preparedManagedTransaction) ObservePartReservation(ctx context.Context, requireAbsent bool) (connector.ManagedPartReservationObservation, error) {
+	return p.destination.observeManagedPartReservation(ctx, p.intent, requireAbsent)
 }
 
 func (p *preparedManagedTransaction) BindPartReservation(reservation connector.ManagedPartReservation) error {
@@ -653,20 +649,45 @@ func (p *preparedManagedTransaction) Apply(ctx context.Context) (connector.Deliv
 		return connector.DeliveryEvidence{}, errors.New("managed ClickHouse write requires a PostgreSQL part reservation")
 	}
 	for _, fragment := range p.plan.Fragments {
-		if err := p.destination.insertManagedFragment(ctx, fragment); err != nil {
-			return connector.DeliveryEvidence{}, err
-		}
 		part := connector.ManagedPartIdentity{Kind: "changelog", Ordinal: fragment.Ordinal, QueryID: fragment.QueryID}
-		if err := p.reservation.MarkPartDurable(ctx, part); err != nil {
-			return connector.DeliveryEvidence{}, fmt.Errorf("%w: record managed ClickHouse fragment reservation progress: %w", connector.ErrDeliveryIndeterminate, err)
+		if err := p.reservation.GuardPartWrite(ctx, part, func(writeCtx context.Context) error {
+			disposition, err := p.destination.reconcileManagedFragment(writeCtx, fragment)
+			if err != nil {
+				return err
+			}
+			if disposition == connector.DeliveryNotApplied {
+				if err := p.destination.insertManagedFragment(writeCtx, fragment); err != nil {
+					return err
+				}
+			}
+			if p.destination.managedAfterPartWriteHook != nil {
+				return p.destination.managedAfterPartWriteHook(writeCtx, part)
+			}
+			return nil
+		}); err != nil {
+			return connector.DeliveryEvidence{}, fmt.Errorf("%w: guarded managed ClickHouse fragment %d: %w", connector.ErrDeliveryIndeterminate, fragment.Ordinal, err)
 		}
-	}
-	if err := p.destination.insertManagedReceipt(ctx, p.plan.Receipt); err != nil {
-		return connector.DeliveryEvidence{}, err
 	}
 	receiptPart := connector.ManagedPartIdentity{Kind: "receipt", Ordinal: 0, QueryID: p.plan.Receipt.QueryID}
-	if err := p.reservation.MarkPartDurable(ctx, receiptPart); err != nil {
-		return connector.DeliveryEvidence{}, fmt.Errorf("%w: record managed ClickHouse receipt reservation progress: %w", connector.ErrDeliveryIndeterminate, err)
+	if err := p.reservation.GuardPartWrite(ctx, receiptPart, func(writeCtx context.Context) error {
+		disposition, _, err := p.destination.Reconcile(writeCtx, p.intent)
+		if err != nil {
+			return err
+		}
+		if disposition == connector.DeliveryIndeterminate {
+			return fmt.Errorf("%w: receipt endpoints disagree before guarded write", connector.ErrDeliveryIndeterminate)
+		}
+		if disposition == connector.DeliveryNotApplied {
+			if err := p.destination.insertManagedReceipt(writeCtx, p.plan.Receipt); err != nil {
+				return err
+			}
+		}
+		if p.destination.managedAfterPartWriteHook != nil {
+			return p.destination.managedAfterPartWriteHook(writeCtx, receiptPart)
+		}
+		return nil
+	}); err != nil {
+		return connector.DeliveryEvidence{}, fmt.Errorf("%w: guarded managed ClickHouse receipt: %w", connector.ErrDeliveryIndeterminate, err)
 	}
 	return connector.DeliveryEvidence{ExternalID: p.plan.Receipt.ExternalID, ContentHash: p.intent.ContentHash}, nil
 }
@@ -694,6 +715,50 @@ func (d *Destination) ApplyTransaction(ctx context.Context, intent connector.Del
 		return connector.DeliveryEvidence{}, err
 	}
 	return prepared.Apply(ctx)
+}
+
+func (d *Destination) reconcileManagedFragment(ctx context.Context, fragment managedFragmentPlan) (connector.DeliveryDisposition, error) {
+	if d.managedConn == nil || d.managedReplicaConn == nil {
+		return connector.DeliveryIndeterminate, fmt.Errorf("%w: both endpoints are required to reconcile a planned fragment", connector.ErrDeliveryIndeterminate)
+	}
+	expectedHashes := make([]string, len(fragment.Rows))
+	for i, row := range fragment.Rows {
+		expectedHashes[i] = row.RecordHash
+	}
+	query := "SELECT any(content_hash),groupArray(record_hash ORDER BY record_ordinal),count() FROM " + quoteQualified(d.managedConfig.database+"."+d.managedConfig.changelogTable) + " FINAL WHERE destination_revision_id=? AND logical_batch_id=? AND fragment_ordinal=? HAVING count()>0"
+	read := func(conn chdriver.Conn) (connector.DeliveryDisposition, error) {
+		var contentHash string
+		var hashes []string
+		var count uint64
+		err := conn.QueryRow(ctx, query, fragment.Rows[0].DestinationRevisionID, fragment.Rows[0].LogicalBatchID, fragment.Ordinal).Scan(&contentHash, &hashes, &count)
+		if errors.Is(err, sql.ErrNoRows) {
+			return connector.DeliveryNotApplied, nil
+		}
+		if err != nil {
+			return connector.DeliveryIndeterminate, err
+		}
+		if contentHash != fragment.Rows[0].ContentHash || count != uint64(len(expectedHashes)) || len(hashes) != len(expectedHashes) {
+			return connector.DeliveryIndeterminate, fmt.Errorf("%w: existing fragment identity differs", connector.ErrDeliveryConflict)
+		}
+		for i := range hashes {
+			if hashes[i] != expectedHashes[i] {
+				return connector.DeliveryIndeterminate, fmt.Errorf("%w: existing fragment record hash differs", connector.ErrDeliveryConflict)
+			}
+		}
+		return connector.DeliveryApplied, nil
+	}
+	primary, err := read(d.managedConn)
+	if err != nil {
+		return connector.DeliveryIndeterminate, err
+	}
+	replica, err := read(d.managedReplicaConn)
+	if err != nil {
+		return connector.DeliveryIndeterminate, err
+	}
+	if primary != replica {
+		return connector.DeliveryIndeterminate, fmt.Errorf("%w: fragment endpoints disagree", connector.ErrDeliveryIndeterminate)
+	}
+	return primary, nil
 }
 
 func (d *Destination) insertManagedFragment(ctx context.Context, fragment managedFragmentPlan) (resultErr error) {
@@ -893,38 +958,47 @@ func managedReceiptValues(row managedReceiptRow) []any {
 	return []any{row.FlowID, row.FlowIncarnationID, row.SourceLineageID, row.DestinationRevisionID, row.LogicalBatchID, row.ContentHash, row.SourcePosition, row.TransactionID, row.FragmentCount, row.RecordCount, row.QueryIDs, row.CommittedAt, row.WallabyVersion, row.ExternalID}
 }
 
-func (d *Destination) observeManagedActiveParts(ctx context.Context) (uint64, error) {
+func (d *Destination) observeManagedPartReservation(ctx context.Context, intent connector.DeliveryIntent, requireAbsent bool) (connector.ManagedPartReservationObservation, error) {
+	if err := intent.Validate(); err != nil {
+		return connector.ManagedPartReservationObservation{}, err
+	}
+	if d.managedConn == nil || d.managedReplicaConn == nil || d.managedRecoveryOnly {
+		return connector.ManagedPartReservationObservation{}, fmt.Errorf("%w: both managed ClickHouse endpoints are required for part admission", connector.ErrDeliveryIndeterminate)
+	}
 	type endpoint struct {
 		name string
 		conn chdriver.Conn
 	}
-	var maxChangelog, maxReceipts uint64
-	readable := 0
-	var endpointErrs []error
+	var maximum uint64
 	for _, current := range []endpoint{{name: "primary", conn: d.managedConn}, {name: "replica", conn: d.managedReplicaConn}} {
-		if current.conn == nil {
-			endpointErrs = append(endpointErrs, fmt.Errorf("%s endpoint is unavailable", current.name))
-			continue
-		}
 		changelog, receipts, err := d.readManagedActiveParts(ctx, current.conn)
 		if err != nil {
-			if !isManagedTransportError(err) {
-				return 0, err
-			}
-			endpointErrs = append(endpointErrs, fmt.Errorf("%s endpoint: %w", current.name, err))
-			continue
+			return connector.ManagedPartReservationObservation{}, fmt.Errorf("%w: read %s active parts: %w", connector.ErrDeliveryIndeterminate, current.name, err)
 		}
-		readable++
-		maxChangelog = max(maxChangelog, changelog)
-		maxReceipts = max(maxReceipts, receipts)
+		if changelog > ^uint64(0)-receipts {
+			return connector.ManagedPartReservationObservation{}, errors.New("managed ClickHouse active part count overflow")
+		}
+		maximum = max(maximum, changelog+receipts)
+		if err := d.requireManagedReplicationQuiescent(ctx, current.conn); err != nil {
+			return connector.ManagedPartReservationObservation{}, fmt.Errorf("%w: %s endpoint is not replication/Keeper quiescent: %w", connector.ErrDeliveryIndeterminate, current.name, err)
+		}
+		if requireAbsent {
+			fragments, receipts, err := d.readManagedBatchCounts(ctx, current.conn, intent)
+			if err != nil {
+				return connector.ManagedPartReservationObservation{}, fmt.Errorf("%w: read %s batch evidence: %w", connector.ErrDeliveryIndeterminate, current.name, err)
+			}
+			if fragments != 0 || receipts != 0 {
+				return connector.ManagedPartReservationObservation{}, fmt.Errorf("%w: %s endpoint retains fragments=%d receipts=%d", connector.ErrDeliveryIndeterminate, current.name, fragments, receipts)
+			}
+		}
 	}
-	if readable == 0 {
-		return 0, errors.Join(append([]error{fmt.Errorf("%w: no managed ClickHouse endpoint could report active parts", connector.ErrDeliveryIndeterminate)}, endpointErrs...)...)
-	}
-	if maxChangelog > ^uint64(0)-maxReceipts {
-		return 0, errors.New("managed ClickHouse active part count overflow")
-	}
-	return maxChangelog + maxReceipts, nil
+	return connector.ManagedPartReservationObservation{ServerActiveParts: maximum, EndpointCount: 2, Quiescent: true, BatchAbsent: requireAbsent}, nil
+}
+
+// ObserveManagedPartReservation is the recovery form used by the coordinator's
+// two-phase reclaim protocol.
+func (d *Destination) ObserveManagedPartReservation(ctx context.Context, intent connector.DeliveryIntent, requireAbsent bool) (connector.ManagedPartReservationObservation, error) {
+	return d.observeManagedPartReservation(ctx, intent, requireAbsent)
 }
 
 func (d *Destination) readManagedActiveParts(ctx context.Context, conn chdriver.Conn) (uint64, uint64, error) {
@@ -939,32 +1013,37 @@ func (d *Destination) readManagedActiveParts(ctx context.Context, conn chdriver.
 	return changelog, receipts, nil
 }
 
-// ProvePartReservationAbsent requires exact zero fragment and receipt rows on
-// both admitted endpoints. A single survivor, a transport failure, or any row
-// retains PostgreSQL's reservation.
-func (d *Destination) ProvePartReservationAbsent(ctx context.Context, intent connector.DeliveryIntent) error {
-	if err := intent.Validate(); err != nil {
-		return err
+func (d *Destination) requireManagedReplicationQuiescent(ctx context.Context, conn chdriver.Conn) error {
+	var replicas, unhealthy uint64
+	query := `SELECT count(),countIf(is_readonly OR queue_size != 0 OR inserts_in_queue != 0 OR merges_in_queue != 0 OR log_pointer < log_max_index)
+FROM system.replicas WHERE database=? AND table IN (?,?)`
+	if err := conn.QueryRow(ctx, query, d.managedConfig.database, d.managedConfig.changelogTable, d.managedConfig.receiptsTable).Scan(&replicas, &unhealthy); err != nil {
+		return fmt.Errorf("read managed replication state: %w", err)
 	}
-	if d.managedConn == nil || d.managedReplicaConn == nil || d.managedRecoveryOnly {
-		return fmt.Errorf("%w: both managed ClickHouse endpoints are required to prove reservation absence", connector.ErrDeliveryIndeterminate)
+	if replicas != 2 || unhealthy != 0 {
+		return fmt.Errorf("replica tables=%d unhealthy=%d", replicas, unhealthy)
 	}
-	for index, conn := range []chdriver.Conn{d.managedConn, d.managedReplicaConn} {
-		name := []string{"primary", "replica"}[index]
-		var fragmentRows, receiptRows uint64
-		fragmentQuery := "SELECT count() FROM " + quoteQualified(d.managedConfig.database+"."+d.managedConfig.changelogTable) + " FINAL WHERE destination_revision_id=? AND logical_batch_id=?"
-		if err := conn.QueryRow(ctx, fragmentQuery, intent.DestinationRevisionID, intent.LogicalBatchID).Scan(&fragmentRows); err != nil {
-			return fmt.Errorf("%w: read %s managed ClickHouse fragments: %w", connector.ErrDeliveryIndeterminate, name, err)
-		}
-		receiptQuery := "SELECT count() FROM " + quoteQualified(d.managedConfig.database+"."+d.managedConfig.receiptsTable) + " FINAL WHERE destination_revision_id=? AND logical_batch_id=?"
-		if err := conn.QueryRow(ctx, receiptQuery, intent.DestinationRevisionID, intent.LogicalBatchID).Scan(&receiptRows); err != nil {
-			return fmt.Errorf("%w: read %s managed ClickHouse receipts: %w", connector.ErrDeliveryIndeterminate, name, err)
-		}
-		if fragmentRows != 0 || receiptRows != 0 {
-			return fmt.Errorf("%w: %s managed ClickHouse endpoint retains fragments=%d receipts=%d", connector.ErrDeliveryIndeterminate, name, fragmentRows, receiptRows)
-		}
+	var queued uint64
+	if err := conn.QueryRow(ctx, `SELECT count() FROM system.replication_queue WHERE database=? AND table IN (?,?)`, d.managedConfig.database, d.managedConfig.changelogTable, d.managedConfig.receiptsTable).Scan(&queued); err != nil {
+		return fmt.Errorf("read managed replication queue: %w", err)
+	}
+	if queued != 0 {
+		return fmt.Errorf("replication queue has %d entries", queued)
 	}
 	return nil
+}
+
+func (d *Destination) readManagedBatchCounts(ctx context.Context, conn chdriver.Conn, intent connector.DeliveryIntent) (uint64, uint64, error) {
+	var fragments, receipts uint64
+	fragmentQuery := "SELECT count() FROM " + quoteQualified(d.managedConfig.database+"."+d.managedConfig.changelogTable) + " FINAL WHERE destination_revision_id=? AND logical_batch_id=?"
+	if err := conn.QueryRow(ctx, fragmentQuery, intent.DestinationRevisionID, intent.LogicalBatchID).Scan(&fragments); err != nil {
+		return 0, 0, fmt.Errorf("read managed ClickHouse fragments: %w", err)
+	}
+	receiptQuery := "SELECT count() FROM " + quoteQualified(d.managedConfig.database+"."+d.managedConfig.receiptsTable) + " FINAL WHERE destination_revision_id=? AND logical_batch_id=?"
+	if err := conn.QueryRow(ctx, receiptQuery, intent.DestinationRevisionID, intent.LogicalBatchID).Scan(&receipts); err != nil {
+		return 0, 0, fmt.Errorf("read managed ClickHouse receipts: %w", err)
+	}
+	return fragments, receipts, nil
 }
 
 func (d *Destination) validateManagedTarget(ctx context.Context, includeStatic bool, plannedChangelogParts, plannedReceiptParts uint64) error {

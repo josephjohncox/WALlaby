@@ -147,7 +147,7 @@ func TestClickHouseManagedProfileTelemetry(t *testing.T) {
 	end(nil)
 	_, end = StartClickHouseManagedSpan(ctx, "flow-specific-unbounded-operation", "query-2", "logical-2", 1, 10)
 	end(context.Canceled)
-	RecordClickHousePartAdmission(ctx, 10, 4, 20, true)
+	RecordClickHousePartAdmission(ctx, 10, 4, 20, "capacity")
 
 	spans := spanRecorder.Ended()
 	if len(spans) != 2 || spans[0].Name() != "clickhouse.managed.fragment" || spans[1].Name() != "clickhouse.managed.other" {

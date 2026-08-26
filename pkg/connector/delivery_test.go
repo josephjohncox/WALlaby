@@ -24,6 +24,45 @@ func TestDeliveryIntentRequiresCurrentLogicalBatchIdentity(t *testing.T) {
 	}
 }
 
+func TestManagedPartReservationRejectsDuplicateIdentityAndQueryID(t *testing.T) {
+	base := ManagedPartReservationRequest{
+		Resource: ManagedPartResourceClickHouseActivePartsV1, DestinationRevisionID: "revision", SourceLineageID: "lineage",
+		LogicalBatchID: "batch", PositionID: "0/10", ContentHash: strings.Repeat("a", 64), Capacity: 10,
+	}
+	for _, test := range []struct {
+		name  string
+		parts []ManagedPartIdentity
+	}{
+		{name: "kind ordinal", parts: []ManagedPartIdentity{{Kind: "changelog", Ordinal: 0, QueryID: "query-a"}, {Kind: "changelog", Ordinal: 0, QueryID: "query-b"}}},
+		{name: "query id", parts: []ManagedPartIdentity{{Kind: "changelog", Ordinal: 0, QueryID: "query-a"}, {Kind: "receipt", Ordinal: 0, QueryID: "query-a"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := base
+			request.Parts = test.parts
+			request.PlanHash, _ = ManagedPartPlanHash(test.parts)
+			if err := request.Validate(); err == nil {
+				t.Fatal("duplicate managed part plan was accepted")
+			}
+		})
+	}
+}
+
+func TestManagedPartReservationPlanHashBindsOrderAndQueryIDs(t *testing.T) {
+	parts := []ManagedPartIdentity{{Kind: "changelog", Ordinal: 0, QueryID: "query-a"}, {Kind: "receipt", Ordinal: 0, QueryID: "query-b"}}
+	first, err := ManagedPartPlanHash(parts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts[0].QueryID = "query-c"
+	second, err := ManagedPartPlanHash(parts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("query ID change did not change immutable managed part plan hash")
+	}
+}
+
 func TestBindProjectionFingerprintChangesRecoveryIdentity(t *testing.T) {
 	first, err := BindProjectionFingerprint("deployment", "mapping-a")
 	if err != nil {

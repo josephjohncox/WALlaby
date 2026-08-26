@@ -150,18 +150,44 @@ type ManagedPartIdentity struct {
 	QueryID string
 }
 
-// ManagedPartReservationRequest carries a destination observation and the
-// complete immutable part plan to PostgreSQL. PostgreSQL serializes admission
-// by destination revision; destination-side observations alone never reserve
-// capacity.
+// ManagedPartReservationRequest carries the complete immutable part plan to
+// PostgreSQL. Dynamic destination observations are deliberately absent: the
+// coordinator obtains them only after taking the destination-revision budget
+// lock, closing validate-then-admit races between writers.
 type ManagedPartReservationRequest struct {
 	Resource              string
 	DestinationRevisionID string
+	SourceLineageID       string
 	LogicalBatchID        string
+	PositionID            string
 	ContentHash           string
-	ServerActiveParts     uint64
+	PlanHash              string
 	Capacity              uint64
 	Parts                 []ManagedPartIdentity
+}
+
+// ManagedPartReservationObservation is proof gathered from both admitted
+// ClickHouse endpoints while PostgreSQL holds the destination budget lock.
+// Quiescent means the replicated changelog and receipt tables have no queued
+// Keeper/log work, so durable rows are reflected in ServerActiveParts.
+type ManagedPartReservationObservation struct {
+	ServerActiveParts uint64
+	EndpointCount     uint32
+	Quiescent         bool
+	BatchAbsent       bool
+}
+
+// ManagedPartPlanHash binds every persisted kind, ordinal, and insert query ID.
+func ManagedPartPlanHash(parts []ManagedPartIdentity) (string, error) {
+	if len(parts) == 0 {
+		return "", errors.New("managed part plan is empty")
+	}
+	payload, err := json.Marshal(parts)
+	if err != nil {
+		return "", fmt.Errorf("encode managed part plan: %w", err)
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 // Validate rejects incomplete, duplicated, or out-of-budget reservation plans.
@@ -169,13 +195,14 @@ func (r ManagedPartReservationRequest) Validate() error {
 	if r.Resource != ManagedPartResourceClickHouseActivePartsV1 {
 		return errors.New("managed part reservation resource is not supported")
 	}
-	if strings.TrimSpace(r.DestinationRevisionID) == "" || strings.TrimSpace(r.LogicalBatchID) == "" || strings.TrimSpace(r.ContentHash) == "" {
+	if strings.TrimSpace(r.DestinationRevisionID) == "" || strings.TrimSpace(r.SourceLineageID) == "" || strings.TrimSpace(r.LogicalBatchID) == "" || strings.TrimSpace(r.PositionID) == "" || strings.TrimSpace(r.ContentHash) == "" || strings.TrimSpace(r.PlanHash) == "" {
 		return errors.New("managed part reservation identity is incomplete")
 	}
 	if r.Capacity == 0 || len(r.Parts) == 0 {
 		return errors.New("managed part reservation capacity and parts must be positive")
 	}
-	seen := make(map[string]struct{}, len(r.Parts))
+	seenIdentity := make(map[string]struct{}, len(r.Parts))
+	seenQueryID := make(map[string]struct{}, len(r.Parts))
 	for _, part := range r.Parts {
 		if part.Kind != "changelog" && part.Kind != "receipt" {
 			return fmt.Errorf("managed part reservation kind %q is invalid", part.Kind)
@@ -183,11 +210,22 @@ func (r ManagedPartReservationRequest) Validate() error {
 		if strings.TrimSpace(part.QueryID) == "" {
 			return errors.New("managed part reservation query ID is required")
 		}
-		key := fmt.Sprintf("%s:%d:%s", part.Kind, part.Ordinal, part.QueryID)
-		if _, duplicate := seen[key]; duplicate {
-			return errors.New("managed part reservation contains duplicate part identity")
+		identity := fmt.Sprintf("%s:%d", part.Kind, part.Ordinal)
+		if _, duplicate := seenIdentity[identity]; duplicate {
+			return errors.New("managed part reservation contains duplicate kind and ordinal")
 		}
-		seen[key] = struct{}{}
+		seenIdentity[identity] = struct{}{}
+		if _, duplicate := seenQueryID[part.QueryID]; duplicate {
+			return errors.New("managed part reservation contains duplicate query ID")
+		}
+		seenQueryID[part.QueryID] = struct{}{}
+	}
+	expectedPlanHash, err := ManagedPartPlanHash(r.Parts)
+	if err != nil {
+		return err
+	}
+	if r.PlanHash != expectedPlanHash {
+		return fmt.Errorf("%w: managed part reservation plan hash differs", ErrDeliveryConflict)
 	}
 	return nil
 }
@@ -197,7 +235,10 @@ func (r ManagedPartReservationRequest) Validate() error {
 // this capability has been supplied by the coordinator.
 type ManagedPartReservation interface {
 	ReservationID() string
-	MarkPartDurable(context.Context, ManagedPartIdentity) error
+	// GuardPartWrite holds the PostgreSQL budget and reservation locks across
+	// the irreversible insert and its durable progress transition. Reclaim can
+	// therefore never release an authorization already handed to a stale writer.
+	GuardPartWrite(context.Context, ManagedPartIdentity, func(context.Context) error) error
 }
 
 // ManagedPartReservationPrepared is implemented only by managed append plans
@@ -205,6 +246,7 @@ type ManagedPartReservation interface {
 type ManagedPartReservationPrepared interface {
 	PreparedManagedTransaction
 	PartReservationRequest() (ManagedPartReservationRequest, error)
+	ObservePartReservation(context.Context, bool) (ManagedPartReservationObservation, error)
 	BindPartReservation(ManagedPartReservation) error
 }
 
@@ -212,7 +254,7 @@ type ManagedPartReservationPrepared interface {
 // fragment or receipt for an immutable logical batch before PostgreSQL releases
 // an abandoned reservation.
 type ManagedPartReservationReconciler interface {
-	ProvePartReservationAbsent(context.Context, DeliveryIntent) error
+	ObserveManagedPartReservation(context.Context, DeliveryIntent, bool) (ManagedPartReservationObservation, error)
 }
 
 // ManagedTransactionPreparer is an optional deep interface implemented by
