@@ -840,8 +840,9 @@ func executeManagedWriteWithFailover(ctx context.Context, replicaAvailable bool,
 	if primaryErr == nil {
 		return nil
 	}
-	if !replicaAvailable || ctx.Err() != nil || !isManagedTransportError(primaryErr) {
-		return primaryErr
+	transportFailure := isManagedTransportError(primaryErr)
+	if !replicaAvailable || ctx.Err() != nil || !transportFailure {
+		return fmt.Errorf("managed ClickHouse primary write did not fail over (replica_available=%t context_error=%v transport_failure=%t error_type=%T): %w", replicaAvailable, ctx.Err(), transportFailure, primaryErr, primaryErr)
 	}
 	if replicaErr := replicaWrite(); replicaErr != nil {
 		return errors.Join(
