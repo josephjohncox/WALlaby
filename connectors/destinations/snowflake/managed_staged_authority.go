@@ -324,13 +324,16 @@ func (p *sqlStageProtocol) observeStagedRows(ctx context.Context, cfg stagedConf
 }
 
 func (p *sqlStageProtocol) ValidateReceiptTargetProof(ctx context.Context, cfg stagedConfig, receipt managedStagedReceipt) error {
-	var manifestHash, contentHash, fileHash, planHash, catalog, rowHashesJSON string
+	var manifestHash, contentHash, fileHash, planHash, catalog, rowHashesJSON, currentCatalog, currentState string
 	var expectedRows int
-	err := p.db.QueryRowContext(ctx, "SELECT \"MANIFEST_HASH\",\"CONTENT_HASH\",\"FILE_CONTENT_HASH\",\"PLAN_HASH\",\"EXPECTED_ROW_COUNT\",\"CATALOG_FINGERPRINT\",\"ROW_HASHES_JSON\" FROM "+managedSnowflakeStagedQualifiedTable(cfg, cfg.targetManifestTable)+" WHERE \"DESTINATION_REVISION_ID\"=? AND \"LOGICAL_BATCH_ID\"=?", receipt.destinationRevisionID, receipt.logicalBatchID).Scan(&manifestHash, &contentHash, &fileHash, &planHash, &expectedRows, &catalog, &rowHashesJSON)
+	var manifestEpoch, currentEpoch int64
+	manifest := managedSnowflakeStagedQualifiedTable(cfg, cfg.targetManifestTable)
+	authority := managedSnowflakeStagedQualifiedTable(cfg, cfg.authorityTable)
+	err := p.db.QueryRowContext(ctx, "SELECT M.\"MANIFEST_HASH\",M.\"CONTENT_HASH\",M.\"FILE_CONTENT_HASH\",M.\"PLAN_HASH\",M.\"EXPECTED_ROW_COUNT\",M.\"PROVISION_EPOCH\",M.\"CATALOG_FINGERPRINT\",M.\"ROW_HASHES_JSON\",C.\"PROVISION_EPOCH\",C.\"CATALOG_FINGERPRINT\",C.\"STATE\" FROM "+manifest+" AS M JOIN "+authority+" AS C ON C.\"AUTHORITY_KIND\"='CATALOG' AND C.\"DESTINATION_REVISION_ID\"=M.\"DESTINATION_REVISION_ID\" AND C.\"AUTHORITY_ID\"='CURRENT' WHERE M.\"DESTINATION_REVISION_ID\"=? AND M.\"LOGICAL_BATCH_ID\"=?", receipt.destinationRevisionID, receipt.logicalBatchID).Scan(&manifestHash, &contentHash, &fileHash, &planHash, &expectedRows, &manifestEpoch, &catalog, &rowHashesJSON, &currentEpoch, &currentCatalog, &currentState)
 	if err != nil {
 		return fmt.Errorf("%w: staged Snowflake receipt target manifest is unavailable: %w", connector.ErrDeliveryIndeterminate, err)
 	}
-	if manifestHash != receipt.manifestHash || contentHash != receipt.contentHash || fileHash != receipt.fileContentHash || planHash != receipt.planHash || expectedRows != receipt.recordCount || catalog != receipt.catalogFingerprint {
+	if manifestHash != receipt.manifestHash || contentHash != receipt.contentHash || fileHash != receipt.fileContentHash || planHash != receipt.planHash || expectedRows != receipt.recordCount || manifestEpoch != receipt.provisionEpoch || catalog != receipt.catalogFingerprint || currentEpoch != receipt.provisionEpoch || currentCatalog != receipt.catalogFingerprint || currentState != "CURRENT" {
 		return fmt.Errorf("%w: staged Snowflake receipt target manifest differs", connector.ErrDeliveryConflict)
 	}
 	var expected []string

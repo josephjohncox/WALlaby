@@ -623,6 +623,27 @@ func TestStagedDriverCleanupIsBoundedIdempotentAndSafe(t *testing.T) {
 	}
 }
 
+func TestStagedDriverCleanupSkipsOldProvisionEpochWithoutRemovingOrWedge(t *testing.T) {
+	t.Parallel()
+	cfg, intent, transaction := stagedFixture(t)
+	proto := newFakeStageProtocol()
+	driver := newStagedTestDriver(cfg, proto)
+	if _, err := driver.apply(context.Background(), intent, transaction); err != nil {
+		t.Fatal(err)
+	}
+	proto.mu.Lock()
+	proto.provisionEpoch++ // no-op owner provision bump; catalog fingerprint is unchanged
+	proto.mu.Unlock()
+	cleanup := ManagedStagedCleanupAuthority{FlowIncarnationID: intent.FlowIncarnationID, Generation: intent.Generation, AcquisitionID: intent.AcquisitionID, LeaseEpoch: intent.LeaseEpoch, DestinationRevisionID: intent.DestinationRevisionID}
+	released, err := driver.cleanup(context.Background(), cleanup)
+	if err != nil || released != 0 {
+		t.Fatalf("old-epoch cleanup released=%d err=%v, want safe skip", released, err)
+	}
+	if proto.removeCalls != 0 {
+		t.Fatalf("old-epoch cleanup removed %d objects", proto.removeCalls)
+	}
+}
+
 func TestStagedDriverCleanupRejectsMaliciousPersistedPath(t *testing.T) {
 	t.Parallel()
 	cfg, intent, transaction := stagedFixture(t)

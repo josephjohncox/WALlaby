@@ -28,7 +28,7 @@ type fakeLoadEntry struct {
 }
 
 // fakeStageProtocol is a deterministic, in-memory implementation of stageProtocol.
-// It models Snowflake's staged-object, COPY, load-history, and hybrid-receipt
+// It models Snowflake's staged-object, COPY, landing/target proof, and hybrid-receipt
 // semantics precisely enough to drive every crash-window recovery test, and it
 // exposes fault knobs to reproduce lost PUT/COPY/receipt responses. It proves
 // protocol logic only and is never promotion evidence.
@@ -536,7 +536,7 @@ func (f *fakeStageProtocol) ValidateReceiptTargetProof(_ context.Context, _ stag
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	claim, present := f.manifests[receipt.externalID]
-	if !present || claim.manifestHash != receipt.manifestHash || claim.contentHash != receipt.contentHash || claim.fileContentHash != receipt.fileContentHash || claim.planHash != receipt.planHash {
+	if !present || claim.manifestHash != receipt.manifestHash || claim.contentHash != receipt.contentHash || claim.fileContentHash != receipt.fileContentHash || claim.planHash != receipt.planHash || claim.provisionEpoch != receipt.provisionEpoch || receipt.provisionEpoch != f.provisionEpoch || claim.catalogFingerprint != receipt.catalogFingerprint || receipt.catalogFingerprint != f.catalogFingerprint {
 		return connector.ErrDeliveryConflict
 	}
 	rows := f.target[receipt.externalID]
@@ -558,7 +558,7 @@ func (f *fakeStageProtocol) InsertLoadReceipt(_ context.Context, _ stagedConfig,
 	defer f.mu.Unlock()
 	current, ok := f.leases[lease.leaseID]
 	ownedClaim, claimOK := f.claims[claim.claimID]
-	if !ok || current.ownerID != lease.ownerID || current.provisionEpoch != f.provisionEpoch || !claimOK || !stagedClaimsSameIdentity(ownedClaim, claim) {
+	if !ok || current.ownerID != lease.ownerID || current.provisionEpoch != f.provisionEpoch || receipt.provisionEpoch != current.provisionEpoch || receipt.catalogFingerprint != current.catalogFingerprint || !claimOK || !stagedClaimsSameIdentity(ownedClaim, claim) {
 		return stageReceiptInsert{}, connector.ErrDeliveryIndeterminate
 	}
 	pk := fakeReceiptPK(receipt)

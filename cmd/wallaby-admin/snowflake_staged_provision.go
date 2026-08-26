@@ -20,7 +20,7 @@ func addSnowflakeStagedProvisionCommand(root *cobra.Command) {
 	snowflakeCommand := &cobra.Command{Use: "snowflake", Short: "manage Snowflake owner operations"}
 	stagedCommand := &cobra.Command{Use: "staged", Short: "manage staged COPY owner operations"}
 	provisionCommand := &cobra.Command{Use: "provision", Short: "inspect and reconcile staged catalog provisioning"}
-	add := func(name, short string, needAttempt bool, run func(context.Context, *sql.DB, snowflakedest.ManagedStagedProvisionSpec, string, int64) (any, error)) {
+	add := func(name, short string, needAttempt bool, run func(context.Context, *sql.DB, snowflakedest.ManagedStagedProvisionSpec, string, int64) (any, error)) *cobra.Command {
 		var specPath, ownerDSN, attemptID string
 		var epoch int64
 		command := &cobra.Command{Use: name, Short: short, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
@@ -64,7 +64,12 @@ func addSnowflakeStagedProvisionCommand(root *cobra.Command) {
 		_ = command.MarkFlagRequired("spec")
 		_ = command.MarkFlagRequired("owner-dsn")
 		provisionCommand.AddCommand(command)
+		return command
 	}
+	bootstrap := add("bootstrap", "install current staged auxiliary objects and first catalog authority", false, func(ctx context.Context, db *sql.DB, spec snowflakedest.ManagedStagedProvisionSpec, _ string, _ int64) (any, error) {
+		return snowflakedest.BootstrapManagedStagedProvision(ctx, db, spec)
+	})
+	bootstrap.Aliases = []string{"install"}
 	add("inspect", "inspect durable and live staged catalog identity", false, func(ctx context.Context, db *sql.DB, spec snowflakedest.ManagedStagedProvisionSpec, _ string, _ int64) (any, error) {
 		return snowflakedest.InspectManagedStagedProvision(ctx, db, spec)
 	})

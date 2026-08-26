@@ -135,7 +135,7 @@ Snowpipe is append-only staged delivery: PUT, optional COPY, and metadata-receip
 | deterministic stage identity and wrong-byte collision | yes | `TestSnowflakeStagedManagedProfileStageIdentityCollision` |
 | PUT uncertainty reconciliation | yes | `TestSnowflakeStagedManagedProfilePutUncertainty` |
 | fail-closed COPY and partial-load rejection | yes | `TestSnowflakeStagedManagedProfileFailClosedCopy` |
-| load history verification and receipt adoption | yes | `TestSnowflakeStagedManagedProfileLoadHistoryAdoption` |
+| landing and target proof with receipt adoption | yes | `TestSnowflakeStagedManagedProfileLandingTargetProofAdoption` |
 | auto-ingest verified completion | yes | `TestSnowflakeStagedManagedProfileAutoIngestCompletion` |
 | copy transport loss and detached takeover | yes | `TestSnowflakeStagedManagedProfileCopyTransportLossAndDetachedTakeover` |
 | DDL rejection and replacement | yes | `TestSnowflakeStagedManagedProfileSchemaReconciliation` |

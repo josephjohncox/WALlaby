@@ -1397,7 +1397,7 @@ PostgresToSnowflakeSQLV1Profile returns the constrained but unpromoted transacti
 func PostgresToSnowflakeStagedAppendV1Profile() ManagedProfileContract
 ```
 
-PostgresToSnowflakeStagedAppendV1Profile returns the constrained but unpromoted staged COPY append\-only Snowflake profile. Like the SQL profile, admission compares a configured service version with CURRENT\_VERSION\(\) but reviews no service version or deployment cell yet. Promotion requires complete same\-SHA real\-service recovery evidence for the PUT/COPY/load\-history/receipt protocol.
+PostgresToSnowflakeStagedAppendV1Profile returns the constrained but unpromoted staged COPY append\-only Snowflake profile. Like the SQL profile, admission compares a configured service version with CURRENT\_VERSION\(\) but reviews no service version or deployment cell yet. Promotion requires complete same\-SHA real\-service recovery evidence for the PUT/COPY/landing\-target\-proof/receipt protocol.
 
 <a name="PostgresToSnowflakeStreamingRestAppendV1Profile"></a>
 ### func [PostgresToSnowflakeStreamingRestAppendV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L268>)

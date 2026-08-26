@@ -27,15 +27,37 @@ func (s ManagedStagedProvisionSpec) config() (stagedConfig, error) {
 	return stagedConfigFromSpec(strings.TrimSpace(s.Endpoint.Options["dsn"]), s.Endpoint)
 }
 
+func (s ManagedStagedProvisionSpec) bootstrapConfig() (stagedConfig, error) {
+	if s.Endpoint.Type != connector.EndpointSnowflake {
+		return stagedConfig{}, errors.New("managed staged Snowflake provision spec requires a Snowflake endpoint")
+	}
+	options := make(map[string]string, len(s.Endpoint.Options)+3)
+	for name, value := range s.Endpoint.Options {
+		options[name] = value
+	}
+	for _, name := range []string{"managed_landing_created_on", "managed_authority_created_on", "managed_target_manifest_created_on"} {
+		if strings.TrimSpace(options[name]) != "" {
+			return stagedConfig{}, fmt.Errorf("managed staged Snowflake bootstrap requires %s to be absent; it reports the live post-create identity", name)
+		}
+		options[name] = "1970-01-01T00:00:00.000000000+00:00"
+	}
+	endpoint := s.Endpoint
+	endpoint.Options = options
+	return stagedConfigFromSpec(strings.TrimSpace(options["dsn"]), endpoint)
+}
+
 // ManagedStagedProvisionStatus reports the durable owner operation and current
 // live catalog fingerprint without exposing credentials.
 type ManagedStagedProvisionStatus struct {
-	DestinationRevision string `json:"destination_revision"`
-	State               string `json:"state"`
-	ProvisionEpoch      int64  `json:"provision_epoch"`
-	ProvisionAttemptID  string `json:"provision_attempt_id,omitempty"`
-	StoredFingerprint   string `json:"stored_fingerprint"`
-	LiveFingerprint     string `json:"live_fingerprint"`
+	DestinationRevision     string `json:"destination_revision"`
+	State                   string `json:"state"`
+	ProvisionEpoch          int64  `json:"provision_epoch"`
+	ProvisionAttemptID      string `json:"provision_attempt_id,omitempty"`
+	StoredFingerprint       string `json:"stored_fingerprint"`
+	LiveFingerprint         string `json:"live_fingerprint"`
+	LandingCreatedOn        string `json:"landing_created_on,omitempty"`
+	AuthorityCreatedOn      string `json:"authority_created_on,omitempty"`
+	TargetManifestCreatedOn string `json:"target_manifest_created_on,omitempty"`
 }
 
 func InspectManagedStagedProvision(ctx context.Context, db *sql.DB, spec ManagedStagedProvisionSpec) (ManagedStagedProvisionStatus, error) {
@@ -64,16 +86,100 @@ func InspectManagedStagedProvision(ctx context.Context, db *sql.DB, spec Managed
 	return status, err
 }
 
+// ManagedStagedProvisioningSQLForSpec returns the current-schema-only owner DDL
+// for a strict non-secret provision specification.
+func ManagedStagedProvisioningSQLForSpec(spec ManagedStagedProvisionSpec) ([]string, error) {
+	cfg, err := spec.bootstrapConfig()
+	if err != nil {
+		return nil, err
+	}
+	return managedStagedProvisioningSQL(cfg)
+}
+
+// BootstrapManagedStagedProvision installs the current auxiliary objects and
+// the first catalog authority row. The caller supplies the owner database only
+// for this operation. No owner credential is stored in the specification.
+func BootstrapManagedStagedProvision(ctx context.Context, db *sql.DB, spec ManagedStagedProvisionSpec) (ManagedStagedProvisionStatus, error) {
+	cfg, err := spec.bootstrapConfig()
+	if err != nil {
+		return ManagedStagedProvisionStatus{}, err
+	}
+	if db == nil {
+		return ManagedStagedProvisionStatus{}, errors.New("managed staged Snowflake bootstrap requires an owner database")
+	}
+	statements, err := managedStagedProvisioningSQL(cfg)
+	if err != nil {
+		return ManagedStagedProvisionStatus{}, err
+	}
+	for index, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return ManagedStagedProvisionStatus{}, fmt.Errorf("execute managed staged Snowflake bootstrap DDL %d: %w", index+1, err)
+		}
+	}
+	catalog, err := (&Destination{stagedConfig: cfg}).loadManagedStagedCatalog(ctx, db)
+	if err != nil {
+		return ManagedStagedProvisionStatus{}, fmt.Errorf("reload managed staged Snowflake bootstrap catalog: %w", err)
+	}
+	cfg.landingCreatedOn = catalog.landing.createdOn
+	cfg.authorityCreatedOn = catalog.authority.createdOn
+	cfg.targetManifestCreatedOn = catalog.targetManifest.createdOn
+	if err := validateManagedStagedCatalog(cfg, catalog); err != nil {
+		return ManagedStagedProvisionStatus{}, fmt.Errorf("validate managed staged Snowflake bootstrap catalog: %w", err)
+	}
+	fingerprint, err := managedStagedCatalogFingerprint(catalog)
+	if err != nil {
+		return ManagedStagedProvisionStatus{}, err
+	}
+	install, err := managedStagedInstallCatalogSQL(cfg, fingerprint)
+	if err != nil {
+		return ManagedStagedProvisionStatus{}, err
+	}
+	result, err := db.ExecContext(ctx, install)
+	if err != nil {
+		return ManagedStagedProvisionStatus{}, fmt.Errorf("install managed staged Snowflake catalog authority: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		return ManagedStagedProvisionStatus{}, fmt.Errorf("%w: staged Snowflake catalog install affected %d rows", connector.ErrDeliveryIndeterminate, affected)
+	}
+	return ManagedStagedProvisionStatus{
+		DestinationRevision: cfg.destinationRevision, State: "CURRENT", ProvisionEpoch: 1,
+		StoredFingerprint: fingerprint, LiveFingerprint: fingerprint,
+		LandingCreatedOn: cfg.landingCreatedOn, AuthorityCreatedOn: cfg.authorityCreatedOn,
+		TargetManifestCreatedOn: cfg.targetManifestCreatedOn,
+	}, nil
+}
+
 func BeginManagedStagedProvision(ctx context.Context, db *sql.DB, spec ManagedStagedProvisionSpec, attemptID string, expectedEpoch int64) error {
 	cfg, err := spec.config()
 	if err != nil {
 		return err
 	}
-	statement, err := ManagedStagedBeginProvisionSQL(cfg, attemptID, expectedEpoch)
+	status, err := InspectManagedStagedProvision(ctx, db, spec)
+	if err != nil {
+		return err
+	}
+	if err := restoreAbortedManagedStagedProvision(ctx, db, cfg, status, expectedEpoch); err != nil {
+		return err
+	}
+	statement, err := managedStagedBeginProvisionSQL(cfg, attemptID, expectedEpoch)
 	if err != nil {
 		return err
 	}
 	return execStagedProvisionCAS(ctx, db, statement, "begin")
+}
+
+func restoreAbortedManagedStagedProvision(ctx context.Context, db *sql.DB, cfg stagedConfig, status ManagedStagedProvisionStatus, expectedEpoch int64) error {
+	if status.State != "ABORTED" {
+		return nil
+	}
+	if status.ProvisionEpoch != expectedEpoch || status.ProvisionAttemptID != "" || status.LiveFingerprint != status.StoredFingerprint {
+		return fmt.Errorf("%w: aborted staged Snowflake provision catalog differs from its pre-attempt fingerprint", connector.ErrDeliveryConflict)
+	}
+	restore, err := managedStagedRestoreAbortedProvisionSQL(cfg, expectedEpoch, status.StoredFingerprint)
+	if err != nil {
+		return err
+	}
+	return execStagedProvisionCAS(ctx, db, restore, "restore aborted")
 }
 
 func ResumeManagedStagedProvision(ctx context.Context, db *sql.DB, spec ManagedStagedProvisionSpec, attemptID string, epoch int64) (ManagedStagedProvisionStatus, error) {
@@ -85,7 +191,7 @@ func ResumeManagedStagedProvision(ctx context.Context, db *sql.DB, spec ManagedS
 		return ManagedStagedProvisionStatus{}, fmt.Errorf("%w: staged Snowflake provision attempt is not the current owner", connector.ErrDeliveryConflict)
 	}
 	cfg, _ := spec.config()
-	statement, err := ManagedStagedFinishProvisionSQL(cfg, attemptID, epoch, status.LiveFingerprint)
+	statement, err := managedStagedFinishProvisionSQL(cfg, attemptID, epoch, status.LiveFingerprint)
 	if err != nil {
 		return ManagedStagedProvisionStatus{}, err
 	}
@@ -100,7 +206,7 @@ func AbortManagedStagedProvision(ctx context.Context, db *sql.DB, spec ManagedSt
 	if err != nil {
 		return err
 	}
-	statement, err := ManagedStagedAbortProvisionSQL(cfg, attemptID, epoch)
+	statement, err := managedStagedAbortProvisionSQL(cfg, attemptID, epoch)
 	if err != nil {
 		return err
 	}
@@ -123,7 +229,7 @@ func execStagedProvisionCAS(ctx context.Context, db *sql.DB, statement, action s
 
 // managedStagedProvisioningSQL returns the current-schema-only owner DDL. It
 // does not contain compatibility branches or IF NOT EXISTS repair paths.
-func ManagedStagedProvisioningSQL(cfg stagedConfig) ([]string, error) {
+func managedStagedProvisioningSQL(cfg stagedConfig) ([]string, error) {
 	landing := managedSnowflakeStagedQualifiedTable(cfg, cfg.landingTable)
 	authority := managedSnowflakeStagedQualifiedTable(cfg, cfg.authorityTable)
 	manifest := managedSnowflakeStagedQualifiedTable(cfg, cfg.targetManifestTable)
@@ -181,9 +287,9 @@ func ManagedStagedProvisioningSQL(cfg stagedConfig) ([]string, error) {
 	return statements, nil
 }
 
-// ManagedStagedInstallCatalogSQL installs the first catalog authority only
+// managedStagedInstallCatalogSQL installs the first catalog authority only
 // after the owner reloads and fingerprints the live post-create objects.
-func ManagedStagedInstallCatalogSQL(cfg stagedConfig, catalogFingerprint string) (string, error) {
+func managedStagedInstallCatalogSQL(cfg stagedConfig, catalogFingerprint string) (string, error) {
 	if len(catalogFingerprint) != 64 || strings.Trim(catalogFingerprint, "0123456789abcdef") != "" {
 		return "", errors.New("managed staged Snowflake catalog install requires a canonical live fingerprint")
 	}
@@ -193,7 +299,7 @@ func ManagedStagedInstallCatalogSQL(cfg stagedConfig, catalogFingerprint string)
 
 // managedStagedBeginProvisionSQL fences runtime leases before owner DDL. DDL in
 // Snowflake auto-commits, so STATE='PROVISIONING' is the durable crash marker.
-func ManagedStagedBeginProvisionSQL(cfg stagedConfig, attemptID string, expectedEpoch int64) (string, error) {
+func managedStagedBeginProvisionSQL(cfg stagedConfig, attemptID string, expectedEpoch int64) (string, error) {
 	if err := validateStagedProvisionAttempt(attemptID, expectedEpoch); err != nil {
 		return "", err
 	}
@@ -201,7 +307,7 @@ func ManagedStagedBeginProvisionSQL(cfg stagedConfig, attemptID string, expected
 	return "UPDATE " + authority + " AS C SET \"STATE\"='PROVISIONING',\"PROVISION_EPOCH\"=\"PROVISION_EPOCH\"+1,\"PROVISION_ATTEMPT_ID\"='" + attemptID + "',\"UPDATED_AT\"=CURRENT_TIMESTAMP() WHERE C.\"AUTHORITY_KIND\"='CATALOG' AND C.\"DESTINATION_REVISION_ID\"='" + cfg.destinationRevision + "' AND C.\"PROVISION_EPOCH\"=" + fmt.Sprint(expectedEpoch) + " AND C.\"PROVISION_ATTEMPT_ID\" IS NULL AND C.\"STATE\"='CURRENT' AND NOT EXISTS (SELECT 1 FROM " + authority + " AS L WHERE L.\"AUTHORITY_KIND\"='LEASE' AND L.\"DESTINATION_REVISION_ID\"=C.\"DESTINATION_REVISION_ID\" AND L.\"STATE\"='ACTIVE' AND L.\"EXPIRES_AT\">CURRENT_TIMESTAMP())", nil
 }
 
-func ManagedStagedFinishProvisionSQL(cfg stagedConfig, attemptID string, provisionEpoch int64, catalogFingerprint string) (string, error) {
+func managedStagedFinishProvisionSQL(cfg stagedConfig, attemptID string, provisionEpoch int64, catalogFingerprint string) (string, error) {
 	if err := validateStagedProvisionAttempt(attemptID, provisionEpoch); err != nil {
 		return "", err
 	}
@@ -212,7 +318,15 @@ func ManagedStagedFinishProvisionSQL(cfg stagedConfig, attemptID string, provisi
 	return "UPDATE " + authority + " SET \"CATALOG_FINGERPRINT\"='" + catalogFingerprint + "',\"PROVISION_ATTEMPT_ID\"=NULL,\"STATE\"='CURRENT',\"UPDATED_AT\"=CURRENT_TIMESTAMP() WHERE \"AUTHORITY_KIND\"='CATALOG' AND \"DESTINATION_REVISION_ID\"='" + cfg.destinationRevision + "' AND \"PROVISION_EPOCH\"=" + fmt.Sprint(provisionEpoch) + " AND \"PROVISION_ATTEMPT_ID\"='" + attemptID + "' AND \"STATE\"='PROVISIONING'", nil
 }
 
-func ManagedStagedAbortProvisionSQL(cfg stagedConfig, attemptID string, provisionEpoch int64) (string, error) {
+func managedStagedRestoreAbortedProvisionSQL(cfg stagedConfig, provisionEpoch int64, catalogFingerprint string) (string, error) {
+	if provisionEpoch <= 0 || len(catalogFingerprint) != 64 || strings.Trim(catalogFingerprint, "0123456789abcdef") != "" {
+		return "", errors.New("managed staged Snowflake aborted provision restore requires a positive epoch and canonical fingerprint")
+	}
+	authority := managedSnowflakeStagedQualifiedTable(cfg, cfg.authorityTable)
+	return "UPDATE " + authority + " SET \"STATE\"='CURRENT',\"UPDATED_AT\"=CURRENT_TIMESTAMP() WHERE \"AUTHORITY_KIND\"='CATALOG' AND \"DESTINATION_REVISION_ID\"='" + cfg.destinationRevision + "' AND \"PROVISION_EPOCH\"=" + fmt.Sprint(provisionEpoch) + " AND \"PROVISION_ATTEMPT_ID\" IS NULL AND \"CATALOG_FINGERPRINT\"='" + catalogFingerprint + "' AND \"STATE\"='ABORTED'", nil
+}
+
+func managedStagedAbortProvisionSQL(cfg stagedConfig, attemptID string, provisionEpoch int64) (string, error) {
 	if err := validateStagedProvisionAttempt(attemptID, provisionEpoch); err != nil {
 		return "", err
 	}

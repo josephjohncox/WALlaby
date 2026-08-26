@@ -125,21 +125,21 @@ func TestSnowflakeStagedManagedProfilePutUncertainty(t *testing.T) {
 	}
 }
 
-func TestSnowflakeStagedManagedProfileLoadHistoryAdoption(t *testing.T) {
+func TestSnowflakeStagedManagedProfileLandingTargetProofAdoption(t *testing.T) {
 	fixture := newSnowflakeStagedManagedFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
 	defer cancel()
 	transaction := snowflakeManagedInsertTransaction(fixture.schema, 4, "history-adoption")
 	intent := snowflakeStagedManagedIntent(t, fixture.spec.Options["destination_revision_id"], transaction, 1, "acq-1")
 	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err != nil {
-		t.Fatalf("initial load-history apply: %v", err)
+		t.Fatalf("initial landing/target proof apply: %v", err)
 	}
 	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err != nil {
-		t.Fatalf("replay adopts via load history: %v", err)
+		t.Fatalf("replay adopts via landing/target proof: %v", err)
 	}
 	disposition, _, err := fixture.destination.Reconcile(ctx, intent)
 	if err != nil || disposition != connector.DeliveryApplied {
-		t.Fatalf("reconcile after load-history adoption=%v/%v", disposition, err)
+		t.Fatalf("reconcile after landing/target proof adoption=%v/%v", disposition, err)
 	}
 }
 
@@ -594,8 +594,9 @@ func snowflakeStagedReceiptsDDL(qualified, suffix, comment string) string {
   "RECEIPT_KIND" VARCHAR NOT NULL, "PROFILE_VERSION" VARCHAR NOT NULL, "FLOW_ID" VARCHAR NOT NULL,
   "FLOW_INCARNATION_ID" VARCHAR NOT NULL, "SOURCE_LINEAGE_ID" VARCHAR NOT NULL, "DESTINATION_REVISION_ID" VARCHAR NOT NULL,
   "LOGICAL_BATCH_ID" VARCHAR NOT NULL, "POSITION_ID" VARCHAR NOT NULL, "CONTENT_HASH" VARCHAR NOT NULL,
-  "SCHEMA_CONTRACT_HASH" VARCHAR NOT NULL, "CATALOG_FINGERPRINT" VARCHAR NOT NULL, "MANIFEST_HASH" VARCHAR NOT NULL,
-  "EXTERNAL_ID" VARCHAR NOT NULL, "GENERATION" NUMBER(38,0) NOT NULL, "ACQUISITION_ID" VARCHAR NOT NULL,
+  "SCHEMA_CONTRACT_HASH" VARCHAR NOT NULL, "CATALOG_FINGERPRINT" VARCHAR NOT NULL, "PROVISION_EPOCH" NUMBER(38,0) NOT NULL,
+  "MANIFEST_HASH" VARCHAR NOT NULL, "PLAN_HASH" VARCHAR NOT NULL, "EXTERNAL_ID" VARCHAR NOT NULL,
+  "GENERATION" NUMBER(38,0) NOT NULL, "ACQUISITION_ID" VARCHAR NOT NULL,
   "LEASE_EPOCH" NUMBER(38,0) NOT NULL, "TRANSACTION_ID" NUMBER(38,0) NOT NULL, "FRAGMENT_COUNT" NUMBER(38,0) NOT NULL,
   "RECORD_COUNT" NUMBER(38,0) NOT NULL, "STAGE_NAME" VARCHAR NOT NULL, "STAGE_PATH" VARCHAR NOT NULL,
   "FILE_CONTENT_HASH" VARCHAR NOT NULL, "FILE_MD5" VARCHAR NOT NULL, "LOAD_ROW_COUNT" NUMBER(38,0) NOT NULL,

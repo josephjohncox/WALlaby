@@ -45,8 +45,8 @@ func (p managedStagedPlan) loadReceiptKey() stagedReceiptKey {
 }
 
 // apply materializes one committed transaction as an immutable stage object,
-// loads it fail-closed, verifies completion through load history, and records a
-// durable receipt. Every step is idempotent so a replay after any crash window
+// loads it fail-closed, verifies exact landing and target identities, and records
+// a durable receipt. Every step is idempotent so a replay after any crash window
 // converges on exactly one load receipt.
 func (d *stagedDriver) apply(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (evidence connector.DeliveryEvidence, resultErr error) {
 	plan, err := planManagedStagedTransaction(d.cfg, intent, transaction)
@@ -66,6 +66,7 @@ func (d *stagedDriver) apply(ctx context.Context, intent connector.DeliveryInten
 	if err != nil {
 		return connector.DeliveryEvidence{}, err
 	}
+	plan.receipt.provisionEpoch = lease.provisionEpoch
 	defer func() {
 		if releaseErr := d.proto.ReleaseRuntimeLease(context.WithoutCancel(ctx), d.cfg, lease); resultErr == nil && releaseErr != nil {
 			resultErr = fmt.Errorf("%w: release staged Snowflake runtime lease: %w", connector.ErrDeliveryIndeterminate, releaseErr)
@@ -427,9 +428,9 @@ func (d *stagedDriver) sleepFor(ctx context.Context, interval time.Duration) err
 }
 
 // reconcile treats only one fully matching durable load receipt as applied. It
-// is read-only: an absent receipt is NotApplied so a replay can converge, even
-// when load history already shows the file, because the durable receipt plus the
-// history together are the completion proof.
+// is read-only: an absent receipt is NotApplied so a replay can converge. The
+// durable receipt plus the current landing/target manifest and row identities
+// are the completion proof.
 func (d *stagedDriver) reconcile(ctx context.Context, intent connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
 	if err := intent.Validate(); err != nil {
 		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
@@ -518,6 +519,11 @@ func (d *stagedDriver) cleanup(ctx context.Context, cleanup ManagedStagedCleanup
 		if receipt.kind != stagedReceiptKindLoad || receipt.loadStatus != stagedLoadStatusLoaded {
 			continue
 		}
+		// A no-op owner epoch bump makes an old receipt ineligible for physical
+		// deletion. Skip it without blocking newer candidates in this sweep.
+		if receipt.provisionEpoch != lease.provisionEpoch || receipt.catalogFingerprint != lease.catalogFingerprint {
+			continue
+		}
 		replayIntent := connector.DeliveryIntent{FlowID: receipt.flowID, FlowIncarnationID: receipt.flowIncarnationID, SourceLineageID: receipt.sourceLineageID, DestinationRevisionID: receipt.destinationRevisionID, LogicalBatchID: receipt.logicalBatchID, PositionID: receipt.positionID, ContentHash: receipt.contentHash, Generation: cleanup.Generation, AcquisitionID: cleanup.AcquisitionID, LeaseEpoch: cleanup.LeaseEpoch}
 		identity, err := newManagedStagedIdentity(d.cfg, replayIntent, receipt.planHash, receipt.contentHash)
 		if err != nil {
@@ -598,6 +604,7 @@ func validateStagedReceiptIdentity(expected, actual managedStagedReceipt) error 
 		expected.destinationRevisionID != actual.destinationRevisionID || expected.logicalBatchID != actual.logicalBatchID ||
 		expected.positionID != actual.positionID || expected.contentHash != actual.contentHash ||
 		expected.schemaContractHash != actual.schemaContractHash || expected.catalogFingerprint != actual.catalogFingerprint ||
+		expected.provisionEpoch > 0 && expected.provisionEpoch != actual.provisionEpoch ||
 		expected.manifestHash != actual.manifestHash || expected.externalID != actual.externalID ||
 		expected.stageName != actual.stageName || expected.stagePath != actual.stagePath {
 		return fmt.Errorf("%w: staged Snowflake receipt identity or hash differs", connector.ErrDeliveryConflict)

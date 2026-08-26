@@ -21,8 +21,8 @@ var (
 	// path but its bytes differ from the immutable plan. It is fatal and fails
 	// closed; the driver never loads or overwrites it.
 	errStagedWrongByteCollision = errors.New("staged Snowflake object exists with different bytes")
-	// errStagedPartialLoad means Snowflake load history reports a non-complete
-	// load (partially loaded, failed, or a row-count mismatch). A partial load can
+	// errStagedPartialLoad means the COPY result or landing proof reports a
+	// non-complete load. A partial load can
 	// never be adopted as a completed delivery.
 	errStagedPartialLoad              = errors.New("staged Snowflake load is partial or failed")
 	ErrStagedLoadNotVisibleDiagnostic = errors.New("staged Snowflake diagnostic load history is not yet visible")
@@ -90,8 +90,8 @@ type stageProtocol interface {
 	// when a different-byte object already occupies the path.
 	PutObject(ctx context.Context, stageRef, relativePath string, content []byte, expectedMD5 string) error
 	// Copy loads one staged object with the plan's fail-closed options and returns
-	// the per-file COPY result. A lost response is reported as an error; the driver
-	// then reconciles through LoadHistory.
+	// the per-file COPY result. A lost response is reported as an error. The driver
+	// then reconciles through exact landing and target proof.
 	Copy(ctx context.Context, plan stagedCopyPlan) (stageCopyResult, error)
 	// RefreshPipe asks an auto-ingest pipe to notice a newly staged object.
 	RefreshPipe(ctx context.Context, pipeRef, relativePath string) error
@@ -362,7 +362,7 @@ func (p *sqlStageProtocol) Copy(ctx context.Context, plan stagedCopyPlan) (stage
 // that window becomes unrecoverable through refresh alone. This is an
 // auto-ingest-only liveness limitation that the live matrix must characterize
 // before the profile leaves experimental; it never compromises fail-closed
-// safety because completion is still gated on verifiable load history.
+// safety because completion is still gated on exact landing and target proof.
 func (p *sqlStageProtocol) RefreshPipe(ctx context.Context, pipeRef, relativePath string) error {
 	if strings.TrimSpace(pipeRef) == "" {
 		return errors.New("staged Snowflake pipe reference is required for auto-ingest refresh")

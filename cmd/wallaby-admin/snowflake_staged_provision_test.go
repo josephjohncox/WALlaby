@@ -8,7 +8,7 @@ import (
 
 func TestSnowflakeStagedProvisionCommandsAreWired(t *testing.T) {
 	command := newAdminCommand()
-	for _, path := range [][]string{{"snowflake"}, {"snowflake", "staged"}, {"snowflake", "staged", "provision"}, {"snowflake", "staged", "provision", "inspect"}, {"snowflake", "staged", "provision", "start"}, {"snowflake", "staged", "provision", "resume"}, {"snowflake", "staged", "provision", "abort"}} {
+	for _, path := range [][]string{{"snowflake"}, {"snowflake", "staged"}, {"snowflake", "staged", "provision"}, {"snowflake", "staged", "provision", "bootstrap"}, {"snowflake", "staged", "provision", "inspect"}, {"snowflake", "staged", "provision", "start"}, {"snowflake", "staged", "provision", "resume"}, {"snowflake", "staged", "provision", "abort"}} {
 		current := command
 		for _, name := range path {
 			child, _, err := current.Find([]string{name})
@@ -17,6 +17,10 @@ func TestSnowflakeStagedProvisionCommandsAreWired(t *testing.T) {
 			}
 			current = child
 		}
+	}
+	install, _, err := command.Find([]string{"snowflake", "staged", "provision", "install"})
+	if err != nil || install == nil || install.Name() != "bootstrap" {
+		t.Fatalf("missing install alias for bootstrap: command=%v err=%v", install, err)
 	}
 }
 

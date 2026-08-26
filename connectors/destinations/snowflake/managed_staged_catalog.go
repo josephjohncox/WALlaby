@@ -75,6 +75,7 @@ type managedPipeSnapshot struct {
 	autoIngest        bool
 	onError           string
 	force             string
+	purge             string
 	matchByColumnName string
 	comment           string
 	grants            map[string][]string
@@ -440,8 +441,9 @@ func validateManagedStagedPipe(cfg stagedConfig, pipe managedPipeSnapshot) error
 	normalizedDefinition := normalizeStagedPipeSQL(pipe.definition)
 	normalizedTarget := normalizeStagedPipeSQL(managedSnowflakeStagedQualifiedTable(cfg, cfg.landingTable))
 	normalizedStage := normalizeStagedPipeSQL(managedSnowflakeStagedQualified(cfg, cfg.stage))
-	if strings.Count(normalizedDefinition, "copyinto") != 1 || !strings.Contains(normalizedDefinition, "copyinto"+normalizedTarget+"from@"+normalizedStage+"/") {
-		return errors.New("managed staged Snowflake pipe must COPY from the exact stage prefix into the exact landing table")
+	expectedSource := "copyinto" + normalizedTarget + "from@" + normalizedStage + "/wallaby_staged_append_v1/"
+	if strings.Count(normalizedDefinition, "copyinto") != 1 || !strings.HasPrefix(normalizedDefinition, expectedSource) || strings.Count(normalizedDefinition, "from@"+normalizedStage+"/wallaby_staged_append_v1/") != 1 {
+		return errors.New("managed staged Snowflake pipe must COPY from the exact @stage/wallaby_staged_append_v1/ root into the exact landing table")
 	}
 	if strings.Contains(normalizedDefinition, ";") {
 		return errors.New("managed staged Snowflake pipe definition contains an extra statement")
@@ -460,8 +462,11 @@ func validateManagedStagedPipe(cfg stagedConfig, pipe managedPipeSnapshot) error
 	if pipe.onError != plan.loadOptions["ON_ERROR"] {
 		return fmt.Errorf("managed staged Snowflake auto-ingest pipe COPY must set ON_ERROR = %s (fail-closed), got %q", plan.loadOptions["ON_ERROR"], pipe.onError)
 	}
-	if strings.EqualFold(pipe.force, "TRUE") {
-		return errors.New("managed staged Snowflake auto-ingest pipe COPY must not set FORCE = TRUE")
+	if pipe.force != "FALSE" {
+		return fmt.Errorf("managed staged Snowflake auto-ingest pipe COPY must set FORCE = FALSE, got %q", pipe.force)
+	}
+	if pipe.purge != "FALSE" {
+		return fmt.Errorf("managed staged Snowflake auto-ingest pipe COPY must set PURGE = FALSE, got %q", pipe.purge)
 	}
 	if pipe.matchByColumnName != plan.loadOptions["MATCH_BY_COLUMN_NAME"] {
 		return fmt.Errorf("managed staged Snowflake auto-ingest pipe COPY must set MATCH_BY_COLUMN_NAME = %s, got %q", plan.loadOptions["MATCH_BY_COLUMN_NAME"], pipe.matchByColumnName)
@@ -548,7 +553,7 @@ func stagedExpectedReceiptColumns() map[string]managedColumnSnapshot {
 	columns := map[string]managedColumnSnapshot{
 		"RECEIPT_KIND": text, "PROFILE_VERSION": text, "FLOW_ID": text, "FLOW_INCARNATION_ID": text, "SOURCE_LINEAGE_ID": text,
 		"DESTINATION_REVISION_ID": text, "LOGICAL_BATCH_ID": text, "POSITION_ID": text, "CONTENT_HASH": text, "SCHEMA_CONTRACT_HASH": text,
-		"CATALOG_FINGERPRINT": text, "MANIFEST_HASH": text, "PLAN_HASH": text, "EXTERNAL_ID": text, "GENERATION": number, "ACQUISITION_ID": text, "LEASE_EPOCH": number,
+		"CATALOG_FINGERPRINT": text, "PROVISION_EPOCH": number, "MANIFEST_HASH": text, "PLAN_HASH": text, "EXTERNAL_ID": text, "GENERATION": number, "ACQUISITION_ID": text, "LEASE_EPOCH": number,
 		"TRANSACTION_ID": number, "FRAGMENT_COUNT": number, "RECORD_COUNT": number, "STAGE_NAME": text, "STAGE_PATH": text, "FILE_CONTENT_HASH": text,
 		"FILE_MD5": text, "LOAD_ROW_COUNT": number, "LOAD_STATUS": text,
 		"COMMITTED_AT": {dataType: "TIMESTAMP_TZ", nullable: false},
@@ -644,6 +649,7 @@ func managedStagedCatalogFingerprint(catalog managedStagedCatalogSnapshot) (stri
 			AutoIngest        bool                `json:"auto_ingest"`
 			OnError           string              `json:"on_error"`
 			Force             string              `json:"force"`
+			Purge             string              `json:"purge"`
 			MatchByColumnName string              `json:"match_by_column_name"`
 			Comment           string              `json:"comment"`
 			Grants            map[string][]string `json:"grants"`
@@ -680,10 +686,11 @@ func managedStagedCatalogFingerprint(catalog managedStagedCatalogSnapshot) (stri
 			AutoIngest        bool                `json:"auto_ingest"`
 			OnError           string              `json:"on_error"`
 			Force             string              `json:"force"`
+			Purge             string              `json:"purge"`
 			MatchByColumnName string              `json:"match_by_column_name"`
 			Comment           string              `json:"comment"`
 			Grants            map[string][]string `json:"grants"`
-		}{Present: catalog.pipe.present, Definition: catalog.pipe.definition, OwnerRole: catalog.pipe.ownerRole, CreatedOn: catalog.pipe.createdOn, AutoIngest: catalog.pipe.autoIngest, OnError: catalog.pipe.onError, Force: catalog.pipe.force, MatchByColumnName: catalog.pipe.matchByColumnName, Comment: catalog.pipe.comment, Grants: canonicalGrants(catalog.pipe.grants)},
+		}{Present: catalog.pipe.present, Definition: catalog.pipe.definition, OwnerRole: catalog.pipe.ownerRole, CreatedOn: catalog.pipe.createdOn, AutoIngest: catalog.pipe.autoIngest, OnError: catalog.pipe.onError, Force: catalog.pipe.force, Purge: catalog.pipe.purge, MatchByColumnName: catalog.pipe.matchByColumnName, Comment: catalog.pipe.comment, Grants: canonicalGrants(catalog.pipe.grants)},
 		TaskCount:           catalog.taskCount,
 		UnexpectedPipeCount: catalog.unexpectedPipeCount,
 	})
@@ -863,11 +870,12 @@ func loadStagedFileFormatProperties(ctx context.Context, queryer managedSnowflak
 func loadStagedPipe(ctx context.Context, queryer managedSnowflakeCatalogQueryer, cfg stagedConfig, informationSchema string) (managedPipeSnapshot, error) {
 	snapshot := managedPipeSnapshot{grants: make(map[string][]string)}
 	var definition, comment, createdOn string
+	var autoIngest bool
 	// #nosec G202 -- the database identifier is one validated unquoted uppercase identifier.
 	if err := queryer.QueryRowContext(ctx,
-		"SELECT DEFINITION, COALESCE(COMMENT, ''), TO_VARCHAR(CREATED, '"+managedSnowflakeCatalogTimestampFormat+"') FROM "+informationSchema+"PIPES WHERE PIPE_SCHEMA = ? AND PIPE_NAME = ?",
+		"SELECT DEFINITION, COALESCE(COMMENT, ''), TO_VARCHAR(CREATED, '"+managedSnowflakeCatalogTimestampFormat+"'), AUTO_INGEST FROM "+informationSchema+"PIPES WHERE PIPE_SCHEMA = ? AND PIPE_NAME = ?",
 		cfg.schema, cfg.pipe,
-	).Scan(&definition, &comment, &createdOn); err != nil {
+	).Scan(&definition, &comment, &createdOn, &autoIngest); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return managedPipeSnapshot{}, nil
 		}
@@ -880,9 +888,10 @@ func loadStagedPipe(ctx context.Context, queryer managedSnowflakeCatalogQueryer,
 	snapshot.definition = definition
 	snapshot.comment = comment
 	snapshot.createdOn = createdOn
-	snapshot.autoIngest = strings.Contains(strings.ToUpper(strings.ReplaceAll(definition, " ", "")), "AUTO_INGEST=TRUE")
+	snapshot.autoIngest = autoIngest
 	snapshot.onError = stagedPipeCopyOption(definition, "ON_ERROR")
 	snapshot.force = stagedPipeCopyOption(definition, "FORCE")
+	snapshot.purge = stagedPipeCopyOption(definition, "PURGE")
 	snapshot.matchByColumnName = stagedPipeCopyOption(definition, "MATCH_BY_COLUMN_NAME")
 	owner, grants, err := loadStagedGrants(ctx, queryer, "PIPE", managedSnowflakeStagedQualified(cfg, cfg.pipe))
 	if err != nil {

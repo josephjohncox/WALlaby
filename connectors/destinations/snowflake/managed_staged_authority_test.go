@@ -3,10 +3,12 @@ package snowflake
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
@@ -33,6 +35,32 @@ func TestClassifyStagedTargetStates(t *testing.T) {
 				t.Fatalf("state=%d, want %d", got, test.want)
 			}
 		})
+	}
+}
+
+func TestValidateReceiptTargetProofRejectsCurrentProvisionEpochDrift(t *testing.T) {
+	t.Parallel()
+	cfg := stagedTestConfig(t)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	receipt := managedStagedReceipt{
+		destinationRevisionID: cfg.destinationRevision, logicalBatchID: "batch", manifestHash: strings.Repeat("a", 64),
+		contentHash: strings.Repeat("b", 64), fileContentHash: strings.Repeat("c", 64), planHash: strings.Repeat("d", 64),
+		recordCount: 1, provisionEpoch: 1, catalogFingerprint: strings.Repeat("e", 64),
+	}
+	mock.ExpectQuery("SELECT M.*JOIN.*AUTHORITY").
+		WithArgs(receipt.destinationRevisionID, receipt.logicalBatchID).
+		WillReturnRows(sqlmock.NewRows([]string{"manifest", "content", "file", "plan", "rows", "manifest_epoch", "catalog", "row_hashes", "current_epoch", "current_catalog", "state"}).
+			AddRow(receipt.manifestHash, receipt.contentHash, receipt.fileContentHash, receipt.planHash, 1, 1, receipt.catalogFingerprint, `["row"]`, 2, receipt.catalogFingerprint, "CURRENT"))
+	proto := &sqlStageProtocol{db: db}
+	if err := proto.ValidateReceiptTargetProof(context.Background(), cfg, receipt); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("provision epoch drift error=%v, want conflict", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

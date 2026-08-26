@@ -5,7 +5,7 @@ WALlaby exposes these Snowflake modes:
 | Contract | Status | Delivery contract |
 | --- | --- | --- |
 | `postgresql-to-snowflake-sql-v1` | experimental | PostgreSQL 16 CDC into one hybrid table, with external-commit reconciliation |
-| `postgresql-to-snowflake-staged-append-v1` | experimental | PostgreSQL 16 CDC into one append changelog table via deterministic internal-stage COPY, with load-history reconciliation |
+| `postgresql-to-snowflake-staged-append-v1` | experimental | PostgreSQL 16 CDC into one append changelog table via deterministic internal-stage COPY, with landing and target proof |
 | `postgresql-to-snowflake-streaming-rest-append-v1` | experimental (fails closed) | PostgreSQL 16 CDC appended to a Snowpipe Streaming channel, adopted only on SQL-observed row completeness. Admission is refused until a reviewed high-performance append transport is linked |
 | Generic `snowflake` and `snowpipe` | experimental | Legacy direct-table and file-loading behavior |
 
@@ -350,7 +350,7 @@ The profile admits, in one dedicated schema owned by a distinct object-owner rol
 - a standard **landing table** with the same row contract and no key constraints (execution role granted `SELECT, INSERT, DELETE`);
 - a hybrid **authority table** containing the provision guard, shared leases, and load claims with one enforced primary key;
 - a hybrid **target manifest table** with enforced logical-batch and manifest identities;
-- a **hybrid receipt table** with an enforced primary key on `(RECEIPT_KIND, FLOW_INCARNATION_ID, DESTINATION_REVISION_ID, LOGICAL_BATCH_ID)` and a unique `EXTERNAL_ID` (execution role granted `SELECT, INSERT`); and
+- a **hybrid receipt table** with an enforced primary key on `(RECEIPT_KIND, FLOW_INCARNATION_ID, DESTINATION_REVISION_ID, LOGICAL_BATCH_ID)`, a unique `EXTERNAL_ID`, and the exact `PROVISION_EPOCH` plus catalog fingerprint (execution role granted `SELECT, INSERT`); and
 - optionally, when typed `auto_ingest=true`, one owned **pipe** with `AUTO_INGEST=TRUE`.
 
 > **Upgrade note.** Inlining the parsing options changes the deterministic COPY plan hash, and therefore the stage path, manifest hash, and external ID of every batch. Drain and acknowledge in-flight batches before upgrading, or assign a new destination revision. An un-acknowledged batch carried across the upgrade is reported as a receipt-identity conflict and requires operator action rather than silently double-loading.
@@ -359,7 +359,7 @@ Every object carries an exact creation-identity timestamp and an ownership comme
 
 No task may be visible in the schema. The profile rejects generated columns, generic metadata/staging options, type-mapping overrides, DDL, arbitrary start LSNs, and multiple sinks. Admission requires key-pair JWT over verified HTTPS with OCSP fail-closed, DSN session parameters `READ_LATEST_WRITES=true` and `TIMEZONE=UTC`, and an inline-secret-free DSN.
 
-Owner provisioning uses a durable attempt UUID and exact epoch CAS. DDL leaves the catalog row in `PROVISIONING` until the owner reloads every live object and installs the post-create fingerprint. Runtime leases reject `PROVISIONING` and `ABORTED` states. Use `wallaby-admin snowflake staged provision inspect|start|resume|abort --spec <non-secret.json> --owner-dsn <ephemeral-dsn>`. The command never writes the owner DSN to the flow or provision specification. A crash after DDL remains fail-closed until the exact attempt resumes or aborts.
+Owner provisioning uses a durable attempt UUID and exact epoch CAS. DDL leaves the catalog row in `PROVISIONING` until the owner reloads every live object and installs the post-create fingerprint. Runtime leases reject `PROVISIONING` and `ABORTED` states. Use `wallaby-admin snowflake staged provision bootstrap|inspect|start|resume|abort --spec <non-secret.json> --owner-dsn <ephemeral-dsn>`. `install` is an alias for `bootstrap`. Bootstrap creates the current auxiliary objects, reloads the live catalog, validates it, fingerprints the created objects, and installs the first catalog authority row. Omit `managed_landing_created_on`, `managed_authority_created_on`, and `managed_target_manifest_created_on` from the bootstrap specification. The command returns those live creation identities for the runtime endpoint specification. The command never writes the owner DSN to the flow or provision specification. An abort can return to `CURRENT` only when the live fingerprint still equals the stored pre-attempt fingerprint. A crash after DDL remains fail-closed until the exact attempt resumes or aborts.
 
 ### Cleanup and retention
 
@@ -378,7 +378,7 @@ WALLABY_TEST_SNOWFLAKE_OWNER_ROLE='WALLABY_OWNER' \
 go test ./tests/ -run 'TestSnowflakeStagedManagedProfile|TestPostgresToSnowflakeStagedManagedProfileRecoveryContract'
 ```
 
-Deterministic PUT/GET, lease, claim, landing, promotion, manifest, receipt, ABA, takeover, partial, duplicate, zero-row, history-expiry, and cleanup behavior is exercised against an in-memory protocol fake and property tests. Commercial Snowflake evidence for every named gate is still absent. The profile remains experimental until that exact-SHA evidence passes.
+Deterministic PUT/GET, lease, claim, landing, promotion, manifest, receipt, ABA, takeover, partial, duplicate, zero-row, target-proof, and cleanup behavior is exercised against an in-memory protocol fake and property tests. Commercial Snowflake evidence for every named gate is still absent. The profile remains experimental until that exact-SHA evidence passes.
 
 ## Snowpipe Streaming REST append profile
 

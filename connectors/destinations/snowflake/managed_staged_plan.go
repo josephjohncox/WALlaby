@@ -40,6 +40,7 @@ type managedStagedReceipt struct {
 	contentHash           string
 	schemaContractHash    string
 	catalogFingerprint    string
+	provisionEpoch        int64
 	manifestHash          string
 	planHash              string
 	externalID            string

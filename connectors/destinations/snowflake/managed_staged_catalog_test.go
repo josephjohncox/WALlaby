@@ -245,7 +245,7 @@ func stagedInlinePipeDefinition(t testing.TB, cfg stagedConfig) string {
 		rendered = append(rendered, name+" = "+options[name])
 	}
 	return "COPY INTO " + managedSnowflakeStagedQualifiedTable(cfg, cfg.landingTable) + " FROM @" + managedSnowflakeStagedQualified(cfg, cfg.stage) + "/wallaby_staged_append_v1/ FILE_FORMAT = (" + strings.Join(rendered, " ") +
-		") MATCH_BY_COLUMN_NAME = CASE_SENSITIVE ON_ERROR = ABORT_STATEMENT FORCE = FALSE"
+		") MATCH_BY_COLUMN_NAME = CASE_SENSITIVE ON_ERROR = ABORT_STATEMENT FORCE = FALSE PURGE = FALSE"
 }
 
 func validStagedAutoIngestPipe(t testing.TB, cfg stagedConfig) managedPipeSnapshot {
@@ -253,7 +253,7 @@ func validStagedAutoIngestPipe(t testing.TB, cfg stagedConfig) managedPipeSnapsh
 	return managedPipeSnapshot{
 		present: true, autoIngest: true, ownerRole: cfg.ownerRole, createdOn: cfg.pipeCreatedOn,
 		definition: stagedInlinePipeDefinition(t, cfg),
-		onError:    "ABORT_STATEMENT", force: "FALSE", matchByColumnName: "CASE_SENSITIVE",
+		onError:    "ABORT_STATEMENT", force: "FALSE", purge: "FALSE", matchByColumnName: "CASE_SENSITIVE",
 		comment: managedStagedOwnershipComment(cfg, "pipe"),
 		grants:  map[string][]string{cfg.executionRole: {"MONITOR", "OPERATE"}, cfg.ownerRole: {"OWNERSHIP"}},
 	}
@@ -266,10 +266,19 @@ func TestValidateManagedStagedPipeRejectsUnsafeCopyOptions(t *testing.T) {
 	cfg.pipe = "WALLABY_PIPE"
 	cfg.pipeCreatedOn = cfg.stageCreatedOn
 	cases := map[string]func(*managedPipeSnapshot){
-		"skip file on_error":   func(p *managedPipeSnapshot) { p.onError = "SKIP_FILE" },
-		"continue on_error":    func(p *managedPipeSnapshot) { p.onError = "CONTINUE" },
-		"absent on_error":      func(p *managedPipeSnapshot) { p.onError = "" },
-		"force true":           func(p *managedPipeSnapshot) { p.force = "TRUE" },
+		"skip file on_error": func(p *managedPipeSnapshot) { p.onError = "SKIP_FILE" },
+		"continue on_error":  func(p *managedPipeSnapshot) { p.onError = "CONTINUE" },
+		"absent on_error":    func(p *managedPipeSnapshot) { p.onError = "" },
+		"force true":         func(p *managedPipeSnapshot) { p.force = "TRUE" },
+		"force absent":       func(p *managedPipeSnapshot) { p.force = "" },
+		"purge true":         func(p *managedPipeSnapshot) { p.purge = "TRUE" },
+		"purge absent":       func(p *managedPipeSnapshot) { p.purge = "" },
+		"broad stage root": func(p *managedPipeSnapshot) {
+			p.definition = strings.ReplaceAll(p.definition, "/wallaby_staged_append_v1/", "/")
+		},
+		"wrong landing target": func(p *managedPipeSnapshot) {
+			p.definition = strings.ReplaceAll(p.definition, cfg.landingTable, cfg.table)
+		},
 		"loose column mapping": func(p *managedPipeSnapshot) { p.matchByColumnName = "CASE_INSENSITIVE" },
 		"absent column match":  func(p *managedPipeSnapshot) { p.matchByColumnName = "" },
 		"named file format": func(p *managedPipeSnapshot) {
@@ -305,8 +314,8 @@ func TestValidateManagedStagedPipeRejectsUnsafeCopyOptions(t *testing.T) {
 func TestStagedPipeCopyOptionParsesDefinition(t *testing.T) {
 	t.Parallel()
 	definition := "COPY INTO db.public.tbl FROM @db.public.stg FILE_FORMAT = (FORMAT_NAME = db.public.ff) " +
-		"MATCH_BY_COLUMN_NAME = CASE_SENSITIVE ON_ERROR = ABORT_STATEMENT FORCE = FALSE"
-	cases := map[string]string{"ON_ERROR": "ABORT_STATEMENT", "FORCE": "FALSE", "MATCH_BY_COLUMN_NAME": "CASE_SENSITIVE", "PURGE": ""}
+		"MATCH_BY_COLUMN_NAME = CASE_SENSITIVE ON_ERROR = ABORT_STATEMENT FORCE = FALSE PURGE = FALSE"
+	cases := map[string]string{"ON_ERROR": "ABORT_STATEMENT", "FORCE": "FALSE", "MATCH_BY_COLUMN_NAME": "CASE_SENSITIVE", "PURGE": "FALSE"}
 	for option, want := range cases {
 		if got := stagedPipeCopyOption(definition, option); got != want {
 			t.Fatalf("stagedPipeCopyOption(%s)=%q, want %q", option, got, want)
@@ -314,6 +323,47 @@ func TestStagedPipeCopyOptionParsesDefinition(t *testing.T) {
 	}
 	if got := stagedPipeCopyOption("... ON_ERROR = 'ABORT_STATEMENT' ...", "ON_ERROR"); got != "ABORT_STATEMENT" {
 		t.Fatalf("quoted ON_ERROR=%q, want ABORT_STATEMENT", got)
+	}
+}
+
+func TestLoadStagedPipeUsesAuthoritativeAutoIngestColumn(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		definition string
+		autoIngest bool
+	}{
+		{name: "catalog true definition absent", definition: "COPY INTO T FROM @S FORCE = FALSE PURGE = FALSE", autoIngest: true},
+		{name: "catalog false definition claims true", definition: "COPY INTO T FROM @S AUTO_INGEST=TRUE FORCE = FALSE PURGE = FALSE", autoIngest: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := stagedTestConfig(t)
+			cfg.pipe = "WALLABY_PIPE"
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			mock.ExpectQuery("SELECT DEFINITION.*AUTO_INGEST FROM.*PIPES").
+				WithArgs(cfg.schema, cfg.pipe).
+				WillReturnRows(sqlmock.NewRows([]string{"definition", "comment", "created", "auto_ingest"}).AddRow(test.definition, "comment", "created", test.autoIngest))
+			mock.ExpectQuery(regexp.QuoteMeta("SHOW GRANTS ON PIPE " + managedSnowflakeStagedQualified(cfg, cfg.pipe))).
+				WillReturnRows(sqlmock.NewRows([]string{"privilege", "grantee_name"}).
+					AddRow("OWNERSHIP", cfg.ownerRole).
+					AddRow("MONITOR", cfg.executionRole).
+					AddRow("OPERATE", cfg.executionRole))
+			pipe, err := loadStagedPipe(context.Background(), db, cfg, `"WALLABY_DB".INFORMATION_SCHEMA.`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pipe.autoIngest != test.autoIngest {
+				t.Fatalf("auto_ingest=%t, want authoritative catalog value %t", pipe.autoIngest, test.autoIngest)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
