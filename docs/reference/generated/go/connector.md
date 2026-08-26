@@ -96,9 +96,7 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [type ManagedDestination](<#ManagedDestination>)
 - [type ManagedFlowScopeValidator](<#ManagedFlowScopeValidator>)
 - [type ManagedPartIdentity](<#ManagedPartIdentity>)
-- [type ManagedPartReservation](<#ManagedPartReservation>)
 - [type ManagedPartReservationObservation](<#ManagedPartReservationObservation>)
-- [type ManagedPartReservationPrepared](<#ManagedPartReservationPrepared>)
 - [type ManagedPartReservationReconciler](<#ManagedPartReservationReconciler>)
 - [type ManagedPartReservationRequest](<#ManagedPartReservationRequest>)
   - [func \(r ManagedPartReservationRequest\) Validate\(\) error](<#ManagedPartReservationRequest.Validate>)
@@ -1263,21 +1261,6 @@ type ManagedPartIdentity struct {
 }
 ```
 
-<a name="ManagedPartReservation"></a>
-## type [ManagedPartReservation](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L236-L242>)
-
-ManagedPartReservation is the narrow PostgreSQL\-backed capability bound to one admitted plan. A destination must not perform managed part writes until this capability has been supplied by the coordinator.
-
-```go
-type ManagedPartReservation interface {
-    ReservationID() string
-    // GuardPartWrite holds the PostgreSQL budget and reservation locks across
-    // the irreversible insert and its durable progress transition. Reclaim can
-    // therefore never release an authorization already handed to a stale writer.
-    GuardPartWrite(context.Context, ManagedPartIdentity, func(context.Context) error) error
-}
-```
-
 <a name="ManagedPartReservationObservation"></a>
 ## type [ManagedPartReservationObservation](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L173-L178>)
 
@@ -1292,22 +1275,8 @@ type ManagedPartReservationObservation struct {
 }
 ```
 
-<a name="ManagedPartReservationPrepared"></a>
-## type [ManagedPartReservationPrepared](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L246-L251>)
-
-ManagedPartReservationPrepared is implemented only by managed append plans whose external operations consume a shared part budget.
-
-```go
-type ManagedPartReservationPrepared interface {
-    PreparedManagedTransaction
-    PartReservationRequest() (ManagedPartReservationRequest, error)
-    ObservePartReservation(context.Context, bool) (ManagedPartReservationObservation, error)
-    BindPartReservation(ManagedPartReservation) error
-}
-```
-
 <a name="ManagedPartReservationReconciler"></a>
-## type [ManagedPartReservationReconciler](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L256-L258>)
+## type [ManagedPartReservationReconciler](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L236-L238>)
 
 ManagedPartReservationReconciler proves that neither endpoint contains any fragment or receipt for an immutable logical batch before PostgreSQL releases an abandoned reservation.
 
@@ -1567,7 +1536,7 @@ type ManagedTransactionDestination interface {
 ```
 
 <a name="ManagedTransactionPreparer"></a>
-## type [ManagedTransactionPreparer](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L263-L265>)
+## type [ManagedTransactionPreparer](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L243-L245>)
 
 ManagedTransactionPreparer is an optional deep interface implemented by managed destinations that can validate and retain one bounded transaction plan before PostgreSQL persists the external attempt.
 

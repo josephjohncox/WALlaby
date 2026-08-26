@@ -20,6 +20,7 @@ import (
 
 	chclient "github.com/ClickHouse/clickhouse-go/v2"
 	chdriver "github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/josephjohncox/wallaby/internal/partauthority"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -583,7 +584,7 @@ type preparedManagedTransaction struct {
 	destination *Destination
 	intent      connector.DeliveryIntent
 	plan        managedTransactionPlan
-	reservation connector.ManagedPartReservation
+	reservation *partauthority.Grant
 }
 
 // PrepareTransaction materializes and validates one bounded plan exactly once.
@@ -633,7 +634,7 @@ func (p *preparedManagedTransaction) ObservePartReservation(ctx context.Context,
 	return p.destination.observeManagedPartReservation(ctx, p.intent, requireAbsent)
 }
 
-func (p *preparedManagedTransaction) BindPartReservation(reservation connector.ManagedPartReservation) error {
+func (p *preparedManagedTransaction) BindPartReservation(reservation *partauthority.Grant) error {
 	if reservation == nil || strings.TrimSpace(reservation.ReservationID()) == "" {
 		return errors.New("managed ClickHouse part reservation is required")
 	}
@@ -725,12 +726,12 @@ func (d *Destination) reconcileManagedFragment(ctx context.Context, fragment man
 	for i, row := range fragment.Rows {
 		expectedHashes[i] = row.RecordHash
 	}
-	query := "SELECT any(content_hash),groupArray(record_hash ORDER BY record_ordinal),count() FROM " + quoteQualified(d.managedConfig.database+"."+d.managedConfig.changelogTable) + " FINAL WHERE destination_revision_id=? AND logical_batch_id=? AND fragment_ordinal=? HAVING count()>0"
+	query := "SELECT any(content_hash),groupArray(record_hash ORDER BY fragment_ordinal,record_ordinal),count() FROM " + quoteQualified(d.managedConfig.database+"."+d.managedConfig.changelogTable) + " FINAL WHERE destination_revision_id=? AND logical_batch_id=? AND insert_query_id=? HAVING count()>0"
 	read := func(conn chdriver.Conn) (connector.DeliveryDisposition, error) {
 		var contentHash string
 		var hashes []string
 		var count uint64
-		err := conn.QueryRow(ctx, query, fragment.Rows[0].DestinationRevisionID, fragment.Rows[0].LogicalBatchID, fragment.Ordinal).Scan(&contentHash, &hashes, &count)
+		err := conn.QueryRow(ctx, query, fragment.Rows[0].DestinationRevisionID, fragment.Rows[0].LogicalBatchID, fragment.QueryID).Scan(&contentHash, &hashes, &count)
 		if errors.Is(err, sql.ErrNoRows) {
 			return connector.DeliveryNotApplied, nil
 		}
@@ -939,15 +940,15 @@ func managedRowBytes(row managedChangelogRow) int64 {
 	return int64(len(row.FlowID) + len(row.FlowIncarnationID) + len(row.SourceLineageID) + len(row.DestinationRevisionID) +
 		len(row.LogicalBatchID) + len(row.ContentHash) + len(row.SourcePosition) + len(row.BeginLSN) + len(row.CommitLSN) + len(row.EndLSN) +
 		len(row.SourceNamespace) + len(row.SourceTable) + len(row.SchemaFingerprint) + len(row.SchemaJSON) + len(row.Operation) +
-		len(row.KeyJSON) + len(row.BeforeJSON) + len(row.AfterJSON) + len(row.Payload) + len(row.DDLPlan) + len(row.RecordHash) + 128)
+		len(row.KeyJSON) + len(row.BeforeJSON) + len(row.AfterJSON) + len(row.Payload) + len(row.DDLPlan) + len(row.InsertQueryID) + len(row.RecordHash) + 128)
 }
 
 func managedChangelogColumns() []string {
-	return []string{"flow_id", "flow_incarnation_id", "source_lineage_id", "destination_revision_id", "logical_batch_id", "content_hash", "source_position", "transaction_id", "begin_lsn", "commit_lsn", "end_lsn", "fragment_ordinal", "record_ordinal", "source_namespace", "source_table", "schema_version", "schema_fingerprint", "schema_json", "operation", "tombstone", "key_json", "before_json", "after_json", "payload", "ddl_plan", "event_time", "record_hash", "wallaby_version"}
+	return []string{"flow_id", "flow_incarnation_id", "source_lineage_id", "destination_revision_id", "logical_batch_id", "content_hash", "source_position", "transaction_id", "begin_lsn", "commit_lsn", "end_lsn", "fragment_ordinal", "record_ordinal", "source_namespace", "source_table", "schema_version", "schema_fingerprint", "schema_json", "operation", "tombstone", "key_json", "before_json", "after_json", "payload", "ddl_plan", "event_time", "insert_query_id", "record_hash", "wallaby_version"}
 }
 
 func managedChangelogValues(row managedChangelogRow) []any {
-	return []any{row.FlowID, row.FlowIncarnationID, row.SourceLineageID, row.DestinationRevisionID, row.LogicalBatchID, row.ContentHash, row.SourcePosition, row.TransactionID, row.BeginLSN, row.CommitLSN, row.EndLSN, row.FragmentOrdinal, row.RecordOrdinal, row.SourceNamespace, row.SourceTable, row.SchemaVersion, row.SchemaFingerprint, row.SchemaJSON, row.Operation, row.Tombstone, row.KeyJSON, row.BeforeJSON, row.AfterJSON, row.Payload, row.DDLPlan, row.EventTime, row.RecordHash, row.WallabyVersion}
+	return []any{row.FlowID, row.FlowIncarnationID, row.SourceLineageID, row.DestinationRevisionID, row.LogicalBatchID, row.ContentHash, row.SourcePosition, row.TransactionID, row.BeginLSN, row.CommitLSN, row.EndLSN, row.FragmentOrdinal, row.RecordOrdinal, row.SourceNamespace, row.SourceTable, row.SchemaVersion, row.SchemaFingerprint, row.SchemaJSON, row.Operation, row.Tombstone, row.KeyJSON, row.BeforeJSON, row.AfterJSON, row.Payload, row.DDLPlan, row.EventTime, row.InsertQueryID, row.RecordHash, row.WallabyVersion}
 }
 
 func managedReceiptColumns() []string {
@@ -1445,7 +1446,7 @@ func managedExpectedChangelogColumns() map[string]string {
 		"begin_lsn": "String", "commit_lsn": "String", "end_lsn": "String", "fragment_ordinal": "UInt64", "record_ordinal": "UInt64",
 		"source_namespace": "String", "source_table": "String", "schema_version": "Int64", "schema_fingerprint": "FixedString(64)",
 		"schema_json": "String", "operation": "LowCardinality(String)", "tombstone": "UInt8", "key_json": "String", "before_json": "String",
-		"after_json": "String", "payload": "String", "ddl_plan": "String", "event_time": "DateTime64(9, 'UTC')", "record_hash": "FixedString(64)", "wallaby_version": "UInt64",
+		"after_json": "String", "payload": "String", "ddl_plan": "String", "event_time": "DateTime64(9, 'UTC')", "insert_query_id": "String", "record_hash": "FixedString(64)", "wallaby_version": "UInt64",
 	}
 }
 

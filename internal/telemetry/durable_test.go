@@ -188,6 +188,39 @@ func TestClickHouseManagedProfileTelemetry(t *testing.T) {
 	}
 }
 
+func TestClickHousePartObservationFailureDoesNotPublishZeroGauges(t *testing.T) {
+	oldMeterProvider := otel.GetMeterProvider()
+	oldMetrics := durableMetrics
+	defer func() {
+		otel.SetMeterProvider(oldMeterProvider)
+		durableMetrics = oldMetrics
+	}()
+
+	reader := sdkmetric.NewManualReader()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	durableMetrics = &durableMetricSet{}
+	RecordClickHousePartRejection(context.Background(), "observation")
+
+	var metrics metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &metrics); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, scope := range metrics.ScopeMetrics {
+		for _, measurement := range scope.Metrics {
+			seen[measurement.Name] = true
+		}
+	}
+	if !seen["wallaby.clickhouse.managed.parts.rejected"] {
+		t.Fatalf("missing rejected counter: %v", seen)
+	}
+	for _, name := range []string{"wallaby.clickhouse.managed.parts.server_active", "wallaby.clickhouse.managed.parts.reserved", "wallaby.clickhouse.managed.parts.capacity"} {
+		if seen[name] {
+			t.Fatalf("observation failure published fabricated gauge %s", name)
+		}
+	}
+}
+
 func TestSnowflakeManagedProfileTelemetry(t *testing.T) {
 	oldTracerProvider := otel.GetTracerProvider()
 	oldMeterProvider := otel.GetMeterProvider()

@@ -278,6 +278,17 @@ func RecordClickHousePartAdmission(ctx context.Context, serverActive, reserved, 
 	}
 }
 
+// RecordClickHousePartRejection records a bounded admission failure without
+// publishing fabricated active/reserved gauge values when observation failed.
+func RecordClickHousePartRejection(ctx context.Context, rejectionReason string) {
+	if !initDurableMetrics() {
+		return
+	}
+	if reason := boundedClickHouseAdmissionReason(rejectionReason); reason != "none" {
+		durableMetrics.clickHouseRejected.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
+	}
+}
+
 func boundedClickHouseAdmissionReason(reason string) string {
 	switch reason {
 	case "", "none":

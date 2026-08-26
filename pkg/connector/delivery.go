@@ -230,26 +230,6 @@ func (r ManagedPartReservationRequest) Validate() error {
 	return nil
 }
 
-// ManagedPartReservation is the narrow PostgreSQL-backed capability bound to
-// one admitted plan. A destination must not perform managed part writes until
-// this capability has been supplied by the coordinator.
-type ManagedPartReservation interface {
-	ReservationID() string
-	// GuardPartWrite holds the PostgreSQL budget and reservation locks across
-	// the irreversible insert and its durable progress transition. Reclaim can
-	// therefore never release an authorization already handed to a stale writer.
-	GuardPartWrite(context.Context, ManagedPartIdentity, func(context.Context) error) error
-}
-
-// ManagedPartReservationPrepared is implemented only by managed append plans
-// whose external operations consume a shared part budget.
-type ManagedPartReservationPrepared interface {
-	PreparedManagedTransaction
-	PartReservationRequest() (ManagedPartReservationRequest, error)
-	ObservePartReservation(context.Context, bool) (ManagedPartReservationObservation, error)
-	BindPartReservation(ManagedPartReservation) error
-}
-
 // ManagedPartReservationReconciler proves that neither endpoint contains any
 // fragment or receipt for an immutable logical batch before PostgreSQL releases
 // an abandoned reservation.

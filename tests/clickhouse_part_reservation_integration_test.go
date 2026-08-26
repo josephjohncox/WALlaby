@@ -14,6 +14,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/delivery"
 	"github.com/josephjohncox/wallaby/internal/flow"
+	"github.com/josephjohncox/wallaby/internal/partauthority"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -195,7 +196,7 @@ type reservationTestPrepared struct {
 	driver      *reservationTestDriver
 	intent      connector.DeliveryIntent
 	request     connector.ManagedPartReservationRequest
-	reservation connector.ManagedPartReservation
+	reservation *partauthority.Grant
 	failAfter   int
 }
 
@@ -205,7 +206,7 @@ func (p *reservationTestPrepared) PartReservationRequest() (connector.ManagedPar
 func (p *reservationTestPrepared) ObservePartReservation(_ context.Context, requireAbsent bool) (connector.ManagedPartReservationObservation, error) {
 	return p.driver.observe(p.intent, requireAbsent)
 }
-func (p *reservationTestPrepared) BindPartReservation(reservation connector.ManagedPartReservation) error {
+func (p *reservationTestPrepared) BindPartReservation(reservation *partauthority.Grant) error {
 	if reservation == nil || reservation.ReservationID() == "" {
 		return errors.New("reservation is required")
 	}

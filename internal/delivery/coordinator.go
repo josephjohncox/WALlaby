@@ -15,6 +15,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/bootstrap"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
+	"github.com/josephjohncox/wallaby/internal/partauthority"
 	"github.com/josephjohncox/wallaby/internal/schemabaseline"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -266,8 +267,8 @@ func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.Ru
 		return AckGrant{}, fmt.Errorf("validate managed target transaction: %w", err)
 	}
 	var reservationRequest *connector.ManagedPartReservationRequest
-	var reservationPrepared connector.ManagedPartReservationPrepared
-	if candidate, ok := prepared.(connector.ManagedPartReservationPrepared); ok {
+	var reservationPrepared partauthority.Prepared
+	if candidate, ok := prepared.(partauthority.Prepared); ok {
 		request, requestErr := candidate.PartReservationRequest()
 		if requestErr != nil {
 			return AckGrant{}, fmt.Errorf("validate managed part reservation: %w", requestErr)
@@ -287,7 +288,11 @@ func (c *Coordinator) DeliverTransaction(ctx context.Context, fence authority.Ru
 		if reservation == nil {
 			return AckGrant{}, errors.New("managed part reservation was not persisted")
 		}
-		if err := reservationPrepared.BindPartReservation(reservation); err != nil {
+		grant, grantErr := partauthority.NewGrant(reservation.ReservationID(), reservation.GuardPartWrite)
+		if grantErr != nil {
+			return AckGrant{}, fmt.Errorf("issue managed part authority: %w", grantErr)
+		}
+		if err := reservationPrepared.BindPartReservation(grant); err != nil {
 			return AckGrant{}, fmt.Errorf("bind managed part reservation: %w", err)
 		}
 		if c.hooks.AfterPartReservationCommit != nil {
@@ -878,7 +883,7 @@ WHERE reservation_id=$1 AND part_kind=$2 AND part_ordinal=$3 AND query_id=$4 AND
 	return nil
 }
 
-func (c *Coordinator) reserveManagedPartsTx(ctx context.Context, tx pgx.Tx, fence authority.RunFence, request connector.ManagedPartReservationRequest, observer connector.ManagedPartReservationPrepared) (*postgresPartReservation, error) {
+func (c *Coordinator) reserveManagedPartsTx(ctx context.Context, tx pgx.Tx, fence authority.RunFence, request connector.ManagedPartReservationRequest, observer partauthority.Prepared) (*postgresPartReservation, error) {
 	if err := request.Validate(); err != nil {
 		return nil, err
 	}
@@ -925,11 +930,11 @@ FOR UPDATE`, request.DestinationRevisionID, request.LogicalBatchID).Scan(&reserv
 	requireAbsent := !exists || state == "released"
 	observation, err := observer.ObservePartReservation(ctx, requireAbsent)
 	if err != nil {
-		telemetry.RecordClickHousePartAdmission(ctx, 0, 0, int64(request.Capacity), "observation")
+		telemetry.RecordClickHousePartRejection(ctx, "observation")
 		return nil, fmt.Errorf("observe managed ClickHouse part budget while locked: %w", err)
 	}
 	if observation.EndpointCount != 2 || !observation.Quiescent || requireAbsent && !observation.BatchAbsent || observation.ServerActiveParts > math.MaxInt64 {
-		telemetry.RecordClickHousePartAdmission(ctx, 0, 0, int64(request.Capacity), "quiescence")
+		telemetry.RecordClickHousePartRejection(ctx, "quiescence")
 		return nil, fmt.Errorf("%w: managed ClickHouse part observation is incomplete", connector.ErrDeliveryIndeterminate)
 	}
 	active := int64(observation.ServerActiveParts)
@@ -1113,7 +1118,7 @@ ORDER BY part_kind,part_ordinal,query_id`, reservationID)
 	return nil
 }
 
-func (c *Coordinator) prepareAttempt(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint, baselines connector.ManagedSchemaBaselinePayload, reservationRequest *connector.ManagedPartReservationRequest, reservationObserver connector.ManagedPartReservationPrepared) (uuid.UUID, connector.ManagedPartReservation, error) {
+func (c *Coordinator) prepareAttempt(ctx context.Context, fence authority.RunFence, intent connector.DeliveryIntent, checkpoint connector.Checkpoint, baselines connector.ManagedSchemaBaselinePayload, reservationRequest *connector.ManagedPartReservationRequest, reservationObserver partauthority.Prepared) (uuid.UUID, *postgresPartReservation, error) {
 	tx, err := c.pool.Begin(ctx)
 	if err != nil {
 		return uuid.Nil, nil, fmt.Errorf("begin delivery attempt: %w", err)

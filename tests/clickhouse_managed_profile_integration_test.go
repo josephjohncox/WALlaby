@@ -19,6 +19,7 @@ import (
 	"time"
 
 	chclient "github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/jackc/pgx/v5/pgxpool"
 	clickhousedest "github.com/josephjohncox/wallaby/connectors/destinations/clickhouse"
 	"github.com/josephjohncox/wallaby/internal/authority"
 	"github.com/josephjohncox/wallaby/internal/delivery"
@@ -158,12 +159,11 @@ func TestClickHouseManagedProfileDedupWindowEviction(t *testing.T) {
 	).Scan(&physicalBeforeReplay); err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := fixture.destination.PrepareTransaction(ctx, intent, transaction)
-	if err != nil {
-		t.Fatalf("prepare physical replay after window eviction: %v", err)
-	}
-	if _, err := prepared.Apply(ctx); err != nil {
-		t.Fatalf("physical replay after window eviction: %v", err)
+	// Replay through the real PostgreSQL coordinator. The durable receipt and
+	// physical insert_query_id evidence must prevent a new external write even
+	// after ClickHouse's finite block-deduplication window has been evicted.
+	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err != nil {
+		t.Fatalf("coordinated replay after window eviction: %v", err)
 	}
 	var physical int
 	if err := fixture.db.QueryRowContext(ctx,
@@ -172,8 +172,8 @@ func TestClickHouseManagedProfileDedupWindowEviction(t *testing.T) {
 	).Scan(&physical); err != nil {
 		t.Fatal(err)
 	}
-	if physical != physicalBeforeReplay+1 {
-		t.Fatalf("replay physical delta=%d, want exactly 1 (before=%d after=%d)", physical-physicalBeforeReplay, physicalBeforeReplay, physical)
+	if physical != physicalBeforeReplay {
+		t.Fatalf("coordinated replay physical delta=%d, want 0 (before=%d after=%d)", physical-physicalBeforeReplay, physicalBeforeReplay, physical)
 	}
 	if _, err := fixture.db.ExecContext(ctx,
 		"ALTER TABLE {database:Identifier}.{table:Identifier} MODIFY SETTING replicated_deduplication_window=1000",
@@ -585,14 +585,24 @@ func TestClickHouseManagedProfileKeeperFailureRecovery(t *testing.T) {
 }
 
 func TestClickHouseManagedProfileBackpressure(t *testing.T) {
-	fixture := newClickHouseManagedFixture(t, 1)
+	// One physical changelog insert plus its receipt requires capacity two.
+	fixture := newClickHouseManagedFixture(t, 2)
 	first := clickHouseManagedTransaction("backpressure", 1, []connector.Record{clickHouseManagedRecord("backpressure", connector.OpInsert, 1, map[string]any{"id": int64(1)})})
-	if _, err := fixture.destination.ApplyTransaction(context.Background(), clickHouseManagedIntent(t, first), first); err != nil {
+	firstIntent := transactionIntentForFence(t, fixture.fence, fixture.revision, first)
+	if _, err := fixture.coordinator.DeliverTransaction(context.Background(), fixture.fence, firstIntent, first, managedBaselinePayload(t, first), fixture.destination); err != nil {
 		t.Fatal(err)
 	}
 	second := clickHouseManagedTransaction("backpressure", 1, []connector.Record{clickHouseManagedRecord("backpressure", connector.OpInsert, 1, map[string]any{"id": int64(2)})})
-	if _, err := fixture.destination.ApplyTransaction(context.Background(), clickHouseManagedIntent(t, second), second); err == nil || !strings.Contains(err.Error(), "backpressure") {
+	secondIntent := transactionIntentForFence(t, fixture.fence, fixture.revision, second)
+	if _, err := fixture.coordinator.DeliverTransaction(context.Background(), fixture.fence, secondIntent, second, managedBaselinePayload(t, second), fixture.destination); err == nil || !strings.Contains(err.Error(), "backpressure") {
 		t.Fatalf("backpressure error=%v", err)
+	}
+	var completed int
+	if err := fixture.controlPool.QueryRow(context.Background(), `SELECT count(*) FROM managed_part_reservations WHERE destination_revision_id=$1 AND reservation_state='completed_pending_observation'`, fixture.revision).Scan(&completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed != 1 {
+		t.Fatalf("completed_pending_observation reservations=%d, want 1 charged reservation", completed)
 	}
 }
 
@@ -732,6 +742,7 @@ type clickHouseManagedFixture struct {
 	receiptsDDL     string
 	viewDDL         string
 	coordinator     *delivery.Coordinator
+	controlPool     *pgxpool.Pool
 	fence           authority.RunFence
 	revision        string
 }
@@ -798,7 +809,7 @@ logical_batch_id String, content_hash FixedString(64), source_position String, t
 begin_lsn String, commit_lsn String, end_lsn String, fragment_ordinal UInt64, record_ordinal UInt64,
 source_namespace String, source_table String, schema_version Int64, schema_fingerprint FixedString(64), schema_json String,
 operation LowCardinality(String), tombstone UInt8, key_json String, before_json String, after_json String,
-payload String, ddl_plan String, event_time DateTime64(9, 'UTC'), record_hash FixedString(64), wallaby_version UInt64
+payload String, ddl_plan String, event_time DateTime64(9, 'UTC'), insert_query_id String, record_hash FixedString(64), wallaby_version UInt64
 ) ENGINE=ReplicatedReplacingMergeTree('/clickhouse/tables/01/%s/%s','wallaby-it-1',wallaby_version)
 ORDER BY (destination_revision_id,logical_batch_id,fragment_ordinal,record_ordinal)
 SETTINGS replicated_deduplication_window=1000,replicated_deduplication_window_seconds=3600,
@@ -855,7 +866,7 @@ parts_to_delay_insert=100,parts_to_throw_insert=200,max_parts_in_total=1000`, da
 	authorityFixture := newPartReservationFixture(t, delivery.CoordinatorHooks{})
 	revision := "clickhouse-managed-" + suffix
 	authorityFixture.register(t, revision)
-	fixture.coordinator, fixture.fence, fixture.revision = authorityFixture.coordinator, authorityFixture.fence, revision
+	fixture.coordinator, fixture.controlPool, fixture.fence, fixture.revision = authorityFixture.coordinator, authorityFixture.pool, authorityFixture.fence, revision
 	fixture.destination = &clickHouseManagedTestDestination{Destination: &clickhousedest.Destination{}, coordinator: fixture.coordinator, fence: fixture.fence, revision: fixture.revision}
 	if err := fixture.destination.Open(ctx, fixture.spec); err != nil {
 		t.Fatalf("open managed ClickHouse destination: %v", err)

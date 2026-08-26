@@ -720,6 +720,45 @@ func TestManagedPartReservationPlanCountsChangelogAndReceipt(t *testing.T) {
 	}
 }
 
+func TestManagedPhysicalInsertIdentityBindsCoalescedAndSplitRows(t *testing.T) {
+	transaction := managedTestTransaction()
+	intent := managedTestIntent(t, transaction)
+	for _, test := range []struct {
+		name      string
+		rowsPer   int
+		fragments int
+	}{
+		{name: "coalesced", rowsPer: 100, fragments: 1},
+		{name: "split", rowsPer: 1, fragments: 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan, err := planManagedTransactionWithLimits(intent, transaction, managedPlanLimits{maxFragments: 8, maxRows: 100, maxBytes: 1 << 20, maxRowsPerInsert: test.rowsPer, maxBytesPerInsert: 1 << 20})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.Fragments) != test.fragments {
+				t.Fatalf("physical fragments=%d, want %d", len(plan.Fragments), test.fragments)
+			}
+			for _, fragment := range plan.Fragments {
+				for _, row := range fragment.Rows {
+					if row.InsertQueryID != fragment.QueryID {
+						t.Fatalf("row insert_query_id=%q, want %q", row.InsertQueryID, fragment.QueryID)
+					}
+					original := row.RecordHash
+					row.InsertQueryID += "-different"
+					changed, hashErr := managedRecordHash(row)
+					if hashErr != nil {
+						t.Fatal(hashErr)
+					}
+					if changed == original {
+						t.Fatal("record hash did not bind physical insert_query_id")
+					}
+				}
+			}
+		})
+	}
+}
+
 func managedTestTransaction() connector.SourceTransaction {
 	zone := time.FixedZone("EST", -5*60*60)
 	schema := connector.Schema{
