@@ -1564,6 +1564,15 @@ WITH candidates AS MATERIALIZED (
   ORDER BY manifest.created_at,manifest.destination_revision_id,manifest.logical_batch_id
   LIMIT $4
   FOR UPDATE OF manifest
+), deleted_part_events AS (
+  DELETE FROM managed_part_reservation_events AS event
+  USING managed_part_reservations AS reservation,candidates
+  WHERE event.reservation_id=reservation.reservation_id
+    AND reservation.flow_incarnation_id=$1
+    AND reservation.destination_revision_id=candidates.destination_revision_id
+    AND reservation.logical_batch_id=candidates.logical_batch_id
+    AND reservation.reservation_state='released'
+  RETURNING event.reservation_id
 ), deleted_part_identities AS (
   DELETE FROM managed_part_reservation_parts AS part
   USING managed_part_reservations AS reservation,candidates
@@ -1572,12 +1581,20 @@ WITH candidates AS MATERIALIZED (
     AND reservation.destination_revision_id=candidates.destination_revision_id
     AND reservation.logical_batch_id=candidates.logical_batch_id
     AND reservation.reservation_state='released'
+  RETURNING part.reservation_id
+), deleted_reservation_children AS MATERIALIZED (
+  SELECT
+    (SELECT count(*) FROM deleted_part_events) AS deleted_events,
+    (SELECT count(*) FROM deleted_part_identities) AS deleted_parts
 ), deleted_part_reservations AS (
-  DELETE FROM managed_part_reservations AS reservation USING candidates
+  DELETE FROM managed_part_reservations AS reservation
+  USING candidates,deleted_reservation_children
   WHERE reservation.flow_incarnation_id=$1
     AND reservation.destination_revision_id=candidates.destination_revision_id
     AND reservation.logical_batch_id=candidates.logical_batch_id
     AND reservation.reservation_state='released'
+    AND deleted_reservation_children.deleted_events>=0
+    AND deleted_reservation_children.deleted_parts>=0
 ), deleted_evidence AS (
   DELETE FROM delivery_attempt_evidence AS evidence
   USING delivery_attempts AS attempt,candidates

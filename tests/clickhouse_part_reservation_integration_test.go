@@ -436,3 +436,66 @@ func TestClickHousePartReservationCrashRecovery(t *testing.T) {
 		})
 	}
 }
+
+func TestClickHousePartReservationRetentionDeletesChildrenBeforeParent(t *testing.T) {
+	fixture := newPartReservationFixture(t, delivery.CoordinatorHooks{})
+	revision := fmt.Sprintf("clickhouse-parts-retention-%d", time.Now().UnixNano())
+	fixture.register(t, revision)
+	driver := newReservationTestDriver(4)
+
+	first := retentionTransaction("parts_retention", 920, "0/920", 20)
+	firstIntent := transactionIntentForFence(t, fixture.fence, revision, first)
+	firstGrant, err := fixture.coordinator.DeliverTransaction(fixture.ctx, fixture.fence, firstIntent, first, managedBaselinePayload(t, first), driver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.coordinator.CommitSourceFeedback(fixture.ctx, fixture.fence, firstGrant, &flushEvidenceTestSource{}); err != nil {
+		t.Fatal(err)
+	}
+
+	second := retentionTransaction("parts_retention", 930, "0/930", 21)
+	secondIntent := transactionIntentForFence(t, fixture.fence, revision, second)
+	secondGrant, err := fixture.coordinator.DeliverTransaction(fixture.ctx, fixture.fence, secondIntent, second, managedBaselinePayload(t, second), driver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.coordinator.CommitSourceFeedback(fixture.ctx, fixture.fence, secondGrant, &flushEvidenceTestSource{}); err != nil {
+		t.Fatal(err)
+	}
+
+	var reservationID, reservationState string
+	var eventCount, partCount int
+	if err := fixture.pool.QueryRow(fixture.ctx, `
+SELECT reservation.reservation_id::text,reservation.reservation_state,
+       (SELECT count(*) FROM managed_part_reservation_events AS event WHERE event.reservation_id=reservation.reservation_id),
+       (SELECT count(*) FROM managed_part_reservation_parts AS part WHERE part.reservation_id=reservation.reservation_id)
+FROM managed_part_reservations AS reservation
+WHERE reservation.flow_incarnation_id=$1
+  AND reservation.destination_revision_id=$2
+  AND reservation.logical_batch_id=$3`, fixture.fence.FlowIncarnationID, revision, firstIntent.LogicalBatchID).Scan(&reservationID, &reservationState, &eventCount, &partCount); err != nil {
+		t.Fatal(err)
+	}
+	if reservationState != "released" || eventCount == 0 || partCount == 0 {
+		t.Fatalf("released reservation state/events/parts=%s/%d/%d, want released/nonzero/nonzero", reservationState, eventCount, partCount)
+	}
+	if _, err := fixture.pool.Exec(fixture.ctx, `UPDATE delivery_manifests SET created_at=clock_timestamp()-interval '2 hours' WHERE flow_incarnation_id=$1 AND logical_batch_id=$2`, fixture.fence.FlowIncarnationID, firstIntent.LogicalBatchID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.coordinator.PruneTerminalDeliveryState(fixture.ctx, fixture.fence, time.Hour, 10); err != nil {
+		t.Fatal(err)
+	}
+
+	var retainedEvents, retainedParts, retainedReservation, retainedManifest, currentManifest int
+	if err := fixture.pool.QueryRow(fixture.ctx, `
+SELECT
+  (SELECT count(*) FROM managed_part_reservation_events WHERE reservation_id=$1::uuid),
+  (SELECT count(*) FROM managed_part_reservation_parts WHERE reservation_id=$1::uuid),
+  (SELECT count(*) FROM managed_part_reservations WHERE reservation_id=$1::uuid),
+  (SELECT count(*) FROM delivery_manifests WHERE flow_incarnation_id=$2 AND logical_batch_id=$3),
+  (SELECT count(*) FROM delivery_manifests WHERE flow_incarnation_id=$2 AND logical_batch_id=$4)`, reservationID, fixture.fence.FlowIncarnationID, firstIntent.LogicalBatchID, secondIntent.LogicalBatchID).Scan(&retainedEvents, &retainedParts, &retainedReservation, &retainedManifest, &currentManifest); err != nil {
+		t.Fatal(err)
+	}
+	if retainedEvents != 0 || retainedParts != 0 || retainedReservation != 0 || retainedManifest != 0 || currentManifest != 1 {
+		t.Fatalf("retained event/part/reservation/old-manifest/current-manifest=%d/%d/%d/%d/%d, want 0/0/0/0/1", retainedEvents, retainedParts, retainedReservation, retainedManifest, currentManifest)
+	}
+}
