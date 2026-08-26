@@ -4196,6 +4196,7 @@ type SnowflakePostgresStreamingConfig struct {
 	CleanupMaxObjects       *uint32                `protobuf:"varint,30,opt,name=cleanup_max_objects,json=cleanupMaxObjects,proto3,oneof" json:"cleanup_max_objects,omitempty"`
 	CleanupRetentionSeconds *uint32                `protobuf:"varint,31,opt,name=cleanup_retention_seconds,json=cleanupRetentionSeconds,proto3,oneof" json:"cleanup_retention_seconds,omitempty"`
 	ChannelNamePrefix       string                 `protobuf:"bytes,32,opt,name=channel_name_prefix,json=channelNamePrefix,proto3" json:"channel_name_prefix,omitempty"`
+	RequestJournalCreatedOn string                 `protobuf:"bytes,33,opt,name=request_journal_created_on,json=requestJournalCreatedOn,proto3" json:"request_journal_created_on,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -4443,6 +4444,13 @@ func (x *SnowflakePostgresStreamingConfig) GetCleanupRetentionSeconds() uint32 {
 func (x *SnowflakePostgresStreamingConfig) GetChannelNamePrefix() string {
 	if x != nil {
 		return x.ChannelNamePrefix
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStreamingConfig) GetRequestJournalCreatedOn() string {
+	if x != nil {
+		return x.RequestJournalCreatedOn
 	}
 	return ""
 }
@@ -6273,7 +6281,7 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"J\x04\b\n" +
 	"\x10\vJ\x04\b\f\x10\rJ\x04\b\x0e\x10\x0fR\n" +
 	"stage_pathR\twarehouseR\rcopy_on_writeR\fcopy_patternR\rcopy_on_errorR\n" +
-	"copy_purgeR\x19copy_match_by_column_nameR\bmetadataR\rtype_mappings\"\xc6\r\n" +
+	"copy_purgeR\x19copy_match_by_column_nameR\bmetadataR\rtype_mappings\"\x83\x0e\n" +
 	" SnowflakePostgresStreamingConfig\x12\x10\n" +
 	"\x03dsn\x18\x01 \x01(\tR\x03dsn\x126\n" +
 	"\x17destination_revision_id\x18\x02 \x01(\tR\x15destinationRevisionId\x12\x1c\n" +
@@ -6308,7 +6316,8 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\x13cleanup_max_objects\x18\x1e \x01(\rH\n" +
 	"R\x11cleanupMaxObjects\x88\x01\x01\x12?\n" +
 	"\x19cleanup_retention_seconds\x18\x1f \x01(\rH\vR\x17cleanupRetentionSeconds\x88\x01\x01\x12.\n" +
-	"\x13channel_name_prefix\x18  \x01(\tR\x11channelNamePrefixB\x17\n" +
+	"\x13channel_name_prefix\x18  \x01(\tR\x11channelNamePrefix\x12;\n" +
+	"\x1arequest_journal_created_on\x18! \x01(\tR\x17requestJournalCreatedOnB\x17\n" +
 	"\x15_max_transaction_rowsB\x18\n" +
 	"\x16_max_transaction_bytesB\x1c\n" +
 	"\x1a_max_transaction_fragmentsB\x10\n" +

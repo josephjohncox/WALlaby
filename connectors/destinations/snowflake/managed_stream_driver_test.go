@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -165,12 +166,14 @@ func TestStreamDriverThrottlingBacksOffAndConverges(t *testing.T) {
 	proto := newFakeStreamProtocol()
 	proto.appendThrottleTimes = 3
 	driver := newStreamTestDriver(cfg, proto)
+	backoffs := 0
+	driver.sleep = func(context.Context, time.Duration) error { backoffs++; return nil }
 
 	if _, err := driver.apply(context.Background(), intent, transaction); err != nil {
 		t.Fatalf("apply under throttling: %v", err)
 	}
-	if proto.insertCalls != 1 {
-		t.Fatalf("throttling failed to converge: insertCalls=%d", proto.insertCalls)
+	if proto.insertCalls != 1 || backoffs != 3 {
+		t.Fatalf("throttling failed to converge: insertCalls/backoffs=%d/%d, want 1/3", proto.insertCalls, backoffs)
 	}
 }
 
@@ -194,6 +197,23 @@ func TestStreamDriverCommitThenLostResponseConvergesWithoutDuplicate(t *testing.
 // A lost response is reconciled from the exact durable request before target
 // visibility catches up. The driver polls the committed request and never sends
 // a duplicate append.
+func TestStreamDriverAcceptedThenEOFConvergesWithoutDuplicate(t *testing.T) {
+	cfg, transaction, intent, plan := streamTestFixture(t)
+	proto := newFakeStreamProtocol()
+	proto.appendCommitsThenEOF = true
+	if _, err := newStreamTestDriver(cfg, proto).apply(context.Background(), intent, transaction); err != nil {
+		t.Fatalf("accepted then EOF recovery: %v", err)
+	}
+	if proto.appendCalls != 1 || proto.insertCalls != 1 {
+		t.Fatalf("accepted then EOF append/receipt=%d/%d, want 1/1", proto.appendCalls, proto.insertCalls)
+	}
+	for _, hash := range plan.rowHashes {
+		if proto.committed[hash].count != 1 {
+			t.Fatalf("accepted then EOF duplicated row %s", hash)
+		}
+	}
+}
+
 func TestStreamDriverLostResponseWithLaggingObservationConvergesOnce(t *testing.T) {
 	cfg, transaction, intent, _ := streamTestFixture(t)
 	proto := newFakeStreamProtocol()
@@ -281,6 +301,20 @@ func TestStreamDriverIncompleteObservationIsIndeterminate(t *testing.T) {
 	}
 }
 
+func TestStreamDriverContradictoryAbsenceFailsConflict(t *testing.T) {
+	cfg, transaction, intent, _ := streamTestFixture(t)
+	proto := newFakeStreamProtocol()
+	proto.appendUnknownOnce = io.EOF
+	proto.requestStatusContradictoryAbsent = true
+	_, err := newStreamTestDriver(cfg, proto).apply(context.Background(), intent, transaction)
+	if !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("contradictory absence error=%v, want conflict", err)
+	}
+	if proto.appendCalls != 1 || proto.insertCalls != 0 {
+		t.Fatalf("contradictory absence append/receipt=%d/%d", proto.appendCalls, proto.insertCalls)
+	}
+}
+
 func TestStreamDriverMissingCommittedTokenIsIndeterminate(t *testing.T) {
 	cfg, transaction, intent, _ := streamTestFixture(t)
 	proto := newFakeStreamProtocol()
@@ -295,6 +329,13 @@ func TestStreamDriverMissingCommittedTokenIsIndeterminate(t *testing.T) {
 	}
 	if !errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("missing committed token must be indeterminate, got %v", err)
+	}
+	proto.statusSuppressCommittedToken = false
+	if _, err := newStreamTestDriver(cfg, proto).apply(context.Background(), intent, transaction); err != nil {
+		t.Fatalf("restart after missing token later committed: %v", err)
+	}
+	if proto.appendCalls != 1 || proto.insertCalls != 1 {
+		t.Fatalf("missing-token restart append/receipt=%d/%d, want 1/1", proto.appendCalls, proto.insertCalls)
 	}
 }
 
@@ -445,49 +486,86 @@ func TestStreamRequestProcessRestartEvidence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		encoded, err := json.Marshal(snapshot{RequestID: request.requestID, ChannelRevision: request.channelRevision, Continuation: request.inputContinuation, Attempt: request.attempt, Phase: string(streamRequestSendingUnknown)})
+		phase := os.Getenv("WALLABY_STREAM_REQUEST_PHASE")
+		encoded, err := json.Marshal(snapshot{RequestID: request.requestID, ChannelRevision: request.channelRevision, Continuation: request.inputContinuation, Attempt: request.attempt, Phase: phase})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(os.Getenv("WALLABY_STREAM_REQUEST_STATE"), encoded, 0o600); err != nil {
+		file, err := os.OpenFile(os.Getenv("WALLABY_STREAM_REQUEST_STATE"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
 			t.Fatal(err)
 		}
-		return
+		if _, err := file.Write(encoded); err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(os.Getenv("WALLABY_STREAM_REQUEST_READY"), []byte("ready"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			time.Sleep(time.Hour)
+		}
 	}
-	path := t.TempDir() + "/request.json"
-	cmd := exec.Command(os.Args[0], "-test.run=^TestStreamRequestProcessRestartEvidence$")
-	cmd.Env = append(os.Environ(), "WALLABY_STREAM_REQUEST_CHILD=1", "WALLABY_STREAM_REQUEST_STATE="+path)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("request child: %v\n%s", err, output)
-	}
-	var durable snapshot
-	encoded, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(encoded, &durable); err != nil {
-		t.Fatal(err)
-	}
-	cfg, transaction, intent, plan := streamTestFixture(t)
-	request, err := newManagedStreamRequest(plan, streamChannelStatus{valid: true, channelName: plan.identity.channelName, channelRevision: durable.ChannelRevision, pipeRevision: "pipe-rev-1", continuationToken: durable.Continuation}, durable.Attempt)
-	if err != nil || request.requestID != durable.RequestID || durable.Phase != string(streamRequestSendingUnknown) {
-		t.Fatalf("durable request mismatch request/snapshot/error=%+v/%+v/%v", request, durable, err)
-	}
-	request.phase = streamRequestSendingUnknown
-	request.phaseVersion = 2
-	proto := newFakeStreamProtocol()
-	proto.channels[request.channelName] = &fakeStreamChannel{revision: request.channelRevision, pipeRevision: request.pipeRevision, continuationToken: "cont-1-committed", committedOffsetToken: request.requestedOffset}
-	proto.requests[request.requestID] = request
-	proto.requestByBatch[fakeRequestBatchKey(streamRequestKey{flowIncarnationID: request.flowIncarnationID, destinationRevisionID: request.destinationRevisionID, logicalBatchID: request.logicalBatchID})] = request.requestID
-	proto.requestStatus[request.requestID] = streamRequestStatusCommitted
-	for _, hash := range plan.rowHashes {
-		proto.committed[hash] = &fakeCommittedRow{logicalBatchID: request.logicalBatchID, count: 1}
-	}
-	if _, err := newStreamTestDriver(cfg, proto).apply(context.Background(), intent, transaction); err != nil {
-		t.Fatalf("restart adoption: %v", err)
-	}
-	if proto.appendCalls != 0 || proto.insertCalls != 1 {
-		t.Fatalf("restart append/receipt=%d/%d, want 0/1", proto.appendCalls, proto.insertCalls)
+	for _, phase := range []streamRequestPhase{streamRequestSendingUnknown, streamRequestAccepted} {
+		t.Run(string(phase), func(t *testing.T) {
+			dir := t.TempDir()
+			path, ready := dir+"/request.json", dir+"/ready"
+			cmd := exec.Command(os.Args[0], "-test.run=^TestStreamRequestProcessRestartEvidence$")
+			cmd.Env = append(os.Environ(), "WALLABY_STREAM_REQUEST_CHILD=1", "WALLABY_STREAM_REQUEST_STATE="+path, "WALLABY_STREAM_REQUEST_READY="+ready, "WALLABY_STREAM_REQUEST_PHASE="+string(phase))
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				if _, err := os.Stat(ready); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					_ = cmd.Process.Kill()
+					t.Fatal("request helper did not persist its crash boundary")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if err := cmd.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Wait(); err == nil {
+				t.Fatal("request helper unexpectedly exited without SIGKILL")
+			}
+			var durable snapshot
+			encoded, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(encoded, &durable); err != nil {
+				t.Fatal(err)
+			}
+			cfg, transaction, intent, plan := streamTestFixture(t)
+			request, err := newManagedStreamRequest(plan, streamChannelStatus{valid: true, channelName: plan.identity.channelName, channelRevision: durable.ChannelRevision, pipeRevision: "pipe-rev-1", continuationToken: durable.Continuation}, durable.Attempt)
+			if err != nil || request.requestID != durable.RequestID || durable.Phase != string(phase) {
+				t.Fatalf("durable request mismatch request/snapshot/error=%+v/%+v/%v", request, durable, err)
+			}
+			request.phase, request.phaseVersion = phase, 2
+			proto := newFakeStreamProtocol()
+			proto.channels[request.channelName] = &fakeStreamChannel{revision: request.channelRevision, pipeRevision: request.pipeRevision, continuationToken: "cont-1-committed", committedOffsetToken: request.requestedOffset}
+			proto.requests[request.requestID] = request
+			proto.requestByBatch[fakeRequestBatchKey(streamRequestKey{flowIncarnationID: request.flowIncarnationID, destinationRevisionID: request.destinationRevisionID, logicalBatchID: request.logicalBatchID})] = request.requestID
+			proto.requestStatus[request.requestID] = streamRequestStatusCommitted
+			for _, hash := range plan.rowHashes {
+				proto.committed[hash] = &fakeCommittedRow{logicalBatchID: request.logicalBatchID, count: 1}
+			}
+			if _, err := newStreamTestDriver(cfg, proto).apply(context.Background(), intent, transaction); err != nil {
+				t.Fatalf("restart adoption: %v", err)
+			}
+			if proto.appendCalls != 0 || proto.insertCalls != 1 {
+				t.Fatalf("restart append/receipt=%d/%d, want 0/1", proto.appendCalls, proto.insertCalls)
+			}
+		})
 	}
 }
 
@@ -517,24 +595,73 @@ func TestStreamRequestDivergenceFailsConflictWithoutResend(t *testing.T) {
 	}
 }
 
+func TestStreamSendBoundaryCASAdmitsExactlyOneAppend(t *testing.T) {
+	cfg, transaction, intent, _ := streamTestFixture(t)
+	proto := newFakeStreamProtocol()
+	claimed := make(chan struct{})
+	release := make(chan struct{})
+	winner := newStreamDriver(proto, cfg, "catalog-fingerprint", streamingHooks{AfterSendClaim: func() error {
+		close(claimed)
+		<-release
+		return nil
+	}})
+	winner.sleep = func(context.Context, time.Duration) error { return nil }
+	winnerErr := make(chan error, 1)
+	go func() {
+		_, err := winner.apply(context.Background(), intent, transaction)
+		winnerErr <- err
+	}()
+	<-claimed
+	loser := newStreamTestDriver(cfg, proto)
+	if _, err := loser.apply(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("send-CAS loser error=%v, want reconciliation-only indeterminate", err)
+	}
+	proto.mu.Lock()
+	appendCallsBeforeRelease := proto.appendCalls
+	proto.mu.Unlock()
+	if appendCallsBeforeRelease != 0 {
+		t.Fatalf("send-CAS loser appended %d times before owner release", appendCallsBeforeRelease)
+	}
+	close(release)
+	if err := <-winnerErr; err != nil {
+		t.Fatalf("send-CAS winner: %v", err)
+	}
+	if _, err := loser.apply(context.Background(), intent, transaction); err != nil {
+		t.Fatalf("send-CAS loser receipt adoption: %v", err)
+	}
+	proto.mu.Lock()
+	defer proto.mu.Unlock()
+	if proto.appendCalls != 1 || proto.insertCalls != 1 {
+		t.Fatalf("send-CAS append/receipt calls=%d/%d, want 1/1", proto.appendCalls, proto.insertCalls)
+	}
+}
+
 func TestStreamChannelStateCASRejectsStaleAndRegressedWriters(t *testing.T) {
 	cfg, _, _, plan := streamTestFixture(t)
 	proto := newFakeStreamProtocol()
 	key := streamChannelStateKey{flowIncarnationID: plan.receipt.flowIncarnationID, destinationRevisionID: plan.receipt.destinationRevisionID, channelName: plan.identity.channelName}
 	state := managedStreamChannelState{flowIncarnationID: key.flowIncarnationID, destinationRevisionID: key.destinationRevisionID, channelName: key.channelName, pipeName: cfg.pipe, pipeRevision: "pipe-1", channelRevision: 2, continuationToken: "cont-2", stateVersion: 1}
-	if _, applied, err := proto.CompareAndSwapChannelState(context.Background(), cfg, 0, state); err != nil || !applied {
+	if _, applied, err := proto.CompareAndSwapChannelState(context.Background(), cfg, managedStreamChannelState{}, state); err != nil || !applied {
 		t.Fatalf("initial CAS applied/error=%t/%v", applied, err)
 	}
 	stale := state
 	stale.stateVersion = 2
-	if _, applied, err := proto.CompareAndSwapChannelState(context.Background(), cfg, 0, stale); err != nil || applied {
+	if _, applied, err := proto.CompareAndSwapChannelState(context.Background(), cfg, managedStreamChannelState{}, stale); err != nil || applied {
 		t.Fatalf("stale CAS applied/error=%t/%v", applied, err)
 	}
 	regressed := state
 	regressed.stateVersion = 2
 	regressed.channelRevision = 1
-	if _, applied, err := proto.CompareAndSwapChannelState(context.Background(), cfg, 1, regressed); err != nil || applied {
+	if _, applied, err := proto.CompareAndSwapChannelState(context.Background(), cfg, state, regressed); err != nil || applied {
 		t.Fatalf("regressed CAS applied/error=%t/%v", applied, err)
+	}
+	divergentExpected := state
+	divergentExpected.continuationToken = "stale-continuation"
+	candidate := state
+	candidate.stateVersion = 2
+	candidate.continuationToken = "cont-3"
+	if _, applied, err := proto.CompareAndSwapChannelState(context.Background(), cfg, divergentExpected, candidate); err != nil || applied {
+		t.Fatalf("divergent prior-token CAS applied/error=%t/%v", applied, err)
 	}
 }
 
@@ -542,7 +669,7 @@ func TestStreamChannelStateCASConcurrentWritersAdmitOne(t *testing.T) {
 	cfg, _, _, plan := streamTestFixture(t)
 	proto := newFakeStreamProtocol()
 	base := managedStreamChannelState{flowIncarnationID: plan.receipt.flowIncarnationID, destinationRevisionID: plan.receipt.destinationRevisionID, channelName: plan.identity.channelName, pipeName: cfg.pipe, pipeRevision: "pipe-1", channelRevision: 1, continuationToken: "cont-1", stateVersion: 1}
-	if _, applied, err := proto.CompareAndSwapChannelState(context.Background(), cfg, 0, base); err != nil || !applied {
+	if _, applied, err := proto.CompareAndSwapChannelState(context.Background(), cfg, managedStreamChannelState{}, base); err != nil || !applied {
 		t.Fatalf("initial CAS applied/error=%t/%v", applied, err)
 	}
 	var wg sync.WaitGroup
@@ -555,7 +682,7 @@ func TestStreamChannelStateCASConcurrentWritersAdmitOne(t *testing.T) {
 			candidate.stateVersion = 2
 			candidate.channelRevision = 2
 			candidate.continuationToken = "cont-2-" + string(rune('a'+index))
-			_, applied, _ := proto.CompareAndSwapChannelState(context.Background(), cfg, 1, candidate)
+			_, applied, _ := proto.CompareAndSwapChannelState(context.Background(), cfg, base, candidate)
 			results <- applied
 		}(index)
 	}
@@ -591,6 +718,25 @@ func TestStreamDriverCleanupRefusesUnresolvedRequest(t *testing.T) {
 	}
 	if proto.deleteCalls != 0 {
 		t.Fatalf("cleanup deleted channel state with unresolved request: %d", proto.deleteCalls)
+	}
+}
+
+func TestStreamDriverCleanupRetriesReceiptCommittedDeletion(t *testing.T) {
+	cfg, transaction, intent, plan := streamTestFixture(t)
+	proto := newFakeStreamProtocol()
+	driver := newStreamTestDriver(cfg, proto)
+	if _, err := driver.apply(context.Background(), intent, transaction); err != nil {
+		t.Fatal(err)
+	}
+	proto.releaseDeleteFailsOnce = true
+	if _, err := driver.cleanup(context.Background(), intent.FlowIncarnationID); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("incomplete cleanup error=%v, want indeterminate", err)
+	}
+	if _, found, _ := proto.LookupChannelState(context.Background(), cfg, streamChannelStateKey{flowIncarnationID: plan.receipt.flowIncarnationID, destinationRevisionID: plan.receipt.destinationRevisionID, channelName: plan.identity.channelName}); !found {
+		t.Fatal("incomplete cleanup removed channel state")
+	}
+	if released, err := driver.cleanup(context.Background(), intent.FlowIncarnationID); err != nil || released != 1 {
+		t.Fatalf("cleanup retry released/error=%d/%v, want 1/nil", released, err)
 	}
 }
 

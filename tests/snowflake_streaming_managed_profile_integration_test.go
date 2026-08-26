@@ -100,7 +100,7 @@ func newSnowflakeStreamingManagedFixture(t *testing.T) *snowflakeStreamingManage
 		"managed_receipts_table": "WALLABY_SF_STREAM_RECEIPTS_" + suffix, "managed_channel_state_table": "WALLABY_SF_STREAM_CHANNELS_" + suffix,
 		"managed_channel_name_prefix": "wallaby_stream", "managed_owner_role": ownerRole, "managed_execution_role": role, "managed_warehouse": warehouse,
 		"managed_snowflake_version": version, "managed_pipe_created_on": created, "managed_target_created_on": created,
-		"managed_receipts_created_on": created, "managed_channel_state_created_on": created,
+		"managed_receipts_created_on": created, "managed_channel_state_created_on": created, "managed_request_journal_created_on": created,
 		"managed_source_schema": "public", "managed_source_table": "widgets",
 		"managed_schema_contract": string(schemaJSON), "managed_schema_contract_hash": schemaHash,
 		"managed_max_transaction_rows": "1000", "managed_max_transaction_bytes": "8388608",

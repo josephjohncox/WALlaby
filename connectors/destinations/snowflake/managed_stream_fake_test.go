@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -50,19 +51,22 @@ type fakeStreamProtocol struct {
 	appendedPayloads [][]byte
 
 	// Fault knobs.
-	openFailsOnce                error // OpenChannel fails once without opening.
-	appendInvalidateThenReopen   bool  // First AppendRows reports a stale channel; reopen bumps the revision.
-	appendAuthExpiresOnce        bool  // First AppendRows reports an expired ingest credential.
-	appendThrottleTimes          int   // The next N AppendRows report backpressure.
-	appendUnknownOnce            error // AppendRows returns one ambiguous transport error without status.
-	appendDefinitelyAbsentOnce   bool  // AppendRows proves that one request was not accepted.
-	appendCommitsThenThrottle    bool  // AppendRows commits the rows, then reports a lost/throttled response.
-	appendRejectsRows            bool  // AppendRows returns per-row rejections.
-	insertCommitsThenDuplicate   bool  // InsertReceipt commits, then reports a duplicate (concurrent owner).
-	statusSuppressCommittedToken bool  // ChannelStatus withholds the committed offset token.
-	requestStatusUnknownTimes    int   // Authoritative request status remains unknown for N polls.
-	requestStatusDivergent       bool  // Authoritative request status returns conflicting identity.
-	commitVisibilityDelay        int   // Committed rows become visible only after this many ObserveCommittedRows calls.
+	openFailsOnce                    error // OpenChannel fails once without opening.
+	appendInvalidateThenReopen       bool  // First AppendRows reports a stale channel; reopen bumps the revision.
+	appendAuthExpiresOnce            bool  // First AppendRows reports an expired ingest credential.
+	appendThrottleTimes              int   // The next N AppendRows report backpressure.
+	appendUnknownOnce                error // AppendRows returns one ambiguous transport error without status.
+	appendDefinitelyAbsentOnce       bool  // AppendRows proves that one request was not accepted.
+	appendCommitsThenThrottle        bool  // AppendRows commits the rows, then reports a lost/throttled response.
+	appendCommitsThenEOF             bool  // AppendRows commits the rows, then loses the response with EOF.
+	appendRejectsRows                bool  // AppendRows returns per-row rejections.
+	insertCommitsThenDuplicate       bool  // InsertReceipt commits, then reports a duplicate (concurrent owner).
+	statusSuppressCommittedToken     bool  // ChannelStatus withholds the committed offset token.
+	requestStatusUnknownTimes        int   // Authoritative request status remains unknown for N polls.
+	requestStatusDivergent           bool  // Authoritative request status returns conflicting identity.
+	requestStatusContradictoryAbsent bool  // Proven absence incorrectly carries commit evidence.
+	releaseDeleteFailsOnce           bool  // Release receipt commits but channel deletion response is incomplete.
+	commitVisibilityDelay            int   // Committed rows become visible only after this many ObserveCommittedRows calls.
 
 	// Observability counters.
 	openCalls, appendCalls, statusCalls, observeCalls, upsertCalls, insertCalls, deleteCalls int
@@ -147,6 +151,9 @@ func (f *fakeStreamProtocol) AppendRows(_ context.Context, req streamAppendReque
 	if f.appendUnknownOnce != nil {
 		err := f.appendUnknownOnce
 		f.appendUnknownOnce = nil
+		if f.requestStatusContradictoryAbsent {
+			f.requestStatus[req.requestID] = streamRequestStatusProvenAbsent
+		}
 		return streamAppendResult{}, err
 	}
 	if f.appendDefinitelyAbsentOnce {
@@ -193,6 +200,10 @@ func (f *fakeStreamProtocol) AppendRows(_ context.Context, req streamAppendReque
 		f.appendCommitsThenThrottle = false
 		return streamAppendResult{}, errStreamThrottled
 	}
+	if f.appendCommitsThenEOF {
+		f.appendCommitsThenEOF = false
+		return streamAppendResult{}, io.EOF
+	}
 	return streamAppendResult{disposition: streamAppendAccepted, requestID: req.requestID, continuationToken: channel.continuationToken, evidence: "accepted"}, nil
 }
 
@@ -230,13 +241,17 @@ func (f *fakeStreamProtocol) RequestStatus(_ context.Context, _ streamConfig, re
 		manifestHash: request.manifestHash, rowsContentHash: request.rowsContentHash, rowCount: request.rowCount,
 		detail: "fake authoritative request status",
 	}
+	if f.requestStatusContradictoryAbsent && status == streamRequestStatusProvenAbsent {
+		evidence.responseContinuation = channel.continuationToken
+		evidence.committedOffset = channel.committedOffsetToken
+	}
 	if f.requestStatusDivergent {
 		evidence.manifestHash = strings.Repeat("f", 64)
 		evidence.disposition = streamRequestStatusDivergent
 	}
-	if channel != nil {
+	if channel != nil && status == streamRequestStatusCommitted {
 		evidence.responseContinuation = channel.continuationToken
-		if status == streamRequestStatusCommitted && !f.statusSuppressCommittedToken {
+		if !f.statusSuppressCommittedToken {
 			evidence.committedOffset = channel.committedOffsetToken
 		}
 	}
@@ -259,20 +274,20 @@ func (f *fakeStreamProtocol) ObserveCommittedRows(_ context.Context, _ streamCon
 	return present, nil
 }
 
-func (f *fakeStreamProtocol) CompareAndSwapChannelState(_ context.Context, _ streamConfig, expectedVersion int64, state managedStreamChannelState) (managedStreamChannelState, bool, error) {
+func (f *fakeStreamProtocol) CompareAndSwapChannelState(_ context.Context, _ streamConfig, expected managedStreamChannelState, state managedStreamChannelState) (managedStreamChannelState, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.upsertCalls++
 	key := fakeChannelStateKey(streamChannelStateKey{flowIncarnationID: state.flowIncarnationID, destinationRevisionID: state.destinationRevisionID, channelName: state.channelName})
 	current, found := f.channelState[key]
 	if !found {
-		if expectedVersion != 0 || state.stateVersion != 1 {
+		if expected.stateVersion != 0 || state.stateVersion != 1 {
 			return managedStreamChannelState{}, false, nil
 		}
 		f.channelState[key] = state
 		return state, true, nil
 	}
-	if current.stateVersion != expectedVersion || state.stateVersion != expectedVersion+1 || state.channelRevision < current.channelRevision {
+	if current.stateVersion != expected.stateVersion || current.channelRevision != expected.channelRevision || current.continuationToken != expected.continuationToken || current.committedOffsetToken != expected.committedOffsetToken || current.logicalBatchID != expected.logicalBatchID || current.rowsContentHash != expected.rowsContentHash || state.stateVersion != expected.stateVersion+1 || state.channelRevision < current.channelRevision {
 		return current, false, nil
 	}
 	f.channelState[key] = state
@@ -401,7 +416,10 @@ func (f *fakeStreamProtocol) ListReleasableReceipts(_ context.Context, _ streamC
 			continue
 		}
 		if _, isReleased := released[receipt.externalID+":release"]; isReleased {
-			continue
+			key := fakeChannelStateKey(streamChannelStateKey{flowIncarnationID: receipt.flowIncarnationID, destinationRevisionID: receipt.destinationRevisionID, channelName: receipt.channelName})
+			if _, cleanupIncomplete := f.channelState[key]; !cleanupIncomplete {
+				continue
+			}
 		}
 		candidates = append(candidates, receipt)
 		if len(candidates) >= limit {
@@ -411,12 +429,29 @@ func (f *fakeStreamProtocol) ListReleasableReceipts(_ context.Context, _ streamC
 	return candidates, nil
 }
 
-func (f *fakeStreamProtocol) DeleteChannelState(_ context.Context, _ streamConfig, key streamChannelStateKey) error {
+func (f *fakeStreamProtocol) ReleaseChannelState(_ context.Context, _ streamConfig, expected managedStreamChannelState, release managedStreamReceipt) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	key := streamChannelStateKey{flowIncarnationID: expected.flowIncarnationID, destinationRevisionID: expected.destinationRevisionID, channelName: expected.channelName}
+	stored, found := f.channelState[fakeChannelStateKey(key)]
+	if !found || stored != expected {
+		return false, nil
+	}
+	for _, request := range f.requests {
+		unresolved := request.phase == streamRequestPrepared || request.phase == streamRequestSendingUnknown || request.phase == streamRequestAccepted || request.phase == streamRequestCommitted
+		if request.flowIncarnationID == key.flowIncarnationID && request.destinationRevisionID == key.destinationRevisionID && request.channelName == key.channelName && unresolved {
+			return false, fmt.Errorf("%w: cleanup channel has unresolved requests", connector.ErrDeliveryIndeterminate)
+		}
+	}
+	f.insertCalls++
+	f.receipts[fakeStreamReceiptPK(release)] = release
+	if f.releaseDeleteFailsOnce {
+		f.releaseDeleteFailsOnce = false
+		return false, fmt.Errorf("%w: injected incomplete channel deletion", connector.ErrDeliveryIndeterminate)
+	}
 	f.deleteCalls++
 	delete(f.channelState, fakeChannelStateKey(key))
-	return nil
+	return true, nil
 }
 
 // streamTestConfig returns an internally consistent streamConfig backed by the
@@ -434,7 +469,7 @@ func streamTestConfig(t testing.TB) streamConfig {
 		receiptsTable: "WALLABY_RECEIPTS", channelStateTable: "WALLABY_CHANNELS", channelNamePrefix: "wallaby_stream",
 		ownerRole: "WALLABY_OWNER", executionRole: "WALLABY_EXEC", warehouse: "WALLABY_WH", snowflakeVersion: "8.0.0",
 		pipeCreatedOn: "2026-01-01T00:00:00.000000000+00:00", targetCreatedOn: "2026-01-01T00:00:00.000000000+00:00",
-		receiptsCreatedOn: "2026-01-01T00:00:00.000000000+00:00", channelStateCreatedOn: "2026-01-01T00:00:00.000000000+00:00",
+		receiptsCreatedOn: "2026-01-01T00:00:00.000000000+00:00", channelStateCreatedOn: "2026-01-01T00:00:00.000000000+00:00", requestJournalCreatedOn: "2026-01-01T00:00:00.000000000+00:00",
 		sourceSchema: "public", sourceTable: "widgets", schemaContract: schema, schemaContractHash: hash,
 		destinationRevision: "snowflake-streaming-v1", maxTransactionRows: 1000, maxTransactionBytes: 8 << 20,
 		maxFragments: 128, maxRowBytes: 1 << 20, maxOpenConnections: 4, statementTimeoutSeconds: 600,

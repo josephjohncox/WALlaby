@@ -405,13 +405,13 @@ An absent receipt remains *not applied*. Target rows without a matching committe
 
 ### Provisioned objects
 
-The profile admits one append target table, pipe, receipt table, channel-state table, and request-journal table. The request journal uses the current schema only. It stores immutable request identity, producer fence, phase version, and response evidence. Existing blind-upsert channel schemas are rejected rather than upgraded.
+The profile admits one append target table, pipe, receipt table, channel-state table, and request-journal table. The channel and request authority objects are Hybrid Tables with enforced keys. The request journal uses the current schema only. It stores immutable request identity, producer fence, phase version, and response evidence. The configured request-journal creation timestamp is part of the destination identity. Existing blind-upsert or non-enforcing control schemas are rejected rather than upgraded.
 
 The profile requires key-pair JWT over verified HTTPS with OCSP fail-closed. It requires `READ_LATEST_WRITES=true`, `TIMEZONE=UTC`, and an inline-secret-free DSN. It rejects generated columns, generic staging options, DDL, arbitrary start LSNs, and multiple sinks.
 
 ### Cleanup and retention
 
-Channel state is released by a bounded cleanup pass keyed on durable append receipts. Cleanup refuses a channel while any request is unresolved. A batch without a receipt is never released.
+Channel state is released by a bounded cleanup pass keyed on durable append receipts. One transaction writes the release receipt and deletes only the exact channel-state version. The delete also checks that no request is unresolved. Cleanup retries deletion when a release receipt exists but channel state remains. A batch without an append receipt is never released.
 
 ### Evidence gate
 
@@ -424,6 +424,6 @@ WALLABY_TEST_SNOWFLAKE_VERSION='<reviewed version>' \
 just test-snowflake-streaming-commercial-unpromoted
 ```
 
-Credential-free tests cover request identity, pre-send persistence, ambiguous responses, visibility lag, restart adoption, proven-absence retry, CAS races, token conflict, target cardinality, receipt conflict, and cleanup refusal. These tests prove protocol logic only.
+Credential-free tests cover request identity, pre-send persistence, accepted-then-EOF recovery, visibility lag, SIGKILL restart adoption, proven-absence retry, send-boundary and channel CAS races, token conflict, row rejection evidence, target cardinality, receipt conflict, and atomic cleanup. These tests prove protocol logic only.
 
 The reviewed high-performance append transport is still absent. Commercial same-SHA delivery evidence does not exist. The profile remains experimental and **fails closed** at admission.

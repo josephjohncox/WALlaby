@@ -158,7 +158,7 @@ type streamStateStore interface {
 	// batch. This SQL observation — not any transport token — proves completeness.
 	ObserveCommittedRows(ctx context.Context, cfg streamConfig, logicalBatchID string, rowHashes []string) (map[string]int, error)
 	// CompareAndSwapChannelState persists monotonic channel evidence.
-	CompareAndSwapChannelState(ctx context.Context, cfg streamConfig, expectedVersion int64, state managedStreamChannelState) (managedStreamChannelState, bool, error)
+	CompareAndSwapChannelState(ctx context.Context, cfg streamConfig, expected managedStreamChannelState, state managedStreamChannelState) (managedStreamChannelState, bool, error)
 	// LookupChannelState returns the persisted channel evidence.
 	LookupChannelState(ctx context.Context, cfg streamConfig, key streamChannelStateKey) (managedStreamChannelState, bool, error)
 	// InsertRequest creates one immutable request identity before network I/O.
@@ -174,8 +174,9 @@ type streamStateStore interface {
 	// ListReleasableReceipts returns append receipts for one flow incarnation
 	// older than the retention window and not yet released, bounded by limit.
 	ListReleasableReceipts(ctx context.Context, cfg streamConfig, flowIncarnationID string, retention time.Duration, limit int) ([]managedStreamReceipt, error)
-	// DeleteChannelState removes one persisted channel-state row during cleanup.
-	DeleteChannelState(ctx context.Context, cfg streamConfig, key streamChannelStateKey) error
+	// ReleaseChannelState atomically writes the release receipt and conditionally
+	// deletes the exact channel-state version only when no unresolved request exists.
+	ReleaseChannelState(ctx context.Context, cfg streamConfig, expected managedStreamChannelState, release managedStreamReceipt) (bool, error)
 }
 
 type streamProtocol interface {
@@ -242,9 +243,9 @@ func (p *sqlStreamProtocol) ObserveCommittedRows(ctx context.Context, cfg stream
 	return present, nil
 }
 
-func (p *sqlStreamProtocol) CompareAndSwapChannelState(ctx context.Context, cfg streamConfig, expectedVersion int64, state managedStreamChannelState) (managedStreamChannelState, bool, error) {
+func (p *sqlStreamProtocol) CompareAndSwapChannelState(ctx context.Context, cfg streamConfig, expected managedStreamChannelState, state managedStreamChannelState) (managedStreamChannelState, bool, error) {
 	ctx, recordQueryID := managedSnowflakeQueryIDContext(ctx)
-	values := append(streamChannelStateValues(state), expectedVersion)
+	values := append(streamChannelStateValues(state), expected.stateVersion, expected.channelRevision, expected.continuationToken, expected.committedOffsetToken, expected.logicalBatchID, expected.rowsContentHash)
 	_, err := p.db.ExecContext(ctx, streamChannelStateMergeSQL(cfg), values...)
 	recordQueryID()
 	if err != nil {
@@ -312,6 +313,18 @@ func (p *sqlStreamProtocol) LookupRequest(ctx context.Context, cfg streamConfig,
 	request, err := scanStreamRequest(rows)
 	if err != nil {
 		return managedStreamRequest{}, false, fmt.Errorf("scan streaming Snowflake request: %w", err)
+	}
+	if rows.Next() {
+		previous, err := scanStreamRequest(rows)
+		if err != nil {
+			return managedStreamRequest{}, false, fmt.Errorf("scan prior streaming Snowflake request: %w", err)
+		}
+		if previous.attempt >= request.attempt || previous.phase != streamRequestProvenAbsent {
+			return managedStreamRequest{}, false, fmt.Errorf("%w: durable streaming request attempt history is divergent", connector.ErrDeliveryConflict)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return managedStreamRequest{}, false, fmt.Errorf("iterate streaming Snowflake requests: %w", err)
 	}
 	return request, true, nil
 }
@@ -400,11 +413,13 @@ func (p *sqlStreamProtocol) InsertReceipt(ctx context.Context, cfg streamConfig,
 
 func (p *sqlStreamProtocol) ListReleasableReceipts(ctx context.Context, cfg streamConfig, flowIncarnationID string, retention time.Duration, limit int) ([]managedStreamReceipt, error) {
 	table := managedSnowflakeStreamQualifiedTable(cfg, cfg.receiptsTable)
-	// #nosec G202 -- the receipts table identifier is composed only of validated unquoted uppercase identifiers; all values are bound parameters.
+	channelTable := managedSnowflakeStreamQualifiedTable(cfg, cfg.channelStateTable)
+	// #nosec G202 -- both table identifiers are composed only of validated unquoted uppercase identifiers; all values are bound parameters.
 	query := "SELECT " + streamReceiptColumnsQualified("L") + " FROM " + table + " AS L" +
 		" WHERE L.\"RECEIPT_KIND\" = ? AND L.\"FLOW_INCARNATION_ID\" = ? AND L.\"RECEIPT_STATUS\" = ?" +
 		" AND L.\"COMMITTED_AT\" < DATEADD('second', ?, CURRENT_TIMESTAMP())" +
-		" AND NOT EXISTS (SELECT 1 FROM " + table + " AS R WHERE R.\"RECEIPT_KIND\" = ? AND R.\"EXTERNAL_ID\" = L.\"EXTERNAL_ID\" || ':release')" +
+		" AND (NOT EXISTS (SELECT 1 FROM " + table + " AS R WHERE R.\"RECEIPT_KIND\" = ? AND R.\"EXTERNAL_ID\" = L.\"EXTERNAL_ID\" || ':release')" +
+		" OR EXISTS (SELECT 1 FROM " + channelTable + " AS C WHERE C.\"FLOW_INCARNATION_ID\" = L.\"FLOW_INCARNATION_ID\" AND C.\"DESTINATION_REVISION_ID\" = L.\"DESTINATION_REVISION_ID\" AND C.\"CHANNEL_NAME\" = L.\"CHANNEL_NAME\"))" +
 		" ORDER BY L.\"COMMITTED_AT\" LIMIT " + strconv.Itoa(limit)
 	rows, err := p.db.QueryContext(ctx, query,
 		streamReceiptKindAppend, flowIncarnationID, streamStatusCommitted,
@@ -428,12 +443,43 @@ func (p *sqlStreamProtocol) ListReleasableReceipts(ctx context.Context, cfg stre
 	return receipts, nil
 }
 
-func (p *sqlStreamProtocol) DeleteChannelState(ctx context.Context, cfg streamConfig, key streamChannelStateKey) error {
-	ctx, recordQueryID := managedSnowflakeQueryIDContext(ctx)
-	_, err := p.db.ExecContext(ctx, streamChannelStateDeleteSQL(cfg), key.flowIncarnationID, key.destinationRevisionID, key.channelName)
-	recordQueryID()
+func (p *sqlStreamProtocol) ReleaseChannelState(ctx context.Context, cfg streamConfig, expected managedStreamChannelState, release managedStreamReceipt) (bool, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("delete streaming Snowflake channel state: %w", err)
+		return false, fmt.Errorf("begin streaming Snowflake channel release: %w", err)
 	}
-	return nil
+	defer func() { _ = tx.Rollback() }()
+	key := streamChannelStateKey{flowIncarnationID: expected.flowIncarnationID, destinationRevisionID: expected.destinationRevisionID, channelName: expected.channelName}
+	current, err := scanStreamChannelState(tx.QueryRowContext(ctx, streamChannelStateLookupSQL(cfg), key.flowIncarnationID, key.destinationRevisionID, key.channelName))
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("%w: cleanup channel state disappeared before release", connector.ErrDeliveryConflict)
+	}
+	if err != nil {
+		return false, fmt.Errorf("read streaming Snowflake cleanup channel state: %w", err)
+	}
+	if current != expected {
+		return false, fmt.Errorf("%w: cleanup channel state changed before release", connector.ErrDeliveryConflict)
+	}
+	var unresolved int64
+	if err := tx.QueryRowContext(ctx, streamRequestUnresolvedSQL(cfg), key.flowIncarnationID, key.destinationRevisionID, key.channelName).Scan(&unresolved); err != nil {
+		return false, fmt.Errorf("read unresolved streaming Snowflake cleanup requests: %w", err)
+	}
+	if unresolved != 0 {
+		return false, fmt.Errorf("%w: cleanup channel has unresolved requests", connector.ErrDeliveryIndeterminate)
+	}
+	if _, err := tx.ExecContext(ctx, streamReceiptInsertSQL(cfg), streamReceiptValues(release)...); err != nil && !isStagedDuplicateKey(err) {
+		return false, fmt.Errorf("insert streaming Snowflake release receipt: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, streamChannelStateDeleteCASSQL(cfg), expected.flowIncarnationID, expected.destinationRevisionID, expected.channelName, expected.stateVersion, expected.channelRevision, expected.continuationToken, expected.committedOffsetToken, expected.logicalBatchID, expected.rowsContentHash, expected.flowIncarnationID, expected.destinationRevisionID, expected.channelName)
+	if err != nil {
+		return false, fmt.Errorf("delete streaming Snowflake channel state: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected != 1 {
+		return false, fmt.Errorf("%w: cleanup channel-state CAS affected %d rows", connector.ErrDeliveryIndeterminate, affected)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("%w: commit streaming Snowflake channel release: %w", connector.ErrDeliveryIndeterminate, err)
+	}
+	return true, nil
 }

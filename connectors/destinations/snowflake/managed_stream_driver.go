@@ -13,11 +13,12 @@ import (
 
 // streamingHooks exposes deterministic fault boundaries to same-package protocol tests.
 type streamingHooks struct {
-	AfterOpen     func() error
-	AfterAppend   func() error
-	BeforeReceipt func() error
-	AfterReceipt  func() error
-	RefreshAuth   func(context.Context) error
+	AfterOpen      func() error
+	AfterAppend    func() error
+	AfterSendClaim func() error
+	BeforeReceipt  func() error
+	AfterReceipt   func() error
+	RefreshAuth    func(context.Context) error
 }
 
 // streamDriver orchestrates the Snowpipe Streaming append protocol against a
@@ -89,10 +90,15 @@ func (d *streamDriver) apply(ctx context.Context, intent connector.DeliveryInten
 		switch request.phase {
 		case streamRequestReceipted:
 			return connector.DeliveryEvidence{}, fmt.Errorf("%w: request is receipted but the durable receipt is absent", connector.ErrDeliveryConflict)
+		case streamRequestRejected:
+			return connector.DeliveryEvidence{}, fmt.Errorf("%w: durable streaming request was terminally rejected: %s", connector.ErrDeliveryConflict, request.responseEvidence)
 		case streamRequestProvenAbsent:
 		case streamRequestCommitted:
-			if request.committedOffset != request.requestedOffset || request.responseContinuation == "" {
-				return connector.DeliveryEvidence{}, fmt.Errorf("%w: committed request evidence is incomplete", connector.ErrDeliveryConflict)
+			if request.committedOffset == "" || request.responseContinuation == "" {
+				return connector.DeliveryEvidence{}, fmt.Errorf("%w: committed request evidence is incomplete", connector.ErrDeliveryIndeterminate)
+			}
+			if request.committedOffset != request.requestedOffset {
+				return connector.DeliveryEvidence{}, fmt.Errorf("%w: committed request offset diverges", connector.ErrDeliveryConflict)
 			}
 			status = streamChannelStatus{valid: true, channelName: request.channelName, channelRevision: request.channelRevision, pipeRevision: request.pipeRevision, continuationToken: request.responseContinuation, committedOffsetToken: request.committedOffset}
 			committed = true
@@ -200,24 +206,30 @@ func (d *streamDriver) persistChannelState(ctx context.Context, plan managedStre
 	if err != nil {
 		return err
 	}
-	expectedVersion := int64(0)
+	expected := managedStreamChannelState{}
 	if found {
-		expectedVersion = current.stateVersion
+		expected = current
 		if current.pipeName != d.cfg.pipe || current.pipeRevision != status.pipeRevision || current.channelRevision > status.channelRevision {
 			return fmt.Errorf("%w: streaming Snowflake channel identity or revision regressed", connector.ErrDeliveryConflict)
 		}
 		if current.channelRevision == status.channelRevision && current.committedOffsetToken != "" && status.committedOffsetToken == "" {
 			return fmt.Errorf("%w: streaming Snowflake committed offset evidence regressed", connector.ErrDeliveryConflict)
 		}
+		if current.channelRevision == status.channelRevision && current.logicalBatchID == plan.receipt.logicalBatchID && current.rowsContentHash != rowsContentHash {
+			return fmt.Errorf("%w: same-revision streaming Snowflake request identity diverges", connector.ErrDeliveryConflict)
+		}
+	}
+	if status.committedOffsetToken != "" && status.committedOffsetToken != plan.identity.offsetToken {
+		return fmt.Errorf("%w: streaming Snowflake committed offset is not the exact request offset", connector.ErrDeliveryConflict)
 	}
 	state := managedStreamChannelState{
 		flowIncarnationID: plan.receipt.flowIncarnationID, destinationRevisionID: plan.receipt.destinationRevisionID,
 		channelName: plan.identity.channelName, pipeName: d.cfg.pipe, pipeRevision: status.pipeRevision,
 		channelRevision: status.channelRevision, continuationToken: status.continuationToken,
 		committedOffsetToken: status.committedOffsetToken, logicalBatchID: plan.receipt.logicalBatchID,
-		rowsContentHash: rowsContentHash, stateVersion: expectedVersion + 1,
+		rowsContentHash: rowsContentHash, stateVersion: expected.stateVersion + 1,
 	}
-	current, applied, err := d.proto.CompareAndSwapChannelState(ctx, d.cfg, expectedVersion, state)
+	current, applied, err := d.proto.CompareAndSwapChannelState(ctx, d.cfg, expected, state)
 	if err != nil {
 		return err
 	}
@@ -283,14 +295,40 @@ func (d *streamDriver) appendRequest(ctx context.Context, plan managedStreamPlan
 			if !found {
 				return streamChannelStatus{}, managedStreamRequest{}, fmt.Errorf("%w: duplicate request identity is not visible", connector.ErrDeliveryIndeterminate)
 			}
+			if !sameManagedStreamRequestIdentity(request, existing) {
+				return streamChannelStatus{}, managedStreamRequest{}, fmt.Errorf("%w: duplicate streaming request identity diverges", connector.ErrDeliveryConflict)
+			}
 			request = existing
 			if err := d.validateRequestPlan(plan, request); err != nil {
 				return streamChannelStatus{}, managedStreamRequest{}, err
 			}
 		}
-		request, err = d.transitionRequest(ctx, request, streamRequestSendingUnknown, "send_started", "")
+		request, sendOwner, err := d.claimRequestSend(ctx, request)
 		if err != nil {
 			return streamChannelStatus{}, managedStreamRequest{}, err
+		}
+		if !sendOwner {
+			var committed bool
+			status, request, committed, err = d.reconcileRequest(ctx, plan, request)
+			if err != nil {
+				return streamChannelStatus{}, managedStreamRequest{}, err
+			}
+			if committed {
+				return status, request, nil
+			}
+			if request.phase != streamRequestProvenAbsent {
+				return streamChannelStatus{}, managedStreamRequest{}, fmt.Errorf("%w: send claim is owned by another writer", connector.ErrDeliveryIndeterminate)
+			}
+			status, err = d.openAndPersistChannel(ctx, plan, plan.rowsContentHash)
+			if err != nil {
+				return streamChannelStatus{}, managedStreamRequest{}, err
+			}
+			continue
+		}
+		if hook := d.hooks.AfterSendClaim; hook != nil {
+			if err := hook(); err != nil {
+				return streamChannelStatus{}, managedStreamRequest{}, err
+			}
 		}
 		if err := ctx.Err(); err != nil {
 			return streamChannelStatus{}, managedStreamRequest{}, err
@@ -314,7 +352,12 @@ func (d *streamDriver) appendRequest(ctx context.Context, plan managedStreamPlan
 			}
 		}
 		if appendErr == nil && len(result.rejections) > 0 {
-			return streamChannelStatus{}, managedStreamRequest{}, fmt.Errorf("%w: %w: %s", connector.ErrDeliveryConflict, errStreamRowsRejected, streamRejectionSummary(result.rejections))
+			summary := streamRejectionSummary(result.rejections)
+			request, err = d.transitionRequestEvidence(context.WithoutCancel(ctx), request, streamRequestRejected, result.continuationToken, "rows_rejected", summary, "")
+			if err != nil {
+				return streamChannelStatus{}, managedStreamRequest{}, err
+			}
+			return streamChannelStatus{}, managedStreamRequest{}, fmt.Errorf("%w: %w: %s", connector.ErrDeliveryConflict, errStreamRowsRejected, summary)
 		}
 		if appendErr == nil {
 			if result.requestID != request.requestID {
@@ -324,7 +367,7 @@ func (d *streamDriver) appendRequest(ctx context.Context, plan managedStreamPlan
 			case streamAppendAccepted:
 				request, err = d.transitionRequestEvidence(ctx, request, streamRequestAccepted, result.continuationToken, "accepted", result.evidence, "")
 			case streamAppendDefinitelyNotAccepted:
-				request, err = d.transitionRequestEvidence(ctx, request, streamRequestProvenAbsent, result.continuationToken, "definitely_not_accepted", result.evidence, "")
+				request, err = d.transitionRequestEvidence(ctx, request, streamRequestProvenAbsent, "", "definitely_not_accepted", result.evidence, "")
 			default:
 				request, err = d.transitionRequestEvidence(ctx, request, streamRequestSendingUnknown, result.continuationToken, "unknown", result.evidence, "")
 			}
@@ -399,6 +442,24 @@ func (d *streamDriver) reconcileRequest(ctx context.Context, plan managedStreamP
 	}
 }
 
+func (d *streamDriver) claimRequestSend(ctx context.Context, request managedStreamRequest) (managedStreamRequest, bool, error) {
+	if request.phase != streamRequestPrepared && request.phase != streamRequestSendingUnknown {
+		return managedStreamRequest{}, false, fmt.Errorf("%w: request phase %q cannot claim the send boundary", connector.ErrDeliveryConflict, request.phase)
+	}
+	current, applied, err := d.proto.TransitionRequest(ctx, d.cfg, streamRequestTransition{
+		requestID: request.requestID, expectedPhase: request.phase, expectedVersion: request.phaseVersion,
+		nextPhase: streamRequestSendingUnknown, responseContinuation: request.responseContinuation,
+		committedOffset: request.committedOffset, responseKind: "send_started", responseEvidence: request.responseEvidence,
+	})
+	if err != nil {
+		return managedStreamRequest{}, false, err
+	}
+	if current.requestID != request.requestID || current.phaseVersion < request.phaseVersion || current.attempt != request.attempt {
+		return managedStreamRequest{}, false, fmt.Errorf("%w: streaming Snowflake send claim lost to divergent request", connector.ErrDeliveryConflict)
+	}
+	return current, applied, nil
+}
+
 func (d *streamDriver) transitionRequest(ctx context.Context, request managedStreamRequest, phase streamRequestPhase, kind, evidence string) (managedStreamRequest, error) {
 	return d.transitionRequestEvidence(ctx, request, phase, request.responseContinuation, kind, evidence, request.committedOffset)
 }
@@ -406,6 +467,15 @@ func (d *streamDriver) transitionRequest(ctx context.Context, request managedStr
 func (d *streamDriver) transitionRequestEvidence(ctx context.Context, request managedStreamRequest, phase streamRequestPhase, continuation, kind, evidence, committedOffset string) (managedStreamRequest, error) {
 	if !validStreamRequestTransition(request.phase, phase) {
 		return managedStreamRequest{}, fmt.Errorf("%w: illegal streaming Snowflake request transition %s -> %s", connector.ErrDeliveryConflict, request.phase, phase)
+	}
+	if phase == streamRequestCommitted && (strings.TrimSpace(continuation) == "" || committedOffset != request.requestedOffset) {
+		return managedStreamRequest{}, fmt.Errorf("%w: committed streaming request evidence is incomplete", connector.ErrDeliveryConflict)
+	}
+	if phase == streamRequestProvenAbsent && (continuation != "" || committedOffset != "") {
+		return managedStreamRequest{}, fmt.Errorf("%w: proven-absent streaming request carries commit evidence", connector.ErrDeliveryConflict)
+	}
+	if phase == streamRequestRejected && committedOffset != "" {
+		return managedStreamRequest{}, fmt.Errorf("%w: rejected streaming request carries committed-offset evidence", connector.ErrDeliveryConflict)
 	}
 	current, applied, err := d.proto.TransitionRequest(ctx, d.cfg, streamRequestTransition{requestID: request.requestID, expectedPhase: request.phase, expectedVersion: request.phaseVersion, nextPhase: phase, responseContinuation: continuation, committedOffset: committedOffset, responseKind: kind, responseEvidence: evidence})
 	if err != nil {
@@ -617,19 +687,19 @@ func (d *streamDriver) cleanup(ctx context.Context, flowIncarnationID string) (r
 			continue
 		}
 		channelKey := streamChannelStateKey{flowIncarnationID: receipt.flowIncarnationID, destinationRevisionID: receipt.destinationRevisionID, channelName: receipt.channelName}
-		unresolved, err := d.proto.HasUnresolvedRequests(ctx, d.cfg, channelKey)
+		state, found, err := d.proto.LookupChannelState(ctx, d.cfg, channelKey)
 		if err != nil {
 			return released, err
 		}
-		if unresolved {
-			return released, fmt.Errorf("%w: cleanup refuses channel %s with unresolved requests", connector.ErrDeliveryIndeterminate, receipt.channelName)
+		if !found {
+			return released, fmt.Errorf("%w: cleanup append receipt has no channel authority state", connector.ErrDeliveryConflict)
 		}
-		release := streamReleaseReceipt(receipt)
-		if _, err := d.proto.InsertReceipt(ctx, d.cfg, release); err != nil {
+		applied, err := d.proto.ReleaseChannelState(ctx, d.cfg, state, streamReleaseReceipt(receipt))
+		if err != nil {
 			return released, err
 		}
-		if err := d.proto.DeleteChannelState(ctx, d.cfg, channelKey); err != nil {
-			return released, err
+		if !applied {
+			return released, fmt.Errorf("%w: cleanup channel release CAS did not apply", connector.ErrDeliveryIndeterminate)
 		}
 		released++
 	}

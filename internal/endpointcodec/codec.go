@@ -831,6 +831,7 @@ func encodeSnowflakeStreaming(out map[string]string, cfg *wallabypb.SnowflakePos
 	put(out, "managed_target_created_on", cfg.GetTargetCreatedOn())
 	put(out, "managed_receipts_created_on", cfg.GetReceiptsCreatedOn())
 	put(out, "managed_channel_state_created_on", cfg.GetChannelStateCreatedOn())
+	put(out, "managed_request_journal_created_on", cfg.GetRequestJournalCreatedOn())
 	putU32(out, "managed_max_transaction_rows", cfg.MaxTransactionRows)
 	putU64(out, "managed_max_transaction_bytes", cfg.MaxTransactionBytes)
 	putU32(out, "managed_max_transaction_fragments", cfg.MaxTransactionFragments)
@@ -1592,7 +1593,7 @@ func decodeSnowflakeStreaming(v map[string]string) (*wallabypb.SnowflakePostgres
 	if err := consumeFixedOptions(v, snowflakeManagedFixedOptions()); err != nil {
 		return nil, err
 	}
-	cfg := &wallabypb.SnowflakePostgresStreamingConfig{Dsn: take(v, "dsn"), DestinationRevisionId: take(v, "destination_revision_id"), Transport: take(v, "managed_streaming_transport"), Account: take(v, "managed_account"), Database: take(v, "managed_database"), Schema: take(v, "managed_schema"), Pipe: take(v, "managed_pipe"), Table: take(v, "managed_table"), ReceiptsTable: take(v, "managed_receipts_table"), ChannelStateTable: take(v, "managed_channel_state_table"), ChannelNamePrefix: take(v, "managed_channel_name_prefix"), OwnerRole: take(v, "managed_owner_role"), ExecutionRole: take(v, "managed_execution_role"), ManagedWarehouse: take(v, "managed_warehouse"), SnowflakeVersion: take(v, "managed_snowflake_version"), PipeCreatedOn: take(v, "managed_pipe_created_on"), TargetCreatedOn: take(v, "managed_target_created_on"), ReceiptsCreatedOn: take(v, "managed_receipts_created_on"), ChannelStateCreatedOn: take(v, "managed_channel_state_created_on")}
+	cfg := &wallabypb.SnowflakePostgresStreamingConfig{Dsn: take(v, "dsn"), DestinationRevisionId: take(v, "destination_revision_id"), Transport: take(v, "managed_streaming_transport"), Account: take(v, "managed_account"), Database: take(v, "managed_database"), Schema: take(v, "managed_schema"), Pipe: take(v, "managed_pipe"), Table: take(v, "managed_table"), ReceiptsTable: take(v, "managed_receipts_table"), ChannelStateTable: take(v, "managed_channel_state_table"), ChannelNamePrefix: take(v, "managed_channel_name_prefix"), OwnerRole: take(v, "managed_owner_role"), ExecutionRole: take(v, "managed_execution_role"), ManagedWarehouse: take(v, "managed_warehouse"), SnowflakeVersion: take(v, "managed_snowflake_version"), PipeCreatedOn: take(v, "managed_pipe_created_on"), TargetCreatedOn: take(v, "managed_target_created_on"), ReceiptsCreatedOn: take(v, "managed_receipts_created_on"), ChannelStateCreatedOn: take(v, "managed_channel_state_created_on"), RequestJournalCreatedOn: take(v, "managed_request_journal_created_on")}
 	var err error
 	cfg.MaxTransactionRows, err = takeU32(v, "managed_max_transaction_rows")
 	if err != nil {

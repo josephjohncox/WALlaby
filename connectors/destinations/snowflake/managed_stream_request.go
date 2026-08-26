@@ -19,6 +19,7 @@ const (
 	streamRequestAccepted       streamRequestPhase = "ACCEPTED"
 	streamRequestCommitted      streamRequestPhase = "COMMITTED"
 	streamRequestProvenAbsent   streamRequestPhase = "PROVEN_ABSENT"
+	streamRequestRejected       streamRequestPhase = "REJECTED"
 	streamRequestReceipted      streamRequestPhase = "RECEIPTED"
 )
 
@@ -27,13 +28,15 @@ func validStreamRequestTransition(from, to streamRequestPhase) bool {
 	case streamRequestPrepared:
 		return to == streamRequestSendingUnknown || to == streamRequestProvenAbsent
 	case streamRequestSendingUnknown:
-		return to == streamRequestSendingUnknown || to == streamRequestAccepted || to == streamRequestCommitted || to == streamRequestProvenAbsent
+		return to == streamRequestSendingUnknown || to == streamRequestAccepted || to == streamRequestCommitted || to == streamRequestProvenAbsent || to == streamRequestRejected
 	case streamRequestAccepted:
-		return to == streamRequestCommitted || to == streamRequestProvenAbsent
+		return to == streamRequestCommitted || to == streamRequestProvenAbsent || to == streamRequestRejected
 	case streamRequestCommitted:
 		return to == streamRequestCommitted || to == streamRequestReceipted
 	case streamRequestProvenAbsent:
 		return to == streamRequestProvenAbsent
+	case streamRequestRejected:
+		return to == streamRequestRejected
 	case streamRequestReceipted:
 		return to == streamRequestReceipted
 	default:
@@ -156,6 +159,16 @@ func newManagedStreamRequest(plan managedStreamPlan, status streamChannelStatus,
 	return record, record.validateIdentity()
 }
 
+func sameManagedStreamRequestIdentity(left, right managedStreamRequest) bool {
+	return left.requestID == right.requestID && left.flowID == right.flowID && left.flowIncarnationID == right.flowIncarnationID &&
+		left.sourceLineageID == right.sourceLineageID && left.destinationRevisionID == right.destinationRevisionID &&
+		left.logicalBatchID == right.logicalBatchID && left.positionID == right.positionID && left.contentHash == right.contentHash &&
+		left.manifestHash == right.manifestHash && left.rowsContentHash == right.rowsContentHash && left.rowCount == right.rowCount &&
+		left.channelName == right.channelName && left.channelRevision == right.channelRevision && left.pipeRevision == right.pipeRevision &&
+		left.inputContinuation == right.inputContinuation && left.requestedOffset == right.requestedOffset &&
+		left.generation == right.generation && left.acquisitionID == right.acquisitionID && left.leaseEpoch == right.leaseEpoch && left.attempt == right.attempt
+}
+
 func (r managedStreamRequest) validateIdentity() error {
 	if !strings.HasPrefix(r.requestID, "wallaby-stream-request-") || len(r.requestID) != len("wallaby-stream-request-")+64 ||
 		r.flowID == "" || r.flowIncarnationID == "" || r.sourceLineageID == "" || r.destinationRevisionID == "" ||
@@ -173,8 +186,14 @@ func validateStreamRequestEvidence(request managedStreamRequest, evidence stream
 		evidence.manifestHash != request.manifestHash || evidence.rowsContentHash != request.rowsContentHash || evidence.rowCount != request.rowCount {
 		return fmt.Errorf("%w: streaming Snowflake request status identity diverges", connector.ErrDeliveryConflict)
 	}
-	if evidence.disposition == streamRequestStatusCommitted && strings.TrimSpace(evidence.responseContinuation) == "" {
-		return fmt.Errorf("%w: committed streaming Snowflake request has no response continuation", connector.ErrDeliveryConflict)
+	if evidence.disposition == streamRequestStatusCommitted && (strings.TrimSpace(evidence.responseContinuation) == "" || strings.TrimSpace(evidence.committedOffset) == "") {
+		return fmt.Errorf("%w: committed streaming Snowflake request evidence is not yet complete", connector.ErrDeliveryIndeterminate)
+	}
+	if evidence.disposition == streamRequestStatusCommitted && evidence.committedOffset != request.requestedOffset {
+		return fmt.Errorf("%w: committed streaming Snowflake offset differs from the exact request", connector.ErrDeliveryConflict)
+	}
+	if evidence.disposition == streamRequestStatusProvenAbsent && (evidence.responseContinuation != "" || evidence.committedOffset != "") {
+		return fmt.Errorf("%w: proven-absent streaming Snowflake request carries commit evidence", connector.ErrDeliveryConflict)
 	}
 	if evidence.committedOffset != "" && evidence.committedOffset != request.requestedOffset {
 		return fmt.Errorf("%w: streaming Snowflake committed offset differs from the exact request", connector.ErrDeliveryConflict)

@@ -1309,6 +1309,7 @@ contract accepts only a DSN and ignores connection-pool and IAM options.
 | cleanup_max_objects | [uint32](#uint32) | optional |  |
 | cleanup_retention_seconds | [uint32](#uint32) | optional |  |
 | channel_name_prefix | [string](#string) |  |  |
+| request_journal_created_on | [string](#string) |  |  |
 
 
 
