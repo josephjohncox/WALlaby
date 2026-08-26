@@ -287,17 +287,17 @@ func TestExactAuthorityCatalogManifestIsCurrent(t *testing.T) {
 	if !containsString(authorityMutableTables, "artifact_consumer_checkpoints") {
 		t.Fatal("artifact_consumer_checkpoints is absent from authority tables")
 	}
-	wantColumnCounts := map[string]int{"delivery_manifests": 13, "managed_part_reservations": 26, "managed_part_reservation_parts": 10, "managed_part_reservation_events": 12, "artifact_delivery_attempts": 11, "artifact_delivery_receipts": 15, "artifact_consumer_checkpoints": 9}
+	wantColumnCounts := map[string]int{"delivery_manifests": 13, "managed_part_reservations": 26, "managed_part_reservation_parts": 10, "managed_part_reservation_events": 12, "artifact_delivery_attempts": 11, "artifact_delivery_receipts": 15, "artifact_consumer_checkpoints": 9, "artifact_metadata_prune_claims": 13}
 	for table, want := range wantColumnCounts {
 		if got := len(exactAuthorityColumns[table]); got != want {
 			t.Fatalf("%s exact column count=%d want=%d", table, got, want)
 		}
 	}
-	if len(exactAuthorityConstraints) != 58 || len(selectiveAuthorityConstraints) != 5 {
-		t.Fatalf("authority exact/selective constraint manifest count=%d/%d want=58/5", len(exactAuthorityConstraints), len(selectiveAuthorityConstraints))
+	if len(exactAuthorityConstraints) != 66 || len(selectiveAuthorityConstraints) != 5 {
+		t.Fatalf("authority exact/selective constraint manifest count=%d/%d want=66/5", len(exactAuthorityConstraints), len(selectiveAuthorityConstraints))
 	}
-	if len(exactAuthorityIndexes) != 21 || len(selectiveAuthorityIndexes) != 1 {
-		t.Fatalf("authority exact/selective index manifest count=%d/%d want=21/1", len(exactAuthorityIndexes), len(selectiveAuthorityIndexes))
+	if len(exactAuthorityIndexes) != 24 || len(selectiveAuthorityIndexes) != 4 {
+		t.Fatalf("authority exact/selective index manifest count=%d/%d want=24/4", len(exactAuthorityIndexes), len(selectiveAuthorityIndexes))
 	}
 	constraintContracts := append(append([]exactAuthorityConstraint(nil), exactAuthorityConstraints...), selectiveAuthorityConstraints...)
 	indexContracts := append(append([]exactAuthorityIndex(nil), exactAuthorityIndexes...), selectiveAuthorityIndexes...)
@@ -330,7 +330,7 @@ func TestExactAuthorityManifestMatchesFreshCatalog(t *testing.T) {
 	}
 	sort.Strings(expectedConstraints)
 	var actualConstraints []string
-	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(table_relation.relname||'.'||constraint_row.conname ORDER BY table_relation.relname,constraint_row.conname),'{}'::text[]) FROM pg_catalog.pg_constraint AS constraint_row JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid=constraint_row.conrelid WHERE table_relation.relname IN ('delivery_manifests','schema_versions','artifact_delivery_attempts','artifact_delivery_receipts','artifact_consumer_checkpoints')
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(table_relation.relname||'.'||constraint_row.conname ORDER BY table_relation.relname,constraint_row.conname),'{}'::text[]) FROM pg_catalog.pg_constraint AS constraint_row JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid=constraint_row.conrelid WHERE table_relation.relname IN ('delivery_manifests','schema_versions','managed_part_reservations','managed_part_reservation_parts','managed_part_reservation_events','artifact_delivery_attempts','artifact_delivery_receipts','artifact_consumer_checkpoints','artifact_metadata_prune_claims')
    OR (table_relation.relname IN ('artifact_deliveries','canonical_schemas','artifact_streams','artifact_objects','artifact_publications')
        AND constraint_row.conname NOT IN (
          'artifact_deliveries_flow_incarnation_id_consumer_revision_i_key','artifact_deliveries_flow_incarnation_id_fkey','artifact_deliveries_pkey','artifact_deliveries_publication_id_fkey',
@@ -351,10 +351,10 @@ func TestExactAuthorityManifestMatchesFreshCatalog(t *testing.T) {
 	}
 	sort.Strings(expectedIndexes)
 	var actualIndexes []string
-	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(table_relation.relname||'.'||index_relation.relname ORDER BY table_relation.relname,index_relation.relname),'{}'::text[]) FROM pg_catalog.pg_index AS index_row JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid=index_row.indrelid JOIN pg_catalog.pg_class AS index_relation ON index_relation.oid=index_row.indexrelid WHERE table_relation.relname IN ('delivery_manifests','schema_versions','artifact_delivery_attempts','artifact_delivery_receipts','artifact_consumer_checkpoints')
-   OR (table_relation.relname IN ('artifact_deliveries','canonical_schemas','artifact_streams','artifact_objects','artifact_publications')
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(table_relation.relname||'.'||index_relation.relname ORDER BY table_relation.relname,index_relation.relname),'{}'::text[]) FROM pg_catalog.pg_index AS index_row JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid=index_row.indrelid JOIN pg_catalog.pg_class AS index_relation ON index_relation.oid=index_row.indexrelid WHERE table_relation.relname IN ('delivery_manifests','schema_versions','managed_part_reservations','managed_part_reservation_parts','managed_part_reservation_events','artifact_delivery_attempts','artifact_delivery_receipts','artifact_consumer_checkpoints','artifact_metadata_prune_claims')
+   OR (table_relation.relname IN ('artifact_deliveries','canonical_schemas','artifact_streams','artifact_objects','artifact_publications','artifact_gc_claims')
        AND index_relation.relname NOT IN (
-         'artifact_deliveries_flow_incarnation_id_consumer_revision_i_key','artifact_deliveries_pkey',
+         'artifact_deliveries_flow_incarnation_id_consumer_revision_i_key','artifact_deliveries_pkey','artifact_gc_claims_pkey',
          'canonical_schemas_pkey','artifact_streams_pkey',
          'artifact_objects_bucket_object_key_key','artifact_objects_flow_incarnation_id_source_position_fragme_key','artifact_objects_logical_shard_idx','artifact_objects_pkey',
          'artifact_publications_flow_incarnation_id_source_position_key','artifact_publications_logical_batch_idx','artifact_publications_pkey','artifact_publications_sequence_idx'
@@ -502,6 +502,49 @@ ON source_resources(source_system_id,database_name,resource_kind,physical_name)
 WHERE state = 'ready'`,
 		restoreActiveResourceIndex,
 		"requires source_resources_active_physical_name_unique to be a unique index",
+	)
+	assertRejected(
+		"metadata claim schema ids remain non-null",
+		"ALTER TABLE artifact_metadata_prune_claims ALTER COLUMN schema_ids DROP NOT NULL",
+		"ALTER TABLE artifact_metadata_prune_claims ALTER COLUMN schema_ids SET NOT NULL",
+		"artifact_metadata_prune_claims.schema_ids differs",
+	)
+	assertRejected(
+		"metadata claim retry default is exact",
+		"ALTER TABLE artifact_metadata_prune_claims ALTER COLUMN retry_after DROP DEFAULT",
+		"ALTER TABLE artifact_metadata_prune_claims ALTER COLUMN retry_after SET DEFAULT clock_timestamp()",
+		"artifact_metadata_prune_claims.retry_after differs",
+	)
+	assertRejected(
+		"metadata claim schema array constraint is exact",
+		"ALTER TABLE artifact_metadata_prune_claims DROP CONSTRAINT artifact_metadata_prune_claims_schema_ids_array; ALTER TABLE artifact_metadata_prune_claims ADD CONSTRAINT artifact_metadata_prune_claims_schema_ids_array CHECK (schema_ids IS NOT NULL)",
+		"ALTER TABLE artifact_metadata_prune_claims DROP CONSTRAINT artifact_metadata_prune_claims_schema_ids_array; ALTER TABLE artifact_metadata_prune_claims ADD CONSTRAINT artifact_metadata_prune_claims_schema_ids_array CHECK (jsonb_typeof(schema_ids)='array')",
+		"artifact_metadata_prune_claims_schema_ids_array definition differs",
+	)
+	assertRejected(
+		"metadata claim catalog tombstone shape is exact",
+		"ALTER TABLE artifact_metadata_prune_claims DROP CONSTRAINT artifact_metadata_prune_claims_catalog_evidence_object; ALTER TABLE artifact_metadata_prune_claims ADD CONSTRAINT artifact_metadata_prune_claims_catalog_evidence_object CHECK (jsonb_typeof(catalog_evidence)='object')",
+		"ALTER TABLE artifact_metadata_prune_claims DROP CONSTRAINT artifact_metadata_prune_claims_catalog_evidence_object; ALTER TABLE artifact_metadata_prune_claims ADD CONSTRAINT artifact_metadata_prune_claims_catalog_evidence_object CHECK (jsonb_typeof(catalog_evidence)='object' AND jsonb_typeof(catalog_evidence->'publication')='object' AND jsonb_typeof(catalog_evidence->'consumers')='array')",
+		"artifact_metadata_prune_claims_catalog_evidence_object definition differs",
+	)
+	assertRejected(
+		"metadata claim scan index order is exact",
+		"DROP INDEX artifact_metadata_prune_claims_flow_idx; CREATE INDEX artifact_metadata_prune_claims_flow_idx ON artifact_metadata_prune_claims(flow_incarnation_id,claimed_at,retry_after,publication_id)",
+		"DROP INDEX artifact_metadata_prune_claims_flow_idx; CREATE INDEX artifact_metadata_prune_claims_flow_idx ON artifact_metadata_prune_claims(flow_incarnation_id,retry_after,claimed_at,publication_id)",
+		"artifact_metadata_prune_claims.artifact_metadata_prune_claims_flow_idx differs",
+	)
+	const restoreGCClaimPublicationIndex = `DROP INDEX artifact_gc_claims_publication_idx; CREATE INDEX artifact_gc_claims_publication_idx ON artifact_gc_claims(publication_id) WHERE publication_id IS NOT NULL`
+	assertRejected(
+		"artifact GC publication index predicate is exact",
+		"DROP INDEX artifact_gc_claims_publication_idx; CREATE INDEX artifact_gc_claims_publication_idx ON artifact_gc_claims(publication_id) WHERE publication_id IS NULL",
+		restoreGCClaimPublicationIndex,
+		"artifact_gc_claims.artifact_gc_claims_publication_idx differs",
+	)
+	assertRejected(
+		"artifact GC publication index key is exact",
+		"DROP INDEX artifact_gc_claims_publication_idx; CREATE INDEX artifact_gc_claims_publication_idx ON artifact_gc_claims(claim_epoch) WHERE publication_id IS NOT NULL",
+		restoreGCClaimPublicationIndex,
+		"artifact_gc_claims.artifact_gc_claims_publication_idx differs",
 	)
 	assertRejected(
 		"missing table",

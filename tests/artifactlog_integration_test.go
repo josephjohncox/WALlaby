@@ -72,7 +72,7 @@ func TestMappedArtifactFilteredTransactionAdvancesWithoutObjectOrCatalogAttempt(
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := artifactlog.NewRuntime(ctx, pool, memoryMappedArtifactStore{}, artifactlog.RuntimeConfig{Stream: artifactlog.StreamConfig{ProjectionID: artifactlog.ProjectionIDV2, MappingFingerprint: projector.Fingerprint(), HardRetainedBytes: 128 << 20, BacklogCountHigh: 100, BacklogBytesHigh: 128 << 20, BacklogAgeHigh: time.Hour}, Projector: projector, OrphanGrace: time.Hour, Retention: time.Hour, GCInterval: time.Hour})
+	runtime, err := artifactlog.NewRuntime(ctx, pool, memoryMappedArtifactStore{}, artifactlog.RuntimeConfig{Stream: artifactlog.StreamConfig{ProjectionID: artifactlog.ProjectionIDV2, MappingFingerprint: projector.Fingerprint(), HardRetainedBytes: 128 << 20, BacklogCountHigh: 100, BacklogBytesHigh: 128 << 20, BacklogAgeHigh: time.Hour}, Projector: projector, OrphanGrace: time.Hour, Retention: time.Hour, MetadataRetention: time.Hour, MetadataMaxPublications: 10, MetadataMaxRows: 100, GCInterval: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestMappedArtifactFilteredTransactionAdvancesWithoutObjectOrCatalogAttempt(
 	if err != nil {
 		t.Fatal(err)
 	}
-	mismatched, err := artifactlog.NewRuntime(ctx, pool, memoryMappedArtifactStore{}, artifactlog.RuntimeConfig{Stream: artifactlog.StreamConfig{ProjectionID: artifactlog.ProjectionIDV2, MappingFingerprint: changedProjector.Fingerprint(), HardRetainedBytes: 128 << 20, BacklogCountHigh: 100, BacklogBytesHigh: 128 << 20, BacklogAgeHigh: time.Hour}, Projector: changedProjector, OrphanGrace: time.Hour, Retention: time.Hour, GCInterval: time.Hour})
+	mismatched, err := artifactlog.NewRuntime(ctx, pool, memoryMappedArtifactStore{}, artifactlog.RuntimeConfig{Stream: artifactlog.StreamConfig{ProjectionID: artifactlog.ProjectionIDV2, MappingFingerprint: changedProjector.Fingerprint(), HardRetainedBytes: 128 << 20, BacklogCountHigh: 100, BacklogBytesHigh: 128 << 20, BacklogAgeHigh: time.Hour}, Projector: changedProjector, OrphanGrace: time.Hour, Retention: time.Hour, MetadataRetention: time.Hour, MetadataMaxPublications: 10, MetadataMaxRows: 100, GCInterval: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}

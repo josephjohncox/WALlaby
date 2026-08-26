@@ -128,7 +128,16 @@ func prepareArtifactAttemptMigrationFixture(t *testing.T, ctx context.Context, p
 	if err := controlplane.ApplyMigrations(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM wallaby_control_migrations WHERE domain='artifactlog' AND version IN ('007_current_catalog_attempt_identity.sql','008_schema_baseline_publication.sql');
+	if _, err := pool.Exec(ctx, `DROP TRIGGER artifact_deliveries_reject_metadata_prune ON artifact_deliveries;
+DROP TRIGGER artifact_delivery_attempts_reject_metadata_prune ON artifact_delivery_attempts;
+DROP TRIGGER artifact_delivery_receipts_reject_metadata_prune ON artifact_delivery_receipts;
+DROP FUNCTION wallaby_reject_metadata_prune_dependent();
+DROP TABLE artifact_metadata_prune_claims;
+DROP INDEX artifact_publications_metadata_retention_idx;
+DROP INDEX artifact_gc_claims_publication_idx;
+DROP INDEX artifact_deliveries_publication_idx;
+DROP INDEX artifact_delivery_attempts_publication_idx;
+DELETE FROM wallaby_control_migrations WHERE domain='artifactlog' AND version IN ('007_current_catalog_attempt_identity.sql','008_schema_baseline_publication.sql','009_metadata_retention.sql');
 ALTER TABLE artifact_publications DROP CONSTRAINT artifact_publications_schema_baseline_fingerprint_check;
 ALTER TABLE artifact_publications DROP COLUMN schema_baseline_fingerprint;
 ALTER TABLE artifact_publications DROP COLUMN schema_baseline_payload;

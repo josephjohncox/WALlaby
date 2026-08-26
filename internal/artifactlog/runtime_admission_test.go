@@ -22,7 +22,7 @@ func (artifactTestProjector) ProjectTransaction(transaction connector.SourceTran
 }
 
 func TestCanonicalV2RuntimeRejectsUnboundOrMismatchedProjection(t *testing.T) {
-	base := RuntimeConfig{Stream: StreamConfig{ProjectionID: ProjectionIDV2, MappingFingerprint: "expected"}, OrphanGrace: time.Second, Retention: time.Second, GCInterval: time.Second}
+	base := RuntimeConfig{Stream: StreamConfig{ProjectionID: ProjectionIDV2, MappingFingerprint: "expected"}, OrphanGrace: time.Second, Retention: time.Second, MetadataRetention: time.Second, MetadataMaxPublications: 1, MetadataMaxRows: 3, GCInterval: time.Second}
 	if _, err := NewRuntime(context.Background(), nil, nil, base); err == nil || !containsError(err, "requires the immutable destination projector") {
 		t.Fatalf("unbound v2 error=%v", err)
 	}
@@ -34,6 +34,13 @@ func TestCanonicalV2RuntimeRejectsUnboundOrMismatchedProjection(t *testing.T) {
 	base.Stream.MappingFingerprint = "other"
 	if _, err := NewRuntime(context.Background(), nil, nil, base); err == nil || !containsError(err, "fingerprint mismatch") {
 		t.Fatalf("recovery fingerprint mismatch error=%v", err)
+	}
+}
+
+func TestRuntimeRejectsMetadataRowLimitBelowAtomicMinimum(t *testing.T) {
+	config := RuntimeConfig{Stream: StreamConfig{ProjectionID: ProjectionIDV2, MappingFingerprint: "expected"}, Projector: artifactTestProjector{fingerprint: "expected"}, OrphanGrace: time.Second, Retention: time.Second, MetadataRetention: time.Second, MetadataMaxPublications: 1, MetadataMaxRows: 2, GCInterval: time.Second}
+	if _, err := NewRuntime(context.Background(), nil, nil, config); err == nil || !containsError(err, "at least 3") {
+		t.Fatalf("row minimum error=%v", err)
 	}
 }
 
