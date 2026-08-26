@@ -29,6 +29,8 @@ type durableMetricSet struct {
 	artifactBytes          metric.Int64Histogram
 	consumerOutcomes       metric.Int64Counter
 	gcOutcomes             metric.Int64Counter
+	metadataRetention      metric.Int64Counter
+	metadataRows           metric.Int64Counter
 	icebergOutcomes        metric.Int64Counter
 	icebergLatency         metric.Float64Histogram
 	clickHouseOutcomes     metric.Int64Counter
@@ -74,6 +76,10 @@ func initDurableMetrics() bool {
 		durableMetrics.consumerOutcomes, err = meter.Int64Counter("wallaby.artifact.consumer.outcomes")
 		errs = append(errs, err)
 		durableMetrics.gcOutcomes, err = meter.Int64Counter("wallaby.artifact.gc.outcomes")
+		errs = append(errs, err)
+		durableMetrics.metadataRetention, err = meter.Int64Counter("wallaby.artifact.metadata_retention.publications")
+		errs = append(errs, err)
+		durableMetrics.metadataRows, err = meter.Int64Counter("wallaby.artifact.metadata_retention.rows")
 		errs = append(errs, err)
 		durableMetrics.icebergOutcomes, err = meter.Int64Counter("wallaby.iceberg.consumer.outcomes")
 		errs = append(errs, err)
@@ -220,6 +226,27 @@ func RecordArtifactGCOutcome(ctx context.Context, outcome string) {
 		return
 	}
 	durableMetrics.gcOutcomes.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
+}
+
+// RecordArtifactMetadataRetention records only bounded outcome labels.
+func RecordArtifactMetadataRetention(ctx context.Context, outcome string, count int64) {
+	if count <= 0 || !initDurableMetrics() {
+		return
+	}
+	switch outcome {
+	case "scanned", "deleted", "deferred":
+	default:
+		outcome = "other"
+	}
+	durableMetrics.metadataRetention.Add(ctx, count, metric.WithAttributes(attribute.String("outcome", outcome)))
+}
+
+// RecordArtifactMetadataRows records committed PostgreSQL metadata removals.
+func RecordArtifactMetadataRows(ctx context.Context, count int64) {
+	if count <= 0 || !initDurableMetrics() {
+		return
+	}
+	durableMetrics.metadataRows.Add(ctx, count)
 }
 
 // StartIcebergConsumerSpan correlates catalog work with immutable publication

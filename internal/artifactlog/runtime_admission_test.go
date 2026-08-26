@@ -22,7 +22,7 @@ func (artifactTestProjector) ProjectTransaction(transaction connector.SourceTran
 }
 
 func TestCanonicalV2RuntimeRejectsUnboundOrMismatchedProjection(t *testing.T) {
-	base := RuntimeConfig{Stream: StreamConfig{ProjectionID: ProjectionIDV2, MappingFingerprint: "expected"}, OrphanGrace: time.Second, Retention: time.Second, GCInterval: time.Second}
+	base := RuntimeConfig{Stream: StreamConfig{ProjectionID: ProjectionIDV2, MappingFingerprint: "expected"}, OrphanGrace: time.Second, Retention: time.Second, MetadataRetention: time.Second, MetadataMaxPublications: 1, MetadataMaxRows: 1, GCInterval: time.Second}
 	if _, err := NewRuntime(context.Background(), nil, nil, base); err == nil || !containsError(err, "requires the immutable destination projector") {
 		t.Fatalf("unbound v2 error=%v", err)
 	}

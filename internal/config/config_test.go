@@ -101,6 +101,9 @@ func TestDocumentedSemanticDefaultsRemainOrdinaryDefaults(t *testing.T) {
 	if cfg.Telemetry.MetricsInterval != 30*time.Second || cfg.DBOS.MaxEmptyReads != 1 {
 		t.Fatalf("telemetry/DBOS defaults=%+v/%+v", cfg.Telemetry, cfg.DBOS)
 	}
+	if cfg.Artifacts.MetadataRetention != 7*24*time.Hour || cfg.Artifacts.MetadataMaxPublications != 100 || cfg.Artifacts.MetadataMaxRows != 1000 {
+		t.Fatalf("artifact metadata defaults=%+v", cfg.Artifacts)
+	}
 }
 
 func TestShippedWorkerConfigurationExampleLoads(t *testing.T) {
@@ -168,6 +171,9 @@ func TestLoadArtifactPublicationConfig(t *testing.T) {
 	t.Setenv("WALLABY_ARTIFACT_BACKLOG_AGE_HIGH", "2h")
 	t.Setenv("WALLABY_ARTIFACT_ORPHAN_GRACE", "15m")
 	t.Setenv("WALLABY_ARTIFACT_RETENTION", "48h")
+	t.Setenv("WALLABY_ARTIFACT_METADATA_RETENTION", "72h")
+	t.Setenv("WALLABY_ARTIFACT_METADATA_MAX_PUBLICATIONS", "7")
+	t.Setenv("WALLABY_ARTIFACT_METADATA_MAX_ROWS", "19")
 
 	cfg, err := Load("")
 	if err != nil {
@@ -176,8 +182,29 @@ func TestLoadArtifactPublicationConfig(t *testing.T) {
 	if cfg.Artifacts.Bucket != "canonical" || !cfg.Artifacts.ForcePathStyle ||
 		cfg.Artifacts.HardRetainedBytes != 1048576 || cfg.Artifacts.BacklogBatchHigh != 12 ||
 		cfg.Artifacts.BacklogBytesHigh != 524288 || cfg.Artifacts.BacklogAgeHigh != 2*time.Hour ||
-		cfg.Artifacts.OrphanGrace != 15*time.Minute || cfg.Artifacts.Retention != 48*time.Hour {
+		cfg.Artifacts.OrphanGrace != 15*time.Minute || cfg.Artifacts.Retention != 48*time.Hour ||
+		cfg.Artifacts.MetadataRetention != 72*time.Hour || cfg.Artifacts.MetadataMaxPublications != 7 || cfg.Artifacts.MetadataMaxRows != 19 {
 		t.Fatalf("artifact config=%+v", cfg.Artifacts)
+	}
+}
+
+func TestArtifactMetadataRetentionRejectsNonPositiveLimits(t *testing.T) {
+	for _, test := range []struct {
+		name, key, value string
+	}{
+		{name: "retention zero", key: "WALLABY_ARTIFACT_METADATA_RETENTION", value: "0s"},
+		{name: "publication limit negative", key: "WALLABY_ARTIFACT_METADATA_MAX_PUBLICATIONS", value: "-1"},
+		{name: "row limit zero", key: "WALLABY_ARTIFACT_METADATA_MAX_ROWS", value: "0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("WALLABY_ENV", "test")
+			t.Setenv("WALLABY_WORKFLOW_STORE", "memory")
+			t.Setenv("WALLABY_ARTIFACT_BUCKET", "canonical")
+			t.Setenv(test.key, test.value)
+			if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "artifact") {
+				t.Fatalf("Load() error=%v, want positive metadata validation", err)
+			}
+		})
 	}
 }
 

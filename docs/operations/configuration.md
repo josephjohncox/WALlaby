@@ -99,12 +99,15 @@ artifacts:
   backpressure_poll_interval: 1s
   orphan_grace: 1h
   retention: 168h
+  metadata_retention: 168h
+  metadata_max_publications: 100
+  metadata_max_rows: 1000
   gc_interval: 1m
 ```
 
-Credentials use the AWS default chain unless `artifacts.access_key`, `artifacts.secret_key`, and optional `artifacts.session_token` are supplied by a secret. Every key also has `WALLABY_ARTIFACT_*` and `WALLABY_WORKER_ARTIFACT_*` environment forms, for example `WALLABY_ARTIFACT_BUCKET`, `WALLABY_ARTIFACT_BACKLOG_BYTES_HIGH`, and `WALLABY_ARTIFACT_RETENTION`.
+Credentials use the AWS default chain unless `artifacts.access_key`, `artifacts.secret_key`, and optional `artifacts.session_token` are supplied by a secret. Every key also has `WALLABY_ARTIFACT_*` and `WALLABY_WORKER_ARTIFACT_*` environment forms, including `WALLABY_ARTIFACT_METADATA_RETENTION`, `WALLABY_ARTIFACT_METADATA_MAX_PUBLICATIONS`, and `WALLABY_ARTIFACT_METADATA_MAX_ROWS` (and their `WALLABY_WORKER_` equivalents).
 
-The projection, retained-byte limit, and backlog count/byte/age thresholds are durable stream admission; changing them for an existing flow incarnation fails closed. If the flow destination is Iceberg, the production worker records the exact `destination_revision_id` in the durable consumer fingerprint and creates delivery rows for that revision. Other materialized destinations record an empty consumer fingerprint. The poll and GC intervals are worker cadence. `orphan_grace` and `retention` are runtime collection policy, so shortening either can make an already-eligible object collectible sooner and must be rolled out as a deliberate retention-policy change.
+The projection, retained-byte limit, and backlog count/byte/age thresholds are durable stream admission; changing them for an existing flow incarnation fails closed. If the flow destination is Iceberg, the production worker records the exact `destination_revision_id` in the durable consumer fingerprint and creates delivery rows for that revision. Other materialized destinations record an empty consumer fingerprint. The poll and GC intervals are worker cadence. `orphan_grace`, `retention`, and `metadata_retention` are runtime collection policy. The metadata horizon starts only after all roots, deliveries, receipts, claims, and source/consumer checkpoint dependencies become terminal. Shortening a horizon can make already-eligible evidence permanently collectible sooner and must be a deliberate retention-policy change.
 
 ### Iceberg catalog client
 

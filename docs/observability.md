@@ -63,8 +63,10 @@ Error types include: `source_read`, `source_ack`, `destination_write`, `checkpoi
 | `wallaby.artifact.bytes` | Histogram | bounded `state` |
 | `wallaby.artifact.consumer.outcomes` | Counter | `outcome` |
 | `wallaby.artifact.gc.outcomes` | Counter | `outcome` |
+| `wallaby.artifact.metadata_retention.publications` | Counter | bounded `outcome`: `scanned`, `deleted`, `deferred`, `other` |
+| `wallaby.artifact.metadata_retention.rows` | Counter | - |
 
-Artifact backlog count/bytes/age, reserved/rooted quota headroom, GC lag, S3 request latency/retries, and recovery-duration gauges are not implemented in this experimental checkpoint. PostgreSQL queries remain the authoritative operational source for those values; absence of these gauges is a support-promotion blocker.
+Artifact backlog count/bytes/age, reserved/rooted quota headroom, GC lag, S3 request latency/retries, and recovery-duration gauges are not implemented in this experimental checkpoint. PostgreSQL queries remain the authoritative operational source for those values. A persistent rise in metadata `deferred` without `deleted` means a live root, checkpoint, claim, pending delivery, or unresolved catalog attempt is retaining evidence; diagnose that authority rather than deleting rows manually.
 
 ### gRPC API
 

@@ -166,6 +166,9 @@ type ArtifactConfig struct {
 	BackpressurePollInterval time.Duration `json:"backpressure_poll_interval" yaml:"backpressure_poll_interval" validate:"omitempty,gt=0"`
 	OrphanGrace              time.Duration `json:"orphan_grace" yaml:"orphan_grace" validate:"omitempty,gt=0"`
 	Retention                time.Duration `json:"retention" yaml:"retention" validate:"omitempty,gt=0"`
+	MetadataRetention        time.Duration `json:"metadata_retention" yaml:"metadata_retention" validate:"omitempty,gt=0"`
+	MetadataMaxPublications  int           `json:"metadata_max_publications" yaml:"metadata_max_publications" validate:"omitempty,gt=0"`
+	MetadataMaxRows          int           `json:"metadata_max_rows" yaml:"metadata_max_rows" validate:"omitempty,gt=0"`
 	GCInterval               time.Duration `json:"gc_interval" yaml:"gc_interval" validate:"omitempty,gt=0"`
 }
 
@@ -303,6 +306,9 @@ func Load(configPath string) (*Config, error) {
 			BackpressurePollInterval: time.Second,
 			OrphanGrace:              time.Hour,
 			Retention:                7 * 24 * time.Hour,
+			MetadataRetention:        7 * 24 * time.Hour,
+			MetadataMaxPublications:  100,
+			MetadataMaxRows:          1000,
 			GCInterval:               time.Minute,
 		},
 		Snowflake: SnowflakeConfig{
@@ -514,6 +520,18 @@ func Load(configPath string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.Artifacts.MetadataRetention, err = durationValue(fileCfg, []string{"artifacts.metadata_retention"}, []string{"WALLABY_ARTIFACT_METADATA_RETENTION", "WALLABY_WORKER_ARTIFACT_METADATA_RETENTION"}, cfg.Artifacts.MetadataRetention)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Artifacts.MetadataMaxPublications, err = intValue(fileCfg, []string{"artifacts.metadata_max_publications"}, []string{"WALLABY_ARTIFACT_METADATA_MAX_PUBLICATIONS", "WALLABY_WORKER_ARTIFACT_METADATA_MAX_PUBLICATIONS"}, cfg.Artifacts.MetadataMaxPublications)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Artifacts.MetadataMaxRows, err = intValue(fileCfg, []string{"artifacts.metadata_max_rows"}, []string{"WALLABY_ARTIFACT_METADATA_MAX_ROWS", "WALLABY_WORKER_ARTIFACT_METADATA_MAX_ROWS"}, cfg.Artifacts.MetadataMaxRows)
+	if err != nil {
+		return nil, err
+	}
 	cfg.Artifacts.GCInterval, err = durationValue(fileCfg, []string{"artifacts.gc_interval"}, []string{"WALLABY_ARTIFACT_GC_INTERVAL", "WALLABY_WORKER_ARTIFACT_GC_INTERVAL"}, cfg.Artifacts.GCInterval)
 	if err != nil {
 		return nil, err
@@ -630,6 +648,9 @@ func validateConfig(cfg *Config) error {
 		cfg.Kubernetes.JobImagePullPolicy = jobImagePullPolicy
 	}
 
+	if strings.TrimSpace(cfg.Artifacts.Bucket) != "" && (cfg.Artifacts.MetadataRetention <= 0 || cfg.Artifacts.MetadataMaxPublications <= 0 || cfg.Artifacts.MetadataMaxRows <= 0) {
+		errs = append(errs, "artifacts metadata_retention, metadata_max_publications, and metadata_max_rows must be greater than 0 when artifact publication is configured")
+	}
 	if cfg.DDL.CatalogEnabled && cfg.DDL.CatalogInterval <= 0 {
 		errs = append(errs, "ddl.catalog_interval must be greater than 0 when ddl catalog scanning is enabled")
 	}

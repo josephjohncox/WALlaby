@@ -105,10 +105,13 @@ func NewArtifactLogFactory(pool *pgxpool.Pool, cfg config.ArtifactConfig, iceber
 				BacklogAgeHigh:           cfg.BacklogAgeHigh,
 				BackpressurePollInterval: cfg.BackpressurePollInterval,
 			},
-			OrphanGrace: cfg.OrphanGrace,
-			Retention:   cfg.Retention,
-			GCInterval:  cfg.GCInterval,
-			Consumers:   catalogConsumers, Projector: projector,
+			OrphanGrace:             cfg.OrphanGrace,
+			Retention:               cfg.Retention,
+			MetadataRetention:       cfg.MetadataRetention,
+			MetadataMaxPublications: cfg.MetadataMaxPublications,
+			MetadataMaxRows:         cfg.MetadataMaxRows,
+			GCInterval:              cfg.GCInterval,
+			Consumers:               catalogConsumers, Projector: projector,
 			DestinationFingerprint: effectiveFingerprint,
 		})
 	}

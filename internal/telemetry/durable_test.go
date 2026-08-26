@@ -76,6 +76,55 @@ func TestPostgresManagedProfileMetrics(t *testing.T) {
 	}
 }
 
+func TestArtifactMetadataRetentionMetricLabelsAreBounded(t *testing.T) {
+	oldMeterProvider := otel.GetMeterProvider()
+	oldMetrics := durableMetrics
+	defer func() {
+		otel.SetMeterProvider(oldMeterProvider)
+		durableMetrics = oldMetrics
+	}()
+	reader := sdkmetric.NewManualReader()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	durableMetrics = &durableMetricSet{}
+	ctx := context.Background()
+	for _, outcome := range []string{"scanned", "deleted", "deferred", "publication-secret"} {
+		RecordArtifactMetadataRetention(ctx, outcome, 1)
+	}
+	RecordArtifactMetadataRows(ctx, 11)
+	var metrics metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &metrics); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, scope := range metrics.ScopeMetrics {
+		for _, measurement := range scope.Metrics {
+			if measurement.Name == "wallaby.artifact.metadata_retention.rows" {
+				seen["rows"] = true
+			}
+			if measurement.Name != "wallaby.artifact.metadata_retention.publications" {
+				continue
+			}
+			sum, ok := measurement.Data.(metricdata.Sum[int64])
+			if !ok {
+				continue
+			}
+			for _, point := range sum.DataPoints {
+				if value, ok := point.Attributes.Value(attribute.Key("outcome")); ok {
+					seen[value.AsString()] = true
+				}
+			}
+		}
+	}
+	for _, outcome := range []string{"scanned", "deleted", "deferred", "other", "rows"} {
+		if !seen[outcome] {
+			t.Fatalf("missing metadata retention metric %q: %v", outcome, seen)
+		}
+	}
+	if seen["publication-secret"] {
+		t.Fatalf("unbounded metadata identity leaked: %v", seen)
+	}
+}
+
 func TestIcebergConsumerTelemetry(t *testing.T) {
 	oldTracerProvider := otel.GetTracerProvider()
 	oldMeterProvider := otel.GetMeterProvider()

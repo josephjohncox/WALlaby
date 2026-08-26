@@ -15,11 +15,14 @@ func TestRuntimeRejectsIncompleteConsumerAuthorityBeforeExternalIO(t *testing.T)
 	t.Parallel()
 	objects := &recordingObjectStore{}
 	config := artifactlog.RuntimeConfig{
-		Stream:      artifactlog.StreamConfig{HardRetainedBytes: 1, BacklogCountHigh: 1, BacklogBytesHigh: 1},
-		OrphanGrace: time.Second,
-		Retention:   time.Second,
-		GCInterval:  time.Second,
-		Consumers:   []artifactlog.CatalogConsumerConfig{{RevisionID: "catalog-v1"}},
+		Stream:                  artifactlog.StreamConfig{HardRetainedBytes: 1, BacklogCountHigh: 1, BacklogBytesHigh: 1},
+		OrphanGrace:             time.Second,
+		Retention:               time.Second,
+		MetadataRetention:       time.Second,
+		MetadataMaxPublications: 1,
+		MetadataMaxRows:         1,
+		GCInterval:              time.Second,
+		Consumers:               []artifactlog.CatalogConsumerConfig{{RevisionID: "catalog-v1"}},
 	}
 	if _, err := artifactlog.NewRuntime(context.Background(), nil, objects, config); err == nil || !strings.Contains(err.Error(), "require revision ID and committer") {
 		t.Fatalf("NewRuntime() error=%v, want incomplete consumer authority rejection", err)
