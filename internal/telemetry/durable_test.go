@@ -196,6 +196,7 @@ func TestClickHouseManagedProfileTelemetry(t *testing.T) {
 	end(nil)
 	_, end = StartClickHouseManagedSpan(ctx, "flow-specific-unbounded-operation", "query-2", "logical-2", 1, 10)
 	end(context.Canceled)
+	RecordClickHousePartAdmission(ctx, 10, 4, 20, "capacity")
 
 	spans := spanRecorder.Ended()
 	if len(spans) != 2 || spans[0].Name() != "clickhouse.managed.fragment" || spans[1].Name() != "clickhouse.managed.other" {
@@ -229,9 +230,42 @@ func TestClickHouseManagedProfileTelemetry(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"wallaby.clickhouse.managed.outcomes", "wallaby.clickhouse.managed.rows", "wallaby.clickhouse.managed.bytes", "wallaby.clickhouse.managed.duration"} {
+	for _, name := range []string{"wallaby.clickhouse.managed.outcomes", "wallaby.clickhouse.managed.rows", "wallaby.clickhouse.managed.bytes", "wallaby.clickhouse.managed.duration", "wallaby.clickhouse.managed.parts.server_active", "wallaby.clickhouse.managed.parts.reserved", "wallaby.clickhouse.managed.parts.capacity", "wallaby.clickhouse.managed.parts.rejected"} {
 		if !seen[name] {
 			t.Fatalf("missing metric %s: %v", name, seen)
+		}
+	}
+}
+
+func TestClickHousePartObservationFailureDoesNotPublishZeroGauges(t *testing.T) {
+	oldMeterProvider := otel.GetMeterProvider()
+	oldMetrics := durableMetrics
+	defer func() {
+		otel.SetMeterProvider(oldMeterProvider)
+		durableMetrics = oldMetrics
+	}()
+
+	reader := sdkmetric.NewManualReader()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	durableMetrics = &durableMetricSet{}
+	RecordClickHousePartRejection(context.Background(), "observation")
+
+	var metrics metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &metrics); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, scope := range metrics.ScopeMetrics {
+		for _, measurement := range scope.Metrics {
+			seen[measurement.Name] = true
+		}
+	}
+	if !seen["wallaby.clickhouse.managed.parts.rejected"] {
+		t.Fatalf("missing rejected counter: %v", seen)
+	}
+	for _, name := range []string{"wallaby.clickhouse.managed.parts.server_active", "wallaby.clickhouse.managed.parts.reserved", "wallaby.clickhouse.managed.parts.capacity"} {
+		if seen[name] {
+			t.Fatalf("observation failure published fabricated gauge %s", name)
 		}
 	}
 }

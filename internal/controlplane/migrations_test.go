@@ -185,7 +185,9 @@ func testDeliveryManifestAuthorityTamper(t *testing.T, major int) {
 		{name: "extra predicate index", tamper: exec(`CREATE INDEX delivery_manifests_injected_predicate_idx ON delivery_manifests(content_hash) WHERE content_hash<>''`), want: "index set for delivery_manifests differs"},
 		{name: "same-name logical check true", tamper: exec(`ALTER TABLE delivery_manifests DROP CONSTRAINT delivery_manifests_logical_batch_current; ALTER TABLE delivery_manifests ADD CONSTRAINT delivery_manifests_logical_batch_current CHECK (true)`), want: "delivery_manifests.delivery_manifests_logical_batch_current definition differs"},
 		{name: "same-name baseline check true", tamper: exec(`ALTER TABLE delivery_manifests DROP CONSTRAINT delivery_manifests_schema_baseline_fingerprint_check; ALTER TABLE delivery_manifests ADD CONSTRAINT delivery_manifests_schema_baseline_fingerprint_check CHECK (true)`), want: "delivery_manifests.delivery_manifests_schema_baseline_fingerprint_check definition differs"},
-		{name: "altered primary key columns", tamper: exec(`ALTER TABLE delivery_manifests DROP CONSTRAINT delivery_manifests_pkey; ALTER TABLE delivery_manifests ADD CONSTRAINT delivery_manifests_pkey PRIMARY KEY (flow_incarnation_id,destination_revision_id,logical_batch_id)`), want: "delivery_manifests.delivery_manifests_pkey definition differs"},
+		{name: "altered primary key columns", tamper: exec(`ALTER TABLE delivery_manifests DROP CONSTRAINT delivery_manifests_pkey CASCADE;
+ALTER TABLE delivery_manifests ADD CONSTRAINT delivery_manifests_pkey PRIMARY KEY (flow_incarnation_id,destination_revision_id,logical_batch_id);
+ALTER TABLE managed_part_reservations ADD CONSTRAINT managed_part_reservations_manifest_fkey FOREIGN KEY (flow_incarnation_id,destination_revision_id,logical_batch_id) REFERENCES delivery_manifests(flow_incarnation_id,destination_revision_id,logical_batch_id) ON DELETE RESTRICT`), want: "delivery_manifests.delivery_manifests_pkey definition differs"},
 		{name: "nonunique logical index", tamper: exec(`DROP INDEX delivery_manifests_logical_batch_idx; CREATE INDEX delivery_manifests_logical_batch_idx ON delivery_manifests(flow_incarnation_id,destination_revision_id,logical_batch_id)`), want: "delivery_manifests.delivery_manifests_logical_batch_idx differs"},
 		{name: "wrong logical index columns", tamper: exec(`DROP INDEX delivery_manifests_logical_batch_idx; CREATE UNIQUE INDEX delivery_manifests_logical_batch_idx ON delivery_manifests(flow_incarnation_id,destination_revision_id,position_id)`), want: "delivery_manifests.delivery_manifests_logical_batch_idx differs"},
 		{name: "predicated logical index", tamper: exec(`DROP INDEX delivery_manifests_logical_batch_idx; CREATE UNIQUE INDEX delivery_manifests_logical_batch_idx ON delivery_manifests(flow_incarnation_id,destination_revision_id,logical_batch_id) WHERE logical_batch_id<>''`), want: "delivery_manifests.delivery_manifests_logical_batch_idx differs"},
@@ -213,6 +215,32 @@ func testDeliveryManifestAuthorityTamper(t *testing.T, major int) {
 			}
 			if err := ApplyMigrations(ctx, pool); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("PostgreSQL %d second restart repaired tamper: error=%v, want %q", major, err, test.want)
+			}
+		})
+	}
+}
+
+func TestManagedPartReservationAuthorityTamperFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		statement string
+		want      string
+	}{
+		{name: "extra reservation column", statement: `ALTER TABLE managed_part_reservations ADD COLUMN injected text`, want: "requires exact columns for managed_part_reservations"},
+		{name: "weakened budget index", statement: `DROP INDEX managed_part_reservations_budget_idx; CREATE INDEX managed_part_reservations_budget_idx ON managed_part_reservations(destination_revision_id,resource,reservation_state)`, want: "managed_part_reservations_budget_idx differs"},
+		{name: "dropped query identity", statement: `ALTER TABLE managed_part_reservation_parts DROP CONSTRAINT managed_part_reservation_parts_query_id_key`, want: "managed_part_reservation_parts_query_id_key"},
+		{name: "extra event index", statement: `CREATE INDEX managed_part_reservation_events_injected ON managed_part_reservation_events(event_kind)`, want: "index set for managed_part_reservation_events differs"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, pool := newControlplaneMigrationFixture(t)
+			if err := ApplyMigrations(ctx, pool); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, test.statement); err != nil {
+				t.Fatal(err)
+			}
+			if err := ApplyMigrations(ctx, pool); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("managed part authority tamper error=%v, want %q", err, test.want)
 			}
 		})
 	}
@@ -259,17 +287,17 @@ func TestExactAuthorityCatalogManifestIsCurrent(t *testing.T) {
 	if !containsString(authorityMutableTables, "artifact_consumer_checkpoints") {
 		t.Fatal("artifact_consumer_checkpoints is absent from authority tables")
 	}
-	wantColumnCounts := map[string]int{"delivery_manifests": 13, "artifact_delivery_attempts": 11, "artifact_delivery_receipts": 15, "artifact_consumer_checkpoints": 9, "artifact_metadata_prune_claims": 13}
+	wantColumnCounts := map[string]int{"delivery_manifests": 13, "managed_part_reservations": 26, "managed_part_reservation_parts": 10, "managed_part_reservation_events": 12, "artifact_delivery_attempts": 11, "artifact_delivery_receipts": 15, "artifact_consumer_checkpoints": 9, "artifact_metadata_prune_claims": 13}
 	for table, want := range wantColumnCounts {
 		if got := len(exactAuthorityColumns[table]); got != want {
 			t.Fatalf("%s exact column count=%d want=%d", table, got, want)
 		}
 	}
-	if len(exactAuthorityConstraints) != 31 || len(selectiveAuthorityConstraints) != 5 {
-		t.Fatalf("authority exact/selective constraint manifest count=%d/%d want=31/5", len(exactAuthorityConstraints), len(selectiveAuthorityConstraints))
+	if len(exactAuthorityConstraints) != 66 || len(selectiveAuthorityConstraints) != 5 {
+		t.Fatalf("authority exact/selective constraint manifest count=%d/%d want=66/5", len(exactAuthorityConstraints), len(selectiveAuthorityConstraints))
 	}
-	if len(exactAuthorityIndexes) != 17 || len(selectiveAuthorityIndexes) != 4 {
-		t.Fatalf("authority exact/selective index manifest count=%d/%d want=17/4", len(exactAuthorityIndexes), len(selectiveAuthorityIndexes))
+	if len(exactAuthorityIndexes) != 24 || len(selectiveAuthorityIndexes) != 4 {
+		t.Fatalf("authority exact/selective index manifest count=%d/%d want=24/4", len(exactAuthorityIndexes), len(selectiveAuthorityIndexes))
 	}
 	constraintContracts := append(append([]exactAuthorityConstraint(nil), exactAuthorityConstraints...), selectiveAuthorityConstraints...)
 	indexContracts := append(append([]exactAuthorityIndex(nil), exactAuthorityIndexes...), selectiveAuthorityIndexes...)
@@ -302,7 +330,7 @@ func TestExactAuthorityManifestMatchesFreshCatalog(t *testing.T) {
 	}
 	sort.Strings(expectedConstraints)
 	var actualConstraints []string
-	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(table_relation.relname||'.'||constraint_row.conname ORDER BY table_relation.relname,constraint_row.conname),'{}'::text[]) FROM pg_catalog.pg_constraint AS constraint_row JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid=constraint_row.conrelid WHERE table_relation.relname IN ('delivery_manifests','schema_versions','artifact_delivery_attempts','artifact_delivery_receipts','artifact_consumer_checkpoints','artifact_metadata_prune_claims')
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(table_relation.relname||'.'||constraint_row.conname ORDER BY table_relation.relname,constraint_row.conname),'{}'::text[]) FROM pg_catalog.pg_constraint AS constraint_row JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid=constraint_row.conrelid WHERE table_relation.relname IN ('delivery_manifests','schema_versions','managed_part_reservations','managed_part_reservation_parts','managed_part_reservation_events','artifact_delivery_attempts','artifact_delivery_receipts','artifact_consumer_checkpoints','artifact_metadata_prune_claims')
    OR (table_relation.relname IN ('artifact_deliveries','canonical_schemas','artifact_streams','artifact_objects','artifact_publications')
        AND constraint_row.conname NOT IN (
          'artifact_deliveries_flow_incarnation_id_consumer_revision_i_key','artifact_deliveries_flow_incarnation_id_fkey','artifact_deliveries_pkey','artifact_deliveries_publication_id_fkey',
@@ -323,7 +351,7 @@ func TestExactAuthorityManifestMatchesFreshCatalog(t *testing.T) {
 	}
 	sort.Strings(expectedIndexes)
 	var actualIndexes []string
-	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(table_relation.relname||'.'||index_relation.relname ORDER BY table_relation.relname,index_relation.relname),'{}'::text[]) FROM pg_catalog.pg_index AS index_row JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid=index_row.indrelid JOIN pg_catalog.pg_class AS index_relation ON index_relation.oid=index_row.indexrelid WHERE table_relation.relname IN ('delivery_manifests','schema_versions','artifact_delivery_attempts','artifact_delivery_receipts','artifact_consumer_checkpoints','artifact_metadata_prune_claims')
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(table_relation.relname||'.'||index_relation.relname ORDER BY table_relation.relname,index_relation.relname),'{}'::text[]) FROM pg_catalog.pg_index AS index_row JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid=index_row.indrelid JOIN pg_catalog.pg_class AS index_relation ON index_relation.oid=index_row.indexrelid WHERE table_relation.relname IN ('delivery_manifests','schema_versions','managed_part_reservations','managed_part_reservation_parts','managed_part_reservation_events','artifact_delivery_attempts','artifact_delivery_receipts','artifact_consumer_checkpoints','artifact_metadata_prune_claims')
    OR (table_relation.relname IN ('artifact_deliveries','canonical_schemas','artifact_streams','artifact_objects','artifact_publications','artifact_gc_claims')
        AND index_relation.relname NOT IN (
          'artifact_deliveries_flow_incarnation_id_consumer_revision_i_key','artifact_deliveries_pkey','artifact_gc_claims_pkey',

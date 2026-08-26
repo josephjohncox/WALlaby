@@ -1004,12 +1004,24 @@ func (r *Runner) runManaged(ctx context.Context) error {
 			PositionID:            positionID,
 			ContentHash:           contentHash,
 		}
-		grant, err := coordinator.DeliverTransaction(ctx, fence, intent, transaction, baselinePayload, driver)
-		if err != nil {
+		var grant connector.AckGrant
+		for {
+			grant, err = coordinator.DeliverTransaction(ctx, fence, intent, transaction, baselinePayload, driver)
+			if err == nil {
+				break
+			}
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("deliver managed source transaction: %w", err)
+			if !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+				return fmt.Errorf("deliver managed source transaction: %w", err)
+			}
+			// Target observation can be temporarily indeterminate during Keeper or
+			// endpoint loss. Retain the same immutable source transaction and fence,
+			// then reconcile it again instead of terminating the live producer.
+			if err := r.sleepRetry(ctx); err != nil {
+				return err
+			}
 		}
 		r.emitCheckpointTrace(ctx, "deliver", grant.Checkpoint, grant.PositionID, spec.ActionDeliver, nil)
 		r.emitCheckpointTrace(ctx, "checkpoint", grant.Checkpoint, grant.PositionID, spec.ActionPersistCheckpoint, nil)

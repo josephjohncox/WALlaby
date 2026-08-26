@@ -140,6 +140,103 @@ type PreparedManagedTransaction interface {
 	Apply(context.Context) (DeliveryEvidence, error)
 }
 
+const ManagedPartResourceClickHouseActivePartsV1 = "clickhouse_active_parts_v1"
+
+// ManagedPartIdentity is one immutable external part planned by a managed
+// transaction. Identity is stable across retries and endpoint failover.
+type ManagedPartIdentity struct {
+	Kind    string
+	Ordinal uint64
+	QueryID string
+}
+
+// ManagedPartReservationRequest carries the complete immutable part plan to
+// PostgreSQL. Dynamic destination observations are deliberately absent: the
+// coordinator obtains them only after taking the destination-revision budget
+// lock, closing validate-then-admit races between writers.
+type ManagedPartReservationRequest struct {
+	Resource              string
+	DestinationRevisionID string
+	SourceLineageID       string
+	LogicalBatchID        string
+	PositionID            string
+	ContentHash           string
+	PlanHash              string
+	Capacity              uint64
+	Parts                 []ManagedPartIdentity
+}
+
+// ManagedPartReservationObservation is proof gathered from both admitted
+// ClickHouse endpoints while PostgreSQL holds the destination budget lock.
+// Quiescent means the replicated changelog and receipt tables have no queued
+// Keeper/log work, so durable rows are reflected in ServerActiveParts.
+type ManagedPartReservationObservation struct {
+	ServerActiveParts uint64
+	EndpointCount     uint32
+	Quiescent         bool
+	BatchAbsent       bool
+}
+
+// ManagedPartPlanHash binds every persisted kind, ordinal, and insert query ID.
+func ManagedPartPlanHash(parts []ManagedPartIdentity) (string, error) {
+	if len(parts) == 0 {
+		return "", errors.New("managed part plan is empty")
+	}
+	payload, err := json.Marshal(parts)
+	if err != nil {
+		return "", fmt.Errorf("encode managed part plan: %w", err)
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+// Validate rejects incomplete, duplicated, or out-of-budget reservation plans.
+func (r ManagedPartReservationRequest) Validate() error {
+	if r.Resource != ManagedPartResourceClickHouseActivePartsV1 {
+		return errors.New("managed part reservation resource is not supported")
+	}
+	if strings.TrimSpace(r.DestinationRevisionID) == "" || strings.TrimSpace(r.SourceLineageID) == "" || strings.TrimSpace(r.LogicalBatchID) == "" || strings.TrimSpace(r.PositionID) == "" || strings.TrimSpace(r.ContentHash) == "" || strings.TrimSpace(r.PlanHash) == "" {
+		return errors.New("managed part reservation identity is incomplete")
+	}
+	if r.Capacity == 0 || len(r.Parts) == 0 {
+		return errors.New("managed part reservation capacity and parts must be positive")
+	}
+	seenIdentity := make(map[string]struct{}, len(r.Parts))
+	seenQueryID := make(map[string]struct{}, len(r.Parts))
+	for _, part := range r.Parts {
+		if part.Kind != "changelog" && part.Kind != "receipt" {
+			return fmt.Errorf("managed part reservation kind %q is invalid", part.Kind)
+		}
+		if strings.TrimSpace(part.QueryID) == "" {
+			return errors.New("managed part reservation query ID is required")
+		}
+		identity := fmt.Sprintf("%s:%d", part.Kind, part.Ordinal)
+		if _, duplicate := seenIdentity[identity]; duplicate {
+			return errors.New("managed part reservation contains duplicate kind and ordinal")
+		}
+		seenIdentity[identity] = struct{}{}
+		if _, duplicate := seenQueryID[part.QueryID]; duplicate {
+			return errors.New("managed part reservation contains duplicate query ID")
+		}
+		seenQueryID[part.QueryID] = struct{}{}
+	}
+	expectedPlanHash, err := ManagedPartPlanHash(r.Parts)
+	if err != nil {
+		return err
+	}
+	if r.PlanHash != expectedPlanHash {
+		return fmt.Errorf("%w: managed part reservation plan hash differs", ErrDeliveryConflict)
+	}
+	return nil
+}
+
+// ManagedPartReservationReconciler proves that neither endpoint contains any
+// fragment or receipt for an immutable logical batch before PostgreSQL releases
+// an abandoned reservation.
+type ManagedPartReservationReconciler interface {
+	ObserveManagedPartReservation(context.Context, DeliveryIntent, bool) (ManagedPartReservationObservation, error)
+}
+
 // ManagedTransactionPreparer is an optional deep interface implemented by
 // managed destinations that can validate and retain one bounded transaction
 // plan before PostgreSQL persists the external attempt.

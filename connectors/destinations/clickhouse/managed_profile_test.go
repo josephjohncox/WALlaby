@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"syscall"
@@ -115,6 +116,26 @@ func TestManagedWriteTransportFailureFallsBackToReplica(t *testing.T) {
 	}
 	if primaryCalls != 1 || replicaCalls != 1 {
 		t.Fatalf("write calls=(primary:%d replica:%d), want (1,1)", primaryCalls, replicaCalls)
+	}
+
+	replicaCalls = 0
+	if err := executeManagedWriteWithFailover(context.Background(), true, func() error {
+		return errors.New("write transport: EOF")
+	}, func() error {
+		replicaCalls++
+		return nil
+	}); err != nil || replicaCalls != 1 {
+		t.Fatalf("wrapped EOF failover error/calls=%v/%d, want nil/1", err, replicaCalls)
+	}
+
+	replicaCalls = 0
+	if err := executeManagedWriteWithFailover(context.Background(), true, func() error {
+		return errors.Join(context.Canceled, io.EOF)
+	}, func() error {
+		replicaCalls++
+		return nil
+	}); err != nil || replicaCalls != 1 {
+		t.Fatalf("endpoint-local cancellation/EOF failover error/calls=%v/%d, want nil/1", err, replicaCalls)
 	}
 
 	serverErr := errors.New("server rejected insert")
@@ -687,6 +708,75 @@ func TestManagedConfigRejectsUnsafeProtocolOptionsBeforeNetwork(t *testing.T) {
 		if _, err := managedConfigFromSpec(connector.RuntimeSpec{Options: options}); err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Fatalf("%s error=%v, want %q", test.key, err, test.want)
 		}
+	}
+}
+
+func TestManagedPreparedTransactionRequiresPostgresPartReservation(t *testing.T) {
+	prepared := &preparedManagedTransaction{}
+	if _, err := prepared.Apply(context.Background()); err == nil || !strings.Contains(err.Error(), "requires a PostgreSQL part reservation") {
+		t.Fatalf("unreserved managed write error=%v", err)
+	}
+}
+
+func TestManagedPartReservationPlanCountsChangelogAndReceipt(t *testing.T) {
+	transaction := managedTestTransaction()
+	intent := managedTestIntent(t, transaction)
+	plan, err := planManagedTransactionWithLimits(intent, transaction, managedPlanLimits{maxFragments: 8, maxRows: 100, maxBytes: 1 << 20, maxRowsPerInsert: 1, maxBytesPerInsert: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := &preparedManagedTransaction{destination: &Destination{managedConfig: managedConfig{maxActiveParts: 8}}, intent: intent, plan: plan}
+	request, err := prepared.PartReservationRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(request.Parts) != len(plan.Fragments)+1 || request.Parts[len(request.Parts)-1].Kind != "receipt" {
+		t.Fatalf("reservation parts=%+v, want %d changelog plus receipt", request.Parts, len(plan.Fragments))
+	}
+	if request.Capacity != 8 || request.SourceLineageID != intent.SourceLineageID || request.PositionID != intent.PositionID {
+		t.Fatalf("reservation identity/capacity=%+v", request)
+	}
+	if want, hashErr := connector.ManagedPartPlanHash(request.Parts); hashErr != nil || request.PlanHash != want {
+		t.Fatalf("reservation plan hash=%q want=%q err=%v", request.PlanHash, want, hashErr)
+	}
+}
+
+func TestManagedPhysicalInsertIdentityBindsCoalescedAndSplitRows(t *testing.T) {
+	transaction := managedTestTransaction()
+	intent := managedTestIntent(t, transaction)
+	for _, test := range []struct {
+		name      string
+		rowsPer   int
+		fragments int
+	}{
+		{name: "coalesced", rowsPer: 100, fragments: 1},
+		{name: "split", rowsPer: 1, fragments: 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan, err := planManagedTransactionWithLimits(intent, transaction, managedPlanLimits{maxFragments: 8, maxRows: 100, maxBytes: 1 << 20, maxRowsPerInsert: test.rowsPer, maxBytesPerInsert: 1 << 20})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.Fragments) != test.fragments {
+				t.Fatalf("physical fragments=%d, want %d", len(plan.Fragments), test.fragments)
+			}
+			for _, fragment := range plan.Fragments {
+				for _, row := range fragment.Rows {
+					if row.InsertQueryID != fragment.QueryID {
+						t.Fatalf("row insert_query_id=%q, want %q", row.InsertQueryID, fragment.QueryID)
+					}
+					original := row.RecordHash
+					row.InsertQueryID += "-different"
+					changed, hashErr := managedRecordHash(row)
+					if hashErr != nil {
+						t.Fatal(hashErr)
+					}
+					if changed == original {
+						t.Fatal("record hash did not bind physical insert_query_id")
+					}
+				}
+			}
+		})
 	}
 }
 

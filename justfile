@@ -298,6 +298,11 @@ test-clickhouse-managed-profile:
     required+=',TestClickHouseManagedProfileProcessKillRecovery'
     required+=',TestClickHouseManagedProfileKeeperFailureRecovery'
     required+=',TestClickHouseManagedProfileBackpressure'
+    required+=',TestClickHousePartReservationSerializesConcurrentWriters'
+    required+=',TestClickHousePartReservationCrashAfterReservation'
+    required+=',TestClickHousePartReservationReclaimRequiresProvenAbsence'
+    required+=',TestClickHousePartReservationCrashRecovery'
+    required+=',TestClickHousePartReservationRetentionDeletesChildrenBeforeParent'
     filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
     WALLABY_TEST_CLICKHOUSE_DESTRUCTIVE_STORAGE_LOSS=1 IT_KIND_CLUSTER="${harness_cluster}" IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' just test-integration
     telemetry_results=$(mktemp)

@@ -84,6 +84,7 @@ CREATE TABLE wallaby.wallaby_cdc_log
     payload String,
     ddl_plan String,
     event_time DateTime64(9, 'UTC'),
+    insert_query_id String,
     record_hash FixedString(64),
     wallaby_version UInt64
 )
@@ -188,7 +189,13 @@ For mutual TLS, set both `tls.certificate_file` and `tls.private_key_file`. Cert
 
 ## Resource and failure behavior
 
-Admission checks transaction-wide fragment, row, and encoded-byte bounds before delivery. Planning also bounds every insert by rows and bytes. Before any write, WALlaby enforces `active_parts + planned_inserts <= max_active_parts`. ClickHouse's own `parts_to_delay_insert`, `parts_to_throw_insert`, and `max_parts_in_total` settings remain the final server-side guardrails.
+Admission checks transaction-wide fragment, row, and encoded-byte bounds before delivery. Planning also bounds every insert by rows and bytes. PostgreSQL first takes the destination-revision budget lock; only while that lock is held does WALlaby require fresh reads from both endpoints, zero replication/Keeper queue work, and the maximum changelog-plus-receipt active-part count. It then atomically reserves every planned changelog insert plus the receipt insert and enforces `server_active_parts + charged_parts + planned_parts <= max_active_parts`. A missing endpoint or non-quiescent replication state rejects new admission. Concurrent coordinators therefore cannot reuse a stale observation or consume the same remaining capacity.
+
+A deterministic reservation is bound to the destination revision, source lineage, immutable logical batch, source position, content hash, complete ordered part-plan hash, and stable insert query IDs. Every changelog row persists its physical `insert_query_id`, and that value participates in `record_hash`. Before each fragment or receipt insert, PostgreSQL holds the same budget lock across destination reconciliation, any irreversible insert, and the progress commit. Retries compare the exact destination revision, logical batch, physical insert query ID, and ordered row hashes on both endpoints before deciding to skip or insert, so convergence does not depend on ClickHouse retaining an old deduplication token and remains correct when source fragments are coalesced or split into physical inserts. Endpoint failover preserves an already admitted reservation, but it does not permit a new reservation without both endpoints.
+
+Receipt finalization changes the reservation to `completed_pending_observation`; it does not immediately subtract the charge. A later fresh, locked, two-endpoint quiescent observation proves that the durable parts are included in the server count before releasing the charge. Absent-batch reclaim is a versioned two-phase takeover: only a demonstrably superseding producer fence can commit `reclaim_pending`, which blocks stale pre-write guards, and a second locked phase releases the exact reclaim epoch only after both endpoints again prove quiescence and absence. Released exact identities may be re-reserved only after another fresh absence observation and an audited reservation-epoch increment. ClickHouse's own `parts_to_delay_insert`, `parts_to_throw_insert`, and `max_parts_in_total` settings remain the final server-side guardrails.
+
+Successful observations expose gauges `wallaby.clickhouse.managed.parts.server_active`, `wallaby.clickhouse.managed.parts.reserved`, and `wallaby.clickhouse.managed.parts.capacity`. Observation failures increment `wallaby.clickhouse.managed.parts.rejected` with a bounded reason without publishing fabricated zero gauges. Revision and logical-batch identities remain trace-only and are never metric labels.
 
 Keeper loss makes replicated tables read-only. WALlaby does not acknowledge during that interval. After Keeper returns and both managed replicas report writable, reconciliation resumes from the completion receipt.
 
@@ -207,6 +214,7 @@ The integration gates cover:
 - forced ClickHouse and Keeper process replacement;
 - primary client-endpoint write/reconciliation failover while quorum two remains healthy;
 - survivor-only receipt recovery after destructive primary storage loss, with new writes fenced until the primary is rebuilt;
+- barrier-driven concurrent active-part reservations and crash recovery after reservation, fragment, and receipt progress;
 - active-part and planned-part backpressure;
 - verified native TLS;
 - bounded 1k, 10k, and 100k transaction query counts;

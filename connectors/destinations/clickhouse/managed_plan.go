@@ -64,6 +64,7 @@ type managedChangelogRow struct {
 	Payload               string
 	DDLPlan               string
 	EventTime             time.Time
+	InsertQueryID         string
 	RecordHash            string
 	WallabyVersion        uint64
 }
@@ -138,16 +139,15 @@ func planManagedTransactionWithLimits(intent connector.DeliveryIntent, transacti
 			if err != nil {
 				return managedTransactionPlan{}, fmt.Errorf("plan managed fragment %d record %d: %w", fragment.Ordinal, recordOrdinal, err)
 			}
-			rowBytes := managedRowBytes(row)
-			if rowBytes > limits.maxBytesPerInsert {
-				return managedTransactionPlan{}, fmt.Errorf("managed ClickHouse single row has %d encoded bytes, per-insert maximum is %d", rowBytes, limits.maxBytesPerInsert)
-			}
-			if plan.EncodedBytes+rowBytes > limits.maxBytes {
-				return managedTransactionPlan{}, fmt.Errorf("managed ClickHouse transaction encoded bytes exceed maximum %d", limits.maxBytes)
-			}
 			needsInsert := len(plan.Fragments) == 0
 			if !needsInsert {
 				current := &plan.Fragments[len(plan.Fragments)-1]
+				row.InsertQueryID = current.QueryID
+				row.RecordHash, err = managedRecordHash(row)
+				if err != nil {
+					return managedTransactionPlan{}, err
+				}
+				rowBytes := managedRowBytes(row)
 				needsInsert = len(current.Rows) >= limits.maxRowsPerInsert || current.EncodedBytes+rowBytes > limits.maxBytesPerInsert
 			}
 			if needsInsert {
@@ -159,6 +159,18 @@ func planManagedTransactionWithLimits(intent connector.DeliveryIntent, transacti
 					Rows:               make([]managedChangelogRow, 0, min(limits.maxRowsPerInsert, limits.maxRows)),
 				})
 				queryIDs = append(queryIDs, queryID)
+				row.InsertQueryID = queryID
+				row.RecordHash, err = managedRecordHash(row)
+				if err != nil {
+					return managedTransactionPlan{}, err
+				}
+			}
+			rowBytes := managedRowBytes(row)
+			if rowBytes > limits.maxBytesPerInsert {
+				return managedTransactionPlan{}, fmt.Errorf("managed ClickHouse single row has %d encoded bytes, per-insert maximum is %d", rowBytes, limits.maxBytesPerInsert)
+			}
+			if plan.EncodedBytes+rowBytes > limits.maxBytes {
+				return managedTransactionPlan{}, fmt.Errorf("managed ClickHouse transaction encoded bytes exceed maximum %d", limits.maxBytes)
 			}
 			current := &plan.Fragments[len(plan.Fragments)-1]
 			current.Rows = append(current.Rows, row)

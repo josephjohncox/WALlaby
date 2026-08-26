@@ -81,6 +81,7 @@ type Destination struct {
 	managedInitializeAuthorityHook func(context.Context, chdriver.Conn, string, bool) error
 	managedOpenEndpointHook        func(context.Context, *chclient.Options, connector.ManagedProfileContract, string) (chdriver.Conn, string, error)
 	managedValidateTargetHook      func(context.Context, chdriver.Conn, string, bool) error
+	managedAfterPartWriteHook      func(context.Context, connector.ManagedPartIdentity) error
 	batchMode                      string
 	batchResolve                   string
 	stagingSchema                  string
