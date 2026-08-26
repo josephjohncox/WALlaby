@@ -52,6 +52,7 @@ type fakeStreamProtocol struct {
 
 	// Fault knobs.
 	openFailsOnce                    error // OpenChannel fails once without opening.
+	openKeepsRevision                bool  // Concurrent opens adopt the same authoritative channel revision.
 	appendInvalidateThenReopen       bool  // First AppendRows reports a stale channel; reopen bumps the revision.
 	appendAuthExpiresOnce            bool  // First AppendRows reports an expired ingest credential.
 	appendThrottleTimes              int   // The next N AppendRows report backpressure.
@@ -122,7 +123,7 @@ func (f *fakeStreamProtocol) OpenChannel(_ context.Context, _ streamConfig, chan
 	if !present {
 		channel = &fakeStreamChannel{revision: 1, pipeRevision: "pipe-rev-1", continuationToken: "cont-1"}
 		f.channels[channelName] = channel
-	} else {
+	} else if !f.openKeepsRevision {
 		channel.revision++
 		channel.continuationToken = fmt.Sprintf("cont-%d", channel.revision)
 	}
@@ -235,7 +236,7 @@ func (f *fakeStreamProtocol) RequestStatus(_ context.Context, _ streamConfig, re
 	}
 	channel := f.channels[request.channelName]
 	evidence := streamRequestStatusEvidence{
-		disposition: status, requestID: request.requestID, channelName: request.channelName,
+		disposition: status, requestID: request.requestID, channelName: request.channelName, pipeName: request.pipeName,
 		channelRevision: request.channelRevision, pipeRevision: request.pipeRevision,
 		inputContinuation: request.inputContinuation, requestedOffset: request.requestedOffset,
 		manifestHash: request.manifestHash, rowsContentHash: request.rowsContentHash, rowCount: request.rowCount,
@@ -287,7 +288,7 @@ func (f *fakeStreamProtocol) CompareAndSwapChannelState(_ context.Context, _ str
 		f.channelState[key] = state
 		return state, true, nil
 	}
-	if current.stateVersion != expected.stateVersion || current.channelRevision != expected.channelRevision || current.continuationToken != expected.continuationToken || current.committedOffsetToken != expected.committedOffsetToken || current.logicalBatchID != expected.logicalBatchID || current.rowsContentHash != expected.rowsContentHash || state.stateVersion != expected.stateVersion+1 || state.channelRevision < current.channelRevision {
+	if current.stateVersion != expected.stateVersion || current.pipeName != expected.pipeName || current.pipeRevision != expected.pipeRevision || current.channelRevision != expected.channelRevision || current.continuationToken != expected.continuationToken || current.committedOffsetToken != expected.committedOffsetToken || current.logicalBatchID != expected.logicalBatchID || current.rowsContentHash != expected.rowsContentHash || current.requestID != expected.requestID || state.stateVersion != expected.stateVersion+1 || state.channelRevision < current.channelRevision {
 		return current, false, nil
 	}
 	f.channelState[key] = state

@@ -102,6 +102,7 @@ type managedStreamChannelState struct {
 	committedOffsetToken  string
 	logicalBatchID        string
 	rowsContentHash       string
+	requestID             string
 	stateVersion          int64
 }
 
@@ -245,11 +246,18 @@ func (p *sqlStreamProtocol) ObserveCommittedRows(ctx context.Context, cfg stream
 
 func (p *sqlStreamProtocol) CompareAndSwapChannelState(ctx context.Context, cfg streamConfig, expected managedStreamChannelState, state managedStreamChannelState) (managedStreamChannelState, bool, error) {
 	ctx, recordQueryID := managedSnowflakeQueryIDContext(ctx)
-	values := append(streamChannelStateValues(state), expected.stateVersion, expected.channelRevision, expected.continuationToken, expected.committedOffsetToken, expected.logicalBatchID, expected.rowsContentHash)
-	_, err := p.db.ExecContext(ctx, streamChannelStateMergeSQL(cfg), values...)
+	values := append(streamChannelStateValues(state), expected.stateVersion, expected.pipeName, expected.pipeRevision, expected.channelRevision, expected.continuationToken, expected.committedOffsetToken, expected.logicalBatchID, expected.rowsContentHash, expected.requestID)
+	result, err := p.db.ExecContext(ctx, streamChannelStateMergeSQL(cfg), values...)
 	recordQueryID()
 	if err != nil {
 		return managedStreamChannelState{}, false, fmt.Errorf("%w: compare-and-swap streaming Snowflake channel state: %w", connector.ErrDeliveryIndeterminate, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return managedStreamChannelState{}, false, fmt.Errorf("read streaming Snowflake channel CAS cardinality: %w", err)
+	}
+	if affected < 0 || affected > 1 {
+		return managedStreamChannelState{}, false, fmt.Errorf("%w: channel state CAS affected %d rows", connector.ErrDeliveryConflict, affected)
 	}
 	current, found, err := p.LookupChannelState(ctx, cfg, streamChannelStateKey{flowIncarnationID: state.flowIncarnationID, destinationRevisionID: state.destinationRevisionID, channelName: state.channelName})
 	if err != nil {
@@ -258,8 +266,7 @@ func (p *sqlStreamProtocol) CompareAndSwapChannelState(ctx context.Context, cfg 
 	if !found {
 		return managedStreamChannelState{}, false, fmt.Errorf("%w: channel state CAS produced no visible row", connector.ErrDeliveryIndeterminate)
 	}
-	applied := current.stateVersion == state.stateVersion && current.channelRevision == state.channelRevision && current.pipeRevision == state.pipeRevision && current.continuationToken == state.continuationToken && current.committedOffsetToken == state.committedOffsetToken
-	return current, applied, nil
+	return current, affected == 1, nil
 }
 
 func (p *sqlStreamProtocol) LookupChannelState(ctx context.Context, cfg streamConfig, key streamChannelStateKey) (managedStreamChannelState, bool, error) {
@@ -342,6 +349,9 @@ func (p *sqlStreamProtocol) TransitionRequest(ctx context.Context, cfg streamCon
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return managedStreamRequest{}, false, err
+	}
+	if affected < 0 || affected > 1 {
+		return managedStreamRequest{}, false, fmt.Errorf("%w: streaming Snowflake request transition affected %d rows", connector.ErrDeliveryConflict, affected)
 	}
 	row := p.db.QueryRowContext(ctx, streamRequestLookupByIDSQL(cfg), transition.requestID)
 	request, scanErr := scanStreamRequest(row)
@@ -470,7 +480,7 @@ func (p *sqlStreamProtocol) ReleaseChannelState(ctx context.Context, cfg streamC
 	if _, err := tx.ExecContext(ctx, streamReceiptInsertSQL(cfg), streamReceiptValues(release)...); err != nil && !isStagedDuplicateKey(err) {
 		return false, fmt.Errorf("insert streaming Snowflake release receipt: %w", err)
 	}
-	result, err := tx.ExecContext(ctx, streamChannelStateDeleteCASSQL(cfg), expected.flowIncarnationID, expected.destinationRevisionID, expected.channelName, expected.stateVersion, expected.channelRevision, expected.continuationToken, expected.committedOffsetToken, expected.logicalBatchID, expected.rowsContentHash, expected.flowIncarnationID, expected.destinationRevisionID, expected.channelName)
+	result, err := tx.ExecContext(ctx, streamChannelStateDeleteCASSQL(cfg), expected.flowIncarnationID, expected.destinationRevisionID, expected.channelName, expected.stateVersion, expected.pipeName, expected.pipeRevision, expected.channelRevision, expected.continuationToken, expected.committedOffsetToken, expected.logicalBatchID, expected.rowsContentHash, expected.requestID, expected.flowIncarnationID, expected.destinationRevisionID, expected.channelName)
 	if err != nil {
 		return false, fmt.Errorf("delete streaming Snowflake channel state: %w", err)
 	}

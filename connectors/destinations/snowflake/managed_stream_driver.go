@@ -13,12 +13,15 @@ import (
 
 // streamingHooks exposes deterministic fault boundaries to same-package protocol tests.
 type streamingHooks struct {
-	AfterOpen      func() error
-	AfterAppend    func() error
-	AfterSendClaim func() error
-	BeforeReceipt  func() error
-	AfterReceipt   func() error
-	RefreshAuth    func(context.Context) error
+	AfterOpen           func() error
+	AfterRequestLookup  func(bool) error
+	AfterAppend         func() error
+	AfterAccepted       func() error
+	BeforeRequestInsert func(managedStreamRequest) error
+	AfterSendClaim      func() error
+	BeforeReceipt       func() error
+	AfterReceipt        func() error
+	RefreshAuth         func(context.Context) error
 }
 
 // streamDriver orchestrates the Snowpipe Streaming append protocol against a
@@ -79,6 +82,11 @@ func (d *streamDriver) apply(ctx context.Context, intent connector.DeliveryInten
 	if err != nil {
 		return connector.DeliveryEvidence{}, err
 	}
+	if hook := d.hooks.AfterRequestLookup; hook != nil {
+		if err := hook(requestFound); err != nil {
+			return connector.DeliveryEvidence{}, err
+		}
+	}
 	var status streamChannelStatus
 	committed := false
 	nextAttempt := 1
@@ -134,7 +142,7 @@ func (d *streamDriver) apply(ctx context.Context, intent connector.DeliveryInten
 		}
 	}
 
-	committedToken, err := d.verifyObservedCompleteness(ctx, plan, status, true)
+	committedToken, err := d.verifyObservedCompleteness(ctx, plan, status, request.requestID)
 	if err != nil {
 		return connector.DeliveryEvidence{}, err
 	}
@@ -191,13 +199,13 @@ func (d *streamDriver) openAndPersistChannel(ctx context.Context, plan managedSt
 	if !status.valid || status.channelName != plan.identity.channelName {
 		return streamChannelStatus{}, fmt.Errorf("%w: streaming Snowflake channel %q did not open cleanly", connector.ErrDeliveryIndeterminate, plan.identity.channelName)
 	}
-	if err := d.persistChannelState(ctx, plan, status, rowsContentHash); err != nil {
+	if err := d.persistChannelState(ctx, plan, status, rowsContentHash, ""); err != nil {
 		return streamChannelStatus{}, err
 	}
 	return status, nil
 }
 
-func (d *streamDriver) persistChannelState(ctx context.Context, plan managedStreamPlan, status streamChannelStatus, rowsContentHash string) error {
+func (d *streamDriver) persistChannelState(ctx context.Context, plan managedStreamPlan, status streamChannelStatus, rowsContentHash, requestID string) error {
 	if status.channelRevision <= 0 || status.channelName != plan.identity.channelName || status.pipeRevision == "" || status.continuationToken == "" {
 		return fmt.Errorf("%w: incomplete streaming Snowflake channel evidence", connector.ErrDeliveryIndeterminate)
 	}
@@ -227,7 +235,7 @@ func (d *streamDriver) persistChannelState(ctx context.Context, plan managedStre
 		channelName: plan.identity.channelName, pipeName: d.cfg.pipe, pipeRevision: status.pipeRevision,
 		channelRevision: status.channelRevision, continuationToken: status.continuationToken,
 		committedOffsetToken: status.committedOffsetToken, logicalBatchID: plan.receipt.logicalBatchID,
-		rowsContentHash: rowsContentHash, stateVersion: expected.stateVersion + 1,
+		rowsContentHash: rowsContentHash, requestID: requestID, stateVersion: expected.stateVersion + 1,
 	}
 	current, applied, err := d.proto.CompareAndSwapChannelState(ctx, d.cfg, expected, state)
 	if err != nil {
@@ -282,6 +290,11 @@ func (d *streamDriver) appendRequest(ctx context.Context, plan managedStreamPlan
 		request, err := newManagedStreamRequest(plan, status, attempt)
 		if err != nil {
 			return streamChannelStatus{}, managedStreamRequest{}, err
+		}
+		if hook := d.hooks.BeforeRequestInsert; hook != nil {
+			if err := hook(request); err != nil {
+				return streamChannelStatus{}, managedStreamRequest{}, err
+			}
 		}
 		inserted, err := d.proto.InsertRequest(ctx, d.cfg, request)
 		if err != nil {
@@ -366,6 +379,9 @@ func (d *streamDriver) appendRequest(ctx context.Context, plan managedStreamPlan
 			switch result.disposition {
 			case streamAppendAccepted:
 				request, err = d.transitionRequestEvidence(ctx, request, streamRequestAccepted, result.continuationToken, "accepted", result.evidence, "")
+				if err == nil && d.hooks.AfterAccepted != nil {
+					err = d.hooks.AfterAccepted()
+				}
 			case streamAppendDefinitelyNotAccepted:
 				request, err = d.transitionRequestEvidence(ctx, request, streamRequestProvenAbsent, "", "definitely_not_accepted", result.evidence, "")
 			default:
@@ -428,7 +444,7 @@ func (d *streamDriver) reconcileRequest(ctx context.Context, plan managedStreamP
 			return streamChannelStatus{}, request, false, err
 		}
 		status := streamChannelStatus{valid: true, channelName: request.channelName, channelRevision: request.channelRevision, pipeRevision: request.pipeRevision, continuationToken: request.responseContinuation, committedOffsetToken: request.committedOffset}
-		if err := d.persistChannelState(ctx, plan, status, plan.rowsContentHash); err != nil {
+		if err := d.persistChannelState(ctx, plan, status, plan.rowsContentHash, request.requestID); err != nil {
 			return streamChannelStatus{}, request, false, err
 		}
 		return status, request, true, nil
@@ -443,7 +459,10 @@ func (d *streamDriver) reconcileRequest(ctx context.Context, plan managedStreamP
 }
 
 func (d *streamDriver) claimRequestSend(ctx context.Context, request managedStreamRequest) (managedStreamRequest, bool, error) {
-	if request.phase != streamRequestPrepared && request.phase != streamRequestSendingUnknown {
+	if request.phase == streamRequestSendingUnknown {
+		return request, false, nil
+	}
+	if request.phase != streamRequestPrepared {
 		return managedStreamRequest{}, false, fmt.Errorf("%w: request phase %q cannot claim the send boundary", connector.ErrDeliveryConflict, request.phase)
 	}
 	current, applied, err := d.proto.TransitionRequest(ctx, d.cfg, streamRequestTransition{
@@ -490,7 +509,7 @@ func (d *streamDriver) transitionRequestEvidence(ctx context.Context, request ma
 }
 
 func (d *streamDriver) validateRequestPlan(plan managedStreamPlan, request managedStreamRequest) error {
-	if request.flowIncarnationID != plan.receipt.flowIncarnationID || request.destinationRevisionID != plan.receipt.destinationRevisionID || request.logicalBatchID != plan.receipt.logicalBatchID || request.positionID != plan.receipt.positionID || request.contentHash != plan.receipt.contentHash || request.manifestHash != plan.identity.manifestHash || request.rowsContentHash != plan.rowsContentHash || request.rowCount != plan.rowCount || request.requestedOffset != plan.identity.offsetToken || request.channelName != plan.identity.channelName {
+	if request.flowIncarnationID != plan.receipt.flowIncarnationID || request.destinationRevisionID != plan.receipt.destinationRevisionID || request.logicalBatchID != plan.receipt.logicalBatchID || request.positionID != plan.receipt.positionID || request.contentHash != plan.receipt.contentHash || request.manifestHash != plan.identity.manifestHash || request.rowsContentHash != plan.rowsContentHash || request.rowCount != plan.rowCount || request.requestedOffset != plan.identity.offsetToken || request.channelName != plan.identity.channelName || request.pipeName != plan.identity.pipeName {
 		return fmt.Errorf("%w: durable streaming Snowflake request differs from the immutable delivery plan", connector.ErrDeliveryConflict)
 	}
 	return request.validateIdentity()
@@ -526,7 +545,7 @@ func (d *streamDriver) assertAppendSize(rows []streamChangelogRow) error {
 // identity is present, then reads the committed offset token as corroborating
 // evidence. SQL observation is the completeness authority; the committed offset
 // token is persisted evidence and must be non-empty before a receipt is written.
-func (d *streamDriver) verifyObservedCompleteness(ctx context.Context, plan managedStreamPlan, status streamChannelStatus, appended bool) (string, error) {
+func (d *streamDriver) verifyObservedCompleteness(ctx context.Context, plan managedStreamPlan, status streamChannelStatus, requestID string) (string, error) {
 	attempts := d.cfg.observeAttempts
 	if attempts < 1 {
 		attempts = 1
@@ -544,7 +563,7 @@ func (d *streamDriver) verifyObservedCompleteness(ctx context.Context, plan mana
 			return "", err
 		}
 		if len(missing) == 0 {
-			committedToken, tokenErr := d.observedCommittedToken(verifyCtx, plan, status, appended)
+			committedToken, tokenErr := d.observedCommittedToken(verifyCtx, plan, status, requestID)
 			if tokenErr != nil {
 				endVerify(tokenErr)
 				return "", tokenErr
@@ -567,7 +586,7 @@ func (d *streamDriver) verifyObservedCompleteness(ctx context.Context, plan mana
 // observedCommittedToken reads the durable committed offset token and persists
 // the final channel evidence. The token must exactly equal the immutable request
 // offset. The driver never synthesizes committed evidence from local state.
-func (d *streamDriver) observedCommittedToken(ctx context.Context, plan managedStreamPlan, status streamChannelStatus, _ bool) (string, error) {
+func (d *streamDriver) observedCommittedToken(ctx context.Context, plan managedStreamPlan, status streamChannelStatus, requestID string) (string, error) {
 	current, err := d.proto.ChannelStatus(ctx, d.cfg, plan.identity.channelName)
 	if err != nil {
 		return "", err
@@ -592,7 +611,7 @@ func (d *streamDriver) observedCommittedToken(ctx context.Context, plan managedS
 	if current.continuationToken != "" {
 		status.continuationToken = current.continuationToken
 	}
-	if err := d.persistChannelState(ctx, plan, status, plan.rowsContentHash); err != nil {
+	if err := d.persistChannelState(ctx, plan, status, plan.rowsContentHash, requestID); err != nil {
 		return "", err
 	}
 	return committedToken, nil

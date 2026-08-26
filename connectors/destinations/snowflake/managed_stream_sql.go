@@ -84,14 +84,14 @@ func scanStreamReceipt(rows streamReceiptScanner) (managedStreamReceipt, error) 
 func streamChannelStateColumns() []string {
 	return []string{
 		"FLOW_INCARNATION_ID", "DESTINATION_REVISION_ID", "CHANNEL_NAME", "PIPE_NAME", "PIPE_REVISION",
-		"CHANNEL_REVISION", "CONTINUATION_TOKEN", "COMMITTED_OFFSET_TOKEN", "LOGICAL_BATCH_ID", "ROWS_CONTENT_HASH", "STATE_VERSION",
+		"CHANNEL_REVISION", "CONTINUATION_TOKEN", "COMMITTED_OFFSET_TOKEN", "LOGICAL_BATCH_ID", "ROWS_CONTENT_HASH", "REQUEST_ID", "STATE_VERSION",
 	}
 }
 
 func streamChannelStateValues(state managedStreamChannelState) []any {
 	return []any{
 		state.flowIncarnationID, state.destinationRevisionID, state.channelName, state.pipeName, state.pipeRevision,
-		state.channelRevision, state.continuationToken, state.committedOffsetToken, state.logicalBatchID, state.rowsContentHash, state.stateVersion,
+		state.channelRevision, state.continuationToken, state.committedOffsetToken, state.logicalBatchID, state.rowsContentHash, state.requestID, state.stateVersion,
 	}
 }
 
@@ -100,10 +100,10 @@ func streamChannelStateValues(state managedStreamChannelState) []any {
 // revision.
 func streamChannelStateMergeSQL(cfg streamConfig) string {
 	table := managedSnowflakeStreamQualifiedTable(cfg, cfg.channelStateTable)
-	return "MERGE INTO " + table + " AS T USING (SELECT ? AS \"FLOW_INCARNATION_ID\", ? AS \"DESTINATION_REVISION_ID\", ? AS \"CHANNEL_NAME\", ? AS \"PIPE_NAME\", ? AS \"PIPE_REVISION\", ? AS \"CHANNEL_REVISION\", ? AS \"CONTINUATION_TOKEN\", ? AS \"COMMITTED_OFFSET_TOKEN\", ? AS \"LOGICAL_BATCH_ID\", ? AS \"ROWS_CONTENT_HASH\", ? AS \"STATE_VERSION\", ? AS \"EXPECTED_VERSION\", ? AS \"EXPECTED_CHANNEL_REVISION\", ? AS \"EXPECTED_CONTINUATION_TOKEN\", ? AS \"EXPECTED_COMMITTED_OFFSET_TOKEN\", ? AS \"EXPECTED_LOGICAL_BATCH_ID\", ? AS \"EXPECTED_ROWS_CONTENT_HASH\") AS S" +
+	return "MERGE INTO " + table + " AS T USING (SELECT ? AS \"FLOW_INCARNATION_ID\", ? AS \"DESTINATION_REVISION_ID\", ? AS \"CHANNEL_NAME\", ? AS \"PIPE_NAME\", ? AS \"PIPE_REVISION\", ? AS \"CHANNEL_REVISION\", ? AS \"CONTINUATION_TOKEN\", ? AS \"COMMITTED_OFFSET_TOKEN\", ? AS \"LOGICAL_BATCH_ID\", ? AS \"ROWS_CONTENT_HASH\", ? AS \"REQUEST_ID\", ? AS \"STATE_VERSION\", ? AS \"EXPECTED_VERSION\", ? AS \"EXPECTED_PIPE_NAME\", ? AS \"EXPECTED_PIPE_REVISION\", ? AS \"EXPECTED_CHANNEL_REVISION\", ? AS \"EXPECTED_CONTINUATION_TOKEN\", ? AS \"EXPECTED_COMMITTED_OFFSET_TOKEN\", ? AS \"EXPECTED_LOGICAL_BATCH_ID\", ? AS \"EXPECTED_ROWS_CONTENT_HASH\", ? AS \"EXPECTED_REQUEST_ID\") AS S" +
 		" ON T.\"FLOW_INCARNATION_ID\" = S.\"FLOW_INCARNATION_ID\" AND T.\"DESTINATION_REVISION_ID\" = S.\"DESTINATION_REVISION_ID\" AND T.\"CHANNEL_NAME\" = S.\"CHANNEL_NAME\"" +
-		" WHEN MATCHED AND T.\"STATE_VERSION\" = S.\"EXPECTED_VERSION\" AND T.\"CHANNEL_REVISION\" = S.\"EXPECTED_CHANNEL_REVISION\" AND T.\"CONTINUATION_TOKEN\" = S.\"EXPECTED_CONTINUATION_TOKEN\" AND T.\"COMMITTED_OFFSET_TOKEN\" = S.\"EXPECTED_COMMITTED_OFFSET_TOKEN\" AND T.\"LOGICAL_BATCH_ID\" = S.\"EXPECTED_LOGICAL_BATCH_ID\" AND T.\"ROWS_CONTENT_HASH\" = S.\"EXPECTED_ROWS_CONTENT_HASH\" AND S.\"STATE_VERSION\" = T.\"STATE_VERSION\" + 1 AND S.\"CHANNEL_REVISION\" >= T.\"CHANNEL_REVISION\" THEN UPDATE SET \"PIPE_NAME\" = S.\"PIPE_NAME\", \"PIPE_REVISION\" = S.\"PIPE_REVISION\", \"CHANNEL_REVISION\" = S.\"CHANNEL_REVISION\", \"CONTINUATION_TOKEN\" = S.\"CONTINUATION_TOKEN\", \"COMMITTED_OFFSET_TOKEN\" = S.\"COMMITTED_OFFSET_TOKEN\", \"LOGICAL_BATCH_ID\" = S.\"LOGICAL_BATCH_ID\", \"ROWS_CONTENT_HASH\" = S.\"ROWS_CONTENT_HASH\", \"STATE_VERSION\" = S.\"STATE_VERSION\", \"UPDATED_AT\" = CURRENT_TIMESTAMP()" +
-		" WHEN NOT MATCHED AND S.\"EXPECTED_VERSION\" = 0 AND S.\"STATE_VERSION\" = 1 THEN INSERT (" + quoteColumns(streamChannelStateColumns()) + ", \"UPDATED_AT\") VALUES (S.\"FLOW_INCARNATION_ID\", S.\"DESTINATION_REVISION_ID\", S.\"CHANNEL_NAME\", S.\"PIPE_NAME\", S.\"PIPE_REVISION\", S.\"CHANNEL_REVISION\", S.\"CONTINUATION_TOKEN\", S.\"COMMITTED_OFFSET_TOKEN\", S.\"LOGICAL_BATCH_ID\", S.\"ROWS_CONTENT_HASH\", S.\"STATE_VERSION\", CURRENT_TIMESTAMP())"
+		" WHEN MATCHED AND T.\"STATE_VERSION\" = S.\"EXPECTED_VERSION\" AND T.\"PIPE_NAME\" = S.\"EXPECTED_PIPE_NAME\" AND T.\"PIPE_REVISION\" = S.\"EXPECTED_PIPE_REVISION\" AND T.\"CHANNEL_REVISION\" = S.\"EXPECTED_CHANNEL_REVISION\" AND T.\"CONTINUATION_TOKEN\" = S.\"EXPECTED_CONTINUATION_TOKEN\" AND T.\"COMMITTED_OFFSET_TOKEN\" = S.\"EXPECTED_COMMITTED_OFFSET_TOKEN\" AND T.\"LOGICAL_BATCH_ID\" = S.\"EXPECTED_LOGICAL_BATCH_ID\" AND T.\"ROWS_CONTENT_HASH\" = S.\"EXPECTED_ROWS_CONTENT_HASH\" AND T.\"REQUEST_ID\" = S.\"EXPECTED_REQUEST_ID\" AND S.\"STATE_VERSION\" = T.\"STATE_VERSION\" + 1 AND S.\"CHANNEL_REVISION\" >= T.\"CHANNEL_REVISION\" THEN UPDATE SET \"PIPE_NAME\" = S.\"PIPE_NAME\", \"PIPE_REVISION\" = S.\"PIPE_REVISION\", \"CHANNEL_REVISION\" = S.\"CHANNEL_REVISION\", \"CONTINUATION_TOKEN\" = S.\"CONTINUATION_TOKEN\", \"COMMITTED_OFFSET_TOKEN\" = S.\"COMMITTED_OFFSET_TOKEN\", \"LOGICAL_BATCH_ID\" = S.\"LOGICAL_BATCH_ID\", \"ROWS_CONTENT_HASH\" = S.\"ROWS_CONTENT_HASH\", \"REQUEST_ID\" = S.\"REQUEST_ID\", \"STATE_VERSION\" = S.\"STATE_VERSION\", \"UPDATED_AT\" = CURRENT_TIMESTAMP()" +
+		" WHEN NOT MATCHED AND S.\"EXPECTED_VERSION\" = 0 AND S.\"STATE_VERSION\" = 1 THEN INSERT (" + quoteColumns(streamChannelStateColumns()) + ", \"UPDATED_AT\") VALUES (S.\"FLOW_INCARNATION_ID\", S.\"DESTINATION_REVISION_ID\", S.\"CHANNEL_NAME\", S.\"PIPE_NAME\", S.\"PIPE_REVISION\", S.\"CHANNEL_REVISION\", S.\"CONTINUATION_TOKEN\", S.\"COMMITTED_OFFSET_TOKEN\", S.\"LOGICAL_BATCH_ID\", S.\"ROWS_CONTENT_HASH\", S.\"REQUEST_ID\", S.\"STATE_VERSION\", CURRENT_TIMESTAMP())"
 }
 
 func streamChannelStateLookupSQL(cfg streamConfig) string {
@@ -116,7 +116,7 @@ func streamChannelStateDeleteCASSQL(cfg streamConfig) string {
 	table := managedSnowflakeStreamQualifiedTable(cfg, cfg.channelStateTable)
 	return "DELETE FROM " + table +
 		" WHERE \"FLOW_INCARNATION_ID\" = ? AND \"DESTINATION_REVISION_ID\" = ? AND \"CHANNEL_NAME\" = ?" +
-		" AND \"STATE_VERSION\" = ? AND \"CHANNEL_REVISION\" = ? AND \"CONTINUATION_TOKEN\" = ? AND \"COMMITTED_OFFSET_TOKEN\" = ? AND \"LOGICAL_BATCH_ID\" = ? AND \"ROWS_CONTENT_HASH\" = ?" +
+		" AND \"STATE_VERSION\" = ? AND \"PIPE_NAME\" = ? AND \"PIPE_REVISION\" = ? AND \"CHANNEL_REVISION\" = ? AND \"CONTINUATION_TOKEN\" = ? AND \"COMMITTED_OFFSET_TOKEN\" = ? AND \"LOGICAL_BATCH_ID\" = ? AND \"ROWS_CONTENT_HASH\" = ? AND \"REQUEST_ID\" = ?" +
 		" AND NOT EXISTS (SELECT 1 FROM " + streamRequestTable(cfg) + " WHERE \"FLOW_INCARNATION_ID\" = ? AND \"DESTINATION_REVISION_ID\" = ? AND \"CHANNEL_NAME\" = ? AND \"PHASE\" IN ('PREPARED','SENDING_UNKNOWN','ACCEPTED','COMMITTED'))"
 }
 
@@ -124,7 +124,7 @@ func scanStreamChannelState(row streamReceiptScanner) (managedStreamChannelState
 	var state managedStreamChannelState
 	if err := row.Scan(
 		&state.flowIncarnationID, &state.destinationRevisionID, &state.channelName, &state.pipeName, &state.pipeRevision,
-		&state.channelRevision, &state.continuationToken, &state.committedOffsetToken, &state.logicalBatchID, &state.rowsContentHash, &state.stateVersion,
+		&state.channelRevision, &state.continuationToken, &state.committedOffsetToken, &state.logicalBatchID, &state.rowsContentHash, &state.requestID, &state.stateVersion,
 	); err != nil {
 		return managedStreamChannelState{}, err
 	}

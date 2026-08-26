@@ -2,11 +2,8 @@ package snowflake
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
-	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -472,103 +469,6 @@ func TestStreamRequestUnknownRestartReconcilesWithoutResend(t *testing.T) {
 	}
 }
 
-func TestStreamRequestProcessRestartEvidence(t *testing.T) {
-	type snapshot struct {
-		RequestID       string `json:"request_id"`
-		ChannelRevision int64  `json:"channel_revision"`
-		Continuation    string `json:"continuation"`
-		Attempt         int    `json:"attempt"`
-		Phase           string `json:"phase"`
-	}
-	if os.Getenv("WALLABY_STREAM_REQUEST_CHILD") == "1" {
-		_, _, _, plan := streamTestFixture(t)
-		request, err := newManagedStreamRequest(plan, streamChannelStatus{valid: true, channelName: plan.identity.channelName, channelRevision: 1, pipeRevision: "pipe-rev-1", continuationToken: "cont-1"}, 1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		phase := os.Getenv("WALLABY_STREAM_REQUEST_PHASE")
-		encoded, err := json.Marshal(snapshot{RequestID: request.requestID, ChannelRevision: request.channelRevision, Continuation: request.inputContinuation, Attempt: request.attempt, Phase: phase})
-		if err != nil {
-			t.Fatal(err)
-		}
-		file, err := os.OpenFile(os.Getenv("WALLABY_STREAM_REQUEST_STATE"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := file.Write(encoded); err != nil {
-			t.Fatal(err)
-		}
-		if err := file.Sync(); err != nil {
-			t.Fatal(err)
-		}
-		if err := file.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(os.Getenv("WALLABY_STREAM_REQUEST_READY"), []byte("ready"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		for {
-			time.Sleep(time.Hour)
-		}
-	}
-	for _, phase := range []streamRequestPhase{streamRequestSendingUnknown, streamRequestAccepted} {
-		t.Run(string(phase), func(t *testing.T) {
-			dir := t.TempDir()
-			path, ready := dir+"/request.json", dir+"/ready"
-			cmd := exec.Command(os.Args[0], "-test.run=^TestStreamRequestProcessRestartEvidence$")
-			cmd.Env = append(os.Environ(), "WALLABY_STREAM_REQUEST_CHILD=1", "WALLABY_STREAM_REQUEST_STATE="+path, "WALLABY_STREAM_REQUEST_READY="+ready, "WALLABY_STREAM_REQUEST_PHASE="+string(phase))
-			if err := cmd.Start(); err != nil {
-				t.Fatal(err)
-			}
-			deadline := time.Now().Add(5 * time.Second)
-			for {
-				if _, err := os.Stat(ready); err == nil {
-					break
-				}
-				if time.Now().After(deadline) {
-					_ = cmd.Process.Kill()
-					t.Fatal("request helper did not persist its crash boundary")
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
-			if err := cmd.Process.Kill(); err != nil {
-				t.Fatal(err)
-			}
-			if err := cmd.Wait(); err == nil {
-				t.Fatal("request helper unexpectedly exited without SIGKILL")
-			}
-			var durable snapshot
-			encoded, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := json.Unmarshal(encoded, &durable); err != nil {
-				t.Fatal(err)
-			}
-			cfg, transaction, intent, plan := streamTestFixture(t)
-			request, err := newManagedStreamRequest(plan, streamChannelStatus{valid: true, channelName: plan.identity.channelName, channelRevision: durable.ChannelRevision, pipeRevision: "pipe-rev-1", continuationToken: durable.Continuation}, durable.Attempt)
-			if err != nil || request.requestID != durable.RequestID || durable.Phase != string(phase) {
-				t.Fatalf("durable request mismatch request/snapshot/error=%+v/%+v/%v", request, durable, err)
-			}
-			request.phase, request.phaseVersion = phase, 2
-			proto := newFakeStreamProtocol()
-			proto.channels[request.channelName] = &fakeStreamChannel{revision: request.channelRevision, pipeRevision: request.pipeRevision, continuationToken: "cont-1-committed", committedOffsetToken: request.requestedOffset}
-			proto.requests[request.requestID] = request
-			proto.requestByBatch[fakeRequestBatchKey(streamRequestKey{flowIncarnationID: request.flowIncarnationID, destinationRevisionID: request.destinationRevisionID, logicalBatchID: request.logicalBatchID})] = request.requestID
-			proto.requestStatus[request.requestID] = streamRequestStatusCommitted
-			for _, hash := range plan.rowHashes {
-				proto.committed[hash] = &fakeCommittedRow{logicalBatchID: request.logicalBatchID, count: 1}
-			}
-			if _, err := newStreamTestDriver(cfg, proto).apply(context.Background(), intent, transaction); err != nil {
-				t.Fatalf("restart adoption: %v", err)
-			}
-			if proto.appendCalls != 0 || proto.insertCalls != 1 {
-				t.Fatalf("restart append/receipt=%d/%d, want 0/1", proto.appendCalls, proto.insertCalls)
-			}
-		})
-	}
-}
-
 func TestStreamRequestDefinitelyNotAcceptedRetriesOnce(t *testing.T) {
 	cfg, transaction, intent, _ := streamTestFixture(t)
 	proto := newFakeStreamProtocol()
@@ -592,6 +492,77 @@ func TestStreamRequestDivergenceFailsConflictWithoutResend(t *testing.T) {
 	}
 	if proto.appendCalls != 1 || proto.insertCalls != 0 {
 		t.Fatalf("divergent request append/receipt=%d/%d, want 1/0", proto.appendCalls, proto.insertCalls)
+	}
+}
+
+func TestStreamSendBoundaryAbsentLookupRaceAdmitsExactlyOneAppend(t *testing.T) {
+	cfg, transaction, intent, _ := streamTestFixture(t)
+	proto := newFakeStreamProtocol()
+	proto.openKeepsRevision = true
+	loserLookedAbsent := make(chan struct{})
+	loserCandidateReady := make(chan struct{})
+	resumeLoser := make(chan struct{})
+	winnerClaimed := make(chan struct{})
+	releaseWinner := make(chan struct{})
+	var loserLookupOnce sync.Once
+	var loserInsertOnce sync.Once
+	loser := newStreamDriver(proto, cfg, "catalog-fingerprint", streamingHooks{
+		AfterRequestLookup: func(found bool) error {
+			if !found {
+				loserLookupOnce.Do(func() { close(loserLookedAbsent) })
+			}
+			return nil
+		},
+		BeforeRequestInsert: func(managedStreamRequest) error {
+			loserInsertOnce.Do(func() {
+				close(loserCandidateReady)
+				<-resumeLoser
+			})
+			return nil
+		},
+	})
+	loser.sleep = func(context.Context, time.Duration) error { return nil }
+	loserErr := make(chan error, 1)
+	go func() {
+		_, err := loser.apply(context.Background(), intent, transaction)
+		loserErr <- err
+	}()
+	<-loserLookedAbsent
+	<-loserCandidateReady
+
+	winner := newStreamDriver(proto, cfg, "catalog-fingerprint", streamingHooks{AfterSendClaim: func() error {
+		close(winnerClaimed)
+		<-releaseWinner
+		return nil
+	}})
+	winner.sleep = func(context.Context, time.Duration) error { return nil }
+	winnerErr := make(chan error, 1)
+	go func() {
+		_, err := winner.apply(context.Background(), intent, transaction)
+		winnerErr <- err
+	}()
+	<-winnerClaimed
+	close(resumeLoser)
+	if err := <-loserErr; !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("duplicate-insert loser error=%v, want reconciliation-only indeterminate", err)
+	}
+	proto.mu.Lock()
+	beforeRelease := proto.appendCalls
+	proto.mu.Unlock()
+	if beforeRelease != 0 {
+		t.Fatalf("duplicate-insert loser appended %d times before owner release", beforeRelease)
+	}
+	close(releaseWinner)
+	if err := <-winnerErr; err != nil {
+		t.Fatalf("duplicate-insert winner: %v", err)
+	}
+	if _, err := loser.apply(context.Background(), intent, transaction); err != nil {
+		t.Fatalf("duplicate-insert loser adoption: %v", err)
+	}
+	proto.mu.Lock()
+	defer proto.mu.Unlock()
+	if proto.appendCalls != 1 || proto.insertCalls != 1 {
+		t.Fatalf("duplicate-insert append/receipt calls=%d/%d, want 1/1", proto.appendCalls, proto.insertCalls)
 	}
 }
 

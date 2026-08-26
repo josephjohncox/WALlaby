@@ -16,7 +16,7 @@ func TestManagedStreamCurrentSchemaContainsRequestAuthority(t *testing.T) {
 	cfg := streamTestConfig(t)
 	ddl := strings.Join(managedStreamCurrentSchemaDDL(cfg), "\n")
 	for _, required := range []string{
-		"STATE_VERSION", "REQUEST_ID", "INPUT_CONTINUATION_TOKEN", "REQUESTED_OFFSET_TOKEN",
+		"STATE_VERSION", "REQUEST_ID", "PIPE_NAME", "INPUT_CONTINUATION_TOKEN", "REQUESTED_OFFSET_TOKEN",
 		"MANIFEST_HASH", "ROWS_CONTENT_HASH", "GENERATION", "ACQUISITION_ID", "LEASE_EPOCH",
 		"CREATE HYBRID TABLE", "WALLABY_STREAM_REQUEST_PK", "WALLABY_STREAM_REQUEST_ATTEMPT",
 	} {
@@ -58,13 +58,63 @@ func TestSQLStreamRequestLookupRejectsDuplicateAuthorityRows(t *testing.T) {
 	}
 }
 
+func TestSQLStreamChannelCASUsesAffectedRowsNotPostRead(t *testing.T) {
+	cfg := streamTestConfig(t)
+	state := managedStreamChannelState{
+		flowIncarnationID: "11111111-1111-1111-1111-111111111111", destinationRevisionID: "revision", channelName: "channel",
+		pipeName: cfg.pipe, pipeRevision: "pipe-rev-1", channelRevision: 1, continuationToken: "cont-1",
+		logicalBatchID: "logical", rowsContentHash: strings.Repeat("a", 64), requestID: "request", stateVersion: 1,
+	}
+	for _, test := range []struct {
+		name     string
+		affected int64
+		wantErr  bool
+	}{
+		{name: "matching post-read is not ownership", affected: 0},
+		{name: "multiple affected rows conflict", affected: 2, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			values := append(streamChannelStateValues(state), int64(0), "", "", int64(0), "", "", "", "", "")
+			args := make([]sqldriver.Value, len(values))
+			for index := range values {
+				args[index] = values[index]
+			}
+			mock.ExpectExec(regexp.QuoteMeta(streamChannelStateMergeSQL(cfg))).WithArgs(args...).WillReturnResult(sqlmock.NewResult(0, test.affected))
+			if test.affected <= 1 {
+				rowValues := streamChannelStateValues(state)
+				row := make([]sqldriver.Value, len(rowValues))
+				for index := range rowValues {
+					row[index] = rowValues[index]
+				}
+				mock.ExpectQuery(regexp.QuoteMeta(streamChannelStateLookupSQL(cfg))).WithArgs(state.flowIncarnationID, state.destinationRevisionID, state.channelName).WillReturnRows(sqlmock.NewRows(streamChannelStateColumns()).AddRow(row...))
+			}
+			_, applied, err := newSQLStreamProtocol(db).CompareAndSwapChannelState(context.Background(), cfg, managedStreamChannelState{}, state)
+			if test.wantErr {
+				if !errors.Is(err, connector.ErrDeliveryConflict) {
+					t.Fatalf("CAS error=%v, want conflict", err)
+				}
+			} else if err != nil || applied {
+				t.Fatalf("CAS applied/error=%t/%v, matching post-read must not prove ownership", applied, err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestStreamRequestSQLUsesCASPredicates(t *testing.T) {
 	cfg := streamTestConfig(t)
 	for name, contract := range map[string]struct {
 		query    string
 		required []string
 	}{
-		"channel": {query: streamChannelStateMergeSQL(cfg), required: []string{"STATE_VERSION", "EXPECTED_VERSION", "EXPECTED_CHANNEL_REVISION", "EXPECTED_CONTINUATION_TOKEN", "EXPECTED_COMMITTED_OFFSET_TOKEN", "EXPECTED_LOGICAL_BATCH_ID", "EXPECTED_ROWS_CONTENT_HASH"}},
+		"channel": {query: streamChannelStateMergeSQL(cfg), required: []string{"STATE_VERSION", "EXPECTED_VERSION", "EXPECTED_PIPE_NAME", "EXPECTED_PIPE_REVISION", "EXPECTED_CHANNEL_REVISION", "EXPECTED_CONTINUATION_TOKEN", "EXPECTED_COMMITTED_OFFSET_TOKEN", "EXPECTED_LOGICAL_BATCH_ID", "EXPECTED_ROWS_CONTENT_HASH", "EXPECTED_REQUEST_ID"}},
 		"request": {query: streamRequestTransitionSQL(cfg), required: []string{"PHASE_VERSION", "PHASE"}},
 	} {
 		for _, required := range contract.required {
@@ -77,7 +127,7 @@ func TestStreamRequestSQLUsesCASPredicates(t *testing.T) {
 		t.Fatal("request transition is not phase/version compare-and-swap")
 	}
 	cleanup := streamChannelStateDeleteCASSQL(cfg)
-	for _, required := range []string{`"STATE_VERSION" = ?`, `"CHANNEL_REVISION" = ?`, `"CONTINUATION_TOKEN" = ?`, `"COMMITTED_OFFSET_TOKEN" = ?`, `NOT EXISTS`, `SENDING_UNKNOWN`, `COMMITTED`} {
+	for _, required := range []string{`"STATE_VERSION" = ?`, `"PIPE_NAME" = ?`, `"PIPE_REVISION" = ?`, `"CHANNEL_REVISION" = ?`, `"CONTINUATION_TOKEN" = ?`, `"COMMITTED_OFFSET_TOKEN" = ?`, `"REQUEST_ID" = ?`, `NOT EXISTS`, `SENDING_UNKNOWN`, `COMMITTED`} {
 		if !strings.Contains(cleanup, required) {
 			t.Fatalf("channel cleanup CAS SQL missing %q: %s", required, cleanup)
 		}

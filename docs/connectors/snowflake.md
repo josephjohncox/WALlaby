@@ -424,6 +424,6 @@ WALLABY_TEST_SNOWFLAKE_VERSION='<reviewed version>' \
 just test-snowflake-streaming-commercial-unpromoted
 ```
 
-Credential-free tests cover request identity, pre-send persistence, accepted-then-EOF recovery, visibility lag, SIGKILL restart adoption, proven-absence retry, send-boundary and channel CAS races, token conflict, row rejection evidence, target cardinality, receipt conflict, and atomic cleanup. These tests prove protocol logic only.
+Credential-free tests cover request identity, pre-send persistence, accepted-then-EOF recovery, visibility lag, proven-absence retry, send-boundary and channel CAS races, token conflict, row rejection evidence, target cardinality, receipt conflict, and atomic cleanup. The SIGKILL test runs the real stream driver in a child process. It fsyncs request, channel, row, and receipt state to a process-shared file, kills the child after actual send-claim or accepted-response persistence, and reconciles that state in a fresh process. These tests prove protocol logic only.
 
 The reviewed high-performance append transport is still absent. Commercial same-SHA delivery evidence does not exist. The profile remains experimental and **fails closed** at admission.

@@ -74,6 +74,7 @@ type managedStreamRequest struct {
 	rowsContentHash       string
 	rowCount              int
 	channelName           string
+	pipeName              string
 	channelRevision       int64
 	pipeRevision          string
 	inputContinuation     string
@@ -111,6 +112,7 @@ type streamRequestStatusEvidence struct {
 	disposition          streamRequestDisposition
 	requestID            string
 	channelName          string
+	pipeName             string
 	channelRevision      int64
 	pipeRevision         string
 	inputContinuation    string
@@ -132,20 +134,20 @@ func newManagedStreamRequest(plan managedStreamPlan, status streamChannelStatus,
 		sourceLineageID: plan.receipt.sourceLineageID, destinationRevisionID: plan.receipt.destinationRevisionID,
 		logicalBatchID: plan.receipt.logicalBatchID, positionID: plan.receipt.positionID, contentHash: plan.receipt.contentHash,
 		manifestHash: plan.identity.manifestHash, rowsContentHash: plan.rowsContentHash, rowCount: plan.rowCount,
-		channelName: status.channelName, channelRevision: status.channelRevision, pipeRevision: status.pipeRevision,
+		channelName: status.channelName, pipeName: plan.identity.pipeName, channelRevision: status.channelRevision, pipeRevision: status.pipeRevision,
 		inputContinuation: status.continuationToken, requestedOffset: plan.identity.offsetToken,
 		generation: plan.receipt.generation, acquisitionID: plan.receipt.acquisitionID, leaseEpoch: plan.receipt.leaseEpoch,
 		attempt: attempt, phase: streamRequestPrepared, phaseVersion: 1,
 	}
 	identity := struct {
-		Profile, FlowIncarnationID, DestinationRevisionID, LogicalBatchID, ChannelName, PipeRevision string
-		ChannelRevision                                                                              int64
-		InputContinuation, RequestedOffset, ManifestHash, RowsContentHash                            string
-		RowCount, Attempt                                                                            int
+		Profile, FlowIncarnationID, DestinationRevisionID, LogicalBatchID, ChannelName, PipeName, PipeRevision string
+		ChannelRevision                                                                                        int64
+		InputContinuation, RequestedOffset, ManifestHash, RowsContentHash                                      string
+		RowCount, Attempt                                                                                      int
 	}{
 		Profile:           connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
 		FlowIncarnationID: record.flowIncarnationID, DestinationRevisionID: record.destinationRevisionID,
-		LogicalBatchID: record.logicalBatchID, ChannelName: record.channelName, PipeRevision: record.pipeRevision,
+		LogicalBatchID: record.logicalBatchID, ChannelName: record.channelName, PipeName: record.pipeName, PipeRevision: record.pipeRevision,
 		ChannelRevision: record.channelRevision, InputContinuation: record.inputContinuation,
 		RequestedOffset: record.requestedOffset, ManifestHash: record.manifestHash, RowsContentHash: record.rowsContentHash,
 		RowCount: record.rowCount, Attempt: record.attempt,
@@ -164,7 +166,7 @@ func sameManagedStreamRequestIdentity(left, right managedStreamRequest) bool {
 		left.sourceLineageID == right.sourceLineageID && left.destinationRevisionID == right.destinationRevisionID &&
 		left.logicalBatchID == right.logicalBatchID && left.positionID == right.positionID && left.contentHash == right.contentHash &&
 		left.manifestHash == right.manifestHash && left.rowsContentHash == right.rowsContentHash && left.rowCount == right.rowCount &&
-		left.channelName == right.channelName && left.channelRevision == right.channelRevision && left.pipeRevision == right.pipeRevision &&
+		left.channelName == right.channelName && left.pipeName == right.pipeName && left.channelRevision == right.channelRevision && left.pipeRevision == right.pipeRevision &&
 		left.inputContinuation == right.inputContinuation && left.requestedOffset == right.requestedOffset &&
 		left.generation == right.generation && left.acquisitionID == right.acquisitionID && left.leaseEpoch == right.leaseEpoch && left.attempt == right.attempt
 }
@@ -173,7 +175,7 @@ func (r managedStreamRequest) validateIdentity() error {
 	if !strings.HasPrefix(r.requestID, "wallaby-stream-request-") || len(r.requestID) != len("wallaby-stream-request-")+64 ||
 		r.flowID == "" || r.flowIncarnationID == "" || r.sourceLineageID == "" || r.destinationRevisionID == "" ||
 		r.logicalBatchID == "" || r.positionID == "" || r.contentHash == "" || r.manifestHash == "" || r.rowsContentHash == "" ||
-		r.rowCount <= 0 || r.channelName == "" || r.channelRevision <= 0 || r.pipeRevision == "" || r.inputContinuation == "" ||
+		r.rowCount <= 0 || r.channelName == "" || r.pipeName == "" || r.channelRevision <= 0 || r.pipeRevision == "" || r.inputContinuation == "" ||
 		r.requestedOffset == "" || r.generation <= 0 || r.acquisitionID == "" || r.leaseEpoch <= 0 || r.attempt <= 0 || r.phaseVersion <= 0 {
 		return errors.New("streaming Snowflake request identity is incomplete")
 	}
@@ -181,7 +183,7 @@ func (r managedStreamRequest) validateIdentity() error {
 }
 
 func validateStreamRequestEvidence(request managedStreamRequest, evidence streamRequestStatusEvidence) error {
-	if evidence.requestID != request.requestID || evidence.channelName != request.channelName || evidence.channelRevision != request.channelRevision ||
+	if evidence.requestID != request.requestID || evidence.channelName != request.channelName || evidence.pipeName != request.pipeName || evidence.channelRevision != request.channelRevision ||
 		evidence.pipeRevision != request.pipeRevision || evidence.inputContinuation != request.inputContinuation || evidence.requestedOffset != request.requestedOffset ||
 		evidence.manifestHash != request.manifestHash || evidence.rowsContentHash != request.rowsContentHash || evidence.rowCount != request.rowCount {
 		return fmt.Errorf("%w: streaming Snowflake request status identity diverges", connector.ErrDeliveryConflict)

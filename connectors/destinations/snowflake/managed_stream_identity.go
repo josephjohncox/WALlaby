@@ -25,6 +25,7 @@ type managedStreamIdentity struct {
 	planHash              string
 	contentHash           string
 	channelName           string
+	pipeName              string
 	offsetToken           string
 	manifestHash          string
 	externalID            string
@@ -201,7 +202,7 @@ func newManagedStreamIdentity(cfg streamConfig, intent connector.DeliveryIntent,
 	return managedStreamIdentity{
 		flowIncarnationID: intent.FlowIncarnationID, destinationRevisionID: intent.DestinationRevisionID,
 		logicalBatchID: intent.LogicalBatchID, planHash: planHash, contentHash: contentHash,
-		channelName: plan.channelName, offsetToken: offsetToken, manifestHash: manifestHash,
+		channelName: plan.channelName, pipeName: cfg.pipe, offsetToken: offsetToken, manifestHash: manifestHash,
 		externalID: "sf-streaming:v1:" + manifestHash,
 	}, nil
 }
