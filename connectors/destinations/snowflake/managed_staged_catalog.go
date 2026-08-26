@@ -442,7 +442,8 @@ func validateManagedStagedPipe(cfg stagedConfig, pipe managedPipeSnapshot) error
 	normalizedTarget := normalizeStagedPipeSQL(managedSnowflakeStagedQualifiedTable(cfg, cfg.landingTable))
 	normalizedStage := normalizeStagedPipeSQL(managedSnowflakeStagedQualified(cfg, cfg.stage))
 	expectedSource := "copyinto" + normalizedTarget + "from@" + normalizedStage + "/wallaby_staged_append_v1/"
-	if strings.Count(normalizedDefinition, "copyinto") != 1 || !strings.HasPrefix(normalizedDefinition, expectedSource) || strings.Count(normalizedDefinition, "from@"+normalizedStage+"/wallaby_staged_append_v1/") != 1 {
+	definitionAfterSource, hasExactSource := strings.CutPrefix(normalizedDefinition, expectedSource)
+	if strings.Count(normalizedDefinition, "copyinto") != 1 || !hasExactSource || !strings.HasPrefix(definitionAfterSource, "file_format=(") || strings.Count(normalizedDefinition, "from@"+normalizedStage+"/wallaby_staged_append_v1/") != 1 {
 		return errors.New("managed staged Snowflake pipe must COPY from the exact @stage/wallaby_staged_append_v1/ root into the exact landing table")
 	}
 	if strings.Contains(normalizedDefinition, ";") {

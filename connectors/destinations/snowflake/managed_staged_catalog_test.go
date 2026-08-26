@@ -276,6 +276,9 @@ func TestValidateManagedStagedPipeRejectsUnsafeCopyOptions(t *testing.T) {
 		"broad stage root": func(p *managedPipeSnapshot) {
 			p.definition = strings.ReplaceAll(p.definition, "/wallaby_staged_append_v1/", "/")
 		},
+		"narrow stage root": func(p *managedPipeSnapshot) {
+			p.definition = strings.ReplaceAll(p.definition, "/wallaby_staged_append_v1/", "/wallaby_staged_append_v1/narrow/")
+		},
 		"wrong landing target": func(p *managedPipeSnapshot) {
 			p.definition = strings.ReplaceAll(p.definition, cfg.landingTable, cfg.table)
 		},

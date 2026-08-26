@@ -15,7 +15,7 @@ func TestSQLStageProtocolRefreshPipeUsesBatchPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	statement := `ALTER PIPE "DB"."PUBLIC"."PIPE" REFRESH PREFIX = 'wallaby_staged_append_v1/incarnation/batch/'`
+	statement := `ALTER PIPE "DB"."PUBLIC"."PIPE" REFRESH PREFIX = 'incarnation/batch/'`
 	mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 1))
 	proto := newSQLStageProtocol(db)
 	if err := proto.RefreshPipe(context.Background(), `"DB"."PUBLIC"."PIPE"`, "wallaby_staged_append_v1/incarnation/batch/file.ndjson"); err != nil {
@@ -23,5 +23,8 @@ func TestSQLStageProtocolRefreshPipeUsesBatchPrefix(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+	if err := proto.RefreshPipe(context.Background(), `"DB"."PUBLIC"."PIPE"`, "other_root/incarnation/batch/file.ndjson"); err == nil {
+		t.Fatal("refresh outside the admitted retention root unexpectedly succeeded")
 	}
 }

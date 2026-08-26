@@ -370,9 +370,14 @@ func (p *sqlStageProtocol) RefreshPipe(ctx context.Context, pipeRef, relativePat
 	if !stagedRelativePathPattern.MatchString(relativePath) || strings.Contains(relativePath, "..") {
 		return errors.New("staged Snowflake pipe refresh path is invalid")
 	}
-	prefix := relativePath
-	if slash := strings.LastIndexByte(relativePath, '/'); slash >= 0 {
-		prefix = relativePath[:slash+1]
+	rootPrefix := stagedRetentionRoot + "/"
+	if !strings.HasPrefix(relativePath, rootPrefix) {
+		return errors.New("staged Snowflake pipe refresh path is outside the admitted retention root")
+	}
+	pipeRelativePath := strings.TrimPrefix(relativePath, rootPrefix)
+	prefix := pipeRelativePath
+	if slash := strings.LastIndexByte(pipeRelativePath, '/'); slash >= 0 {
+		prefix = pipeRelativePath[:slash+1]
 	}
 	if _, err := p.db.ExecContext(ctx, "ALTER PIPE "+pipeRef+" REFRESH PREFIX = '"+prefix+"'"); err != nil {
 		return fmt.Errorf("refresh staged Snowflake pipe: %w", err)
