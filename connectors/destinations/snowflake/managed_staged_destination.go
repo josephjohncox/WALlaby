@@ -11,6 +11,29 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+// ManagedStagedCleanupAuthority is the current producer/cleanup capability used
+// to fence irreversible staged-object removal.
+type ManagedStagedCleanupAuthority struct {
+	FlowIncarnationID     string
+	Generation            int64
+	AcquisitionID         string
+	LeaseEpoch            int64
+	DestinationRevisionID string
+}
+
+func (a ManagedStagedCleanupAuthority) validate() error {
+	if strings.TrimSpace(a.FlowIncarnationID) == "" || strings.TrimSpace(a.AcquisitionID) == "" || strings.TrimSpace(a.DestinationRevisionID) == "" || a.Generation <= 0 || a.LeaseEpoch <= 0 {
+		return errors.New("managed staged Snowflake cleanup requires current flow, generation, acquisition, lease, and destination authority")
+	}
+	return nil
+}
+
+// ManagedStagedCatalogFingerprint returns the admitted non-secret catalog
+// identity for owner-side initialization and same-SHA commercial evidence.
+func (d *Destination) ManagedStagedCatalogFingerprint() string {
+	return d.stagedCatalogFingerprint
+}
+
 func (d *Destination) stagedHooksSnapshot() stagedHooks {
 	d.stagedHooksMu.RLock()
 	defer d.stagedHooksMu.RUnlock()
@@ -156,14 +179,20 @@ func (d *Destination) reconcileManagedStaged(ctx context.Context, intent connect
 // CleanupManagedStaged runs one bounded stage-object retention pass for the
 // bound flow incarnation. The runner schedules it after acknowledged deliveries;
 // it never removes an object whose delivery was not durably recorded.
-func (d *Destination) CleanupManagedStaged(ctx context.Context, flowIncarnationID string) (int, error) {
+func (d *Destination) CleanupManagedStaged(ctx context.Context, cleanup ManagedStagedCleanupAuthority) (int, error) {
 	if d.db == nil || d.managedProfile != connector.ManagedProfilePostgresToSnowflakeStagedAppendV1 {
 		return 0, errors.New("managed staged Snowflake destination not initialized")
 	}
-	if err := d.validateStagedSnowflakeReceiptScope(ctx, connector.DeliveryIntent{FlowIncarnationID: flowIncarnationID, LogicalBatchID: "scope-validation"}); err != nil {
+	if err := cleanup.validate(); err != nil {
 		return 0, err
 	}
-	return d.newStagedDriver().cleanup(ctx, flowIncarnationID)
+	if cleanup.DestinationRevisionID != d.stagedConfig.destinationRevision {
+		return 0, fmt.Errorf("%w: staged Snowflake cleanup destination revision differs", connector.ErrDeliveryConflict)
+	}
+	if err := d.validateStagedSnowflakeReceiptScope(ctx, connector.DeliveryIntent{FlowIncarnationID: cleanup.FlowIncarnationID, LogicalBatchID: "scope-validation"}); err != nil {
+		return 0, err
+	}
+	return d.newStagedDriver().cleanup(ctx, cleanup)
 }
 
 func (d *Destination) validateStagedSnowflakeReceiptScope(ctx context.Context, intent connector.DeliveryIntent) error {

@@ -724,3 +724,13 @@ trace-suite:
 
 trace-suite-large:
     TRACE_CASES=20000 TRACE_SEED=123 TRACE_MAX_BATCHES=12 TRACE_MAX_RECORDS=5 GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test ./pkg/stream -run TestTraceSuite -count=1
+
+# Credential-gated same-SHA staged authority evidence. This recipe is not part
+# of ordinary branch promotion and fails closed when credentials are absent.
+test-snowflake-staged-authority-commercial:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test "${WALLABY_TEST_SNOWFLAKE_MANAGED:-}" = "1" || { echo 'WALLABY_TEST_SNOWFLAKE_MANAGED=1 is required' >&2; exit 2; }
+    # Auto-ingest remains outside this required list until its commercial test performs real assertions.
+    required='TestSnowflakeStagedManagedProfileReviewedDeploymentCell,TestSnowflakeStagedManagedProfileLiveAdmission,TestSnowflakeStagedManagedProfileFailClosedCopy,TestSnowflakeStagedManagedProfileStageIdentityCollision,TestSnowflakeStagedManagedProfilePutUncertainty,TestSnowflakeStagedManagedProfileCopyTransportLossAndDetachedTakeover,TestSnowflakeStagedManagedProfileRoleIsolation,TestSnowflakeStagedManagedProfilePipeIsolation,TestSnowflakeStagedManagedProfileNetworkFaultMatrix,TestSnowflakeStagedManagedProfileProcessKillRecovery,TestSnowflakeStagedManagedProfileWorkerSIGKILLRecovery,TestSnowflakeStagedManagedProfileCleanup'
+    IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="^($(printf '%s' "${required}" | tr ',' '|'))$" INTEGRATION_PACKAGE='./tests' just test-integration

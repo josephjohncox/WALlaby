@@ -23,8 +23,9 @@ const (
 	// ManagedProfilePostgresToSnowflakeStagedAppendV1 names the constrained staged
 	// COPY append-only Snowflake contract: each logical batch is serialized into a
 	// deterministic immutable stage object, loaded with fail-closed COPY options,
-	// and acknowledged only after Snowflake load history plus a durable destination
-	// receipt prove full, non-partial completion. It remains experimental until its
+	// and acknowledged only after exact landing-row identity, atomic target-manifest
+	// promotion, and a guarded durable receipt prove full completion. COPY history
+	// is diagnostic only. It remains experimental until its
 	// opt-in real-service recovery matrix passes on one reviewed Snowflake SHA.
 	ManagedProfilePostgresToSnowflakeStagedAppendV1 = "postgresql-to-snowflake-staged-append-v1"
 	// ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 names the constrained
@@ -210,7 +211,7 @@ func PostgresToSnowflakeSQLV1Profile() ManagedProfileContract {
 // staged COPY append-only Snowflake profile. Like the SQL profile, admission
 // compares a configured service version with CURRENT_VERSION() but reviews no
 // service version or deployment cell yet. Promotion requires complete same-SHA
-// real-service recovery evidence for the PUT/COPY/load-history/receipt protocol.
+// real-service recovery evidence for the PUT/COPY/landing-target-proof/receipt protocol.
 func PostgresToSnowflakeStagedAppendV1Profile() ManagedProfileContract {
 	contract := ManagedProfileContract{
 		Name:                   ManagedProfilePostgresToSnowflakeStagedAppendV1,
@@ -232,7 +233,7 @@ func PostgresToSnowflakeStagedAppendV1Profile() ManagedProfileContract {
 			{Capability: "deterministic stage identity and wrong-byte collision", Test: "TestSnowflakeStagedManagedProfileStageIdentityCollision", Live: true},
 			{Capability: "PUT uncertainty reconciliation", Test: "TestSnowflakeStagedManagedProfilePutUncertainty", Live: true},
 			{Capability: "fail-closed COPY and partial-load rejection", Test: "TestSnowflakeStagedManagedProfileFailClosedCopy", Live: true},
-			{Capability: "load history verification and receipt adoption", Test: "TestSnowflakeStagedManagedProfileLoadHistoryAdoption", Live: true},
+			{Capability: "landing and target proof with receipt adoption", Test: "TestSnowflakeStagedManagedProfileLandingTargetProofAdoption", Live: true},
 			{Capability: "auto-ingest verified completion", Test: "TestSnowflakeStagedManagedProfileAutoIngestCompletion", Live: true},
 			{Capability: "copy transport loss and detached takeover", Test: "TestSnowflakeStagedManagedProfileCopyTransportLossAndDetachedTakeover", Live: true},
 			{Capability: "DDL rejection and replacement", Test: "TestSnowflakeStagedManagedProfileSchemaReconciliation", Live: true},
@@ -448,7 +449,7 @@ func managedProfileRequiredGates(name string) (map[string]bool, error) {
 			"target stage grants objects and file format": true, "role hierarchy and alternate writers": true,
 			"pipe visibility and auto-ingest isolation":             true,
 			"deterministic stage identity and wrong-byte collision": true, "PUT uncertainty reconciliation": true,
-			"fail-closed COPY and partial-load rejection": true, "load history verification and receipt adoption": true,
+			"fail-closed COPY and partial-load rejection": true, "landing and target proof with receipt adoption": true,
 			"auto-ingest verified completion": true, "copy transport loss and detached takeover": true,
 			"DDL rejection and replacement": true, "adapter process kill": true, "full worker SIGKILL": true,
 			"network fault matrix": true, "cancellation and pool safety": true,

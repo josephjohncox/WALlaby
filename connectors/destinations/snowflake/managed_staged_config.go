@@ -23,6 +23,9 @@ type stagedConfig struct {
 	stage                   string
 	table                   string
 	receiptsTable           string
+	landingTable            string
+	authorityTable          string
+	targetManifestTable     string
 	fileFormat              string
 	pipe                    string
 	autoIngest              bool
@@ -33,6 +36,9 @@ type stagedConfig struct {
 	stageCreatedOn          string
 	targetCreatedOn         string
 	receiptsCreatedOn       string
+	landingCreatedOn        string
+	authorityCreatedOn      string
+	targetManifestCreatedOn string
 	fileFormatCreatedOn     string
 	pipeCreatedOn           string
 	sourceSchema            string
@@ -61,11 +67,13 @@ func stagedProfileAllowedOptions() map[string]struct{} {
 		"batch_mode": {}, "batch_resolution": {}, "meta_table_enabled": {},
 		"disable_transactions": {}, "session_keep_alive": {},
 		"managed_account": {}, "managed_database": {}, "managed_schema": {}, "managed_stage": {},
-		"managed_table": {}, "managed_receipts_table": {}, "managed_file_format": {},
+		"managed_table": {}, "managed_receipts_table": {}, "managed_landing_table": {},
+		"managed_authority_table": {}, "managed_target_manifest_table": {}, "managed_file_format": {},
 		"managed_pipe": {}, "managed_auto_ingest": {},
 		"managed_owner_role": {}, "managed_execution_role": {}, "managed_warehouse": {},
 		"managed_snowflake_version": {}, "managed_stage_created_on": {}, "managed_target_created_on": {},
-		"managed_receipts_created_on": {}, "managed_file_format_created_on": {}, "managed_pipe_created_on": {},
+		"managed_receipts_created_on": {}, "managed_landing_created_on": {}, "managed_authority_created_on": {},
+		"managed_target_manifest_created_on": {}, "managed_file_format_created_on": {}, "managed_pipe_created_on": {},
 		"managed_source_schema": {}, "managed_source_table": {},
 		"managed_schema_contract": {}, "managed_schema_contract_hash": {},
 		"managed_max_transaction_rows": {}, "managed_max_transaction_bytes": {},
@@ -135,14 +143,18 @@ func stagedConfigFromSpec(dsn string, spec connector.RuntimeSpec) (stagedConfig,
 		account:  strings.ToUpper(strings.TrimSpace(options["managed_account"])),
 		database: strings.TrimSpace(options["managed_database"]), schema: strings.TrimSpace(options["managed_schema"]),
 		stage: strings.TrimSpace(options["managed_stage"]), table: strings.TrimSpace(options["managed_table"]),
-		receiptsTable: strings.TrimSpace(options["managed_receipts_table"]), fileFormat: strings.TrimSpace(options["managed_file_format"]),
-		pipe:      strings.TrimSpace(options["managed_pipe"]),
-		ownerRole: strings.TrimSpace(options["managed_owner_role"]), executionRole: strings.TrimSpace(options["managed_execution_role"]),
+		receiptsTable: strings.TrimSpace(options["managed_receipts_table"]), landingTable: strings.TrimSpace(options["managed_landing_table"]),
+		authorityTable: strings.TrimSpace(options["managed_authority_table"]), targetManifestTable: strings.TrimSpace(options["managed_target_manifest_table"]),
+		fileFormat: strings.TrimSpace(options["managed_file_format"]),
+		pipe:       strings.TrimSpace(options["managed_pipe"]),
+		ownerRole:  strings.TrimSpace(options["managed_owner_role"]), executionRole: strings.TrimSpace(options["managed_execution_role"]),
 		warehouse: strings.TrimSpace(options["managed_warehouse"]), snowflakeVersion: strings.TrimSpace(options["managed_snowflake_version"]),
 		stageCreatedOn: strings.TrimSpace(options["managed_stage_created_on"]), targetCreatedOn: strings.TrimSpace(options["managed_target_created_on"]),
-		receiptsCreatedOn: strings.TrimSpace(options["managed_receipts_created_on"]), fileFormatCreatedOn: strings.TrimSpace(options["managed_file_format_created_on"]),
-		pipeCreatedOn: strings.TrimSpace(options["managed_pipe_created_on"]),
-		sourceSchema:  options["managed_source_schema"], sourceTable: options["managed_source_table"],
+		receiptsCreatedOn: strings.TrimSpace(options["managed_receipts_created_on"]), landingCreatedOn: strings.TrimSpace(options["managed_landing_created_on"]),
+		authorityCreatedOn: strings.TrimSpace(options["managed_authority_created_on"]), targetManifestCreatedOn: strings.TrimSpace(options["managed_target_manifest_created_on"]),
+		fileFormatCreatedOn: strings.TrimSpace(options["managed_file_format_created_on"]),
+		pipeCreatedOn:       strings.TrimSpace(options["managed_pipe_created_on"]),
+		sourceSchema:        options["managed_source_schema"], sourceTable: options["managed_source_table"],
 		schemaContractHash:  strings.TrimSpace(options["managed_schema_contract_hash"]),
 		destinationRevision: strings.TrimSpace(options["destination_revision_id"]),
 	}
@@ -155,7 +167,8 @@ func stagedConfigFromSpec(dsn string, spec connector.RuntimeSpec) (stagedConfig,
 	}
 	if cfg.flowID == "" || cfg.account == "" || cfg.snowflakeVersion == "" || cfg.sourceSchema == "" || cfg.sourceTable == "" ||
 		strings.ContainsRune(cfg.sourceSchema, '\x00') || strings.ContainsRune(cfg.sourceTable, '\x00') ||
-		cfg.destinationRevision == "" || cfg.stageCreatedOn == "" || cfg.targetCreatedOn == "" || cfg.receiptsCreatedOn == "" || cfg.fileFormatCreatedOn == "" {
+		cfg.destinationRevision == "" || cfg.stageCreatedOn == "" || cfg.targetCreatedOn == "" || cfg.receiptsCreatedOn == "" ||
+		cfg.landingCreatedOn == "" || cfg.authorityCreatedOn == "" || cfg.targetManifestCreatedOn == "" || cfg.fileFormatCreatedOn == "" {
 		return stagedConfig{}, errors.New("managed staged Snowflake flow, account, version, object creation identities, exact nonempty NUL-free source relation, and destination revision are required")
 	}
 	if len(cfg.flowID) > 1024 || strings.TrimSpace(cfg.flowID) != cfg.flowID || strings.ContainsAny(cfg.flowID, "\r\n\x00") {
@@ -166,7 +179,9 @@ func stagedConfigFromSpec(dsn string, spec connector.RuntimeSpec) (stagedConfig,
 	}
 	createdIdentities := map[string]string{
 		"managed_stage_created_on": cfg.stageCreatedOn, "managed_target_created_on": cfg.targetCreatedOn,
-		"managed_receipts_created_on": cfg.receiptsCreatedOn, "managed_file_format_created_on": cfg.fileFormatCreatedOn,
+		"managed_receipts_created_on": cfg.receiptsCreatedOn, "managed_landing_created_on": cfg.landingCreatedOn,
+		"managed_authority_created_on": cfg.authorityCreatedOn, "managed_target_manifest_created_on": cfg.targetManifestCreatedOn,
+		"managed_file_format_created_on": cfg.fileFormatCreatedOn,
 	}
 	if cfg.autoIngest {
 		if cfg.pipe == "" || cfg.pipeCreatedOn == "" {
@@ -183,7 +198,9 @@ func stagedConfigFromSpec(dsn string, spec connector.RuntimeSpec) (stagedConfig,
 	}
 	identifiers := map[string]string{
 		"managed_database": cfg.database, "managed_schema": cfg.schema, "managed_stage": cfg.stage, "managed_table": cfg.table,
-		"managed_receipts_table": cfg.receiptsTable, "managed_file_format": cfg.fileFormat, "managed_owner_role": cfg.ownerRole,
+		"managed_receipts_table": cfg.receiptsTable, "managed_landing_table": cfg.landingTable,
+		"managed_authority_table": cfg.authorityTable, "managed_target_manifest_table": cfg.targetManifestTable,
+		"managed_file_format": cfg.fileFormat, "managed_owner_role": cfg.ownerRole,
 		"managed_execution_role": cfg.executionRole, "managed_warehouse": cfg.warehouse,
 	}
 	if cfg.autoIngest {

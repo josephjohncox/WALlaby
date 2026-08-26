@@ -14,12 +14,16 @@ import (
 )
 
 type managedStagedCatalogSnapshot struct {
-	stage      managedStageSnapshot
-	fileFormat managedFileFormatSnapshot
-	target     managedTableSnapshot
-	receipts   managedTableSnapshot
-	pipe       managedPipeSnapshot
-	taskCount  int
+	stage               managedStageSnapshot
+	fileFormat          managedFileFormatSnapshot
+	target              managedTableSnapshot
+	receipts            managedTableSnapshot
+	landing             managedTableSnapshot
+	authority           managedTableSnapshot
+	targetManifest      managedTableSnapshot
+	pipe                managedPipeSnapshot
+	taskCount           int
+	unexpectedPipeCount int
 }
 
 type managedStageSnapshot struct {
@@ -71,6 +75,7 @@ type managedPipeSnapshot struct {
 	autoIngest        bool
 	onError           string
 	force             string
+	purge             string
 	matchByColumnName string
 	comment           string
 	grants            map[string][]string
@@ -92,8 +97,17 @@ func validateManagedStagedCatalog(cfg stagedConfig, catalog managedStagedCatalog
 	if err := validateManagedStagedReceipts(cfg, catalog.receipts); err != nil {
 		return err
 	}
+	if err := validateManagedStagedAuxiliaryTables(cfg, catalog); err != nil {
+		return err
+	}
 	if err := validateManagedStagedPipe(cfg, catalog.pipe); err != nil {
 		return err
+	}
+	if !cfg.autoIngest && catalog.unexpectedPipeCount != 0 {
+		return fmt.Errorf("managed staged Snowflake synchronous profile observed %d pipes in the dedicated schema", catalog.unexpectedPipeCount)
+	}
+	if cfg.autoIngest && catalog.unexpectedPipeCount != 1 {
+		return fmt.Errorf("managed staged Snowflake auto-ingest profile requires exactly one pipe in the dedicated schema, got %d", catalog.unexpectedPipeCount)
 	}
 	return nil
 }
@@ -317,6 +331,89 @@ func validateManagedStagedReceipts(cfg stagedConfig, receipts managedTableSnapsh
 	return nil
 }
 
+func validateManagedStagedAuxiliaryTables(cfg stagedConfig, catalog managedStagedCatalogSnapshot) error {
+	for _, item := range []struct {
+		name, object, createdOn, commentKind, kind string
+		table                                      managedTableSnapshot
+		columns                                    map[string]managedColumnSnapshot
+		execution                                  []string
+	}{
+		{name: "landing", object: cfg.landingTable, createdOn: cfg.landingCreatedOn, commentKind: "landing", kind: "TABLE", table: catalog.landing, columns: stagedExpectedTargetColumns(), execution: []string{"DELETE", "INSERT", "SELECT"}},
+		{name: "authority", object: cfg.authorityTable, createdOn: cfg.authorityCreatedOn, commentKind: "authority", kind: "HYBRID TABLE", table: catalog.authority, columns: stagedExpectedAuthorityColumns(), execution: []string{"DELETE", "INSERT", "SELECT", "UPDATE"}},
+		{name: "target manifest", object: cfg.targetManifestTable, createdOn: cfg.targetManifestCreatedOn, commentKind: "target_manifest", kind: "HYBRID TABLE", table: catalog.targetManifest, columns: stagedExpectedTargetManifestColumns(), execution: []string{"INSERT", "SELECT"}},
+	} {
+		if normalizeManagedSnowflakeKind(item.table.kind) != item.kind {
+			return fmt.Errorf("managed staged Snowflake %s table kind=%q, want %s", item.name, item.table.kind, item.kind)
+		}
+		if item.table.ownerRole != cfg.ownerRole || item.table.createdOn != item.createdOn || item.table.comment != managedStagedOwnershipComment(cfg, item.commentKind) {
+			return fmt.Errorf("managed staged Snowflake %s ownership or creation identity differs", item.name)
+		}
+		if err := validateManagedStagedGrants(cfg, item.table.grants, item.execution, []string{"OWNERSHIP"}); err != nil {
+			return fmt.Errorf("managed staged Snowflake %s grants: %w", item.name, err)
+		}
+		if err := validateManagedStagedColumns(item.name, item.table.columns, item.columns); err != nil {
+			return err
+		}
+		if item.table.otherConstraintCount != 0 {
+			return fmt.Errorf("managed staged Snowflake %s has unsupported constraints", item.name)
+		}
+		switch item.name {
+		case "landing":
+			if len(item.table.constraints) != 0 {
+				return errors.New("managed staged Snowflake landing table must not have key constraints")
+			}
+		case "authority":
+			if len(item.table.constraints) != 1 || !hasManagedEnforcedConstraintType(item.table.constraints, "PRIMARY KEY", []string{"AUTHORITY_KIND", "DESTINATION_REVISION_ID", "AUTHORITY_ID"}) {
+				return errors.New("managed staged Snowflake authority table requires its exact enforced primary key")
+			}
+		case "target manifest":
+			if len(item.table.constraints) != 2 || !hasManagedEnforcedConstraintType(item.table.constraints, "PRIMARY KEY", []string{"DESTINATION_REVISION_ID", "LOGICAL_BATCH_ID"}) || !hasManagedEnforcedConstraintType(item.table.constraints, "UNIQUE", []string{"MANIFEST_HASH"}) {
+				return errors.New("managed staged Snowflake target manifest table requires exact enforced primary and manifest keys")
+			}
+		}
+	}
+	return nil
+}
+
+func normalizeStagedPipeSQL(value string) string {
+	return strings.Map(func(character rune) rune {
+		if character == '"' || character == '`' || character == ' ' || character == '\t' || character == '\r' || character == '\n' {
+			return -1
+		}
+		if character >= 'A' && character <= 'Z' {
+			return character + ('a' - 'A')
+		}
+		return character
+	}, value)
+}
+
+func stagedExpectedAuthorityColumns() map[string]managedColumnSnapshot {
+	text := managedColumnSnapshot{dataType: "VARCHAR", nullable: false}
+	number := managedColumnSnapshot{dataType: "NUMBER(38,0)", nullable: false}
+	timestamp := managedColumnSnapshot{dataType: "TIMESTAMP_LTZ(9)", nullable: false}
+	optionalText := managedColumnSnapshot{dataType: "VARCHAR", nullable: true}
+	optionalNumber := managedColumnSnapshot{dataType: "NUMBER(38,0)", nullable: true}
+	return map[string]managedColumnSnapshot{
+		"AUTHORITY_KIND": text, "DESTINATION_REVISION_ID": text, "AUTHORITY_ID": text, "OWNER_ID": text,
+		"FLOW_INCARNATION_ID": optionalText, "GENERATION": optionalNumber, "ACQUISITION_ID": optionalText,
+		"LEASE_EPOCH": optionalNumber, "PROVISION_EPOCH": number, "PROVISION_ATTEMPT_ID": optionalText, "CATALOG_FINGERPRINT": text,
+		"LOGICAL_BATCH_ID": optionalText, "MANIFEST_HASH": optionalText, "CONTENT_HASH": optionalText,
+		"FILE_CONTENT_HASH": optionalText, "PLAN_HASH": optionalText, "EXPECTED_ROW_COUNT": optionalNumber,
+		"STATE": text, "EXPIRES_AT": timestamp, "UPDATED_AT": timestamp,
+	}
+}
+
+func stagedExpectedTargetManifestColumns() map[string]managedColumnSnapshot {
+	text := managedColumnSnapshot{dataType: "VARCHAR", nullable: false}
+	number := managedColumnSnapshot{dataType: "NUMBER(38,0)", nullable: false}
+	return map[string]managedColumnSnapshot{
+		"DESTINATION_REVISION_ID": text, "LOGICAL_BATCH_ID": text, "MANIFEST_HASH": text, "CONTENT_HASH": text,
+		"FILE_CONTENT_HASH": text, "PLAN_HASH": text, "EXPECTED_ROW_COUNT": number, "ROW_HASHES_JSON": text,
+		"PROVISION_EPOCH": number, "CATALOG_FINGERPRINT": text,
+		"COMMITTED_AT": {dataType: "TIMESTAMP_LTZ(9)", nullable: false},
+	}
+}
+
 func validateManagedStagedPipe(cfg stagedConfig, pipe managedPipeSnapshot) error {
 	if !cfg.autoIngest {
 		if pipe.present {
@@ -338,6 +435,20 @@ func validateManagedStagedPipe(cfg stagedConfig, pipe managedPipeSnapshot) error
 	if err != nil {
 		return err
 	}
+	if stripped := stripStagedSQLStringLiterals(pipe.definition); stripped != pipe.definition {
+		return errors.New("managed staged Snowflake pipe definition must not contain comments or string literals")
+	}
+	normalizedDefinition := normalizeStagedPipeSQL(pipe.definition)
+	normalizedTarget := normalizeStagedPipeSQL(managedSnowflakeStagedQualifiedTable(cfg, cfg.landingTable))
+	normalizedStage := normalizeStagedPipeSQL(managedSnowflakeStagedQualified(cfg, cfg.stage))
+	expectedSource := "copyinto" + normalizedTarget + "from@" + normalizedStage + "/wallaby_staged_append_v1/"
+	definitionAfterSource, hasExactSource := strings.CutPrefix(normalizedDefinition, expectedSource)
+	if strings.Count(normalizedDefinition, "copyinto") != 1 || !hasExactSource || !strings.HasPrefix(definitionAfterSource, "file_format=(") || strings.Count(normalizedDefinition, "from@"+normalizedStage+"/wallaby_staged_append_v1/") != 1 {
+		return errors.New("managed staged Snowflake pipe must COPY from the exact @stage/wallaby_staged_append_v1/ root into the exact landing table")
+	}
+	if strings.Contains(normalizedDefinition, ";") {
+		return errors.New("managed staged Snowflake pipe definition contains an extra statement")
+	}
 	// A pipe that references a named file format reopens exactly the mutation
 	// window the synchronous COPY closed by inlining its parsing options, so the
 	// pipe definition must inline the same options instead.
@@ -352,8 +463,11 @@ func validateManagedStagedPipe(cfg stagedConfig, pipe managedPipeSnapshot) error
 	if pipe.onError != plan.loadOptions["ON_ERROR"] {
 		return fmt.Errorf("managed staged Snowflake auto-ingest pipe COPY must set ON_ERROR = %s (fail-closed), got %q", plan.loadOptions["ON_ERROR"], pipe.onError)
 	}
-	if strings.EqualFold(pipe.force, "TRUE") {
-		return errors.New("managed staged Snowflake auto-ingest pipe COPY must not set FORCE = TRUE")
+	if pipe.force != "FALSE" {
+		return fmt.Errorf("managed staged Snowflake auto-ingest pipe COPY must set FORCE = FALSE, got %q", pipe.force)
+	}
+	if pipe.purge != "FALSE" {
+		return fmt.Errorf("managed staged Snowflake auto-ingest pipe COPY must set PURGE = FALSE, got %q", pipe.purge)
 	}
 	if pipe.matchByColumnName != plan.loadOptions["MATCH_BY_COLUMN_NAME"] {
 		return fmt.Errorf("managed staged Snowflake auto-ingest pipe COPY must set MATCH_BY_COLUMN_NAME = %s, got %q", plan.loadOptions["MATCH_BY_COLUMN_NAME"], pipe.matchByColumnName)
@@ -440,7 +554,7 @@ func stagedExpectedReceiptColumns() map[string]managedColumnSnapshot {
 	columns := map[string]managedColumnSnapshot{
 		"RECEIPT_KIND": text, "PROFILE_VERSION": text, "FLOW_ID": text, "FLOW_INCARNATION_ID": text, "SOURCE_LINEAGE_ID": text,
 		"DESTINATION_REVISION_ID": text, "LOGICAL_BATCH_ID": text, "POSITION_ID": text, "CONTENT_HASH": text, "SCHEMA_CONTRACT_HASH": text,
-		"CATALOG_FINGERPRINT": text, "MANIFEST_HASH": text, "EXTERNAL_ID": text, "GENERATION": number, "ACQUISITION_ID": text, "LEASE_EPOCH": number,
+		"CATALOG_FINGERPRINT": text, "PROVISION_EPOCH": number, "MANIFEST_HASH": text, "PLAN_HASH": text, "EXTERNAL_ID": text, "GENERATION": number, "ACQUISITION_ID": text, "LEASE_EPOCH": number,
 		"TRANSACTION_ID": number, "FRAGMENT_COUNT": number, "RECORD_COUNT": number, "STAGE_NAME": text, "STAGE_PATH": text, "FILE_CONTENT_HASH": text,
 		"FILE_MD5": text, "LOAD_ROW_COUNT": number, "LOAD_STATUS": text,
 		"COMMITTED_AT": {dataType: "TIMESTAMP_TZ", nullable: false},
@@ -494,10 +608,11 @@ func managedStagedCatalogFingerprint(catalog managedStagedCatalogSnapshot) (stri
 			OwnerRole   string                       `json:"owner_role"`
 			CreatedOn   string                       `json:"created_on"`
 			Comment     string                       `json:"comment"`
+			Definition  string                       `json:"definition"`
 			Columns     map[string]fingerprintColumn `json:"columns"`
 			Constraints []fingerprintConstraint      `json:"constraints"`
 			Grants      map[string][]string          `json:"grants"`
-		}{Kind: table.kind, OwnerRole: table.ownerRole, CreatedOn: table.createdOn, Comment: table.comment, Columns: columns, Constraints: constraints, Grants: canonicalGrants(table.grants)}
+		}{Kind: table.kind, OwnerRole: table.ownerRole, CreatedOn: table.createdOn, Comment: table.comment, Definition: table.definition, Columns: columns, Constraints: constraints, Grants: canonicalGrants(table.grants)}
 	}
 	fileFormatProperties := make(map[string]fingerprintFileFormatProperty, len(catalog.fileFormat.properties))
 	for name, property := range catalog.fileFormat.properties {
@@ -522,20 +637,26 @@ func managedStagedCatalogFingerprint(catalog managedStagedCatalogSnapshot) (stri
 			Properties map[string]fingerprintFileFormatProperty `json:"properties"`
 			Grants     map[string][]string                      `json:"grants"`
 		} `json:"file_format"`
-		Target   any `json:"target"`
-		Receipts any `json:"receipts"`
-		Pipe     struct {
+		Target         any `json:"target"`
+		Receipts       any `json:"receipts"`
+		Landing        any `json:"landing"`
+		Authority      any `json:"authority"`
+		TargetManifest any `json:"target_manifest"`
+		Pipe           struct {
 			Present           bool                `json:"present"`
+			Definition        string              `json:"definition"`
 			OwnerRole         string              `json:"owner_role"`
 			CreatedOn         string              `json:"created_on"`
 			AutoIngest        bool                `json:"auto_ingest"`
 			OnError           string              `json:"on_error"`
 			Force             string              `json:"force"`
+			Purge             string              `json:"purge"`
 			MatchByColumnName string              `json:"match_by_column_name"`
 			Comment           string              `json:"comment"`
 			Grants            map[string][]string `json:"grants"`
 		} `json:"pipe"`
-		TaskCount int `json:"task_count"`
+		TaskCount           int `json:"task_count"`
+		UnexpectedPipeCount int `json:"unexpected_pipe_count"`
 	}{
 		Stage: struct {
 			Kind      string              `json:"kind"`
@@ -553,20 +674,26 @@ func managedStagedCatalogFingerprint(catalog managedStagedCatalogSnapshot) (stri
 			Properties map[string]fingerprintFileFormatProperty `json:"properties"`
 			Grants     map[string][]string                      `json:"grants"`
 		}{FormatType: catalog.fileFormat.formatType, OwnerRole: catalog.fileFormat.ownerRole, CreatedOn: catalog.fileFormat.createdOn, Comment: catalog.fileFormat.comment, Definition: catalog.fileFormat.definition, Properties: fileFormatProperties, Grants: canonicalGrants(catalog.fileFormat.grants)},
-		Target:   canonicalTable(catalog.target),
-		Receipts: canonicalTable(catalog.receipts),
+		Target:         canonicalTable(catalog.target),
+		Receipts:       canonicalTable(catalog.receipts),
+		Landing:        canonicalTable(catalog.landing),
+		Authority:      canonicalTable(catalog.authority),
+		TargetManifest: canonicalTable(catalog.targetManifest),
 		Pipe: struct {
 			Present           bool                `json:"present"`
+			Definition        string              `json:"definition"`
 			OwnerRole         string              `json:"owner_role"`
 			CreatedOn         string              `json:"created_on"`
 			AutoIngest        bool                `json:"auto_ingest"`
 			OnError           string              `json:"on_error"`
 			Force             string              `json:"force"`
+			Purge             string              `json:"purge"`
 			MatchByColumnName string              `json:"match_by_column_name"`
 			Comment           string              `json:"comment"`
 			Grants            map[string][]string `json:"grants"`
-		}{Present: catalog.pipe.present, OwnerRole: catalog.pipe.ownerRole, CreatedOn: catalog.pipe.createdOn, AutoIngest: catalog.pipe.autoIngest, OnError: catalog.pipe.onError, Force: catalog.pipe.force, MatchByColumnName: catalog.pipe.matchByColumnName, Comment: catalog.pipe.comment, Grants: canonicalGrants(catalog.pipe.grants)},
-		TaskCount: catalog.taskCount,
+		}{Present: catalog.pipe.present, Definition: catalog.pipe.definition, OwnerRole: catalog.pipe.ownerRole, CreatedOn: catalog.pipe.createdOn, AutoIngest: catalog.pipe.autoIngest, OnError: catalog.pipe.onError, Force: catalog.pipe.force, Purge: catalog.pipe.purge, MatchByColumnName: catalog.pipe.matchByColumnName, Comment: catalog.pipe.comment, Grants: canonicalGrants(catalog.pipe.grants)},
+		TaskCount:           catalog.taskCount,
+		UnexpectedPipeCount: catalog.unexpectedPipeCount,
 	})
 	if err != nil {
 		return "", fmt.Errorf("encode managed staged Snowflake catalog fingerprint: %w", err)
@@ -595,10 +722,22 @@ func (d *Destination) loadManagedStagedCatalog(ctx context.Context, queryer mana
 	if snapshot.receipts, err = loadStagedTable(ctx, queryer, cfg, informationSchema, cfg.receiptsTable); err != nil {
 		return managedStagedCatalogSnapshot{}, fmt.Errorf("inspect managed staged Snowflake receipts: %w", err)
 	}
+	if snapshot.landing, err = loadStagedTable(ctx, queryer, cfg, informationSchema, cfg.landingTable); err != nil {
+		return managedStagedCatalogSnapshot{}, fmt.Errorf("inspect managed staged Snowflake landing table: %w", err)
+	}
+	if snapshot.authority, err = loadStagedTable(ctx, queryer, cfg, informationSchema, cfg.authorityTable); err != nil {
+		return managedStagedCatalogSnapshot{}, fmt.Errorf("inspect managed staged Snowflake authority table: %w", err)
+	}
+	if snapshot.targetManifest, err = loadStagedTable(ctx, queryer, cfg, informationSchema, cfg.targetManifestTable); err != nil {
+		return managedStagedCatalogSnapshot{}, fmt.Errorf("inspect managed staged Snowflake target manifest table: %w", err)
+	}
 	if cfg.autoIngest {
 		if snapshot.pipe, err = loadStagedPipe(ctx, queryer, cfg, informationSchema); err != nil {
 			return managedStagedCatalogSnapshot{}, err
 		}
+	}
+	if err := queryer.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+informationSchema+"PIPES WHERE PIPE_SCHEMA = ?", cfg.schema).Scan(&snapshot.unexpectedPipeCount); err != nil {
+		return managedStagedCatalogSnapshot{}, fmt.Errorf("count managed staged Snowflake schema pipes: %w", err)
 	}
 	// #nosec G202 -- the database identifier is one validated unquoted uppercase identifier.
 	if err := queryer.QueryRowContext(ctx,
@@ -732,11 +871,12 @@ func loadStagedFileFormatProperties(ctx context.Context, queryer managedSnowflak
 func loadStagedPipe(ctx context.Context, queryer managedSnowflakeCatalogQueryer, cfg stagedConfig, informationSchema string) (managedPipeSnapshot, error) {
 	snapshot := managedPipeSnapshot{grants: make(map[string][]string)}
 	var definition, comment, createdOn string
+	var autoIngest bool
 	// #nosec G202 -- the database identifier is one validated unquoted uppercase identifier.
 	if err := queryer.QueryRowContext(ctx,
-		"SELECT DEFINITION, COALESCE(COMMENT, ''), TO_VARCHAR(CREATED, '"+managedSnowflakeCatalogTimestampFormat+"') FROM "+informationSchema+"PIPES WHERE PIPE_SCHEMA = ? AND PIPE_NAME = ?",
+		"SELECT DEFINITION, COALESCE(COMMENT, ''), TO_VARCHAR(CREATED, '"+managedSnowflakeCatalogTimestampFormat+"'), AUTO_INGEST FROM "+informationSchema+"PIPES WHERE PIPE_SCHEMA = ? AND PIPE_NAME = ?",
 		cfg.schema, cfg.pipe,
-	).Scan(&definition, &comment, &createdOn); err != nil {
+	).Scan(&definition, &comment, &createdOn, &autoIngest); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return managedPipeSnapshot{}, nil
 		}
@@ -749,9 +889,10 @@ func loadStagedPipe(ctx context.Context, queryer managedSnowflakeCatalogQueryer,
 	snapshot.definition = definition
 	snapshot.comment = comment
 	snapshot.createdOn = createdOn
-	snapshot.autoIngest = strings.Contains(strings.ToUpper(strings.ReplaceAll(definition, " ", "")), "AUTO_INGEST=TRUE")
+	snapshot.autoIngest = autoIngest
 	snapshot.onError = stagedPipeCopyOption(definition, "ON_ERROR")
 	snapshot.force = stagedPipeCopyOption(definition, "FORCE")
+	snapshot.purge = stagedPipeCopyOption(definition, "PURGE")
 	snapshot.matchByColumnName = stagedPipeCopyOption(definition, "MATCH_BY_COLUMN_NAME")
 	owner, grants, err := loadStagedGrants(ctx, queryer, "PIPE", managedSnowflakeStagedQualified(cfg, cfg.pipe))
 	if err != nil {
@@ -816,6 +957,13 @@ func loadStagedTable(ctx context.Context, queryer managedSnowflakeCatalogQueryer
 		snapshot.kind = "HYBRID TABLE"
 	} else {
 		snapshot.kind = "TABLE"
+	}
+	qualified := managedSnowflakeStagedQualified(cfg, table)
+	if err := queryer.QueryRowContext(ctx, "SELECT LEFT(GET_DDL('TABLE', ?), 65537)", qualified).Scan(&snapshot.definition); err != nil {
+		return managedTableSnapshot{}, fmt.Errorf("read managed staged Snowflake table definition: %w", err)
+	}
+	if len(snapshot.definition) == 0 || len(snapshot.definition) > 64<<10 {
+		return managedTableSnapshot{}, fmt.Errorf("managed staged Snowflake table definition has invalid length %d", len(snapshot.definition))
 	}
 	owner, grants, err := loadStagedGrants(ctx, queryer, "TABLE", managedSnowflakeStagedQualified(cfg, table))
 	if err != nil {

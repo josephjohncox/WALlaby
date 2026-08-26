@@ -492,6 +492,12 @@ message SnowflakePostgresStagedConfig {
   optional uint32 load_verify_interval_millis = 36;
   optional uint32 cleanup_max_objects = 37;
   optional uint32 cleanup_retention_seconds = 38;
+  string landing_table = 39;
+  string authority_table = 40;
+  string target_manifest_table = 41;
+  string landing_created_on = 42;
+  string authority_created_on = 43;
+  string target_manifest_created_on = 44;
 }
 
 message SnowflakePostgresStreamingConfig {

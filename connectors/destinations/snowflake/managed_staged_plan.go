@@ -40,7 +40,9 @@ type managedStagedReceipt struct {
 	contentHash           string
 	schemaContractHash    string
 	catalogFingerprint    string
+	provisionEpoch        int64
 	manifestHash          string
+	planHash              string
 	externalID            string
 	generation            int64
 	acquisitionID         string
@@ -70,6 +72,7 @@ type managedStagedPlan struct {
 	fileContentHash    string
 	fileMD5            string
 	rowCount           int
+	rowHashes          []string
 	encodedBytes       int64
 	catalogFingerprint string
 	receipt            managedStagedReceipt
@@ -150,6 +153,10 @@ func planManagedStagedTransaction(cfg stagedConfig, intent connector.DeliveryInt
 		}
 	}
 
+	rowHashes := make([]string, len(rows))
+	for index := range rows {
+		rowHashes[index] = rows[index].RecordHash
+	}
 	fileBytes, fileContentHash, fileMD5, err := serializeStagedFile(rows)
 	if err != nil {
 		return managedStagedPlan{}, err
@@ -173,7 +180,7 @@ func planManagedStagedTransaction(cfg stagedConfig, intent connector.DeliveryInt
 		kind: stagedReceiptKindLoad, profileVersion: cfg.profile, flowID: intent.FlowID, flowIncarnationID: intent.FlowIncarnationID,
 		sourceLineageID: intent.SourceLineageID, destinationRevisionID: intent.DestinationRevisionID,
 		logicalBatchID: intent.LogicalBatchID, positionID: intent.PositionID, contentHash: intent.ContentHash,
-		schemaContractHash: cfg.schemaContractHash, manifestHash: identity.manifestHash, externalID: identity.externalID,
+		schemaContractHash: cfg.schemaContractHash, manifestHash: identity.manifestHash, planHash: planHash, externalID: identity.externalID,
 		generation: intent.Generation, acquisitionID: intent.AcquisitionID, leaseEpoch: intent.LeaseEpoch,
 		transactionID: transaction.TransactionID, fragmentCount: len(transaction.Fragments), recordCount: len(rows),
 		stageName: cfg.stage, stagePath: identity.relativePath, fileContentHash: fileContentHash, fileMD5: fileMD5,
@@ -181,7 +188,7 @@ func planManagedStagedTransaction(cfg stagedConfig, intent connector.DeliveryInt
 	}
 	return managedStagedPlan{
 		identity: identity, copyPlan: copyPlan, fileBytes: fileBytes, fileContentHash: fileContentHash,
-		fileMD5: fileMD5, rowCount: len(rows), encodedBytes: encodedBytes, receipt: receipt,
+		fileMD5: fileMD5, rowCount: len(rows), rowHashes: rowHashes, encodedBytes: encodedBytes, receipt: receipt,
 	}, nil
 }
 
@@ -248,7 +255,7 @@ func newStagedCopyPlan(cfg stagedConfig) (stagedCopyPlan, error) {
 		return stagedCopyPlan{}, err
 	}
 	return stagedCopyPlan{
-		target:        managedSnowflakeStagedQualified(cfg, cfg.table),
+		target:        managedSnowflakeStagedQualified(cfg, cfg.landingTable),
 		stageRef:      managedSnowflakeStagedQualified(cfg, cfg.stage),
 		fileFormatRef: managedSnowflakeStagedQualified(cfg, cfg.fileFormat),
 		columns:       stagedChangelogColumns(),

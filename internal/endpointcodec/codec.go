@@ -784,6 +784,9 @@ func encodeSnowflakeStaged(out map[string]string, cfg *wallabypb.SnowflakePostgr
 	put(out, "managed_schema", cfg.GetSchema())
 	put(out, "managed_table", cfg.GetTable())
 	put(out, "managed_receipts_table", cfg.GetReceiptsTable())
+	put(out, "managed_landing_table", cfg.GetLandingTable())
+	put(out, "managed_authority_table", cfg.GetAuthorityTable())
+	put(out, "managed_target_manifest_table", cfg.GetTargetManifestTable())
 	put(out, "managed_pipe", cfg.GetPipe())
 	put(out, "managed_owner_role", cfg.GetOwnerRole())
 	put(out, "managed_execution_role", cfg.GetExecutionRole())
@@ -792,6 +795,9 @@ func encodeSnowflakeStaged(out map[string]string, cfg *wallabypb.SnowflakePostgr
 	put(out, "managed_stage_created_on", cfg.GetStageCreatedOn())
 	put(out, "managed_target_created_on", cfg.GetTargetCreatedOn())
 	put(out, "managed_receipts_created_on", cfg.GetReceiptsCreatedOn())
+	put(out, "managed_landing_created_on", cfg.GetLandingCreatedOn())
+	put(out, "managed_authority_created_on", cfg.GetAuthorityCreatedOn())
+	put(out, "managed_target_manifest_created_on", cfg.GetTargetManifestCreatedOn())
 	put(out, "managed_file_format_created_on", cfg.GetFileFormatCreatedOn())
 	put(out, "managed_pipe_created_on", cfg.GetPipeCreatedOn())
 	putU32(out, "managed_max_transaction_rows", cfg.MaxTransactionRows)
@@ -1546,7 +1552,7 @@ func decodeSnowflakeStaged(v map[string]string) (*wallabypb.SnowflakePostgresSta
 	if err := consumeFixedOptions(v, snowflakeManagedFixedOptions()); err != nil {
 		return nil, err
 	}
-	cfg := &wallabypb.SnowflakePostgresStagedConfig{Dsn: take(v, "dsn"), Stage: take(v, "managed_stage"), FileFormat: take(v, "managed_file_format"), DestinationRevisionId: take(v, "destination_revision_id"), Account: take(v, "managed_account"), Database: take(v, "managed_database"), Schema: take(v, "managed_schema"), Table: take(v, "managed_table"), ReceiptsTable: take(v, "managed_receipts_table"), Pipe: take(v, "managed_pipe"), OwnerRole: take(v, "managed_owner_role"), ExecutionRole: take(v, "managed_execution_role"), ManagedWarehouse: take(v, "managed_warehouse"), SnowflakeVersion: take(v, "managed_snowflake_version"), StageCreatedOn: take(v, "managed_stage_created_on"), TargetCreatedOn: take(v, "managed_target_created_on"), ReceiptsCreatedOn: take(v, "managed_receipts_created_on"), FileFormatCreatedOn: take(v, "managed_file_format_created_on"), PipeCreatedOn: take(v, "managed_pipe_created_on")}
+	cfg := &wallabypb.SnowflakePostgresStagedConfig{Dsn: take(v, "dsn"), Stage: take(v, "managed_stage"), FileFormat: take(v, "managed_file_format"), DestinationRevisionId: take(v, "destination_revision_id"), Account: take(v, "managed_account"), Database: take(v, "managed_database"), Schema: take(v, "managed_schema"), Table: take(v, "managed_table"), ReceiptsTable: take(v, "managed_receipts_table"), LandingTable: take(v, "managed_landing_table"), AuthorityTable: take(v, "managed_authority_table"), TargetManifestTable: take(v, "managed_target_manifest_table"), Pipe: take(v, "managed_pipe"), OwnerRole: take(v, "managed_owner_role"), ExecutionRole: take(v, "managed_execution_role"), ManagedWarehouse: take(v, "managed_warehouse"), SnowflakeVersion: take(v, "managed_snowflake_version"), StageCreatedOn: take(v, "managed_stage_created_on"), TargetCreatedOn: take(v, "managed_target_created_on"), ReceiptsCreatedOn: take(v, "managed_receipts_created_on"), LandingCreatedOn: take(v, "managed_landing_created_on"), AuthorityCreatedOn: take(v, "managed_authority_created_on"), TargetManifestCreatedOn: take(v, "managed_target_manifest_created_on"), FileFormatCreatedOn: take(v, "managed_file_format_created_on"), PipeCreatedOn: take(v, "managed_pipe_created_on")}
 	var err error
 	if cfg.AutoIngest, err = takeBool(v, "managed_auto_ingest"); err != nil {
 		return nil, err

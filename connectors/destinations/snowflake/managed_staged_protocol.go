@@ -21,13 +21,11 @@ var (
 	// path but its bytes differ from the immutable plan. It is fatal and fails
 	// closed; the driver never loads or overwrites it.
 	errStagedWrongByteCollision = errors.New("staged Snowflake object exists with different bytes")
-	// errStagedPartialLoad means Snowflake load history reports a non-complete
-	// load (partially loaded, failed, or a row-count mismatch). A partial load can
+	// errStagedPartialLoad means the COPY result or landing proof reports a
+	// non-complete load. A partial load can
 	// never be adopted as a completed delivery.
-	errStagedPartialLoad = errors.New("staged Snowflake load is partial or failed")
-	// errStagedLoadNotVisible means no completed load is yet visible. The outcome
-	// is indeterminate and must be retried, never converted into a receipt.
-	errStagedLoadNotVisible = errors.New("staged Snowflake load is not yet verifiable")
+	errStagedPartialLoad              = errors.New("staged Snowflake load is partial or failed")
+	ErrStagedLoadNotVisibleDiagnostic = errors.New("staged Snowflake diagnostic load history is not yet visible")
 )
 
 // Load status vocabulary observed from Snowflake COPY results and history.
@@ -44,9 +42,8 @@ const (
 // INFORMATION_SCHEMA.COPY_HISTORY.STATUS reports space forms ("Loaded",
 // "Partially loaded", "Load failed", "Load in progress"). Collapsing whitespace
 // runs to single underscores maps both onto the same constants, so the async
-// auto-ingest path — whose only completion evidence is COPY_HISTORY — classifies
-// a partial or failed pipe load as a fail-closed conflict instead of silently
-// polling it to exhaustion.
+// COPY_HISTORY remains a diagnostic surface only. Normalization keeps its
+// operator diagnostics stable but never authorizes promotion or a receipt.
 func normalizeStagedLoadStatus(raw string) string {
 	return strings.Join(strings.Fields(strings.ToUpper(raw)), "_")
 }
@@ -81,6 +78,7 @@ type stageReceiptInsert struct {
 // Every ambiguous transport boundary in the real service is a single method so
 // the driver's crash-window recovery is exhaustively testable with a fake.
 type stageProtocol interface {
+	stagedAuthorityProtocol
 	// StatObject reports whether the deterministic stage path holds an object and
 	// its Snowflake-reported MD5 checksum and size.
 	StatObject(ctx context.Context, stageRef, relativePath string) (stageObjectStat, error)
@@ -92,13 +90,13 @@ type stageProtocol interface {
 	// when a different-byte object already occupies the path.
 	PutObject(ctx context.Context, stageRef, relativePath string, content []byte, expectedMD5 string) error
 	// Copy loads one staged object with the plan's fail-closed options and returns
-	// the per-file COPY result. A lost response is reported as an error; the driver
-	// then reconciles through LoadHistory.
+	// the per-file COPY result. A lost response is reported as an error. The driver
+	// then reconciles through exact landing and target proof.
 	Copy(ctx context.Context, plan stagedCopyPlan) (stageCopyResult, error)
 	// RefreshPipe asks an auto-ingest pipe to notice a newly staged object.
 	RefreshPipe(ctx context.Context, pipeRef, relativePath string) error
-	// LoadHistory reports the authoritative completion state of one file from
-	// Snowflake's durable load history for the target table (or its pipe).
+	// LoadHistory reports diagnostic COPY history. It never authorizes target
+	// promotion, receipt insertion, or retry.
 	LoadHistory(ctx context.Context, target, relativePath string) (stageLoadEntry, error)
 	// LookupReceipt returns the durable destination receipt for one identity.
 	LookupReceipt(ctx context.Context, cfg stagedConfig, key stagedReceiptKey) (managedStagedReceipt, bool, error)
@@ -364,12 +362,24 @@ func (p *sqlStageProtocol) Copy(ctx context.Context, plan stagedCopyPlan) (stage
 // that window becomes unrecoverable through refresh alone. This is an
 // auto-ingest-only liveness limitation that the live matrix must characterize
 // before the profile leaves experimental; it never compromises fail-closed
-// safety because completion is still gated on verifiable load history.
-func (p *sqlStageProtocol) RefreshPipe(ctx context.Context, pipeRef, _ string) error {
+// safety because completion is still gated on exact landing and target proof.
+func (p *sqlStageProtocol) RefreshPipe(ctx context.Context, pipeRef, relativePath string) error {
 	if strings.TrimSpace(pipeRef) == "" {
 		return errors.New("staged Snowflake pipe reference is required for auto-ingest refresh")
 	}
-	if _, err := p.db.ExecContext(ctx, "ALTER PIPE "+pipeRef+" REFRESH"); err != nil {
+	if !stagedRelativePathPattern.MatchString(relativePath) || strings.Contains(relativePath, "..") {
+		return errors.New("staged Snowflake pipe refresh path is invalid")
+	}
+	rootPrefix := stagedRetentionRoot + "/"
+	if !strings.HasPrefix(relativePath, rootPrefix) {
+		return errors.New("staged Snowflake pipe refresh path is outside the admitted retention root")
+	}
+	pipeRelativePath := strings.TrimPrefix(relativePath, rootPrefix)
+	prefix := pipeRelativePath
+	if slash := strings.LastIndexByte(pipeRelativePath, '/'); slash >= 0 {
+		prefix = pipeRelativePath[:slash+1]
+	}
+	if _, err := p.db.ExecContext(ctx, "ALTER PIPE "+pipeRef+" REFRESH PREFIX = '"+prefix+"'"); err != nil {
 		return fmt.Errorf("refresh staged Snowflake pipe: %w", err)
 	}
 	return nil

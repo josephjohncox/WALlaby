@@ -14,10 +14,11 @@ import (
 
 // stagedHooks exposes deterministic fault boundaries to same-package protocol tests.
 type stagedHooks struct {
-	AfterPut      func() error
-	AfterCopy     func() error
-	BeforeReceipt func() error
-	AfterReceipt  func() error
+	AfterPut           func() error
+	AfterCopy          func() error
+	BeforeReceipt      func() error
+	AfterReceipt       func() error
+	AfterCleanupRemove func() error
 }
 
 // stagedDriver orchestrates the staged COPY append protocol against a
@@ -44,8 +45,8 @@ func (p managedStagedPlan) loadReceiptKey() stagedReceiptKey {
 }
 
 // apply materializes one committed transaction as an immutable stage object,
-// loads it fail-closed, verifies completion through load history, and records a
-// durable receipt. Every step is idempotent so a replay after any crash window
+// loads it fail-closed, verifies exact landing and target identities, and records
+// a durable receipt. Every step is idempotent so a replay after any crash window
 // converges on exactly one load receipt.
 func (d *stagedDriver) apply(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (evidence connector.DeliveryEvidence, resultErr error) {
 	plan, err := planManagedStagedTransaction(d.cfg, intent, transaction)
@@ -61,32 +62,100 @@ func (d *stagedDriver) apply(ctx context.Context, intent connector.DeliveryInten
 		return connector.DeliveryEvidence{}, err
 	}
 
+	lease, err := d.proto.AcquireRuntimeLease(ctx, d.cfg, stagedLeaseRequestForPlan(intent, d.catalogFingerprint))
+	if err != nil {
+		return connector.DeliveryEvidence{}, err
+	}
+	plan.receipt.provisionEpoch = lease.provisionEpoch
+	defer func() {
+		if releaseErr := d.proto.ReleaseRuntimeLease(context.WithoutCancel(ctx), d.cfg, lease); resultErr == nil && releaseErr != nil {
+			resultErr = fmt.Errorf("%w: release staged Snowflake runtime lease: %w", connector.ErrDeliveryIndeterminate, releaseErr)
+		}
+	}()
+	claim, err := d.proto.AcquireLoadClaim(ctx, d.cfg, lease, stagedLoadClaimForPlan(lease, plan))
+	if err != nil {
+		return connector.DeliveryEvidence{}, err
+	}
+	target, err := d.proto.ObserveTarget(ctx, d.cfg, claim, plan.rowHashes)
+	if err != nil {
+		return connector.DeliveryEvidence{}, err
+	}
+	if target.state == stagedTargetPartial || target.state == stagedTargetDuplicate || target.state == stagedTargetConflict || target.state == stagedTargetUnknown {
+		return connector.DeliveryEvidence{}, fmt.Errorf("%w: staged Snowflake target state=%d: %s", connector.ErrDeliveryConflict, target.state, target.detail)
+	}
+
 	if existing, found, lookupErr := d.proto.LookupReceipt(ctx, d.cfg, plan.loadReceiptKey()); lookupErr != nil {
 		return connector.DeliveryEvidence{}, lookupErr
 	} else if found {
 		if err := validateStagedReceipt(plan.receipt, existing); err != nil {
 			return connector.DeliveryEvidence{}, err
 		}
+		if err := d.proto.ValidateReceiptTargetProof(ctx, d.cfg, existing); err != nil {
+			return connector.DeliveryEvidence{}, err
+		}
+		target, err = d.proto.ObserveTarget(ctx, d.cfg, claim, plan.rowHashes)
+		if err != nil {
+			return connector.DeliveryEvidence{}, err
+		}
+		if target.state != stagedTargetComplete {
+			return connector.DeliveryEvidence{}, fmt.Errorf("%w: staged Snowflake receipt exists without complete current target proof", connector.ErrDeliveryConflict)
+		}
 		return connector.DeliveryEvidence{ExternalID: existing.externalID, ContentHash: existing.contentHash}, nil
 	}
 
-	if err := d.ensureStageObject(ctx, plan); err != nil {
-		return connector.DeliveryEvidence{}, err
+	if target.state != stagedTargetComplete {
+		if err := d.proto.GuardCatalog(ctx, d.cfg, lease); err != nil {
+			return connector.DeliveryEvidence{}, err
+		}
+		if err := d.ensureStageObject(ctx, plan, lease); err != nil {
+			return connector.DeliveryEvidence{}, err
+		}
+		if plan.rowCount > 0 {
+			if err := d.proto.GuardCatalog(ctx, d.cfg, lease); err != nil {
+				return connector.DeliveryEvidence{}, err
+			}
+			if err := d.ensureLoaded(ctx, plan, lease); err != nil {
+				return connector.DeliveryEvidence{}, err
+			}
+			landing, err := d.waitForExactLanding(ctx, claim, plan.rowHashes)
+			if err != nil {
+				return connector.DeliveryEvidence{}, err
+			}
+			if landing.state != stagedTargetComplete {
+				classification := connector.ErrDeliveryIndeterminate
+				if landing.state == stagedTargetPartial || landing.state == stagedTargetDuplicate || landing.state == stagedTargetConflict {
+					classification = connector.ErrDeliveryConflict
+				}
+				return connector.DeliveryEvidence{}, fmt.Errorf("%w: staged Snowflake landing state=%d: %s", classification, landing.state, landing.detail)
+			}
+		}
+		if err := d.proto.GuardCatalog(ctx, d.cfg, lease); err != nil {
+			return connector.DeliveryEvidence{}, err
+		}
+		if err := d.proto.PromoteTarget(ctx, d.cfg, lease, claim, plan.rowHashes); err != nil {
+			return connector.DeliveryEvidence{}, err
+		}
+		target, err = d.proto.ObserveTarget(ctx, d.cfg, claim, plan.rowHashes)
+		if err != nil {
+			return connector.DeliveryEvidence{}, err
+		}
+		if target.state != stagedTargetComplete {
+			return connector.DeliveryEvidence{}, fmt.Errorf("%w: staged Snowflake target promotion did not produce exact proof", connector.ErrDeliveryIndeterminate)
+		}
 	}
-	entry, err := d.ensureLoaded(ctx, plan)
-	if err != nil {
-		return connector.DeliveryEvidence{}, err
-	}
-	plan.receipt.loadRowCount = entry.rowCount
+	plan.receipt.loadRowCount = plan.rowCount
 	plan.receipt.loadStatus = stagedLoadStatusLoaded
 
+	if err := d.proto.GuardCatalog(ctx, d.cfg, lease); err != nil {
+		return connector.DeliveryEvidence{}, err
+	}
 	if hook := d.hooks.BeforeReceipt; hook != nil {
 		if err := hook(); err != nil {
 			return connector.DeliveryEvidence{}, fmt.Errorf("before staged Snowflake receipt: %w", err)
 		}
 	}
 	receiptCtx, endReceipt := telemetry.StartSnowflakeManagedSpan(ctx, "receipt", plan.identity.externalID, intent.LogicalBatchID, 1, 0)
-	insert, insertErr := d.proto.InsertReceipt(receiptCtx, d.cfg, plan.receipt)
+	insert, insertErr := d.proto.InsertLoadReceipt(receiptCtx, d.cfg, lease, claim, plan.receipt)
 	endReceipt(insertErr)
 	if insertErr != nil {
 		return connector.DeliveryEvidence{}, insertErr
@@ -102,6 +171,9 @@ func (d *stagedDriver) apply(ctx context.Context, intent connector.DeliveryInten
 		if err := validateStagedReceipt(plan.receipt, existing); err != nil {
 			return connector.DeliveryEvidence{}, err
 		}
+		if err := d.proto.ValidateReceiptTargetProof(ctx, d.cfg, existing); err != nil {
+			return connector.DeliveryEvidence{}, err
+		}
 		return connector.DeliveryEvidence{ExternalID: existing.externalID, ContentHash: existing.contentHash}, nil
 	}
 	if hook := d.hooks.AfterReceipt; hook != nil {
@@ -115,7 +187,7 @@ func (d *stagedDriver) apply(ctx context.Context, intent connector.DeliveryInten
 // ensureStageObject guarantees the deterministic path holds exactly the planned
 // bytes, reconciling every PUT-uncertainty window and rejecting any wrong-byte
 // collision fail-closed.
-func (d *stagedDriver) ensureStageObject(ctx context.Context, plan managedStagedPlan) (resultErr error) {
+func (d *stagedDriver) ensureStageObject(ctx context.Context, plan managedStagedPlan, lease stagedRuntimeLease) (resultErr error) {
 	ctx, endSpan := telemetry.StartSnowflakeManagedSpan(ctx, "stage_put", plan.identity.externalID, plan.receipt.logicalBatchID, int64(plan.rowCount), int64(len(plan.fileBytes)))
 	defer func() { endSpan(resultErr) }()
 	stageRef := plan.copyPlan.stageRef
@@ -126,6 +198,9 @@ func (d *stagedDriver) ensureStageObject(ctx context.Context, plan managedStaged
 	}
 	if stat.present {
 		return d.verifyStagedBytes(ctx, stat, plan)
+	}
+	if err := d.proto.GuardCatalog(ctx, d.cfg, lease); err != nil {
+		return err
 	}
 	putErr := d.proto.PutObject(ctx, stageRef, path, plan.fileBytes, plan.fileMD5)
 	if putErr != nil {
@@ -206,37 +281,33 @@ func assertStagedBytes(stat stageObjectStat, content []byte, plan managedStagedP
 	return nil
 }
 
-// ensureLoaded runs the fail-closed COPY (or refreshes the auto-ingest pipe) and
-// then proves completion through Snowflake load history. Auto-ingest can never
-// acknowledge before a completed load is verifiable.
-func (d *stagedDriver) ensureLoaded(ctx context.Context, plan managedStagedPlan) (stageLoadEntry, error) {
+// ensureLoaded triggers COPY or a batch-scoped pipe refresh. Exact landing and
+// target observations, not the command response, authorize promotion.
+func (d *stagedDriver) ensureLoaded(ctx context.Context, plan managedStagedPlan, lease stagedRuntimeLease) error {
+	if err := d.proto.GuardCatalog(ctx, d.cfg, lease); err != nil {
+		return err
+	}
 	if d.cfg.autoIngest {
 		pipeRef := managedSnowflakeStagedQualified(d.cfg, d.cfg.pipe)
-		if err := d.proto.RefreshPipe(ctx, pipeRef, plan.identity.relativePath); err != nil {
-			return stageLoadEntry{}, err
-		}
-		return d.verifyLoadHistory(ctx, plan)
+		return d.proto.RefreshPipe(ctx, pipeRef, plan.identity.relativePath)
 	}
 	copyCtx, endCopy := telemetry.StartSnowflakeManagedSpan(ctx, "copy", plan.identity.externalID, plan.receipt.logicalBatchID, int64(plan.rowCount), int64(len(plan.fileBytes)))
 	result, copyErr := d.proto.Copy(copyCtx, plan.copyPlan)
 	endCopy(copyErr)
-	if copyErr == nil && result.present {
-		entry, conclusive, err := interpretStagedCopyResult(result, plan.rowCount)
-		if err != nil {
-			return stageLoadEntry{}, err
-		}
-		if conclusive {
-			if hook := d.hooks.AfterCopy; hook != nil {
-				if hookErr := hook(); hookErr != nil {
-					return stageLoadEntry{}, fmt.Errorf("%w: injected after staged Snowflake COPY: %w", connector.ErrDeliveryIndeterminate, hookErr)
-				}
-			}
-			return entry, nil
+	if result.present {
+		if _, _, err := interpretStagedCopyResult(result, plan.rowCount); err != nil {
+			return err
 		}
 	}
-	// A lost or inconclusive COPY response is reconciled through durable load
-	// history: the COPY may have committed even though the response was lost.
-	return d.verifyLoadHistory(ctx, plan)
+	if hook := d.hooks.AfterCopy; hook != nil {
+		if hookErr := hook(); hookErr != nil {
+			return fmt.Errorf("%w: injected after staged Snowflake COPY: %w", connector.ErrDeliveryIndeterminate, hookErr)
+		}
+	}
+	// COPY errors and inconclusive responses are not proof of absence. The caller
+	// reconciles exact landing identities before retry or promotion.
+	_ = copyErr
+	return nil
 }
 
 func interpretStagedCopyResult(result stageCopyResult, expectedRows int) (stageLoadEntry, bool, error) {
@@ -250,16 +321,41 @@ func interpretStagedCopyResult(result stageCopyResult, expectedRows int) (stageL
 		return stageLoadEntry{}, false, fmt.Errorf("%w: %w: %s", connector.ErrDeliveryConflict, errStagedPartialLoad, result.firstError)
 	default:
 		// An empty or "skipped" status (a re-COPY of an already-loaded file with
-		// FORCE=FALSE) is inconclusive; the durable history is authoritative.
+		// FORCE=FALSE) is inconclusive; exact landing and target proof decide.
 		return stageLoadEntry{}, false, nil
 	}
 }
 
-func (d *stagedDriver) verifyLoadHistory(ctx context.Context, plan managedStagedPlan) (stageLoadEntry, error) {
-	// The synchronous COPY path probes history once: COPY is authoritative and
-	// history is only consulted to reconcile a lost response, so COPY_HISTORY
-	// ingestion latency surfaces as ErrDeliveryIndeterminate and is retried by the
-	// outer coordinator. Only the async auto-ingest path polls within the bound.
+func (d *stagedDriver) waitForExactLanding(ctx context.Context, claim stagedLoadClaim, rowHashes []string) (stagedTargetObservation, error) {
+	attempts := 1
+	if d.cfg.autoIngest {
+		attempts = d.cfg.loadVerifyAttempts
+		if attempts < 1 {
+			attempts = 1
+		}
+	}
+	var observation stagedTargetObservation
+	for attempt := 0; attempt < attempts; attempt++ {
+		var err error
+		observation, err = d.proto.ObserveLanding(ctx, d.cfg, claim, rowHashes)
+		if err != nil {
+			return stagedTargetObservation{}, err
+		}
+		if observation.state == stagedTargetComplete || observation.state == stagedTargetPartial || observation.state == stagedTargetDuplicate || observation.state == stagedTargetConflict {
+			return observation, nil
+		}
+		if attempt+1 < attempts {
+			if err := d.sleepFor(ctx, d.cfg.loadVerifyInterval); err != nil {
+				return stagedTargetObservation{}, err
+			}
+		}
+	}
+	return observation, nil
+}
+
+func (d *stagedDriver) VerifyLoadHistoryDiagnostic(ctx context.Context, plan managedStagedPlan) (stageLoadEntry, error) {
+	// This diagnostic helper is retained for commercial troubleshooting only.
+	// Delivery and receipt decisions do not call it or trust COPY_HISTORY.
 	attempts := 1
 	interval := time.Duration(0)
 	if d.cfg.autoIngest {
@@ -309,7 +405,7 @@ func (d *stagedDriver) verifyLoadHistory(ctx context.Context, plan managedStaged
 			}
 		}
 	}
-	lastErr = fmt.Errorf("%w: %w", connector.ErrDeliveryIndeterminate, errStagedLoadNotVisible)
+	lastErr = fmt.Errorf("%w: %w", connector.ErrDeliveryIndeterminate, ErrStagedLoadNotVisibleDiagnostic)
 	endVerify(lastErr)
 	return stageLoadEntry{}, lastErr
 }
@@ -332,9 +428,9 @@ func (d *stagedDriver) sleepFor(ctx context.Context, interval time.Duration) err
 }
 
 // reconcile treats only one fully matching durable load receipt as applied. It
-// is read-only: an absent receipt is NotApplied so a replay can converge, even
-// when load history already shows the file, because the durable receipt plus the
-// history together are the completion proof.
+// is read-only: an absent receipt is NotApplied so a replay can converge. The
+// durable receipt plus the current landing/target manifest and row identities
+// are the completion proof.
 func (d *stagedDriver) reconcile(ctx context.Context, intent connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
 	if err := intent.Validate(); err != nil {
 		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
@@ -362,7 +458,7 @@ func (d *stagedDriver) reconcile(ctx context.Context, intent connector.DeliveryI
 		sourceLineageID: intent.SourceLineageID, destinationRevisionID: intent.DestinationRevisionID,
 		logicalBatchID: intent.LogicalBatchID, positionID: intent.PositionID, contentHash: intent.ContentHash,
 		schemaContractHash: d.cfg.schemaContractHash, catalogFingerprint: d.catalogFingerprint,
-		manifestHash: identity.manifestHash, externalID: identity.externalID, stageName: d.cfg.stage, stagePath: identity.relativePath,
+		manifestHash: identity.manifestHash, planHash: planHash, externalID: identity.externalID, stageName: d.cfg.stage, stagePath: identity.relativePath,
 	}
 	reconcileCtx, endReconcile := telemetry.StartSnowflakeManagedSpan(ctx, "reconcile", identity.externalID, intent.LogicalBatchID, 0, 0)
 	receipt, found, err := d.proto.LookupReceipt(reconcileCtx, d.cfg, stagedReceiptKey{
@@ -382,6 +478,10 @@ func (d *stagedDriver) reconcile(ctx context.Context, intent connector.DeliveryI
 		endReconcile(err)
 		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
 	}
+	if err := d.proto.ValidateReceiptTargetProof(reconcileCtx, d.cfg, receipt); err != nil {
+		endReconcile(err)
+		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
+	}
 	endReconcile(nil)
 	return connector.DeliveryApplied, connector.DeliveryEvidence{ExternalID: receipt.externalID, ContentHash: receipt.contentHash}, nil
 }
@@ -390,13 +490,27 @@ func (d *stagedDriver) reconcile(ctx context.Context, intent connector.DeliveryI
 // incarnation. It removes only objects whose fully loaded, durably recorded
 // batch is older than the retention window and not yet released, then writes an
 // idempotent release receipt so the removal is convergent.
-func (d *stagedDriver) cleanup(ctx context.Context, flowIncarnationID string) (released int, resultErr error) {
-	ctx, endSpan := telemetry.StartSnowflakeManagedSpan(ctx, "cleanup", d.cfg.stage, flowIncarnationID, 0, 0)
+func (d *stagedDriver) cleanup(ctx context.Context, cleanup ManagedStagedCleanupAuthority) (released int, resultErr error) {
+	ctx, endSpan := telemetry.StartSnowflakeManagedSpan(ctx, "cleanup", d.cfg.stage, cleanup.FlowIncarnationID, 0, 0)
 	defer func() { endSpan(resultErr) }()
-	if strings.TrimSpace(flowIncarnationID) == "" {
-		return 0, errors.New("staged Snowflake cleanup requires a flow incarnation")
+	if err := cleanup.validate(); err != nil {
+		return 0, err
 	}
-	candidates, err := d.proto.ListReleasableReceipts(ctx, d.cfg, flowIncarnationID, d.cfg.cleanupRetention, d.cfg.cleanupMaxObjects)
+	if cleanup.DestinationRevisionID != d.cfg.destinationRevision {
+		return 0, fmt.Errorf("%w: staged Snowflake cleanup destination revision differs", connector.ErrDeliveryConflict)
+	}
+	intent := connector.DeliveryIntent{FlowID: d.cfg.flowID, FlowIncarnationID: cleanup.FlowIncarnationID, DestinationRevisionID: cleanup.DestinationRevisionID, LogicalBatchID: "cleanup-authority", Generation: cleanup.Generation, AcquisitionID: cleanup.AcquisitionID, LeaseEpoch: cleanup.LeaseEpoch}
+	leaseRequest := stagedLeaseRequestForPlan(intent, d.catalogFingerprint)
+	lease, err := d.proto.AcquireRuntimeLease(ctx, d.cfg, leaseRequest)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if releaseErr := d.proto.ReleaseRuntimeLease(context.WithoutCancel(ctx), d.cfg, lease); resultErr == nil && releaseErr != nil {
+			resultErr = fmt.Errorf("%w: release staged Snowflake cleanup lease: %w", connector.ErrDeliveryIndeterminate, releaseErr)
+		}
+	}()
+	candidates, err := d.proto.ListReleasableReceipts(ctx, d.cfg, cleanup.FlowIncarnationID, d.cfg.cleanupRetention, d.cfg.cleanupMaxObjects)
 	if err != nil {
 		return 0, err
 	}
@@ -405,12 +519,54 @@ func (d *stagedDriver) cleanup(ctx context.Context, flowIncarnationID string) (r
 		if receipt.kind != stagedReceiptKindLoad || receipt.loadStatus != stagedLoadStatusLoaded {
 			continue
 		}
-		if err := d.proto.RemoveObject(ctx, stageRef, receipt.stagePath); err != nil {
+		// A no-op owner epoch bump makes an old receipt ineligible for physical
+		// deletion. Skip it without blocking newer candidates in this sweep.
+		if receipt.provisionEpoch != lease.provisionEpoch || receipt.catalogFingerprint != lease.catalogFingerprint {
+			continue
+		}
+		replayIntent := connector.DeliveryIntent{FlowID: receipt.flowID, FlowIncarnationID: receipt.flowIncarnationID, SourceLineageID: receipt.sourceLineageID, DestinationRevisionID: receipt.destinationRevisionID, LogicalBatchID: receipt.logicalBatchID, PositionID: receipt.positionID, ContentHash: receipt.contentHash, Generation: cleanup.Generation, AcquisitionID: cleanup.AcquisitionID, LeaseEpoch: cleanup.LeaseEpoch}
+		identity, err := newManagedStagedIdentity(d.cfg, replayIntent, receipt.planHash, receipt.contentHash)
+		if err != nil {
+			return released, err
+		}
+		if receipt.stageName != d.cfg.stage || receipt.stagePath != identity.relativePath || receipt.manifestHash != identity.manifestHash || receipt.externalID != identity.externalID {
+			return released, fmt.Errorf("%w: staged Snowflake cleanup receipt path or immutable identity differs", connector.ErrDeliveryConflict)
+		}
+		claim := stagedLoadClaim{leaseID: lease.leaseID, claimID: receipt.externalID, logicalBatchID: receipt.logicalBatchID, stagePath: identity.relativePath, manifestHash: receipt.manifestHash, contentHash: receipt.contentHash, fileContentHash: receipt.fileContentHash, planHash: receipt.planHash, expectedRows: receipt.recordCount, provisionEpoch: lease.provisionEpoch, catalogFingerprint: lease.catalogFingerprint, destinationRevision: lease.destinationRevision}
+		claim, err = d.proto.AcquireLoadClaim(ctx, d.cfg, lease, claim)
+		if err != nil {
+			return released, err
+		}
+		if err := d.proto.GuardCatalog(ctx, d.cfg, lease); err != nil {
+			return released, err
+		}
+		if err := d.proto.ValidateReceiptTargetProof(ctx, d.cfg, receipt); err != nil {
+			return released, fmt.Errorf("revalidate staged Snowflake cleanup target proof: %w", err)
+		}
+		if err := d.proto.GuardCatalog(ctx, d.cfg, lease); err != nil {
+			return released, err
+		}
+		if err := d.proto.RemoveObject(ctx, stageRef, identity.relativePath); err != nil {
+			return released, err
+		}
+		if hook := d.hooks.AfterCleanupRemove; hook != nil {
+			if err := hook(); err != nil {
+				return released, fmt.Errorf("%w: injected after staged Snowflake cleanup remove: %w", connector.ErrDeliveryIndeterminate, err)
+			}
+		}
+		if err := d.proto.GuardCatalog(ctx, d.cfg, lease); err != nil {
 			return released, err
 		}
 		release := stagedReleaseReceipt(receipt)
-		if _, err := d.proto.InsertReceipt(ctx, d.cfg, release); err != nil {
+		insert, err := d.proto.InsertReleaseReceipt(ctx, d.cfg, lease, claim, release)
+		if err != nil {
 			return released, err
+		}
+		if !insert.inserted {
+			existing, found, err := d.proto.LookupReceipt(ctx, d.cfg, stagedReceiptKey{flowIncarnationID: release.flowIncarnationID, destinationRevisionID: release.destinationRevisionID, logicalBatchID: release.logicalBatchID, externalID: release.externalID, kind: stagedReceiptKindRelease})
+			if err != nil || !found || existing.stagePath != release.stagePath || existing.manifestHash != release.manifestHash {
+				return released, fmt.Errorf("%w: staged Snowflake cleanup release receipt is missing or divergent", connector.ErrDeliveryIndeterminate)
+			}
 		}
 		released++
 	}
@@ -429,7 +585,7 @@ func validateStagedReceipt(expected, actual managedStagedReceipt) error {
 	if err := validateStagedReceiptIdentity(expected, actual); err != nil {
 		return err
 	}
-	if expected.fileContentHash != actual.fileContentHash || expected.fileMD5 != actual.fileMD5 {
+	if expected.planHash != actual.planHash || expected.fileContentHash != actual.fileContentHash || expected.fileMD5 != actual.fileMD5 {
 		return fmt.Errorf("%w: staged Snowflake receipt file identity differs", connector.ErrDeliveryConflict)
 	}
 	if expected.transactionID != actual.transactionID || expected.fragmentCount != actual.fragmentCount ||
@@ -448,6 +604,7 @@ func validateStagedReceiptIdentity(expected, actual managedStagedReceipt) error 
 		expected.destinationRevisionID != actual.destinationRevisionID || expected.logicalBatchID != actual.logicalBatchID ||
 		expected.positionID != actual.positionID || expected.contentHash != actual.contentHash ||
 		expected.schemaContractHash != actual.schemaContractHash || expected.catalogFingerprint != actual.catalogFingerprint ||
+		expected.provisionEpoch > 0 && expected.provisionEpoch != actual.provisionEpoch ||
 		expected.manifestHash != actual.manifestHash || expected.externalID != actual.externalID ||
 		expected.stageName != actual.stageName || expected.stagePath != actual.stagePath {
 		return fmt.Errorf("%w: staged Snowflake receipt identity or hash differs", connector.ErrDeliveryConflict)
