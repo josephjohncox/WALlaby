@@ -726,19 +726,31 @@ func (d *Destination) reconcileManagedFragment(ctx context.Context, fragment man
 	for i, row := range fragment.Rows {
 		expectedHashes[i] = row.RecordHash
 	}
-	query := "SELECT any(content_hash),groupArray(record_hash ORDER BY fragment_ordinal,record_ordinal),count() FROM " + quoteQualified(d.managedConfig.database+"."+d.managedConfig.changelogTable) + " FINAL WHERE destination_revision_id=? AND logical_batch_id=? AND insert_query_id=? HAVING count()>0"
+	query := "SELECT content_hash,record_hash FROM " + quoteQualified(d.managedConfig.database+"."+d.managedConfig.changelogTable) + " FINAL WHERE destination_revision_id=? AND logical_batch_id=? AND insert_query_id=? ORDER BY fragment_ordinal,record_ordinal"
 	read := func(conn chdriver.Conn) (connector.DeliveryDisposition, error) {
-		var contentHash string
-		var hashes []string
-		var count uint64
-		err := conn.QueryRow(ctx, query, fragment.Rows[0].DestinationRevisionID, fragment.Rows[0].LogicalBatchID, fragment.QueryID).Scan(&contentHash, &hashes, &count)
-		if errors.Is(err, sql.ErrNoRows) {
-			return connector.DeliveryNotApplied, nil
-		}
+		rows, err := conn.Query(ctx, query, fragment.Rows[0].DestinationRevisionID, fragment.Rows[0].LogicalBatchID, fragment.QueryID)
 		if err != nil {
 			return connector.DeliveryIndeterminate, err
 		}
-		if contentHash != fragment.Rows[0].ContentHash || count != uint64(len(expectedHashes)) || len(hashes) != len(expectedHashes) {
+		defer func() { _ = rows.Close() }()
+		hashes := make([]string, 0, len(expectedHashes))
+		for rows.Next() {
+			var contentHash, recordHash string
+			if err := rows.Scan(&contentHash, &recordHash); err != nil {
+				return connector.DeliveryIndeterminate, err
+			}
+			if contentHash != fragment.Rows[0].ContentHash {
+				return connector.DeliveryIndeterminate, fmt.Errorf("%w: existing fragment identity differs", connector.ErrDeliveryConflict)
+			}
+			hashes = append(hashes, recordHash)
+		}
+		if err := rows.Err(); err != nil {
+			return connector.DeliveryIndeterminate, err
+		}
+		if len(hashes) == 0 {
+			return connector.DeliveryNotApplied, nil
+		}
+		if len(hashes) != len(expectedHashes) {
 			return connector.DeliveryIndeterminate, fmt.Errorf("%w: existing fragment identity differs", connector.ErrDeliveryConflict)
 		}
 		for i := range hashes {
