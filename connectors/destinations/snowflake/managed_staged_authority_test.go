@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
@@ -58,6 +59,46 @@ func TestStagedAuthorityFencesABAAndStaleOwners(t *testing.T) {
 	}
 	if err := proto.PromoteTarget(context.Background(), cfg, lease, claim, plan.rowHashes); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("stale owner promotion error=%v, want indeterminate", err)
+	}
+}
+
+func TestStagedAuthorityClockedTakeoverFencesStaleLeaseAndClaim(t *testing.T) {
+	t.Parallel()
+	cfg, intent, transaction := stagedFixture(t)
+	plan := stagedPlanFor(t, cfg, intent, transaction)
+	plan.catalogFingerprint = "catalog-fingerprint"
+	proto := newFakeStageProtocol()
+	firstRequest := stagedLeaseRequestForPlan(intent, plan.catalogFingerprint)
+	first, err := proto.AcquireRuntimeLease(context.Background(), cfg, firstRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstClaim, err := proto.AcquireLoadClaim(context.Background(), cfg, first, stagedLoadClaimForPlan(first, plan))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent.AcquisitionID = "33333333-3333-3333-3333-333333333333"
+	intent.LeaseEpoch++
+	secondRequest := stagedLeaseRequestForPlan(intent, plan.catalogFingerprint)
+	if _, err := proto.AcquireRuntimeLease(context.Background(), cfg, secondRequest); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("live lease takeover error=%v, want indeterminate", err)
+	}
+	proto.mu.Lock()
+	proto.now = proto.now.Add(stagedRuntimeLeaseMinimum + time.Second)
+	proto.mu.Unlock()
+	second, err := proto.AcquireRuntimeLease(context.Background(), cfg, secondRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondClaim := stagedLoadClaimForPlan(second, plan)
+	if _, err := proto.AcquireLoadClaim(context.Background(), cfg, second, secondClaim); err != nil {
+		t.Fatal(err)
+	}
+	if err := proto.GuardCatalog(context.Background(), cfg, first); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("stale lease guard error=%v, want indeterminate", err)
+	}
+	if _, err := proto.InsertLoadReceipt(context.Background(), cfg, first, firstClaim, plan.receipt); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("stale claim receipt error=%v, want indeterminate", err)
 	}
 }
 

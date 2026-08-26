@@ -307,10 +307,11 @@ func TestSnowflakeStagedManagedProfileCleanup(t *testing.T) {
 	}
 	// The default retention window is long, so nothing is released yet; cleanup
 	// stays bounded and idempotent regardless.
-	if _, err := fixture.destination.CleanupManagedStaged(ctx, intent.FlowIncarnationID); err != nil {
+	cleanup := snowflake.ManagedStagedCleanupAuthority{FlowIncarnationID: intent.FlowIncarnationID, Generation: intent.Generation, AcquisitionID: intent.AcquisitionID, LeaseEpoch: intent.LeaseEpoch, DestinationRevisionID: intent.DestinationRevisionID}
+	if _, err := fixture.destination.CleanupManagedStaged(ctx, cleanup); err != nil {
 		t.Fatalf("staged cleanup: %v", err)
 	}
-	if _, err := fixture.destination.CleanupManagedStaged(ctx, intent.FlowIncarnationID); err != nil {
+	if _, err := fixture.destination.CleanupManagedStaged(ctx, cleanup); err != nil {
 		t.Fatalf("idempotent staged cleanup: %v", err)
 	}
 }

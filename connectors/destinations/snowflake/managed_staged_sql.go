@@ -13,7 +13,7 @@ func stagedReceiptColumns() []string {
 	return []string{
 		"RECEIPT_KIND", "PROFILE_VERSION", "FLOW_ID", "FLOW_INCARNATION_ID", "SOURCE_LINEAGE_ID",
 		"DESTINATION_REVISION_ID", "LOGICAL_BATCH_ID", "POSITION_ID", "CONTENT_HASH", "SCHEMA_CONTRACT_HASH",
-		"CATALOG_FINGERPRINT", "MANIFEST_HASH", "EXTERNAL_ID", "GENERATION", "ACQUISITION_ID", "LEASE_EPOCH",
+		"CATALOG_FINGERPRINT", "MANIFEST_HASH", "PLAN_HASH", "EXTERNAL_ID", "GENERATION", "ACQUISITION_ID", "LEASE_EPOCH",
 		"TRANSACTION_ID", "FRAGMENT_COUNT", "RECORD_COUNT", "STAGE_NAME", "STAGE_PATH", "FILE_CONTENT_HASH",
 		"FILE_MD5", "LOAD_ROW_COUNT", "LOAD_STATUS",
 	}
@@ -50,7 +50,7 @@ func stagedReceiptValues(receipt managedStagedReceipt) []any {
 	return []any{
 		receipt.kind, receipt.profileVersion, receipt.flowID, receipt.flowIncarnationID, receipt.sourceLineageID,
 		receipt.destinationRevisionID, receipt.logicalBatchID, receipt.positionID, receipt.contentHash, receipt.schemaContractHash,
-		receipt.catalogFingerprint, receipt.manifestHash, receipt.externalID, receipt.generation, receipt.acquisitionID, receipt.leaseEpoch,
+		receipt.catalogFingerprint, receipt.manifestHash, receipt.planHash, receipt.externalID, receipt.generation, receipt.acquisitionID, receipt.leaseEpoch,
 		int64(receipt.transactionID), receipt.fragmentCount, receipt.recordCount, receipt.stageName, receipt.stagePath, receipt.fileContentHash,
 		receipt.fileMD5, receipt.loadRowCount, receipt.loadStatus,
 	}
@@ -66,7 +66,7 @@ func scanStagedReceipt(rows stagedReceiptScanner) (managedStagedReceipt, error) 
 	if err := rows.Scan(
 		&receipt.kind, &receipt.profileVersion, &receipt.flowID, &receipt.flowIncarnationID, &receipt.sourceLineageID,
 		&receipt.destinationRevisionID, &receipt.logicalBatchID, &receipt.positionID, &receipt.contentHash, &receipt.schemaContractHash,
-		&receipt.catalogFingerprint, &receipt.manifestHash, &receipt.externalID, &receipt.generation, &receipt.acquisitionID, &receipt.leaseEpoch,
+		&receipt.catalogFingerprint, &receipt.manifestHash, &receipt.planHash, &receipt.externalID, &receipt.generation, &receipt.acquisitionID, &receipt.leaseEpoch,
 		&transactionID, &receipt.fragmentCount, &receipt.recordCount, &receipt.stageName, &receipt.stagePath, &receipt.fileContentHash,
 		&receipt.fileMD5, &receipt.loadRowCount, &receipt.loadStatus,
 	); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -562,6 +563,23 @@ func TestStagedDriverAutoIngestSpaceFormPartialFailsClosed(t *testing.T) {
 	}
 }
 
+func TestStagedDriverAutoIngestPollsDelayedLandingProof(t *testing.T) {
+	t.Parallel()
+	cfg, intent, transaction := stagedFixture(t)
+	cfg.autoIngest = true
+	cfg.pipe = "WALLABY_PIPE"
+	cfg.loadVerifyAttempts = 4
+	proto := newFakeStageProtocol()
+	proto.landingDelayCalls = 3
+	driver := newStagedTestDriver(cfg, proto)
+	evidence, err := driver.apply(context.Background(), intent, transaction)
+	assertStagedApplied(t, proto, intent, evidence, err)
+	plan := stagedPlanFor(t, cfg, intent, transaction)
+	if got := proto.landingObserves[plan.identity.relativePath]; got != 3 {
+		t.Fatalf("landing observations=%d, want 3", got)
+	}
+}
+
 func TestStagedDriverAutoIngestSpaceFormLoadedAcks(t *testing.T) {
 	t.Parallel()
 	cfg, intent, transaction := stagedFixture(t)
@@ -588,7 +606,8 @@ func TestStagedDriverCleanupIsBoundedIdempotentAndSafe(t *testing.T) {
 	orphanStage := managedSnowflakeStagedQualified(cfg, cfg.stage)
 	proto.stageRaw(orphanStage, plan.identity.incarnationRoot+"/orphan.ndjson", []byte("orphan\n"))
 
-	released, err := driver.cleanup(context.Background(), intent.FlowIncarnationID)
+	cleanup := ManagedStagedCleanupAuthority{FlowIncarnationID: intent.FlowIncarnationID, Generation: intent.Generation, AcquisitionID: intent.AcquisitionID, LeaseEpoch: intent.LeaseEpoch, DestinationRevisionID: intent.DestinationRevisionID}
+	released, err := driver.cleanup(context.Background(), cleanup)
 	if err != nil || released != 1 {
 		t.Fatalf("first cleanup released=%d err=%v, want 1", released, err)
 	}
@@ -598,8 +617,73 @@ func TestStagedDriverCleanupIsBoundedIdempotentAndSafe(t *testing.T) {
 	if _, present := proto.objects[fakeStageKey(orphanStage, plan.identity.incarnationRoot+"/orphan.ndjson")]; !present {
 		t.Fatal("cleanup must never remove an object without a durable load receipt")
 	}
-	released, err = driver.cleanup(context.Background(), intent.FlowIncarnationID)
+	released, err = driver.cleanup(context.Background(), cleanup)
 	if err != nil || released != 0 {
 		t.Fatalf("idempotent cleanup released=%d err=%v, want 0", released, err)
+	}
+}
+
+func TestStagedDriverCleanupRejectsMaliciousPersistedPath(t *testing.T) {
+	t.Parallel()
+	cfg, intent, transaction := stagedFixture(t)
+	proto := newFakeStageProtocol()
+	driver := newStagedTestDriver(cfg, proto)
+	if _, err := driver.apply(context.Background(), intent, transaction); err != nil {
+		t.Fatal(err)
+	}
+	proto.mu.Lock()
+	for key, receipt := range proto.receipts {
+		if receipt.kind == stagedReceiptKindLoad {
+			receipt.stagePath = "../../other-flow/object.ndjson"
+			proto.receipts[key] = receipt
+		}
+	}
+	proto.mu.Unlock()
+	cleanup := ManagedStagedCleanupAuthority{FlowIncarnationID: intent.FlowIncarnationID, Generation: intent.Generation, AcquisitionID: intent.AcquisitionID, LeaseEpoch: intent.LeaseEpoch, DestinationRevisionID: intent.DestinationRevisionID}
+	if _, err := driver.cleanup(context.Background(), cleanup); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("malicious cleanup path error=%v, want conflict", err)
+	}
+	if proto.removeCalls != 0 {
+		t.Fatalf("malicious path caused %d removals", proto.removeCalls)
+	}
+}
+
+func TestStagedDriverCleanupCrashAfterRemoveResumesWithGuardedReceipt(t *testing.T) {
+	t.Parallel()
+	cfg, intent, transaction := stagedFixture(t)
+	proto := newFakeStageProtocol()
+	base := newStagedTestDriver(cfg, proto)
+	if _, err := base.apply(context.Background(), intent, transaction); err != nil {
+		t.Fatal(err)
+	}
+	crash := true
+	driver := newStagedDriver(proto, cfg, "catalog-fingerprint", stagedHooks{AfterCleanupRemove: func() error {
+		if crash {
+			crash = false
+			return errors.New("crash after remove")
+		}
+		return nil
+	}})
+	driver.sleep = func(context.Context, time.Duration) error { return nil }
+	cleanup := ManagedStagedCleanupAuthority{FlowIncarnationID: intent.FlowIncarnationID, Generation: intent.Generation, AcquisitionID: intent.AcquisitionID, LeaseEpoch: intent.LeaseEpoch, DestinationRevisionID: intent.DestinationRevisionID}
+	if _, err := driver.cleanup(context.Background(), cleanup); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
+		t.Fatalf("cleanup crash error=%v, want indeterminate", err)
+	}
+	if released, err := driver.cleanup(context.Background(), cleanup); err != nil || released != 1 {
+		t.Fatalf("cleanup resume released=%d err=%v", released, err)
+	}
+	if proto.removeCalls != 2 {
+		t.Fatalf("idempotent remove calls=%d, want 2", proto.removeCalls)
+	}
+}
+
+func TestStagedDriverCleanupRejectsStaleDestinationAuthority(t *testing.T) {
+	t.Parallel()
+	cfg, intent, _ := stagedFixture(t)
+	proto := newFakeStageProtocol()
+	driver := newStagedTestDriver(cfg, proto)
+	cleanup := ManagedStagedCleanupAuthority{FlowIncarnationID: intent.FlowIncarnationID, Generation: intent.Generation, AcquisitionID: intent.AcquisitionID, LeaseEpoch: intent.LeaseEpoch, DestinationRevisionID: "other-revision"}
+	if _, err := driver.cleanup(context.Background(), cleanup); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("stale cleanup authority error=%v, want conflict", err)
 	}
 }

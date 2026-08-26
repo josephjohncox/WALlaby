@@ -41,6 +41,7 @@ type managedStagedReceipt struct {
 	schemaContractHash    string
 	catalogFingerprint    string
 	manifestHash          string
+	planHash              string
 	externalID            string
 	generation            int64
 	acquisitionID         string
@@ -178,7 +179,7 @@ func planManagedStagedTransaction(cfg stagedConfig, intent connector.DeliveryInt
 		kind: stagedReceiptKindLoad, profileVersion: cfg.profile, flowID: intent.FlowID, flowIncarnationID: intent.FlowIncarnationID,
 		sourceLineageID: intent.SourceLineageID, destinationRevisionID: intent.DestinationRevisionID,
 		logicalBatchID: intent.LogicalBatchID, positionID: intent.PositionID, contentHash: intent.ContentHash,
-		schemaContractHash: cfg.schemaContractHash, manifestHash: identity.manifestHash, externalID: identity.externalID,
+		schemaContractHash: cfg.schemaContractHash, manifestHash: identity.manifestHash, planHash: planHash, externalID: identity.externalID,
 		generation: intent.Generation, acquisitionID: intent.AcquisitionID, leaseEpoch: intent.LeaseEpoch,
 		transactionID: transaction.TransactionID, fragmentCount: len(transaction.Fragments), recordCount: len(rows),
 		stageName: cfg.stage, stagePath: identity.relativePath, fileContentHash: fileContentHash, fileMD5: fileMD5,

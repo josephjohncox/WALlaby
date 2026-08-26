@@ -173,6 +173,7 @@ func newAdminCommand() *cobra.Command {
 	addLeaf(flowCommand, "validate", "validate flow definition", addFlowValidateFlags, flowValidate)
 	addFlowMappingsCommand(flowCommand)
 	command.AddCommand(flowCommand)
+	addSnowflakeStagedProvisionCommand(command)
 
 	command.InitDefaultCompletionCmd()
 

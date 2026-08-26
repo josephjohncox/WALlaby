@@ -220,6 +220,7 @@ func TestValidateManagedStagedCatalogAutoIngestRequiresPipe(t *testing.T) {
 		t.Fatal("auto-ingest catalog without a pipe was accepted")
 	}
 	catalog.pipe = validStagedAutoIngestPipe(t, cfg)
+	catalog.unexpectedPipeCount = 1
 	if err := validateManagedStagedCatalog(cfg, catalog); err != nil {
 		t.Fatalf("valid auto-ingest catalog rejected: %v", err)
 	}
@@ -228,7 +229,7 @@ func TestValidateManagedStagedCatalogAutoIngestRequiresPipe(t *testing.T) {
 // stagedInlinePipeDefinition renders a pipe DEFINITION that inlines exactly the
 // JSON parsing options the synchronous COPY inlines, which is what admission
 // requires so an ALTER FILE FORMAT cannot change auto-ingest parsing.
-func stagedInlinePipeDefinition(t testing.TB) string {
+func stagedInlinePipeDefinition(t testing.TB, cfg stagedConfig) string {
 	t.Helper()
 	options, err := stagedInlineJSONFormatOptions()
 	if err != nil {
@@ -243,7 +244,7 @@ func stagedInlinePipeDefinition(t testing.TB) string {
 	for _, name := range names {
 		rendered = append(rendered, name+" = "+options[name])
 	}
-	return "COPY INTO T FROM @S FILE_FORMAT = (" + strings.Join(rendered, " ") +
+	return "COPY INTO " + managedSnowflakeStagedQualifiedTable(cfg, cfg.landingTable) + " FROM @" + managedSnowflakeStagedQualified(cfg, cfg.stage) + "/wallaby_staged_append_v1/ FILE_FORMAT = (" + strings.Join(rendered, " ") +
 		") MATCH_BY_COLUMN_NAME = CASE_SENSITIVE ON_ERROR = ABORT_STATEMENT FORCE = FALSE"
 }
 
@@ -251,7 +252,7 @@ func validStagedAutoIngestPipe(t testing.TB, cfg stagedConfig) managedPipeSnapsh
 	t.Helper()
 	return managedPipeSnapshot{
 		present: true, autoIngest: true, ownerRole: cfg.ownerRole, createdOn: cfg.pipeCreatedOn,
-		definition: stagedInlinePipeDefinition(t),
+		definition: stagedInlinePipeDefinition(t, cfg),
 		onError:    "ABORT_STATEMENT", force: "FALSE", matchByColumnName: "CASE_SENSITIVE",
 		comment: managedStagedOwnershipComment(cfg, "pipe"),
 		grants:  map[string][]string{cfg.executionRole: {"MONITOR", "OPERATE"}, cfg.ownerRole: {"OWNERSHIP"}},
@@ -282,7 +283,7 @@ func TestValidateManagedStagedPipeRejectsUnsafeCopyOptions(t *testing.T) {
 		},
 		"format name hidden in comment": func(p *managedPipeSnapshot) {
 			p.definition = "COPY INTO T FROM @S FILE_FORMAT = (FORMAT_NAME = DB.PUBLIC.FF) /* " +
-				stagedInlinePipeDefinition(t) + " */"
+				stagedInlinePipeDefinition(t, cfg) + " */"
 		},
 	}
 	for name, mutate := range cases {

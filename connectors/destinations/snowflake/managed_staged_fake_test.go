@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -41,8 +42,10 @@ type fakeStageProtocol struct {
 	landing            map[string]map[string]int
 	target             map[string]map[string]int
 	manifests          map[string]stagedLoadClaim
+	landingObserves    map[string]int
 	provisionEpoch     int64
 	catalogFingerprint string
+	now                time.Time
 	removed            []string
 
 	// Fault knobs consumed once per apply attempt.
@@ -53,6 +56,7 @@ type fakeStageProtocol struct {
 	insertCommitsThenDuplicate bool  // InsertReceipt commits, then reports a duplicate (concurrent owner).
 	forcePartialLoad           bool  // COPY/history reports a partial load.
 	autoIngestDelayCalls       int   // Load history becomes visible only after this many LoadHistory calls.
+	landingDelayCalls          int   // Auto-ingest landing rows become visible only after this many observations.
 	historyEmitsSpaceStatus    bool  // LoadHistory reports Snowflake COPY_HISTORY space-form statuses (e.g. "Partially loaded").
 	getHardFail                error
 	getCorrupt                 bool
@@ -71,7 +75,8 @@ func newFakeStageProtocol() *fakeStageProtocol {
 		receipts: make(map[string]managedStagedReceipt),
 		leases:   make(map[string]stagedRuntimeLease), claims: make(map[string]stagedLoadClaim),
 		landing: make(map[string]map[string]int), target: make(map[string]map[string]int),
-		manifests: make(map[string]stagedLoadClaim), provisionEpoch: 1,
+		manifests: make(map[string]stagedLoadClaim), landingObserves: make(map[string]int), provisionEpoch: 1,
+		now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 }
 
@@ -424,6 +429,8 @@ func stagedTestIntent(t *testing.T, cfg stagedConfig, transaction connector.Sour
 func stagedClaimsSameIdentity(left, right stagedLoadClaim) bool {
 	left.leaseID = ""
 	right.leaseID = ""
+	left.expiresAt = time.Time{}
+	right.expiresAt = time.Time{}
 	return left == right
 }
 
@@ -436,8 +443,8 @@ func (f *fakeStageProtocol) AcquireRuntimeLease(_ context.Context, _ stagedConfi
 	if f.catalogFingerprint != request.catalogFingerprint {
 		return stagedRuntimeLease{}, connector.ErrDeliveryConflict
 	}
-	lease := stagedRuntimeLease{stagedLeaseRequest: request, provisionEpoch: f.provisionEpoch}
-	if existing, ok := f.leases[request.leaseID]; ok && existing.ownerID != request.ownerID {
+	lease := stagedRuntimeLease{stagedLeaseRequest: request, provisionEpoch: f.provisionEpoch, expiresAt: f.now.Add(stagedRuntimeLeaseMinimum)}
+	if existing, ok := f.leases[request.leaseID]; ok && existing.ownerID != request.ownerID && existing.expiresAt.After(f.now) {
 		return stagedRuntimeLease{}, connector.ErrDeliveryIndeterminate
 	}
 	f.leases[request.leaseID] = lease
@@ -448,8 +455,20 @@ func (f *fakeStageProtocol) RevalidateRuntimeLease(_ context.Context, _ stagedCo
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	current, ok := f.leases[lease.leaseID]
-	if !ok || current.ownerID != lease.ownerID || current.provisionEpoch != lease.provisionEpoch || current.provisionEpoch != f.provisionEpoch || f.catalogFingerprint != lease.catalogFingerprint {
+	if !ok || current.ownerID != lease.ownerID || !current.expiresAt.After(f.now) || current.provisionEpoch != lease.provisionEpoch || current.provisionEpoch != f.provisionEpoch || f.catalogFingerprint != lease.catalogFingerprint {
 		return connector.ErrDeliveryIndeterminate
+	}
+	current.expiresAt = f.now.Add(stagedRuntimeLeaseMinimum)
+	f.leases[lease.leaseID] = current
+	return nil
+}
+
+func (f *fakeStageProtocol) GuardCatalog(_ context.Context, _ stagedConfig, lease stagedRuntimeLease) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	current, ok := f.leases[lease.leaseID]
+	if !ok || current.ownerID != lease.ownerID || !current.expiresAt.After(f.now) || current.provisionEpoch != f.provisionEpoch || current.catalogFingerprint != f.catalogFingerprint {
+		return fmt.Errorf("%w: fake staged catalog guard changed", connector.ErrDeliveryIndeterminate)
 	}
 	return nil
 }
@@ -470,11 +489,14 @@ func (f *fakeStageProtocol) AcquireLoadClaim(_ context.Context, _ stagedConfig, 
 	if !ok || current.ownerID != lease.ownerID || current.provisionEpoch != f.provisionEpoch {
 		return stagedLoadClaim{}, connector.ErrDeliveryIndeterminate
 	}
+	claim.expiresAt = f.now.Add(stagedRuntimeLeaseMinimum)
 	if existing, ok := f.claims[claim.claimID]; ok {
-		if !stagedClaimsSameIdentity(existing, claim) {
+		if existing.expiresAt.After(f.now) && !stagedClaimsSameIdentity(existing, claim) {
 			return stagedLoadClaim{}, connector.ErrDeliveryConflict
 		}
-		return existing, nil
+		if existing.expiresAt.After(f.now) {
+			return existing, nil
+		}
 	}
 	f.claims[claim.claimID] = claim
 	return claim, nil
@@ -491,6 +513,10 @@ func fakeObserveRows(expected []string, manifest bool, manifestMatches bool, row
 func (f *fakeStageProtocol) ObserveLanding(_ context.Context, _ stagedConfig, claim stagedLoadClaim, expected []string) (stagedTargetObservation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.landingObserves[claim.stagePath]++
+	if f.landingDelayCalls > 0 && f.landingObserves[claim.stagePath] < f.landingDelayCalls {
+		return stagedTargetObservation{state: stagedTargetAbsent}, nil
+	}
 	rows := f.landing[claim.stagePath]
 	observation := fakeObserveRows(expected, len(expected) == 0 || len(rows) > 0, true, rows)
 	if len(expected) == 0 {
@@ -510,7 +536,7 @@ func (f *fakeStageProtocol) ValidateReceiptTargetProof(_ context.Context, _ stag
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	claim, present := f.manifests[receipt.externalID]
-	if !present || claim.manifestHash != receipt.manifestHash || claim.contentHash != receipt.contentHash || claim.fileContentHash != receipt.fileContentHash {
+	if !present || claim.manifestHash != receipt.manifestHash || claim.contentHash != receipt.contentHash || claim.fileContentHash != receipt.fileContentHash || claim.planHash != receipt.planHash {
 		return connector.ErrDeliveryConflict
 	}
 	rows := f.target[receipt.externalID]
@@ -546,6 +572,10 @@ func (f *fakeStageProtocol) InsertLoadReceipt(_ context.Context, _ stagedConfig,
 		return stageReceiptInsert{inserted: false}, nil
 	}
 	return stageReceiptInsert{inserted: true}, nil
+}
+
+func (f *fakeStageProtocol) InsertReleaseReceipt(ctx context.Context, cfg stagedConfig, lease stagedRuntimeLease, claim stagedLoadClaim, receipt managedStagedReceipt) (stageReceiptInsert, error) {
+	return f.InsertLoadReceipt(ctx, cfg, lease, claim, receipt)
 }
 
 func (f *fakeStageProtocol) PromoteTarget(_ context.Context, _ stagedConfig, lease stagedRuntimeLease, claim stagedLoadClaim, rowHashes []string) error {

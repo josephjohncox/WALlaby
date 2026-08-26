@@ -105,6 +105,9 @@ func validateManagedStagedCatalog(cfg stagedConfig, catalog managedStagedCatalog
 	if !cfg.autoIngest && catalog.unexpectedPipeCount != 0 {
 		return fmt.Errorf("managed staged Snowflake synchronous profile observed %d pipes in the dedicated schema", catalog.unexpectedPipeCount)
 	}
+	if cfg.autoIngest && catalog.unexpectedPipeCount != 1 {
+		return fmt.Errorf("managed staged Snowflake auto-ingest profile requires exactly one pipe in the dedicated schema, got %d", catalog.unexpectedPipeCount)
+	}
 	return nil
 }
 
@@ -371,6 +374,18 @@ func validateManagedStagedAuxiliaryTables(cfg stagedConfig, catalog managedStage
 	return nil
 }
 
+func normalizeStagedPipeSQL(value string) string {
+	return strings.Map(func(character rune) rune {
+		if character == '"' || character == '`' || character == ' ' || character == '\t' || character == '\r' || character == '\n' {
+			return -1
+		}
+		if character >= 'A' && character <= 'Z' {
+			return character + ('a' - 'A')
+		}
+		return character
+	}, value)
+}
+
 func stagedExpectedAuthorityColumns() map[string]managedColumnSnapshot {
 	text := managedColumnSnapshot{dataType: "VARCHAR", nullable: false}
 	number := managedColumnSnapshot{dataType: "NUMBER(38,0)", nullable: false}
@@ -380,7 +395,7 @@ func stagedExpectedAuthorityColumns() map[string]managedColumnSnapshot {
 	return map[string]managedColumnSnapshot{
 		"AUTHORITY_KIND": text, "DESTINATION_REVISION_ID": text, "AUTHORITY_ID": text, "OWNER_ID": text,
 		"FLOW_INCARNATION_ID": optionalText, "GENERATION": optionalNumber, "ACQUISITION_ID": optionalText,
-		"LEASE_EPOCH": optionalNumber, "PROVISION_EPOCH": number, "CATALOG_FINGERPRINT": text,
+		"LEASE_EPOCH": optionalNumber, "PROVISION_EPOCH": number, "PROVISION_ATTEMPT_ID": optionalText, "CATALOG_FINGERPRINT": text,
 		"LOGICAL_BATCH_ID": optionalText, "MANIFEST_HASH": optionalText, "CONTENT_HASH": optionalText,
 		"FILE_CONTENT_HASH": optionalText, "PLAN_HASH": optionalText, "EXPECTED_ROW_COUNT": optionalNumber,
 		"STATE": text, "EXPIRES_AT": timestamp, "UPDATED_AT": timestamp,
@@ -418,6 +433,18 @@ func validateManagedStagedPipe(cfg stagedConfig, pipe managedPipeSnapshot) error
 	plan, err := newStagedCopyPlan(cfg)
 	if err != nil {
 		return err
+	}
+	if stripped := stripStagedSQLStringLiterals(pipe.definition); stripped != pipe.definition {
+		return errors.New("managed staged Snowflake pipe definition must not contain comments or string literals")
+	}
+	normalizedDefinition := normalizeStagedPipeSQL(pipe.definition)
+	normalizedTarget := normalizeStagedPipeSQL(managedSnowflakeStagedQualifiedTable(cfg, cfg.landingTable))
+	normalizedStage := normalizeStagedPipeSQL(managedSnowflakeStagedQualified(cfg, cfg.stage))
+	if strings.Count(normalizedDefinition, "copyinto") != 1 || !strings.Contains(normalizedDefinition, "copyinto"+normalizedTarget+"from@"+normalizedStage+"/") {
+		return errors.New("managed staged Snowflake pipe must COPY from the exact stage prefix into the exact landing table")
+	}
+	if strings.Contains(normalizedDefinition, ";") {
+		return errors.New("managed staged Snowflake pipe definition contains an extra statement")
 	}
 	// A pipe that references a named file format reopens exactly the mutation
 	// window the synchronous COPY closed by inlining its parsing options, so the
@@ -521,7 +548,7 @@ func stagedExpectedReceiptColumns() map[string]managedColumnSnapshot {
 	columns := map[string]managedColumnSnapshot{
 		"RECEIPT_KIND": text, "PROFILE_VERSION": text, "FLOW_ID": text, "FLOW_INCARNATION_ID": text, "SOURCE_LINEAGE_ID": text,
 		"DESTINATION_REVISION_ID": text, "LOGICAL_BATCH_ID": text, "POSITION_ID": text, "CONTENT_HASH": text, "SCHEMA_CONTRACT_HASH": text,
-		"CATALOG_FINGERPRINT": text, "MANIFEST_HASH": text, "EXTERNAL_ID": text, "GENERATION": number, "ACQUISITION_ID": text, "LEASE_EPOCH": number,
+		"CATALOG_FINGERPRINT": text, "MANIFEST_HASH": text, "PLAN_HASH": text, "EXTERNAL_ID": text, "GENERATION": number, "ACQUISITION_ID": text, "LEASE_EPOCH": number,
 		"TRANSACTION_ID": number, "FRAGMENT_COUNT": number, "RECORD_COUNT": number, "STAGE_NAME": text, "STAGE_PATH": text, "FILE_CONTENT_HASH": text,
 		"FILE_MD5": text, "LOAD_ROW_COUNT": number, "LOAD_STATUS": text,
 		"COMMITTED_AT": {dataType: "TIMESTAMP_TZ", nullable: false},
@@ -700,8 +727,9 @@ func (d *Destination) loadManagedStagedCatalog(ctx context.Context, queryer mana
 		if snapshot.pipe, err = loadStagedPipe(ctx, queryer, cfg, informationSchema); err != nil {
 			return managedStagedCatalogSnapshot{}, err
 		}
-	} else if err := queryer.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+informationSchema+"PIPES WHERE PIPE_SCHEMA = ?", cfg.schema).Scan(&snapshot.unexpectedPipeCount); err != nil {
-		return managedStagedCatalogSnapshot{}, fmt.Errorf("prove absence of managed staged Snowflake pipe: %w", err)
+	}
+	if err := queryer.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+informationSchema+"PIPES WHERE PIPE_SCHEMA = ?", cfg.schema).Scan(&snapshot.unexpectedPipeCount); err != nil {
+		return managedStagedCatalogSnapshot{}, fmt.Errorf("count managed staged Snowflake schema pipes: %w", err)
 	}
 	// #nosec G202 -- the database identifier is one validated unquoted uppercase identifier.
 	if err := queryer.QueryRowContext(ctx,

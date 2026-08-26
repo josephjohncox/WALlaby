@@ -23,8 +23,9 @@ const (
 	// ManagedProfilePostgresToSnowflakeStagedAppendV1 names the constrained staged
 	// COPY append-only Snowflake contract: each logical batch is serialized into a
 	// deterministic immutable stage object, loaded with fail-closed COPY options,
-	// and acknowledged only after Snowflake load history plus a durable destination
-	// receipt prove full, non-partial completion. It remains experimental until its
+	// and acknowledged only after exact landing-row identity, atomic target-manifest
+	// promotion, and a guarded durable receipt prove full completion. COPY history
+	// is diagnostic only. It remains experimental until its
 	// opt-in real-service recovery matrix passes on one reviewed Snowflake SHA.
 	ManagedProfilePostgresToSnowflakeStagedAppendV1 = "postgresql-to-snowflake-staged-append-v1"
 	// ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 names the constrained
