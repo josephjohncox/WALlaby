@@ -33,7 +33,7 @@ func streamValidOptions(t *testing.T) (string, map[string]string) {
 		"managed_table": "WALLABY_CHANGELOG", "managed_receipts_table": "WALLABY_RECEIPTS", "managed_channel_state_table": "WALLABY_CHANNELS",
 		"managed_channel_name_prefix": "wallaby_stream", "managed_owner_role": "WALLABY_OWNER", "managed_execution_role": "ROLE", "managed_warehouse": "WH",
 		"managed_snowflake_version": "8.0.0", "managed_pipe_created_on": created, "managed_target_created_on": created,
-		"managed_receipts_created_on": created, "managed_channel_state_created_on": created,
+		"managed_receipts_created_on": created, "managed_channel_state_created_on": created, "managed_request_journal_created_on": created,
 		"managed_source_schema": "public", "managed_source_table": "widgets",
 		"managed_schema_contract": string(schemaJSON), "managed_schema_contract_hash": hash,
 		"managed_max_transaction_rows": "1000", "managed_max_transaction_bytes": "8388608",
@@ -52,7 +52,7 @@ func TestStreamConfigFromSpecAdmitsValidSpec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid streaming spec rejected: %v", err)
 	}
-	if cfg.pipe != "WALLABY_PIPE" || cfg.table != "WALLABY_CHANGELOG" || cfg.channelStateTable != "WALLABY_CHANNELS" {
+	if cfg.pipe != "WALLABY_PIPE" || cfg.table != "WALLABY_CHANGELOG" || cfg.channelStateTable != "WALLABY_CHANNELS" || cfg.requestJournalCreatedOn == "" {
 		t.Fatalf("streaming config identity=%+v", cfg)
 	}
 }
@@ -60,21 +60,22 @@ func TestStreamConfigFromSpecAdmitsValidSpec(t *testing.T) {
 func TestStreamConfigRejectsLossyAndUnsafeOptions(t *testing.T) {
 	t.Parallel()
 	cases := map[string]func(map[string]string){
-		"obsolete write mode": func(o map[string]string) { o["write_mode"] = "streaming_append" },
-		"batch mode":          func(o map[string]string) { o["batch_mode"] = "staging" },
-		"meta table":          func(o map[string]string) { o["meta_table_enabled"] = "true" },
-		"keep alive":          func(o map[string]string) { o["session_keep_alive"] = "true" },
-		"type override":       func(o map[string]string) { o["type_mappings"] = "text=STRING" },
-		"generic staging":     func(o map[string]string) { o["staging_table"] = "X" },
-		"same role":           func(o map[string]string) { o["managed_execution_role"] = o["managed_owner_role"] },
-		"unknown option":      func(o map[string]string) { o["nonsense"] = "1" },
-		"missing transport":   func(o map[string]string) { delete(o, "managed_streaming_transport") },
-		"wrong transport":     func(o map[string]string) { o["managed_streaming_transport"] = "some-other-transport" },
-		"bad contract":        func(o map[string]string) { o["managed_schema_contract_hash"] = "deadbeef" },
-		"missing created":     func(o map[string]string) { o["managed_channel_state_created_on"] = "" },
-		"lowercase ident":     func(o map[string]string) { o["managed_pipe"] = "wallaby_pipe" },
-		"bad channel prefix":  func(o map[string]string) { o["managed_channel_name_prefix"] = "bad prefix!" },
-		"missing channel tbl": func(o map[string]string) { o["managed_channel_state_table"] = "" },
+		"obsolete write mode":             func(o map[string]string) { o["write_mode"] = "streaming_append" },
+		"batch mode":                      func(o map[string]string) { o["batch_mode"] = "staging" },
+		"meta table":                      func(o map[string]string) { o["meta_table_enabled"] = "true" },
+		"keep alive":                      func(o map[string]string) { o["session_keep_alive"] = "true" },
+		"type override":                   func(o map[string]string) { o["type_mappings"] = "text=STRING" },
+		"generic staging":                 func(o map[string]string) { o["staging_table"] = "X" },
+		"same role":                       func(o map[string]string) { o["managed_execution_role"] = o["managed_owner_role"] },
+		"unknown option":                  func(o map[string]string) { o["nonsense"] = "1" },
+		"missing transport":               func(o map[string]string) { delete(o, "managed_streaming_transport") },
+		"wrong transport":                 func(o map[string]string) { o["managed_streaming_transport"] = "some-other-transport" },
+		"bad contract":                    func(o map[string]string) { o["managed_schema_contract_hash"] = "deadbeef" },
+		"missing created":                 func(o map[string]string) { o["managed_channel_state_created_on"] = "" },
+		"missing request journal created": func(o map[string]string) { o["managed_request_journal_created_on"] = "" },
+		"lowercase ident":                 func(o map[string]string) { o["managed_pipe"] = "wallaby_pipe" },
+		"bad channel prefix":              func(o map[string]string) { o["managed_channel_name_prefix"] = "bad prefix!" },
+		"missing channel tbl":             func(o map[string]string) { o["managed_channel_state_table"] = "" },
 	}
 	for name, mutate := range cases {
 		name, mutate := name, mutate

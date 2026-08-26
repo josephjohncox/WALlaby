@@ -49,29 +49,30 @@ func ManagedStreamingTransportAvailable() bool { return streamingTransportLinked
 // Streaming REST append profile. It is derived only from the connector spec;
 // nothing observed from the live service can widen it.
 type streamConfig struct {
-	profile               string
-	flowID                string
-	account               string
-	database              string
-	schema                string
-	pipe                  string
-	table                 string
-	receiptsTable         string
-	channelStateTable     string
-	channelNamePrefix     string
-	ownerRole             string
-	executionRole         string
-	warehouse             string
-	snowflakeVersion      string
-	pipeCreatedOn         string
-	targetCreatedOn       string
-	receiptsCreatedOn     string
-	channelStateCreatedOn string
-	sourceSchema          string
-	sourceTable           string
-	schemaContract        connector.Schema
-	schemaContractHash    string
-	destinationRevision   string
+	profile                 string
+	flowID                  string
+	account                 string
+	database                string
+	schema                  string
+	pipe                    string
+	table                   string
+	receiptsTable           string
+	channelStateTable       string
+	channelNamePrefix       string
+	ownerRole               string
+	executionRole           string
+	warehouse               string
+	snowflakeVersion        string
+	pipeCreatedOn           string
+	targetCreatedOn         string
+	receiptsCreatedOn       string
+	channelStateCreatedOn   string
+	requestJournalCreatedOn string
+	sourceSchema            string
+	sourceTable             string
+	schemaContract          connector.Schema
+	schemaContractHash      string
+	destinationRevision     string
 
 	maxTransactionRows      int
 	maxTransactionBytes     int64
@@ -101,7 +102,7 @@ func streamProfileAllowedOptions() map[string]struct{} {
 		"managed_channel_name_prefix": {},
 		"managed_owner_role":          {}, "managed_execution_role": {}, "managed_warehouse": {},
 		"managed_snowflake_version": {}, "managed_pipe_created_on": {}, "managed_target_created_on": {},
-		"managed_receipts_created_on": {}, "managed_channel_state_created_on": {},
+		"managed_receipts_created_on": {}, "managed_channel_state_created_on": {}, "managed_request_journal_created_on": {},
 		"managed_source_schema": {}, "managed_source_table": {},
 		"managed_schema_contract": {}, "managed_schema_contract_hash": {},
 		"managed_max_transaction_rows": {}, "managed_max_transaction_bytes": {},
@@ -194,7 +195,7 @@ func streamConfigFromSpec(dsn string, spec connector.RuntimeSpec) (streamConfig,
 		ownerRole:         strings.TrimSpace(options["managed_owner_role"]), executionRole: strings.TrimSpace(options["managed_execution_role"]),
 		warehouse: strings.TrimSpace(options["managed_warehouse"]), snowflakeVersion: strings.TrimSpace(options["managed_snowflake_version"]),
 		pipeCreatedOn: strings.TrimSpace(options["managed_pipe_created_on"]), targetCreatedOn: strings.TrimSpace(options["managed_target_created_on"]),
-		receiptsCreatedOn: strings.TrimSpace(options["managed_receipts_created_on"]), channelStateCreatedOn: strings.TrimSpace(options["managed_channel_state_created_on"]),
+		receiptsCreatedOn: strings.TrimSpace(options["managed_receipts_created_on"]), channelStateCreatedOn: strings.TrimSpace(options["managed_channel_state_created_on"]), requestJournalCreatedOn: strings.TrimSpace(options["managed_request_journal_created_on"]),
 		sourceSchema: options["managed_source_schema"], sourceTable: options["managed_source_table"],
 		schemaContractHash:  strings.TrimSpace(options["managed_schema_contract_hash"]),
 		destinationRevision: strings.TrimSpace(options["destination_revision_id"]),
@@ -204,7 +205,7 @@ func streamConfigFromSpec(dsn string, spec connector.RuntimeSpec) (streamConfig,
 	}
 	if cfg.flowID == "" || cfg.account == "" || cfg.snowflakeVersion == "" || cfg.sourceSchema == "" || cfg.sourceTable == "" ||
 		strings.ContainsRune(cfg.sourceSchema, '\x00') || strings.ContainsRune(cfg.sourceTable, '\x00') ||
-		cfg.destinationRevision == "" || cfg.pipeCreatedOn == "" || cfg.targetCreatedOn == "" || cfg.receiptsCreatedOn == "" || cfg.channelStateCreatedOn == "" {
+		cfg.destinationRevision == "" || cfg.pipeCreatedOn == "" || cfg.targetCreatedOn == "" || cfg.receiptsCreatedOn == "" || cfg.channelStateCreatedOn == "" || cfg.requestJournalCreatedOn == "" {
 		return streamConfig{}, errors.New("managed streaming Snowflake flow, account, version, object creation identities, exact nonempty NUL-free source relation, and destination revision are required")
 	}
 	if len(cfg.flowID) > 1024 || strings.TrimSpace(cfg.flowID) != cfg.flowID || strings.ContainsAny(cfg.flowID, "\r\n\x00") {
@@ -215,7 +216,7 @@ func streamConfigFromSpec(dsn string, spec connector.RuntimeSpec) (streamConfig,
 	}
 	createdIdentities := map[string]string{
 		"managed_pipe_created_on": cfg.pipeCreatedOn, "managed_target_created_on": cfg.targetCreatedOn,
-		"managed_receipts_created_on": cfg.receiptsCreatedOn, "managed_channel_state_created_on": cfg.channelStateCreatedOn,
+		"managed_receipts_created_on": cfg.receiptsCreatedOn, "managed_channel_state_created_on": cfg.channelStateCreatedOn, "managed_request_journal_created_on": cfg.requestJournalCreatedOn,
 	}
 	for name, value := range createdIdentities {
 		if _, err := time.Parse("2006-01-02T15:04:05.000000000Z07:00", value); err != nil {
@@ -225,12 +226,16 @@ func streamConfigFromSpec(dsn string, spec connector.RuntimeSpec) (streamConfig,
 	identifiers := map[string]string{
 		"managed_database": cfg.database, "managed_schema": cfg.schema, "managed_pipe": cfg.pipe, "managed_table": cfg.table,
 		"managed_receipts_table": cfg.receiptsTable, "managed_channel_state_table": cfg.channelStateTable,
-		"managed_owner_role": cfg.ownerRole, "managed_execution_role": cfg.executionRole, "managed_warehouse": cfg.warehouse,
+		"managed_request_journal_table": cfg.channelStateTable + "_REQUESTS",
+		"managed_owner_role":            cfg.ownerRole, "managed_execution_role": cfg.executionRole, "managed_warehouse": cfg.warehouse,
 	}
 	for name, value := range identifiers {
 		if err := validateManagedSnowflakeUnquotedIdentifier(name, value); err != nil {
 			return streamConfig{}, err
 		}
+	}
+	if ddl := managedStreamCurrentSchemaDDL(cfg); len(ddl) != 2 || ddl[0] == "" || ddl[1] == "" {
+		return streamConfig{}, errors.New("managed streaming Snowflake current control schema is incomplete")
 	}
 	if err := validateManagedStreamingChannelPrefix(cfg.channelNamePrefix); err != nil {
 		return streamConfig{}, err

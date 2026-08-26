@@ -869,7 +869,7 @@ func validateManagedSnowflakeStreamingAppendAdmission(flowID string, sourceSpec 
 	if options["managed_source_schema"] == "" || options["managed_source_table"] == "" || strings.ContainsRune(options["managed_source_schema"], '\x00') || strings.ContainsRune(options["managed_source_table"], '\x00') {
 		return fmt.Errorf("%s requires exact nonempty NUL-free managed source identifiers", profileName)
 	}
-	for _, key := range []string{"managed_schema_contract", "managed_snowflake_version", "managed_pipe_created_on", "managed_target_created_on", "managed_receipts_created_on", "managed_channel_state_created_on"} {
+	for _, key := range []string{"managed_schema_contract", "managed_snowflake_version", "managed_pipe_created_on", "managed_target_created_on", "managed_receipts_created_on", "managed_channel_state_created_on", "managed_request_journal_created_on"} {
 		if strings.TrimSpace(options[key]) == "" {
 			return fmt.Errorf("%s requires %s", profileName, key)
 		}

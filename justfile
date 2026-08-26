@@ -402,6 +402,35 @@ test-snowflake-managed-profile:
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./scripts/verify-go-test-json.go \
       -results "${results}" -required "${required}"
 
+# Unpromoted same-SHA Snowpipe Streaming commercial boundary. The named tests
+# assert fail-closed admission until a reviewed append transport is linked.
+test-snowflake-streaming-commercial-unpromoted:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test "${WALLABY_TEST_SNOWFLAKE_MANAGED:-}" = "1" || { echo 'WALLABY_TEST_SNOWFLAKE_MANAGED=1 is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_SNOWFLAKE_DSN:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_DSN is required' >&2; exit 2; }
+    test -n "${WALLABY_TEST_SNOWFLAKE_VERSION:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_VERSION is required' >&2; exit 2; }
+    results=$(mktemp)
+    trap 'rm -f "${results}"' EXIT
+    required=TestSnowflakeStreamingManagedProfileAmbiguousRequestRecovery
+    required+=',TestSnowflakeStreamingManagedProfileVisibilityLagWithoutResend'
+    required+=',TestSnowflakeStreamingManagedProfileProvenAbsenceRetry'
+    required+=',TestSnowflakeStreamingManagedProfileRequestProcessRestart'
+    filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
+    set +e
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 -json ./tests -run "${filter}" >"${results}"
+    test_rc=$?
+    set -e
+    cat "${results}"
+    test "${test_rc}" -eq 0
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} run ./scripts/verify-go-test-json.go \
+      -results "${results}" -required "${required}"
+
+# Credential-free OS-process request-journal crash evidence. The helper fsyncs
+# request state, is killed with SIGKILL, and the replacement adopts without append.
+test-snowpipe-streaming-process-failure:
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./connectors/destinations/snowflake -run '^TestStreamRequestProcessRestartEvidence$'
+
 # Deterministic fuzz smoke for the constrained Snowflake SQL planner. It runs
 # every managed fuzz target's seed corpus (no -fuzz, so no randomness and no
 # network) plus the bounded rapid SQL-injection-safety and hash-determinism
