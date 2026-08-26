@@ -1595,6 +1595,9 @@ WITH candidates AS MATERIALIZED (
     AND reservation.reservation_state='released'
     AND deleted_reservation_children.deleted_events>=0
     AND deleted_reservation_children.deleted_parts>=0
+  RETURNING reservation.reservation_id
+), deleted_reservations_complete AS MATERIALIZED (
+  SELECT count(*) AS deleted_reservations FROM deleted_part_reservations
 ), deleted_evidence AS (
   DELETE FROM delivery_attempt_evidence AS evidence
   USING delivery_attempts AS attempt,candidates
@@ -1614,10 +1617,11 @@ WITH candidates AS MATERIALIZED (
     AND receipt.destination_revision_id=candidates.destination_revision_id
     AND receipt.position_id=candidates.position_id
 ), deleted_manifests AS (
-  DELETE FROM delivery_manifests AS manifest USING candidates
+  DELETE FROM delivery_manifests AS manifest USING candidates,deleted_reservations_complete
   WHERE manifest.flow_incarnation_id=$1
     AND manifest.destination_revision_id=candidates.destination_revision_id
     AND manifest.position_id=candidates.position_id
+    AND deleted_reservations_complete.deleted_reservations>=0
   RETURNING 1
 )
 SELECT count(*) FROM deleted_manifests`, fence.FlowIncarnationID, positionID, cutoff, limit).Scan(&deleted); err != nil {
