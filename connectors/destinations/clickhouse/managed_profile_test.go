@@ -117,6 +117,16 @@ func TestManagedWriteTransportFailureFallsBackToReplica(t *testing.T) {
 		t.Fatalf("write calls=(primary:%d replica:%d), want (1,1)", primaryCalls, replicaCalls)
 	}
 
+	replicaCalls = 0
+	if err := executeManagedWriteWithFailover(context.Background(), true, func() error {
+		return errors.New("write transport: EOF")
+	}, func() error {
+		replicaCalls++
+		return nil
+	}); err != nil || replicaCalls != 1 {
+		t.Fatalf("wrapped EOF failover error/calls=%v/%d, want nil/1", err, replicaCalls)
+	}
+
 	serverErr := errors.New("server rejected insert")
 	replicaCalls = 0
 	if err := executeManagedWriteWithFailover(context.Background(), true, func() error { return serverErr }, func() error {

@@ -447,6 +447,7 @@ func TestClickHouseManagedProfileProcessKillRecovery(t *testing.T) {
 	if err := restarted.InitializeManagedDelivery(context.Background()); err != nil {
 		t.Fatalf("initialize after ClickHouse process kill: %v", err)
 	}
+	intent = fixture.destination.authoritativeIntent(intent)
 	disposition, evidence, err := restarted.Reconcile(context.Background(), intent)
 	if err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
 		t.Fatalf("post-kill receipt reconciliation=(%v,%+v,%v)", disposition, evidence, err)
@@ -498,6 +499,7 @@ func TestClickHouseManagedProfileSurvivorOnlyPrimaryStorageLossRecovery(t *testi
 	if err := restarted.InitializeManagedDelivery(context.Background()); err != nil {
 		t.Fatalf("initialize recovery-only destination after primary storage loss: %v", err)
 	}
+	intent = fixture.destination.authoritativeIntent(intent)
 	disposition, evidence, err := restarted.Reconcile(context.Background(), intent)
 	if err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
 		t.Fatalf("survivor-only reconciliation=(%v,%+v,%v)", disposition, evidence, err)
@@ -513,7 +515,7 @@ func TestClickHouseManagedProfileSurvivorOnlyPrimaryStorageLossRecovery(t *testi
 	newTransaction := clickHouseManagedTransaction("primary_storage_loss_new", 2, []connector.Record{
 		clickHouseManagedRecord("primary_storage_loss_new", connector.OpInsert, 2, map[string]any{"id": int64(2), "value": "fenced"}),
 	})
-	newIntent := clickHouseManagedIntent(t, newTransaction)
+	newIntent := fixture.destination.authoritativeIntent(clickHouseManagedIntent(t, newTransaction))
 	if _, err := restarted.ApplyTransaction(context.Background(), newIntent, newTransaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
 		t.Fatalf("recovery-only write error=%v, want ErrDeliveryIndeterminate", err)
 	}
@@ -567,6 +569,7 @@ func TestClickHouseManagedProfileKeeperFailureRecovery(t *testing.T) {
 	if err := restarted.InitializeManagedDelivery(context.Background()); err != nil {
 		t.Fatalf("initialize after Keeper process kill: %v", err)
 	}
+	beforeIntent = fixture.destination.authoritativeIntent(beforeIntent)
 	if disposition, evidence, err := restarted.Reconcile(context.Background(), beforeIntent); err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != beforeIntent.ContentHash {
 		t.Fatalf("Keeper receipt recovery reconciliation=(%v,%+v,%v)", disposition, evidence, err)
 	}

@@ -861,7 +861,9 @@ func isManagedTransportError(err error) bool {
 	if errors.As(err, &netErr) {
 		return true
 	}
-	return errors.Is(err, io.EOF) ||
+	message := strings.TrimSpace(strings.ToLower(err.Error()))
+	return message == "eof" || strings.HasSuffix(message, ": eof") ||
+		errors.Is(err, io.EOF) ||
 		errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, driver.ErrBadConn) ||
 		errors.Is(err, net.ErrClosed) ||
