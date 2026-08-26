@@ -50,8 +50,8 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: Setup uv
-        # astral-sh/setup-uv v10.0.0
-        uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d
+        # astral-sh/setup-uv v10.0.1
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
         with:
           version: "0.11.29"
           enable-cache: true
@@ -117,9 +117,9 @@ jobs:
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8
 
       - name: Set up Docker Buildx
-        # docker/setup-buildx-action v4.2.0
+        # docker/setup-buildx-action v4.3.0
         uses: >-
-          docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+          docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
 
       - name: Login to GHCR
         # docker/login-action v3.4.0
