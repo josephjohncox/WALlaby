@@ -335,8 +335,8 @@ func TestStagedDriverEmptyTransactionStillProvesBytes(t *testing.T) {
 	proto := newFakeStageProtocol()
 	evidence, err := newStagedTestDriver(cfg, proto).apply(context.Background(), intent, transaction)
 	assertStagedApplied(t, proto, intent, evidence, err)
-	if proto.getCalls != 1 || proto.copyCalls != 1 {
-		t.Fatalf("zero-row transaction calls=(get:%d copy:%d), want 1/1", proto.getCalls, proto.copyCalls)
+	if proto.getCalls != 1 || proto.copyCalls != 0 {
+		t.Fatalf("zero-row transaction calls=(get:%d copy:%d), want 1/0 with durable manifest promotion", proto.getCalls, proto.copyCalls)
 	}
 }
 
@@ -350,7 +350,7 @@ func TestStagedDriverCopyResponseLossRecoversViaHistory(t *testing.T) {
 	assertStagedApplied(t, proto, intent, evidence, err)
 }
 
-func TestStagedDriverInconclusiveCopyReconcilesViaHistory(t *testing.T) {
+func TestStagedDriverInconclusiveCopyReconcilesViaLandingProof(t *testing.T) {
 	t.Parallel()
 	cfg, intent, transaction := stagedFixture(t)
 	proto := newFakeStageProtocol()
@@ -358,8 +358,8 @@ func TestStagedDriverInconclusiveCopyReconcilesViaHistory(t *testing.T) {
 	driver := newStagedTestDriver(cfg, proto)
 	evidence, err := driver.apply(context.Background(), intent, transaction)
 	assertStagedApplied(t, proto, intent, evidence, err)
-	if proto.historyCalls == 0 {
-		t.Fatal("inconclusive COPY must consult durable load history")
+	if proto.historyCalls != 0 {
+		t.Fatal("inconclusive COPY must not use COPY_HISTORY as authority")
 	}
 }
 
@@ -413,7 +413,7 @@ func TestStagedDriverCrashBetweenCopyAndReceiptConverges(t *testing.T) {
 	assertStagedApplied(t, proto, intent, evidence, err)
 }
 
-func TestStagedDriverAdoptsExistingReceiptWithoutReloading(t *testing.T) {
+func TestStagedDriverRejectsExistingReceiptWithoutTargetProof(t *testing.T) {
 	t.Parallel()
 	cfg, intent, transaction := stagedFixture(t)
 	plan := stagedPlanFor(t, cfg, intent, transaction)
@@ -422,10 +422,8 @@ func TestStagedDriverAdoptsExistingReceiptWithoutReloading(t *testing.T) {
 	seeded.catalogFingerprint = "catalog-fingerprint"
 	proto.seedReceipt(seeded)
 	driver := newStagedTestDriver(cfg, proto)
-	evidence, err := driver.apply(context.Background(), intent, transaction)
-	assertStagedApplied(t, proto, intent, evidence, err)
-	if proto.putCalls != 0 || proto.copyCalls != 0 {
-		t.Fatalf("adoption must not re-stage or re-load: put/copy=%d/%d", proto.putCalls, proto.copyCalls)
+	if _, err := driver.apply(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("receipt without target proof error=%v, want conflict", err)
 	}
 }
 
@@ -495,7 +493,7 @@ func TestStagedDriverAutoIngestWaitsForVerifiableCompletion(t *testing.T) {
 	}
 }
 
-func TestStagedDriverAutoIngestUnverifiedIsIndeterminate(t *testing.T) {
+func TestStagedDriverAutoIngestDoesNotDependOnHistoryVisibility(t *testing.T) {
 	t.Parallel()
 	cfg, intent, transaction := stagedFixture(t)
 	cfg.autoIngest = true
@@ -504,13 +502,10 @@ func TestStagedDriverAutoIngestUnverifiedIsIndeterminate(t *testing.T) {
 	proto := newFakeStageProtocol()
 	proto.autoIngestDelayCalls = 10
 	driver := newStagedTestDriver(cfg, proto)
-	if _, err := driver.apply(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {
-		t.Fatalf("unverifiable auto-ingest error=%v, want indeterminate", err)
-	}
-	for _, receipt := range proto.receipts {
-		if receipt.kind == stagedReceiptKindLoad {
-			t.Fatal("auto-ingest must not acknowledge before a verifiable completion")
-		}
+	evidence, err := driver.apply(context.Background(), intent, transaction)
+	assertStagedApplied(t, proto, intent, evidence, err)
+	if proto.historyCalls != 0 {
+		t.Fatal("auto-ingest target proof must not wait for COPY_HISTORY visibility")
 	}
 }
 
@@ -557,8 +552,8 @@ func TestStagedDriverAutoIngestSpaceFormPartialFailsClosed(t *testing.T) {
 	proto.historyEmitsSpaceStatus = true // COPY_HISTORY reports "Partially loaded".
 	driver := newStagedTestDriver(cfg, proto)
 	_, err := driver.apply(context.Background(), intent, transaction)
-	if !errors.Is(err, connector.ErrDeliveryConflict) || !errors.Is(err, errStagedPartialLoad) {
-		t.Fatalf("space-form partial history error=%v, want conflict/partial", err)
+	if !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("partial landing proof error=%v, want conflict", err)
 	}
 	for _, receipt := range proto.receipts {
 		if receipt.kind == stagedReceiptKindLoad {

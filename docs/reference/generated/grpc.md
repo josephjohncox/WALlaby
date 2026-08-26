@@ -1264,6 +1264,12 @@ contract accepts only a DSN and ignores connection-pool and IAM options.
 | load_verify_interval_millis | [uint32](#uint32) | optional |  |
 | cleanup_max_objects | [uint32](#uint32) | optional |  |
 | cleanup_retention_seconds | [uint32](#uint32) | optional |  |
+| landing_table | [string](#string) |  |  |
+| authority_table | [string](#string) |  |  |
+| target_manifest_table | [string](#string) |  |  |
+| landing_created_on | [string](#string) |  |  |
+| authority_created_on | [string](#string) |  |  |
+| target_manifest_created_on | [string](#string) |  |  |
 
 
 

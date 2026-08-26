@@ -332,13 +332,13 @@ A committed transaction becomes one newline-delimited JSON stage object whose by
 
 The stage-object path is a deterministic, immutable function of the flow incarnation, destination revision, logical batch, plan hash, and logical content hash, rooted under one per-incarnation retention prefix (`wallaby_staged_append_v1/<incarnation>/…`). Delivery proceeds as:
 
-1. **Adopt** — if a durable load receipt for the logical batch already exists, return it; a receipt whose identity, file digest, or transaction manifest differs is a conflict.
+1. **Fence and adopt** — acquire a Snowflake-clock shared runtime lease bound to the current provision epoch, catalog fingerprint, destination revision, flow incarnation, generation, acquisition, and lease epoch. Acquire the deterministic per-batch load claim. A receipt is adopted only when its immutable identity and the current target manifest plus exact row identities still match.
 2. **Stage** — `LIST`/`PUT` the immutable bytes. A `PUT` whose response is lost is reconciled by re-reading the stage. Before any load, WALlaby first requires Snowflake `LIST` to report a stored size no larger than the planned plaintext plus a fixed 64 KiB encryption-envelope allowance; only then does it perform Snowflake `GET` into a plan-sized writer and require the decrypted, uncompressed plaintext to be byte-for-byte equal to the deterministic NDJSON plan. The `GET` runs against a private per-call download directory and emits its own `stage_verify` span. Verification is unconditional, including immediately after this process staged the bytes, so every transaction costs one extra bounded download; that egress is the deliberate price of not treating an encrypted-stage `LIST` checksum as an equality oracle. A different LIST MD5 remains an additional collision signal, but a missing checksum is never accepted as the sole evidence. Because `LIST` and `GET` are both prefix-scoped, a foreign object that merely starts with the deterministic path is reported as a conflict during `LIST` rather than silently joining the download. Unavailable GET evidence is indeterminate; oversized or unequal plaintext is a conflict. Every one of these fails closed before `COPY` and before a receipt.
-3. **Load** — `COPY INTO … MATCH_BY_COLUMN_NAME=CASE_SENSITIVE ON_ERROR=ABORT_STATEMENT FORCE=FALSE PURGE=FALSE`. The statement inlines every admitted JSON parsing option instead of referencing the named file format, so a concurrent `ALTER FILE FORMAT` between admission and load cannot change how the immutable staged bytes are parsed; the inline values are derived from the same admitted property table the catalog validator enforces and are bound into the stage-object plan hash. For auto-ingest the same requirement is pushed into admission: a pipe whose `DEFINITION` references `FORMAT_NAME`, or that omits any inlined option value, is rejected. Option scanning ignores string literals and SQL comments, so a crafted comment cannot satisfy it. There is no lossy `ON_ERROR` continuation, so a partial file can never be mistaken for a complete load. For auto-ingest, the pipe is refreshed instead of running `COPY`.
-4. **Verify** — completion and the absence of a partial load are proven through Snowflake load history (`INFORMATION_SCHEMA.COPY_HISTORY`): the file must be `LOADED` with the exact expected row count and zero errors. A lost `COPY` response is reconciled through the same history. Auto-ingest cannot acknowledge until a completed load is verifiable.
-5. **Receipt** — insert one durable load receipt into an owned hybrid receipt table whose enforced primary key serializes concurrent generations; a duplicate key adopts the winning attempt.
+3. **Load landing** — revalidate the lease and catalog epoch, then run `COPY INTO` against the dedicated landing table with `MATCH_BY_COLUMN_NAME=CASE_SENSITIVE ON_ERROR=ABORT_STATEMENT FORCE=FALSE PURGE=FALSE`. The statement inlines every admitted JSON parsing option. Auto-ingest uses the same landing table and refreshes only the deterministic batch prefix.
+4. **Prove and promote** — compare every landing `RECORD_HASH` with the planned identity set. Partial, duplicate, and foreign identities fail closed. Under the same load claim, atomically append the exact landing rows to the target, insert the immutable companion manifest, and clear the landing rows. A zero-row batch still inserts its manifest. `COPY_HISTORY` is diagnostic only.
+5. **Receipt** — revalidate the shared lease and provision epoch inside the receipt statement. Insert one durable load receipt. A duplicate key can be adopted only after the current target manifest and every target row identity are revalidated.
 
-Because the durable receipt plus load history are the joint completion proof, `Reconcile` is read-only: an absent receipt is *not applied* so a replay converges idempotently (`COPY FORCE=FALSE` skips an already-loaded file), and only a fully matching receipt is *applied*.
+`Reconcile` is read-only. It adopts only a matching receipt whose target manifest and target rows remain complete and unique. An absent receipt is *not applied*. Complete target proof without a receipt converges through `ApplyTransaction` without another `COPY` or pipe refresh.
 
 ### Provisioned objects
 
@@ -347,6 +347,9 @@ The profile admits, in one dedicated schema owned by a distinct object-owner rol
 - an **internal named stage** (execution role granted `READ, WRITE`);
 - a **JSON file format** (execution role granted `USAGE`);
 - a **standard append changelog table** with the exact wallaby column contract (execution role granted `SELECT, INSERT`); a hybrid target is rejected;
+- a standard **landing table** with the same row contract and no key constraints (execution role granted `SELECT, INSERT, DELETE`);
+- a hybrid **authority table** containing the provision guard, shared leases, and load claims with one enforced primary key;
+- a hybrid **target manifest table** with enforced logical-batch and manifest identities;
 - a **hybrid receipt table** with an enforced primary key on `(RECEIPT_KIND, FLOW_INCARNATION_ID, DESTINATION_REVISION_ID, LOGICAL_BATCH_ID)` and a unique `EXTERNAL_ID` (execution role granted `SELECT, INSERT`); and
 - optionally, when typed `auto_ingest=true`, one owned **pipe** with `AUTO_INGEST=TRUE`.
 
@@ -358,7 +361,7 @@ No task may be visible in the schema. The profile rejects generated columns, gen
 
 ### Cleanup and retention
 
-Stage objects are released by a bounded, idempotent cleanup pass keyed on durable load receipts: only fully loaded, acknowledged batches older than the retention window are removed, each removal writes an idempotent release receipt, and an object without a durable load receipt is never removed.
+Stage objects are released by a bounded cleanup pass. Cleanup first revalidates the current receipt and target proof. It removes only acknowledged batches older than the retention window and records an idempotent release receipt. A batch without current target proof is never removed.
 
 ### Evidence gate
 
@@ -373,7 +376,7 @@ WALLABY_TEST_SNOWFLAKE_OWNER_ROLE='WALLABY_OWNER' \
 go test ./tests/ -run 'TestSnowflakeStagedManagedProfile|TestPostgresToSnowflakeStagedManagedProfileRecoveryContract'
 ```
 
-Deterministic PUT/GET/COPY/load-history/receipt recovery — including bounded plaintext equality, unavailable or corrupt GET evidence, wrong-byte collisions, partial-load rejection, lost responses, receipt adoption, concurrent generations, and bounded cleanup — is exercised against an in-memory protocol fake and property/fuzz tests. The modeled protocol profile is implemented, but live commercial-Snowflake evidence for every named gate is still absent. That evidence gap, not a claim of missing staged-COPY logic, keeps the profile experimental and fail-closed outside its exact admission contract.
+Deterministic PUT/GET, lease, claim, landing, promotion, manifest, receipt, ABA, takeover, partial, duplicate, zero-row, history-expiry, and cleanup behavior is exercised against an in-memory protocol fake and property tests. Commercial Snowflake evidence for every named gate is still absent. The profile remains experimental until that exact-SHA evidence passes.
 
 ## Snowpipe Streaming REST append profile
 

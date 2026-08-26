@@ -70,6 +70,7 @@ type managedStagedPlan struct {
 	fileContentHash    string
 	fileMD5            string
 	rowCount           int
+	rowHashes          []string
 	encodedBytes       int64
 	catalogFingerprint string
 	receipt            managedStagedReceipt
@@ -150,6 +151,10 @@ func planManagedStagedTransaction(cfg stagedConfig, intent connector.DeliveryInt
 		}
 	}
 
+	rowHashes := make([]string, len(rows))
+	for index := range rows {
+		rowHashes[index] = rows[index].RecordHash
+	}
 	fileBytes, fileContentHash, fileMD5, err := serializeStagedFile(rows)
 	if err != nil {
 		return managedStagedPlan{}, err
@@ -181,7 +186,7 @@ func planManagedStagedTransaction(cfg stagedConfig, intent connector.DeliveryInt
 	}
 	return managedStagedPlan{
 		identity: identity, copyPlan: copyPlan, fileBytes: fileBytes, fileContentHash: fileContentHash,
-		fileMD5: fileMD5, rowCount: len(rows), encodedBytes: encodedBytes, receipt: receipt,
+		fileMD5: fileMD5, rowCount: len(rows), rowHashes: rowHashes, encodedBytes: encodedBytes, receipt: receipt,
 	}, nil
 }
 
@@ -248,7 +253,7 @@ func newStagedCopyPlan(cfg stagedConfig) (stagedCopyPlan, error) {
 		return stagedCopyPlan{}, err
 	}
 	return stagedCopyPlan{
-		target:        managedSnowflakeStagedQualified(cfg, cfg.table),
+		target:        managedSnowflakeStagedQualified(cfg, cfg.landingTable),
 		stageRef:      managedSnowflakeStagedQualified(cfg, cfg.stage),
 		fileFormatRef: managedSnowflakeStagedQualified(cfg, cfg.fileFormat),
 		columns:       stagedChangelogColumns(),

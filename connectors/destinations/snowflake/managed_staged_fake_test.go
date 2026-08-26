@@ -3,6 +3,7 @@ package snowflake
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -31,11 +32,18 @@ type fakeLoadEntry struct {
 // exposes fault knobs to reproduce lost PUT/COPY/receipt responses. It proves
 // protocol logic only and is never promotion evidence.
 type fakeStageProtocol struct {
-	mu       sync.Mutex
-	objects  map[string]fakeStageObject
-	loaded   map[string]fakeLoadEntry
-	receipts map[string]managedStagedReceipt
-	removed  []string
+	mu                 sync.Mutex
+	objects            map[string]fakeStageObject
+	loaded             map[string]fakeLoadEntry
+	receipts           map[string]managedStagedReceipt
+	leases             map[string]stagedRuntimeLease
+	claims             map[string]stagedLoadClaim
+	landing            map[string]map[string]int
+	target             map[string]map[string]int
+	manifests          map[string]stagedLoadClaim
+	provisionEpoch     int64
+	catalogFingerprint string
+	removed            []string
 
 	// Fault knobs consumed once per apply attempt.
 	putStagesThenError         error // PUT durably stages the object, then reports a lost response.
@@ -61,10 +69,27 @@ func newFakeStageProtocol() *fakeStageProtocol {
 		objects:  make(map[string]fakeStageObject),
 		loaded:   make(map[string]fakeLoadEntry),
 		receipts: make(map[string]managedStagedReceipt),
+		leases:   make(map[string]stagedRuntimeLease), claims: make(map[string]stagedLoadClaim),
+		landing: make(map[string]map[string]int), target: make(map[string]map[string]int),
+		manifests: make(map[string]stagedLoadClaim), provisionEpoch: 1,
 	}
 }
 
 func fakeStageKey(stageRef, relativePath string) string { return stageRef + "\x00" + relativePath }
+
+func fakeStagedRowHashes(content []byte) map[string]int {
+	result := make(map[string]int)
+	for _, line := range bytes.Split(content, []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		var row stagedChangelogRow
+		if json.Unmarshal(line, &row) == nil {
+			result[row.RecordHash]++
+		}
+	}
+	return result
+}
 
 func fakeReceiptPK(r managedStagedReceipt) string {
 	return strings.Join([]string{r.kind, r.flowIncarnationID, r.destinationRevisionID, r.logicalBatchID}, "\x00")
@@ -174,9 +199,10 @@ func (f *fakeStageProtocol) Copy(_ context.Context, plan stagedCopyPlan) (stageC
 	f.copyCalls++
 	object, present := f.objects[fakeStageKey(plan.stageRef, plan.relativePath)]
 	if !present {
-		return stageCopyResult{}, errStagedLoadNotVisible
+		return stageCopyResult{}, connector.ErrDeliveryIndeterminate
 	}
 	rowCount := fakeCountRows(object.content)
+	f.landing[plan.relativePath] = fakeStagedRowHashes(object.content)
 	_, alreadyLoaded := f.loaded[plan.relativePath]
 	f.recordLoadLocked(plan.relativePath, rowCount)
 	if err := f.copyLoadsThenError; err != nil {
@@ -199,6 +225,14 @@ func (f *fakeStageProtocol) RefreshPipe(_ context.Context, _, relativePath strin
 	// Auto-ingest ingests whatever is staged; visibility may lag by design.
 	for key, object := range f.objects {
 		if strings.HasSuffix(key, relativePath) {
+			landing := fakeStagedRowHashes(object.content)
+			if f.forcePartialLoad {
+				for hash := range landing {
+					delete(landing, hash)
+					break
+				}
+			}
+			f.landing[relativePath] = landing
 			f.recordLoadLocked(relativePath, fakeCountRows(object.content))
 			break
 		}
@@ -355,10 +389,12 @@ func stagedTestConfig(t testing.TB) stagedConfig {
 	return stagedConfig{
 		profile: connector.ManagedProfilePostgresToSnowflakeStagedAppendV1, flowID: "flow-1",
 		account: "ACME", database: "DB", schema: "PUBLIC", stage: "WALLABY_STAGE", table: "WALLABY_CHANGELOG",
-		receiptsTable: "WALLABY_RECEIPTS", fileFormat: "WALLABY_JSON", ownerRole: "WALLABY_OWNER", executionRole: "WALLABY_EXEC",
+		receiptsTable: "WALLABY_RECEIPTS", landingTable: "WALLABY_LANDING", authorityTable: "WALLABY_AUTHORITY",
+		targetManifestTable: "WALLABY_TARGET_MANIFESTS", fileFormat: "WALLABY_JSON", ownerRole: "WALLABY_OWNER", executionRole: "WALLABY_EXEC",
 		warehouse: "WALLABY_WH", snowflakeVersion: "8.0.0", stageCreatedOn: "2026-01-01T00:00:00.000000000+00:00",
 		targetCreatedOn: "2026-01-01T00:00:00.000000000+00:00", receiptsCreatedOn: "2026-01-01T00:00:00.000000000+00:00",
-		fileFormatCreatedOn: "2026-01-01T00:00:00.000000000+00:00", sourceSchema: "public", sourceTable: "widgets",
+		landingCreatedOn: "2026-01-01T00:00:00.000000000+00:00", authorityCreatedOn: "2026-01-01T00:00:00.000000000+00:00",
+		targetManifestCreatedOn: "2026-01-01T00:00:00.000000000+00:00", fileFormatCreatedOn: "2026-01-01T00:00:00.000000000+00:00", sourceSchema: "public", sourceTable: "widgets",
 		schemaContract: schema, schemaContractHash: hash, destinationRevision: "snowflake-staged-v1",
 		maxTransactionRows: 1000, maxTransactionBytes: 8 << 20, maxFragments: 128, maxOpenConnections: 4,
 		statementTimeoutSeconds: 600, loadVerifyAttempts: 5, cleanupMaxObjects: 100, validateEveryConnection: true,
@@ -383,6 +419,165 @@ func stagedTestIntent(t *testing.T, cfg stagedConfig, transaction connector.Sour
 		DestinationRevisionID: cfg.destinationRevision, LogicalBatchID: logicalBatchID,
 		PositionID: position, ContentHash: contentHash,
 	}
+}
+
+func stagedClaimsSameIdentity(left, right stagedLoadClaim) bool {
+	left.leaseID = ""
+	right.leaseID = ""
+	return left == right
+}
+
+func (f *fakeStageProtocol) AcquireRuntimeLease(_ context.Context, _ stagedConfig, request stagedLeaseRequest) (stagedRuntimeLease, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.catalogFingerprint == "" {
+		f.catalogFingerprint = request.catalogFingerprint
+	}
+	if f.catalogFingerprint != request.catalogFingerprint {
+		return stagedRuntimeLease{}, connector.ErrDeliveryConflict
+	}
+	lease := stagedRuntimeLease{stagedLeaseRequest: request, provisionEpoch: f.provisionEpoch}
+	if existing, ok := f.leases[request.leaseID]; ok && existing.ownerID != request.ownerID {
+		return stagedRuntimeLease{}, connector.ErrDeliveryIndeterminate
+	}
+	f.leases[request.leaseID] = lease
+	return lease, nil
+}
+
+func (f *fakeStageProtocol) RevalidateRuntimeLease(_ context.Context, _ stagedConfig, lease stagedRuntimeLease) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	current, ok := f.leases[lease.leaseID]
+	if !ok || current.ownerID != lease.ownerID || current.provisionEpoch != lease.provisionEpoch || current.provisionEpoch != f.provisionEpoch || f.catalogFingerprint != lease.catalogFingerprint {
+		return connector.ErrDeliveryIndeterminate
+	}
+	return nil
+}
+
+func (f *fakeStageProtocol) ReleaseRuntimeLease(_ context.Context, _ stagedConfig, lease stagedRuntimeLease) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if current, ok := f.leases[lease.leaseID]; ok && current.ownerID == lease.ownerID {
+		delete(f.leases, lease.leaseID)
+	}
+	return nil
+}
+
+func (f *fakeStageProtocol) AcquireLoadClaim(_ context.Context, _ stagedConfig, lease stagedRuntimeLease, claim stagedLoadClaim) (stagedLoadClaim, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	current, ok := f.leases[lease.leaseID]
+	if !ok || current.ownerID != lease.ownerID || current.provisionEpoch != f.provisionEpoch {
+		return stagedLoadClaim{}, connector.ErrDeliveryIndeterminate
+	}
+	if existing, ok := f.claims[claim.claimID]; ok {
+		if !stagedClaimsSameIdentity(existing, claim) {
+			return stagedLoadClaim{}, connector.ErrDeliveryConflict
+		}
+		return existing, nil
+	}
+	f.claims[claim.claimID] = claim
+	return claim, nil
+}
+
+func fakeObserveRows(expected []string, manifest bool, manifestMatches bool, rows map[string]int) stagedTargetObservation {
+	copyRows := make(map[string]int, len(rows))
+	for hash, count := range rows {
+		copyRows[hash] = count
+	}
+	return classifyStagedTarget(expected, manifest, manifestMatches, copyRows)
+}
+
+func (f *fakeStageProtocol) ObserveLanding(_ context.Context, _ stagedConfig, claim stagedLoadClaim, expected []string) (stagedTargetObservation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rows := f.landing[claim.stagePath]
+	observation := fakeObserveRows(expected, len(expected) == 0 || len(rows) > 0, true, rows)
+	if len(expected) == 0 {
+		observation.state = stagedTargetComplete
+	}
+	return observation, nil
+}
+
+func (f *fakeStageProtocol) ObserveTarget(_ context.Context, _ stagedConfig, claim stagedLoadClaim, expected []string) (stagedTargetObservation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	manifest, present := f.manifests[claim.claimID]
+	return fakeObserveRows(expected, present, !present || stagedClaimsSameIdentity(manifest, claim), f.target[claim.claimID]), nil
+}
+
+func (f *fakeStageProtocol) ValidateReceiptTargetProof(_ context.Context, _ stagedConfig, receipt managedStagedReceipt) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	claim, present := f.manifests[receipt.externalID]
+	if !present || claim.manifestHash != receipt.manifestHash || claim.contentHash != receipt.contentHash || claim.fileContentHash != receipt.fileContentHash {
+		return connector.ErrDeliveryConflict
+	}
+	rows := f.target[receipt.externalID]
+	count := 0
+	for _, duplicates := range rows {
+		if duplicates != 1 {
+			return connector.ErrDeliveryConflict
+		}
+		count += duplicates
+	}
+	if count != receipt.recordCount {
+		return connector.ErrDeliveryConflict
+	}
+	return nil
+}
+
+func (f *fakeStageProtocol) InsertLoadReceipt(_ context.Context, _ stagedConfig, lease stagedRuntimeLease, claim stagedLoadClaim, receipt managedStagedReceipt) (stageReceiptInsert, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	current, ok := f.leases[lease.leaseID]
+	ownedClaim, claimOK := f.claims[claim.claimID]
+	if !ok || current.ownerID != lease.ownerID || current.provisionEpoch != f.provisionEpoch || !claimOK || !stagedClaimsSameIdentity(ownedClaim, claim) {
+		return stageReceiptInsert{}, connector.ErrDeliveryIndeterminate
+	}
+	pk := fakeReceiptPK(receipt)
+	if _, present := f.receipts[pk]; present {
+		return stageReceiptInsert{inserted: false}, nil
+	}
+	f.receipts[pk] = receipt
+	f.insertCalls++
+	if f.insertCommitsThenDuplicate {
+		f.insertCommitsThenDuplicate = false
+		return stageReceiptInsert{inserted: false}, nil
+	}
+	return stageReceiptInsert{inserted: true}, nil
+}
+
+func (f *fakeStageProtocol) PromoteTarget(_ context.Context, _ stagedConfig, lease stagedRuntimeLease, claim stagedLoadClaim, rowHashes []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	current, ok := f.leases[lease.leaseID]
+	if !ok || current.ownerID != lease.ownerID || current.provisionEpoch != f.provisionEpoch {
+		return connector.ErrDeliveryIndeterminate
+	}
+	if existing, present := f.manifests[claim.claimID]; present {
+		if !stagedClaimsSameIdentity(existing, claim) {
+			return connector.ErrDeliveryConflict
+		}
+		return nil
+	}
+	landing := f.landing[claim.stagePath]
+	expected := make(map[string]int, len(rowHashes))
+	for _, hash := range rowHashes {
+		expected[hash]++
+	}
+	if len(landing) != len(expected) {
+		return connector.ErrDeliveryIndeterminate
+	}
+	for hash, count := range expected {
+		if count != 1 || landing[hash] != 1 {
+			return connector.ErrDeliveryConflict
+		}
+	}
+	f.target[claim.claimID] = expected
+	f.manifests[claim.claimID] = claim
+	delete(f.landing, claim.stagePath)
+	return nil
 }
 
 func newStagedTestDriver(cfg stagedConfig, proto stageProtocol) *stagedDriver {

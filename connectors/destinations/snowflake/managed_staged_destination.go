@@ -11,6 +11,12 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
+// ManagedStagedCatalogFingerprint returns the admitted non-secret catalog
+// identity for owner-side initialization and same-SHA commercial evidence.
+func (d *Destination) ManagedStagedCatalogFingerprint() string {
+	return d.stagedCatalogFingerprint
+}
+
 func (d *Destination) stagedHooksSnapshot() stagedHooks {
 	d.stagedHooksMu.RLock()
 	defer d.stagedHooksMu.RUnlock()

@@ -23,6 +23,7 @@ type managedTableSnapshot struct {
 	ownerRole            string
 	createdOn            string
 	comment              string
+	definition           string
 	columns              map[string]managedColumnSnapshot
 	constraints          []managedConstraintSnapshot
 	otherConstraintCount int

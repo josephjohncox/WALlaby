@@ -447,6 +447,9 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	fileFormat := "WALLABY_SF_FF_" + suffix
 	target := "WALLABY_SF_STAGED_" + suffix
 	receipts := "WALLABY_SF_STAGED_RECEIPTS_" + suffix
+	landing := "WALLABY_SF_STAGED_LANDING_" + suffix
+	authority := "WALLABY_SF_STAGED_AUTHORITY_" + suffix
+	targetManifest := "WALLABY_SF_STAGED_MANIFESTS_" + suffix
 	revision := "snowflake-staged-" + strings.ToLower(suffix)
 	schema := snowflakeManagedSchema()
 	schemaJSON, err := json.Marshal(schema)
@@ -460,6 +463,9 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	q := func(name string) string { return quoteSnowflakeIdent(name) }
 	targetQualified := q(database) + "." + q(schemaName) + "." + q(target)
 	receiptQualified := q(database) + "." + q(schemaName) + "." + q(receipts)
+	landingQualified := q(database) + "." + q(schemaName) + "." + q(landing)
+	authorityQualified := q(database) + "." + q(schemaName) + "." + q(authority)
+	targetManifestQualified := q(database) + "." + q(schemaName) + "." + q(targetManifest)
 	stageQualified := q(database) + "." + q(schemaName) + "." + q(stage)
 	fileFormatQualified := q(database) + "." + q(schemaName) + "." + q(fileFormat)
 	destination := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
@@ -468,7 +474,8 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 		defer cleanupCancel()
 		_ = destination.Close(cleanupCtx)
 		for _, drop := range []string{
-			"DROP TABLE IF EXISTS " + receiptQualified, "DROP TABLE IF EXISTS " + targetQualified,
+			"DROP TABLE IF EXISTS " + targetManifestQualified, "DROP TABLE IF EXISTS " + authorityQualified,
+			"DROP TABLE IF EXISTS " + landingQualified, "DROP TABLE IF EXISTS " + receiptQualified, "DROP TABLE IF EXISTS " + targetQualified,
 			"DROP STAGE IF EXISTS " + stageQualified, "DROP FILE FORMAT IF EXISTS " + fileFormatQualified,
 		} {
 			_, _ = provisionDB.ExecContext(cleanupCtx, drop)
@@ -480,14 +487,23 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	fileFormatComment := snowflakeStagedOwnershipComment("file_format", revision, schemaHash, flowID)
 	targetComment := snowflakeStagedOwnershipComment("target", revision, schemaHash, flowID)
 	receiptComment := snowflakeStagedOwnershipComment("receipts", revision, schemaHash, flowID)
+	landingComment := snowflakeStagedOwnershipComment("landing", revision, schemaHash, flowID)
+	authorityComment := snowflakeStagedOwnershipComment("authority", revision, schemaHash, flowID)
+	targetManifestComment := snowflakeStagedOwnershipComment("target_manifest", revision, schemaHash, flowID)
 	statements := []string{
 		fmt.Sprintf("CREATE STAGE %s COMMENT = '%s'", stageQualified, stageComment),
 		fmt.Sprintf("CREATE FILE FORMAT %s TYPE = JSON MULTI_LINE = FALSE STRIP_OUTER_ARRAY = FALSE COMMENT = '%s'", fileFormatQualified, fileFormatComment),
 		snowflakeStagedTargetDDL(targetQualified, targetComment),
+		snowflakeStagedTargetDDL(landingQualified, landingComment),
 		snowflakeStagedReceiptsDDL(receiptQualified, suffix, receiptComment),
+		snowflakeStagedAuthorityDDL(authorityQualified, suffix, authorityComment),
+		snowflakeStagedTargetManifestDDL(targetManifestQualified, suffix, targetManifestComment),
 		"GRANT READ, WRITE ON STAGE " + stageQualified + " TO ROLE " + q(role),
 		"GRANT USAGE ON FILE FORMAT " + fileFormatQualified + " TO ROLE " + q(role),
 		"GRANT SELECT, INSERT ON TABLE " + targetQualified + " TO ROLE " + q(role),
+		"GRANT SELECT, INSERT, DELETE ON TABLE " + landingQualified + " TO ROLE " + q(role),
+		"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE " + authorityQualified + " TO ROLE " + q(role),
+		"GRANT SELECT, INSERT ON TABLE " + targetManifestQualified + " TO ROLE " + q(role),
 		"GRANT SELECT, INSERT ON TABLE " + receiptQualified + " TO ROLE " + q(role),
 	}
 	for _, statement := range statements {
@@ -507,17 +523,24 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	fileFormatCreated := readCreated("SELECT TO_VARCHAR(CREATED, '"+catalogTimestampFormat+"') FROM "+q(database)+".INFORMATION_SCHEMA.FILE_FORMATS WHERE FILE_FORMAT_SCHEMA=? AND FILE_FORMAT_NAME=?", strings.ToUpper(schemaName), fileFormat)
 	targetCreated := readCreated("SELECT TO_VARCHAR(CREATED, '"+catalogTimestampFormat+"') FROM "+q(database)+".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", strings.ToUpper(schemaName), target)
 	receiptsCreated := readCreated("SELECT TO_VARCHAR(CREATED, '"+catalogTimestampFormat+"') FROM "+q(database)+".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", strings.ToUpper(schemaName), receipts)
+	landingCreated := readCreated("SELECT TO_VARCHAR(CREATED, '"+catalogTimestampFormat+"') FROM "+q(database)+".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", strings.ToUpper(schemaName), landing)
+	authorityCreated := readCreated("SELECT TO_VARCHAR(CREATED, '"+catalogTimestampFormat+"') FROM "+q(database)+".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", strings.ToUpper(schemaName), authority)
+	targetManifestCreated := readCreated("SELECT TO_VARCHAR(CREATED, '"+catalogTimestampFormat+"') FROM "+q(database)+".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", strings.ToUpper(schemaName), targetManifest)
 
 	spec := connector.RuntimeSpec{Name: "snowflake-staged", Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": dsn, "flow_id": flowID, "managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
 		"destination_revision_id": revision, "batch_mode": "target", "batch_resolution": "none",
 		"meta_table_enabled": "false", "disable_transactions": "false", "session_keep_alive": "false",
 		"managed_account": strings.ToUpper(account), "managed_database": strings.ToUpper(database), "managed_schema": strings.ToUpper(schemaName),
-		"managed_stage": stage, "managed_table": target, "managed_receipts_table": receipts, "managed_file_format": fileFormat,
-		"managed_owner_role": expectedOwnerRole, "managed_execution_role": strings.ToUpper(role), "managed_warehouse": strings.ToUpper(warehouse),
+		"managed_stage": stage, "managed_table": target, "managed_receipts_table": receipts,
+		"managed_landing_table": landing, "managed_authority_table": authority, "managed_target_manifest_table": targetManifest,
+		"managed_file_format": fileFormat,
+		"managed_owner_role":  expectedOwnerRole, "managed_execution_role": strings.ToUpper(role), "managed_warehouse": strings.ToUpper(warehouse),
 		"managed_snowflake_version": expectedVersion, "managed_stage_created_on": stageCreated, "managed_target_created_on": targetCreated,
-		"managed_receipts_created_on": receiptsCreated, "managed_file_format_created_on": fileFormatCreated,
-		"managed_source_schema": "public", "managed_source_table": "widgets",
+		"managed_receipts_created_on": receiptsCreated, "managed_landing_created_on": landingCreated,
+		"managed_authority_created_on": authorityCreated, "managed_target_manifest_created_on": targetManifestCreated,
+		"managed_file_format_created_on": fileFormatCreated,
+		"managed_source_schema":          "public", "managed_source_table": "widgets",
 		"managed_schema_contract": string(schemaJSON), "managed_schema_contract_hash": schemaHash,
 		"managed_max_transaction_rows": "1000", "managed_max_transaction_bytes": "8388608",
 		"managed_max_transaction_fragments": "64", "managed_max_open_conns": "4",
@@ -530,6 +553,13 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	}
 	if err := destination.Open(ctx, spec); err != nil {
 		t.Fatalf("open managed staged Snowflake destination: %v", err)
+	}
+	fingerprint := destination.ManagedStagedCatalogFingerprint()
+	if len(fingerprint) != 64 {
+		t.Fatalf("managed staged catalog fingerprint=%q", fingerprint)
+	}
+	if _, err := provisionDB.ExecContext(ctx, "INSERT INTO "+authorityQualified+" (AUTHORITY_KIND,DESTINATION_REVISION_ID,AUTHORITY_ID,OWNER_ID,PROVISION_EPOCH,CATALOG_FINGERPRINT,STATE,EXPIRES_AT,UPDATED_AT) VALUES ('CATALOG',?,'CURRENT',?,1,?,'CURRENT','9999-12-31 23:59:59 +00:00',CURRENT_TIMESTAMP())", revision, expectedOwnerRole, fingerprint); err != nil {
+		t.Fatalf("initialize staged catalog authority: %v", err)
 	}
 	if err := destination.InitializeManagedDelivery(ctx); err != nil {
 		t.Fatalf("initialize Open-managed staged Snowflake authority: %v", err)
@@ -571,6 +601,29 @@ func snowflakeStagedReceiptsDDL(qualified, suffix, comment string) string {
   "LOAD_STATUS" VARCHAR NOT NULL, "COMMITTED_AT" TIMESTAMP_TZ NOT NULL,
   CONSTRAINT "PK_STAGED_%s" PRIMARY KEY ("RECEIPT_KIND", "FLOW_INCARNATION_ID", "DESTINATION_REVISION_ID", "LOGICAL_BATCH_ID"),
   CONSTRAINT "UQ_STAGED_EXTERNAL_%s" UNIQUE ("EXTERNAL_ID")
+) COMMENT = '%s'`, qualified, suffix, suffix, comment)
+}
+
+func snowflakeStagedAuthorityDDL(qualified, suffix, comment string) string {
+	return fmt.Sprintf(`CREATE HYBRID TABLE %s (
+  "AUTHORITY_KIND" VARCHAR NOT NULL, "DESTINATION_REVISION_ID" VARCHAR NOT NULL, "AUTHORITY_ID" VARCHAR NOT NULL,
+  "OWNER_ID" VARCHAR NOT NULL, "FLOW_INCARNATION_ID" VARCHAR, "GENERATION" NUMBER(38,0), "ACQUISITION_ID" VARCHAR,
+  "LEASE_EPOCH" NUMBER(38,0), "PROVISION_EPOCH" NUMBER(38,0) NOT NULL, "CATALOG_FINGERPRINT" VARCHAR NOT NULL,
+  "LOGICAL_BATCH_ID" VARCHAR, "MANIFEST_HASH" VARCHAR, "CONTENT_HASH" VARCHAR, "FILE_CONTENT_HASH" VARCHAR,
+  "PLAN_HASH" VARCHAR, "EXPECTED_ROW_COUNT" NUMBER(38,0), "STATE" VARCHAR NOT NULL,
+  "EXPIRES_AT" TIMESTAMP_LTZ(9) NOT NULL, "UPDATED_AT" TIMESTAMP_LTZ(9) NOT NULL,
+  CONSTRAINT "PK_STAGED_AUTH_%s" PRIMARY KEY ("AUTHORITY_KIND","DESTINATION_REVISION_ID","AUTHORITY_ID")
+) COMMENT = '%s'`, qualified, suffix, comment)
+}
+
+func snowflakeStagedTargetManifestDDL(qualified, suffix, comment string) string {
+	return fmt.Sprintf(`CREATE HYBRID TABLE %s (
+  "DESTINATION_REVISION_ID" VARCHAR NOT NULL, "LOGICAL_BATCH_ID" VARCHAR NOT NULL, "MANIFEST_HASH" VARCHAR NOT NULL,
+  "CONTENT_HASH" VARCHAR NOT NULL, "FILE_CONTENT_HASH" VARCHAR NOT NULL, "PLAN_HASH" VARCHAR NOT NULL,
+  "EXPECTED_ROW_COUNT" NUMBER(38,0) NOT NULL, "ROW_HASHES_JSON" VARCHAR NOT NULL, "PROVISION_EPOCH" NUMBER(38,0) NOT NULL,
+  "CATALOG_FINGERPRINT" VARCHAR NOT NULL, "COMMITTED_AT" TIMESTAMP_LTZ(9) NOT NULL,
+  CONSTRAINT "PK_STAGED_MANIFEST_%s" PRIMARY KEY ("DESTINATION_REVISION_ID","LOGICAL_BATCH_ID"),
+  CONSTRAINT "UQ_STAGED_MANIFEST_%s" UNIQUE ("MANIFEST_HASH")
 ) COMMENT = '%s'`, qualified, suffix, suffix, comment)
 }
 

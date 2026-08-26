@@ -27,6 +27,26 @@ func validStagedCatalog(cfg stagedConfig) managedStagedCatalogSnapshot {
 			columns: stagedExpectedTargetColumns(),
 			grants:  map[string][]string{cfg.executionRole: {"INSERT", "SELECT"}, cfg.ownerRole: {"OWNERSHIP"}},
 		},
+		landing: managedTableSnapshot{
+			kind: "TABLE", ownerRole: cfg.ownerRole, createdOn: cfg.landingCreatedOn, comment: managedStagedOwnershipComment(cfg, "landing"),
+			columns: stagedExpectedTargetColumns(),
+			grants:  map[string][]string{cfg.executionRole: {"DELETE", "INSERT", "SELECT"}, cfg.ownerRole: {"OWNERSHIP"}},
+		},
+		authority: managedTableSnapshot{
+			kind: "HYBRID TABLE", ownerRole: cfg.ownerRole, createdOn: cfg.authorityCreatedOn, comment: managedStagedOwnershipComment(cfg, "authority"),
+			columns:     stagedExpectedAuthorityColumns(),
+			grants:      map[string][]string{cfg.executionRole: {"DELETE", "INSERT", "SELECT", "UPDATE"}, cfg.ownerRole: {"OWNERSHIP"}},
+			constraints: []managedConstraintSnapshot{{name: "PK_AUTHORITY", constraintType: "PRIMARY KEY", enforced: true, columns: []string{"AUTHORITY_KIND", "DESTINATION_REVISION_ID", "AUTHORITY_ID"}}},
+		},
+		targetManifest: managedTableSnapshot{
+			kind: "HYBRID TABLE", ownerRole: cfg.ownerRole, createdOn: cfg.targetManifestCreatedOn, comment: managedStagedOwnershipComment(cfg, "target_manifest"),
+			columns: stagedExpectedTargetManifestColumns(),
+			grants:  map[string][]string{cfg.executionRole: {"INSERT", "SELECT"}, cfg.ownerRole: {"OWNERSHIP"}},
+			constraints: []managedConstraintSnapshot{
+				{name: "PK_MANIFEST", constraintType: "PRIMARY KEY", enforced: true, columns: []string{"DESTINATION_REVISION_ID", "LOGICAL_BATCH_ID"}},
+				{name: "UQ_MANIFEST", constraintType: "UNIQUE", enforced: true, columns: []string{"MANIFEST_HASH"}},
+			},
+		},
 		receipts: managedTableSnapshot{
 			kind: "HYBRID TABLE", ownerRole: cfg.ownerRole, createdOn: cfg.receiptsCreatedOn, comment: managedStagedOwnershipComment(cfg, "receipts"),
 			columns: stagedExpectedReceiptColumns(),
@@ -330,5 +350,32 @@ func TestManagedStagedCatalogFingerprintIsDeterministicAndSensitive(t *testing.T
 	}
 	if changed == first {
 		t.Fatal("staged catalog fingerprint did not change when a JSON file format default drifted")
+	}
+	cfg.autoIngest = true
+	cfg.pipe = "WALLABY_PIPE"
+	cfg.pipeCreatedOn = cfg.stageCreatedOn
+	pipeCatalog := validStagedCatalog(cfg)
+	pipeCatalog.pipe = validStagedAutoIngestPipe(t, cfg)
+	pipeBaseline, err := managedStagedCatalogFingerprint(pipeCatalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipeCatalog.pipe.definition += " /* changed */"
+	pipeChanged, err := managedStagedCatalogFingerprint(pipeCatalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pipeBaseline == pipeChanged {
+		t.Fatal("staged catalog fingerprint did not bind the full pipe definition")
+	}
+}
+
+func TestValidateManagedStagedCatalogProvesNoPipeForSynchronousCopy(t *testing.T) {
+	t.Parallel()
+	cfg := stagedTestConfig(t)
+	catalog := validStagedCatalog(cfg)
+	catalog.unexpectedPipeCount = 1
+	if err := validateManagedStagedCatalog(cfg, catalog); err == nil {
+		t.Fatal("synchronous staged profile accepted an observed pipe")
 	}
 }

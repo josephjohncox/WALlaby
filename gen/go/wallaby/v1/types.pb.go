@@ -3926,6 +3926,12 @@ type SnowflakePostgresStagedConfig struct {
 	LoadVerifyIntervalMillis *uint32                `protobuf:"varint,36,opt,name=load_verify_interval_millis,json=loadVerifyIntervalMillis,proto3,oneof" json:"load_verify_interval_millis,omitempty"`
 	CleanupMaxObjects        *uint32                `protobuf:"varint,37,opt,name=cleanup_max_objects,json=cleanupMaxObjects,proto3,oneof" json:"cleanup_max_objects,omitempty"`
 	CleanupRetentionSeconds  *uint32                `protobuf:"varint,38,opt,name=cleanup_retention_seconds,json=cleanupRetentionSeconds,proto3,oneof" json:"cleanup_retention_seconds,omitempty"`
+	LandingTable             string                 `protobuf:"bytes,39,opt,name=landing_table,json=landingTable,proto3" json:"landing_table,omitempty"`
+	AuthorityTable           string                 `protobuf:"bytes,40,opt,name=authority_table,json=authorityTable,proto3" json:"authority_table,omitempty"`
+	TargetManifestTable      string                 `protobuf:"bytes,41,opt,name=target_manifest_table,json=targetManifestTable,proto3" json:"target_manifest_table,omitempty"`
+	LandingCreatedOn         string                 `protobuf:"bytes,42,opt,name=landing_created_on,json=landingCreatedOn,proto3" json:"landing_created_on,omitempty"`
+	AuthorityCreatedOn       string                 `protobuf:"bytes,43,opt,name=authority_created_on,json=authorityCreatedOn,proto3" json:"authority_created_on,omitempty"`
+	TargetManifestCreatedOn  string                 `protobuf:"bytes,44,opt,name=target_manifest_created_on,json=targetManifestCreatedOn,proto3" json:"target_manifest_created_on,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -4161,6 +4167,48 @@ func (x *SnowflakePostgresStagedConfig) GetCleanupRetentionSeconds() uint32 {
 		return *x.CleanupRetentionSeconds
 	}
 	return 0
+}
+
+func (x *SnowflakePostgresStagedConfig) GetLandingTable() string {
+	if x != nil {
+		return x.LandingTable
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetAuthorityTable() string {
+	if x != nil {
+		return x.AuthorityTable
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetTargetManifestTable() string {
+	if x != nil {
+		return x.TargetManifestTable
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetLandingCreatedOn() string {
+	if x != nil {
+		return x.LandingCreatedOn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetAuthorityCreatedOn() string {
+	if x != nil {
+		return x.AuthorityCreatedOn
+	}
+	return ""
+}
+
+func (x *SnowflakePostgresStagedConfig) GetTargetManifestCreatedOn() string {
+	if x != nil {
+		return x.TargetManifestCreatedOn
+	}
+	return ""
 }
 
 type SnowflakePostgresStreamingConfig struct {
@@ -6226,7 +6274,7 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\x1a_max_transaction_fragmentsB\x17\n" +
 	"\x15_max_open_connectionsB\x1c\n" +
 	"\x1a_statement_timeout_secondsB$\n" +
-	"\"_hybrid_table_lock_timeout_secondsJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x06\x10\aR\twarehouseR\astagingR\bmetadataR\rtype_mappings\"\xc2\r\n" +
+	"\"_hybrid_table_lock_timeout_secondsJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x06\x10\aR\twarehouseR\astagingR\bmetadataR\rtype_mappings\"\xe1\x0f\n" +
 	"\x1dSnowflakePostgresStagedConfig\x12\x10\n" +
 	"\x03dsn\x18\x01 \x01(\tR\x03dsn\x12\x14\n" +
 	"\x05stage\x18\x02 \x01(\tR\x05stage\x12\x1f\n" +
@@ -6259,7 +6307,13 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\x14load_verify_attempts\x18# \x01(\rH\x06R\x12loadVerifyAttempts\x88\x01\x01\x12B\n" +
 	"\x1bload_verify_interval_millis\x18$ \x01(\rH\aR\x18loadVerifyIntervalMillis\x88\x01\x01\x123\n" +
 	"\x13cleanup_max_objects\x18% \x01(\rH\bR\x11cleanupMaxObjects\x88\x01\x01\x12?\n" +
-	"\x19cleanup_retention_seconds\x18& \x01(\rH\tR\x17cleanupRetentionSeconds\x88\x01\x01B\x0e\n" +
+	"\x19cleanup_retention_seconds\x18& \x01(\rH\tR\x17cleanupRetentionSeconds\x88\x01\x01\x12#\n" +
+	"\rlanding_table\x18' \x01(\tR\flandingTable\x12'\n" +
+	"\x0fauthority_table\x18( \x01(\tR\x0eauthorityTable\x122\n" +
+	"\x15target_manifest_table\x18) \x01(\tR\x13targetManifestTable\x12,\n" +
+	"\x12landing_created_on\x18* \x01(\tR\x10landingCreatedOn\x120\n" +
+	"\x14authority_created_on\x18+ \x01(\tR\x12authorityCreatedOn\x12;\n" +
+	"\x1atarget_manifest_created_on\x18, \x01(\tR\x17targetManifestCreatedOnB\x0e\n" +
 	"\f_auto_ingestB\x17\n" +
 	"\x15_max_transaction_rowsB\x18\n" +
 	"\x16_max_transaction_bytesB\x1c\n" +
