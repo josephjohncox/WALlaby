@@ -14,8 +14,6 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-var errStreamChannelInvalidated = errors.New("streaming Snowflake channel is invalidated")
-
 // fakeStreamChannel is one durable channel in the in-memory protocol.
 type fakeStreamChannel struct {
 	revision             int64

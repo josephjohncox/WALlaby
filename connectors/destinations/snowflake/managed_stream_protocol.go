@@ -30,6 +30,9 @@ var (
 	// one deterministic identity than the plan produced — a duplicate-identity
 	// hazard that fails closed rather than acknowledging.
 	errStreamObservationInconsistent = errors.New("streaming Snowflake observed row cardinality is inconsistent")
+	// errStreamChannelInvalidated means Snowflake rejected the current client
+	// sequencer. Recovery must reopen and reconcile before any append.
+	errStreamChannelInvalidated = errors.New("streaming Snowflake channel is invalidated")
 )
 
 // streamAppendRow is one row handed to the append transport. The payload is the
