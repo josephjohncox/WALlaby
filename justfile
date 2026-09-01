@@ -416,9 +416,10 @@ test-snowflake-streaming-commercial-unpromoted:
     required+=',TestSnowflakeStreamingManagedProfileVisibilityLagWithoutResend'
     required+=',TestSnowflakeStreamingManagedProfileProvenAbsenceRetry'
     required+=',TestSnowflakeStreamingManagedProfileRequestProcessRestart'
+    required+=',TestSnowflakeStreamingRequestJournalCommercialRoundTrip'
     filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
     set +e
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 -json ./tests -run "${filter}" >"${results}"
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 -json ./tests ./connectors/destinations/snowflake -run "${filter}" >"${results}"
     test_rc=$?
     set -e
     cat "${results}"

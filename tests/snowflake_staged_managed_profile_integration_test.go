@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -283,9 +284,21 @@ func TestSnowflakeStagedManagedProfileAutoIngestCompletion(t *testing.T) {
 		t.Fatalf("auto-ingest landing/manifests/receipts=%d/%d/%d, want 0/1/1", landingRows, manifests, receipts)
 	}
 	var refreshQuery string
-	refreshPattern := "ALTER PIPE " + fixture.pipeQualified + " REFRESH PREFIX = %"
-	if err := fixture.db.QueryRowContext(ctx, `SELECT QUERY_TEXT FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(RESULT_LIMIT=>100)) WHERE QUERY_TEXT ILIKE ? ORDER BY START_TIME DESC LIMIT 1`, refreshPattern).Scan(&refreshQuery); err != nil {
-		t.Fatalf("read exact auto-ingest pipe refresh query: %v", err)
+	refreshPrefix := "ALTER PIPE " + fixture.pipeQualified + " REFRESH PREFIX = "
+	historyDeadline := time.Now().Add(30 * time.Second)
+	for {
+		err := fixture.db.QueryRowContext(ctx, `SELECT QUERY_TEXT FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_USER(RESULT_LIMIT=>1000)) WHERE STARTSWITH(UPPER(QUERY_TEXT),UPPER(?)) ORDER BY START_TIME DESC LIMIT 1`, refreshPrefix).Scan(&refreshQuery)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, sql.ErrNoRows) || time.Now().After(historyDeadline) {
+			t.Fatalf("read exact auto-ingest pipe refresh query across worker sessions: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 	marker := "REFRESH PREFIX = '"
 	markerIndex := strings.Index(strings.ToUpper(refreshQuery), marker)

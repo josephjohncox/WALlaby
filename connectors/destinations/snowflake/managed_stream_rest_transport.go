@@ -133,9 +133,8 @@ func (t *streamRESTTransport) validateConfigAccount(cfg streamConfig) error {
 		return nil
 	}
 	configured := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(cfg.account)), "_", "-")
-	controlAccount := streamRESTAccountLabel(t.controlBase.Hostname())
-	if configured == "" || controlAccount != configured && !strings.HasSuffix(controlAccount, "-"+configured) {
-		return errors.New("snowpipe Streaming control origin does not match the admitted Snowflake account")
+	if configured == "" || strings.ContainsAny(configured, ".:/@?#") || streamRESTAccountLabel(t.controlBase.Hostname()) != configured {
+		return errors.New("snowpipe Streaming control origin does not match the complete admitted Snowflake account identifier")
 	}
 	return nil
 }
@@ -280,7 +279,7 @@ func (t *streamRESTTransport) RequestStatus(ctx context.Context, cfg streamConfi
 		manifestHash: request.manifestHash, rowsContentHash: request.rowsContentHash, rowCount: request.rowCount,
 		detail: "Snowflake channel status has not committed the exact offset",
 	}
-	if !status.valid || status.pipeRevision != request.pipeRevision || status.channelRevision > 0 && status.channelRevision != request.channelRevision {
+	if !status.valid || status.pipeRevision != request.pipeRevision || status.channelRevision != request.channelRevision {
 		evidence.disposition = streamRequestStatusDivergent
 		return evidence, nil
 	}
@@ -558,7 +557,7 @@ func (r streamRESTOpenResponse) validate(cfg streamConfig, channel string) error
 }
 
 func (s streamRESTChannelStatus) validate(cfg streamConfig, channel string) error {
-	if s.ChannelName != channel || !strings.EqualFold(s.DatabaseName, cfg.database) || !strings.EqualFold(s.SchemaName, cfg.schema) || !strings.EqualFold(s.PipeName, cfg.pipe) || s.ChannelStatusCode == "" || s.CreatedOnMS < 0 || s.RowsInserted < 0 || s.RowsParsed < 0 || s.RowsErrors < 0 || s.RowsErrorCount < 0 {
+	if s.ChannelName != channel || !strings.EqualFold(s.DatabaseName, cfg.database) || !strings.EqualFold(s.SchemaName, cfg.schema) || !strings.EqualFold(s.PipeName, cfg.pipe) || s.ChannelStatusCode == "" || s.CreatedOnMS <= 0 || s.RowsInserted < 0 || s.RowsParsed < 0 || s.RowsErrors < 0 || s.RowsErrorCount < 0 {
 		return fmt.Errorf("%w: Snowpipe Streaming channel status identity is incomplete", connector.ErrDeliveryConflict)
 	}
 	if s.RowsErrors > 0 || s.RowsErrorCount > 0 || s.LastErrorOffsetUpperBound != "" || s.LastErrorMessage != "" {

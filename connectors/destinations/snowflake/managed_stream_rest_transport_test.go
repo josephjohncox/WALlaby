@@ -188,6 +188,51 @@ func TestStreamRESTChannelRevisionUsesCreatedOnMS(t *testing.T) {
 	}
 }
 
+func TestStreamRESTRequestStatusRejectsMissingOrDifferentChannelIncarnation(t *testing.T) {
+	request := managedStreamRequest{
+		requestID: "request", channelName: "CHANNEL_1", pipeName: "PIPE", channelRevision: 9,
+		pipeRevision: streamRESTTestConfig().pipeCreatedOn, inputContinuation: "cont",
+		expectedPreviousOffset: "offset-0", requestedOffset: "offset-1",
+		manifestHash: "manifest", rowsContentHash: "rows", rowCount: 1,
+	}
+	for _, test := range []struct {
+		name       string
+		createdOn  *int64
+		wantError  bool
+		wantStatus streamRequestDisposition
+	}{
+		{name: "missing", wantError: true},
+		{name: "zero", createdOn: int64Pointer(0), wantError: true},
+		{name: "older", createdOn: int64Pointer(8), wantStatus: streamRequestStatusDivergent},
+		{name: "newer", createdOn: int64Pointer(10), wantStatus: streamRequestStatusDivergent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			created := ""
+			if test.createdOn != nil {
+				created = fmt.Sprintf(`,"created_on_ms":%d`, *test.createdOn)
+			}
+			body := fmt.Sprintf(`{"channel_statuses":{"CHANNEL_1":{"database_name":"DB","schema_name":"PUBLIC","pipe_name":"PIPE","channel_name":"CHANNEL_1","channel_status_code":"ACTIVE","last_committed_offset_token":"offset-0"%s,"rows_inserted":0,"rows_parsed":0,"rows_errors":0,"rows_error_count":0}}}`, created)
+			transport, closeServer := newStreamRESTStatusFixture(t, http.StatusOK, body)
+			defer closeServer()
+			if _, _, err := transport.session(context.Background(), false); err != nil {
+				t.Fatal(err)
+			}
+			evidence, err := transport.RequestStatus(context.Background(), streamRESTTestConfig(), request)
+			if test.wantError {
+				if !errors.Is(err, connector.ErrDeliveryConflict) {
+					t.Fatalf("channel incarnation error=%v, want delivery conflict", err)
+				}
+				return
+			}
+			if err != nil || evidence.disposition != test.wantStatus {
+				t.Fatalf("channel incarnation evidence/error=%+v/%v, want %v", evidence, err, test.wantStatus)
+			}
+		})
+	}
+}
+
+func int64Pointer(value int64) *int64 { return &value }
+
 func TestStreamRESTMalformedOversizedRedirectCancellationAndHostDrift(t *testing.T) {
 	t.Run("malformed", func(t *testing.T) {
 		transport, closeServer := newStreamRESTStatusFixture(t, http.StatusOK, `{"next_continuation_token":`)
@@ -365,7 +410,7 @@ func TestStreamRESTPriorOffsetThenRequestedOffsetCommits(t *testing.T) {
 			mu.Lock()
 			value := committed
 			mu.Unlock()
-			_ = json.NewEncoder(w).Encode(streamRESTBulkStatusResponse{ChannelStatuses: map[string]streamRESTChannelStatus{"CHANNEL_1": {DatabaseName: "DB", SchemaName: "PUBLIC", PipeName: "PIPE", ChannelName: "CHANNEL_1", ChannelStatusCode: "ACTIVE", LastCommittedOffsetToken: value}}})
+			_ = json.NewEncoder(w).Encode(streamRESTBulkStatusResponse{ChannelStatuses: map[string]streamRESTChannelStatus{"CHANNEL_1": {DatabaseName: "DB", SchemaName: "PUBLIC", PipeName: "PIPE", ChannelName: "CHANNEL_1", ChannelStatusCode: "ACTIVE", LastCommittedOffsetToken: value, CreatedOnMS: 9}}})
 		}
 	}))
 	defer server.Close()
@@ -395,7 +440,7 @@ func TestStreamRESTPriorAndOpaqueOffsetsRemainUnknown(t *testing.T) {
 		{name: "unrelated opaque offset", observed: "opaque-other"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			body := fmt.Sprintf(`{"channel_statuses":{"CHANNEL_1":{"database_name":"DB","schema_name":"PUBLIC","pipe_name":"PIPE","channel_name":"CHANNEL_1","channel_status_code":"ACTIVE","last_committed_offset_token":%q,"created_on_ms":0,"rows_inserted":0,"rows_parsed":0,"rows_errors":0,"rows_error_count":0,"last_error_offset_upper_bound":"","last_error_message":"","last_error_timestamp":"","snowflake_avg_processing_latency_ms":0}}}`, test.observed)
+			body := fmt.Sprintf(`{"channel_statuses":{"CHANNEL_1":{"database_name":"DB","schema_name":"PUBLIC","pipe_name":"PIPE","channel_name":"CHANNEL_1","channel_status_code":"ACTIVE","last_committed_offset_token":%q,"created_on_ms":9,"rows_inserted":0,"rows_parsed":0,"rows_errors":0,"rows_error_count":0,"last_error_offset_upper_bound":"","last_error_message":"","last_error_timestamp":"","snowflake_avg_processing_latency_ms":0}}}`, test.observed)
 			transport, closeServer := newStreamRESTStatusFixture(t, http.StatusOK, body)
 			defer closeServer()
 			if _, _, err := transport.session(context.Background(), false); err != nil {
@@ -447,6 +492,13 @@ func TestStreamRESTProductionOriginAndTLSBinding(t *testing.T) {
 	}
 	if err := transport.validateConfigAccount(streamConfig{account: "OTHER"}); err == nil {
 		t.Fatal("cross-account managed config accepted")
+	}
+	evilTransport, err := newStreamRESTTransport("https://evil-acme.snowflakecomputing.com", safeClient, staticStreamRESTToken("jwt-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := evilTransport.validateConfigAccount(streamConfig{account: "ACME"}); err == nil {
+		t.Fatal("cross-organization control origin with the same account suffix accepted")
 	}
 }
 
