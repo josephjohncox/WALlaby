@@ -28,8 +28,7 @@ func streamValidOptions(t *testing.T) (string, map[string]string) {
 		"dsn": dsn, "flow_id": "flow-1", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
 		"destination_revision_id": "snowflake-streaming-v1", "batch_mode": "target", "batch_resolution": "none",
 		"meta_table_enabled": "false", "disable_transactions": "false", "session_keep_alive": "false",
-		"managed_streaming_transport": streamRequiredTransport,
-		"managed_account":             "ACCOUNT", "managed_database": "DB", "managed_schema": "PUBLIC", "managed_pipe": "WALLABY_PIPE",
+		"managed_account": "ACCOUNT", "managed_database": "DB", "managed_schema": "PUBLIC", "managed_pipe": "WALLABY_PIPE",
 		"managed_table": "WALLABY_CHANGELOG", "managed_receipts_table": "WALLABY_RECEIPTS", "managed_channel_state_table": "WALLABY_CHANNELS",
 		"managed_channel_name_prefix": "wallaby_stream", "managed_owner_role": "WALLABY_OWNER", "managed_execution_role": "ROLE", "managed_warehouse": "WH",
 		"managed_snowflake_version": "8.0.0", "managed_pipe_created_on": created, "managed_target_created_on": created,
@@ -68,8 +67,6 @@ func TestStreamConfigRejectsLossyAndUnsafeOptions(t *testing.T) {
 		"generic staging":                 func(o map[string]string) { o["staging_table"] = "X" },
 		"same role":                       func(o map[string]string) { o["managed_execution_role"] = o["managed_owner_role"] },
 		"unknown option":                  func(o map[string]string) { o["nonsense"] = "1" },
-		"missing transport":               func(o map[string]string) { delete(o, "managed_streaming_transport") },
-		"wrong transport":                 func(o map[string]string) { o["managed_streaming_transport"] = "some-other-transport" },
 		"bad contract":                    func(o map[string]string) { o["managed_schema_contract_hash"] = "deadbeef" },
 		"missing created":                 func(o map[string]string) { o["managed_channel_state_created_on"] = "" },
 		"missing request journal created": func(o map[string]string) { o["managed_request_journal_created_on"] = "" },
@@ -161,7 +158,7 @@ func TestStreamSnowflakeDSNRedactsSecrets(t *testing.T) {
 func TestStreamTransportUnavailableFailsClosed(t *testing.T) {
 	t.Parallel()
 	if ManagedStreamingTransportAvailable() {
-		t.Fatal("no reviewed high-performance append transport should be linked in this build")
+		t.Skip("experimental build intentionally links the reviewed adapter")
 	}
 	dsn, options := streamValidOptions(t)
 	destination := &Destination{deploymentPolicy: snowflakeTestPolicy(t)}

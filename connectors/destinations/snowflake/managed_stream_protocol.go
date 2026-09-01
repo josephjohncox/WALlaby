@@ -189,6 +189,13 @@ type streamProtocol interface {
 	streamStateStore
 }
 
+// composedStreamProtocol binds HTTP channel operations to Snowflake SQL
+// authority. Neither side can substitute for the other.
+type composedStreamProtocol struct {
+	streamTransport
+	streamStateStore
+}
+
 // sqlStreamProtocol is the real gosnowflake-backed protocol. Its SQL-observation
 // and receipt/channel-state methods query the ordinary Snowflake query API; its
 // append-transport methods fail closed because no reviewed high-performance Go

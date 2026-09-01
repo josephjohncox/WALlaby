@@ -34,7 +34,7 @@ These are implemented modeled protocol profiles, not blanket support claims for 
 
 The SQL profile provides **at-least-once delivery with external-commit reconciliation**. It does not claim exactly-once delivery.
 
-## Unlinked Snowpipe Streaming REST adapter
+## Experimental Snowpipe Streaming REST adapter
 
 The unlinked adapter implements Snowflake's documented high-performance REST sequence:
 
@@ -45,13 +45,15 @@ The unlinked adapter implements Snowflake's documented high-performance REST seq
 5. Read the committed offset through the bulk channel-status endpoint.
 6. Drop the channel only with `fail_on_uncommitted_rows=true`.
 
-A deployment token provider signs RS256 key-pair JWTs inside `SnowflakeDeploymentPolicy`. The private key never leaves the policy. The issuer binds the normalized account, user, and SHA-256 public-key fingerprint. Tokens use an injected clock and a positive lifetime of at most one hour. The adapter derives its HTTPS control endpoint from the same deployment policy. Runtime construction still does not call this provider while `streamingTransportLinked=false`.
+A deployment token provider signs RS256 key-pair JWTs through an opaque `SnowflakeStreamingRESTPolicy`. The private key never leaves the shared base policy. The issuer binds the normalized account, user, and SHA-256 public-key fingerprint. Tokens use an injected clock and a positive lifetime of at most one hour. The adapter derives its HTTPS control endpoint from the same deployment policy.
+
+The normal binary does not link runtime assembly. An experimental binary must use the `snowpipe_streaming_rest_experimental` build tag and deployment configuration must set both `snowflake.enabled=true` and `snowflake.streaming_rest.enabled=true`. A flow cannot enable either gate. Kubernetes dispatch also requires an authoritative `--snowflake-streaming-rest-granted=true` argument and reads the current worker-local enable value from the configured ConfigMap key. The worker ANDs both values, so false wins. After disabling the capability, cancel active Streaming worker Pods before treating the deployment as quiescent.
 
 The adapter accepts at most 4 MiB of exact NDJSON wire bytes per append and 1 MiB per response. The wire count includes each row's newline terminator. It rejects redirects, cross-account host drift, user information, non-443 production endpoints, unsafe TLS clients, malformed JSON, unknown response fields, insecure non-loopback HTTP, and non-advancing continuation tokens. It never logs JWTs or scoped tokens.
 
 The durable request identity binds the exact prior committed offset, requested offset, continuation token, channel creation timestamp, pipe revision, manifest, and row identities. Offset tokens are opaque. The exact prior token means no progress, the exact requested token means committed, and any other token remains unknown without matching request-journal evidence. Bulk channel status must return the same positive `created_on_ms` value as the persisted request. A missing or different channel creation timestamp fails closed because the status could belong to a reopened channel. Commercial promotion requires the reviewed Snowflake deployment to return this incarnation field on bulk status. Authentication, channel invalidation, throttling, and local validation failures can be marked definitely not accepted only from an exact response or pre-send boundary. A timeout, service error, disconnect, or malformed success response remains ambiguous.
 
-An append success proves service receipt only. It does not prove target commit. The request remains unresolved until the channel reports the exact committed offset and SQL observation proves every expected row identity once. The public API does not expose an authoritative per-request absence lookup, so the REST adapter never invents proven-absence evidence after an ambiguous request. The runtime keeps `streamingTransportLinked=false` until the commercial same-SHA matrix validates the complete sequence.
+An append success proves service receipt only. It does not prove target commit. The request remains unresolved until the channel reports the exact committed offset and SQL observation proves every expected row identity once. The public API does not expose an authoritative per-request absence lookup, so the REST adapter never invents proven-absence evidence after an ambiguous request. The profile remains experimental until the commercial same-SHA matrix validates the complete sequence.
 
 ## Admission contract
 

@@ -122,6 +122,9 @@ jobs:
           diff -u docs/reference/generated/connector-support.md \
             .cache/evidence/connector-support.md
 
+      - name: Verify experimental Snowpipe Streaming runtime assembly
+        run: just test-snowpipe-streaming-runtime-wiring
+
       - name: Upload connector matrix
         if: always()
         # actions/upload-artifact v7.0.1

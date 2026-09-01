@@ -11,22 +11,6 @@ import (
 	"github.com/snowflakedb/gosnowflake"
 )
 
-// streamingTransportLinked reports whether this build links a reviewed,
-// live-proven Snowpipe Streaming high-performance append transport.
-//
-// It is deliberately false. There is no officially supported Go SDK or
-// high-performance REST client for Snowpipe Streaming that the gosnowflake
-// database/sql driver can execute: gosnowflake speaks the query API, not the
-// channel append protocol. Rather than fabricate delivery from local
-// continuation/offset tokens ("local-token theater"), the profile fails closed
-// at admission until a reviewed transport is linked here AND its same-SHA live
-// recovery matrix passes on one commercial Snowflake deployment cell.
-//
-// Flipping this constant is a promotion action, not a configuration one; it must
-// be accompanied by a concrete streamAppendTransport implementation and the live
-// evidence gates named by the profile contract.
-const streamingTransportLinked = false
-
 var (
 	// ErrManagedStreamingTransportUnavailable is the fail-closed admission error
 	// returned whenever the streaming REST append profile is requested without a
@@ -110,15 +94,8 @@ func streamProfileAllowedOptions() map[string]struct{} {
 		"managed_statement_timeout_seconds": {}, "managed_observe_attempts": {},
 		"managed_observe_interval_ms": {}, "managed_append_attempts": {}, "managed_append_backoff_ms": {},
 		"managed_cleanup_max_objects": {}, "managed_cleanup_retention_seconds": {},
-		"managed_streaming_transport": {},
 	}
 }
-
-// streamRequiredTransport is the only admitted value for managed_streaming_transport.
-// It names the intended reviewed transport; the presence of the option is not
-// sufficient for admission — ManagedStreamingTransportAvailable() must also be
-// true, which requires the transport to be linked and live-proven.
-const streamRequiredTransport = "snowpipe-streaming-highperf-rest"
 
 // ValidateManagedStreamingProfileOptions rejects options outside the constrained
 // streaming append profile before connector side effects occur.
@@ -150,9 +127,6 @@ func streamConfigFromSpec(dsn string, spec connector.RuntimeSpec) (streamConfig,
 	}
 	if err := ValidateManagedStreamingProfileOptions(options); err != nil {
 		return streamConfig{}, err
-	}
-	if got := strings.TrimSpace(options["managed_streaming_transport"]); got != streamRequiredTransport {
-		return streamConfig{}, fmt.Errorf("managed streaming Snowflake profile requires managed_streaming_transport=%s; got %q", streamRequiredTransport, got)
 	}
 	if err := connector.ValidateSnowflakeDSN(dsn); err != nil {
 		return streamConfig{}, err

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -167,7 +168,7 @@ func TestKubernetesDispatcherReservedOwnershipCannotBeOverridden(t *testing.T) {
 		},
 		JobArgs: []string{
 			"--", "--flow-id=attacker", "--generation", "999", "--execution-backend=worker", "--execution-id", "attacker",
-			"--snowflake-enabled=true", "--snowflake-account=attacker", "--snowflake-user=attacker", "--snowflake-host=attacker.example",
+			"--snowflake-enabled=true", "--snowflake-streaming-rest-granted=true", "--snowflake-account=attacker", "--snowflake-user=attacker", "--snowflake-host=attacker.example",
 			"--snowflake-private-key-file=/attacker/key.pem", "--foo=bar",
 		},
 	}}
@@ -196,7 +197,7 @@ func TestKubernetesDispatcherReservedOwnershipCannotBeOverridden(t *testing.T) {
 	if !slices.Contains(args, "--foo=bar") {
 		t.Fatalf("unrelated job arg was removed: %v", args)
 	}
-	if !slices.Contains(args, "--snowflake-enabled=false") || slices.Contains(args, "--snowflake-enabled=true") || slices.Contains(args, "--snowflake-private-key-file=/attacker/key.pem") {
+	if !slices.Contains(args, "--snowflake-enabled=false") || !slices.Contains(args, "--snowflake-streaming-rest-granted=false") || slices.Contains(args, "--snowflake-enabled=true") || slices.Contains(args, "--snowflake-streaming-rest-granted=true") || slices.Contains(args, "--snowflake-private-key-file=/attacker/key.pem") {
 		t.Fatalf("deployment Snowflake policy was not authoritative: %v", args)
 	}
 	keyFlag := slices.Index(args, "--snowflake-private-key-file")
@@ -211,6 +212,7 @@ func TestKubernetesSnowflakeEnabledJobMountsAuthoritativeSecretKey(t *testing.T)
 	client := fake.NewClientset()
 	dispatcher := &KubernetesDispatcher{client: client, namespace: "default", cfg: KubernetesConfig{
 		JobImage: "wallaby:test", JobNamePrefix: "wallaby-worker", SnowflakeEnabled: true,
+		SnowflakeStreamingRESTEnabled: true, SnowflakeStreamingRESTConfigMapName: "wallaby-runtime-policy", SnowflakeStreamingRESTConfigMapKey: "snowflake-streaming-rest-enabled",
 		SnowflakeAccount: "account", SnowflakeUser: "user", SnowflakeHost: "account.snowflakecomputing.com",
 		SnowflakePrivateKeyFile:       "/run/secrets/wallaby/snowflake-key.pem",
 		SnowflakePrivateKeySecretName: "wallaby-snowflake", SnowflakePrivateKeySecretKey: "private-key.pem",
@@ -230,10 +232,19 @@ func TestKubernetesSnowflakeEnabledJobMountsAuthoritativeSecretKey(t *testing.T)
 	if len(container.VolumeMounts) != 1 || container.VolumeMounts[0].MountPath != "/run/secrets/wallaby/snowflake-key.pem" || container.VolumeMounts[0].SubPath != "private-key.pem" || !container.VolumeMounts[0].ReadOnly {
 		t.Fatalf("Snowflake key mount=%+v", container.VolumeMounts)
 	}
-	for _, want := range []string{"--snowflake-enabled=true", "--snowflake-account", "account", "--snowflake-user", "user", "--snowflake-host", "account.snowflakecomputing.com", "--snowflake-private-key-file", "/run/secrets/wallaby/snowflake-key.pem"} {
+	for _, want := range []string{"--snowflake-enabled=true", "--snowflake-streaming-rest-granted=true", "--snowflake-account", "account", "--snowflake-user", "user", "--snowflake-host", "account.snowflakecomputing.com", "--snowflake-private-key-file", "/run/secrets/wallaby/snowflake-key.pem"} {
 		if !slices.Contains(container.Args, want) {
 			t.Fatalf("missing authoritative argument %q in %v", want, container.Args)
 		}
+	}
+	var policyEnv *corev1.EnvVar
+	for index := range container.Env {
+		if container.Env[index].Name == "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED" {
+			policyEnv = &container.Env[index]
+		}
+	}
+	if policyEnv == nil || policyEnv.ValueFrom == nil || policyEnv.ValueFrom.ConfigMapKeyRef == nil || policyEnv.ValueFrom.ConfigMapKeyRef.Name != "wallaby-runtime-policy" || policyEnv.ValueFrom.ConfigMapKeyRef.Key != "snowflake-streaming-rest-enabled" {
+		t.Fatalf("Snowpipe Streaming policy env=%+v", policyEnv)
 	}
 }
 

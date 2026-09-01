@@ -32,7 +32,7 @@ func (d *Destination) managedHooksSnapshot() managedHooks {
 
 // InitializeManagedDelivery verifies that Open established the exact authority
 // required by the configured managed profile before any managed source I/O.
-func (d *Destination) InitializeManagedDelivery(context.Context) error {
+func (d *Destination) InitializeManagedDelivery(ctx context.Context) error {
 	if d.db == nil {
 		return errors.New("managed Snowflake destination not initialized")
 	}
@@ -46,8 +46,8 @@ func (d *Destination) InitializeManagedDelivery(context.Context) error {
 			return errors.New("managed staged Snowflake receipt and catalog authority is not configured")
 		}
 	case connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
-		if !ManagedStreamingTransportAvailable() {
-			return ErrManagedStreamingTransportUnavailable
+		if err := d.requireStreamingCapability(); err != nil {
+			return err
 		}
 		if strings.TrimSpace(d.streamConfig.destinationRevision) == "" || strings.TrimSpace(d.streamConfig.receiptsTable) == "" || strings.TrimSpace(d.streamConfig.channelStateTable) == "" || strings.TrimSpace(d.streamConfig.schemaContractHash) == "" || strings.TrimSpace(d.streamCatalogFingerprint) == "" {
 			return errors.New("managed streaming Snowflake receipt, channel, and catalog authority is not configured")

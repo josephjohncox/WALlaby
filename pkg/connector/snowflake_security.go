@@ -21,11 +21,12 @@ import (
 const maxSnowflakePrivateKeyBytes = 1 << 20
 
 var (
-	ErrSnowflakeExecutionDisabled  = errors.New("snowflake execution is disabled by deployment policy")
-	ErrSnowflakePolicyInvalid      = errors.New("snowflake deployment policy is invalid")
-	ErrSnowflakeIdentityNotAllowed = errors.New("snowflake DSN identity is not allowed by deployment policy")
-	ErrUnsafeSnowflakeDSN          = errors.New("snowflake DSN contains prohibited credential or connection control material")
-	ErrMalformedSnowflakeDSN       = errors.New("snowflake DSN is malformed")
+	ErrSnowflakeExecutionDisabled     = errors.New("snowflake execution is disabled by deployment policy")
+	ErrSnowflakePolicyInvalid         = errors.New("snowflake deployment policy is invalid")
+	ErrSnowflakeStreamingRESTDisabled = errors.New("snowpipe Streaming REST execution is disabled by deployment policy")
+	ErrSnowflakeIdentityNotAllowed    = errors.New("snowflake DSN identity is not allowed by deployment policy")
+	ErrUnsafeSnowflakeDSN             = errors.New("snowflake DSN contains prohibited credential or connection control material")
+	ErrMalformedSnowflakeDSN          = errors.New("snowflake DSN is malformed")
 )
 
 var persistedSnowflakeDSNKeys = map[string]struct{}{
@@ -37,24 +38,33 @@ var persistedSnowflakeDSNKeys = map[string]struct{}{
 // SnowflakeDeploymentConfig is runtime-only trust configuration. The account,
 // user, host, and key never come from a flow definition.
 type SnowflakeDeploymentConfig struct {
-	Enabled        bool
-	Account        string
-	User           string
-	Host           string
-	PrivateKeyFile string
+	Enabled              bool
+	StreamingRESTEnabled bool
+	Account              string
+	User                 string
+	Host                 string
+	PrivateKeyFile       string
 }
 
 // SnowflakeDeploymentPolicy is an immutable, prevalidated deployment trust
 // boundary. Its zero value is disabled and no flow option can widen it.
 type SnowflakeDeploymentPolicy struct {
-	enabled          bool
-	account          string
-	user             string
-	host             string
-	privateKey       *rsa.PrivateKey
-	clientConfigPath string
-	clientConfigDir  string
-	state            *snowflakeDeploymentPolicyState
+	enabled              bool
+	account              string
+	user                 string
+	host                 string
+	privateKey           *rsa.PrivateKey
+	clientConfigPath     string
+	clientConfigDir      string
+	state                *snowflakeDeploymentPolicyState
+	streamingRESTEnabled bool
+}
+
+// SnowflakeStreamingRESTPolicy is an opaque capability derived from an active
+// deployment policy whose Streaming REST gate is enabled. It shares revocation
+// and key ownership with the base policy.
+type SnowflakeStreamingRESTPolicy struct {
+	policy SnowflakeDeploymentPolicy
 }
 
 type snowflakeDeploymentPolicyState struct {
@@ -67,6 +77,9 @@ type snowflakeDeploymentPolicyState struct {
 // NewSnowflakeDeploymentPolicy validates and loads deployment identity before
 // the server or worker can persist, dispatch, or execute a Snowflake-backed flow.
 func NewSnowflakeDeploymentPolicy(cfg SnowflakeDeploymentConfig) (SnowflakeDeploymentPolicy, error) {
+	if cfg.StreamingRESTEnabled && !cfg.Enabled {
+		return SnowflakeDeploymentPolicy{}, ErrSnowflakePolicyInvalid
+	}
 	if !cfg.Enabled {
 		return SnowflakeDeploymentPolicy{}, nil
 	}
@@ -80,12 +93,12 @@ func NewSnowflakeDeploymentPolicy(cfg SnowflakeDeploymentConfig) (SnowflakeDeplo
 	if err != nil {
 		return SnowflakeDeploymentPolicy{}, err
 	}
-	return NewSnowflakeDeploymentPolicyWithPrivateKey(account, user, host, key)
+	return NewSnowflakeDeploymentPolicyWithPrivateKey(account, user, host, key, cfg.StreamingRESTEnabled)
 }
 
 // NewSnowflakeDeploymentPolicyWithPrivateKey supports deployment secret
 // providers that resolve key bytes before constructing runtime dependencies.
-func NewSnowflakeDeploymentPolicyWithPrivateKey(account, user, host string, key *rsa.PrivateKey) (SnowflakeDeploymentPolicy, error) {
+func NewSnowflakeDeploymentPolicyWithPrivateKey(account, user, host string, key *rsa.PrivateKey, streamingRESTEnabled bool) (SnowflakeDeploymentPolicy, error) {
 	host = strings.ToLower(host)
 	if !validSnowflakeAccount(account) || !validSnowflakeUser(user) || !validSnowflakeHost(host) || !validSnowflakePrivateKey(key) {
 		return SnowflakeDeploymentPolicy{}, ErrSnowflakePolicyInvalid
@@ -101,7 +114,7 @@ func NewSnowflakeDeploymentPolicyWithPrivateKey(account, user, host string, key 
 	return SnowflakeDeploymentPolicy{
 		enabled: true, account: account, user: user, host: host, privateKey: key,
 		clientConfigPath: clientConfigPath, clientConfigDir: clientConfigDir,
-		state: &snowflakeDeploymentPolicyState{},
+		state: &snowflakeDeploymentPolicyState{}, streamingRESTEnabled: streamingRESTEnabled,
 	}, nil
 }
 
@@ -243,6 +256,41 @@ func (p SnowflakeDeploymentPolicy) Enabled() bool {
 	return ok
 }
 
+// StreamingRESTPolicy returns the opaque Streaming REST capability only when
+// both the base Snowflake policy and the deployment-only Streaming gate are
+// active. Every copy shares base-policy revocation.
+func (p SnowflakeDeploymentPolicy) StreamingRESTPolicy() (SnowflakeStreamingRESTPolicy, error) {
+	unlock, ok := p.lockActive()
+	if !ok {
+		return SnowflakeStreamingRESTPolicy{}, ErrSnowflakePolicyInvalid
+	}
+	defer unlock()
+	if !p.streamingRESTEnabled {
+		return SnowflakeStreamingRESTPolicy{}, ErrSnowflakeStreamingRESTDisabled
+	}
+	return SnowflakeStreamingRESTPolicy{policy: p}, nil
+}
+
+// Enabled reports whether this Streaming capability and its base policy remain active.
+func (p SnowflakeStreamingRESTPolicy) Enabled() bool {
+	_, err := p.policy.StreamingRESTPolicy()
+	return err == nil
+}
+
+// Admit validates one Streaming spec against the shared deployment policy.
+func (p SnowflakeStreamingRESTPolicy) Admit(spec RuntimeSpec) error {
+	if strings.TrimSpace(spec.Options["managed_profile"]) != ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 {
+		return ErrSnowflakePolicyInvalid
+	}
+	return p.policy.Admit([]RuntimeSpec{spec})
+}
+
+// BasePolicy returns a value copy that shares revocation and key ownership. It
+// is used only for the credential-free Snowflake SQL connection.
+func (p SnowflakeStreamingRESTPolicy) BasePolicy() SnowflakeDeploymentPolicy {
+	return p.policy
+}
+
 // Admit validates every Snowflake-backed spec before allowing execution.
 func (p SnowflakeDeploymentPolicy) Admit(specs []RuntimeSpec) error {
 	for _, spec := range specs {
@@ -254,6 +302,9 @@ func (p SnowflakeDeploymentPolicy) Admit(specs []RuntimeSpec) error {
 		}
 		if !p.enabled {
 			return ErrSnowflakeExecutionDisabled
+		}
+		if spec.Type == EndpointSnowflake && strings.TrimSpace(spec.Options["managed_profile"]) == ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 && !p.streamingRESTEnabled {
+			return ErrSnowflakeStreamingRESTDisabled
 		}
 		parsed, err := parsePersistableSnowflakeDSN(spec.Options["dsn"])
 		if err != nil {

@@ -70,6 +70,7 @@ func newWallabyWorkerCommand() *cobra.Command {
 	command.Flags().Int("partition-count", 0, "partition count per table for backfill hashing")
 	command.Flags().Bool("resolve-staging", false, "resolve destination staging tables after batch/backfill runs")
 	command.Flags().Bool("snowflake-enabled", false, "allow Snowflake-backed execution for this deployment")
+	command.Flags().Bool("snowflake-streaming-rest-granted", false, "dispatcher grant for deployment-enabled experimental Snowpipe Streaming REST")
 	command.Flags().String("snowflake-account", "", "deployment-owned Snowflake account identity")
 	command.Flags().String("snowflake-user", "", "deployment-owned Snowflake user identity")
 	command.Flags().String("snowflake-host", "", "deployment-owned canonical Snowflake host")
@@ -131,7 +132,7 @@ func runWallabyWorker(cmd *cobra.Command) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	snowflakePolicy, err := resolveWorkerSnowflakePolicy(cmd, cfg)
+	snowflakePolicy, err := resolveWorkerSnowflakePolicy(cmd, cfg, executionBackend == "kubernetes")
 	if err != nil {
 		return err
 	}
@@ -351,12 +352,19 @@ func runWallabyWorker(cmd *cobra.Command) error {
 	return nil
 }
 
-func resolveWorkerSnowflakePolicy(cmd *cobra.Command, cfg *config.Config) (connector.SnowflakeDeploymentPolicy, error) {
+func resolveWorkerSnowflakePolicy(cmd *cobra.Command, cfg *config.Config, requireDispatchGrant bool) (connector.SnowflakeDeploymentPolicy, error) {
 	if cmd == nil || cfg == nil {
 		return connector.SnowflakeDeploymentPolicy{}, errors.New("worker command and config are required")
 	}
 	if flag := cmd.Flags().Lookup("snowflake-enabled"); flag != nil && flag.Changed {
 		cfg.Snowflake.Enabled = cli.ResolveBoolFlag(cmd, "snowflake-enabled")
+	}
+	if requireDispatchGrant {
+		grant := false
+		if flag := cmd.Flags().Lookup("snowflake-streaming-rest-granted"); flag != nil && flag.Changed {
+			grant = cli.ResolveBoolFlag(cmd, "snowflake-streaming-rest-granted")
+		}
+		cfg.Snowflake.StreamingREST.Enabled = cfg.Snowflake.StreamingREST.Enabled && grant
 	}
 	for flagName, target := range map[string]*string{
 		"snowflake-account":          &cfg.Snowflake.Account,
@@ -372,7 +380,8 @@ func resolveWorkerSnowflakePolicy(cmd *cobra.Command, cfg *config.Config) (conne
 		return connector.SnowflakeDeploymentPolicy{}, err
 	}
 	return connector.NewSnowflakeDeploymentPolicy(connector.SnowflakeDeploymentConfig{
-		Enabled: cfg.Snowflake.Enabled, Account: cfg.Snowflake.Account, User: cfg.Snowflake.User,
+		Enabled: cfg.Snowflake.Enabled, StreamingRESTEnabled: cfg.Snowflake.StreamingREST.Enabled,
+		Account: cfg.Snowflake.Account, User: cfg.Snowflake.User,
 		Host: cfg.Snowflake.Host, PrivateKeyFile: cfg.Snowflake.PrivateKeyFile,
 	})
 }

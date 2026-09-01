@@ -432,6 +432,11 @@ test-snowflake-streaming-commercial-unpromoted:
 test-snowpipe-streaming-process-failure:
     GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./connectors/destinations/snowflake -run '^TestStreamRequestProcessRestartUsesDurableStore$'
 
+# Credential-free assembly proof for the experimental build-tagged runtime.
+test-snowpipe-streaming-runtime-wiring:
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 -tags snowpipe_streaming_rest_experimental \
+      ./connectors/destinations/snowflake ./internal/runner ./internal/api/grpc ./internal/orchestrator ./cmd/wallaby-worker
+
 # Deterministic fuzz smoke for the constrained Snowflake SQL planner. It runs
 # every managed fuzz target's seed corpus (no -fuzz, so no randomness and no
 # network) plus the bounded rapid SQL-injection-safety and hash-determinism

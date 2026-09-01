@@ -40,7 +40,6 @@ func managedSnowflakeStreamingAdmissionDestinations(t *testing.T) []stream.Desti
 			"meta_table_enabled":                 "false",
 			"disable_transactions":               "false",
 			"session_keep_alive":                 "false",
-			"managed_streaming_transport":        "snowpipe-streaming-highperf-rest",
 			"managed_account":                    "ACCOUNT",
 			"managed_database":                   "DB",
 			"managed_schema":                     "PUBLIC",
@@ -137,7 +136,6 @@ func TestManagedAdmissionStreamingAppendRejectsMisconfigBeforeTransportRefusal(t
 		{name: "missing pipe", key: "managed_pipe", value: "", want: "managed_pipe"},
 		{name: "missing channel state table", key: "managed_channel_state_table", value: "", want: "managed_channel_state_table"},
 		{name: "lowercase pipe", key: "managed_pipe", value: "wallaby_pipe", want: "unquoted uppercase"},
-		{name: "missing transport", key: "managed_streaming_transport", value: "", want: "managed_streaming_transport"},
 		{name: "unpinned version", key: "managed_snowflake_version", value: "", want: "managed_snowflake_version"},
 	}
 	for _, test := range tests {

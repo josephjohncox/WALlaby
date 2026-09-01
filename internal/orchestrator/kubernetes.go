@@ -40,37 +40,40 @@ const (
 
 // KubernetesConfig configures the Kubernetes job dispatcher.
 type KubernetesConfig struct {
-	KubeconfigPath                  string
-	KubeContext                     string
-	APIServer                       string
-	BearerToken                     string
-	CAFile                          string
-	CAData                          string
-	ClientCertFile                  string
-	ClientKeyFile                   string
-	InsecureSkipTLS                 bool
-	Namespace                       string
-	JobImage                        string
-	JobImagePullPolicy              string
-	JobServiceAccount               string
-	JobAutomountServiceAccountToken bool
-	JobNamePrefix                   string
-	JobTTLSeconds                   int
-	JobBackoffLimit                 int
-	MaxEmptyReads                   int
-	JobLabels                       map[string]string
-	JobAnnotations                  map[string]string
-	JobCommand                      []string
-	JobArgs                         []string
-	JobEnv                          map[string]string
-	JobEnvFrom                      []string
-	SnowflakeEnabled                bool
-	SnowflakeAccount                string
-	SnowflakeUser                   string
-	SnowflakeHost                   string
-	SnowflakePrivateKeyFile         string
-	SnowflakePrivateKeySecretName   string
-	SnowflakePrivateKeySecretKey    string
+	KubeconfigPath                      string
+	KubeContext                         string
+	APIServer                           string
+	BearerToken                         string
+	CAFile                              string
+	CAData                              string
+	ClientCertFile                      string
+	ClientKeyFile                       string
+	InsecureSkipTLS                     bool
+	Namespace                           string
+	JobImage                            string
+	JobImagePullPolicy                  string
+	JobServiceAccount                   string
+	JobAutomountServiceAccountToken     bool
+	JobNamePrefix                       string
+	JobTTLSeconds                       int
+	JobBackoffLimit                     int
+	MaxEmptyReads                       int
+	JobLabels                           map[string]string
+	JobAnnotations                      map[string]string
+	JobCommand                          []string
+	JobArgs                             []string
+	JobEnv                              map[string]string
+	JobEnvFrom                          []string
+	SnowflakeEnabled                    bool
+	SnowflakeStreamingRESTEnabled       bool
+	SnowflakeStreamingRESTConfigMapName string
+	SnowflakeStreamingRESTConfigMapKey  string
+	SnowflakeAccount                    string
+	SnowflakeUser                       string
+	SnowflakeHost                       string
+	SnowflakePrivateKeyFile             string
+	SnowflakePrivateKeySecretName       string
+	SnowflakePrivateKeySecretKey        string
 }
 
 // KubernetesDispatcher triggers flow workers as Kubernetes Jobs.
@@ -84,6 +87,12 @@ type KubernetesDispatcher struct {
 func NewKubernetesDispatcher(ctx context.Context, cfg KubernetesConfig) (*KubernetesDispatcher, error) {
 	if cfg.JobImage == "" {
 		return nil, errors.New("kubernetes job image is required")
+	}
+	if cfg.SnowflakeStreamingRESTEnabled && !cfg.SnowflakeEnabled {
+		return nil, errors.New("kubernetes Snowpipe Streaming REST requires general Snowflake execution")
+	}
+	if cfg.SnowflakeStreamingRESTEnabled && (strings.TrimSpace(cfg.SnowflakeStreamingRESTConfigMapName) == "" || strings.TrimSpace(cfg.SnowflakeStreamingRESTConfigMapKey) == "") {
+		return nil, errors.New("kubernetes Snowpipe Streaming REST requires a stable policy ConfigMap name and key")
 	}
 	if cfg.SnowflakeEnabled {
 		for name, value := range map[string]string{
@@ -238,9 +247,24 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 	if len(command) == 0 {
 		command = []string{"/usr/local/bin/wallaby-worker"}
 	}
-	args := authoritativeWorkerArgsWithSnowflake(k.cfg.JobArgs, flowID, generation, executionID, k.cfg.MaxEmptyReads, k.cfg.SnowflakeEnabled, k.cfg.SnowflakeAccount, k.cfg.SnowflakeUser, k.cfg.SnowflakeHost, k.cfg.SnowflakePrivateKeyFile)
+	args := authoritativeWorkerArgsWithSnowflake(k.cfg.JobArgs, flowID, generation, executionID, k.cfg.MaxEmptyReads, k.cfg.SnowflakeEnabled, k.cfg.SnowflakeStreamingRESTEnabled, k.cfg.SnowflakeAccount, k.cfg.SnowflakeUser, k.cfg.SnowflakeHost, k.cfg.SnowflakePrivateKeyFile)
 
-	env := mapToEnvVars(k.cfg.JobEnv)
+	jobEnv := make(map[string]string, len(k.cfg.JobEnv))
+	for name, value := range k.cfg.JobEnv {
+		if name != "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED" {
+			jobEnv[name] = value
+		}
+	}
+	env := mapToEnvVars(jobEnv)
+	if k.cfg.SnowflakeStreamingRESTEnabled && k.cfg.SnowflakeStreamingRESTConfigMapName != "" && k.cfg.SnowflakeStreamingRESTConfigMapKey != "" {
+		env = append(env, corev1.EnvVar{
+			Name: "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED",
+			ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: k.cfg.SnowflakeStreamingRESTConfigMapName},
+				Key:                  k.cfg.SnowflakeStreamingRESTConfigMapKey,
+			}},
+		})
+	}
 	envFrom := parseEnvFrom(k.cfg.JobEnvFrom)
 
 	container := corev1.Container{
@@ -572,17 +596,18 @@ func mergeLabels(base, override map[string]string) map[string]string {
 	return out
 }
 
-func authoritativeWorkerArgsWithSnowflake(args []string, flowID string, generation int64, executionID string, maxEmpty int, snowflakeEnabled bool, account, user, host, privateKeyFile string) []string {
+func authoritativeWorkerArgsWithSnowflake(args []string, flowID string, generation int64, executionID string, maxEmpty int, snowflakeEnabled, streamingRESTEnabled bool, account, user, host, privateKeyFile string) []string {
 	reserved := map[string]struct{}{
-		"flow-id":                    {},
-		"generation":                 {},
-		"execution-backend":          {},
-		"execution-id":               {},
-		"snowflake-enabled":          {},
-		"snowflake-account":          {},
-		"snowflake-user":             {},
-		"snowflake-host":             {},
-		"snowflake-private-key-file": {},
+		"flow-id":                          {},
+		"generation":                       {},
+		"execution-backend":                {},
+		"execution-id":                     {},
+		"snowflake-enabled":                {},
+		"snowflake-streaming-rest-granted": {},
+		"snowflake-account":                {},
+		"snowflake-user":                   {},
+		"snowflake-host":                   {},
+		"snowflake-private-key-file":       {},
 	}
 	out := make([]string, 0, len(args)+8)
 	for index := 0; index < len(args); index++ {
@@ -605,6 +630,7 @@ func authoritativeWorkerArgsWithSnowflake(args []string, flowID string, generati
 		"--execution-backend", kubernetesBackend,
 		"--execution-id", executionID,
 		"--snowflake-enabled="+strconv.FormatBool(snowflakeEnabled),
+		"--snowflake-streaming-rest-granted="+strconv.FormatBool(streamingRESTEnabled),
 		"--snowflake-account", account,
 		"--snowflake-user", user,
 		"--snowflake-host", host,

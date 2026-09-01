@@ -23,14 +23,18 @@ func TestDeploymentStreamRESTTokenProviderRefreshAndBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("account", "user", "account.snowflakecomputing.com", key)
+	policy, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("account", "user", "account.snowflakecomputing.com", key, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = policy.Close() })
+	streamingPolicy, err := policy.StreamingRESTPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	current := time.Unix(1_800_000_000, 0).UTC()
-	provider, err := newDeploymentStreamRESTTokenProvider(policy, func() time.Time { return current }, 55*time.Minute)
+	provider, err := newDeploymentStreamRESTTokenProvider(streamingPolicy, func() time.Time { return current }, 55*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,19 +69,19 @@ func TestDeploymentStreamRESTTokenProviderRefreshAndBoundaries(t *testing.T) {
 	if firstClaims, secondClaims := claims(first), claims(second); secondClaims.IssuedAt-firstClaims.IssuedAt != 60 || secondClaims.ExpiresAt-firstClaims.ExpiresAt != 60 {
 		t.Fatalf("refreshed JWT times first=%+v second=%+v", firstClaims, secondClaims)
 	}
-	if _, err := newDeploymentStreamRESTTokenProvider(connector.SnowflakeDeploymentPolicy{}, func() time.Time { return current }, time.Minute); err == nil {
+	if _, err := newDeploymentStreamRESTTokenProvider(connector.SnowflakeStreamingRESTPolicy{}, func() time.Time { return current }, time.Minute); err == nil {
 		t.Fatal("disabled policy created a token provider")
 	}
-	if _, err := newDeploymentStreamRESTTokenProvider(policy, nil, time.Minute); err == nil {
+	if _, err := newDeploymentStreamRESTTokenProvider(streamingPolicy, nil, time.Minute); err == nil {
 		t.Fatal("nil clock created a token provider")
 	}
-	if _, err := newDeploymentStreamRESTTokenProvider(policy, func() time.Time { return current }, time.Second-time.Nanosecond); err == nil {
+	if _, err := newDeploymentStreamRESTTokenProvider(streamingPolicy, func() time.Time { return current }, time.Second-time.Nanosecond); err == nil {
 		t.Fatal("sub-second token TTL created a token provider")
 	}
-	if _, err := newDeploymentStreamRESTTokenProvider(policy, func() time.Time { return current }, connector.MaxSnowflakeKeyPairJWTTTL+time.Second); err == nil {
+	if _, err := newDeploymentStreamRESTTokenProvider(streamingPolicy, func() time.Time { return current }, connector.MaxSnowflakeKeyPairJWTTTL+time.Second); err == nil {
 		t.Fatal("oversized token TTL created a token provider")
 	}
-	transport, err := newDeploymentStreamRESTTransport(policy, http.DefaultClient, func() time.Time { return current }, time.Minute)
+	transport, err := newDeploymentStreamRESTTransport(streamingPolicy, http.DefaultClient, func() time.Time { return current }, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,15 +106,19 @@ func TestDeploymentStreamRESTTransportBindsCanonicalPolicyAccountAndClose(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("org.account", "runtime_user", "org-account.snowflakecomputing.com", key)
+	policy, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("org.account", "runtime_user", "org-account.snowflakecomputing.com", key, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider, err := newDeploymentStreamRESTTokenProvider(policy, time.Now, time.Second)
+	streamingPolicy, err := policy.StreamingRESTPolicy()
 	if err != nil {
 		t.Fatal(err)
 	}
-	transport, err := newDeploymentStreamRESTTransport(policy, http.DefaultClient, time.Now, time.Second)
+	provider, err := newDeploymentStreamRESTTokenProvider(streamingPolicy, time.Now, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, err := newDeploymentStreamRESTTransport(streamingPolicy, http.DefaultClient, time.Now, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,16 +135,20 @@ func TestDeploymentStreamRESTTransportBindsCanonicalPolicyAccountAndClose(t *tes
 	if _, err := provider.KeypairJWT(context.Background()); err == nil {
 		t.Fatal("provider signed after copied policy close")
 	}
-	if _, err := newDeploymentStreamRESTTransport(policy, http.DefaultClient, time.Now, time.Second); err == nil {
+	if _, err := newDeploymentStreamRESTTransport(streamingPolicy, http.DefaultClient, time.Now, time.Second); err == nil {
 		t.Fatal("closed policy constructed a REST transport")
 	}
 
-	mismatch, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("account", "runtime_user", "evil-account.snowflakecomputing.com", key)
+	mismatch, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("account", "runtime_user", "evil-account.snowflakecomputing.com", key, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = mismatch.Close() }()
-	if _, err := newDeploymentStreamRESTTransport(mismatch, http.DefaultClient, time.Now, time.Minute); err == nil {
+	mismatchStreaming, err := mismatch.StreamingRESTPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newDeploymentStreamRESTTransport(mismatchStreaming, http.DefaultClient, time.Now, time.Minute); err == nil {
 		t.Fatal("cross-account policy host constructed a REST transport")
 	}
 }
@@ -151,13 +163,17 @@ func TestDeploymentStreamRESTTokenProviderAuthenticatesScopedTokenExchangeWithou
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("account", "user", "account.snowflakecomputing.com", key)
+	policy, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("account", "user", "account.snowflakecomputing.com", key, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = policy.Close() })
+	streamingPolicy, err := policy.StreamingRESTPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
 	fixed := time.Unix(1_800_000_000, 0).UTC()
-	provider, err := newDeploymentStreamRESTTokenProvider(policy, func() time.Time { return fixed }, 10*time.Minute)
+	provider, err := newDeploymentStreamRESTTokenProvider(streamingPolicy, func() time.Time { return fixed }, 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

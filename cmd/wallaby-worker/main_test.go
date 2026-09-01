@@ -118,12 +118,12 @@ func TestAuthoritativeWorkerSnowflakeFalseOverridesStaleEnabledConfig(t *testing
 	if err := command.ParseFlags([]string{"--snowflake-enabled=false", "--snowflake-private-key-file="}); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Snowflake: config.SnowflakeConfig{Enabled: true}}
-	policy, err := resolveWorkerSnowflakePolicy(command, cfg)
+	cfg := &config.Config{Snowflake: config.SnowflakeConfig{Enabled: true, StreamingREST: config.SnowflakeStreamingRESTConfig{Enabled: true}}}
+	policy, err := resolveWorkerSnowflakePolicy(command, cfg, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if policy.Enabled() || cfg.Snowflake.PrivateKeyFile != "" || cfg.Snowflake.Enabled {
+	if policy.Enabled() || cfg.Snowflake.PrivateKeyFile != "" || cfg.Snowflake.Enabled || cfg.Snowflake.StreamingREST.Enabled {
 		t.Fatalf("authoritative false was widened: policy=%+v config=%+v", policy, cfg.Snowflake)
 	}
 }
