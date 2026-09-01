@@ -16,6 +16,7 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [Variables](<#variables>)
 - [func BatchContentHash\(batch Batch\) \(string, error\)](<#BatchContentHash>)
 - [func BindProjectionFingerprint\(destinationFingerprint, projectionFingerprint string\) \(string, error\)](<#BindProjectionFingerprint>)
+- [func CanonicalSnowflakeAccountIdentifier\(value string\) \(string, error\)](<#CanonicalSnowflakeAccountIdentifier>)
 - [func CanonicalizeCheckpointPosition\(raw string\) \(string, error\)](<#CanonicalizeCheckpointPosition>)
 - [func CheckpointPositionID\(checkpoint Checkpoint\) \(string, error\)](<#CheckpointPositionID>)
 - [func CompareCheckpointLSN\(left, right string\) \(int, error\)](<#CompareCheckpointLSN>)
@@ -32,6 +33,7 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [func NormalizePostgresRecord\(schema Schema, values map\[string\]any\) error](<#NormalizePostgresRecord>)
 - [func NormalizeSourceMode\(raw string\) \(string, error\)](<#NormalizeSourceMode>)
 - [func OpenSnowflakeDB\(dsn string, policy SnowflakeDeploymentPolicy\) \(\*sql.DB, error\)](<#OpenSnowflakeDB>)
+- [func SnowflakeRESTAccountLabel\(value string\) \(string, error\)](<#SnowflakeRESTAccountLabel>)
 - [func SourceTransactionContentHash\(transaction SourceTransaction\) \(string, error\)](<#SourceTransactionContentHash>)
 - [func SourceTransactionIdentity\(transaction SourceTransaction\) \(string, string, error\)](<#SourceTransactionIdentity>)
 - [func SourceTransactionLogicalBatchID\(transaction SourceTransaction\) \(string, error\)](<#SourceTransactionLogicalBatchID>)
@@ -151,6 +153,8 @@ Package connector defines the stable source, destination, checkpoint, schema, an
   - [func \(p SnowflakeDeploymentPolicy\) Admit\(specs \[\]RuntimeSpec\) error](<#SnowflakeDeploymentPolicy.Admit>)
   - [func \(p SnowflakeDeploymentPolicy\) Close\(\) error](<#SnowflakeDeploymentPolicy.Close>)
   - [func \(p SnowflakeDeploymentPolicy\) Enabled\(\) bool](<#SnowflakeDeploymentPolicy.Enabled>)
+  - [func \(p SnowflakeDeploymentPolicy\) SnowflakeKeyPairJWT\(now time.Time, ttl time.Duration\) \(string, error\)](<#SnowflakeDeploymentPolicy.SnowflakeKeyPairJWT>)
+  - [func \(p SnowflakeDeploymentPolicy\) SnowflakeRESTIdentity\(\) \(account, user, host string, err error\)](<#SnowflakeDeploymentPolicy.SnowflakeRESTIdentity>)
 - [type Source](<#Source>)
 - [type SourceFactory](<#SourceFactory>)
 - [type SourceFlushEvidence](<#SourceFlushEvidence>)
@@ -232,6 +236,12 @@ const ManagedPartResourceClickHouseActivePartsV1 = "clickhouse_active_parts_v1"
 
 ```go
 const ManagedSchemaBaselinesOptionKey = "managed_postgres_schema_baselines_v1"
+```
+
+<a name="MaxSnowflakeKeyPairJWTTTL"></a>MaxSnowflakeKeyPairJWTTTL is Snowflake's maximum key\-pair JWT lifetime.
+
+```go
+const MaxSnowflakeKeyPairJWTTTL = time.Hour
 ```
 
 ## Variables
@@ -320,6 +330,15 @@ func BindProjectionFingerprint(destinationFingerprint, projectionFingerprint str
 
 BindProjectionFingerprint binds a deployment\-effective destination identity to the immutable logical projection revision.
 
+<a name="CanonicalSnowflakeAccountIdentifier"></a>
+## func [CanonicalSnowflakeAccountIdentifier](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L182>)
+
+```go
+func CanonicalSnowflakeAccountIdentifier(value string) (string, error)
+```
+
+CanonicalSnowflakeAccountIdentifier returns Snowflake's key\-pair JWT account spelling: uppercase with organization separators normalized to hyphens.
+
 <a name="CanonicalizeCheckpointPosition"></a>
 ## func [CanonicalizeCheckpointPosition](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/checkpoint.go#L25>)
 
@@ -393,7 +412,7 @@ func IsPostgresToSnowflakeSQLV1Spec(spec RuntimeSpec) bool
 IsPostgresToSnowflakeSQLV1Spec reports whether spec selects the exact named Snowflake SQL profile whose configured capabilities advertise explicit\-key upsert.
 
 <a name="IsSnowflakeEndpoint"></a>
-## func [IsSnowflakeEndpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L169>)
+## func [IsSnowflakeEndpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L293>)
 
 ```go
 func IsSnowflakeEndpoint(endpointType EndpointType) bool
@@ -402,7 +421,7 @@ func IsSnowflakeEndpoint(endpointType EndpointType) bool
 IsSnowflakeEndpoint identifies the five admitted execution cells: generic Snowflake, generic Snowpipe, and the three Snowflake managed profiles.
 
 <a name="LoadSnowflakePrivateKey"></a>
-## func [LoadSnowflakePrivateKey](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L360>)
+## func [LoadSnowflakePrivateKey](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L489>)
 
 ```go
 func LoadSnowflakePrivateKey(path string) (*rsa.PrivateKey, error)
@@ -458,13 +477,22 @@ NormalizeSourceMode normalizes and validates source modes for worker flow source
 It is case\-insensitive, trims whitespace, and defaults empty values to cdc.
 
 <a name="OpenSnowflakeDB"></a>
-## func [OpenSnowflakeDB](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L341>)
+## func [OpenSnowflakeDB](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L465>)
 
 ```go
 func OpenSnowflakeDB(dsn string, policy SnowflakeDeploymentPolicy) (*sql.DB, error)
 ```
 
 OpenSnowflakeDB opens gosnowflake from an in\-memory Config populated with a deployment\-owned key. It never reconstructs a credential\-bearing DSN.
+
+<a name="SnowflakeRESTAccountLabel"></a>
+## func [SnowflakeRESTAccountLabel](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L191>)
+
+```go
+func SnowflakeRESTAccountLabel(value string) (string, error)
+```
+
+SnowflakeRESTAccountLabel returns the account label used by Snowflake REST hostnames. Snowflake documents underscore\-to\-hyphen hostname normalization.
 
 <a name="SourceTransactionContentHash"></a>
 ## func [SourceTransactionContentHash](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L86>)
@@ -503,7 +531,7 @@ func ValidateBatch(batch Batch) error
 ValidateBatch enforces the source\-to\-runner batch contract. Data batches describe exactly one table and one logical schema. DDL/control records may be grouped together, but never with data records. Tableless control batches are valid because PostgreSQL logical messages carry ordered DDL text and a source position without relation metadata. A zero record schema version is treated as inherited from Batch.Schema for adapters that omit the redundant field.
 
 <a name="ValidatePersistedSnowflakeSpec"></a>
-## func [ValidatePersistedSnowflakeSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L175>)
+## func [ValidatePersistedSnowflakeSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L299>)
 
 ```go
 func ValidatePersistedSnowflakeSpec(spec RuntimeSpec) error
@@ -521,7 +549,7 @@ func ValidatePersistedSpec(spec RuntimeSpec) error
 ValidatePersistedSpec rejects endpoint options that cannot safely become durable flow state. Deployment\-only credentials and behavior controls must never be smuggled through a connector's arbitrary option map.
 
 <a name="ValidateSnowflakeDSN"></a>
-## func [ValidateSnowflakeDSN](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L184>)
+## func [ValidateSnowflakeDSN](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L308>)
 
 ```go
 func ValidateSnowflakeDSN(dsn string) error
@@ -1830,7 +1858,7 @@ type SlotDropper interface {
 ```
 
 <a name="SnowflakeDeploymentConfig"></a>
-## type [SnowflakeDeploymentConfig](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L38-L44>)
+## type [SnowflakeDeploymentConfig](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L39-L45>)
 
 SnowflakeDeploymentConfig is runtime\-only trust configuration. The account, user, host, and key never come from a flow definition.
 
@@ -1845,7 +1873,7 @@ type SnowflakeDeploymentConfig struct {
 ```
 
 <a name="SnowflakeDeploymentPolicy"></a>
-## type [SnowflakeDeploymentPolicy](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L48-L56>)
+## type [SnowflakeDeploymentPolicy](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L49-L58>)
 
 SnowflakeDeploymentPolicy is an immutable, prevalidated deployment trust boundary. Its zero value is disabled and no flow option can widen it.
 
@@ -1856,7 +1884,7 @@ type SnowflakeDeploymentPolicy struct {
 ```
 
 <a name="NewSnowflakeDeploymentPolicy"></a>
-### func [NewSnowflakeDeploymentPolicy](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L60>)
+### func [NewSnowflakeDeploymentPolicy](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L69>)
 
 ```go
 func NewSnowflakeDeploymentPolicy(cfg SnowflakeDeploymentConfig) (SnowflakeDeploymentPolicy, error)
@@ -1865,7 +1893,7 @@ func NewSnowflakeDeploymentPolicy(cfg SnowflakeDeploymentConfig) (SnowflakeDeplo
 NewSnowflakeDeploymentPolicy validates and loads deployment identity before the server or worker can persist, dispatch, or execute a Snowflake\-backed flow.
 
 <a name="NewSnowflakeDeploymentPolicyWithPrivateKey"></a>
-### func [NewSnowflakeDeploymentPolicyWithPrivateKey](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L79>)
+### func [NewSnowflakeDeploymentPolicyWithPrivateKey](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L88>)
 
 ```go
 func NewSnowflakeDeploymentPolicyWithPrivateKey(account, user, host string, key *rsa.PrivateKey) (SnowflakeDeploymentPolicy, error)
@@ -1874,7 +1902,7 @@ func NewSnowflakeDeploymentPolicyWithPrivateKey(account, user, host string, key 
 NewSnowflakeDeploymentPolicyWithPrivateKey supports deployment secret providers that resolve key bytes before constructing runtime dependencies.
 
 <a name="SnowflakeDeploymentPolicy.Admit"></a>
-### func \(SnowflakeDeploymentPolicy\) [Admit](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L129>)
+### func \(SnowflakeDeploymentPolicy\) [Admit](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L247>)
 
 ```go
 func (p SnowflakeDeploymentPolicy) Admit(specs []RuntimeSpec) error
@@ -1883,22 +1911,40 @@ func (p SnowflakeDeploymentPolicy) Admit(specs []RuntimeSpec) error
 Admit validates every Snowflake\-backed spec before allowing execution.
 
 <a name="SnowflakeDeploymentPolicy.Close"></a>
-### func \(SnowflakeDeploymentPolicy\) [Close](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L114>)
+### func \(SnowflakeDeploymentPolicy\) [Close](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L226>)
 
 ```go
 func (p SnowflakeDeploymentPolicy) Close() error
 ```
 
-Close removes the process\-local, deployment\-owned client logging policy.
+Close revokes all value copies and removes the process\-local client logging policy. Concurrent calls are idempotent.
 
 <a name="SnowflakeDeploymentPolicy.Enabled"></a>
-### func \(SnowflakeDeploymentPolicy\) [Enabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L122>)
+### func \(SnowflakeDeploymentPolicy\) [Enabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L238>)
 
 ```go
 func (p SnowflakeDeploymentPolicy) Enabled() bool
 ```
 
 Enabled reports whether this prevalidated policy admits Snowflake execution.
+
+<a name="SnowflakeDeploymentPolicy.SnowflakeKeyPairJWT"></a>
+### func \(SnowflakeDeploymentPolicy\) [SnowflakeKeyPairJWT](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_jwt.go#L46>)
+
+```go
+func (p SnowflakeDeploymentPolicy) SnowflakeKeyPairJWT(now time.Time, ttl time.Duration) (string, error)
+```
+
+SnowflakeKeyPairJWT signs a short\-lived Snowflake KEYPAIR\_JWT with the deployment\-owned RSA key. Callers receive only the serialized token.
+
+<a name="SnowflakeDeploymentPolicy.SnowflakeRESTIdentity"></a>
+### func \(SnowflakeDeploymentPolicy\) [SnowflakeRESTIdentity](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_jwt.go#L35>)
+
+```go
+func (p SnowflakeDeploymentPolicy) SnowflakeRESTIdentity() (account, user, host string, err error)
+```
+
+SnowflakeRESTIdentity returns the nonsecret deployment identity used by the Snowpipe Streaming control endpoint. It never exposes the deployment key.
 
 <a name="Source"></a>
 ## type [Source](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L146-L152>)

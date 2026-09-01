@@ -132,8 +132,8 @@ func (t *streamRESTTransport) validateConfigAccount(cfg streamConfig) error {
 	if isStreamRESTLoopback(t.controlBase.Hostname()) {
 		return nil
 	}
-	configured := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(cfg.account)), "_", "-")
-	if configured == "" || strings.ContainsAny(configured, ".:/@?#") || streamRESTAccountLabel(t.controlBase.Hostname()) != configured {
+	configured, err := connector.SnowflakeRESTAccountLabel(cfg.account)
+	if err != nil || streamRESTAccountLabel(t.controlBase.Hostname()) != configured {
 		return errors.New("snowpipe Streaming control origin does not match the complete admitted Snowflake account identifier")
 	}
 	return nil

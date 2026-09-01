@@ -1,16 +1,21 @@
 package connector
 
 import (
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func testSnowflakeDeploymentPolicy(t *testing.T) SnowflakeDeploymentPolicy {
@@ -141,6 +146,126 @@ func TestOpenSnowflakeDBUsesPrevalidatedDeploymentKeyWithoutNetworkIO(t *testing
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSnowflakeDeploymentPolicyCopiesRevokeAndOwnPrivateKey(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPublic := rsa.PublicKey{N: new(big.Int).Set(key.N), E: key.E}
+	policy, err := NewSnowflakeDeploymentPolicyWithPrivateKey("org.account", "runtime_user", "org-account.snowflakecomputing.com", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyPolicy := policy
+	configPath := policy.clientConfigPath
+
+	// Mutation of the caller-owned key after construction must not affect the
+	// policy's fingerprint or signatures.
+	key.N.SetInt64(3)
+	key.D.SetInt64(1)
+	token, err := policy.SnowflakeKeyPairJWT(time.Unix(100, 500_000_000), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("JWT parts=%d, want 3", len(parts))
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	if err := rsa.VerifyPKCS1v15(&originalPublic, crypto.SHA256, digest[:], signature); err != nil {
+		t.Fatalf("policy retained caller-owned key state: %v", err)
+	}
+
+	var wait sync.WaitGroup
+	for range 8 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for range 10 {
+				_, _ = copyPolicy.SnowflakeKeyPairJWT(time.Now(), time.Minute)
+			}
+		}()
+	}
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		if err := policy.Close(); err != nil {
+			t.Errorf("close policy: %v", err)
+		}
+	}()
+	wait.Wait()
+
+	if policy.Enabled() || copyPolicy.Enabled() {
+		t.Fatal("closed policy copy remained enabled")
+	}
+	if _, _, _, err := copyPolicy.SnowflakeRESTIdentity(); !errors.Is(err, ErrSnowflakePolicyInvalid) {
+		t.Fatalf("closed REST identity error=%v", err)
+	}
+	if _, err := copyPolicy.SnowflakeKeyPairJWT(time.Now(), time.Minute); err == nil {
+		t.Fatal("closed policy signed a JWT")
+	}
+	dsn := "runtime_user:@org.account/db/schema?authenticator=snowflake_jwt&ocspFailOpen=false"
+	if err := copyPolicy.Admit([]RuntimeSpec{{Type: EndpointSnowflake, Options: map[string]string{"dsn": dsn}}}); !errors.Is(err, ErrSnowflakePolicyInvalid) {
+		t.Fatalf("closed policy admission error=%v", err)
+	}
+	parsed, err := parsePersistableSnowflakeDSN(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := copyPolicy.validateIdentity(parsed); !errors.Is(err, ErrSnowflakePolicyInvalid) {
+		t.Fatalf("closed identity validation error=%v", err)
+	}
+	if _, err := OpenSnowflakeDB(dsn, copyPolicy); !errors.Is(err, ErrSnowflakePolicyInvalid) {
+		t.Fatalf("closed policy database error=%v", err)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("closed client policy path error=%v", err)
+	}
+	if err := copyPolicy.Close(); err != nil {
+		t.Fatalf("idempotent copied close: %v", err)
+	}
+}
+
+func TestSnowflakeDeploymentPolicyRejectsMalformedPrincipalsAndHosts(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range []string{"", " account", "account ", ".account", "account.", "-account", "account-", "org..account", "org.-account", "org account", "org/account"} {
+		if policy, err := NewSnowflakeDeploymentPolicyWithPrivateKey(account, "user", "account.snowflakecomputing.com", key); err == nil {
+			_ = policy.Close()
+			t.Fatalf("malformed account accepted")
+		}
+	}
+	for _, user := range []string{"", " user", "user ", ".", "user.name", "user-name", "9user", "user name"} {
+		if policy, err := NewSnowflakeDeploymentPolicyWithPrivateKey("account", user, "account.snowflakecomputing.com", key); err == nil {
+			_ = policy.Close()
+			t.Fatalf("malformed user accepted")
+		}
+	}
+	for _, host := range []string{"", "account", "account.example.com", "account..snowflakecomputing.com", "-account.snowflakecomputing.com", "account_.snowflakecomputing.com", "https://account.snowflakecomputing.com", "account.snowflakecomputing.com:443"} {
+		if policy, err := NewSnowflakeDeploymentPolicyWithPrivateKey("account", "user", host, key); err == nil {
+			_ = policy.Close()
+			t.Fatalf("malformed host accepted")
+		}
+	}
+	for _, account := range []string{"account", "org.account", "org-account", "org_account"} {
+		hostLabel, err := SnowflakeRESTAccountLabel(account)
+		if err != nil {
+			t.Fatal(err)
+		}
+		policy, err := NewSnowflakeDeploymentPolicyWithPrivateKey(account, "user_1$", hostLabel+".snowflakecomputing.com", key)
+		if err != nil {
+			t.Fatalf("valid account rejected")
+		}
+		_ = policy.Close()
 	}
 }
 
