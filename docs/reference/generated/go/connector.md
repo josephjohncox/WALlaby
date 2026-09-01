@@ -168,6 +168,7 @@ Package connector defines the stable source, destination, checkpoint, schema, an
 - [type TransactionalSource](<#TransactionalSource>)
 - [type WireFormat](<#WireFormat>)
 
+
 ## Constants
 
 <a name="ManagedProfilePostgresToPostgresV1"></a>
@@ -312,7 +313,6 @@ var ErrInvalidBatch = errors.New("invalid connector batch")
 ```
 
 <a name="BatchContentHash"></a>
-
 ## func [BatchContentHash](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/hash.go#L40>)
 
 ```go
@@ -322,7 +322,6 @@ func BatchContentHash(batch Batch) (string, error)
 BatchContentHash returns a deterministic, type\-sensitive SHA\-256 identity for a logical connector batch. Map iteration order and checkpoint observation timestamps do not affect the result. A projected batch also excludes replay\- variable source observations while retaining its resolved write policy.
 
 <a name="BindProjectionFingerprint"></a>
-
 ## func [BindProjectionFingerprint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L27>)
 
 ```go
@@ -332,7 +331,6 @@ func BindProjectionFingerprint(destinationFingerprint, projectionFingerprint str
 BindProjectionFingerprint binds a deployment\-effective destination identity to the immutable logical projection revision.
 
 <a name="CanonicalSnowflakeAccountIdentifier"></a>
-
 ## func [CanonicalSnowflakeAccountIdentifier](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L182>)
 
 ```go
@@ -342,7 +340,6 @@ func CanonicalSnowflakeAccountIdentifier(value string) (string, error)
 CanonicalSnowflakeAccountIdentifier returns Snowflake's key\-pair JWT account spelling: uppercase with organization separators normalized to hyphens.
 
 <a name="CanonicalizeCheckpointPosition"></a>
-
 ## func [CanonicalizeCheckpointPosition](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/checkpoint.go#L25>)
 
 ```go
@@ -352,7 +349,6 @@ func CanonicalizeCheckpointPosition(raw string) (string, error)
 CanonicalizeCheckpointPosition validates and canonicalizes a PostgreSQL LSN \(HEX/HEX\) or non\-negative decimal ordinal. Surrounding whitespace and signed ordinals are rejected. PostgreSQL LSN hex digits are accepted in either case and stored uppercase; decimal leading zeroes are removed.
 
 <a name="CheckpointPositionID"></a>
-
 ## func [CheckpointPositionID](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/checkpoint.go#L67>)
 
 ```go
@@ -362,7 +358,6 @@ func CheckpointPositionID(checkpoint Checkpoint) (string, error)
 CheckpointPositionID returns the deterministic identity used by traces and the durable fan\-out outbox. Stream positions use their canonical LSN or ordinal. Empty\-LSN control/backfill positions hash every metadata key/value in stable key order, so cursor and completion changes remain distinct across process restarts.
 
 <a name="CompareCheckpointLSN"></a>
-
 ## func [CompareCheckpointLSN](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/checkpoint.go#L95>)
 
 ```go
@@ -372,7 +367,6 @@ func CompareCheckpointLSN(left, right string) (int, error)
 CompareCheckpointLSN compares canonical PostgreSQL LSNs or decimal batch ordinals. Positions of different kinds are intentionally incomparable.
 
 <a name="DeliveryLogicalBatchID"></a>
-
 ## func [DeliveryLogicalBatchID](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L147>)
 
 ```go
@@ -382,7 +376,6 @@ func DeliveryLogicalBatchID(sourceLineageID, positionID, contentHash string) (st
 SourceTransactionIdentity computes the content hash and logical batch ID in one pass. Callers at each trust seam can validate independently without hashing the same transaction twice at that seam. Process\-local schema counters, observation timestamps, and checkpoint recovery metadata do not participate in the identity of an otherwise identical WAL replay.
 
 <a name="IsBuiltinEndpointType"></a>
-
 ## func [IsBuiltinEndpointType](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L30>)
 
 ```go
@@ -392,7 +385,6 @@ func IsBuiltinEndpointType(endpointType EndpointType) bool
 IsBuiltinEndpointType reports whether endpointType is reserved by a first\-party connector.
 
 <a name="IsManagedSnowflakeProfile"></a>
-
 ## func [IsManagedSnowflakeProfile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L52>)
 
 ```go
@@ -402,7 +394,6 @@ func IsManagedSnowflakeProfile(name string) bool
 IsManagedSnowflakeProfile reports whether name is one of the constrained Snowflake managed profiles.
 
 <a name="IsManagedSourceSpec"></a>
-
 ## func [IsManagedSourceSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_mode.go#L17>)
 
 ```go
@@ -412,7 +403,6 @@ func IsManagedSourceSpec(spec RuntimeSpec) bool
 IsManagedSourceSpec reports whether a source requests either the legacy managed protocol or a named managed profile. Control\-plane and runtime gates must use this single predicate so profile\-only flows cannot bypass fencing.
 
 <a name="IsPostgresToSnowflakeSQLV1Spec"></a>
-
 ## func [IsPostgresToSnowflakeSQLV1Spec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L46>)
 
 ```go
@@ -422,7 +412,6 @@ func IsPostgresToSnowflakeSQLV1Spec(spec RuntimeSpec) bool
 IsPostgresToSnowflakeSQLV1Spec reports whether spec selects the exact named Snowflake SQL profile whose configured capabilities advertise explicit\-key upsert.
 
 <a name="IsSnowflakeEndpoint"></a>
-
 ## func [IsSnowflakeEndpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L293>)
 
 ```go
@@ -432,7 +421,6 @@ func IsSnowflakeEndpoint(endpointType EndpointType) bool
 IsSnowflakeEndpoint identifies the five admitted execution cells: generic Snowflake, generic Snowpipe, and the three Snowflake managed profiles.
 
 <a name="LoadSnowflakePrivateKey"></a>
-
 ## func [LoadSnowflakePrivateKey](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L489>)
 
 ```go
@@ -442,7 +430,6 @@ func LoadSnowflakePrivateKey(path string) (*rsa.PrivateKey, error)
 LoadSnowflakePrivateKey reads a bounded, owner\-only regular file and accepts only unencrypted PKCS\#8 or PKCS\#1 RSA PEM.
 
 <a name="ManagedPartPlanHash"></a>
-
 ## func [ManagedPartPlanHash](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L181>)
 
 ```go
@@ -452,7 +439,6 @@ func ManagedPartPlanHash(parts []ManagedPartIdentity) (string, error)
 ManagedPartPlanHash binds every persisted kind, ordinal, and insert query ID.
 
 <a name="ManagedSchemaBaselineKey"></a>
-
 ## func [ManagedSchemaBaselineKey](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L290>)
 
 ```go
@@ -462,7 +448,6 @@ func ManagedSchemaBaselineKey(namespace, name string) string
 ManagedSchemaBaselineKey encodes an exact PostgreSQL relation identity for in\-memory indexing. PostgreSQL identifiers cannot contain NUL, so the NUL delimiter is unambiguous and preserves every identifier byte, including case and leading or trailing spaces.
 
 <a name="NormalizeKeyForSchema"></a>
-
 ## func [NormalizeKeyForSchema](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/normalize.go#L251>)
 
 ```go
@@ -472,7 +457,6 @@ func NormalizeKeyForSchema(schema Schema, key map[string]any) (map[string]any, e
 NormalizeKeyForSchema coerces key values based on the provided schema. This keeps WHERE clauses consistent with the source column types.
 
 <a name="NormalizePostgresRecord"></a>
-
 ## func [NormalizePostgresRecord](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/normalize.go#L21>)
 
 ```go
@@ -482,7 +466,6 @@ func NormalizePostgresRecord(schema Schema, values map[string]any) error
 NormalizePostgresRecord coerces row values into stable, structure\-preserving types based on the Postgres column types in the provided schema.
 
 <a name="NormalizeSourceMode"></a>
-
 ## func [NormalizeSourceMode](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_mode.go#L35>)
 
 ```go
@@ -494,7 +477,6 @@ NormalizeSourceMode normalizes and validates source modes for worker flow source
 It is case\-insensitive, trims whitespace, and defaults empty values to cdc.
 
 <a name="OpenSnowflakeDB"></a>
-
 ## func [OpenSnowflakeDB](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L465>)
 
 ```go
@@ -504,7 +486,6 @@ func OpenSnowflakeDB(dsn string, policy SnowflakeDeploymentPolicy) (*sql.DB, err
 OpenSnowflakeDB opens gosnowflake from an in\-memory Config populated with a deployment\-owned key. It never reconstructs a credential\-bearing DSN.
 
 <a name="SnowflakeRESTAccountLabel"></a>
-
 ## func [SnowflakeRESTAccountLabel](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L191>)
 
 ```go
@@ -514,7 +495,6 @@ func SnowflakeRESTAccountLabel(value string) (string, error)
 SnowflakeRESTAccountLabel returns the account label used by Snowflake REST hostnames. Snowflake documents underscore\-to\-hyphen hostname normalization.
 
 <a name="SourceTransactionContentHash"></a>
-
 ## func [SourceTransactionContentHash](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L86>)
 
 ```go
@@ -524,15 +504,15 @@ func SourceTransactionContentHash(transaction SourceTransaction) (string, error)
 SourceTransactionContentHash returns the stable logical identity of a full committed transaction. Observation timestamps, process\-local schema counters, and checkpoint recovery metadata do not participate, while WAL positions and transaction and fragment order always do.
 
 <a name="SourceTransactionIdentity"></a>
-
 ## func [SourceTransactionIdentity](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L157>)
 
 ```go
 func SourceTransactionIdentity(transaction SourceTransaction) (string, string, error)
 ```
 
-<a name="SourceTransactionLogicalBatchID"></a>
 
+
+<a name="SourceTransactionLogicalBatchID"></a>
 ## func [SourceTransactionLogicalBatchID](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L175>)
 
 ```go
@@ -542,7 +522,6 @@ func SourceTransactionLogicalBatchID(transaction SourceTransaction) (string, err
 SourceTransactionLogicalBatchID identifies one source commit independently from any worker generation or destination revision.
 
 <a name="ValidateBatch"></a>
-
 ## func [ValidateBatch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/batch_validation.go#L18>)
 
 ```go
@@ -552,7 +531,6 @@ func ValidateBatch(batch Batch) error
 ValidateBatch enforces the source\-to\-runner batch contract. Data batches describe exactly one table and one logical schema. DDL/control records may be grouped together, but never with data records. Tableless control batches are valid because PostgreSQL logical messages carry ordered DDL text and a source position without relation metadata. A zero record schema version is treated as inherited from Batch.Schema for adapters that omit the redundant field.
 
 <a name="ValidatePersistedSnowflakeSpec"></a>
-
 ## func [ValidatePersistedSnowflakeSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L299>)
 
 ```go
@@ -562,7 +540,6 @@ func ValidatePersistedSnowflakeSpec(spec RuntimeSpec) error
 ValidatePersistedSnowflakeSpec rejects credential\-bearing Snowflake DSNs independently of deployment admission. This is safe for offline planning.
 
 <a name="ValidatePersistedSpec"></a>
-
 ## func [ValidatePersistedSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/spec_validation.go#L16>)
 
 ```go
@@ -572,7 +549,6 @@ func ValidatePersistedSpec(spec RuntimeSpec) error
 ValidatePersistedSpec rejects endpoint options that cannot safely become durable flow state. Deployment\-only credentials and behavior controls must never be smuggled through a connector's arbitrary option map.
 
 <a name="ValidateSnowflakeDSN"></a>
-
 ## func [ValidateSnowflakeDSN](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L308>)
 
 ```go
@@ -582,7 +558,6 @@ func ValidateSnowflakeDSN(dsn string) error
 ValidateSnowflakeDSN is the single persistence\-safe Snowflake DSN validator. Every error is static and therefore cannot disclose the DSN, key, or value.
 
 <a name="AckGrant"></a>
-
 ## type [AckGrant](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L102-L105>)
 
 AckGrant is a PostgreSQL\-authorized source feedback position.
@@ -595,7 +570,6 @@ type AckGrant struct {
 ```
 
 <a name="Batch"></a>
-
 ## type [Batch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L137-L143>)
 
 Batch is the unit passed between sources and destinations.
@@ -611,7 +585,6 @@ type Batch struct {
 ```
 
 <a name="BootstrapIntent"></a>
-
 ## type [BootstrapIntent](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L15-L26>)
 
 BootstrapIntent identifies one immutable managed snapshot generation. It is independent of the public lifecycle state, which remains running while the private bootstrap phases advance.
@@ -632,7 +605,6 @@ type BootstrapIntent struct {
 ```
 
 <a name="BootstrapIntent.Validate"></a>
-
 ### func \(BootstrapIntent\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L30>)
 
 ```go
@@ -642,7 +614,6 @@ func (i BootstrapIntent) Validate() error
 Validate rejects incomplete bootstrap identities before any destination table or source resource can be changed.
 
 <a name="BootstrapTable"></a>
-
 ## type [BootstrapTable](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L72-L76>)
 
 BootstrapTable is one projected destination table in the immutable snapshot manifest, including its per\-table write contract.
@@ -656,7 +627,6 @@ type BootstrapTable struct {
 ```
 
 <a name="CanonicalArtifactDestination"></a>
-
 ## type [CanonicalArtifactDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L107-L110>)
 
 CanonicalArtifactDestination marks a destination specification that is consumed asynchronously from the PostgreSQL\-authoritative artifact log. Its ordinary Destination methods are never a data\-delivery path.
@@ -669,7 +639,6 @@ type CanonicalArtifactDestination interface {
 ```
 
 <a name="Capabilities"></a>
-
 ## type [Capabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L74-L84>)
 
 Capabilities describe what a connector can handle.
@@ -689,7 +658,6 @@ type Capabilities struct {
 ```
 
 <a name="ResolveDestinationCapabilities"></a>
-
 ### func [ResolveDestinationCapabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L81>)
 
 ```go
@@ -699,7 +667,6 @@ func ResolveDestinationCapabilities(destination Destination, spec RuntimeSpec) (
 ResolveDestinationCapabilities returns the guarantees for one validated configured destination, falling back to its static declaration. A classifier result that is not in the connector's declared closed profile set fails.
 
 <a name="Capabilities.ExecutesDDL"></a>
-
 ### func \(Capabilities\) [ExecutesDDL](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L120>)
 
 ```go
@@ -709,7 +676,6 @@ func (c Capabilities) ExecutesDDL() bool
 ExecutesDDL reports whether ApplyDDL performs a downstream schema mutation.
 
 <a name="Capabilities.SupportsTablePolicy"></a>
-
 ### func \(Capabilities\) [SupportsTablePolicy](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L47>)
 
 ```go
@@ -719,7 +685,6 @@ func (c Capabilities) SupportsTablePolicy(policy TableWritePolicy) error
 SupportsTablePolicy reports whether the destination can execute policy.
 
 <a name="Capabilities.ValidateSupport"></a>
-
 ### func \(Capabilities\) [ValidateSupport](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L105>)
 
 ```go
@@ -729,7 +694,6 @@ func (c Capabilities) ValidateSupport() error
 ValidateSupport rejects unsupported levels and maintained classifications that lack one or more required executable contract suites.
 
 <a name="CapabilityProfileID"></a>
-
 ## type [CapabilityProfileID](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L68>)
 
 CapabilityProfileID identifies one closed configuration\-sensitive capability cell.
@@ -739,7 +703,6 @@ type CapabilityProfileID string
 ```
 
 <a name="Checkpoint"></a>
-
 ## type [Checkpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L108-L112>)
 
 Checkpoint identifies a durable offset for a flow.
@@ -753,7 +716,6 @@ type Checkpoint struct {
 ```
 
 <a name="CheckpointOutboxStore"></a>
-
 ## type [CheckpointOutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L212-L215>)
 
 CheckpointOutboxStore is the atomic durability seam required by primary acknowledgement. A single adapter must own both checkpoint and outbox state.
@@ -766,7 +728,6 @@ type CheckpointOutboxStore interface {
 ```
 
 <a name="CheckpointStore"></a>
-
 ## type [CheckpointStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L176-L180>)
 
 CheckpointStore persists checkpoints for recovery. Get returns ErrCheckpointNotFound when a flow has no durable position yet.
@@ -780,7 +741,6 @@ type CheckpointStore interface {
 ```
 
 <a name="ClaimFence"></a>
-
 ## type [ClaimFence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L76-L81>)
 
 ClaimFence adds exact work ownership to a producer fence.
@@ -795,7 +755,6 @@ type ClaimFence struct {
 ```
 
 <a name="ClaimFence.Validate"></a>
-
 ### func \(ClaimFence\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L85>)
 
 ```go
@@ -805,7 +764,6 @@ func (f ClaimFence) Validate() error
 Validate rejects a claim that is not tied to a complete producer fence and one positive claim epoch.
 
 <a name="ClaimKind"></a>
-
 ## type [ClaimKind](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L66>)
 
 ClaimKind scopes a resource claim without extending public lifecycle state.
@@ -826,7 +784,6 @@ const (
 ```
 
 <a name="CleanupFence"></a>
-
 ## type [CleanupFence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L50-L52>)
 
 CleanupFence is an immutable terminal source\-resource capability. It is distinct from RunFence so ordinary managed data\-plane methods cannot accept cleanup authority accidentally.
@@ -838,7 +795,6 @@ type CleanupFence struct {
 ```
 
 <a name="CleanupFence.Validate"></a>
-
 ### func \(CleanupFence\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L55>)
 
 ```go
@@ -848,7 +804,6 @@ func (f CleanupFence) Validate() error
 Validate rejects incomplete terminal cleanup authority.
 
 <a name="CleanupFenceGuard"></a>
-
 ## type [CleanupFenceGuard](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L112>)
 
 CleanupFenceGuard renews the exact terminal\-cleanup capability, locks the global physical identity in the same control transaction, rejects active aliases, and holds both locks across one irreversible external operation.
@@ -858,7 +813,6 @@ type CleanupFenceGuard func(context.Context, CleanupResourceIdentity, func(conte
 ```
 
 <a name="CleanupResourceIdentity"></a>
-
 ## type [CleanupResourceIdentity](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L86-L93>)
 
 CleanupResourceIdentity is the global source\-catalog identity protected by a guarded terminal delete. Retired historical rows are not active aliases.
@@ -875,23 +829,24 @@ type CleanupResourceIdentity struct {
 ```
 
 <a name="CleanupResourceIdentity.AuthorityKey"></a>
-
 ### func \(CleanupResourceIdentity\) [AuthorityKey](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L105>)
 
 ```go
 func (i CleanupResourceIdentity) AuthorityKey() string
 ```
 
-<a name="CleanupResourceIdentity.Validate"></a>
 
+
+<a name="CleanupResourceIdentity.Validate"></a>
 ### func \(CleanupResourceIdentity\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L95>)
 
 ```go
 func (i CleanupResourceIdentity) Validate() error
 ```
 
-<a name="Column"></a>
 
+
+<a name="Column"></a>
 ## type [Column](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L97-L105>)
 
 Column defines a schema field.
@@ -909,7 +864,6 @@ type Column struct {
 ```
 
 <a name="ConfiguredDestinationCapabilities"></a>
-
 ## type [ConfiguredDestinationCapabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L72-L76>)
 
 ConfiguredDestinationCapabilities classifies every capability\-affecting configuration into a closed, typed profile before returning its guarantees.
@@ -923,7 +877,6 @@ type ConfiguredDestinationCapabilities interface {
 ```
 
 <a name="ContractEvidence"></a>
-
 ## type [ContractEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L16-L21>)
 
 ContractEvidence records the executable contract suites required before a connector can be classified as maintained.
@@ -938,7 +891,6 @@ type ContractEvidence struct {
 ```
 
 <a name="ContractEvidence.Complete"></a>
-
 ### func \(ContractEvidence\) [Complete](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L24>)
 
 ```go
@@ -948,7 +900,6 @@ func (e ContractEvidence) Complete() bool
 Complete reports whether every maintained\-connector gate has evidence.
 
 <a name="DDLExecutionState"></a>
-
 ## type [DDLExecutionState](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/ddl.go#L10>)
 
 DDLExecutionState is the durable state returned before a destination DDL side effect. A retry requires destination reconciliation before execution.
@@ -969,7 +920,6 @@ const (
 ```
 
 <a name="DDLExecutionState.Valid"></a>
-
 ### func \(DDLExecutionState\) [Valid](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/ddl.go#L20>)
 
 ```go
@@ -979,7 +929,6 @@ func (s DDLExecutionState) Valid() bool
 Valid reports whether the state is a runnable protocol state.
 
 <a name="DDLGateError"></a>
-
 ## type [DDLGateError](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/errors.go#L22-L29>)
 
 DDLGateError captures details for a blocked DDL approval gate.
@@ -996,7 +945,6 @@ type DDLGateError struct {
 ```
 
 <a name="AsDDLGate"></a>
-
 ### func [AsDDLGate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/errors.go#L56>)
 
 ```go
@@ -1006,23 +954,24 @@ func AsDDLGate(err error) (*DDLGateError, bool)
 AsDDLGate extracts a DDLGateError from an error chain.
 
 <a name="DDLGateError.Error"></a>
-
 ### func \(\*DDLGateError\) [Error](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/errors.go#L31>)
 
 ```go
 func (e *DDLGateError) Error() string
 ```
 
-<a name="DDLGateError.Unwrap"></a>
 
+
+<a name="DDLGateError.Unwrap"></a>
 ### func \(\*DDLGateError\) [Unwrap](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/errors.go#L51>)
 
 ```go
 func (e *DDLGateError) Unwrap() error
 ```
 
-<a name="DDLReconcileResult"></a>
 
+
+<a name="DDLReconcileResult"></a>
 ## type [DDLReconcileResult](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/ddl.go#L26>)
 
 DDLReconcileResult describes whether the intended DDL effect is already visible at a destination after an ambiguous prior attempt.
@@ -1042,7 +991,6 @@ const (
 ```
 
 <a name="DDLReconcileResult.Valid"></a>
-
 ### func \(DDLReconcileResult\) [Valid](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/ddl.go#L35>)
 
 ```go
@@ -1052,7 +1000,6 @@ func (r DDLReconcileResult) Valid() bool
 Valid reports whether the result is a recognized reconciliation outcome.
 
 <a name="DDLReconciler"></a>
-
 ## type [DDLReconciler](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/ddl.go#L41-L43>)
 
 DDLReconciler inspects destination state after an ambiguous DDL attempt. Implementations must not mutate the destination.
@@ -1064,7 +1011,6 @@ type DDLReconciler interface {
 ```
 
 <a name="DeliveryDisposition"></a>
-
 ## type [DeliveryDisposition](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L96>)
 
 DeliveryDisposition is the result of destination reconciliation.
@@ -1084,7 +1030,6 @@ const (
 ```
 
 <a name="DeliveryEvidence"></a>
-
 ## type [DeliveryEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L90-L93>)
 
 DeliveryEvidence is untrusted external proof returned by a destination.
@@ -1097,7 +1042,6 @@ type DeliveryEvidence struct {
 ```
 
 <a name="DeliveryIntent"></a>
-
 ## type [DeliveryIntent](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L45-L56>)
 
 DeliveryIntent is the immutable identity supplied to a reconcilable external destination attempt. PostgreSQL remains authoritative for adopting evidence as a durable receipt; destination evidence alone never advances a checkpoint.
@@ -1118,7 +1062,6 @@ type DeliveryIntent struct {
 ```
 
 <a name="DeliveryIntent.Validate"></a>
-
 ### func \(DeliveryIntent\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L59>)
 
 ```go
@@ -1128,7 +1071,6 @@ func (i DeliveryIntent) Validate() error
 Validate rejects incomplete delivery identities before external I/O.
 
 <a name="DeliverySemantics"></a>
-
 ## type [DeliverySemantics](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L29-L35>)
 
 DeliverySemantics describes the guarantees a configured destination provides.
@@ -1144,7 +1086,6 @@ type DeliverySemantics struct {
 ```
 
 <a name="Destination"></a>
-
 ## type [Destination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L165-L172>)
 
 Destination writes to a downstream system.
@@ -1161,7 +1102,6 @@ type Destination interface {
 ```
 
 <a name="DestinationFactory"></a>
-
 ## type [DestinationFactory](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/registry.go#L14>)
 
 DestinationFactory constructs one custom destination instance.
@@ -1171,7 +1111,6 @@ type DestinationFactory func() Destination
 ```
 
 <a name="EndpointType"></a>
-
 ## type [EndpointType](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L9>)
 
 EndpointType identifies the connector implementation.
@@ -1203,7 +1142,6 @@ const (
 ```
 
 <a name="FlowCheckpoint"></a>
-
 ## type [FlowCheckpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L115-L118>)
 
 FlowCheckpoint ties a checkpoint to a flow ID.
@@ -1216,7 +1154,6 @@ type FlowCheckpoint struct {
 ```
 
 <a name="FlushEvidenceSource"></a>
-
 ## type [FlushEvidenceSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L339-L342>)
 
 FlushEvidenceSource sends source feedback and proves the resulting logical slot flush position. The managed coordinator validates authority before and after this external source operation; feedback itself is monotonic.
@@ -1229,7 +1166,6 @@ type FlushEvidenceSource interface {
 ```
 
 <a name="InitialCheckpointSource"></a>
-
 ## type [InitialCheckpointSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L325-L328>)
 
 InitialCheckpointSource exposes the validated stream start after Open. A managed coordinator persists this cut and an ACK intent before the first source transaction, so a crash immediately after slot creation is recoverable.
@@ -1242,7 +1178,6 @@ type InitialCheckpointSource interface {
 ```
 
 <a name="ManagedBootstrapDestination"></a>
-
 ## type [ManagedBootstrapDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L126-L133>)
 
 ManagedBootstrapDestination stages one immutable snapshot generation and atomically publishes every table in its frozen manifest. External evidence is untrusted until the source bootstrap coordinator records it under the current RunFence in PostgreSQL.
@@ -1259,7 +1194,6 @@ type ManagedBootstrapDestination interface {
 ```
 
 <a name="ManagedBootstrapProjector"></a>
-
 ## type [ManagedBootstrapProjector](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L63-L68>)
 
 ManagedBootstrapProjector is the typed logical\-projection contract used by snapshot planning and delivery. Source query schemas remain source\-shaped; destination schemas and batches are projected explicitly through this seam.
@@ -1274,7 +1208,6 @@ type ManagedBootstrapProjector interface {
 ```
 
 <a name="ManagedBootstrapPublicationReconciler"></a>
-
 ## type [ManagedBootstrapPublicationReconciler](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L139-L141>)
 
 ManagedBootstrapPublicationReconciler is an optional recovery extension. It preserves the original destination contract while allowing implementations with an atomic publication marker to prove a publish\-before\-control\-receipt crash without replaying publication.
@@ -1286,7 +1219,6 @@ type ManagedBootstrapPublicationReconciler interface {
 ```
 
 <a name="ManagedBootstrapResult"></a>
-
 ## type [ManagedBootstrapResult](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L54-L58>)
 
 ManagedBootstrapResult is the durable source cut installed by a managed bootstrap. SourceOptions are runtime\-only overrides derived from PostgreSQL\-authoritative resource rows; they are never written back to the public flow definition.
@@ -1300,7 +1232,6 @@ type ManagedBootstrapResult struct {
 ```
 
 <a name="ManagedBootstrapSource"></a>
-
 ## type [ManagedBootstrapSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L80-L82>)
 
 ManagedBootstrapSource owns the source\-specific exported\-snapshot protocol. The destination is already open when this method is called.
@@ -1312,7 +1243,6 @@ type ManagedBootstrapSource interface {
 ```
 
 <a name="ManagedClickHouseVersionProvider"></a>
-
 ## type [ManagedClickHouseVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L523-L525>)
 
 ManagedClickHouseVersionProvider exposes the admitted live server version after connector Open.
@@ -1324,7 +1254,6 @@ type ManagedClickHouseVersionProvider interface {
 ```
 
 <a name="ManagedDestination"></a>
-
 ## type [ManagedDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L115-L119>)
 
 ManagedDestination applies an immutable delivery intent and reconciles an ambiguous prior attempt. Implementations must fail closed when evidence is insufficient.
@@ -1338,7 +1267,6 @@ type ManagedDestination interface {
 ```
 
 <a name="ManagedFlowScopeValidator"></a>
-
 ## type [ManagedFlowScopeValidator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L517-L519>)
 
 ManagedFlowScopeValidator proves that an already\-open destination contains no receipts owned by another incarnation before the runner reads WAL.
@@ -1350,7 +1278,6 @@ type ManagedFlowScopeValidator interface {
 ```
 
 <a name="ManagedPartIdentity"></a>
-
 ## type [ManagedPartIdentity](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L147-L151>)
 
 ManagedPartIdentity is one immutable external part planned by a managed transaction. Identity is stable across retries and endpoint failover.
@@ -1364,7 +1291,6 @@ type ManagedPartIdentity struct {
 ```
 
 <a name="ManagedPartReservationObservation"></a>
-
 ## type [ManagedPartReservationObservation](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L173-L178>)
 
 ManagedPartReservationObservation is proof gathered from both admitted ClickHouse endpoints while PostgreSQL holds the destination budget lock. Quiescent means the replicated changelog and receipt tables have no queued Keeper/log work, so durable rows are reflected in ServerActiveParts.
@@ -1379,7 +1305,6 @@ type ManagedPartReservationObservation struct {
 ```
 
 <a name="ManagedPartReservationReconciler"></a>
-
 ## type [ManagedPartReservationReconciler](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L236-L238>)
 
 ManagedPartReservationReconciler proves that neither endpoint contains any fragment or receipt for an immutable logical batch before PostgreSQL releases an abandoned reservation.
@@ -1391,7 +1316,6 @@ type ManagedPartReservationReconciler interface {
 ```
 
 <a name="ManagedPartReservationRequest"></a>
-
 ## type [ManagedPartReservationRequest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L157-L167>)
 
 ManagedPartReservationRequest carries the complete immutable part plan to PostgreSQL. Dynamic destination observations are deliberately absent: the coordinator obtains them only after taking the destination\-revision budget lock, closing validate\-then\-admit races between writers.
@@ -1411,7 +1335,6 @@ type ManagedPartReservationRequest struct {
 ```
 
 <a name="ManagedPartReservationRequest.Validate"></a>
-
 ### func \(ManagedPartReservationRequest\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L194>)
 
 ```go
@@ -1421,7 +1344,6 @@ func (r ManagedPartReservationRequest) Validate() error
 Validate rejects incomplete, duplicated, or out\-of\-budget reservation plans.
 
 <a name="ManagedPostgresPublicationProvider"></a>
-
 ## type [ManagedPostgresPublicationProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L504-L507>)
 
 ManagedPostgresPublicationProvider exposes the exact live publication relation set observed during named\-profile source admission.
@@ -1434,7 +1356,6 @@ type ManagedPostgresPublicationProvider interface {
 ```
 
 <a name="ManagedPostgresVersionProvider"></a>
-
 ## type [ManagedPostgresVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L498-L500>)
 
 SupportsPostgresVersion reports whether the named profile admits a live PostgreSQL server\_version\_num major. ManagedPostgresVersionProvider exposes the admitted live server major after connector Open. The runner compares both endpoints before managed delivery.
@@ -1446,7 +1367,6 @@ type ManagedPostgresVersionProvider interface {
 ```
 
 <a name="ManagedProfileContract"></a>
-
 ## type [ManagedProfileContract](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L71-L87>)
 
 ManagedProfileContract is the executable support and admission declaration rendered into the generated connector support matrix.
@@ -1472,7 +1392,6 @@ type ManagedProfileContract struct {
 ```
 
 <a name="PostgresToClickHouseAppendV1Profile"></a>
-
 ### func [PostgresToClickHouseAppendV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L129>)
 
 ```go
@@ -1482,7 +1401,6 @@ func PostgresToClickHouseAppendV1Profile() ManagedProfileContract
 PostgresToClickHouseAppendV1Profile returns the exact promoted append\-only ClickHouse profile. Version support is deliberately limited to the exact PostgreSQL and ClickHouse patch pairing exercised by the real\-service gate.
 
 <a name="PostgresToPostgresV1Profile"></a>
-
 ### func [PostgresToPostgresV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L90>)
 
 ```go
@@ -1492,7 +1410,6 @@ func PostgresToPostgresV1Profile() ManagedProfileContract
 PostgresToPostgresV1Profile returns a defensive copy of the promoted profile.
 
 <a name="PostgresToSnowflakeSQLV1Profile"></a>
-
 ### func [PostgresToSnowflakeSQLV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L169>)
 
 ```go
@@ -1502,7 +1419,6 @@ func PostgresToSnowflakeSQLV1Profile() ManagedProfileContract
 PostgresToSnowflakeSQLV1Profile returns the constrained but unpromoted transactional Snowflake SQL profile. Admission compares a configured service version with CURRENT\_VERSION\(\), but no service version or deployment cell is reviewed yet. Promotion requires complete same\-SHA real\-service evidence.
 
 <a name="PostgresToSnowflakeStagedAppendV1Profile"></a>
-
 ### func [PostgresToSnowflakeStagedAppendV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L215>)
 
 ```go
@@ -1512,7 +1428,6 @@ func PostgresToSnowflakeStagedAppendV1Profile() ManagedProfileContract
 PostgresToSnowflakeStagedAppendV1Profile returns the constrained but unpromoted staged COPY append\-only Snowflake profile. Like the SQL profile, admission compares a configured service version with CURRENT\_VERSION\(\) but reviews no service version or deployment cell yet. Promotion requires complete same\-SHA real\-service recovery evidence for the PUT/COPY/landing\-target\-proof/receipt protocol.
 
 <a name="PostgresToSnowflakeStreamingRestAppendV1Profile"></a>
-
 ### func [PostgresToSnowflakeStreamingRestAppendV1Profile](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L268>)
 
 ```go
@@ -1522,7 +1437,6 @@ func PostgresToSnowflakeStreamingRestAppendV1Profile() ManagedProfileContract
 PostgresToSnowflakeStreamingRestAppendV1Profile returns the constrained but unpromoted Snowpipe Streaming high\-performance REST append profile. Admission compares a configured service version with CURRENT\_VERSION\(\) but reviews no service version or deployment cell yet. Promotion requires complete same\-SHA real\-service recovery evidence for the channel append / SQL\-observed completeness / durable\-receipt protocol executed through a reviewed high\-performance append transport. Until such a transport is linked and exercised by live recovery evidence, the profile fails closed at admission.
 
 <a name="ManagedProfileContract.SupportsClickHouseVersion"></a>
-
 ### func \(ManagedProfileContract\) [SupportsClickHouseVersion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L484>)
 
 ```go
@@ -1532,15 +1446,15 @@ func (c ManagedProfileContract) SupportsClickHouseVersion(version string) bool
 SupportsClickHouseVersion reports whether the server version is one exact ClickHouse patch build admitted by this profile.
 
 <a name="ManagedProfileContract.SupportsPostgresVersion"></a>
-
 ### func \(ManagedProfileContract\) [SupportsPostgresVersion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L533>)
 
 ```go
 func (c ManagedProfileContract) SupportsPostgresVersion(major int) bool
 ```
 
-<a name="ManagedProfileContract.ValidatePromotion"></a>
 
+
+<a name="ManagedProfileContract.ValidatePromotion"></a>
 ### func \(ManagedProfileContract\) [ValidatePromotion](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L316>)
 
 ```go
@@ -1550,7 +1464,6 @@ func (c ManagedProfileContract) ValidatePromotion() error
 ValidatePromotion rejects maintained status unless every required admission and real\-service evidence gate is named and enabled.
 
 <a name="ManagedProfileGate"></a>
-
 ## type [ManagedProfileGate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L63-L67>)
 
 ManagedProfileGate binds one support claim to a required real\-service test.
@@ -1564,7 +1477,6 @@ type ManagedProfileGate struct {
 ```
 
 <a name="ManagedSchemaBaselinePayload"></a>
-
 ## type [ManagedSchemaBaselinePayload](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L183-L186>)
 
 ManagedSchemaBaselinePayload is the exact source\-schema state advanced with one authoritative checkpoint. Its canonical encoding and fingerprint are bound into delivery/publication manifests before external I/O.
@@ -1577,7 +1489,6 @@ type ManagedSchemaBaselinePayload struct {
 ```
 
 <a name="NewManagedSchemaBaselinePayload"></a>
-
 ### func [NewManagedSchemaBaselinePayload](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L191>)
 
 ```go
@@ -1587,7 +1498,6 @@ func NewManagedSchemaBaselinePayload(sourceLineageID string, schemas []Schema) (
 NewManagedSchemaBaselinePayload canonicalizes one transaction's source schemas. Duplicate relation identities collapse to the greatest observed schema version and relation order is deterministic.
 
 <a name="ManagedSchemaBaselinePayload.Canonical"></a>
-
 ### func \(ManagedSchemaBaselinePayload\) [Canonical](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L222>)
 
 ```go
@@ -1597,7 +1507,6 @@ func (p ManagedSchemaBaselinePayload) Canonical() ([]byte, string, error)
 Canonical returns the immutable JSON payload and lowercase SHA\-256 identity.
 
 <a name="ManagedSchemaBaselineStore"></a>
-
 ## type [ManagedSchemaBaselineStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L254-L256>)
 
 ManagedSchemaBaselineStore is the PostgreSQL\-authoritative managed decoder baseline read contract. Advancement is available only through the internal transaction\-scoped upsert helper owned by checkpoint finalizers.
@@ -1609,7 +1518,6 @@ type ManagedSchemaBaselineStore interface {
 ```
 
 <a name="ManagedSnowflakeVersionProvider"></a>
-
 ## type [ManagedSnowflakeVersionProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L529-L531>)
 
 ManagedSnowflakeVersionProvider exposes the exact CURRENT\_VERSION\(\) value admitted by the constrained Snowflake SQL destination during Open.
@@ -1621,7 +1529,6 @@ type ManagedSnowflakeVersionProvider interface {
 ```
 
 <a name="ManagedSourceResourceCleaner"></a>
-
 ## type [ManagedSourceResourceCleaner](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_bootstrap.go#L118-L120>)
 
 ManagedSourceResourceCleaner retires source resources owned by a managed flow after its stopping generation has quiesced. Implementations must never drop adopted resources, must renew authority before each delete, and must prove external absence before returning.
@@ -1633,7 +1540,6 @@ type ManagedSourceResourceCleaner interface {
 ```
 
 <a name="ManagedSourceSchemaValidator"></a>
-
 ## type [ManagedSourceSchemaValidator](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/managed_profile.go#L511-L513>)
 
 ManagedSourceSchemaValidator lets a named destination compare a live source catalog schema with its immutable destination contract before reading WAL.
@@ -1645,7 +1551,6 @@ type ManagedSourceSchemaValidator interface {
 ```
 
 <a name="ManagedTransactionDestination"></a>
-
 ## type [ManagedTransactionDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L128-L133>)
 
 ManagedTransactionDestination is the full\-transaction extension used by managed execution. Initialization establishes and verifies destination receipt authority before bootstrap or CDC I/O. Validation runs immediately before a new control\-plane attempt is prepared, but never blocks adoption of an already committed target marker. Transactional targets commit all fragments with the marker; append\-only targets insert ordered, replay\-convergent fragments and write the marker last.
@@ -1660,7 +1565,6 @@ type ManagedTransactionDestination interface {
 ```
 
 <a name="ManagedTransactionPreparer"></a>
-
 ## type [ManagedTransactionPreparer](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L243-L245>)
 
 ManagedTransactionPreparer is an optional deep interface implemented by managed destinations that can validate and retain one bounded transaction plan before PostgreSQL persists the external attempt.
@@ -1672,7 +1576,6 @@ type ManagedTransactionPreparer interface {
 ```
 
 <a name="Operation"></a>
-
 ## type [Operation](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L53>)
 
 Operation indicates the change type for a record.
@@ -1694,7 +1597,6 @@ const (
 ```
 
 <a name="OutboxEntry"></a>
-
 ## type [OutboxEntry](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L190-L199>)
 
 OutboxEntry is one durable secondary\-destination delivery. PositionID is derived with CheckpointPositionID; PostgreSQL positionless transaction fragments use a deterministic /fragment/ ordinal suffix under their final commit checkpoint identity. BatchHash is populated by stores when listing entries and identifies the exact, type\-preserving batch contents. Every destination used with primary acknowledgement must implement idempotent writes because a crash after Write and before durable persistence or deletion can replay a batch.
@@ -1713,7 +1615,6 @@ type OutboxEntry struct {
 ```
 
 <a name="OutboxStore"></a>
-
 ## type [OutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L204-L208>)
 
 OutboxStore atomically advances a flow checkpoint and records secondary deliveries. Implementations must make insertion idempotent for an identical \(flow, destination, position\) and reject conflicting batch content.
@@ -1727,7 +1628,6 @@ type OutboxStore interface {
 ```
 
 <a name="PreparedManagedTransaction"></a>
-
 ## type [PreparedManagedTransaction](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/delivery.go#L139-L141>)
 
 PreparedManagedTransaction is a bounded, validated destination operation. The implementation hides destination\-specific planning behind one Apply method so the coordinator does not ask an adapter to materialize a full transaction twice around the durable attempt boundary.
@@ -1739,7 +1639,6 @@ type PreparedManagedTransaction interface {
 ```
 
 <a name="Record"></a>
-
 ## type [Record](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L121-L134>)
 
 Record represents a single change or DDL event.
@@ -1762,7 +1661,6 @@ type Record struct {
 ```
 
 <a name="Registry"></a>
-
 ## type [Registry](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/registry.go#L18-L22>)
 
 Registry owns process\-local custom connector registrations. First\-party connector names are permanently reserved and are not stored in this registry.
@@ -1774,7 +1672,6 @@ type Registry struct {
 ```
 
 <a name="NewRegistry"></a>
-
 ### func [NewRegistry](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/registry.go#L25>)
 
 ```go
@@ -1784,7 +1681,6 @@ func NewRegistry() *Registry
 NewRegistry returns an empty custom connector registry.
 
 <a name="Registry.HasDestination"></a>
-
 ### func \(\*Registry\) [HasDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/registry.go#L86>)
 
 ```go
@@ -1794,7 +1690,6 @@ func (r *Registry) HasDestination(endpointType EndpointType) bool
 HasDestination reports whether a custom destination type is registered.
 
 <a name="Registry.HasSource"></a>
-
 ### func \(\*Registry\) [HasSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/registry.go#L75>)
 
 ```go
@@ -1804,7 +1699,6 @@ func (r *Registry) HasSource(endpointType EndpointType) bool
 HasSource reports whether a custom source type is registered.
 
 <a name="Registry.NewDestination"></a>
-
 ### func \(\*Registry\) [NewDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/registry.go#L115>)
 
 ```go
@@ -1814,7 +1708,6 @@ func (r *Registry) NewDestination(endpointType EndpointType) (Destination, error
 NewDestination constructs a registered custom destination.
 
 <a name="Registry.NewSource"></a>
-
 ### func \(\*Registry\) [NewSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/registry.go#L97>)
 
 ```go
@@ -1824,7 +1717,6 @@ func (r *Registry) NewSource(endpointType EndpointType) (Source, error)
 NewSource constructs a registered custom source.
 
 <a name="Registry.RegisterDestination"></a>
-
 ### func \(\*Registry\) [RegisterDestination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/registry.go#L54>)
 
 ```go
@@ -1834,7 +1726,6 @@ func (r *Registry) RegisterDestination(endpointType string, factory DestinationF
 RegisterDestination registers a custom destination constructor.
 
 <a name="Registry.RegisterSource"></a>
-
 ### func \(\*Registry\) [RegisterSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/registry.go#L33>)
 
 ```go
@@ -1844,7 +1735,6 @@ func (r *Registry) RegisterSource(endpointType string, factory SourceFactory) er
 RegisterSource registers a custom source constructor.
 
 <a name="ReplicationLagProvider"></a>
-
 ## type [ReplicationLagProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L155-L157>)
 
 ReplicationLagProvider exposes replication lag metrics for sources that can report it.
@@ -1856,7 +1746,6 @@ type ReplicationLagProvider interface {
 ```
 
 <a name="ResolvedWriteMode"></a>
-
 ## type [ResolvedWriteMode](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/write_policy.go#L4>)
 
 ResolvedWriteMode is the destination write behavior for one projected table.
@@ -1875,7 +1764,6 @@ const (
 ```
 
 <a name="RunFence"></a>
-
 ## type [RunFence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L12-L19>)
 
 RunFence is an immutable capability identifying one live flow producer.
@@ -1892,7 +1780,6 @@ type RunFence struct {
 ```
 
 <a name="RunFence.Validate"></a>
-
 ### func \(RunFence\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L23>)
 
 ```go
@@ -1902,7 +1789,6 @@ func (f RunFence) Validate() error
 Validate rejects incomplete authority before it can reach SQL. In particular, a default\-zero fence is never a compatibility mode.
 
 <a name="RunFenceBinder"></a>
-
 ## type [RunFenceBinder](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/authority.go#L61-L63>)
 
 RunFenceBinder receives producer authority before a managed connector opens. Binding is immutable for one connector instance.
@@ -1914,7 +1800,6 @@ type RunFenceBinder interface {
 ```
 
 <a name="RuntimeSpec"></a>
-
 ## type [RuntimeSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L67-L71>)
 
 RuntimeSpec is the internal runtime\-adapter/plugin representation. It is never a public authoring or persistence shape; public and durable flow definitions use typed wallaby.v1.Endpoint messages and cross the boundary through internal/endpointcodec.
@@ -1928,7 +1813,6 @@ type RuntimeSpec struct {
 ```
 
 <a name="Schema"></a>
-
 ## type [Schema](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L87-L94>)
 
 Schema describes a table\-level schema snapshot.
@@ -1945,7 +1829,6 @@ type Schema struct {
 ```
 
 <a name="DecodeManagedSchemaBaselineOption"></a>
-
 ### func [DecodeManagedSchemaBaselineOption](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L264>)
 
 ```go
@@ -1955,7 +1838,6 @@ func DecodeManagedSchemaBaselineOption(raw string) ([]Schema, error)
 DecodeManagedSchemaBaselineOption validates the runner\-to\-decoder snapshot.
 
 <a name="SourceTransactionSchemas"></a>
-
 ### func [SourceTransactionSchemas](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L237>)
 
 ```go
@@ -1965,7 +1847,6 @@ func SourceTransactionSchemas(transaction SourceTransaction) []Schema
 SourceTransactionSchemas extracts exact source relation schemas before any destination projection filters or renames them.
 
 <a name="SlotDropper"></a>
-
 ## type [SlotDropper](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L160-L162>)
 
 SlotDropper is implemented by sources that can drop replication slots.
@@ -1977,7 +1858,6 @@ type SlotDropper interface {
 ```
 
 <a name="SnowflakeDeploymentConfig"></a>
-
 ## type [SnowflakeDeploymentConfig](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L39-L45>)
 
 SnowflakeDeploymentConfig is runtime\-only trust configuration. The account, user, host, and key never come from a flow definition.
@@ -1993,7 +1873,6 @@ type SnowflakeDeploymentConfig struct {
 ```
 
 <a name="SnowflakeDeploymentPolicy"></a>
-
 ## type [SnowflakeDeploymentPolicy](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L49-L58>)
 
 SnowflakeDeploymentPolicy is an immutable, prevalidated deployment trust boundary. Its zero value is disabled and no flow option can widen it.
@@ -2005,7 +1884,6 @@ type SnowflakeDeploymentPolicy struct {
 ```
 
 <a name="NewSnowflakeDeploymentPolicy"></a>
-
 ### func [NewSnowflakeDeploymentPolicy](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L69>)
 
 ```go
@@ -2015,7 +1893,6 @@ func NewSnowflakeDeploymentPolicy(cfg SnowflakeDeploymentConfig) (SnowflakeDeplo
 NewSnowflakeDeploymentPolicy validates and loads deployment identity before the server or worker can persist, dispatch, or execute a Snowflake\-backed flow.
 
 <a name="NewSnowflakeDeploymentPolicyWithPrivateKey"></a>
-
 ### func [NewSnowflakeDeploymentPolicyWithPrivateKey](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L88>)
 
 ```go
@@ -2025,7 +1902,6 @@ func NewSnowflakeDeploymentPolicyWithPrivateKey(account, user, host string, key 
 NewSnowflakeDeploymentPolicyWithPrivateKey supports deployment secret providers that resolve key bytes before constructing runtime dependencies.
 
 <a name="SnowflakeDeploymentPolicy.Admit"></a>
-
 ### func \(SnowflakeDeploymentPolicy\) [Admit](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L247>)
 
 ```go
@@ -2035,7 +1911,6 @@ func (p SnowflakeDeploymentPolicy) Admit(specs []RuntimeSpec) error
 Admit validates every Snowflake\-backed spec before allowing execution.
 
 <a name="SnowflakeDeploymentPolicy.Close"></a>
-
 ### func \(SnowflakeDeploymentPolicy\) [Close](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L226>)
 
 ```go
@@ -2045,7 +1920,6 @@ func (p SnowflakeDeploymentPolicy) Close() error
 Close revokes all value copies and removes the process\-local client logging policy. Concurrent calls are idempotent.
 
 <a name="SnowflakeDeploymentPolicy.Enabled"></a>
-
 ### func \(SnowflakeDeploymentPolicy\) [Enabled](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_security.go#L238>)
 
 ```go
@@ -2055,7 +1929,6 @@ func (p SnowflakeDeploymentPolicy) Enabled() bool
 Enabled reports whether this prevalidated policy admits Snowflake execution.
 
 <a name="SnowflakeDeploymentPolicy.SnowflakeKeyPairJWT"></a>
-
 ### func \(SnowflakeDeploymentPolicy\) [SnowflakeKeyPairJWT](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_jwt.go#L46>)
 
 ```go
@@ -2065,7 +1938,6 @@ func (p SnowflakeDeploymentPolicy) SnowflakeKeyPairJWT(now time.Time, ttl time.D
 SnowflakeKeyPairJWT signs a short\-lived Snowflake KEYPAIR\_JWT with the deployment\-owned RSA key. Callers receive only the serialized token.
 
 <a name="SnowflakeDeploymentPolicy.SnowflakeRESTIdentity"></a>
-
 ### func \(SnowflakeDeploymentPolicy\) [SnowflakeRESTIdentity](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/snowflake_jwt.go#L35>)
 
 ```go
@@ -2075,7 +1947,6 @@ func (p SnowflakeDeploymentPolicy) SnowflakeRESTIdentity() (account, user, host 
 SnowflakeRESTIdentity returns the nonsecret deployment identity used by the Snowpipe Streaming control endpoint. It never exposes the deployment key.
 
 <a name="Source"></a>
-
 ## type [Source](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L146-L152>)
 
 Source reads from an upstream system.
@@ -2091,7 +1962,6 @@ type Source interface {
 ```
 
 <a name="SourceFactory"></a>
-
 ## type [SourceFactory](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/registry.go#L11>)
 
 SourceFactory constructs one custom source instance.
@@ -2101,7 +1971,6 @@ type SourceFactory func() Source
 ```
 
 <a name="SourceFlushEvidence"></a>
-
 ## type [SourceFlushEvidence](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L332-L334>)
 
 SourceFlushEvidence is the source PostgreSQL position observed after a standby\-status update, not merely an in\-process scheduling acknowledgement.
@@ -2113,7 +1982,6 @@ type SourceFlushEvidence struct {
 ```
 
 <a name="SourceTransaction"></a>
-
 ## type [SourceTransaction](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L20-L28>)
 
 SourceTransaction is a committed source transaction. Fragments preserve source order while allowing existing table\-scoped Batch contracts to remain unchanged. Checkpoint is the transaction\-end position and is the only position eligible for durable source feedback.
@@ -2131,7 +1999,6 @@ type SourceTransaction struct {
 ```
 
 <a name="SourceTransaction.Validate"></a>
-
 ### func \(SourceTransaction\) [Validate](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L33>)
 
 ```go
@@ -2141,7 +2008,6 @@ func (t SourceTransaction) Validate() error
 Validate rejects incomplete or reordered committed transactions before they can become durable delivery identities. Fragment ordinals are contiguous; projections must renumber surviving fragments rather than admitting gaps.
 
 <a name="SupportLevel"></a>
-
 ## type [SupportLevel](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L6>)
 
 SupportLevel states the operational support commitment for a connector.
@@ -2161,7 +2027,6 @@ const (
 ```
 
 <a name="TableWritePolicy"></a>
-
 ## type [TableWritePolicy](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/write_policy.go#L18-L23>)
 
 TableWritePolicy is the fully resolved write contract carried with a projected batch.
@@ -2176,7 +2041,6 @@ type TableWritePolicy struct {
 ```
 
 <a name="TableWritePolicy.IsZero"></a>
-
 ### func \(TableWritePolicy\) [IsZero](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/write_policy.go#L26>)
 
 ```go
@@ -2186,7 +2050,6 @@ func (p TableWritePolicy) IsZero() bool
 IsZero reports whether a batch has no resolved projection policy.
 
 <a name="TableWriteSemantics"></a>
-
 ## type [TableWriteSemantics](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/capabilities.go#L39-L44>)
 
 TableWriteSemantics declares which projected logical table policies a destination can execute.
@@ -2201,7 +2064,6 @@ type TableWriteSemantics struct {
 ```
 
 <a name="TransactionFragment"></a>
-
 ## type [TransactionFragment](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L309-L312>)
 
 TransactionFragment is a deterministic, ordered table/schema fragment of a committed source transaction.
@@ -2214,7 +2076,6 @@ type TransactionFragment struct {
 ```
 
 <a name="TransactionalSource"></a>
-
 ## type [TransactionalSource](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/source_transaction.go#L317-L320>)
 
 TransactionalSource is an optional source contract for managed execution. Legacy Source.Read remains available for compatibility, but managed PostgreSQL execution consumes complete transactions through this interface.
@@ -2227,7 +2088,6 @@ type TransactionalSource interface {
 ```
 
 <a name="WireFormat"></a>
-
 ## type [WireFormat](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L42>)
 
 WireFormat describes the wire encoding used between connectors.
