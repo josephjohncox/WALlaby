@@ -93,12 +93,12 @@ func TestSnowflakeDeploymentPolicyKeyPairJWTBoundariesFailClosedWithoutIdentityD
 		t.Fatal(err)
 	}
 	const secretAccount = "do-not-disclose-account"
-	policy, err := NewSnowflakeDeploymentPolicyWithPrivateKey(secretAccount, "do-not-disclose-user", secretAccount+".snowflakecomputing.com", key)
+	policy, err := NewSnowflakeDeploymentPolicyWithPrivateKey(secretAccount, "do_not_disclose_user", secretAccount+".snowflakecomputing.com", key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = policy.Close() })
-	for _, ttl := range []time.Duration{0, -time.Second, time.Nanosecond, MaxSnowflakeKeyPairJWTTTL + time.Nanosecond} {
+	for _, ttl := range []time.Duration{0, -time.Second, time.Nanosecond, time.Second - time.Nanosecond, MaxSnowflakeKeyPairJWTTTL + time.Nanosecond} {
 		if _, err := policy.SnowflakeKeyPairJWT(time.Unix(100, 0), ttl); err == nil {
 			t.Fatalf("invalid TTL %s signed a JWT", ttl)
 		} else if strings.Contains(err.Error(), secretAccount) {

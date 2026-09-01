@@ -16,7 +16,7 @@ type deploymentStreamRESTTokenProvider struct {
 }
 
 func newDeploymentStreamRESTTokenProvider(policy connector.SnowflakeDeploymentPolicy, now func() time.Time, ttl time.Duration) (*deploymentStreamRESTTokenProvider, error) {
-	if now == nil || ttl <= 0 || ttl > connector.MaxSnowflakeKeyPairJWTTTL {
+	if now == nil || ttl < time.Second || ttl > connector.MaxSnowflakeKeyPairJWTTTL {
 		return nil, errors.New("snowpipe Streaming deployment token provider configuration is invalid")
 	}
 	if _, _, _, err := policy.SnowflakeRESTIdentity(); err != nil {
@@ -44,9 +44,13 @@ func (p *deploymentStreamRESTTokenProvider) KeypairJWT(ctx context.Context) (str
 // this function until streamingTransportLinked is promoted after commercial
 // evidence.
 func newDeploymentStreamRESTTransport(policy connector.SnowflakeDeploymentPolicy, client *http.Client, now func() time.Time, ttl time.Duration) (*streamRESTTransport, error) {
-	_, _, host, err := policy.SnowflakeRESTIdentity()
+	account, _, host, err := policy.SnowflakeRESTIdentity()
 	if err != nil {
 		return nil, errors.New("snowpipe Streaming deployment policy is invalid")
+	}
+	expectedAccountLabel, err := connector.SnowflakeRESTAccountLabel(account)
+	if err != nil || streamRESTAccountLabel(host) != expectedAccountLabel {
+		return nil, errors.New("snowpipe Streaming deployment policy account and host differ")
 	}
 	provider, err := newDeploymentStreamRESTTokenProvider(policy, now, ttl)
 	if err != nil {

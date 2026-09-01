@@ -71,6 +71,9 @@ func TestDeploymentStreamRESTTokenProviderRefreshAndBoundaries(t *testing.T) {
 	if _, err := newDeploymentStreamRESTTokenProvider(policy, nil, time.Minute); err == nil {
 		t.Fatal("nil clock created a token provider")
 	}
+	if _, err := newDeploymentStreamRESTTokenProvider(policy, func() time.Time { return current }, time.Second-time.Nanosecond); err == nil {
+		t.Fatal("sub-second token TTL created a token provider")
+	}
 	if _, err := newDeploymentStreamRESTTokenProvider(policy, func() time.Time { return current }, connector.MaxSnowflakeKeyPairJWTTTL+time.Second); err == nil {
 		t.Fatal("oversized token TTL created a token provider")
 	}
@@ -91,6 +94,50 @@ func TestDeploymentStreamRESTTokenProviderRefreshAndBoundaries(t *testing.T) {
 	cancel()
 	if _, err := provider.KeypairJWT(canceled); err == nil {
 		t.Fatal("canceled token request succeeded")
+	}
+}
+
+func TestDeploymentStreamRESTTransportBindsCanonicalPolicyAccountAndClose(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("org.account", "runtime_user", "org-account.snowflakecomputing.com", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := newDeploymentStreamRESTTokenProvider(policy, time.Now, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, err := newDeploymentStreamRESTTransport(policy, http.DefaultClient, time.Now, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transport.controlBase.Hostname() != "org-account.snowflakecomputing.com" {
+		t.Fatalf("control host=%q", transport.controlBase.Hostname())
+	}
+	if err := transport.validateConfigAccount(streamConfig{account: "org.account"}); err != nil {
+		t.Fatalf("dotted stream account rejected: %v", err)
+	}
+	copyPolicy := policy
+	if err := copyPolicy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.KeypairJWT(context.Background()); err == nil {
+		t.Fatal("provider signed after copied policy close")
+	}
+	if _, err := newDeploymentStreamRESTTransport(policy, http.DefaultClient, time.Now, time.Second); err == nil {
+		t.Fatal("closed policy constructed a REST transport")
+	}
+
+	mismatch, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("account", "runtime_user", "evil-account.snowflakecomputing.com", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mismatch.Close() }()
+	if _, err := newDeploymentStreamRESTTransport(mismatch, http.DefaultClient, time.Now, time.Minute); err == nil {
+		t.Fatal("cross-account policy host constructed a REST transport")
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/snowflakedb/gosnowflake"
 )
@@ -53,6 +54,14 @@ type SnowflakeDeploymentPolicy struct {
 	privateKey       *rsa.PrivateKey
 	clientConfigPath string
 	clientConfigDir  string
+	state            *snowflakeDeploymentPolicyState
+}
+
+type snowflakeDeploymentPolicyState struct {
+	mu       sync.RWMutex
+	closed   bool
+	close    sync.Once
+	closeErr error
 }
 
 // NewSnowflakeDeploymentPolicy validates and loads deployment identity before
@@ -61,10 +70,10 @@ func NewSnowflakeDeploymentPolicy(cfg SnowflakeDeploymentConfig) (SnowflakeDeplo
 	if !cfg.Enabled {
 		return SnowflakeDeploymentPolicy{}, nil
 	}
-	account := strings.TrimSpace(cfg.Account)
-	user := strings.TrimSpace(cfg.User)
-	host := strings.ToLower(strings.TrimSpace(cfg.Host))
-	if invalidSnowflakeDeploymentIdentity(account) || invalidSnowflakeDeploymentIdentity(user) || invalidSnowflakeDeploymentIdentity(host) {
+	account := cfg.Account
+	user := cfg.User
+	host := strings.ToLower(cfg.Host)
+	if !validSnowflakeAccount(account) || !validSnowflakeUser(user) || !validSnowflakeHost(host) {
 		return SnowflakeDeploymentPolicy{}, ErrSnowflakePolicyInvalid
 	}
 	key, err := LoadSnowflakePrivateKey(cfg.PrivateKeyFile)
@@ -77,10 +86,12 @@ func NewSnowflakeDeploymentPolicy(cfg SnowflakeDeploymentConfig) (SnowflakeDeplo
 // NewSnowflakeDeploymentPolicyWithPrivateKey supports deployment secret
 // providers that resolve key bytes before constructing runtime dependencies.
 func NewSnowflakeDeploymentPolicyWithPrivateKey(account, user, host string, key *rsa.PrivateKey) (SnowflakeDeploymentPolicy, error) {
-	account = strings.TrimSpace(account)
-	user = strings.TrimSpace(user)
-	host = strings.ToLower(strings.TrimSpace(host))
-	if invalidSnowflakeDeploymentIdentity(account) || invalidSnowflakeDeploymentIdentity(user) || invalidSnowflakeDeploymentIdentity(host) || !validSnowflakePrivateKey(key) {
+	host = strings.ToLower(host)
+	if !validSnowflakeAccount(account) || !validSnowflakeUser(user) || !validSnowflakeHost(host) || !validSnowflakePrivateKey(key) {
+		return SnowflakeDeploymentPolicy{}, ErrSnowflakePolicyInvalid
+	}
+	key, err := cloneSnowflakePrivateKey(key)
+	if err != nil {
 		return SnowflakeDeploymentPolicy{}, ErrSnowflakePolicyInvalid
 	}
 	clientConfigPath, clientConfigDir, err := createSnowflakeClientConfig()
@@ -90,11 +101,99 @@ func NewSnowflakeDeploymentPolicyWithPrivateKey(account, user, host string, key 
 	return SnowflakeDeploymentPolicy{
 		enabled: true, account: account, user: user, host: host, privateKey: key,
 		clientConfigPath: clientConfigPath, clientConfigDir: clientConfigDir,
+		state: &snowflakeDeploymentPolicyState{},
 	}, nil
 }
 
 func validSnowflakePrivateKey(key *rsa.PrivateKey) bool {
 	return key != nil && key.N != nil && key.N.BitLen() >= 2048 && key.Validate() == nil
+}
+
+func cloneSnowflakePrivateKey(key *rsa.PrivateKey) (*rsa.PrivateKey, error) {
+	if !validSnowflakePrivateKey(key) {
+		return nil, ErrSnowflakePolicyInvalid
+	}
+	clone, err := x509.ParsePKCS1PrivateKey(x509.MarshalPKCS1PrivateKey(key))
+	if err != nil || !validSnowflakePrivateKey(clone) {
+		return nil, ErrSnowflakePolicyInvalid
+	}
+	return clone, nil
+}
+
+func validSnowflakeAccount(value string) bool {
+	if value == "" || value != strings.TrimSpace(value) || len(value) > 255 {
+		return false
+	}
+	separator := true
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			separator = false
+			continue
+		}
+		if r != '.' && r != '-' && r != '_' || separator {
+			return false
+		}
+		separator = true
+	}
+	return !separator
+}
+
+func validSnowflakeUser(value string) bool {
+	if value == "" || value != strings.TrimSpace(value) || len(value) > 255 {
+		return false
+	}
+	for index, r := range value {
+		letter := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
+		digit := r >= '0' && r <= '9'
+		if index == 0 {
+			if !letter && r != '_' {
+				return false
+			}
+			continue
+		}
+		if !letter && !digit && r != '_' && r != '$' {
+			return false
+		}
+	}
+	return true
+}
+
+func validSnowflakeHost(value string) bool {
+	if value == "" || value != strings.TrimSpace(value) || len(value) > 253 || value != strings.ToLower(value) || !strings.HasSuffix(value, ".snowflakecomputing.com") {
+		return false
+	}
+	for _, label := range strings.Split(value, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			letter := r >= 'a' && r <= 'z'
+			digit := r >= '0' && r <= '9'
+			if !letter && !digit && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// CanonicalSnowflakeAccountIdentifier returns Snowflake's key-pair JWT account
+// spelling: uppercase with organization separators normalized to hyphens.
+func CanonicalSnowflakeAccountIdentifier(value string) (string, error) {
+	if !validSnowflakeAccount(value) {
+		return "", ErrSnowflakePolicyInvalid
+	}
+	return strings.ToUpper(strings.ReplaceAll(value, ".", "-")), nil
+}
+
+// SnowflakeRESTAccountLabel returns the account label used by Snowflake REST
+// hostnames. Snowflake documents underscore-to-hyphen hostname normalization.
+func SnowflakeRESTAccountLabel(value string) (string, error) {
+	canonical, err := CanonicalSnowflakeAccountIdentifier(value)
+	if err != nil {
+		return "", err
+	}
+	return strings.ToLower(strings.ReplaceAll(canonical, "_", "-")), nil
 }
 
 func createSnowflakeClientConfig() (string, string, error) {
@@ -110,19 +209,38 @@ func createSnowflakeClientConfig() (string, string, error) {
 	return path, dir, nil
 }
 
-// Close removes the process-local, deployment-owned client logging policy.
+func (p SnowflakeDeploymentPolicy) lockActive() (func(), bool) {
+	if !p.enabled || p.state == nil {
+		return nil, false
+	}
+	p.state.mu.RLock()
+	if p.state.closed || !validSnowflakeAccount(p.account) || !validSnowflakeUser(p.user) || !validSnowflakeHost(p.host) || !validSnowflakePrivateKey(p.privateKey) || p.clientConfigPath == "" || p.clientConfigDir == "" {
+		p.state.mu.RUnlock()
+		return nil, false
+	}
+	return p.state.mu.RUnlock, true
+}
+
+// Close revokes all value copies and removes the process-local client logging
+// policy. Concurrent calls are idempotent.
 func (p SnowflakeDeploymentPolicy) Close() error {
-	if p.clientConfigDir == "" {
+	if p.state == nil {
 		return nil
 	}
-	return os.RemoveAll(p.clientConfigDir)
+	p.state.mu.Lock()
+	p.state.closed = true
+	p.state.mu.Unlock()
+	p.state.close.Do(func() { p.state.closeErr = os.RemoveAll(p.clientConfigDir) })
+	return p.state.closeErr
 }
 
 // Enabled reports whether this prevalidated policy admits Snowflake execution.
-func (p SnowflakeDeploymentPolicy) Enabled() bool { return p.enabled }
-
-func invalidSnowflakeDeploymentIdentity(value string) bool {
-	return value == "" || len(value) > 1024 || strings.ContainsAny(value, "\r\n\x00:/?#@")
+func (p SnowflakeDeploymentPolicy) Enabled() bool {
+	unlock, ok := p.lockActive()
+	if ok {
+		unlock()
+	}
+	return ok
 }
 
 // Admit validates every Snowflake-backed spec before allowing execution.
@@ -137,9 +255,6 @@ func (p SnowflakeDeploymentPolicy) Admit(specs []RuntimeSpec) error {
 		if !p.enabled {
 			return ErrSnowflakeExecutionDisabled
 		}
-		if !validSnowflakePrivateKey(p.privateKey) || p.account == "" || p.user == "" || p.host == "" || p.clientConfigPath == "" {
-			return ErrSnowflakePolicyInvalid
-		}
 		parsed, err := parsePersistableSnowflakeDSN(spec.Options["dsn"])
 		if err != nil {
 			return err
@@ -152,6 +267,15 @@ func (p SnowflakeDeploymentPolicy) Admit(specs []RuntimeSpec) error {
 }
 
 func (p SnowflakeDeploymentPolicy) validateIdentity(cfg *gosnowflake.Config) error {
+	unlock, ok := p.lockActive()
+	if !ok {
+		return ErrSnowflakePolicyInvalid
+	}
+	defer unlock()
+	return p.validateIdentityUnlocked(cfg)
+}
+
+func (p SnowflakeDeploymentPolicy) validateIdentityUnlocked(cfg *gosnowflake.Config) error {
 	if cfg == nil || !strings.EqualFold(cfg.Account, p.account) || !strings.EqualFold(cfg.User, p.user) || !strings.EqualFold(cfg.Host, p.host) || cfg.Port != 443 {
 		return ErrSnowflakeIdentityNotAllowed
 	}
@@ -347,6 +471,11 @@ func OpenSnowflakeDB(dsn string, policy SnowflakeDeploymentPolicy) (*sql.DB, err
 	if err != nil {
 		return nil, err
 	}
+	unlock, ok := policy.lockActive()
+	if !ok {
+		return nil, ErrSnowflakePolicyInvalid
+	}
+	defer unlock()
 	cfg.PrivateKey = policy.privateKey
 	cfg.Authenticator = gosnowflake.AuthTypeJwt
 	cfg.LogQueryText = false

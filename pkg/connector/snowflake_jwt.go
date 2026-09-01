@@ -33,27 +33,34 @@ type snowflakeJWTClaims struct {
 // SnowflakeRESTIdentity returns the nonsecret deployment identity used by the
 // Snowpipe Streaming control endpoint. It never exposes the deployment key.
 func (p SnowflakeDeploymentPolicy) SnowflakeRESTIdentity() (account, user, host string, err error) {
-	if !p.enabled || invalidSnowflakeDeploymentIdentity(p.account) || invalidSnowflakeDeploymentIdentity(p.user) || invalidSnowflakeDeploymentIdentity(p.host) || !validSnowflakePrivateKey(p.privateKey) {
+	unlock, ok := p.lockActive()
+	if !ok {
 		return "", "", "", ErrSnowflakePolicyInvalid
 	}
+	defer unlock()
 	return p.account, p.user, p.host, nil
 }
 
 // SnowflakeKeyPairJWT signs a short-lived Snowflake KEYPAIR_JWT with the
 // deployment-owned RSA key. Callers receive only the serialized token.
 func (p SnowflakeDeploymentPolicy) SnowflakeKeyPairJWT(now time.Time, ttl time.Duration) (string, error) {
-	if !p.enabled || invalidSnowflakeDeploymentIdentity(p.account) || invalidSnowflakeDeploymentIdentity(p.user) || invalidSnowflakeDeploymentIdentity(p.host) || !validSnowflakePrivateKey(p.privateKey) || ttl <= 0 || ttl > MaxSnowflakeKeyPairJWTTTL {
+	if ttl < time.Second || ttl > MaxSnowflakeKeyPairJWTTTL {
 		return "", errSnowflakeJWTInvalid
 	}
+	unlock, ok := p.lockActive()
+	if !ok {
+		return "", errSnowflakeJWTInvalid
+	}
+	defer unlock()
 	now = now.UTC()
 	issuedAt := now.Unix()
 	expiresAt := now.Add(ttl).Unix()
 	if issuedAt < 0 || expiresAt <= issuedAt {
 		return "", errSnowflakeJWTInvalid
 	}
-	account := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(p.account), ".", "-"))
-	user := strings.ToUpper(strings.TrimSpace(p.user))
-	if account == "" || user == "" {
+	account, err := CanonicalSnowflakeAccountIdentifier(p.account)
+	user := strings.ToUpper(p.user)
+	if err != nil || account == "" || user == "" {
 		return "", errSnowflakeJWTInvalid
 	}
 	publicDER, err := x509.MarshalPKIXPublicKey(&p.privateKey.PublicKey)
