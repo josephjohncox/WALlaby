@@ -30,6 +30,9 @@ var (
 	// one deterministic identity than the plan produced — a duplicate-identity
 	// hazard that fails closed rather than acknowledging.
 	errStreamObservationInconsistent = errors.New("streaming Snowflake observed row cardinality is inconsistent")
+	// errStreamChannelInvalidated means Snowflake rejected the current client
+	// sequencer. Recovery must reopen and reconcile before any append.
+	errStreamChannelInvalidated = errors.New("streaming Snowflake channel is invalidated")
 )
 
 // streamAppendRow is one row handed to the append transport. The payload is the
@@ -42,17 +45,18 @@ type streamAppendRow struct {
 
 // streamAppendRequest is one bounded append call against an open channel.
 type streamAppendRequest struct {
-	cfg               streamConfig
-	requestID         string
-	channelName       string
-	channelRevision   int64
-	pipeRevision      string
-	continuationToken string
-	offsetToken       string
-	manifestHash      string
-	rowsContentHash   string
-	rowCount          int
-	rows              []streamAppendRow
+	cfg                    streamConfig
+	requestID              string
+	channelName            string
+	channelRevision        int64
+	pipeRevision           string
+	continuationToken      string
+	expectedPreviousOffset string
+	offsetToken            string
+	manifestHash           string
+	rowsContentHash        string
+	rowCount               int
+	rows                   []streamAppendRow
 }
 
 // streamRowRejection is one server-rejected row.

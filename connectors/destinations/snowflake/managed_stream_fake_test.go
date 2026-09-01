@@ -14,8 +14,6 @@ import (
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
-var errStreamChannelInvalidated = errors.New("streaming Snowflake channel is invalidated")
-
 // fakeStreamChannel is one durable channel in the in-memory protocol.
 type fakeStreamChannel struct {
 	revision             int64
@@ -141,7 +139,7 @@ func (f *fakeStreamProtocol) AppendRows(_ context.Context, req streamAppendReque
 		f.appendedPayloads = append(f.appendedPayloads, append([]byte(nil), row.payload...))
 	}
 	request, requestPresent := f.requests[req.requestID]
-	if !requestPresent || request.phase != streamRequestSendingUnknown || request.channelRevision != req.channelRevision || request.inputContinuation != req.continuationToken || request.requestedOffset != req.offsetToken || request.manifestHash != req.manifestHash || request.rowsContentHash != req.rowsContentHash || request.rowCount != req.rowCount {
+	if !requestPresent || request.phase != streamRequestSendingUnknown || request.channelRevision != req.channelRevision || request.inputContinuation != req.continuationToken || request.expectedPreviousOffset != req.expectedPreviousOffset || request.requestedOffset != req.offsetToken || request.manifestHash != req.manifestHash || request.rowsContentHash != req.rowsContentHash || request.rowCount != req.rowCount {
 		return streamAppendResult{}, fmt.Errorf("%w: append was not preceded by the exact durable SENDING_UNKNOWN request", connector.ErrDeliveryConflict)
 	}
 	channel, present := f.channels[req.channelName]
@@ -165,17 +163,17 @@ func (f *fakeStreamProtocol) AppendRows(_ context.Context, req streamAppendReque
 	if f.appendInvalidateThenReopen {
 		f.appendInvalidateThenReopen = false
 		f.requestStatus[req.requestID] = streamRequestStatusProvenAbsent
-		return streamAppendResult{}, errStreamChannelInvalidated
+		return streamAppendResult{}, newStreamAppendFailure(streamAppendFailureDefinitelyNotAccepted, errStreamChannelInvalidated)
 	}
 	if f.appendAuthExpiresOnce {
 		f.appendAuthExpiresOnce = false
 		f.requestStatus[req.requestID] = streamRequestStatusProvenAbsent
-		return streamAppendResult{}, errStreamAuthExpired
+		return streamAppendResult{}, newStreamAppendFailure(streamAppendFailureDefinitelyNotAccepted, errStreamAuthExpired)
 	}
 	if f.appendThrottleTimes > 0 {
 		f.appendThrottleTimes--
 		f.requestStatus[req.requestID] = streamRequestStatusProvenAbsent
-		return streamAppendResult{}, errStreamThrottled
+		return streamAppendResult{}, newStreamAppendFailure(streamAppendFailureDefinitelyNotAccepted, errStreamThrottled)
 	}
 	if f.appendRejectsRows {
 		f.appendRejectsRows = false
@@ -238,7 +236,7 @@ func (f *fakeStreamProtocol) RequestStatus(_ context.Context, _ streamConfig, re
 	evidence := streamRequestStatusEvidence{
 		disposition: status, requestID: request.requestID, channelName: request.channelName, pipeName: request.pipeName,
 		channelRevision: request.channelRevision, pipeRevision: request.pipeRevision,
-		inputContinuation: request.inputContinuation, requestedOffset: request.requestedOffset,
+		inputContinuation: request.inputContinuation, expectedPreviousOffset: request.expectedPreviousOffset, requestedOffset: request.requestedOffset,
 		manifestHash: request.manifestHash, rowsContentHash: request.rowsContentHash, rowCount: request.rowCount,
 		detail: "fake authoritative request status",
 	}
@@ -472,7 +470,7 @@ func streamTestConfig(t testing.TB) streamConfig {
 		pipeCreatedOn: "2026-01-01T00:00:00.000000000+00:00", targetCreatedOn: "2026-01-01T00:00:00.000000000+00:00",
 		receiptsCreatedOn: "2026-01-01T00:00:00.000000000+00:00", channelStateCreatedOn: "2026-01-01T00:00:00.000000000+00:00", requestJournalCreatedOn: "2026-01-01T00:00:00.000000000+00:00",
 		sourceSchema: "public", sourceTable: "widgets", schemaContract: schema, schemaContractHash: hash,
-		destinationRevision: "snowflake-streaming-v1", maxTransactionRows: 1000, maxTransactionBytes: 8 << 20,
+		destinationRevision: "snowflake-streaming-v1", maxTransactionRows: 1000, maxTransactionBytes: streamRESTMaxAppendBytes,
 		maxFragments: 128, maxRowBytes: 1 << 20, maxOpenConnections: 4, statementTimeoutSeconds: 600,
 		observeAttempts: 8, observeInterval: time.Millisecond, appendAttempts: 8, appendBackoff: time.Millisecond,
 		cleanupMaxObjects: 100, cleanupRetention: time.Hour, validateEveryConnection: true, typeMappings: defaultSnowflakeTypeMappings(),

@@ -36,7 +36,7 @@ func streamValidOptions(t *testing.T) (string, map[string]string) {
 		"managed_receipts_created_on": created, "managed_channel_state_created_on": created, "managed_request_journal_created_on": created,
 		"managed_source_schema": "public", "managed_source_table": "widgets",
 		"managed_schema_contract": string(schemaJSON), "managed_schema_contract_hash": hash,
-		"managed_max_transaction_rows": "1000", "managed_max_transaction_bytes": "8388608",
+		"managed_max_transaction_rows": "1000", "managed_max_transaction_bytes": "4194304",
 		"managed_max_transaction_fragments": "128", "managed_max_row_bytes": "1048576", "managed_max_open_conns": "4",
 		"managed_statement_timeout_seconds": "600", "managed_observe_attempts": "60", "managed_observe_interval_ms": "1000",
 		"managed_append_attempts": "16", "managed_append_backoff_ms": "250",
@@ -76,6 +76,8 @@ func TestStreamConfigRejectsLossyAndUnsafeOptions(t *testing.T) {
 		"lowercase ident":                 func(o map[string]string) { o["managed_pipe"] = "wallaby_pipe" },
 		"bad channel prefix":              func(o map[string]string) { o["managed_channel_name_prefix"] = "bad prefix!" },
 		"missing channel tbl":             func(o map[string]string) { o["managed_channel_state_table"] = "" },
+		"REST transaction overflow":       func(o map[string]string) { o["managed_max_transaction_bytes"] = "4194305" },
+		"row exceeds REST transaction":    func(o map[string]string) { o["managed_max_row_bytes"] = "4194305" },
 	}
 	for name, mutate := range cases {
 		name, mutate := name, mutate

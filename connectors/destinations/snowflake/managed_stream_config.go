@@ -293,14 +293,20 @@ func streamConfigFromSpec(dsn string, spec connector.RuntimeSpec) (streamConfig,
 	if cfg.maxTransactionRows, err = parseManagedSnowflakeInt(options, "managed_max_transaction_rows", 100_000); err != nil {
 		return streamConfig{}, err
 	}
-	if cfg.maxTransactionBytes, err = parseManagedSnowflakeInt64(options, "managed_max_transaction_bytes", 256<<20); err != nil {
+	if cfg.maxTransactionBytes, err = parseManagedSnowflakeInt64(options, "managed_max_transaction_bytes", streamRESTMaxAppendBytes); err != nil {
 		return streamConfig{}, err
+	}
+	if cfg.maxTransactionBytes > streamRESTMaxAppendBytes {
+		return streamConfig{}, fmt.Errorf("managed streaming Snowflake transaction bytes must not exceed the %d-byte REST append limit", streamRESTMaxAppendBytes)
 	}
 	if cfg.maxFragments, err = parseManagedSnowflakeInt(options, "managed_max_transaction_fragments", 4096); err != nil {
 		return streamConfig{}, err
 	}
-	if cfg.maxRowBytes, err = parseManagedSnowflakeInt64(options, "managed_max_row_bytes", 16<<20); err != nil {
+	if cfg.maxRowBytes, err = parseManagedSnowflakeInt64(options, "managed_max_row_bytes", streamRESTMaxAppendBytes); err != nil {
 		return streamConfig{}, err
+	}
+	if cfg.maxRowBytes > streamRESTMaxAppendBytes || cfg.maxRowBytes > cfg.maxTransactionBytes {
+		return streamConfig{}, errors.New("managed streaming Snowflake row bytes must not exceed the transaction or REST append limit")
 	}
 	if cfg.maxOpenConnections, err = parseManagedSnowflakeInt(options, "managed_max_open_conns", 8); err != nil {
 		return streamConfig{}, err

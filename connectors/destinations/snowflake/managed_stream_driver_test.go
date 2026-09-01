@@ -156,6 +156,18 @@ func TestStreamDriverAuthExpiryRefreshesAndConverges(t *testing.T) {
 	if refreshed == 0 {
 		t.Fatal("auth expiry did not trigger credential refresh")
 	}
+	provenAbsent := 0
+	for _, request := range proto.requests {
+		if request.phase == streamRequestProvenAbsent {
+			provenAbsent++
+		}
+		if request.responseKind == "ambiguous_transport_error" {
+			t.Fatalf("definitive auth rejection was persisted as ambiguous: %+v", request)
+		}
+	}
+	if provenAbsent != 1 {
+		t.Fatalf("proven-absent auth requests=%d, want 1", provenAbsent)
+	}
 }
 
 func TestStreamDriverThrottlingBacksOffAndConverges(t *testing.T) {
@@ -362,7 +374,7 @@ func TestStreamDriverReconcileMatchesReceipt(t *testing.T) {
 
 func TestStreamRequestIdentityBindsChannelOffsetAndAttempt(t *testing.T) {
 	cfg, _, _, plan := streamTestFixture(t)
-	status := streamChannelStatus{valid: true, channelName: plan.identity.channelName, channelRevision: 3, pipeRevision: "pipe-3", continuationToken: "continuation-9"}
+	status := streamChannelStatus{valid: true, channelName: plan.identity.channelName, channelRevision: 3, pipeRevision: "pipe-3", continuationToken: "continuation-9", committedOffsetToken: "offset-prior"}
 	first, err := newManagedStreamRequest(plan, status, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -375,8 +387,40 @@ func TestStreamRequestIdentityBindsChannelOffsetAndAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.requestID != replay.requestID || first.requestID == second.requestID || first.requestedOffset != plan.identity.offsetToken || first.channelRevision != 3 || first.inputContinuation != "continuation-9" || first.destinationRevisionID != cfg.destinationRevision {
+	if first.requestID != replay.requestID || first.requestID == second.requestID || first.requestedOffset != plan.identity.offsetToken || first.channelRevision != 3 || first.inputContinuation != "continuation-9" || first.expectedPreviousOffset != "offset-prior" || first.destinationRevisionID != cfg.destinationRevision {
 		t.Fatalf("request identities first/replay/second=%+v/%+v/%+v", first, replay, second)
+	}
+}
+
+func TestStreamSequentialBatchesBindExactPreviousCommittedOffset(t *testing.T) {
+	cfg, firstTransaction, firstIntent, _ := streamTestFixture(t)
+	proto := newFakeStreamProtocol()
+	driver := newStreamTestDriver(cfg, proto)
+	if _, err := driver.apply(context.Background(), firstIntent, firstTransaction); err != nil {
+		t.Fatalf("first batch: %v", err)
+	}
+	firstRequest, found, err := proto.LookupRequest(context.Background(), cfg, streamRequestKey{flowIncarnationID: firstIntent.FlowIncarnationID, destinationRevisionID: firstIntent.DestinationRevisionID, logicalBatchID: firstIntent.LogicalBatchID})
+	if err != nil || !found {
+		t.Fatalf("first request found/error=%t/%v", found, err)
+	}
+	secondTransaction := managedTestTransaction(cfg.schemaContract)
+	secondTransaction.TransactionID = 43
+	secondTransaction.BeginLSN, secondTransaction.CommitLSN, secondTransaction.EndLSN = "0/21", "0/30", "0/30"
+	secondTransaction.Checkpoint = connector.Checkpoint{LSN: "0/30", Timestamp: time.Unix(101, 0).UTC()}
+	secondTransaction.Fragments[0].Batch.Records[0].After["id"] = int64(2)
+	secondIntent := streamTestIntent(t, cfg, secondTransaction)
+	if _, err := driver.apply(context.Background(), secondIntent, secondTransaction); err != nil {
+		t.Fatalf("second batch: %v", err)
+	}
+	secondRequest, found, err := proto.LookupRequest(context.Background(), cfg, streamRequestKey{flowIncarnationID: secondIntent.FlowIncarnationID, destinationRevisionID: secondIntent.DestinationRevisionID, logicalBatchID: secondIntent.LogicalBatchID})
+	if err != nil || !found {
+		t.Fatalf("second request found/error=%t/%v", found, err)
+	}
+	if secondRequest.expectedPreviousOffset != firstRequest.requestedOffset || secondRequest.requestedOffset == firstRequest.requestedOffset {
+		t.Fatalf("sequential request offsets first=%q second_previous/current=%q/%q", firstRequest.requestedOffset, secondRequest.expectedPreviousOffset, secondRequest.requestedOffset)
+	}
+	if proto.appendCalls != 2 || proto.insertCalls != 2 {
+		t.Fatalf("sequential append/receipt calls=%d/%d, want 2/2", proto.appendCalls, proto.insertCalls)
 	}
 }
 
@@ -390,7 +434,7 @@ func TestStreamRequestAmbiguousTransportNeverResendsWithoutProof(t *testing.T) {
 		t.Fatalf("ambiguous append error=%v, want indeterminate", err)
 	}
 	request, found, lookupErr := proto.LookupRequest(context.Background(), cfg, streamRequestKey{flowIncarnationID: intent.FlowIncarnationID, destinationRevisionID: intent.DestinationRevisionID, logicalBatchID: intent.LogicalBatchID})
-	if lookupErr != nil || !found || request.phase != streamRequestSendingUnknown || request.responseKind != "transport_error" {
+	if lookupErr != nil || !found || request.phase != streamRequestSendingUnknown || request.responseKind != "ambiguous_transport_error" {
 		t.Fatalf("ambiguous request=%+v found/error=%t/%v", request, found, lookupErr)
 	}
 	if _, err := driver.apply(context.Background(), intent, transaction); !errors.Is(err, connector.ErrDeliveryIndeterminate) {

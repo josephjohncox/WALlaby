@@ -416,9 +416,10 @@ test-snowflake-streaming-commercial-unpromoted:
     required+=',TestSnowflakeStreamingManagedProfileVisibilityLagWithoutResend'
     required+=',TestSnowflakeStreamingManagedProfileProvenAbsenceRetry'
     required+=',TestSnowflakeStreamingManagedProfileRequestProcessRestart'
+    required+=',TestSnowflakeStreamingRequestJournalCommercialRoundTrip'
     filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
     set +e
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 -json ./tests -run "${filter}" >"${results}"
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 -json ./tests ./connectors/destinations/snowflake -run "${filter}" >"${results}"
     test_rc=$?
     set -e
     cat "${results}"
@@ -429,7 +430,7 @@ test-snowflake-streaming-commercial-unpromoted:
 # Credential-free OS-process request-journal crash evidence. The helper fsyncs
 # request state, is killed with SIGKILL, and the replacement adopts without append.
 test-snowpipe-streaming-process-failure:
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./connectors/destinations/snowflake -run '^TestStreamRequestProcessRestartEvidence$'
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./connectors/destinations/snowflake -run '^TestStreamRequestProcessRestartUsesDurableStore$'
 
 # Deterministic fuzz smoke for the constrained Snowflake SQL planner. It runs
 # every managed fuzz target's seed corpus (no -fuzz, so no randomness and no
@@ -731,6 +732,6 @@ test-snowflake-staged-authority-commercial:
     #!/usr/bin/env bash
     set -euo pipefail
     test "${WALLABY_TEST_SNOWFLAKE_MANAGED:-}" = "1" || { echo 'WALLABY_TEST_SNOWFLAKE_MANAGED=1 is required' >&2; exit 2; }
-    # Auto-ingest remains outside this required list until its commercial test performs real assertions.
-    required='TestSnowflakeStagedManagedProfileReviewedDeploymentCell,TestSnowflakeStagedManagedProfileLiveAdmission,TestSnowflakeStagedManagedProfileFailClosedCopy,TestSnowflakeStagedManagedProfileStageIdentityCollision,TestSnowflakeStagedManagedProfilePutUncertainty,TestSnowflakeStagedManagedProfileCopyTransportLossAndDetachedTakeover,TestSnowflakeStagedManagedProfileRoleIsolation,TestSnowflakeStagedManagedProfilePipeIsolation,TestSnowflakeStagedManagedProfileNetworkFaultMatrix,TestSnowflakeStagedManagedProfileProcessKillRecovery,TestSnowflakeStagedManagedProfileWorkerSIGKILLRecovery,TestSnowflakeStagedManagedProfileCleanup'
+    test "${WALLABY_TEST_SNOWFLAKE_STAGED_AUTO_INGEST:-}" = "1" || { echo 'WALLABY_TEST_SNOWFLAKE_STAGED_AUTO_INGEST=1 is required' >&2; exit 2; }
+    required='TestSnowflakeStagedManagedProfileReviewedDeploymentCell,TestSnowflakeStagedManagedProfileLiveAdmission,TestSnowflakeStagedManagedProfileFailClosedCopy,TestSnowflakeStagedManagedProfileStageIdentityCollision,TestSnowflakeStagedManagedProfilePutUncertainty,TestSnowflakeStagedManagedProfileAutoIngestCompletion,TestSnowflakeStagedManagedProfileCopyTransportLossAndDetachedTakeover,TestSnowflakeStagedManagedProfileRoleIsolation,TestSnowflakeStagedManagedProfilePipeIsolation,TestSnowflakeStagedManagedProfileNetworkFaultMatrix,TestSnowflakeStagedManagedProfileProcessKillRecovery,TestSnowflakeStagedManagedProfileWorkerSIGKILLRecovery,TestSnowflakeStagedManagedProfileCleanup'
     IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="^($(printf '%s' "${required}" | tr ',' '|'))$" INTEGRATION_PACKAGE='./tests' just test-integration

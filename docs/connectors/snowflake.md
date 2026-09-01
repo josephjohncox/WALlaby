@@ -6,7 +6,7 @@ WALlaby exposes these Snowflake modes:
 | --- | --- | --- |
 | `postgresql-to-snowflake-sql-v1` | experimental | PostgreSQL 16 CDC into one hybrid table, with external-commit reconciliation |
 | `postgresql-to-snowflake-staged-append-v1` | experimental | PostgreSQL 16 CDC into one append changelog table via deterministic internal-stage COPY, with landing and target proof |
-| `postgresql-to-snowflake-streaming-rest-append-v1` | experimental (fails closed) | PostgreSQL 16 CDC appended to a Snowpipe Streaming channel, adopted only on SQL-observed row completeness. Admission is refused until a reviewed high-performance append transport is linked |
+| `postgresql-to-snowflake-streaming-rest-append-v1` | experimental (fails closed) | PostgreSQL 16 CDC appended to a Snowpipe Streaming channel, adopted only on channel-offset and SQL-observed row completeness. A concrete REST adapter exists but remains unlinked until commercial same-SHA evidence passes |
 | Generic `snowflake` and `snowpipe` | experimental | Legacy direct-table and file-loading behavior |
 
 ## Deployment execution policy and credentials
@@ -30,9 +30,26 @@ Snowflake DSNs persisted in flows may contain only the reviewed account/database
 
 Disabling the gate blocks new persistence, lifecycle transitions, reconciliation, DBOS recovery, and newly started workers for existing Snowflake-backed flows. It does not reach into a process that already holds an open connection: stop or terminate those workers and roll the deployment when revoking execution. Offline plan/check commands prove only structural and credential-safe flow syntax. `flow plan --endpoint ...` calls the server's policy-aware `ValidateFlow` RPC before producing a diff and fails when the current deployment does not admit the flow.
 
-These are implemented modeled protocol profiles, not blanket support claims for the Snowflake adapters. SQL and staged COPY have no reviewed Snowflake service version or deployment cell with every required same-SHA live recovery gate. Local tests, PostgreSQL tests, mocks, and fakesnow cannot promote them. Streaming additionally has no linked reviewed append transport, so it fails closed before external I/O. A maintained declaration requires complete unskipped real-service evidence on the reviewed SHA; Streaming also requires the concrete reviewed transport.
+These are implemented modeled protocol profiles, not blanket support claims for the Snowflake adapters. SQL and staged COPY have no reviewed Snowflake service version or deployment cell with every required same-SHA live recovery gate. Local tests, PostgreSQL tests, mocks, and fakesnow cannot promote them. Streaming has a concrete Snowflake v2 REST adapter, but the runtime does not link it. Admission therefore fails before external I/O. A maintained declaration requires complete unskipped real-service evidence on the reviewed SHA.
 
 The SQL profile provides **at-least-once delivery with external-commit reconciliation**. It does not claim exactly-once delivery.
+
+## Unlinked Snowpipe Streaming REST adapter
+
+The unlinked adapter implements Snowflake's documented high-performance REST sequence:
+
+1. Get the ingest hostname from `GET /v2/streaming/hostname` with a key-pair JWT.
+2. Exchange the JWT at `POST /oauth/token` for an ingest-host-scoped token.
+3. Open the channel with `fail_on_uncommitted_rows=true` and a deterministic UUID request ID.
+4. Append bounded NDJSON with the exact continuation, start offset, end offset, and request ID.
+5. Read the committed offset through the bulk channel-status endpoint.
+6. Drop the channel only with `fail_on_uncommitted_rows=true`.
+
+The adapter accepts at most 4 MiB of exact NDJSON wire bytes per append and 1 MiB per response. The wire count includes each row's newline terminator. It rejects redirects, cross-account host drift, user information, non-443 production endpoints, unsafe TLS clients, malformed JSON, unknown response fields, insecure non-loopback HTTP, and non-advancing continuation tokens. It never logs JWTs or scoped tokens.
+
+The durable request identity binds the exact prior committed offset, requested offset, continuation token, channel creation timestamp, pipe revision, manifest, and row identities. Offset tokens are opaque. The exact prior token means no progress, the exact requested token means committed, and any other token remains unknown without matching request-journal evidence. Bulk channel status must return the same positive `created_on_ms` value as the persisted request. A missing or different channel creation timestamp fails closed because the status could belong to a reopened channel. Commercial promotion requires the reviewed Snowflake deployment to return this incarnation field on bulk status. Authentication, channel invalidation, throttling, and local validation failures can be marked definitely not accepted only from an exact response or pre-send boundary. A timeout, service error, disconnect, or malformed success response remains ambiguous.
+
+An append success proves service receipt only. It does not prove target commit. The request remains unresolved until the channel reports the exact committed offset and SQL observation proves every expected row identity once. The public API does not expose an authoritative per-request absence lookup, so the REST adapter never invents proven-absence evidence after an ambiguous request. The runtime keeps `streamingTransportLinked=false` until the commercial same-SHA matrix validates the complete sequence.
 
 ## Admission contract
 
@@ -54,7 +71,7 @@ The profile admits only this configuration:
 - key-pair JWT authentication over verified HTTPS with OCSP fail-closed;
 - one configured `CURRENT_VERSION()` value, checked on every acquired session;
 - exact target and receipt-table creation identities;
-- at most 1,000 records, 128 fragments, and 8 MiB of logical content per PostgreSQL transaction; and
+- at most 1,000 records, 128 fragments, and 4 MiB of exact NDJSON wire bytes per PostgreSQL transaction; and
 - at most eight Snowflake sessions.
 
 The profile rejects standard Snowflake tables because their primary and unique constraints are not enforced. It also rejects generated columns, generic metadata tables, staging, append mode, disabled transactions, schema drift, DDL, type-mapping overrides, arbitrary start LSNs, and multiple sinks.

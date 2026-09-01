@@ -10,7 +10,7 @@ func streamRequestColumns() []string {
 	return []string{
 		"REQUEST_ID", "FLOW_ID", "FLOW_INCARNATION_ID", "SOURCE_LINEAGE_ID", "DESTINATION_REVISION_ID",
 		"LOGICAL_BATCH_ID", "POSITION_ID", "CONTENT_HASH", "MANIFEST_HASH", "ROWS_CONTENT_HASH", "ROW_COUNT",
-		"CHANNEL_NAME", "PIPE_NAME", "CHANNEL_REVISION", "PIPE_REVISION", "INPUT_CONTINUATION_TOKEN", "REQUESTED_OFFSET_TOKEN",
+		"CHANNEL_NAME", "PIPE_NAME", "CHANNEL_REVISION", "PIPE_REVISION", "INPUT_CONTINUATION_TOKEN", "EXPECTED_PREVIOUS_COMMITTED_OFFSET_TOKEN", "REQUESTED_OFFSET_TOKEN",
 		"RESPONSE_CONTINUATION_TOKEN", "COMMITTED_OFFSET_TOKEN", "GENERATION", "ACQUISITION_ID", "LEASE_EPOCH",
 		"ATTEMPT", "PHASE", "PHASE_VERSION", "RESPONSE_KIND", "RESPONSE_EVIDENCE",
 	}
@@ -20,7 +20,7 @@ func streamRequestValues(r managedStreamRequest) []any {
 	return []any{
 		r.requestID, r.flowID, r.flowIncarnationID, r.sourceLineageID, r.destinationRevisionID,
 		r.logicalBatchID, r.positionID, r.contentHash, r.manifestHash, r.rowsContentHash, r.rowCount,
-		r.channelName, r.pipeName, r.channelRevision, r.pipeRevision, r.inputContinuation, r.requestedOffset,
+		r.channelName, r.pipeName, r.channelRevision, r.pipeRevision, r.inputContinuation, r.expectedPreviousOffset, r.requestedOffset,
 		r.responseContinuation, r.committedOffset, r.generation, r.acquisitionID, r.leaseEpoch,
 		r.attempt, string(r.phase), r.phaseVersion, r.responseKind, r.responseEvidence,
 	}
@@ -62,7 +62,7 @@ func scanStreamRequest(row streamReceiptScanner) (managedStreamRequest, error) {
 	if err := row.Scan(
 		&r.requestID, &r.flowID, &r.flowIncarnationID, &r.sourceLineageID, &r.destinationRevisionID,
 		&r.logicalBatchID, &r.positionID, &r.contentHash, &r.manifestHash, &r.rowsContentHash, &r.rowCount,
-		&r.channelName, &r.pipeName, &r.channelRevision, &r.pipeRevision, &r.inputContinuation, &r.requestedOffset,
+		&r.channelName, &r.pipeName, &r.channelRevision, &r.pipeRevision, &r.inputContinuation, &r.expectedPreviousOffset, &r.requestedOffset,
 		&r.responseContinuation, &r.committedOffset, &r.generation, &r.acquisitionID, &r.leaseEpoch,
 		&r.attempt, &phase, &r.phaseVersion, &r.responseKind, &r.responseEvidence,
 	); err != nil {

@@ -227,9 +227,6 @@ func (d *streamDriver) persistChannelState(ctx context.Context, plan managedStre
 			return fmt.Errorf("%w: same-revision streaming Snowflake request identity diverges", connector.ErrDeliveryConflict)
 		}
 	}
-	if status.committedOffsetToken != "" && status.committedOffsetToken != plan.identity.offsetToken {
-		return fmt.Errorf("%w: streaming Snowflake committed offset is not the exact request offset", connector.ErrDeliveryConflict)
-	}
 	state := managedStreamChannelState{
 		flowIncarnationID: plan.receipt.flowIncarnationID, destinationRevisionID: plan.receipt.destinationRevisionID,
 		channelName: plan.identity.channelName, pipeName: d.cfg.pipe, pipeRevision: status.pipeRevision,
@@ -348,7 +345,7 @@ func (d *streamDriver) appendRequest(ctx context.Context, plan managedStreamPlan
 		}
 		req := streamAppendRequest{
 			cfg: d.cfg, requestID: request.requestID, channelName: request.channelName, channelRevision: request.channelRevision,
-			pipeRevision: request.pipeRevision, continuationToken: request.inputContinuation, offsetToken: request.requestedOffset,
+			pipeRevision: request.pipeRevision, continuationToken: request.inputContinuation, expectedPreviousOffset: request.expectedPreviousOffset, offsetToken: request.requestedOffset,
 			manifestHash: request.manifestHash, rowsContentHash: request.rowsContentHash, rowCount: request.rowCount,
 			rows: appendRowsOf(missing),
 		}
@@ -356,7 +353,19 @@ func (d *streamDriver) appendRequest(ctx context.Context, plan managedStreamPlan
 		result, appendErr := d.proto.AppendRows(appendCtx, req)
 		endAppend(appendErr)
 		if appendErr != nil {
-			request, err = d.transitionRequestEvidence(context.WithoutCancel(ctx), request, streamRequestSendingUnknown, request.responseContinuation, "transport_error", appendErr.Error(), "")
+			outcome := streamAppendFailureOutcomeOf(appendErr)
+			phase := streamRequestSendingUnknown
+			kind := "ambiguous_transport_error"
+			continuation := request.responseContinuation
+			if outcome == streamAppendFailurePreSend || outcome == streamAppendFailureDefinitelyNotAccepted {
+				phase = streamRequestProvenAbsent
+				continuation = ""
+				kind = "definitely_not_accepted"
+				if outcome == streamAppendFailurePreSend {
+					kind = "pre_send_failure"
+				}
+			}
+			request, err = d.transitionRequestEvidence(context.WithoutCancel(ctx), request, phase, continuation, kind, appendErr.Error(), "")
 			if err != nil {
 				return streamChannelStatus{}, managedStreamRequest{}, err
 			}
@@ -390,6 +399,23 @@ func (d *streamDriver) appendRequest(ctx context.Context, plan managedStreamPlan
 			if err != nil {
 				return streamChannelStatus{}, managedStreamRequest{}, err
 			}
+		}
+		if request.phase == streamRequestProvenAbsent {
+			if errors.Is(appendErr, errStreamAuthExpired) && d.hooks.RefreshAuth != nil {
+				if err := d.hooks.RefreshAuth(ctx); err != nil {
+					return streamChannelStatus{}, managedStreamRequest{}, fmt.Errorf("%w: refresh streaming Snowflake credentials: %w", connector.ErrDeliveryIndeterminate, err)
+				}
+			}
+			if errors.Is(appendErr, errStreamThrottled) {
+				if err := d.sleepFor(ctx, d.cfg.appendBackoff); err != nil {
+					return streamChannelStatus{}, managedStreamRequest{}, err
+				}
+			}
+			status, err = d.openAndPersistChannel(ctx, plan, plan.rowsContentHash)
+			if err != nil {
+				return streamChannelStatus{}, managedStreamRequest{}, err
+			}
+			continue
 		}
 		var committed bool
 		status, request, committed, err = d.reconcileRequest(ctx, plan, request)
@@ -533,7 +559,11 @@ func (d *streamDriver) assertAppendSize(rows []streamChangelogRow) error {
 		if size > d.cfg.maxRowBytes {
 			return fmt.Errorf("%w: %w: row %d is %d bytes", connector.ErrDeliveryConflict, errStreamOversize, rows[index].AppendOrdinal, size)
 		}
-		total += size
+		wireSize := size + 1 // NDJSON terminates every JSON value with one newline.
+		if wireSize > d.cfg.maxRowBytes {
+			return fmt.Errorf("%w: %w: row %d is %d wire bytes", connector.ErrDeliveryConflict, errStreamOversize, rows[index].AppendOrdinal, wireSize)
+		}
+		total += wireSize
 	}
 	if total > d.cfg.maxTransactionBytes {
 		return fmt.Errorf("%w: %w: append request is %d bytes", connector.ErrDeliveryConflict, errStreamOversize, total)

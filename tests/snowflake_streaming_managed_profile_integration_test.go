@@ -103,7 +103,7 @@ func newSnowflakeStreamingManagedFixture(t *testing.T) *snowflakeStreamingManage
 		"managed_receipts_created_on": created, "managed_channel_state_created_on": created, "managed_request_journal_created_on": created,
 		"managed_source_schema": "public", "managed_source_table": "widgets",
 		"managed_schema_contract": string(schemaJSON), "managed_schema_contract_hash": schemaHash,
-		"managed_max_transaction_rows": "1000", "managed_max_transaction_bytes": "8388608",
+		"managed_max_transaction_rows": "1000", "managed_max_transaction_bytes": "4194304",
 		"managed_max_transaction_fragments": "128", "managed_max_row_bytes": "1048576", "managed_max_open_conns": "4",
 		"managed_statement_timeout_seconds": "600", "managed_observe_attempts": "60", "managed_observe_interval_ms": "1000",
 		"managed_append_attempts": "16", "managed_append_backoff_ms": "250",

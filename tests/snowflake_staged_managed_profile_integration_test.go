@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -56,8 +57,9 @@ func TestSnowflakeStagedManagedProfileLiveAdmission(t *testing.T) {
 	bad.Options = cloneTestOptions(fixture.spec.Options)
 	bad.Options["managed_snowflake_version"] = fixture.version + "-unproven"
 	candidate := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
-	if err := candidate.Open(context.Background(), bad); err == nil {
-		_ = candidate.Close(context.Background())
+	err := candidate.Open(context.Background(), bad)
+	closeSnowflakeStagedDestination(t, "invalid version candidate", candidate)
+	if err == nil {
 		t.Fatal("unproven staged Snowflake version admission must fail closed")
 	}
 }
@@ -189,11 +191,13 @@ func TestSnowflakeStagedManagedProfileRoleIsolation(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cleanupCancel()
-		_, _ = fixture.provisionDB.ExecContext(cleanupCtx, revoke)
+		if _, err := fixture.provisionDB.ExecContext(cleanupCtx, revoke); err != nil {
+			t.Errorf("revoke staged alternate writer: %v", err)
+		}
 	})
 	candidate := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	err := candidate.Open(ctx, fixture.spec)
-	_ = candidate.Close(context.Background())
+	closeSnowflakeStagedDestination(t, "alternate-writer candidate", candidate)
 	if err == nil || !strings.Contains(err.Error(), "additional privileged role") {
 		t.Fatalf("alternate-writer admission error=%v, want additional privileged role rejection", err)
 	}
@@ -213,7 +217,9 @@ func TestSnowflakeStagedManagedProfilePipeIsolation(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cleanupCancel()
-		_, _ = fixture.provisionDB.ExecContext(cleanupCtx, "DROP PIPE IF EXISTS "+pipe)
+		if _, err := fixture.provisionDB.ExecContext(cleanupCtx, "DROP PIPE IF EXISTS "+pipe); err != nil {
+			t.Errorf("drop staged isolation pipe: %v", err)
+		}
 	})
 	// The non-auto-ingest profile does not observe a pipe; a stray pipe is not
 	// part of the admitted catalog, so a fresh open still validates the objects.
@@ -221,16 +227,93 @@ func TestSnowflakeStagedManagedProfilePipeIsolation(t *testing.T) {
 	if err := candidate.Open(ctx, fixture.spec); err != nil {
 		t.Logf("stray pipe present; open outcome=%v", err)
 	}
-	_ = candidate.Close(context.Background())
+	closeSnowflakeStagedDestination(t, "pipe-isolation candidate", candidate)
+}
+
+func TestSnowflakeStagedAutoIngestPipeDDLIsExact(t *testing.T) {
+	t.Parallel()
+	statement := snowflakeStagedAutoIngestPipeDDL(`"DB"."S"."P"`, `"DB"."S"."LANDING"`, `"DB"."S"."STAGE"`, "owner-comment")
+	for _, required := range []string{
+		`CREATE PIPE "DB"."S"."P" AUTO_INGEST=TRUE`,
+		`COPY INTO "DB"."S"."LANDING" FROM @"DB"."S"."STAGE"/wallaby_staged_append_v1/`,
+		`MATCH_BY_COLUMN_NAME=CASE_SENSITIVE`, `ON_ERROR=ABORT_STATEMENT`, `FORCE=FALSE`, `PURGE=FALSE`,
+	} {
+		if !strings.Contains(statement, required) {
+			t.Fatalf("auto-ingest pipe DDL omitted %q: %s", required, statement)
+		}
+	}
+	if strings.Contains(statement, "FORMAT_NAME") {
+		t.Fatalf("auto-ingest pipe DDL references mutable format name: %s", statement)
+	}
+	authorityDDL := snowflakeStagedAuthorityDDL(`"DB"."S"."AUTH"`, "SUFFIX", "owner-comment")
+	if !strings.Contains(authorityDDL, `"PROVISION_ATTEMPT_ID" VARCHAR`) {
+		t.Fatalf("commercial authority fixture omitted provision attempt identity: %s", authorityDDL)
+	}
 }
 
 func TestSnowflakeStagedManagedProfileAutoIngestCompletion(t *testing.T) {
-	if strings.TrimSpace(os.Getenv("WALLABY_TEST_SNOWFLAKE_STAGED_PIPE")) == "" {
-		t.Skip("set WALLABY_TEST_SNOWFLAKE_STAGED_PIPE=<pipe> to exercise the auto-ingest completion gate")
+	fixture := newSnowflakeStagedManagedFixtureMode(t, true)
+	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
+	defer cancel()
+	transaction := snowflakeManagedInsertTransaction(fixture.schema, 41, "auto-ingest")
+	intent := snowflakeStagedManagedIntent(t, fixture.spec.Options["destination_revision_id"], transaction, 1, "auto-acq-1")
+	if _, err := fixture.destination.ApplyTransaction(ctx, intent, transaction); err != nil {
+		t.Fatalf("auto-ingest apply: %v", err)
 	}
-	fixture := newSnowflakeStagedManagedFixture(t)
-	_ = fixture
-	t.Skip("auto-ingest completion requires a provisioned notification integration; exercised only in the auto-ingest cell")
+	if disposition, evidence, err := fixture.destination.Reconcile(ctx, intent); err != nil || disposition != connector.DeliveryApplied || evidence.ContentHash != intent.ContentHash {
+		t.Fatalf("auto-ingest reconcile=%v/%+v/%v", disposition, evidence, err)
+	}
+	var rows, identities, maxIdentityCopies int
+	if err := fixture.db.QueryRowContext(ctx, "SELECT COUNT(*),COUNT(DISTINCT \"RECORD_HASH\"),COALESCE(MAX(COPIES),0) FROM (SELECT \"RECORD_HASH\",COUNT(*) COPIES FROM "+fixture.targetQualified+" WHERE \"LOGICAL_BATCH_ID\"=? GROUP BY \"RECORD_HASH\")", intent.LogicalBatchID).Scan(&rows, &identities, &maxIdentityCopies); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || identities != 1 || maxIdentityCopies != 1 {
+		t.Fatalf("auto-ingest target rows/identities/max-copies=%d/%d/%d, want 1/1/1", rows, identities, maxIdentityCopies)
+	}
+	var landingRows, manifests, receipts int
+	if err := fixture.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+fixture.landingQualified+" WHERE \"LOGICAL_BATCH_ID\"=?", intent.LogicalBatchID).Scan(&landingRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+fixture.targetManifestQualified+" WHERE \"DESTINATION_REVISION_ID\"=? AND \"LOGICAL_BATCH_ID\"=? AND \"EXPECTED_ROW_COUNT\"=1", intent.DestinationRevisionID, intent.LogicalBatchID).Scan(&manifests); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+fixture.receiptQualified+" WHERE \"RECEIPT_KIND\"='load' AND \"DESTINATION_REVISION_ID\"=? AND \"LOGICAL_BATCH_ID\"=? AND \"LOAD_ROW_COUNT\"=1", intent.DestinationRevisionID, intent.LogicalBatchID).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if landingRows != 0 || manifests != 1 || receipts != 1 {
+		t.Fatalf("auto-ingest landing/manifests/receipts=%d/%d/%d, want 0/1/1", landingRows, manifests, receipts)
+	}
+	var refreshQuery string
+	refreshPrefix := "ALTER PIPE " + fixture.pipeQualified + " REFRESH PREFIX = "
+	historyDeadline := time.Now().Add(30 * time.Second)
+	for {
+		err := fixture.db.QueryRowContext(ctx, `SELECT QUERY_TEXT FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_USER(RESULT_LIMIT=>1000)) WHERE STARTSWITH(UPPER(QUERY_TEXT),UPPER(?)) ORDER BY START_TIME DESC LIMIT 1`, refreshPrefix).Scan(&refreshQuery)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, sql.ErrNoRows) || time.Now().After(historyDeadline) {
+			t.Fatalf("read exact auto-ingest pipe refresh query across worker sessions: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	marker := "REFRESH PREFIX = '"
+	markerIndex := strings.Index(strings.ToUpper(refreshQuery), marker)
+	if markerIndex < 0 {
+		t.Fatalf("pipe refresh omitted its prefix: %s", refreshQuery)
+	}
+	prefixStart := markerIndex + len(marker)
+	prefixEnd := strings.Index(refreshQuery[prefixStart:], "'")
+	if prefixEnd < 0 {
+		t.Fatalf("pipe refresh prefix was not terminated: %s", refreshQuery)
+	}
+	prefix := refreshQuery[prefixStart : prefixStart+prefixEnd]
+	if prefix == "" || strings.HasPrefix(prefix, "/") || strings.HasPrefix(strings.ToLower(prefix), "wallaby_staged_append_v1/") || strings.Contains(prefix, "..") || !strings.HasSuffix(prefix, "/") {
+		t.Fatalf("pipe refresh prefix is not a nonempty root-relative directory: %q query=%s", prefix, refreshQuery)
+	}
 }
 
 func TestSnowflakeStagedManagedProfileCancellationAndPoolSafety(t *testing.T) {
@@ -332,7 +415,7 @@ func TestSnowflakeStagedManagedProfileSecretRedaction(t *testing.T) {
 		"dsn": leaky, "flow_id": "staged", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
 		"managed_source_schema": "public", "managed_source_table": "widgets",
 	}})
-	_ = destination.Close(context.Background())
+	closeSnowflakeStagedDestination(t, "secret-redaction candidate", destination)
 	if err == nil || strings.Contains(err.Error(), "hunter2") {
 		t.Fatalf("staged admission leaked a DSN secret or accepted it: %v", err)
 	}
@@ -374,24 +457,51 @@ func TestSnowflakeStagedManagedProfileTelemetry(t *testing.T) {
 	}
 }
 
+func closeSnowflakeStagedDestination(t testing.TB, name string, destination *snowflake.Destination) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := destination.Close(ctx); err != nil {
+		t.Errorf("close staged Snowflake %s: %v", name, err)
+	}
+}
+
+func closeSnowflakeStagedDB(t testing.TB, name string, db *sql.DB) {
+	t.Helper()
+	if err := db.Close(); err != nil {
+		t.Errorf("close staged Snowflake %s database: %v", name, err)
+	}
+}
+
 type snowflakeStagedManagedFixture struct {
-	db               *sql.DB
-	provisionDB      *sql.DB
-	destination      *snowflake.Destination
-	spec             connector.RuntimeSpec
-	schema           connector.Schema
-	version          string
-	targetQualified  string
-	receiptQualified string
+	db                      *sql.DB
+	provisionDB             *sql.DB
+	destination             *snowflake.Destination
+	spec                    connector.RuntimeSpec
+	schema                  connector.Schema
+	version                 string
+	targetQualified         string
+	receiptQualified        string
+	landingQualified        string
+	targetManifestQualified string
+	pipeQualified           string
 }
 
 func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixture {
+	t.Helper()
+	return newSnowflakeStagedManagedFixtureMode(t, false)
+}
+
+func newSnowflakeStagedManagedFixtureMode(t *testing.T, autoIngest bool) *snowflakeStagedManagedFixture {
 	t.Helper()
 	if os.Getenv("WALLABY_TEST_SNOWFLAKE_MANAGED") != "1" {
 		t.Skip("set WALLABY_TEST_SNOWFLAKE_MANAGED=1 with a real Snowflake account; fakesnow is not promotion evidence")
 	}
 	if usingFakesnow() {
 		t.Skip("managed staged Snowflake profile requires real internal-stage COPY and recovery evidence")
+	}
+	if autoIngest && os.Getenv("WALLABY_TEST_SNOWFLAKE_STAGED_AUTO_INGEST") != "1" {
+		t.Fatal("WALLABY_TEST_SNOWFLAKE_STAGED_AUTO_INGEST=1 is required for the commercial auto-ingest cell")
 	}
 	dsn := strings.TrimSpace(os.Getenv("WALLABY_TEST_SNOWFLAKE_DSN"))
 	provisionDSN := strings.TrimSpace(os.Getenv("WALLABY_TEST_SNOWFLAKE_PROVISION_DSN"))
@@ -418,27 +528,27 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	}
 	provisionDB, err := sql.Open("snowflake", provisionDSN)
 	if err != nil {
-		_ = db.Close()
+		closeSnowflakeStagedDB(t, "execution after provisioning open failure", db)
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
 	defer cancel()
 	for _, handle := range []*sql.DB{db, provisionDB} {
 		if err := handle.PingContext(ctx); err != nil {
-			_ = provisionDB.Close()
-			_ = db.Close()
+			closeSnowflakeStagedDB(t, "provisioning after ping failure", provisionDB)
+			closeSnowflakeStagedDB(t, "execution after ping failure", db)
 			t.Fatal(err)
 		}
 	}
 	var account, database, schemaName, role, warehouse, version string
 	if err := db.QueryRowContext(ctx, `SELECT CURRENT_ACCOUNT_NAME(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_ROLE(), CURRENT_WAREHOUSE(), CURRENT_VERSION()`).Scan(&account, &database, &schemaName, &role, &warehouse, &version); err != nil {
-		_ = provisionDB.Close()
-		_ = db.Close()
+		closeSnowflakeStagedDB(t, "provisioning after identity failure", provisionDB)
+		closeSnowflakeStagedDB(t, "execution after identity failure", db)
 		t.Fatal(err)
 	}
 	if version != expectedVersion {
-		_ = provisionDB.Close()
-		_ = db.Close()
+		closeSnowflakeStagedDB(t, "provisioning after version mismatch", provisionDB)
+		closeSnowflakeStagedDB(t, "execution after version mismatch", db)
 		t.Fatalf("live CURRENT_VERSION()=%q, exact reviewed pin=%q", version, expectedVersion)
 	}
 
@@ -451,6 +561,7 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	landing := "WALLABY_SF_STAGED_LANDING_" + suffix
 	authority := "WALLABY_SF_STAGED_AUTHORITY_" + suffix
 	targetManifest := "WALLABY_SF_STAGED_MANIFESTS_" + suffix
+	pipe := "WALLABY_SF_STAGED_PIPE_" + suffix
 	revision := "snowflake-staged-" + strings.ToLower(suffix)
 	schema := snowflakeManagedSchema()
 	schemaJSON, err := json.Marshal(schema)
@@ -469,20 +580,32 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	targetManifestQualified := q(database) + "." + q(schemaName) + "." + q(targetManifest)
 	stageQualified := q(database) + "." + q(schemaName) + "." + q(stage)
 	fileFormatQualified := q(database) + "." + q(schemaName) + "." + q(fileFormat)
+	pipeQualified := q(database) + "." + q(schemaName) + "." + q(pipe)
 	destination := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cleanupCancel()
-		_ = destination.Close(cleanupCtx)
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := destination.Close(closeCtx); err != nil {
+			t.Errorf("close staged Snowflake destination: %v", err)
+		}
+		closeCancel()
 		for _, drop := range []string{
+			"DROP PIPE IF EXISTS " + pipeQualified,
 			"DROP TABLE IF EXISTS " + targetManifestQualified, "DROP TABLE IF EXISTS " + authorityQualified,
 			"DROP TABLE IF EXISTS " + landingQualified, "DROP TABLE IF EXISTS " + receiptQualified, "DROP TABLE IF EXISTS " + targetQualified,
 			"DROP STAGE IF EXISTS " + stageQualified, "DROP FILE FORMAT IF EXISTS " + fileFormatQualified,
 		} {
-			_, _ = provisionDB.ExecContext(cleanupCtx, drop)
+			dropCtx, dropCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if _, err := provisionDB.ExecContext(dropCtx, drop); err != nil {
+				t.Errorf("cleanup staged Snowflake object with %q: %v", drop, err)
+			}
+			dropCancel()
 		}
-		_ = provisionDB.Close()
-		_ = db.Close()
+		if err := provisionDB.Close(); err != nil {
+			t.Errorf("close staged Snowflake provisioning database: %v", err)
+		}
+		if err := db.Close(); err != nil {
+			t.Errorf("close staged Snowflake execution database: %v", err)
+		}
 	})
 	stageComment := snowflakeStagedOwnershipComment("stage", revision, schemaHash, flowID)
 	fileFormatComment := snowflakeStagedOwnershipComment("file_format", revision, schemaHash, flowID)
@@ -491,6 +614,7 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	landingComment := snowflakeStagedOwnershipComment("landing", revision, schemaHash, flowID)
 	authorityComment := snowflakeStagedOwnershipComment("authority", revision, schemaHash, flowID)
 	targetManifestComment := snowflakeStagedOwnershipComment("target_manifest", revision, schemaHash, flowID)
+	pipeComment := snowflakeStagedOwnershipComment("pipe", revision, schemaHash, flowID)
 	statements := []string{
 		fmt.Sprintf("CREATE STAGE %s COMMENT = '%s'", stageQualified, stageComment),
 		fmt.Sprintf("CREATE FILE FORMAT %s TYPE = JSON MULTI_LINE = FALSE STRIP_OUTER_ARRAY = FALSE COMMENT = '%s'", fileFormatQualified, fileFormatComment),
@@ -506,6 +630,12 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 		"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE " + authorityQualified + " TO ROLE " + q(role),
 		"GRANT SELECT, INSERT ON TABLE " + targetManifestQualified + " TO ROLE " + q(role),
 		"GRANT SELECT, INSERT ON TABLE " + receiptQualified + " TO ROLE " + q(role),
+	}
+	if autoIngest {
+		statements = append(statements,
+			snowflakeStagedAutoIngestPipeDDL(pipeQualified, landingQualified, stageQualified, pipeComment),
+			"GRANT MONITOR, OPERATE ON PIPE "+pipeQualified+" TO ROLE "+q(role),
+		)
 	}
 	for _, statement := range statements {
 		if _, err := provisionDB.ExecContext(ctx, statement); err != nil {
@@ -527,6 +657,10 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	landingCreated := readCreated("SELECT TO_VARCHAR(CREATED, '"+catalogTimestampFormat+"') FROM "+q(database)+".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", strings.ToUpper(schemaName), landing)
 	authorityCreated := readCreated("SELECT TO_VARCHAR(CREATED, '"+catalogTimestampFormat+"') FROM "+q(database)+".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", strings.ToUpper(schemaName), authority)
 	targetManifestCreated := readCreated("SELECT TO_VARCHAR(CREATED, '"+catalogTimestampFormat+"') FROM "+q(database)+".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", strings.ToUpper(schemaName), targetManifest)
+	pipeCreated := ""
+	if autoIngest {
+		pipeCreated = readCreated("SELECT TO_VARCHAR(CREATED, '"+catalogTimestampFormat+"') FROM "+q(database)+".INFORMATION_SCHEMA.PIPES WHERE PIPE_SCHEMA=? AND PIPE_NAME=?", strings.ToUpper(schemaName), pipe)
+	}
 
 	spec := connector.RuntimeSpec{Name: "snowflake-staged", Type: connector.EndpointSnowflake, Options: map[string]string{
 		"dsn": dsn, "flow_id": flowID, "managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
@@ -549,6 +683,11 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 		"managed_load_verify_interval_ms": "1000", "managed_cleanup_max_objects": "1000",
 		"managed_cleanup_retention_seconds": "2592000",
 	}}
+	if autoIngest {
+		spec.Options["managed_auto_ingest"] = "true"
+		spec.Options["managed_pipe"] = pipe
+		spec.Options["managed_pipe_created_on"] = pipeCreated
+	}
 	if !strings.EqualFold(parsed.Role, role) {
 		t.Fatalf("execution DSN role=%q does not match live role=%q", parsed.Role, role)
 	}
@@ -568,6 +707,7 @@ func newSnowflakeStagedManagedFixture(t *testing.T) *snowflakeStagedManagedFixtu
 	return &snowflakeStagedManagedFixture{
 		db: db, provisionDB: provisionDB, destination: destination, spec: spec, schema: schema,
 		version: version, targetQualified: targetQualified, receiptQualified: receiptQualified,
+		landingQualified: landingQualified, targetManifestQualified: targetManifestQualified, pipeQualified: pipeQualified,
 	}
 }
 
@@ -587,6 +727,10 @@ func snowflakeStagedTargetDDL(qualified, comment string) string {
   "KEY_JSON" VARIANT, "BEFORE_IMAGE" VARIANT, "AFTER_IMAGE" VARIANT, "EVENT_TIME" TIMESTAMP_TZ NOT NULL,
   "RECORD_HASH" VARCHAR NOT NULL
 ) COMMENT = '%s'`, qualified, comment)
+}
+
+func snowflakeStagedAutoIngestPipeDDL(pipe, landing, stage, comment string) string {
+	return fmt.Sprintf(`CREATE PIPE %s AUTO_INGEST=TRUE COMMENT='%s' AS COPY INTO %s FROM @%s/wallaby_staged_append_v1/ FILE_FORMAT=(TYPE=JSON COMPRESSION=AUTO DATE_FORMAT=AUTO TIME_FORMAT=AUTO TIMESTAMP_FORMAT=AUTO BINARY_FORMAT=HEX TRIM_SPACE=FALSE NULL_IF=() ENABLE_OCTAL=FALSE ALLOW_DUPLICATE=FALSE STRIP_OUTER_ARRAY=FALSE STRIP_NULL_VALUES=FALSE IGNORE_UTF8_ERRORS=FALSE REPLACE_INVALID_CHARACTERS=FALSE SKIP_BYTE_ORDER_MARK=TRUE MULTI_LINE=FALSE) MATCH_BY_COLUMN_NAME=CASE_SENSITIVE ON_ERROR=ABORT_STATEMENT FORCE=FALSE PURGE=FALSE`, pipe, comment, landing, stage)
 }
 
 func snowflakeStagedReceiptsDDL(qualified, suffix, comment string) string {
@@ -610,7 +754,7 @@ func snowflakeStagedAuthorityDDL(qualified, suffix, comment string) string {
 	return fmt.Sprintf(`CREATE HYBRID TABLE %s (
   "AUTHORITY_KIND" VARCHAR NOT NULL, "DESTINATION_REVISION_ID" VARCHAR NOT NULL, "AUTHORITY_ID" VARCHAR NOT NULL,
   "OWNER_ID" VARCHAR NOT NULL, "FLOW_INCARNATION_ID" VARCHAR, "GENERATION" NUMBER(38,0), "ACQUISITION_ID" VARCHAR,
-  "LEASE_EPOCH" NUMBER(38,0), "PROVISION_EPOCH" NUMBER(38,0) NOT NULL, "CATALOG_FINGERPRINT" VARCHAR NOT NULL,
+  "LEASE_EPOCH" NUMBER(38,0), "PROVISION_EPOCH" NUMBER(38,0) NOT NULL, "PROVISION_ATTEMPT_ID" VARCHAR, "CATALOG_FINGERPRINT" VARCHAR NOT NULL,
   "LOGICAL_BATCH_ID" VARCHAR, "MANIFEST_HASH" VARCHAR, "CONTENT_HASH" VARCHAR, "FILE_CONTENT_HASH" VARCHAR,
   "PLAN_HASH" VARCHAR, "EXPECTED_ROW_COUNT" NUMBER(38,0), "STATE" VARCHAR NOT NULL,
   "EXPIRES_AT" TIMESTAMP_LTZ(9) NOT NULL, "UPDATED_AT" TIMESTAMP_LTZ(9) NOT NULL,
