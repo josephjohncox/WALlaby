@@ -289,10 +289,10 @@ func TestPostgresExactTerminalReconciliationRequiresExpiredLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RegisterExecutionGeneration(ctx, flowID, "kube-exact", "kubernetes", control.Generation, 40*time.Millisecond); err != nil {
+	if err := store.RegisterExecutionGeneration(ctx, flowID, "kube-exact", "kubernetes", control.Generation, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RegisterExecutionGeneration(ctx, flowID, "manual", "worker", control.Generation, 40*time.Millisecond); err != nil {
+	if err := store.RegisterExecutionGeneration(ctx, flowID, "manual", "worker", control.Generation, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ReconcileTerminatedExecutions(ctx, flowID, control.Generation, "kubernetes", []string{"kube-exact"}, "job_deleted"); err != nil {
@@ -301,7 +301,9 @@ func TestPostgresExactTerminalReconciliationRequiresExpiredLease(t *testing.T) {
 	if active, err := store.ActiveExecutionsThrough(ctx, flowID, control.Generation); err != nil || active != 2 {
 		t.Fatalf("active before expiry=(%d,%v), want 2", active, err)
 	}
-	time.Sleep(60 * time.Millisecond)
+	if _, err := store.pool.Exec(ctx, `UPDATE flow_executions SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE flow_id=$1 AND generation=$2`, flowID, control.Generation); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.ReconcileTerminatedExecutions(ctx, flowID, control.Generation, "kubernetes", []string{"wrong"}, "job_deleted"); err != nil {
 		t.Fatal(err)
 	}
