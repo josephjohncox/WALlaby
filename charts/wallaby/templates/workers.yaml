@@ -48,12 +48,43 @@ spec:
           imagePullSecrets:
 {{ toYaml $root.Values.imagePullSecrets | indent 12 }}
 {{- end }}
-          serviceAccountName: {{ include "wallaby.workerServiceAccountName" $root }}
+          securityContext:
+            fsGroup: 65532
+            fsGroupChangePolicy: OnRootMismatch
+          securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+      serviceAccountName: {{ include "wallaby.workerServiceAccountName" $root }}
           automountServiceAccountToken: {{ $root.Values.workerServiceAccount.automountServiceAccountToken }}
+{{- if $root.Values.snowflake.enabled }}
+          volumes:
+            - name: snowflake-private-key
+              secret:
+                secretName: {{ required "snowflake.privateKeySecretName is required" $root.Values.snowflake.privateKeySecretName | quote }}
+                defaultMode: 288
+                items:
+                  - key: {{ required "snowflake.privateKeySecretKey is required" $root.Values.snowflake.privateKeySecretKey | quote }}
+                    path: private-key.pem
+                    mode: 288
+{{- end }}
           containers:
             - name: wallaby-worker
               image: "{{ $imageRepo }}:{{ $imageTag }}"
               imagePullPolicy: {{ $imagePullPolicy }}
+{{- if $root.Values.snowflake.enabled }}
+          volumeMounts:
+            - name: snowflake-private-key
+              mountPath: {{ $root.Values.snowflake.privateKeyFile | quote }}
+              subPath: private-key.pem
+              readOnly: true
+{{- end }}
+{{- if $root.Values.snowflake.enabled }}
+              volumeMounts:
+                - name: snowflake-private-key
+                  mountPath: {{ $root.Values.snowflake.privateKeyFile | quote }}
+                  subPath: private-key.pem
+                  readOnly: true
+{{- end }}
 {{- if $worker.command }}
               command: {{ toYaml $worker.command | nindent 16 }}
 {{- end }}
@@ -72,13 +103,16 @@ spec:
 {{ toYaml $envFrom | indent 16 }}
 {{- end }}
 {{- $otelEnv := include "wallaby.otelEnv" $root }}
-{{- if or $worker.env $otelEnv }}
               env:
 {{- with $worker.env }}
 {{ toYaml . | indent 16 }}
 {{- end }}
 {{ $otelEnv | indent 16 }}
-{{- end }}
+                - name: WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED
+                  valueFrom:
+                    configMapKeyRef:
+                      name: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" $root)) $root.Values.snowflake.streamingREST.policyConfigMapName | quote }}
+                      key: {{ $root.Values.snowflake.streamingREST.policyConfigMapKey | quote }}
 {{- with $worker.resources }}
               resources:
 {{ toYaml . | indent 16 }}
@@ -130,12 +164,33 @@ spec:
       imagePullSecrets:
 {{ toYaml $root.Values.imagePullSecrets | indent 8 }}
 {{- end }}
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
       serviceAccountName: {{ include "wallaby.workerServiceAccountName" $root }}
       automountServiceAccountToken: {{ $root.Values.workerServiceAccount.automountServiceAccountToken }}
+{{- if $root.Values.snowflake.enabled }}
+      volumes:
+        - name: snowflake-private-key
+          secret:
+            secretName: {{ required "snowflake.privateKeySecretName is required" $root.Values.snowflake.privateKeySecretName | quote }}
+            defaultMode: 288
+            items:
+              - key: {{ required "snowflake.privateKeySecretKey is required" $root.Values.snowflake.privateKeySecretKey | quote }}
+                path: private-key.pem
+                mode: 288
+{{- end }}
       containers:
         - name: wallaby-worker
           image: "{{ $imageRepo }}:{{ $imageTag }}"
           imagePullPolicy: {{ $imagePullPolicy }}
+{{- if $root.Values.snowflake.enabled }}
+          volumeMounts:
+            - name: snowflake-private-key
+              mountPath: {{ $root.Values.snowflake.privateKeyFile | quote }}
+              subPath: private-key.pem
+              readOnly: true
+{{- end }}
 {{- if $worker.command }}
           command: {{ toYaml $worker.command | nindent 12 }}
 {{- end }}
@@ -154,13 +209,16 @@ spec:
 {{ toYaml $envFrom | indent 12 }}
 {{- end }}
 {{- $otelEnv := include "wallaby.otelEnv" $root }}
-{{- if or $worker.env $otelEnv }}
           env:
 {{- with $worker.env }}
 {{ toYaml . | indent 12 }}
 {{- end }}
 {{ $otelEnv | indent 12 }}
-{{- end }}
+            - name: WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" $root)) $root.Values.snowflake.streamingREST.policyConfigMapName | quote }}
+                  key: {{ $root.Values.snowflake.streamingREST.policyConfigMapKey | quote }}
 {{- with $worker.resources }}
           resources:
 {{ toYaml . | indent 12 }}
@@ -217,12 +275,33 @@ spec:
       imagePullSecrets:
 {{ toYaml $root.Values.imagePullSecrets | indent 8 }}
 {{- end }}
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
       serviceAccountName: {{ include "wallaby.workerServiceAccountName" $root }}
       automountServiceAccountToken: {{ $root.Values.workerServiceAccount.automountServiceAccountToken }}
+{{- if $root.Values.snowflake.enabled }}
+      volumes:
+        - name: snowflake-private-key
+          secret:
+            secretName: {{ required "snowflake.privateKeySecretName is required" $root.Values.snowflake.privateKeySecretName | quote }}
+            defaultMode: 288
+            items:
+              - key: {{ required "snowflake.privateKeySecretKey is required" $root.Values.snowflake.privateKeySecretKey | quote }}
+                path: private-key.pem
+                mode: 288
+{{- end }}
       containers:
         - name: wallaby-worker
           image: "{{ $imageRepo }}:{{ $imageTag }}"
           imagePullPolicy: {{ $imagePullPolicy }}
+{{- if $root.Values.snowflake.enabled }}
+          volumeMounts:
+            - name: snowflake-private-key
+              mountPath: {{ $root.Values.snowflake.privateKeyFile | quote }}
+              subPath: private-key.pem
+              readOnly: true
+{{- end }}
 {{- if $worker.command }}
           command: {{ toYaml $worker.command | nindent 12 }}
 {{- end }}
@@ -241,13 +320,16 @@ spec:
 {{ toYaml $envFrom | indent 12 }}
 {{- end }}
 {{- $otelEnv := include "wallaby.otelEnv" $root }}
-{{- if or $worker.env $otelEnv }}
           env:
 {{- with $worker.env }}
 {{ toYaml . | indent 12 }}
 {{- end }}
 {{ $otelEnv | indent 12 }}
-{{- end }}
+            - name: WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" $root)) $root.Values.snowflake.streamingREST.policyConfigMapName | quote }}
+                  key: {{ $root.Values.snowflake.streamingREST.policyConfigMapKey | quote }}
 {{- with $worker.resources }}
           resources:
 {{ toYaml . | indent 12 }}

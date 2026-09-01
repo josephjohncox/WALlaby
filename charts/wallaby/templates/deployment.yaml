@@ -22,8 +22,9 @@ spec:
 {{- with .Values.podLabels }}
 {{ toYaml . | nindent 8 }}
 {{- end }}
-{{- with .Values.podAnnotations }}
       annotations:
+        checksum/snowflake-streaming-policy: {{ include (print $.Template.BasePath "/snowflake-policy-configmap.yaml") . | sha256sum }}
+{{- with .Values.podAnnotations }}
 {{ toYaml . | nindent 8 }}
 {{- end }}
     spec:
@@ -31,6 +32,9 @@ spec:
       imagePullSecrets:
 {{ toYaml .Values.imagePullSecrets | indent 8 }}
 {{- end }}
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
       serviceAccountName: {{ include "wallaby.serviceAccountName" . }}
       containers:
         - name: wallaby
@@ -112,6 +116,12 @@ spec:
               value: {{ .Values.workflowStore | quote }}
             - name: WALLABY_SNOWFLAKE_ENABLED
               value: {{ .Values.snowflake.enabled | quote }}
+            - name: WALLABY_SNOWFLAKE_STREAMING_REST_ENABLED
+              value: {{ .Values.snowflake.streamingREST.enabled | quote }}
+            - name: WALLABY_SNOWFLAKE_STREAMING_REST_POLICY_CONFIG_MAP_NAME
+              value: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" .)) .Values.snowflake.streamingREST.policyConfigMapName | quote }}
+            - name: WALLABY_SNOWFLAKE_STREAMING_REST_POLICY_CONFIG_MAP_KEY
+              value: {{ .Values.snowflake.streamingREST.policyConfigMapKey | quote }}
             - name: WALLABY_SNOWFLAKE_ACCOUNT
               value: {{ .Values.snowflake.account | quote }}
             - name: WALLABY_SNOWFLAKE_USER
@@ -153,11 +163,11 @@ spec:
         - name: snowflake-private-key
           secret:
             secretName: {{ required "snowflake.privateKeySecretName is required when snowflake.enabled=true" .Values.snowflake.privateKeySecretName | quote }}
-            defaultMode: 256
+            defaultMode: 288
             items:
               - key: {{ required "snowflake.privateKeySecretKey is required when snowflake.enabled=true" .Values.snowflake.privateKeySecretKey | quote }}
                 path: private-key.pem
-                mode: 256
+                mode: 288
 {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

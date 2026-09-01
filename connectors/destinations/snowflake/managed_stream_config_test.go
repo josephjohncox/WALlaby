@@ -44,6 +44,38 @@ func streamValidOptions(t *testing.T) (string, map[string]string) {
 	return dsn, options
 }
 
+func TestManagedStreamConfigDigestBindsEveryConfigurationCategory(t *testing.T) {
+	base := streamTestConfig(t)
+	base.configDigest = managedStreamConfigDigest(base)
+	mutations := map[string]func(*streamConfig){
+		"identity": func(cfg *streamConfig) { cfg.destinationRevision += "-next" },
+		"catalog":  func(cfg *streamConfig) { cfg.requestJournalCreatedOn = "2026-01-02T00:00:00.000000000+00:00" },
+		"source":   func(cfg *streamConfig) { cfg.sourceTable += "_next" },
+		"limits":   func(cfg *streamConfig) { cfg.maxTransactionRows++ },
+		"retry":    func(cfg *streamConfig) { cfg.appendAttempts++ },
+		"cleanup":  func(cfg *streamConfig) { cfg.cleanupMaxObjects++ },
+		"mapping":  func(cfg *streamConfig) { cfg.typeMappings["text"] = "VARIANT" },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			changed := base
+			changed.typeMappings = cloneStreamMappings(base.typeMappings)
+			mutate(&changed)
+			if got := managedStreamConfigDigest(changed); got == base.configDigest {
+				t.Fatalf("%s drift did not change config digest", name)
+			}
+		})
+	}
+}
+
+func cloneStreamMappings(values map[string]string) map[string]string {
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
 func TestStreamConfigFromSpecAdmitsValidSpec(t *testing.T) {
 	t.Parallel()
 	dsn, options := streamValidOptions(t)

@@ -3,9 +3,11 @@ package connector
 import (
 	"bytes"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"io"
@@ -289,6 +291,24 @@ func (p SnowflakeStreamingRESTPolicy) Admit(spec RuntimeSpec) error {
 // is used only for the credential-free Snowflake SQL connection.
 func (p SnowflakeStreamingRESTPolicy) BasePolicy() SnowflakeDeploymentPolicy {
 	return p.policy
+}
+
+// Fingerprint binds the active deployment identity, public key, and both
+// execution gates without exposing private key material.
+func (p SnowflakeStreamingRESTPolicy) Fingerprint() (string, error) {
+	unlock, ok := p.policy.lockActive()
+	if !ok || !p.policy.streamingRESTEnabled {
+		return "", ErrSnowflakeStreamingRESTDisabled
+	}
+	defer unlock()
+	publicDER, err := x509.MarshalPKIXPublicKey(&p.policy.privateKey.PublicKey)
+	if err != nil {
+		return "", ErrSnowflakePolicyInvalid
+	}
+	keyDigest := sha256.Sum256(publicDER)
+	identity := strings.Join([]string{p.policy.account, p.policy.user, p.policy.host, hex.EncodeToString(keyDigest[:]), "snowflake=true", "streaming_rest=true"}, "\x00")
+	digest := sha256.Sum256([]byte(identity))
+	return hex.EncodeToString(digest[:]), nil
 }
 
 // Admit validates every Snowflake-backed spec before allowing execution.

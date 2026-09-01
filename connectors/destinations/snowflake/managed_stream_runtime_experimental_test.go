@@ -10,6 +10,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -57,6 +58,62 @@ func TestExperimentalStreamingRuntimeAssemblyRequiresDeploymentCapability(t *tes
 	}
 }
 
+func TestExperimentalStreamingRuntimeCloseWaitsForOperationSnapshot(t *testing.T) {
+	policy := experimentalStreamPolicy(t, true)
+	streamingPolicy, err := policy.StreamingRESTPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectClose()
+	destination := NewDestination(policy)
+	destination.spec = experimentalStreamSpec(t)
+	destination.db = db
+	destination.managedProfile = connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1
+	destination.streamRuntimeProtocol = newFakeStreamProtocol()
+	destination.streamConfig = streamTestConfig(t)
+	destination.streamCatalogFingerprint = strings.Repeat("a", 64)
+	destination.streamingPolicy = streamingPolicy
+	_, unlock, err := destination.lockStreamRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- destination.Close(context.Background()) }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned while an operation snapshot was active: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	unlock()
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExperimentalStreamingRuntimeRejectsMissingComposedProtocol(t *testing.T) {
+	policy := experimentalStreamPolicy(t, true)
+	destination := NewDestination(policy)
+	destination.spec = experimentalStreamSpec(t)
+	destination.db = &sql.DB{}
+	destination.managedProfile = connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1
+	streamingPolicy, err := policy.StreamingRESTPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination.streamingPolicy = streamingPolicy
+	if _, unlock, err := destination.lockStreamRuntime(); err == nil {
+		unlock()
+		t.Fatal("missing composed protocol unexpectedly admitted")
+	}
+}
+
 func TestExperimentalStreamingRuntimeAssemblyComposesRESTAndSQLAndRollsBack(t *testing.T) {
 	spec := experimentalStreamSpec(t)
 	policy := experimentalStreamPolicy(t, true)
@@ -92,9 +149,11 @@ func TestExperimentalStreamingRuntimeAssemblyComposesRESTAndSQLAndRollsBack(t *t
 				if err != nil || destination.db == nil || destination.streamRuntimeProtocol == nil || destination.streamCatalogFingerprint == "" {
 					t.Fatalf("assembled state error/db/protocol/fingerprint=%v/%v/%v/%q", err, destination.db, destination.streamRuntimeProtocol, destination.streamCatalogFingerprint)
 				}
-				if err := destination.requireStreamingCapability(); err != nil {
+				_, unlock, err := destination.lockStreamRuntime()
+				if err != nil {
 					t.Fatal(err)
 				}
+				unlock()
 				if err := destination.Close(context.Background()); err != nil {
 					t.Fatal(err)
 				}

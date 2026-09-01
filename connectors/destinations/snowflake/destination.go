@@ -89,6 +89,7 @@ type Destination struct {
 	stagedCatalogFingerprint string
 	stagedHooksMu            sync.RWMutex
 	stagedHooks              stagedHooks
+	streamRuntimeMu          sync.RWMutex
 	streamConfig             streamConfig
 	streamCatalogFingerprint string
 	streamRuntimeProtocol    streamProtocol
@@ -421,6 +422,8 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 }
 
 func (d *Destination) Close(ctx context.Context) error {
+	d.streamRuntimeMu.Lock()
+	defer d.streamRuntimeMu.Unlock()
 	d.closeMu.Lock()
 	db := d.db
 	registry := d.registry

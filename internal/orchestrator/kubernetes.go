@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -74,6 +75,7 @@ type KubernetesConfig struct {
 	SnowflakePrivateKeyFile             string
 	SnowflakePrivateKeySecretName       string
 	SnowflakePrivateKeySecretKey        string
+	SnowflakePolicyFingerprint          string
 }
 
 // KubernetesDispatcher triggers flow workers as Kubernetes Jobs.
@@ -91,8 +93,11 @@ func NewKubernetesDispatcher(ctx context.Context, cfg KubernetesConfig) (*Kubern
 	if cfg.SnowflakeStreamingRESTEnabled && !cfg.SnowflakeEnabled {
 		return nil, errors.New("kubernetes Snowpipe Streaming REST requires general Snowflake execution")
 	}
-	if cfg.SnowflakeStreamingRESTEnabled && (strings.TrimSpace(cfg.SnowflakeStreamingRESTConfigMapName) == "" || strings.TrimSpace(cfg.SnowflakeStreamingRESTConfigMapKey) == "") {
-		return nil, errors.New("kubernetes Snowpipe Streaming REST requires a stable policy ConfigMap name and key")
+	if cfg.SnowflakeStreamingRESTEnabled && strings.TrimSpace(cfg.SnowflakePolicyFingerprint) == "" {
+		return nil, errors.New("kubernetes Snowpipe Streaming REST requires the deployment public-key policy fingerprint")
+	}
+	if cfg.SnowflakeEnabled && (strings.TrimSpace(cfg.SnowflakeStreamingRESTConfigMapName) == "" || strings.TrimSpace(cfg.SnowflakeStreamingRESTConfigMapKey) == "") {
+		return nil, errors.New("kubernetes Snowflake execution requires a stable Streaming policy ConfigMap name and key")
 	}
 	if cfg.SnowflakeEnabled {
 		for name, value := range map[string]string{
@@ -163,6 +168,10 @@ func (k *KubernetesDispatcher) enqueue(ctx context.Context, flowID string, gener
 			err = fmt.Errorf("unexpected generation %d or execution id %q", existingGeneration, executionID)
 		}
 		return fmt.Errorf("existing kubernetes job %q has non-authoritative ownership: %w", jobName, err)
+	}
+	expectedDigest := k.expectedJobPolicyDigest(flowID, generation, jobName)
+	if existing.Annotations["wallaby.snowflake-policy-digest"] != expectedDigest || existing.Spec.Template.Annotations["wallaby.snowflake-policy-digest"] != expectedDigest {
+		return fmt.Errorf("existing kubernetes job %q has a stale Snowflake policy or pod template digest", jobName)
 	}
 	// An existing generation Job is durable proof that lifecycle dispatch
 	// happened. Run-once Jobs use unique names and do not share this path.
@@ -247,16 +256,21 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 	if len(command) == 0 {
 		command = []string{"/usr/local/bin/wallaby-worker"}
 	}
-	args := authoritativeWorkerArgsWithSnowflake(k.cfg.JobArgs, flowID, generation, executionID, k.cfg.MaxEmptyReads, k.cfg.SnowflakeEnabled, k.cfg.SnowflakeStreamingRESTEnabled, k.cfg.SnowflakeAccount, k.cfg.SnowflakeUser, k.cfg.SnowflakeHost, k.cfg.SnowflakePrivateKeyFile)
+	args := authoritativeWorkerArgsWithSnowflake(k.cfg.JobArgs, flowID, generation, executionID, k.cfg.MaxEmptyReads, k.cfg.SnowflakeEnabled, k.cfg.SnowflakeStreamingRESTEnabled, k.cfg.SnowflakeAccount, k.cfg.SnowflakeUser, k.cfg.SnowflakeHost, k.cfg.SnowflakePrivateKeyFile, k.cfg.SnowflakePolicyFingerprint)
+	policyDigest := k.jobPolicyDigest(command, args)
+	annotations["wallaby.snowflake-policy-digest"] = policyDigest
 
 	jobEnv := make(map[string]string, len(k.cfg.JobEnv))
 	for name, value := range k.cfg.JobEnv {
-		if name != "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED" {
+		switch name {
+		case "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED", "WALLABY_SNOWFLAKE_STREAMING_REST_ENABLED":
+			continue
+		default:
 			jobEnv[name] = value
 		}
 	}
 	env := mapToEnvVars(jobEnv)
-	if k.cfg.SnowflakeStreamingRESTEnabled && k.cfg.SnowflakeStreamingRESTConfigMapName != "" && k.cfg.SnowflakeStreamingRESTConfigMapKey != "" {
+	if k.cfg.SnowflakeEnabled && k.cfg.SnowflakeStreamingRESTConfigMapName != "" && k.cfg.SnowflakeStreamingRESTConfigMapKey != "" {
 		env = append(env, corev1.EnvVar{
 			Name: "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED",
 			ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
@@ -275,7 +289,7 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 	if k.cfg.SnowflakeEnabled {
 		const keyVolume = "snowflake-private-key"
 		const keyItemPath = "private-key.pem"
-		mode := int32(0o400)
+		mode := int32(0o440)
 		volumes = []corev1.Volume{{
 			Name: keyVolume,
 			VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
@@ -302,8 +316,9 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 			TTLSecondsAfterFinished: optionalInt32(k.cfg.JobTTLSeconds),
 			BackoffLimit:            optionalInt32(k.cfg.JobBackoffLimit),
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: map[string]string{"wallaby.snowflake-policy-digest": policyDigest}},
 				Spec: corev1.PodSpec{
+					SecurityContext:              &corev1.PodSecurityContext{FSGroup: int64Ptr(65532), FSGroupChangePolicy: fsGroupChangePolicyPtr(corev1.FSGroupChangeOnRootMismatch)},
 					ServiceAccountName:           k.cfg.JobServiceAccount,
 					AutomountServiceAccountToken: boolPtr(k.cfg.JobAutomountServiceAccountToken),
 					RestartPolicy:                corev1.RestartPolicyNever,
@@ -320,6 +335,39 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 	}
 
 	return nil
+}
+
+func (k *KubernetesDispatcher) expectedJobPolicyDigest(flowID string, generation int64, executionID string) string {
+	command := k.cfg.JobCommand
+	if len(command) == 0 {
+		command = []string{"/usr/local/bin/wallaby-worker"}
+	}
+	args := authoritativeWorkerArgsWithSnowflake(k.cfg.JobArgs, flowID, generation, executionID, k.cfg.MaxEmptyReads, k.cfg.SnowflakeEnabled, k.cfg.SnowflakeStreamingRESTEnabled, k.cfg.SnowflakeAccount, k.cfg.SnowflakeUser, k.cfg.SnowflakeHost, k.cfg.SnowflakePrivateKeyFile, k.cfg.SnowflakePolicyFingerprint)
+	return k.jobPolicyDigest(command, args)
+}
+
+func (k *KubernetesDispatcher) jobPolicyDigest(command, args []string) string {
+	payload := struct {
+		Image, PullPolicy, ServiceAccount string
+		Command, Args, EnvFrom            []string
+		Env                               map[string]string
+		SnowflakeEnabled, Streaming       bool
+		Account, User, Host, KeyFile      string
+		SecretName, SecretKey             string
+		ConfigMapName, ConfigMapKey       string
+		PolicyFingerprint                 string
+	}{
+		k.cfg.JobImage, k.cfg.JobImagePullPolicy, k.cfg.JobServiceAccount,
+		append([]string(nil), command...), append([]string(nil), args...), append([]string(nil), k.cfg.JobEnvFrom...),
+		k.cfg.JobEnv, k.cfg.SnowflakeEnabled, k.cfg.SnowflakeStreamingRESTEnabled,
+		k.cfg.SnowflakeAccount, k.cfg.SnowflakeUser, k.cfg.SnowflakeHost, k.cfg.SnowflakePrivateKeyFile,
+		k.cfg.SnowflakePrivateKeySecretName, k.cfg.SnowflakePrivateKeySecretKey,
+		k.cfg.SnowflakeStreamingRESTConfigMapName, k.cfg.SnowflakeStreamingRESTConfigMapKey,
+		k.cfg.SnowflakePolicyFingerprint,
+	}
+	encoded, _ := json.Marshal(payload)
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
 }
 
 func resolveKubeClient(cfg KubernetesConfig) (kubernetes.Interface, string, error) {
@@ -596,7 +644,7 @@ func mergeLabels(base, override map[string]string) map[string]string {
 	return out
 }
 
-func authoritativeWorkerArgsWithSnowflake(args []string, flowID string, generation int64, executionID string, maxEmpty int, snowflakeEnabled, streamingRESTEnabled bool, account, user, host, privateKeyFile string) []string {
+func authoritativeWorkerArgsWithSnowflake(args []string, flowID string, generation int64, executionID string, maxEmpty int, snowflakeEnabled, streamingRESTEnabled bool, account, user, host, privateKeyFile, policyFingerprint string) []string {
 	reserved := map[string]struct{}{
 		"flow-id":                          {},
 		"generation":                       {},
@@ -608,6 +656,7 @@ func authoritativeWorkerArgsWithSnowflake(args []string, flowID string, generati
 		"snowflake-user":                   {},
 		"snowflake-host":                   {},
 		"snowflake-private-key-file":       {},
+		"snowflake-policy-digest":          {},
 	}
 	out := make([]string, 0, len(args)+8)
 	for index := 0; index < len(args); index++ {
@@ -635,6 +684,7 @@ func authoritativeWorkerArgsWithSnowflake(args []string, flowID string, generati
 		"--snowflake-user", user,
 		"--snowflake-host", host,
 		"--snowflake-private-key-file", privateKeyFile,
+		"--snowflake-policy-digest", policyFingerprint,
 	)
 	if maxEmpty > 0 && !hasFlag(out, "max-empty-reads") {
 		out = append(out, "--max-empty-reads", strconv.Itoa(maxEmpty))
@@ -700,7 +750,11 @@ func parseEnvFrom(entries []string) []corev1.EnvFromSource {
 	return out
 }
 
-func boolPtr(value bool) *bool { return &value }
+func boolPtr(value bool) *bool    { return &value }
+func int64Ptr(value int64) *int64 { return &value }
+func fsGroupChangePolicyPtr(value corev1.PodFSGroupChangePolicy) *corev1.PodFSGroupChangePolicy {
+	return &value
+}
 
 func optionalInt32(value int) *int32 {
 	if value <= 0 {

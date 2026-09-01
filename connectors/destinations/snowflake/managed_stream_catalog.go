@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -85,9 +86,14 @@ func validateManagedStreamCatalogSnapshot(cfg streamConfig, catalog managedStrea
 	if err := validateManagedStagedGrants(streamCatalogStagedConfig(cfg), catalog.pipe.grants, []string{"MONITOR", "OPERATE"}, []string{"OWNERSHIP"}); err != nil {
 		return fmt.Errorf("managed streaming Snowflake pipe grants: %w", err)
 	}
+	pipeWithoutAllowedLiteral := strings.ReplaceAll(strings.ReplaceAll(catalog.pipe.definition, "'STREAMING'", "STREAMING"), "'streaming'", "STREAMING")
+	if stripStagedSQLStringLiterals(pipeWithoutAllowedLiteral) != pipeWithoutAllowedLiteral || strings.Contains(catalog.pipe.definition, ";") {
+		return errors.New("managed streaming Snowflake pipe definition must not contain comments, unexpected string literals, or extra statements")
+	}
 	normalizedPipe := normalizeStagedPipeSQL(catalog.pipe.definition)
 	normalizedTarget := normalizeStagedPipeSQL(managedSnowflakeStreamQualifiedTable(cfg, cfg.table))
-	if strings.Count(normalizedPipe, "copyinto") != 1 || !strings.Contains(normalizedPipe, "copyinto"+normalizedTarget) || !strings.Contains(normalizedPipe, "datasource(type=>\"streaming\")") && !strings.Contains(normalizedPipe, "datasource(type=>'streaming')") {
+	exactTarget := "copyinto" + normalizedTarget + "from"
+	if strings.Count(normalizedPipe, "copyinto") != 1 || strings.Count(normalizedPipe, exactTarget) != 1 || !strings.Contains(normalizedPipe, "datasource(type=>\"streaming\")") && !strings.Contains(normalizedPipe, "datasource(type=>'streaming')") {
 		return errors.New("managed streaming Snowflake pipe must COPY into the exact target from DATA_SOURCE(TYPE=>'STREAMING')")
 	}
 
@@ -121,9 +127,11 @@ func validateStreamTable(cfg streamConfig, managedCfg managedConfig, kind string
 	if table.otherConstraintCount != 0 || len(table.columns) != len(columns) {
 		return fmt.Errorf("managed streaming Snowflake %s schema cardinality differs", kind)
 	}
+	contracts := managedStreamColumnContracts(kind, columns)
 	for _, column := range columns {
 		value, ok := table.columns[column]
-		if !ok || value.nullable || value.hasDefault || value.generated {
+		contract := contracts[column]
+		if !ok || value.nullable || value.hasDefault || value.generated || value.dataType != contract.dataType || contract.characterMaximumLength >= 0 && value.characterMaximumLength != contract.characterMaximumLength || contract.datetimePrecision >= 0 && value.datetimePrecision != contract.datetimePrecision {
 			return fmt.Errorf("managed streaming Snowflake %s column %s differs", kind, column)
 		}
 	}
@@ -140,6 +148,32 @@ func validateStreamTable(cfg streamConfig, managedCfg managedConfig, kind string
 		}
 	}
 	return nil
+}
+
+type managedStreamColumnContract struct {
+	dataType               string
+	characterMaximumLength int64
+	datetimePrecision      int64
+}
+
+func managedStreamColumnContracts(kind string, columns []string) map[string]managedStreamColumnContract {
+	contracts := make(map[string]managedStreamColumnContract, len(columns))
+	for _, column := range columns {
+		contracts[column] = managedStreamColumnContract{dataType: "VARCHAR", characterMaximumLength: 16 << 20, datetimePrecision: -1}
+	}
+	set := func(dataType string, characterLength, datetimePrecision int64, names ...string) {
+		for _, name := range names {
+			contracts[name] = managedStreamColumnContract{dataType: dataType, characterMaximumLength: characterLength, datetimePrecision: datetimePrecision}
+		}
+	}
+	set("VARCHAR", 64, -1, "CONTENT_HASH", "SCHEMA_CONTRACT_HASH", "CATALOG_FINGERPRINT", "MANIFEST_HASH", "ROWS_CONTENT_HASH", "ROW_HASH")
+	set("NUMBER(38,0)", -1, -1, "APPEND_ORDINAL", "TRANSACTION_ID", "FRAGMENT_ORDINAL", "RECORD_ORDINAL", "GENERATION", "LEASE_EPOCH", "FRAGMENT_COUNT", "RECORD_COUNT", "CHANNEL_REVISION", "STATE_VERSION", "ROW_COUNT", "ATTEMPT", "PHASE_VERSION")
+	set("BOOLEAN", -1, -1, "TOMBSTONE")
+	set("VARIANT", -1, -1, "KEY_JSON", "BEFORE_IMAGE", "AFTER_IMAGE")
+	set("ARRAY", -1, -1, "UNCHANGED_TOAST")
+	set("TIMESTAMP_TZ(9)", -1, 9, "EVENT_TIME", "COMMITTED_AT", "UPDATED_AT", "CREATED_AT")
+	_ = kind
+	return contracts
 }
 
 func managedStreamOwnershipComment(cfg streamConfig, kind string) string {
@@ -161,11 +195,49 @@ func managedStreamCatalogFingerprint(catalog managedStreamCatalogSnapshot) (stri
 		Receipts string `json:"receipts"`
 		Channel  string `json:"channel"`
 		Requests string `json:"requests"`
-	}{catalog.pipe.createdOn + "\x00" + catalog.pipe.definition, catalog.target.createdOn + "\x00" + catalog.target.definition, catalog.receipts.createdOn + "\x00" + catalog.receipts.definition, catalog.channel.createdOn + "\x00" + catalog.channel.definition, catalog.requests.createdOn + "\x00" + catalog.requests.definition}
+		Counts   string `json:"counts"`
+	}{canonicalManagedStreamPipe(catalog.pipe), canonicalManagedStreamTable(catalog.target), canonicalManagedStreamTable(catalog.receipts), canonicalManagedStreamTable(catalog.channel), canonicalManagedStreamTable(catalog.requests), fmt.Sprintf("pipes=%d;tasks=%d", catalog.pipeCount, catalog.taskCount)}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err
 	}
 	digest := sha256.Sum256(encoded)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+func canonicalManagedStreamPipe(pipe managedPipeSnapshot) string {
+	values := make([]string, 0, 10+len(pipe.grants))
+	values = append(values, strconv.FormatBool(pipe.present), pipe.definition, pipe.ownerRole, pipe.createdOn, strconv.FormatBool(pipe.autoIngest), pipe.onError, pipe.force, pipe.purge, pipe.matchByColumnName, pipe.comment)
+	values = append(values, canonicalManagedStreamGrants(pipe.grants)...)
+	return strings.Join(values, "\x00")
+}
+
+func canonicalManagedStreamTable(table managedTableSnapshot) string {
+	values := make([]string, 0, 6+len(table.columns)+len(table.constraints)+len(table.grants))
+	values = append(values, table.kind, table.ownerRole, table.createdOn, table.comment, table.definition, strconv.Itoa(table.otherConstraintCount))
+	columns := make([]string, 0, len(table.columns))
+	for name, column := range table.columns {
+		columns = append(columns, fmt.Sprintf("%s:%s:%d:%d:%t:%t:%t", name, column.dataType, column.characterMaximumLength, column.datetimePrecision, column.nullable, column.hasDefault, column.generated))
+	}
+	sort.Strings(columns)
+	values = append(values, columns...)
+	constraints := make([]string, 0, len(table.constraints))
+	for _, constraint := range table.constraints {
+		constraints = append(constraints, constraint.name+":"+constraint.constraintType+":"+strconv.FormatBool(constraint.enforced)+":"+strings.Join(constraint.columns, ","))
+	}
+	sort.Strings(constraints)
+	values = append(values, constraints...)
+	values = append(values, canonicalManagedStreamGrants(table.grants)...)
+	return strings.Join(values, "\x00")
+}
+
+func canonicalManagedStreamGrants(grants map[string][]string) []string {
+	values := make([]string, 0, len(grants))
+	for role, privileges := range grants {
+		copyPrivileges := append([]string(nil), privileges...)
+		sort.Strings(copyPrivileges)
+		values = append(values, role+":"+strings.Join(copyPrivileges, ","))
+	}
+	sort.Strings(values)
+	return values
 }

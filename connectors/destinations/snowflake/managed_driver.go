@@ -33,23 +33,31 @@ func (d *Destination) managedHooksSnapshot() managedHooks {
 // InitializeManagedDelivery verifies that Open established the exact authority
 // required by the configured managed profile before any managed source I/O.
 func (d *Destination) InitializeManagedDelivery(ctx context.Context) error {
-	if d.db == nil {
-		return errors.New("managed Snowflake destination not initialized")
-	}
 	switch d.managedProfile {
 	case connector.ManagedProfilePostgresToSnowflakeSQLV1:
+		if d.db == nil {
+			return errors.New("managed Snowflake destination not initialized")
+		}
 		if strings.TrimSpace(d.managedConfig.destinationRevision) == "" || strings.TrimSpace(d.managedConfig.receiptsTable) == "" || strings.TrimSpace(d.managedConfig.schemaContractHash) == "" {
 			return errors.New("managed Snowflake SQL receipt authority is not configured")
 		}
 	case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
+		if d.db == nil {
+			return errors.New("managed Snowflake destination not initialized")
+		}
 		if strings.TrimSpace(d.stagedConfig.destinationRevision) == "" || strings.TrimSpace(d.stagedConfig.receiptsTable) == "" || strings.TrimSpace(d.stagedConfig.schemaContractHash) == "" || strings.TrimSpace(d.stagedCatalogFingerprint) == "" {
 			return errors.New("managed staged Snowflake receipt and catalog authority is not configured")
 		}
 	case connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
-		if err := d.requireStreamingCapability(); err != nil {
+		snapshot, unlock, err := d.lockStreamRuntime()
+		if err != nil {
 			return err
 		}
-		if strings.TrimSpace(d.streamConfig.destinationRevision) == "" || strings.TrimSpace(d.streamConfig.receiptsTable) == "" || strings.TrimSpace(d.streamConfig.channelStateTable) == "" || strings.TrimSpace(d.streamConfig.schemaContractHash) == "" || strings.TrimSpace(d.streamCatalogFingerprint) == "" {
+		defer unlock()
+		if err := d.validateStreamRuntime(ctx, snapshot); err != nil {
+			return err
+		}
+		if strings.TrimSpace(snapshot.cfg.destinationRevision) == "" || strings.TrimSpace(snapshot.cfg.receiptsTable) == "" || strings.TrimSpace(snapshot.cfg.channelStateTable) == "" || strings.TrimSpace(snapshot.cfg.schemaContractHash) == "" || strings.TrimSpace(snapshot.catalogFingerprint) == "" {
 			return errors.New("managed streaming Snowflake receipt, channel, and catalog authority is not configured")
 		}
 	default:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -206,13 +207,39 @@ func TestKubernetesDispatcherReservedOwnershipCannotBeOverridden(t *testing.T) {
 	}
 }
 
+func TestKubernetesExistingJobRejectsPolicyOrTemplateDigestDrift(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	client := fake.NewClientset()
+	base := KubernetesConfig{JobImage: "wallaby:v1", JobNamePrefix: "wallaby-worker", SnowflakePolicyFingerprint: strings.Repeat("a", 64)}
+	first := &KubernetesDispatcher{client: client, namespace: "default", cfg: base}
+	if err := first.EnqueueGeneration(ctx, "orders", 3); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*KubernetesConfig){
+		"image":        func(cfg *KubernetesConfig) { cfg.JobImage = "wallaby:v2" },
+		"key rotation": func(cfg *KubernetesConfig) { cfg.SnowflakePolicyFingerprint = strings.Repeat("b", 64) },
+		"command":      func(cfg *KubernetesConfig) { cfg.JobCommand = []string{"/different-worker"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := base
+			mutate(&cfg)
+			dispatcher := &KubernetesDispatcher{client: client, namespace: "default", cfg: cfg}
+			err := dispatcher.EnqueueGeneration(ctx, "orders", 3)
+			if err == nil || !strings.Contains(err.Error(), "stale Snowflake policy or pod template digest") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestKubernetesSnowflakeEnabledJobMountsAuthoritativeSecretKey(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	client := fake.NewClientset()
 	dispatcher := &KubernetesDispatcher{client: client, namespace: "default", cfg: KubernetesConfig{
 		JobImage: "wallaby:test", JobNamePrefix: "wallaby-worker", SnowflakeEnabled: true,
-		SnowflakeStreamingRESTEnabled: true, SnowflakeStreamingRESTConfigMapName: "wallaby-runtime-policy", SnowflakeStreamingRESTConfigMapKey: "snowflake-streaming-rest-enabled",
+		SnowflakeStreamingRESTEnabled: true, SnowflakeStreamingRESTConfigMapName: "wallaby-runtime-policy", SnowflakeStreamingRESTConfigMapKey: "snowflake-streaming-rest-enabled", SnowflakePolicyFingerprint: strings.Repeat("a", 64),
 		SnowflakeAccount: "account", SnowflakeUser: "user", SnowflakeHost: "account.snowflakecomputing.com",
 		SnowflakePrivateKeyFile:       "/run/secrets/wallaby/snowflake-key.pem",
 		SnowflakePrivateKeySecretName: "wallaby-snowflake", SnowflakePrivateKeySecretKey: "private-key.pem",
@@ -225,14 +252,20 @@ func TestKubernetesSnowflakeEnabledJobMountsAuthoritativeSecretKey(t *testing.T)
 		t.Fatal(err)
 	}
 	pod := job.Spec.Template.Spec
-	if len(pod.Volumes) != 1 || pod.Volumes[0].Secret == nil || pod.Volumes[0].Secret.SecretName != "wallaby-snowflake" || len(pod.Volumes[0].Secret.Items) != 1 || pod.Volumes[0].Secret.Items[0].Key != "private-key.pem" || pod.Volumes[0].Secret.Items[0].Mode == nil || *pod.Volumes[0].Secret.Items[0].Mode != 0o400 {
+	if len(pod.Volumes) != 1 || pod.Volumes[0].Secret == nil || pod.Volumes[0].Secret.SecretName != "wallaby-snowflake" || len(pod.Volumes[0].Secret.Items) != 1 || pod.Volumes[0].Secret.Items[0].Key != "private-key.pem" || pod.Volumes[0].Secret.Items[0].Mode == nil || *pod.Volumes[0].Secret.Items[0].Mode != 0o440 {
 		t.Fatalf("Snowflake key volume=%+v", pod.Volumes)
+	}
+	if pod.SecurityContext == nil || pod.SecurityContext.FSGroup == nil || *pod.SecurityContext.FSGroup != 65532 || pod.SecurityContext.FSGroupChangePolicy == nil || *pod.SecurityContext.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
+		t.Fatalf("Snowflake pod security context=%+v", pod.SecurityContext)
+	}
+	if job.Annotations["wallaby.snowflake-policy-digest"] == "" || job.Annotations["wallaby.snowflake-policy-digest"] != job.Spec.Template.Annotations["wallaby.snowflake-policy-digest"] {
+		t.Fatalf("Snowflake policy digest annotations=%v/%v", job.Annotations, job.Spec.Template.Annotations)
 	}
 	container := pod.Containers[0]
 	if len(container.VolumeMounts) != 1 || container.VolumeMounts[0].MountPath != "/run/secrets/wallaby/snowflake-key.pem" || container.VolumeMounts[0].SubPath != "private-key.pem" || !container.VolumeMounts[0].ReadOnly {
 		t.Fatalf("Snowflake key mount=%+v", container.VolumeMounts)
 	}
-	for _, want := range []string{"--snowflake-enabled=true", "--snowflake-streaming-rest-granted=true", "--snowflake-account", "account", "--snowflake-user", "user", "--snowflake-host", "account.snowflakecomputing.com", "--snowflake-private-key-file", "/run/secrets/wallaby/snowflake-key.pem"} {
+	for _, want := range []string{"--snowflake-enabled=true", "--snowflake-streaming-rest-granted=true", "--snowflake-account", "account", "--snowflake-user", "user", "--snowflake-host", "account.snowflakecomputing.com", "--snowflake-private-key-file", "/run/secrets/wallaby/snowflake-key.pem", "--snowflake-policy-digest", strings.Repeat("a", 64)} {
 		if !slices.Contains(container.Args, want) {
 			t.Fatalf("missing authoritative argument %q in %v", want, container.Args)
 		}

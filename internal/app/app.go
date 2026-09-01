@@ -319,6 +319,17 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		})
 	}
 	if cfg.Kubernetes.Enabled {
+		var snowflakePolicyFingerprint string
+		if cfg.Snowflake.StreamingREST.Enabled {
+			streamingPolicy, streamErr := snowflakePolicy.StreamingRESTPolicy()
+			if streamErr != nil {
+				return streamErr
+			}
+			snowflakePolicyFingerprint, streamErr = streamingPolicy.Fingerprint()
+			if streamErr != nil {
+				return streamErr
+			}
+		}
 		dispatcher, err := orchestrator.NewKubernetesDispatcher(ctx, orchestrator.KubernetesConfig{
 			KubeconfigPath:                      cfg.Kubernetes.KubeconfigPath,
 			KubeContext:                         cfg.Kubernetes.KubeContext,
@@ -354,6 +365,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			SnowflakePrivateKeyFile:             cfg.Snowflake.PrivateKeyFile,
 			SnowflakePrivateKeySecretName:       cfg.Snowflake.PrivateKeySecretName,
 			SnowflakePrivateKeySecretKey:        cfg.Snowflake.PrivateKeySecretKey,
+			SnowflakePolicyFingerprint:          snowflakePolicyFingerprint,
 		})
 		if err != nil {
 			return err

@@ -75,6 +75,7 @@ func newWallabyWorkerCommand() *cobra.Command {
 	command.Flags().String("snowflake-user", "", "deployment-owned Snowflake user identity")
 	command.Flags().String("snowflake-host", "", "deployment-owned canonical Snowflake host")
 	command.Flags().String("snowflake-private-key-file", "", "deployment-owned Snowflake RSA private key file")
+	command.Flags().String("snowflake-policy-digest", "", "dispatcher-bound Snowflake public policy digest")
 	command.Args = cobra.NoArgs
 	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
 		if err := initWallabyWorkerConfig(cmd); err != nil {
@@ -364,7 +365,12 @@ func resolveWorkerSnowflakePolicy(cmd *cobra.Command, cfg *config.Config, requir
 		if flag := cmd.Flags().Lookup("snowflake-streaming-rest-granted"); flag != nil && flag.Changed {
 			grant = cli.ResolveBoolFlag(cmd, "snowflake-streaming-rest-granted")
 		}
-		cfg.Snowflake.StreamingREST.Enabled = cfg.Snowflake.StreamingREST.Enabled && grant
+		rawPolicy, present := os.LookupEnv("WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED")
+		if !present || rawPolicy != "true" && rawPolicy != "false" {
+			return connector.SnowflakeDeploymentPolicy{}, errors.New("kubernetes worker requires exact WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED=true|false from the deployment policy ConfigMap")
+		}
+		localPolicy := rawPolicy == "true"
+		cfg.Snowflake.StreamingREST.Enabled = cfg.Snowflake.StreamingREST.Enabled && grant && localPolicy
 	}
 	for flagName, target := range map[string]*string{
 		"snowflake-account":          &cfg.Snowflake.Account,
@@ -379,11 +385,28 @@ func resolveWorkerSnowflakePolicy(cmd *cobra.Command, cfg *config.Config, requir
 	if err := cfg.Snowflake.ValidateExecution(); err != nil {
 		return connector.SnowflakeDeploymentPolicy{}, err
 	}
-	return connector.NewSnowflakeDeploymentPolicy(connector.SnowflakeDeploymentConfig{
+	policy, err := connector.NewSnowflakeDeploymentPolicy(connector.SnowflakeDeploymentConfig{
 		Enabled: cfg.Snowflake.Enabled, StreamingRESTEnabled: cfg.Snowflake.StreamingREST.Enabled,
 		Account: cfg.Snowflake.Account, User: cfg.Snowflake.User,
 		Host: cfg.Snowflake.Host, PrivateKeyFile: cfg.Snowflake.PrivateKeyFile,
 	})
+	if err != nil {
+		return connector.SnowflakeDeploymentPolicy{}, err
+	}
+	if requireDispatchGrant && cfg.Snowflake.StreamingREST.Enabled {
+		expected := cli.ResolveStringFlag(cmd, "snowflake-policy-digest")
+		streaming, streamErr := policy.StreamingRESTPolicy()
+		if streamErr != nil {
+			_ = policy.Close()
+			return connector.SnowflakeDeploymentPolicy{}, streamErr
+		}
+		actual, digestErr := streaming.Fingerprint()
+		if digestErr != nil || expected == "" || actual != expected {
+			_ = policy.Close()
+			return connector.SnowflakeDeploymentPolicy{}, errors.New("kubernetes worker Snowflake policy digest differs from the dispatcher grant")
+		}
+	}
+	return policy, nil
 }
 
 func copyStringMap(in map[string]string) map[string]string {

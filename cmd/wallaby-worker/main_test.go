@@ -114,6 +114,7 @@ func TestWorkerFlagsOverrideCurrentEnvironment(t *testing.T) {
 }
 
 func TestAuthoritativeWorkerSnowflakeFalseOverridesStaleEnabledConfig(t *testing.T) {
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED", "false")
 	command := newWallabyWorkerCommand()
 	if err := command.ParseFlags([]string{"--snowflake-enabled=false", "--snowflake-private-key-file="}); err != nil {
 		t.Fatal(err)
@@ -125,6 +126,33 @@ func TestAuthoritativeWorkerSnowflakeFalseOverridesStaleEnabledConfig(t *testing
 	}
 	if policy.Enabled() || cfg.Snowflake.PrivateKeyFile != "" || cfg.Snowflake.Enabled || cfg.Snowflake.StreamingREST.Enabled {
 		t.Fatalf("authoritative false was widened: policy=%+v config=%+v", policy, cfg.Snowflake)
+	}
+}
+
+func TestKubernetesWorkerRequiresExactStreamingPolicyConfigMapValue(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		present bool
+		value   string
+	}{
+		{name: "missing"},
+		{name: "numeric alias", present: true, value: "1"},
+		{name: "uppercase alias", present: true, value: "TRUE"},
+		{name: "whitespace", present: true, value: " true "},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.present {
+				t.Setenv("WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED", test.value)
+			}
+			command := newWallabyWorkerCommand()
+			if err := command.ParseFlags([]string{"--snowflake-enabled=false", "--snowflake-streaming-rest-granted=false"}); err != nil {
+				t.Fatal(err)
+			}
+			_, err := resolveWorkerSnowflakePolicy(command, &config.Config{}, true)
+			if err == nil || !strings.Contains(err.Error(), "requires exact WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED") {
+				t.Fatalf("error=%v", err)
+			}
+		})
 	}
 }
 

@@ -1,9 +1,13 @@
 package snowflake
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,6 +76,7 @@ type streamConfig struct {
 	cleanupRetention        time.Duration
 	validateEveryConnection bool
 	typeMappings            map[string]string
+	configDigest            string
 }
 
 // streamProfileAllowedOptions is the exact admitted option set for the streaming
@@ -339,7 +344,37 @@ func streamConfigFromSpec(dsn string, spec connector.RuntimeSpec) (streamConfig,
 			return streamConfig{}, fmt.Errorf("managed streaming Snowflake profile rejects generic option %s", option)
 		}
 	}
+	cfg.configDigest = managedStreamConfigDigest(cfg)
 	return cfg, nil
+}
+
+func managedStreamConfigDigest(cfg streamConfig) string {
+	values := make([]string, 0, 36+len(cfg.typeMappings))
+	values = append(values,
+		cfg.profile, cfg.flowID, cfg.account, cfg.database, cfg.schema, cfg.pipe, cfg.table,
+		cfg.receiptsTable, cfg.channelStateTable, cfg.channelNamePrefix, cfg.ownerRole,
+		cfg.executionRole, cfg.warehouse, cfg.snowflakeVersion, cfg.pipeCreatedOn,
+		cfg.targetCreatedOn, cfg.receiptsCreatedOn, cfg.channelStateCreatedOn,
+		cfg.requestJournalCreatedOn, cfg.sourceSchema, cfg.sourceTable,
+		cfg.schemaContractHash, cfg.destinationRevision,
+		strconv.Itoa(cfg.maxTransactionRows), strconv.FormatInt(cfg.maxTransactionBytes, 10),
+		strconv.Itoa(cfg.maxFragments), strconv.FormatInt(cfg.maxRowBytes, 10),
+		strconv.Itoa(cfg.maxOpenConnections), strconv.Itoa(cfg.statementTimeoutSeconds),
+		strconv.Itoa(cfg.observeAttempts), strconv.FormatInt(int64(cfg.observeInterval), 10),
+		strconv.Itoa(cfg.appendAttempts), strconv.FormatInt(int64(cfg.appendBackoff), 10),
+		strconv.Itoa(cfg.cleanupMaxObjects), strconv.FormatInt(int64(cfg.cleanupRetention), 10),
+		strconv.FormatBool(cfg.validateEveryConnection),
+	)
+	mappingKeys := make([]string, 0, len(cfg.typeMappings))
+	for key := range cfg.typeMappings {
+		mappingKeys = append(mappingKeys, key)
+	}
+	sort.Strings(mappingKeys)
+	for _, key := range mappingKeys {
+		values = append(values, key+"="+cfg.typeMappings[key])
+	}
+	digest := sha256.Sum256([]byte(strings.Join(values, "\x00")))
+	return hex.EncodeToString(digest[:])
 }
 
 // validateManagedStreamingChannelPrefix bounds the operator-supplied channel

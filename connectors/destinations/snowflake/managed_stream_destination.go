@@ -2,7 +2,9 @@ package snowflake
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -27,6 +29,34 @@ func (d *Destination) streamSessionShim(cfg streamConfig) managedConfig {
 		statementTimeoutSeconds: cfg.statementTimeoutSeconds, hybridLockTimeoutSeconds: cfg.statementTimeoutSeconds,
 		validateEveryConnection: true,
 	}
+}
+
+type streamRuntimeSnapshot struct {
+	db                 *sql.DB
+	protocol           streamProtocol
+	cfg                streamConfig
+	catalogFingerprint string
+	policy             connector.SnowflakeStreamingRESTPolicy
+}
+
+// lockStreamRuntime returns one atomic runtime view and holds a read lock until
+// the caller completes. Close takes the write lock and therefore cannot close
+// the SQL pool or revoke the runtime while an operation uses this snapshot.
+func (d *Destination) lockStreamRuntime() (streamRuntimeSnapshot, func(), error) {
+	d.streamRuntimeMu.RLock()
+	snapshot := streamRuntimeSnapshot{
+		db: d.db, protocol: d.streamRuntimeProtocol, cfg: d.streamConfig,
+		catalogFingerprint: d.streamCatalogFingerprint, policy: d.streamingPolicy,
+	}
+	if !ManagedStreamingTransportAvailable() || snapshot.db == nil || snapshot.protocol == nil || d.managedProfile != connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 || !snapshot.policy.Enabled() {
+		d.streamRuntimeMu.RUnlock()
+		return streamRuntimeSnapshot{}, nil, streamingNotInitializedError()
+	}
+	if err := snapshot.policy.Admit(d.spec); err != nil {
+		d.streamRuntimeMu.RUnlock()
+		return streamRuntimeSnapshot{}, nil, err
+	}
+	return snapshot, d.streamRuntimeMu.RUnlock, nil
 }
 
 // openManagedStreaming assembles the experimental REST transport only when the
@@ -69,16 +99,21 @@ func (d *Destination) openManagedStreaming(ctx context.Context, dsn string, spec
 			return
 		}
 		resultErr = errors.Join(resultErr, db.Close())
+		d.streamRuntimeMu.Lock()
 		d.db = nil
 		d.streamRuntimeProtocol = nil
+		d.streamCatalogFingerprint = ""
 		d.streamingPolicy = connector.SnowflakeStreamingRESTPolicy{}
+		d.streamRuntimeMu.Unlock()
 	}()
 	if err := db.PingContext(ctx); err != nil {
 		return fmt.Errorf("ping managed streaming Snowflake: %w", err)
 	}
+	d.streamRuntimeMu.Lock()
 	d.db = db
 	d.streamConfig = cfg
 	d.managedConfig = d.streamSessionShim(cfg)
+	d.streamRuntimeMu.Unlock()
 	openRuntime := factories.openStreamRuntime
 	if openRuntime == nil {
 		openRuntime = d.openManagedStreamRuntime
@@ -90,9 +125,11 @@ func (d *Destination) openManagedStreaming(ctx context.Context, dsn string, spec
 	if protocol == nil || strings.TrimSpace(fingerprint) == "" {
 		return errors.New("managed streaming Snowflake runtime assembly is incomplete")
 	}
+	d.streamRuntimeMu.Lock()
 	d.streamRuntimeProtocol = protocol
 	d.streamCatalogFingerprint = fingerprint
 	d.streamingPolicy = streamingPolicy
+	d.streamRuntimeMu.Unlock()
 	d.managedScopeMu.Lock()
 	d.managedFlowIncarnation = ""
 	d.managedScopeMu.Unlock()
@@ -106,7 +143,11 @@ func (d *Destination) openManagedStreamRuntime(ctx context.Context, db *sql.DB, 
 		return nil, "", err
 	}
 	defer func() { _ = conn.Close() }()
-	fingerprint, err := validateManagedStreamCatalog(ctx, conn, cfg)
+	catalogFingerprint, err := validateManagedStreamCatalog(ctx, conn, cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	fingerprint, err := managedStreamRuntimeFingerprint(cfg, catalogFingerprint, policy)
 	if err != nil {
 		return nil, "", err
 	}
@@ -117,22 +158,40 @@ func (d *Destination) openManagedStreamRuntime(ctx context.Context, db *sql.DB, 
 	return &composedStreamProtocol{streamTransport: transport, streamStateStore: newSQLStreamProtocol(db)}, fingerprint, nil
 }
 
-func (d *Destination) requireStreamingCapability() error {
-	if !ManagedStreamingTransportAvailable() {
-		return ErrManagedStreamingTransportUnavailable
+func managedStreamRuntimeFingerprint(cfg streamConfig, catalogFingerprint string, policy connector.SnowflakeStreamingRESTPolicy) (string, error) {
+	policyFingerprint, err := policy.Fingerprint()
+	if err != nil {
+		return "", err
 	}
-	if !d.streamingPolicy.Enabled() {
-		return connector.ErrSnowflakeStreamingRESTDisabled
-	}
-	return d.streamingPolicy.Admit(d.spec)
+	digest := sha256.Sum256([]byte(strings.Join([]string{cfg.configDigest, catalogFingerprint, policyFingerprint}, "\x00")))
+	return hex.EncodeToString(digest[:]), nil
 }
 
-func (d *Destination) newStreamDriver() *streamDriver {
-	protocol := d.streamRuntimeProtocol
-	if protocol == nil {
-		protocol = newSQLStreamProtocol(d.db)
+func (d *Destination) validateStreamRuntime(ctx context.Context, snapshot streamRuntimeSnapshot) error {
+	conn, err := snapshot.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire managed streaming Snowflake validation session: %w", err)
 	}
-	return newStreamDriver(protocol, d.streamConfig, d.streamCatalogFingerprint, d.streamHooksSnapshot())
+	defer func() { _ = conn.Close() }()
+	if err := d.validateManagedSnowflakeTransactions(ctx, conn); err != nil {
+		return err
+	}
+	catalogFingerprint, err := validateManagedStreamCatalog(ctx, conn, snapshot.cfg)
+	if err != nil {
+		return err
+	}
+	fingerprint, err := managedStreamRuntimeFingerprint(snapshot.cfg, catalogFingerprint, snapshot.policy)
+	if err != nil {
+		return err
+	}
+	if fingerprint != snapshot.catalogFingerprint {
+		return fmt.Errorf("%w: managed streaming Snowflake runtime or catalog fingerprint changed", connector.ErrDeliveryConflict)
+	}
+	return nil
+}
+
+func (d *Destination) newStreamDriver(snapshot streamRuntimeSnapshot) *streamDriver {
+	return newStreamDriver(snapshot.protocol, snapshot.cfg, snapshot.catalogFingerprint, d.streamHooksSnapshot())
 }
 
 type preparedManagedStreamTransaction struct {
@@ -143,59 +202,69 @@ type preparedManagedStreamTransaction struct {
 }
 
 func (d *Destination) prepareManagedStreaming(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (connector.PreparedManagedTransaction, error) {
-	if err := d.requireStreamingCapability(); err != nil {
+	snapshot, unlock, err := d.lockStreamRuntime()
+	if err != nil {
 		return nil, err
 	}
-	if d.db == nil || d.streamRuntimeProtocol == nil || d.managedProfile != connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 {
-		return nil, streamingNotInitializedError()
+	defer unlock()
+	if err := d.validateStreamRuntime(ctx, snapshot); err != nil {
+		return nil, err
 	}
-	plan, err := planManagedStreamTransaction(d.streamConfig, intent, transaction)
+	plan, err := planManagedStreamTransaction(snapshot.cfg, intent, transaction)
 	if err != nil {
 		return nil, err
 	}
 	if err := d.validateStreamingSnowflakeReceiptScope(ctx, intent); err != nil {
 		return nil, err
 	}
-	plan.catalogFingerprint = d.streamCatalogFingerprint
-	plan.receipt.catalogFingerprint = d.streamCatalogFingerprint
+	plan.catalogFingerprint = snapshot.catalogFingerprint
+	plan.receipt.catalogFingerprint = snapshot.catalogFingerprint
 	return &preparedManagedStreamTransaction{destination: d, intent: intent, transaction: transaction, plan: plan}, nil
 }
 
 func (p *preparedManagedStreamTransaction) Apply(ctx context.Context) (connector.DeliveryEvidence, error) {
-	if err := p.destination.requireStreamingCapability(); err != nil {
+	snapshot, unlock, err := p.destination.lockStreamRuntime()
+	if err != nil {
 		return connector.DeliveryEvidence{}, err
 	}
-	driver := p.destination.newStreamDriver()
-	return driver.apply(ctx, p.intent, p.transaction)
+	defer unlock()
+	if err := p.destination.validateStreamRuntime(ctx, snapshot); err != nil {
+		return connector.DeliveryEvidence{}, err
+	}
+	return p.destination.newStreamDriver(snapshot).apply(ctx, p.intent, p.transaction)
 }
 
 func (d *Destination) reconcileManagedStreaming(ctx context.Context, intent connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
-	if err := d.requireStreamingCapability(); err != nil {
+	snapshot, unlock, err := d.lockStreamRuntime()
+	if err != nil {
 		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
 	}
-	if d.db == nil || d.streamRuntimeProtocol == nil || d.managedProfile != connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 {
-		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, streamingNotInitializedError()
+	defer unlock()
+	if err := d.validateStreamRuntime(ctx, snapshot); err != nil {
+		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
 	}
 	if err := d.validateStreamingSnowflakeReceiptScope(ctx, intent); err != nil {
 		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
 	}
-	return d.newStreamDriver().reconcile(ctx, intent)
+	return d.newStreamDriver(snapshot).reconcile(ctx, intent)
 }
 
 // CleanupManagedStreaming runs one bounded channel-state retention pass for the
 // bound flow incarnation. The runner schedules it after acknowledged deliveries;
 // it never releases a batch whose delivery was not durably recorded.
 func (d *Destination) CleanupManagedStreaming(ctx context.Context, flowIncarnationID string) (int, error) {
-	if err := d.requireStreamingCapability(); err != nil {
+	snapshot, unlock, err := d.lockStreamRuntime()
+	if err != nil {
 		return 0, err
 	}
-	if d.db == nil || d.streamRuntimeProtocol == nil || d.managedProfile != connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 {
-		return 0, streamingNotInitializedError()
+	defer unlock()
+	if err := d.validateStreamRuntime(ctx, snapshot); err != nil {
+		return 0, err
 	}
 	if err := d.validateStreamingSnowflakeReceiptScope(ctx, connector.DeliveryIntent{FlowIncarnationID: flowIncarnationID, LogicalBatchID: "scope-validation"}); err != nil {
 		return 0, err
 	}
-	return d.newStreamDriver().cleanup(ctx, flowIncarnationID)
+	return d.newStreamDriver(snapshot).cleanup(ctx, flowIncarnationID)
 }
 
 // streamingNotInitializedError explains why a managed streaming operation is
