@@ -21,6 +21,12 @@ import (
 
 type staticStreamRESTToken string
 
+type streamRESTRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f streamRESTRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
 func (t staticStreamRESTToken) KeypairJWT(context.Context) (string, error) { return string(t), nil }
 
 func streamRESTTestConfig() streamConfig {
@@ -127,18 +133,19 @@ func TestStreamRESTTransportConformance(t *testing.T) {
 
 func TestStreamRESTAppendStatusClassification(t *testing.T) {
 	for _, test := range []struct {
-		name       string
-		status     int
-		wantError  error
-		wantResult streamAppendDisposition
+		name        string
+		status      int
+		wantError   error
+		wantOutcome streamAppendFailureOutcome
+		wantResult  streamAppendDisposition
 	}{
-		{name: "request timeout", status: http.StatusRequestTimeout, wantError: connector.ErrDeliveryIndeterminate},
-		{name: "throttle", status: http.StatusTooManyRequests, wantError: errStreamThrottled},
-		{name: "server", status: http.StatusServiceUnavailable, wantError: connector.ErrDeliveryIndeterminate},
-		{name: "auth", status: http.StatusUnauthorized, wantError: errStreamAuthExpired},
-		{name: "forbidden", status: http.StatusForbidden, wantError: errStreamAuthExpired},
-		{name: "invalidated", status: http.StatusConflict, wantError: errStreamChannelInvalidated},
-		{name: "client rejection remains ambiguous", status: http.StatusUnprocessableEntity, wantError: connector.ErrDeliveryIndeterminate},
+		{name: "request timeout", status: http.StatusRequestTimeout, wantError: connector.ErrDeliveryIndeterminate, wantOutcome: streamAppendFailureAmbiguous},
+		{name: "throttle", status: http.StatusTooManyRequests, wantError: errStreamThrottled, wantOutcome: streamAppendFailureDefinitelyNotAccepted},
+		{name: "server", status: http.StatusServiceUnavailable, wantError: connector.ErrDeliveryIndeterminate, wantOutcome: streamAppendFailureAmbiguous},
+		{name: "auth", status: http.StatusUnauthorized, wantError: errStreamAuthExpired, wantOutcome: streamAppendFailureDefinitelyNotAccepted},
+		{name: "forbidden", status: http.StatusForbidden, wantError: errStreamAuthExpired, wantOutcome: streamAppendFailureDefinitelyNotAccepted},
+		{name: "invalidated", status: http.StatusConflict, wantError: errStreamChannelInvalidated, wantOutcome: streamAppendFailureDefinitelyNotAccepted},
+		{name: "client rejection remains ambiguous", status: http.StatusUnprocessableEntity, wantError: connector.ErrDeliveryIndeterminate, wantOutcome: streamAppendFailureAmbiguous},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			transport, closeServer := newStreamRESTStatusFixture(t, test.status, "{}")
@@ -148,12 +155,36 @@ func TestStreamRESTAppendStatusClassification(t *testing.T) {
 				if !errors.Is(err, test.wantError) {
 					t.Fatalf("error=%v want %v", err, test.wantError)
 				}
+				if outcome := streamAppendFailureOutcomeOf(err); outcome != test.wantOutcome {
+					t.Fatalf("failure outcome=%v, want %v", outcome, test.wantOutcome)
+				}
 				return
 			}
 			if err != nil || result.disposition != test.wantResult {
 				t.Fatalf("result/error=%+v/%v", result, err)
 			}
 		})
+	}
+}
+
+func TestStreamRESTNDJSONExactWireBoundary(t *testing.T) {
+	exact := []byte(`"` + strings.Repeat("x", streamRESTMaxAppendBytes-3) + `"`)
+	payload, err := streamRESTNDJSON([]streamAppendRow{{payload: exact}})
+	if err != nil || len(payload) != streamRESTMaxAppendBytes {
+		t.Fatalf("exact REST payload bytes/error=%d/%v", len(payload), err)
+	}
+	over := []byte(`"` + strings.Repeat("x", streamRESTMaxAppendBytes-2) + `"`)
+	if _, err := streamRESTNDJSON([]streamAppendRow{{payload: over}}); !errors.Is(err, errStreamOversize) {
+		t.Fatalf("one-byte REST overflow error=%v", err)
+	}
+}
+
+func TestStreamRESTChannelRevisionUsesCreatedOnMS(t *testing.T) {
+	if got := streamRESTRevision(12345); got != 12345 {
+		t.Fatalf("revision=%d, want exact created_on_ms", got)
+	}
+	if got := streamRESTRevision(0); got != 0 {
+		t.Fatalf("absent created_on_ms revision=%d, want zero", got)
 	}
 }
 
@@ -221,7 +252,7 @@ func TestStreamRESTMalformedOversizedRedirectCancellationAndHostDrift(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := transport.OpenChannel(context.Background(), streamRESTTestConfig(), "CHANNEL_1"); err == nil || !strings.Contains(err.Error(), "host drifted") {
+		if _, err := transport.OpenChannel(context.Background(), streamRESTTestConfig(), "CHANNEL_1"); err == nil || !strings.Contains(err.Error(), "origin allowlist") {
 			t.Fatalf("host drift error=%v", err)
 		}
 	})
@@ -235,9 +266,9 @@ func TestStreamRESTAcceptedThenDisconnectIsIndeterminate(t *testing.T) {
 		case r.URL.Path == "/oauth/token":
 			_ = json.NewEncoder(w).Encode(streamRESTTokenResponse{Token: "scoped"})
 		case strings.HasSuffix(r.URL.Path, ":bulk-channel-status"):
-			_ = json.NewEncoder(w).Encode(streamRESTBulkStatusResponse{ChannelStatuses: map[string]streamRESTChannelStatus{"CHANNEL_1": {DatabaseName: "DB", SchemaName: "PUBLIC", PipeName: "PIPE", ChannelName: "CHANNEL_1", ChannelStatusCode: "ACTIVE", LastCommittedOffsetToken: "offset-1", CreatedOnMS: 1}}})
+			_ = json.NewEncoder(w).Encode(streamRESTBulkStatusResponse{ChannelStatuses: map[string]streamRESTChannelStatus{"CHANNEL_1": {DatabaseName: "DB", SchemaName: "PUBLIC", PipeName: "PIPE", ChannelName: "CHANNEL_1", ChannelStatusCode: "ACTIVE", LastCommittedOffsetToken: "offset-1", CreatedOnMS: 7}}})
 		case r.Method == http.MethodPut:
-			_ = json.NewEncoder(w).Encode(streamRESTOpenResponse{NextContinuationToken: "cont-recovered", ChannelStatus: streamRESTChannelStatus{DatabaseName: "DB", SchemaName: "PUBLIC", PipeName: "PIPE", ChannelName: "CHANNEL_1", ChannelStatusCode: "ACTIVE", LastCommittedOffsetToken: "offset-1", CreatedOnMS: 2}})
+			_ = json.NewEncoder(w).Encode(streamRESTOpenResponse{NextContinuationToken: "cont-recovered", ChannelStatus: streamRESTChannelStatus{DatabaseName: "DB", SchemaName: "PUBLIC", PipeName: "PIPE", ChannelName: "CHANNEL_1", ChannelStatusCode: "ACTIVE", LastCommittedOffsetToken: "offset-1", CreatedOnMS: 7}})
 		default:
 			hijacker, ok := w.(http.Hijacker)
 			if !ok {
@@ -314,10 +345,143 @@ func TestStreamRESTRequestStatusNeverInventsProvenAbsence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := managedStreamRequest{requestID: "request", channelName: "CHANNEL_1", pipeName: "PIPE", channelRevision: 1, pipeRevision: streamRESTTestConfig().pipeCreatedOn, inputContinuation: "cont", requestedOffset: "offset-1", manifestHash: "manifest", rowsContentHash: "rows", rowCount: 1}
+	request := managedStreamRequest{requestID: "request", channelName: "CHANNEL_1", pipeName: "PIPE", channelRevision: 1, pipeRevision: streamRESTTestConfig().pipeCreatedOn, inputContinuation: "cont", expectedPreviousOffset: "offset-0", requestedOffset: "offset-1", manifestHash: "manifest", rowsContentHash: "rows", rowCount: 1}
 	evidence, err := transport.RequestStatus(context.Background(), streamRESTTestConfig(), request)
 	if err != nil || evidence.disposition == streamRequestStatusProvenAbsent {
 		t.Fatalf("status evidence=%+v error=%v", evidence, err)
+	}
+}
+
+func TestStreamRESTPriorOffsetThenRequestedOffsetCommits(t *testing.T) {
+	var mu sync.Mutex
+	committed := "offset-0"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/streaming/hostname":
+			_ = json.NewEncoder(w).Encode(streamRESTHostnameResponse{Hostname: r.Host})
+		case "/oauth/token":
+			_ = json.NewEncoder(w).Encode(streamRESTTokenResponse{Token: "scoped"})
+		default:
+			mu.Lock()
+			value := committed
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(streamRESTBulkStatusResponse{ChannelStatuses: map[string]streamRESTChannelStatus{"CHANNEL_1": {DatabaseName: "DB", SchemaName: "PUBLIC", PipeName: "PIPE", ChannelName: "CHANNEL_1", ChannelStatusCode: "ACTIVE", LastCommittedOffsetToken: value}}})
+		}
+	}))
+	defer server.Close()
+	transport, err := newStreamRESTTransport(server.URL, server.Client(), staticStreamRESTToken("jwt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := managedStreamRequest{requestID: "request", channelName: "CHANNEL_1", pipeName: "PIPE", channelRevision: 9, pipeRevision: streamRESTTestConfig().pipeCreatedOn, inputContinuation: "cont-1", expectedPreviousOffset: "offset-0", requestedOffset: "offset-1", responseContinuation: "cont-2", manifestHash: "manifest", rowsContentHash: "rows", rowCount: 1}
+	first, err := transport.RequestStatus(context.Background(), streamRESTTestConfig(), request)
+	if err != nil || first.disposition != streamRequestUnknown || first.committedOffset != "offset-0" {
+		t.Fatalf("prior evidence=%+v error=%v", first, err)
+	}
+	mu.Lock()
+	committed = "offset-1"
+	mu.Unlock()
+	second, err := transport.RequestStatus(context.Background(), streamRESTTestConfig(), request)
+	if err != nil || second.disposition != streamRequestStatusCommitted || second.committedOffset != "offset-1" || second.responseContinuation != "cont-2" {
+		t.Fatalf("committed evidence=%+v error=%v", second, err)
+	}
+}
+
+func TestStreamRESTPriorAndOpaqueOffsetsRemainUnknown(t *testing.T) {
+	for _, test := range []struct {
+		name, observed string
+	}{
+		{name: "exact prior offset", observed: "offset-0"},
+		{name: "unrelated opaque offset", observed: "opaque-other"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"channel_statuses":{"CHANNEL_1":{"database_name":"DB","schema_name":"PUBLIC","pipe_name":"PIPE","channel_name":"CHANNEL_1","channel_status_code":"ACTIVE","last_committed_offset_token":%q,"created_on_ms":0,"rows_inserted":0,"rows_parsed":0,"rows_errors":0,"rows_error_count":0,"last_error_offset_upper_bound":"","last_error_message":"","last_error_timestamp":"","snowflake_avg_processing_latency_ms":0}}}`, test.observed)
+			transport, closeServer := newStreamRESTStatusFixture(t, http.StatusOK, body)
+			defer closeServer()
+			if _, _, err := transport.session(context.Background(), false); err != nil {
+				t.Fatal(err)
+			}
+			request := managedStreamRequest{requestID: "request", channelName: "CHANNEL_1", pipeName: "PIPE", channelRevision: 9, pipeRevision: streamRESTTestConfig().pipeCreatedOn, inputContinuation: "cont", expectedPreviousOffset: "offset-0", requestedOffset: "offset-1", manifestHash: "manifest", rowsContentHash: "rows", rowCount: 1}
+			evidence, err := transport.RequestStatus(context.Background(), streamRESTTestConfig(), request)
+			if err != nil || evidence.disposition != streamRequestUnknown || evidence.committedOffset != test.observed {
+				t.Fatalf("evidence=%+v error=%v", evidence, err)
+			}
+			if err := validateStreamRequestEvidence(request, evidence); err != nil {
+				t.Fatalf("opaque nonprogress evidence rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestStreamRESTProductionOriginAndTLSBinding(t *testing.T) {
+	safeClient := &http.Client{Transport: http.DefaultTransport}
+	for _, endpoint := range []string{
+		"https://user:secret@acme.snowflakecomputing.com",
+		"https://acme.snowflakecomputing.com:8443",
+		"https://example.com",
+	} {
+		if _, err := newStreamRESTTransport(endpoint, safeClient, staticStreamRESTToken("jwt-secret")); err == nil {
+			t.Fatalf("unsafe control endpoint %q accepted", endpoint)
+		}
+	}
+	if _, err := newStreamRESTTransport("https://acme.snowflakecomputing.com", &http.Client{Transport: streamRESTRoundTripper(func(*http.Request) (*http.Response, error) { return nil, errors.New("unexpected") })}, staticStreamRESTToken("jwt-secret")); err == nil {
+		t.Fatal("unreviewable production RoundTripper accepted")
+	}
+	insecureClient := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} // #nosec G402 -- rejection test.
+	if _, err := newStreamRESTTransport("https://acme.snowflakecomputing.com", insecureClient, staticStreamRESTToken("jwt-secret")); err == nil {
+		t.Fatal("TLS verification bypass accepted")
+	}
+	transport, err := newStreamRESTTransport("https://acme.snowflakecomputing.com", safeClient, staticStreamRESTToken("jwt-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transport.validatedIngestURL("other.region.ingest.snowflakecomputing.com"); err == nil {
+		t.Fatal("cross-account ingest host accepted")
+	}
+	normalizedTransport, err := newStreamRESTTransport("https://acme-region.snowflakecomputing.com", safeClient, staticStreamRESTToken("jwt-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := normalizedTransport.validatedIngestURL("acme_region.region.ingest.snowflakecomputing.com"); err != nil {
+		t.Fatalf("documented underscore normalization rejected: %v", err)
+	}
+	if err := transport.validateConfigAccount(streamConfig{account: "OTHER"}); err == nil {
+		t.Fatal("cross-account managed config accepted")
+	}
+}
+
+func TestStreamRESTJWTIsNeverDisclosedAndAuthInvalidatesSession(t *testing.T) {
+	const secret = "jwt-super-secret"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/hostname") {
+			http.Error(w, "denied", http.StatusUnauthorized)
+			return
+		}
+		http.Error(w, "denied", http.StatusForbidden)
+	}))
+	defer server.Close()
+	transport, err := newStreamRESTTransport(server.URL, server.Client(), staticStreamRESTToken(secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = transport.OpenChannel(context.Background(), streamRESTTestConfig(), "CHANNEL_1")
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("hostname auth error disclosed JWT: %v", err)
+	}
+	base, _ := url.Parse(server.URL)
+	transport.ingestBase, transport.scopedToken = base, "scoped-secret"
+	if _, err := transport.OpenChannel(context.Background(), streamRESTTestConfig(), "CHANNEL_1"); !errors.Is(err, errStreamAuthExpired) {
+		t.Fatalf("open auth error=%v", err)
+	}
+	if transport.scopedToken != "" {
+		t.Fatal("open authorization failure retained scoped token")
+	}
+	transport.ingestBase, transport.scopedToken = base, "scoped-secret"
+	if err := transport.DropChannel(context.Background(), streamRESTTestConfig(), "CHANNEL_1"); !errors.Is(err, errStreamAuthExpired) {
+		t.Fatalf("drop auth error=%v", err)
+	}
+	if transport.scopedToken != "" {
+		t.Fatal("drop authorization failure retained scoped token")
 	}
 }
 

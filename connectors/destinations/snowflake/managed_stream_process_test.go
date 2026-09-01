@@ -13,13 +13,13 @@ import (
 )
 
 type processRequest struct {
-	RequestID, FlowID, FlowIncarnationID, SourceLineageID, DestinationRevisionID string
-	LogicalBatchID, PositionID, ContentHash, ManifestHash, RowsContentHash       string
-	ChannelName, PipeName, PipeRevision, InputContinuation, RequestedOffset      string
-	ResponseContinuation, CommittedOffset, AcquisitionID, ResponseKind, Evidence string
-	RowCount, Attempt                                                            int
-	ChannelRevision, Generation, LeaseEpoch, PhaseVersion                        int64
-	Phase                                                                        string
+	RequestID, FlowID, FlowIncarnationID, SourceLineageID, DestinationRevisionID                    string
+	LogicalBatchID, PositionID, ContentHash, ManifestHash, RowsContentHash                          string
+	ChannelName, PipeName, PipeRevision, InputContinuation, ExpectedPreviousOffset, RequestedOffset string
+	ResponseContinuation, CommittedOffset, AcquisitionID, ResponseKind, Evidence                    string
+	RowCount, Attempt                                                                               int
+	ChannelRevision, Generation, LeaseEpoch, PhaseVersion                                           int64
+	Phase                                                                                           string
 }
 
 func processRequestFrom(value managedStreamRequest) processRequest {
@@ -29,7 +29,7 @@ func processRequestFrom(value managedStreamRequest) processRequest {
 		LogicalBatchID: value.logicalBatchID, PositionID: value.positionID, ContentHash: value.contentHash,
 		ManifestHash: value.manifestHash, RowsContentHash: value.rowsContentHash, RowCount: value.rowCount,
 		ChannelName: value.channelName, PipeName: value.pipeName, ChannelRevision: value.channelRevision,
-		PipeRevision: value.pipeRevision, InputContinuation: value.inputContinuation, RequestedOffset: value.requestedOffset,
+		PipeRevision: value.pipeRevision, InputContinuation: value.inputContinuation, ExpectedPreviousOffset: value.expectedPreviousOffset, RequestedOffset: value.requestedOffset,
 		ResponseContinuation: value.responseContinuation, CommittedOffset: value.committedOffset,
 		Generation: value.generation, AcquisitionID: value.acquisitionID, LeaseEpoch: value.leaseEpoch,
 		Attempt: value.attempt, Phase: string(value.phase), PhaseVersion: value.phaseVersion,
@@ -44,7 +44,7 @@ func (value processRequest) request() managedStreamRequest {
 		logicalBatchID: value.LogicalBatchID, positionID: value.PositionID, contentHash: value.ContentHash,
 		manifestHash: value.ManifestHash, rowsContentHash: value.RowsContentHash, rowCount: value.RowCount,
 		channelName: value.ChannelName, pipeName: value.PipeName, channelRevision: value.ChannelRevision,
-		pipeRevision: value.PipeRevision, inputContinuation: value.InputContinuation, requestedOffset: value.RequestedOffset,
+		pipeRevision: value.PipeRevision, inputContinuation: value.InputContinuation, expectedPreviousOffset: value.ExpectedPreviousOffset, requestedOffset: value.RequestedOffset,
 		responseContinuation: value.ResponseContinuation, committedOffset: value.CommittedOffset,
 		generation: value.Generation, acquisitionID: value.AcquisitionID, leaseEpoch: value.LeaseEpoch,
 		attempt: value.Attempt, phase: streamRequestPhase(value.Phase), phaseVersion: value.PhaseVersion,
@@ -254,7 +254,7 @@ func (p *processStreamProtocol) RequestStatus(_ context.Context, _ streamConfig,
 	if state.AppendCalls == 0 {
 		disposition = streamRequestStatusProvenAbsent
 	}
-	evidence := streamRequestStatusEvidence{disposition: disposition, requestID: request.requestID, channelName: request.channelName, pipeName: request.pipeName, channelRevision: request.channelRevision, pipeRevision: request.pipeRevision, inputContinuation: request.inputContinuation, requestedOffset: request.requestedOffset, manifestHash: request.manifestHash, rowsContentHash: request.rowsContentHash, rowCount: request.rowCount, detail: "durable process store"}
+	evidence := streamRequestStatusEvidence{disposition: disposition, requestID: request.requestID, channelName: request.channelName, pipeName: request.pipeName, channelRevision: request.channelRevision, pipeRevision: request.pipeRevision, inputContinuation: request.inputContinuation, expectedPreviousOffset: request.expectedPreviousOffset, requestedOffset: request.requestedOffset, manifestHash: request.manifestHash, rowsContentHash: request.rowsContentHash, rowCount: request.rowCount, detail: "durable process store"}
 	if disposition == streamRequestStatusCommitted {
 		evidence.responseContinuation = state.Continuation
 		evidence.committedOffset = state.CommittedOffset

@@ -429,7 +429,7 @@ test-snowflake-streaming-commercial-unpromoted:
 # Credential-free OS-process request-journal crash evidence. The helper fsyncs
 # request state, is killed with SIGKILL, and the replacement adopts without append.
 test-snowpipe-streaming-process-failure:
-    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./connectors/destinations/snowflake -run '^TestStreamRequestProcessRestartEvidence$'
+    GOMODCACHE="{{ gomodcache }}" GOCACHE="{{ gocache }}" {{ go }} test -count=1 ./connectors/destinations/snowflake -run '^TestStreamRequestProcessRestartUsesDurableStore$'
 
 # Deterministic fuzz smoke for the constrained Snowflake SQL planner. It runs
 # every managed fuzz target's seed corpus (no -fuzz, so no randomness and no

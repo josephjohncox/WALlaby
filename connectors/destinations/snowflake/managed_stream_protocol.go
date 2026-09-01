@@ -45,17 +45,18 @@ type streamAppendRow struct {
 
 // streamAppendRequest is one bounded append call against an open channel.
 type streamAppendRequest struct {
-	cfg               streamConfig
-	requestID         string
-	channelName       string
-	channelRevision   int64
-	pipeRevision      string
-	continuationToken string
-	offsetToken       string
-	manifestHash      string
-	rowsContentHash   string
-	rowCount          int
-	rows              []streamAppendRow
+	cfg                    streamConfig
+	requestID              string
+	channelName            string
+	channelRevision        int64
+	pipeRevision           string
+	continuationToken      string
+	expectedPreviousOffset string
+	offsetToken            string
+	manifestHash           string
+	rowsContentHash        string
+	rowCount               int
+	rows                   []streamAppendRow
 }
 
 // streamRowRejection is one server-rejected row.

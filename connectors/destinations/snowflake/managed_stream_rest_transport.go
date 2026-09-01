@@ -3,8 +3,7 @@ package snowflake
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,28 +53,71 @@ func newStreamRESTTransport(controlBase string, client *http.Client, tokens stre
 		return nil, errors.New("snowpipe Streaming REST transport requires an HTTP client and token provider")
 	}
 	base, err := url.Parse(strings.TrimSpace(controlBase))
-	if err != nil || base.Host == "" || base.Path != "" && base.Path != "/" || base.RawQuery != "" || base.Fragment != "" {
+	if err != nil || base.Host == "" || base.Opaque != "" || base.Path != "" && base.Path != "/" || base.RawQuery != "" || base.Fragment != "" {
 		return nil, errors.New("snowpipe Streaming control endpoint is malformed")
 	}
 	if err := validateStreamRESTEndpoint(base); err != nil {
 		return nil, err
 	}
 	copyClient := *client
+	if !isStreamRESTLoopback(base.Hostname()) {
+		transport := client.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
+		}
+		httpTransport, ok := transport.(*http.Transport)
+		if !ok {
+			return nil, errors.New("snowpipe Streaming production client requires a reviewable HTTP transport")
+		}
+		if httpTransport.TLSClientConfig != nil && httpTransport.TLSClientConfig.InsecureSkipVerify {
+			return nil, errors.New("snowpipe Streaming production client rejects TLS verification bypass")
+		}
+		clonedTransport := httpTransport.Clone()
+		clonedTransport.Proxy = nil
+		if clonedTransport.TLSClientConfig == nil {
+			clonedTransport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		} else {
+			clonedTransport.TLSClientConfig = clonedTransport.TLSClientConfig.Clone()
+			if clonedTransport.TLSClientConfig.MinVersion < tls.VersionTLS12 {
+				clonedTransport.TLSClientConfig.MinVersion = tls.VersionTLS12
+			}
+		}
+		copyClient.Transport = clonedTransport
+	}
 	copyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &streamRESTTransport{client: &copyClient, controlBase: base, tokens: tokens, maxResponse: streamRESTMaxResponseBytes}, nil
 }
 
 func validateStreamRESTEndpoint(endpoint *url.URL) error {
-	if endpoint == nil || endpoint.Hostname() == "" {
+	if endpoint == nil || endpoint.Hostname() == "" || endpoint.User != nil {
 		return errors.New("snowpipe Streaming endpoint is missing")
 	}
 	if endpoint.Scheme == "https" {
+		if !isStreamRESTLoopback(endpoint.Hostname()) {
+			if endpoint.Port() != "" && endpoint.Port() != "443" {
+				return errors.New("snowpipe Streaming production endpoint requires HTTPS port 443")
+			}
+			if !isAllowedStreamRESTSnowflakeHost(endpoint.Hostname()) {
+				return errors.New("snowpipe Streaming endpoint is outside the Snowflake origin allowlist")
+			}
+		}
 		return nil
 	}
 	if endpoint.Scheme == "http" && isStreamRESTLoopback(endpoint.Hostname()) {
 		return nil
 	}
 	return errors.New("snowpipe Streaming REST requires HTTPS; HTTP is loopback-test-only")
+}
+
+func isAllowedStreamRESTSnowflakeHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	return strings.HasSuffix(host, ".snowflakecomputing.com") && host != "snowflakecomputing.com"
+}
+
+func streamRESTAccountLabel(host string) string {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	label, _, _ := strings.Cut(host, ".")
+	return strings.ReplaceAll(label, "_", "-")
 }
 
 func isStreamRESTLoopback(host string) bool {
@@ -86,7 +128,22 @@ func isStreamRESTLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+func (t *streamRESTTransport) validateConfigAccount(cfg streamConfig) error {
+	if isStreamRESTLoopback(t.controlBase.Hostname()) {
+		return nil
+	}
+	configured := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(cfg.account)), "_", "-")
+	controlAccount := streamRESTAccountLabel(t.controlBase.Hostname())
+	if configured == "" || controlAccount != configured && !strings.HasSuffix(controlAccount, "-"+configured) {
+		return errors.New("snowpipe Streaming control origin does not match the admitted Snowflake account")
+	}
+	return nil
+}
+
 func (t *streamRESTTransport) OpenChannel(ctx context.Context, cfg streamConfig, channelName string) (streamChannelStatus, error) {
+	if err := t.validateConfigAccount(cfg); err != nil {
+		return streamChannelStatus{}, err
+	}
 	if strings.TrimSpace(channelName) == "" {
 		return streamChannelStatus{}, errors.New("snowpipe Streaming channel name is required")
 	}
@@ -103,6 +160,10 @@ func (t *streamRESTTransport) OpenChannel(ctx context.Context, cfg streamConfig,
 	if err != nil {
 		return streamChannelStatus{}, err
 	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		t.invalidateSession()
+		return streamChannelStatus{}, errStreamAuthExpired
+	}
 	if status == http.StatusConflict {
 		return streamChannelStatus{}, errStreamChannelInvalidated
 	}
@@ -116,16 +177,19 @@ func (t *streamRESTTransport) OpenChannel(ctx context.Context, cfg streamConfig,
 }
 
 func (t *streamRESTTransport) AppendRows(ctx context.Context, req streamAppendRequest) (streamAppendResult, error) {
-	if req.requestID == "" || req.continuationToken == "" || req.offsetToken == "" || req.rowCount != len(req.rows) || req.rowCount == 0 {
-		return streamAppendResult{}, errors.New("snowpipe Streaming append request is incomplete")
+	if err := t.validateConfigAccount(req.cfg); err != nil {
+		return streamAppendResult{}, newStreamAppendFailure(streamAppendFailurePreSend, err)
+	}
+	if req.requestID == "" || req.continuationToken == "" || req.offsetToken == "" || req.expectedPreviousOffset == req.offsetToken || req.rowCount != len(req.rows) || req.rowCount == 0 {
+		return streamAppendResult{}, newStreamAppendFailure(streamAppendFailurePreSend, errors.New("snowpipe Streaming append request is incomplete"))
 	}
 	payload, err := streamRESTNDJSON(req.rows)
 	if err != nil {
-		return streamAppendResult{}, err
+		return streamAppendResult{}, newStreamAppendFailure(streamAppendFailurePreSend, err)
 	}
 	ingest, token, err := t.session(ctx, false)
 	if err != nil {
-		return streamAppendResult{}, err
+		return streamAppendResult{}, newStreamAppendFailure(streamAppendFailurePreSend, err)
 	}
 	query := url.Values{
 		"continuationToken": {req.continuationToken},
@@ -137,35 +201,38 @@ func (t *streamRESTTransport) AppendRows(ctx context.Context, req streamAppendRe
 	var response streamRESTAppendResponse
 	status, requestErr := t.doJSON(ctx, http.MethodPost, ingest, path, query, token, "", "application/x-ndjson", payload, &response)
 	if requestErr != nil {
-		return streamAppendResult{disposition: streamAppendUnknown, requestID: req.requestID}, fmt.Errorf("%w: append rows: %w", connector.ErrDeliveryIndeterminate, requestErr)
+		return streamAppendResult{disposition: streamAppendUnknown, requestID: req.requestID}, newStreamAppendFailure(streamAppendFailureAmbiguous, fmt.Errorf("%w: append rows: %w", connector.ErrDeliveryIndeterminate, requestErr))
 	}
 	switch {
 	case status >= 200 && status < 300:
 		if strings.TrimSpace(response.NextContinuationToken) == "" || response.NextContinuationToken == req.continuationToken {
-			return streamAppendResult{}, fmt.Errorf("%w: append response continuation token did not advance", connector.ErrDeliveryConflict)
+			return streamAppendResult{}, newStreamAppendFailure(streamAppendFailureAmbiguous, fmt.Errorf("%w: append response continuation token did not advance", connector.ErrDeliveryConflict))
 		}
 		return streamAppendResult{disposition: streamAppendAccepted, requestID: req.requestID, continuationToken: response.NextContinuationToken, evidence: "snowflake-rest-accepted"}, nil
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		t.invalidateSession()
-		return streamAppendResult{}, errStreamAuthExpired
+		return streamAppendResult{}, newStreamAppendFailure(streamAppendFailureDefinitelyNotAccepted, errStreamAuthExpired)
 	case status == http.StatusConflict:
-		return streamAppendResult{}, errStreamChannelInvalidated
+		return streamAppendResult{}, newStreamAppendFailure(streamAppendFailureDefinitelyNotAccepted, errStreamChannelInvalidated)
 	case status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500:
 		if status == http.StatusTooManyRequests {
-			return streamAppendResult{}, errStreamThrottled
+			return streamAppendResult{}, newStreamAppendFailure(streamAppendFailureDefinitelyNotAccepted, errStreamThrottled)
 		}
-		return streamAppendResult{disposition: streamAppendUnknown, requestID: req.requestID}, fmt.Errorf("%w: Snowpipe Streaming append returned HTTP %d", connector.ErrDeliveryIndeterminate, status)
+		return streamAppendResult{disposition: streamAppendUnknown, requestID: req.requestID}, newStreamAppendFailure(streamAppendFailureAmbiguous, fmt.Errorf("%w: Snowpipe Streaming append returned HTTP %d", connector.ErrDeliveryIndeterminate, status))
 	case status >= 400 && status < 500:
 		// The public API does not provide a per-request non-acceptance lookup.
 		// A client error can arrive after the service consumed request bytes, so
 		// keep the request unresolved unless a future authoritative API proves it absent.
-		return streamAppendResult{disposition: streamAppendUnknown, requestID: req.requestID}, fmt.Errorf("%w: Snowpipe Streaming append returned HTTP %d", connector.ErrDeliveryIndeterminate, status)
+		return streamAppendResult{disposition: streamAppendUnknown, requestID: req.requestID}, newStreamAppendFailure(streamAppendFailureAmbiguous, fmt.Errorf("%w: Snowpipe Streaming append returned HTTP %d", connector.ErrDeliveryIndeterminate, status))
 	default:
-		return streamAppendResult{}, fmt.Errorf("%w: Snowpipe Streaming append returned HTTP %d", connector.ErrDeliveryIndeterminate, status)
+		return streamAppendResult{}, newStreamAppendFailure(streamAppendFailureAmbiguous, fmt.Errorf("%w: Snowpipe Streaming append returned HTTP %d", connector.ErrDeliveryIndeterminate, status))
 	}
 }
 
 func (t *streamRESTTransport) ChannelStatus(ctx context.Context, cfg streamConfig, channelName string) (streamChannelStatus, error) {
+	if err := t.validateConfigAccount(cfg); err != nil {
+		return streamChannelStatus{}, err
+	}
 	ingest, token, err := t.session(ctx, false)
 	if err != nil {
 		return streamChannelStatus{}, err
@@ -209,11 +276,11 @@ func (t *streamRESTTransport) RequestStatus(ctx context.Context, cfg streamConfi
 	evidence := streamRequestStatusEvidence{
 		disposition: streamRequestUnknown, requestID: request.requestID, channelName: request.channelName,
 		pipeName: request.pipeName, channelRevision: request.channelRevision, pipeRevision: request.pipeRevision,
-		inputContinuation: request.inputContinuation, requestedOffset: request.requestedOffset,
+		inputContinuation: request.inputContinuation, expectedPreviousOffset: request.expectedPreviousOffset, requestedOffset: request.requestedOffset,
 		manifestHash: request.manifestHash, rowsContentHash: request.rowsContentHash, rowCount: request.rowCount,
 		detail: "Snowflake channel status has not committed the exact offset",
 	}
-	if !status.valid || status.pipeRevision != request.pipeRevision {
+	if !status.valid || status.pipeRevision != request.pipeRevision || status.channelRevision > 0 && status.channelRevision != request.channelRevision {
 		evidence.disposition = streamRequestStatusDivergent
 		return evidence, nil
 	}
@@ -224,7 +291,7 @@ func (t *streamRESTTransport) RequestStatus(ctx context.Context, cfg streamConfi
 			if openErr != nil {
 				return streamRequestStatusEvidence{}, fmt.Errorf("%w: reopen committed Snowpipe Streaming channel: %w", connector.ErrDeliveryIndeterminate, openErr)
 			}
-			if !reopened.valid || reopened.committedOffsetToken != request.requestedOffset || reopened.pipeRevision != request.pipeRevision || reopened.continuationToken == "" {
+			if !reopened.valid || reopened.channelRevision != request.channelRevision || reopened.committedOffsetToken != request.requestedOffset || reopened.pipeRevision != request.pipeRevision || reopened.continuationToken == "" {
 				return streamRequestStatusEvidence{}, fmt.Errorf("%w: reopened Snowpipe Streaming channel evidence diverged", connector.ErrDeliveryConflict)
 			}
 			responseContinuation = reopened.continuationToken
@@ -233,15 +300,21 @@ func (t *streamRESTTransport) RequestStatus(ctx context.Context, cfg streamConfi
 		evidence.committedOffset = status.committedOffsetToken
 		evidence.responseContinuation = responseContinuation
 		evidence.detail = "Snowflake channel committed the exact requested offset"
-	} else if status.committedOffsetToken != "" {
-		evidence.disposition = streamRequestStatusDivergent
+	} else {
 		evidence.committedOffset = status.committedOffsetToken
-		evidence.detail = "Snowflake channel committed offset differs from the request"
+		if status.committedOffsetToken == request.expectedPreviousOffset {
+			evidence.detail = "Snowflake channel remains at the exact prior committed offset"
+		} else if status.committedOffsetToken != "" {
+			evidence.detail = "Snowflake channel reports an opaque offset that cannot be ordered against this request"
+		}
 	}
 	return evidence, nil
 }
 
 func (t *streamRESTTransport) DropChannel(ctx context.Context, cfg streamConfig, channelName string) error {
+	if err := t.validateConfigAccount(cfg); err != nil {
+		return err
+	}
 	ingest, token, err := t.session(ctx, false)
 	if err != nil {
 		return err
@@ -251,6 +324,10 @@ func (t *streamRESTTransport) DropChannel(ctx context.Context, cfg streamConfig,
 	status, err := t.doJSON(ctx, http.MethodDelete, ingest, streamRESTChannelPath(cfg, channelName), query, token, "", "application/json", body, nil)
 	if err != nil {
 		return err
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		t.invalidateSession()
+		return errStreamAuthExpired
 	}
 	if status == http.StatusConflict {
 		return errStreamChannelInvalidated
@@ -304,11 +381,17 @@ func (t *streamRESTTransport) invalidateSession() {
 
 func (t *streamRESTTransport) validatedIngestURL(raw string) (*url.URL, error) {
 	raw = strings.TrimSpace(strings.Trim(raw, `"`))
-	if strings.Contains(raw, "://") {
-		return nil, errors.New("snowpipe Streaming ingest hostname must not contain a scheme")
+	if raw == "" || strings.Contains(raw, "://") || strings.ContainsAny(raw, "/?#@") {
+		return nil, errors.New("snowpipe Streaming ingest hostname is malformed")
 	}
+	// Snowflake documents underscore-to-hyphen normalization for the returned
+	// ingest hostname. Apply it only to that discovered hostname.
 	host := strings.ReplaceAll(raw, "_", "-")
-	ingest := &url.URL{Scheme: t.controlBase.Scheme, Host: host}
+	parsed, err := url.Parse("//" + host)
+	if err != nil || parsed.User != nil || parsed.Hostname() == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, errors.New("snowpipe Streaming ingest hostname is malformed")
+	}
+	ingest := &url.URL{Scheme: t.controlBase.Scheme, Host: parsed.Host}
 	if err := validateStreamRESTEndpoint(ingest); err != nil {
 		return nil, err
 	}
@@ -318,8 +401,10 @@ func (t *streamRESTTransport) validatedIngestURL(raw string) (*url.URL, error) {
 		if ingestHost != controlHost || ingest.Port() != t.controlBase.Port() {
 			return nil, errors.New("snowpipe Streaming loopback ingest host drifted from the control origin")
 		}
-	} else if !strings.HasSuffix(controlHost, ".snowflakecomputing.com") || !strings.HasSuffix(ingestHost, ".snowflakecomputing.com") {
-		return nil, errors.New("snowpipe Streaming ingest host is outside the Snowflake origin allowlist")
+		return ingest, nil
+	}
+	if streamRESTAccountLabel(ingestHost) != streamRESTAccountLabel(controlHost) {
+		return nil, errors.New("snowpipe Streaming ingest host belongs to a different Snowflake account")
 	}
 	return ingest, nil
 }
@@ -386,20 +471,17 @@ func streamRESTUUID(identity string) string {
 	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(identity)).String()
 }
 
-func streamRESTRevision(token string) int64 {
-	digest := sha256.Sum256([]byte(token))
-	// #nosec G115 -- masking the sign bit proves the uint64 value is <= MaxInt64.
-	value := int64(binary.BigEndian.Uint64(digest[:8]) & ((1 << 63) - 1))
-	if value == 0 {
-		return 1
+func streamRESTRevision(createdOnMS int64) int64 {
+	if createdOnMS <= 0 {
+		return 0
 	}
-	return value
+	return createdOnMS
 }
 
 func streamRESTStatus(cfg streamConfig, continuation string, value streamRESTChannelStatus) streamChannelStatus {
 	return streamChannelStatus{
 		valid: strings.EqualFold(value.ChannelStatusCode, "ACTIVE"), channelName: value.ChannelName,
-		channelRevision: streamRESTRevision(fmt.Sprintf("%s\x1f%d", continuation, value.CreatedOnMS)), pipeRevision: cfg.pipeCreatedOn,
+		channelRevision: streamRESTRevision(value.CreatedOnMS), pipeRevision: cfg.pipeCreatedOn,
 		continuationToken: continuation, committedOffsetToken: value.LastCommittedOffsetToken,
 	}
 }
@@ -469,7 +551,7 @@ type streamRESTChannelStatus struct {
 }
 
 func (r streamRESTOpenResponse) validate(cfg streamConfig, channel string) error {
-	if strings.TrimSpace(r.NextContinuationToken) == "" {
+	if strings.TrimSpace(r.NextContinuationToken) == "" || r.ChannelStatus.CreatedOnMS <= 0 {
 		return errors.New("snowpipe Streaming open response omitted continuation token")
 	}
 	return r.ChannelStatus.validate(cfg, channel)

@@ -63,7 +63,7 @@ func managedSnowflakeStreamingAdmissionDestinations(t *testing.T) []stream.Desti
 			"managed_schema_contract":            string(encoded),
 			"managed_schema_contract_hash":       hash,
 			"managed_max_transaction_rows":       "1000",
-			"managed_max_transaction_bytes":      "8388608",
+			"managed_max_transaction_bytes":      "4194304",
 			"managed_max_transaction_fragments":  "64",
 			"managed_max_row_bytes":              "1048576",
 			"managed_max_open_conns":             "4",
@@ -84,7 +84,7 @@ func managedStreamingAdmissionFlowConfigured(t *testing.T) (flow.Flow, StreamRun
 	setRunnerSourceOptions(&f, map[string]string{
 		"managed": "", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
 		"create_slot": "true", "slot": "managed", "streaming_transactions": "true", "toast_fetch": "off",
-		"max_transaction_records": "1000", "max_transaction_bytes": "8388608", "max_transaction_fragments": "64",
+		"max_transaction_records": "1000", "max_transaction_bytes": "4194304", "max_transaction_fragments": "64",
 	})
 	persistedDestination := cloneSpec(managedSnowflakeStreamingAdmissionDestinations(t)[0].Spec)
 	for _, key := range []string{"flow_id", "managed_schema_contract", "managed_schema_contract_hash", "managed_source_schema", "managed_source_table"} {

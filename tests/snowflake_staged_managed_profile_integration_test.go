@@ -56,8 +56,9 @@ func TestSnowflakeStagedManagedProfileLiveAdmission(t *testing.T) {
 	bad.Options = cloneTestOptions(fixture.spec.Options)
 	bad.Options["managed_snowflake_version"] = fixture.version + "-unproven"
 	candidate := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
-	if err := candidate.Open(context.Background(), bad); err == nil {
-		_ = candidate.Close(context.Background())
+	err := candidate.Open(context.Background(), bad)
+	closeSnowflakeStagedDestination(t, "invalid version candidate", candidate)
+	if err == nil {
 		t.Fatal("unproven staged Snowflake version admission must fail closed")
 	}
 }
@@ -189,11 +190,13 @@ func TestSnowflakeStagedManagedProfileRoleIsolation(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cleanupCancel()
-		_, _ = fixture.provisionDB.ExecContext(cleanupCtx, revoke)
+		if _, err := fixture.provisionDB.ExecContext(cleanupCtx, revoke); err != nil {
+			t.Errorf("revoke staged alternate writer: %v", err)
+		}
 	})
 	candidate := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	err := candidate.Open(ctx, fixture.spec)
-	_ = candidate.Close(context.Background())
+	closeSnowflakeStagedDestination(t, "alternate-writer candidate", candidate)
 	if err == nil || !strings.Contains(err.Error(), "additional privileged role") {
 		t.Fatalf("alternate-writer admission error=%v, want additional privileged role rejection", err)
 	}
@@ -213,7 +216,9 @@ func TestSnowflakeStagedManagedProfilePipeIsolation(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cleanupCancel()
-		_, _ = fixture.provisionDB.ExecContext(cleanupCtx, "DROP PIPE IF EXISTS "+pipe)
+		if _, err := fixture.provisionDB.ExecContext(cleanupCtx, "DROP PIPE IF EXISTS "+pipe); err != nil {
+			t.Errorf("drop staged isolation pipe: %v", err)
+		}
 	})
 	// The non-auto-ingest profile does not observe a pipe; a stray pipe is not
 	// part of the admitted catalog, so a fresh open still validates the objects.
@@ -221,7 +226,7 @@ func TestSnowflakeStagedManagedProfilePipeIsolation(t *testing.T) {
 	if err := candidate.Open(ctx, fixture.spec); err != nil {
 		t.Logf("stray pipe present; open outcome=%v", err)
 	}
-	_ = candidate.Close(context.Background())
+	closeSnowflakeStagedDestination(t, "pipe-isolation candidate", candidate)
 }
 
 func TestSnowflakeStagedAutoIngestPipeDDLIsExact(t *testing.T) {
@@ -238,6 +243,10 @@ func TestSnowflakeStagedAutoIngestPipeDDLIsExact(t *testing.T) {
 	}
 	if strings.Contains(statement, "FORMAT_NAME") {
 		t.Fatalf("auto-ingest pipe DDL references mutable format name: %s", statement)
+	}
+	authorityDDL := snowflakeStagedAuthorityDDL(`"DB"."S"."AUTH"`, "SUFFIX", "owner-comment")
+	if !strings.Contains(authorityDDL, `"PROVISION_ATTEMPT_ID" VARCHAR`) {
+		t.Fatalf("commercial authority fixture omitted provision attempt identity: %s", authorityDDL)
 	}
 }
 
@@ -274,11 +283,23 @@ func TestSnowflakeStagedManagedProfileAutoIngestCompletion(t *testing.T) {
 		t.Fatalf("auto-ingest landing/manifests/receipts=%d/%d/%d, want 0/1/1", landingRows, manifests, receipts)
 	}
 	var refreshQuery string
-	if err := fixture.db.QueryRowContext(ctx, `SELECT QUERY_TEXT FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(RESULT_LIMIT=>100)) WHERE QUERY_TEXT ILIKE 'ALTER PIPE % REFRESH PREFIX = %' ORDER BY START_TIME DESC LIMIT 1`).Scan(&refreshQuery); err != nil {
-		t.Fatalf("read auto-ingest refresh query: %v", err)
+	refreshPattern := "ALTER PIPE " + fixture.pipeQualified + " REFRESH PREFIX = %"
+	if err := fixture.db.QueryRowContext(ctx, `SELECT QUERY_TEXT FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(RESULT_LIMIT=>100)) WHERE QUERY_TEXT ILIKE ? ORDER BY START_TIME DESC LIMIT 1`, refreshPattern).Scan(&refreshQuery); err != nil {
+		t.Fatalf("read exact auto-ingest pipe refresh query: %v", err)
 	}
-	if strings.Contains(refreshQuery, "PREFIX = 'wallaby_staged_append_v1/") || !strings.Contains(refreshQuery, "REFRESH PREFIX = '") {
-		t.Fatalf("pipe refresh did not use a batch-relative prefix: %s", refreshQuery)
+	marker := "REFRESH PREFIX = '"
+	markerIndex := strings.Index(strings.ToUpper(refreshQuery), marker)
+	if markerIndex < 0 {
+		t.Fatalf("pipe refresh omitted its prefix: %s", refreshQuery)
+	}
+	prefixStart := markerIndex + len(marker)
+	prefixEnd := strings.Index(refreshQuery[prefixStart:], "'")
+	if prefixEnd < 0 {
+		t.Fatalf("pipe refresh prefix was not terminated: %s", refreshQuery)
+	}
+	prefix := refreshQuery[prefixStart : prefixStart+prefixEnd]
+	if prefix == "" || strings.HasPrefix(prefix, "/") || strings.HasPrefix(strings.ToLower(prefix), "wallaby_staged_append_v1/") || strings.Contains(prefix, "..") || !strings.HasSuffix(prefix, "/") {
+		t.Fatalf("pipe refresh prefix is not a nonempty root-relative directory: %q query=%s", prefix, refreshQuery)
 	}
 }
 
@@ -381,7 +402,7 @@ func TestSnowflakeStagedManagedProfileSecretRedaction(t *testing.T) {
 		"dsn": leaky, "flow_id": "staged", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStagedAppendV1,
 		"managed_source_schema": "public", "managed_source_table": "widgets",
 	}})
-	_ = destination.Close(context.Background())
+	closeSnowflakeStagedDestination(t, "secret-redaction candidate", destination)
 	if err == nil || strings.Contains(err.Error(), "hunter2") {
 		t.Fatalf("staged admission leaked a DSN secret or accepted it: %v", err)
 	}
@@ -420,6 +441,22 @@ func TestSnowflakeStagedManagedProfileTelemetry(t *testing.T) {
 		if operation == "" {
 			t.Fatal("staged telemetry operation label must be non-empty")
 		}
+	}
+}
+
+func closeSnowflakeStagedDestination(t testing.TB, name string, destination *snowflake.Destination) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := destination.Close(ctx); err != nil {
+		t.Errorf("close staged Snowflake %s: %v", name, err)
+	}
+}
+
+func closeSnowflakeStagedDB(t testing.TB, name string, db *sql.DB) {
+	t.Helper()
+	if err := db.Close(); err != nil {
+		t.Errorf("close staged Snowflake %s database: %v", name, err)
 	}
 }
 
@@ -478,27 +515,27 @@ func newSnowflakeStagedManagedFixtureMode(t *testing.T, autoIngest bool) *snowfl
 	}
 	provisionDB, err := sql.Open("snowflake", provisionDSN)
 	if err != nil {
-		_ = db.Close()
+		closeSnowflakeStagedDB(t, "execution after provisioning open failure", db)
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), snowflakeTestTimeout())
 	defer cancel()
 	for _, handle := range []*sql.DB{db, provisionDB} {
 		if err := handle.PingContext(ctx); err != nil {
-			_ = provisionDB.Close()
-			_ = db.Close()
+			closeSnowflakeStagedDB(t, "provisioning after ping failure", provisionDB)
+			closeSnowflakeStagedDB(t, "execution after ping failure", db)
 			t.Fatal(err)
 		}
 	}
 	var account, database, schemaName, role, warehouse, version string
 	if err := db.QueryRowContext(ctx, `SELECT CURRENT_ACCOUNT_NAME(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_ROLE(), CURRENT_WAREHOUSE(), CURRENT_VERSION()`).Scan(&account, &database, &schemaName, &role, &warehouse, &version); err != nil {
-		_ = provisionDB.Close()
-		_ = db.Close()
+		closeSnowflakeStagedDB(t, "provisioning after identity failure", provisionDB)
+		closeSnowflakeStagedDB(t, "execution after identity failure", db)
 		t.Fatal(err)
 	}
 	if version != expectedVersion {
-		_ = provisionDB.Close()
-		_ = db.Close()
+		closeSnowflakeStagedDB(t, "provisioning after version mismatch", provisionDB)
+		closeSnowflakeStagedDB(t, "execution after version mismatch", db)
 		t.Fatalf("live CURRENT_VERSION()=%q, exact reviewed pin=%q", version, expectedVersion)
 	}
 
@@ -533,19 +570,29 @@ func newSnowflakeStagedManagedFixtureMode(t *testing.T, autoIngest bool) *snowfl
 	pipeQualified := q(database) + "." + q(schemaName) + "." + q(pipe)
 	destination := snowflake.NewDestination(snowflakeDeploymentPolicyForTest(t))
 	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cleanupCancel()
-		_ = destination.Close(cleanupCtx)
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := destination.Close(closeCtx); err != nil {
+			t.Errorf("close staged Snowflake destination: %v", err)
+		}
+		closeCancel()
 		for _, drop := range []string{
 			"DROP PIPE IF EXISTS " + pipeQualified,
 			"DROP TABLE IF EXISTS " + targetManifestQualified, "DROP TABLE IF EXISTS " + authorityQualified,
 			"DROP TABLE IF EXISTS " + landingQualified, "DROP TABLE IF EXISTS " + receiptQualified, "DROP TABLE IF EXISTS " + targetQualified,
 			"DROP STAGE IF EXISTS " + stageQualified, "DROP FILE FORMAT IF EXISTS " + fileFormatQualified,
 		} {
-			_, _ = provisionDB.ExecContext(cleanupCtx, drop)
+			dropCtx, dropCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if _, err := provisionDB.ExecContext(dropCtx, drop); err != nil {
+				t.Errorf("cleanup staged Snowflake object with %q: %v", drop, err)
+			}
+			dropCancel()
 		}
-		_ = provisionDB.Close()
-		_ = db.Close()
+		if err := provisionDB.Close(); err != nil {
+			t.Errorf("close staged Snowflake provisioning database: %v", err)
+		}
+		if err := db.Close(); err != nil {
+			t.Errorf("close staged Snowflake execution database: %v", err)
+		}
 	})
 	stageComment := snowflakeStagedOwnershipComment("stage", revision, schemaHash, flowID)
 	fileFormatComment := snowflakeStagedOwnershipComment("file_format", revision, schemaHash, flowID)
@@ -694,7 +741,7 @@ func snowflakeStagedAuthorityDDL(qualified, suffix, comment string) string {
 	return fmt.Sprintf(`CREATE HYBRID TABLE %s (
   "AUTHORITY_KIND" VARCHAR NOT NULL, "DESTINATION_REVISION_ID" VARCHAR NOT NULL, "AUTHORITY_ID" VARCHAR NOT NULL,
   "OWNER_ID" VARCHAR NOT NULL, "FLOW_INCARNATION_ID" VARCHAR, "GENERATION" NUMBER(38,0), "ACQUISITION_ID" VARCHAR,
-  "LEASE_EPOCH" NUMBER(38,0), "PROVISION_EPOCH" NUMBER(38,0) NOT NULL, "CATALOG_FINGERPRINT" VARCHAR NOT NULL,
+  "LEASE_EPOCH" NUMBER(38,0), "PROVISION_EPOCH" NUMBER(38,0) NOT NULL, "PROVISION_ATTEMPT_ID" VARCHAR, "CATALOG_FINGERPRINT" VARCHAR NOT NULL,
   "LOGICAL_BATCH_ID" VARCHAR, "MANIFEST_HASH" VARCHAR, "CONTENT_HASH" VARCHAR, "FILE_CONTENT_HASH" VARCHAR,
   "PLAN_HASH" VARCHAR, "EXPECTED_ROW_COUNT" NUMBER(38,0), "STATE" VARCHAR NOT NULL,
   "EXPIRES_AT" TIMESTAMP_LTZ(9) NOT NULL, "UPDATED_AT" TIMESTAMP_LTZ(9) NOT NULL,

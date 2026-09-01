@@ -45,7 +45,9 @@ The unlinked adapter implements Snowflake's documented high-performance REST seq
 5. Read the committed offset through the bulk channel-status endpoint.
 6. Drop the channel only with `fail_on_uncommitted_rows=true`.
 
-The adapter accepts at most 4 MiB per append and 1 MiB per response. It rejects redirects, host drift, malformed JSON, unknown response fields, insecure non-loopback HTTP, and non-advancing continuation tokens. It classifies authentication, throttling, invalidation, service failure, cancellation, and ambiguous disconnects without logging credentials.
+The adapter accepts at most 4 MiB of exact NDJSON wire bytes per append and 1 MiB per response. The wire count includes each row's newline terminator. It rejects redirects, cross-account host drift, user information, non-443 production endpoints, unsafe TLS clients, malformed JSON, unknown response fields, insecure non-loopback HTTP, and non-advancing continuation tokens. It never logs JWTs or scoped tokens.
+
+The durable request identity binds the exact prior committed offset, requested offset, continuation token, channel creation timestamp, pipe revision, manifest, and row identities. Offset tokens are opaque. The exact prior token means no progress, the exact requested token means committed, and any other token remains unknown without matching request-journal evidence. Authentication, channel invalidation, throttling, and local validation failures can be marked definitely not accepted only from an exact response or pre-send boundary. A timeout, service error, disconnect, or malformed success response remains ambiguous.
 
 An append success proves service receipt only. It does not prove target commit. The request remains unresolved until the channel reports the exact committed offset and SQL observation proves every expected row identity once. The public API does not expose an authoritative per-request absence lookup, so the REST adapter never invents proven-absence evidence after an ambiguous request. The runtime keeps `streamingTransportLinked=false` until the commercial same-SHA matrix validates the complete sequence.
 
@@ -69,7 +71,7 @@ The profile admits only this configuration:
 - key-pair JWT authentication over verified HTTPS with OCSP fail-closed;
 - one configured `CURRENT_VERSION()` value, checked on every acquired session;
 - exact target and receipt-table creation identities;
-- at most 1,000 records, 128 fragments, and 8 MiB of logical content per PostgreSQL transaction; and
+- at most 1,000 records, 128 fragments, and 4 MiB of exact NDJSON wire bytes per PostgreSQL transaction; and
 - at most eight Snowflake sessions.
 
 The profile rejects standard Snowflake tables because their primary and unique constraints are not enforced. It also rejects generated columns, generic metadata tables, staging, append mode, disabled transactions, schema drift, DDL, type-mapping overrides, arbitrary start LSNs, and multiple sinks.
