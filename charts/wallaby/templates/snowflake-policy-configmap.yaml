@@ -1,0 +1,40 @@
+{{- if hasKey .Values.snowflake "streamingREST" -}}
+{{- fail "snowflake.streamingREST is removed; use snowflake.streamingRest" -}}
+{{- end -}}
+{{- if and .Values.snowflake.enabled (empty .Values.snowflake.account) -}}
+{{- fail "snowflake.account is required when snowflake.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.snowflake.enabled (empty .Values.snowflake.user) -}}
+{{- fail "snowflake.user is required when snowflake.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.snowflake.enabled (empty .Values.snowflake.host) -}}
+{{- fail "snowflake.host is required when snowflake.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.snowflake.enabled (empty .Values.snowflake.privateKeyFile) -}}
+{{- fail "snowflake.privateKeyFile is required when snowflake.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.snowflake.enabled (empty .Values.snowflake.privateKeySecretName) -}}
+{{- fail "snowflake.privateKeySecretName is required when snowflake.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.snowflake.enabled (empty .Values.snowflake.privateKeySecretKey) -}}
+{{- fail "snowflake.privateKeySecretKey is required when snowflake.enabled=true" -}}
+{{- end -}}
+{{- if empty .Values.snowflake.streamingRest.policyConfigMapKey -}}
+{{- fail "snowflake.streamingRest.policyConfigMapKey is required" -}}
+{{- end -}}
+{{- if and .Values.snowflake.streamingRest.enabled (not .Values.snowflake.enabled) -}}
+{{- fail "snowflake.streamingRest.enabled requires snowflake.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.snowflake.streamingRest.enabled (or (empty .Values.snowflake.privateKeySecretName) (empty .Values.snowflake.privateKeySecretKey)) -}}
+{{- fail "snowflake Streaming REST requires privateKeySecretName and privateKeySecretKey" -}}
+{{- end -}}
+{{- $policyName := default (printf "%s-snowflake-policy" (include "wallaby.fullname" .)) .Values.snowflake.streamingRest.policyConfigMapName -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $policyName | quote }}
+  labels:
+    app.kubernetes.io/name: {{ include "wallaby.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  {{ .Values.snowflake.streamingRest.policyConfigMapKey }}: {{ ternary "true" "false" .Values.snowflake.streamingRest.enabled | quote }}

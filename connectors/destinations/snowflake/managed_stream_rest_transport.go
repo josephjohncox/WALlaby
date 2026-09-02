@@ -337,7 +337,7 @@ func (t *streamRESTTransport) DropChannel(ctx context.Context, cfg streamConfig,
 	return nil
 }
 
-func (t *streamRESTTransport) session(ctx context.Context, force bool) (*url.URL, string, error) {
+func (t *streamRESTTransport) session(ctx context.Context, force bool) (*url.URL, string, error) { //nolint:unparam // forced refresh is exercised by auth-recovery tests and the experimental runtime.
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !force && t.ingestBase != nil && t.scopedToken != "" {

@@ -41,13 +41,22 @@ type PostgresConfig struct {
 // SnowflakeConfig is deployment-owned execution and key-file configuration.
 // It is never serialized into flow state.
 type SnowflakeConfig struct {
-	Enabled              bool   `json:"enabled" yaml:"enabled"`
-	Account              string `json:"account" yaml:"account"`
-	User                 string `json:"user" yaml:"user"`
-	Host                 string `json:"host" yaml:"host"`
-	PrivateKeyFile       string `json:"private_key_file" yaml:"private_key_file"`
-	PrivateKeySecretName string `json:"private_key_secret_name" yaml:"private_key_secret_name"`
-	PrivateKeySecretKey  string `json:"private_key_secret_key" yaml:"private_key_secret_key"`
+	Enabled              bool                         `json:"enabled" yaml:"enabled"`
+	StreamingREST        SnowflakeStreamingRESTConfig `json:"streaming_rest" yaml:"streaming_rest"`
+	Account              string                       `json:"account" yaml:"account"`
+	User                 string                       `json:"user" yaml:"user"`
+	Host                 string                       `json:"host" yaml:"host"`
+	PrivateKeyFile       string                       `json:"private_key_file" yaml:"private_key_file"`
+	PrivateKeySecretName string                       `json:"private_key_secret_name" yaml:"private_key_secret_name"`
+	PrivateKeySecretKey  string                       `json:"private_key_secret_key" yaml:"private_key_secret_key"`
+}
+
+// SnowflakeStreamingRESTConfig is a deployment-only experimental capability.
+// Flow definitions cannot enable it.
+type SnowflakeStreamingRESTConfig struct {
+	Enabled             bool   `json:"enabled" yaml:"enabled"`
+	PolicyConfigMapName string `json:"policy_config_map_name" yaml:"policy_config_map_name"`
+	PolicyConfigMapKey  string `json:"policy_config_map_key" yaml:"policy_config_map_key"`
 }
 
 // ValidateExecution ensures an enabled deployment has a reviewed external
@@ -55,6 +64,9 @@ type SnowflakeConfig struct {
 // it so a Kubernetes-supplied false value cannot be widened by stale files or
 // environment variables.
 func (c SnowflakeConfig) ValidateExecution() error {
+	if c.StreamingREST.Enabled && !c.Enabled {
+		return errors.New("snowflake.streaming_rest.enabled requires snowflake.enabled=true")
+	}
 	if !c.Enabled {
 		return nil
 	}
@@ -314,6 +326,10 @@ func Load(configPath string) (*Config, error) {
 		Snowflake: SnowflakeConfig{
 			Enabled:             false,
 			PrivateKeySecretKey: "private-key.pem",
+			StreamingREST: SnowflakeStreamingRESTConfig{
+				PolicyConfigMapName: "wallaby-runtime-policy",
+				PolicyConfigMapKey:  "snowflake-streaming-rest-enabled",
+			},
 		},
 		Iceberg: IcebergConfig{
 			ControlTable:                "__wallaby_control",
@@ -347,6 +363,12 @@ func Load(configPath string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.Snowflake.StreamingREST.Enabled, err = boolValue(fileCfg, []string{"snowflake.streaming_rest.enabled"}, []string{"WALLABY_SNOWFLAKE_STREAMING_REST_ENABLED", "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED"}, cfg.Snowflake.StreamingREST.Enabled)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Snowflake.StreamingREST.PolicyConfigMapName = stringValue(fileCfg, []string{"snowflake.streaming_rest.policy_config_map_name"}, []string{"WALLABY_SNOWFLAKE_STREAMING_REST_POLICY_CONFIG_MAP_NAME"}, cfg.Snowflake.StreamingREST.PolicyConfigMapName)
+	cfg.Snowflake.StreamingREST.PolicyConfigMapKey = stringValue(fileCfg, []string{"snowflake.streaming_rest.policy_config_map_key"}, []string{"WALLABY_SNOWFLAKE_STREAMING_REST_POLICY_CONFIG_MAP_KEY"}, cfg.Snowflake.StreamingREST.PolicyConfigMapKey)
 	cfg.Snowflake.Account = stringValue(fileCfg, []string{"snowflake.account"}, []string{"WALLABY_SNOWFLAKE_ACCOUNT", "WALLABY_WORKER_SNOWFLAKE_ACCOUNT"}, cfg.Snowflake.Account)
 	cfg.Snowflake.User = stringValue(fileCfg, []string{"snowflake.user"}, []string{"WALLABY_SNOWFLAKE_USER", "WALLABY_WORKER_SNOWFLAKE_USER"}, cfg.Snowflake.User)
 	cfg.Snowflake.Host = stringValue(fileCfg, []string{"snowflake.host"}, []string{"WALLABY_SNOWFLAKE_HOST", "WALLABY_WORKER_SNOWFLAKE_HOST"}, cfg.Snowflake.Host)

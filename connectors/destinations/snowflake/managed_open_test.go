@@ -112,6 +112,9 @@ func TestManagedSnowflakeOpenStateInitializesEveryProfileAuthority(t *testing.T)
 		}, wantErr: ErrManagedStreamingTransportUnavailable},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.name == "Streaming REST" && ManagedStreamingTransportAvailable() {
+				t.Skip("experimental assembly is covered by its policy-bound runtime test")
+			}
 			err := test.destination.InitializeManagedDelivery(context.Background())
 			if test.wantErr == nil && err != nil {
 				t.Fatalf("Open-established %s authority rejected: %v", test.name, err)

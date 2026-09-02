@@ -13,6 +13,8 @@ just docs-check
 
 Integration tests require PostgreSQL logical replication and, for some suites, destination services or a kind cluster. See `tests/README.md` for harness setup.
 
+Pi Lens excludes `charts/wallaby/templates/**/*.yaml` from standalone YAML parsing because those files contain Helm Go-template directives. The project config enables Helm render validation instead. `helm lint`, `helm template`, and `scripts/helm-check.sh` are the authoritative chart checks. Values files and other YAML remain in ordinary YAML analysis.
+
 ## Generated files
 
 Run `just generate` after editing Protobuf definitions. Run `just docs-generate` after changing Protobuf comments, public symbols under `pkg/`, or package comments. CI checks both generated trees for drift.

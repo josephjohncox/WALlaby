@@ -98,7 +98,7 @@ func workflowTestSnowflakePolicy(t *testing.T) connector.SnowflakeDeploymentPoli
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("account", "user", "account.snowflakecomputing.com", key)
+	policy, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("account", "user", "account.snowflakecomputing.com", key, true)
 	if err != nil {
 		t.Fatal(err)
 	}

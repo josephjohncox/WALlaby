@@ -68,8 +68,9 @@ const (
 )
 
 type destinationFactories struct {
-	openDB      func(string, string) (*sql.DB, error)
-	newRegistry func(context.Context, schemaregistry.Config) (schemaregistry.Registry, error)
+	openDB            func(string, string) (*sql.DB, error)
+	newRegistry       func(context.Context, schemaregistry.Config) (schemaregistry.Registry, error)
+	openStreamRuntime func(context.Context, *sql.DB, streamConfig, connector.SnowflakeStreamingRESTPolicy) (streamProtocol, string, error)
 }
 
 // Destination writes change events into Snowflake tables.
@@ -88,8 +89,11 @@ type Destination struct {
 	stagedCatalogFingerprint string
 	stagedHooksMu            sync.RWMutex
 	stagedHooks              stagedHooks
+	streamRuntimeMu          sync.RWMutex
 	streamConfig             streamConfig
 	streamCatalogFingerprint string
+	streamRuntimeProtocol    streamProtocol
+	streamingPolicy          connector.SnowflakeStreamingRESTPolicy
 	streamHooksMu            sync.RWMutex
 	streamHooks              streamingHooks
 	disableTx                bool
@@ -157,7 +161,7 @@ func (d *Destination) open(ctx context.Context, spec connector.RuntimeSpec, fact
 		case connector.ManagedProfilePostgresToSnowflakeStagedAppendV1:
 			return d.openManagedStaged(ctx, dsn, spec)
 		case connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1:
-			return d.openManagedStreaming(ctx, dsn, spec)
+			return d.openManagedStreaming(ctx, dsn, spec, factories)
 		default:
 			return fmt.Errorf("unsupported Snowflake managed profile %q", d.managedProfile)
 		}
@@ -283,6 +287,7 @@ func (d *Destination) configureSession(ctx context.Context) error {
 		if *d.sessionKeepAlive {
 			value = "TRUE"
 		}
+		// pi-lens-ignore: go-sql-injection — value is selected from the fixed TRUE/FALSE set above.
 		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("ALTER SESSION SET CLIENT_SESSION_KEEP_ALIVE = %s", value)); err != nil {
 			if isUnsupportedSessionSetting(err) {
 				log.Printf("snowflake session keep-alive not supported by driver: %v", err)
@@ -294,6 +299,7 @@ func (d *Destination) configureSession(ctx context.Context) error {
 	if d.warehouse == "" {
 		return nil
 	}
+	// pi-lens-ignore: go-sql-injection — warehouse passed strict identifier validation and is quoted.
 	if _, err := d.db.ExecContext(ctx, fmt.Sprintf("USE WAREHOUSE %s", quoteIdent(d.warehouse, '"'))); err != nil {
 		return fmt.Errorf("use warehouse: %w", err)
 	}
@@ -416,6 +422,8 @@ func (d *Destination) Write(ctx context.Context, batch connector.Batch) error {
 }
 
 func (d *Destination) Close(ctx context.Context) error {
+	d.streamRuntimeMu.Lock()
+	defer d.streamRuntimeMu.Unlock()
 	d.closeMu.Lock()
 	db := d.db
 	registry := d.registry
@@ -427,6 +435,9 @@ func (d *Destination) Close(ctx context.Context) error {
 	}
 	d.db = nil
 	d.registry = nil
+	d.streamRuntimeProtocol = nil
+	d.streamCatalogFingerprint = ""
+	d.streamingPolicy = connector.SnowflakeStreamingRESTPolicy{}
 	if managed {
 		d.managedScopeMu.Lock()
 		d.managedFlowIncarnation = ""
@@ -788,6 +799,7 @@ func (d *Destination) resolveStagingTable(ctx context.Context, info tableInfo) e
 	}
 	colList := quoteColumns(cols)
 	if d.batchResolve == batchResolveReplace {
+		// pi-lens-ignore: go-sql-injection — target is composed from validated quoted identifiers.
 		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("TRUNCATE TABLE %s", target)); err != nil {
 			return fmt.Errorf("truncate target: %w", err)
 		}
@@ -901,6 +913,7 @@ func (d *Destination) ensureMetaTable(ctx context.Context) error {
 		return errors.New("meta schema and table are required")
 	}
 	schemaIdent := quoteIdent(d.metaSchema, '"')
+	// pi-lens-ignore: go-sql-injection — schemaIdent is the quoted configured identifier.
 	if _, err := d.db.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", schemaIdent)); err != nil {
 		return fmt.Errorf("create meta schema: %w", err)
 	}

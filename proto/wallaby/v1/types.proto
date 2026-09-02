@@ -503,9 +503,8 @@ message SnowflakePostgresStagedConfig {
 message SnowflakePostgresStreamingConfig {
   string dsn = 1;
   string destination_revision_id = 2;
-  reserved 3;
-  reserved "type_mappings";
-  string transport = 4;
+  reserved 3, 4;
+  reserved "type_mappings", "transport";
   string account = 5;
   string database = 6;
   string schema = 7;

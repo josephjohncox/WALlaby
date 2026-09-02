@@ -28,8 +28,7 @@ func streamValidOptions(t *testing.T) (string, map[string]string) {
 		"dsn": dsn, "flow_id": "flow-1", "managed_profile": connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
 		"destination_revision_id": "snowflake-streaming-v1", "batch_mode": "target", "batch_resolution": "none",
 		"meta_table_enabled": "false", "disable_transactions": "false", "session_keep_alive": "false",
-		"managed_streaming_transport": streamRequiredTransport,
-		"managed_account":             "ACCOUNT", "managed_database": "DB", "managed_schema": "PUBLIC", "managed_pipe": "WALLABY_PIPE",
+		"managed_account": "ACCOUNT", "managed_database": "DB", "managed_schema": "PUBLIC", "managed_pipe": "WALLABY_PIPE",
 		"managed_table": "WALLABY_CHANGELOG", "managed_receipts_table": "WALLABY_RECEIPTS", "managed_channel_state_table": "WALLABY_CHANNELS",
 		"managed_channel_name_prefix": "wallaby_stream", "managed_owner_role": "WALLABY_OWNER", "managed_execution_role": "ROLE", "managed_warehouse": "WH",
 		"managed_snowflake_version": "8.0.0", "managed_pipe_created_on": created, "managed_target_created_on": created,
@@ -43,6 +42,38 @@ func streamValidOptions(t *testing.T) (string, map[string]string) {
 		"managed_cleanup_max_objects": "1000", "managed_cleanup_retention_seconds": "2592000",
 	}
 	return dsn, options
+}
+
+func TestManagedStreamConfigDigestBindsEveryConfigurationCategory(t *testing.T) {
+	base := streamTestConfig(t)
+	base.configDigest = managedStreamConfigDigest(base)
+	mutations := map[string]func(*streamConfig){
+		"identity": func(cfg *streamConfig) { cfg.destinationRevision += "-next" },
+		"catalog":  func(cfg *streamConfig) { cfg.requestJournalCreatedOn = "2026-01-02T00:00:00.000000000+00:00" },
+		"source":   func(cfg *streamConfig) { cfg.sourceTable += "_next" },
+		"limits":   func(cfg *streamConfig) { cfg.maxTransactionRows++ },
+		"retry":    func(cfg *streamConfig) { cfg.appendAttempts++ },
+		"cleanup":  func(cfg *streamConfig) { cfg.cleanupMaxObjects++ },
+		"mapping":  func(cfg *streamConfig) { cfg.typeMappings["text"] = "VARIANT" },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			changed := base
+			changed.typeMappings = cloneStreamMappings(base.typeMappings)
+			mutate(&changed)
+			if got := managedStreamConfigDigest(changed); got == base.configDigest {
+				t.Fatalf("%s drift did not change config digest", name)
+			}
+		})
+	}
+}
+
+func cloneStreamMappings(values map[string]string) map[string]string {
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
 }
 
 func TestStreamConfigFromSpecAdmitsValidSpec(t *testing.T) {
@@ -68,8 +99,6 @@ func TestStreamConfigRejectsLossyAndUnsafeOptions(t *testing.T) {
 		"generic staging":                 func(o map[string]string) { o["staging_table"] = "X" },
 		"same role":                       func(o map[string]string) { o["managed_execution_role"] = o["managed_owner_role"] },
 		"unknown option":                  func(o map[string]string) { o["nonsense"] = "1" },
-		"missing transport":               func(o map[string]string) { delete(o, "managed_streaming_transport") },
-		"wrong transport":                 func(o map[string]string) { o["managed_streaming_transport"] = "some-other-transport" },
 		"bad contract":                    func(o map[string]string) { o["managed_schema_contract_hash"] = "deadbeef" },
 		"missing created":                 func(o map[string]string) { o["managed_channel_state_created_on"] = "" },
 		"missing request journal created": func(o map[string]string) { o["managed_request_journal_created_on"] = "" },
@@ -161,7 +190,7 @@ func TestStreamSnowflakeDSNRedactsSecrets(t *testing.T) {
 func TestStreamTransportUnavailableFailsClosed(t *testing.T) {
 	t.Parallel()
 	if ManagedStreamingTransportAvailable() {
-		t.Fatal("no reviewed high-performance append transport should be linked in this build")
+		t.Skip("experimental build intentionally links the reviewed adapter")
 	}
 	dsn, options := streamValidOptions(t)
 	destination := &Destination{deploymentPolicy: snowflakeTestPolicy(t)}

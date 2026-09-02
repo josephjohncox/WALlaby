@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -9,13 +10,39 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type requiredGateStep struct {
+	Run  string `yaml:"run"`
+	Uses string `yaml:"uses"`
+}
+
+type requiredGateJob struct {
+	Env   map[string]any     `yaml:"env"`
+	Steps []requiredGateStep `yaml:"steps"`
+}
+
 type requiredGateWorkflow struct {
-	Jobs map[string]struct {
-		Env   map[string]any `yaml:"env"`
-		Steps []struct {
-			Run string `yaml:"run"`
-		} `yaml:"steps"`
-	} `yaml:"jobs"`
+	Jobs map[string]requiredGateJob `yaml:"jobs"`
+}
+
+func TestPiLensHelmTemplateExclusionIsNarrowAndRenderValidated(t *testing.T) {
+	var cfg struct {
+		Ignore []string `json:"ignore"`
+		Helm   struct {
+			RenderValidation struct {
+				Enabled bool `json:"enabled"`
+			} `json:"renderValidation"`
+		} `json:"helm"`
+	}
+	raw, err := os.ReadFile("../.pi-lens.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Ignore) != 1 || cfg.Ignore[0] != "charts/wallaby/templates/**/*.yaml" || !cfg.Helm.RenderValidation.Enabled {
+		t.Fatalf("pi-lens Helm policy=%+v", cfg)
+	}
 }
 
 func TestRequiredCheckpoint5AndModelOnlyCIGatesStayWired(t *testing.T) {
@@ -35,14 +62,17 @@ func TestRequiredCheckpoint5AndModelOnlyCIGatesStayWired(t *testing.T) {
 		}
 		return workflow
 	}
-	hasRun := func(job struct {
-		Env   map[string]any `yaml:"env"`
-		Steps []struct {
-			Run string `yaml:"run"`
-		} `yaml:"steps"`
-	}, command string) bool {
+	hasRun := func(job requiredGateJob, command string) bool {
 		for _, step := range job.Steps {
 			if strings.TrimSpace(step.Run) == command {
+				return true
+			}
+		}
+		return false
+	}
+	hasUse := func(job requiredGateJob, action string) bool {
+		for _, step := range job.Steps {
+			if strings.TrimSpace(step.Uses) == action {
 				return true
 			}
 		}
@@ -56,15 +86,14 @@ func TestRequiredCheckpoint5AndModelOnlyCIGatesStayWired(t *testing.T) {
 	evidence := parse("../.github/workflows/ci-evidence.yml")
 	model, modelOK := evidence.Jobs["failure-matrix-model"]
 	process, processOK := evidence.Jobs["failure-matrix"]
+	connectorMatrix, connectorMatrixOK := evidence.Jobs["connector-matrix"]
+	if !connectorMatrixOK || !hasUse(connectorMatrix, "./.github/actions/setup-just") || !hasRun(connectorMatrix, "just test-snowpipe-streaming-runtime-wiring") {
+		t.Fatal("CI Evidence connector-matrix job does not install just before the experimental runtime recipe")
+	}
 	if !modelOK || !processOK || !hasRun(model, "just test-failure-matrix-model") || hasRun(model, "just test-failure-matrix") || !hasRun(process, "just test-failure-matrix") || hasRun(process, "just test-failure-matrix-model") {
 		t.Fatal("CI Evidence does not keep model-only and OS-process recipes in distinct jobs")
 	}
-	for name, job := range map[string]struct {
-		Env   map[string]any `yaml:"env"`
-		Steps []struct {
-			Run string `yaml:"run"`
-		} `yaml:"steps"`
-	}{"failure-matrix-model": model, "failure-matrix": process} {
+	for name, job := range map[string]requiredGateJob{"failure-matrix-model": model, "failure-matrix": process} {
 		cycles := fmt.Sprint(job.Env["FAILURE_CYCLES"])
 		if !strings.Contains(cycles, "'1000'") || !strings.Contains(cycles, "'100'") || !strings.Contains(cycles, "schedule") {
 			t.Fatalf("%s does not preserve explicit 100/1000 cycle bounds: %q", name, cycles)

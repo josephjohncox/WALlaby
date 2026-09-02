@@ -2,6 +2,8 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
 	"slices"
 	"strings"
@@ -53,12 +55,96 @@ func TestDBOSSnowflakePolicyDeniesDirectEnqueueAndDoesNotStarveOtherScheduledFlo
 		t.Fatalf("EnqueueRunOnce() error=%v", err)
 	}
 	var enqueued []string
-	count, err := orchestrator.dispatchScheduledFlows(ctx, time.Unix(123, 0), func(flowID string, _ int64, _ string) error {
+	count, err := orchestrator.dispatchScheduledFlows(ctx, time.Unix(123, 0), func(flowID string, _ int64, _, _ string) error {
 		enqueued = append(enqueued, flowID)
 		return nil
 	})
 	if count != 1 || !slices.Equal(enqueued, []string{"postgres-new"}) || !errors.Is(err, connector.ErrSnowflakeExecutionDisabled) {
 		t.Fatalf("scheduled count=%d flows=%v error=%v", count, enqueued, err)
+	}
+}
+
+func TestDBOSStreamingWorkflowBindsCurrentDeploymentFingerprint(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("account", "user", "account.snowflakecomputing.com", key, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = policy.Close() }()
+	spec := connector.RuntimeSpec{Name: "stream", Type: connector.EndpointSnowflake, Options: map[string]string{
+		"dsn":             "user:@account/db/schema?authenticator=snowflake_jwt&ocspFailOpen=false",
+		"managed_profile": connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
+	}}
+	definition := dbosPolicyTestFlow(t, "streaming", spec)
+	orchestrator := &DBOSOrchestrator{factory: runner.Factory{ConnectorRegistry: connector.DefaultRegistry, SnowflakePolicy: policy}, snowflakePolicy: policy}
+	fingerprint, err := orchestrator.flowSnowflakePolicyFingerprint(definition)
+	if err != nil || fingerprint == "" {
+		t.Fatalf("fingerprint=%q error=%v", fingerprint, err)
+	}
+	input := FlowRunInput{FlowID: definition.ID, Generation: 1, SnowflakePolicyFingerprint: fingerprint}
+	if err := orchestrator.validateFlowRunPolicy(definition, input); err != nil {
+		t.Fatalf("matching workflow policy rejected: %v", err)
+	}
+	if _, err := orchestrator.factory.Destinations([]connector.RuntimeSpec{spec}); err != nil {
+		t.Fatalf("matching policy did not reach destination factory: %v", err)
+	}
+	if err := orchestrator.validateFlowRunPolicy(definition, FlowRunInput{FlowID: definition.ID, Generation: 1}); err == nil || !strings.Contains(err.Error(), "fingerprint differs") {
+		t.Fatalf("missing persisted fingerprint error=%v", err)
+	}
+
+	rotatedKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("account", "user", "account.snowflakecomputing.com", rotatedKey, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rotated.Close() }()
+	rotatedOrchestrator := &DBOSOrchestrator{factory: runner.Factory{ConnectorRegistry: connector.DefaultRegistry, SnowflakePolicy: rotated}, snowflakePolicy: rotated}
+	if err := rotatedOrchestrator.validateFlowRunPolicy(definition, input); err == nil || !strings.Contains(err.Error(), "fingerprint differs") {
+		t.Fatalf("key rotation adopted stale workflow input: %v", err)
+	}
+	disabled := &DBOSOrchestrator{factory: runner.Factory{ConnectorRegistry: connector.DefaultRegistry}, snowflakePolicy: connector.SnowflakeDeploymentPolicy{}}
+	if err := disabled.validateFlowRunPolicy(definition, input); !errors.Is(err, connector.ErrSnowflakeExecutionDisabled) {
+		t.Fatalf("disabled recovery policy error=%v", err)
+	}
+}
+
+func TestDBOSScheduledStreamingDispatchCarriesPolicyFingerprint(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := connector.NewSnowflakeDeploymentPolicyWithPrivateKey("account", "user", "account.snowflakecomputing.com", key, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = policy.Close() }()
+	ctx := context.Background()
+	engine := workflow.NewMemoryEngine()
+	spec := connector.RuntimeSpec{Name: "stream", Type: connector.EndpointSnowflake, Options: map[string]string{
+		"dsn":             "user:@account/db/schema?authenticator=snowflake_jwt&ocspFailOpen=false",
+		"managed_profile": connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1,
+	}}
+	definition := dbosPolicyTestFlow(t, "scheduled-stream", spec)
+	if _, err := engine.Create(ctx, definition); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Start(ctx, definition.ID); err != nil {
+		t.Fatal(err)
+	}
+	orchestrator := &DBOSOrchestrator{engine: engine, factory: runner.Factory{ConnectorRegistry: connector.DefaultRegistry, SnowflakePolicy: policy}, snowflakePolicy: policy}
+	var captured string
+	count, err := orchestrator.dispatchScheduledFlows(ctx, time.Unix(123, 0), func(_ string, _ int64, _ string, fingerprint string) error {
+		captured = fingerprint
+		return nil
+	})
+	if err != nil || count != 1 || captured == "" {
+		t.Fatalf("scheduled count/fingerprint/error=%d/%q/%v", count, captured, err)
 	}
 }
 

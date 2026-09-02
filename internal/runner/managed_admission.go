@@ -799,10 +799,6 @@ func validateManagedSnowflakeStreamingAppendAdmission(flowID string, sourceSpec 
 			return fmt.Errorf("%s rejects generic option %s", profileName, key)
 		}
 	}
-	if got := strings.TrimSpace(options["managed_streaming_transport"]); got == "" {
-		return fmt.Errorf("%s requires managed_streaming_transport naming the reviewed high-performance append transport", profileName)
-	}
-
 	dsnConfig, err := gosnowflake.ParseDSN(dsn)
 	if err != nil {
 		return connector.ErrMalformedSnowflakeDSN

@@ -189,18 +189,47 @@ type streamProtocol interface {
 	streamStateStore
 }
 
+// composedStreamProtocol binds HTTP channel operations to Snowflake SQL
+// authority. Neither side can substitute for the other.
+type composedStreamProtocol struct {
+	streamTransport
+	streamStateStore
+}
+
 // sqlStreamProtocol is the real gosnowflake-backed protocol. Its SQL-observation
 // and receipt/channel-state methods query the ordinary Snowflake query API; its
 // append-transport methods fail closed because no reviewed high-performance Go
 // append client is linked. It is exercised only by the credential-gated live
 // recovery matrix once a transport exists; unit and property coverage runs
 // against the in-memory fake.
-type sqlStreamProtocol struct {
-	db *sql.DB
+type streamSQLConnAcquirer func(context.Context) (*sql.Conn, error)
+
+type streamSQLQueryer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func newSQLStreamProtocol(db *sql.DB) *sqlStreamProtocol {
-	return &sqlStreamProtocol{db: db}
+type sqlStreamProtocol struct {
+	acquire streamSQLConnAcquirer
+}
+
+func newSQLStreamProtocol(acquire streamSQLConnAcquirer) *sqlStreamProtocol {
+	return &sqlStreamProtocol{acquire: acquire}
+}
+
+func (p *sqlStreamProtocol) acquireConn(ctx context.Context) (*sql.Conn, error) {
+	if p == nil || p.acquire == nil {
+		return nil, errors.New("managed streaming Snowflake SQL connection authority is unavailable")
+	}
+	conn, err := p.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if conn == nil {
+		return nil, errors.New("managed streaming Snowflake SQL connection authority returned no connection")
+	}
+	return conn, nil
 }
 
 func (p *sqlStreamProtocol) OpenChannel(context.Context, streamConfig, string) (streamChannelStatus, error) {
@@ -224,12 +253,17 @@ func (p *sqlStreamProtocol) ObserveCommittedRows(ctx context.Context, cfg stream
 	if len(rowHashes) == 0 {
 		return present, nil
 	}
+	conn, err := p.acquireConn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close() }()
 	target := managedSnowflakeStreamQualified(cfg, cfg.table)
 	// #nosec G202 -- the target identifier is composed only of validated unquoted
 	// uppercase identifiers; the logical batch is a bound parameter.
 	query := "SELECT \"ROW_HASH\", COUNT(*) FROM " + target +
 		" WHERE \"LOGICAL_BATCH_ID\" = ? GROUP BY \"ROW_HASH\""
-	rows, err := p.db.QueryContext(ctx, query, logicalBatchID)
+	rows, err := conn.QueryContext(ctx, query, logicalBatchID)
 	if err != nil {
 		return nil, fmt.Errorf("observe streaming Snowflake committed rows: %w", err)
 	}
@@ -249,9 +283,14 @@ func (p *sqlStreamProtocol) ObserveCommittedRows(ctx context.Context, cfg stream
 }
 
 func (p *sqlStreamProtocol) CompareAndSwapChannelState(ctx context.Context, cfg streamConfig, expected managedStreamChannelState, state managedStreamChannelState) (managedStreamChannelState, bool, error) {
+	conn, err := p.acquireConn(ctx)
+	if err != nil {
+		return managedStreamChannelState{}, false, err
+	}
+	defer func() { _ = conn.Close() }()
 	ctx, recordQueryID := managedSnowflakeQueryIDContext(ctx)
 	values := append(streamChannelStateValues(state), expected.stateVersion, expected.pipeName, expected.pipeRevision, expected.channelRevision, expected.continuationToken, expected.committedOffsetToken, expected.logicalBatchID, expected.rowsContentHash, expected.requestID)
-	result, err := p.db.ExecContext(ctx, streamChannelStateMergeSQL(cfg), values...)
+	result, err := conn.ExecContext(ctx, streamChannelStateMergeSQL(cfg), values...)
 	recordQueryID()
 	if err != nil {
 		return managedStreamChannelState{}, false, fmt.Errorf("%w: compare-and-swap streaming Snowflake channel state: %w", connector.ErrDeliveryIndeterminate, err)
@@ -263,7 +302,7 @@ func (p *sqlStreamProtocol) CompareAndSwapChannelState(ctx context.Context, cfg 
 	if affected < 0 || affected > 1 {
 		return managedStreamChannelState{}, false, fmt.Errorf("%w: channel state CAS affected %d rows", connector.ErrDeliveryConflict, affected)
 	}
-	current, found, err := p.LookupChannelState(ctx, cfg, streamChannelStateKey{flowIncarnationID: state.flowIncarnationID, destinationRevisionID: state.destinationRevisionID, channelName: state.channelName})
+	current, found, err := lookupStreamChannelState(ctx, conn, cfg, streamChannelStateKey{flowIncarnationID: state.flowIncarnationID, destinationRevisionID: state.destinationRevisionID, channelName: state.channelName})
 	if err != nil {
 		return managedStreamChannelState{}, false, err
 	}
@@ -274,8 +313,17 @@ func (p *sqlStreamProtocol) CompareAndSwapChannelState(ctx context.Context, cfg 
 }
 
 func (p *sqlStreamProtocol) LookupChannelState(ctx context.Context, cfg streamConfig, key streamChannelStateKey) (managedStreamChannelState, bool, error) {
+	conn, err := p.acquireConn(ctx)
+	if err != nil {
+		return managedStreamChannelState{}, false, err
+	}
+	defer func() { _ = conn.Close() }()
+	return lookupStreamChannelState(ctx, conn, cfg, key)
+}
+
+func lookupStreamChannelState(ctx context.Context, queryer streamSQLQueryer, cfg streamConfig, key streamChannelStateKey) (managedStreamChannelState, bool, error) {
 	ctx, recordQueryID := managedSnowflakeQueryIDContext(ctx)
-	row := p.db.QueryRowContext(ctx, streamChannelStateLookupSQL(cfg), key.flowIncarnationID, key.destinationRevisionID, key.channelName)
+	row := queryer.QueryRowContext(ctx, streamChannelStateLookupSQL(cfg), key.flowIncarnationID, key.destinationRevisionID, key.channelName)
 	recordQueryID()
 	state, err := scanStreamChannelState(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -291,8 +339,13 @@ func (p *sqlStreamProtocol) InsertRequest(ctx context.Context, cfg streamConfig,
 	if err := request.validateIdentity(); err != nil {
 		return false, err
 	}
+	conn, err := p.acquireConn(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = conn.Close() }()
 	ctx, recordQueryID := managedSnowflakeQueryIDContext(ctx)
-	result, err := p.db.ExecContext(ctx, streamRequestInsertSQL(cfg), streamRequestValues(request)...)
+	result, err := conn.ExecContext(ctx, streamRequestInsertSQL(cfg), streamRequestValues(request)...)
 	recordQueryID()
 	if err != nil {
 		if isStagedDuplicateKey(err) {
@@ -308,8 +361,13 @@ func (p *sqlStreamProtocol) InsertRequest(ctx context.Context, cfg streamConfig,
 }
 
 func (p *sqlStreamProtocol) LookupRequest(ctx context.Context, cfg streamConfig, key streamRequestKey) (managedStreamRequest, bool, error) {
+	conn, err := p.acquireConn(ctx)
+	if err != nil {
+		return managedStreamRequest{}, false, err
+	}
+	defer func() { _ = conn.Close() }()
 	ctx, recordQueryID := managedSnowflakeQueryIDContext(ctx)
-	rows, err := p.db.QueryContext(ctx, streamRequestLookupSQL(cfg), key.flowIncarnationID, key.destinationRevisionID, key.logicalBatchID)
+	rows, err := conn.QueryContext(ctx, streamRequestLookupSQL(cfg), key.flowIncarnationID, key.destinationRevisionID, key.logicalBatchID)
 	recordQueryID()
 	if err != nil {
 		return managedStreamRequest{}, false, fmt.Errorf("query streaming Snowflake request: %w", err)
@@ -344,8 +402,13 @@ func (p *sqlStreamProtocol) TransitionRequest(ctx context.Context, cfg streamCon
 	if !validStreamRequestTransition(transition.expectedPhase, transition.nextPhase) || transition.expectedVersion <= 0 {
 		return managedStreamRequest{}, false, errors.New("illegal streaming Snowflake request transition")
 	}
+	conn, err := p.acquireConn(ctx)
+	if err != nil {
+		return managedStreamRequest{}, false, err
+	}
+	defer func() { _ = conn.Close() }()
 	ctx, recordQueryID := managedSnowflakeQueryIDContext(ctx)
-	result, err := p.db.ExecContext(ctx, streamRequestTransitionSQL(cfg), string(transition.nextPhase), transition.responseContinuation, transition.committedOffset, transition.responseKind, transition.responseEvidence, transition.requestID, string(transition.expectedPhase), transition.expectedVersion)
+	result, err := conn.ExecContext(ctx, streamRequestTransitionSQL(cfg), string(transition.nextPhase), transition.responseContinuation, transition.committedOffset, transition.responseKind, transition.responseEvidence, transition.requestID, string(transition.expectedPhase), transition.expectedVersion)
 	recordQueryID()
 	if err != nil {
 		return managedStreamRequest{}, false, fmt.Errorf("%w: transition streaming Snowflake request: %w", connector.ErrDeliveryIndeterminate, err)
@@ -357,7 +420,7 @@ func (p *sqlStreamProtocol) TransitionRequest(ctx context.Context, cfg streamCon
 	if affected < 0 || affected > 1 {
 		return managedStreamRequest{}, false, fmt.Errorf("%w: streaming Snowflake request transition affected %d rows", connector.ErrDeliveryConflict, affected)
 	}
-	row := p.db.QueryRowContext(ctx, streamRequestLookupByIDSQL(cfg), transition.requestID)
+	row := conn.QueryRowContext(ctx, streamRequestLookupByIDSQL(cfg), transition.requestID)
 	request, scanErr := scanStreamRequest(row)
 	if scanErr != nil {
 		return managedStreamRequest{}, false, fmt.Errorf("read transitioned streaming Snowflake request: %w", scanErr)
@@ -366,16 +429,26 @@ func (p *sqlStreamProtocol) TransitionRequest(ctx context.Context, cfg streamCon
 }
 
 func (p *sqlStreamProtocol) HasUnresolvedRequests(ctx context.Context, cfg streamConfig, key streamChannelStateKey) (bool, error) {
+	conn, err := p.acquireConn(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = conn.Close() }()
 	var count int64
-	if err := p.db.QueryRowContext(ctx, streamRequestUnresolvedSQL(cfg), key.flowIncarnationID, key.destinationRevisionID, key.channelName).Scan(&count); err != nil {
+	if err := conn.QueryRowContext(ctx, streamRequestUnresolvedSQL(cfg), key.flowIncarnationID, key.destinationRevisionID, key.channelName).Scan(&count); err != nil {
 		return false, fmt.Errorf("query unresolved streaming Snowflake requests: %w", err)
 	}
 	return count > 0, nil
 }
 
 func (p *sqlStreamProtocol) LookupReceipt(ctx context.Context, cfg streamConfig, key streamReceiptKey) (managedStreamReceipt, bool, error) {
+	conn, err := p.acquireConn(ctx)
+	if err != nil {
+		return managedStreamReceipt{}, false, err
+	}
+	defer func() { _ = conn.Close() }()
 	queryCtx, recordQueryID := managedSnowflakeQueryIDContext(ctx)
-	rows, err := p.db.QueryContext(queryCtx, streamReceiptLookupSQL(cfg),
+	rows, err := conn.QueryContext(queryCtx, streamReceiptLookupSQL(cfg),
 		key.kind, key.flowIncarnationID, key.destinationRevisionID, key.logicalBatchID,
 		key.kind, key.flowIncarnationID, key.destinationRevisionID, key.sourceLineageID, key.positionID,
 		key.externalID,
@@ -406,8 +479,13 @@ func (p *sqlStreamProtocol) LookupReceipt(ctx context.Context, cfg streamConfig,
 }
 
 func (p *sqlStreamProtocol) InsertReceipt(ctx context.Context, cfg streamConfig, receipt managedStreamReceipt) (streamReceiptInsert, error) {
+	conn, err := p.acquireConn(ctx)
+	if err != nil {
+		return streamReceiptInsert{}, err
+	}
+	defer func() { _ = conn.Close() }()
 	ctx, recordQueryID := managedSnowflakeQueryIDContext(ctx)
-	result, err := p.db.ExecContext(ctx, streamReceiptInsertSQL(cfg), streamReceiptValues(receipt)...)
+	result, err := conn.ExecContext(ctx, streamReceiptInsertSQL(cfg), streamReceiptValues(receipt)...)
 	recordQueryID()
 	if err != nil {
 		if isStagedDuplicateKey(err) {
@@ -426,6 +504,11 @@ func (p *sqlStreamProtocol) InsertReceipt(ctx context.Context, cfg streamConfig,
 }
 
 func (p *sqlStreamProtocol) ListReleasableReceipts(ctx context.Context, cfg streamConfig, flowIncarnationID string, retention time.Duration, limit int) ([]managedStreamReceipt, error) {
+	conn, err := p.acquireConn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close() }()
 	table := managedSnowflakeStreamQualifiedTable(cfg, cfg.receiptsTable)
 	channelTable := managedSnowflakeStreamQualifiedTable(cfg, cfg.channelStateTable)
 	// #nosec G202 -- both table identifiers are composed only of validated unquoted uppercase identifiers; all values are bound parameters.
@@ -435,7 +518,7 @@ func (p *sqlStreamProtocol) ListReleasableReceipts(ctx context.Context, cfg stre
 		" AND (NOT EXISTS (SELECT 1 FROM " + table + " AS R WHERE R.\"RECEIPT_KIND\" = ? AND R.\"EXTERNAL_ID\" = L.\"EXTERNAL_ID\" || ':release')" +
 		" OR EXISTS (SELECT 1 FROM " + channelTable + " AS C WHERE C.\"FLOW_INCARNATION_ID\" = L.\"FLOW_INCARNATION_ID\" AND C.\"DESTINATION_REVISION_ID\" = L.\"DESTINATION_REVISION_ID\" AND C.\"CHANNEL_NAME\" = L.\"CHANNEL_NAME\"))" +
 		" ORDER BY L.\"COMMITTED_AT\" LIMIT " + strconv.Itoa(limit)
-	rows, err := p.db.QueryContext(ctx, query,
+	rows, err := conn.QueryContext(ctx, query,
 		streamReceiptKindAppend, flowIncarnationID, streamStatusCommitted,
 		-int64(retention/time.Second), streamReceiptKindRelease,
 	)
@@ -458,7 +541,12 @@ func (p *sqlStreamProtocol) ListReleasableReceipts(ctx context.Context, cfg stre
 }
 
 func (p *sqlStreamProtocol) ReleaseChannelState(ctx context.Context, cfg streamConfig, expected managedStreamChannelState, release managedStreamReceipt) (bool, error) {
-	tx, err := p.db.BeginTx(ctx, nil)
+	conn, err := p.acquireConn(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = conn.Close() }()
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin streaming Snowflake channel release: %w", err)
 	}

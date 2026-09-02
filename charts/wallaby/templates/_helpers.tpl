@@ -83,3 +83,21 @@
 {{- end }}
 {{- end }}
 {{- end -}}
+
+{{- define "wallaby.snowflakeWorkerEnv" -}}
+- name: WALLABY_WORKER_SNOWFLAKE_ENABLED
+  value: {{ .Values.snowflake.enabled | toString | quote }}
+- name: WALLABY_WORKER_SNOWFLAKE_ACCOUNT
+  value: {{ .Values.snowflake.account | quote }}
+- name: WALLABY_WORKER_SNOWFLAKE_USER
+  value: {{ .Values.snowflake.user | quote }}
+- name: WALLABY_WORKER_SNOWFLAKE_HOST
+  value: {{ .Values.snowflake.host | quote }}
+- name: WALLABY_WORKER_SNOWFLAKE_PRIVATE_KEY_FILE
+  value: {{ .Values.snowflake.privateKeyFile | quote }}
+- name: WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED
+  valueFrom:
+    configMapKeyRef:
+      name: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" .)) .Values.snowflake.streamingRest.policyConfigMapName | quote }}
+      key: {{ .Values.snowflake.streamingRest.policyConfigMapKey | quote }}
+{{- end -}}

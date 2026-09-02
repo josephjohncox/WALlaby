@@ -106,6 +106,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Setup just
+        uses: ./.github/actions/setup-just
+
       - name: Setup Go
         # actions/setup-go v7.0.0
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -121,6 +124,9 @@ jobs:
             > .cache/evidence/connector-support.md
           diff -u docs/reference/generated/connector-support.md \
             .cache/evidence/connector-support.md
+
+      - name: Verify experimental Snowpipe Streaming runtime assembly
+        run: just test-snowpipe-streaming-runtime-wiring
 
       - name: Upload connector matrix
         if: always()

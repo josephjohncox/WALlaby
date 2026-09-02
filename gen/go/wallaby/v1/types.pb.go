@@ -4215,7 +4215,6 @@ type SnowflakePostgresStreamingConfig struct {
 	state                   protoimpl.MessageState `protogen:"open.v1"`
 	Dsn                     string                 `protobuf:"bytes,1,opt,name=dsn,proto3" json:"dsn,omitempty"`
 	DestinationRevisionId   string                 `protobuf:"bytes,2,opt,name=destination_revision_id,json=destinationRevisionId,proto3" json:"destination_revision_id,omitempty"`
-	Transport               string                 `protobuf:"bytes,4,opt,name=transport,proto3" json:"transport,omitempty"`
 	Account                 string                 `protobuf:"bytes,5,opt,name=account,proto3" json:"account,omitempty"`
 	Database                string                 `protobuf:"bytes,6,opt,name=database,proto3" json:"database,omitempty"`
 	Schema                  string                 `protobuf:"bytes,7,opt,name=schema,proto3" json:"schema,omitempty"`
@@ -4289,13 +4288,6 @@ func (x *SnowflakePostgresStreamingConfig) GetDsn() string {
 func (x *SnowflakePostgresStreamingConfig) GetDestinationRevisionId() string {
 	if x != nil {
 		return x.DestinationRevisionId
-	}
-	return ""
-}
-
-func (x *SnowflakePostgresStreamingConfig) GetTransport() string {
-	if x != nil {
-		return x.Transport
 	}
 	return ""
 }
@@ -6335,11 +6327,10 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"J\x04\b\n" +
 	"\x10\vJ\x04\b\f\x10\rJ\x04\b\x0e\x10\x0fR\n" +
 	"stage_pathR\twarehouseR\rcopy_on_writeR\fcopy_patternR\rcopy_on_errorR\n" +
-	"copy_purgeR\x19copy_match_by_column_nameR\bmetadataR\rtype_mappings\"\x83\x0e\n" +
+	"copy_purgeR\x19copy_match_by_column_nameR\bmetadataR\rtype_mappings\"\xf6\r\n" +
 	" SnowflakePostgresStreamingConfig\x12\x10\n" +
 	"\x03dsn\x18\x01 \x01(\tR\x03dsn\x126\n" +
-	"\x17destination_revision_id\x18\x02 \x01(\tR\x15destinationRevisionId\x12\x1c\n" +
-	"\ttransport\x18\x04 \x01(\tR\ttransport\x12\x18\n" +
+	"\x17destination_revision_id\x18\x02 \x01(\tR\x15destinationRevisionId\x12\x18\n" +
 	"\aaccount\x18\x05 \x01(\tR\aaccount\x12\x1a\n" +
 	"\bdatabase\x18\x06 \x01(\tR\bdatabase\x12\x16\n" +
 	"\x06schema\x18\a \x01(\tR\x06schema\x12\x12\n" +
@@ -6383,7 +6374,7 @@ const file_wallaby_v1_types_proto_rawDesc = "" +
 	"\x10_append_attemptsB\x18\n" +
 	"\x16_append_backoff_millisB\x16\n" +
 	"\x14_cleanup_max_objectsB\x1c\n" +
-	"\x1a_cleanup_retention_secondsJ\x04\b\x03\x10\x04R\rtype_mappings\"\x93\x06\n" +
+	"\x1a_cleanup_retention_secondsJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05R\rtype_mappingsR\ttransport\"\x93\x06\n" +
 	"\x19SnowpipeDestinationConfig\x12\x10\n" +
 	"\x03dsn\x18\x01 \x01(\tR\x03dsn\x12\x14\n" +
 	"\x05stage\x18\x02 \x01(\tR\x05stage\x12\x1d\n" +

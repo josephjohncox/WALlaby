@@ -56,9 +56,10 @@ type Config struct {
 
 // FlowRunInput is the generation-fenced workflow input for one flow.
 type FlowRunInput struct {
-	FlowID        string `json:"flow_id"`
-	Generation    int64  `json:"generation"`
-	MaxEmptyReads int    `json:"max_empty_reads,omitempty"`
+	FlowID                     string `json:"flow_id"`
+	Generation                 int64  `json:"generation"`
+	MaxEmptyReads              int    `json:"max_empty_reads,omitempty"`
+	SnowflakePolicyFingerprint string `json:"snowflake_policy_fingerprint,omitempty"`
 }
 
 // DBOSOrchestrator schedules flow runs via DBOS.
@@ -165,23 +166,49 @@ func (o *DBOSOrchestrator) EnqueueGeneration(ctx context.Context, flowID string,
 	if flowID == "" || generation <= 0 {
 		return errors.New("flow id and positive generation are required")
 	}
-	if err := o.admitSnowflake(ctx, flowID); err != nil {
-		return err
-	}
-	identity := fmt.Sprintf("%sg-%d", flowWorkflowPrefix(flowID), generation)
-	return o.enqueueWorkflow(flowID, generation, identity)
-}
-
-func (o *DBOSOrchestrator) admitSnowflake(ctx context.Context, flowID string) error {
-	definition, err := o.engine.Get(ctx, flowID)
+	policyFingerprint, err := o.admitSnowflake(ctx, flowID)
 	if err != nil {
 		return err
 	}
-	return flow.ValidateSnowflakeDeploymentPolicy(definition, o.factory.ConnectorRegistry, o.snowflakePolicy)
+	identity := fmt.Sprintf("%sg-%d", flowWorkflowPrefix(flowID), generation)
+	return o.enqueueWorkflow(flowID, generation, identity, policyFingerprint)
 }
 
-func (o *DBOSOrchestrator) enqueueWorkflow(flowID string, generation int64, identity string) error {
-	input := FlowRunInput{FlowID: flowID, Generation: generation, MaxEmptyReads: o.maxEmptyReads}
+func (o *DBOSOrchestrator) admitSnowflake(ctx context.Context, flowID string) (string, error) {
+	definition, err := o.engine.Get(ctx, flowID)
+	if err != nil {
+		return "", err
+	}
+	if err := flow.ValidateSnowflakeDeploymentPolicy(definition, o.factory.ConnectorRegistry, o.snowflakePolicy); err != nil {
+		return "", err
+	}
+	return o.flowSnowflakePolicyFingerprint(definition)
+}
+
+func (o *DBOSOrchestrator) flowSnowflakePolicyFingerprint(definition flow.Flow) (string, error) {
+	registry := o.factory.ConnectorRegistry
+	if registry == nil {
+		registry = connector.DefaultRegistry
+	}
+	specs, err := definition.DecodeDestinations(registry)
+	if err != nil {
+		return "", err
+	}
+	for _, spec := range specs {
+		if spec.Type != connector.EndpointSnowflake || strings.TrimSpace(spec.Options["managed_profile"]) != connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1 {
+			continue
+		}
+		streamingPolicy, err := o.snowflakePolicy.StreamingRESTPolicy()
+		if err != nil {
+			return "", err
+		}
+		return streamingPolicy.Fingerprint()
+	}
+	return "", nil
+}
+
+func (o *DBOSOrchestrator) enqueueWorkflow(flowID string, generation int64, identity, policyFingerprint string) error {
+	input := FlowRunInput{FlowID: flowID, Generation: generation, MaxEmptyReads: o.maxEmptyReads, SnowflakePolicyFingerprint: policyFingerprint}
 	opts := []dbos.WorkflowOption{dbos.WithWorkflowID(identity)}
 	if o.queue != nil {
 		opts = append(opts, dbos.WithQueue(o.queue), dbos.WithDeduplicationID(identity))
@@ -202,11 +229,12 @@ func (o *DBOSOrchestrator) EnqueueRunOnce(ctx context.Context, flowID string, ge
 	if flowID == "" || generation <= 0 {
 		return errors.New("flow id and positive generation are required")
 	}
-	if err := o.admitSnowflake(ctx, flowID); err != nil {
+	policyFingerprint, err := o.admitSnowflake(ctx, flowID)
+	if err != nil {
 		return err
 	}
 	identity := fmt.Sprintf("%sg-%d-r-%s", flowWorkflowPrefix(flowID), generation, uuid.NewString())
-	return o.enqueueWorkflow(flowID, generation, identity)
+	return o.enqueueWorkflow(flowID, generation, identity, policyFingerprint)
 }
 
 // CancelThroughGeneration cancels and then polls every relevant workflow until
@@ -323,7 +351,7 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.Context, input FlowRunInput)
 	if err != nil {
 		return "", err
 	}
-	if err := flow.ValidateSnowflakeDeploymentPolicy(f, o.factory.ConnectorRegistry, o.snowflakePolicy); err != nil {
+	if err := o.validateFlowRunPolicy(f, input); err != nil {
 		return "", err
 	}
 	control, err := o.engine.Control(ctx, input.FlowID)
@@ -376,12 +404,26 @@ func (o *DBOSOrchestrator) runFlowWorkflow(ctx dbos.Context, input FlowRunInput)
 	return "ok", nil
 }
 
+func (o *DBOSOrchestrator) validateFlowRunPolicy(definition flow.Flow, input FlowRunInput) error {
+	if err := flow.ValidateSnowflakeDeploymentPolicy(definition, o.factory.ConnectorRegistry, o.snowflakePolicy); err != nil {
+		return err
+	}
+	policyFingerprint, err := o.flowSnowflakePolicyFingerprint(definition)
+	if err != nil {
+		return err
+	}
+	if policyFingerprint != input.SnowflakePolicyFingerprint {
+		return errors.New("DBOS workflow Snowflake policy fingerprint differs from the current deployment")
+	}
+	return nil
+}
+
 func (o *DBOSOrchestrator) dispatchWorkflow(ctx dbos.Context, input dbos.ScheduledWorkflowInput) (string, error) {
 	count, err := o.dispatchScheduledFlows(ctx, input.ScheduledTime, o.enqueueWorkflow)
 	return fmt.Sprintf("scheduled %d flows", count), err
 }
 
-func (o *DBOSOrchestrator) dispatchScheduledFlows(ctx context.Context, scheduledAt time.Time, enqueue func(string, int64, string) error) (int, error) {
+func (o *DBOSOrchestrator) dispatchScheduledFlows(ctx context.Context, scheduledAt time.Time, enqueue func(string, int64, string, string) error) (int, error) {
 	flows, err := o.engine.List(ctx)
 	if err != nil {
 		return 0, err
@@ -396,6 +438,11 @@ func (o *DBOSOrchestrator) dispatchScheduledFlows(ctx context.Context, scheduled
 			joined = errors.Join(joined, fmt.Errorf("admit scheduled flow %s: %w", f.ID, err))
 			continue
 		}
+		policyFingerprint, err := o.flowSnowflakePolicyFingerprint(f)
+		if err != nil {
+			joined = errors.Join(joined, fmt.Errorf("bind scheduled flow %s Snowflake policy: %w", f.ID, err))
+			continue
+		}
 		control, err := o.engine.Control(ctx, f.ID)
 		if err != nil {
 			joined = errors.Join(joined, fmt.Errorf("load scheduled flow %s control: %w", f.ID, err))
@@ -405,7 +452,7 @@ func (o *DBOSOrchestrator) dispatchScheduledFlows(ctx context.Context, scheduled
 			continue
 		}
 		identity := fmt.Sprintf("%sg-%d-s-%d", flowWorkflowPrefix(f.ID), control.Generation, scheduledAt.UnixNano())
-		if err := enqueue(f.ID, control.Generation, identity); err != nil {
+		if err := enqueue(f.ID, control.Generation, identity, policyFingerprint); err != nil {
 			joined = errors.Join(joined, fmt.Errorf("enqueue scheduled flow %s: %w", f.ID, err))
 			continue
 		}

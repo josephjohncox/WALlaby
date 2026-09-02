@@ -1286,7 +1286,6 @@ contract accepts only a DSN and ignores connection-pool and IAM options.
 | ----- | ---- | ----- | ----------- |
 | dsn | [string](#string) |  |  |
 | destination_revision_id | [string](#string) |  |  |
-| transport | [string](#string) |  |  |
 | account | [string](#string) |  |  |
 | database | [string](#string) |  |  |
 | schema | [string](#string) |  |  |

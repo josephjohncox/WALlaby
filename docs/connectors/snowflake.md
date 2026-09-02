@@ -34,7 +34,7 @@ These are implemented modeled protocol profiles, not blanket support claims for 
 
 The SQL profile provides **at-least-once delivery with external-commit reconciliation**. It does not claim exactly-once delivery.
 
-## Unlinked Snowpipe Streaming REST adapter
+## Experimental Snowpipe Streaming REST adapter
 
 The unlinked adapter implements Snowflake's documented high-performance REST sequence:
 
@@ -45,13 +45,19 @@ The unlinked adapter implements Snowflake's documented high-performance REST seq
 5. Read the committed offset through the bulk channel-status endpoint.
 6. Drop the channel only with `fail_on_uncommitted_rows=true`.
 
-A deployment token provider signs RS256 key-pair JWTs inside `SnowflakeDeploymentPolicy`. The private key never leaves the policy. The issuer binds the normalized account, user, and SHA-256 public-key fingerprint. Tokens use an injected clock and a positive lifetime of at most one hour. The adapter derives its HTTPS control endpoint from the same deployment policy. Runtime construction still does not call this provider while `streamingTransportLinked=false`.
+A deployment token provider signs RS256 key-pair JWTs through an opaque `SnowflakeStreamingRESTPolicy`. The private key never leaves the shared base policy. The issuer binds the normalized account, user, and SHA-256 public-key fingerprint. Tokens use an injected clock and a positive lifetime of at most one hour. The adapter derives its HTTPS control endpoint from the same deployment policy.
+
+The normal binary does not link runtime assembly. An experimental binary must use the `snowpipe_streaming_rest_experimental` build tag and deployment configuration must set both `snowflake.enabled=true` and `snowflake.streaming_rest.enabled=true`. Helm uses the typed `snowflake.streamingRest` value and always renders one stable policy ConfigMap with an exact `true` or `false` value. A flow cannot enable either gate.
+
+Kubernetes dispatch requires the policy ConfigMap name and key for every worker, including non-Snowflake workers. Each Job carries an authoritative dispatch grant and reads the current worker-local value from that ConfigMap. The worker ANDs configuration, dispatch, and ConfigMap values, so false wins. Existing Jobs are adopted only when their actual policy-critical Pod template matches the freshly constructed template. Matching annotations alone are not authority.
+
+DBOS workflow input persists the deployment public-key policy fingerprint. Recovery, scheduled dispatch, and run-once execution reject disabled or rotated policy before connector construction. After disabling the capability, cancel active Streaming worker Pods before treating the deployment as quiescent.
 
 The adapter accepts at most 4 MiB of exact NDJSON wire bytes per append and 1 MiB per response. The wire count includes each row's newline terminator. It rejects redirects, cross-account host drift, user information, non-443 production endpoints, unsafe TLS clients, malformed JSON, unknown response fields, insecure non-loopback HTTP, and non-advancing continuation tokens. It never logs JWTs or scoped tokens.
 
 The durable request identity binds the exact prior committed offset, requested offset, continuation token, channel creation timestamp, pipe revision, manifest, and row identities. Offset tokens are opaque. The exact prior token means no progress, the exact requested token means committed, and any other token remains unknown without matching request-journal evidence. Bulk channel status must return the same positive `created_on_ms` value as the persisted request. A missing or different channel creation timestamp fails closed because the status could belong to a reopened channel. Commercial promotion requires the reviewed Snowflake deployment to return this incarnation field on bulk status. Authentication, channel invalidation, throttling, and local validation failures can be marked definitely not accepted only from an exact response or pre-send boundary. A timeout, service error, disconnect, or malformed success response remains ambiguous.
 
-An append success proves service receipt only. It does not prove target commit. The request remains unresolved until the channel reports the exact committed offset and SQL observation proves every expected row identity once. The public API does not expose an authoritative per-request absence lookup, so the REST adapter never invents proven-absence evidence after an ambiguous request. The runtime keeps `streamingTransportLinked=false` until the commercial same-SHA matrix validates the complete sequence.
+An append success proves service receipt only. It does not prove target commit. The request remains unresolved until the channel reports the exact committed offset and SQL observation proves every expected row identity once. The public API does not expose an authoritative per-request absence lookup, so the REST adapter never invents proven-absence evidence after an ambiguous request. The profile remains experimental until the commercial same-SHA matrix validates the complete sequence.
 
 ## Admission contract
 
@@ -405,9 +411,11 @@ Deterministic PUT/GET, lease, claim, landing, promotion, manifest, receipt, ABA,
 
 ### Fail-closed admission
 
-There is no officially supported Go SDK or high-performance REST client for Snowpipe Streaming: the `database/sql` gosnowflake driver speaks the query API, not the channel append protocol. Proving delivery from a build with no append transport would mean trusting local continuation/offset tokens — token theater. WALlaby refuses that. `ManagedStreamingTransportAvailable()` is a compile-time constant that is **false** until a reviewed high-performance append transport is linked, and both runner admission and destination `Open` **fail closed** with `ErrManagedStreamingTransportUnavailable` before any network side effect. The full admission contract (DSN, JWT, session parameters, identifiers, schema contract, limits, and the typed `transport` declaration) is still validated first, so a misconfiguration produces its own precise error rather than the blanket refusal. Flipping the constant is a promotion action that must ship a concrete append transport and pass the same-SHA live recovery matrix.
+The reviewed REST adapter is assembled only in builds tagged `snowpipe_streaming_rest_experimental`. Default builds exclude the adapter and return `ErrManagedStreamingTransportUnavailable` before SQL, HTTP, or JWT work. Tagged builds also require the deployment-owned base Snowflake policy, the separate Streaming REST capability, an exact policy ConfigMap value for Kubernetes workers, and the dispatcher grant. A flow cannot enable any of these gates.
 
-### Delivery protocol (exercised against the in-memory fake)
+The tagged runtime combines the REST channel transport with Snowflake SQL request, channel, target, and receipt authority. Admission reloads the complete catalog, validates exact object types and definitions, and binds the catalog, configuration, and public-key policy fingerprints. Initialize, apply, reconcile, and cleanup repeat live session and catalog validation. Tagged assembly is experimental evidence, not reviewed promotion.
+
+### Delivery protocol
 
 A committed transaction becomes deterministic append rows. Each row carries the delivery identity, offset token, ordinal, and row hash. The row hash identifies target rows. The offset token does not prove commit.
 
@@ -429,7 +437,73 @@ An absent receipt remains *not applied*. Target rows without a matching committe
 
 ### Provisioned objects
 
-The profile admits one append target table, pipe, receipt table, channel-state table, and request-journal table. The channel and request authority objects are Hybrid Tables with enforced keys. The request journal uses the current schema only. It stores immutable request identity, producer fence, phase version, and response evidence. The configured request-journal creation timestamp is part of the destination identity. Existing blind-upsert or non-enforcing control schemas are rejected rather than upgraded.
+The profile admits one standard append-only changelog target table, one pipe, one Hybrid receipt table, one Hybrid channel-state table, and one Hybrid request-journal table. The channel and request authority tables use enforced keys. The request journal uses the current schema only. It stores immutable request identity, producer fence, phase version, and response evidence. The configured request-journal creation timestamp is part of the destination identity. Existing blind-upsert or non-enforcing control schemas are rejected rather than upgraded.
+
+The append target is a standard table, not a Hybrid table. The pipe definition must have this exact source and target shape, with no transform, comment, extra statement, or unadmitted option:
+
+```sql
+CREATE PIPE <pipe> AS
+COPY INTO <standard_append_target>
+FROM TABLE(DATA_SOURCE(TYPE => 'STREAMING'));
+```
+
+The current control-table DDL is generated by `managedStreamCurrentSchemaDDL`. It requires exact data types, `NUMBER(38,0)` precision and scale, exact `VARCHAR` widths, and `TIMESTAMP_TZ(9)` precision. The channel primary key is `(FLOW_INCARNATION_ID, DESTINATION_REVISION_ID, CHANNEL_NAME)`. The request journal primary key is `REQUEST_ID`, with a unique key on `(FLOW_INCARNATION_ID, DESTINATION_REVISION_ID, LOGICAL_BATCH_ID, ATTEMPT)`. Provision the control tables as Hybrid tables. Do not use standard control tables, unenforced constraints, nullable columns, defaults, generated columns, extra constraints, or alternate widths.
+
+```sql
+CREATE HYBRID TABLE <channel_state> (
+  FLOW_INCARNATION_ID VARCHAR NOT NULL,
+  DESTINATION_REVISION_ID VARCHAR NOT NULL,
+  CHANNEL_NAME VARCHAR NOT NULL,
+  PIPE_NAME VARCHAR NOT NULL,
+  PIPE_REVISION VARCHAR NOT NULL,
+  CHANNEL_REVISION NUMBER(38,0) NOT NULL,
+  CONTINUATION_TOKEN VARCHAR NOT NULL,
+  COMMITTED_OFFSET_TOKEN VARCHAR NOT NULL,
+  LOGICAL_BATCH_ID VARCHAR NOT NULL,
+  ROWS_CONTENT_HASH VARCHAR(64) NOT NULL,
+  REQUEST_ID VARCHAR NOT NULL,
+  STATE_VERSION NUMBER(38,0) NOT NULL,
+  UPDATED_AT TIMESTAMP_TZ(9) NOT NULL,
+  CONSTRAINT WALLABY_STREAM_CHANNEL_PK PRIMARY KEY
+    (FLOW_INCARNATION_ID, DESTINATION_REVISION_ID, CHANNEL_NAME)
+);
+
+CREATE HYBRID TABLE <channel_state>_REQUESTS (
+  REQUEST_ID VARCHAR NOT NULL,
+  FLOW_ID VARCHAR NOT NULL,
+  FLOW_INCARNATION_ID VARCHAR NOT NULL,
+  SOURCE_LINEAGE_ID VARCHAR NOT NULL,
+  DESTINATION_REVISION_ID VARCHAR NOT NULL,
+  LOGICAL_BATCH_ID VARCHAR NOT NULL,
+  POSITION_ID VARCHAR NOT NULL,
+  CONTENT_HASH VARCHAR(64) NOT NULL,
+  MANIFEST_HASH VARCHAR(64) NOT NULL,
+  ROWS_CONTENT_HASH VARCHAR(64) NOT NULL,
+  ROW_COUNT NUMBER(38,0) NOT NULL,
+  CHANNEL_NAME VARCHAR NOT NULL,
+  PIPE_NAME VARCHAR NOT NULL,
+  CHANNEL_REVISION NUMBER(38,0) NOT NULL,
+  PIPE_REVISION VARCHAR NOT NULL,
+  INPUT_CONTINUATION_TOKEN VARCHAR NOT NULL,
+  EXPECTED_PREVIOUS_COMMITTED_OFFSET_TOKEN VARCHAR NOT NULL,
+  REQUESTED_OFFSET_TOKEN VARCHAR NOT NULL,
+  RESPONSE_CONTINUATION_TOKEN VARCHAR NOT NULL,
+  COMMITTED_OFFSET_TOKEN VARCHAR NOT NULL,
+  GENERATION NUMBER(38,0) NOT NULL,
+  ACQUISITION_ID VARCHAR NOT NULL,
+  LEASE_EPOCH NUMBER(38,0) NOT NULL,
+  ATTEMPT NUMBER(38,0) NOT NULL,
+  PHASE VARCHAR NOT NULL,
+  PHASE_VERSION NUMBER(38,0) NOT NULL,
+  RESPONSE_KIND VARCHAR NOT NULL,
+  RESPONSE_EVIDENCE VARCHAR NOT NULL,
+  CREATED_AT TIMESTAMP_TZ(9) NOT NULL,
+  UPDATED_AT TIMESTAMP_TZ(9) NOT NULL,
+  CONSTRAINT WALLABY_STREAM_REQUEST_PK PRIMARY KEY (REQUEST_ID),
+  CONSTRAINT WALLABY_STREAM_REQUEST_ATTEMPT UNIQUE
+    (FLOW_INCARNATION_ID, DESTINATION_REVISION_ID, LOGICAL_BATCH_ID, ATTEMPT)
+);
+```
 
 The profile requires key-pair JWT over verified HTTPS with OCSP fail-closed. It requires `READ_LATEST_WRITES=true`, `TIMEZONE=UTC`, and an inline-secret-free DSN. It rejects generated columns, generic staging options, DDL, arbitrary start LSNs, and multiple sinks.
 
@@ -439,9 +513,11 @@ Channel state is released by a bounded cleanup pass keyed on durable append rece
 
 ### Evidence gate
 
-The streaming gate reuses the managed Snowflake credentials and skips closed without them. Because no reviewed append transport is linked, the live entrypoints assert the fail-closed refusal rather than proving delivery:
+The streaming gate reuses the managed Snowflake credentials and skips closed without them. Default builds assert the fail-closed refusal. The experimental tagged build runs credential-free assembly separately:
 
 ```bash
+just test-snowpipe-streaming-runtime-wiring
+
 WALLABY_TEST_SNOWFLAKE_MANAGED=1 \
 WALLABY_TEST_SNOWFLAKE_DSN='...' \
 WALLABY_TEST_SNOWFLAKE_VERSION='<reviewed version>' \
@@ -450,4 +526,4 @@ just test-snowflake-streaming-commercial-unpromoted
 
 Credential-free tests cover request identity, pre-send persistence, accepted-then-EOF recovery, visibility lag, proven-absence retry, send-boundary and channel CAS races, token conflict, row rejection evidence, target cardinality, receipt conflict, and atomic cleanup. The SIGKILL test runs the real stream driver in a child process. It fsyncs request, channel, row, and receipt state to a process-shared file, kills the child after actual send-claim or accepted-response persistence, and reconciles that state in a fresh process. These tests prove protocol logic only.
 
-The reviewed high-performance append transport is still absent. Commercial same-SHA delivery evidence does not exist. The profile remains experimental and **fails closed** at admission.
+The REST adapter and deployment JWT provider are linked only in the experimental build-tagged runtime. Default builds exclude runtime assembly. Commercial same-SHA delivery evidence does not exist, so the profile remains experimental and default-deny.

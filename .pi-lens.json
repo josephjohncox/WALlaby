@@ -1,0 +1,10 @@
+{
+  "ignore": [
+    "charts/wallaby/templates/**/*.yaml"
+  ],
+  "helm": {
+    "renderValidation": {
+      "enabled": true
+    }
+  }
+}

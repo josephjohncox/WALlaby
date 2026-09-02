@@ -2,6 +2,7 @@ package snowflake
 
 import (
 	"context"
+	"database/sql"
 	sqldriver "database/sql/driver"
 	"errors"
 	"regexp"
@@ -49,9 +50,44 @@ func TestSQLStreamRequestLookupRejectsDuplicateAuthorityRows(t *testing.T) {
 	}
 	rows := sqlmock.NewRows(streamRequestColumns()).AddRow(driverValues...).AddRow(driverValues...)
 	mock.ExpectQuery(regexp.QuoteMeta(streamRequestLookupSQL(cfg))).WithArgs(request.flowIncarnationID, request.destinationRevisionID, request.logicalBatchID).WillReturnRows(rows)
-	_, _, err = newSQLStreamProtocol(db).LookupRequest(context.Background(), cfg, streamRequestKey{flowIncarnationID: request.flowIncarnationID, destinationRevisionID: request.destinationRevisionID, logicalBatchID: request.logicalBatchID})
+	_, _, err = newSQLStreamProtocol(func(ctx context.Context) (*sql.Conn, error) { return db.Conn(ctx) }).LookupRequest(context.Background(), cfg, streamRequestKey{flowIncarnationID: request.flowIncarnationID, destinationRevisionID: request.destinationRevisionID, logicalBatchID: request.logicalBatchID})
 	if !errors.Is(err, connector.ErrDeliveryConflict) {
 		t.Fatalf("duplicate SQL request rows error=%v, want conflict", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSQLStreamProtocolAcquiresValidatedConnectionForEveryAuthorityOperation(t *testing.T) {
+	cfg := streamTestConfig(t)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	key := streamChannelStateKey{flowIncarnationID: "incarnation", destinationRevisionID: "revision", channelName: "channel"}
+	for range 2 {
+		mock.ExpectQuery(regexp.QuoteMeta(streamRequestUnresolvedSQL(cfg))).
+			WithArgs(key.flowIncarnationID, key.destinationRevisionID, key.channelName).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	}
+	acquisitions := 0
+	protocol := newSQLStreamProtocol(func(ctx context.Context) (*sql.Conn, error) {
+		acquisitions++
+		// Production supplies acquireValidatedStreamConn here. Returning a fresh
+		// sql.Conn in this contract test proves the protocol never retains or
+		// bypasses the acquisition authority between operations.
+		return db.Conn(ctx)
+	})
+	for range 2 {
+		unresolved, err := protocol.HasUnresolvedRequests(context.Background(), cfg, key)
+		if err != nil || unresolved {
+			t.Fatalf("unresolved request lookup=%t/%v", unresolved, err)
+		}
+	}
+	if acquisitions != 2 {
+		t.Fatalf("validated connection acquisitions=%d, want one per authority operation", acquisitions)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -93,7 +129,7 @@ func TestSQLStreamChannelCASUsesAffectedRowsNotPostRead(t *testing.T) {
 				}
 				mock.ExpectQuery(regexp.QuoteMeta(streamChannelStateLookupSQL(cfg))).WithArgs(state.flowIncarnationID, state.destinationRevisionID, state.channelName).WillReturnRows(sqlmock.NewRows(streamChannelStateColumns()).AddRow(row...))
 			}
-			_, applied, err := newSQLStreamProtocol(db).CompareAndSwapChannelState(context.Background(), cfg, managedStreamChannelState{}, state)
+			_, applied, err := newSQLStreamProtocol(func(ctx context.Context) (*sql.Conn, error) { return db.Conn(ctx) }).CompareAndSwapChannelState(context.Background(), cfg, managedStreamChannelState{}, state)
 			if test.wantErr {
 				if !errors.Is(err, connector.ErrDeliveryConflict) {
 					t.Fatalf("CAS error=%v, want conflict", err)

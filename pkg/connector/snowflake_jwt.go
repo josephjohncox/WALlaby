@@ -30,9 +30,7 @@ type snowflakeJWTClaims struct {
 	ExpiresAt int64  `json:"exp"`
 }
 
-// SnowflakeRESTIdentity returns the nonsecret deployment identity used by the
-// Snowpipe Streaming control endpoint. It never exposes the deployment key.
-func (p SnowflakeDeploymentPolicy) SnowflakeRESTIdentity() (account, user, host string, err error) {
+func (p SnowflakeDeploymentPolicy) snowflakeRESTIdentity() (account, user, host string, err error) {
 	unlock, ok := p.lockActive()
 	if !ok {
 		return "", "", "", ErrSnowflakePolicyInvalid
@@ -41,9 +39,7 @@ func (p SnowflakeDeploymentPolicy) SnowflakeRESTIdentity() (account, user, host 
 	return p.account, p.user, p.host, nil
 }
 
-// SnowflakeKeyPairJWT signs a short-lived Snowflake KEYPAIR_JWT with the
-// deployment-owned RSA key. Callers receive only the serialized token.
-func (p SnowflakeDeploymentPolicy) SnowflakeKeyPairJWT(now time.Time, ttl time.Duration) (string, error) {
+func (p SnowflakeDeploymentPolicy) snowflakeKeyPairJWT(now time.Time, ttl time.Duration) (string, error) {
 	if ttl < time.Second || ttl > MaxSnowflakeKeyPairJWTTTL {
 		return "", errSnowflakeJWTInvalid
 	}
@@ -89,4 +85,22 @@ func (p SnowflakeDeploymentPolicy) SnowflakeKeyPairJWT(now time.Time, ttl time.D
 		return "", errSnowflakeJWTInvalid
 	}
 	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+// SnowflakeRESTIdentity returns the nonsecret identity bound to this opaque
+// Streaming capability. It never exposes the deployment key.
+func (p SnowflakeStreamingRESTPolicy) SnowflakeRESTIdentity() (account, user, host string, err error) {
+	if !p.Enabled() {
+		return "", "", "", ErrSnowflakeStreamingRESTDisabled
+	}
+	return p.policy.snowflakeRESTIdentity()
+}
+
+// SnowflakeKeyPairJWT signs a short-lived KEYPAIR_JWT only through an active
+// deployment-enabled Streaming capability.
+func (p SnowflakeStreamingRESTPolicy) SnowflakeKeyPairJWT(now time.Time, ttl time.Duration) (string, error) {
+	if !p.Enabled() {
+		return "", errSnowflakeJWTInvalid
+	}
+	return p.policy.snowflakeKeyPairJWT(now, ttl)
 }

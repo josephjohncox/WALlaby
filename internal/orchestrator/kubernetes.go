@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -21,6 +22,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	kubernetesscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -40,37 +42,41 @@ const (
 
 // KubernetesConfig configures the Kubernetes job dispatcher.
 type KubernetesConfig struct {
-	KubeconfigPath                  string
-	KubeContext                     string
-	APIServer                       string
-	BearerToken                     string
-	CAFile                          string
-	CAData                          string
-	ClientCertFile                  string
-	ClientKeyFile                   string
-	InsecureSkipTLS                 bool
-	Namespace                       string
-	JobImage                        string
-	JobImagePullPolicy              string
-	JobServiceAccount               string
-	JobAutomountServiceAccountToken bool
-	JobNamePrefix                   string
-	JobTTLSeconds                   int
-	JobBackoffLimit                 int
-	MaxEmptyReads                   int
-	JobLabels                       map[string]string
-	JobAnnotations                  map[string]string
-	JobCommand                      []string
-	JobArgs                         []string
-	JobEnv                          map[string]string
-	JobEnvFrom                      []string
-	SnowflakeEnabled                bool
-	SnowflakeAccount                string
-	SnowflakeUser                   string
-	SnowflakeHost                   string
-	SnowflakePrivateKeyFile         string
-	SnowflakePrivateKeySecretName   string
-	SnowflakePrivateKeySecretKey    string
+	KubeconfigPath                      string
+	KubeContext                         string
+	APIServer                           string
+	BearerToken                         string
+	CAFile                              string
+	CAData                              string
+	ClientCertFile                      string
+	ClientKeyFile                       string
+	InsecureSkipTLS                     bool
+	Namespace                           string
+	JobImage                            string
+	JobImagePullPolicy                  string
+	JobServiceAccount                   string
+	JobAutomountServiceAccountToken     bool
+	JobNamePrefix                       string
+	JobTTLSeconds                       int
+	JobBackoffLimit                     int
+	MaxEmptyReads                       int
+	JobLabels                           map[string]string
+	JobAnnotations                      map[string]string
+	JobCommand                          []string
+	JobArgs                             []string
+	JobEnv                              map[string]string
+	JobEnvFrom                          []string
+	SnowflakeEnabled                    bool
+	SnowflakeStreamingRESTEnabled       bool
+	SnowflakeStreamingRESTConfigMapName string
+	SnowflakeStreamingRESTConfigMapKey  string
+	SnowflakeAccount                    string
+	SnowflakeUser                       string
+	SnowflakeHost                       string
+	SnowflakePrivateKeyFile             string
+	SnowflakePrivateKeySecretName       string
+	SnowflakePrivateKeySecretKey        string
+	SnowflakePolicyFingerprint          string
 }
 
 // KubernetesDispatcher triggers flow workers as Kubernetes Jobs.
@@ -84,6 +90,15 @@ type KubernetesDispatcher struct {
 func NewKubernetesDispatcher(ctx context.Context, cfg KubernetesConfig) (*KubernetesDispatcher, error) {
 	if cfg.JobImage == "" {
 		return nil, errors.New("kubernetes job image is required")
+	}
+	if cfg.SnowflakeStreamingRESTEnabled && !cfg.SnowflakeEnabled {
+		return nil, errors.New("kubernetes Snowpipe Streaming REST requires general Snowflake execution")
+	}
+	if cfg.SnowflakeStreamingRESTEnabled && strings.TrimSpace(cfg.SnowflakePolicyFingerprint) == "" {
+		return nil, errors.New("kubernetes Snowpipe Streaming REST requires the deployment public-key policy fingerprint")
+	}
+	if strings.TrimSpace(cfg.SnowflakeStreamingRESTConfigMapName) == "" || strings.TrimSpace(cfg.SnowflakeStreamingRESTConfigMapKey) == "" {
+		return nil, errors.New("kubernetes dispatch requires a stable Streaming policy ConfigMap name and key")
 	}
 	if cfg.SnowflakeEnabled {
 		for name, value := range map[string]string{
@@ -155,6 +170,14 @@ func (k *KubernetesDispatcher) enqueue(ctx context.Context, flowID string, gener
 		}
 		return fmt.Errorf("existing kubernetes job %q has non-authoritative ownership: %w", jobName, err)
 	}
+	desired := k.desiredJob(flowID, jobName, generation)
+	expectedDigest := desired.Annotations["wallaby.snowflake-policy-digest"]
+	if existing.Annotations["wallaby.snowflake-policy-digest"] != expectedDigest || existing.Spec.Template.Annotations["wallaby.snowflake-policy-digest"] != expectedDigest {
+		return fmt.Errorf("existing kubernetes job %q has a stale Snowflake policy or pod template digest", jobName)
+	}
+	if canonicalJobTemplateDigest(existing) != canonicalJobTemplateDigest(desired) {
+		return fmt.Errorf("existing kubernetes job %q has a non-authoritative worker pod template", jobName)
+	}
 	// An existing generation Job is durable proof that lifecycle dispatch
 	// happened. Run-once Jobs use unique names and do not share this path.
 	return nil
@@ -214,7 +237,7 @@ func (k *KubernetesDispatcher) CancelFlow(ctx context.Context, flowID string) er
 	return k.waitForJobDeletion(ctx, jobName, 30*time.Second)
 }
 
-func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName string, generation int64) error {
+func (k *KubernetesDispatcher) desiredJob(flowID, jobName string, generation int64) *batchv1.Job {
 	executionID := jobName
 	generationText := strconv.FormatInt(generation, 10)
 	// User metadata is applied first. The authoritative ownership keys are
@@ -238,9 +261,19 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 	if len(command) == 0 {
 		command = []string{"/usr/local/bin/wallaby-worker"}
 	}
-	args := authoritativeWorkerArgsWithSnowflake(k.cfg.JobArgs, flowID, generation, executionID, k.cfg.MaxEmptyReads, k.cfg.SnowflakeEnabled, k.cfg.SnowflakeAccount, k.cfg.SnowflakeUser, k.cfg.SnowflakeHost, k.cfg.SnowflakePrivateKeyFile)
+	args := authoritativeWorkerArgsWithSnowflake(k.cfg.JobArgs, flowID, generation, executionID, k.cfg.MaxEmptyReads, k.cfg.SnowflakeEnabled, k.cfg.SnowflakeStreamingRESTEnabled, k.cfg.SnowflakeAccount, k.cfg.SnowflakeUser, k.cfg.SnowflakeHost, k.cfg.SnowflakePrivateKeyFile, k.cfg.SnowflakePolicyFingerprint)
+	policyDigest := k.jobPolicyDigest(command, args)
+	annotations["wallaby.snowflake-policy-digest"] = policyDigest
 
-	env := mapToEnvVars(k.cfg.JobEnv)
+	jobEnv := sanitizedWorkerJobEnv(k.cfg.JobEnv)
+	env := mapToEnvVars(jobEnv)
+	env = append(env, corev1.EnvVar{
+		Name: "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED",
+		ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: k.cfg.SnowflakeStreamingRESTConfigMapName},
+			Key:                  k.cfg.SnowflakeStreamingRESTConfigMapKey,
+		}},
+	})
 	envFrom := parseEnvFrom(k.cfg.JobEnvFrom)
 
 	container := corev1.Container{
@@ -251,7 +284,7 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 	if k.cfg.SnowflakeEnabled {
 		const keyVolume = "snowflake-private-key"
 		const keyItemPath = "private-key.pem"
-		mode := int32(0o400)
+		mode := int32(0o440)
 		volumes = []corev1.Volume{{
 			Name: keyVolume,
 			VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
@@ -278,8 +311,9 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 			TTLSecondsAfterFinished: optionalInt32(k.cfg.JobTTLSeconds),
 			BackoffLimit:            optionalInt32(k.cfg.JobBackoffLimit),
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: map[string]string{"wallaby.snowflake-policy-digest": policyDigest}},
 				Spec: corev1.PodSpec{
+					SecurityContext:              &corev1.PodSecurityContext{FSGroup: int64Ptr(65532), FSGroupChangePolicy: fsGroupChangePolicyPtr(corev1.FSGroupChangeOnRootMismatch)},
 					ServiceAccountName:           k.cfg.JobServiceAccount,
 					AutomountServiceAccountToken: boolPtr(k.cfg.JobAutomountServiceAccountToken),
 					RestartPolicy:                corev1.RestartPolicyNever,
@@ -290,12 +324,85 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 		},
 	}
 
-	_, err := k.client.BatchV1().Jobs(k.namespace).Create(ctx, job, metav1.CreateOptions{})
+	return job
+}
+
+func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName string, generation int64) error {
+	_, err := k.client.BatchV1().Jobs(k.namespace).Create(ctx, k.desiredJob(flowID, jobName, generation), metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("create kubernetes job: %w", err)
 	}
-
 	return nil
+}
+
+func canonicalJobTemplateDigest(job *batchv1.Job) string {
+	if job == nil {
+		return ""
+	}
+	// Kubernetes stores the API-defaulted template. Apply the same registered
+	// defaulting functions before comparison so a stored default is not treated
+	// as drift. JSON omitempty canonicalizes nil and empty maps/slices while
+	// retaining every nonempty PodTemplateSpec and PodSpec field.
+	canonical := job.DeepCopy()
+	kubernetesscheme.Scheme.Default(canonical)
+	// The Job strategy adds these controller-owned labels after admission. They
+	// identify the Job instance, not its authoritative execution template.
+	// Ignore only these exact API-managed keys; every caller-controlled label
+	// and every PodSpec field remains part of the digest.
+	for _, label := range []string{
+		batchv1.ControllerUidLabel,
+		batchv1.JobNameLabel,
+		"controller-uid",
+		"job-name",
+	} {
+		delete(canonical.Spec.Template.Labels, label)
+	}
+	if len(canonical.Spec.Template.Labels) == 0 {
+		canonical.Spec.Template.Labels = nil
+	}
+	encoded, err := json.Marshal(canonical.Spec.Template)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func (k *KubernetesDispatcher) jobPolicyDigest(command, args []string) string {
+	payload := struct {
+		Image, PullPolicy, ServiceAccount string
+		Command, Args, EnvFrom            []string
+		Env                               map[string]string
+		SnowflakeEnabled, Streaming       bool
+		Account, User, Host, KeyFile      string
+		SecretName, SecretKey             string
+		ConfigMapName, ConfigMapKey       string
+		PolicyFingerprint                 string
+	}{
+		k.cfg.JobImage, k.cfg.JobImagePullPolicy, k.cfg.JobServiceAccount,
+		append([]string(nil), command...), append([]string(nil), args...), append([]string(nil), k.cfg.JobEnvFrom...),
+		sanitizedWorkerJobEnv(k.cfg.JobEnv), k.cfg.SnowflakeEnabled, k.cfg.SnowflakeStreamingRESTEnabled,
+		k.cfg.SnowflakeAccount, k.cfg.SnowflakeUser, k.cfg.SnowflakeHost, k.cfg.SnowflakePrivateKeyFile,
+		k.cfg.SnowflakePrivateKeySecretName, k.cfg.SnowflakePrivateKeySecretKey,
+		k.cfg.SnowflakeStreamingRESTConfigMapName, k.cfg.SnowflakeStreamingRESTConfigMapKey,
+		k.cfg.SnowflakePolicyFingerprint,
+	}
+	encoded, _ := json.Marshal(payload)
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func sanitizedWorkerJobEnv(input map[string]string) map[string]string {
+	output := make(map[string]string, len(input))
+	for name, value := range input {
+		switch name {
+		case "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED", "WALLABY_SNOWFLAKE_STREAMING_REST_ENABLED":
+			continue
+		default:
+			output[name] = value
+		}
+	}
+	return output
 }
 
 func resolveKubeClient(cfg KubernetesConfig) (kubernetes.Interface, string, error) {
@@ -572,17 +679,19 @@ func mergeLabels(base, override map[string]string) map[string]string {
 	return out
 }
 
-func authoritativeWorkerArgsWithSnowflake(args []string, flowID string, generation int64, executionID string, maxEmpty int, snowflakeEnabled bool, account, user, host, privateKeyFile string) []string {
+func authoritativeWorkerArgsWithSnowflake(args []string, flowID string, generation int64, executionID string, maxEmpty int, snowflakeEnabled, streamingRESTEnabled bool, account, user, host, privateKeyFile, policyFingerprint string) []string {
 	reserved := map[string]struct{}{
-		"flow-id":                    {},
-		"generation":                 {},
-		"execution-backend":          {},
-		"execution-id":               {},
-		"snowflake-enabled":          {},
-		"snowflake-account":          {},
-		"snowflake-user":             {},
-		"snowflake-host":             {},
-		"snowflake-private-key-file": {},
+		"flow-id":                          {},
+		"generation":                       {},
+		"execution-backend":                {},
+		"execution-id":                     {},
+		"snowflake-enabled":                {},
+		"snowflake-streaming-rest-granted": {},
+		"snowflake-account":                {},
+		"snowflake-user":                   {},
+		"snowflake-host":                   {},
+		"snowflake-private-key-file":       {},
+		"snowflake-policy-digest":          {},
 	}
 	out := make([]string, 0, len(args)+8)
 	for index := 0; index < len(args); index++ {
@@ -605,10 +714,12 @@ func authoritativeWorkerArgsWithSnowflake(args []string, flowID string, generati
 		"--execution-backend", kubernetesBackend,
 		"--execution-id", executionID,
 		"--snowflake-enabled="+strconv.FormatBool(snowflakeEnabled),
+		"--snowflake-streaming-rest-granted="+strconv.FormatBool(streamingRESTEnabled),
 		"--snowflake-account", account,
 		"--snowflake-user", user,
 		"--snowflake-host", host,
 		"--snowflake-private-key-file", privateKeyFile,
+		"--snowflake-policy-digest", policyFingerprint,
 	)
 	if maxEmpty > 0 && !hasFlag(out, "max-empty-reads") {
 		out = append(out, "--max-empty-reads", strconv.Itoa(maxEmpty))
@@ -674,7 +785,11 @@ func parseEnvFrom(entries []string) []corev1.EnvFromSource {
 	return out
 }
 
-func boolPtr(value bool) *bool { return &value }
+func boolPtr(value bool) *bool    { return &value }
+func int64Ptr(value int64) *int64 { return &value }
+func fsGroupChangePolicyPtr(value corev1.PodFSGroupChangePolicy) *corev1.PodFSGroupChangePolicy {
+	return &value
+}
 
 func optionalInt32(value int) *int32 {
 	if value <= 0 {

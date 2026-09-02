@@ -1,6 +1,10 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +13,7 @@ import (
 
 	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/internal/config"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 func TestWorkerRejectsUnknownRuntimeConfigPath(t *testing.T) {
@@ -80,6 +85,29 @@ func TestWorkerEnvironmentOnlyFlowIDReachesRuntimeConfiguration(t *testing.T) {
 	}
 }
 
+func TestDisabledNonSnowflakeWorkerReachesStartWithoutSnowflakeCredentials(t *testing.T) {
+	t.Setenv("WALLABY_WORKER_FLOW_ID", "non-snowflake-flow")
+	t.Setenv("WALLABY_WORKER_ENV", "test")
+	t.Setenv("WALLABY_WORKER_WORKFLOW_STORE", "memory")
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_ENABLED", "false")
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED", "false")
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_ACCOUNT", "")
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_USER", "")
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_HOST", "")
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_PRIVATE_KEY_FILE", "")
+	t.Setenv("WALLABY_POSTGRES_DSN", "")
+	t.Setenv("WALLABY_WORKER_POSTGRES_DSN", "")
+
+	command := newWallabyWorkerCommand()
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "WALLABY_POSTGRES_DSN is required") {
+		t.Fatalf("disabled non-Snowflake worker start error=%v", err)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "snowflake") {
+		t.Fatalf("disabled non-Snowflake worker unexpectedly required Snowflake credentials: %v", err)
+	}
+}
+
 func TestWorkerFlagsOverrideCurrentEnvironment(t *testing.T) {
 	t.Setenv("WALLABY_WORKER_FLOW_ID", "environment-flow")
 	t.Setenv("WALLABY_WORKER_EXECUTION_BACKEND", "kubernetes")
@@ -114,17 +142,109 @@ func TestWorkerFlagsOverrideCurrentEnvironment(t *testing.T) {
 }
 
 func TestAuthoritativeWorkerSnowflakeFalseOverridesStaleEnabledConfig(t *testing.T) {
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED", "false")
 	command := newWallabyWorkerCommand()
 	if err := command.ParseFlags([]string{"--snowflake-enabled=false", "--snowflake-private-key-file="}); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Snowflake: config.SnowflakeConfig{Enabled: true}}
-	policy, err := resolveWorkerSnowflakePolicy(command, cfg)
+	cfg := &config.Config{Snowflake: config.SnowflakeConfig{Enabled: true, StreamingREST: config.SnowflakeStreamingRESTConfig{Enabled: true}}}
+	policy, err := resolveWorkerSnowflakePolicy(command, cfg, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if policy.Enabled() || cfg.Snowflake.PrivateKeyFile != "" || cfg.Snowflake.Enabled {
+	if policy.Enabled() || cfg.Snowflake.PrivateKeyFile != "" || cfg.Snowflake.Enabled || cfg.Snowflake.StreamingREST.Enabled {
 		t.Fatalf("authoritative false was widened: policy=%+v config=%+v", policy, cfg.Snowflake)
+	}
+}
+
+func TestKubernetesWorkerRequiresExactStreamingPolicyConfigMapValue(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		present bool
+		value   string
+	}{
+		{name: "missing"},
+		{name: "numeric alias", present: true, value: "1"},
+		{name: "uppercase alias", present: true, value: "TRUE"},
+		{name: "whitespace", present: true, value: " true "},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.present {
+				t.Setenv("WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED", test.value)
+			}
+			command := newWallabyWorkerCommand()
+			if err := command.ParseFlags([]string{"--snowflake-enabled=false", "--snowflake-streaming-rest-granted=false"}); err != nil {
+				t.Fatal(err)
+			}
+			_, err := resolveWorkerSnowflakePolicy(command, &config.Config{}, true)
+			if err == nil || !strings.Contains(err.Error(), "requires exact WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestWorkerStreamingDeploymentGateFalseDominatesStandaloneConfig(t *testing.T) {
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED", "false")
+	command := newWallabyWorkerCommand()
+	if err := command.ParseFlags([]string{"--snowflake-enabled=false"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Snowflake: config.SnowflakeConfig{Enabled: true, StreamingREST: config.SnowflakeStreamingRESTConfig{Enabled: true}}}
+	policy, err := resolveWorkerSnowflakePolicy(command, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = policy.Close() }()
+	if policy.Enabled() || cfg.Snowflake.Enabled || cfg.Snowflake.StreamingREST.Enabled {
+		t.Fatalf("standalone false gate was widened: policy=%v config=%+v", policy.Enabled(), cfg.Snowflake)
+	}
+}
+
+func TestKubernetesWorkerStreamingTrueRequiresAllThreeAuthorities(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "snowflake-key.pem")
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Snowflake: config.SnowflakeConfig{
+		Enabled: true, Account: "account", User: "user", Host: "account.snowflakecomputing.com", PrivateKeyFile: keyPath,
+		StreamingREST: config.SnowflakeStreamingRESTConfig{Enabled: true},
+	}}
+	expected, err := connector.NewSnowflakeDeploymentPolicy(connector.SnowflakeDeploymentConfig{
+		Enabled: true, StreamingRESTEnabled: true, Account: cfg.Snowflake.Account, User: cfg.Snowflake.User, Host: cfg.Snowflake.Host, PrivateKeyFile: keyPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	streaming, err := expected.StreamingRESTPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := streaming.Fingerprint()
+	_ = expected.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED", "true")
+	command := newWallabyWorkerCommand()
+	if err := command.ParseFlags([]string{"--snowflake-enabled=true", "--snowflake-streaming-rest-granted=true", "--snowflake-policy-digest", digest}); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := resolveWorkerSnowflakePolicy(command, &cfg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = policy.Close() }()
+	if !policy.Enabled() || !cfg.Snowflake.StreamingREST.Enabled {
+		t.Fatalf("matching three-way authority was not admitted: policy=%v config=%+v", policy.Enabled(), cfg.Snowflake)
 	}
 }
 
