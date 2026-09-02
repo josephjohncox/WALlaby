@@ -33,6 +33,8 @@ type managedTableSnapshot struct {
 type managedColumnSnapshot struct {
 	dataType               string
 	characterMaximumLength int64
+	numericPrecision       int64
+	numericScale           int64
 	datetimePrecision      int64
 	nullable               bool
 	hasDefault             bool

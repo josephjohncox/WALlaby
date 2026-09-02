@@ -92,9 +92,23 @@ func validateManagedStreamCatalogSnapshot(cfg streamConfig, catalog managedStrea
 	}
 	normalizedPipe := normalizeStagedPipeSQL(catalog.pipe.definition)
 	normalizedTarget := normalizeStagedPipeSQL(managedSnowflakeStreamQualifiedTable(cfg, cfg.table))
-	exactTarget := "copyinto" + normalizedTarget + "from"
-	if strings.Count(normalizedPipe, "copyinto") != 1 || strings.Count(normalizedPipe, exactTarget) != 1 || !strings.Contains(normalizedPipe, "datasource(type=>\"streaming\")") && !strings.Contains(normalizedPipe, "datasource(type=>'streaming')") {
-		return errors.New("managed streaming Snowflake pipe must COPY into the exact target from DATA_SOURCE(TYPE=>'STREAMING')")
+	prefixes := []string{
+		"copyinto" + normalizedTarget + "fromtable(data_source(type=>'streaming'))",
+		"copyinto" + normalizedTarget + "fromtable(data_source(type=>\"streaming\"))",
+	}
+	matched := ""
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(normalizedPipe, prefix) {
+			matched = prefix
+			break
+		}
+	}
+	if strings.Count(normalizedPipe, "copyinto") != 1 || matched == "" {
+		return errors.New("managed streaming Snowflake pipe must COPY into the exact target from TABLE(DATA_SOURCE(TYPE=>'STREAMING'))")
+	}
+	suffix := strings.TrimPrefix(normalizedPipe, matched)
+	if suffix != "" && suffix != "match_by_column_name=case_sensitive" {
+		return errors.New("managed streaming Snowflake pipe definition contains an unadmitted option or transformation")
 	}
 
 	managedCfg := streamCatalogManagedConfig(cfg)
@@ -131,7 +145,7 @@ func validateStreamTable(cfg streamConfig, managedCfg managedConfig, kind string
 	for _, column := range columns {
 		value, ok := table.columns[column]
 		contract := contracts[column]
-		if !ok || value.nullable || value.hasDefault || value.generated || value.dataType != contract.dataType || contract.characterMaximumLength >= 0 && value.characterMaximumLength != contract.characterMaximumLength || contract.datetimePrecision >= 0 && value.datetimePrecision != contract.datetimePrecision {
+		if !ok || value.nullable || value.hasDefault || value.generated || value.dataType != contract.dataType || contract.characterMaximumLength >= 0 && value.characterMaximumLength != contract.characterMaximumLength || contract.numericPrecision >= 0 && value.numericPrecision != contract.numericPrecision || contract.numericScale >= 0 && value.numericScale != contract.numericScale || contract.datetimePrecision >= 0 && value.datetimePrecision != contract.datetimePrecision {
 			return fmt.Errorf("managed streaming Snowflake %s column %s differs", kind, column)
 		}
 	}
@@ -153,21 +167,30 @@ func validateStreamTable(cfg streamConfig, managedCfg managedConfig, kind string
 type managedStreamColumnContract struct {
 	dataType               string
 	characterMaximumLength int64
+	numericPrecision       int64
+	numericScale           int64
 	datetimePrecision      int64
 }
 
 func managedStreamColumnContracts(kind string, columns []string) map[string]managedStreamColumnContract {
 	contracts := make(map[string]managedStreamColumnContract, len(columns))
 	for _, column := range columns {
-		contracts[column] = managedStreamColumnContract{dataType: "VARCHAR", characterMaximumLength: 16 << 20, datetimePrecision: -1}
+		contracts[column] = managedStreamColumnContract{dataType: "VARCHAR", characterMaximumLength: 16 << 20, numericPrecision: -1, numericScale: -1, datetimePrecision: -1}
 	}
 	set := func(dataType string, characterLength, datetimePrecision int64, names ...string) {
 		for _, name := range names {
-			contracts[name] = managedStreamColumnContract{dataType: dataType, characterMaximumLength: characterLength, datetimePrecision: datetimePrecision}
+			contracts[name] = managedStreamColumnContract{dataType: dataType, characterMaximumLength: characterLength, numericPrecision: -1, numericScale: -1, datetimePrecision: datetimePrecision}
 		}
 	}
 	set("VARCHAR", 64, -1, "CONTENT_HASH", "SCHEMA_CONTRACT_HASH", "CATALOG_FINGERPRINT", "MANIFEST_HASH", "ROWS_CONTENT_HASH", "ROW_HASH")
-	set("NUMBER(38,0)", -1, -1, "APPEND_ORDINAL", "TRANSACTION_ID", "FRAGMENT_ORDINAL", "RECORD_ORDINAL", "GENERATION", "LEASE_EPOCH", "FRAGMENT_COUNT", "RECORD_COUNT", "CHANNEL_REVISION", "STATE_VERSION", "ROW_COUNT", "ATTEMPT", "PHASE_VERSION")
+	numericColumns := []string{"APPEND_ORDINAL", "TRANSACTION_ID", "FRAGMENT_ORDINAL", "RECORD_ORDINAL", "GENERATION", "LEASE_EPOCH", "FRAGMENT_COUNT", "RECORD_COUNT", "CHANNEL_REVISION", "STATE_VERSION", "ROW_COUNT", "ATTEMPT", "PHASE_VERSION"}
+	set("NUMBER(38,0)", -1, -1, numericColumns...)
+	for _, name := range numericColumns {
+		contract := contracts[name]
+		contract.numericPrecision = 38
+		contract.numericScale = 0
+		contracts[name] = contract
+	}
 	set("BOOLEAN", -1, -1, "TOMBSTONE")
 	set("VARIANT", -1, -1, "KEY_JSON", "BEFORE_IMAGE", "AFTER_IMAGE")
 	set("ARRAY", -1, -1, "UNCHANGED_TOAST")
@@ -217,7 +240,7 @@ func canonicalManagedStreamTable(table managedTableSnapshot) string {
 	values = append(values, table.kind, table.ownerRole, table.createdOn, table.comment, table.definition, strconv.Itoa(table.otherConstraintCount))
 	columns := make([]string, 0, len(table.columns))
 	for name, column := range table.columns {
-		columns = append(columns, fmt.Sprintf("%s:%s:%d:%d:%t:%t:%t", name, column.dataType, column.characterMaximumLength, column.datetimePrecision, column.nullable, column.hasDefault, column.generated))
+		columns = append(columns, fmt.Sprintf("%s:%s:%d:%d:%d:%d:%t:%t:%t", name, column.dataType, column.characterMaximumLength, column.numericPrecision, column.numericScale, column.datetimePrecision, column.nullable, column.hasDefault, column.generated))
 	}
 	sort.Strings(columns)
 	values = append(values, columns...)

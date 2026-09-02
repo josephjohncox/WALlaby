@@ -54,14 +54,19 @@ func (p managedStreamPlan) appendReceiptKey() streamReceiptKey {
 // proves are missing, verifies SQL-observed completeness, and records a durable
 // receipt. Every step is idempotent so a replay after any crash window converges
 // on exactly one append receipt.
-func (d *streamDriver) apply(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (evidence connector.DeliveryEvidence, resultErr error) {
+//
+//nolint:unused // credential-free protocol tests exercise planning plus applyPlan through this seam.
+func (d *streamDriver) apply(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (connector.DeliveryEvidence, error) {
 	plan, err := planManagedStreamTransaction(d.cfg, intent, transaction)
 	if err != nil {
 		return connector.DeliveryEvidence{}, err
 	}
 	plan.catalogFingerprint = d.catalogFingerprint
 	plan.receipt.catalogFingerprint = d.catalogFingerprint
+	return d.applyPlan(ctx, intent, plan)
+}
 
+func (d *streamDriver) applyPlan(ctx context.Context, intent connector.DeliveryIntent, plan managedStreamPlan) (evidence connector.DeliveryEvidence, resultErr error) {
 	ctx, endSpan := telemetry.StartSnowflakeManagedSpan(ctx, "channel", plan.identity.externalID, intent.LogicalBatchID, int64(plan.rowCount), plan.encodedBytes)
 	defer func() { endSpan(resultErr) }()
 	if err := ctx.Err(); err != nil {

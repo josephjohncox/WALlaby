@@ -96,8 +96,8 @@ ORDER BY ORDINAL_POSITION`, d.managedConfig.schema, table)
 		}
 		snapshot.columns[canonicalName] = managedColumnSnapshot{
 			dataType: dataType, characterMaximumLength: characterMaximumLength.Int64,
-			datetimePrecision: datetimePrecision.Int64,
-			nullable:          strings.EqualFold(nullable, "YES"), hasDefault: defaultValue.Valid,
+			numericPrecision: precision.Int64, numericScale: scale.Int64, datetimePrecision: datetimePrecision.Int64,
+			nullable: strings.EqualFold(nullable, "YES"), hasDefault: defaultValue.Valid,
 			generated: strings.EqualFold(identity, "YES"),
 		}
 	}

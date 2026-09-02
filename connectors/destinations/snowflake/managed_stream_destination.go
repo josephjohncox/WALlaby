@@ -155,7 +155,10 @@ func (d *Destination) openManagedStreamRuntime(ctx context.Context, db *sql.DB, 
 	if err != nil {
 		return nil, "", err
 	}
-	return &composedStreamProtocol{streamTransport: transport, streamStateStore: newSQLStreamProtocol(db)}, fingerprint, nil
+	acquire := func(acquireCtx context.Context) (*sql.Conn, error) {
+		return d.acquireValidatedStreamConn(acquireCtx, cfg, policy, fingerprint)
+	}
+	return &composedStreamProtocol{streamTransport: transport, streamStateStore: newSQLStreamProtocol(acquire)}, fingerprint, nil
 }
 
 func managedStreamRuntimeFingerprint(cfg streamConfig, catalogFingerprint string, policy connector.SnowflakeStreamingRESTPolicy) (string, error) {
@@ -168,26 +171,38 @@ func managedStreamRuntimeFingerprint(cfg streamConfig, catalogFingerprint string
 }
 
 func (d *Destination) validateStreamRuntime(ctx context.Context, snapshot streamRuntimeSnapshot) error {
-	conn, err := snapshot.db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("acquire managed streaming Snowflake validation session: %w", err)
-	}
-	defer func() { _ = conn.Close() }()
-	if err := d.validateManagedSnowflakeTransactions(ctx, conn); err != nil {
-		return err
-	}
-	catalogFingerprint, err := validateManagedStreamCatalog(ctx, conn, snapshot.cfg)
+	conn, err := d.acquireValidatedStreamConn(ctx, snapshot.cfg, snapshot.policy, snapshot.catalogFingerprint)
 	if err != nil {
 		return err
 	}
-	fingerprint, err := managedStreamRuntimeFingerprint(snapshot.cfg, catalogFingerprint, snapshot.policy)
+	return conn.Close()
+}
+
+func (d *Destination) acquireValidatedStreamConn(ctx context.Context, cfg streamConfig, policy connector.SnowflakeStreamingRESTPolicy, expectedFingerprint string) (*sql.Conn, error) {
+	conn, err := d.acquireManagedSnowflakeConn(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if fingerprint != snapshot.catalogFingerprint {
-		return fmt.Errorf("%w: managed streaming Snowflake runtime or catalog fingerprint changed", connector.ErrDeliveryConflict)
+	failed := true
+	defer func() {
+		if failed {
+			discardManagedSnowflakeConn(conn)
+			_ = conn.Close()
+		}
+	}()
+	catalogFingerprint, err := validateManagedStreamCatalog(ctx, conn, cfg)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	fingerprint, err := managedStreamRuntimeFingerprint(cfg, catalogFingerprint, policy)
+	if err != nil {
+		return nil, err
+	}
+	if fingerprint != expectedFingerprint {
+		return nil, fmt.Errorf("%w: managed streaming Snowflake runtime or catalog fingerprint changed", connector.ErrDeliveryConflict)
+	}
+	failed = false
+	return conn, nil
 }
 
 func (d *Destination) newStreamDriver(snapshot streamRuntimeSnapshot) *streamDriver {
@@ -195,10 +210,11 @@ func (d *Destination) newStreamDriver(snapshot streamRuntimeSnapshot) *streamDri
 }
 
 type preparedManagedStreamTransaction struct {
-	destination *Destination
-	intent      connector.DeliveryIntent
-	transaction connector.SourceTransaction
-	plan        managedStreamPlan
+	destination        *Destination
+	intent             connector.DeliveryIntent
+	plan               managedStreamPlan
+	runtimeFingerprint string
+	configDigest       string
 }
 
 func (d *Destination) prepareManagedStreaming(ctx context.Context, intent connector.DeliveryIntent, transaction connector.SourceTransaction) (connector.PreparedManagedTransaction, error) {
@@ -214,12 +230,12 @@ func (d *Destination) prepareManagedStreaming(ctx context.Context, intent connec
 	if err != nil {
 		return nil, err
 	}
-	if err := d.validateStreamingSnowflakeReceiptScope(ctx, intent); err != nil {
+	if err := d.validateStreamingSnowflakeReceiptScope(ctx, snapshot, intent); err != nil {
 		return nil, err
 	}
 	plan.catalogFingerprint = snapshot.catalogFingerprint
 	plan.receipt.catalogFingerprint = snapshot.catalogFingerprint
-	return &preparedManagedStreamTransaction{destination: d, intent: intent, transaction: transaction, plan: plan}, nil
+	return &preparedManagedStreamTransaction{destination: d, intent: intent, plan: plan, runtimeFingerprint: snapshot.catalogFingerprint, configDigest: snapshot.cfg.configDigest}, nil
 }
 
 func (p *preparedManagedStreamTransaction) Apply(ctx context.Context) (connector.DeliveryEvidence, error) {
@@ -228,10 +244,13 @@ func (p *preparedManagedStreamTransaction) Apply(ctx context.Context) (connector
 		return connector.DeliveryEvidence{}, err
 	}
 	defer unlock()
+	if snapshot.catalogFingerprint != p.runtimeFingerprint || snapshot.cfg.configDigest != p.configDigest || p.plan.catalogFingerprint != p.runtimeFingerprint || p.plan.receipt.catalogFingerprint != p.runtimeFingerprint {
+		return connector.DeliveryEvidence{}, fmt.Errorf("%w: prepared managed streaming runtime changed before apply", connector.ErrDeliveryConflict)
+	}
 	if err := p.destination.validateStreamRuntime(ctx, snapshot); err != nil {
 		return connector.DeliveryEvidence{}, err
 	}
-	return p.destination.newStreamDriver(snapshot).apply(ctx, p.intent, p.transaction)
+	return p.destination.newStreamDriver(snapshot).applyPlan(ctx, p.intent, p.plan)
 }
 
 func (d *Destination) reconcileManagedStreaming(ctx context.Context, intent connector.DeliveryIntent) (connector.DeliveryDisposition, connector.DeliveryEvidence, error) {
@@ -243,7 +262,7 @@ func (d *Destination) reconcileManagedStreaming(ctx context.Context, intent conn
 	if err := d.validateStreamRuntime(ctx, snapshot); err != nil {
 		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
 	}
-	if err := d.validateStreamingSnowflakeReceiptScope(ctx, intent); err != nil {
+	if err := d.validateStreamingSnowflakeReceiptScope(ctx, snapshot, intent); err != nil {
 		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
 	}
 	return d.newStreamDriver(snapshot).reconcile(ctx, intent)
@@ -261,7 +280,7 @@ func (d *Destination) CleanupManagedStreaming(ctx context.Context, flowIncarnati
 	if err := d.validateStreamRuntime(ctx, snapshot); err != nil {
 		return 0, err
 	}
-	if err := d.validateStreamingSnowflakeReceiptScope(ctx, connector.DeliveryIntent{FlowIncarnationID: flowIncarnationID, LogicalBatchID: "scope-validation"}); err != nil {
+	if err := d.validateStreamingSnowflakeReceiptScope(ctx, snapshot, connector.DeliveryIntent{FlowIncarnationID: flowIncarnationID, LogicalBatchID: "scope-validation"}); err != nil {
 		return 0, err
 	}
 	return d.newStreamDriver(snapshot).cleanup(ctx, flowIncarnationID)
@@ -274,7 +293,7 @@ func streamingNotInitializedError() error {
 	return fmt.Errorf("managed streaming Snowflake destination not initialized: %w", ErrManagedStreamingTransportUnavailable)
 }
 
-func (d *Destination) validateStreamingSnowflakeReceiptScope(ctx context.Context, intent connector.DeliveryIntent) error {
+func (d *Destination) validateStreamingSnowflakeReceiptScope(ctx context.Context, snapshot streamRuntimeSnapshot, intent connector.DeliveryIntent) error {
 	flowIncarnationID := strings.TrimSpace(intent.FlowIncarnationID)
 	if flowIncarnationID == "" {
 		return errors.New("managed streaming Snowflake flow incarnation is required")
@@ -287,15 +306,15 @@ func (d *Destination) validateStreamingSnowflakeReceiptScope(ctx context.Context
 		}
 		return nil
 	}
-	conn, err := d.acquireManagedSnowflakeConn(ctx)
+	conn, err := d.acquireValidatedStreamConn(ctx, snapshot.cfg, snapshot.policy, snapshot.catalogFingerprint)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = conn.Close() }()
 	var foreign int
-	query := "SELECT COUNT(*) FROM " + managedSnowflakeStreamQualifiedTable(d.streamConfig, d.streamConfig.receiptsTable) +
+	query := "SELECT COUNT(*) FROM " + managedSnowflakeStreamQualifiedTable(snapshot.cfg, snapshot.cfg.receiptsTable) +
 		" WHERE \"FLOW_ID\" <> ? OR \"FLOW_INCARNATION_ID\" <> ?"
-	if err := conn.QueryRowContext(ctx, query, d.streamConfig.flowID, flowIncarnationID).Scan(&foreign); err != nil {
+	if err := conn.QueryRowContext(ctx, query, snapshot.cfg.flowID, flowIncarnationID).Scan(&foreign); err != nil {
 		return fmt.Errorf("validate managed streaming Snowflake receipt flow scope: %w", err)
 	}
 	if foreign != 0 {

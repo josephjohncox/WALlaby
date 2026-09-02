@@ -114,6 +114,42 @@ func TestExperimentalStreamingRuntimeRejectsMissingComposedProtocol(t *testing.T
 	}
 }
 
+func TestExperimentalPreparedStreamingRejectsRuntimeDriftBeforeSideEffects(t *testing.T) {
+	policy := experimentalStreamPolicy(t, true)
+	streamingPolicy, err := policy.StreamingRESTPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeStreamProtocol()
+	destination := NewDestination(policy)
+	destination.spec = experimentalStreamSpec(t)
+	destination.db = &sql.DB{}
+	destination.managedProfile = connector.ManagedProfilePostgresToSnowflakeStreamingRestAppendV1
+	destination.streamRuntimeProtocol = fake
+	destination.streamConfig = streamTestConfig(t)
+	destination.streamConfig.configDigest = strings.Repeat("c", 64)
+	destination.streamCatalogFingerprint = strings.Repeat("b", 64)
+	destination.streamingPolicy = streamingPolicy
+	prepared := &preparedManagedStreamTransaction{
+		destination: destination,
+		intent:      connector.DeliveryIntent{LogicalBatchID: "prepared-drift"},
+		plan: managedStreamPlan{
+			catalogFingerprint: strings.Repeat("a", 64),
+			receipt:            managedStreamReceipt{catalogFingerprint: strings.Repeat("a", 64)},
+		},
+		runtimeFingerprint: strings.Repeat("a", 64),
+		configDigest:       strings.Repeat("c", 64),
+	}
+	if _, err := prepared.Apply(context.Background()); !errors.Is(err, connector.ErrDeliveryConflict) {
+		t.Fatalf("prepared runtime drift error=%v, want conflict", err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.appendedPayloads) != 0 || len(fake.requests) != 0 || len(fake.receipts) != 0 {
+		t.Fatalf("prepared drift produced side effects: appends=%d requests=%d receipts=%d", len(fake.appendedPayloads), len(fake.requests), len(fake.receipts))
+	}
+}
+
 func TestExperimentalStreamingRuntimeAssemblyComposesRESTAndSQLAndRollsBack(t *testing.T) {
 	spec := experimentalStreamSpec(t)
 	policy := experimentalStreamPolicy(t, true)

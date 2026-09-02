@@ -2,6 +2,7 @@ package snowflake
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
@@ -77,7 +78,7 @@ func TestSnowflakeStreamingRequestJournalCommercialRoundTrip(t *testing.T) {
 		}
 	}
 
-	protocol := newSQLStreamProtocol(db)
+	protocol := newSQLStreamProtocol(func(ctx context.Context) (*sql.Conn, error) { return db.Conn(ctx) })
 	request := managedStreamRequest{
 		requestID: "wallaby-stream-request-" + strings.Repeat("a", 64),
 		flowID:    "commercial-flow", flowIncarnationID: "commercial-incarnation", sourceLineageID: "commercial-lineage",

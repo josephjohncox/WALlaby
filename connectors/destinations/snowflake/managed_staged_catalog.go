@@ -997,7 +997,8 @@ FROM `+informationSchema+`COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDE
 			return managedTableSnapshot{}, fmt.Errorf("staged catalog column: %w", err)
 		}
 		snapshot.columns[canonicalName] = managedColumnSnapshot{
-			dataType: dataType, characterMaximumLength: characterMaximumLength.Int64, datetimePrecision: datetimePrecision.Int64,
+			dataType: dataType, characterMaximumLength: characterMaximumLength.Int64,
+			numericPrecision: precision.Int64, numericScale: scale.Int64, datetimePrecision: datetimePrecision.Int64,
 			nullable: strings.EqualFold(nullable, "YES"), hasDefault: defaultValue.Valid, generated: strings.EqualFold(identity, "YES"),
 		}
 	}
