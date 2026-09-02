@@ -315,6 +315,13 @@ func TestKubernetesExistingJobCanonicalizesAPIDefaults(t *testing.T) {
 	seed := &KubernetesDispatcher{namespace: "default", cfg: cfg}
 	job := seed.desiredJob("orders", buildGenerationJobName("wallaby-worker", "orders", 3), 3)
 	kubernetesscheme.Scheme.Default(job)
+	if job.Spec.Template.Labels == nil {
+		job.Spec.Template.Labels = make(map[string]string)
+	}
+	job.Spec.Template.Labels[batchv1.ControllerUidLabel] = "4f25194d-8ba2-4ec8-b5cf-a33773a55824"
+	job.Spec.Template.Labels[batchv1.JobNameLabel] = job.Name
+	job.Spec.Template.Labels["controller-uid"] = "4f25194d-8ba2-4ec8-b5cf-a33773a55824"
+	job.Spec.Template.Labels["job-name"] = job.Name
 	client := fake.NewClientset(job)
 	dispatcher := &KubernetesDispatcher{client: client, namespace: "default", cfg: cfg}
 	if err := dispatcher.EnqueueGeneration(ctx, "orders", 3); err != nil {

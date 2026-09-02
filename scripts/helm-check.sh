@@ -16,6 +16,20 @@ require_env_value() {
 	fi
 }
 
+require_env_configmap_ref() {
+	file=$1
+	name=$2
+	configmap=$3
+	key=$4
+	block=$(grep -A4 -m1 "name: $name" "$file" || true)
+	for required in 'valueFrom:' 'configMapKeyRef:' "name: \"$configmap\"" "key: \"$key\""; do
+		printf '%s\n' "$block" | grep -q "$required" || {
+			echo "$file lacks exact ConfigMap reference $name -> $configmap/$key" >&2
+			exit 1
+		}
+	done
+}
+
 expect_snowflake_value_failure() {
 	name=$1
 	if helm template wallaby-ci "$chart" \
@@ -111,7 +125,9 @@ fi
 # Render every worker controller kind with the global policy disabled. The
 # policy ConfigMap and exact worker key reference must still exist.
 for kind in deployment job cronjob; do
-	set -- --set workers.enabled=true --set 'workers.items[0].name=policy-check' --set "workers.items[0].kind=$kind"
+	set -- --set workers.enabled=true --set 'workers.items[0].name=policy-check' --set "workers.items[0].kind=$kind" \
+		--set snowflake.streamingRest.policyConfigMapName=runtime-policy-test \
+		--set snowflake.streamingRest.policyConfigMapKey=streaming-rest-test
 	if [ "$kind" = cronjob ]; then
 		set -- "$@" --set-string 'workers.items[0].schedule=*/5 * * * *'
 	fi
@@ -122,9 +138,7 @@ for kind in deployment job cronjob; do
 	require_env_value "$worker_render" WALLABY_WORKER_SNOWFLAKE_USER ""
 	require_env_value "$worker_render" WALLABY_WORKER_SNOWFLAKE_HOST ""
 	require_env_value "$worker_render" WALLABY_WORKER_SNOWFLAKE_PRIVATE_KEY_FILE /run/secrets/wallaby/snowflake-key.pem
-	grep -q 'name: WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED' "$worker_render" || {
-		echo "$kind worker lacks the mandatory Streaming policy gate" >&2; exit 1;
-	}
+	require_env_configmap_ref "$worker_render" WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED runtime-policy-test streaming-rest-test
 	grep -q 'fsGroup: 65532' "$output_dir/worker-$kind.yaml" || {
 		echo "$kind worker lacks the private-key group context" >&2; exit 1;
 	}
@@ -152,6 +166,8 @@ for kind in deployment job cronjob; do
 		--set snowflake.privateKeyFile=/run/secrets/wallaby/snowflake-key.pem \
 		--set snowflake.privateKeySecretName=wallaby-snowflake \
 		--set snowflake.privateKeySecretKey=private-key.pem \
+		--set snowflake.streamingRest.policyConfigMapName=runtime-policy-test \
+		--set snowflake.streamingRest.policyConfigMapKey=streaming-rest-test \
 		--set workers.enabled=true \
 		--set 'workers.items[0].name=enabled' \
 		--set "workers.items[0].kind=$kind"
@@ -160,7 +176,7 @@ for kind in deployment job cronjob; do
 	fi
 	enabled_render="$output_dir/snowflake-enabled-$kind.yaml"
 	helm template wallaby-ci "$chart" "$@" >"$enabled_render"
-	for required in 'snowflake-streaming-rest-enabled: "true"' 'defaultMode: 288' 'mode: 288' 'fsGroup: 65532' 'mountPath: "/run/secrets/wallaby/snowflake-key.pem"'; do
+	for required in 'streaming-rest-test: "true"' 'defaultMode: 288' 'mode: 288' 'fsGroup: 65532' 'mountPath: "/run/secrets/wallaby/snowflake-key.pem"'; do
 		grep -q "$required" "$enabled_render" || {
 			echo "enabled $kind Snowflake render lacks $required" >&2; exit 1;
 		}
@@ -170,6 +186,7 @@ for kind in deployment job cronjob; do
 	require_env_value "$enabled_render" WALLABY_WORKER_SNOWFLAKE_USER user
 	require_env_value "$enabled_render" WALLABY_WORKER_SNOWFLAKE_HOST account.snowflakecomputing.com
 	require_env_value "$enabled_render" WALLABY_WORKER_SNOWFLAKE_PRIVATE_KEY_FILE /run/secrets/wallaby/snowflake-key.pem
+	require_env_configmap_ref "$enabled_render" WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED runtime-policy-test streaming-rest-test
 done
 
 for name in snowflake.account snowflake.user snowflake.host snowflake.privateKeyFile snowflake.privateKeySecretName snowflake.privateKeySecretKey; do

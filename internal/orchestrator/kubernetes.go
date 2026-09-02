@@ -345,6 +345,21 @@ func canonicalJobTemplateDigest(job *batchv1.Job) string {
 	// retaining every nonempty PodTemplateSpec and PodSpec field.
 	canonical := job.DeepCopy()
 	kubernetesscheme.Scheme.Default(canonical)
+	// The Job strategy adds these controller-owned labels after admission. They
+	// identify the Job instance, not its authoritative execution template.
+	// Ignore only these exact API-managed keys; every caller-controlled label
+	// and every PodSpec field remains part of the digest.
+	for _, label := range []string{
+		batchv1.ControllerUidLabel,
+		batchv1.JobNameLabel,
+		"controller-uid",
+		"job-name",
+	} {
+		delete(canonical.Spec.Template.Labels, label)
+	}
+	if len(canonical.Spec.Template.Labels) == 0 {
+		canonical.Spec.Template.Labels = nil
+	}
 	encoded, err := json.Marshal(canonical.Spec.Template)
 	if err != nil {
 		return ""
