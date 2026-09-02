@@ -36,13 +36,20 @@ func TestKubernetesDispatcherIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	client, err := kubeClient(kubeconfig)
+	if err != nil {
+		t.Fatalf("kube client: %v", err)
+	}
+	policyConfigMap := createStreamingPolicyConfigMap(t, ctx, client, namespace, "wallaby-test-policy")
 	dispatcher, err := orchestrator.NewKubernetesDispatcher(ctx, orchestrator.KubernetesConfig{
-		KubeconfigPath: kubeconfig,
-		Namespace:      namespace,
-		JobImage:       image,
-		JobCommand:     []string{"/bin/true"},
-		JobNamePrefix:  "wallaby-test",
-		MaxEmptyReads:  1,
+		KubeconfigPath:                      kubeconfig,
+		Namespace:                           namespace,
+		JobImage:                            image,
+		JobCommand:                          []string{"/bin/true"},
+		JobNamePrefix:                       "wallaby-test",
+		MaxEmptyReads:                       1,
+		SnowflakeStreamingRESTConfigMapName: policyConfigMap,
+		SnowflakeStreamingRESTConfigMapKey:  testStreamingPolicyConfigMapKey,
 	})
 	if err != nil {
 		t.Fatalf("create dispatcher: %v", err)
@@ -51,11 +58,6 @@ func TestKubernetesDispatcherIntegration(t *testing.T) {
 	flowID := fmt.Sprintf("flow-%d", time.Now().UnixNano())
 	if err := dispatcher.EnqueueRunOnce(ctx, flowID, 1); err != nil {
 		t.Fatalf("enqueue flow: %v", err)
-	}
-
-	client, err := kubeClient(kubeconfig)
-	if err != nil {
-		t.Fatalf("kube client: %v", err)
 	}
 
 	waitFor(t, 30*time.Second, 2*time.Second, func() (bool, error) {
@@ -71,6 +73,7 @@ func TestKubernetesDispatcherIntegration(t *testing.T) {
 		t.Fatalf("list jobs: %v", err)
 	}
 	for _, job := range jobs {
+		assertJobPolicyConfigMap(t, job, policyConfigMap)
 		_ = deleteJob(ctx, client, namespace, job.Name)
 	}
 }
@@ -104,7 +107,10 @@ func TestKubernetesDispatcherJobSpec(t *testing.T) {
 	secretName := "wallaby-secret-" + suffix
 	_, err = client.CoreV1().ConfigMaps(namespace).Create(ctx, &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: cmName},
-		Data:       map[string]string{"FOO": "BAR"},
+		Data: map[string]string{
+			"FOO":                           "BAR",
+			testStreamingPolicyConfigMapKey: "false",
+		},
 	}, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("create configmap: %v", err)
@@ -150,6 +156,8 @@ func TestKubernetesDispatcherJobSpec(t *testing.T) {
 			"configmap:" + cmName,
 			"secret:" + secretName,
 		},
+		SnowflakeStreamingRESTConfigMapName: cmName,
+		SnowflakeStreamingRESTConfigMapKey:  testStreamingPolicyConfigMapKey,
 	})
 	if err != nil {
 		t.Fatalf("create dispatcher: %v", err)
@@ -222,6 +230,10 @@ func TestKubernetesDispatcherJobSpec(t *testing.T) {
 	if !envFromPresent(ctr.EnvFrom, cmName, secretName) {
 		t.Fatalf("expected envFrom configmap %s and secret %s, got %v", cmName, secretName, ctr.EnvFrom)
 	}
+	if !envConfigMapRefPresent(ctr.Env, "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED", cmName, testStreamingPolicyConfigMapKey) {
+		t.Fatalf("expected exact Streaming policy ConfigMap reference %s/%s, got %v", cmName, testStreamingPolicyConfigMapKey, ctr.Env)
+	}
+	assertJobPolicyConfigMap(t, *job, cmName)
 	if job.Spec.Template.Spec.ServiceAccountName != "default" {
 		t.Fatalf("expected service account default, got %s", job.Spec.Template.Spec.ServiceAccountName)
 	}
@@ -246,14 +258,21 @@ func TestKubernetesDispatcherRetry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
+	client, err := kubeClient(kubeconfig)
+	if err != nil {
+		t.Fatalf("kube client: %v", err)
+	}
+	policyConfigMap := createStreamingPolicyConfigMap(t, ctx, client, namespace, "wallaby-retry-policy")
 	dispatcher, err := orchestrator.NewKubernetesDispatcher(ctx, orchestrator.KubernetesConfig{
-		KubeconfigPath:  kubeconfig,
-		Namespace:       namespace,
-		JobImage:        image,
-		JobNamePrefix:   "wallaby-retry",
-		JobBackoffLimit: 1,
-		JobCommand:      []string{"/bin/sh", "-c"},
-		JobArgs:         []string{"exit 1"},
+		KubeconfigPath:                      kubeconfig,
+		Namespace:                           namespace,
+		JobImage:                            image,
+		JobNamePrefix:                       "wallaby-retry",
+		JobBackoffLimit:                     1,
+		JobCommand:                          []string{"/bin/sh", "-c"},
+		JobArgs:                             []string{"exit 1"},
+		SnowflakeStreamingRESTConfigMapName: policyConfigMap,
+		SnowflakeStreamingRESTConfigMapKey:  testStreamingPolicyConfigMapKey,
 	})
 	if err != nil {
 		t.Fatalf("create dispatcher: %v", err)
@@ -262,11 +281,6 @@ func TestKubernetesDispatcherRetry(t *testing.T) {
 	flowID := fmt.Sprintf("flow-%d", time.Now().UnixNano())
 	if err := dispatcher.EnqueueRunOnce(ctx, flowID, 1); err != nil {
 		t.Fatalf("enqueue flow: %v", err)
-	}
-
-	client, err := kubeClient(kubeconfig)
-	if err != nil {
-		t.Fatalf("kube client: %v", err)
 	}
 
 	var jobName string
@@ -290,6 +304,7 @@ func TestKubernetesDispatcherRetry(t *testing.T) {
 		if job.Spec.BackoffLimit == nil || *job.Spec.BackoffLimit != 1 {
 			t.Fatalf("expected backoff limit 1, got %+v", job.Spec.BackoffLimit)
 		}
+		assertJobPolicyConfigMap(t, *job, policyConfigMap)
 		if job.Status.Failed > 0 {
 			return true, nil
 		}
@@ -323,21 +338,23 @@ func TestKubernetesDispatcherRecovery(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	dispatcher, err := orchestrator.NewKubernetesDispatcher(ctx, orchestrator.KubernetesConfig{
-		KubeconfigPath:  kubeconfig,
-		Namespace:       namespace,
-		JobImage:        image,
-		JobNamePrefix:   "wallaby-recover",
-		JobBackoffLimit: 0,
-		JobCommand:      []string{"/bin/true"},
-	})
-	if err != nil {
-		t.Fatalf("create dispatcher: %v", err)
-	}
-
 	client, err := kubeClient(kubeconfig)
 	if err != nil {
 		t.Fatalf("kube client: %v", err)
+	}
+	policyConfigMap := createStreamingPolicyConfigMap(t, ctx, client, namespace, "wallaby-recover-policy")
+	dispatcher, err := orchestrator.NewKubernetesDispatcher(ctx, orchestrator.KubernetesConfig{
+		KubeconfigPath:                      kubeconfig,
+		Namespace:                           namespace,
+		JobImage:                            image,
+		JobNamePrefix:                       "wallaby-recover",
+		JobBackoffLimit:                     0,
+		JobCommand:                          []string{"/bin/true"},
+		SnowflakeStreamingRESTConfigMapName: policyConfigMap,
+		SnowflakeStreamingRESTConfigMapKey:  testStreamingPolicyConfigMapKey,
+	})
+	if err != nil {
+		t.Fatalf("create dispatcher: %v", err)
 	}
 
 	flowID := fmt.Sprintf("flow-%d", time.Now().UnixNano())
@@ -357,6 +374,7 @@ func TestKubernetesDispatcherRecovery(t *testing.T) {
 		}
 		firstJob = jobs[0].Name
 		firstUID = string(jobs[0].UID)
+		assertJobPolicyConfigMap(t, jobs[0], policyConfigMap)
 		return true, nil
 	})
 
@@ -389,6 +407,7 @@ func TestKubernetesDispatcherRecovery(t *testing.T) {
 		for _, job := range jobs {
 			if job.Name != firstJob {
 				secondJob = job.Name
+				assertJobPolicyConfigMap(t, job, policyConfigMap)
 				if string(job.UID) == firstUID {
 					t.Fatalf("separate run-once attempts reused UID %s", firstUID)
 				}
@@ -408,6 +427,23 @@ func TestKubernetesDispatcherRecovery(t *testing.T) {
 	for _, job := range jobs {
 		_ = deleteJob(ctx, client, namespace, job.Name)
 	}
+}
+
+const testStreamingPolicyConfigMapKey = "snowflake-streaming-rest-enabled"
+
+func createStreamingPolicyConfigMap(t *testing.T, ctx context.Context, client *kubernetes.Clientset, namespace, prefix string) string {
+	t.Helper()
+	name := fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+	if _, err := client.CoreV1().ConfigMaps(namespace).Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Data:       map[string]string{testStreamingPolicyConfigMapKey: "false"},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create Streaming policy ConfigMap: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.CoreV1().ConfigMaps(namespace).Delete(context.Background(), name, metav1.DeleteOptions{})
+	})
+	return name
 }
 
 func kubeClient(kubeconfig string) (*kubernetes.Clientset, error) {
@@ -454,6 +490,28 @@ func argValuePresent(args []string, name, value string) bool {
 			return true
 		}
 		if arg == flag+"="+value {
+			return true
+		}
+	}
+	return false
+}
+
+func assertJobPolicyConfigMap(t *testing.T, job batchv1.Job, configMap string) {
+	t.Helper()
+	if len(job.Spec.Template.Spec.Containers) == 0 || !envConfigMapRefPresent(
+		job.Spec.Template.Spec.Containers[0].Env,
+		"WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED",
+		configMap,
+		testStreamingPolicyConfigMapKey,
+	) {
+		t.Fatalf("job %s lacks exact Streaming policy ConfigMap reference %s/%s", job.Name, configMap, testStreamingPolicyConfigMapKey)
+	}
+}
+
+func envConfigMapRefPresent(env []corev1.EnvVar, name, configMap, key string) bool {
+	for _, item := range env {
+		if item.Name == name && item.ValueFrom != nil && item.ValueFrom.ConfigMapKeyRef != nil &&
+			item.ValueFrom.ConfigMapKeyRef.Name == configMap && item.ValueFrom.ConfigMapKeyRef.Key == key {
 			return true
 		}
 	}
