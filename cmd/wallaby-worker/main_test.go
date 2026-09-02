@@ -85,6 +85,29 @@ func TestWorkerEnvironmentOnlyFlowIDReachesRuntimeConfiguration(t *testing.T) {
 	}
 }
 
+func TestDisabledNonSnowflakeWorkerReachesStartWithoutSnowflakeCredentials(t *testing.T) {
+	t.Setenv("WALLABY_WORKER_FLOW_ID", "non-snowflake-flow")
+	t.Setenv("WALLABY_WORKER_ENV", "test")
+	t.Setenv("WALLABY_WORKER_WORKFLOW_STORE", "memory")
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_ENABLED", "false")
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED", "false")
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_ACCOUNT", "")
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_USER", "")
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_HOST", "")
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_PRIVATE_KEY_FILE", "")
+	t.Setenv("WALLABY_POSTGRES_DSN", "")
+	t.Setenv("WALLABY_WORKER_POSTGRES_DSN", "")
+
+	command := newWallabyWorkerCommand()
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "WALLABY_POSTGRES_DSN is required") {
+		t.Fatalf("disabled non-Snowflake worker start error=%v", err)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "snowflake") {
+		t.Fatalf("disabled non-Snowflake worker unexpectedly required Snowflake credentials: %v", err)
+	}
+}
+
 func TestWorkerFlagsOverrideCurrentEnvironment(t *testing.T) {
 	t.Setenv("WALLABY_WORKER_FLOW_ID", "environment-flow")
 	t.Setenv("WALLABY_WORKER_EXECUTION_BACKEND", "kubernetes")

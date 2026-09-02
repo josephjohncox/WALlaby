@@ -22,6 +22,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	kubernetesscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -335,30 +336,16 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 }
 
 func canonicalJobTemplateDigest(job *batchv1.Job) string {
-	if job == nil || len(job.Spec.Template.Spec.Containers) != 1 {
+	if job == nil {
 		return ""
 	}
-	container := job.Spec.Template.Spec.Containers[0]
-	projection := struct {
-		Image, PullPolicy, ServiceAccount string
-		Command, Args                     []string
-		Env                               []corev1.EnvVar
-		EnvFrom                           []corev1.EnvFromSource
-		VolumeMounts                      []corev1.VolumeMount
-		Volumes                           []corev1.Volume
-		Automount                         *bool
-		SecurityContext                   *corev1.PodSecurityContext
-		RestartPolicy                     corev1.RestartPolicy
-		PolicyDigest                      string
-	}{
-		Image: container.Image, PullPolicy: string(container.ImagePullPolicy), ServiceAccount: job.Spec.Template.Spec.ServiceAccountName,
-		Command: append([]string(nil), container.Command...), Args: append([]string(nil), container.Args...),
-		Env: append([]corev1.EnvVar(nil), container.Env...), EnvFrom: append([]corev1.EnvFromSource(nil), container.EnvFrom...),
-		VolumeMounts: append([]corev1.VolumeMount(nil), container.VolumeMounts...), Volumes: append([]corev1.Volume(nil), job.Spec.Template.Spec.Volumes...),
-		Automount: job.Spec.Template.Spec.AutomountServiceAccountToken, SecurityContext: job.Spec.Template.Spec.SecurityContext,
-		RestartPolicy: job.Spec.Template.Spec.RestartPolicy, PolicyDigest: job.Spec.Template.Annotations["wallaby.snowflake-policy-digest"],
-	}
-	encoded, err := json.Marshal(projection)
+	// Kubernetes stores the API-defaulted template. Apply the same registered
+	// defaulting functions before comparison so a stored default is not treated
+	// as drift. JSON omitempty canonicalizes nil and empty maps/slices while
+	// retaining every nonempty PodTemplateSpec and PodSpec field.
+	canonical := job.DeepCopy()
+	kubernetesscheme.Scheme.Default(canonical)
+	encoded, err := json.Marshal(canonical.Spec.Template)
 	if err != nil {
 		return ""
 	}

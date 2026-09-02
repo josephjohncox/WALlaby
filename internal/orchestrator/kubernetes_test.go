@@ -12,6 +12,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+	kubernetesscheme "k8s.io/client-go/kubernetes/scheme"
 )
 
 func TestBuildJobName_SanitizesAndBounds(t *testing.T) {
@@ -300,6 +301,66 @@ func TestKubernetesExistingJobRejectsPolicyOrTemplateDigestDrift(t *testing.T) {
 	}
 	if err := first.EnqueueGeneration(ctx, "orders", 3); err == nil || !strings.Contains(err.Error(), "non-authoritative worker pod template") {
 		t.Fatalf("forged matching annotation error=%v", err)
+	}
+}
+
+func TestKubernetesExistingJobCanonicalizesAPIDefaults(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cfg := KubernetesConfig{
+		JobImage: "wallaby:v1", JobNamePrefix: "wallaby-worker",
+		SnowflakeStreamingRESTConfigMapName: "wallaby-runtime-policy",
+		SnowflakeStreamingRESTConfigMapKey:  "snowflake-streaming-rest-enabled",
+	}
+	seed := &KubernetesDispatcher{namespace: "default", cfg: cfg}
+	job := seed.desiredJob("orders", buildGenerationJobName("wallaby-worker", "orders", 3), 3)
+	kubernetesscheme.Scheme.Default(job)
+	client := fake.NewClientset(job)
+	dispatcher := &KubernetesDispatcher{client: client, namespace: "default", cfg: cfg}
+	if err := dispatcher.EnqueueGeneration(ctx, "orders", 3); err != nil {
+		t.Fatalf("API-defaulted existing template was not adopted: %v", err)
+	}
+}
+
+func TestKubernetesExistingJobRejectsCompletePodTemplateDrift(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cfg := KubernetesConfig{
+		JobImage: "wallaby:v1", JobNamePrefix: "wallaby-worker",
+		SnowflakeStreamingRESTConfigMapName: "wallaby-runtime-policy",
+		SnowflakeStreamingRESTConfigMapKey:  "snowflake-streaming-rest-enabled",
+	}
+	for name, mutate := range map[string]func(*corev1.PodTemplateSpec){
+		"forged annotation with init container": func(template *corev1.PodTemplateSpec) {
+			template.Spec.InitContainers = append(template.Spec.InitContainers, corev1.Container{Name: "forged-init", Image: "attacker/init:latest"})
+		},
+		"privileged worker": func(template *corev1.PodTemplateSpec) {
+			template.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Privileged: boolPtr(true)}
+		},
+		"forged ephemeral container": func(template *corev1.PodTemplateSpec) {
+			template.Spec.EphemeralContainers = append(template.Spec.EphemeralContainers, corev1.EphemeralContainer{EphemeralContainerCommon: corev1.EphemeralContainerCommon{Name: "forged-debug", Image: "attacker/debug:latest"}})
+		},
+		"altered envFrom": func(template *corev1.PodTemplateSpec) {
+			template.Spec.Containers[0].EnvFrom = append(template.Spec.Containers[0].EnvFrom, corev1.EnvFromSource{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "forged"}}})
+		},
+		"altered volume": func(template *corev1.PodTemplateSpec) {
+			template.Spec.Volumes = append(template.Spec.Volumes, corev1.Volume{Name: "forged", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+		},
+		"altered service account": func(template *corev1.PodTemplateSpec) {
+			template.Spec.ServiceAccountName = "forged-service-account"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			seed := &KubernetesDispatcher{namespace: "default", cfg: cfg}
+			job := seed.desiredJob("orders", buildGenerationJobName("wallaby-worker", "orders", 3), 3)
+			kubernetesscheme.Scheme.Default(job)
+			mutate(&job.Spec.Template)
+			client := fake.NewClientset(job)
+			dispatcher := &KubernetesDispatcher{client: client, namespace: "default", cfg: cfg}
+			if err := dispatcher.EnqueueGeneration(ctx, "orders", 3); err == nil || !strings.Contains(err.Error(), "non-authoritative worker pod template") {
+				t.Fatalf("template drift error=%v", err)
+			}
+		})
 	}
 }
 

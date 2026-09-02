@@ -1,6 +1,24 @@
 {{- if hasKey .Values.snowflake "streamingREST" -}}
 {{- fail "snowflake.streamingREST is removed; use snowflake.streamingRest" -}}
 {{- end -}}
+{{- if and .Values.snowflake.enabled (empty .Values.snowflake.account) -}}
+{{- fail "snowflake.account is required when snowflake.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.snowflake.enabled (empty .Values.snowflake.user) -}}
+{{- fail "snowflake.user is required when snowflake.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.snowflake.enabled (empty .Values.snowflake.host) -}}
+{{- fail "snowflake.host is required when snowflake.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.snowflake.enabled (empty .Values.snowflake.privateKeyFile) -}}
+{{- fail "snowflake.privateKeyFile is required when snowflake.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.snowflake.enabled (empty .Values.snowflake.privateKeySecretName) -}}
+{{- fail "snowflake.privateKeySecretName is required when snowflake.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.snowflake.enabled (empty .Values.snowflake.privateKeySecretKey) -}}
+{{- fail "snowflake.privateKeySecretKey is required when snowflake.enabled=true" -}}
+{{- end -}}
 {{- if empty .Values.snowflake.streamingRest.policyConfigMapKey -}}
 {{- fail "snowflake.streamingRest.policyConfigMapKey is required" -}}
 {{- end -}}

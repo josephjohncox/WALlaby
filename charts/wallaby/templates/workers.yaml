@@ -8,8 +8,8 @@
 {{- $imageTag := dig "image" "tag" $root.Values.image.tag $worker -}}
 {{- $imagePullPolicy := dig "image" "pullPolicy" $root.Values.image.pullPolicy $worker -}}
 {{- range $entry := $worker.env }}
-{{- if or (eq $entry.name "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED") (eq $entry.name "WALLABY_SNOWFLAKE_STREAMING_REST_ENABLED") -}}
-{{- fail "workers.items[].env cannot override the Snowflake Streaming REST deployment policy" -}}
+{{- if has $entry.name (list "WALLABY_WORKER_SNOWFLAKE_ENABLED" "WALLABY_WORKER_SNOWFLAKE_ACCOUNT" "WALLABY_WORKER_SNOWFLAKE_USER" "WALLABY_WORKER_SNOWFLAKE_HOST" "WALLABY_WORKER_SNOWFLAKE_PRIVATE_KEY_FILE" "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED" "WALLABY_SNOWFLAKE_ENABLED" "WALLABY_SNOWFLAKE_ACCOUNT" "WALLABY_SNOWFLAKE_USER" "WALLABY_SNOWFLAKE_HOST" "WALLABY_SNOWFLAKE_PRIVATE_KEY_FILE" "WALLABY_SNOWFLAKE_STREAMING_REST_ENABLED") -}}
+{{- fail "workers.items[].env cannot override the Snowflake deployment policy" -}}
 {{- end -}}
 {{- end -}}
 {{- if eq $kind "cronjob" }}
@@ -104,11 +104,7 @@ spec:
 {{ toYaml . | indent 16 }}
 {{- end }}
 {{ $otelEnv | indent 16 }}
-                - name: WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED
-                  valueFrom:
-                    configMapKeyRef:
-                      name: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" $root)) $root.Values.snowflake.streamingRest.policyConfigMapName | quote }}
-                      key: {{ $root.Values.snowflake.streamingRest.policyConfigMapKey | quote }}
+{{ include "wallaby.snowflakeWorkerEnv" $root | indent 16 }}
 {{- with $worker.resources }}
               resources:
 {{ toYaml . | indent 16 }}
@@ -211,11 +207,7 @@ spec:
 {{ toYaml . | indent 12 }}
 {{- end }}
 {{ $otelEnv | indent 12 }}
-            - name: WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED
-              valueFrom:
-                configMapKeyRef:
-                  name: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" $root)) $root.Values.snowflake.streamingRest.policyConfigMapName | quote }}
-                  key: {{ $root.Values.snowflake.streamingRest.policyConfigMapKey | quote }}
+{{ include "wallaby.snowflakeWorkerEnv" $root | indent 12 }}
 {{- with $worker.resources }}
           resources:
 {{ toYaml . | indent 12 }}
@@ -323,11 +315,7 @@ spec:
 {{ toYaml . | indent 12 }}
 {{- end }}
 {{ $otelEnv | indent 12 }}
-            - name: WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED
-              valueFrom:
-                configMapKeyRef:
-                  name: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" $root)) $root.Values.snowflake.streamingRest.policyConfigMapName | quote }}
-                  key: {{ $root.Values.snowflake.streamingRest.policyConfigMapKey | quote }}
+{{ include "wallaby.snowflakeWorkerEnv" $root | indent 12 }}
 {{- with $worker.resources }}
           resources:
 {{ toYaml . | indent 12 }}
