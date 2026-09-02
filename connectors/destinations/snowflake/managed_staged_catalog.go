@@ -569,10 +569,14 @@ func managedStagedOwnershipComment(cfg stagedConfig, objectKind string) string {
 
 func managedStagedCatalogFingerprint(catalog managedStagedCatalogSnapshot) (string, error) {
 	type fingerprintColumn struct {
-		DataType   string `json:"data_type"`
-		Nullable   bool   `json:"nullable"`
-		HasDefault bool   `json:"has_default"`
-		Generated  bool   `json:"generated"`
+		DataType               string `json:"data_type"`
+		CharacterMaximumLength int64  `json:"character_maximum_length"`
+		NumericPrecision       int64  `json:"numeric_precision"`
+		NumericScale           int64  `json:"numeric_scale"`
+		DatetimePrecision      int64  `json:"datetime_precision"`
+		Nullable               bool   `json:"nullable"`
+		HasDefault             bool   `json:"has_default"`
+		Generated              bool   `json:"generated"`
 	}
 	type fingerprintConstraint struct {
 		Name           string   `json:"name"`
@@ -597,7 +601,11 @@ func managedStagedCatalogFingerprint(catalog managedStagedCatalogSnapshot) (stri
 	canonicalTable := func(table managedTableSnapshot) any {
 		columns := make(map[string]fingerprintColumn, len(table.columns))
 		for name, column := range table.columns {
-			columns[name] = fingerprintColumn{DataType: column.dataType, Nullable: column.nullable, HasDefault: column.hasDefault, Generated: column.generated}
+			columns[name] = fingerprintColumn{
+				DataType: column.dataType, CharacterMaximumLength: column.characterMaximumLength,
+				NumericPrecision: column.numericPrecision, NumericScale: column.numericScale, DatetimePrecision: column.datetimePrecision,
+				Nullable: column.nullable, HasDefault: column.hasDefault, Generated: column.generated,
+			}
 		}
 		constraints := make([]fingerprintConstraint, 0, len(table.constraints))
 		for _, constraint := range table.constraints {

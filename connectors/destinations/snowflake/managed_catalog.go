@@ -127,6 +127,8 @@ func managedSnowflakeCatalogFingerprint(catalog managedCatalogSnapshot) (string,
 	type fingerprintColumn struct {
 		DataType               string `json:"data_type"`
 		CharacterMaximumLength int64  `json:"character_maximum_length"`
+		NumericPrecision       int64  `json:"numeric_precision"`
+		NumericScale           int64  `json:"numeric_scale"`
 		DatetimePrecision      int64  `json:"datetime_precision"`
 		Nullable               bool   `json:"nullable"`
 		HasDefault             bool   `json:"has_default"`
@@ -157,6 +159,7 @@ func managedSnowflakeCatalogFingerprint(catalog managedCatalogSnapshot) (string,
 		for name, column := range table.columns {
 			result.Columns[name] = fingerprintColumn{
 				DataType: column.dataType, CharacterMaximumLength: column.characterMaximumLength,
+				NumericPrecision: column.numericPrecision, NumericScale: column.numericScale,
 				DatetimePrecision: column.datetimePrecision, Nullable: column.nullable,
 				HasDefault: column.hasDefault, Generated: column.generated,
 			}
