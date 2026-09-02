@@ -23,10 +23,10 @@ snowflake:
   privateKeyFile: /run/secrets/wallaby/snowflake-key.pem
   privateKeySecretName: ""
   privateKeySecretKey: private-key.pem
-  streamingREST:
+  streamingRest:
     enabled: false
     policyConfigMapName: ""
-    policyConfigMapKey: enabled
+    policyConfigMapKey: snowflake-streaming-rest-enabled
 
 service:
   type: ClusterIP

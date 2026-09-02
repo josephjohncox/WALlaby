@@ -8,6 +8,9 @@ import (
 	"crypto/rsa"
 	"database/sql"
 	"errors"
+	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -186,6 +189,136 @@ func TestExperimentalPreparedStreamingRejectsConfigDriftBeforeSideEffects(t *tes
 	defer fake.mu.Unlock()
 	if len(fake.appendedPayloads) != 0 || len(fake.requests) != 0 || len(fake.receipts) != 0 {
 		t.Fatalf("prepared config drift produced side effects: appends=%d requests=%d receipts=%d", len(fake.appendedPayloads), len(fake.requests), len(fake.receipts))
+	}
+}
+
+func expectExperimentalStreamSession(mock sqlmock.Sqlmock, cfg streamConfig) {
+	mock.ExpectExec(regexp.QuoteMeta("USE SECONDARY ROLES NONE")).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta("ALTER SESSION SET") + ".*").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT CURRENT_ACCOUNT_NAME(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_ROLE(), CURRENT_WAREHOUSE(), CURRENT_VERSION()`)).
+		WillReturnRows(sqlmock.NewRows([]string{"account", "database", "schema", "role", "warehouse", "version"}).AddRow(cfg.account, cfg.database, cfg.schema, cfg.executionRole, cfg.warehouse, cfg.snowflakeVersion))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT IS_ROLE_IN_SESSION(?)`)).WithArgs(cfg.ownerRole).
+		WillReturnRows(sqlmock.NewRows([]string{"is_role_in_session"}).AddRow(false))
+	parameters := sqlmock.NewRows([]string{"key", "value"})
+	for key, value := range map[string]string{
+		"AUTOCOMMIT": "true", "TRANSACTION_ABORT_ON_ERROR": "true", "ABORT_DETACHED_QUERY": "true",
+		"ERROR_ON_NONDETERMINISTIC_MERGE": "true", "ERROR_ON_NONDETERMINISTIC_UPDATE": "true",
+		"READ_LATEST_WRITES": "true", "CLIENT_SESSION_KEEP_ALIVE": "false",
+		"STATEMENT_TIMEOUT_IN_SECONDS": fmt.Sprint(cfg.statementTimeoutSeconds),
+		"HYBRID_TABLE_LOCK_TIMEOUT":    fmt.Sprint(cfg.statementTimeoutSeconds),
+	} {
+		parameters.AddRow(key, value)
+	}
+	mock.ExpectQuery(regexp.QuoteMeta("SHOW PARAMETERS IN SESSION")).WillReturnRows(parameters)
+}
+
+func experimentalGrantRows(grants map[string][]string) *sqlmock.Rows {
+	rows := sqlmock.NewRows([]string{"privilege", "grantee_name"})
+	roles := make([]string, 0, len(grants))
+	for role := range grants {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	for _, role := range roles {
+		privileges := append([]string(nil), grants[role]...)
+		sort.Strings(privileges)
+		for _, privilege := range privileges {
+			rows.AddRow(privilege, role)
+		}
+	}
+	return rows
+}
+
+func experimentalColumnRows(columns map[string]managedColumnSnapshot) *sqlmock.Rows {
+	rows := sqlmock.NewRows([]string{"COLUMN_NAME", "DATA_TYPE", "IS_NULLABLE", "COLUMN_DEFAULT", "IS_IDENTITY", "NUMERIC_PRECISION", "NUMERIC_SCALE", "DATETIME_PRECISION", "CHARACTER_MAXIMUM_LENGTH"})
+	names := make([]string, 0, len(columns))
+	for name := range columns {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		column := columns[name]
+		dataType := column.dataType
+		var precision, scale, datetimePrecision, length any
+		if strings.HasPrefix(dataType, "NUMBER") {
+			dataType, precision, scale = "NUMBER", column.numericPrecision, column.numericScale
+		}
+		if strings.HasPrefix(dataType, "TIMESTAMP_") {
+			dataType, datetimePrecision = "TIMESTAMP_TZ", column.datetimePrecision
+		}
+		if column.characterMaximumLength >= 0 {
+			length = column.characterMaximumLength
+		}
+		rows.AddRow(name, dataType, "NO", nil, "NO", precision, scale, datetimePrecision, length)
+	}
+	return rows
+}
+
+func experimentalConstraintRows(constraints []managedConstraintSnapshot) *sqlmock.Rows {
+	rows := sqlmock.NewRows([]string{"CONSTRAINT_NAME", "CONSTRAINT_TYPE", "ENFORCED", "COLUMN_NAME", "ORDINAL_POSITION"})
+	for _, constraint := range constraints {
+		for index, column := range constraint.columns {
+			rows.AddRow(constraint.name, constraint.constraintType, constraint.enforced, column, index+1)
+		}
+	}
+	return rows
+}
+
+func expectExperimentalStreamCatalog(mock sqlmock.Sqlmock, cfg streamConfig) {
+	catalog := validManagedStreamCatalog(cfg)
+	mock.ExpectQuery("SELECT DEFINITION.*PIPES").WithArgs(cfg.schema, cfg.pipe).
+		WillReturnRows(sqlmock.NewRows([]string{"definition", "comment", "created", "auto_ingest"}).AddRow(catalog.pipe.definition, catalog.pipe.comment, catalog.pipe.createdOn, true))
+	mock.ExpectQuery("SHOW GRANTS ON PIPE").WillReturnRows(experimentalGrantRows(catalog.pipe.grants))
+	for _, table := range []managedTableSnapshot{catalog.target, catalog.receipts, catalog.channel, catalog.requests} {
+		hybrid := "NO"
+		if table.kind == "HYBRID TABLE" {
+			hybrid = "YES"
+		}
+		mock.ExpectQuery("SELECT IS_HYBRID.*TABLES").WillReturnRows(sqlmock.NewRows([]string{"is_hybrid", "comment", "created"}).AddRow(hybrid, table.comment, table.createdOn))
+		mock.ExpectQuery("SELECT LEFT\\(GET_DDL").WillReturnRows(sqlmock.NewRows([]string{"ddl"}).AddRow("CREATE " + table.kind + " VALIDATED"))
+		mock.ExpectQuery("SHOW GRANTS ON TABLE").WillReturnRows(experimentalGrantRows(table.grants))
+		mock.ExpectQuery("SELECT COLUMN_NAME, DATA_TYPE.*COLUMNS").WillReturnRows(experimentalColumnRows(table.columns))
+		mock.ExpectQuery("SELECT TC.CONSTRAINT_NAME.*TABLE_CONSTRAINTS").WillReturnRows(experimentalConstraintRows(table.constraints))
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\).*TABLE_CONSTRAINTS").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	}
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\).*PIPES").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\).*TASKS").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+}
+
+func TestExperimentalStreamingRuntimeFullAssemblyUsesValidatedSQLAndREST(t *testing.T) {
+	cfg := streamTestConfig(t)
+	policy := experimentalStreamPolicy(t, true)
+	streamingPolicy, err := policy.StreamingRESTPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	destination := NewDestination(policy)
+	destination.db = db
+	destination.streamConfig = cfg
+	destination.managedConfig = destination.streamSessionShim(cfg)
+	expectExperimentalStreamSession(mock, cfg)
+	expectExperimentalStreamCatalog(mock, cfg)
+	protocol, fingerprint, err := destination.openManagedStreamRuntime(context.Background(), db, cfg, streamingPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	composed, ok := protocol.(*composedStreamProtocol)
+	if !ok || composed.streamTransport == nil || composed.streamStateStore == nil || fingerprint == "" {
+		t.Fatalf("full runtime assembly=%T/%v/%v/%q", protocol, composed.streamTransport, composed.streamStateStore, fingerprint)
+	}
+	if _, ok := composed.streamTransport.(*streamRESTTransport); !ok {
+		t.Fatalf("transport=%T, want real REST transport", composed.streamTransport)
+	}
+	if _, ok := composed.streamStateStore.(*sqlStreamProtocol); !ok {
+		t.Fatalf("state store=%T, want validated SQL protocol", composed.streamStateStore)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

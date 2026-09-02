@@ -36,6 +36,7 @@ spec:
         fsGroup: 65532
         fsGroupChangePolicy: OnRootMismatch
       serviceAccountName: {{ include "wallaby.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.kubernetesDispatch.enabled }}
       containers:
         - name: wallaby
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -117,11 +118,11 @@ spec:
             - name: WALLABY_SNOWFLAKE_ENABLED
               value: {{ .Values.snowflake.enabled | quote }}
             - name: WALLABY_SNOWFLAKE_STREAMING_REST_ENABLED
-              value: {{ .Values.snowflake.streamingREST.enabled | quote }}
+              value: {{ .Values.snowflake.streamingRest.enabled | quote }}
             - name: WALLABY_SNOWFLAKE_STREAMING_REST_POLICY_CONFIG_MAP_NAME
-              value: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" .)) .Values.snowflake.streamingREST.policyConfigMapName | quote }}
+              value: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" .)) .Values.snowflake.streamingRest.policyConfigMapName | quote }}
             - name: WALLABY_SNOWFLAKE_STREAMING_REST_POLICY_CONFIG_MAP_KEY
-              value: {{ .Values.snowflake.streamingREST.policyConfigMapKey | quote }}
+              value: {{ .Values.snowflake.streamingRest.policyConfigMapKey | quote }}
             - name: WALLABY_SNOWFLAKE_ACCOUNT
               value: {{ .Values.snowflake.account | quote }}
             - name: WALLABY_SNOWFLAKE_USER

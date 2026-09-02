@@ -96,8 +96,8 @@ func NewKubernetesDispatcher(ctx context.Context, cfg KubernetesConfig) (*Kubern
 	if cfg.SnowflakeStreamingRESTEnabled && strings.TrimSpace(cfg.SnowflakePolicyFingerprint) == "" {
 		return nil, errors.New("kubernetes Snowpipe Streaming REST requires the deployment public-key policy fingerprint")
 	}
-	if cfg.SnowflakeEnabled && (strings.TrimSpace(cfg.SnowflakeStreamingRESTConfigMapName) == "" || strings.TrimSpace(cfg.SnowflakeStreamingRESTConfigMapKey) == "") {
-		return nil, errors.New("kubernetes Snowflake execution requires a stable Streaming policy ConfigMap name and key")
+	if strings.TrimSpace(cfg.SnowflakeStreamingRESTConfigMapName) == "" || strings.TrimSpace(cfg.SnowflakeStreamingRESTConfigMapKey) == "" {
+		return nil, errors.New("kubernetes dispatch requires a stable Streaming policy ConfigMap name and key")
 	}
 	if cfg.SnowflakeEnabled {
 		for name, value := range map[string]string{
@@ -169,9 +169,13 @@ func (k *KubernetesDispatcher) enqueue(ctx context.Context, flowID string, gener
 		}
 		return fmt.Errorf("existing kubernetes job %q has non-authoritative ownership: %w", jobName, err)
 	}
-	expectedDigest := k.expectedJobPolicyDigest(flowID, generation, jobName)
+	desired := k.desiredJob(flowID, jobName, generation)
+	expectedDigest := desired.Annotations["wallaby.snowflake-policy-digest"]
 	if existing.Annotations["wallaby.snowflake-policy-digest"] != expectedDigest || existing.Spec.Template.Annotations["wallaby.snowflake-policy-digest"] != expectedDigest {
 		return fmt.Errorf("existing kubernetes job %q has a stale Snowflake policy or pod template digest", jobName)
+	}
+	if canonicalJobTemplateDigest(existing) != canonicalJobTemplateDigest(desired) {
+		return fmt.Errorf("existing kubernetes job %q has a non-authoritative worker pod template", jobName)
 	}
 	// An existing generation Job is durable proof that lifecycle dispatch
 	// happened. Run-once Jobs use unique names and do not share this path.
@@ -232,7 +236,7 @@ func (k *KubernetesDispatcher) CancelFlow(ctx context.Context, flowID string) er
 	return k.waitForJobDeletion(ctx, jobName, 30*time.Second)
 }
 
-func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName string, generation int64) error {
+func (k *KubernetesDispatcher) desiredJob(flowID, jobName string, generation int64) *batchv1.Job {
 	executionID := jobName
 	generationText := strconv.FormatInt(generation, 10)
 	// User metadata is applied first. The authoritative ownership keys are
@@ -260,25 +264,15 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 	policyDigest := k.jobPolicyDigest(command, args)
 	annotations["wallaby.snowflake-policy-digest"] = policyDigest
 
-	jobEnv := make(map[string]string, len(k.cfg.JobEnv))
-	for name, value := range k.cfg.JobEnv {
-		switch name {
-		case "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED", "WALLABY_SNOWFLAKE_STREAMING_REST_ENABLED":
-			continue
-		default:
-			jobEnv[name] = value
-		}
-	}
+	jobEnv := sanitizedWorkerJobEnv(k.cfg.JobEnv)
 	env := mapToEnvVars(jobEnv)
-	if k.cfg.SnowflakeEnabled && k.cfg.SnowflakeStreamingRESTConfigMapName != "" && k.cfg.SnowflakeStreamingRESTConfigMapKey != "" {
-		env = append(env, corev1.EnvVar{
-			Name: "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED",
-			ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: k.cfg.SnowflakeStreamingRESTConfigMapName},
-				Key:                  k.cfg.SnowflakeStreamingRESTConfigMapKey,
-			}},
-		})
-	}
+	env = append(env, corev1.EnvVar{
+		Name: "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED",
+		ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: k.cfg.SnowflakeStreamingRESTConfigMapName},
+			Key:                  k.cfg.SnowflakeStreamingRESTConfigMapKey,
+		}},
+	})
 	envFrom := parseEnvFrom(k.cfg.JobEnvFrom)
 
 	container := corev1.Container{
@@ -329,21 +323,47 @@ func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName st
 		},
 	}
 
-	_, err := k.client.BatchV1().Jobs(k.namespace).Create(ctx, job, metav1.CreateOptions{})
+	return job
+}
+
+func (k *KubernetesDispatcher) createJob(ctx context.Context, flowID, jobName string, generation int64) error {
+	_, err := k.client.BatchV1().Jobs(k.namespace).Create(ctx, k.desiredJob(flowID, jobName, generation), metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("create kubernetes job: %w", err)
 	}
-
 	return nil
 }
 
-func (k *KubernetesDispatcher) expectedJobPolicyDigest(flowID string, generation int64, executionID string) string {
-	command := k.cfg.JobCommand
-	if len(command) == 0 {
-		command = []string{"/usr/local/bin/wallaby-worker"}
+func canonicalJobTemplateDigest(job *batchv1.Job) string {
+	if job == nil || len(job.Spec.Template.Spec.Containers) != 1 {
+		return ""
 	}
-	args := authoritativeWorkerArgsWithSnowflake(k.cfg.JobArgs, flowID, generation, executionID, k.cfg.MaxEmptyReads, k.cfg.SnowflakeEnabled, k.cfg.SnowflakeStreamingRESTEnabled, k.cfg.SnowflakeAccount, k.cfg.SnowflakeUser, k.cfg.SnowflakeHost, k.cfg.SnowflakePrivateKeyFile, k.cfg.SnowflakePolicyFingerprint)
-	return k.jobPolicyDigest(command, args)
+	container := job.Spec.Template.Spec.Containers[0]
+	projection := struct {
+		Image, PullPolicy, ServiceAccount string
+		Command, Args                     []string
+		Env                               []corev1.EnvVar
+		EnvFrom                           []corev1.EnvFromSource
+		VolumeMounts                      []corev1.VolumeMount
+		Volumes                           []corev1.Volume
+		Automount                         *bool
+		SecurityContext                   *corev1.PodSecurityContext
+		RestartPolicy                     corev1.RestartPolicy
+		PolicyDigest                      string
+	}{
+		Image: container.Image, PullPolicy: string(container.ImagePullPolicy), ServiceAccount: job.Spec.Template.Spec.ServiceAccountName,
+		Command: append([]string(nil), container.Command...), Args: append([]string(nil), container.Args...),
+		Env: append([]corev1.EnvVar(nil), container.Env...), EnvFrom: append([]corev1.EnvFromSource(nil), container.EnvFrom...),
+		VolumeMounts: append([]corev1.VolumeMount(nil), container.VolumeMounts...), Volumes: append([]corev1.Volume(nil), job.Spec.Template.Spec.Volumes...),
+		Automount: job.Spec.Template.Spec.AutomountServiceAccountToken, SecurityContext: job.Spec.Template.Spec.SecurityContext,
+		RestartPolicy: job.Spec.Template.Spec.RestartPolicy, PolicyDigest: job.Spec.Template.Annotations["wallaby.snowflake-policy-digest"],
+	}
+	encoded, err := json.Marshal(projection)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
 }
 
 func (k *KubernetesDispatcher) jobPolicyDigest(command, args []string) string {
@@ -359,7 +379,7 @@ func (k *KubernetesDispatcher) jobPolicyDigest(command, args []string) string {
 	}{
 		k.cfg.JobImage, k.cfg.JobImagePullPolicy, k.cfg.JobServiceAccount,
 		append([]string(nil), command...), append([]string(nil), args...), append([]string(nil), k.cfg.JobEnvFrom...),
-		k.cfg.JobEnv, k.cfg.SnowflakeEnabled, k.cfg.SnowflakeStreamingRESTEnabled,
+		sanitizedWorkerJobEnv(k.cfg.JobEnv), k.cfg.SnowflakeEnabled, k.cfg.SnowflakeStreamingRESTEnabled,
 		k.cfg.SnowflakeAccount, k.cfg.SnowflakeUser, k.cfg.SnowflakeHost, k.cfg.SnowflakePrivateKeyFile,
 		k.cfg.SnowflakePrivateKeySecretName, k.cfg.SnowflakePrivateKeySecretKey,
 		k.cfg.SnowflakeStreamingRESTConfigMapName, k.cfg.SnowflakeStreamingRESTConfigMapKey,
@@ -368,6 +388,19 @@ func (k *KubernetesDispatcher) jobPolicyDigest(command, args []string) string {
 	encoded, _ := json.Marshal(payload)
 	digest := sha256.Sum256(encoded)
 	return hex.EncodeToString(digest[:])
+}
+
+func sanitizedWorkerJobEnv(input map[string]string) map[string]string {
+	output := make(map[string]string, len(input))
+	for name, value := range input {
+		switch name {
+		case "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED", "WALLABY_SNOWFLAKE_STREAMING_REST_ENABLED":
+			continue
+		default:
+			output[name] = value
+		}
+	}
+	return output
 }
 
 func resolveKubeClient(cfg KubernetesConfig) (kubernetes.Interface, string, error) {

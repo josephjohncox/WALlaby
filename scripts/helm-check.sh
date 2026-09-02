@@ -49,6 +49,14 @@ for probe in startupProbe readinessProbe livenessProbe; do
 		exit 1
 	fi
 done
+if ! grep -q '^      automountServiceAccountToken: false$' "$default_render"; then
+	echo "server pod must disable its Kubernetes token when dispatch is disabled" >&2
+	exit 1
+fi
+if ! grep -q '^      automountServiceAccountToken: true$' "$output_dir/kubernetes-dispatch.yaml"; then
+	echo "server dispatcher pod must mount its Kubernetes token when dispatch is enabled" >&2
+	exit 1
+fi
 if ! grep -q 'service: wallaby.readiness' "$default_render"; then
 	echo "Helm test and deployment must use the readiness health service" >&2
 	exit 1
@@ -74,4 +82,65 @@ if grep -q 'name: OTEL_EXPORTER_OTLP_ENDPOINT' "$telemetry_render"; then
 	exit 1
 fi
 
-printf '%s\n' 'Helm lint and deployment, health, telemetry, dispatch, and worker renders passed.'
+# Render every worker controller kind with the global policy disabled. The
+# policy ConfigMap and exact worker key reference must still exist.
+for kind in deployment job cronjob; do
+	set -- --set workers.enabled=true --set 'workers.items[0].name=policy-check' --set "workers.items[0].kind=$kind"
+	if [ "$kind" = cronjob ]; then
+		set -- "$@" --set-string 'workers.items[0].schedule=*/5 * * * *'
+	fi
+	helm template wallaby-ci "$chart" "$@" >"$output_dir/worker-$kind.yaml"
+	grep -q 'name: WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED' "$output_dir/worker-$kind.yaml" || {
+		echo "$kind worker lacks the mandatory Streaming policy gate" >&2; exit 1;
+	}
+	grep -q 'fsGroup: 65532' "$output_dir/worker-$kind.yaml" || {
+		echo "$kind worker lacks the private-key group context" >&2; exit 1;
+	}
+	grep -q 'automountServiceAccountToken: false' "$output_dir/worker-$kind.yaml" || {
+		echo "$kind worker unexpectedly mounts a service-account token" >&2; exit 1;
+	}
+	grep -q 'checksum/snowflake-streaming-policy:' "$output_dir/worker-$kind.yaml" || {
+		echo "$kind worker lacks policy ConfigMap rollout checksum" >&2; exit 1;
+	}
+done
+
+grep -q 'snowflake-streaming-rest-enabled: "false"' "$output_dir/default.yaml" || {
+	echo 'default policy ConfigMap must render an exact false value' >&2; exit 1;
+}
+grep -q 'checksum/snowflake-streaming-policy:' "$output_dir/default.yaml" || {
+	echo 'server deployment lacks policy ConfigMap rollout checksum' >&2; exit 1;
+}
+
+helm template wallaby-ci "$chart" \
+	--set snowflake.enabled=true \
+	--set snowflake.streamingRest.enabled=true \
+	--set snowflake.account=account \
+	--set snowflake.user=user \
+	--set snowflake.host=account.snowflakecomputing.com \
+	--set snowflake.privateKeySecretName=wallaby-snowflake \
+	--set snowflake.privateKeySecretKey=private-key.pem \
+	--set workers.enabled=true \
+	--set 'workers.items[0].name=enabled' \
+	--set 'workers.items[0].kind=cronjob' \
+	--set-string 'workers.items[0].schedule=*/5 * * * *' \
+	>"$output_dir/snowflake-enabled.yaml"
+for required in 'snowflake-streaming-rest-enabled: "true"' 'defaultMode: 288' 'mode: 288' 'fsGroup: 65532' 'mountPath: "/run/secrets/wallaby/snowflake-key.pem"'; do
+	grep -q "$required" "$output_dir/snowflake-enabled.yaml" || {
+		echo "enabled Snowflake render lacks $required" >&2; exit 1;
+	}
+done
+
+if helm template wallaby-ci "$chart" --set snowflake.streamingRest.enabled=true >"$output_dir/invalid-streaming.yaml" 2>&1; then
+	echo 'Streaming REST enabled without base Snowflake policy unexpectedly rendered' >&2; exit 1
+fi
+if helm template wallaby-ci "$chart" --set snowflake.streamingREST.enabled=true >"$output_dir/removed-alias.yaml" 2>&1; then
+	echo 'removed snowflake.streamingREST alias unexpectedly rendered' >&2; exit 1
+fi
+if helm template wallaby-ci "$chart" --set snowflake.streamingRest.policyConfigMapKey= >"$output_dir/missing-policy-key.yaml" 2>&1; then
+	echo 'empty Streaming policy ConfigMap key unexpectedly rendered' >&2; exit 1
+fi
+if helm template wallaby-ci "$chart" --set workers.enabled=true --set 'workers.items[0].name=bad' --set 'workers.items[0].env[0].name=WALLABY_SNOWFLAKE_STREAMING_REST_ENABLED' --set 'workers.items[0].env[0].value=true' >"$output_dir/worker-alias.yaml" 2>&1; then
+	echo 'worker policy environment alias unexpectedly rendered' >&2; exit 1
+fi
+
+printf '%s\n' 'Helm lint and deployment, health, telemetry, dispatch, policy, and all worker-kind renders passed.'

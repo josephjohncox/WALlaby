@@ -1,6 +1,10 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +13,7 @@ import (
 
 	"github.com/josephjohncox/wallaby/internal/cli"
 	"github.com/josephjohncox/wallaby/internal/config"
+	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 
 func TestWorkerRejectsUnknownRuntimeConfigPath(t *testing.T) {
@@ -153,6 +158,70 @@ func TestKubernetesWorkerRequiresExactStreamingPolicyConfigMapValue(t *testing.T
 				t.Fatalf("error=%v", err)
 			}
 		})
+	}
+}
+
+func TestWorkerStreamingDeploymentGateFalseDominatesStandaloneConfig(t *testing.T) {
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED", "false")
+	command := newWallabyWorkerCommand()
+	if err := command.ParseFlags([]string{"--snowflake-enabled=false"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Snowflake: config.SnowflakeConfig{Enabled: true, StreamingREST: config.SnowflakeStreamingRESTConfig{Enabled: true}}}
+	policy, err := resolveWorkerSnowflakePolicy(command, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = policy.Close() }()
+	if policy.Enabled() || cfg.Snowflake.Enabled || cfg.Snowflake.StreamingREST.Enabled {
+		t.Fatalf("standalone false gate was widened: policy=%v config=%+v", policy.Enabled(), cfg.Snowflake)
+	}
+}
+
+func TestKubernetesWorkerStreamingTrueRequiresAllThreeAuthorities(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "snowflake-key.pem")
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Snowflake: config.SnowflakeConfig{
+		Enabled: true, Account: "account", User: "user", Host: "account.snowflakecomputing.com", PrivateKeyFile: keyPath,
+		StreamingREST: config.SnowflakeStreamingRESTConfig{Enabled: true},
+	}}
+	expected, err := connector.NewSnowflakeDeploymentPolicy(connector.SnowflakeDeploymentConfig{
+		Enabled: true, StreamingRESTEnabled: true, Account: cfg.Snowflake.Account, User: cfg.Snowflake.User, Host: cfg.Snowflake.Host, PrivateKeyFile: keyPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	streaming, err := expected.StreamingRESTPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := streaming.Fingerprint()
+	_ = expected.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED", "true")
+	command := newWallabyWorkerCommand()
+	if err := command.ParseFlags([]string{"--snowflake-enabled=true", "--snowflake-streaming-rest-granted=true", "--snowflake-policy-digest", digest}); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := resolveWorkerSnowflakePolicy(command, &cfg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = policy.Close() }()
+	if !policy.Enabled() || !cfg.Snowflake.StreamingREST.Enabled {
+		t.Fatalf("matching three-way authority was not admitted: policy=%v config=%+v", policy.Enabled(), cfg.Snowflake)
 	}
 }
 

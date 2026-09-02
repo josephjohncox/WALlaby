@@ -44,13 +44,18 @@ func loadManagedStreamCatalog(ctx context.Context, queryer managedSnowflakeCatal
 	if result.pipe, err = loadStagedPipe(ctx, queryer, shim, informationSchema); err != nil {
 		return result, err
 	}
-	for name, target := range map[string]*managedTableSnapshot{
-		cfg.table: &result.target, cfg.receiptsTable: &result.receipts,
-		cfg.channelStateTable: &result.channel, cfg.channelStateTable + "_REQUESTS": &result.requests,
+	for _, item := range []struct {
+		name   string
+		target *managedTableSnapshot
+	}{
+		{name: cfg.table, target: &result.target},
+		{name: cfg.receiptsTable, target: &result.receipts},
+		{name: cfg.channelStateTable, target: &result.channel},
+		{name: cfg.channelStateTable + "_REQUESTS", target: &result.requests},
 	} {
-		*target, err = loadStagedTable(ctx, queryer, shim, informationSchema, name)
+		*item.target, err = loadStagedTable(ctx, queryer, shim, informationSchema, item.name)
 		if err != nil {
-			return result, fmt.Errorf("inspect managed streaming Snowflake table %s: %w", name, err)
+			return result, fmt.Errorf("inspect managed streaming Snowflake table %s: %w", item.name, err)
 		}
 	}
 	if err := queryer.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+informationSchema+"PIPES WHERE PIPE_SCHEMA = ?", cfg.schema).Scan(&result.pipeCount); err != nil {

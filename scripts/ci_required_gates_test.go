@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -16,6 +17,27 @@ type requiredGateWorkflow struct {
 			Run string `yaml:"run"`
 		} `yaml:"steps"`
 	} `yaml:"jobs"`
+}
+
+func TestPiLensHelmTemplateExclusionIsNarrowAndRenderValidated(t *testing.T) {
+	var cfg struct {
+		Ignore []string `json:"ignore"`
+		Helm   struct {
+			RenderValidation struct {
+				Enabled bool `json:"enabled"`
+			} `json:"renderValidation"`
+		} `json:"helm"`
+	}
+	raw, err := os.ReadFile("../.pi-lens.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Ignore) != 1 || cfg.Ignore[0] != "charts/wallaby/templates/**/*.yaml" || !cfg.Helm.RenderValidation.Enabled {
+		t.Fatalf("pi-lens Helm policy=%+v", cfg)
+	}
 }
 
 func TestRequiredCheckpoint5AndModelOnlyCIGatesStayWired(t *testing.T) {

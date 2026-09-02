@@ -360,18 +360,25 @@ func resolveWorkerSnowflakePolicy(cmd *cobra.Command, cfg *config.Config, requir
 	if flag := cmd.Flags().Lookup("snowflake-enabled"); flag != nil && flag.Changed {
 		cfg.Snowflake.Enabled = cli.ResolveBoolFlag(cmd, "snowflake-enabled")
 	}
+	grant := true
 	if requireDispatchGrant {
-		grant := false
+		grant = false
 		if flag := cmd.Flags().Lookup("snowflake-streaming-rest-granted"); flag != nil && flag.Changed {
 			grant = cli.ResolveBoolFlag(cmd, "snowflake-streaming-rest-granted")
 		}
-		rawPolicy, present := os.LookupEnv("WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED")
-		if !present || rawPolicy != "true" && rawPolicy != "false" {
-			return connector.SnowflakeDeploymentPolicy{}, errors.New("kubernetes worker requires exact WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED=true|false from the deployment policy ConfigMap")
-		}
-		localPolicy := rawPolicy == "true"
-		cfg.Snowflake.StreamingREST.Enabled = cfg.Snowflake.StreamingREST.Enabled && grant && localPolicy
 	}
+	rawPolicy, policyPresent := os.LookupEnv("WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED")
+	if requireDispatchGrant && !policyPresent {
+		return connector.SnowflakeDeploymentPolicy{}, errors.New("kubernetes worker requires exact WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED=true|false from the deployment policy ConfigMap")
+	}
+	localPolicy := true
+	if policyPresent {
+		if rawPolicy != "true" && rawPolicy != "false" {
+			return connector.SnowflakeDeploymentPolicy{}, errors.New("worker requires exact WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED=true|false when the deployment gate is present")
+		}
+		localPolicy = rawPolicy == "true"
+	}
+	cfg.Snowflake.StreamingREST.Enabled = cfg.Snowflake.StreamingREST.Enabled && grant && localPolicy
 	for flagName, target := range map[string]*string{
 		"snowflake-account":          &cfg.Snowflake.Account,
 		"snowflake-user":             &cfg.Snowflake.User,

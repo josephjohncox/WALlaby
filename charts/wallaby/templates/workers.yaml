@@ -7,6 +7,11 @@
 {{- $imageRepo := dig "image" "repository" $root.Values.image.repository $worker -}}
 {{- $imageTag := dig "image" "tag" $root.Values.image.tag $worker -}}
 {{- $imagePullPolicy := dig "image" "pullPolicy" $root.Values.image.pullPolicy $worker -}}
+{{- range $entry := $worker.env }}
+{{- if or (eq $entry.name "WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED") (eq $entry.name "WALLABY_SNOWFLAKE_STREAMING_REST_ENABLED") -}}
+{{- fail "workers.items[].env cannot override the Snowflake Streaming REST deployment policy" -}}
+{{- end -}}
+{{- end -}}
 {{- if eq $kind "cronjob" }}
 apiVersion: batch/v1
 kind: CronJob
@@ -38,8 +43,9 @@ spec:
 {{- with $worker.podLabels }}
 {{ toYaml . | nindent 12 }}
 {{- end }}
-{{- with $worker.podAnnotations }}
           annotations:
+            checksum/snowflake-streaming-policy: {{ include (print $root.Template.BasePath "/snowflake-policy-configmap.yaml") $root | sha256sum }}
+{{- with $worker.podAnnotations }}
 {{ toYaml . | nindent 12 }}
 {{- end }}
         spec:
@@ -51,10 +57,7 @@ spec:
           securityContext:
             fsGroup: 65532
             fsGroupChangePolicy: OnRootMismatch
-          securityContext:
-        fsGroup: 65532
-        fsGroupChangePolicy: OnRootMismatch
-      serviceAccountName: {{ include "wallaby.workerServiceAccountName" $root }}
+          serviceAccountName: {{ include "wallaby.workerServiceAccountName" $root }}
           automountServiceAccountToken: {{ $root.Values.workerServiceAccount.automountServiceAccountToken }}
 {{- if $root.Values.snowflake.enabled }}
           volumes:
@@ -71,13 +74,6 @@ spec:
             - name: wallaby-worker
               image: "{{ $imageRepo }}:{{ $imageTag }}"
               imagePullPolicy: {{ $imagePullPolicy }}
-{{- if $root.Values.snowflake.enabled }}
-          volumeMounts:
-            - name: snowflake-private-key
-              mountPath: {{ $root.Values.snowflake.privateKeyFile | quote }}
-              subPath: private-key.pem
-              readOnly: true
-{{- end }}
 {{- if $root.Values.snowflake.enabled }}
               volumeMounts:
                 - name: snowflake-private-key
@@ -111,8 +107,8 @@ spec:
                 - name: WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED
                   valueFrom:
                     configMapKeyRef:
-                      name: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" $root)) $root.Values.snowflake.streamingREST.policyConfigMapName | quote }}
-                      key: {{ $root.Values.snowflake.streamingREST.policyConfigMapKey | quote }}
+                      name: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" $root)) $root.Values.snowflake.streamingRest.policyConfigMapName | quote }}
+                      key: {{ $root.Values.snowflake.streamingRest.policyConfigMapKey | quote }}
 {{- with $worker.resources }}
               resources:
 {{ toYaml . | indent 16 }}
@@ -154,8 +150,9 @@ spec:
 {{- with $worker.podLabels }}
 {{ toYaml . | nindent 8 }}
 {{- end }}
-{{- with $worker.podAnnotations }}
       annotations:
+        checksum/snowflake-streaming-policy: {{ include (print $root.Template.BasePath "/snowflake-policy-configmap.yaml") $root | sha256sum }}
+{{- with $worker.podAnnotations }}
 {{ toYaml . | nindent 8 }}
 {{- end }}
     spec:
@@ -217,8 +214,8 @@ spec:
             - name: WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED
               valueFrom:
                 configMapKeyRef:
-                  name: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" $root)) $root.Values.snowflake.streamingREST.policyConfigMapName | quote }}
-                  key: {{ $root.Values.snowflake.streamingREST.policyConfigMapKey | quote }}
+                  name: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" $root)) $root.Values.snowflake.streamingRest.policyConfigMapName | quote }}
+                  key: {{ $root.Values.snowflake.streamingRest.policyConfigMapKey | quote }}
 {{- with $worker.resources }}
           resources:
 {{ toYaml . | indent 12 }}
@@ -266,8 +263,9 @@ spec:
 {{- with $worker.podLabels }}
 {{ toYaml . | nindent 8 }}
 {{- end }}
-{{- with $worker.podAnnotations }}
       annotations:
+        checksum/snowflake-streaming-policy: {{ include (print $root.Template.BasePath "/snowflake-policy-configmap.yaml") $root | sha256sum }}
+{{- with $worker.podAnnotations }}
 {{ toYaml . | nindent 8 }}
 {{- end }}
     spec:
@@ -328,8 +326,8 @@ spec:
             - name: WALLABY_WORKER_SNOWFLAKE_STREAMING_REST_ENABLED
               valueFrom:
                 configMapKeyRef:
-                  name: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" $root)) $root.Values.snowflake.streamingREST.policyConfigMapName | quote }}
-                  key: {{ $root.Values.snowflake.streamingREST.policyConfigMapKey | quote }}
+                  name: {{ default (printf "%s-snowflake-policy" (include "wallaby.fullname" $root)) $root.Values.snowflake.streamingRest.policyConfigMapName | quote }}
+                  key: {{ $root.Values.snowflake.streamingRest.policyConfigMapKey | quote }}
 {{- with $worker.resources }}
           resources:
 {{ toYaml . | indent 12 }}
