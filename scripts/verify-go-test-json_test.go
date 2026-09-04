@@ -313,7 +313,6 @@ func TestVerifyRequiredTestsRequiresExactTopLevelLifecycle(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			report, err := verifyRequiredTests(strings.NewReader(test.events), []string{"TestRequired"})
@@ -327,6 +326,53 @@ func TestVerifyRequiredTestsRequiresExactTopLevelLifecycle(t *testing.T) {
 				t.Fatalf("verifyRequiredTests() error=%v, want substring %q; report=%+v", err, test.wantErr, report)
 			}
 		})
+	}
+}
+
+func TestVerifyRequiredTestsRequiresExactRepetitionCount(t *testing.T) {
+	t.Parallel()
+	repeated := validPackageEvidence("example/pkg",
+		testJSON("run", "example/pkg", "TestRequired"),
+		testJSON("run", "example/pkg", "TestRequired/child"),
+		testJSON("pass", "example/pkg", "TestRequired/child"),
+		testJSON("pass", "example/pkg", "TestRequired"),
+		testJSON("run", "example/pkg", "TestRequired"),
+		testJSON("run", "example/pkg", "TestRequired/child"),
+		testJSON("pass", "example/pkg", "TestRequired/child"),
+		testJSON("pass", "example/pkg", "TestRequired"),
+	)
+	if _, err := verifyRequiredTestsWithCount(strings.NewReader(repeated), []string{"TestRequired"}, 2); err != nil {
+		t.Fatalf("verify two exact repetitions: %v", err)
+	}
+	if _, err := verifyRequiredTests(strings.NewReader(repeated), []string{"TestRequired"}); err == nil || !strings.Contains(err.Error(), "duplicate run") {
+		t.Fatalf("default single-run contract accepted repeated evidence: %v", err)
+	}
+	if _, err := verifyRequiredTestsWithCount(strings.NewReader(repeated), []string{"TestRequired"}, 0); err == nil || !strings.Contains(err.Error(), "expected runs must be at least one") {
+		t.Fatalf("nonpositive expected runs error=%v", err)
+	}
+
+	tooFew := validPackageEvidence("example/pkg",
+		testJSON("run", "example/pkg", "TestRequired"),
+		testJSON("run", "example/pkg", "TestRequired/child"),
+		testJSON("pass", "example/pkg", "TestRequired/child"),
+		testJSON("pass", "example/pkg", "TestRequired"),
+		testJSON("run", "example/pkg", "TestRequired"),
+		testJSON("pass", "example/pkg", "TestRequired"),
+	)
+	if _, err := verifyRequiredTestsWithCount(strings.NewReader(tooFew), []string{"TestRequired"}, 2); err == nil || !strings.Contains(err.Error(), "TestRequired/child(run=1 pass=1") || !strings.Contains(err.Error(), "expected-runs=2") {
+		t.Fatalf("missing nested repetition error=%v", err)
+	}
+
+	extra := validPackageEvidence("example/pkg",
+		testJSON("run", "example/pkg", "TestRequired"),
+		testJSON("pass", "example/pkg", "TestRequired"),
+		testJSON("run", "example/pkg", "TestRequired"),
+		testJSON("pass", "example/pkg", "TestRequired"),
+		testJSON("run", "example/pkg", "TestRequired"),
+		testJSON("pass", "example/pkg", "TestRequired"),
+	)
+	if _, err := verifyRequiredTestsWithCount(strings.NewReader(extra), []string{"TestRequired"}, 2); err == nil || !strings.Contains(err.Error(), "duplicate run") {
+		t.Fatalf("extra repetition error=%v", err)
 	}
 }
 
@@ -371,6 +417,27 @@ func TestVerifyGoTestJSONCLIWithPureRealStream(t *testing.T) {
 	}
 	if !strings.Contains(string(verified), "exactly one run/pass") && !strings.Contains(string(verified), "chronological run/pass") {
 		t.Fatalf("unexpected verifier output: %s", verified)
+	}
+}
+
+func TestVerifyGoTestJSONCLIWithRepeatedRealStream(t *testing.T) {
+	t.Parallel()
+	testCommand := exec.Command("go", "test", "-json", "-count=2", "-run", "^TestVerifierRealJSONFixture$", ".")
+	output, err := testCommand.Output()
+	if err != nil {
+		t.Fatalf("run repeated real go test -json fixture: %v", err)
+	}
+	results := t.TempDir() + "/results.json"
+	if err := os.WriteFile(results, output, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	verifyCommand := exec.Command("go", "run", "./verify-go-test-json.go", "-results", results, "-required", "TestVerifierRealJSONFixture", "-expected-runs", "2")
+	verified, err := verifyCommand.CombinedOutput()
+	if err != nil {
+		t.Fatalf("verify repeated go-test JSON: %v\n%s", err, verified)
+	}
+	if !strings.Contains(string(verified), "exactly 2 chronological run/pass repetitions") {
+		t.Fatalf("unexpected repeated verifier output: %s", verified)
 	}
 }
 
@@ -443,6 +510,14 @@ func (r *errorReader) Read(buffer []byte) (int, error) {
 		return 0, err
 	}
 	return 0, io.EOF
+}
+
+func verifyRequiredTests(input io.Reader, requiredNames []string) (verificationReport, error) {
+	report, err := verifyRequiredTestsWithCount(input, requiredNames, 1)
+	if err != nil {
+		return report, fmt.Errorf("verify required tests: %w", err)
+	}
+	return report, nil
 }
 
 func validPackageEvidence(packageName string, testEvents ...string) string {

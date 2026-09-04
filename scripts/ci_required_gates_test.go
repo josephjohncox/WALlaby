@@ -106,9 +106,20 @@ func TestRequiredCheckpoint5AndModelOnlyCIGatesStayWired(t *testing.T) {
 		"IT_SERVICES=iceberg IT_REQUIRED_TESTS=\"${required}\"",
 		"test-failure-matrix-model:",
 		"-model-only -cycles {{ failure_cycles }} -seed {{ failure_seed }} -require-coverage",
+		"IT_COUNT=10 just test-durable-integration",
+		"IT_COUNT=10 just test-durable-dbos-integration",
 	} {
 		if !strings.Contains(justfile, required) {
 			t.Fatalf("justfile is missing required non-vacuous gate contract %q", required)
+		}
+	}
+	integrationScript := read("../scripts/test-integration.sh")
+	for _, required := range []string{
+		"expected_runs=${IT_COUNT:-1}",
+		"-expected-runs \"$expected_runs\"",
+	} {
+		if !strings.Contains(integrationScript, required) {
+			t.Fatalf("integration verifier is missing exact repetition accounting %q", required)
 		}
 	}
 	governance := read("../docs/development/ci-governance.md")

@@ -50,9 +50,9 @@ if [ -n "$GO_TEST_COVERPROFILE" ]; then
 	set -- "$@" -coverprofile="$GO_TEST_COVERPROFILE"
 fi
 
-export IT_VERBOSE=$GO_TEST_VERBOSE
-export WALLABY_IT_VERBOSE=$GO_TEST_VERBOSE
-export WALLABY_IT_SERVICE_READY_TIMEOUT_SECONDS=$IT_SERVICE_READY_TIMEOUT_SECONDS
+export IT_VERBOSE="$GO_TEST_VERBOSE"
+export WALLABY_IT_VERBOSE="$GO_TEST_VERBOSE"
+export WALLABY_IT_SERVICE_READY_TIMEOUT_SECONDS="$IT_SERVICE_READY_TIMEOUT_SECONDS"
 
 if [ -z "$IT_REQUIRED_TESTS" ]; then
 	exec "$@"
@@ -68,4 +68,8 @@ cat "$results"
 if [ "$status" -ne 0 ]; then
 	exit "$status"
 fi
-"$GO" run ./scripts/verify-go-test-json.go -results "$results" -required "$IT_REQUIRED_TESTS"
+expected_runs=${IT_COUNT:-1}
+"$GO" run ./scripts/verify-go-test-json.go \
+	-results "$results" \
+	-required "$IT_REQUIRED_TESTS" \
+	-expected-runs "$expected_runs"

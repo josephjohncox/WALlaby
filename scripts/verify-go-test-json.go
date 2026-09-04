@@ -54,9 +54,14 @@ type packageState struct {
 func main() {
 	results := flag.String("results", "", "pure go test -json output")
 	requiredRaw := flag.String("required", "", "comma-separated required top-level test names")
+	expectedRuns := flag.Int("expected-runs", 1, "exact run/pass repetitions required for every required test and nested test")
 	flag.Parse()
 	if *results == "" || strings.TrimSpace(*requiredRaw) == "" {
 		fmt.Fprintln(os.Stderr, "results and required tests are required")
+		os.Exit(2)
+	}
+	if *expectedRuns < 1 {
+		fmt.Fprintln(os.Stderr, "expected runs must be at least one")
 		os.Exit(2)
 	}
 	required := splitRequired(*requiredRaw)
@@ -69,7 +74,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	report, verifyErr := verifyRequiredTests(file, required)
+	report, verifyErr := verifyRequiredTestsWithCount(file, required, *expectedRuns)
 	closeErr := file.Close()
 	if verifyErr != nil {
 		fmt.Fprintln(os.Stderr, verifyErr)
@@ -79,13 +84,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, closeErr)
 		os.Exit(2)
 	}
-	fmt.Printf("verified %d required tests: chronological run/pass, complete nested suites, and passing package terminals\n", len(report.Required))
+	fmt.Printf("verified %d required tests: exactly %d chronological run/pass repetitions, complete nested suites, and passing package terminals\n", len(report.Required), *expectedRuns)
 }
 
 func splitRequired(raw string) []string {
 	seen := make(map[string]struct{})
 	var required []string
-	for _, name := range strings.Split(raw, ",") {
+	for name := range strings.SplitSeq(raw, ",") {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
@@ -100,9 +105,12 @@ func splitRequired(raw string) []string {
 	return required
 }
 
-func verifyRequiredTests(input io.Reader, requiredNames []string) (verificationReport, error) {
+func verifyRequiredTestsWithCount(input io.Reader, requiredNames []string, expectedRuns int) (verificationReport, error) {
 	report := verificationReport{Required: append([]string(nil), requiredNames...)}
 	sort.Strings(report.Required)
+	if expectedRuns < 1 {
+		return report, errors.New("expected runs must be at least one")
+	}
 	if len(report.Required) == 0 {
 		return report, errors.New("at least one effective required top-level test is required")
 	}
@@ -172,7 +180,7 @@ func verifyRequiredTests(input io.Reader, requiredNames []string) (verificationR
 			}
 			continue
 		}
-		if err := applyTestEvent(pkg, item, lineNumber); err != nil {
+		if err := applyTestEvent(pkg, item, lineNumber, expectedRuns); err != nil {
 			return report, err
 		}
 	}
@@ -213,8 +221,8 @@ func verifyRequiredTests(input io.Reader, requiredNames []string) (verificationR
 			continue
 		}
 		state := matches[0]
-		if state.Run != 1 || state.Pass != 1 || state.Skip != 0 || state.Fail != 0 || state.Terminal != "pass" {
-			invalid[fmt.Sprintf("%s(run=%d pass=%d skip=%d fail=%d terminal=%s)", requiredName, state.Run, state.Pass, state.Skip, state.Fail, state.Terminal)] = true
+		if state.Run != expectedRuns || state.Pass != expectedRuns || state.Skip != 0 || state.Fail != 0 || state.Terminal != "pass" {
+			invalid[fmt.Sprintf("%s(run=%d pass=%d skip=%d fail=%d terminal=%s expected-runs=%d)", requiredName, state.Run, state.Pass, state.Skip, state.Fail, state.Terminal, expectedRuns)] = true
 		}
 		if state.Skip != 0 {
 			skipped[requiredName] = true
@@ -236,8 +244,8 @@ func verifyRequiredTests(input io.Reader, requiredNames []string) (verificationR
 			if nested.Fail != 0 {
 				failed[testName] = true
 			}
-			if nested.Run != 1 || nested.Pass != 1 || nested.Skip != 0 || nested.Fail != 0 || nested.Terminal != "pass" {
-				invalid[fmt.Sprintf("%s(run=%d pass=%d skip=%d fail=%d terminal=%s)", testName, nested.Run, nested.Pass, nested.Skip, nested.Fail, nested.Terminal)] = true
+			if nested.Run != expectedRuns || nested.Pass != expectedRuns || nested.Skip != 0 || nested.Fail != 0 || nested.Terminal != "pass" {
+				invalid[fmt.Sprintf("%s(run=%d pass=%d skip=%d fail=%d terminal=%s expected-runs=%d)", testName, nested.Run, nested.Pass, nested.Skip, nested.Fail, nested.Terminal, expectedRuns)] = true
 			}
 		}
 	}
@@ -284,21 +292,28 @@ func applyPackageEvent(pkg *packageState, action string, lineNumber int) error {
 	}
 }
 
-func applyTestEvent(pkg *packageState, item event, lineNumber int) error {
+func applyTestEvent(pkg *packageState, item event, lineNumber, expectedRuns int) error {
 	state := pkg.Tests[item.Test]
 	switch item.Action {
 	case "run":
-		if state != nil {
-			return fmt.Errorf("test %s in package %s has duplicate run on line %d", item.Test, pkg.Name, lineNumber)
-		}
 		parentName := longestActiveParent(pkg, item.Test)
 		if strings.Contains(item.Test, "/") && parentName == "" {
 			return fmt.Errorf("nested test %s started without an active slash-prefix parent on line %d", item.Test, lineNumber)
 		}
-		pkg.Tests[item.Test] = &testState{Name: item.Test, Package: pkg.Name, Parent: parentName, Benchmark: isBenchmarkName(item.Test), Run: 1}
+		if state == nil {
+			pkg.Tests[item.Test] = &testState{Name: item.Test, Package: pkg.Name, Parent: parentName, Benchmark: isBenchmarkName(item.Test), Run: 1}
+			return nil
+		}
+		if state.Terminal == "" || state.Run >= expectedRuns || state.Benchmark {
+			return fmt.Errorf("test %s in package %s has duplicate run on line %d", item.Test, pkg.Name, lineNumber)
+		}
+		state.Parent = parentName
+		state.Run++
+		state.Paused = false
+		state.Terminal = ""
 		return nil
 	case "output", "bench", "pause", "cont", "pass", "fail", "skip":
-		if state == nil || state.Run != 1 {
+		if state == nil || state.Run == 0 {
 			return fmt.Errorf("test %s action %s occurred before run on line %d", item.Test, item.Action, lineNumber)
 		}
 		if state.Terminal != "" {
@@ -351,7 +366,7 @@ func applyTestEvent(pkg *packageState, item event, lineNumber int) error {
 func longestActiveParent(pkg *packageState, name string) string {
 	parent := ""
 	for candidateName, candidate := range pkg.Tests {
-		if candidate.Run != 1 || candidate.Terminal != "" || candidate.Paused || !strings.HasPrefix(name, candidateName+"/") {
+		if candidate.Run == 0 || candidate.Terminal != "" || candidate.Paused || !strings.HasPrefix(name, candidateName+"/") {
 			continue
 		}
 		if len(candidateName) > len(parent) {
