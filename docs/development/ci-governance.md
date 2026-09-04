@@ -23,7 +23,7 @@ The active `Main: reviewed PRs and required checks` repository ruleset enforces 
 - `TestIcebergRESTLiveAppendProjection`
 - `TestIcebergRESTLiveSchemaEvolutionRename`
 
-The integration JSON verifier requires each named test to emit a chronological `run` event and terminal `pass` event. Missing tests, skips, malformed JSON, package failure, or a pass without a preceding run fail the check.
+The integration JSON verifier requires each named test to emit a chronological `run` event and terminal `pass` event. Missing tests, skips, malformed JSON, package failure, or a pass without a preceding run fail the check. Scheduled durability runs pass their explicit Go `-count` value to the verifier, which requires that exact number of complete top-level and nested `run`/`pass` cycles. Missing or extra repetitions fail closed.
 
 `failure-matrix-model` runs `just test-failure-matrix-model` as a distinct check. It is in-process executable-model evidence only. `failure-matrix` remains the separate real-child OS-process death/restart matrix, and neither substitutes for the other or for destination implementation evidence.
 
