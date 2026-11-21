@@ -6,6 +6,6 @@ case "${SKIP_TLA_CHECKS:-false}" in
 	echo "Skipping TLC checks (SKIP_TLA_CHECKS=${SKIP_TLA_CHECKS}); set to false/0 to run them."
 	;;
 *)
-	exec "${JUST:-just}" tla
+	exec "${MISE:-mise}" run tla
 	;;
 esac

@@ -7,7 +7,10 @@
     "ExecutionFinished",
     "PauseComplete",
     "StopComplete",
-    "RestartExecution",
+    "ExpireLease",
+    "Takeover",
+    "AuthoritativeMutation",
+    "RecreatePublicID",
     "Fail",
     "RunOnce"
   ],
@@ -17,7 +20,9 @@
     "QuiescentTerminalState",
     "RegistrationUsesCurrentGeneration",
     "PendingPauseIsNotPaused",
-    "PendingStopIsStopping"
+    "PendingStopIsStopping",
+    "AuthoritativeMutationUsesCurrentFence",
+    "FlowReuseClearsOldAuthority"
   ],
   "unreachable_actions": [
     "Start",
@@ -26,7 +31,10 @@
     "ExecutionFinished",
     "PauseComplete",
     "StopComplete",
-    "RestartExecution",
+    "ExpireLease",
+    "Takeover",
+    "AuthoritativeMutation",
+    "RecreatePublicID",
     "Fail",
     "RunOnce"
   ],
@@ -36,6 +44,8 @@
     "QuiescentTerminalState",
     "RegistrationUsesCurrentGeneration",
     "PendingPauseIsNotPaused",
-    "PendingStopIsStopping"
+    "PendingStopIsStopping",
+    "AuthoritativeMutationUsesCurrentFence",
+    "FlowReuseClearsOldAuthority"
   ]
 }

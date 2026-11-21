@@ -24,36 +24,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Setup just
-        uses: ./.github/actions/setup-just
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
 
-      - name: Setup Go
-        # actions/setup-go v7.0.0
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Setup Buf
-        # bufbuild/buf-setup-action v1.50.0
-        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99
-        with:
-          version: "1.63.0"
-          github_token: ${{ github.token }}
-
-      - name: Setup uv
-        # astral-sh/setup-uv v10.0.1
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
-        with:
-          version: "0.11.29"
-          enable-cache: true
-          prune-cache: true
 
       - name: Verify generated protobuf and Go artifacts
-        run: just generate-check
+        run: mise run generate-check
 
       - name: Verify generated documentation
-        run: just docs-verify
+        run: mise run docs-verify
 
       - name: Test release tag validation
         run: ./scripts/validate-release-tag-selftest.sh

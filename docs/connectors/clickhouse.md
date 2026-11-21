@@ -221,7 +221,7 @@ The integration gates cover:
 - PostgreSQL-authoritative receipt, checkpoint, ACK, and lease-takeover recovery;
 - bounded telemetry attributes and metrics.
 
-Run the profile gate with `just test-clickhouse-managed-profile`. The generated [connector support matrix](../reference/generated/connector-support.md) lists the executable gate names.
+Run the profile gate with `mise run test-clickhouse-managed-profile`. The generated [connector support matrix](../reference/generated/connector-support.md) lists the executable gate names.
 
 ## ClickHouse semantics used by the profile
 

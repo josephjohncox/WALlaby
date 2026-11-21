@@ -223,12 +223,29 @@ func RunIntegrationHarness(m *testing.M) int {
 	h.logf("integration harness config: kind=%v keep=%v cluster=%s nodeImage=%s", h.config.kindEnabled, h.config.kindKeep, h.config.kindCluster, h.config.kindNodeImage)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	startupCtx, cancelStartup := context.WithCancel(context.Background())
+	defer cancelStartup()
+	startupDone := make(chan struct{})
+	var startupOnce sync.Once
+	finishStartup := func() { startupOnce.Do(func() { close(startupDone) }) }
+	defer finishStartup()
+	monitorDone := make(chan struct{})
+	defer close(monitorDone)
 
+	var iggy *composeIggySession
+	var cleanupErr error
 	var once sync.Once
 	cleanup := func() {
 		once.Do(func() {
 			if err := h.stop(); err != nil {
+				cleanupErr = errors.Join(cleanupErr, err)
 				fmt.Fprintln(os.Stderr, err)
+			}
+			if iggy != nil {
+				if err := iggy.close(); err != nil {
+					cleanupErr = errors.Join(cleanupErr, err)
+					fmt.Fprintln(os.Stderr, err)
+				}
 			}
 		})
 	}
@@ -237,11 +254,31 @@ func RunIntegrationHarness(m *testing.M) int {
 		cleanup()
 	}()
 	go func() {
-		<-sigCh
-		cleanup()
-		os.Exit(1)
+		select {
+		case <-sigCh:
+			cancelStartup()
+			// Do not race provisioning or miss a just-created owned session.
+			<-startupDone
+			cleanup()
+			os.Exit(1)
+		case <-monitorDone:
+		}
 	}()
 
+	if *integrationComposeIggy {
+		if config.expectedPeers != 1 {
+			fmt.Fprintln(os.Stderr, "Compose Iggy ownership requires one test-package participant")
+			return 1
+		}
+		ctx, cancel := context.WithTimeout(startupCtx, 3*time.Minute)
+		var err error
+		iggy, err = startComposeIggy(ctx)
+		cancel()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
 	if err := h.start(); err != nil {
 		h.dumpPodLogsOnFail = true
 		fmt.Fprintln(os.Stderr, err)
@@ -249,11 +286,18 @@ func RunIntegrationHarness(m *testing.M) int {
 		return 1
 	}
 
+	finishStartup()
+	if startupCtx.Err() != nil {
+		return 1
+	}
 	result := m.Run()
 	if result != 0 {
 		h.dumpPodLogsOnFail = true
 	}
 	cleanup()
+	if cleanupErr != nil && result == 0 {
+		return 1
+	}
 	return result
 }
 
@@ -576,19 +620,25 @@ func (h *integrationHarness) createKindCluster(ctx context.Context) (string, err
 		args = append(args, "--image", h.config.kindNodeImage)
 	}
 
-	_, createErr := commandOutput(ctx, "", "kind", args...)
-	if createErr != nil {
-		return "", createErr
+	// Never rewrite the developer's default kubeconfig/current context.
+	file, err := os.CreateTemp("", "wallaby-it-kind-*.kubeconfig")
+	if err != nil {
+		return "", err
 	}
-
-	kubeconfigPath, kubeErr := h.getExistingKindKubeconfig(ctx, h.config.kindCluster)
-	if kubeErr != nil {
-		return "", kubeErr
+	kubeconfigPath := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(kubeconfigPath)
+		return "", err
 	}
-	if vErr := h.validateKindCluster(kubeconfigPath); vErr != nil {
-		return "", vErr
+	args = append(args, "--kubeconfig", kubeconfigPath)
+	if _, err := commandOutput(ctx, "", "kind", args...); err != nil {
+		_ = os.Remove(kubeconfigPath)
+		return "", err
 	}
-
+	if err := h.validateKindCluster(kubeconfigPath); err != nil {
+		_ = os.Remove(kubeconfigPath)
+		return "", err
+	}
 	return kubeconfigPath, nil
 }
 

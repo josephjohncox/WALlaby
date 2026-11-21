@@ -14,8 +14,8 @@ on:
       - "uv.lock"
       - "buf.gen.docs.yaml"
       - "lychee.toml"
-      - "justfile"
-      - ".github/actions/setup-just/**"
+      - "mise.toml"
+      - ".github/actions/setup-mise/**"
       - "scripts/docs-*"
       - ".github/workflows/docs.yml"
   push:
@@ -32,8 +32,8 @@ on:
       - "uv.lock"
       - "buf.gen.docs.yaml"
       - "lychee.toml"
-      - "justfile"
-      - ".github/actions/setup-just/**"
+      - "mise.toml"
+      - ".github/actions/setup-mise/**"
       - "scripts/docs-*"
       - ".github/workflows/docs.yml"
   schedule:
@@ -61,36 +61,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Setup just
-        uses: ./.github/actions/setup-just
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
 
-      - name: Setup Go
-        # actions/setup-go v7.0.0
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Setup Buf
-        # bufbuild/buf-setup-action v1.50.0
-        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99
-        with:
-          version: "1.63.0"
-          github_token: ${{ github.token }}
-
-      - name: Setup uv
-        # astral-sh/setup-uv v10.0.1
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
-        with:
-          version: "0.11.29"
-          enable-cache: true
-          prune-cache: true
 
       - name: Verify generated documentation
-        run: just docs-verify
+        run: mise run docs-verify
 
       - name: Refresh, build, and check documentation
-        run: just docs-check
+        run: mise run docs-check
 
       - name: Check links in all repository Markdown
         # lycheeverse/lychee-action v2.9.0
@@ -125,8 +104,8 @@ jobs:
     steps:
       - name: Deploy Pages
         id: deployment
-        # actions/deploy-pages v5.0.0
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128
+        # actions/deploy-pages v5.0.1
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346
 
   external-links:
     if: github.event_name == 'schedule'

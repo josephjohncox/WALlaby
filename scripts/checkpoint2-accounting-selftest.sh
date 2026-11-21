@@ -25,11 +25,11 @@ done
 
 recipe_body() {
 	local recipe=$1
-	awk -v recipe="${recipe}:" '
+	awk -v recipe="[tasks.\"${recipe}\"]" '
     $0==recipe { active=1; next }
-    active && /^[A-Za-z0-9_-]+:/ { exit }
+    active && /^\[tasks\./ { exit }
     active { print }
-  ' justfile
+  ' mise.toml
 }
 
 profile_evidence=$(go run ./scripts/managed-profile-evidence.go)
@@ -76,13 +76,13 @@ while IFS='|' read -r profile test_name; do
 	postgresql-to-postgresql-v1) recipe=${postgres_recipe} ;;
 	postgresql-to-clickhouse-append-v1) recipe=${clickhouse_recipe} ;;
 	*)
-		echo "promoted profile ${profile} has no strict justfile gate" >&2
+		echo "promoted profile ${profile} has no strict mise gate" >&2
 		exit 1
 		;;
 	esac
 	recipe_count=$(printf '%s\n' "${recipe}" | grep -o -- "${test_name}" | wc -l | tr -d ' ')
 	if [[ "${recipe_count}" -ne 1 ]]; then
-		echo "promoted profile ${profile} evidence ${test_name} occurs ${recipe_count} times in its justfile gate; want exactly once" >&2
+		echo "promoted profile ${profile} evidence ${test_name} occurs ${recipe_count} times in its mise gate; want exactly once" >&2
 		exit 1
 	fi
 done <<<"${profile_evidence}"

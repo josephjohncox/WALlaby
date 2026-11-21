@@ -1,0 +1,46 @@
+/-
+Negative control. The generated call with observation 1 and `failed = false`
+is `Retry` (`W64 1`). This triple demands `Adopt` (`W64 2`).
+
+The script is the same opening as the real proof (`wp_start`, `wp_auto`) and
+then closes with `rfl`. It must fail because `W64 1` is not definitionally
+`W64 2`, not because a tactic name is missing.
+-/
+module
+
+public import WallabyGoose.Code.github_com.josephjohncox.wallaby.internal.reconcilepolicy
+public import Perennial.Golang.Theory
+
+@[expose] public section
+
+noncomputable section
+
+namespace Perennial
+
+open Iris Iris.BI Iris.ProgramLogic Iris.Std Iris.ProofMode
+
+namespace github_com.josephjohncox.wallaby.internal.reconcilepolicy
+
+section negative
+variable [GooseExts] [GooseSemantics] [GooseInterp]
+variable [go_gctx : GoGlobalContext]
+variable {hlc : HasLC} {GF : BundledGFunctors} [hG : HeapGS hlc GF]
+variable [sem : go.Semantics]
+variable [package_sem : Assumptions]
+
+theorem decide_false_observation_one_adopts :
+    {{ (True : IProp GF) }}
+      (App (App (Val (@! Decide)) (Val #(W64 1))) (Val #false))
+    {{ (r : w64), RET #r; ⌜r = W64 2⌝ }} := by
+  wp_start
+  simp only [Wait, Retry, Adopt, Reject]
+  wp_auto
+  wp_end
+  ipureintro
+  rfl
+
+end negative
+
+end github_com.josephjohncox.wallaby.internal.reconcilepolicy
+
+end Perennial

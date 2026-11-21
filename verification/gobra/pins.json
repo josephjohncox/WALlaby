@@ -1,0 +1,41 @@
+{
+  "gobra": {
+    "repository": "https://github.com/viperproject/gobra.git",
+    "tag": "v26.09",
+    "commit": "d2c5af5450540c502855e53f4a5af1ba7630c41f",
+    "license": "MPL-2.0",
+    "scala": "2.13.18",
+    "sbt": "1.13.0"
+  },
+  "submodules": {
+    "viperserver": "99be0e6df388579d77368a41f29a8bae1a2c4400",
+    "carbon": "d9a8b50384ce8c91a1ab50ac572df5d43149baa9",
+    "silicon": "6b540aa45e5af214f4727b7be463ce84b328fabd",
+    "silver": "f02e7010639f314447d74732146644565aa8d135"
+  },
+  "downloads": {
+    "sbt-1.13.0.tgz": {
+      "url": "https://github.com/sbt/sbt/releases/download/v1.13.0/sbt-1.13.0.tgz",
+      "sha256": "06806805ffd26232727326216766ed4793b549f8c1e6ffeef2e610db7245b698"
+    },
+    "z3-4.16.0-arm64-osx-15.7.3.zip": {
+      "url": "https://github.com/Z3Prover/z3/releases/download/z3-4.16.0/z3-4.16.0-arm64-osx-15.7.3.zip",
+      "sha256": "41828fa07d5cb77bfaee326e8e6dac074f26329c09c633f9e66012bb917cf8ae"
+    },
+    "antlr-4.13.1-complete.jar": {
+      "url": "https://www.antlr.org/download/antlr-4.13.1-complete.jar",
+      "sha256": "bc13a9c57a8dd7d5196888211e5ede657cb64a3ce968608697e4f668251a8487"
+    }
+  },
+  "executed_gobra_jar_sha256": "d3d9b2427781033779584e6a6bf5e21deef14dc394ba51c62520ae1c3c90d241",
+  "java": {
+    "vendor": "Eclipse Temurin",
+    "version": "25.0.5+8"
+  },
+  "z3": {
+    "version": "4.16.0",
+    "platform": "arm64-osx-15.7.3",
+    "binary_sha256": "edae32f9e37ea4b5bb35310d72f0e352d0dc07626cac4e9e30bc1ea9a5bc8efb",
+    "note": "Host Z3 5.4.1 is not used. Gobra v26.09 documents Z3 4.16.0."
+  }
+}

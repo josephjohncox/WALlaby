@@ -17,13 +17,13 @@ are not already set:
 - Fakesnow (`WALLABY_TEST_FAKESNOW_*` when explicitly enabled)
 
 ```bash
-just test-e2e
+mise run test-e2e
 ```
 
 Run the full integration suite (all integration test packages):
 
 ```bash
-just test-integration-ci
+mise run test-integration-ci
 ```
 
 `test-integration` currently executes `./tests/...`, which includes both:
@@ -31,7 +31,11 @@ just test-integration-ci
 - `tests` package integration tests (destination and protocol coverage)
 - `tests/integration` package integration tests (CLI, DBOS, and k8s flow dispatch integration)
 
-The harness is kind-driven (no docker-compose bootstrap) and can still reuse an existing kubeconfig:
+The PostgreSQL/general harness is kind-driven and can reuse an existing kubeconfig.
+Native Iggy additionally has an explicit Go-managed Compose executor. Run
+`mise run test-live-local` for owned kind PostgreSQL + Compose Iggy, seven required
+live tests and durable JSON evidence; see `docs/development/live-delivery.md`.
+The `-it-compose-iggy` flag is opt-in and ordinary unit tests provision nothing:
 
 - `IT_KIND=1` (default): create (or reuse) a kind cluster for Kubernetes dispatcher tests.
 - `IT_KIND=0`: skip kind bootstrap.
@@ -42,8 +46,8 @@ The harness is kind-driven (no docker-compose bootstrap) and can still reuse an 
 Examples:
 
 ```bash
-IT_KIND=1 IT_KIND_CLUSTER=my-kind-cluster just test-k8s-kind
-WALLABY_TEST_K8S_KUBECONFIG=/path/to/kubeconfig just test-integration
+IT_KIND=1 IT_KIND_CLUSTER=my-kind-cluster mise run test-k8s-kind
+WALLABY_TEST_K8S_KUBECONFIG=/path/to/kubeconfig mise run test-integration
 ```
 
 The harness still sanitizes credential helpers (AWS/Kubeconfig) to avoid calling external tooling during tests.
@@ -52,7 +56,7 @@ You can override the per-package test timeout with `GO_TEST_TIMEOUT` (default: 8
 The required `checkpoint5-iceberg` CI check runs:
 
 ```bash
-just test-checkpoint5-iceberg-integration
+mise run test-checkpoint5-iceberg-integration
 ```
 
 It selects only the local Iceberg REST/MinIO harness services and requires both append/projection/readback and schema-evolution rename tests through machine-readable `IT_REQUIRED_TESTS` accounting. Missing, skipped, malformed, or package-failed evidence cannot pass. Credential-gated AWS S3 Tables and Snowflake catalog tests are separate opt-in gates and are not ordinary branch-promotion evidence.
@@ -60,12 +64,12 @@ It selects only the local Iceberg REST/MinIO harness services and requires both 
 Run the Kubernetes dispatcher integration test using kind (no kubeconfig required):
 
 ```bash
-just test-k8s-kind
+mise run test-k8s-kind
 ```
 
 Optional env vars for kind:
 
-- `WALLABY_TEST_K8S_KIND` (`1`/`0`; default `1` in the root `justfile`)
+- `WALLABY_TEST_K8S_KIND` (`1`/`0`; default `1` in root `mise.toml`)
 - `IT_KEEP` (`1` to keep kind cluster after test run)
 - `KIND_CLUSTER` (cluster name)
 - `KIND_NODE_IMAGE` (override node image)
@@ -89,6 +93,8 @@ Set these environment variables to enable destination tests:
 - `WALLABY_TEST_CLI_LOG=1` (print wallaby-admin output during CLI integration tests)
 - `WALLABY_TEST_S3_ENDPOINT`, `WALLABY_TEST_S3_BUCKET`, `WALLABY_TEST_S3_ACCESS_KEY`, `WALLABY_TEST_S3_SECRET_KEY`, optional `WALLABY_TEST_S3_REGION`
 - `WALLABY_TEST_KAFKA_BROKERS` (Kafka/Redpanda brokers)
+- `WALLABY_TEST_IGGY_ADDRESS`, `WALLABY_TEST_IGGY_USERNAME`, `WALLABY_TEST_IGGY_PASSWORD` (native Iggy 0.10; `mise run test-iggy` requires these and rejects skips)
+- `WALLABY_TEST_IGGY_TLS` (default `true`; use `false` only for the disposable plaintext fixture), optional `WALLABY_TEST_IGGY_TLS_CA_FILE` and `WALLABY_TEST_IGGY_TLS_SERVER_NAME`
 - `WALLABY_TEST_HTTP_URL` (HTTP destination test endpoint)
 - `WALLABY_TEST_GLUE_ENDPOINT`, optional `WALLABY_TEST_GLUE_REGION` (Glue schema registry via LocalStack)
 - `WALLABY_TEST_DUCKDB_DSN`
@@ -120,7 +126,7 @@ WALLABY_TEST_SNOWFLAKE_VERSION='<reviewed version>' \
 WALLABY_TEST_SNOWFLAKE_REGION='<reviewed AWS region>' \
 WALLABY_TEST_SNOWFLAKE_OWNER_ROLE='WALLABY_OWNER' \
 TEST_PG_DSN='postgres://...' \
-just test-snowflake-managed-profile
+mise run test-snowflake-managed-profile
 ```
 
 Snowflake benchmarks (requires env vars):

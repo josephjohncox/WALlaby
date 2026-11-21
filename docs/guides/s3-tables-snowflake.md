@@ -173,7 +173,7 @@ SHOW ICEBERG TABLES IN DATABASE WALLABY_S3TABLES;
 
 Inspect `auto_refresh_status` for tables that were discovered but could not initialize. Catalog-link synchronization and table refresh are asynchronous; the example uses 30-second polling intervals.
 
-For promotion evidence, export the AWS/Snowflake variables consumed by the example and run `just test-s3tables-snowflake-live`. The test creates a unique S3 Tables Iceberg table, commits canonical changelog rows, waits for the catalog-linked database to discover it, records `CURRENT_VERSION()`, and verifies exact logical-batch and row counts through Snowflake. A skipped or unrun credential cell is not evidence.
+For promotion evidence, export the AWS/Snowflake variables consumed by the example and run `mise run test-s3tables-snowflake-live`. The test creates a unique S3 Tables Iceberg table, commits canonical changelog rows, waits for the catalog-linked database to discover it, records `CURRENT_VERSION()`, and verifies exact logical-batch and row counts through Snowflake. A skipped or unrun credential cell is not evidence.
 
 ## 6. Query the changelog
 

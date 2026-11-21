@@ -80,17 +80,17 @@ func TestRequiredCheckpoint5AndModelOnlyCIGatesStayWired(t *testing.T) {
 	}
 	integration := parse("../.github/workflows/ci-integration.yml")
 	checkpoint, ok := integration.Jobs["checkpoint5-iceberg"]
-	if !ok || !hasRun(checkpoint, "just test-checkpoint5-iceberg-integration") {
+	if !ok || !hasRun(checkpoint, "mise run test-checkpoint5-iceberg-integration") {
 		t.Fatal("CI Integration lacks the separate checkpoint5-iceberg recipe job")
 	}
 	evidence := parse("../.github/workflows/ci-evidence.yml")
 	model, modelOK := evidence.Jobs["failure-matrix-model"]
 	process, processOK := evidence.Jobs["failure-matrix"]
 	connectorMatrix, connectorMatrixOK := evidence.Jobs["connector-matrix"]
-	if !connectorMatrixOK || !hasUse(connectorMatrix, "./.github/actions/setup-just") || !hasRun(connectorMatrix, "just test-snowpipe-streaming-runtime-wiring") {
-		t.Fatal("CI Evidence connector-matrix job does not install just before the experimental runtime recipe")
+	if !connectorMatrixOK || !hasUse(connectorMatrix, "./.github/actions/setup-mise") || !hasRun(connectorMatrix, "mise run test-snowpipe-streaming-runtime-wiring") {
+		t.Fatal("CI Evidence connector-matrix job does not install mise before the experimental runtime recipe")
 	}
-	if !modelOK || !processOK || !hasRun(model, "just test-failure-matrix-model") || hasRun(model, "just test-failure-matrix") || !hasRun(process, "just test-failure-matrix") || hasRun(process, "just test-failure-matrix-model") {
+	if !modelOK || !processOK || !hasRun(model, "mise run test-failure-matrix-model") || hasRun(model, "mise run test-failure-matrix") || !hasRun(process, "mise run test-failure-matrix") || hasRun(process, "mise run test-failure-matrix-model") {
 		t.Fatal("CI Evidence does not keep model-only and OS-process recipes in distinct jobs")
 	}
 	for name, job := range map[string]requiredGateJob{"failure-matrix-model": model, "failure-matrix": process} {
@@ -99,18 +99,18 @@ func TestRequiredCheckpoint5AndModelOnlyCIGatesStayWired(t *testing.T) {
 			t.Fatalf("%s does not preserve explicit 100/1000 cycle bounds: %q", name, cycles)
 		}
 	}
-	justfile := read("../justfile")
+	miseConfig := read("../mise.toml")
 	for _, required := range []string{
-		"test-checkpoint5-iceberg-integration:",
+		`[tasks."test-checkpoint5-iceberg-integration"]`,
 		"TestIcebergRESTLiveAppendProjection,TestIcebergRESTLiveSchemaEvolutionRename",
 		"IT_SERVICES=iceberg IT_REQUIRED_TESTS=\"${required}\"",
-		"test-failure-matrix-model:",
-		"-model-only -cycles {{ failure_cycles }} -seed {{ failure_seed }} -require-coverage",
-		"IT_COUNT=10 just test-durable-integration",
-		"IT_COUNT=10 just test-durable-dbos-integration",
+		`[tasks."test-failure-matrix-model"]`,
+		"-model-only -cycles {{ vars.failure_cycles }} -seed {{ vars.failure_seed }} -require-coverage",
+		"IT_COUNT=10 mise run test-durable-integration",
+		"IT_COUNT=10 mise run test-durable-dbos-integration",
 	} {
-		if !strings.Contains(justfile, required) {
-			t.Fatalf("justfile is missing required non-vacuous gate contract %q", required)
+		if !strings.Contains(miseConfig, required) {
+			t.Fatalf("mise.toml is missing required non-vacuous gate contract %q", required)
 		}
 	}
 	integrationScript := read("../scripts/test-integration.sh")

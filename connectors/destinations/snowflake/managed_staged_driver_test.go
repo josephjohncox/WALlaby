@@ -8,7 +8,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 )
 
 func stagedFixture(t *testing.T) (stagedConfig, connector.DeliveryIntent, connector.SourceTransaction) {
@@ -201,15 +201,9 @@ func TestStagedDollarIdentifiersOpenInitializeAndObjectProtocol(t *testing.T) {
 	if stat, err := protocol.StatObject(context.Background(), stageRef, plan.identity.relativePath); err != nil || !stat.present {
 		t.Fatalf("LIST dollar stage stat=%+v err=%v", stat, err)
 	}
-	mock.ExpectExec("GET @").WillReturnResult(sqlmock.NewResult(0, 1))
-	if _, err := protocol.GetObject(context.Background(), stageRef, plan.identity.relativePath, len(plan.fileBytes)); err != nil {
-		t.Fatalf("GET dollar stage: %v", err)
-	}
-	mock.ExpectQuery("LIST @").WillReturnRows(sqlmock.NewRows([]string{"name", "size", "md5", "last_modified"}))
-	mock.ExpectExec("PUT file:///").WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := protocol.PutObject(context.Background(), stageRef, plan.identity.relativePath, plan.fileBytes, plan.fileMD5); err != nil {
-		t.Fatalf("PUT dollar stage: %v", err)
-	}
+	// GET/PUT use the driver's native streaming methods, not SQL Exec. Their
+	// dollar-identifier, byte-bound and immutable-upload contracts are exercised
+	// through a native driver test connection in managed_staged_stream_test.go.
 	mock.ExpectQuery("COPY INTO").WillReturnRows(sqlmock.NewRows([]string{"status", "rows_loaded", "errors_seen", "first_error"}).AddRow("LOADED", plan.rowCount, 0, ""))
 	if result, err := protocol.Copy(context.Background(), plan.copyPlan); err != nil || !result.present || result.rowsLoaded != plan.rowCount {
 		t.Fatalf("COPY dollar stage result=%+v err=%v", result, err)

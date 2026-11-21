@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-ARG GO_VERSION=1.26.6
+ARG GO_VERSION=1.27.4
 ARG CGO_ENABLED=1
 
 FROM golang:${GO_VERSION} AS build
@@ -18,7 +18,8 @@ RUN CGO_ENABLED=${CGO_ENABLED} GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd6
 RUN CGO_ENABLED=${CGO_ENABLED} GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/wallaby-admin ./cmd/wallaby-admin
 RUN CGO_ENABLED=${CGO_ENABLED} GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/wallaby-worker ./cmd/wallaby-worker
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian13:nonroot
+ENV SF_DISABLE_MINICORE=true
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build /out/wallaby /usr/local/bin/wallaby
 COPY --from=build /out/wallaby-admin /usr/local/bin/wallaby-admin

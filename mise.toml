@@ -1,0 +1,1194 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+
+min_version = "2026.11.0"
+
+# Public, reproducible tools. No private CLI, registry or organization login.
+# Keep Go aligned with both application go.mod files and Dockerfile.
+[tools]
+go = "1.27.4"
+uv = "0.13.9"
+python = "3.15.2"
+buf = "1.75.0"
+protoc = "36.2"
+golangci-lint = "2.15.0"
+goreleaser = "2.20.3"
+helm = "4.3.2"
+kind = "0.33.0"
+java = "temurin-25.0.5+8.0.LTS"
+
+[env]
+GOTOOLCHAIN = "local"
+# The Go driver does not need its optional self-extracting native minicore.
+SF_DISABLE_MINICORE = "true"
+# uv must not silently reuse an older interpreter from an existing .venv.
+UV_PYTHON = "3.15.2"
+UV_PYTHON_DOWNLOADS = "never"
+
+# Environment overrides remain available for CI, integration and evidence runs.
+[vars]
+go = "{{ env.GO | default(value=\"go\") }}"
+buf = "{{ env.BUF | default(value=\"buf\") }}"
+golangci_lint = "{{ env.GOLANGCI_LINT | default(value=\"golangci-lint\") }}"
+staticcheck_version = "{{ env.STATICCHECK_VERSION | default(value=\"v0.8.2\") }}"
+govulncheck_version = "{{ env.GOVULNCHECK_VERSION | default(value=\"v1.10.0\") }}"
+goreleaser = "{{ env.GORELEASER | default(value=\"goreleaser\") }}"
+protoc_gen_go_version = "{{ env.PROTOC_GEN_GO_VERSION | default(value=\"v1.36.12\") }}"
+protoc_gen_go_grpc_version = "{{ env.PROTOC_GEN_GO_GRPC_VERSION | default(value=\"v1.6.2\") }}"
+gomarkdoc_version = "{{ env.GOMARKDOC_VERSION | default(value=\"v1.1.0\") }}"
+protoc_gen_doc_version = "{{ env.PROTOC_GEN_DOC_VERSION | default(value=\"v1.5.1\") }}"
+uv = "{{ env.UV | default(value=\"uv\") }}"
+uv_version = "{{ env.UV_VERSION | default(value=\"0.13.9\") }}"
+root = "{{config_root}}"
+cache_dir = "{{ env.CACHE_DIR | default(value=\".cache\") }}"
+gomodcache = "{{ env.GOMODCACHE | default(value=vars.root ~ \"/\" ~ vars.cache_dir ~ \"/gomod\") }}"
+gocache = "{{ env.GOCACHE | default(value=vars.root ~ \"/\" ~ vars.cache_dir ~ \"/gocache\") }}"
+golangci_lint_cache = "{{ env.GOLANGCI_LINT_CACHE | default(value=vars.root ~ \"/\" ~ vars.cache_dir ~ \"/golangci-lint\") }}"
+gobin = "{{ env.GOBIN | default(value=config_root ~ '/.cache/bin') }}"
+profile = "{{ env.PROFILE | default(value=\"small\") }}"
+targets = "{{ env.TARGETS | default(value=\"all\") }}"
+scenario = "{{ env.SCENARIO | default(value=\"base\") }}"
+baseline = "{{ env.BASELINE | default(value=\"\") }}"
+candidate = "{{ env.CANDIDATE | default(value=\"\") }}"
+tlc = "{{ env.TLC | default(value=\"tlc2.TLC\") }}"
+tla_module = "{{ env.TLA_MODULE | default(value=\"specs/CDCFlow.tla\") }}"
+tla_config = "{{ env.TLA_CONFIG | default(value=\"specs/CDCFlow.cfg\") }}"
+tla_tools_tag = "{{ env.TLA_TOOLS_TAG | default(value=\"v1.7.4\") }}"
+tla_tools_url = "{{ env.TLA_TOOLS_URL | default(value=\"https://github.com/tlaplus/tlaplus/releases/download/\" ~ vars.tla_tools_tag ~ \"/tla2tools.jar\") }}"
+tla_tools_dir = "{{ env.TLA_TOOLS_DIR | default(value=vars.root ~ \"/\" ~ vars.cache_dir ~ \"/tla\") }}"
+tla_tools_jar = "{{ env.TLA_TOOLS_JAR | default(value=vars.tla_tools_dir ~ \"/tla2tools.jar\") }}"
+tla_tools_sha256_file = "{{ env.TLA_TOOLS_SHA256_FILE | default(value=\"scripts/tla2tools-\" ~ vars.tla_tools_tag ~ \".sha256\") }}"
+tlc_java_opts = "{{ env.TLC_JAVA_OPTS | default(value=\"-XX:+UseParallelGC\") }}"
+tlc_args = "{{ env.TLC_ARGS | default(value=\"\") }}"
+skip_tla_checks = "{{ env.SKIP_TLA_CHECKS | default(value=\"false\") }}"
+tlc_coverage_dir = "{{ env.TLC_COVERAGE_DIR | default(value=\"specs/coverage\") }}"
+tla_coverage_min = "{{ env.TLA_COVERAGE_MIN | default(value=\"1\") }}"
+tla_coverage_ignore = "{{ env.TLA_COVERAGE_IGNORE | default(value=\"\") }}"
+trace_cases = "{{ env.TRACE_CASES | default(value=\"1000\") }}"
+trace_seed = "{{ env.TRACE_SEED | default(value=\"1\") }}"
+trace_max_batches = "{{ env.TRACE_MAX_BATCHES | default(value=\"10\") }}"
+trace_max_records = "{{ env.TRACE_MAX_RECORDS | default(value=\"3\") }}"
+rapid_checks = "{{ env.RAPID_CHECKS | default(value=\"100\") }}"
+failure_cycles = "{{ env.FAILURE_CYCLES | default(value=\"100\") }}"
+failure_seed = "{{ env.FAILURE_SEED | default(value=\"20260728\") }}"
+soak_duration = "{{ env.SOAK_DURATION | default(value=\"30s\") }}"
+soak_seed = "{{ env.SOAK_SEED | default(value=\"20260728\") }}"
+rapid_packages = "{{ env.RAPID_PACKAGES | default(value=\"./pkg/stream ./pkg/wire ./internal/artifactlog ./internal/ddl ./internal/registry ./internal/schema ./internal/workflow ./connectors/sources/postgres ./connectors/destinations/postgres\") }}"
+spec_lint_verbose = "{{ env.SPEC_LINT_VERBOSE | default(value=\"\") }}"
+spec_lint_verbose_mode = "{{ env.SPEC_LINT_VERBOSE_MODE | default(value=\"checks\") }}"
+go_test_timeout = "{{ env.GO_TEST_TIMEOUT | default(value=\"\") }}"
+go_test_verbose = "{{ env.GO_TEST_VERBOSE | default(value=\"1\") }}"
+go_test_verbose_flag = "{{ env.GO_TEST_VERBOSE_FLAG | default(value=\"\") }}"
+it_kind = "{{ env.IT_KIND | default(value=\"\") }}"
+it_keep = "{{ env.IT_KEEP | default(value=\"0\") }}"
+it_kind_cluster = "{{ env.IT_KIND_CLUSTER | default(value=\"\") }}"
+it_kind_node_image = "{{ env.IT_KIND_NODE_IMAGE | default(value=\"\") }}"
+it_service_ready_timeout_seconds = "{{ env.IT_SERVICE_READY_TIMEOUT_SECONDS | default(value=\"240\") }}"
+it_run_filter = "{{ env.IT_RUN_FILTER | default(value=\"\") }}"
+it_skip_filter = "{{ env.IT_SKIP_FILTER | default(value=\"\") }}"
+it_count = "{{ env.IT_COUNT | default(value=\"\") }}"
+it_package_parallelism = "{{ env.IT_PACKAGE_PARALLELISM | default(value=\"1\") }}"
+it_expected_harness_participants = "{{ env.IT_EXPECTED_HARNESS_PARTICIPANTS | default(value=vars.it_package_parallelism) }}"
+integration_package = "{{ env.INTEGRATION_PACKAGE | default(value=\"./tests/...\") }}"
+integration_worker_binary = "{{ vars.root ~ \"/\" ~ vars.cache_dir ~ \"/wallaby-worker-integration\" }}"
+snowflake_fuzz_time = "{{ env.SNOWFLAKE_FUZZ_TIME | default(value=\"30s\") }}"
+snowflake_fuzz_targets = "{{ env.SNOWFLAKE_FUZZ_TARGETS | default(value=\"FuzzManagedSchemaContractHash FuzzNormalizeManagedSourceType FuzzManagedRecordKey FuzzBuildManagedSnowflakeOperationSQLSafety\") }}"
+snowflake_fuzz_rapid_checks = "{{ env.SNOWFLAKE_FUZZ_RAPID_CHECKS | default(value=\"1000\") }}"
+
+[tasks."default"]
+description = "List available recipes."
+shell = "bash -euo pipefail -c"
+run = '''
+mise tasks
+'''
+
+[tasks."format"]
+description = "Format all Go packages."
+shell = "bash -euo pipefail -c"
+run = '''
+{{ vars.go }} fmt ./...
+{{ vars.go }} -C terraform/provider fmt ./...
+{{ vars.go }} -C third_party/hamba-avro-shim fmt ./...
+'''
+
+[tasks."format:check"]
+description = "Verify Go formatting without modifying the worktree."
+shell = "bash -euo pipefail -c"
+run = '''
+unformatted="$(gofmt -l $(find . -type f -name '*.go' -not -path './.git/*' -not -path './.cache/*' -not -path '*/.lake/*'))"; test -z "$unformatted" || { printf 'unformatted Go files:\n%s\n' "$unformatted" >&2; exit 1; }
+'''
+
+[tasks."lint"]
+description = "Run golangci-lint."
+shell = "bash -euo pipefail -c"
+run = '''
+GOFLAGS="-buildvcs=false" GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" GOLANGCI_LINT_CACHE="{{ vars.golangci_lint_cache }}" {{ vars.golangci_lint }} run ./...
+{{ vars.go }} -C terraform/provider vet ./...
+'''
+
+[tasks."staticcheck"]
+description = "Run staticcheck at the repository-pinned version. Tooling does not need VCS build metadata, and disabling it keeps this gate deterministic in worktrees."
+shell = "bash -euo pipefail -c"
+run = '''
+GOFLAGS="-buildvcs=false" GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run honnef.co/go/tools/cmd/staticcheck@{{ vars.staticcheck_version }} ./...
+'''
+
+[tasks."vulncheck"]
+description = "Scan reachable Go code for known vulnerabilities. Tool binaries do not need VCS build metadata and must run identically in the primary tree and worktrees."
+shell = "bash -euo pipefail -c"
+run = '''
+GOFLAGS="-buildvcs=false" GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run golang.org/x/vuln/cmd/govulncheck@{{ vars.govulncheck_version }} ./...
+'''
+
+[tasks."lint-full"]
+description = "lint full"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run lint
+mise run staticcheck
+mise run vulncheck
+mise run proto-lint
+mise run proto-breaking
+'''
+
+[tasks."check"]
+description = "check"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run spec-verify
+mise run spec-sync
+mise run spec-lint
+mise run check-tla
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test ./...
+'''
+
+[tasks."check-tla"]
+description = "check tla"
+shell = "bash -euo pipefail -c"
+run = '''
+SKIP_TLA_CHECKS="{{ vars.skip_tla_checks }}" MISE="mise" ./scripts/check-tla.sh
+'''
+
+[tasks."check-lite"]
+description = "check lite"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run spec-sync
+mise run spec-lint
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test ./cmd/wallaby-admin ./pkg/... ./internal/... ./connectors/... ./tests/...
+'''
+
+[tasks."check-coverage"]
+description = "check coverage"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run spec-sync
+mise run tla-coverage
+mise run tla-coverage-check
+mise run trace-suite
+mise run test-e2e
+'''
+
+[tasks."test"]
+description = "test"
+shell = "bash -euo pipefail -c"
+run = '''
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" GO="{{ vars.go }}" GO_TEST_TIMEOUT="{{ vars.go_test_timeout }}" GO_TEST_VERBOSE="{{ vars.go_test_verbose }}" GO_TEST_VERBOSE_FLAG="{{ vars.go_test_verbose_flag }}" ./scripts/test-go.sh
+{{ vars.go }} -C terraform/provider test ./...
+'''
+
+[tasks."test-rapid"]
+description = "test rapid"
+shell = "bash -euo pipefail -c"
+run = '''
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" GO="{{ vars.go }}" RAPID_PACKAGES="{{ vars.rapid_packages }}" RAPID_CHECKS="{{ vars.rapid_checks }}" ./scripts/test-rapid.sh
+'''
+
+[tasks."build-integration-worker"]
+description = "Build the real worker process required by process-kill/restart evidence."
+shell = "bash -euo pipefail -c"
+run = '''
+mkdir -p "$(dirname '{{ vars.integration_worker_binary }}')"
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} build -o "{{ vars.integration_worker_binary }}" ./cmd/wallaby-worker
+'''
+
+[tasks."test-integration"]
+description = "test integration"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run build-integration-worker
+WALLABY_WORKER_BINARY="${WALLABY_WORKER_BINARY:-{{ vars.integration_worker_binary }}}" GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" GO="{{ vars.go }}" GO_TEST_TIMEOUT="{{ vars.go_test_timeout }}" GO_TEST_VERBOSE="{{ vars.go_test_verbose }}" GO_TEST_VERBOSE_FLAG="{{ vars.go_test_verbose_flag }}" IT_KIND="{{ vars.it_kind }}" IT_KEEP="{{ vars.it_keep }}" IT_KIND_CLUSTER="{{ vars.it_kind_cluster }}" IT_KIND_NODE_IMAGE="{{ vars.it_kind_node_image }}" IT_SERVICE_READY_TIMEOUT_SECONDS="{{ vars.it_service_ready_timeout_seconds }}" IT_RUN_FILTER="{{ vars.it_run_filter }}" IT_SKIP_FILTER="{{ vars.it_skip_filter }}" IT_COUNT="{{ vars.it_count }}" IT_PACKAGE_PARALLELISM="{{ vars.it_package_parallelism }}" IT_EXPECTED_HARNESS_PARTICIPANTS="{{ vars.it_expected_harness_participants }}" INTEGRATION_PACKAGE="{{ vars.integration_package }}" ./scripts/test-integration.sh
+'''
+
+[tasks."test-integration-ci"]
+description = "Broad integration excludes managed ClickHouse/Keeper fault cells. Those run immediately afterward through test-clickhouse-managed-profile with strict required-test/no-skip accounting and an isolated harness identity."
+shell = "bash -euo pipefail -c"
+run = '''
+IT_SKIP_FILTER='^(TestClickHouseManagedProfile|TestPostgresToClickHouseManagedProfile)' mise run test-integration
+'''
+
+[tasks."test-durable-pr"]
+description = "Durable-core unit and contract gate. Real-service evidence runs separately."
+shell = "bash -euo pipefail -c"
+run = '''
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test -count=1 ./internal/authority ./internal/controlplane ./internal/controlstore ./internal/delivery ./internal/bootstrap ./internal/artifactlog ./internal/failmatrix ./internal/workflow ./internal/checkpoint ./internal/registry ./internal/replication ./internal/runner ./pkg/connector ./pkg/stream ./connectors/sources/postgres ./connectors/destinations/postgres ./connectors/destinations/clickhouse ./connectors/destinations/iceberg
+'''
+
+[tasks."test-durable-race"]
+description = "Race detector coverage for the durable mutation and execution surfaces."
+shell = "bash -euo pipefail -c"
+run = '''
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test -race -count=1 ./internal/authority ./internal/controlplane ./internal/controlstore ./internal/delivery ./internal/bootstrap ./internal/artifactlog ./internal/failmatrix ./internal/workflow ./internal/checkpoint ./internal/registry ./internal/replication ./internal/runner ./pkg/connector ./pkg/stream ./connectors/sources/postgres ./connectors/destinations/postgres ./connectors/destinations/iceberg
+'''
+
+[tasks."test-durable-seams"]
+description = "Behavior-focused durable seam gate. The integration harness provisions real PostgreSQL authority and versioned MinIO; IT_REQUIRED_TESTS makes every named delivery, bootstrap, artifact, consumer, quota, fencing, and GC test no-skip."
+shell = "bash -euo pipefail -c"
+run = '''
+required=
+required+='TestCoordinatorRecoverAbsentManifestFailsClosedWithoutPoisoningDeliver'
+required+=',TestPostgresCommitBeforeReceiptReconciles'
+required+=',TestCoordinatorRecoverReturnsPostgresAuthoritativeCheckpointMetadata'
+required+=',TestPostgresGenerationFenceRejectsStaleCommit'
+required+=',TestBootstrapRecoveryFailpoints'
+required+=',TestManagedBootstrapPublicationReceiptBeforeHandoffRecovery'
+required+=',TestManagedBootstrapHandoffBeforeCDCOpenRecovery'
+required+=',TestManagedTerminalStopOwnershipLive'
+required+=',TestCanonicalArtifactPublicationFailureBoundaries'
+required+=',TestCanonicalArtifactStalePublisherCannotCommit'
+required+=',TestCanonicalArtifactBackpressureAndRootedRetention'
+required+=',TestArtifactConsumerRetryDoesNotBlockReadsBelowBacklogWatermark'
+required+=',TestCanonicalArtifactConsumerReceiptBoundaryRecovery'
+required+=',TestCanonicalArtifactOrphanMarkSweepCrashRecovery'
+filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
+mkdir -p .cache/coverage
+GO_TEST_COVERPKG='./internal/authority,./internal/delivery,./internal/bootstrap,./internal/artifactlog,./internal/checkpoint' \
+  GO_TEST_COVERPROFILE='.cache/coverage/durable-seams.out' \
+  IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' mise run test-integration
+test -s .cache/coverage/durable-seams.out
+{{ vars.go }} tool cover -func=.cache/coverage/durable-seams.out > .cache/coverage/durable-seams.txt
+test -s .cache/coverage/durable-seams.txt
+'''
+
+[tasks."test-durable-integration"]
+description = "Required live PostgreSQL/MinIO durability profiles. The harness provisions services, so these named tests must run rather than skip."
+shell = "bash -euo pipefail -c"
+run = '''
+WALLABY_WORKER_BINARY="{{ vars.integration_worker_binary }}" IT_REQUIRED_TESTS='TestWallabyWorkerProcessKillRecovery,TestAuthorityProtocolGateRejectsStaleBinarySession,TestPostgresGenerationFenceRejectsStaleCommit,TestPostgresRunFenceValidationSerializesTakeover,TestPostgresCheckpointGenerationFenceRejectsStaleCommit,TestPostgresFlowIDReuseDoesNotRestoreOldState,TestPostgresDestinationRevisionIsImmutable,TestPostgresAckOnlyCheckpointHasIntentAndReceipt,TestPostgresCommitBeforeReceiptReconciles,TestPostgresManagedDriverMarkerReconciles,TestPostgresTargetReplayConvergesIncludingMetadata,TestPostgresTargetPreservesSameKeyOperationOrderIntegration,TestLogicalSlotExportedSnapshotContract,TestBootstrapConcurrentWritesBoundary,TestManagedTerminalStopHardCrashSlotBeforePersist,TestManagedTerminalStopHardCrashPublicationBeforePublish,TestBootstrapRecoveryFailpoints,TestManagedBootstrapWorkerWiringConcurrentBoundary,TestManagedBootstrapSnapshotBatchCommitBeforeReceiptRecovery,TestManagedBootstrapPublicationReceiptBeforeHandoffRecovery,TestManagedBootstrapHandoffBeforeCDCOpenRecovery,TestManagedBootstrapLiveAdmissionMatrix,TestCanonicalPublicationFingerprintLive,TestManagedTerminalStopOwnershipLive,TestRegistryAndDDLReceiptsRejectStaleTakeover,TestCanonicalArtifactS3AdmissionRequiresEnabledVersioning,TestCanonicalArtifactPublicationRecovery,TestCanonicalArtifactPublicationFailureBoundaries,TestCanonicalArtifactBarrierOnlyDelivery,TestCanonicalArtifactStalePublisherCannotCommit,TestCanonicalArtifactBackpressureAndRootedRetention,TestArtifactConsumerRetryDoesNotBlockReadsBelowBacklogWatermark,TestCanonicalArtifactOrphanMarkSweepCrashRecovery,TestCanonicalArtifactGCDoesNotClaimActiveUpload,TestCanonicalArtifactGCTakeoverDoesNotOrphanInFlightPut,TestCanonicalArtifactPublisherGCClaimRevalidation,TestCanonicalArtifactConsumerReceiptBoundaryRecovery,TestCanonicalArtifactConsumerReconcileBoundaryRecovery,TestCanonicalArtifactRandomizedCrashCycles,TestWallabyWorkerMaterializedPublicationRecovery,TestPostgresToPostgresManagedRecoveryContract' IT_RUN_FILTER='^(TestWallabyWorkerProcessKillRecovery|TestAuthorityProtocolGateRejectsStaleBinarySession|TestPostgresGenerationFenceRejectsStaleCommit|TestPostgresRunFenceValidationSerializesTakeover|TestPostgresCheckpointGenerationFenceRejectsStaleCommit|TestPostgresFlowIDReuseDoesNotRestoreOldState|TestPostgresDestinationRevisionIsImmutable|TestPostgresAckOnlyCheckpointHasIntentAndReceipt|TestPostgresCommitBeforeReceiptReconciles|TestPostgresManagedDriverMarkerReconciles|TestPostgresTargetReplayConvergesIncludingMetadata|TestPostgresTargetPreservesSameKeyOperationOrderIntegration|TestLogicalSlotExportedSnapshotContract|TestBootstrapConcurrentWritesBoundary|TestManagedTerminalStopHardCrashSlotBeforePersist|TestManagedTerminalStopHardCrashPublicationBeforePublish|TestBootstrapRecoveryFailpoints|TestManagedBootstrapWorkerWiringConcurrentBoundary|TestManagedBootstrapSnapshotBatchCommitBeforeReceiptRecovery|TestManagedBootstrapPublicationReceiptBeforeHandoffRecovery|TestManagedBootstrapHandoffBeforeCDCOpenRecovery|TestManagedBootstrapLiveAdmissionMatrix|TestCanonicalPublicationFingerprintLive|TestManagedTerminalStopOwnershipLive|TestRegistryAndDDLReceiptsRejectStaleTakeover|TestCanonicalArtifactS3AdmissionRequiresEnabledVersioning|TestCanonicalArtifactPublicationRecovery|TestCanonicalArtifactPublicationFailureBoundaries|TestCanonicalArtifactBarrierOnlyDelivery|TestCanonicalArtifactStalePublisherCannotCommit|TestCanonicalArtifactBackpressureAndRootedRetention|TestArtifactConsumerRetryDoesNotBlockReadsBelowBacklogWatermark|TestCanonicalArtifactOrphanMarkSweepCrashRecovery|TestCanonicalArtifactGCDoesNotClaimActiveUpload|TestCanonicalArtifactGCTakeoverDoesNotOrphanInFlightPut|TestCanonicalArtifactPublisherGCClaimRevalidation|TestCanonicalArtifactConsumerReceiptBoundaryRecovery|TestCanonicalArtifactConsumerReconcileBoundaryRecovery|TestCanonicalArtifactRandomizedCrashCycles|TestWallabyWorkerMaterializedPublicationRecovery|TestPostgresToPostgresManagedRecoveryContract)$' INTEGRATION_PACKAGE='./tests' mise run test-integration
+'''
+
+[tasks."test-durable-dbos-integration"]
+description = "Live DBOS evidence for the production managed-bootstrap wiring."
+shell = "bash -euo pipefail -c"
+run = '''
+IT_REQUIRED_TESTS='TestDBOSManagedBootstrapProductionWiring' IT_RUN_FILTER='^TestDBOSManagedBootstrapProductionWiring$' INTEGRATION_PACKAGE='./tests/integration' mise run test-integration
+'''
+
+[tasks."test-checkpoint1-integration"]
+description = "Checkpoint-1 requires both direct worker and in-process DBOS evidence. Use distinct per-run harness identities so the sequential phases cannot reuse port-forward state from infrastructure torn down by the preceding phase."
+shell = "bash -euo pipefail -c"
+run = '''
+harness_base="${IT_KIND_CLUSTER:-wallaby-test}-checkpoint1-$$"
+cleanup() {
+    status=$?
+    if [[ "${IT_KEEP:-0}" != "1" ]]; then
+        if command -v kind >/dev/null 2>&1; then
+            kind delete cluster --name "${harness_base}-direct" || true
+            kind delete cluster --name "${harness_base}-dbos" || true
+        fi
+        rm -f "${TMPDIR:-/tmp}/wallaby-it-integration-harness.state"
+    fi
+    return "$status"
+}
+trap cleanup EXIT
+IT_KIND_CLUSTER="${harness_base}-direct" mise run test-durable-integration
+IT_KIND_CLUSTER="${harness_base}-dbos" mise run test-durable-dbos-integration
+'''
+
+[tasks."test-checkpoint2-postgres-profile"]
+description = "Checkpoint-2 named PostgreSQL profile gate. CI runs this recipe against every admitted PostgreSQL major. JSON verification makes missing or skipped evidence fail instead of letting a stale -run expression pass vacuously."
+shell = "bash -euo pipefail -c"
+run = '''
+test -n "${TEST_PG_DSN:-}" || { echo 'TEST_PG_DSN is required' >&2; exit 2; }
+mkdir -p "$(dirname '{{ vars.integration_worker_binary }}')"
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} build -o "{{ vars.integration_worker_binary }}" ./cmd/wallaby-worker
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run ./scripts/apply-control-migrations.go
+results=$(mktemp)
+trap 'rm -f "${results}"' EXIT
+required=
+required+='TestManagedProfileCannotBypassManagedAdmission'
+required+=',TestPostgresManagedProfileVersionContract'
+required+=',TestPostgresManagedStreamedSubtransactionAbort'
+required+=',TestPostgresManagedProfileTargetAdmission'
+required+=',TestPostgresManagedProfileDestinationSchemaEvolution'
+required+=',TestPostgresManagedProfileDDLTargetMapping'
+required+=',TestPostgresManagedProfileDDLCommitReconciliation'
+required+=',TestPostgresManagedTargetRejectsLegacyReceiptSchemaWithoutMutation'
+required+=',TestPostgresManagedFullTransactionPreservesFragmentsAndMarker'
+required+=',TestPostgresManagedTransactionCommitBeforeReceiptReconciles'
+required+=',TestPostgresManagedOverlappingTakeoverAdoptsConcurrentCommit'
+required+=',TestPostgresManagedDeliveryRetryAndRetention'
+required+=',TestManagedDeliveryRetentionRunsDuringLongLivedFlow'
+required+=',TestPostgresAuthorizedSourceFlushRejectsStaleWorker'
+required+=',TestPostgresToPostgresManagedRecoveryContract'
+required+=',TestManagedBootstrapWorkerWiringConcurrentBoundary'
+required+=',TestPostgresManagedProfileSourceSchemaEvolutionAfterRestart'
+required+=',TestWallabyWorkerProcessKillRecovery'
+required+=',TestPostgresManagedProfilePoolExhaustion'
+required+=',TestManagedReceiptReconcilesLogicalAndPositionIdentities'
+required+=',TestPostgresManagedProfileMetrics'
+required+=',TestFencedSchemaRegistrationScopesCatalogAndFlowProvenance'
+required+=',TestPostgresToPostgresE2E'
+required+=',TestControlStoreMigrationLedgerDoesNotReplaySQL'
+required+=',TestDeliveryManifestAuthorityTamperCurrentPGMajor'
+filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
+set +e
+WALLABY_WORKER_BINARY="{{ vars.integration_worker_binary }}" GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" \
+  {{ vars.go }} test -p 1 -count=1 -json \
+  ./tests ./tests/integration ./internal/runner ./internal/replication ./connectors/destinations/postgres ./internal/telemetry ./internal/controlstore ./internal/controlplane \
+  -run "${filter}" >"${results}"
+test_rc=$?
+set -e
+cat "${results}"
+test "${test_rc}" -eq 0
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run ./scripts/verify-go-test-json.go \
+  -results "${results}" -required "${required}"
+./scripts/checkpoint2-accounting-selftest.sh --profile postgresql-to-postgresql-v1 --results "${results}"
+'''
+
+[tasks."test-checkpoint2-accounting-selftest"]
+description = "Verify that every checkpoint-2 required name resolves to exactly one listed test. The live checkpoint recipe separately proves that every listed test ran and did not skip through verify-go-test-json."
+shell = "bash -euo pipefail -c"
+run = '''
+./scripts/checkpoint2-accounting-selftest.sh
+'''
+
+[tasks."test-clickhouse-managed-profile"]
+description = "Checkpoint-3 exact PostgreSQL 16 + ClickHouse/Keeper 25.12.1.649 append profile. The harness provisions both processes and verified native TLS. Required-test validation rejects skipped or missing evidence."
+shell = "bash -euo pipefail -c"
+run = '''
+harness_cluster="${IT_KIND_CLUSTER:-wallaby-test}-clickhouse-profile-$$"
+cleanup() {
+    status=$?
+    if [[ "${IT_KEEP:-0}" != "1" ]] && command -v kind >/dev/null 2>&1; then
+        kind delete cluster --name "${harness_cluster}" || true
+    fi
+    rm -f "${telemetry_results:-}"
+    return "$status"
+}
+trap cleanup EXIT
+required=
+required+='TestClickHouseManagedProfileVersionMatrix'
+required+=',TestClickHouseManagedProfileAdmission'
+required+=',TestClickHouseManagedProfileCommitAndReconcile'
+required+=',TestClickHouseManagedProfileSecondaryEndpointWriteFailover'
+required+=',TestClickHouseManagedProfileSurvivorOnlyPrimaryStorageLossRecovery'
+required+=',TestClickHouseManagedProfileDedupWindowEviction'
+required+=',TestClickHouseManagedProfileOrderingAndConcurrency'
+required+=',TestClickHouseManagedProfileKeyChangesAndTombstones'
+required+=',TestClickHouseManagedProfileSchemaEvolutionAndTypes'
+required+=',TestPostgresToClickHouseManagedProfileRecoveryContract'
+required+=',TestClickHouseManagedProfileBoundedLoad'
+required+=',TestClickHouseManagedProfileTLS'
+required+=',TestClickHouseManagedProfileProcessKillRecovery'
+required+=',TestClickHouseManagedProfileKeeperFailureRecovery'
+required+=',TestClickHouseManagedProfileBackpressure'
+required+=',TestClickHousePartReservationSerializesConcurrentWriters'
+required+=',TestClickHousePartReservationCrashAfterReservation'
+required+=',TestClickHousePartReservationReclaimRequiresProvenAbsence'
+required+=',TestClickHousePartReservationCrashRecovery'
+required+=',TestClickHousePartReservationRetentionDeletesChildrenBeforeParent'
+filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
+WALLABY_TEST_CLICKHOUSE_DESTRUCTIVE_STORAGE_LOSS=1 IT_KIND_CLUSTER="${harness_cluster}" IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' mise run test-integration
+telemetry_results=$(mktemp)
+telemetry_required='TestClickHouseManagedProfileTelemetry'
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test -count=1 -json \
+  ./internal/telemetry -run "^(${telemetry_required})$" >"${telemetry_results}"
+cat "${telemetry_results}"
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run ./scripts/verify-go-test-json.go \
+  -results "${telemetry_results}" -required "${telemetry_required}"
+rm -f "${telemetry_results}"
+'''
+
+[tasks."test-iceberg-rest"]
+description = "Local/emulated Iceberg REST live gate. The ordinary package conformance tests use httptest and always run in test-durable-pr; this recipe targets a real REST fixture and warehouse already exported into the environment by an operator or by the integration harness."
+shell = "bash -euo pipefail -c"
+run = '''
+test -n "${WALLABY_TEST_ICEBERG_REST_URI:-}" || { echo 'WALLABY_TEST_ICEBERG_REST_URI is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_ICEBERG_WAREHOUSE:-}" || { echo 'WALLABY_TEST_ICEBERG_WAREHOUSE is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_ICEBERG_NAMESPACE:-}" || { echo 'WALLABY_TEST_ICEBERG_NAMESPACE is required' >&2; exit 2; }
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test -count=1 ./tests -run '^TestIcebergRESTLiveAppendProjection$'
+'''
+
+[tasks."test-checkpoint5-iceberg-integration"]
+description = "Checkpoint-5 mandatory gate. The integration harness provisions a real Apache Iceberg REST catalog backed by MinIO and exports the connection env, so the live append/projection/readback test must RUN rather than skip. JSON verification fails the gate on a missing or skipped result."
+shell = "bash -euo pipefail -c"
+run = '''
+harness_cluster="${IT_KIND_CLUSTER:-wallaby-test}-iceberg-rest-$$"
+cleanup() {
+    status=$?
+    if [[ "${IT_KEEP:-0}" != "1" ]] && command -v kind >/dev/null 2>&1; then
+        kind delete cluster --name "${harness_cluster}" || true
+    fi
+    rm -f "${TMPDIR:-/tmp}/wallaby-it-integration-harness.state"
+    return "$status"
+}
+trap cleanup EXIT
+required='TestIcebergRESTLiveAppendProjection,TestIcebergRESTLiveSchemaEvolutionRename'
+filter="^(TestIcebergRESTLiveAppendProjection|TestIcebergRESTLiveSchemaEvolutionRename)$"
+IT_KIND_CLUSTER="${harness_cluster}" IT_SERVICES=iceberg IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' mise run test-integration
+'''
+
+[tasks."test-s3tables-live"]
+description = "Opt-in AWS S3 Tables gate. This creates a uniquely named experimental table, configures maintenance through the S3 Tables API, appends, and reconciles it."
+shell = "bash -euo pipefail -c"
+run = '''
+test "${WALLABY_TEST_S3TABLES:-}" = "1" || { echo 'WALLABY_TEST_S3TABLES=1 is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_S3TABLES_REGION:-}" || { echo 'WALLABY_TEST_S3TABLES_REGION is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_S3TABLES_WAREHOUSE:-}" || { echo 'WALLABY_TEST_S3TABLES_WAREHOUSE is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_S3TABLES_TABLE_BUCKET_ARN:-}" || { echo 'WALLABY_TEST_S3TABLES_TABLE_BUCKET_ARN is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN:-}" || { echo 'WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_S3TABLES_NAMESPACE:-}" || { echo 'WALLABY_TEST_S3TABLES_NAMESPACE is required' >&2; exit 2; }
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test -count=1 ./tests -run '^TestS3TablesLiveAppendProjection$'
+'''
+
+[tasks."test-snowflake-managed-profile"]
+description = "Constrained Snowflake SQL profile evidence. This intentionally fails until every named live cell exists and passes on a reviewed real Snowflake account with hybrid-table support. Fakesnow cannot satisfy this recipe."
+shell = "bash -euo pipefail -c"
+run = '''
+test "${WALLABY_TEST_SNOWFLAKE_MANAGED:-}" = "1" || { echo 'WALLABY_TEST_SNOWFLAKE_MANAGED=1 is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_SNOWFLAKE_DSN:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_DSN is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_SNOWFLAKE_PROVISION_DSN:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_PROVISION_DSN is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_SNOWFLAKE_VERSION:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_VERSION is required; the gate may not self-pin CURRENT_VERSION()' >&2; exit 2; }
+test -n "${WALLABY_TEST_SNOWFLAKE_REGION:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_REGION is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_SNOWFLAKE_OWNER_ROLE:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_OWNER_ROLE is required' >&2; exit 2; }
+test -n "${TEST_PG_DSN:-}" || { echo 'TEST_PG_DSN is required for generation-fenced recovery evidence' >&2; exit 2; }
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test -count=1 \
+  ./connectors/destinations/snowflake ./internal/runner ./pkg/connector ./pkg/stream ./internal/telemetry
+results=$(mktemp)
+trap 'rm -f "${results}"' EXIT
+required=
+required+='TestSnowflakeManagedProfilePostgresSourceCatalog'
+required+=',TestSnowflakeManagedProfileFencedCleanSourceCut'
+required+=',TestSnowflakeManagedProfileLiveAdmission'
+required+=',TestSnowflakeManagedProfileReviewedDeploymentCell'
+required+=',TestSnowflakeManagedProfileRoleIsolation'
+required+=',TestSnowflakeManagedProfileTaskIsolation'
+required+=',TestSnowflakeManagedProfileCommitAndReconcile'
+required+=',TestSnowflakeManagedProfileCommitAndDetachedTakeover'
+required+=',TestSnowflakeManagedProfileOrderedFragmentsAndTypes'
+required+=',TestSnowflakeManagedProfileSchemaReconciliation'
+required+=',TestSnowflakeManagedProfileProcessKillRecovery'
+required+=',TestSnowflakeManagedProfileWorkerSIGKILLRecovery'
+required+=',TestSnowflakeManagedProfileCancellationAndPoolSafety'
+required+=',TestSnowflakeManagedProfileBoundedLoadAndBackpressure'
+required+=',TestSnowflakeManagedProfileSecretRedaction'
+required+=',TestSnowflakeManagedProfileCleanup'
+required+=',TestPostgresToSnowflakeManagedProfileRecoveryContract'
+filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
+set +e
+WALLABY_TEST_SNOWFLAKE_MANAGED_DIRECT=1 GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" \
+  {{ vars.go }} test -p 1 -count=1 -json ./tests ./connectors/sources/postgres -run "${filter}" >"${results}"
+test_rc=$?
+set -e
+cat "${results}"
+test "${test_rc}" -eq 0
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run ./scripts/verify-go-test-json.go \
+  -results "${results}" -required "${required}"
+'''
+
+[tasks."test-snowflake-streaming-commercial-unpromoted"]
+description = "Unpromoted same-SHA Snowpipe Streaming commercial boundary. The named tests assert fail-closed admission until a reviewed append transport is linked."
+shell = "bash -euo pipefail -c"
+run = '''
+test "${WALLABY_TEST_SNOWFLAKE_MANAGED:-}" = "1" || { echo 'WALLABY_TEST_SNOWFLAKE_MANAGED=1 is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_SNOWFLAKE_DSN:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_DSN is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_SNOWFLAKE_VERSION:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_VERSION is required' >&2; exit 2; }
+results=$(mktemp)
+trap 'rm -f "${results}"' EXIT
+required=TestSnowflakeStreamingManagedProfileAmbiguousRequestRecovery
+required+=',TestSnowflakeStreamingManagedProfileVisibilityLagWithoutResend'
+required+=',TestSnowflakeStreamingManagedProfileProvenAbsenceRetry'
+required+=',TestSnowflakeStreamingManagedProfileRequestProcessRestart'
+required+=',TestSnowflakeStreamingRequestJournalCommercialRoundTrip'
+filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
+set +e
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test -count=1 -json ./tests ./connectors/destinations/snowflake -run "${filter}" >"${results}"
+test_rc=$?
+set -e
+cat "${results}"
+test "${test_rc}" -eq 0
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run ./scripts/verify-go-test-json.go \
+  -results "${results}" -required "${required}"
+'''
+
+[tasks."test-snowpipe-streaming-process-failure"]
+description = "Credential-free OS-process request-journal crash evidence. The helper fsyncs request state, is killed with SIGKILL, and the replacement adopts without append."
+shell = "bash -euo pipefail -c"
+run = '''
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test -count=1 ./connectors/destinations/snowflake -run '^TestStreamRequestProcessRestartUsesDurableStore$'
+'''
+
+[tasks."test-snowpipe-streaming-runtime-wiring"]
+description = "Credential-free assembly proof for the experimental build-tagged runtime."
+shell = "bash -euo pipefail -c"
+run = '''
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test -count=1 -tags snowpipe_streaming_rest_experimental \
+  ./connectors/destinations/snowflake ./internal/runner ./internal/api/grpc ./internal/orchestrator ./cmd/wallaby-worker
+'''
+
+[tasks."fuzz-smoke"]
+description = "Deterministic fuzz smoke for the constrained Snowflake SQL planner. It runs every managed fuzz target's seed corpus (no -fuzz, so no randomness and no network) plus the bounded rapid SQL-injection-safety and hash-determinism properties. Safe for pull-request CI and the non-credential suite."
+shell = "bash -euo pipefail -c"
+run = '''
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test -count=1 \
+  -run '^(Fuzz|TestManagedSnowflake.*Property)$' ./connectors/destinations/snowflake \
+  -args -rapid.checks={{ vars.snowflake_fuzz_rapid_checks }}
+'''
+
+[tasks."fuzz-managed-snowflake"]
+description = "Bounded coverage-guided fuzzing for the Snowflake SQL planner. Each target runs for SNOWFLAKE_FUZZ_TIME; a crasher is written under testdata/fuzz and fails the recipe. This is intentionally separate from the deterministic smoke."
+shell = "bash -euo pipefail -c"
+run = '''
+for target in {{ vars.snowflake_fuzz_targets }}; do
+  echo "fuzzing ${target} for {{ vars.snowflake_fuzz_time }}"
+  GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test -run '^$' \
+    -fuzz="^${target}$" -fuzztime={{ vars.snowflake_fuzz_time }} ./connectors/destinations/snowflake
+done
+'''
+
+[tasks."test-s3tables-snowflake-live"]
+description = "Cross-service promotion gate. The Snowflake catalog-linked database must already be read-only and linked to the same S3 Tables bucket/namespace."
+shell = "bash -euo pipefail -c"
+run = '''
+test "${WALLABY_TEST_S3TABLES_SNOWFLAKE:-}" = "1" || { echo 'WALLABY_TEST_S3TABLES_SNOWFLAKE=1 is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_S3TABLES_REGION:-}" || { echo 'WALLABY_TEST_S3TABLES_REGION is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_S3TABLES_WAREHOUSE:-}" || { echo 'WALLABY_TEST_S3TABLES_WAREHOUSE is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_S3TABLES_TABLE_BUCKET_ARN:-}" || { echo 'WALLABY_TEST_S3TABLES_TABLE_BUCKET_ARN is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN:-}" || { echo 'WALLABY_TEST_S3TABLES_EXPECTED_ROLE_ARN is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_S3TABLES_NAMESPACE:-}" || { echo 'WALLABY_TEST_S3TABLES_NAMESPACE is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_SNOWFLAKE_DSN:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_DSN is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_SNOWFLAKE_LINKED_DATABASE:-}" || { echo 'WALLABY_TEST_SNOWFLAKE_LINKED_DATABASE is required' >&2; exit 2; }
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test -count=1 ./tests -run '^TestS3TablesSnowflakeCatalogLinkedReadback$'
+'''
+
+[tasks."test-durable-nightly"]
+description = "Nightly increases property checks and repeats worker bootstrap/fencing plus DBOS bootstrap evidence. IT_REQUIRED_TESTS makes every named test no-skip."
+shell = "bash -euo pipefail -c"
+run = '''
+mise run build-integration-worker
+WALLABY_WORKER_BINARY="${WALLABY_WORKER_BINARY:-{{ vars.integration_worker_binary }}}" RAPID_CHECKS=20000 mise run test-rapid
+FAILURE_CYCLES=1000 mise run test-failure-matrix
+SOAK_DURATION=5m mise run test-soak
+IT_COUNT=10 mise run test-durable-integration
+IT_COUNT=10 mise run test-durable-dbos-integration
+'''
+
+[tasks."test-failure-matrix"]
+description = "Deterministic, credential-free OS-process protocol evidence. Prebuilds the parent and child executables once, then runs >= FAILURE_CYCLES real PID SIGKILL/restart/overlap cycles per supported (profile,boundary) cell against fsync-backed model state. It fails on skips, vacuity, invariant violations, or resource bounds. This is process evidence, not destination implementation proof; live destination cells remain in the real-service recipes below."
+shell = "bash -euo pipefail -c"
+run = '''
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test -count=1 ./internal/failmatrix
+bindir="$(mktemp -d)"
+trap 'rm -rf "${bindir}"' EXIT
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} build -o "${bindir}/wallaby-failmatrix" ./cmd/wallaby-failmatrix
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} build -o "${bindir}/wallaby-failmatrix-worker" ./cmd/wallaby-failmatrix-worker
+"${bindir}/wallaby-failmatrix" -worker "${bindir}/wallaby-failmatrix-worker" \
+  -cycles {{ vars.failure_cycles }} -seed {{ vars.failure_seed }} -require-coverage
+'''
+
+[tasks."test-failure-matrix-model"]
+description = "Fast in-process executable-model evidence, explicitly separate from OS-process evidence and destination implementation proof."
+shell = "bash -euo pipefail -c"
+run = '''
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run ./cmd/wallaby-failmatrix \
+  -model-only -cycles {{ vars.failure_cycles }} -seed {{ vars.failure_seed }} -require-coverage
+'''
+
+[tasks."test-failure-matrix-race"]
+description = "Race-detector pass over both the parent runner and every spawned child. The explicit worker override prevents tests from silently rebuilding an uninstrumented child binary."
+shell = "bash -euo pipefail -c"
+run = '''
+bindir="$(mktemp -d)"
+trap 'rm -rf "${bindir}"' EXIT
+mkdir -p bench/evidence/failure_matrix
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} build -race -o "${bindir}/wallaby-failmatrix-worker" ./cmd/wallaby-failmatrix-worker
+WALLABY_FAILMATRIX_WORKER="${bindir}/wallaby-failmatrix-worker" \
+  GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" \
+  {{ vars.go }} test -race -count=1 ./internal/failmatrix 2>&1 | tee bench/evidence/failure_matrix/race-test.txt
+shasum -a 256 "${bindir}/wallaby-failmatrix-worker" > bench/evidence/failure_matrix/race-worker.sha256
+test -s bench/evidence/failure_matrix/race-test.txt
+test -s bench/evidence/failure_matrix/race-worker.sha256
+'''
+
+[tasks."test-soak"]
+description = "Bounded in-process soak for the protocol model. Verifies bounded goroutine and heap growth with no invariant violations over SOAK_DURATION and emits timestamped JSON/text evidence under bench/evidence/soak. Live-service load and soak for the exact maintained profiles (PostgreSQL, ClickHouse, artifact publication, Iceberg REST/MinIO) run via test-bounded-load and the opt-in managed-profile recipes; this gate carries no comparative winner claims."
+shell = "bash -euo pipefail -c"
+run = '''
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run ./cmd/wallaby-failmatrix \
+  -soak {{ vars.soak_duration }} -seed {{ vars.soak_seed }}
+'''
+
+[tasks."test-bounded-load"]
+description = "Bounded live-service load gate for the exact maintained profiles plus artifact publication and Iceberg REST/MinIO. Requires the provisioned local harness (TEST_PG_DSN + MinIO); the named tests are no-skip and JSON-verified so missing services fail rather than pass vacuously."
+shell = "bash -euo pipefail -c"
+run = '''
+required='TestClickHouseManagedProfileBoundedLoad,TestCanonicalArtifactBackpressureAndRootedRetention,TestCanonicalArtifactRandomizedCrashCycles,TestPostgresManagedProfilePoolExhaustion'
+filter="^($(printf '%s' "${required}" | tr ',' '|'))$"
+IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="${filter}" INTEGRATION_PACKAGE='./tests' mise run test-integration
+'''
+
+[tasks."test-integration-kind"]
+description = "test integration kind"
+shell = "bash -euo pipefail -c"
+run = '''
+IT_RUN_FILTER="^TestKubernetesDispatcher" IT_COUNT=1 mise run test-integration
+'''
+
+[tasks."test-e2e"]
+description = "test e2e"
+shell = "bash -euo pipefail -c"
+run = '''
+IT_RUN_FILTER="^TestPostgresToPostgresE2E" IT_COUNT=1 mise run test-integration
+'''
+
+[tasks."test-k8s-kind"]
+description = "test k8s kind"
+shell = "bash -euo pipefail -c"
+run = '''
+IT_RUN_FILTER="^TestKubernetesDispatcher" IT_COUNT=1 mise run test-integration
+'''
+
+[tasks."check-integration-core"]
+description = "check integration core"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run test-integration
+'''
+
+[tasks."check-integration-full"]
+description = "check integration full"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run test-integration
+mise run test-e2e
+'''
+
+[tasks."avro-shim-generate"]
+description = "avro shim generate"
+shell = "bash -euo pipefail -c"
+run = '''
+cd third_party/hamba-avro-shim && GOFLAGS="-buildvcs=false" {{ vars.go }} run ./cmd/shimgen
+'''
+
+[tasks."avro-shim-check"]
+description = "avro shim check"
+shell = "bash -euo pipefail -c"
+run = '''
+cd third_party/hamba-avro-shim
+GOFLAGS="-buildvcs=false" {{ vars.go }} test ./...
+GOFLAGS="-buildvcs=false" {{ vars.go }} mod tidy -diff
+GOFLAGS="-buildvcs=false" {{ vars.go }} mod verify
+GOFLAGS="-buildvcs=false" {{ vars.go }} run ./cmd/shimgen -check
+cd ../..
+template="$(printf '%s' '{''{range .Imports}''}{''{println .}''}{''{end}''}{''{range .TestImports}''}{''{println .}''}{''{end}''}{''{range .XTestImports}''}{''{println .}''}{''{end}''}')"
+imports="$(GOFLAGS="-buildvcs=false" {{ vars.go }} list -f "${template}" ./... | sort -u | grep '^github.com/hamba/avro/v2' || true)"
+unexpected="$(printf '%s\n' "${imports}" | grep -Ev '^github.com/hamba/avro/v2(/ocf)?$' || true)"
+if [[ -n "${unexpected}" ]]; then
+  printf 'unsupported hamba Avro subpackage import(s):\n%s\n' "${unexpected}" >&2
+  exit 1
+fi
+'''
+
+[tasks."proto"]
+description = "proto"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run proto-tools
+rm -rf gen/go
+mkdir -p gen/go
+PATH="{{ vars.gobin }}:$PATH" {{ vars.buf }} generate
+'''
+
+[tasks."generate"]
+description = "generate"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run proto
+mise run avro-shim-generate
+'''
+
+[tasks."generate-check"]
+description = "generate check"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run generate
+mise run avro-shim-check
+./scripts/generate-check.sh
+'''
+
+[tasks."proto-lint"]
+description = "proto lint"
+shell = "bash -euo pipefail -c"
+run = '''
+{{ vars.buf }} lint
+'''
+
+[tasks."proto-breaking"]
+description = "proto breaking"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run proto-breaking-selftest
+./scripts/proto-breaking.sh "{{ vars.buf }}"
+'''
+
+[tasks."proto-breaking-selftest"]
+description = "proto breaking selftest"
+shell = "bash -euo pipefail -c"
+run = '''
+./scripts/proto-breaking-selftest.sh
+'''
+
+[tasks."proto-tools"]
+description = "proto tools"
+shell = "bash -euo pipefail -c"
+run = '''
+GOFLAGS="-buildvcs=false" GOBIN="{{ vars.gobin }}" {{ vars.go }} install google.golang.org/protobuf/cmd/protoc-gen-go@{{ vars.protoc_gen_go_version }}
+GOFLAGS="-buildvcs=false" GOBIN="{{ vars.gobin }}" {{ vars.go }} install google.golang.org/grpc/cmd/protoc-gen-go-grpc@{{ vars.protoc_gen_go_grpc_version }}
+'''
+
+[tasks."docs-tools"]
+description = "docs tools"
+shell = "bash -euo pipefail -c"
+run = '''
+command -v {{ vars.uv }} >/dev/null 2>&1 || { echo "uv {{ vars.uv_version }} is required: https://docs.astral.sh/uv/" >&2; exit 1; }
+GOFLAGS="-buildvcs=false" GOBIN="{{ vars.gobin }}" {{ vars.go }} install github.com/princjef/gomarkdoc/cmd/gomarkdoc@{{ vars.gomarkdoc_version }}
+GOFLAGS="-buildvcs=false" GOBIN="{{ vars.gobin }}" {{ vars.go }} install github.com/pseudomuto/protoc-gen-doc/cmd/protoc-gen-doc@{{ vars.protoc_gen_doc_version }}
+{{ vars.uv }} sync --frozen
+'''
+
+[tasks."docs-generate"]
+description = "docs generate"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run docs-tools
+PATH="{{ vars.gobin }}:$PATH" GOBIN="{{ vars.gobin }}" ./scripts/docs-generate.sh
+'''
+
+[tasks."docs-verify"]
+description = "docs verify"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run docs-tools
+PATH="{{ vars.gobin }}:$PATH" GOBIN="{{ vars.gobin }}" ./scripts/docs-verify.sh
+'''
+
+[tasks."docs-verify-selftest"]
+description = "docs verify selftest"
+shell = "bash -euo pipefail -c"
+run = '''
+./scripts/docs-verify-selftest.sh
+'''
+
+[tasks."docs-build"]
+description = "docs build"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run docs-generate
+{{ vars.uv }} run --frozen mkdocs build --strict --clean
+'''
+
+[tasks."docs-preview"]
+description = "docs preview"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run docs-generate
+{{ vars.uv }} run --frozen mkdocs serve
+'''
+
+[tasks."docs-links"]
+description = "docs links"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run docs-build
+{{ vars.uv }} run --frozen python ./scripts/docs-links.py site
+'''
+
+[tasks."docs-check"]
+description = "docs check"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run docs-generate
+{{ vars.uv }} run --frozen mkdocs build --strict --clean
+{{ vars.uv }} run --frozen python ./scripts/docs-links.py site
+'''
+
+[tasks."spec-manifest"]
+description = "spec manifest"
+shell = "bash -euo pipefail -c"
+run = '''
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run ./cmd/wallaby-spec-manifest --out specs/coverage.json --dir specs
+'''
+
+[tasks."spec-verify"]
+description = "spec verify"
+shell = "bash -euo pipefail -c"
+run = '''
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" GO="{{ vars.go }}" ./scripts/spec-verify.sh
+'''
+
+[tasks."spec-lint"]
+description = "spec lint"
+shell = "bash -euo pipefail -c"
+run = '''
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" GO="{{ vars.go }}" GOBIN="{{ vars.gobin }}" SPEC_LINT_VERBOSE_MODE="{{ vars.spec_lint_verbose_mode }}" SPEC_LINT_VERBOSE="{{ vars.spec_lint_verbose }}" ./scripts/spec-lint.sh
+'''
+
+[tasks."spec-sync"]
+description = "spec sync"
+shell = "bash -euo pipefail -c"
+run = '''
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run ./cmd/wallaby-spec-sync --spec-dir specs --manifest-dir specs
+'''
+
+[tasks."tla-tools"]
+description = "tla tools"
+shell = "bash -euo pipefail -c"
+run = '''
+./scripts/tla-tools.sh "{{ vars.tla_tools_url }}" "{{ vars.tla_tools_dir }}" "{{ vars.tla_tools_jar }}" "{{ vars.gobin }}" "{{ vars.tla_tools_sha256_file }}"
+'''
+
+[tasks."tidy"]
+description = "tidy"
+shell = "bash -euo pipefail -c"
+run = '''
+{{ vars.go }} mod tidy
+{{ vars.go }} -C terraform/provider mod tidy
+{{ vars.go }} -C third_party/hamba-avro-shim mod tidy
+'''
+
+[tasks."release-tag-check"]
+description = "release tag check"
+shell = "bash -euo pipefail -c"
+run = '''
+./scripts/validate-release-tag-selftest.sh
+'''
+
+[tasks."release"]
+description = "release"
+shell = "bash -euo pipefail -c"
+run = '''
+{{ vars.goreleaser }} release --clean
+'''
+
+[tasks."release-snapshot"]
+description = "release snapshot"
+shell = "bash -euo pipefail -c"
+run = '''
+{{ vars.goreleaser }} release --snapshot --clean
+'''
+
+[tasks."bench-up"]
+description = "bench up"
+shell = "bash -euo pipefail -c"
+run = '''
+docker compose -f bench/docker-compose.yml up -d
+'''
+
+[tasks."bench-down"]
+description = "bench down"
+shell = "bash -euo pipefail -c"
+run = '''
+docker compose -f bench/docker-compose.yml down
+'''
+
+[tasks."bench"]
+description = "bench"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run bench-up
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run ./cmd/wallaby-bench --profile "{{ vars.profile }}" --targets "{{ vars.targets }}" --scenario "{{ vars.scenario }}"
+'''
+
+[tasks."bench-ddl"]
+description = "bench ddl"
+shell = "bash -euo pipefail -c"
+run = '''
+SCENARIO=ddl mise run bench
+'''
+
+[tasks."benchmark"]
+description = "benchmark"
+shell = "bash -euo pipefail -c"
+run = '''
+./bench/benchmark.sh
+'''
+
+[tasks."benchmark-profile"]
+description = "benchmark profile"
+shell = "bash -euo pipefail -c"
+run = '''
+ENABLE_PROFILES=1 PROFILE_FORMAT=both ./bench/benchmark.sh
+'''
+
+[tasks."benchstat"]
+description = "benchstat"
+shell = "bash -euo pipefail -c"
+run = '''
+test -n "{{ vars.baseline }}" && test -n "{{ vars.candidate }}" || { echo "BASELINE and CANDIDATE are required" >&2; exit 2; }
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run ./cmd/wallaby-bench-summary --dir "{{ vars.baseline }}" --format benchstat --latest=false --output "{{ vars.baseline }}/benchstat.txt"
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run ./cmd/wallaby-bench-summary --dir "{{ vars.candidate }}" --format benchstat --latest=false --output "{{ vars.candidate }}/benchstat.txt"
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run golang.org/x/perf/cmd/benchstat@latest "{{ vars.baseline }}/benchstat.txt" "{{ vars.candidate }}/benchstat.txt"
+'''
+
+[tasks."tla"]
+description = "tla"
+shell = "bash -euo pipefail -c"
+run = '''
+mise run tla-flow
+mise run tla-state
+mise run tla-fanout
+mise run tla-ddl-execution
+mise run tla-lifecycle-generation
+mise run tla-snapshot-transition
+mise run tla-managed-durability
+mise run tla-managed-postgres-delivery
+mise run tla-liveness
+mise run tla-witness
+'''
+
+[tasks."tla-single"]
+description = "tla single"
+shell = "bash -euo pipefail -c"
+run = '''
+PATH="{{ vars.gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ vars.tlc_java_opts }}" {{ vars.tlc }} {{ vars.tlc_args }} -config "{{ vars.tla_config }}" "{{ vars.tla_module }}"
+'''
+
+[tasks."tla-flow"]
+description = "tla flow"
+shell = "bash -euo pipefail -c"
+run = '''
+TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlow.cfg mise run tla-single
+'''
+
+[tasks."tla-state"]
+description = "tla state"
+shell = "bash -euo pipefail -c"
+run = '''
+TLA_MODULE=specs/FlowStateMachine.tla TLA_CONFIG=specs/FlowStateMachine.cfg mise run tla-single
+'''
+
+[tasks."tla-fanout"]
+description = "tla fanout"
+shell = "bash -euo pipefail -c"
+run = '''
+TLA_MODULE=specs/CDCFlowFanout.tla TLA_CONFIG=specs/CDCFlowFanout.cfg mise run tla-single
+'''
+
+[tasks."tla-ddl-execution"]
+description = "tla ddl execution"
+shell = "bash -euo pipefail -c"
+run = '''
+TLA_MODULE=specs/DDLExecution.tla TLA_CONFIG=specs/DDLExecution.cfg mise run tla-single
+'''
+
+[tasks."tla-lifecycle-generation"]
+description = "tla lifecycle generation"
+shell = "bash -euo pipefail -c"
+run = '''
+TLA_MODULE=specs/LifecycleGeneration.tla TLA_CONFIG=specs/LifecycleGeneration.cfg mise run tla-single
+'''
+
+[tasks."tla-snapshot-transition"]
+description = "tla snapshot transition"
+shell = "bash -euo pipefail -c"
+run = '''
+TLA_MODULE=specs/SnapshotTransition.tla TLA_CONFIG=specs/SnapshotTransition.cfg mise run tla-single
+'''
+
+[tasks."tla-managed-durability"]
+description = "tla managed durability"
+shell = "bash -euo pipefail -c"
+run = '''
+TLA_MODULE=specs/ManagedDurability.tla TLA_CONFIG=specs/ManagedDurability.cfg mise run tla-single
+'''
+
+[tasks."tla-managed-postgres-delivery"]
+description = "tla managed postgres delivery"
+shell = "bash -euo pipefail -c"
+run = '''
+TLA_MODULE=specs/ManagedPostgresDelivery.tla TLA_CONFIG=specs/ManagedPostgresDelivery.cfg mise run tla-single
+'''
+
+[tasks."tla-liveness"]
+description = "tla liveness"
+shell = "bash -euo pipefail -c"
+run = '''
+TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowLiveness.cfg mise run tla-single
+'''
+
+[tasks."tla-witness"]
+description = "tla witness"
+shell = "bash -euo pipefail -c"
+run = '''
+TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowWitness.cfg mise run tla-single
+'''
+
+[tasks."tla-coverage"]
+description = "tla coverage"
+shell = "bash -euo pipefail -c"
+run = '''
+mkdir -p "{{ vars.tlc_coverage_dir }}"
+PATH="{{ vars.gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ vars.tlc_java_opts }}" {{ vars.tlc }} -coverage 1 -config specs/CDCFlow.cfg specs/CDCFlow.tla > "{{ vars.tlc_coverage_dir }}/CDCFlow.txt" 2>&1
+PATH="{{ vars.gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ vars.tlc_java_opts }}" {{ vars.tlc }} -coverage 1 -config specs/FlowStateMachine.cfg specs/FlowStateMachine.tla > "{{ vars.tlc_coverage_dir }}/FlowStateMachine.txt" 2>&1
+PATH="{{ vars.gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ vars.tlc_java_opts }}" {{ vars.tlc }} -coverage 1 -config specs/CDCFlowFanout.cfg specs/CDCFlowFanout.tla > "{{ vars.tlc_coverage_dir }}/CDCFlowFanout.txt" 2>&1
+PATH="{{ vars.gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ vars.tlc_java_opts }}" {{ vars.tlc }} -coverage 1 -config specs/DDLExecution.cfg specs/DDLExecution.tla > "{{ vars.tlc_coverage_dir }}/DDLExecution.txt" 2>&1
+PATH="{{ vars.gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ vars.tlc_java_opts }}" {{ vars.tlc }} -coverage 1 -config specs/LifecycleGeneration.cfg specs/LifecycleGeneration.tla > "{{ vars.tlc_coverage_dir }}/LifecycleGeneration.txt" 2>&1
+PATH="{{ vars.gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ vars.tlc_java_opts }}" {{ vars.tlc }} -coverage 1 -config specs/SnapshotTransition.cfg specs/SnapshotTransition.tla > "{{ vars.tlc_coverage_dir }}/SnapshotTransition.txt" 2>&1
+PATH="{{ vars.gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ vars.tlc_java_opts }}" {{ vars.tlc }} -coverage 1 -config specs/ManagedPostgresDelivery.cfg specs/ManagedPostgresDelivery.tla > "{{ vars.tlc_coverage_dir }}/ManagedPostgresDelivery.txt" 2>&1
+PATH="{{ vars.gobin }}:$PATH" JAVA_TOOL_OPTIONS="{{ vars.tlc_java_opts }}" {{ vars.tlc }} -coverage 1 -config specs/ManagedDurability.cfg specs/ManagedDurability.tla > "{{ vars.tlc_coverage_dir }}/ManagedDurability.txt" 2>&1
+'''
+
+[tasks."tla-coverage-check"]
+description = "tla coverage check"
+shell = "bash -euo pipefail -c"
+run = '''
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} run ./cmd/wallaby-tla-coverage --dir "{{ vars.tlc_coverage_dir }}" --min "{{ vars.tla_coverage_min }}" --ignore "{{ vars.tla_coverage_ignore }}" --json "{{ vars.tlc_coverage_dir }}/report.json"
+'''
+
+[tasks."trace-suite"]
+description = "trace suite"
+shell = "bash -euo pipefail -c"
+run = '''
+TRACE_CASES="{{ vars.trace_cases }}" TRACE_SEED="{{ vars.trace_seed }}" TRACE_MAX_BATCHES="{{ vars.trace_max_batches }}" TRACE_MAX_RECORDS="{{ vars.trace_max_records }}" GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test ./pkg/stream -run TestTraceSuite -count=1
+'''
+
+[tasks."trace-suite-large"]
+description = "trace suite large"
+shell = "bash -euo pipefail -c"
+run = '''
+TRACE_CASES=20000 TRACE_SEED=123 TRACE_MAX_BATCHES=12 TRACE_MAX_RECORDS=5 GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" {{ vars.go }} test ./pkg/stream -run TestTraceSuite -count=1
+'''
+
+[tasks."test-snowflake-staged-authority-commercial"]
+description = "Credential-gated same-SHA staged authority evidence. This recipe is not part of ordinary branch promotion and fails closed when credentials are absent."
+shell = "bash -euo pipefail -c"
+run = '''
+test "${WALLABY_TEST_SNOWFLAKE_MANAGED:-}" = "1" || { echo 'WALLABY_TEST_SNOWFLAKE_MANAGED=1 is required' >&2; exit 2; }
+test "${WALLABY_TEST_SNOWFLAKE_STAGED_AUTO_INGEST:-}" = "1" || { echo 'WALLABY_TEST_SNOWFLAKE_STAGED_AUTO_INGEST=1 is required' >&2; exit 2; }
+required='TestSnowflakeStagedManagedProfileReviewedDeploymentCell,TestSnowflakeStagedManagedProfileLiveAdmission,TestSnowflakeStagedManagedProfileFailClosedCopy,TestSnowflakeStagedManagedProfileStageIdentityCollision,TestSnowflakeStagedManagedProfilePutUncertainty,TestSnowflakeStagedManagedProfileAutoIngestCompletion,TestSnowflakeStagedManagedProfileCopyTransportLossAndDetachedTakeover,TestSnowflakeStagedManagedProfileRoleIsolation,TestSnowflakeStagedManagedProfilePipeIsolation,TestSnowflakeStagedManagedProfileNetworkFaultMatrix,TestSnowflakeStagedManagedProfileProcessKillRecovery,TestSnowflakeStagedManagedProfileWorkerSIGKILLRecovery,TestSnowflakeStagedManagedProfileCleanup'
+IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="^($(printf '%s' "${required}" | tr ',' '|'))$" INTEGRATION_PACKAGE='./tests' mise run test-integration
+'''
+
+[tasks.setup]
+description = "Prepare a fresh checkout with locked dependencies and code generators"
+run = ["go mod download", "go -C terraform/provider mod download", "go -C third_party/hamba-avro-shim mod download", "uv sync --frozen", "mise run proto-tools"]
+
+[tasks.build]
+description = "Build CLI binaries and the Terraform provider into bin/"
+run = ["go build -trimpath -o bin/ ./cmd/...", "go -C terraform/provider build -trimpath -o ../../bin/terraform-provider-wallaby ."]
+
+[tasks."deps:check"]
+description = "Verify checksums and tidy manifests in every Go module and check the Python lock"
+run = ["go mod verify", "go mod tidy -diff", "go -C terraform/provider mod verify", "go -C terraform/provider mod tidy -diff", "go -C third_party/hamba-avro-shim mod verify", "go -C third_party/hamba-avro-shim mod tidy -diff", "uv lock --check"]
+
+[tasks.security]
+description = "Scan both Go applications and the locked Python documentation dependencies"
+run = ["mise run vulncheck", "cd terraform/provider && {{ vars.go }} run golang.org/x/vuln/cmd/govulncheck@{{ vars.govulncheck_version }} ./...", "mise run security-python"]
+
+[tasks."security-python"]
+description = "Audit exactly the hashed documentation lock with pip-audit 2.10.1"
+shell = "bash -euo pipefail -c"
+run = '''
+requirements=$(mktemp)
+trap 'rm -f "$requirements"' EXIT
+{{ vars.uv }} export --locked --no-emit-project --format requirements-txt --output-file "$requirements" >/dev/null
+{{ vars.uv }} tool run --from pip-audit==2.10.1 pip-audit --disable-pip --require-hashes --requirement "$requirements"
+'''
+
+
+[tasks."ci-check-test"]
+description = "Run non-mutating formatting, lint, complete unit, dependency and security gates"
+run = ["mise run format:check", "mise run lint", "mise run proto-lint", "mise run test", "mise run test-protocol", "mise run avro-shim-check", "mise run deps:check", "mise run security"]
+
+[tasks."test-protocol"]
+description = "Production Runner exploration, real-store histories, and mutation-sensitive protocol gates"
+run = [
+  "go test -count=1 -v ./pkg/stream -run 'TestManagedProtocol|TestDDLIndeterminate|TestRunnerReconcilesCommitBeforeReceipt'",
+  "go test -count=1 ./internal/reconcilepolicy -run 'TestDecide|TestRuntime'",
+  "go test -count=1 ./internal/delivery -run '^TestReconciliation'",
+  "go test -count=1 ./internal/checkpoint -run 'TestSQLiteCheckpointOutboxLinearizability|TestCheckpointHistoryModel'",
+  "mise run spec-sync",
+  "mise run spec-verify",
+  "mise run test-protocol-mutations",
+  "mise run test-tla-mutations",
+]
+
+[tasks."test-protocol-mutations"]
+description = "Require ten production Go overlay mutants to fail specific protocol properties"
+run = "go run ./tools/protocolmutate"
+
+[tasks."test-tla-mutations"]
+description = "Require DDL abstract-model safety mutants and nonzero indeterminate coverage"
+run = ["mise run tla-tools", "python scripts/check-tla-mutants.py --jar '{{ vars.tla_tools_jar }}'"]
+
+[tasks."pre-commit"]
+description = "Fast non-mutating Go formatting and Protobuf checks"
+run = ["mise run format:check", "mise run proto-lint"]
+
+[tasks."proof-gobra-bootstrap"]
+description = "Fetch/build pinned Gobra pilot prerequisites (macOS arm64 only; fail closed elsewhere)"
+run = "python verification/gobra/bootstrap.py"
+
+[tasks."proof-gobra"]
+description = "Prove actual reconciliation policy with Gobra plus rejected false-property/mutant controls"
+run = "python verification/gobra/verify.py"
+
+[tasks."proof-goose-bootstrap"]
+description = "Install the pinned local Lean toolchain through existing public elan (no default change)"
+shell = "bash -euo pipefail -c"
+run = '''
+command -v elan >/dev/null || { echo "Install public elan to provide lean/lake shims, then rerun this task" >&2; exit 1; }
+IFS= read -r toolchain < verification/goose/lean-toolchain
+elan toolchain install "$toolchain"
+'''
+
+[tasks."proof-goose-drift"]
+description = "Regenerate production Goose translation and reject drift (NOT a proof)"
+run = "sh verification/goose/scripts/regenerate.sh"
+
+[tasks."proof-goose"]
+description = "Check production-linked Perennial WP, standard axiom allowlist and rejected false-property control"
+run = "sh verification/goose/scripts/check.sh"
+
+[tasks."test-live-local"]
+description = "Provision owned kind PostgreSQL + Compose Iggy through Go executors and require live delivery evidence"
+shell = "bash -euo pipefail -c"
+run = '''
+run_id="wallaby-live-$$"
+evidence="{{ vars.root }}/.cache/live-evidence/${run_id}"
+mkdir -p "$evidence"
+required='TestPostgresCommitBeforeReceiptReconciles,TestPostgresGenerationFenceRejectsStaleCommit,TestPostgresManagedTransactionCommitBeforeReceiptReconciles,TestPostgresToPostgresManagedRecoveryContract,TestPostgresCheckpointGenerationFenceRejectsStaleCommit,TestIggyDestinationWireFormats,TestPostgresToIggyCDCCheckpointRestart'
+filter="^($(printf '%s' "$required" | tr ',' '|'))$"
+IT_KIND=1 IT_KIND_CLUSTER="$run_id" IT_SERVICES=none IT_COMPOSE_IGGY=true \
+  IT_EXPECTED_HARNESS_PARTICIPANTS=1 IT_PACKAGE_PARALLELISM=1 INTEGRATION_PACKAGE=./tests \
+  IT_REQUIRED_TESTS="$required" IT_RUN_FILTER="$filter" IT_RESULTS_FILE="$evidence/go-test.json" \
+  mise run test-integration
+printf 'Live Go executor evidence: %s\n' "$evidence/go-test.json"
+'''
+
+[tasks."test-iggy"]
+description = "Native Iggy 0.10 readback for all four wire formats, with no-skip accounting"
+shell = "bash -euo pipefail -c"
+run = '''
+test -n "${WALLABY_TEST_IGGY_ADDRESS:-}" || { echo 'WALLABY_TEST_IGGY_ADDRESS is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_IGGY_USERNAME:-}" || { echo 'WALLABY_TEST_IGGY_USERNAME is required' >&2; exit 2; }
+test -n "${WALLABY_TEST_IGGY_PASSWORD:-}" || { echo 'WALLABY_TEST_IGGY_PASSWORD is required' >&2; exit 2; }
+results=$(mktemp)
+trap 'rm -f "$results"' EXIT
+if ! {{ vars.go }} test -count=1 -json ./tests -run '^TestIggyDestinationWireFormats$' >"$results"; then
+  cat "$results"
+  exit 1
+fi
+cat "$results"
+{{ vars.go }} run ./scripts/verify-go-test-json.go -results "$results" -required TestIggyDestinationWireFormats
+'''

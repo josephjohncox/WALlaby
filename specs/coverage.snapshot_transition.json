@@ -3,8 +3,10 @@
   "actions": [
     "ReadSnapshot",
     "PersistPartition",
-    "Crash",
-    "Restart",
+    "CrashTask",
+    "RestartTaskSameExporter",
+    "LoseExporter",
+    "RestartWholeSnapshot",
     "CompleteSnapshot",
     "StartStreaming",
     "ReadStream",
@@ -15,13 +17,18 @@
     "RowsStayInAssignedPartition",
     "DurableRowsWereScanned",
     "TransitionRequiresCompleteSnapshot",
-    "StreamingStartsAtSnapshotBoundary"
+    "StreamingStartsAtSnapshotBoundary",
+    "NoCursorCrossesBootstrapGeneration",
+    "PublishedGenerationIsCurrent",
+    "ExporterRequiredUntilPublication"
   ],
   "unreachable_actions": [
     "ReadSnapshot",
     "PersistPartition",
-    "Crash",
-    "Restart",
+    "CrashTask",
+    "RestartTaskSameExporter",
+    "LoseExporter",
+    "RestartWholeSnapshot",
     "CompleteSnapshot",
     "StartStreaming",
     "ReadStream",
@@ -32,6 +39,9 @@
     "RowsStayInAssignedPartition",
     "DurableRowsWereScanned",
     "TransitionRequiresCompleteSnapshot",
-    "StreamingStartsAtSnapshotBoundary"
+    "StreamingStartsAtSnapshotBoundary",
+    "NoCursorCrossesBootstrapGeneration",
+    "PublishedGenerationIsCurrent",
+    "ExporterRequiredUntilPublication"
   ]
 }

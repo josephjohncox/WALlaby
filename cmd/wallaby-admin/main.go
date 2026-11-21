@@ -955,6 +955,12 @@ func checkEndpointConnectivity(endpointType connector.EndpointType, options map[
 		}
 		return nil
 
+	case connector.EndpointIggy:
+		target := strings.TrimSpace(optionValue(options, "address"))
+		if target == "" {
+			return errors.New("address is required for Iggy connectivity check")
+		}
+		return checkNetworkConnectivity(target, timeout)
 	case connector.EndpointHTTP:
 		target := strings.TrimSpace(optionValue(options, "url"))
 		if target == "" {

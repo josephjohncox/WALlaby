@@ -1,0 +1,16 @@
+name = "wallabyGoose"
+version = "0.1.0"
+defaultTargets = ["WallabyGoose"]
+
+[[require]]
+name = "perennial"
+git = "https://github.com/mit-pdos/perennial"
+rev = "e9988b5cde5907d9a66177ad7912c4d3f3729651"
+
+[[lean_lib]]
+name = "WallabyGoose"
+
+[leanOptions]
+linter.unusedSectionVars = false
+autoImplicit = false
+weak.linter.unusedVariables = false

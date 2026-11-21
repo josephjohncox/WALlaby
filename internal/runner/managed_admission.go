@@ -15,7 +15,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 )
 
 func validateManagedAdmission(f flow.Flow, source connector.Source, sourceSpec connector.RuntimeSpec, destinations []stream.DestinationConfig, cfg StreamRunnerConfig, ddlPolicy flow.DDLPolicyDefaults) error {

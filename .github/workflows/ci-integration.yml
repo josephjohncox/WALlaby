@@ -43,23 +43,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Setup just
-        uses: ./.github/actions/setup-just
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
 
-      - name: Setup Go
-        id: setup-go
-        # actions/setup-go v7.0.0
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: false
-
-      - name: Setup Buf
-        # bufbuild/buf-setup-action v1.50.0
-        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99
-        with:
-          version: "1.63.0"
-          github_token: ${{ github.token }}
 
       - name: Restore Go + tools cache
         id: cache-go-tools
@@ -71,7 +57,7 @@ jobs:
             .cache/gomod
             .cache/golangci-lint
           key: >-
-            ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-tools-
+            ${{ runner.os }}-go-${{ hashFiles('mise.toml') }}-tools-
             ${{ hashFiles('go.sum') }}
 
       - name: Restore Go build cache
@@ -81,11 +67,11 @@ jobs:
         with:
           path: .cache/gocache
           key: >-
-            ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-build-
+            ${{ runner.os }}-go-${{ hashFiles('mise.toml') }}-build-
             ${{ hashFiles('go.sum') }}
 
       - name: Generate protobufs
-        run: just proto
+        run: mise run proto
 
       - name: PostgreSQL-backed store contract tests
         env:
@@ -185,22 +171,22 @@ jobs:
       - name: Integration tests (PostgreSQL, ClickHouse, DBOS, Kubernetes)
         env:
           WALLABY_TEST_K8S_NAMESPACE: default
-        run: just test-integration-ci
+        run: mise run test-integration-ci
 
       - name: Required durable seam behavior (PostgreSQL + MinIO, no skips)
         if: github.event_name != 'schedule'
-        run: just test-durable-seams
+        run: mise run test-durable-seams
 
       - name: Required checkpoint-1 worker and DBOS evidence (no skips)
         if: github.event_name != 'schedule'
-        run: just test-checkpoint1-integration
+        run: mise run test-checkpoint1-integration
 
       - name: Required managed ClickHouse profile evidence (no skips)
-        run: just test-clickhouse-managed-profile
+        run: mise run test-clickhouse-managed-profile
 
       - name: Nightly durability and repeated recovery evidence
         if: github.event_name == 'schedule'
-        run: just test-durable-nightly
+        run: mise run test-durable-nightly
 
       - name: Stop integration PostgreSQL
         if: always()
@@ -208,7 +194,7 @@ jobs:
 
       - name: Save Go + tools cache
         if: always() && steps.cache-go-tools.outputs.cache-hit != 'true'
-        # actions/cache v4.3.0
+        # actions/cache/save v6.1.0
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
@@ -219,7 +205,7 @@ jobs:
 
       - name: Save Go build cache
         if: always() && steps.cache-go-build.outputs.cache-hit != 'true'
-        # actions/cache v4.3.0
+        # actions/cache/save v6.1.0
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: .cache/gocache
@@ -242,18 +228,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Setup just
-        uses: ./.github/actions/setup-just
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
 
-      - name: Setup Go
-        # actions/setup-go v7.0.0
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: true
 
       - name: Required checkpoint-5 Iceberg REST evidence (no skips)
-        run: just test-checkpoint5-iceberg-integration
+        run: mise run test-checkpoint5-iceberg-integration
 
   postgres-managed-profile:
     name: postgres-managed-profile-${{ matrix.postgres }}
@@ -276,15 +256,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Setup just
-        uses: ./.github/actions/setup-just
-
-      - name: Setup Go
-        # actions/setup-go v7.0.0
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: false
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
 
       - name: Start PostgreSQL ${{ matrix.postgres }} with logical replication
         run: |
@@ -320,7 +293,7 @@ jobs:
         run: |
           for iteration in 1 2; do
             echo "managed PostgreSQL profile iteration ${iteration}/2"
-            just test-checkpoint2-postgres-profile
+            mise run test-checkpoint2-postgres-profile
           done
 
       - name: Stop managed profile PostgreSQL
@@ -346,15 +319,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Setup just
-        uses: ./.github/actions/setup-just
-
-      - name: Setup Go
-        # actions/setup-go v7.0.0
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: false
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
 
       - name: Start PostgreSQL 16 authority
         run: |
@@ -394,7 +360,7 @@ jobs:
             ${{ vars.WALLABY_TEST_SNOWFLAKE_REGION }}
           WALLABY_TEST_SNOWFLAKE_OWNER_ROLE: >-
             ${{ vars.WALLABY_TEST_SNOWFLAKE_OWNER_ROLE }}
-        run: just test-snowflake-managed-profile
+        run: mise run test-snowflake-managed-profile
 
       - name: Stop Snowflake profile PostgreSQL
         if: always()

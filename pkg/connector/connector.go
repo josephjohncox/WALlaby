@@ -13,6 +13,7 @@ const (
 	EndpointSnowflake EndpointType = "snowflake"
 	EndpointS3        EndpointType = "s3"
 	EndpointKafka     EndpointType = "kafka"
+	EndpointIggy      EndpointType = "iggy"
 	EndpointHTTP      EndpointType = "http"
 	EndpointGRPC      EndpointType = "grpc"
 	EndpointPGStream  EndpointType = "pgstream"
@@ -29,7 +30,7 @@ const (
 // IsBuiltinEndpointType reports whether endpointType is reserved by a first-party connector.
 func IsBuiltinEndpointType(endpointType EndpointType) bool {
 	switch endpointType {
-	case EndpointPostgres, EndpointSnowflake, EndpointS3, EndpointKafka, EndpointHTTP,
+	case EndpointPostgres, EndpointSnowflake, EndpointS3, EndpointKafka, EndpointIggy, EndpointHTTP,
 		EndpointGRPC, EndpointPGStream, EndpointSnowpipe, EndpointDuckDB, EndpointDuckLake,
 		EndpointRedpanda, EndpointClickHouse, EndpointIceberg:
 		return true

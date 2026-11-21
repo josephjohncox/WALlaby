@@ -3,9 +3,9 @@
 WALlaby has two credential-free protocol checks which must not be confused with
 real destination evidence:
 
-1. `just test-failure-matrix` prebuilds a parent executable and a real child
+1. `mise run test-failure-matrix` prebuilds a parent executable and a real child
    executable, then collects **OS-process protocol evidence**.
-2. `just test-failure-matrix-model` runs the fast in-process executable model.
+2. `mise run test-failure-matrix-model` runs the fast in-process executable model.
 
 Neither command connects to a destination, proves a connector implementation,
 claims exactly-once, or replaces the real-service promotion suites.
@@ -58,7 +58,7 @@ non-fail-closed cell that does not reach its requested boundary fails.
 ## Run
 
 ```bash
-just test-failure-matrix
+mise run test-failure-matrix
 ```
 
 The default executes 6 modeled profiles × 10 requested boundaries × 100 cycles
@@ -79,7 +79,7 @@ requires:
 Deepen or replay deterministically:
 
 ```bash
-FAILURE_CYCLES=1000 FAILURE_SEED=20260728 just test-failure-matrix
+FAILURE_CYCLES=1000 FAILURE_SEED=20260728 mise run test-failure-matrix
 ```
 
 `FAILURE_CYCLES` below 100 is rejected by the required evidence command.
@@ -110,16 +110,16 @@ Fresh evidence directories are ignored by Git and uploaded by CI.
 ## Fast model and bounded soak
 
 ```bash
-just test-failure-matrix-model
-just test-soak                 # default SOAK_DURATION=30s
-SOAK_DURATION=5m just test-soak
+mise run test-failure-matrix-model
+mise run test-soak                 # default SOAK_DURATION=30s
+SOAK_DURATION=5m mise run test-soak
 ```
 
-These run in-process and are labeled model evidence. CI runs `just test-failure-matrix-model` in the separate required `failure-matrix-model` check; it is not inferred from the OS-process job. `just test-bounded-load` uses provisioned local services and is the separate destination/load surface.
+These run in-process and are labeled model evidence. CI runs `mise run test-failure-matrix-model` in the separate required `failure-matrix-model` check; it is not inferred from the OS-process job. `mise run test-bounded-load` uses provisioned local services and is the separate destination/load surface.
 
 ## Nightly
 
-`just test-durable-nightly` runs 1000 OS-process cycles per cell, a five-minute
+`mise run test-durable-nightly` runs 1000 OS-process cycles per cell, a five-minute
 in-process model soak, expanded property checks, and the live durable and DBOS
 integration suites.
 

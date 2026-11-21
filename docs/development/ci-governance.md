@@ -18,20 +18,21 @@ The active `Main: reviewed PRs and required checks` repository ruleset enforces 
 
 ## Non-vacuous evidence checks
 
-`checkpoint5-iceberg` runs `just test-checkpoint5-iceberg-integration` against the maintained local Iceberg REST/MinIO harness. The recipe requires both of these tests through `IT_REQUIRED_TESTS`:
+`checkpoint5-iceberg` runs `mise run test-checkpoint5-iceberg-integration` against the maintained local Iceberg REST/MinIO harness. The recipe requires both of these tests through `IT_REQUIRED_TESTS`:
 
 - `TestIcebergRESTLiveAppendProjection`
 - `TestIcebergRESTLiveSchemaEvolutionRename`
 
 The integration JSON verifier requires each named test to emit a chronological `run` event and terminal `pass` event. Missing tests, skips, malformed JSON, package failure, or a pass without a preceding run fail the check. Scheduled durability runs pass their explicit Go `-count` value to the verifier, which requires that exact number of complete top-level and nested `run`/`pass` cycles. Missing or extra repetitions fail closed.
 
-`failure-matrix-model` runs `just test-failure-matrix-model` as a distinct check. It is in-process executable-model evidence only. `failure-matrix` remains the separate real-child OS-process death/restart matrix, and neither substitutes for the other or for destination implementation evidence.
+`failure-matrix-model` runs `mise run test-failure-matrix-model` as a distinct check. It is in-process executable-model evidence only. `failure-matrix` remains the separate real-child OS-process death/restart matrix, and neither substitutes for the other or for destination implementation evidence.
 
 ## Intentionally non-required checks
 
 The following are not maintained promotion requirements:
 
 - `snowflake-managed-profile-unpromoted` — commercial Snowflake credentials and a reviewed deployment cell are intentionally unavailable in ordinary CI;
+- `iggy-native` — experimental native Iggy readback against the pinned SDK/server pair; it is not a maintained promotion claim or a required branch-rule context yet;
 - `external-links` — scheduled external-network documentation check;
 - `deploy` — GitHub Pages deployment runs only after documentation builds on `main`, not on pull requests; tag-only artifact publication uses separate `release-verification` and `publish` jobs;
 - AWS S3 Tables and Snowflake linked-catalog live gates — credential-gated operator evidence, not ordinary branch admission.

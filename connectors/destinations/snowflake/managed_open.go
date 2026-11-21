@@ -14,7 +14,7 @@ import (
 
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 )
 
 func (d *Destination) openManaged(ctx context.Context, dsn string, spec connector.RuntimeSpec) (resultErr error) {

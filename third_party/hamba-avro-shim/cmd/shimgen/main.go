@@ -81,7 +81,7 @@ func checkOutput(path string, generated []byte) error {
 		return fmt.Errorf("generated Avro shim %s is missing: %w", path, err)
 	}
 	if !bytes.Equal(current, generated) {
-		return fmt.Errorf("generated Avro shim %s is stale; run just avro-shim-generate", path)
+		return fmt.Errorf("generated Avro shim %s is stale; run mise run avro-shim-generate", path)
 	}
 	return nil
 }

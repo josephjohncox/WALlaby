@@ -39,8 +39,6 @@ type Config struct {
 	MaxRetriesSet     bool
 	DefaultWire       connector.WireFormat
 	StrictWire        bool
-	AdminServer       bool
-	AdminPort         int
 	Tracer            trace.Tracer
 	Meters            *telemetry.Meters
 	DDLExecutions     stream.DDLExecutionStore
@@ -109,10 +107,8 @@ func NewDBOSOrchestrator(ctx context.Context, cfg Config, engine workflow.Lifecy
 	}
 
 	dbosCtx, err := dbos.NewContext(ctx, dbos.Config{
-		AppName:         cfg.AppName,
-		DatabaseURL:     cfg.DatabaseURL,
-		AdminServer:     cfg.AdminServer,
-		AdminServerPort: cfg.AdminPort,
+		AppName:     cfg.AppName,
+		DatabaseURL: cfg.DatabaseURL,
 	})
 	if err != nil {
 		return nil, err

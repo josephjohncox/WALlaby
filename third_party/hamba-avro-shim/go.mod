@@ -14,20 +14,18 @@
 // README.md for the exact limitation and full provenance.
 module github.com/hamba/avro/v2
 
-go 1.24.13
+go 1.26.0
 
 require (
-	github.com/iskorotkov/avro/v2 v2.33.1
-	golang.org/x/mod v0.31.0
-	golang.org/x/tools v0.40.0
+	github.com/iskorotkov/avro/v2 v2.35.0
+	golang.org/x/mod v0.43.0
+	golang.org/x/tools v0.53.0
 )
 
 require (
-	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
+	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/golang/snappy v1.0.0 // indirect
-	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.18.2 // indirect
-	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
+	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
-	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
 )

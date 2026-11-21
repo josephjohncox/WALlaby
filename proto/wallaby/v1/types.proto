@@ -374,6 +374,29 @@ message RedpandaDestinationConfig {
   KafkaDestinationConfig kafka = 1;
 }
 
+// Native Apache Iggy TCP transport (SDK/server 0.10), not a Kafka endpoint.
+// Streams/topics must already exist. Each CDC batch becomes one message.
+message IggyDestinationConfig {
+  string address = 1;
+  string stream = 2;
+  string topic = 3;
+  // Zero-based partition, defaults to 0 to preserve per-flow order.
+  optional uint32 partition_id = 4;
+  // Supply username/password OR a personal access token.
+  string username = 5;
+  string password = 6;
+  string token = 7;
+  // TLS defaults to true. Certificate validation is always enabled.
+  optional bool tls = 8;
+  string tls_ca_file = 9;
+  string tls_server_name = 10;
+  WireFormat format = 11;
+  google.protobuf.Duration timeout = 12;
+  // Encoded payload limit; oversized batches fail without dropping records.
+  optional uint32 max_message_bytes = 13;
+  TypeMappingsConfig type_mappings = 14;
+}
+
 message S3DestinationConfig {
   string bucket = 1;
   string prefix = 2;
@@ -642,6 +665,7 @@ message Endpoint {
     DuckLakeDestinationConfig ducklake = 26;
     IcebergDestinationConfig iceberg = 27;
     CustomEndpointConfig custom = 28;
+    IggyDestinationConfig iggy = 29;
   }
 }
 

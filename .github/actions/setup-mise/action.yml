@@ -1,0 +1,14 @@
+name: Setup mise
+description: Install the pinned public toolchain from mise.toml
+
+runs:
+  using: composite
+  steps:
+    - name: Install mise and repository tools
+      # jdx/mise-action v5.2.10
+      uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a
+      with:
+        version: "2026.11.11"
+        cache: true
+      env:
+        GITHUB_TOKEN: ${{ github.token }}

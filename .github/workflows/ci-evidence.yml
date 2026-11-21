@@ -31,18 +31,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Setup just
-        uses: ./.github/actions/setup-just
-
-      - name: Setup Go
-        # actions/setup-go v7.0.0
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
 
       - name: In-process executable failure model (not OS-process evidence)
-        run: just test-failure-matrix-model
+        run: mise run test-failure-matrix-model
 
   failure-matrix:
     runs-on: ubuntu-latest
@@ -62,29 +55,22 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Setup just
-        uses: ./.github/actions/setup-just
-
-      - name: Setup Go
-        # actions/setup-go v7.0.0
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
 
       - name: OS-process failure matrix
-        run: just test-failure-matrix
+        run: mise run test-failure-matrix
 
       - name: Race-instrumented failure matrix
-        run: just test-failure-matrix-race
+        run: mise run test-failure-matrix-race
 
       - name: Bounded protocol soak
-        run: just test-soak
+        run: mise run test-soak
 
       - name: Upload failure-matrix evidence
         if: always()
-        # actions/upload-artifact v7.0.1
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        # actions/upload-artifact v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: failure-matrix-evidence
           path: |
@@ -106,15 +92,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Setup just
-        uses: ./.github/actions/setup-just
-
-      - name: Setup Go
-        # actions/setup-go v7.0.0
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
 
       - name: Verify executable connector matrix
         run: |
@@ -126,12 +105,12 @@ jobs:
             .cache/evidence/connector-support.md
 
       - name: Verify experimental Snowpipe Streaming runtime assembly
-        run: just test-snowpipe-streaming-runtime-wiring
+        run: mise run test-snowpipe-streaming-runtime-wiring
 
       - name: Upload connector matrix
         if: always()
-        # actions/upload-artifact v7.0.1
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        # actions/upload-artifact v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: connector-matrix
           path: .cache/evidence/connector-support.md
@@ -159,18 +138,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Setup just
-        uses: ./.github/actions/setup-just
-
-      - name: Setup Go
-        # actions/setup-go v7.0.0
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
 
       - name: Run benchmark harness
-        run: just benchmark
+        run: mise run benchmark
 
       - name: Verify benchmark artifacts
         run: |
@@ -210,8 +182,8 @@ jobs:
 
       - name: Upload benchmark results
         if: always()
-        # actions/upload-artifact v7.0.1
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        # actions/upload-artifact v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: benchmark-results-${{ env.PROFILES }}
           path: .cache/bench-results/

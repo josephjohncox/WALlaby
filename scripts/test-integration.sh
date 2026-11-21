@@ -15,6 +15,8 @@ IT_KIND_CLUSTER=${IT_KIND_CLUSTER:-${KIND_CLUSTER:-wallaby-test}}
 IT_KIND_NODE_IMAGE=${IT_KIND_NODE_IMAGE:-${KIND_NODE_IMAGE:-kindest/node:v1.35.0}}
 IT_SERVICE_READY_TIMEOUT_SECONDS=${IT_SERVICE_READY_TIMEOUT_SECONDS:-240}
 IT_SERVICES=${IT_SERVICES:-all}
+IT_COMPOSE_IGGY=${IT_COMPOSE_IGGY:-false}
+IT_RESULTS_FILE=${IT_RESULTS_FILE:-}
 IT_RUN_FILTER=${IT_RUN_FILTER:-}
 IT_SKIP_FILTER=${IT_SKIP_FILTER:-}
 IT_REQUIRED_TESTS=${IT_REQUIRED_TESTS:-}
@@ -29,6 +31,7 @@ if [ -n "$GO_TEST_VERBOSE_FLAG" ]; then
 fi
 set -- "$@" "$INTEGRATION_PACKAGE" \
 	-it-kind="$IT_KIND" \
+	-it-compose-iggy="$IT_COMPOSE_IGGY" \
 	-it-keep="$IT_KEEP" \
 	-it-k8s-kind-cluster="$IT_KIND_CLUSTER" \
 	-it-k8s-kind-node-image="$IT_KIND_NODE_IMAGE" \
@@ -58,8 +61,13 @@ if [ -z "$IT_REQUIRED_TESTS" ]; then
 	exec "$@"
 fi
 
-results=$(mktemp "${TMPDIR:-/tmp}/wallaby-go-test.XXXXXX.json")
-trap 'rm -f "$results"' EXIT HUP INT TERM
+if [ -n "$IT_RESULTS_FILE" ]; then
+	umask 077
+	results=$IT_RESULTS_FILE
+else
+	results=$(mktemp "${TMPDIR:-/tmp}/wallaby-go-test.XXXXXX.json")
+	trap 'rm -f "$results"' EXIT HUP INT TERM
+fi
 set +e
 "$@" -json >"$results"
 status=$?

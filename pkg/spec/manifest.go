@@ -27,52 +27,59 @@ const (
 )
 
 const (
-	ActionNone                   Action = ""
-	ActionStart                  Action = "Start"
-	ActionPause                  Action = "Pause"
-	ActionResume                 Action = "Resume"
-	ActionStop                   Action = "Stop"
-	ActionStopBegin              Action = "StopBegin"
-	ActionStopComplete           Action = "StopComplete"
-	ActionFail                   Action = "Fail"
-	ActionRunOnce                Action = "RunOnce"
-	ActionReadBatch              Action = "ReadBatch"
-	ActionReadDDL                Action = "ReadDDL"
-	ActionReadFail               Action = "ReadFail"
-	ActionReadGiveUp             Action = "ReadGiveUp"
-	ActionDeliver                Action = "Deliver"
-	ActionWriteFail              Action = "WriteFail"
-	ActionWriteGiveUp            Action = "WriteGiveUp"
-	ActionCheckpointFail         Action = "CheckpointFail"
-	ActionPersistCheckpoint      Action = "PersistCheckpoint"
-	ActionAck                    Action = "Ack"
-	ActionRestoreAck             Action = "RestoreAck"
-	ActionCrash                  Action = "Crash"
-	ActionRestart                Action = "Restart"
-	ActionAckDest                Action = "AckDest"
-	ActionAckSource              Action = "AckSource"
-	ActionApproveDDL             Action = "ApproveDDL"
-	ActionApplyDDL               Action = "ApplyDDL"
-	ActionResumeAfter            Action = "ResumeAfterDDL"
-	ActionIdle                   Action = "Idle"
-	ActionPrepare                Action = "Prepare"
-	ActionApply                  Action = "Apply"
-	ActionRecordReceipt          Action = "RecordReceipt"
-	ActionAcquireExecutionLock   Action = "AcquireExecutionLock"
-	ActionReleaseExecutionLock   Action = "ReleaseExecutionLock"
-	ActionReconcileApplied       Action = "ReconcileApplied"
-	ActionReconcileNotApplied    Action = "ReconcileNotApplied"
-	ActionReconcileIndeterminate Action = "ReconcileIndeterminate"
-	ActionPauseIntent            Action = "PauseIntent"
-	ActionStopIntent             Action = "StopIntent"
-	ActionExecutionFinished      Action = "ExecutionFinished"
-	ActionPauseComplete          Action = "PauseComplete"
-	ActionRestartExecution       Action = "RestartExecution"
-	ActionReadSnapshot           Action = "ReadSnapshot"
-	ActionPersistPartition       Action = "PersistPartition"
-	ActionCompleteSnapshot       Action = "CompleteSnapshot"
-	ActionStartStreaming         Action = "StartStreaming"
-	ActionReadStream             Action = "ReadStream"
+	ActionNone                    Action = ""
+	ActionStart                   Action = "Start"
+	ActionPause                   Action = "Pause"
+	ActionResume                  Action = "Resume"
+	ActionStop                    Action = "Stop"
+	ActionStopBegin               Action = "StopBegin"
+	ActionStopComplete            Action = "StopComplete"
+	ActionFail                    Action = "Fail"
+	ActionRunOnce                 Action = "RunOnce"
+	ActionReadBatch               Action = "ReadBatch"
+	ActionReadDDL                 Action = "ReadDDL"
+	ActionReadFail                Action = "ReadFail"
+	ActionReadGiveUp              Action = "ReadGiveUp"
+	ActionDeliver                 Action = "Deliver"
+	ActionWriteFail               Action = "WriteFail"
+	ActionWriteGiveUp             Action = "WriteGiveUp"
+	ActionCheckpointFail          Action = "CheckpointFail"
+	ActionPersistCheckpoint       Action = "PersistCheckpoint"
+	ActionAck                     Action = "Ack"
+	ActionRestoreAck              Action = "RestoreAck"
+	ActionCrash                   Action = "Crash"
+	ActionRestart                 Action = "Restart"
+	ActionAckDest                 Action = "AckDest"
+	ActionAckSource               Action = "AckSource"
+	ActionApproveDDL              Action = "ApproveDDL"
+	ActionApplyDDL                Action = "ApplyDDL"
+	ActionResumeAfter             Action = "ResumeAfterDDL"
+	ActionIdle                    Action = "Idle"
+	ActionPrepare                 Action = "Prepare"
+	ActionApply                   Action = "Apply"
+	ActionRecordReceipt           Action = "RecordReceipt"
+	ActionAcquireExecutionLock    Action = "AcquireExecutionLock"
+	ActionReleaseExecutionLock    Action = "ReleaseExecutionLock"
+	ActionReconcileApplied        Action = "ReconcileApplied"
+	ActionReconcileNotApplied     Action = "ReconcileNotApplied"
+	ActionReconcileIndeterminate  Action = "ReconcileIndeterminate"
+	ActionPauseIntent             Action = "PauseIntent"
+	ActionStopIntent              Action = "StopIntent"
+	ActionExecutionFinished       Action = "ExecutionFinished"
+	ActionPauseComplete           Action = "PauseComplete"
+	ActionExpireLease             Action = "ExpireLease"
+	ActionTakeover                Action = "Takeover"
+	ActionAuthoritativeMutation   Action = "AuthoritativeMutation"
+	ActionRecreatePublicID        Action = "RecreatePublicID"
+	ActionCrashTask               Action = "CrashTask"
+	ActionRestartTaskSameExporter Action = "RestartTaskSameExporter"
+	ActionLoseExporter            Action = "LoseExporter"
+	ActionRestartWholeSnapshot    Action = "RestartWholeSnapshot"
+	ActionReadSnapshot            Action = "ReadSnapshot"
+	ActionPersistPartition        Action = "PersistPartition"
+	ActionCompleteSnapshot        Action = "CompleteSnapshot"
+	ActionStartStreaming          Action = "StartStreaming"
+	ActionReadStream              Action = "ReadStream"
 	// Managed durability (ArtifactPublication) and managed PostgreSQL delivery
 	// (SourceFeedback) actions.
 	ActionAcquire                  Action = "Acquire"
@@ -93,31 +100,37 @@ const (
 )
 
 const (
-	InvTypeInvariant                 Invariant = "TypeInvariant"
-	InvNoAckWithoutDeliver           Invariant = "NoAckWithoutDeliver"
-	InvAckMonotonic                  Invariant = "AckMonotonic"
-	InvCheckpointMonotonic           Invariant = "CheckpointMonotonic"
-	InvReadAheadBounded              Invariant = "ReadAheadBounded"
-	InvRetryBounds                   Invariant = "RetryBounds"
-	InvDDLAppliedAfter               Invariant = "DDLAppliedAfterApproval"
-	InvDDLGatedPausesFlow            Invariant = "DDLGatedPausesFlow"
-	InvFlowTransitionsValid          Invariant = "FlowTransitionsValid"
-	InvAckedImpliesDelivered         Invariant = "AckedImpliesDelivered"
-	InvSourceAckRequires             Invariant = "SourceAckRequiresPolicy"
-	InvSourceFlushRequiresCheckpoint Invariant = "SourceFlushRequiresCheckpoint"
-	InvExternalCommitRequiresAttempt Invariant = "ExternalCommitRequiresAttempt"
-	InvReceiptRequiresExternalCommit Invariant = "ReceiptRequiresExternalCommit"
-	InvExternalCommitExactlyOnce     Invariant = "ExternalCommitExactlyOnce"
-	InvCommitCountMatchesState       Invariant = "CommitCountMatchesState"
-	InvLeaseMatchesExecution         Invariant = "LeaseMatchesExecution"
-	InvQuiescentTerminalState        Invariant = "QuiescentTerminalState"
-	InvRegistrationCurrentGeneration Invariant = "RegistrationUsesCurrentGeneration"
-	InvPendingPauseIsNotPaused       Invariant = "PendingPauseIsNotPaused"
-	InvPendingStopIsStopping         Invariant = "PendingStopIsStopping"
-	InvRowsStayAssignedPartition     Invariant = "RowsStayInAssignedPartition"
-	InvDurableRowsWereScanned        Invariant = "DurableRowsWereScanned"
-	InvTransitionCompleteSnapshot    Invariant = "TransitionRequiresCompleteSnapshot"
-	InvStreamingSnapshotBoundary     Invariant = "StreamingStartsAtSnapshotBoundary"
+	InvTypeInvariant                      Invariant = "TypeInvariant"
+	InvNoAckWithoutDeliver                Invariant = "NoAckWithoutDeliver"
+	InvAckMonotonic                       Invariant = "AckMonotonic"
+	InvCheckpointMonotonic                Invariant = "CheckpointMonotonic"
+	InvReadAheadBounded                   Invariant = "ReadAheadBounded"
+	InvRetryBounds                        Invariant = "RetryBounds"
+	InvDDLAppliedAfter                    Invariant = "DDLAppliedAfterApproval"
+	InvDDLGatedPausesFlow                 Invariant = "DDLGatedPausesFlow"
+	InvFlowTransitionsValid               Invariant = "FlowTransitionsValid"
+	InvAckedImpliesDelivered              Invariant = "AckedImpliesDelivered"
+	InvSourceAckRequires                  Invariant = "SourceAckRequiresPolicy"
+	InvSourceFlushRequiresCheckpoint      Invariant = "SourceFlushRequiresCheckpoint"
+	InvExternalCommitRequiresAttempt      Invariant = "ExternalCommitRequiresAttempt"
+	InvReceiptRequiresExternalCommit      Invariant = "ReceiptRequiresExternalCommit"
+	InvExternalCommitExactlyOnce          Invariant = "ExternalCommitExactlyOnce"
+	InvCommitCountMatchesState            Invariant = "CommitCountMatchesState"
+	InvIndeterminateFailsClosed           Invariant = "IndeterminateFailsClosed"
+	InvLeaseMatchesExecution              Invariant = "LeaseMatchesExecution"
+	InvQuiescentTerminalState             Invariant = "QuiescentTerminalState"
+	InvRegistrationCurrentGeneration      Invariant = "RegistrationUsesCurrentGeneration"
+	InvPendingPauseIsNotPaused            Invariant = "PendingPauseIsNotPaused"
+	InvPendingStopIsStopping              Invariant = "PendingStopIsStopping"
+	InvAuthoritativeMutationCurrentFence  Invariant = "AuthoritativeMutationUsesCurrentFence"
+	InvFlowReuseClearsOldAuthority        Invariant = "FlowReuseClearsOldAuthority"
+	InvNoCursorCrossesBootstrapGeneration Invariant = "NoCursorCrossesBootstrapGeneration"
+	InvPublishedGenerationIsCurrent       Invariant = "PublishedGenerationIsCurrent"
+	InvExporterRequiredUntilPublication   Invariant = "ExporterRequiredUntilPublication"
+	InvRowsStayAssignedPartition          Invariant = "RowsStayInAssignedPartition"
+	InvDurableRowsWereScanned             Invariant = "DurableRowsWereScanned"
+	InvTransitionCompleteSnapshot         Invariant = "TransitionRequiresCompleteSnapshot"
+	InvStreamingSnapshotBoundary          Invariant = "StreamingStartsAtSnapshotBoundary"
 	// Managed durability + managed PostgreSQL delivery invariants.
 	InvReceiptCheckpointAckAtomic        Invariant = "ReceiptCheckpointAckAtomic"
 	InvArtifactCheckpointAckAtomic       Invariant = "ArtifactCheckpointAckAtomic"
@@ -237,6 +250,7 @@ var DDLExecutionInvariants = []Invariant{
 	InvReceiptRequiresExternalCommit,
 	InvExternalCommitExactlyOnce,
 	InvCommitCountMatchesState,
+	InvIndeterminateFailsClosed,
 }
 
 var LifecycleGenerationActions = []Action{
@@ -246,7 +260,10 @@ var LifecycleGenerationActions = []Action{
 	ActionExecutionFinished,
 	ActionPauseComplete,
 	ActionStopComplete,
-	ActionRestartExecution,
+	ActionExpireLease,
+	ActionTakeover,
+	ActionAuthoritativeMutation,
+	ActionRecreatePublicID,
 	ActionFail,
 	ActionRunOnce,
 }
@@ -258,13 +275,17 @@ var LifecycleGenerationInvariants = []Invariant{
 	InvRegistrationCurrentGeneration,
 	InvPendingPauseIsNotPaused,
 	InvPendingStopIsStopping,
+	InvAuthoritativeMutationCurrentFence,
+	InvFlowReuseClearsOldAuthority,
 }
 
 var SnapshotTransitionActions = []Action{
 	ActionReadSnapshot,
 	ActionPersistPartition,
-	ActionCrash,
-	ActionRestart,
+	ActionCrashTask,
+	ActionRestartTaskSameExporter,
+	ActionLoseExporter,
+	ActionRestartWholeSnapshot,
 	ActionCompleteSnapshot,
 	ActionStartStreaming,
 	ActionReadStream,
@@ -277,6 +298,9 @@ var SnapshotTransitionInvariants = []Invariant{
 	InvDurableRowsWereScanned,
 	InvTransitionCompleteSnapshot,
 	InvStreamingSnapshotBoundary,
+	InvNoCursorCrossesBootstrapGeneration,
+	InvPublishedGenerationIsCurrent,
+	InvExporterRequiredUntilPublication,
 }
 
 // CDCFlowTraceUnreachableActions documents actions not emitted by the trace suite.

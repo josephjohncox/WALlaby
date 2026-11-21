@@ -1,0 +1,49 @@
+name: postgres_to_iggy
+wire_format: json
+parallelism: 1
+source:
+  name: postgres_source
+  postgres_source:
+    mode: POSTGRES_SOURCE_MODE_CDC
+    connection:
+      dsn: postgres://wallaby:example@localhost:5432/app?sslmode=disable
+    slot: wallaby_iggy
+    publication: wallaby_iggy
+    publication_schemas: [public]
+    create_slot: true
+    batch_size: 100
+    batch_timeout: 1s
+    format: WIRE_FORMAT_JSON
+destinations:
+  - name: iggy_out
+    iggy:
+      address: localhost:8090
+      stream: cdc
+      topic: orders
+      partition_id: 0
+      username: iggy
+      password: WallabyLocal123!
+      # Plaintext only for the disposable localhost broker.
+      tls: false
+      timeout: 10s
+      max_message_bytes: 1000000
+      format: WIRE_FORMAT_JSON
+config:
+  ack_policy: all
+  ddl:
+    auto_apply: false
+  table_mappings:
+    version: 2
+    destinations:
+      - destination: iggy_out
+        future_tables:
+          action: include
+          target_schema: "{{ .Schema }}"
+          target_table: "{{ .Table }}"
+          future_columns:
+            action: include
+            target_column: "{{ .Column }}"
+          write:
+            mode: append
+            key_columns: []
+        tables: []

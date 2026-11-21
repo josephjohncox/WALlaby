@@ -81,6 +81,12 @@ func DecodeWithRegistry(endpoint *wallabypb.Endpoint, role Role, registry *conne
 		if err == nil {
 			err = encodeKafka(options, cfg.Kafka)
 		}
+	case *wallabypb.Endpoint_Iggy:
+		err = destinationOnly(role, "iggy")
+		spec.Type = connector.EndpointIggy
+		if err == nil {
+			err = encodeIggy(options, cfg.Iggy)
+		}
 	case *wallabypb.Endpoint_Redpanda:
 		err = destinationOnly(role, "redpanda")
 		spec.Type = connector.EndpointRedpanda
@@ -235,6 +241,10 @@ func Encode(spec connector.RuntimeSpec, role Role) (*wallabypb.Endpoint, error) 
 		} else {
 			endpoint.Config = &wallabypb.Endpoint_Redpanda{Redpanda: &wallabypb.RedpandaDestinationConfig{Kafka: cfg}}
 		}
+	case connector.EndpointIggy:
+		var cfg *wallabypb.IggyDestinationConfig
+		cfg, err = decodeIggy(values)
+		endpoint.Config = &wallabypb.Endpoint_Iggy{Iggy: cfg}
 	case connector.EndpointS3:
 		var cfg *wallabypb.S3DestinationConfig
 		cfg, err = decodeS3(values)

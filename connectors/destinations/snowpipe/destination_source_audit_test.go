@@ -363,10 +363,27 @@ func snowpipeSameSentence(lowerLine string) bool {
 	return false
 }
 
+func TestSnowpipeRepositoryScanIgnoresGeneratedIndexCache(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".codebase-index", "index", "stale.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	removedOption := "compat" + "_" + "mode" // wallaby:snowpipe-audit-fixture
+	contents := "type: snowpipe\noptions:\n  " + removedOption + ": true\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	findings, err := scanSnowpipeRepository(root)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("generated index cache is not repository source: findings=%v err=%v", findings, err)
+	}
+}
+
 func excludedSnowpipeAuditDirectory(name, path string) bool {
 	lowerName := strings.ToLower(name)
 	switch lowerName {
-	case ".git", "build", "dist", "vendor", "node_modules", "site", ".cache", "artifact", "artifacts", ".pi-subagents":
+	case ".git", "build", "dist", "vendor", "node_modules", "site", ".cache", ".codebase-index", "artifact", "artifacts", ".pi-subagents":
 		return true
 	}
 	lowerPath := filepath.ToSlash(strings.ToLower(path))

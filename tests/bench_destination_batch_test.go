@@ -15,7 +15,7 @@ import (
 	"github.com/josephjohncox/wallaby/connectors/destinations/duckdb"
 	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	_ "github.com/snowflakedb/gosnowflake"
+	_ "github.com/snowflakedb/gosnowflake/v2"
 )
 
 func BenchmarkClickHouseBatchSizes(b *testing.B) {

@@ -142,6 +142,13 @@ func (f Factory) destination(spec connector.RuntimeSpec) (connector.Destination,
 	if destination == nil {
 		return nil, fmt.Errorf("destination constructor returned nil: %s", spec.Type)
 	}
+	if validator, ok := destination.(interface {
+		ValidateSpec(connector.RuntimeSpec) error
+	}); ok {
+		if err := validator.ValidateSpec(spec); err != nil {
+			return nil, fmt.Errorf("validate destination %s: %w", spec.Type, err)
+		}
+	}
 	if _, err := registration.ResolveCapabilities(destination, spec); err != nil {
 		return nil, fmt.Errorf("destination %s capability profile: %w", spec.Type, err)
 	}

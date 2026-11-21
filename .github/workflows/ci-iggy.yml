@@ -1,0 +1,42 @@
+name: CI Iggy
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  iggy-native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
+
+      - name: Enable io_uring on the disposable runner
+        run: sudo sysctl -w kernel.io_uring_disabled=0
+
+      # Go owns the kind cluster, private kubeconfig, Compose project, native
+      # SDK readiness probe, test execution and cleanup. No service is reused.
+      - name: Live PostgreSQL and Iggy delivery through Go executors
+        run: mise run test-live-local
+
+      - name: Upload owned live-delivery evidence
+        if: always()
+        # actions/upload-artifact v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: postgres-iggy-live-evidence
+          path: .cache/live-evidence/
+          if-no-files-found: error

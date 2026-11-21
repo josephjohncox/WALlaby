@@ -1,0 +1,58 @@
+name: Deductive pilots
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  goose-conditional-wp:
+    # Opt-in public runner check. The parent execution was macOS arm64; a
+    # dispatched Linux run must supply its own evidence, not inherit that claim.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ELAN_HOME: ${{ github.workspace }}/.cache/toolchain/elan
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
+
+      - name: Install pinned public elan launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          directory=$(mktemp -d)
+          trap 'rm -rf "$directory"' EXIT
+          asset=elan-x86_64-unknown-linux-gnu.tar.gz
+          base=https://github.com/leanprover/elan/releases/download
+          curl --fail --location --proto '=https' --proto-redir '=https' \
+            --max-time 180 "$base/v4.4.0/$asset" \
+            --output "$directory/elan.tar.gz"
+          digest=0e8250aa2be86c7af929ade68db617af9
+          digest+=edc8b9ccf6eaf5ece228250d0d032e2
+          echo "$digest  $directory/elan.tar.gz" | sha256sum --check
+          tar -xzf "$directory/elan.tar.gz" -C "$directory"
+          "$directory/elan-init" -y --no-modify-path --default-toolchain none
+          echo "$ELAN_HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Install the pinned local Lean toolchain
+        run: mise run proof-goose-bootstrap
+
+      - name: Production translation, conditional WP, axioms and false property
+        run: mise run proof-goose
+
+      - name: Retain checker evidence
+        if: always()
+        # actions/upload-artifact v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: goose-conditional-wp-evidence
+          path: verification/goose/artifacts/
+          if-no-files-found: error

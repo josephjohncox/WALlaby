@@ -7,5 +7,5 @@ package artifactlog
 // one `go test -race` invocation with internal/failmatrix, whose real child
 // processes have wall-clock durability deadlines. An unbounded property here
 // saturates the machine and makes that unrelated gate flake. Full-strength
-// property coverage still runs in `just test` and `just test-rapid`.
+// property coverage still runs in `mise run test` and `mise run test-rapid`.
 const rapidPlannerMaxRecords = 2

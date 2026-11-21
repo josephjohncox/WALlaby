@@ -1,10 +1,13 @@
 # Specs & Verification
 
-WALlaby treats protocol specs and trace validation as first-class artifacts. The TLA+ models and trace validators are used to prevent drift between runtime behavior and the formal model.
+WALlaby checks bounded protocol models, selected production executions and trace
+contracts. These layers are complementary; none proves that the whole Go
+implementation refines a TLA+ model. See the [implementation-linked verification
+guide](development/protocol-verification.md) for the precise claims and limits.
 
 ## What’s in `specs/`
 
-- **TLA+ models**: `CDCFlow.tla`, `FlowStateMachine.tla`, `CDCFlowFanout.tla`, `DDLExecution.tla`, `LifecycleGeneration.tla`, and `SnapshotTransition.tla`, plus liveness/witness configs.
+- **TLA+ models**: `CDCFlow.tla`, `FlowStateMachine.tla`, `CDCFlowFanout.tla`, `DDLExecution.tla`, `LifecycleGeneration.tla`, `SnapshotTransition.tla`, `ManagedDurability.tla`, and `ManagedPostgresDelivery.tla`, plus liveness/witness configs.
 - **Coverage manifests**: `specs/coverage*.json` define the contract between spec actions/invariants and runtime trace actions.
 - **Coverage output**: generated into `specs/coverage/` when running TLC with coverage enabled.
 
@@ -13,19 +16,19 @@ WALlaby treats protocol specs and trace validation as first-class artifacts. The
 Run a full spec + trace verification pass:
 
 ```bash
-just tla                 # all flow, receipt, lifecycle, snapshot, and liveness models
-just tla-coverage         # action coverage from TLC
-just tla-coverage-check   # enforce minimum coverage
-just trace-suite          # randomized trace suite (CI-friendly)
-just trace-suite-large    # larger randomized trace suite
+mise run tla                 # all flow, receipt, lifecycle, snapshot, and liveness models
+mise run tla-coverage         # action coverage from TLC
+mise run tla-coverage-check   # enforce minimum coverage
+mise run trace-suite          # randomized trace suite (CI-friendly)
+mise run trace-suite-large    # larger randomized trace suite
 ```
 
 Regenerate and verify the manifest contracts:
 
 ```bash
-just spec-verify
-just spec-sync
-just spec-lint
+mise run spec-verify
+mise run spec-sync
+mise run spec-lint
 ```
 
 ## Trace validation

@@ -12,7 +12,7 @@ import (
 
 	"github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 )
 
 // These functions are the same-SHA live-service gates named by the constrained
