@@ -1,7 +1,7 @@
 # Dependency maintenance
 
 `mise.toml` pins developer tools. Go application manifests, the nested Terraform
-provider module and the Avro shim module own library dependencies. `uv.lock`
+provider module own library dependencies. `uv.lock`
 locks the documentation environment. GitHub Actions use verified commit SHAs
 with adjacent release comments.
 
@@ -18,7 +18,7 @@ plugins, staticcheck and govulncheck have explicit versions in mise tasks.
 5. Run real-service gates for affected delivery contracts. Unit fakes, successful
    compilation and skipped integration tests are not live-delivery evidence.
 
-`mise run deps:check` verifies all three Go modules, their checksums/tidy state and
+`mise run deps:check` verifies both Go modules, their checksums/tidy state and
 the Python lock. `mise run security` scans reachable code in both application Go
 modules and audits the hashed Python lock with pip-audit 2.10.1. The Python-only
 gate is `mise run security-python`. uv uses the exact mise Python pin rather than
@@ -46,38 +46,51 @@ version aligned with both application modules and Dockerfile.
   processing advisories. Removing tool-only modules also reduces the graph.
 - The docs lock contains urllib3 `2.8.0` and certifi `2026.10.23`, past the fixed
   versions for the reported proxy/streaming and CA-bundle advisories.
-- The Avro shim forwards to maintained `iskorotkov/avro/v2 v2.35.0`; it does not
-  compile the archived vulnerable hamba decoder. Keep its generated aliases and
-  regression tests in sync with the nested module.
+- Wire codecs import maintained `iskorotkov/avro/v2 v2.35.0` directly. Iceberg
+  0.7 uses `twmb/avro`; it no longer requires the archived hamba module. The
+  obsolete alias shim, generator, replacement and nested module are removed.
+  Decoder security regressions remain covered by `pkg/wire` tests.
 
 GitHub alerts and redundant Dependabot PRs are remote state. They are not
 manually dismissed by this change; GitHub must analyze the merged manifests.
 
-## Constrained upgrades
+## Arrow and Iceberg upgrade
 
-Do not treat `go get -u ./...` succeeding as proof of a valid upgrade. These
-constraints were verified during the update; the regression tests remain strict.
+The application selects Arrow Go **18.9.0** and Iceberg Go **0.7.0**, the latest
+stable releases checked for this update. The Terraform module selects the same
+Arrow version. Related Arrow-based constraints are lifted: Azure Blob is 1.8.3,
+gocloud is 0.49.0 and Substrait protobuf bindings are 0.85.0. No older encoder,
+dependency replacement or vendored Arrow implementation is retained.
 
-| Dependency | Selected version | Why a newer version is not selected |
-| --- | --- | --- |
-| Arrow Go | `v18.5.2` | Frozen canonical v1/v2 Parquet byte hashes change in 18.6, 18.7, 18.8 and 18.9 |
-| Iceberg Go | `v0.5.0` | 0.6 requires Arrow 18.6; 0.7 requires Arrow 18.8 |
-| Azure Blob SDK | `v1.8.0` | Newer releases raise the Arrow minimum above the frozen encoder's version |
-| gocloud | `v0.47.0` | Newer releases require newer Arrow |
-| Substrait/protobuf bindings | `v0.84.0` | The updated substrait-go/v7.6 still uses the URI-based extension API removed by 0.85 bindings |
-| kube-openapi | `v0.0.0-20260721132016-d427ff9ee9ad` | Newer source returns structured-merge-diff/v7 types, incompatible with Kubernetes 0.37.2's v6 types |
+Both canonical Parquet byte-hash goldens are intentionally regenerated for
+Arrow 18.9.0. Logical batch/content IDs, schema IDs, artifact IDs, object keys
+and mapping identities remain unchanged; the serialized byte hashes change:
 
-The Arrow check compared the same logical batch across versions. Logical IDs,
-schema IDs and object keys remained stable, but serialized Parquet changed
-(column offsets, optional statistics and root-schema metadata). Keeping current
-Arrow with the old zstd library did **not** restore the bytes; using Arrow 18.5.2
-with the updated zstd library did. The golden hashes were not regenerated:
+| Projection | Arrow 18.9.0 encoded SHA-256 |
+| --- | --- |
+| `canonical_cdc_parquet_v1` | `42c8d345515f8b46c5eb494982e7ed2288b66e5c06b4e33d5eb8c7eadd1e2539` |
+| `canonical_cdc_parquet_v2` | `3c97f25be44b4aaf64cae3fe3325075ad7c23e034d9f46b22765dda4f48de704` |
+
+This is an intentional byte-compatibility break, not an attempt to reproduce the
+18.5.2 encoder. Do not mix old and new publisher builds within a durable flow
+incarnation; use fresh incarnations for the changed encoder. There is no old-byte
+fallback or migration path. Exact stored-byte verification, schema/identity
+checks, replay determinism and corruption tests remain enabled.
 
 ```bash
 mise exec -- go test ./internal/artifactlog \
-  -run '^TestCanonicalProjectionV[12]'
+  -run '^TestCanonicalProjectionV[12]' -count=10
+mise run test-durable-pr
+mise run test-checkpoint5-iceberg-integration
 ```
 
-A later Arrow upgrade needs an explicit canonical-encoding contract decision,
-not a new expected hash for the same frozen projection. No new dependency
-replacement, vendored encoder or silent compatibility path is introduced here.
+Iceberg 0.7 partition fields expose a source-ID slice and a two-value iterator.
+The consumer validates every source ID, including later entries, and rejects
+an empty source list rather than accepting it vacuously.
+
+## Remaining independent constraint
+
+Kubernetes 0.37.2 uses structured-merge-diff/v6, so kube-openapi remains at
+`v0.0.0-20260721132016-d427ff9ee9ad`; newer source returns v7 types.
+This is separate from the removed Arrow/Iceberg holds. Do not treat
+`go get -u ./...` succeeding as proof that an upgrade is valid.

@@ -4,7 +4,7 @@ Status: **supported configuration preview; experimental service evidence**.
 
 The PostgreSQL-to-canonical-Parquet-to-Iceberg configuration surface is versioned and tested. Promotion to maintained support remains blocked on same-commit AWS S3 Tables and commercial Snowflake readback evidence. See [Query WALlaby Iceberg tables from Snowflake](../guides/s3-tables-snowflake.md) for the documented S3 Tables configuration preview.
 
-The Iceberg endpoint consumes explicitly projection-bound `canonical_cdc_parquet_v2` publications after PostgreSQL commits them. The byte-frozen `canonical_cdc_parquet_v1` encoder remains available only for its historical protocol contract and is not admitted for mapped Iceberg flows. It is not a direct destination. PostgreSQL owns delivery attempts, receipts, consumer checkpoints, quotas, and garbage-collection roots. The catalog owns Iceberg metadata. Ordinary versioned S3 retains canonical recovery objects.
+The Iceberg endpoint consumes explicitly projection-bound `canonical_cdc_parquet_v2` publications after PostgreSQL commits them. The `canonical_cdc_parquet_v1` logical projection is not admitted for mapped Iceberg flows. This build uses Arrow 18.9.0 and Iceberg Go 0.7.0; canonical byte-hash goldens are intentionally rebaselined, without an old-encoder compatibility path. Use fresh flow incarnations for the changed encoder; see [dependency maintenance](../development/dependencies.md#arrow-and-iceberg-upgrade). It is not a direct destination. PostgreSQL owns delivery attempts, receipts, consumer checkpoints, quotas, and garbage-collection roots. The catalog owns Iceberg metadata. Ordinary versioned S3 retains canonical recovery objects.
 
 ## Data model
 

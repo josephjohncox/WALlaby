@@ -35,7 +35,8 @@ func TestCanonicalProjectionV1GoldenIdentity(t *testing.T) {
 	const wantContentHash = "3ad2988816a831f1c0fa3ef4a81c9674906038571d87c63ab0ac07a3f35fac3f"
 	const wantSchemaID = "f6b4df8e0254025c850b6be95241df78de7f68ce91a01b1ac2e2d60a1e8b3e03"
 	const wantArtifactID = "f5c32f67d7df869068321358e5c92c7f0209e47789009dc4f1d694e17af5fef1"
-	const wantEncodedHash = "874ae66dd0d319762a490d7f23b131e8e181057e284ed66beacf49d501bf1de3"
+	// Rebaselined for Arrow 18.9.0; logical/schema/artifact identities stay unchanged.
+	const wantEncodedHash = "42c8d345515f8b46c5eb494982e7ed2288b66e5c06b4e33d5eb8c7eadd1e2539"
 	const wantObjectKey = "wallaby/artifacts/44444444-4444-4444-4444-444444444444/source=3c123b9685a8bc65/namespace=public/table=widgets/schema=f6b4df8e0254025c850b6be95241df78de7f68ce91a01b1ac2e2d60a1e8b3e03/partition=unpartitioned/shard=000000/f5c32f67d7df869068321358e5c92c7f0209e47789009dc4f1d694e17af5fef1.parquet"
 	if plan.LogicalBatchID != wantLogicalBatchID || plan.ContentHash != wantContentHash || artifact.SchemaID != wantSchemaID || artifact.ID != wantArtifactID || artifact.EncodedByteHash != wantEncodedHash || artifact.ObjectKey != wantObjectKey {
 		t.Fatalf("golden identity changed:\nlogical=%q\ncontent=%q\nschema=%q\nartifact=%q\nencoded=%q\nkey=%q", plan.LogicalBatchID, plan.ContentHash, artifact.SchemaID, artifact.ID, artifact.EncodedByteHash, artifact.ObjectKey)
@@ -70,10 +71,12 @@ func TestCanonicalProjectionV2MappedReplayAndStableSourceFieldIDs(t *testing.T) 
 	const wantContent = "6b3bbae6c8eec101f26974e6e47c5eb0daefb45723d215acec77e80652009acb"
 	const wantSchema = "e2b0e25a8a2de9bfac6b4e46175826ab7595635a3f82ba7c2b227c3443f672da"
 	const wantArtifact = "7b6d9408a04c83b4cf9ae622f67483cdc70fc1fca4bbe99c8abde02b937dc126"
-	const wantEncoded = "bc3ff24a63301ea153393f6daf5f549d510b16392217bfe1e26e2dc24fc4d7e9"
+	// Rebaselined for Arrow 18.9.0; mapping and logical identities stay unchanged.
+	const wantEncoded = "3c97f25be44b4aaf64cae3fe3325075ad7c23e034d9f46b22765dda4f48de704"
 	const wantKey = "wallaby/artifacts-v2/44444444-4444-4444-4444-444444444444/source=3c123b9685a8bc65/mapping=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/namespace=lake/table=accounts/schema=e2b0e25a8a2de9bfac6b4e46175826ab7595635a3f82ba7c2b227c3443f672da/partition=unpartitioned/shard=000000/7b6d9408a04c83b4cf9ae622f67483cdc70fc1fca4bbe99c8abde02b937dc126.parquet"
 	if first.LogicalBatchID != wantLogical || first.ContentHash != wantContent || first.Artifacts[0].SchemaID != wantSchema || first.Artifacts[0].ID != wantArtifact || first.Artifacts[0].EncodedByteHash != wantEncoded || first.Artifacts[0].ObjectKey != wantKey {
-		t.Fatalf("canonical v2 golden identity changed: %+v", first.Artifacts[0])
+		artifact := first.Artifacts[0]
+		t.Fatalf("canonical v2 golden identity changed:\nlogical=%q\ncontent=%q\nschema=%q\nartifact=%q\nencoded=%q\nkey=%q", first.LogicalBatchID, first.ContentHash, artifact.SchemaID, artifact.ID, artifact.EncodedByteHash, artifact.ObjectKey)
 	}
 	second, err := encoder.PlanMappedTransaction(context.Background(), incarnation, fingerprint, mapped)
 	if err != nil {

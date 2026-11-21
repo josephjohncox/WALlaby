@@ -767,13 +767,45 @@ func TestCommitterFailsClosedOnCorruptionAndSchemaMismatch(t *testing.T) {
 		defer plan.release()
 		group := plan.groups[0]
 		partitioned := iceberggo.NewPartitionSpec(iceberggo.PartitionField{
-			SourceID: 999999, FieldID: 1000, Name: "missing", Transform: iceberggo.IdentityTransform{},
+			SourceIDs: []int{999999}, FieldID: 1000, Name: "missing", Transform: iceberggo.IdentityTransform{},
 		})
 		state := catalogTable{Identifier: group.target, Schema: group.schema, PartitionSpec: partitioned}
 		if err := validatePartitionSpec(state); err == nil || !strings.Contains(err.Error(), "absent from the table schema") {
 			t.Fatalf("partition compatibility error=%v", err)
 		}
 	})
+}
+
+func TestValidatePartitionSpecChecksEverySourceID(t *testing.T) {
+	t.Parallel()
+	schema := iceberggo.NewSchema(0,
+		iceberggo.NestedField{ID: 1, Name: "first", Type: iceberggo.Int64Type{}},
+		iceberggo.NestedField{ID: 2, Name: "second", Type: iceberggo.Int64Type{}},
+	)
+	for _, test := range []struct {
+		name    string
+		sources []int
+		wantErr string
+	}{
+		{name: "single source", sources: []int{1}},
+		{name: "all sources present", sources: []int{1, 2}},
+		{name: "second source missing", sources: []int{1, 999999}, wantErr: "source ID 999999 absent"},
+		{name: "first source missing", sources: []int{999999, 2}, wantErr: "source ID 999999 absent"},
+		{name: "no sources", wantErr: "has no source IDs"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			spec := iceberggo.NewPartitionSpec(iceberggo.PartitionField{
+				SourceIDs: test.sources, FieldID: 1000, Name: "partition", Transform: iceberggo.IdentityTransform{},
+			})
+			err := validatePartitionSpec(catalogTable{Schema: schema, PartitionSpec: spec})
+			if test.wantErr == "" && err != nil {
+				t.Fatal(err)
+			}
+			if test.wantErr != "" && (err == nil || !strings.Contains(err.Error(), test.wantErr)) {
+				t.Fatalf("partition error=%v, want %q", err, test.wantErr)
+			}
+		})
+	}
 }
 
 func TestReconcileDistinguishesConflictAbsenceAndExpiredEvidence(t *testing.T) {

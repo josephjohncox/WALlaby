@@ -347,9 +347,14 @@ func validatePartitionSpec(state catalogTable) error {
 	if state.Schema == nil {
 		return errors.New("catalog table schema is required")
 	}
-	for partition := range state.PartitionSpec.Fields() {
-		if _, ok := state.Schema.FindFieldByID(partition.SourceID); !ok {
-			return fmt.Errorf("partition field %s references source ID %d absent from the table schema", partition.Name, partition.SourceID)
+	for _, partition := range state.PartitionSpec.Fields() {
+		if len(partition.SourceIDs) == 0 {
+			return fmt.Errorf("partition field %s has no source IDs", partition.Name)
+		}
+		for _, sourceID := range partition.SourceIDs {
+			if _, ok := state.Schema.FindFieldByID(sourceID); !ok {
+				return fmt.Errorf("partition field %s references source ID %d absent from the table schema", partition.Name, sourceID)
+			}
 		}
 	}
 	return nil

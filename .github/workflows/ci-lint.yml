@@ -66,9 +66,6 @@ jobs:
             .cache/golangci-lint
           key: ${{ steps.cache-go-tools.outputs.cache-primary-key }}
 
-      - name: Verify nested Avro compatibility shim
-        run: mise run avro-shim-check
-
       - name: Generate protobufs
         run: mise run proto
 

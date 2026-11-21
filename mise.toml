@@ -107,7 +107,6 @@ shell = "bash -euo pipefail -c"
 run = '''
 {{ vars.go }} fmt ./...
 {{ vars.go }} -C terraform/provider fmt ./...
-{{ vars.go }} -C third_party/hamba-avro-shim fmt ./...
 '''
 
 [tasks."format:check"]
@@ -673,32 +672,6 @@ mise run test-integration
 mise run test-e2e
 '''
 
-[tasks."avro-shim-generate"]
-description = "avro shim generate"
-shell = "bash -euo pipefail -c"
-run = '''
-cd third_party/hamba-avro-shim && GOFLAGS="-buildvcs=false" {{ vars.go }} run ./cmd/shimgen
-'''
-
-[tasks."avro-shim-check"]
-description = "avro shim check"
-shell = "bash -euo pipefail -c"
-run = '''
-cd third_party/hamba-avro-shim
-GOFLAGS="-buildvcs=false" {{ vars.go }} test ./...
-GOFLAGS="-buildvcs=false" {{ vars.go }} mod tidy -diff
-GOFLAGS="-buildvcs=false" {{ vars.go }} mod verify
-GOFLAGS="-buildvcs=false" {{ vars.go }} run ./cmd/shimgen -check
-cd ../..
-template="$(printf '%s' '{''{range .Imports}''}{''{println .}''}{''{end}''}{''{range .TestImports}''}{''{println .}''}{''{end}''}{''{range .XTestImports}''}{''{println .}''}{''{end}''}')"
-imports="$(GOFLAGS="-buildvcs=false" {{ vars.go }} list -f "${template}" ./... | sort -u | grep '^github.com/hamba/avro/v2' || true)"
-unexpected="$(printf '%s\n' "${imports}" | grep -Ev '^github.com/hamba/avro/v2(/ocf)?$' || true)"
-if [[ -n "${unexpected}" ]]; then
-  printf 'unsupported hamba Avro subpackage import(s):\n%s\n' "${unexpected}" >&2
-  exit 1
-fi
-'''
-
 [tasks."proto"]
 description = "proto"
 shell = "bash -euo pipefail -c"
@@ -714,7 +687,6 @@ description = "generate"
 shell = "bash -euo pipefail -c"
 run = '''
 mise run proto
-mise run avro-shim-generate
 '''
 
 [tasks."generate-check"]
@@ -722,7 +694,6 @@ description = "generate check"
 shell = "bash -euo pipefail -c"
 run = '''
 mise run generate
-mise run avro-shim-check
 ./scripts/generate-check.sh
 '''
 
@@ -863,7 +834,6 @@ shell = "bash -euo pipefail -c"
 run = '''
 {{ vars.go }} mod tidy
 {{ vars.go }} -C terraform/provider mod tidy
-{{ vars.go }} -C third_party/hamba-avro-shim mod tidy
 '''
 
 [tasks."release-tag-check"]
@@ -1081,7 +1051,7 @@ IT_REQUIRED_TESTS="${required}" IT_RUN_FILTER="^($(printf '%s' "${required}" | t
 
 [tasks.setup]
 description = "Prepare a fresh checkout with locked dependencies and code generators"
-run = ["go mod download", "go -C terraform/provider mod download", "go -C third_party/hamba-avro-shim mod download", "uv sync --frozen", "mise run proto-tools"]
+run = ["go mod download", "go -C terraform/provider mod download", "uv sync --frozen", "mise run proto-tools"]
 
 [tasks.build]
 description = "Build CLI binaries and the Terraform provider into bin/"
@@ -1089,7 +1059,7 @@ run = ["go build -trimpath -o bin/ ./cmd/...", "go -C terraform/provider build -
 
 [tasks."deps:check"]
 description = "Verify checksums and tidy manifests in every Go module and check the Python lock"
-run = ["go mod verify", "go mod tidy -diff", "go -C terraform/provider mod verify", "go -C terraform/provider mod tidy -diff", "go -C third_party/hamba-avro-shim mod verify", "go -C third_party/hamba-avro-shim mod tidy -diff", "uv lock --check"]
+run = ["go mod verify", "go mod tidy -diff", "go -C terraform/provider mod verify", "go -C terraform/provider mod tidy -diff", "uv lock --check"]
 
 [tasks.security]
 description = "Scan both Go applications and the locked Python documentation dependencies"
@@ -1108,7 +1078,7 @@ trap 'rm -f "$requirements"' EXIT
 
 [tasks."ci-check-test"]
 description = "Run non-mutating formatting, lint, complete unit, dependency and security gates"
-run = ["mise run format:check", "mise run lint", "mise run proto-lint", "mise run test", "mise run test-protocol", "mise run avro-shim-check", "mise run deps:check", "mise run security"]
+run = ["mise run format:check", "mise run lint", "mise run proto-lint", "mise run test", "mise run test-protocol", "mise run deps:check", "mise run security"]
 
 [tasks."test-protocol"]
 description = "Production Runner exploration, real-store histories, and mutation-sensitive protocol gates"
