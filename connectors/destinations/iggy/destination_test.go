@@ -108,6 +108,26 @@ func TestInvalidConfigurationFailsBeforeClientConstruction(t *testing.T) {
 	}
 }
 
+func TestPartitionIDUsesFullUint32Range(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  uint32
+	}{
+		{value: "0", want: 0},
+		{value: "2147483648", want: 2147483648},
+		{value: "4294967295", want: 4294967295},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			spec := testSpec()
+			spec.Options["partition_id"] = test.value
+			cfg, err := parseConfig(spec)
+			if err != nil || cfg.partition != test.want {
+				t.Fatalf("partition=%d err=%v, want %d", cfg.partition, err, test.want)
+			}
+		})
+	}
+}
+
 func TestTLSAndAuthenticationConfiguration(t *testing.T) {
 	for _, token := range []bool{false, true} {
 		spec := testSpec()

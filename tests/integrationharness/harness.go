@@ -105,7 +105,7 @@ const (
 	defaultClickHouseReplicaTLSLocalPort = "9441"
 
 	defaultMinioName        = "wallaby-it-minio"
-	defaultMinioImage       = "minio/minio:RELEASE.2025-09-07T16-13-09Z"
+	defaultMinioImage       = minioFixtureImage
 	defaultMinioUser        = "wallaby"
 	defaultMinioSecret      = "wallabysecret"
 	defaultMinioLocalPort   = "9002"
@@ -855,6 +855,9 @@ func (h *integrationHarness) startClickHouse(namespace string) error {
 func (h *integrationHarness) startS3(namespace string) error {
 	if strings.TrimSpace(os.Getenv("WALLABY_TEST_S3_ENDPOINT")) != "" {
 		return nil
+	}
+	if err := h.prepareMinioFixture(); err != nil {
+		return err
 	}
 	manifest, err := minioKindManifest(namespace)
 	if err != nil {
@@ -2560,7 +2563,7 @@ func minioKindManifest(namespace string) (string, error) {
 						{
 							Name:            "minio",
 							Image:           defaultMinioImage,
-							ImagePullPolicy: corev1.PullIfNotPresent,
+							ImagePullPolicy: corev1.PullNever,
 							Env: []corev1.EnvVar{
 								{Name: "MINIO_ROOT_USER", Value: defaultMinioUser},
 								{Name: "MINIO_ROOT_PASSWORD", Value: defaultMinioSecret},

@@ -88,6 +88,16 @@ Iceberg 0.7 partition fields expose a source-ID slice and a two-value iterator.
 The consumer validates every source ID, including later entries, and rejects
 an empty source list rather than accepting it vacuously.
 
+## Public integration fixture
+
+Upstream MinIO image and archived-binary endpoints are no longer usable for
+credential-free CI. The Go harness builds its test-only MinIO image from public
+commit `07c3a429bfed433e49018cb0f78a52145d4bedeb`, with archive SHA-256
+`8819e3e7817e46b7b3798f8f200ead208562e571563c2e040352378031abe9f2`.
+The Dockerfile copies the upstream AGPL license. The builder uses the pinned Go
+version of the test binary and native architecture only; the harness loads that
+image into its selected kind cluster and never requests it from a registry.
+
 ## Remaining independent constraint
 
 Kubernetes 0.37.2 uses structured-merge-diff/v6, so kube-openapi remains at

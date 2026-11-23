@@ -10,7 +10,13 @@ It also provisions these dependency services in kind when their corresponding en
 are not already set:
 
 - ClickHouse (`WALLABY_TEST_CLICKHOUSE_DSN`, `WALLABY_TEST_CLICKHOUSE_DB`, `TEST_CLICKHOUSE_HTTP_PORT`)
-- MinIO/S3 (`WALLABY_TEST_S3_*`)
+- MinIO/S3 (`WALLABY_TEST_S3_*`). The Go harness builds a local fixture from
+  public MinIO commit `07c3a429bfed433e49018cb0f78a52145d4bedeb` (the
+  `RELEASE.2025-09-07T16-13-09Z` source) with a checked archive checksum and
+  the test binary's pinned Go version. It exports only the native ARM64/AMD64
+  image and streams it into the selected kind nodes. It never pulls a private
+  MinIO image or falls back to a cached upstream binary. The fixture includes
+  its AGPL license and is test-only, not a production MinIO distribution.
 - Redpanda/Kafka (`WALLABY_TEST_KAFKA_BROKERS`)
 - LocalStack (`WALLABY_TEST_GLUE_ENDPOINT`, `WALLABY_TEST_GLUE_REGION`)
 - HTTP test service (`WALLABY_TEST_HTTP_URL`)

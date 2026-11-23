@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -127,7 +126,7 @@ func (*Destination) ValidateSpec(spec connector.RuntimeSpec) error {
 
 func parseConfig(spec connector.RuntimeSpec) (destinationConfig, error) {
 	decoder := options.NewDecoder("iggy options", spec.Options)
-	partition := decoder.Int("partition_id", 0)
+	partitionText := decoder.String("partition_id", "0")
 	cfg := destinationConfig{
 		address:       decoder.String("address", ""),
 		username:      decoder.Raw("username", ""),
@@ -163,10 +162,10 @@ func parseConfig(spec connector.RuntimeSpec) (destinationConfig, error) {
 	if cfg.timeout <= 0 || cfg.timeout > 30*time.Second {
 		return destinationConfig{}, errors.New("iggy timeout must be positive and at most 30s (SDK operation limit)")
 	}
-	if partition < 0 || uint64(partition) > math.MaxUint32 {
+	partition, err := strconv.ParseUint(partitionText, 10, 32)
+	if err != nil {
 		return destinationConfig{}, errors.New("iggy partition_id must be in 0..4294967295")
 	}
-	// #nosec G115 -- validated against the full uint32 range above.
 	cfg.partition = uint32(partition)
 	if cfg.maxMessage <= 0 || cfg.maxMessage > iggcon.MaxPayloadSize {
 		return destinationConfig{}, fmt.Errorf("iggy max_message_bytes must be in 1..%d", iggcon.MaxPayloadSize)
