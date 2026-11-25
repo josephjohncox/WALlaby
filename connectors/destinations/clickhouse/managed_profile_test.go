@@ -711,6 +711,144 @@ func TestManagedConfigRejectsUnsafeProtocolOptionsBeforeNetwork(t *testing.T) {
 	}
 }
 
+func managedBoundedOptionBase() map[string]string {
+	return map[string]string{
+		"managed_database": "wallaby", "managed_changelog_table": "cdc_log", "managed_receipts_table": "delivery_receipts",
+		"managed_final_view": "cdc_log_final", "managed_deployment": "self-managed-keeper", "managed_keeper_path_prefix": "/clickhouse/tables/01", "managed_keeper_address": "127.0.0.1:9181", "managed_replica_dsn": "clickhouse://replica-2:9440/default?secure=true", "managed_replica_names": "replica-1,replica-2", "insert_quorum": "2",
+		"batch_mode": "target", "batch_resolution": "none", "meta_table_enabled": "false",
+		"async_insert": "false", "wait_for_async_insert": "true",
+	}
+}
+
+func TestParseManagedIntOptionBoundsAndRejectsOverflowBeforeNarrowing(t *testing.T) {
+	t.Parallel()
+	const name = "managed_test_option"
+	const want = "managed ClickHouse managed_test_option must be between 1 and 100"
+	for _, test := range []struct {
+		name  string
+		raw   string
+		value int
+		ok    bool
+	}{
+		{name: "empty uses fallback", raw: "", value: 7, ok: true},
+		{name: "whitespace uses fallback", raw: "  ", value: 7, ok: true},
+		{name: "minimum", raw: "1", value: 1, ok: true},
+		{name: "maximum", raw: "100", value: 100, ok: true},
+		{name: "trimmed", raw: " 42 ", value: 42, ok: true},
+		{name: "below minimum", raw: "0"},
+		{name: "above maximum", raw: "101"},
+		{name: "negative", raw: "-1"},
+		{name: "negative zero", raw: "-0"},
+		{name: "explicit plus sign", raw: "+5"},
+		{name: "int32 max", raw: "2147483647"},
+		{name: "int32 overflow", raw: "2147483648"},
+		{name: "uint32 max", raw: "4294967295"},
+		{name: "uint32 overflow", raw: "4294967296"},
+		{name: "int64 max", raw: "9223372036854775807"},
+		{name: "uint64 max", raw: "18446744073709551615"},
+		{name: "uint64 overflow", raw: "18446744073709551616"},
+		{name: "not a number", raw: "ten"},
+		{name: "hex", raw: "0x10"},
+		{name: "fraction", raw: "1.5"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseManagedIntOption(map[string]string{name: test.raw}, name, 7, 1, 100)
+			if test.ok {
+				if err != nil || got != test.value {
+					t.Fatalf("parse %q = %d, %v; want %d", test.raw, got, err, test.value)
+				}
+				return
+			}
+			if err == nil || err.Error() != want || got != 0 {
+				t.Fatalf("parse %q = %d, %v; want zero and %q", test.raw, got, err, want)
+			}
+		})
+	}
+}
+
+func TestManagedConfigBoundedIntegerOptionsAdmitBoundariesAndRejectOverflow(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		extra map[string]string
+		check func(managedConfig) bool
+	}{
+		{name: "defaults", check: func(c managedConfig) bool {
+			return c.maxTransactionRows == 100000 && c.maxTransactionBytes == 128<<20 && c.maxFragments == 128 && c.maxRowsPerBatch == 10000 && c.maxBatchBytes == 16<<20
+		}},
+		{name: "maximums", extra: map[string]string{
+			"managed_max_transaction_rows": "100000", "managed_max_transaction_bytes": "134217728", "managed_max_transaction_fragments": "1024",
+			"managed_max_rows_per_batch": "100000", "managed_max_batch_bytes": "134217728",
+		}, check: func(c managedConfig) bool {
+			return c.maxTransactionRows == 100000 && c.maxTransactionBytes == 128<<20 && c.maxFragments == 1024 && c.maxRowsPerBatch == 100000 && c.maxBatchBytes == 128<<20
+		}},
+		{name: "minimums", extra: map[string]string{
+			"managed_max_transaction_rows": "1", "managed_max_transaction_bytes": "1048576", "managed_max_transaction_fragments": "1",
+			"managed_max_rows_per_batch": "1", "managed_max_batch_bytes": "1048576",
+		}, check: func(c managedConfig) bool {
+			return c.maxTransactionRows == 1 && c.maxTransactionBytes == 1<<20 && c.maxFragments == 1 && c.maxRowsPerBatch == 1 && c.maxBatchBytes == 1<<20
+		}},
+		{name: "batch limits follow smaller transaction limits", extra: map[string]string{
+			"managed_max_transaction_rows": "50", "managed_max_transaction_bytes": "2097152",
+			"managed_max_rows_per_batch": "50", "managed_max_batch_bytes": "2097152",
+		}, check: func(c managedConfig) bool {
+			return c.maxTransactionRows == 50 && c.maxRowsPerBatch == 50 && c.maxTransactionBytes == 2<<20 && c.maxBatchBytes == 2<<20
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			options := managedBoundedOptionBase()
+			for key, value := range test.extra {
+				options[key] = value
+			}
+			cfg, err := managedConfigFromSpec(connector.RuntimeSpec{Options: options})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !test.check(cfg) {
+				t.Fatalf("unexpected config: %+v", cfg)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name  string
+		extra map[string]string
+		want  string
+	}{
+		{name: "transaction rows above maximum", extra: map[string]string{"managed_max_transaction_rows": "100001"}, want: "managed_max_transaction_rows must be between 1 and 100000"},
+		{name: "transaction rows zero", extra: map[string]string{"managed_max_transaction_rows": "0"}, want: "managed_max_transaction_rows must be between 1 and 100000"},
+		{name: "transaction rows negative", extra: map[string]string{"managed_max_transaction_rows": "-1"}, want: "managed_max_transaction_rows must be between 1 and 100000"},
+		{name: "transaction rows uint32 overflow", extra: map[string]string{"managed_max_transaction_rows": "4294967297"}, want: "managed_max_transaction_rows must be between 1 and 100000"},
+		{name: "transaction bytes below minimum", extra: map[string]string{"managed_max_transaction_bytes": "1048575"}, want: "managed_max_transaction_bytes must be between 1048576 and 134217728"},
+		{name: "transaction bytes above maximum", extra: map[string]string{"managed_max_transaction_bytes": "134217729"}, want: "managed_max_transaction_bytes must be between 1048576 and 134217728"},
+		{name: "transaction bytes negative", extra: map[string]string{"managed_max_transaction_bytes": "-134217728"}, want: "managed_max_transaction_bytes must be between 1048576 and 134217728"},
+		{name: "transaction bytes int64 overflow", extra: map[string]string{"managed_max_transaction_bytes": "9223372036854775808"}, want: "managed_max_transaction_bytes must be between 1048576 and 134217728"},
+		{name: "fragments above maximum", extra: map[string]string{"managed_max_transaction_fragments": "1025"}, want: "managed_max_transaction_fragments must be between 1 and 1024"},
+		{name: "fragments negative", extra: map[string]string{"managed_max_transaction_fragments": "-1"}, want: "managed_max_transaction_fragments must be between 1 and 1024"},
+		{name: "fragments int32 overflow", extra: map[string]string{"managed_max_transaction_fragments": "2147483648"}, want: "managed_max_transaction_fragments must be between 1 and 1024"},
+		{name: "rows per batch exceeds transaction rows", extra: map[string]string{"managed_max_transaction_rows": "50", "managed_max_rows_per_batch": "51"}, want: "managed_max_rows_per_batch must be between 1 and 50"},
+		{name: "rows per batch negative", extra: map[string]string{"managed_max_rows_per_batch": "-1"}, want: "managed_max_rows_per_batch must be between 1 and 100000"},
+		{name: "rows per batch uint64 overflow", extra: map[string]string{"managed_max_rows_per_batch": "18446744073709551616"}, want: "managed_max_rows_per_batch must be between 1 and 100000"},
+		{name: "batch bytes exceeds transaction bytes", extra: map[string]string{"managed_max_transaction_bytes": "2097152", "managed_max_batch_bytes": "2097153"}, want: "managed_max_batch_bytes must be between 1048576 and 2097152"},
+		{name: "batch bytes below minimum", extra: map[string]string{"managed_max_batch_bytes": "0"}, want: "managed_max_batch_bytes must be between 1048576 and 134217728"},
+		{name: "batch bytes negative", extra: map[string]string{"managed_max_batch_bytes": "-1"}, want: "managed_max_batch_bytes must be between 1048576 and 134217728"},
+		{name: "batch bytes uint32 overflow", extra: map[string]string{"managed_max_batch_bytes": "4294967296"}, want: "managed_max_batch_bytes must be between 1048576 and 134217728"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			options := managedBoundedOptionBase()
+			for key, value := range test.extra {
+				options[key] = value
+			}
+			if _, err := managedConfigFromSpec(connector.RuntimeSpec{Options: options}); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("managedConfigFromSpec error=%v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestManagedPreparedTransactionRequiresPostgresPartReservation(t *testing.T) {
 	prepared := &preparedManagedTransaction{}
 	if _, err := prepared.Apply(context.Background()); err == nil || !strings.Contains(err.Error(), "requires a PostgreSQL part reservation") {

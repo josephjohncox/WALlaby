@@ -41,7 +41,9 @@ updates:
         patterns: ["*"]
 
   - package-ecosystem: docker
-    directory: /
+    directories:
+      - /
+      - /tests/integrationharness/fixtures/minio
     schedule:
       interval: weekly
 

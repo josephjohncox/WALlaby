@@ -1,0 +1,73 @@
+name: Supply chain security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Review dependency changes for known vulnerabilities
+        # actions/dependency-review-action v5.0.1
+        uses: >-
+          actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec
+        with:
+          fail-on-severity: low
+          fail-on-scopes: runtime, development, unknown
+          license-check: false
+          comment-summary-in-pr: never
+          show-openssf-scorecard: false
+
+  root-dependency-submission:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
+      - name: Submit root Go dependency graph
+        # actions/go-dependency-submission v2.0.3
+        uses: >-
+          actions/go-dependency-submission@f35d5c9af13ce9cc32f7930b171e315e878f6921
+        with:
+          go-mod-path: go.mod
+          go-build-target: all
+
+  # Distinct job IDs also give the API distinct snapshot correlators; a matrix
+  # job must not let one module replace the other module's dependency evidence.
+  provider-dependency-submission:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
+      - name: Submit Terraform provider dependency graph
+        # actions/go-dependency-submission v2.0.3
+        uses: >-
+          actions/go-dependency-submission@f35d5c9af13ce9cc32f7930b171e315e878f6921
+        with:
+          go-mod-path: terraform/provider/go.mod
+          go-build-target: all

@@ -39,6 +39,40 @@ The following are not maintained promotion requirements:
 
 Credential-gated checks must remain explicit and fail closed when deliberately invoked, but their absence cannot be used to imply maintained support.
 
+## Security scanning and dependency evidence
+
+GitHub-managed CodeQL default setup analyzes Go, Python and Actions with the
+extended query suite and remote-and-local threat model. The configuration's
+validation run succeeded before this update was reported active. The repository
+settings API remains the live authority, not the presence of this text.
+CodeQL does not verify SQL, Terraform, shell, TLA+ or Lean semantics; their focused
+validators and executable proof/model gates remain separate. Secret scanning and
+push protection are enabled in repository settings.
+
+`Supply chain security` reviews dependency changes on pull requests and rejects
+new known vulnerabilities at low severity or above in runtime, development or
+unknown scope. It uses a read-only token and does not post privileged comments.
+On main pushes or explicit trusted dispatch, separate root/provider jobs submit
+all selected Go dependencies to GitHub's dependency graph. Distinct job identities
+prevent one module's snapshot replacing the other's. Only those trusted submission
+jobs receive contents-write permission. The workflow does not dismiss alerts;
+GitHub must reconcile them with the submitted/default-branch manifests.
+
+## Unit test coverage
+
+`mise run test-coverage` runs the complete root test suite through the existing
+JSON completeness checker, then the Terraform provider suite. Enumeration remains
+uninstrumented; only the actual root execution receives atomic coverage flags.
+The modules produce separate `.cache/coverage/root.out` and
+`terraform-provider.out` profiles and function summaries, resolved in each
+module's own context. CI uploads them as `go-unit-coverage`.
+
+This is per-package unit coverage from each package's tests, with no percentage
+threshold and no repository-wide/live-service coverage claim. Credential-gated
+skips remain visible in completeness accounting. It is distinct from TLA action
+coverage and the separately instrumented durable live-seam profile. Keep ordinary
+tests, protocol mutation gates and required live-service checks intact.
+
 ## Review and merge policy
 
 The `main` ruleset requires a pull request and one approval. A reviewer other than the last pusher must approve the final head. A new push dismisses stale approval. The pull request must resolve all review threads.

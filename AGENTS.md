@@ -35,7 +35,9 @@ for workflows and `mise exec -- <command>` for ad-hoc toolchain commands.
 - `mise run format` / `mise run format:check`: format / check Go code.
 - `mise run lint`: Go lint and provider vet; `mise run proto-lint`: API lint.
 - `mise run test`: complete root unit suite plus provider tests.
-- `mise run generate`: regenerate Protobuf and the Avro shim.
+- `mise run test-coverage`: report-only per-package unit coverage for both Go
+  modules, with the same root test-completeness accounting; not live coverage.
+- `mise run generate`: regenerate Protobuf.
 - `mise run tidy` / `mise run deps:check`: update / verify module manifests.
 - `mise run security`: scan both Go applications and the locked Python docs.
 - `mise run test-protocol`: production-loop exploration, real-store histories
