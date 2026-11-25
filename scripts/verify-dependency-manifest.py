@@ -9,7 +9,7 @@ from pathlib import Path
 REQUIRED = ("go.mod", "terraform/provider/go.mod", "uv.lock")
 
 
-def verify(document: dict, root: Path) -> dict[str, int]:
+def verify(document: dict, root: Path, required: tuple[str, ...] = REQUIRED) -> dict[str, int]:
     graphs = document.get("dependencyGraphs")
     if not isinstance(graphs, dict):
         raise ValueError("detector output lacks dependencyGraphs")
@@ -25,7 +25,7 @@ def verify(document: dict, root: Path) -> dict[str, int]:
             location = path.as_posix()
         normalized[location] = graph
     counts = {}
-    for manifest in REQUIRED:
+    for manifest in required:
         entry = normalized.get(manifest)
         graph = entry.get("graph") if isinstance(entry, dict) else None
         if not isinstance(graph, dict) or not graph:
@@ -38,9 +38,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument("--require", action="append", choices=REQUIRED)
     args = parser.parse_args()
     try:
-        counts = verify(json.loads(args.manifest.read_text()), args.root)
+        counts = verify(json.loads(args.manifest.read_text()), args.root, tuple(args.require or REQUIRED))
     except (OSError, ValueError, TypeError) as error:
         parser.exit(1, f"dependency coverage verification failed: {error}\n")
     print(json.dumps({"verified_manifest_graphs": counts}, sort_keys=True))

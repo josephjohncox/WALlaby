@@ -26,7 +26,7 @@ jobs:
           comment-summary-in-pr: never
           show-openssf-scorecard: false
 
-  dependency-submission:
+  root-dependency-submission:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -40,7 +40,7 @@ jobs:
           persist-credentials: false
       - name: Setup mise
         uses: ./.github/actions/setup-mise
-      - name: Submit both Go modules and the uv lock in one snapshot
+      - name: Submit root Go and uv dependencies
         # Component Detection dependency submission action v0.2.1
         uses: >-
           advanced-security/component-detection-dependency-submission-action@9887d3a4295305f4e7b03a1cfdb2099d44cadf52
@@ -49,16 +49,49 @@ jobs:
           fail-on-empty: true
           detectorArgs: UvLock=EnableIfDefaultOff
           directoryExclusionList: .git,.cache,.zed,**/.lake
-          correlator: wallaby-go-modules-and-uv
+          correlator: wallaby-root-go-and-uv
       # The action deletes its private temporary manifest. Reuse its acquired
-      # executable to retain and verify all three required project graphs.
-      - name: Verify root, provider and uv dependency coverage
-        run: mise run dependency-manifest
+      # executable to retain and verify the expected project graphs.
+      - name: Verify root Go and uv dependency coverage
+        run: mise run dependency-manifest-root
       - name: Retain detector manifest for coverage verification
         if: always()
         # actions/upload-artifact v7.0.2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: dependency-detector-manifest
-          path: .cache/security/dependencies.json
+          name: root-dependency-detector-manifest
+          path: .cache/security/dependencies-root.json
+          if-no-files-found: error
+
+  provider-dependency-submission:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
+      - name: Submit nested provider dependencies explicitly
+        # Component Detection dependency submission action v0.2.1
+        uses: >-
+          advanced-security/component-detection-dependency-submission-action@9887d3a4295305f4e7b03a1cfdb2099d44cadf52
+        with:
+          filePath: terraform/provider
+          fail-on-empty: true
+          correlator: wallaby-terraform-provider
+      - name: Verify provider dependency coverage
+        run: mise run dependency-manifest-provider
+      - name: Retain provider detector manifest
+        if: always()
+        # actions/upload-artifact v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: provider-dependency-detector-manifest
+          path: .cache/security/dependencies-provider.json
           if-no-files-found: error
