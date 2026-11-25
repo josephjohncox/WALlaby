@@ -383,7 +383,7 @@ func DeliveryLogicalBatchID(sourceLineageID, positionID, contentHash string) (st
 SourceTransactionIdentity computes the content hash and logical batch ID in one pass. Callers at each trust seam can validate independently without hashing the same transaction twice at that seam. Process\-local schema counters, observation timestamps, and checkpoint recovery metadata do not participate in the identity of an otherwise identical WAL replay.
 
 <a name="IsBuiltinEndpointType"></a>
-## func [IsBuiltinEndpointType](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L30>)
+## func [IsBuiltinEndpointType](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L31>)
 
 ```go
 func IsBuiltinEndpointType(endpointType EndpointType) bool
@@ -577,7 +577,7 @@ type AckGrant struct {
 ```
 
 <a name="Batch"></a>
-## type [Batch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L137-L143>)
+## type [Batch](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L138-L144>)
 
 Batch is the unit passed between sources and destinations.
 
@@ -646,7 +646,7 @@ type CanonicalArtifactDestination interface {
 ```
 
 <a name="Capabilities"></a>
-## type [Capabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L74-L84>)
+## type [Capabilities](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L75-L85>)
 
 Capabilities describe what a connector can handle.
 
@@ -710,7 +710,7 @@ type CapabilityProfileID string
 ```
 
 <a name="Checkpoint"></a>
-## type [Checkpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L108-L112>)
+## type [Checkpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L109-L113>)
 
 Checkpoint identifies a durable offset for a flow.
 
@@ -723,7 +723,7 @@ type Checkpoint struct {
 ```
 
 <a name="CheckpointOutboxStore"></a>
-## type [CheckpointOutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L212-L215>)
+## type [CheckpointOutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L213-L216>)
 
 CheckpointOutboxStore is the atomic durability seam required by primary acknowledgement. A single adapter must own both checkpoint and outbox state.
 
@@ -735,7 +735,7 @@ type CheckpointOutboxStore interface {
 ```
 
 <a name="CheckpointStore"></a>
-## type [CheckpointStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L176-L180>)
+## type [CheckpointStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L177-L181>)
 
 CheckpointStore persists checkpoints for recovery. Get returns ErrCheckpointNotFound when a flow has no durable position yet.
 
@@ -854,7 +854,7 @@ func (i CleanupResourceIdentity) Validate() error
 
 
 <a name="Column"></a>
-## type [Column](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L97-L105>)
+## type [Column](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L98-L106>)
 
 Column defines a schema field.
 
@@ -1093,7 +1093,7 @@ type DeliverySemantics struct {
 ```
 
 <a name="Destination"></a>
-## type [Destination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L165-L172>)
+## type [Destination](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L166-L173>)
 
 Destination writes to a downstream system.
 
@@ -1134,6 +1134,7 @@ const (
     EndpointSnowflake EndpointType = "snowflake"
     EndpointS3        EndpointType = "s3"
     EndpointKafka     EndpointType = "kafka"
+    EndpointIggy      EndpointType = "iggy"
     EndpointHTTP      EndpointType = "http"
     EndpointGRPC      EndpointType = "grpc"
     EndpointPGStream  EndpointType = "pgstream"
@@ -1149,7 +1150,7 @@ const (
 ```
 
 <a name="FlowCheckpoint"></a>
-## type [FlowCheckpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L115-L118>)
+## type [FlowCheckpoint](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L116-L119>)
 
 FlowCheckpoint ties a checkpoint to a flow ID.
 
@@ -1583,7 +1584,7 @@ type ManagedTransactionPreparer interface {
 ```
 
 <a name="Operation"></a>
-## type [Operation](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L53>)
+## type [Operation](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L54>)
 
 Operation indicates the change type for a record.
 
@@ -1604,7 +1605,7 @@ const (
 ```
 
 <a name="OutboxEntry"></a>
-## type [OutboxEntry](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L190-L199>)
+## type [OutboxEntry](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L191-L200>)
 
 OutboxEntry is one durable secondary\-destination delivery. PositionID is derived with CheckpointPositionID; PostgreSQL positionless transaction fragments use a deterministic /fragment/ ordinal suffix under their final commit checkpoint identity. BatchHash is populated by stores when listing entries and identifies the exact, type\-preserving batch contents. Every destination used with primary acknowledgement must implement idempotent writes because a crash after Write and before durable persistence or deletion can replay a batch.
 
@@ -1622,7 +1623,7 @@ type OutboxEntry struct {
 ```
 
 <a name="OutboxStore"></a>
-## type [OutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L204-L208>)
+## type [OutboxStore](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L205-L209>)
 
 OutboxStore atomically advances a flow checkpoint and records secondary deliveries. Implementations must make insertion idempotent for an identical \(flow, destination, position\) and reject conflicting batch content.
 
@@ -1646,7 +1647,7 @@ type PreparedManagedTransaction interface {
 ```
 
 <a name="Record"></a>
-## type [Record](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L121-L134>)
+## type [Record](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L122-L135>)
 
 Record represents a single change or DDL event.
 
@@ -1742,7 +1743,7 @@ func (r *Registry) RegisterSource(endpointType string, factory SourceFactory) er
 RegisterSource registers a custom source constructor.
 
 <a name="ReplicationLagProvider"></a>
-## type [ReplicationLagProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L155-L157>)
+## type [ReplicationLagProvider](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L156-L158>)
 
 ReplicationLagProvider exposes replication lag metrics for sources that can report it.
 
@@ -1807,7 +1808,7 @@ type RunFenceBinder interface {
 ```
 
 <a name="RuntimeSpec"></a>
-## type [RuntimeSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L67-L71>)
+## type [RuntimeSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L68-L72>)
 
 RuntimeSpec is the internal runtime\-adapter/plugin representation. It is never a public authoring or persistence shape; public and durable flow definitions use typed wallaby.v1.Endpoint messages and cross the boundary through internal/endpointcodec.
 
@@ -1820,7 +1821,7 @@ type RuntimeSpec struct {
 ```
 
 <a name="Schema"></a>
-## type [Schema](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L87-L94>)
+## type [Schema](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L88-L95>)
 
 Schema describes a table\-level schema snapshot.
 
@@ -1854,7 +1855,7 @@ func SourceTransactionSchemas(transaction SourceTransaction) []Schema
 SourceTransactionSchemas extracts exact source relation schemas before any destination projection filters or renames them.
 
 <a name="SlotDropper"></a>
-## type [SlotDropper](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L160-L162>)
+## type [SlotDropper](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L161-L163>)
 
 SlotDropper is implemented by sources that can drop replication slots.
 
@@ -2011,7 +2012,7 @@ func (p SnowflakeStreamingRESTPolicy) SnowflakeRESTIdentity() (account, user, ho
 SnowflakeRESTIdentity returns the nonsecret identity bound to this opaque Streaming capability. It never exposes the deployment key.
 
 <a name="Source"></a>
-## type [Source](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L146-L152>)
+## type [Source](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L147-L153>)
 
 Source reads from an upstream system.
 
@@ -2152,7 +2153,7 @@ type TransactionalSource interface {
 ```
 
 <a name="WireFormat"></a>
-## type [WireFormat](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L42>)
+## type [WireFormat](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/connector/connector.go#L43>)
 
 WireFormat describes the wire encoding used between connectors.
 

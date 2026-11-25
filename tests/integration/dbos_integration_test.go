@@ -1,20 +1,19 @@
 package integration_test
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
+
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dbos-inc/dbos-transact-golang/dbos"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -316,7 +315,7 @@ func TestDBOSIntegrationStreaming(t *testing.T) {
 	})
 }
 
-func TestDBOSIntegrationRetries(t *testing.T) {
+func TestDBOSIntegrationTerminalErrorDoesNotRetry(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("WALLABY_TEST_DBOS_DSN"))
 	if dsn == "" {
 		dsn = strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
@@ -336,6 +335,9 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 
 	suffix := time.Now().UnixNano()
 	flowID := fmt.Sprintf("flow-retry-%d", suffix)
+	queueName := fmt.Sprintf("wallaby-terminal-error-%d", suffix)
+	restoreEnv(t, "DBOS__APPVERSION", queueName)
+	restoreEnv(t, "DBOS__VMID", queueName)
 
 	engine, err := workflow.NewPostgresEngine(ctx, dsn)
 	if err != nil {
@@ -380,7 +382,7 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 	orch, err := orchestrator.NewDBOSOrchestrator(ctx, orchestrator.Config{
 		AppName:       "wallaby-test",
 		DatabaseURL:   dsn,
-		Queue:         "wallaby",
+		Queue:         queueName,
 		MaxEmptyReads: 1,
 		MaxRetries:    1,
 		MaxRetriesSet: true,
@@ -399,36 +401,48 @@ func TestDBOSIntegrationRetries(t *testing.T) {
 		t.Fatalf("enqueue flow: %v", err)
 	}
 
-	startedAt := time.Now().Add(-1 * time.Second).UnixMilli()
-
-	waitFor(t, 30*time.Second, 500*time.Millisecond, func() (bool, error) {
+	// DBOS owns the persisted error envelope; read it through the SDK rather
+	// than searching serialized error bytes. The execution-attempt counter is
+	// one for this first run; an ordinary returned error must not rerun.
+	var workflowID string
+	waitFor(t, 30*time.Second, 100*time.Millisecond, func() (bool, error) {
 		var status string
 		var attempts int64
-		var errMsg sql.NullString
-		err := pool.QueryRow(ctx, `SELECT status, recovery_attempts, error
-FROM dbos.workflow_status
-WHERE created_at >= $1 AND error ILIKE '%postgres dsn is required%'
-ORDER BY created_at DESC
-LIMIT 1`, startedAt).Scan(&status, &attempts, &errMsg)
+		err := pool.QueryRow(ctx, `SELECT workflow_uuid, status, recovery_attempts
+FROM dbos.workflow_status WHERE queue_name = $1`, queueName).Scan(&workflowID, &status, &attempts)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return false, nil
-			}
 			return false, err
 		}
-		if status == "ERROR" || status == "MAX_RECOVERY_ATTEMPTS_EXCEEDED" {
-			if attempts >= 1 {
-				if errMsg.Valid && !strings.Contains(errMsg.String, "postgres dsn is required") {
-					t.Fatalf("unexpected error: %s", errMsg.String)
-				}
-				return true, nil
-			}
+		if status == "MAX_RECOVERY_ATTEMPTS_EXCEEDED" || attempts > 1 {
+			t.Fatalf("ordinary returned error was retried: status=%s attempts=%d", status, attempts)
 		}
-		return false, nil
+		if status == "ERROR" && attempts != 1 {
+			t.Fatalf("terminal workflow attempts=%d, want exactly one", attempts)
+		}
+		return status == "ERROR", nil
 	})
+	var executions int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM dbos.workflow_status WHERE queue_name = $1", queueName).Scan(&executions); err != nil || executions != 1 {
+		t.Fatalf("terminal source error executions=%d err=%v, want exactly one", executions, err)
+	}
+	client, err := dbos.NewClient(ctx, dbos.ClientConfig{AppName: "wallaby-test", DatabaseURL: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Shutdown(client, 5*time.Second) }()
+	handle, err := dbos.RetrieveWorkflow[string](client, workflowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handle.GetResult(dbos.WithHandleTimeout(5 * time.Second)); err == nil || !strings.Contains(err.Error(), "postgres dsn is required") {
+		t.Fatalf("unexpected persisted terminal error: %v", err)
+	}
 }
 
-func TestDBOSIntegrationAdminRecovery(t *testing.T) {
+func TestDBOSIntegrationLaunchRecovery(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("WALLABY_TEST_DBOS_DSN"))
 	if dsn == "" {
 		dsn = strings.TrimSpace(os.Getenv("TEST_PG_DSN"))
@@ -450,7 +464,8 @@ func TestDBOSIntegrationAdminRecovery(t *testing.T) {
 	appVersion := fmt.Sprintf("wallaby-recovery-%d", suffix)
 	restoreEnv(t, "DBOS__APPVERSION", appVersion)
 
-	adminPort := freePort(t)
+	executorID := fmt.Sprintf("wallaby-recovery-%d", suffix)
+	restoreEnv(t, "DBOS__VMID", executorID)
 
 	schema := fmt.Sprintf("dbos_recovery_%d", suffix)
 	table := "events"
@@ -529,86 +544,54 @@ func TestDBOSIntegrationAdminRecovery(t *testing.T) {
 
 	checkpointStore := newDBOSCheckpointStore(t, ctx, dsn)
 	defer checkpointStore.Close()
-	orch, err := orchestrator.NewDBOSOrchestrator(ctx, orchestrator.Config{
-		AppName:       "wallaby-test",
-		DatabaseURL:   dsn,
-		MaxEmptyReads: 1,
-		DefaultWire:   connector.WireFormatJSON,
-		AdminServer:   true,
-		AdminPort:     adminPort,
-	}, engine, checkpointStore, runner.Factory{})
-	if err != nil {
-		t.Fatalf("create dbos orchestrator: %v", err)
+	queueName := fmt.Sprintf("wallaby-recovery-%d", suffix)
+	cfg := orchestrator.Config{
+		AppName: "wallaby-test", DatabaseURL: dsn, Queue: queueName,
+		MaxEmptyReads: 1, DefaultWire: connector.WireFormatJSON,
 	}
-	defer orch.Shutdown(5 * time.Second)
+	// Initialize the system schema and registered queue, then stop the executor.
+	// DBOS 1.9 removed its embedded HTTP admin server; recovery is a Launch
+	// responsibility, not an emulated compatibility endpoint.
+	orch, err := orchestrator.NewDBOSOrchestrator(ctx, cfg, engine, checkpointStore, runner.Factory{})
+	if err != nil {
+		t.Fatalf("initialize dbos orchestrator: %v", err)
+	}
+	orch.Shutdown(5 * time.Second)
 
-	adminURL := fmt.Sprintf("http://127.0.0.1:%d/dbos-healthz", adminPort)
-	waitFor(t, 10*time.Second, 200*time.Millisecond, func() (bool, error) {
-		resp, err := http.Get(adminURL)
-		if err != nil {
-			return false, nil
-		}
-		_ = resp.Body.Close()
-		return resp.StatusCode == http.StatusOK, nil
-	})
-
+	dbosClient, err := dbos.NewClient(ctx, dbos.ClientConfig{AppName: cfg.AppName, DatabaseURL: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dbosClient.Shutdown(dbosClient, 5*time.Second) }()
+	control, err := engine.Control(ctx, flowID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	workflowID := uuid.NewString()
-	workflowName := orchestrator.FlowWorkflowName()
-	inputPayload, err := json.Marshal(orchestrator.FlowRunInput{
-		FlowID:        flowID,
-		MaxEmptyReads: 1,
-	})
+	// Let the SDK author its own input envelope and workflow row. Only the
+	// interrupted-execution state is injected, as if this executor had crashed.
+	handle, err := dbos.Enqueue[string](dbosClient, queueName, orchestrator.FlowWorkflowName(), orchestrator.FlowRunInput{
+		FlowID: flowID, Generation: control.Generation, MaxEmptyReads: 1,
+	}, dbos.WithEnqueueWorkflowID(workflowID), dbos.WithEnqueueApplicationVersion(appVersion))
 	if err != nil {
-		t.Fatalf("marshal flow input: %v", err)
+		t.Fatalf("persist recoverable workflow: %v", err)
 	}
-	createdAt := time.Now().UnixMilli()
-	_, err = pool.Exec(ctx, `INSERT INTO dbos.workflow_status (workflow_uuid, status, name, executor_id, application_version, application_id, created_at, updated_at, inputs, authenticated_user, assumed_role)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10)`,
-		workflowID,
-		"PENDING",
-		workflowName,
-		"local",
-		appVersion,
-		"",
-		createdAt,
-		string(inputPayload),
-		"",
-		"",
-	)
+	if _, err := pool.Exec(ctx, "UPDATE dbos.workflow_status SET status = 'PENDING', recovery_attempts = 1, executor_id = $1 WHERE workflow_uuid = $2", executorID, workflowID); err != nil {
+		t.Fatalf("inject interrupted executor state: %v", err)
+	}
+	restarted, err := orchestrator.NewDBOSOrchestrator(ctx, cfg, engine, checkpointStore, runner.Factory{})
 	if err != nil {
-		t.Fatalf("insert pending workflow: %v", err)
+		t.Fatalf("restart and recover dbos executor: %v", err)
 	}
-
-	recoveryURL := fmt.Sprintf("http://127.0.0.1:%d/dbos-workflow-recovery", adminPort)
-	body, _ := json.Marshal([]string{"local"})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, recoveryURL, bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("build recovery request: %v", err)
+	defer restarted.Shutdown(5 * time.Second)
+	if _, err := handle.GetResult(); err != nil {
+		t.Fatalf("recovered workflow did not complete: %v", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("call recovery endpoint: %v", err)
+	var recoveries int64
+	if err := pool.QueryRow(ctx, "SELECT recovery_attempts FROM dbos.workflow_status WHERE workflow_uuid = $1", workflowID).Scan(&recoveries); err != nil || recoveries != 2 {
+		t.Fatalf("interrupted workflow attempts=%d err=%v, want initial plus one recovery", recoveries, err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		t.Fatalf("recovery endpoint status %d", resp.StatusCode)
-	}
-	var recovered []string
-	if err := json.NewDecoder(resp.Body).Decode(&recovered); err != nil {
-		t.Fatalf("decode recovery response: %v", err)
-	}
-	if !containsString(recovered, workflowID) {
-		t.Fatalf("expected workflow %s in recovery response, got %v", workflowID, recovered)
-	}
-
-	waitFor(t, 30*time.Second, 500*time.Millisecond, func() (bool, error) {
-		var status string
-		if err := pool.QueryRow(ctx, "SELECT status FROM dbos.workflow_status WHERE workflow_uuid = $1", workflowID).Scan(&status); err != nil {
-			return false, err
-		}
-		return status != "PENDING", nil
-	})
+	waitForStreamEvents(t, ctx, pool, flowID, streamName, "", 1)
 }
 
 func waitForStreamEvents(t *testing.T, ctx context.Context, pool *pgxpool.Pool, flowID, streamName, inputPayload string, want int) {
@@ -660,20 +643,6 @@ LIMIT 1`, inputPayload).Scan(&status, &errMsg)
 	}
 }
 
-func freePort(t *testing.T) int {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for port: %v", err)
-	}
-	defer listener.Close()
-	addr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("unexpected addr type: %T", listener.Addr())
-	}
-	return addr.Port
-}
-
 func restoreEnv(t *testing.T, key, value string) {
 	t.Helper()
 	previous, ok := os.LookupEnv(key)
@@ -687,15 +656,6 @@ func restoreEnv(t *testing.T, key, value string) {
 			_ = os.Unsetenv(key)
 		}
 	})
-}
-
-func containsString(items []string, needle string) bool {
-	for _, item := range items {
-		if item == needle {
-			return true
-		}
-	}
-	return false
 }
 
 func newDBOSCheckpointStore(t *testing.T, ctx context.Context, dsn string) *checkpoint.PostgresStore {

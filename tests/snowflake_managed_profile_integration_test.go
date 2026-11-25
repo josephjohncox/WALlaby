@@ -25,7 +25,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 )
 
 func TestSnowflakeManagedProfileRejectsFakesnowCredentialTransport(t *testing.T) {

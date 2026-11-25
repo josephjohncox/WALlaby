@@ -35,6 +35,9 @@ func TestFactoryConstructionConsumesAuthoritativeDestinationRegistry(t *testing.
 			continue
 		}
 		spec := connector.RuntimeSpec{Type: registration.Type}
+		if registration.Type == connector.EndpointIggy {
+			spec.Options = map[string]string{"address": "localhost:8090", "stream": "cdc", "topic": "events", "token": "example-token"}
+		}
 		if connector.IsSnowflakeEndpoint(registration.Type) {
 			spec.Options = map[string]string{"dsn": "user:@account/db/schema?authenticator=snowflake_jwt&ocspFailOpen=false"}
 		}

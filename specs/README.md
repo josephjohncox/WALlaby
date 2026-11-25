@@ -24,13 +24,13 @@ What it models:
 Run TLC (from the TLA+ tools) for all specs:
 
 ```
-just tla
+mise run tla
 ```
 
 To run only this module:
 
 ```
-TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlow.cfg just tla-single
+TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlow.cfg mise run tla-single
 ```
 
 The default config lives at `specs/CDCFlow.cfg` and intentionally uses a small
@@ -40,20 +40,20 @@ exploration rather than making the default model check unbounded.
 For a liveness/fairness check, use:
 
 ```
-TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowLiveness.cfg just tla-single
+TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowLiveness.cfg mise run tla-single
 ```
 
 For a DDL witness run (ensures approval/applied are reachable under fairness):
 
 ```
-TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowWitness.cfg just tla-single
+TLA_MODULE=specs/CDCFlow.tla TLA_CONFIG=specs/CDCFlowWitness.cfg mise run tla-single
 ```
 
 To produce coverage reports:
 
 ```
-just tla-coverage
-just tla-coverage-check
+mise run tla-coverage
+mise run tla-coverage-check
 ```
 
 `tla-coverage-check` respects `TLA_COVERAGE_MIN` and writes a JSON report to
@@ -75,7 +75,7 @@ What it models:
 Run TLC:
 
 ```
-TLA_MODULE=specs/FlowStateMachine.tla TLA_CONFIG=specs/FlowStateMachine.cfg just tla-single
+TLA_MODULE=specs/FlowStateMachine.tla TLA_CONFIG=specs/FlowStateMachine.cfg mise run tla-single
 ```
 
 ## Lifecycle Generation Spec (TLA+)
@@ -92,7 +92,7 @@ What it models:
 Run TLC:
 
 ```
-TLA_MODULE=specs/LifecycleGeneration.tla TLA_CONFIG=specs/LifecycleGeneration.cfg just tla-single
+TLA_MODULE=specs/LifecycleGeneration.tla TLA_CONFIG=specs/LifecycleGeneration.cfg mise run tla-single
 ```
 
 ## Fan-out Spec (TLA+)
@@ -108,7 +108,7 @@ What it models:
 Run TLC:
 
 ```
-TLA_MODULE=specs/CDCFlowFanout.tla TLA_CONFIG=specs/CDCFlowFanout.cfg just tla-single
+TLA_MODULE=specs/CDCFlowFanout.tla TLA_CONFIG=specs/CDCFlowFanout.cfg mise run tla-single
 ```
 
 ## Snapshot Transition Spec (TLA+)
@@ -125,7 +125,7 @@ What it models:
 Run TLC:
 
 ```
-TLA_MODULE=specs/SnapshotTransition.tla TLA_CONFIG=specs/SnapshotTransition.cfg just tla-single
+TLA_MODULE=specs/SnapshotTransition.tla TLA_CONFIG=specs/SnapshotTransition.cfg mise run tla-single
 ```
 
 ## DDL Execution Receipt Spec (TLA+)
@@ -144,7 +144,7 @@ What it models:
 Run TLC:
 
 ```
-TLA_MODULE=specs/DDLExecution.tla TLA_CONFIG=specs/DDLExecution.cfg just tla-single
+TLA_MODULE=specs/DDLExecution.tla TLA_CONFIG=specs/DDLExecution.cfg mise run tla-single
 ```
 
 ## Managed Durability Spec (TLA+)
@@ -161,12 +161,12 @@ What it models:
 - orphan collection that cannot delete an active abstract PostgreSQL root; and
 - abstract root release only after source ACK, one modeled delivery-completion bit, and a newer checkpoint.
 
-This model does **not** represent elapsed time or retention eligibility, delivery-row cardinality, multi-object publications, partial object release, exact S3 versions, or the worker startup recovery path. `AuthorizeInitialCut` models only checkpoint/ACK authorization for an object-free cut. `ManagedDurability` is checked by `just check-tla`; its nonzero action coverage is enforced by `just tla-coverage-check` (it is generated into `specs/coverage/ManagedDurability.txt` by `just tla-coverage`); its manifest (`specs/coverage.managed_durability.json`) is registered in `pkg/spec` and validated for Next-block/cfg drift by `just spec-sync`. It is not part of the CDCFlow trace coverage manifests; instead its safety invariants are mirrored as executable runtime checks by the deterministic process-failure matrix in `internal/failmatrix` (see [Process-failure matrix and soak](../docs/development/failure-matrix.md)).
+This model does **not** represent elapsed time or retention eligibility, delivery-row cardinality, multi-object publications, partial object release, exact S3 versions, or the worker startup recovery path. `AuthorizeInitialCut` models only checkpoint/ACK authorization for an object-free cut. `ManagedDurability` is checked by `mise run check-tla`; its nonzero action coverage is enforced by `mise run tla-coverage-check` (it is generated into `specs/coverage/ManagedDurability.txt` by `mise run tla-coverage`); its manifest (`specs/coverage.managed_durability.json`) is registered in `pkg/spec` and validated for Next-block/cfg drift by `mise run spec-sync`. It is not part of the CDCFlow trace coverage manifests; instead its safety invariants are mirrored as executable runtime checks by the deterministic process-failure matrix in `internal/failmatrix` (see [Process-failure matrix and soak](../docs/development/failure-matrix.md)).
 
 Run TLC:
 
 ```
-TLA_MODULE=specs/ManagedDurability.tla TLA_CONFIG=specs/ManagedDurability.cfg just tla-single
+TLA_MODULE=specs/ManagedDurability.tla TLA_CONFIG=specs/ManagedDurability.cfg mise run tla-single
 ```
 
 ## Managed PostgreSQL Delivery Spec (TLA+)
@@ -184,7 +184,7 @@ What it models:
 Run TLC:
 
 ```
-TLA_MODULE=specs/ManagedPostgresDelivery.tla TLA_CONFIG=specs/ManagedPostgresDelivery.cfg just tla-single
+TLA_MODULE=specs/ManagedPostgresDelivery.tla TLA_CONFIG=specs/ManagedPostgresDelivery.cfg mise run tla-single
 ```
 
 ## Trace Validation
@@ -213,29 +213,35 @@ unreachable items for the trace suite:
 Regenerate them with:
 
 ```
-just spec-manifest
+mise run spec-manifest
 ```
 
 To ensure the manifests stay in sync with the TLA+ `Next` blocks and config
 invariants, run:
 
 ```
-just spec-sync
+mise run spec-sync
 ```
 
-`spec-sync` validates CDCFlow, FlowStateMachine, CDCFlowFanout, DDLExecution, and
-both managed models (ManagedDurability, ManagedPostgresDelivery). LifecycleGeneration
-and SnapshotTransition use a distinct action-naming layer in their manifests and are
-reconciled separately, so they are not synced by this tool yet.
+`spec-sync` validates every registered model, including LifecycleGeneration and
+SnapshotTransition. Unit tests check all eight and reject action/invariant drift.
+`spec-verify` generates only into a temporary directory and rejects drift without
+rewriting any checked manifest, including CDCFlow.
 
-Known formal follow-up: `DDLExecution.tla` defines `IndeterminateFailsClosed` as an
-action predicate (it references `UNCHANGED vars`), so it cannot be checked as a TLC
-state invariant and is intentionally absent from `DDLExecution.cfg`. The managed
-models cover the indeterminate-fail-closed behavior through `ReconcileIndeterminate`
-plus bounded retries, and it is mirrored as an executable check
-(`adopted_indeterminate_effect`) in `internal/failmatrix`.
+`DDLExecution` now models sound Applied/Absent observations separately from
+external truth and permits Indeterminate regardless of that truth. Fresh attempts
+grant one execution permission; process death loses it. The state invariant
+`IndeterminateFailsClosed` forbids execution/receipt permission after an unknown
+observation and tracks unsafe execution. `mise run test-tla-mutations` requires
+three real safety counterexamples, not parser errors or timeouts, and nonzero
+indeterminate coverage. This is abstract-model evidence, not Go refinement.
 
-Static analysis (`just spec-lint`) enforces that `SpecAction` values in code are
+`mise run test-protocol` adds production Runner schedule exploration, eight Go
+overlay mutants and Porcupine histories from the real SQLite checkpoint/outbox
+store. See [protocol verification](../docs/development/protocol-verification.md)
+for exact bounds, assumptions and remaining managed-model/trace gaps.
+
+Static analysis (`mise run spec-lint`) enforces that `SpecAction` values in code are
 constants from the manifest.
 
 To emit traces from a worker run, set `WALLABY_TRACE_PATH` (supports `{flow_id}`

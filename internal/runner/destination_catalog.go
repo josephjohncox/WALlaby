@@ -10,6 +10,7 @@ import (
 	grpcdest "github.com/josephjohncox/wallaby/connectors/destinations/grpc"
 	httpdest "github.com/josephjohncox/wallaby/connectors/destinations/http"
 	icebergdest "github.com/josephjohncox/wallaby/connectors/destinations/iceberg"
+	"github.com/josephjohncox/wallaby/connectors/destinations/iggy"
 	"github.com/josephjohncox/wallaby/connectors/destinations/kafka"
 	"github.com/josephjohncox/wallaby/connectors/destinations/pgstream"
 	pgdest "github.com/josephjohncox/wallaby/connectors/destinations/postgres"
@@ -143,6 +144,7 @@ var destinationRegistry = []DestinationRegistration{
 			SupportedWireFormats: []connector.WireFormat{connector.WireFormatArrow, connector.WireFormatAvro, connector.WireFormatProto, connector.WireFormatJSON},
 		}},
 	}},
+	{Type: connector.EndpointIggy, New: func() connector.Destination { return &iggy.Destination{} }},
 	{Type: connector.EndpointS3, New: func() connector.Destination { return &s3.Destination{} }},
 	{Type: connector.EndpointHTTP, New: func() connector.Destination { return &httpdest.Destination{} }},
 	{Type: connector.EndpointGRPC, New: func() connector.Destination { return &grpcdest.Destination{} }},

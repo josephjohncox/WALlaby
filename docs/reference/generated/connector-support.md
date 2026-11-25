@@ -19,6 +19,7 @@
 | `pgstream` | experimental | yes | yes | no | no | no | no | no | no | no | no |
 | `kafka` | experimental | yes | yes | no | no | no | no | no | no | no | no |
 | `redpanda` | experimental | yes | yes | no | no | no | no | no | no | no | no |
+| `iggy` | experimental | yes | yes | no | no | no | no | no | no | no | no |
 | `s3` | experimental | yes | yes | no | no | no | no | no | no | no | no |
 | `http` | experimental | yes | yes | no | no | no | no | no | no | no | no |
 | `grpc` | experimental | yes | yes | no | no | no | no | no | no | no | no |

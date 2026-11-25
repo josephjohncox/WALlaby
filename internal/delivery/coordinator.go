@@ -16,6 +16,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/bootstrap"
 	"github.com/josephjohncox/wallaby/internal/checkpoint"
 	"github.com/josephjohncox/wallaby/internal/partauthority"
+	"github.com/josephjohncox/wallaby/internal/reconcilepolicy"
 	"github.com/josephjohncox/wallaby/internal/schemabaseline"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
 	"github.com/josephjohncox/wallaby/pkg/connector"
@@ -478,8 +479,20 @@ func (c *Coordinator) reconcileUnfinished(ctx context.Context, fence authority.R
 		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, err
 	}
 	disposition, evidence, reconcileErr := driver.Reconcile(ctx, intent)
-	if reconcileErr == nil && disposition != connector.DeliveryIndeterminate {
-		return disposition, evidence, nil
+	switch reconcilepolicy.Decide(uint64(disposition), reconcileErr != nil) {
+	case reconcilepolicy.Retry:
+		return connector.DeliveryNotApplied, evidence, nil
+	case reconcilepolicy.Adopt:
+		return connector.DeliveryApplied, evidence, nil
+	case reconcilepolicy.Reject:
+		// A malformed result is not evidence of absence and must not reach
+		// DeliverTransaction's new-attempt path.
+		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, fmt.Errorf("invalid managed reconciliation disposition %d", disposition)
+	case reconcilepolicy.Wait:
+		// Unknown/error-bearing observations retain the durable attempt and
+		// consume the existing reconciliation retry budget below.
+	default:
+		return connector.DeliveryIndeterminate, connector.DeliveryEvidence{}, errors.New("invalid reconciliation policy action")
 	}
 	detail := "target reconciliation remained indeterminate"
 	if reconcileErr != nil {

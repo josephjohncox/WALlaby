@@ -20,7 +20,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 )
 
 func TestManagedAdmissionUsesResolvedDeploymentDDLPolicy(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 )
 
 func TestSnowflakeStreamingRequestJournalCommercialRoundTrip(t *testing.T) {

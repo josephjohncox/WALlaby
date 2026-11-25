@@ -7,6 +7,9 @@ docs_dir: docs
 site_dir: site
 use_directory_urls: true
 strict: true
+exclude_docs: |
+  AGENTS.md
+  **/AGENTS.md
 
 theme:
   name: material
@@ -72,6 +75,7 @@ nav:
       - PostgreSQL managed profile: connectors/postgres-managed-profile.md
       - Iceberg: connectors/iceberg.md
       - ClickHouse: connectors/clickhouse.md
+      - Apache Iggy: connectors/iggy.md
       - Snowflake: connectors/snowflake.md
       - Snowpipe: connectors/snowpipe.md
       - Extended connector notes: connectors.md
@@ -93,5 +97,8 @@ nav:
       - Table mappings: implementation/table-mappings.md
       - Process-failure matrix and soak: development/failure-matrix.md
       - CI check governance: development/ci-governance.md
+      - Dependency maintenance: development/dependencies.md
+      - Protocol verification: development/protocol-verification.md
+      - Live delivery harnesses: development/live-delivery.md
       - Formal verification: specs.md
       - Benchmarks: benchmarks.md

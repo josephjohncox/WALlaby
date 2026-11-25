@@ -14,7 +14,8 @@ Read [PostgreSQL connectors](postgres.md) before using any of those three roles.
 | --- | --- | --- |
 | Replicate ordinary tables | `postgres` | Compatible target schema and stable keys |
 | Pull and acknowledge messages | `pgstream` | Consumer group, visibility timeout, and acknowledgement handling |
-| Publish ordered records | `kafka` or `redpanda` | Partition key, registry, and idempotent producer settings |
+| Publish ordered records via Kafka | `kafka` or `redpanda` | Partition key, registry, and idempotent producer settings |
+| Publish through native Iggy | [`iggy`](iggy.md) | SDK/server protocol version, explicit partition, topic durability and duplicate handling |
 | Write objects | `s3` or `parquet` | Object naming, partitioning, and replay behavior |
 | Call an application endpoint | `http` or `grpc` | Idempotency key and retry behavior |
 | Load an analytical store | [`snowflake`](snowflake.md), `snowpipe`, [`clickhouse`](clickhouse.md), `duckdb`, or `ducklake` | Type mapping, DDL behavior, and mutation support |
@@ -45,6 +46,6 @@ Stable destination names are required for primary acknowledgement because pendin
 
 ## Extended adapter notes
 
-The [Snowpipe guide](snowpipe.md) documents its append-only staged-delivery and failure contract. [Extended connector notes](../connectors.md) cover Kafka, Snowflake, DuckLake, HTTP, and S3. Those notes supplement, rather than replace, adapter tests and the generated Go contracts.
+The [Snowpipe guide](snowpipe.md) documents its append-only staged-delivery and failure contract. The [Iggy guide](iggy.md) documents the native TCP adapter. [Extended connector notes](../connectors.md) cover Kafka, Snowflake, DuckLake, HTTP, and S3. Those notes supplement, rather than replace, adapter tests and the generated Go contracts.
 
 New connector and wire-format work is intentionally secondary to contract coverage for existing adapters.

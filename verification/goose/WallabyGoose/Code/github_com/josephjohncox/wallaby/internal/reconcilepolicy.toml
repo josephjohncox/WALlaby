@@ -1,0 +1,4 @@
+# Whole production package. No trusted models, no axiomatized bodies, no admitted proofgen.
+translate = ["*"]
+imports = ["*"]
+trust_proofgen = false

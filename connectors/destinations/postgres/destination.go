@@ -916,7 +916,8 @@ type watermarkStateIdentity struct {
 }
 
 func advanceWatermarkState(ctx context.Context, tx pgx.Tx, identity watermarkStateIdentity, watermarkType, incoming, sourcePosition, contentHash string, deleted bool) (bool, error) {
-	args := []any{identity.flowID, identity.targetSchema, identity.targetTable, identity.projectionFingerprint, identity.keyColumns, identity.keyValues}
+	args := make([]any, 0, 11)
+	args = append(args, identity.flowID, identity.targetSchema, identity.targetTable, identity.projectionFingerprint, identity.keyColumns, identity.keyValues)
 	var inserted int
 	err := tx.QueryRow(ctx, `INSERT INTO wallaby.watermark_state(
  flow_id,target_schema,target_table,projection_fingerprint,key_columns,key_values,watermark_type,watermark_value,source_position,content_hash,deleted)

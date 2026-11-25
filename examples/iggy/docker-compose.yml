@@ -1,0 +1,38 @@
+# Disposable local development broker. Never use these public test credentials
+# for a deployed service. Requires a Linux kernel >= 5.19 (including in a VM).
+name: wallaby-iggy
+services:
+  iggy:
+    image: apache/iggy:0.10.0
+    cap_add:
+      - SYS_NICE
+    security_opt:
+      - seccomp:unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    environment:
+      IGGY_ROOT_USERNAME: iggy
+      IGGY_ROOT_PASSWORD: WallabyLocal123!
+      IGGY_TCP_ADDRESS: 0.0.0.0:8090
+      IGGY_NODE_ADVERTISED_ADDRESS: localhost
+      IGGY_HTTP_ENABLED: "false"
+      IGGY_QUIC_ENABLED: "false"
+      IGGY_WEBSOCKET_ENABLED: "false"
+    ports:
+      - "127.0.0.1:8090:8090"
+    healthcheck:
+      test:
+        - CMD
+        - iggy
+        - -u
+        - iggy
+        - -p
+        - WallabyLocal123!
+        - stream
+        - list
+      interval: 2s
+      timeout: 5s
+      retries: 60
+      start_period: 5s

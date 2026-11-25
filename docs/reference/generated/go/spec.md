@@ -143,6 +143,7 @@ var DDLExecutionInvariants = []Invariant{
     InvReceiptRequiresExternalCommit,
     InvExternalCommitExactlyOnce,
     InvCommitCountMatchesState,
+    InvIndeterminateFailsClosed,
 }
 ```
 
@@ -261,7 +262,10 @@ var LifecycleGenerationActions = []Action{
     ActionExecutionFinished,
     ActionPauseComplete,
     ActionStopComplete,
-    ActionRestartExecution,
+    ActionExpireLease,
+    ActionTakeover,
+    ActionAuthoritativeMutation,
+    ActionRecreatePublicID,
     ActionFail,
     ActionRunOnce,
 }
@@ -277,6 +281,8 @@ var LifecycleGenerationInvariants = []Invariant{
     InvRegistrationCurrentGeneration,
     InvPendingPauseIsNotPaused,
     InvPendingStopIsStopping,
+    InvAuthoritativeMutationCurrentFence,
+    InvFlowReuseClearsOldAuthority,
 }
 ```
 
@@ -388,8 +394,10 @@ var ManagedPostgresDeliveryTraceUnreachableInvariants = append([]Invariant(nil),
 var SnapshotTransitionActions = []Action{
     ActionReadSnapshot,
     ActionPersistPartition,
-    ActionCrash,
-    ActionRestart,
+    ActionCrashTask,
+    ActionRestartTaskSameExporter,
+    ActionLoseExporter,
+    ActionRestartWholeSnapshot,
     ActionCompleteSnapshot,
     ActionStartStreaming,
     ActionReadStream,
@@ -406,6 +414,9 @@ var SnapshotTransitionInvariants = []Invariant{
     InvDurableRowsWereScanned,
     InvTransitionCompleteSnapshot,
     InvStreamingSnapshotBoundary,
+    InvNoCursorCrossesBootstrapGeneration,
+    InvPublishedGenerationIsCurrent,
+    InvExporterRequiredUntilPublication,
 }
 ```
 
@@ -422,7 +433,7 @@ var SnapshotTransitionTraceUnreachableInvariants = append([]Invariant(nil), Snap
 ```
 
 <a name="LoadManifests"></a>
-## func [LoadManifests](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L511>)
+## func [LoadManifests](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L535>)
 
 ```go
 func LoadManifests(path string) (map[SpecName]Manifest, error)
@@ -431,7 +442,7 @@ func LoadManifests(path string) (map[SpecName]Manifest, error)
 LoadManifests loads one or more manifests from a file or directory.
 
 <a name="ManifestPath"></a>
-## func [ManifestPath](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L550>)
+## func [ManifestPath](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L574>)
 
 ```go
 func ManifestPath(dir string, spec SpecName) string
@@ -452,52 +463,59 @@ type Action string
 
 ```go
 const (
-    ActionNone                   Action = ""
-    ActionStart                  Action = "Start"
-    ActionPause                  Action = "Pause"
-    ActionResume                 Action = "Resume"
-    ActionStop                   Action = "Stop"
-    ActionStopBegin              Action = "StopBegin"
-    ActionStopComplete           Action = "StopComplete"
-    ActionFail                   Action = "Fail"
-    ActionRunOnce                Action = "RunOnce"
-    ActionReadBatch              Action = "ReadBatch"
-    ActionReadDDL                Action = "ReadDDL"
-    ActionReadFail               Action = "ReadFail"
-    ActionReadGiveUp             Action = "ReadGiveUp"
-    ActionDeliver                Action = "Deliver"
-    ActionWriteFail              Action = "WriteFail"
-    ActionWriteGiveUp            Action = "WriteGiveUp"
-    ActionCheckpointFail         Action = "CheckpointFail"
-    ActionPersistCheckpoint      Action = "PersistCheckpoint"
-    ActionAck                    Action = "Ack"
-    ActionRestoreAck             Action = "RestoreAck"
-    ActionCrash                  Action = "Crash"
-    ActionRestart                Action = "Restart"
-    ActionAckDest                Action = "AckDest"
-    ActionAckSource              Action = "AckSource"
-    ActionApproveDDL             Action = "ApproveDDL"
-    ActionApplyDDL               Action = "ApplyDDL"
-    ActionResumeAfter            Action = "ResumeAfterDDL"
-    ActionIdle                   Action = "Idle"
-    ActionPrepare                Action = "Prepare"
-    ActionApply                  Action = "Apply"
-    ActionRecordReceipt          Action = "RecordReceipt"
-    ActionAcquireExecutionLock   Action = "AcquireExecutionLock"
-    ActionReleaseExecutionLock   Action = "ReleaseExecutionLock"
-    ActionReconcileApplied       Action = "ReconcileApplied"
-    ActionReconcileNotApplied    Action = "ReconcileNotApplied"
-    ActionReconcileIndeterminate Action = "ReconcileIndeterminate"
-    ActionPauseIntent            Action = "PauseIntent"
-    ActionStopIntent             Action = "StopIntent"
-    ActionExecutionFinished      Action = "ExecutionFinished"
-    ActionPauseComplete          Action = "PauseComplete"
-    ActionRestartExecution       Action = "RestartExecution"
-    ActionReadSnapshot           Action = "ReadSnapshot"
-    ActionPersistPartition       Action = "PersistPartition"
-    ActionCompleteSnapshot       Action = "CompleteSnapshot"
-    ActionStartStreaming         Action = "StartStreaming"
-    ActionReadStream             Action = "ReadStream"
+    ActionNone                    Action = ""
+    ActionStart                   Action = "Start"
+    ActionPause                   Action = "Pause"
+    ActionResume                  Action = "Resume"
+    ActionStop                    Action = "Stop"
+    ActionStopBegin               Action = "StopBegin"
+    ActionStopComplete            Action = "StopComplete"
+    ActionFail                    Action = "Fail"
+    ActionRunOnce                 Action = "RunOnce"
+    ActionReadBatch               Action = "ReadBatch"
+    ActionReadDDL                 Action = "ReadDDL"
+    ActionReadFail                Action = "ReadFail"
+    ActionReadGiveUp              Action = "ReadGiveUp"
+    ActionDeliver                 Action = "Deliver"
+    ActionWriteFail               Action = "WriteFail"
+    ActionWriteGiveUp             Action = "WriteGiveUp"
+    ActionCheckpointFail          Action = "CheckpointFail"
+    ActionPersistCheckpoint       Action = "PersistCheckpoint"
+    ActionAck                     Action = "Ack"
+    ActionRestoreAck              Action = "RestoreAck"
+    ActionCrash                   Action = "Crash"
+    ActionRestart                 Action = "Restart"
+    ActionAckDest                 Action = "AckDest"
+    ActionAckSource               Action = "AckSource"
+    ActionApproveDDL              Action = "ApproveDDL"
+    ActionApplyDDL                Action = "ApplyDDL"
+    ActionResumeAfter             Action = "ResumeAfterDDL"
+    ActionIdle                    Action = "Idle"
+    ActionPrepare                 Action = "Prepare"
+    ActionApply                   Action = "Apply"
+    ActionRecordReceipt           Action = "RecordReceipt"
+    ActionAcquireExecutionLock    Action = "AcquireExecutionLock"
+    ActionReleaseExecutionLock    Action = "ReleaseExecutionLock"
+    ActionReconcileApplied        Action = "ReconcileApplied"
+    ActionReconcileNotApplied     Action = "ReconcileNotApplied"
+    ActionReconcileIndeterminate  Action = "ReconcileIndeterminate"
+    ActionPauseIntent             Action = "PauseIntent"
+    ActionStopIntent              Action = "StopIntent"
+    ActionExecutionFinished       Action = "ExecutionFinished"
+    ActionPauseComplete           Action = "PauseComplete"
+    ActionExpireLease             Action = "ExpireLease"
+    ActionTakeover                Action = "Takeover"
+    ActionAuthoritativeMutation   Action = "AuthoritativeMutation"
+    ActionRecreatePublicID        Action = "RecreatePublicID"
+    ActionCrashTask               Action = "CrashTask"
+    ActionRestartTaskSameExporter Action = "RestartTaskSameExporter"
+    ActionLoseExporter            Action = "LoseExporter"
+    ActionRestartWholeSnapshot    Action = "RestartWholeSnapshot"
+    ActionReadSnapshot            Action = "ReadSnapshot"
+    ActionPersistPartition        Action = "PersistPartition"
+    ActionCompleteSnapshot        Action = "CompleteSnapshot"
+    ActionStartStreaming          Action = "StartStreaming"
+    ActionReadStream              Action = "ReadStream"
     // Managed durability (ArtifactPublication) and managed PostgreSQL delivery
     // (SourceFeedback) actions.
     ActionAcquire                  Action = "Acquire"
@@ -531,31 +549,37 @@ type Invariant string
 
 ```go
 const (
-    InvTypeInvariant                 Invariant = "TypeInvariant"
-    InvNoAckWithoutDeliver           Invariant = "NoAckWithoutDeliver"
-    InvAckMonotonic                  Invariant = "AckMonotonic"
-    InvCheckpointMonotonic           Invariant = "CheckpointMonotonic"
-    InvReadAheadBounded              Invariant = "ReadAheadBounded"
-    InvRetryBounds                   Invariant = "RetryBounds"
-    InvDDLAppliedAfter               Invariant = "DDLAppliedAfterApproval"
-    InvDDLGatedPausesFlow            Invariant = "DDLGatedPausesFlow"
-    InvFlowTransitionsValid          Invariant = "FlowTransitionsValid"
-    InvAckedImpliesDelivered         Invariant = "AckedImpliesDelivered"
-    InvSourceAckRequires             Invariant = "SourceAckRequiresPolicy"
-    InvSourceFlushRequiresCheckpoint Invariant = "SourceFlushRequiresCheckpoint"
-    InvExternalCommitRequiresAttempt Invariant = "ExternalCommitRequiresAttempt"
-    InvReceiptRequiresExternalCommit Invariant = "ReceiptRequiresExternalCommit"
-    InvExternalCommitExactlyOnce     Invariant = "ExternalCommitExactlyOnce"
-    InvCommitCountMatchesState       Invariant = "CommitCountMatchesState"
-    InvLeaseMatchesExecution         Invariant = "LeaseMatchesExecution"
-    InvQuiescentTerminalState        Invariant = "QuiescentTerminalState"
-    InvRegistrationCurrentGeneration Invariant = "RegistrationUsesCurrentGeneration"
-    InvPendingPauseIsNotPaused       Invariant = "PendingPauseIsNotPaused"
-    InvPendingStopIsStopping         Invariant = "PendingStopIsStopping"
-    InvRowsStayAssignedPartition     Invariant = "RowsStayInAssignedPartition"
-    InvDurableRowsWereScanned        Invariant = "DurableRowsWereScanned"
-    InvTransitionCompleteSnapshot    Invariant = "TransitionRequiresCompleteSnapshot"
-    InvStreamingSnapshotBoundary     Invariant = "StreamingStartsAtSnapshotBoundary"
+    InvTypeInvariant                      Invariant = "TypeInvariant"
+    InvNoAckWithoutDeliver                Invariant = "NoAckWithoutDeliver"
+    InvAckMonotonic                       Invariant = "AckMonotonic"
+    InvCheckpointMonotonic                Invariant = "CheckpointMonotonic"
+    InvReadAheadBounded                   Invariant = "ReadAheadBounded"
+    InvRetryBounds                        Invariant = "RetryBounds"
+    InvDDLAppliedAfter                    Invariant = "DDLAppliedAfterApproval"
+    InvDDLGatedPausesFlow                 Invariant = "DDLGatedPausesFlow"
+    InvFlowTransitionsValid               Invariant = "FlowTransitionsValid"
+    InvAckedImpliesDelivered              Invariant = "AckedImpliesDelivered"
+    InvSourceAckRequires                  Invariant = "SourceAckRequiresPolicy"
+    InvSourceFlushRequiresCheckpoint      Invariant = "SourceFlushRequiresCheckpoint"
+    InvExternalCommitRequiresAttempt      Invariant = "ExternalCommitRequiresAttempt"
+    InvReceiptRequiresExternalCommit      Invariant = "ReceiptRequiresExternalCommit"
+    InvExternalCommitExactlyOnce          Invariant = "ExternalCommitExactlyOnce"
+    InvCommitCountMatchesState            Invariant = "CommitCountMatchesState"
+    InvIndeterminateFailsClosed           Invariant = "IndeterminateFailsClosed"
+    InvLeaseMatchesExecution              Invariant = "LeaseMatchesExecution"
+    InvQuiescentTerminalState             Invariant = "QuiescentTerminalState"
+    InvRegistrationCurrentGeneration      Invariant = "RegistrationUsesCurrentGeneration"
+    InvPendingPauseIsNotPaused            Invariant = "PendingPauseIsNotPaused"
+    InvPendingStopIsStopping              Invariant = "PendingStopIsStopping"
+    InvAuthoritativeMutationCurrentFence  Invariant = "AuthoritativeMutationUsesCurrentFence"
+    InvFlowReuseClearsOldAuthority        Invariant = "FlowReuseClearsOldAuthority"
+    InvNoCursorCrossesBootstrapGeneration Invariant = "NoCursorCrossesBootstrapGeneration"
+    InvPublishedGenerationIsCurrent       Invariant = "PublishedGenerationIsCurrent"
+    InvExporterRequiredUntilPublication   Invariant = "ExporterRequiredUntilPublication"
+    InvRowsStayAssignedPartition          Invariant = "RowsStayInAssignedPartition"
+    InvDurableRowsWereScanned             Invariant = "DurableRowsWereScanned"
+    InvTransitionCompleteSnapshot         Invariant = "TransitionRequiresCompleteSnapshot"
+    InvStreamingSnapshotBoundary          Invariant = "StreamingStartsAtSnapshotBoundary"
     // Managed durability + managed PostgreSQL delivery invariants.
     InvReceiptCheckpointAckAtomic        Invariant = "ReceiptCheckpointAckAtomic"
     InvArtifactCheckpointAckAtomic       Invariant = "ArtifactCheckpointAckAtomic"
@@ -571,7 +595,7 @@ const (
 ```
 
 <a name="Manifest"></a>
-## type [Manifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L396-L404>)
+## type [Manifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L420-L428>)
 
 Manifest defines the spec coverage contract shared by TLC and Go tests.
 
@@ -588,7 +612,7 @@ type Manifest struct {
 ```
 
 <a name="AllManifests"></a>
-### func [AllManifests](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L413>)
+### func [AllManifests](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L437>)
 
 ```go
 func AllManifests() []Manifest
@@ -597,7 +621,7 @@ func AllManifests() []Manifest
 AllManifests returns manifests for all known specs.
 
 <a name="LoadManifest"></a>
-### func [LoadManifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L487>)
+### func [LoadManifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L511>)
 
 ```go
 func LoadManifest(path string) (Manifest, error)
@@ -606,7 +630,7 @@ func LoadManifest(path string) (Manifest, error)
 LoadManifest loads a coverage manifest from disk.
 
 <a name="ManifestForSpec"></a>
-### func [ManifestForSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L435>)
+### func [ManifestForSpec](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L459>)
 
 ```go
 func ManifestForSpec(spec SpecName) (Manifest, bool)
@@ -615,7 +639,7 @@ func ManifestForSpec(spec SpecName) (Manifest, bool)
 ManifestForSpec builds a manifest for the named spec.
 
 <a name="TraceSuiteManifest"></a>
-### func [TraceSuiteManifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L407>)
+### func [TraceSuiteManifest](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L431>)
 
 ```go
 func TraceSuiteManifest() Manifest
@@ -624,7 +648,7 @@ func TraceSuiteManifest() Manifest
 TraceSuiteManifest returns the CDC flow manifest used by trace suite tests.
 
 <a name="Manifest.ActionMin"></a>
-### func \(Manifest\) [ActionMin](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L605>)
+### func \(Manifest\) [ActionMin](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L629>)
 
 ```go
 func (m Manifest) ActionMin(action Action) int
@@ -633,7 +657,7 @@ func (m Manifest) ActionMin(action Action) int
 
 
 <a name="Manifest.ActionSet"></a>
-### func \(Manifest\) [ActionSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L581>)
+### func \(Manifest\) [ActionSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L605>)
 
 ```go
 func (m Manifest) ActionSet() map[Action]struct{}
@@ -642,7 +666,7 @@ func (m Manifest) ActionSet() map[Action]struct{}
 
 
 <a name="Manifest.InvariantMin"></a>
-### func \(Manifest\) [InvariantMin](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L614>)
+### func \(Manifest\) [InvariantMin](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L638>)
 
 ```go
 func (m Manifest) InvariantMin(inv Invariant) int
@@ -651,7 +675,7 @@ func (m Manifest) InvariantMin(inv Invariant) int
 
 
 <a name="Manifest.InvariantSet"></a>
-### func \(Manifest\) [InvariantSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L589>)
+### func \(Manifest\) [InvariantSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L613>)
 
 ```go
 func (m Manifest) InvariantSet() map[Invariant]struct{}
@@ -660,7 +684,7 @@ func (m Manifest) InvariantSet() map[Invariant]struct{}
 
 
 <a name="Manifest.UnreachableActionSet"></a>
-### func \(Manifest\) [UnreachableActionSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L597>)
+### func \(Manifest\) [UnreachableActionSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L621>)
 
 ```go
 func (m Manifest) UnreachableActionSet() map[Action]struct{}
@@ -669,7 +693,7 @@ func (m Manifest) UnreachableActionSet() map[Action]struct{}
 
 
 <a name="Manifest.UnreachableInvariantSet"></a>
-### func \(Manifest\) [UnreachableInvariantSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L601>)
+### func \(Manifest\) [UnreachableInvariantSet](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L625>)
 
 ```go
 func (m Manifest) UnreachableInvariantSet() map[Invariant]struct{}
@@ -703,7 +727,7 @@ const (
 ```
 
 <a name="ParseSpecName"></a>
-### func [ParseSpecName](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L558>)
+### func [ParseSpecName](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L582>)
 
 ```go
 func ParseSpecName(value string) (SpecName, bool)
@@ -712,7 +736,7 @@ func ParseSpecName(value string) (SpecName, bool)
 
 
 <a name="SortedSpecs"></a>
-### func [SortedSpecs](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L657>)
+### func [SortedSpecs](<https://github.com/josephjohncox/WALlaby/blob/main/pkg/spec/manifest.go#L681>)
 
 ```go
 func SortedSpecs() []SpecName

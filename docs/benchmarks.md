@@ -9,25 +9,25 @@ This repository includes a reproducible, local benchmark harness for:
 ## Quick Start
 
 ```bash
-PROFILE=small TARGETS=all just bench
+PROFILE=small TARGETS=all mise run bench
 ```
 
 To run the full benchmark suite (small/medium/large) and generate a summary:
 
 ```bash
-just benchmark
+mise run benchmark
 ```
 
 To capture CPU/heap profiles and Go execution traces (with per-target runs), use:
 
 ```bash
-just benchmark-profile
+mise run benchmark-profile
 ```
 
 You can override the suite with env vars:
 
 ```bash
-PROFILES=small,medium SCENARIOS=base,ddl TARGETS=postgres just benchmark
+PROFILES=small,medium SCENARIOS=base,ddl TARGETS=postgres mise run benchmark
 ```
 
 Profiling outputs:
@@ -67,7 +67,7 @@ Profiles control scale and concurrency:
 Example:
 
 ```bash
-PROFILE=medium TARGETS=postgres,clickhouse just bench
+PROFILE=medium TARGETS=postgres,clickhouse mise run bench
 ```
 
 ## Targets
@@ -75,9 +75,9 @@ PROFILE=medium TARGETS=postgres,clickhouse just bench
 Run all targets or a subset:
 
 ```bash
-TARGETS=all just bench
-TARGETS=postgres just bench
-TARGETS=kafka,clickhouse just bench
+TARGETS=all mise run bench
+TARGETS=postgres mise run bench
+TARGETS=kafka,clickhouse mise run bench
 ```
 
 Note: the Kafka target uses a smaller batch size (clamped to 25) plus LZ4 compression to avoid hitting default broker message-size limits.
@@ -87,7 +87,7 @@ Note: the Kafka target uses a smaller batch size (clamped to 25) plus LZ4 compre
 DDL churn is available as a separate scenario (adds/drops a column and changes a type during the run):
 
 ```bash
-PROFILE=small TARGETS=postgres just bench-ddl
+PROFILE=small TARGETS=postgres mise run bench-ddl
 ```
 
 The benchmark uses the same current write contracts as production: PostgreSQL is projected as explicit-key upsert on `id`, while ClickHouse and Kafka/Redpanda are projected as append-only changelogs. There is no runtime write-mode override.
@@ -105,7 +105,7 @@ You can override connection settings via env vars:
 Example:
 
 ```bash
-BENCH_PG_DSN=postgres://user:pass@localhost:5432/db?sslmode=disable just bench
+BENCH_PG_DSN=postgres://user:pass@localhost:5432/db?sslmode=disable mise run bench
 ```
 
 ## Results
@@ -122,7 +122,7 @@ For statistical comparisons between two sets of runs (baseline vs candidate),
 use `benchstat` from `golang.org/x/perf`:
 
 ```bash
-BASELINE=bench/results/baseline CANDIDATE=bench/results/candidate just benchstat
+BASELINE=bench/results/baseline CANDIDATE=bench/results/candidate mise run benchstat
 ```
 
 Each directory can contain one or more `bench_*.json` files (from multiple runs).
@@ -150,7 +150,7 @@ We recommend:
 4. Compare with `benchstat`:
 
 ```bash
-BASELINE=bench/results/external/debezium CANDIDATE=bench/results/run_<timestamp> just benchstat
+BASELINE=bench/results/external/debezium CANDIDATE=bench/results/run_<timestamp> mise run benchstat
 ```
 
 Keep notes about versions, config, and hardware so we can reproduce results later.

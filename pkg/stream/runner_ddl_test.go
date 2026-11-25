@@ -211,7 +211,8 @@ func TestRunnerReconcilesCommitBeforeReceiptOnReplay(t *testing.T) {
 		return nil
 	}}
 	runner := Runner{
-		FlowID: "flow-ddl-crash-window",
+		FlowID:    "flow-ddl-crash-window",
+		TraceSink: &MemoryTraceSink{},
 		Destinations: []DestinationConfig{{
 			Spec: connector.RuntimeSpec{Name: "dest"},
 			Dest: destination,
@@ -246,6 +247,9 @@ func TestRunnerReconcilesCommitBeforeReceiptOnReplay(t *testing.T) {
 	state, err := receipts.PrepareDDLExecution(context.Background(), runner.FlowID, "0/10", "dest", []string{"dest"})
 	if err != nil || state != connector.DDLExecutionComplete {
 		t.Fatalf("receipt state=%v error=%v, want complete", state, err)
+	}
+	if err := ValidateTrace(runner.TraceSink.(*MemoryTraceSink).Events(), TraceValidationOptions{}); err != nil {
+		t.Fatalf("reconciled production trace is invalid: %v", err)
 	}
 }
 

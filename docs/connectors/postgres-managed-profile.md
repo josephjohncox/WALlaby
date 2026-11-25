@@ -169,6 +169,6 @@ requires a real service. Schema evolution, DDL reconciliation,
 snapshot-to-CDC handoff, process kill, pool exhaustion, restart,
 retry/retention, and upgrade migrations run against PostgreSQL; the bounded
 metric-label contract is deterministic SDK evidence. CI runs
-`just test-checkpoint2-postgres-profile` against every admitted PostgreSQL
+`mise run test-checkpoint2-postgres-profile` against every admitted PostgreSQL
 major twice and rejects missing or skipped named tests. Removing or disabling a
 gate makes the maintained profile declaration invalid.

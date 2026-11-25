@@ -150,7 +150,7 @@ fsync-backed **protocol-model** state file at modeled delivery, feedback,
 publication, retention, and GC boundaries:
 
 ```bash
-just test-failure-matrix
+mise run test-failure-matrix
 ```
 
 Its NDJSON records substantiate model transitions across OS-process death. They

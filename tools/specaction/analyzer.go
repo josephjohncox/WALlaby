@@ -305,6 +305,9 @@ var kindSpecActionMap = map[string]map[spec.Action]struct{}{
 	"ddl_applied": {
 		spec.ActionApplyDDL: {},
 	},
+	"ddl_reconciled": {
+		spec.ActionApplyDDL: {},
+	},
 	"ddl_approved": {
 		spec.ActionApproveDDL: {},
 	},

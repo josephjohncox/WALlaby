@@ -305,7 +305,7 @@ func EvaluateTrace(events []TraceEvent, opts TraceValidationOptions, manifest *s
 					coverage.Invariants[spec.InvDDLAppliedAfter]++
 				}
 			}
-		case "read_error", "write_error", "ack_error", "restore_ack_error", "checkpoint_error", "ddl_error", "read", "flow_state", "ddl_gate", "write", "control_checkpoint":
+		case "read_error", "write_error", "ack_error", "restore_ack_error", "checkpoint_error", "ddl_error", "ddl_reconciled", "read", "flow_state", "ddl_gate", "write", "control_checkpoint":
 			// Informational; failures are represented by the absence of successor actions.
 		default:
 			if event.Kind != "" {

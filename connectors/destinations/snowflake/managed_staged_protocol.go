@@ -6,14 +6,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
+	"io"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 )
 
 var (
@@ -219,10 +219,9 @@ func validateStagedObjectReference(stageRef, relativePath string) error {
 // exact planned plaintext size. It is the second of two bounds and not the only
 // one: the driver refuses to issue GET at all unless LIST already reported a
 // stored size within the planned plaintext plus a fixed encryption-envelope
-// allowance. That LIST precheck reduces, but cannot by itself eliminate,
-// gosnowflake's internal materialization of the downloaded and decrypted object,
-// because the object could in principle change between LIST and GET. Immutable
-// content-addressed paths and OVERWRITE=FALSE make that window remote.
+// allowance. Native DownloadStream then bounds plaintext while reading even
+// if the remote object changes after LIST. Content-addressed names and the SDK
+// no-clobber option are defense in depth; byte equality remains the proof.
 type boundedStageObjectWriter struct {
 	buffer bytes.Buffer
 	limit  int
@@ -240,14 +239,10 @@ func (w *boundedStageObjectWriter) Write(content []byte) (int, error) {
 	return w.buffer.Write(content)
 }
 
-// GetObject streams the decrypted, uncompressed object into a plan-sized writer.
-// gosnowflake validates the GET local location as an existing directory before it
-// runs, even in stream mode, so a private per-call directory is created and
-// removed around the statement. Stream-mode GET yields bytes only for a
-// client-side-encrypted object, which is why admission requires an INTERNAL
-// stage; relaxing that admission check would silently return empty plaintext and
-// turn every batch into a spurious conflict. The local location is Unix-shaped
-// and single-quoted, so this path assumes a POSIX deployment.
+// GetObject uses the v2 driver's streaming API rather than the deprecated
+// context-based GET API, which buffers the whole object before writing it.
+// Plaintext is bounded while reading, including when the remote object is larger
+// than its catalog metadata claims. Admission still requires an INTERNAL stage.
 func (p *sqlStageProtocol) GetObject(ctx context.Context, stageRef, relativePath string, maxBytes int) ([]byte, error) {
 	if maxBytes < 0 {
 		return nil, errors.New("staged Snowflake GET requires a non-negative plaintext bound")
@@ -255,24 +250,34 @@ func (p *sqlStageProtocol) GetObject(ctx context.Context, stageRef, relativePath
 	if err := validateStagedObjectReference(stageRef, relativePath); err != nil {
 		return nil, err
 	}
-	directory, err := os.MkdirTemp("", "wallaby-stage-verify-")
-	if err != nil {
-		return nil, fmt.Errorf("create staged Snowflake GET download directory: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(directory) }()
-	if strings.ContainsAny(directory, "'\\\r\n") || !strings.HasPrefix(directory, "/") {
-		return nil, fmt.Errorf("staged Snowflake GET download directory %q is not a quotable absolute POSIX path", directory)
-	}
 	writer := &boundedStageObjectWriter{limit: maxBytes}
-	getCtx := gosnowflake.WithFileTransferOptions(ctx, &gosnowflake.SnowflakeFileTransferOptions{GetFileToStream: true, RaisePutGetError: true})
-	getCtx = gosnowflake.WithFileGetStream(getCtx, writer)
-	statement := "GET @" + stageRef + "/" + relativePath + " 'file://" + directory + "'"
-	if _, err := p.db.ExecContext(getCtx, statement); err != nil {
+	err := p.withStreamConnection(ctx, func(connection gosnowflake.SnowflakeConnection) error {
+		reader, err := connection.DownloadStream(ctx, "@"+stageRef, relativePath)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(writer, reader)
+		return errors.Join(copyErr, reader.Close())
+	})
+	if err != nil {
 		return nil, fmt.Errorf("get staged object for byte verification: %w", err)
 	}
-	// writer is call-local and never reused, so its buffer can be returned without
-	// an additional full-size copy of the plaintext.
 	return writer.buffer.Bytes(), nil
+}
+
+func (p *sqlStageProtocol) withStreamConnection(ctx context.Context, action func(gosnowflake.SnowflakeConnection) error) error {
+	connection, err := p.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = connection.Close() }()
+	return connection.Raw(func(raw any) error {
+		streamConnection, ok := raw.(gosnowflake.SnowflakeConnection)
+		if !ok {
+			return errors.New("staged Snowflake requires the native v2 streaming connection")
+		}
+		return action(streamConnection)
+	})
 }
 
 func (p *sqlStageProtocol) PutObject(ctx context.Context, stageRef, relativePath string, content []byte, expectedMD5 string) error {
@@ -296,14 +301,31 @@ func (p *sqlStageProtocol) PutObject(ctx context.Context, stageRef, relativePath
 		directory = relativePath[:slash]
 		fileName = relativePath[slash+1:]
 	}
-	target := "@" + stageRef
-	if directory != "" {
-		target += "/" + directory
+	err = p.withStreamConnection(ctx, func(connection gosnowflake.SnowflakeConnection) error {
+		return connection.UploadStreamWithConfig(ctx, "@"+stageRef, fileName, bytes.NewReader(content), gosnowflake.UploadStreamConfig{
+			DestPrefix: directory, Compression: gosnowflake.CompressionNone,
+			// The caller already owns the bounded plan bytes. Avoid spilling
+			// plaintext CDC data to an unmanaged temp directory on SIGKILL.
+			Overwrite: gosnowflake.ConfigBoolFalse, MaxBuffer: gosnowflake.MaxBufferUnbounded,
+		})
+	})
+	var snowflakeErr *gosnowflake.SnowflakeError
+	if errors.As(err, &snowflakeErr) && snowflakeErr.Number == gosnowflake.ErrUploadStreamSkipped {
+		// No-clobber is a best-effort SDK HEAD/PUT check, not conditional
+		// object creation. The caller verifies exact bytes before promotion.
+		existing, statErr := p.StatObject(ctx, stageRef, relativePath)
+		if statErr != nil {
+			return statErr
+		}
+		if !existing.present {
+			return fmt.Errorf("%w: skipped upload is not yet observable at %s", connector.ErrDeliveryIndeterminate, relativePath)
+		}
+		if existing.md5 != "" && existing.md5 != strings.ToLower(expectedMD5) {
+			return fmt.Errorf("%w: concurrent upload occupies %s", errStagedWrongByteCollision, relativePath)
+		}
+		return nil
 	}
-	putCtx := gosnowflake.WithFileStream(ctx, bytes.NewReader(content))
-	putCtx = gosnowflake.WithFileTransferOptions(putCtx, &gosnowflake.SnowflakeFileTransferOptions{RaisePutGetError: true})
-	statement := fmt.Sprintf("PUT file:///tmp/%s %s AUTO_COMPRESS=FALSE SOURCE_COMPRESSION=NONE OVERWRITE=FALSE", fileName, target)
-	if _, err := p.db.ExecContext(putCtx, statement); err != nil {
+	if err != nil {
 		return fmt.Errorf("put staged object: %w", err)
 	}
 	return nil

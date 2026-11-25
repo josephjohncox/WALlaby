@@ -47,7 +47,7 @@ The production worker and in-process DBOS path now run these primitives for `boo
 
 ### Canonical artifact log
 
-`internal/artifactlog` keeps the bounded `canonical_cdc_parquet_v1` Arrow 18/Parquet v2 projection byte-for-byte frozen, including its golden hashes and object keys. Mapped Iceberg materialization uses explicit `canonical_cdc_parquet_v2`: the immutable destination projector runs exactly once, and projection version, mapping fingerprint, and mapped relation identity bind canonical schemas, artifact identities, PostgreSQL publication rows, recovery, and consumer requests. Objects target approximately 32 MiB and fail closed above 64 MiB. DDL is rooted as an ordered PostgreSQL barrier rather than encoded as a changelog row.
+`internal/artifactlog` uses bounded Arrow 18/Parquet v2 canonical projections. Arrow 18.9.0 intentionally rebaselines the v1/v2 encoded-byte goldens while preserving logical, schema and artifact IDs and object keys. Exact-byte replay is deterministic within the pinned build, not across the old and new encoders; use fresh flow incarnations for this byte-incompatible upgrade. Mapped Iceberg materialization uses explicit `canonical_cdc_parquet_v2`: the immutable destination projector runs exactly once, and projection version, mapping fingerprint, and mapped relation identity bind canonical schemas, artifact identities, PostgreSQL publication rows, recovery, and consumer requests. Objects target approximately 32 MiB and fail closed above 64 MiB. DDL is rooted as an ordered PostgreSQL barrier rather than encoded as a changelog row.
 
 The experimental `ack_policy=materialized` worker path restores PostgreSQL quota/backlog state before source reads, encodes before destination transforms or retries, records durable upload intents, reconciles conditional S3 PUTs by exact `VersionId`/SHA-256/length/projection, and commits publication roots, quota conversion, checkpoint, and ACK intent in one revalidated generation-fenced transaction. Source feedback occurs only after commit. The production worker registers no catalog consumer and does not create destination delivery rows or open synchronous destination connectors for CDC; the public behavior is canonical publication only.
 
@@ -100,22 +100,22 @@ The experimental Snowflake SQL profile requires PostgreSQL 16, `bootstrap=BOOTST
 
 The acceptance workflow requires the following gates; a gate is not evidence of a pass unless its command completed successfully in the reviewed revision:
 
-- `just fmt-check` and `just lint`;
+- `mise run format:check` and `mise run lint`;
 - `go test -count=1 ./...`;
-- `just test-rapid` and `just test-durable-race`;
-- `just test-durable-pr`;
-- `just test-durable-seams` — requires the named live PostgreSQL/MinIO delivery recovery, metadata authority, stale fencing, bootstrap resume/abandon/handoff, artifact publication/quota/consumer, and GC tests to run without skips;
-- `just test-durable-integration` — preserves the broader named live PostgreSQL/MinIO worker, bootstrap, connector, and fencing suite without skips;
-- `just test-checkpoint2-postgres-profile` — CI runs the exact managed admission and evidence suite twice against each same-major PostgreSQL 14, 15, 16, and 17 profile;
-- `just test-durable-dbos-integration` — requires the named in-process DBOS bootstrap test to run without a skip;
-- `just check-tla` and `just spec-verify`;
-- `just generate-check`;
-- `just docs-check`;
-- `just test-checkpoint5-iceberg-integration` for the live Iceberg REST/MinIO append and schema-evolution cell;
-- `just test-failure-matrix` for credential-free real-child PID kill/restart/overlap evidence over fsync-backed protocol-model state (not destination implementation proof);
-- `just test-failure-matrix-model` for the fast in-process executable model;
-- `just test-failure-matrix-race`; and
-- `just test-soak` for the bounded in-process protocol-model soak.
+- `mise run test-rapid` and `mise run test-durable-race`;
+- `mise run test-durable-pr`;
+- `mise run test-durable-seams` — requires the named live PostgreSQL/MinIO delivery recovery, metadata authority, stale fencing, bootstrap resume/abandon/handoff, artifact publication/quota/consumer, and GC tests to run without skips;
+- `mise run test-durable-integration` — preserves the broader named live PostgreSQL/MinIO worker, bootstrap, connector, and fencing suite without skips;
+- `mise run test-checkpoint2-postgres-profile` — CI runs the exact managed admission and evidence suite twice against each same-major PostgreSQL 14, 15, 16, and 17 profile;
+- `mise run test-durable-dbos-integration` — requires the named in-process DBOS bootstrap test to run without a skip;
+- `mise run check-tla` and `mise run spec-verify`;
+- `mise run generate-check`;
+- `mise run docs-check`;
+- `mise run test-checkpoint5-iceberg-integration` for the live Iceberg REST/MinIO append and schema-evolution cell;
+- `mise run test-failure-matrix` for credential-free real-child PID kill/restart/overlap evidence over fsync-backed protocol-model state (not destination implementation proof);
+- `mise run test-failure-matrix-model` for the fast in-process executable model;
+- `mise run test-failure-matrix-race`; and
+- `mise run test-soak` for the bounded in-process protocol-model soak.
 
 The process recovery test starts the built worker with `bootstrap=BOOTSTRAP_MODE_REQUIRED`, proves an existing source row is atomically published before CDC, sends SIGKILL, expires the abandoned lease, starts a replacement process, reopens the generated logical slot at the authoritative checkpoint, and delivers a subsequent transaction. This test also covers the replay-stable PostgreSQL commit timestamp used by managed records.
 

@@ -17,7 +17,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 )
 
 const maxSnowflakePrivateKeyBytes = 1 << 20

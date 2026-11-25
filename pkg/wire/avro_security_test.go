@@ -11,8 +11,8 @@ import (
 	// by a local replace to the patched github.com/iskorotkov/avro/v2 (v2.33.0+).
 	// Exercising these APIs here proves the shim wires our compiled code to the
 	// fixed decoder that closes GO-2026-5046/5047/5048.
-	"github.com/hamba/avro/v2"
-	"github.com/hamba/avro/v2/ocf"
+	"github.com/iskorotkov/avro/v2"
+	"github.com/iskorotkov/avro/v2/ocf"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 

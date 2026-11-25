@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hamba/avro/v2/ocf"
+	"github.com/iskorotkov/avro/v2/ocf"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 )
 

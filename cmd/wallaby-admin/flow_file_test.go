@@ -64,6 +64,7 @@ func TestShippedFlowExamplesStrictLoadValidateAndUseCurrentMappings(t *testing.T
 		"flows/postgres_to_http_toast_full.json",
 		"flows/postgres_to_http_typed.yaml",
 		"flows/postgres_to_iceberg_s3tables.json",
+		"flows/postgres_to_iggy.yaml",
 		"flows/postgres_to_kafka.json",
 		"flows/postgres_to_kafka_http_primary.json",
 		"flows/postgres_to_pgstream.json",

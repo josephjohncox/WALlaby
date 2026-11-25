@@ -340,7 +340,7 @@ WALLABY_TEST_SNOWFLAKE_VERSION='<reviewed version>' \
 WALLABY_TEST_SNOWFLAKE_REGION='<reviewed AWS region>' \
 WALLABY_TEST_SNOWFLAKE_OWNER_ROLE='WALLABY_OWNER' \
 TEST_PG_DSN='postgres://...' \
-just test-snowflake-managed-profile
+mise run test-snowflake-managed-profile
 ```
 
 The recipe rejects skipped or missing required tests. It records the PostgreSQL version, Snowflake version and region, Go driver version, and JWT auth mode. Fakesnow must fail managed admission and cannot satisfy this gate.
@@ -358,7 +358,7 @@ A committed transaction becomes one newline-delimited JSON stage object whose by
 The stage-object path is a deterministic, immutable function of the flow incarnation, destination revision, logical batch, plan hash, and logical content hash, rooted under one per-incarnation retention prefix (`wallaby_staged_append_v1/<incarnation>/…`). Delivery proceeds as:
 
 1. **Fence and adopt** — acquire a Snowflake-clock shared runtime lease bound to the current provision epoch, catalog fingerprint, destination revision, flow incarnation, generation, acquisition, and lease epoch. Acquire the deterministic per-batch load claim. A receipt is adopted only when its immutable identity and the current target manifest plus exact row identities still match.
-2. **Stage** — `LIST`/`PUT` the immutable bytes. A `PUT` whose response is lost is reconciled by re-reading the stage. Before any load, WALlaby first requires Snowflake `LIST` to report a stored size no larger than the planned plaintext plus a fixed 64 KiB encryption-envelope allowance; only then does it perform Snowflake `GET` into a plan-sized writer and require the decrypted, uncompressed plaintext to be byte-for-byte equal to the deterministic NDJSON plan. The `GET` runs against a private per-call download directory and emits its own `stage_verify` span. Verification is unconditional, including immediately after this process staged the bytes, so every transaction costs one extra bounded download; that egress is the deliberate price of not treating an encrypted-stage `LIST` checksum as an equality oracle. A different LIST MD5 remains an additional collision signal, but a missing checksum is never accepted as the sole evidence. Because `LIST` and `GET` are both prefix-scoped, a foreign object that merely starts with the deterministic path is reported as a conflict during `LIST` rather than silently joining the download. Unavailable GET evidence is indeterminate; oversized or unequal plaintext is a conflict. Every one of these fails closed before `COPY` and before a receipt.
+2. **Stage** — `LIST`/`PUT` the immutable bytes. A `PUT` whose response is lost is reconciled by re-reading the stage. Before any load, WALlaby first requires Snowflake `LIST` to report a stored size no larger than the planned plaintext plus a fixed 64 KiB encryption-envelope allowance; only then does it perform Snowflake `GET` into a plan-sized writer and require the decrypted, uncompressed plaintext to be byte-for-byte equal to the deterministic NDJSON plan. The native v2 `DownloadStream` reads directly into the bounded writer and emits a `stage_verify` span; it creates no download directory. Verification is unconditional, including immediately after this process staged the bytes, so every transaction costs one extra bounded download; that egress is the deliberate price of not treating an encrypted-stage `LIST` checksum as an equality oracle. A different LIST MD5 remains an additional collision signal, but a missing checksum is never accepted as the sole evidence. Because `LIST` and `GET` are both prefix-scoped, a foreign object that merely starts with the deterministic path is reported as a conflict during `LIST` rather than silently joining the download. Unavailable GET evidence is indeterminate; oversized or unequal plaintext is a conflict. Every one of these fails closed before `COPY` and before a receipt.
 3. **Load landing** — reload the exact live stage, tables, grants, file format, pipe, and pipe count. Recompute the complete catalog fingerprint, then renew the Snowflake-clock lease before `PUT`, `COPY`, or pipe refresh. `COPY INTO` uses the dedicated landing table with `MATCH_BY_COLUMN_NAME=CASE_SENSITIVE ON_ERROR=ABORT_STATEMENT FORCE=FALSE PURGE=FALSE`. Auto-ingest accepts exactly one pipe, uses the same landing table, refreshes only the deterministic batch prefix, and polls delayed landing visibility within a configured bound.
 4. **Prove and promote** — compare every landing `RECORD_HASH` with the planned identity set inside the promotion transaction. Partial, duplicate, and foreign identities fail closed. The transaction renews the exact lease and claim, checks affected row counts, appends the exact landing rows, inserts the immutable companion manifest, and clears the landing rows. A zero-row batch still inserts its manifest. `COPY_HISTORY` is diagnostic only.
 5. **Receipt** — reload the live catalog and revalidate the shared lease, claim, provision epoch, target manifest, and target-row identities. Insert one guarded durable load receipt. A duplicate key can be adopted only after the current target manifest and every target row identity are revalidated.
@@ -516,12 +516,12 @@ Channel state is released by a bounded cleanup pass keyed on durable append rece
 The streaming gate reuses the managed Snowflake credentials and skips closed without them. Default builds assert the fail-closed refusal. The experimental tagged build runs credential-free assembly separately:
 
 ```bash
-just test-snowpipe-streaming-runtime-wiring
+mise run test-snowpipe-streaming-runtime-wiring
 
 WALLABY_TEST_SNOWFLAKE_MANAGED=1 \
 WALLABY_TEST_SNOWFLAKE_DSN='...' \
 WALLABY_TEST_SNOWFLAKE_VERSION='<reviewed version>' \
-just test-snowflake-streaming-commercial-unpromoted
+mise run test-snowflake-streaming-commercial-unpromoted
 ```
 
 Credential-free tests cover request identity, pre-send persistence, accepted-then-EOF recovery, visibility lag, proven-absence retry, send-boundary and channel CAS races, token conflict, row rejection evidence, target cardinality, receipt conflict, and atomic cleanup. The SIGKILL test runs the real stream driver in a child process. It fsyncs request, channel, row, and receipt state to a process-shared file, kills the child after actual send-claim or accepted-response persistence, and reconciles that state in a fresh process. These tests prove protocol logic only.

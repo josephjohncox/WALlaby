@@ -25,6 +25,7 @@ type endpointModel struct {
 	PostgresDestination        types.Object `tfsdk:"postgres_destination"`
 	PGStream                   types.Object `tfsdk:"pgstream"`
 	Kafka                      types.Object `tfsdk:"kafka"`
+	Iggy                       types.Object `tfsdk:"iggy"`
 	Redpanda                   types.Object `tfsdk:"redpanda"`
 	S3                         types.Object `tfsdk:"s3"`
 	HTTP                       types.Object `tfsdk:"http"`
@@ -166,7 +167,7 @@ func endpointModelToProto(ctx context.Context, model endpointModel, source bool)
 func (model endpointModel) branchObjects() map[string]types.Object {
 	return map[string]types.Object{
 		"postgres_source": model.PostgresSource, "postgres_destination": model.PostgresDestination,
-		"pgstream": model.PGStream, "kafka": model.Kafka, "redpanda": model.Redpanda, "s3": model.S3,
+		"pgstream": model.PGStream, "kafka": model.Kafka, "iggy": model.Iggy, "redpanda": model.Redpanda, "s3": model.S3,
 		"http": model.HTTP, "grpc": model.GRPC, "snowflake": model.Snowflake,
 		"snowflake_postgres_sql": model.SnowflakePostgresSQL, "snowflake_postgres_staged": model.SnowflakePostgresStaged,
 		"snowflake_postgres_streaming": model.SnowflakePostgresStreaming, "snowpipe": model.Snowpipe,
@@ -357,6 +358,8 @@ func (model *endpointModel) setBranchObject(name string, value types.Object) {
 		model.PGStream = value
 	case "kafka":
 		model.Kafka = value
+	case "iggy":
+		model.Iggy = value
 	case "redpanda":
 		model.Redpanda = value
 	case "s3":

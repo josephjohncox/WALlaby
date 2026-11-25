@@ -126,7 +126,7 @@ An upsert watermark establishes freshness, not identity. PostgreSQL watermark-gu
 
 ## Mapped materialization
 
-The historical `canonical_cdc_parquet_v1` projection remains byte-for-byte frozen for historical artifact verification. It is not admitted for current mapped materialization. Mapped Iceberg flows use exactly `canonical_cdc_parquet_v2`, bind artifacts and catalog commits to mapping and projection identity, and remain append-only.
+The historical `canonical_cdc_parquet_v1` projection keeps its logical identity contract; its byte-hash golden, like v2's, is intentionally rebaselined for Arrow 18.9.0. Old publisher byte compatibility is not retained; use fresh flow incarnations for the changed encoder. It is not admitted for current mapped materialization. Mapped Iceberg flows use exactly `canonical_cdc_parquet_v2`, bind artifacts and catalog commits to mapping and projection identity, and remain append-only.
 
 ## Lifecycle operations
 

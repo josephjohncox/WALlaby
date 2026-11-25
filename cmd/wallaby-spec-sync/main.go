@@ -62,17 +62,9 @@ func runWallabySpecSync(cmd *cobra.Command) error {
 		manifestDir: cli.ResolveStringFlag(cmd, "manifest-dir"),
 	}
 
-	files := []specFiles{
-		{Name: spec.SpecCDCFlow, TLA: filepath.Join(opts.specDir, "CDCFlow.tla"), CFG: filepath.Join(opts.specDir, "CDCFlow.cfg")},
-		{Name: spec.SpecFlowState, TLA: filepath.Join(opts.specDir, "FlowStateMachine.tla"), CFG: filepath.Join(opts.specDir, "FlowStateMachine.cfg")},
-		{Name: spec.SpecCDCFlowFanout, TLA: filepath.Join(opts.specDir, "CDCFlowFanout.tla"), CFG: filepath.Join(opts.specDir, "CDCFlowFanout.cfg")},
-		{Name: spec.SpecDDLExecution, TLA: filepath.Join(opts.specDir, "DDLExecution.tla"), CFG: filepath.Join(opts.specDir, "DDLExecution.cfg")},
-		// LifecycleGeneration and SnapshotTransition intentionally use a distinct
-		// action-naming layer (aliased in the manifest) and are reconciled
-		// separately; they are not synced here yet.
-		{Name: spec.SpecManagedDurability, TLA: filepath.Join(opts.specDir, "ManagedDurability.tla"), CFG: filepath.Join(opts.specDir, "ManagedDurability.cfg")},
-		{Name: spec.SpecManagedPostgresDel, TLA: filepath.Join(opts.specDir, "ManagedPostgresDelivery.tla"), CFG: filepath.Join(opts.specDir, "ManagedPostgresDelivery.cfg")},
-	}
+	// The registered manifest set is authoritative: newly registered models
+	// cannot silently fall out of the synchronization gate.
+	files := registeredSpecFiles(opts.specDir)
 
 	var failures []string
 	for _, file := range files {
@@ -89,6 +81,19 @@ func runWallabySpecSync(cmd *cobra.Command) error {
 	}
 
 	return nil
+}
+
+func registeredSpecFiles(specDir string) []specFiles {
+	names := make([]string, 0, len(spec.DefaultManifestFiles))
+	for name := range spec.DefaultManifestFiles {
+		names = append(names, string(name))
+	}
+	sort.Strings(names)
+	files := make([]specFiles, 0, len(names))
+	for _, name := range names {
+		files = append(files, specFiles{Name: spec.SpecName(name), TLA: filepath.Join(specDir, name+".tla"), CFG: filepath.Join(specDir, name+".cfg")})
+	}
+	return files
 }
 
 func validateSpec(file specFiles, manifestDir string) error {

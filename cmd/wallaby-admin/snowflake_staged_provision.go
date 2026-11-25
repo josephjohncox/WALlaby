@@ -12,7 +12,7 @@ import (
 	"time"
 
 	snowflakedest "github.com/josephjohncox/wallaby/connectors/destinations/snowflake"
-	_ "github.com/snowflakedb/gosnowflake" // Explicit owner-only administration command.
+	_ "github.com/snowflakedb/gosnowflake/v2" // Explicit owner-only administration command.
 	"github.com/spf13/cobra"
 )
 

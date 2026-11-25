@@ -26,30 +26,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Setup just
-        uses: ./.github/actions/setup-just
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
 
-      - name: Setup Go
-        id: setup-go
-        # actions/setup-go v7.0.0
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: go.mod
-          cache: false
-
-      - name: Setup Buf
-        # bufbuild/buf-setup-action v1.50.0
-        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99
-        with:
-          version: "1.63.0"
-          github_token: ${{ github.token }}
-
-      - name: Setup Java
-        # actions/setup-java v6.0.0
-        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
-        with:
-          distribution: temurin
-          java-version: "17"
 
       - name: Restore Go + tools cache
         id: cache-go-tools
@@ -61,7 +40,7 @@ jobs:
             .cache/gomod
             .cache/golangci-lint
           key: >-
-            ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-tools-
+            ${{ runner.os }}-go-${{ hashFiles('mise.toml') }}-tools-
             ${{ hashFiles('go.sum') }}
 
       - name: Restore Go build cache
@@ -71,12 +50,12 @@ jobs:
         with:
           path: .cache/gocache
           key: >-
-            ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-build-
+            ${{ runner.os }}-go-${{ hashFiles('mise.toml') }}-build-
             ${{ hashFiles('go.sum') }}
 
       - name: Save Go + tools cache
         if: always() && steps.cache-go-tools.outputs.cache-hit != 'true'
-        # actions/cache v4.3.0
+        # actions/cache/save v6.1.0
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
@@ -86,27 +65,27 @@ jobs:
           key: ${{ steps.cache-go-tools.outputs.cache-primary-key }}
 
       - name: Spec manifest
-        run: just spec-verify
+        run: mise run spec-verify
 
       - name: Generate protobufs
-        run: just proto
+        run: mise run proto
 
       - name: Spec analyzer
-        run: just spec-lint
+        run: mise run spec-lint
 
       - name: Spec sync
-        run: just spec-sync
+        run: mise run spec-sync
 
       - name: TLA+ model check
         run: |
-          just tla-tools
-          just tla
+          mise run tla-tools
+          mise run tla
 
       - name: TLA+ coverage
         run: |
           set -euo pipefail
-          just tla-coverage
-          if ! just tla-coverage-check; then
+          mise run tla-coverage
+          if ! mise run tla-coverage-check; then
             echo "==== TLA coverage outputs ===="
             for f in specs/coverage/*.txt; do
               echo "---- ${f} ----"
@@ -117,11 +96,11 @@ jobs:
 
       - name: Trace suite coverage
         run: |
-          TRACE_CASES=200 TRACE_COVERAGE_REPORT=1 just trace-suite
+          TRACE_CASES=200 TRACE_COVERAGE_REPORT=1 mise run trace-suite
 
       - name: Save Go build cache
         if: always() && steps.cache-go-build.outputs.cache-hit != 'true'
-        # actions/cache v4.3.0
+        # actions/cache/save v6.1.0
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: .cache/gocache

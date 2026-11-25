@@ -37,6 +37,15 @@ Payload format notes:
 - `arrow`/`avro`/`proto` use the shared schema from the flow; schema evolution is driven by DDL events.
 - JSON is supported for compatibility but loses some typing fidelity; prefer Arrow/Avro/Proto for strict round-trip.
 
+## Apache Iggy
+
+The typed `iggy` endpoint uses the native Iggy Go SDK, not Kafka. It publishes
+one encoded batch per message with Arrow, Avro, Protobuf or JSON, TLS and
+username/password or personal-token authentication. It requires a pre-existing
+stream/topic and uses an explicit zero-based partition. Delivery is experimental
+and append-only, not crash-safe exactly once. See the [Iggy guide](connectors/iggy.md)
+for configuration, limits, uncertain-send recovery and live readback tests.
+
 ## Snowflake
 
 Read the [Snowflake destination reference](connectors/snowflake.md) before selecting a mode. WALlaby implements three experimental modeled protocol profiles: `postgresql-to-snowflake-sql-v1` uses pre-provisioned hybrid tables and receipt-first target transactions; `postgresql-to-snowflake-staged-append-v1` loads a deterministic immutable internal-stage object into an append changelog table with fail-closed COPY and landing/target proof; and `postgresql-to-snowflake-streaming-rest-append-v1` models SQL-observed append completeness but refuses admission because no reviewed append transport is linked. SQL and staged COPY have no reviewed Snowflake service version or deployment cell with complete same-SHA live evidence. Streaming has that promotion gap plus the missing transport. The generic direct-table mode below is also experimental and does not inherit the named profiles' reconciliation contracts.

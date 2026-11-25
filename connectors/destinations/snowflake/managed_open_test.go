@@ -11,7 +11,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/josephjohncox/wallaby/pkg/connector"
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 )
 
 func TestManagedSnowflakeApplyDDLRejectsBeforeExecutor(t *testing.T) {

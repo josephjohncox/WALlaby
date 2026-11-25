@@ -6,7 +6,7 @@ implementation ran.
 
 ## OS-process protocol evidence
 
-`just test-failure-matrix` prebuilds `wallaby-failmatrix` and
+`mise run test-failure-matrix` prebuilds `wallaby-failmatrix` and
 `wallaby-failmatrix-worker`, reuses that real child executable, and writes fresh
 runs under `os_run_<timestamp>_seed<seed>/`.
 
@@ -53,11 +53,11 @@ Fresh `os_run_*` directories are Git-ignored and uploaded from CI.
 ## In-process model-only evidence
 
 `run_canonical/` is the committed legacy sample from the fast in-process
-executable model (`just test-failure-matrix-model`). Its `cycles.ndjson` schema
+executable model (`mise run test-failure-matrix-model`). Its `cycles.ndjson` schema
 has no child PIDs because no child process was involved. It remains useful for
 model determinism, but it is not OS-process or destination implementation proof.
 
-The bounded `just test-soak` command is also in-process model evidence and writes
+The bounded `mise run test-soak` command is also in-process model evidence and writes
 to `bench/evidence/soak`.
 
 ## Evidence boundaries

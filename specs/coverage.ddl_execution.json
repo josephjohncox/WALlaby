@@ -17,7 +17,8 @@
     "ExternalCommitRequiresAttempt",
     "ReceiptRequiresExternalCommit",
     "ExternalCommitExactlyOnce",
-    "CommitCountMatchesState"
+    "CommitCountMatchesState",
+    "IndeterminateFailsClosed"
   ],
   "unreachable_actions": [
     "AcquireExecutionLock",
@@ -36,6 +37,7 @@
     "ExternalCommitRequiresAttempt",
     "ReceiptRequiresExternalCommit",
     "ExternalCommitExactlyOnce",
-    "CommitCountMatchesState"
+    "CommitCountMatchesState",
+    "IndeterminateFailsClosed"
   ]
 }

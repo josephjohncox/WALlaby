@@ -15,6 +15,7 @@ import (
 func TestEndpointTerraformRoundTrips(t *testing.T) {
 	t.Parallel()
 	for _, endpoint := range []*wallabypb.Endpoint{
+		{Name: "iggy", Config: &wallabypb.Endpoint_Iggy{Iggy: &wallabypb.IggyDestinationConfig{Address: "iggy.example.test:8090", Stream: "cdc", Topic: "orders", PartitionId: proto.Uint32(0), Token: "example-token", Tls: proto.Bool(false), Format: wallabypb.WireFormat_WIRE_FORMAT_JSON}}},
 		{Name: "redpanda", Config: &wallabypb.Endpoint_Redpanda{Redpanda: &wallabypb.RedpandaDestinationConfig{Kafka: &wallabypb.KafkaDestinationConfig{Brokers: []string{"broker:9092"}, Acks: wallabypb.KafkaAcks_KAFKA_ACKS_ALL}}}},
 		{Name: "iceberg", Config: &wallabypb.Endpoint_Iceberg{Iceberg: &wallabypb.IcebergDestinationConfig{CatalogProfile: wallabypb.IcebergCatalogProfile_ICEBERG_CATALOG_PROFILE_S3_TABLES, DestinationRevisionId: "revision-1"}}},
 		{Name: "ducklake", Config: &wallabypb.Endpoint_Ducklake{Ducklake: &wallabypb.DuckLakeDestinationConfig{Dsn: "ducklake:db", Catalog: "postgres:catalog", DataPath: "s3://bucket/data", OverrideDataPath: proto.Bool(true), InstallExtensions: proto.Bool(false), TypeMappings: &wallabypb.TypeMappingsConfig{Mappings: map[string]string{"jsonb": "JSON"}}}}},
@@ -128,6 +129,12 @@ func TestEndpointTerraformSchemaSensitivityAndNoLegacyShape(t *testing.T) {
 	for _, name := range []string{"access_key", "secret_key", "session_token"} {
 		if field := s3.Attributes[name].(schema.StringAttribute); !field.Sensitive {
 			t.Fatalf("s3.%s is not sensitive", name)
+		}
+	}
+	iggy := attributes["iggy"].(schema.SingleNestedAttribute)
+	for _, name := range []string{"password", "token"} {
+		if field := iggy.Attributes[name].(schema.StringAttribute); !field.Sensitive {
+			t.Fatalf("iggy.%s is not sensitive", name)
 		}
 	}
 	postgres := attributes["postgres_destination"].(schema.SingleNestedAttribute)

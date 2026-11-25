@@ -39,6 +39,7 @@
     - [HTTPDestinationConfig](#wallaby-v1-HTTPDestinationConfig)
     - [HTTPDestinationConfig.HeadersEntry](#wallaby-v1-HTTPDestinationConfig-HeadersEntry)
     - [IcebergDestinationConfig](#wallaby-v1-IcebergDestinationConfig)
+    - [IggyDestinationConfig](#wallaby-v1-IggyDestinationConfig)
     - [KafkaDestinationConfig](#wallaby-v1-KafkaDestinationConfig)
     - [LocalSchemaRegistryConfig](#wallaby-v1-LocalSchemaRegistryConfig)
     - [MaterializationPolicy](#wallaby-v1-MaterializationPolicy)
@@ -625,6 +626,7 @@
 | ducklake | [DuckLakeDestinationConfig](#wallaby-v1-DuckLakeDestinationConfig) |  |  |
 | iceberg | [IcebergDestinationConfig](#wallaby-v1-IcebergDestinationConfig) |  |  |
 | custom | [CustomEndpointConfig](#wallaby-v1-CustomEndpointConfig) |  |  |
+| iggy | [IggyDestinationConfig](#wallaby-v1-IggyDestinationConfig) |  |  |
 
 
 
@@ -807,6 +809,35 @@
 | catalog_profile | [IcebergCatalogProfile](#wallaby-v1-IcebergCatalogProfile) |  |  |
 | control_table | [string](#string) |  |  |
 | destination_revision_id | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="wallaby-v1-IggyDestinationConfig"></a>
+
+### IggyDestinationConfig
+Native Apache Iggy TCP transport (SDK/server 0.10), not a Kafka endpoint.
+Streams/topics must already exist. Each CDC batch becomes one message.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| address | [string](#string) |  |  |
+| stream | [string](#string) |  |  |
+| topic | [string](#string) |  |  |
+| partition_id | [uint32](#uint32) | optional | Zero-based partition, defaults to 0 to preserve per-flow order. |
+| username | [string](#string) |  | Supply username/password OR a personal access token. |
+| password | [string](#string) |  |  |
+| token | [string](#string) |  |  |
+| tls | [bool](#bool) | optional | TLS defaults to true. Certificate validation is always enabled. |
+| tls_ca_file | [string](#string) |  |  |
+| tls_server_name | [string](#string) |  |  |
+| format | [WireFormat](#wallaby-v1-WireFormat) |  |  |
+| timeout | [google.protobuf.Duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration) |  |  |
+| max_message_bytes | [uint32](#uint32) | optional | Encoded payload limit; oversized batches fail without dropping records. |
+| type_mappings | [TypeMappingsConfig](#wallaby-v1-TypeMappingsConfig) |  |  |
 
 
 

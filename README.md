@@ -39,21 +39,34 @@ Verification and benchmark binaries live under `cmd/`; they are development tool
 
 ## Develop
 
-Install [`just`](https://just.systems) (CI pins version 1.56.0), then run:
+Install [mise](https://mise.jdx.dev/). The public toolchain and workflows live in
+`mise.toml`; no private CLI or organization login is required.
 
 ```bash
-just proto
-just fmt
-just lint
-just test
-RAPID_CHECKS=100 just test-rapid
-just docs-verify
+mise trust
+mise install
+mise run setup
+mise run build
+mise run proto
+mise run format
+mise run lint
+mise run test
+RAPID_CHECKS=100 mise run test-rapid
+mise run docs-verify
 ```
+
+`mise tasks` lists all workflows. `mise run ci-check-test` runs the non-mutating
+pre-merge gate. Go tools in ad-hoc commands run through `mise exec --`.
+See the root and subtree `AGENTS.md` files for hierarchical contributor guidance.
+
+Kafka/Redpanda and native [Apache Iggy](https://josephjohncox.github.io/WALlaby/connectors/iggy/)
+are separate destination adapters. A local Iggy fixture and typed flow example
+live under `examples/iggy/` and `examples/flows/postgres_to_iggy.yaml`.
 
 Run the live integration harness with:
 
 ```bash
-just test-integration
+mise run test-integration
 ```
 
 See the [contributor guide](https://josephjohncox.github.io/WALlaby/development/) for PostgreSQL-backed store tests, TLA+ checks, Helm validation, and generated-file rules.

@@ -7,16 +7,19 @@ temporary=$(mktemp -d "${TMPDIR:-/tmp}/wallaby-spec-verify.XXXXXX")
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM
 
 cd "$root"
-cp specs/coverage*.json "$temporary/"
+generated="$temporary/generated"
+mkdir -p "$generated"
 
-"$GO" run ./cmd/wallaby-spec-sync --spec-dir specs --manifest-dir "$temporary"
-"$GO" run ./cmd/wallaby-spec-manifest --out "$temporary/coverage.json" --dir specs
+# Never generate into the tree being verified: doing so hid CDCFlow drift and
+# silently rewrote the other manifests before reporting a failure.
+"$GO" run ./cmd/wallaby-spec-manifest --out "$generated/coverage.json" --dir "$generated"
+"$GO" run ./cmd/wallaby-spec-sync --spec-dir specs --manifest-dir "$generated"
 
 for actual in specs/coverage*.json; do
 	name=$(basename "$actual")
-	if ! diff -u "$actual" "$temporary/$name"; then
+	if ! diff -u "$actual" "$generated/$name"; then
 		echo "spec manifest differs from a fresh generation: $actual" >&2
-		echo "run just spec-sync and just spec-manifest, then include every changed manifest" >&2
+		echo "run mise run spec-sync and mise run spec-manifest, then include every changed manifest" >&2
 		exit 1
 	fi
 done
