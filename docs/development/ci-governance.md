@@ -52,11 +52,13 @@ push protection are enabled in repository settings.
 `Supply chain security` reviews dependency changes on pull requests and rejects
 new known vulnerabilities at low severity or above in runtime, development or
 unknown scope. It uses a read-only token and does not post privileged comments.
-On main pushes or explicit trusted dispatch, separate root/provider jobs submit
-all selected Go dependencies to GitHub's dependency graph. Distinct job identities
-prevent one module's snapshot replacing the other's. Only those trusted submission
-jobs receive contents-write permission. The workflow does not dismiss alerts;
-GitHub must reconcile them with the submitted/default-branch manifests.
+On main pushes or explicit trusted dispatch, Component Detection scans both Go
+modules and the uv lock into one explicitly correlated dependency-graph snapshot.
+The uv detector is enabled explicitly; empty results fail the job. Ignored caches
+and editor settings are outside the scan. Only the trusted submission job receives
+contents-write permission. Its action commit is pinned; the action acquires the
+current detector release. The workflow does not dismiss alerts; GitHub must
+reconcile them with the submitted/default-branch manifests.
 
 ## Unit test coverage
 

@@ -26,7 +26,7 @@ jobs:
           comment-summary-in-pr: never
           show-openssf-scorecard: false
 
-  root-dependency-submission:
+  dependency-submission:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -40,34 +40,14 @@ jobs:
           persist-credentials: false
       - name: Setup mise
         uses: ./.github/actions/setup-mise
-      - name: Submit root Go dependency graph
-        # actions/go-dependency-submission v2.0.3
+      - name: Submit both Go modules and the uv lock in one snapshot
+        # Component Detection dependency submission action v0.2.1
         uses: >-
-          actions/go-dependency-submission@f35d5c9af13ce9cc32f7930b171e315e878f6921
+          advanced-security/component-detection-dependency-submission-action@9887d3a4295305f4e7b03a1cfdb2099d44cadf52
         with:
-          go-mod-path: go.mod
-          go-build-target: all
-
-  # Distinct job IDs also give the API distinct snapshot correlators; a matrix
-  # job must not let one module replace the other module's dependency evidence.
-  provider-dependency-submission:
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        # actions/checkout v7.0.1
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - name: Setup mise
-        uses: ./.github/actions/setup-mise
-      - name: Submit Terraform provider dependency graph
-        # actions/go-dependency-submission v2.0.3
-        uses: >-
-          actions/go-dependency-submission@f35d5c9af13ce9cc32f7930b171e315e878f6921
-        with:
-          go-mod-path: terraform/provider/go.mod
-          go-build-target: all
+          filePath: .
+          fail-on-empty: true
+          detectorsCategories: GoMod,Pip
+          detectorArgs: UvLock=EnableIfDefaultOff
+          directoryExclusionList: .git,.cache,.zed,**/.lake
+          correlator: wallaby-go-modules-and-uv
