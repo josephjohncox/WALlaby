@@ -25,7 +25,7 @@ services:
       retries: 10
 
   clickhouse:
-    image: clickhouse/clickhouse-server:24.12
+    image: clickhouse/clickhouse-server:26.7
     container_name: wallaby-bench-clickhouse
     environment:
       CLICKHOUSE_DB: bench
