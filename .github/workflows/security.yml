@@ -47,7 +47,14 @@ jobs:
         with:
           filePath: .
           fail-on-empty: true
-          detectorsCategories: GoMod,Pip
           detectorArgs: UvLock=EnableIfDefaultOff
           directoryExclusionList: .git,.cache,.zed,**/.lake
           correlator: wallaby-go-modules-and-uv
+      - name: Retain detector manifest for coverage verification
+        if: always()
+        # actions/upload-artifact v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: dependency-detector-manifest
+          path: ${{ runner.temp }}/component-detection-output.json
+          if-no-files-found: error
