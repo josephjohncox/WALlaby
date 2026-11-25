@@ -50,11 +50,15 @@ jobs:
           detectorArgs: UvLock=EnableIfDefaultOff
           directoryExclusionList: .git,.cache,.zed,**/.lake
           correlator: wallaby-go-modules-and-uv
+      # The action deletes its private temporary manifest. Reuse its acquired
+      # executable to retain and verify all three required project graphs.
+      - name: Verify root, provider and uv dependency coverage
+        run: mise run dependency-manifest
       - name: Retain detector manifest for coverage verification
         if: always()
         # actions/upload-artifact v7.0.2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: dependency-detector-manifest
-          path: ${{ runner.temp }}/component-detection-output.json
+          path: .cache/security/dependencies.json
           if-no-files-found: error

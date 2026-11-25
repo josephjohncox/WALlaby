@@ -1074,6 +1074,15 @@ run = ["go build -trimpath -o bin/ ./cmd/...", "go -C terraform/provider build -
 description = "Verify checksums and tidy manifests in every Go module and check the Python lock"
 run = ["go mod verify", "go mod tidy -diff", "go -C terraform/provider mod verify", "go -C terraform/provider mod tidy -diff", "uv lock --check"]
 
+[tasks."dependency-manifest"]
+description = "Verify real root/provider/uv detector graphs; CI supplies the public Component Detection executable"
+shell = "bash -euo pipefail -c"
+run = '''
+mkdir -p .cache/security
+./component-detection scan --SourceDirectory . --ManifestFile .cache/security/dependencies.json --DirectoryExclusionList '.git,.cache,.zed,**/.lake' --DetectorArgs UvLock=EnableIfDefaultOff
+python scripts/verify-dependency-manifest.py .cache/security/dependencies.json
+'''
+
 [tasks.security]
 description = "Scan both Go applications and the locked Python documentation dependencies"
 run = ["mise run vulncheck", "cd terraform/provider && {{ vars.go }} run golang.org/x/vuln/cmd/govulncheck@{{ vars.govulncheck_version }} ./...", "mise run security-python"]
