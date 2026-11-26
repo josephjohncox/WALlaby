@@ -407,8 +407,15 @@ func TestManagedAdmissionRejectsUnsafeOptions(t *testing.T) {
 		{name: "bootstrap never missing sync publication", mutate: func(f *flow.Flow, _ *[]stream.DestinationConfig, _ *StreamRunnerConfig) {
 			setRunnerSourceOptions(f, map[string]string{"sync_publication": ""})
 		}, want: "sync_publication=false"},
-		{name: "file snapshot authority", mutate: func(f *flow.Flow, _ *[]stream.DestinationConfig, _ *StreamRunnerConfig) {
-			setRunnerSourceOptions(f, map[string]string{"snapshot_state_backend": "file"})
+		// Persisted flows reject the file backend at admission, so the managed
+		// check is reached only through the local-only source override.
+		{name: "file snapshot authority", mutate: func(f *flow.Flow, _ *[]stream.DestinationConfig, cfg *StreamRunnerConfig) {
+			spec, err := f.DecodeSource(connector.DefaultRegistry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec.Options["snapshot_state_backend"] = "file"
+			cfg.SourceSpecOverride = &spec
 		}, want: "snapshot authority"},
 		{name: "drop slot", mutate: func(f *flow.Flow, _ *[]stream.DestinationConfig, _ *StreamRunnerConfig) {
 			f.Config.FailureMode = stream.FailureModeDropSlot

@@ -203,7 +203,11 @@ message ClickHouseMetadataConfig {
   string schema = 2;
   string table = 3;
   string primary_key_prefix = 4;
+  // Legacy metadata uses MergeTree. Empty selects the default; other engines
+  // and SQL fragments are rejected before the destination opens a connection.
   string engine = 5;
+  // Comma-separated unique names from flow_id, source_schema, source_table,
+  // synced_at, is_deleted, lsn, operation, key_json. Expressions are not allowed.
   string order_by = 6;
 }
 
@@ -267,6 +271,8 @@ message SchemaRegistryConfig {
 message SnapshotStateConfig {
   oneof backend {
     bool disabled = 1;
+    // Local connector configuration only. Persisted flow admission rejects
+    // file-backed state; operator-run backfill can use a runtime override.
     string file_path = 2;
     PostgresDSNConfig postgres = 3;
   }

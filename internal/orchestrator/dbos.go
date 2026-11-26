@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"reflect"
 	"runtime"
 	"sort"
@@ -21,6 +19,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/flow"
 	"github.com/josephjohncox/wallaby/internal/runner"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
+	"github.com/josephjohncox/wallaby/internal/tracepath"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
@@ -461,20 +460,9 @@ func (o *DBOSOrchestrator) flowTraceSink(flowID string) (stream.TraceSink, func(
 	if o.tracePath == "" {
 		return o.traceSink, nil, nil
 	}
-	path := strings.ReplaceAll(o.tracePath, "{flow_id}", flowID)
-	if path == o.tracePath {
-		path = fmt.Sprintf("%s.%s", o.tracePath, flowID)
-	}
-	dir := filepath.Dir(path)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o750); err != nil {
-			return nil, nil, fmt.Errorf("create trace dir: %w", err)
-		}
-	}
-	// #nosec G304 -- trace path is configured by the operator.
-	file, err := os.Create(path)
+	file, err := tracepath.Open(o.tracePath, flowID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open trace file: %w", err)
+		return nil, nil, err
 	}
 	return stream.NewJSONTraceSink(file), file.Close, nil
 }
