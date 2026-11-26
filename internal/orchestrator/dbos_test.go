@@ -244,7 +244,7 @@ func TestDBOSFlowTraceSinkConfinesFlowIDToTemplateRoot(t *testing.T) {
 			}
 		}
 	}
-	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "sentinel" { // #nosec G304 -- test-owned temp path.
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "sentinel" {
 		t.Fatalf("sentinel=%q err=%v, want unchanged", got, err)
 	}
 
