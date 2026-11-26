@@ -75,6 +75,9 @@ jobs:
       - name: Lint
         run: mise run lint
 
+      - name: Proof runner security unit tests
+        run: mise run test-proof-runner
+
       - name: Govulncheck
         run: mise run security
 

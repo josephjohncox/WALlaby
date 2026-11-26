@@ -26,6 +26,7 @@ overlay mutation controls. Those tests are not part of either deductive theorem.
 ## Gobra
 
 ```bash
+mise run test-proof-runner
 mise run proof-gobra-bootstrap
 mise run proof-gobra
 ```
@@ -35,8 +36,18 @@ archives and exact source/submodule revisions into ignored `.cache/`, builds
 Gobra if absent, then checks the recorded local assembly hash. There is no
 upstream release-JAR claim. A non-byte-identical rebuild fails; do not update the
 hash merely to make a build pass. This has not been validated as a portable CI
-build. Java Temurin 25.0.5+8 is selected by mise/JAVA_HOME; it worked here but is
-outside Gobra's documented Java 11/15 matrix.
+build. The runner accepts only mise's pinned `temurin-25.0.5+8.0.LTS` install
+under the invoking account's default mise data directory. `JAVA_HOME` and Java
+agent options cannot select or alter the verifier subprocess; subprocesses use a
+small fixed environment. Z3's binary hash is checked before executing it. A
+custom mise data directory fails closed. The Java installation itself remains
+trusted user-managed content, checked by version rather than a pinned executable
+hash. Java 25 worked here but is outside Gobra's documented Java 11/15 matrix.
+
+`test-proof-runner` runs without Gobra or native solver tools and is enforced by
+ordinary CI. It tests tool admission, subprocess environment isolation, tampered
+solver rejection, pin consistency and the frozen production contract. These
+unit tests do not establish the deductive result.
 
 The runner lifts the source's `// @` contracts and names its single unnamed result
 `res`. Executable tokens and the contract list must exactly match the frozen

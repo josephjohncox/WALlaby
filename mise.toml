@@ -1107,7 +1107,7 @@ trap 'rm -f "$requirements"' EXIT
 
 [tasks."ci-check-test"]
 description = "Run non-mutating formatting, lint, complete unit, dependency and security gates"
-run = ["mise run format:check", "mise run lint", "mise run proto-lint", "mise run test", "mise run test-protocol", "mise run deps:check", "mise run security"]
+run = ["mise run format:check", "mise run lint", "mise run proto-lint", "mise run test", "mise run test-protocol", "mise run test-proof-runner", "mise run deps:check", "mise run security"]
 
 [tasks."test-protocol"]
 description = "Production Runner exploration, real-store histories, and mutation-sensitive protocol gates"
@@ -1133,6 +1133,10 @@ run = ["mise run tla-tools", "python scripts/check-tla-mutants.py --jar '{{ vars
 [tasks."pre-commit"]
 description = "Fast non-mutating Go formatting and Protobuf checks"
 run = ["mise run format:check", "mise run proto-lint"]
+
+[tasks."test-proof-runner"]
+description = "Unit-test proof runner tool admission, subprocess isolation and frozen contract without native verifier tools"
+run = "python -m unittest discover -s verification/gobra -p 'test_*.py'"
 
 [tasks."proof-gobra-bootstrap"]
 description = "Fetch/build pinned Gobra pilot prerequisites (macOS arm64 only; fail closed elsewhere)"

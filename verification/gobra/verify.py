@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pwd
 import re
 import subprocess
 import sys
@@ -47,45 +48,55 @@ def pinned_z3() -> Path:
     return CACHE / "toolchain" / "z3" / archive[: -len(".zip")] / "bin" / "z3"
 
 
-def tool_version(binary: Path) -> tuple[int, str]:
+# The proof must not inherit caller-controlled tool selection or configuration
+# (JAVA_HOME, JAVA_TOOL_OPTIONS, GIT_DIR and similar). Every subprocess gets this
+# fixed environment; every executable is a pinned absolute path, except the
+# system git used only to read the pinned checkout revisions.
+TOOL_ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
+
+
+def tool_version(binary: Path, flag: str) -> tuple[int, str]:
     proc = subprocess.run(
-        [str(binary), "-version" if binary.name == "java" else "--version"],
+        [str(binary), flag],
         check=False,
         text=True,
         capture_output=True,
+        env=TOOL_ENV,
     )
     return proc.returncode, proc.stdout + proc.stderr
 
 
-def resolve_java() -> Path:
-    """Locate the pinned Temurin without storing a machine path.
+def mise_java_root() -> Path:
+    """Return mise's Java install directory for the invoking account.
 
-    If JAVA_HOME is set, that binary is the only candidate and a version
-    mismatch fails closed. Otherwise a mise Java install whose directory name
-    contains the pinned version is accepted. Any other Java is rejected.
+    The account database, not HOME or JAVA_HOME, supplies the base so no
+    environment variable can redirect the pinned Java executable.
     """
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local" / "share" / "mise" / "installs" / "java"
+
+
+def resolve_java() -> Path:
+    """Return the one pinned mise Temurin install, or fail closed.
+
+    pins.json names the exact install directory (the value of the java tool in
+    mise.toml). The directory must be a real directory, java must resolve inside
+    it, and its reported version must match. There is no override.
+    """
+    install_name = PINS["java"]["install"]
     version = PINS["java"]["version"]
-    java_home = os.environ.get("JAVA_HOME")
-    if java_home:
-        candidate = Path(java_home) / "bin" / "java"
-        if not candidate.is_file():
-            fail(f"JAVA_HOME does not contain a java binary: {candidate}")
-        code, text = tool_version(candidate)
-        if code != 0 or version not in text:
-            fail(f"JAVA_HOME Java is not pinned {version}: {text.strip()}")
-        return candidate
-    mise_root = Path.home() / ".local" / "share" / "mise" / "installs" / "java"
-    if mise_root.is_dir():
-        for child in sorted(mise_root.iterdir()):
-            if version not in child.name:
-                continue
-            candidate = child / "bin" / "java"
-            if not candidate.is_file():
-                continue
-            code, text = tool_version(candidate)
-            if code == 0 and version in text:
-                return candidate
-    fail("pinned Java " + version + " was not found. Set JAVA_HOME to that Temurin install.")
+    if Path(install_name).name != install_name or version not in install_name:
+        fail(f"java.install must be one directory name containing {version}: {install_name!r}")
+    install = mise_java_root() / install_name
+    if install.is_symlink() or not install.is_dir():
+        fail(f"pinned Java install {install_name} is not a real mise install directory; run mise install")
+    candidate = install / "bin" / "java"
+    if not candidate.is_file() or not candidate.resolve().is_relative_to(install.resolve()):
+        fail(f"pinned Java install has no contained java binary: {candidate}")
+    code, text = tool_version(candidate, "-version")
+    if code != 0 or version not in text:
+        fail(f"pinned Java is not {version}: {text.strip()}")
+    return candidate
+
 
 FROZEN_EXECUTABLE = """package reconcilepolicy
 const (
@@ -204,6 +215,7 @@ def git_rev(path: Path) -> str:
         check=False,
         text=True,
         capture_output=True,
+        env=TOOL_ENV,
     )
     if proc.returncode != 0:
         fail(f"git rev-parse failed in {path}: {proc.stderr.strip()}")
@@ -225,6 +237,8 @@ def require_tools() -> dict:
         z3 = pinned_z3()
         if not z3.is_file() or not os.access(z3, os.X_OK):
             fail(f"pinned Z3 is missing or not executable: {z3}")
+        # Admit the solver by checksum before any execution of it.
+        z3_hash = require_file(z3, PINS["z3"]["binary_sha256"])
         jar_hash = require_file(JAR, PINS["executed_gobra_jar_sha256"])
         sbt_name, sbt_meta = pinned_download("sbt-", ".tgz")
         z3_name, z3_meta = pinned_download("z3-", ".zip")
@@ -253,10 +267,10 @@ def require_tools() -> dict:
         for name, rev in revs.items():
             if rev != expected[name]:
                 fail(f"{name} revision drift: {rev} != {expected[name]}")
-        java_code, java_text = tool_version(java)
+        java_code, java_text = tool_version(java, "-version")
         if java_code != 0 or PINS["java"]["version"] not in java_text:
             fail(f"pinned Java version not reported by {java}: {java_text}")
-        z3_code, z3_text = tool_version(z3)
+        z3_code, z3_text = tool_version(z3, "--version")
         if z3_code != 0 or PINS["z3"]["version"] not in z3_text:
             fail(f"pinned Z3 version not reported: {z3_text}")
         return {
@@ -264,7 +278,7 @@ def require_tools() -> dict:
             "java_executable": str(java),
             "z3": z3_text.strip(),
             "z3_executable": str(z3),
-            "z3_binary_sha256": require_file(z3, PINS["z3"]["binary_sha256"]),
+            "z3_binary_sha256": z3_hash,
             "jar_sha256": jar_hash,
             "archives": archive_hashes,
             "revisions": revs,
@@ -294,6 +308,7 @@ def run_gobra(subject: Path, java: Path, z3: Path) -> dict:
         text=True,
         capture_output=True,
         timeout=120,
+        env=TOOL_ENV,
     )
     elapsed = time.perf_counter() - started
     combined = proc.stdout + proc.stderr
