@@ -44,10 +44,26 @@ var generatedKubeconfigName = regexp.MustCompile(`^wallaby-it-kube-[0-9a-f]{32}\
 // harnessRoot is the only filesystem location the harness uses for shared
 // state, its lock and generated files. Every access goes through os.Root, so a
 // symlink inside the directory cannot redirect a read, write or removal.
+//
+// path is display and identity metadata (for example the kind cluster name);
+// no cleanup authority is derived from it. Deletion authority is the owned
+// capability, which only createOwnedRoot can mint.
 type harnessRoot struct {
-	path    string
-	root    *os.Root
-	ownsDir bool
+	path  string
+	root  *os.Root
+	owned *ownedDirectory
+}
+
+// ownedDirectory is the authority to remove one directory this process created
+// in a single-package invocation. It pins the parent directory the leaf was
+// created in, so renaming or replacing the parent or the leaf afterwards cannot
+// redirect removal to another directory, and it records the created
+// directory's identity so a replaced leaf is refused instead of removed.
+// Runner- or environment-provided roots never carry one.
+type ownedDirectory struct {
+	parent   *os.Root
+	name     string
+	identity fs.FileInfo
 }
 
 // openHarnessRoot opens the runner-provided private directory. Without one, a
@@ -58,17 +74,7 @@ func openHarnessRoot(dir string, expectedPeers int) (*harnessRoot, error) {
 		if expectedPeers != 1 {
 			return nil, fmt.Errorf("%d harness participants require the private state directory from scripts/test-integration.sh (%s)", expectedPeers, stateDirEnv)
 		}
-		created, err := os.MkdirTemp("", "wallaby-it-")
-		if err != nil {
-			return nil, fmt.Errorf("create private harness state directory: %w", err)
-		}
-		root, err := openPrivateRoot(created)
-		if err != nil {
-			_ = os.Remove(created)
-			return nil, err
-		}
-		root.ownsDir = true
-		return root, nil
+		return createOwnedRoot()
 	}
 	if !filepath.IsAbs(dir) {
 		return nil, fmt.Errorf("%s must be an absolute path", stateDirEnv)
@@ -76,16 +82,74 @@ func openHarnessRoot(dir string, expectedPeers int) (*harnessRoot, error) {
 	return openPrivateRoot(dir)
 }
 
+// createOwnedRoot makes a fresh private directory with a generated name inside
+// the temporary directory and returns it together with the only capability to
+// remove it. The directory is created, inspected and opened through one pinned
+// parent root, so no ambient path is resolved again after creation.
+func createOwnedRoot() (*harnessRoot, error) {
+	tempDir := os.TempDir()
+	parent, err := os.OpenRoot(tempDir)
+	if err != nil {
+		return nil, fmt.Errorf("open temporary directory for harness state: %w", err)
+	}
+	name, err := mkdirGenerated(parent)
+	if err != nil {
+		_ = parent.Close()
+		return nil, fmt.Errorf("create private harness state directory: %w", err)
+	}
+	root, err := openPrivateChild(parent, name, filepath.Join(tempDir, name))
+	if err != nil {
+		_ = parent.Remove(name)
+		_ = parent.Close()
+		return nil, err
+	}
+	identity, err := root.root.Stat(".")
+	if err != nil {
+		_ = root.root.Close()
+		_ = parent.Remove(name)
+		_ = parent.Close()
+		return nil, fmt.Errorf("inspect created harness state directory: %w", err)
+	}
+	root.owned = &ownedDirectory{parent: parent, name: name, identity: identity}
+	return root, nil
+}
+
+// mkdirGenerated creates a new 0700 directory with a random name; Mkdir never
+// reuses or follows an existing name.
+func mkdirGenerated(parent *os.Root) (string, error) {
+	for range 16 {
+		var random [16]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return "", err
+		}
+		name := "wallaby-it-" + hex.EncodeToString(random[:])
+		err := parent.Mkdir(name, 0o700)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		return name, nil
+	}
+	return "", errors.New("exhausted random directory name attempts")
+}
+
 func openPrivateRoot(dir string) (*harnessRoot, error) {
 	dir = filepath.Clean(dir)
-	// Inspect the final component through its parent so a symlink is seen as a
-	// symlink, then prove the directory opened is the one inspected.
 	parent, err := os.OpenRoot(filepath.Dir(dir))
 	if err != nil {
 		return nil, fmt.Errorf("open parent of harness state directory: %w", err)
 	}
 	defer func() { _ = parent.Close() }()
-	name := filepath.Base(dir)
+	return openPrivateChild(parent, filepath.Base(dir), dir)
+}
+
+// openPrivateChild opens the named child of parent as the private root.
+// displayPath is metadata only.
+func openPrivateChild(parent *os.Root, name, displayPath string) (*harnessRoot, error) {
+	// Inspect the final component through its parent so a symlink is seen as a
+	// symlink, then prove the directory opened is the one inspected.
 	before, err := parent.Lstat(name)
 	if err != nil {
 		return nil, fmt.Errorf("inspect harness state directory: %w", err)
@@ -108,7 +172,7 @@ func openPrivateRoot(dir string) (*harnessRoot, error) {
 		_ = root.Close()
 		return nil, err
 	}
-	return &harnessRoot{path: dir, root: root}, nil
+	return &harnessRoot{path: displayPath, root: root}, nil
 }
 
 func checkPrivateDirectory(info fs.FileInfo) error {
@@ -337,18 +401,39 @@ func (r *harnessRoot) removeGenerated(name string) error {
 }
 
 // close releases the root. A directory this process created is emptied through
-// the root first, then its now-empty path is removed; a runner-provided
-// directory is left for the shell that created it.
+// the pinned root first; its leaf is then removed through the pinned parent
+// only if it is still the directory that was created. A replaced or moved leaf
+// is refused, never removed. A runner-provided directory is left for the shell
+// that created it. Every descriptor is closed on every path.
 func (r *harnessRoot) close() error {
 	var removeErr error
-	if r.ownsDir {
+	if r.owned != nil {
 		removeErr = r.removeContents()
 	}
 	closeErr := r.root.Close()
-	if r.ownsDir && removeErr == nil {
-		removeErr = os.Remove(r.path)
+	if r.owned != nil {
+		if removeErr == nil {
+			removeErr = r.owned.remove()
+		}
+		closeErr = errors.Join(closeErr, r.owned.parent.Close())
 	}
 	return errors.Join(removeErr, closeErr)
+}
+
+// remove deletes the now-empty owned leaf through the pinned parent after
+// proving the leaf still names the directory that was created.
+func (d *ownedDirectory) remove() error {
+	current, err := d.parent.Lstat(d.name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("refusing to remove harness state directory %q: it was moved or removed", d.name)
+	}
+	if err != nil {
+		return err
+	}
+	if !current.IsDir() || !os.SameFile(d.identity, current) {
+		return fmt.Errorf("refusing to remove harness state directory %q: it no longer names the created directory", d.name)
+	}
+	return d.parent.Remove(d.name)
 }
 
 func (r *harnessRoot) removeContents() error {

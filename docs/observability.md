@@ -117,6 +117,11 @@ Important span attributes:
 
 DDL gating emits an explicit span event `ddl.gated` and a trace event `ddl_gate` in the trace sink.
 
+For per-flow JSONL files, pre-create the operator-owned root configured by
+`trace.path` / `WALLABY_TRACE_PATH`. Workers and DBOS can create per-flow
+subdirectories inside that root, but do not create the root or its ancestors.
+See [per-flow trace configuration](operations/configuration.md#per-flow-trace-files).
+
 ## pprof
 
 Enable the built-in profiler with:

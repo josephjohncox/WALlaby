@@ -116,6 +116,132 @@ func TestOpenHarnessRootWithoutRunnerDirectoryIsSinglePackageAndSelfCleaning(t *
 	}
 }
 
+func openOwnedTestRoot(t *testing.T) (*harnessRoot, string) {
+	t.Helper()
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	root, err := openHarnessRoot("", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.owned == nil {
+		t.Fatal("single-package root has no removal capability")
+	}
+	return root, tmp
+}
+
+func requireClosedDescriptors(t *testing.T, root *harnessRoot) {
+	t.Helper()
+	if _, err := root.root.Stat("."); err == nil {
+		t.Fatal("state root descriptor still open after close")
+	}
+	if _, err := root.owned.parent.Stat("."); err == nil {
+		t.Fatal("pinned parent descriptor still open after close")
+	}
+}
+
+func requireEmptyDirectory(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("unrelated directory %s entries=%v err=%v, want it present and empty", dir, entries, err)
+	}
+}
+
+func TestOwnedRootCloseIgnoresRedirectedDisplayPath(t *testing.T) {
+	root, _ := openOwnedTestRoot(t)
+	created := root.path
+	unrelated := t.TempDir() // empty: os.Remove(path) would succeed on it
+	root.path = unrelated
+	if err := root.close(); err != nil {
+		t.Fatal(err)
+	}
+	requireEmptyDirectory(t, unrelated)
+	if _, err := os.Lstat(created); !os.IsNotExist(err) {
+		t.Fatalf("created directory retained: %v", err)
+	}
+	requireClosedDescriptors(t, root)
+}
+
+func TestOwnedRootCloseUsesPinnedParentAfterParentRename(t *testing.T) {
+	root, tmp := openOwnedTestRoot(t)
+	leaf := root.owned.name
+	moved := tmp + "-moved"
+	if err := os.Rename(tmp, moved); err != nil {
+		t.Fatal(err)
+	}
+	// A decoy empty directory with the same leaf name at the old ambient
+	// location; os.Remove of the display path would delete it.
+	decoy := filepath.Join(tmp, leaf)
+	if err := os.MkdirAll(decoy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.close(); err != nil {
+		t.Fatal(err)
+	}
+	requireEmptyDirectory(t, decoy)
+	if _, err := os.Lstat(filepath.Join(moved, leaf)); !os.IsNotExist(err) {
+		t.Fatalf("owned directory retained in the renamed parent: %v", err)
+	}
+	requireClosedDescriptors(t, root)
+}
+
+func TestOwnedRootCloseRefusesReplacedLeaf(t *testing.T) {
+	for name, replace := range map[string]func(t *testing.T, leaf, unrelated string){
+		"renamed and replaced by a directory": func(t *testing.T, leaf, unrelated string) {
+			if err := os.Rename(leaf, leaf+".moved"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(leaf, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"swapped for a symlink": func(t *testing.T, leaf, unrelated string) {
+			if err := os.Rename(leaf, leaf+".moved"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(unrelated, leaf); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"renamed away": func(t *testing.T, leaf, unrelated string) {
+			if err := os.Rename(leaf, leaf+".moved"); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root, _ := openOwnedTestRoot(t)
+			unrelated := t.TempDir()
+			leaf := root.path
+			replace(t, leaf, unrelated)
+			if err := root.close(); err == nil {
+				t.Fatal("close removed or accepted a leaf that is not the created directory")
+			}
+			requireEmptyDirectory(t, unrelated)
+			if info, err := os.Lstat(leaf); err == nil && info.IsDir() {
+				requireEmptyDirectory(t, leaf) // the planted replacement survives
+			}
+			requireClosedDescriptors(t, root)
+		})
+	}
+}
+
+func TestRunnerProvidedEmptyHarnessRootHasNoRemovalAuthority(t *testing.T) {
+	dir := privateTestDir(t)
+	root, err := openHarnessRoot(dir, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.owned != nil {
+		t.Fatal("runner-provided root carries a removal capability")
+	}
+	if err := root.close(); err != nil {
+		t.Fatal(err)
+	}
+	requireEmptyDirectory(t, dir)
+}
+
 func TestRunnerProvidedHarnessRootIsNotRemovedByHarness(t *testing.T) {
 	dir := privateTestDir(t)
 	root, err := openHarnessRoot(dir, 3)

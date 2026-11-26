@@ -225,8 +225,10 @@ func TestDBOSFlowTraceSinkConfinesFlowIDToTemplateRoot(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "traces")
 	outside := filepath.Join(base, "outside")
-	if err := os.Mkdir(outside, 0o750); err != nil {
-		t.Fatal(err)
+	for _, dir := range []string{root, outside} { // the operator-chosen trace root must pre-exist
+		if err := os.Mkdir(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
 	}
 	sentinel := filepath.Join(outside, "owned.jsonl")
 	if err := os.WriteFile(sentinel, []byte("sentinel"), 0o600); err != nil {

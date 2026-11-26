@@ -19,10 +19,13 @@ const Placeholder = "{flow_id}"
 //
 // Every occurrence of Placeholder in template is replaced by flowID; a template
 // without the placeholder gets ".<flowID>" appended. The directory portion of
-// the template before the first placeholder is the operator-chosen root. The
-// flow ID is revalidated here, and all further directory and file creation is
-// confined to that root with os.Root so separators, dot-dot or symlinks cannot
-// reach outside it. Files are created with mode 0600.
+// the template before the first placeholder is the operator-chosen root, taken
+// from the template alone. That root must already exist: Open never creates
+// it, so a trace path grants no ambient directory-creation authority. The flow
+// ID is revalidated here and appears only in the root-relative leaf; all further
+// directory and file creation is confined
+// to that root with os.Root so separators, dot-dot or symlinks cannot reach
+// outside it. Files are created with mode 0600.
 func Open(template, flowID string) (*os.File, error) {
 	if template == "" {
 		return nil, errors.New("trace path template is required")
@@ -31,22 +34,8 @@ func Open(template, flowID string) (*os.File, error) {
 		return nil, fmt.Errorf("trace path: %w", err)
 	}
 
-	expanded := template + "." + flowID
-	prefix := template
-	if index := strings.Index(template, Placeholder); index >= 0 {
-		expanded = strings.ReplaceAll(template, Placeholder, flowID)
-		prefix = template[:index]
-	}
-	rootPath := "."
-	relative := expanded
-	if index := strings.LastIndexAny(prefix, `/`+string(os.PathSeparator)); index >= 0 {
-		rootPath = expanded[:index+1]
-		relative = expanded[index+1:]
-	}
+	rootPath, relative := splitTemplate(template, flowID)
 
-	if err := os.MkdirAll(rootPath, 0o750); err != nil {
-		return nil, fmt.Errorf("create trace dir: %w", err)
-	}
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {
 		return nil, fmt.Errorf("open trace root: %w", err)
@@ -68,4 +57,25 @@ func Open(template, flowID string) (*os.File, error) {
 		return nil, fmt.Errorf("secure trace file permissions: %w", err)
 	}
 	return file, nil
+}
+
+// splitTemplate separates the operator-chosen root directory from the
+// root-relative trace leaf. rootPath is a slice of template taken before the
+// first placeholder and never depends on flowID; flowID is substituted only
+// into the leaf, which is later resolved through os.Root.
+func splitTemplate(template, flowID string) (rootPath, relative string) {
+	prefix := template
+	if index := strings.Index(template, Placeholder); index >= 0 {
+		prefix = template[:index]
+	}
+	rootPath = "."
+	leafTemplate := template
+	if index := strings.LastIndexAny(prefix, `/`+string(os.PathSeparator)); index >= 0 {
+		rootPath = template[:index+1]
+		leafTemplate = template[index+1:]
+	}
+	if strings.Contains(leafTemplate, Placeholder) {
+		return rootPath, strings.ReplaceAll(leafTemplate, Placeholder, flowID)
+	}
+	return rootPath, leafTemplate + "." + flowID
 }
