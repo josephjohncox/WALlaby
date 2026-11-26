@@ -810,13 +810,18 @@ func verifyExactAuthorityObjectSets(ctx context.Context, pool authorityCatalogQu
 			return fmt.Errorf("exact authority constraint backing index %s.%s must be represented exactly once", contract.table, contract.name)
 		}
 	}
+	// PostgreSQL 18 represents column NOT NULL attributes as contype='n'
+	// catalog rows. Validated nullability is a column contract (attnotnull),
+	// not a named table-constraint contract. Unvalidated NOT NULL rows remain
+	// unexpected: attnotnull alone does not prove existing rows are non-null.
 	for table, expected := range constraintNames {
 		sort.Strings(expected)
 		var actual []string
 		if err := pool.QueryRow(ctx, `
 SELECT COALESCE(array_agg(constraint_row.conname::text ORDER BY constraint_row.conname),'{}'::text[])
 FROM pg_catalog.pg_constraint AS constraint_row
-WHERE constraint_row.conrelid=to_regclass($1)`, publicRegclass(table)).Scan(&actual); err != nil {
+WHERE constraint_row.conrelid=to_regclass($1)
+  AND NOT (constraint_row.contype = 'n' AND constraint_row.convalidated)`, publicRegclass(table)).Scan(&actual); err != nil {
 			return fmt.Errorf("enumerate exact authority constraints for %s: %w", table, err)
 		}
 		if !equalStrings(actual, expected) {

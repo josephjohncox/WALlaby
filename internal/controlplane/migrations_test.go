@@ -155,6 +155,43 @@ func TestDeliveryManifestAuthorityTamperCurrentPGMajor(t *testing.T) {
 	testDeliveryManifestAuthorityTamper(t, major)
 }
 
+func TestDeliveryManifestAuthorityTamperPG18(t *testing.T) {
+	testDeliveryManifestAuthorityTamper(t, 18)
+}
+
+func TestUnvalidatedNotNullAuthorityRejectedPostgres18(t *testing.T) {
+	ctx, pool := newControlplaneMigrationFixture(t)
+	var major int
+	if err := pool.QueryRow(ctx, `SELECT current_setting('server_version_num')::int / 10000`).Scan(&major); err != nil {
+		t.Fatal(err)
+	}
+	if major != 18 {
+		t.Skipf("PostgreSQL 18 NOT VALID nullability cell requires major 18, got %d", major)
+	}
+	if err := ApplyMigrations(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `ALTER TABLE delivery_manifests ALTER COLUMN checkpoint_metadata DROP NOT NULL;
+ALTER TABLE delivery_manifests ADD CONSTRAINT checkpoint_metadata_unvalidated NOT NULL checkpoint_metadata NOT VALID`); err != nil {
+		t.Fatal(err)
+	}
+	var notNull, validated bool
+	if err := pool.QueryRow(ctx, `SELECT attribute.attnotnull,constraint_row.convalidated
+FROM pg_catalog.pg_attribute AS attribute
+JOIN pg_catalog.pg_constraint AS constraint_row ON constraint_row.conrelid=attribute.attrelid AND attribute.attnum=ANY(constraint_row.conkey)
+WHERE attribute.attrelid='public.delivery_manifests'::regclass AND attribute.attname='checkpoint_metadata' AND constraint_row.contype='n'`).Scan(&notNull, &validated); err != nil {
+		t.Fatal(err)
+	}
+	if !notNull || validated {
+		t.Fatalf("fixture must bypass an attnotnull-only check: not_null=%t validated=%t", notNull, validated)
+	}
+	for attempt := range 2 {
+		if err := ApplyMigrations(ctx, pool); err == nil || !strings.Contains(err.Error(), "constraint set for delivery_manifests differs") {
+			t.Fatalf("restart %d accepted unvalidated NOT NULL authority: %v", attempt, err)
+		}
+	}
+}
+
 func TestDeliveryManifestAuthorityTamperPG14(t *testing.T) {
 	testDeliveryManifestAuthorityTamper(t, 14)
 }
@@ -330,7 +367,7 @@ func TestExactAuthorityManifestMatchesFreshCatalog(t *testing.T) {
 	}
 	sort.Strings(expectedConstraints)
 	var actualConstraints []string
-	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(table_relation.relname||'.'||constraint_row.conname ORDER BY table_relation.relname,constraint_row.conname),'{}'::text[]) FROM pg_catalog.pg_constraint AS constraint_row JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid=constraint_row.conrelid WHERE table_relation.relname IN ('delivery_manifests','schema_versions','managed_part_reservations','managed_part_reservation_parts','managed_part_reservation_events','artifact_delivery_attempts','artifact_delivery_receipts','artifact_consumer_checkpoints','artifact_metadata_prune_claims')
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(array_agg(table_relation.relname||'.'||constraint_row.conname ORDER BY table_relation.relname,constraint_row.conname),'{}'::text[]) FROM pg_catalog.pg_constraint AS constraint_row JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid=constraint_row.conrelid WHERE (table_relation.relname IN ('delivery_manifests','schema_versions','managed_part_reservations','managed_part_reservation_parts','managed_part_reservation_events','artifact_delivery_attempts','artifact_delivery_receipts','artifact_consumer_checkpoints','artifact_metadata_prune_claims')
    OR (table_relation.relname IN ('artifact_deliveries','canonical_schemas','artifact_streams','artifact_objects','artifact_publications')
        AND constraint_row.conname NOT IN (
          'artifact_deliveries_flow_incarnation_id_consumer_revision_i_key','artifact_deliveries_flow_incarnation_id_fkey','artifact_deliveries_pkey','artifact_deliveries_publication_id_fkey',
@@ -338,7 +375,7 @@ func TestExactAuthorityManifestMatchesFreshCatalog(t *testing.T) {
          'artifact_streams_backlog_age_high_seconds_check','artifact_streams_backlog_bytes_high_check','artifact_streams_backlog_count_high_check','artifact_streams_flow_incarnation_id_fkey','artifact_streams_hard_retained_bytes_check','artifact_streams_pkey',
          'artifact_objects_bucket_object_key_key','artifact_objects_encoded_length_check','artifact_objects_flow_incarnation_id_fkey','artifact_objects_flow_incarnation_id_source_position_fragme_key','artifact_objects_pkey','artifact_objects_record_count_positive','artifact_objects_schema_id_fkey','artifact_objects_shard_nonnegative','artifact_objects_state_check','artifact_objects_version_evidence',
          'artifact_publications_flow_incarnation_id_fkey','artifact_publications_flow_incarnation_id_source_position_key','artifact_publications_pkey'
-       ))`).Scan(&actualConstraints); err != nil {
+       ))) AND NOT (constraint_row.contype = 'n' AND constraint_row.convalidated)`).Scan(&actualConstraints); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(actualConstraints, expectedConstraints) {
