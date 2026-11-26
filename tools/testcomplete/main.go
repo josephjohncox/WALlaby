@@ -27,7 +27,6 @@ type expectedResults struct {
 }
 
 func main() {
-	goCommand := flag.String("go", envOr("GO", "go"), "Go command")
 	outputPath := flag.String(
 		"output",
 		envOr("GO_TEST_JSON", ".cache/test-results/go-test.json"),
@@ -40,18 +39,22 @@ func main() {
 	)
 	flag.Parse()
 
-	if err := run(*goCommand, *outputPath, *expectedPath); err != nil {
+	if err := run(*outputPath, *expectedPath); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run(goCommand, outputPath, expectedPath string) error {
-	packages, err := listPackages(goCommand)
+func run(outputPath, expectedPath string) error {
+	coverageMode := os.Getenv("GO_UNIT_COVERAGE")
+	if coverageMode != "" && coverageMode != "0" && coverageMode != "1" {
+		return errors.New("GO_UNIT_COVERAGE must be 0 or 1")
+	}
+	packages, err := listPackages()
 	if err != nil {
 		return err
 	}
-	expected, err := enumerateTests(goCommand)
+	expected, err := enumerateTests()
 	if err != nil {
 		return err
 	}
@@ -59,7 +62,7 @@ func run(goCommand, outputPath, expectedPath string) error {
 		return err
 	}
 
-	returnCode, seenPackages, accountedTests, passedTests, err := runTests(goCommand, outputPath)
+	returnCode, seenPackages, accountedTests, passedTests, err := runTests(outputPath, coverageMode == "1")
 	if err != nil {
 		return err
 	}
@@ -103,8 +106,8 @@ func run(goCommand, outputPath, expectedPath string) error {
 	return nil
 }
 
-func listPackages(goCommand string) (map[string]struct{}, error) {
-	output, err := exec.Command(goCommand, "list", "./...").Output()
+func listPackages() (map[string]struct{}, error) {
+	output, err := exec.Command("go", "list", "./...").Output()
 	if err != nil {
 		return nil, fmt.Errorf("list Go packages: %w", err)
 	}
@@ -117,8 +120,8 @@ func listPackages(goCommand string) (map[string]struct{}, error) {
 	return packages, nil
 }
 
-func enumerateTests(goCommand string) (map[string]map[string]struct{}, error) {
-	command := exec.Command(goCommand, "test", "-json", "-list", "^Test", "./...")
+func enumerateTests() (map[string]map[string]struct{}, error) {
+	command := exec.Command("go", "test", "-json", "-list", "^Test", "./...")
 	expected := make(map[string]map[string]struct{})
 	if err := consumeCommand(command, nil, func(event testEvent) {
 		name := strings.TrimSpace(event.Output)
@@ -132,7 +135,7 @@ func enumerateTests(goCommand string) (map[string]map[string]struct{}, error) {
 	return expected, nil
 }
 
-func runTests(goCommand, outputPath string) (int, map[string]struct{}, map[string]map[string]struct{}, map[string]map[string]struct{}, error) {
+func runTests(outputPath string, coverage bool) (int, map[string]struct{}, map[string]map[string]struct{}, map[string]map[string]struct{}, error) {
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o750); err != nil {
 		return 0, nil, nil, nil, fmt.Errorf("create Go test results directory: %w", err)
 	}
@@ -146,7 +149,12 @@ func runTests(goCommand, outputPath string) (int, map[string]struct{}, map[strin
 	packages := make(map[string]struct{})
 	accounted := make(map[string]map[string]struct{})
 	passed := make(map[string]map[string]struct{})
-	command := exec.Command(goCommand, "test", "-json", "-count=1", "./...")
+	if coverage {
+		if err := os.MkdirAll(".cache/coverage", 0o750); err != nil {
+			return 0, nil, nil, nil, fmt.Errorf("create coverage results directory: %w", err)
+		}
+	}
+	command := newTestCommand(coverage)
 	err = consumeCommand(command, output, func(event testEvent) {
 		recordCompletedPackage(packages, event)
 		recordAccountedTest(accounted, event)
@@ -163,6 +171,13 @@ func runTests(goCommand, outputPath string) (int, map[string]struct{}, map[strin
 		return exitError.ExitCode(), packages, accounted, passed, nil
 	}
 	return 0, nil, nil, nil, fmt.Errorf("run Go tests: %w", err)
+}
+
+func newTestCommand(coverage bool) *exec.Cmd {
+	if coverage {
+		return exec.Command("go", "test", "-json", "-count=1", "-covermode=atomic", "-coverprofile=.cache/coverage/root.out", "./...")
+	}
+	return exec.Command("go", "test", "-json", "-count=1", "./...")
 }
 
 func recordCompletedPackage(packages map[string]struct{}, event testEvent) {

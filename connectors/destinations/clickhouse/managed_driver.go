@@ -399,38 +399,25 @@ func managedConfigFromSpec(spec connector.RuntimeSpec) (managedConfig, error) {
 	if cfg.maxActiveParts, err = parseManagedUintOption(options, "managed_max_active_parts", 180, 1, 100000); err != nil {
 		return managedConfig{}, err
 	}
-	transactionRows, err := parseManagedUintOption(options, "managed_max_transaction_rows", 100000, 1, 100000)
+	if cfg.maxTransactionRows, err = parseManagedIntOption(options, "managed_max_transaction_rows", 100000, 1, 100000); err != nil {
+		return managedConfig{}, err
+	}
+	transactionBytes, err := parseManagedIntOption(options, "managed_max_transaction_bytes", 128<<20, 1<<20, 128<<20)
 	if err != nil {
 		return managedConfig{}, err
 	}
-	// #nosec G115 -- parseManagedUintOption bounds rows at 100000.
-	cfg.maxTransactionRows = int(transactionRows)
-	transactionBytes, err := parseManagedUintOption(options, "managed_max_transaction_bytes", 128<<20, 1<<20, 128<<20)
-	if err != nil {
-		return managedConfig{}, err
-	}
-	// #nosec G115 -- parseManagedUintOption bounds bytes at 128 MiB.
 	cfg.maxTransactionBytes = int64(transactionBytes)
-	fragments, err := parseManagedUintOption(options, "managed_max_transaction_fragments", 128, 1, 1024)
+	if cfg.maxFragments, err = parseManagedIntOption(options, "managed_max_transaction_fragments", 128, 1, 1024); err != nil {
+		return managedConfig{}, err
+	}
+	if cfg.maxRowsPerBatch, err = parseManagedIntOption(options, "managed_max_rows_per_batch", 10000, 1, cfg.maxTransactionRows); err != nil {
+		return managedConfig{}, err
+	}
+	batchBytes, err := parseManagedIntOption(options, "managed_max_batch_bytes", 16<<20, 1<<20, transactionBytes)
 	if err != nil {
 		return managedConfig{}, err
 	}
-	// #nosec G115 -- parseManagedUintOption bounds fragments at 1024.
-	cfg.maxFragments = int(fragments)
-	// #nosec G115 -- maxTransactionRows is positive and bounded at 100000.
-	rows, err := parseManagedUintOption(options, "managed_max_rows_per_batch", 10000, 1, uint64(cfg.maxTransactionRows))
-	if err != nil {
-		return managedConfig{}, err
-	}
-	// #nosec G115 -- parseManagedUintOption bounds rows at maxTransactionRows.
-	cfg.maxRowsPerBatch = int(rows)
-	// #nosec G115 -- maxTransactionBytes is positive and bounded at 128 MiB.
-	bytes, err := parseManagedUintOption(options, "managed_max_batch_bytes", 16<<20, 1<<20, uint64(cfg.maxTransactionBytes))
-	if err != nil {
-		return managedConfig{}, err
-	}
-	// #nosec G115 -- parseManagedUintOption bounds bytes at maxTransactionBytes.
-	cfg.maxBatchBytes = int64(bytes)
+	cfg.maxBatchBytes = int64(batchBytes)
 	if mode := strings.ToLower(strings.TrimSpace(options["batch_mode"])); mode != "target" {
 		return managedConfig{}, fmt.Errorf("managed ClickHouse profile requires batch_mode=target; got %q", mode)
 	}
@@ -506,6 +493,29 @@ func validateManagedIdentifier(name, value string) error {
 		return fmt.Errorf("managed ClickHouse %s must be one unqualified identifier", name)
 	}
 	return nil
+}
+
+// parseManagedIntOption parses an unsigned decimal option into an int bounded
+// by [minimum, maximum]. The parse is limited to 32 bits so the result is
+// representable as int on every architecture; signs are rejected as by
+// parseManagedUintOption.
+func parseManagedIntOption(options map[string]string, name string, fallback, minimum, maximum int) (int, error) {
+	raw := strings.TrimSpace(options[name])
+	if raw == "" {
+		return fallback, nil
+	}
+	if raw[0] == '+' || raw[0] == '-' {
+		return 0, fmt.Errorf("managed ClickHouse %s must be between %d and %d", name, minimum, maximum)
+	}
+	parsed, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("managed ClickHouse %s must be between %d and %d", name, minimum, maximum)
+	}
+	value := int(parsed)
+	if value < minimum || value > maximum {
+		return 0, fmt.Errorf("managed ClickHouse %s must be between %d and %d", name, minimum, maximum)
+	}
+	return value, nil
 }
 
 func parseManagedUintOption(options map[string]string, name string, fallback, minimum, maximum uint64) (uint64, error) {

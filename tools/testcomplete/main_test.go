@@ -1,7 +1,9 @@
 package main
 
 import (
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -75,6 +77,38 @@ func TestRecordPassedTestIgnoresSkippedRunningAndNestedEvents(t *testing.T) {
 	want := map[string]map[string]struct{}{"example/a": {"TestThree": {}}}
 	if !reflect.DeepEqual(passed, want) {
 		t.Fatalf("passed tests=%v, want %v", passed, want)
+	}
+}
+
+func TestTestRunArgsEnableOptionalAtomicCoverage(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		coverage bool
+		want     []string
+	}{
+		{name: "default", want: []string{"test", "-json", "-count=1", "./..."}},
+		{name: "coverage", coverage: true, want: []string{"test", "-json", "-count=1", "-covermode=atomic", "-coverprofile=.cache/coverage/root.out", "./..."}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := newTestCommand(test.coverage).Args[1:]; !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("test args=%v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRunTestsRejectsInvalidCoverageModeBeforeExecutingGo(t *testing.T) {
+	for _, value := range []string{"2", "true", "../outside.out"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("GO_UNIT_COVERAGE", value)
+			t.Setenv("PATH", t.TempDir()) // A mode-validation regression must not execute recursive Go tests.
+			dir := t.TempDir()
+			err := run(filepath.Join(dir, "results.json"), filepath.Join(dir, "expected.json"))
+			if err == nil || !strings.Contains(err.Error(), "must be 0 or 1") {
+				t.Fatalf("invalid coverage mode reached command execution: %v", err)
+			}
+		})
 	}
 }
 

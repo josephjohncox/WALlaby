@@ -103,10 +103,19 @@ jobs:
       - name: Rapid property tests
         run: mise run test-rapid
 
-      - name: Unit tests with completeness accounting
+      - name: Unit tests with completeness accounting and coverage
         run: |
           go test ./tools/testcomplete
-          mise run test
+          mise run test-coverage
+
+      - name: Upload atomic unit coverage profiles
+        if: always()
+        # actions/upload-artifact v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: go-unit-coverage
+          path: .cache/coverage/
+          if-no-files-found: error
 
       - name: Upload machine-readable Go test results
         if: always()

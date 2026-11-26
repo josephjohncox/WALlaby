@@ -191,8 +191,21 @@ mise run test-e2e
 description = "test"
 shell = "bash -euo pipefail -c"
 run = '''
-GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" GO="{{ vars.go }}" GO_TEST_TIMEOUT="{{ vars.go_test_timeout }}" GO_TEST_VERBOSE="{{ vars.go_test_verbose }}" GO_TEST_VERBOSE_FLAG="{{ vars.go_test_verbose_flag }}" ./scripts/test-go.sh
-{{ vars.go }} -C terraform/provider test ./...
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" ./scripts/test-go.sh
+GOMODCACHE="{{ vars.gomodcache }}" GOCACHE="{{ vars.gocache }}" go -C terraform/provider test ./...
+'''
+
+[tasks."test-coverage"]
+description = "Report per-package unit coverage for root/provider; retain completeness checks, no threshold or live-coverage claim"
+shell = "bash -euo pipefail -c"
+run = '''
+mkdir -p .cache/coverage
+GOMODCACHE='{{ vars.gomodcache }}' GOCACHE='{{ vars.gocache }}' GO_UNIT_COVERAGE=1 ./scripts/test-go.sh
+GOMODCACHE='{{ vars.gomodcache }}' GOCACHE='{{ vars.gocache }}' go -C terraform/provider test -count=1 -covermode=atomic -coverprofile='../../.cache/coverage/terraform-provider.out' ./...
+GOMODCACHE='{{ vars.gomodcache }}' GOCACHE='{{ vars.gocache }}' go tool cover -func=.cache/coverage/root.out > .cache/coverage/root.txt
+GOMODCACHE='{{ vars.gomodcache }}' GOCACHE='{{ vars.gocache }}' go -C terraform/provider tool cover -func=../../.cache/coverage/terraform-provider.out > .cache/coverage/terraform-provider.txt
+test -s .cache/coverage/root.out
+test -s .cache/coverage/terraform-provider.out
 '''
 
 [tasks."test-rapid"]
@@ -1060,6 +1073,24 @@ run = ["go build -trimpath -o bin/ ./cmd/...", "go -C terraform/provider build -
 [tasks."deps:check"]
 description = "Verify checksums and tidy manifests in every Go module and check the Python lock"
 run = ["go mod verify", "go mod tidy -diff", "go -C terraform/provider mod verify", "go -C terraform/provider mod tidy -diff", "uv lock --check"]
+
+[tasks."dependency-manifest-root"]
+description = "Verify root Go and uv graphs from the public detector executable supplied by CI"
+shell = "bash -euo pipefail -c"
+run = '''
+mkdir -p .cache/security
+./component-detection scan --SourceDirectory . --ManifestFile .cache/security/dependencies-root.json --DirectoryExclusionList '.git,.cache,.zed,**/.lake' --DetectorArgs UvLock=EnableIfDefaultOff
+python scripts/verify-dependency-manifest.py .cache/security/dependencies-root.json --require go.mod --require uv.lock
+'''
+
+[tasks."dependency-manifest-provider"]
+description = "Verify the nested provider graph from the public detector executable supplied by CI"
+shell = "bash -euo pipefail -c"
+run = '''
+mkdir -p .cache/security
+./component-detection scan --SourceDirectory terraform/provider --ManifestFile .cache/security/dependencies-provider.json
+python scripts/verify-dependency-manifest.py .cache/security/dependencies-provider.json --require terraform/provider/go.mod
+'''
 
 [tasks.security]
 description = "Scan both Go applications and the locked Python documentation dependencies"
