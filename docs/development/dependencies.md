@@ -44,7 +44,7 @@ version aligned with both application modules and Dockerfile.
   and exporter-log advisories on the previous versions.
 - Go JOSE is selected at `v4.1.9`, past the fixes for the JWK and JSON/CBC
   processing advisories. Removing tool-only modules also reduces the graph.
-- The docs lock contains urllib3 `2.8.0` and certifi `2026.10.23`, past the fixed
+- The docs lock contains urllib3 `2.8.0` and certifi `2026.11.20`, past the fixed
   versions for the reported proxy/streaming and CA-bundle advisories.
 - Wire codecs import maintained `iskorotkov/avro/v2 v2.35.0` directly. Iceberg
   0.7 uses `twmb/avro`; it no longer requires the archived hamba module. The
@@ -104,3 +104,30 @@ Kubernetes 0.37.2 uses structured-merge-diff/v6, so kube-openapi remains at
 `v0.0.0-20260721132016-d427ff9ee9ad`; newer source returns v7 types.
 This is separate from the removed Arrow/Iceberg holds. Do not treat
 `go get -u ./...` succeeding as proof that an upgrade is valid.
+
+## Follow-up dependency updates
+
+The Terraform provider selects Protobuf `v1.37.0-rc.1`, replacing an unreleased
+pseudo-version. This is a release candidate, not a stable-release claim. The
+application runtime and code generator keep their stable selections. Provider
+module tidy and tests are checked separately from the root module.
+
+The documentation lock selects charset-normalizer `3.5.3`. The quickstart uses
+`postgres:18-alpine`; the benchmark uses `clickhouse/clickhouse-server:26.7` with
+an authenticated healthcheck. Local isolated runs observed PostgreSQL **18.4**
+and ClickHouse **26.7.38.18**. Those are the executed versions, not claims about
+the newest patches behind mutable tags.
+
+PostgreSQL 18 represents column `NOT NULL` attributes as additional catalog
+constraints. Authority validation checks nullability through `attnotnull` and
+omits only validated `NOT NULL` rows from the named-constraint comparison. A
+`NOT VALID` nullability constraint still fails closed: `attnotnull` alone cannot
+prove existing rows are non-null. Extra check, unique, primary-key and foreign-key
+constraints remain errors.
+
+Local PostgreSQL 18 E2E, exact-catalog and tamper tests passed, and a weaker-filter
+negative control failed. The separate `postgres-quickstart-18` CI job runs
+`mise run test-postgres18-quickstart` with required-test JSON accounting against
+the image selected by the quickstart Compose definition. These checks do not
+promote PostgreSQL 18 into the managed delivery profile, whose admitted majors
+remain 14–17.
