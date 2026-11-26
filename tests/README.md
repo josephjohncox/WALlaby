@@ -45,7 +45,7 @@ The `-it-compose-iggy` flag is opt-in and ordinary unit tests provision nothing:
 
 - `IT_KIND=1` (default): create (or reuse) a kind cluster for Kubernetes dispatcher tests.
 - `IT_KIND=0`: skip kind bootstrap.
-- `IT_KIND_CLUSTER`: kind cluster name.
+- `IT_KIND_CLUSTER`: explicit kind cluster name. Without one, each runner invocation derives a distinct name from its private state directory; all participating packages share that name.
 - `IT_KIND_NODE_IMAGE`: override kind node image.
 - `IT_SERVICE_READY_TIMEOUT_SECONDS`: override how long the harness waits for Kubernetes service readiness (default 240s).
 
@@ -53,11 +53,32 @@ Examples:
 
 ```bash
 IT_KIND=1 IT_KIND_CLUSTER=my-kind-cluster mise run test-k8s-kind
-WALLABY_TEST_K8S_KUBECONFIG=/path/to/kubeconfig mise run test-integration
+IT_KIND_CLUSTER=my-kind-cluster WALLABY_TEST_K8S_KUBECONFIG=/path/to/kubeconfig mise run test-integration
 ```
 
+When borrowing a kind kubeconfig, supply the matching `IT_KIND_CLUSTER` so the
+MinIO image importer selects that cluster's nodes. Set an explicit name with
+`IT_KEEP=1` if a later run must reuse the cluster. Operator-provided kubeconfigs
+are never removed.
+
+The runner owns an unpredictable `0700` directory for each invocation and
+passes it to child test packages as `WALLABY_IT_STATE_DIR`. State and lock files
+are owner-only; generated kubeconfigs and CA files stay inside that directory.
+Do not use the old shared temporary state file or set the runner variable to
+reuse state. Direct single-package Go invocations create their own private
+state directory; shared multi-package runs use the mise runner. Normal exits
+remove owned files. SIGKILL can leave a private directory or cluster behind.
+
+The infrastructure owner stays alive until its declared concurrent peers finish,
+so its in-process port-forwards do not disappear under another package. The
+runner derives the default participant count from the selected harness packages
+and package parallelism. An unknown selector with parallelism above one needs
+an explicit `IT_EXPECTED_HARNESS_PARTICIPANTS`; invalid counts fail before setup.
+
 The harness still sanitizes credential helpers (AWS/Kubeconfig) to avoid calling external tooling during tests.
-You can override the per-package test timeout with `GO_TEST_TIMEOUT` (default: 8m).
+Set `GO_TEST_TIMEOUT` to pass an explicit Go test timeout. If unset, Go's default
+is 10 minutes. The owner reserves cleanup time inside the remaining process
+budget rather than waiting beyond Go's kill timer.
 
 The required `checkpoint5-iceberg` CI check runs:
 

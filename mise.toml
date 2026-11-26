@@ -87,7 +87,7 @@ it_run_filter = "{{ env.IT_RUN_FILTER | default(value=\"\") }}"
 it_skip_filter = "{{ env.IT_SKIP_FILTER | default(value=\"\") }}"
 it_count = "{{ env.IT_COUNT | default(value=\"\") }}"
 it_package_parallelism = "{{ env.IT_PACKAGE_PARALLELISM | default(value=\"1\") }}"
-it_expected_harness_participants = "{{ env.IT_EXPECTED_HARNESS_PARTICIPANTS | default(value=vars.it_package_parallelism) }}"
+it_expected_harness_participants = "{{ env.IT_EXPECTED_HARNESS_PARTICIPANTS | default(value=\"\") }}"
 integration_package = "{{ env.INTEGRATION_PACKAGE | default(value=\"./tests/...\") }}"
 integration_worker_binary = "{{ vars.root ~ \"/\" ~ vars.cache_dir ~ \"/wallaby-worker-integration\" }}"
 snowflake_fuzz_time = "{{ env.SNOWFLAKE_FUZZ_TIME | default(value=\"30s\") }}"
@@ -307,7 +307,6 @@ cleanup() {
             kind delete cluster --name "${harness_base}-direct" || true
             kind delete cluster --name "${harness_base}-dbos" || true
         fi
-        rm -f "${TMPDIR:-/tmp}/wallaby-it-integration-harness.state"
     fi
     return "$status"
 }
@@ -441,7 +440,6 @@ cleanup() {
     if [[ "${IT_KEEP:-0}" != "1" ]] && command -v kind >/dev/null 2>&1; then
         kind delete cluster --name "${harness_cluster}" || true
     fi
-    rm -f "${TMPDIR:-/tmp}/wallaby-it-integration-harness.state"
     return "$status"
 }
 trap cleanup EXIT
