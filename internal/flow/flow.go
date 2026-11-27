@@ -3,6 +3,7 @@ package flow
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	wallabypb "github.com/josephjohncox/wallaby/gen/go/wallaby/v1"
@@ -85,6 +86,20 @@ type MaterializationPolicy struct {
 	ProjectionID string `json:"projection_id,omitempty"`
 }
 
+// flowIDPattern bounds flow identifiers to a portable ASCII token that is safe
+// as a single file-name component: no separators, controls, dot or dot-dot.
+var flowIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+// ValidateID rejects flow identifiers that are not bounded safe ASCII. Flow IDs
+// are interpolated into worker-local file names, so admission and file creation
+// both use this check.
+func ValidateID(id string) error {
+	if !flowIDPattern.MatchString(id) {
+		return fmt.Errorf("flow id %q must match %s", id, flowIDPattern)
+	}
+	return nil
+}
+
 // ValidateDefinition rejects cross-field configurations before they can be
 // persisted by any API adapter. Runtime admission repeats capability checks
 // after concrete connector construction.
@@ -94,10 +109,22 @@ func ValidateDefinition(definition Flow) error {
 
 // ValidateDefinitionWithRegistry validates typed endpoint branches and decodes
 // runtime adapters only for validation that depends on connector capabilities.
+//
+// A present flow ID must satisfy ValidateID. Empty IDs remain valid here so
+// authoring tools can validate definitions before an ID is assigned; engines
+// still require an ID at Create.
 func ValidateDefinitionWithRegistry(definition Flow, registry *connector.Registry) error {
+	if definition.ID != "" {
+		if err := ValidateID(definition.ID); err != nil {
+			return err
+		}
+	}
 	source, err := definition.DecodeSource(registry)
 	if err != nil {
 		return fmt.Errorf("decode source endpoint: %w", err)
+	}
+	if err := connector.ValidatePersistedSpec(source); err != nil {
+		return fmt.Errorf("validate persisted %s source: %w", source.Type, err)
 	}
 	destinations, err := definition.DecodeDestinations(registry)
 	if err != nil {

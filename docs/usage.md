@@ -8,6 +8,35 @@ Use this page to look up configuration keys and command syntax. For a runnable f
 - A named replication slot and publication. WALlaby can create them when its database role has permission.
 - Network access from each worker to its source, destinations, workflow store, and checkpoint store.
 
+## Persisted flow admission
+
+A supplied flow ID must match `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. Omit it when
+creating a flow to let the server assign a UUID. Persisted PostgreSQL sources
+cannot select `snapshot_state.file_path`: local file state is available only to
+a direct operator-run backfill, not to a stored flow executed by a worker.
+
+Before deploying this admission change over an existing workflow database, run
+this read-only check:
+
+```sql
+SELECT id
+FROM public.flows
+WHERE id !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
+   OR jsonb_path_exists(source::jsonb, '$.**.snapshot_state.file_path')
+   OR jsonb_path_exists(source::jsonb, '$.**.snapshot_state.filePath')
+   OR jsonb_path_exists(source::jsonb, '$.**.snapshotState.file_path')
+   OR jsonb_path_exists(source::jsonb, '$.**.snapshotState.filePath');
+```
+
+Review any returned definitions before deployment. There is no migration or
+fallback for them. A stored definition that fails admission also makes flow
+listing fail, which prevents the scheduler from dispatching other flows until
+the invalid stored definition is repaired under operator control. The flow API
+cannot update, stop or delete a definition that fails load-time admission. Stop
+affected workers through deployment controls, review durable authority and
+checkpoints, and repair the workflow database directly. There is no automatic
+data or checkpoint migration.
+
 ## API Server
 
 Start the gRPC API server:
@@ -479,7 +508,7 @@ Backfill fields on `postgres_source` are native typed values:
 - `partition_column` (optional) — column used to hash-partition a table
 - `partition_count` (default `1`) — number of partitions per table
 - `snapshot_consistent` (default `true`) — uses `pg_export_snapshot()` for a consistent snapshot
-- `snapshot_state.postgres.dsn` selects PostgreSQL state; alternatively select `snapshot_state.file_path` or the `snapshot_state.disabled` boolean branch
+- `snapshot_state.postgres.dsn` selects PostgreSQL state; alternatively select the `snapshot_state.disabled` boolean branch. `snapshot_state.file_path` is local-only: persisted flow admission rejects it, and it is honored only by a direct, operator-run local backfill
 - `snapshot_state.schema` and `snapshot_state.table` — PostgreSQL state-table identity
 
 ```json

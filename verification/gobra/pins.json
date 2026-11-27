@@ -30,7 +30,8 @@
   "executed_gobra_jar_sha256": "d3d9b2427781033779584e6a6bf5e21deef14dc394ba51c62520ae1c3c90d241",
   "java": {
     "vendor": "Eclipse Temurin",
-    "version": "25.0.5+8"
+    "version": "25.0.5+8",
+    "install": "temurin-25.0.5+8.0.LTS"
   },
   "z3": {
     "version": "4.16.0",

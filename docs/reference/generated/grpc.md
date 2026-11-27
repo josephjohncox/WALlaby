@@ -428,8 +428,8 @@
 | schema | [string](#string) |  |  |
 | table | [string](#string) |  |  |
 | primary_key_prefix | [string](#string) |  |  |
-| engine | [string](#string) |  |  |
-| order_by | [string](#string) |  |  |
+| engine | [string](#string) |  | Legacy metadata uses MergeTree. Empty selects the default; other engines and SQL fragments are rejected before the destination opens a connection. |
+| order_by | [string](#string) |  | Comma-separated unique names from flow_id, source_schema, source_table, synced_at, is_deleted, lsn, operation, key_json. Expressions are not allowed. |
 
 
 
@@ -1193,7 +1193,7 @@ contract accepts only a DSN and ignores connection-pool and IAM options.
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | disabled | [bool](#bool) |  |  |
-| file_path | [string](#string) |  |  |
+| file_path | [string](#string) |  | Local connector configuration only. Persisted flow admission rejects file-backed state; operator-run backfill can use a runtime override. |
 | postgres | [PostgresDSNConfig](#wallaby-v1-PostgresDSNConfig) |  |  |
 | schema | [string](#string) |  |  |
 | table | [string](#string) |  |  |

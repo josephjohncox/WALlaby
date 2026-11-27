@@ -87,7 +87,7 @@ it_run_filter = "{{ env.IT_RUN_FILTER | default(value=\"\") }}"
 it_skip_filter = "{{ env.IT_SKIP_FILTER | default(value=\"\") }}"
 it_count = "{{ env.IT_COUNT | default(value=\"\") }}"
 it_package_parallelism = "{{ env.IT_PACKAGE_PARALLELISM | default(value=\"1\") }}"
-it_expected_harness_participants = "{{ env.IT_EXPECTED_HARNESS_PARTICIPANTS | default(value=vars.it_package_parallelism) }}"
+it_expected_harness_participants = "{{ env.IT_EXPECTED_HARNESS_PARTICIPANTS | default(value=\"\") }}"
 integration_package = "{{ env.INTEGRATION_PACKAGE | default(value=\"./tests/...\") }}"
 integration_worker_binary = "{{ vars.root ~ \"/\" ~ vars.cache_dir ~ \"/wallaby-worker-integration\" }}"
 snowflake_fuzz_time = "{{ env.SNOWFLAKE_FUZZ_TIME | default(value=\"30s\") }}"
@@ -307,7 +307,6 @@ cleanup() {
             kind delete cluster --name "${harness_base}-direct" || true
             kind delete cluster --name "${harness_base}-dbos" || true
         fi
-        rm -f "${TMPDIR:-/tmp}/wallaby-it-integration-harness.state"
     fi
     return "$status"
 }
@@ -441,7 +440,6 @@ cleanup() {
     if [[ "${IT_KEEP:-0}" != "1" ]] && command -v kind >/dev/null 2>&1; then
         kind delete cluster --name "${harness_cluster}" || true
     fi
-    rm -f "${TMPDIR:-/tmp}/wallaby-it-integration-harness.state"
     return "$status"
 }
 trap cleanup EXIT
@@ -1109,7 +1107,7 @@ trap 'rm -f "$requirements"' EXIT
 
 [tasks."ci-check-test"]
 description = "Run non-mutating formatting, lint, complete unit, dependency and security gates"
-run = ["mise run format:check", "mise run lint", "mise run proto-lint", "mise run test", "mise run test-protocol", "mise run deps:check", "mise run security"]
+run = ["mise run format:check", "mise run lint", "mise run proto-lint", "mise run test", "mise run test-protocol", "mise run test-proof-runner", "mise run deps:check", "mise run security"]
 
 [tasks."test-protocol"]
 description = "Production Runner exploration, real-store histories, and mutation-sensitive protocol gates"
@@ -1135,6 +1133,21 @@ run = ["mise run tla-tools", "python scripts/check-tla-mutants.py --jar '{{ vars
 [tasks."pre-commit"]
 description = "Fast non-mutating Go formatting and Protobuf checks"
 run = ["mise run format:check", "mise run proto-lint"]
+
+[tasks."test-postgres18-quickstart"]
+description = "Require real PostgreSQL 18 quickstart E2E, exact authority catalog, and validated-NOT-NULL tamper evidence"
+shell = "bash -euo pipefail -c"
+run = '''
+: "${TEST_PG_DSN:?provide a disposable PostgreSQL 18 database with logical replication}"
+mkdir -p .cache/test-results
+go test -count=1 -json ./internal/controlplane -run '^(TestExactAuthorityManifestMatchesFreshCatalog|TestDeliveryManifestAuthorityTamperPG18|TestUnvalidatedNotNullAuthorityRejectedPostgres18)$' > .cache/test-results/postgres18-catalog.json
+go run ./scripts/verify-go-test-json.go -results .cache/test-results/postgres18-catalog.json -required 'TestExactAuthorityManifestMatchesFreshCatalog,TestDeliveryManifestAuthorityTamperPG18,TestUnvalidatedNotNullAuthorityRejectedPostgres18'
+IT_KIND=0 IT_SERVICES=none IT_COMPOSE_IGGY=false IT_PACKAGE_PARALLELISM=1 IT_EXPECTED_HARNESS_PARTICIPANTS=1 INTEGRATION_PACKAGE=./tests/integration IT_RUN_FILTER='^TestPostgresToPostgresE2E$' IT_REQUIRED_TESTS=TestPostgresToPostgresE2E IT_RESULTS_FILE="$PWD/.cache/test-results/postgres18-e2e.json" mise run test-integration
+'''
+
+[tasks."test-proof-runner"]
+description = "Unit-test proof runner tool admission, subprocess isolation and frozen contract without native verifier tools"
+run = "python -m unittest discover -s verification/gobra -p 'test_*.py'"
 
 [tasks."proof-gobra-bootstrap"]
 description = "Fetch/build pinned Gobra pilot prerequisites (macOS arm64 only; fail closed elsewhere)"

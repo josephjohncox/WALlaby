@@ -26,6 +26,11 @@ const (
 	optSnapshotStateTable   = "snapshot_state_table"
 	optSnapshotStatePath    = "snapshot_state_path"
 	optSnapshotStateDSN     = "snapshot_state_dsn"
+
+	// maxBackfillBatchSize bounds the record slice allocated per batch.
+	maxBackfillBatchSize = 10000
+	// maxBackfillPartitionCount bounds the tasks created for each table.
+	maxBackfillPartitionCount = 4096
 )
 
 // BackfillSource reads existing table data in bulk.
@@ -48,27 +53,67 @@ type BackfillSource struct {
 	flowID         string
 	taskStates     map[snapshotTaskKey]snapshotTaskState
 	primaryKeys    map[string][]string
+
+	// connect and openStateStore replace the PostgreSQL pool and the state
+	// store constructor in tests that exercise Open's failure cleanup.
+	connect        func(ctx context.Context, dsn string, options map[string]string) (*pgxpool.Pool, error)
+	openStateStore func(ctx context.Context, backend string, spec connector.RuntimeSpec, dsn string) (snapshotStateStore, error)
 }
 
-func (b *BackfillSource) Open(ctx context.Context, spec connector.RuntimeSpec) error {
+func connectBackfillPool(ctx context.Context, dsn string, options map[string]string) (*pgxpool.Pool, error) {
+	pool, err := newPool(ctx, dsn, options)
+	if err != nil {
+		return nil, fmt.Errorf("connect postgres: %w", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("ping postgres: %w", err)
+	}
+	return pool, nil
+}
+
+func (b *BackfillSource) Open(ctx context.Context, spec connector.RuntimeSpec) (retErr error) {
 	b.spec = spec
+	// Release the pool, snapshot, and state store (including a file store's
+	// pinned directory) when Open fails partway. Close is idempotent, so a
+	// caller's later Close remains safe.
+	defer func() {
+		if retErr != nil {
+			_ = b.Close(context.WithoutCancel(ctx))
+		}
+	}()
 
 	dsn := spec.Options[optDSN]
 	if dsn == "" {
 		return errors.New("postgres dsn is required")
 	}
 
-	pool, err := newPool(ctx, dsn, spec.Options)
-	if err != nil {
-		return fmt.Errorf("connect postgres: %w", err)
+	// These values size per-batch and per-partition allocations; validate them
+	// before any connection is opened.
+	batchSize := parseInt(spec.Options[optBatchSize], 1000)
+	if batchSize < 1 || batchSize > maxBackfillBatchSize {
+		return fmt.Errorf("backfill batch_size must be between 1 and %d, got %d", maxBackfillBatchSize, batchSize)
 	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return fmt.Errorf("ping postgres: %w", err)
+	partitionCount := parseInt(spec.Options[optPartitionCount], 1)
+	if partitionCount < 1 {
+		partitionCount = 1
+	}
+	if partitionCount > maxBackfillPartitionCount {
+		return fmt.Errorf("backfill partition_count must be at most %d, got %d", maxBackfillPartitionCount, partitionCount)
+	}
+
+	connect := b.connect
+	if connect == nil {
+		connect = connectBackfillPool
+	}
+	pool, err := connect(ctx, dsn, spec.Options)
+	if err != nil {
+		return err
 	}
 	b.pool = pool
+	b.batchSize = batchSize
+	b.partitionCount = partitionCount
 
-	b.batchSize = parseInt(spec.Options[optBatchSize], 1000)
 	b.wireFormat = connector.WireFormat(spec.Options[optFormat])
 	if b.wireFormat == "" {
 		b.wireFormat = connector.WireFormatArrow
@@ -84,14 +129,14 @@ func (b *BackfillSource) Open(ctx context.Context, spec connector.RuntimeSpec) e
 		}
 		b.partitionCol = partitionColumn
 	}
-	b.partitionCount = parseInt(spec.Options[optPartitionCount], 1)
-	if b.partitionCount < 1 {
-		b.partitionCount = 1
-	}
 
 	b.flowID = snapshotFlowID(spec)
 	if backend := strings.ToLower(spec.Options[optSnapshotStateBackend]); backend != "none" {
-		store, err := newSnapshotStateStore(ctx, backend, spec, dsn)
+		openStore := b.openStateStore
+		if openStore == nil {
+			openStore = newSnapshotStateStore
+		}
+		store, err := openStore(ctx, backend, spec, dsn)
 		if err != nil {
 			return err
 		}

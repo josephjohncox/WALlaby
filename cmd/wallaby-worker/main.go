@@ -9,7 +9,6 @@ import (
 	_ "net/http/pprof" //nolint:gosec // pprof is gated by config.
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -26,6 +25,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/runner"
 	"github.com/josephjohncox/wallaby/internal/schemabaseline"
 	"github.com/josephjohncox/wallaby/internal/telemetry"
+	"github.com/josephjohncox/wallaby/internal/tracepath"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
 	"github.com/josephjohncox/wallaby/pkg/stream"
@@ -333,9 +333,7 @@ func runWallabyWorker(cmd *cobra.Command) error {
 		SnowflakePolicy:    snowflakePolicy,
 	}
 	if cfg.Trace.Path != "" {
-		tracePath := strings.ReplaceAll(cfg.Trace.Path, "{flow_id}", flowDef.ID)
-		// #nosec G304 -- trace path is configured by the operator.
-		traceFile, err := os.Create(tracePath)
+		traceFile, err := tracepath.Open(cfg.Trace.Path, flowDef.ID)
 		if err != nil {
 			return fmt.Errorf("open trace file: %w", err)
 		}

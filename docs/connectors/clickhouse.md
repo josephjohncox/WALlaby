@@ -9,6 +9,21 @@ WALlaby has two ClickHouse contracts. Do not treat them as equivalent.
 
 Maintained status applies only to the `clickhouse_postgres_append` typed branch. Selecting the generic `clickhouse` branch does not promote a generic ClickHouse configuration.
 
+## Generic metadata layout
+
+The experimental `clickhouse` branch can create its legacy metadata table.
+`metadata.engine` is empty or `MergeTree` (case-insensitive); WALlaby compiles it
+to the fixed `MergeTree` engine. `metadata.order_by` is a comma-separated list
+of unique names from `flow_id`, `source_schema`, `source_table`, `synced_at`,
+`is_deleted`, `lsn`, `operation`, and `key_json`. The default is
+`flow_id, source_schema, source_table, key_json`.
+
+SQL expressions, sort directions, comments, duplicate columns, and other
+engines are rejected before any connection opens, even when metadata is
+disabled. The ordering text is limited to 256 bytes. Existing flows using a
+custom engine or expression must be replaced; there is no raw-SQL fallback.
+These restrictions do not change the separate managed profile below.
+
 ## Maintained profile boundary
 
 `postgresql-to-clickhouse-append-v1` admits only this deployment:

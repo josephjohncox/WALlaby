@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json"
@@ -16,6 +17,10 @@ import (
 )
 
 const managedSnapshotCursorVersion = "wallaby.postgres.pk-cursor/v1"
+
+// maxManagedSnapshotCursorBytes bounds a durable cursor before it is decoded
+// and a cursor before it is stored, so a stored cursor is always readable.
+const maxManagedSnapshotCursorBytes = 1 << 20
 
 type managedSnapshotCursor struct {
 	Version string                     `json:"version"`
@@ -46,12 +51,22 @@ func encodeManagedSnapshotCursor(task bootstrap.SnapshotTask, row map[string]any
 		}
 		cursor.Keys[i] = managedSnapshotCursorKey{Name: name, Type: postgresType, Encoding: encoding, Value: text}
 	}
-	return json.Marshal(cursor)
+	encoded, err := json.Marshal(cursor)
+	if err != nil {
+		return nil, err
+	}
+	if len(encoded) > maxManagedSnapshotCursorBytes {
+		return nil, fmt.Errorf("snapshot cursor is %d bytes, exceeding the %d byte limit", len(encoded), maxManagedSnapshotCursorBytes)
+	}
+	return encoded, nil
 }
 
 func decodeManagedSnapshotCursor(task bootstrap.SnapshotTask, encoded []byte) ([]any, error) {
+	if len(encoded) > maxManagedSnapshotCursorBytes {
+		return nil, fmt.Errorf("snapshot cursor is %d bytes, exceeding the %d byte limit", len(encoded), maxManagedSnapshotCursorBytes)
+	}
 	var cursor managedSnapshotCursor
-	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&cursor); err != nil {
 		return nil, fmt.Errorf("decode snapshot cursor: %w", err)

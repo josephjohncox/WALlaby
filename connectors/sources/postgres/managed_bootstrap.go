@@ -27,6 +27,9 @@ import (
 const (
 	defaultManagedSnapshotWorkers = 4
 	maxManagedSnapshotWorkers     = 16
+	// maxManagedSnapshotBatchSize bounds the rows one bootstrap batch may
+	// request and therefore the slice allocated for them.
+	maxManagedSnapshotBatchSize   = 10000
 	defaultManagedSnapshotTables  = 64
 	defaultManagedSnapshotRetries = 3
 )
@@ -339,8 +342,8 @@ func (s *Source) runManagedBootstrapGeneration(ctx context.Context, coordinator 
 		workers = availableImporters
 	}
 	batchSize := parseInt(spec.Options[optBatchSize], 100)
-	if batchSize < 1 || batchSize > 10000 {
-		return connector.ManagedBootstrapResult{}, false, fmt.Errorf("bootstrap batch_size must be between 1 and 10000, got %d", batchSize)
+	if err := validateManagedSnapshotBatchSize(batchSize); err != nil {
+		return connector.ManagedBootstrapResult{}, false, err
 	}
 	claimLease := parseDuration(spec.Options["snapshot_claim_lease"], 30*time.Second)
 	if claimLease <= 0 {
@@ -922,7 +925,19 @@ WHERE i.indrelid=$1 AND i.indisreplident ORDER BY k.ord`, relation.OID)
 	return connector.Schema{Name: relation.Table, Namespace: relation.Namespace, Version: 1, Columns: columns}, keys, nil
 }
 
+func validateManagedSnapshotBatchSize(batchSize int) error {
+	if batchSize < 1 || batchSize > maxManagedSnapshotBatchSize {
+		return fmt.Errorf("bootstrap batch_size must be between 1 and %d, got %d", maxManagedSnapshotBatchSize, batchSize)
+	}
+	return nil
+}
+
 func queryManagedSnapshotBatch(ctx context.Context, tx pgx.Tx, task bootstrap.SnapshotTask, cursor []byte, limit int) ([]connector.Record, []byte, bool, error) {
+	// The limit sizes the record slice below; check it here so no caller can
+	// reach the allocation with an unvalidated value.
+	if err := validateManagedSnapshotBatchSize(limit); err != nil {
+		return nil, nil, false, err
+	}
 	identifier := pgx.Identifier{task.Namespace, task.Table}.Sanitize()
 	keys := make([]string, len(task.KeyColumns))
 	for i, key := range task.KeyColumns {

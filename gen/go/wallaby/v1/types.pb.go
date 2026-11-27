@@ -1521,10 +1521,14 @@ type ClickHouseMetadataConfig struct {
 	Schema           string                 `protobuf:"bytes,2,opt,name=schema,proto3" json:"schema,omitempty"`
 	Table            string                 `protobuf:"bytes,3,opt,name=table,proto3" json:"table,omitempty"`
 	PrimaryKeyPrefix string                 `protobuf:"bytes,4,opt,name=primary_key_prefix,json=primaryKeyPrefix,proto3" json:"primary_key_prefix,omitempty"`
-	Engine           string                 `protobuf:"bytes,5,opt,name=engine,proto3" json:"engine,omitempty"`
-	OrderBy          string                 `protobuf:"bytes,6,opt,name=order_by,json=orderBy,proto3" json:"order_by,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Legacy metadata uses MergeTree. Empty selects the default; other engines
+	// and SQL fragments are rejected before the destination opens a connection.
+	Engine string `protobuf:"bytes,5,opt,name=engine,proto3" json:"engine,omitempty"`
+	// Comma-separated unique names from flow_id, source_schema, source_table,
+	// synced_at, is_deleted, lsn, operation, key_json. Expressions are not allowed.
+	OrderBy       string `protobuf:"bytes,6,opt,name=order_by,json=orderBy,proto3" json:"order_by,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ClickHouseMetadataConfig) Reset() {
@@ -2290,6 +2294,8 @@ type SnapshotStateConfig_Disabled struct {
 }
 
 type SnapshotStateConfig_FilePath struct {
+	// Local connector configuration only. Persisted flow admission rejects
+	// file-backed state; operator-run backfill can use a runtime override.
 	FilePath string `protobuf:"bytes,2,opt,name=file_path,json=filePath,proto3,oneof"`
 }
 

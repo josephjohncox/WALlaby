@@ -245,8 +245,13 @@ Static analysis (`mise run spec-lint`) enforces that `SpecAction` values in code
 constants from the manifest.
 
 To emit traces from a worker run, set `WALLABY_TRACE_PATH` (supports `{flow_id}`
-placeholder) and run `wallaby-worker`. For the main server, `{flow_id}` is
-replaced with `server`. Then validate (defaults to `specs/coverage.json`):
+placeholder; without it `.<flow_id>` is appended) and run `wallaby-worker`.
+Flow IDs must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`, and trace files are
+created mode 0600 confined to the template's directory prefix before the first
+placeholder. Create that operator-owned root before starting the worker; a
+missing root is an error, not permission to create host directories. Per-flow
+subdirectories can be created only inside the opened root. For the main server,
+`{flow_id}` is replaced with `server`. Then validate (defaults to `specs/coverage.json`):
 
 ```
 wallaby-trace-validate --input /path/to/trace.jsonl

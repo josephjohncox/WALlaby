@@ -235,6 +235,82 @@ jobs:
       - name: Required checkpoint-5 Iceberg REST evidence (no skips)
         run: mise run test-checkpoint5-iceberg-integration
 
+  postgres-quickstart-18:
+    name: postgres-quickstart-18
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOBIN: ${{ github.workspace }}/.cache/bin
+      GOMODCACHE: ${{ github.workspace }}/.cache/gomod
+      GOCACHE: ${{ github.workspace }}/.cache/gocache
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup mise
+        uses: ./.github/actions/setup-mise
+
+      - name: Start the quickstart PostgreSQL image
+        run: |
+          config=$(docker compose \
+            -f examples/quickstart/docker-compose.yml config --format json)
+          image=$(printf '%s' "$config" | mise exec -- python -c '
+          import json,sys
+          print(json.load(sys.stdin)["services"]["postgres"]["image"])
+          ')
+          run="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          container="wallaby-quickstart-${run}"
+          docker run --detach --name "$container" \
+            --label "wallaby.quickstart-run=${run}" \
+            --env POSTGRES_USER=wallaby --env POSTGRES_PASSWORD=wallaby \
+            --env POSTGRES_DB=postgres --publish 127.0.0.1::5432 \
+            -- "$image" -c wal_level=logical
+          port=$(docker port "$container" 5432/tcp | awk -F: '{print $NF}')
+          test -n "$port"
+          for attempt in $(seq 1 60); do
+            if docker exec "$container" \
+              pg_isready -U wallaby -d postgres >/dev/null 2>&1
+            then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              docker logs "$container" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          dsn="postgres://wallaby:wallaby@127.0.0.1:$port/postgres"
+          printf 'TEST_PG_DSN=%s?sslmode=disable\n' "$dsn" \
+            >> "$GITHUB_ENV"
+
+      - name: PostgreSQL 18 E2E and exact catalog regressions (no skips)
+        run: mise run test-postgres18-quickstart
+
+      - name: Upload PostgreSQL 18 evidence
+        if: always()
+        # actions/upload-artifact v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: postgres18-quickstart-results
+          path: .cache/test-results/postgres18-*.json
+          if-no-files-found: error
+
+      - name: Stop only the owned quickstart fixture
+        if: always()
+        run: |
+          container="wallaby-quickstart-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          label='{{ index .Config.Labels "wallaby.quickstart-run" }}'
+          owner=$(docker inspect --format "$label" "$container" \
+            2>/dev/null || true)
+          if [ "$owner" = "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]; then
+            docker rm --force "$container"
+          fi
+
   postgres-managed-profile:
     name: postgres-managed-profile-${{ matrix.postgres }}
     runs-on: ubuntu-latest

@@ -93,8 +93,7 @@ type Destination struct {
 	metaPKPrefix                   string
 	flowID                         string
 	metaColumns                    map[string]struct{}
-	metaEngine                     string
-	metaOrderBy                    string
+	metaLayout                     metaTableLayout
 	stagingTables                  map[string]tableInfo
 	stagingResolved                bool
 }
@@ -113,6 +112,11 @@ func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) erro
 		return d.openManaged(ctx, dsn, spec)
 	}
 
+	metaLayout, err := compileMetaTableLayout(spec.Options[optMetaEngine], spec.Options[optMetaOrderBy])
+	if err != nil {
+		return err
+	}
+
 	db, err := sql.Open("clickhouse", dsn)
 	if err != nil {
 		return fmt.Errorf("open clickhouse: %w", err)
@@ -121,7 +125,13 @@ func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) erro
 		_ = db.Close()
 		return fmt.Errorf("ping clickhouse: %w", err)
 	}
+	return d.configureLegacy(ctx, db, spec, metaLayout)
+}
+
+// configureLegacy takes ownership of db and closes it on any failure.
+func (d *Destination) configureLegacy(ctx context.Context, db *sql.DB, spec connector.RuntimeSpec, metaLayout metaTableLayout) error {
 	d.db = db
+	d.metaLayout = metaLayout
 
 	d.batchMode = strings.ToLower(spec.Options[optBatchMode])
 	if d.batchMode == "" {
@@ -153,17 +163,11 @@ func (d *Destination) Open(ctx context.Context, spec connector.RuntimeSpec) erro
 	}
 	d.flowID = spec.Options[optFlowID]
 	d.metaColumns = map[string]struct{}{}
-	d.metaEngine = strings.TrimSpace(spec.Options[optMetaEngine])
-	if d.metaEngine == "" {
-		d.metaEngine = defaultMetaEngine
-	}
-	d.metaOrderBy = strings.TrimSpace(spec.Options[optMetaOrderBy])
-	if d.metaOrderBy == "" {
-		d.metaOrderBy = "flow_id, source_schema, source_table, key_json"
-	}
 
 	if d.metaEnabled {
 		if err := d.ensureMetaTable(ctx); err != nil {
+			_ = db.Close()
+			d.db = nil
 			return err
 		}
 	}
@@ -643,20 +647,14 @@ func (d *Destination) ensureMetaTable(ctx context.Context) error {
 		return errors.New("meta schema and table are required")
 	}
 	schemaIdent := quoteIdent(d.metaSchema, '`')
+	tableIdent := schemaIdent + "." + quoteIdent(d.metaTable, '`')
+	query, err := d.metaLayout.createTableDDL(tableIdent)
+	if err != nil {
+		return err
+	}
 	if _, err := d.db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", schemaIdent)); err != nil {
 		return fmt.Errorf("create meta database: %w", err)
 	}
-	tableIdent := schemaIdent + "." + quoteIdent(d.metaTable, '`')
-	query := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-  flow_id String,
-  source_schema String,
-  source_table String,
-  synced_at DateTime64(9),
-  is_deleted UInt8,
-  lsn String,
-  operation String,
-  key_json String
-) ENGINE = %s ORDER BY (%s)`, tableIdent, d.metaEngine, d.metaOrderBy)
 	if _, err := d.db.ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("create meta table: %w", err)
 	}
@@ -882,7 +880,12 @@ func quoteIdent(value string, quote rune) string {
 	if value == "" {
 		return value
 	}
-	escaped := strings.ReplaceAll(value, string(quote), string(quote)+string(quote))
+	// ClickHouse treats a backslash inside a quoted identifier as an escape
+	// character. Escape it before doubling the delimiter; otherwise a name
+	// ending in a backslash (or containing "\`") leaves the identifier open or
+	// closes it early and the rest of the name is parsed as SQL.
+	escaped := strings.ReplaceAll(value, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, string(quote), string(quote)+string(quote))
 	return string(quote) + escaped + string(quote)
 }
 

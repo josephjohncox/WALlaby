@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -17,6 +19,7 @@ import (
 	"github.com/josephjohncox/wallaby/internal/runner"
 	"github.com/josephjohncox/wallaby/internal/workflow"
 	"github.com/josephjohncox/wallaby/pkg/connector"
+	"github.com/josephjohncox/wallaby/pkg/stream"
 )
 
 func dbosPolicyTestFlow(t *testing.T, id string, destination connector.RuntimeSpec) flow.Flow {
@@ -214,5 +217,52 @@ func TestFlowWorkflowPrefixDisambiguatesSanitizedFlowIDs(t *testing.T) {
 	}
 	if !strings.HasPrefix(left, "wallaby-flow-orders-eu-") || !strings.HasSuffix(left, "-") {
 		t.Fatalf("unexpected workflow prefix %q", left)
+	}
+}
+
+func TestDBOSFlowTraceSinkConfinesFlowIDToTemplateRoot(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	root := filepath.Join(base, "traces")
+	outside := filepath.Join(base, "outside")
+	for _, dir := range []string{root, outside} { // the operator-chosen trace root must pre-exist
+		if err := os.Mkdir(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sentinel := filepath.Join(outside, "owned.jsonl")
+	if err := os.WriteFile(sentinel, []byte("sentinel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, template := range []string{filepath.Join(root, "{flow_id}.jsonl"), filepath.Join(root, "trace.jsonl")} {
+		orchestrator := &DBOSOrchestrator{tracePath: template}
+		for _, id := range []string{"../outside/owned", "../outside/owned.jsonl", "a/b", "..", ""} {
+			if sink, closeSink, err := orchestrator.flowTraceSink(id); err == nil {
+				_ = closeSink()
+				t.Fatalf("flowTraceSink(%q) with %q succeeded: %v", id, template, sink)
+			}
+		}
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "sentinel" {
+		t.Fatalf("sentinel=%q err=%v, want unchanged", got, err)
+	}
+
+	for template, want := range map[string]string{
+		filepath.Join(root, "{flow_id}.jsonl"): filepath.Join(root, "flow-1.jsonl"),
+		filepath.Join(root, "trace.jsonl"):     filepath.Join(root, "trace.jsonl.flow-1"),
+	} {
+		sink, closeSink, err := (&DBOSOrchestrator{tracePath: template}).flowTraceSink("flow-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sink.Emit(context.Background(), stream.TraceEvent{Kind: "test"})
+		if err := closeSink(); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(want)
+		if err != nil || info.Size() == 0 || info.Mode().Perm() != 0o600 {
+			t.Fatalf("trace %s info=%v err=%v, want non-empty 0600 file", want, info, err)
+		}
 	}
 }

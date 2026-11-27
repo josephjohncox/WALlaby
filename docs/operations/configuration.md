@@ -45,6 +45,25 @@ The server environment uses the documented `WALLABY_*` forms (`WALLABY_ENV`, `WA
 
 Worker command flags also retain their normalized `WALLABY_WORKER_*` bindings, including `WALLABY_WORKER_FLOW_ID`, `WALLABY_WORKER_GENERATION`, `WALLABY_WORKER_EXECUTION_BACKEND`, and `WALLABY_WORKER_MAX_EMPTY_READS`. An explicit command-line flag overrides its environment binding. Strict runtime-file mode disables Viper file decoding and legacy key aliases; it does not disable current flag environment bindings.
 
+## Per-flow trace files
+
+`trace.path` / `WALLABY_TRACE_PATH` can contain `{flow_id}`. A worker or DBOS
+runtime opens the constant directory prefix before that placeholder as its
+filesystem root. That directory must already exist and be writable by the
+worker. The runtime can create per-flow subdirectories only inside it; it does
+not create the operator's root or its ancestors. Without a placeholder, the
+runtime appends `.<flowID>` to the configured path. Trace files use mode `0600`.
+
+For a local run:
+
+```bash
+mkdir -p traces
+export WALLABY_TRACE_PATH="$PWD/traces/{flow_id}.jsonl"
+```
+
+The main server's separate trace uses the configured path with `{flow_id}`
+replaced by `server`.
+
 ## Workflow stores
 
 | Store | Environments | Durability |

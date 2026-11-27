@@ -31,3 +31,29 @@ func TestValidatePersistedIcebergSpecUsesAllowlist(t *testing.T) {
 		})
 	}
 }
+
+func TestValidatePersistedPostgresSpecRejectsLocalFileSnapshotState(t *testing.T) {
+	t.Parallel()
+
+	for name, options := range map[string]map[string]string{
+		"file backend":          {"snapshot_state_backend": "file"},
+		"file backend mixed":    {" Snapshot_State_Backend ": " FILE "},
+		"path only":             {"snapshot_state_path": "/var/lib/wallaby/state.json"},
+		"file backend and path": {"snapshot_state_backend": "file", "snapshot_state_path": "state.json"},
+	} {
+		if err := ValidatePersistedSpec(RuntimeSpec{Type: EndpointPostgres, Options: options}); err == nil || !strings.Contains(err.Error(), "snapshot_state") {
+			t.Errorf("%s: error=%v, want snapshot_state rejection", name, err)
+		}
+	}
+	for name, options := range map[string]map[string]string{
+		"none":     nil,
+		"postgres": {"snapshot_state_backend": "postgres", "snapshot_state_dsn": "postgres://state.example/db"},
+		"disabled": {"snapshot_state_backend": "none"},
+		"blank":    {"snapshot_state_path": "  "},
+	} {
+		if err := ValidatePersistedSpec(RuntimeSpec{Type: EndpointPostgres, Options: options}); err != nil {
+			t.Errorf("%s: unexpected rejection: %v", name, err)
+		}
+	}
+
+}

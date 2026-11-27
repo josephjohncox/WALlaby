@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,8 +50,8 @@ var (
 	integrationKind        = flag.Bool("it-kind", false, "start a local kind cluster for Kubernetes tests")
 	integrationKindCluster = flag.String(
 		"it-k8s-kind-cluster",
-		defaultKindCluster,
-		"kind cluster name",
+		"",
+		"kind cluster name; empty derives a unique name from this invocation's private state directory",
 	)
 	integrationKindNodeImage = flag.String(
 		"it-k8s-kind-node-image",
@@ -69,14 +68,14 @@ var (
 )
 
 const (
-	defaultKindCluster                 = "wallaby-test"
 	defaultKindNodeImage               = "kindest/node:v1.35.0"
 	defaultKindNamespace               = "default"
 	defaultServiceReadyTimeout         = 240 * time.Second
 	defaultIntegrationLockTimeout      = 5 * time.Minute
-	defaultIntegrationHarnessState     = "wallaby-it-integration-harness.state"
+	defaultOwnerPeerWaitTimeout        = 30 * time.Minute
+	defaultOwnerPeerPollInterval       = 500 * time.Millisecond
+	defaultOwnerCleanupReserve         = 2 * time.Minute
 	defaultExpectedHarnessParticipants = 1
-	defaultIntegrationHarnessStateTTL  = 10 * time.Minute
 
 	defaultPostgresName          = "wallaby-it-postgres"
 	defaultPostgresImage         = "postgres:16.11"
@@ -139,8 +138,6 @@ const (
 	defaultIcebergWarehouseBucket = "wallaby-iceberg"
 	defaultIcebergWarehouse       = "s3://wallaby-iceberg/warehouse"
 	defaultIcebergNamespace       = "wallaby_live"
-
-	defaultIntegrationHarnessLock = "wallaby-it-integration-harness.lock"
 )
 
 var (
@@ -155,31 +152,39 @@ var (
 )
 
 type integrationHarnessConfig struct {
-	kindEnabled   bool
-	kindKeep      bool
+	kindEnabled bool
+	kindKeep    bool
+	// kindCluster is empty until the private state root is open; an explicit
+	// name opts into a named (possibly developer-owned) cluster.
 	kindCluster   string
 	kindNodeImage string
 	services      string
 	expectedPeers int
+	// testTimeout is the go test -timeout for this process; zero is unbounded.
+	testTimeout time.Duration
 }
 
 type managedService struct {
 	created               bool
 	portForwardStop       context.CancelFunc
 	extraPortForwardStops []context.CancelFunc
-	cleanupFiles          []string
+	cleanupFiles          []string // generated basenames inside the harness state root
 	localPort             string
 }
 
 type integrationHarnessSharedState struct {
-	Version              int                `json:"version"`
-	Active               bool               `json:"active"`
-	KindCluster          string             `json:"kindCluster"`
-	KindNodeImage        string             `json:"kindNodeImage"`
-	KindCreated          bool               `json:"kindCreated"`
-	KindKubePath         string             `json:"kindKubePath"`
-	KindKeep             bool               `json:"kindKeep"`
-	Participants         int                `json:"participants"`
+	Version       int    `json:"version"`
+	Active        bool   `json:"active"`
+	KindCluster   string `json:"kindCluster"`
+	KindNodeImage string `json:"kindNodeImage"`
+	KindCreated   bool   `json:"kindCreated"`
+	KindKubeFile  string `json:"kindKubeFile"`
+	KindKeep      bool   `json:"kindKeep"`
+	Participants  int    `json:"participants"`
+	// JoinedTotal counts every participant that ever joined and never
+	// decrements, so an owner can tell "peers already came and went" from
+	// "peers have not started yet".
+	JoinedTotal          int                `json:"joinedTotal"`
 	ExpectedParticipants int                `json:"expectedParticipants"`
 	UpdatedAt            time.Time          `json:"updatedAt"`
 	Env                  map[string]*string `json:"env"`
@@ -189,18 +194,70 @@ type integrationHarness struct {
 	config       integrationHarnessConfig
 	kindCreated  bool
 	kindKubePath string
-	lockFile     *os.File
-	k8sClient    *kubernetes.Clientset
-	k8sConfig    *rest.Config
-	originalEnv  envSnapshot
-	services     map[string]*managedService
+	// kindKubeFile is the basename of a kubeconfig this harness generated in
+	// stateRoot. It stays empty for operator-provided kubeconfigs, which the
+	// harness never deletes.
+	kindKubeFile string
+	stateRoot    *harnessRoot
+	// joined records that this process persisted its participation (join or
+	// ownership claim). Only a joined process may decrement the shared count
+	// or clean up shared infrastructure.
+	joined bool
+	// lifecycleMu serializes the owner's peer barrier with stop, so a signal
+	// cleanup cannot use the shared state concurrently with the barrier.
+	lifecycleMu sync.Mutex
+	// peerWait overrides the owner's peer-barrier timing; zero uses defaults.
+	peerWait    peerWaitTiming
+	lockFile    *os.File
+	k8sClient   *kubernetes.Clientset
+	k8sConfig   *rest.Config
+	originalEnv envSnapshot
+	services    map[string]*managedService
 
 	pgCreated         bool
 	pgPortForwardStop context.CancelFunc
 	pgLocalPort       string
 	ownsInfra         bool
-	statePath         string
 	dumpPodLogsOnFail bool
+}
+
+// harnessProcessStart approximates the test process start. cmd/go's outer kill
+// deadline (-timeout plus a grace period) is measured from the start of the
+// test process, so the owner's peer barrier is budgeted against it.
+var harnessProcessStart = time.Now()
+
+// parseTestTimeout returns the -test.timeout cmd/go passed to this binary
+// (10m unless the caller set -timeout); zero means no timeout.
+func parseTestTimeout(fs *flag.FlagSet) time.Duration {
+	f := fs.Lookup("test.timeout")
+	if f == nil {
+		return 0
+	}
+	getter, ok := f.Value.(flag.Getter)
+	if !ok {
+		return 0
+	}
+	if d, ok := getter.Get().(time.Duration); ok && d > 0 {
+		return d
+	}
+	return 0
+}
+
+// peerBarrierBudget is how long the owner may wait for peers: the remaining
+// test timeout minus a cleanup reserve, so waiting can never run into cmd/go's
+// outer kill while peers still depend on this process. Without a timeout the
+// fallback is finite. A non-positive result means the budget is exhausted.
+func peerBarrierBudget(testTimeout time.Duration, processStart, now time.Time) time.Duration {
+	if testTimeout <= 0 {
+		return defaultOwnerPeerWaitTimeout
+	}
+	reserve := min(defaultOwnerCleanupReserve, testTimeout/4)
+	return processStart.Add(testTimeout - reserve).Sub(now)
+}
+
+type peerWaitTiming struct {
+	timeout  time.Duration
+	interval time.Duration
 }
 
 type envSnapshot map[string]*string
@@ -294,8 +351,15 @@ func RunIntegrationHarness(m *testing.M) int {
 	if result != 0 {
 		h.dumpPodLogsOnFail = true
 	}
+	// The owner process hosts the in-process port-forwards that peer packages
+	// use, so it must outlive them. A signal cancels startupCtx, which ends
+	// the wait before the signal path's cleanup takes the lifecycle lock.
+	peerErr := h.waitForPeers(startupCtx)
+	if peerErr != nil {
+		fmt.Fprintln(os.Stderr, peerErr)
+	}
 	cleanup()
-	if cleanupErr != nil && result == 0 {
+	if (cleanupErr != nil || peerErr != nil) && result == 0 {
 		return 1
 	}
 	return result
@@ -313,6 +377,7 @@ func loadIntegrationHarnessConfig() integrationHarnessConfig {
 		kindNodeImage: *integrationKindNodeImage,
 		services:      strings.ToLower(strings.TrimSpace(*integrationServices)),
 		expectedPeers: peers,
+		testTimeout:   parseTestTimeout(flag.CommandLine),
 	}
 }
 
@@ -324,7 +389,19 @@ func isCrashHelperProcess() bool {
 func (h *integrationHarness) start() error {
 	h.logf("starting integration harness")
 	h.originalEnv = captureEnv(integrationManagedEnvKeys()...)
-	h.statePath = filepath.Join(os.TempDir(), defaultIntegrationHarnessState)
+	root, err := openHarnessRoot(os.Getenv(stateDirEnv), h.config.expectedPeers)
+	if err != nil {
+		return err
+	}
+	h.stateRoot = root
+	if h.config.kindCluster == "" {
+		name, err := root.derivedKindClusterName()
+		if err != nil {
+			return err
+		}
+		h.config.kindCluster = name
+		h.logf("using invocation-scoped kind cluster %q", name)
+	}
 
 	if err := h.acquireGlobalLock(); err != nil {
 		return err
@@ -338,19 +415,25 @@ func (h *integrationHarness) start() error {
 	if h.shouldReuseSharedState(state) {
 		h.ownsInfra = false
 		h.logf("reusing shared harness state for cluster %q", h.config.kindCluster)
-		h.restoreManagedEnvFromState(state.Env)
-		h.kindKubePath = state.KindKubePath
+		if err := h.restoreManagedEnvFromState(state); err != nil {
+			h.releaseGlobalLock()
+			return err
+		}
+		h.kindKubeFile = state.KindKubeFile
 		h.kindCreated = false
 
 		if err := validateLocalManagedEndpoints(restoredLocalManagedEndpoints()); err == nil {
 			h.config.kindKeep = h.config.kindKeep || state.KindKeep
 			state.Participants++
+			state.JoinedTotal++
 			state.Active = true
 			state.UpdatedAt = time.Now()
 			state.ExpectedParticipants = h.config.expectedPeers
 			state.KindKeep = h.config.kindKeep
-			state.KindCreated = false
 			err = h.persistSharedState(state)
+			if err == nil {
+				h.joined = true
+			}
 			h.releaseGlobalLock()
 			if err != nil {
 				return err
@@ -361,23 +444,30 @@ func (h *integrationHarness) start() error {
 			state.Active = false
 			state.Participants = 0
 			h.cleanupSharedInfrastructure(state)
-			_ = os.Remove(h.statePath)
+			if err := h.stateRoot.removeState(); err != nil {
+				h.releaseGlobalLock()
+				return fmt.Errorf("discard stale harness shared state: %w", err)
+			}
 			h.restoreCapturedEnv()
 			h.kindKubePath = ""
+			h.kindKubeFile = ""
 		}
 	}
 
 	h.ownsInfra = true
 	h.logf("claiming harness ownership for cluster %q", h.config.kindCluster)
+	// KindCreated is recorded only once this process has created the cluster,
+	// so a failed start can never delete a cluster that existed beforehand.
 	state = &integrationHarnessSharedState{
 		Version:              1,
 		Active:               true,
 		KindCluster:          h.config.kindCluster,
 		KindNodeImage:        h.config.kindNodeImage,
-		KindCreated:          true,
-		KindKubePath:         "",
+		KindCreated:          false,
+		KindKubeFile:         "",
 		KindKeep:             h.config.kindKeep,
 		Participants:         1,
+		JoinedTotal:          1,
 		ExpectedParticipants: h.config.expectedPeers,
 		UpdatedAt:            time.Now(),
 		Env:                  nil,
@@ -386,25 +476,23 @@ func (h *integrationHarness) start() error {
 		h.releaseGlobalLock()
 		return err
 	}
+	h.joined = true
 
 	if err := h.startKind(); err != nil {
-		h.releaseGlobalLock()
-		return err
+		return h.failOwnedStart(state, err)
 	}
 	if err := h.startManagedDependencies(defaultK8sNamespace()); err != nil {
-		h.releaseGlobalLock()
-		return err
+		return h.failOwnedStart(state, err)
 	}
 	// Start PostgreSQL last. On cold CI runners, pulling the other dependency
 	// images can leave its API-server port-forward idle long enough to be closed.
 	if err := h.startPostgres(); err != nil {
-		h.releaseGlobalLock()
-		return err
+		return h.failOwnedStart(state, err)
 	}
 	setIntegrationDefaults()
 
 	state.KindCreated = h.kindCreated
-	state.KindKubePath = h.kindKubePath
+	state.KindKubeFile = h.kindKubeFile
 	state.Env = currentManagedEnvSnapshot()
 	state.UpdatedAt = time.Now()
 	state.ExpectedParticipants = h.config.expectedPeers
@@ -417,8 +505,44 @@ func (h *integrationHarness) start() error {
 	return nil
 }
 
+// failOwnedStart records what this process created before releasing the lock,
+// so stop removes exactly the cluster and generated files it owns.
+func (h *integrationHarness) failOwnedStart(state *integrationHarnessSharedState, cause error) error {
+	state.KindCreated = h.kindCreated
+	state.KindKubeFile = h.kindKubeFile
+	err := h.persistSharedState(state)
+	h.releaseGlobalLock()
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
+}
+
 func (h *integrationHarness) stop() error {
+	h.lifecycleMu.Lock()
+	defer h.lifecycleMu.Unlock()
+	if h.stateRoot == nil {
+		h.restoreCapturedEnv()
+		return nil
+	}
+	var err error
+	if h.joined {
+		err = h.stopLocked()
+	} else {
+		// This process never joined the shared state (for example, it was
+		// rejected at start), so it must not decrement or clean up a live
+		// owner's infrastructure. It only releases its own resources.
+		h.releaseGlobalLock()
+		h.restoreCapturedEnv()
+	}
+	closeErr := h.stateRoot.close()
+	h.stateRoot = nil
+	return errors.Join(err, closeErr)
+}
+
+func (h *integrationHarness) stopLocked() error {
 	if err := h.acquireGlobalLock(); err != nil {
+		h.restoreCapturedEnv()
 		return err
 	}
 	defer h.releaseGlobalLock()
@@ -463,7 +587,12 @@ func (h *integrationHarness) stop() error {
 	if shouldDeleteInfrastructure && h.shouldCleanup(state) {
 		state.Active = false
 		h.cleanupSharedInfrastructure(state)
-		_ = os.Remove(h.statePath)
+		if err := h.stateRoot.removeState(); err != nil {
+			h.restoreCapturedEnv()
+			return fmt.Errorf("remove harness shared state: %w", err)
+		}
+		h.restoreCapturedEnv()
+		return nil
 	}
 
 	if err := h.persistSharedState(state); err != nil {
@@ -472,6 +601,65 @@ func (h *integrationHarness) stop() error {
 	}
 	h.restoreCapturedEnv()
 	return nil
+}
+
+// waitForPeers keeps the infrastructure owner alive until every expected
+// participant has joined (JoinedTotal) and all peers have finished (only the
+// owner remains active). The owner's process hosts the port-forwards peers use,
+// so exiting earlier would cut their connections mid-test. The shared lock is
+// held only for each poll, never while sleeping.
+func (h *integrationHarness) waitForPeers(ctx context.Context) error {
+	if !h.joined || !h.ownsInfra || h.config.expectedPeers <= 1 {
+		return nil
+	}
+	h.lifecycleMu.Lock()
+	defer h.lifecycleMu.Unlock()
+	timeout := peerBarrierBudget(h.config.testTimeout, harnessProcessStart, time.Now())
+	interval := defaultOwnerPeerPollInterval
+	if h.peerWait.timeout > 0 {
+		timeout = h.peerWait.timeout
+	}
+	if h.peerWait.interval > 0 {
+		interval = h.peerWait.interval
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("wait for harness peers: %w", err)
+		}
+		joined, active, err := h.peerProgress()
+		if err != nil {
+			return fmt.Errorf("wait for harness peers: %w", err)
+		}
+		if joined >= h.config.expectedPeers && active <= 1 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for harness peers: %w", ctx.Err())
+		case <-deadline.C:
+			return fmt.Errorf("wait for harness peers: gave up after %s of the remaining test-timeout budget with %d of %d participants joined and %d active", max(timeout, 0).Round(time.Millisecond), joined, h.config.expectedPeers, active)
+		case <-ticker.C:
+		}
+	}
+}
+
+func (h *integrationHarness) peerProgress() (joined, active int, err error) {
+	if err := h.acquireGlobalLock(); err != nil {
+		return 0, 0, err
+	}
+	defer h.releaseGlobalLock()
+	state, err := h.readSharedState()
+	if err != nil {
+		return 0, 0, err
+	}
+	if !state.Active || state.KindCluster != h.config.kindCluster {
+		return 0, 0, errors.New("shared harness state was replaced while the owner waited for peers")
+	}
+	return state.JoinedTotal, state.Participants, nil
 }
 
 func (h *integrationHarness) kubernetesClient() (*kubernetes.Clientset, *rest.Config, error) {
@@ -557,29 +745,34 @@ func (h *integrationHarness) bootstrapKindCluster() error {
 
 	if kindHasCluster(string(clusters), h.config.kindCluster) {
 		h.logf("reusing existing kind cluster %q", h.config.kindCluster)
-		kubeconfigPath, err := h.getExistingKindKubeconfig(ctx, h.config.kindCluster)
+		kubeconfigPath, generatedName, err := h.getExistingKindKubeconfig(ctx, h.config.kindCluster)
 		if err != nil {
 			return fmt.Errorf("resolve existing kind cluster %q kubeconfig: %w", h.config.kindCluster, err)
 		}
 		if err := h.validateKindCluster(kubeconfigPath); err == nil {
 			h.kindKubePath = kubeconfigPath
+			h.kindKubeFile = generatedName
 			_ = os.Setenv("WALLABY_TEST_K8S_KUBECONFIG", h.kindKubePath)
 			_ = os.Setenv("KUBECONFIG", h.kindKubePath)
 			_ = os.Setenv("WALLABY_TEST_K8S_NAMESPACE", defaultK8sNamespace())
 			return nil
 		}
 		h.logf("existing kind cluster %q appears unhealthy: %v", h.config.kindCluster, err)
+		if generatedName != "" {
+			_ = h.stateRoot.removeGenerated(generatedName)
+		}
 		if destroyErr := h.deleteKindCluster(ctx, h.config.kindCluster); destroyErr != nil && harnessVerbose() {
 			fmt.Fprintf(os.Stderr, "failed to cleanup stale kind cluster %q: %v\n", h.config.kindCluster, destroyErr)
 		}
 	}
 
 	h.kindCreated = true
-	kubeconfigPath, err := h.createKindCluster(ctx)
+	kubeconfigPath, generatedName, err := h.createKindCluster(ctx)
 	if err != nil {
 		return fmt.Errorf("create kind cluster %q: %w", h.config.kindCluster, err)
 	}
 	h.kindKubePath = kubeconfigPath
+	h.kindKubeFile = generatedName
 
 	if h.kindKubePath == "" {
 		return fmt.Errorf("kind cluster %q returned empty kubeconfig path", h.config.kindCluster)
@@ -613,33 +806,34 @@ func (h *integrationHarness) validateKindCluster(kubeconfigPath string) error {
 	return lastErr
 }
 
-func (h *integrationHarness) createKindCluster(ctx context.Context) (string, error) {
+func (h *integrationHarness) createKindCluster(ctx context.Context) (string, string, error) {
 	h.logf("creating kind cluster %q (image=%q)", h.config.kindCluster, h.config.kindNodeImage)
 	args := []string{"create", "cluster", "--name", h.config.kindCluster}
 	if strings.TrimSpace(h.config.kindNodeImage) != "" {
 		args = append(args, "--image", h.config.kindNodeImage)
 	}
 
-	// Never rewrite the developer's default kubeconfig/current context.
-	file, err := os.CreateTemp("", "wallaby-it-kind-*.kubeconfig")
+	// Never rewrite the developer's default kubeconfig/current context. The
+	// generated kubeconfig lives in the private harness root.
+	file, name, err := h.stateRoot.createGeneratedKubeconfig()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	kubeconfigPath := file.Name()
+	kubeconfigPath := h.stateRoot.generatedPath(name)
 	if err := file.Close(); err != nil {
-		_ = os.Remove(kubeconfigPath)
-		return "", err
+		_ = h.stateRoot.removeGenerated(name)
+		return "", "", err
 	}
 	args = append(args, "--kubeconfig", kubeconfigPath)
 	if _, err := commandOutput(ctx, "", "kind", args...); err != nil {
-		_ = os.Remove(kubeconfigPath)
-		return "", err
+		_ = h.stateRoot.removeGenerated(name)
+		return "", "", err
 	}
 	if err := h.validateKindCluster(kubeconfigPath); err != nil {
-		_ = os.Remove(kubeconfigPath)
-		return "", err
+		_ = h.stateRoot.removeGenerated(name)
+		return "", "", err
 	}
-	return kubeconfigPath, nil
+	return kubeconfigPath, name, nil
 }
 
 func (h *integrationHarness) deleteKindCluster(ctx context.Context, cluster string) error {
@@ -647,41 +841,42 @@ func (h *integrationHarness) deleteKindCluster(ctx context.Context, cluster stri
 	return err
 }
 
-func (h *integrationHarness) getExistingKindKubeconfig(ctx context.Context, clusterName string) (string, error) {
+// getExistingKindKubeconfig returns the kubeconfig path and, when the harness
+// generated it, the owned basename. An operator-provided path is returned with
+// an empty owned name and is never removed by the harness.
+func (h *integrationHarness) getExistingKindKubeconfig(ctx context.Context, clusterName string) (string, string, error) {
 	kubeconfigPath := strings.TrimSpace(os.Getenv("WALLABY_TEST_K8S_KUBECONFIG"))
 	if kubeconfigPath != "" {
 		// #nosec G703 -- this integration harness intentionally probes an operator-supplied kubeconfig path.
 		_, err := os.Stat(kubeconfigPath)
 		if err == nil {
-			return kubeconfigPath, nil
+			return kubeconfigPath, "", nil
 		}
 	}
 
 	raw, err := commandOutput(ctx, "", "kind", "get", "kubeconfig", "--name", clusterName)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" {
-		return "", fmt.Errorf("empty kubeconfig for existing kind cluster %q", clusterName)
+		return "", "", fmt.Errorf("empty kubeconfig for existing kind cluster %q", clusterName)
 	}
-	temp, err := os.CreateTemp("", fmt.Sprintf("wallaby-%s-kubeconfig-*", clusterName))
+	temp, name, err := h.stateRoot.createGeneratedKubeconfig()
 	if err != nil {
-		return "", fmt.Errorf("create temp kubeconfig: %w", err)
+		return "", "", fmt.Errorf("create temp kubeconfig: %w", err)
 	}
 	if _, err := temp.WriteString(trimmed); err != nil {
-		_ = os.Remove(temp.Name())
-		if closeErr := temp.Close(); closeErr != nil {
-			return "", fmt.Errorf("write temp kubeconfig: %w", errors.Join(err, closeErr))
-		}
-		return "", fmt.Errorf("write temp kubeconfig: %w", err)
+		closeErr := temp.Close()
+		_ = h.stateRoot.removeGenerated(name)
+		return "", "", fmt.Errorf("write temp kubeconfig: %w", errors.Join(err, closeErr))
 	}
 	if err := temp.Close(); err != nil {
-		_ = os.Remove(temp.Name())
-		return "", fmt.Errorf("flush temp kubeconfig: %w", err)
+		_ = h.stateRoot.removeGenerated(name)
+		return "", "", fmt.Errorf("flush temp kubeconfig: %w", err)
 	}
 
-	return temp.Name(), nil
+	return h.stateRoot.generatedPath(name), name, nil
 }
 
 func (h *integrationHarness) startPostgres() error {
@@ -829,7 +1024,7 @@ func (h *integrationHarness) startClickHouse(namespace string) error {
 	}
 	service := h.getService(defaultClickHouseName)
 	service.extraPortForwardStops = append(service.extraPortForwardStops, keeperStop, replicaStop, secureStop, replicaSecureStop)
-	caFile, err := os.CreateTemp("", "wallaby-clickhouse-ca-*.pem")
+	caFile, caName, err := h.stateRoot.createGeneratedCA()
 	if err != nil {
 		return fmt.Errorf("create ClickHouse TLS CA fixture: %w", err)
 	}
@@ -840,13 +1035,13 @@ func (h *integrationHarness) startClickHouse(namespace string) error {
 	if err := caFile.Close(); err != nil {
 		return fmt.Errorf("close ClickHouse TLS CA fixture: %w", err)
 	}
-	service.cleanupFiles = append(service.cleanupFiles, caFile.Name())
+	service.cleanupFiles = append(service.cleanupFiles, caName)
 	setenv("WALLABY_TEST_CLICKHOUSE_DSN", defaultClickHouseDSN())
 	setenv("WALLABY_TEST_CLICKHOUSE_REPLICA_DSN", fmt.Sprintf("clickhouse://%s:%s@%s:%s/%s", defaultClickHouseUser, defaultClickHousePassword, defaultPostgresLocalBindHost, replicaPort, defaultClickHouseDatabase))
 	setenv("WALLABY_TEST_CLICKHOUSE_REPLICA_TLS_DSN", fmt.Sprintf("clickhouse://%s:%s@%s:%s/%s?secure=true", defaultClickHouseUser, defaultClickHousePassword, defaultPostgresLocalBindHost, replicaSecurePort, defaultClickHouseDatabase))
 	setenv("WALLABY_TEST_CLICKHOUSE_KEEPER_ADDRESS", net.JoinHostPort(defaultPostgresLocalBindHost, keeperPort))
 	setenv("WALLABY_TEST_CLICKHOUSE_TLS_DSN", fmt.Sprintf("clickhouse://%s:%s@%s:%s/%s?secure=true", defaultClickHouseUser, defaultClickHousePassword, defaultPostgresLocalBindHost, securePort, defaultClickHouseDatabase))
-	setenv("WALLABY_TEST_CLICKHOUSE_TLS_CA", caFile.Name())
+	setenv("WALLABY_TEST_CLICKHOUSE_TLS_CA", h.stateRoot.generatedPath(caName))
 	setenv("WALLABY_TEST_CLICKHOUSE_DB", getenvString("WALLABY_TEST_CLICKHOUSE_DB", defaultClickHouseDatabase))
 	setenv("TEST_CLICKHOUSE_HTTP_PORT", getenvString("TEST_CLICKHOUSE_HTTP_PORT", defaultClickHouseHTTPPort))
 	return nil
@@ -1093,21 +1288,7 @@ func (h *integrationHarness) deleteManagedInfrastructure() {
 }
 
 func (h *integrationHarness) readSharedState() (*integrationHarnessSharedState, error) {
-	raw, err := os.ReadFile(h.statePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &integrationHarnessSharedState{}, nil
-		}
-		return nil, fmt.Errorf("read harness shared state %s: %w", h.statePath, err)
-	}
-	if len(raw) == 0 {
-		return &integrationHarnessSharedState{}, nil
-	}
-	var state integrationHarnessSharedState
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return nil, fmt.Errorf("decode harness shared state %s: %w", h.statePath, err)
-	}
-	return &state, nil
+	return h.stateRoot.readState()
 }
 
 func (h *integrationHarness) persistSharedState(state *integrationHarnessSharedState) error {
@@ -1115,15 +1296,7 @@ func (h *integrationHarness) persistSharedState(state *integrationHarnessSharedS
 		state = &integrationHarnessSharedState{}
 	}
 	state.UpdatedAt = time.Now()
-	encoded, err := json.Marshal(state)
-	if err != nil {
-		return fmt.Errorf("marshal harness shared state: %w", err)
-	}
-	tmp := h.statePath + ".tmp"
-	if err := os.WriteFile(tmp, encoded, 0o600); err != nil {
-		return fmt.Errorf("write harness shared state %s: %w", tmp, err)
-	}
-	return os.Rename(tmp, h.statePath)
+	return h.stateRoot.writeState(state)
 }
 
 func (h *integrationHarness) shouldReuseSharedState(state *integrationHarnessSharedState) bool {
@@ -1142,24 +1315,74 @@ func (h *integrationHarness) shouldReuseSharedState(state *integrationHarnessSha
 	if state.Participants <= 0 {
 		return false
 	}
-	if !state.UpdatedAt.IsZero() && time.Since(state.UpdatedAt) > defaultIntegrationHarnessStateTTL {
-		return false
-	}
 	return true
 }
 
-func (h *integrationHarness) restoreManagedEnvFromState(stateEnv map[string]*string) {
-	if stateEnv == nil {
-		return
+// restoreManagedEnvFromState applies shared state only after validating all of
+// it: unknown keys, oversized values, and path-valued keys that are neither the
+// operator's own value nor a file this harness generated are rejected.
+func (h *integrationHarness) restoreManagedEnvFromState(state *integrationHarnessSharedState) error {
+	if state.KindKubeFile != "" && !generatedKubeconfigName.MatchString(state.KindKubeFile) {
+		return fmt.Errorf("harness shared state names an unowned kubeconfig %q", state.KindKubeFile)
+	}
+	if state.Env == nil {
+		return nil
+	}
+	managed := make(map[string]bool)
+	for _, key := range integrationManagedEnvKeys() {
+		managed[key] = true
+	}
+	for key, value := range state.Env {
+		if !managed[key] {
+			return fmt.Errorf("harness shared state restores unmanaged environment key %q", key)
+		}
+		if value == nil {
+			continue
+		}
+		if len(*value) > maxRestoredEnvBytes || strings.ContainsRune(*value, 0) {
+			return fmt.Errorf("harness shared state has an invalid value for %s", key)
+		}
+		if !restoredPathEnvKeys[key] || *value == "" || *value == "/dev/null" || h.originalEnvAllows(key, *value) {
+			continue
+		}
+		if !h.stateRoot.isGeneratedPath(*value) {
+			return fmt.Errorf("harness shared state points %s outside the harness state directory", key)
+		}
 	}
 	for _, key := range integrationManagedEnvKeys() {
-		v, ok := stateEnv[key]
+		v, ok := state.Env[key]
 		if !ok || v == nil {
 			_ = os.Unsetenv(key)
 			continue
 		}
 		_ = os.Setenv(key, *v)
 	}
+	return nil
+}
+
+var restoredPathEnvKeys = map[string]bool{
+	"KUBECONFIG":                              true,
+	"WALLABY_TEST_K8S_KUBECONFIG":             true,
+	"WALLABY_TEST_CLICKHOUSE_TLS_CA":          true,
+	"WALLABY_TEST_SNOWFLAKE_PRIVATE_KEY_FILE": true,
+	"AWS_CONFIG_FILE":                         true,
+	"AWS_SHARED_CREDENTIALS_FILE":             true,
+}
+
+// originalEnvAllows reports whether the operator supplied value for key. The
+// two kubeconfig variables are aliases that startKind copies into each other,
+// so a value from either one is operator-provided for both.
+func (h *integrationHarness) originalEnvAllows(key, value string) bool {
+	keys := []string{key}
+	if key == "KUBECONFIG" || key == "WALLABY_TEST_K8S_KUBECONFIG" {
+		keys = []string{"KUBECONFIG", "WALLABY_TEST_K8S_KUBECONFIG"}
+	}
+	for _, candidate := range keys {
+		if original := h.originalEnv[candidate]; original != nil && strings.TrimSpace(*original) == value {
+			return true
+		}
+	}
+	return false
 }
 
 func currentManagedEnvSnapshot() map[string]*string {
@@ -1185,8 +1408,10 @@ func (h *integrationHarness) cleanupSharedInfrastructure(state *integrationHarne
 			fmt.Fprintf(os.Stderr, "failed to delete kind cluster %s: %v\n", h.config.kindCluster, err)
 		}
 	}
-	if state.KindKubePath != "" {
-		_ = os.Remove(state.KindKubePath)
+	if state.KindKubeFile != "" {
+		if err := h.stateRoot.removeGenerated(state.KindKubeFile); err != nil && harnessVerbose() {
+			fmt.Fprintf(os.Stderr, "failed to remove generated kubeconfig: %v\n", err)
+		}
 	}
 }
 
@@ -1197,17 +1422,17 @@ func (h *integrationHarness) restoreCapturedEnv() {
 }
 
 func (h *integrationHarness) acquireGlobalLock() error {
-	lockPath := filepath.Join(os.TempDir(), defaultIntegrationHarnessLock)
-	// #nosec G304 -- lockPath is a fixed lock filename in the temporary directory.
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	lockFile, err := h.stateRoot.openLock()
 	if err != nil {
-		return fmt.Errorf("acquire integration harness lock: open lock file %s: %w", lockPath, err)
+		return fmt.Errorf("acquire integration harness lock: %w", err)
 	}
 	h.lockFile = lockFile
 	deadline := time.Now().Add(defaultIntegrationLockTimeout)
 	for {
 		if time.Now().After(deadline) {
-			return fmt.Errorf("acquire integration harness lock: timeout waiting for %s", lockPath)
+			_ = lockFile.Close()
+			h.lockFile = nil
+			return fmt.Errorf("acquire integration harness lock: timeout waiting for %s", harnessLockFileName)
 		}
 		if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err == nil {
 			return nil
@@ -1251,8 +1476,10 @@ func (h *integrationHarness) stopManagedService(name string) {
 		}
 	}
 	svc.extraPortForwardStops = nil
-	for _, path := range svc.cleanupFiles {
-		_ = os.Remove(path)
+	for _, name := range svc.cleanupFiles {
+		if h.stateRoot != nil {
+			_ = h.stateRoot.removeGenerated(name)
+		}
 	}
 	svc.cleanupFiles = nil
 	if svc.created {
